@@ -1,6 +1,15 @@
 /** @jest-environment jsdom */
 
-import { act, type JSX, type ReactNode, useEffect } from 'react';
+import {
+  act,
+  forwardRef,
+  type JSX,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
   CanopyClient,
@@ -11,12 +20,60 @@ import type {
   Unsubscribe,
 } from '@canopy/app-core';
 import { CanopyClientProvider, useChatStore } from '@canopy/app-state';
+import type { ChatTurnPhase } from '@canopy/protocol/portal';
+import {
+  ChatComposerShell,
+  CompactQueueProvider,
+} from '@canopy/ui-shared/components';
 import { ChatPanel, type ChatComposerHostControls } from '../ChatPanel';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock('../ChatComposer', () => ({
   ChatComposer: (): JSX.Element => <div data-testid="composer" />,
+}));
+// A textarea stands in for the Slate composer editor: it keeps the editor
+// contract the queued-message composer relies on (seeded text, text changes,
+// Enter submits, and the imperative serialize and focus).
+jest.mock('@canopy/ui-rich/editor', () => ({
+  ComposerEditor: forwardRef(function MockComposerEditor(
+    props: {
+      initialText?: string;
+      dataTestId?: string;
+      onTextChange?: (text: string) => void;
+      onKeyDown?: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
+      onSubmit?: (payload: { text: string }) => void;
+      canSubmit?: (payload: { text: string }) => boolean;
+    },
+    ref,
+  ): JSX.Element {
+    const input = useRef<HTMLTextAreaElement>(null);
+    const text = (): string => input.current?.value ?? '';
+    useImperativeHandle(ref, () => ({
+      // Like the real editor, focus with no selection puts the caret at the end.
+      focus: (): void => {
+        const element = input.current;
+        element?.focus();
+        element?.setSelectionRange(element.value.length, element.value.length);
+      },
+      serialize: (): { text: string } => ({ text: text() }),
+    }));
+    return (
+      <textarea
+        ref={input}
+        data-testid={props.dataTestId}
+        defaultValue={props.initialText}
+        onChange={(event): void => props.onTextChange?.(event.target.value)}
+        onKeyDown={(event): void => {
+          props.onKeyDown?.(event);
+          if (event.key !== 'Enter' || event.defaultPrevented) return;
+          event.preventDefault();
+          const payload = { text: text() };
+          if (props.canSubmit?.(payload) ?? true) props.onSubmit?.(payload);
+        }}
+      />
+    );
+  }),
 }));
 // Honors the real transcript's footer contract: a chat with no messages but a
 // queue mounts the transcript, which owns the queued list.
@@ -82,7 +139,7 @@ function Seeder(): null {
   return null;
 }
 
-describe('ChatPanel queued-message inline edit', () => {
+describe('ChatPanel queued-message edit in the composer', () => {
   it('offers Steer only for rows the host marks eligible', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
@@ -135,6 +192,290 @@ describe('ChatPanel queued-message inline edit', () => {
     act(() => root.unmount());
   });
 
+  it('opens the editor in the composer place and keeps the composer mounted', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <CanopyClientProvider client={createClient([])}>
+          <Seeder />
+          <ChatPanel
+            chatId="c1"
+            renderComposer={(): JSX.Element => (
+              <textarea data-testid="host-composer" defaultValue="my draft" />
+            )}
+          />
+        </CanopyClientProvider>,
+      );
+    });
+    await flushLazyTranscript();
+    const composer = (): HTMLTextAreaElement | null =>
+      container.querySelector<HTMLTextAreaElement>(
+        '[data-testid="host-composer"]',
+      );
+    const bubbleTexts = (): string[] =>
+      Array.from(
+        container.querySelectorAll('[data-testid="queued-message-bubble"]'),
+        (bubble) => bubble.textContent ?? '',
+      );
+    expect(bubbleTexts()).toHaveLength(4);
+
+    // The editor opens once the host grants the edit lock.
+    await act(async () => {
+      container
+        .querySelector<HTMLElement>('[data-testid="queued-message-edit"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    const editor = container.querySelector(
+      '[data-testid="queued-message-editor"]',
+    );
+    // The editor is not inside the transcript any more; the edited row
+    // steps out of the queue while the editor holds its text.
+    expect(editor).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="transcript"]')?.contains(editor),
+    ).toBe(false);
+    expect(bubbleTexts()).toHaveLength(3);
+    expect(bubbleTexts().some((text) => text.includes('original'))).toBe(false);
+    expect(
+      container.querySelector<HTMLTextAreaElement>(
+        '[data-testid="queued-message-edit-input"]',
+      )?.value,
+    ).toBe('original');
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-testid="queued-message-edit-input"]'),
+    );
+    // The composer and its draft stay mounted, hidden.
+    expect(composer()?.value).toBe('my draft');
+    expect(composer()?.closest('[data-queued-edit-hidden]')).not.toBeNull();
+
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-testid="queued-message-edit-cancel"]',
+        )
+        ?.click();
+    });
+
+    expect(
+      container.querySelector('[data-testid="queued-message-editor"]'),
+    ).toBeNull();
+    expect(bubbleTexts()).toHaveLength(4);
+    expect(composer()?.value).toBe('my draft');
+    expect(composer()?.closest('[data-queued-edit-hidden]')).toBeNull();
+    // Focus was in the editor, so it goes back to the composer.
+    expect(document.activeElement).toBe(composer());
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('edits a compact queue row in the composer place, outside the list', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <CanopyClientProvider client={createClient([])}>
+          <CompactQueueProvider value>
+            <Seeder />
+            <ChatPanel
+              chatId="c1"
+              renderComposer={(): JSX.Element => (
+                <ChatComposerShell dataTestId="host-composer-box">
+                  <textarea
+                    data-testid="host-composer"
+                    defaultValue="my draft"
+                  />
+                </ChatComposerShell>
+              )}
+            />
+          </CompactQueueProvider>
+        </CanopyClientProvider>,
+      );
+    });
+    await flushLazyTranscript();
+    const list = (): Element | null =>
+      container.querySelector('[aria-label="Queued messages"]');
+    // The list sits on the box that shows: the composer's, then the
+    // editor's while an edit is open.
+    const boxUnderList = (): string | null | undefined =>
+      list()
+        ?.closest('[data-composer-tray-slot]')
+        ?.nextElementSibling?.getAttribute('data-testid');
+    expect(boxUnderList()).toBe('host-composer-box');
+    const rowTexts = (): string[] =>
+      Array.from(
+        list()?.querySelectorAll('[data-testid="queued-message-preview"]') ??
+          [],
+        (row) => row.textContent ?? '',
+      );
+    expect(rowTexts()).toEqual([
+      'original',
+      'second',
+      'attached',
+      'Attached files',
+    ]);
+
+    const row = list()?.querySelector('[data-testid="queued-message-preview"]');
+    if (!row) throw new Error('missing compact queue row');
+    await act(async () => {
+      const init = { bubbles: true, cancelable: true, button: 0 };
+      row.dispatchEvent(new MouseEvent('mousedown', { ...init, detail: 1 }));
+      row.dispatchEvent(new MouseEvent('mousedown', { ...init, detail: 2 }));
+      row.dispatchEvent(new MouseEvent('dblclick', { ...init, detail: 2 }));
+      await Promise.resolve();
+    });
+
+    // One editor, in the composer's place: the edited row leaves the list
+    // and no second editor opens under it.
+    const editors = container.querySelectorAll(
+      '[data-testid="queued-message-editor"]',
+    );
+    expect(editors).toHaveLength(1);
+    expect(list()?.contains(editors[0])).toBe(false);
+    expect(rowTexts()).toEqual(['second', 'attached', 'Attached files']);
+    expect(
+      container.querySelector<HTMLTextAreaElement>(
+        '[data-testid="queued-message-edit-input"]',
+      )?.value,
+    ).toBe('original');
+    const composer = container.querySelector('[data-testid="host-composer"]');
+    expect(composer?.closest('[data-queued-edit-hidden]')).toBeInstanceOf(
+      Element,
+    );
+    expect(boxUnderList()).toBe('queued-message-edit-shell');
+
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          '[data-testid="queued-message-edit-cancel"]',
+        )
+        ?.click();
+    });
+    expect(
+      container.querySelector('[data-testid="queued-message-editor"]'),
+    ).toBeNull();
+    expect(rowTexts()).toEqual([
+      'original',
+      'second',
+      'attached',
+      'Attached files',
+    ]);
+    expect(boxUnderList()).toBe('host-composer-box');
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('keeps drawer queue controls outside the hidden composer while a host editor is active', async () => {
+    let arrive: (() => void) | undefined;
+    function Arrival(): null {
+      // Zustand actions are closure-based and do not use `this`.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const hydrate = useChatStore((state) => state.hydrate);
+      const queued = useChatStore((state) => state.threads.c1?.queuedMessages);
+      useEffect(() => {
+        arrive = (): void =>
+          hydrate('c1', [], {
+            route: {
+              scope: 'worktree',
+              workspaceLocalId: 'ws',
+              worktreeLocalId: 'wt',
+            },
+            queuedMessages: [
+              ...(queued ?? []),
+              {
+                id: 'new',
+                text: 'Arrived during editing',
+                origin: 'portal',
+                enqueuedAtMs: 5,
+              },
+            ],
+          });
+      }, [hydrate, queued]);
+      return null;
+    }
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <CanopyClientProvider client={createClient([])}>
+          <CompactQueueProvider value={true}>
+            <Seeder />
+            <Arrival />
+            <ChatPanel
+              chatId="c1"
+              composerWorkDrawer
+              hostQueuedMessageEditor={<div data-testid="host-queued-editor" />}
+              renderComposer={(controls): JSX.Element => (
+                <div>
+                  {controls.queuedPanel}
+                  <textarea data-testid="host-composer" />
+                </div>
+              )}
+            />
+          </CompactQueueProvider>
+        </CanopyClientProvider>,
+      ),
+    );
+    await flushLazyTranscript();
+    const visibleRows = Array.from(
+      container.querySelectorAll('[data-testid="queued-message-bubble"]'),
+    ).filter((row) => !row.closest('[data-queued-edit-hidden]'));
+    expect(visibleRows).toHaveLength(4);
+    act(() => arrive?.());
+    const arrived = Array.from(
+      container.querySelectorAll('[data-testid="queued-message-preview"]'),
+    ).find((row) => row.textContent === 'Arrived during editing');
+    expect(arrived).toBeDefined();
+    expect(arrived?.closest('[data-queued-edit-hidden]')).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+  it('renders a host-supplied queued-message editor in the composer place', () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const render = (editing: boolean): void => {
+      root.render(
+        <CanopyClientProvider client={createClient([])}>
+          <ChatPanel
+            chatId="c1"
+            hostQueuedMessageEditor={
+              editing ? <div data-testid="host-queued-editor" /> : null
+            }
+            renderComposer={(): JSX.Element => (
+              <div data-testid="host-composer" />
+            )}
+          />
+        </CanopyClientProvider>,
+      );
+    };
+    act(() => render(true));
+
+    expect(
+      container.querySelector('[data-testid="host-queued-editor"]'),
+    ).not.toBeNull();
+    expect(
+      container
+        .querySelector('[data-testid="host-composer"]')
+        ?.closest('[data-queued-edit-hidden]'),
+    ).not.toBeNull();
+
+    act(() => render(false));
+    expect(
+      container.querySelector('[data-testid="host-queued-editor"]'),
+    ).toBeNull();
+    expect(
+      container
+        .querySelector('[data-testid="host-composer"]')
+        ?.closest('[data-queued-edit-hidden]'),
+    ).toBeNull();
+    act(() => root.unmount());
+  });
+
   it('locks on open, edits on save, and unlocks on cancel', async () => {
     const calls: Array<[CommandName, unknown]> = [];
     const client: CanopyClient = {
@@ -143,9 +484,9 @@ describe('ChatPanel queued-message inline edit', () => {
         terminalPty: false,
         fileSystemAccess: 'read',
         voice: false,
-        settingsScope: 'limited',
-        pipelines: 'view-only',
-        routing: 'portal',
+        settingsScope: 'api-keys-only',
+        pipelines: 'read-only',
+        routing: 'url',
         overviewNotifications: true,
       },
       query<K extends QueryName>(): Promise<QueryMap[K]['result']> {
@@ -854,7 +1195,7 @@ describe('ChatPanel queued-message inline edit', () => {
     act(() => root.unmount());
   });
 
-  it('edits inside the shared composer-style card', async () => {
+  it('edits inside the shared composer shell', async () => {
     const container = document.createElement('div');
     const root = createRoot(container);
     act(() => {
@@ -875,8 +1216,10 @@ describe('ChatPanel queued-message inline edit', () => {
     const input = container.querySelector(
       '[data-testid="queued-message-edit-input"]',
     );
-    expect(input?.closest('[data-testid="message-edit-card"]')).not.toBeNull();
-    expect(input?.classList.contains('resize-none')).toBe(true);
+    expect(input).toBeInstanceOf(HTMLElement);
+    expect(
+      input?.closest('[data-testid="queued-message-edit-shell"]'),
+    ).toBeInstanceOf(HTMLElement);
     act(() => root.unmount());
   });
 
@@ -960,6 +1303,157 @@ describe('ChatPanel queued-message inline edit', () => {
   });
 });
 
+function PhaseSeeder({
+  rows,
+}: {
+  rows: ReadonlyArray<{
+    id: string;
+    turnPhase?: ChatTurnPhase;
+    retryable?: boolean;
+    canSteer?: boolean;
+  }>;
+}): null {
+  // Zustand actions are closure-based and do not use `this`.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const hydrate = useChatStore((state) => state.hydrate);
+  useEffect(() => {
+    hydrate('c1', [], {
+      route: {
+        scope: 'worktree',
+        workspaceLocalId: 'ws',
+        worktreeLocalId: 'wt',
+      },
+      queuedMessages: rows.map((row, index) => ({
+        text: `queued ${row.id}`,
+        origin: 'portal' as const,
+        enqueuedAtMs: index + 1,
+        ...row,
+      })),
+      steeringCapabilities: {
+        provider: 'claude',
+        generation: 'g1',
+        steer: true,
+        withdraw: true,
+        interrupt: true,
+      },
+    });
+  }, [hydrate, rows]);
+  return null;
+}
+
+describe('ChatPanel queued-message actions by turn phase', () => {
+  async function renderRows(
+    rows: Parameters<typeof PhaseSeeder>[0]['rows'],
+    calls: Array<[CommandName, unknown]> = [],
+  ): Promise<{ container: HTMLDivElement; unmount: () => void }> {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <CanopyClientProvider client={createClient(calls)}>
+          <PhaseSeeder rows={rows} />
+          <ChatPanel chatId="c1" />
+        </CanopyClientProvider>,
+      );
+    });
+    await flushLazyTranscript();
+    return { container, unmount: (): void => act(() => root.unmount()) };
+  }
+
+  function count(container: HTMLElement, testId: string): number {
+    return container.querySelectorAll(`[data-testid="${testId}"]`).length;
+  }
+
+  it('keeps Steer and Interrupt for rows from a host that reports no phase', async () => {
+    const { container, unmount } = await renderRows([
+      { id: 'q1', canSteer: true },
+      { id: 'q2' },
+    ]);
+
+    expect(count(container, 'queued-message-steer')).toBe(1);
+    expect(count(container, 'queued-message-interrupt')).toBe(2);
+    expect(count(container, 'queued-message-retry')).toBe(0);
+    unmount();
+  });
+
+  it('offers Steer and Interrupt while a foreground turn runs', async () => {
+    const { container, unmount } = await renderRows([
+      { id: 'q1', turnPhase: 'foreground', canSteer: true },
+    ]);
+
+    expect(count(container, 'queued-message-steer')).toBe(1);
+    expect(count(container, 'queued-message-interrupt')).toBe(1);
+    unmount();
+  });
+
+  it.each(['idle', 'background'] as const)(
+    'hides Steer and Interrupt when the chat is %s',
+    async (turnPhase) => {
+      const { container, unmount } = await renderRows([
+        { id: 'q1', turnPhase, canSteer: true },
+        { id: 'q2', turnPhase },
+      ]);
+
+      expect(count(container, 'queued-message-steer')).toBe(0);
+      expect(count(container, 'queued-message-interrupt')).toBe(0);
+      expect(count(container, 'queued-message-cancel')).toBe(2);
+      unmount();
+    },
+  );
+
+  it.each(['idle', 'background'] as const)(
+    'offers Retry for a row still queued while the chat is %s',
+    async (turnPhase) => {
+      const calls: Array<[CommandName, unknown]> = [];
+      const { container, unmount } = await renderRows(
+        [{ id: 'q1', turnPhase }],
+        calls,
+      );
+
+      // Nothing is left to interrupt, so the row keeps a way to be sent.
+      expect(count(container, 'queued-message-retry')).toBe(1);
+      act(() => {
+        container
+          .querySelector<HTMLElement>('[data-testid="queued-message-retry"]')
+          ?.click();
+      });
+      expect(calls).toEqual([
+        [
+          'chat.queue.force',
+          { projectId: 'ws', worktreeId: 'wt', chatId: 'c1', entryId: 'q1' },
+        ],
+      ]);
+      unmount();
+    },
+  );
+
+  it.each([undefined, 'idle', 'background', 'foreground'] as const)(
+    'retries a failed delivery through the force command (phase %s)',
+    async (turnPhase) => {
+      const calls: Array<[CommandName, unknown]> = [];
+      const { container, unmount } = await renderRows(
+        [{ id: 'q1', retryable: true, ...(turnPhase ? { turnPhase } : {}) }],
+        calls,
+      );
+
+      expect(count(container, 'queued-message-retry')).toBe(1);
+      expect(count(container, 'queued-message-interrupt')).toBe(0);
+      act(() => {
+        container
+          .querySelector<HTMLElement>('[data-testid="queued-message-retry"]')
+          ?.click();
+      });
+      expect(calls).toEqual([
+        [
+          'chat.queue.force',
+          { projectId: 'ws', worktreeId: 'wt', chatId: 'c1', entryId: 'q1' },
+        ],
+      ]);
+      unmount();
+    },
+  );
+});
+
 function createClient(
   calls: Array<[CommandName, unknown]>,
   options: {
@@ -992,6 +1486,9 @@ function createClient(
               new Error('This message is no longer available to edit.'),
             )
           : Promise.resolve();
+      case 'chat.queue.force':
+      case 'chat.queue.steer':
+        return Promise.resolve();
       default:
         return Promise.reject(new Error(`Unexpected command: ${name}`));
     }
@@ -1003,9 +1500,9 @@ function createClient(
       terminalPty: false,
       fileSystemAccess: 'read',
       voice: false,
-      settingsScope: 'limited',
-      pipelines: 'view-only',
-      routing: 'portal',
+      settingsScope: 'api-keys-only',
+      pipelines: 'read-only',
+      routing: 'url',
       overviewNotifications: true,
     },
     query<K extends QueryName>(): Promise<QueryMap[K]['result']> {

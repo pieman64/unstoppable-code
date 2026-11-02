@@ -303,7 +303,7 @@ describe('SettingsNav', () => {
       />,
     );
     expect(html).toContain('data-testid="settings-nav-app-advisor"');
-    expect(html).toContain('App Advisor');
+    expect(html).toContain('Orchestrator');
   });
 
   it('places Accounts immediately after General', () => {
@@ -589,6 +589,7 @@ describe('SettingsNav', () => {
   });
 
   it('uses the main sidebar styling and supplied width', () => {
+    setPlatform('darwin');
     const html = renderToStaticMarkup(
       <SettingsNav
         activeSection="canopy"
@@ -729,9 +730,8 @@ describe('SettingsNav labels', () => {
     container.innerHTML = renderToStaticMarkup(
       <SettingsNav
         activeSection="display"
-        onNavigate={jest.fn()}
-        onClose={jest.fn()}
-        teamsEnabled
+        onNavigate={jest.fn<void, [SettingsSection]>()}
+        onClose={jest.fn<void, []>()}
       />,
     );
     return container;

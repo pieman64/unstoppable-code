@@ -19,7 +19,7 @@ function renderTimer(node: JSX.Element): {
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => {
-    root.render(node);
+    root.render(<ChatLookProvider value="classic">{node}</ChatLookProvider>);
   });
   return { container, root };
 }
@@ -46,14 +46,14 @@ describe('TurnTimer', () => {
     );
 
     try {
-      expect(container.textContent).toBe('Paused at 0:03');
+      expect(container.textContent).toBe('Waiting for you · 0:03');
       expect(container.querySelector('[data-testid="spinner"]')).toBeNull();
 
       act(() => {
         jest.advanceTimersByTime(3_000);
       });
 
-      expect(container.textContent).toBe('Paused at 0:03');
+      expect(container.textContent).toBe('Waiting for you · 0:03');
     } finally {
       act(() => {
         root.unmount();
@@ -355,11 +355,13 @@ describe('TurnTimer', () => {
       const root = createRoot(container);
       act(() => {
         root.render(
-          <TurnTimer
-            startedAt={0}
-            finishedAt={60_000}
-            stampAccessory={<SelfClosingMenu />}
-          />,
+          <ChatLookProvider value="classic">
+            <TurnTimer
+              startedAt={0}
+              finishedAt={60_000}
+              stampAccessory={<SelfClosingMenu />}
+            />
+          </ChatLookProvider>,
         );
       });
       try {
@@ -651,18 +653,26 @@ describe('TurnTimer', () => {
       try {
         expectAllShown(readParts(container));
         act(() => {
-          root.render(fullTimer({ finishedAt: 60_000 }));
+          root.render(
+            <ChatLookProvider value="classic">
+              {fullTimer({ finishedAt: 60_000 })}
+            </ChatLookProvider>,
+          );
         });
         expectHoverOnly(readParts(container));
         act(() => {
           root.render(
-            fullTimer({ finishedAt: 60_000, completionStatus: 'failed' }),
+            <ChatLookProvider value="classic">
+              {fullTimer({ finishedAt: 60_000, completionStatus: 'failed' })}
+            </ChatLookProvider>,
           );
         });
         expectAllShown(readParts(container));
         act(() => {
           root.render(
-            fullTimer({ finishedAt: 60_000, completionStatus: 'cancelled' }),
+            <ChatLookProvider value="classic">
+              {fullTimer({ finishedAt: 60_000, completionStatus: 'cancelled' })}
+            </ChatLookProvider>,
           );
         });
         expectAllShown(readParts(container));
@@ -741,13 +751,13 @@ describe('TurnTimer', () => {
     );
 
     try {
-      expect(container.textContent).toBe('Paused at 0:07');
+      expect(container.textContent).toBe('Waiting for you · 0:07');
 
       act(() => {
         jest.advanceTimersByTime(3_000);
       });
 
-      expect(container.textContent).toBe('Paused at 0:07');
+      expect(container.textContent).toBe('Waiting for you · 0:07');
     } finally {
       act(() => {
         root.unmount();
@@ -932,7 +942,7 @@ describe('TurnTimer reply Copy (CAN-4704)', () => {
     );
   }
 
-  it('keeps a historical clean reply Copy visible while other actions reveal', () => {
+  it('keeps a historical clean reply row, Copy included, visible at rest', () => {
     const { container, root } = renderTimer(
       <ChatLookProvider value="clean">
         <TurnTimer
@@ -953,10 +963,11 @@ describe('TurnTimer reply Copy (CAN-4704)', () => {
       ) {
         expect(node.className.split(/\s+/)).not.toContain('opacity-0');
       }
+      // Clean chat look: the whole reply row stays in view, not only Copy.
       expect(
         container.querySelector('[data-testid="turn-actions-reveal"]')
           ?.className,
-      ).toContain('opacity-0');
+      ).not.toContain('opacity-0');
     } finally {
       act(() => root.unmount());
     }
@@ -1041,7 +1052,9 @@ describe('TurnTimer reply Copy (CAN-4704)', () => {
       expect(copies(container)).toHaveLength(0);
       act(() => {
         root.render(
-          <TurnTimer startedAt={0} finishedAt={60_000} copyText="  Final  " />,
+          <ChatLookProvider value="classic">
+            <TurnTimer startedAt={0} finishedAt={60_000} copyText="  Final  " />
+          </ChatLookProvider>,
         );
       });
       const [copy] = copies(container);
@@ -1053,6 +1066,482 @@ describe('TurnTimer reply Copy (CAN-4704)', () => {
       // Trimming only decides whether to show Copy; the text copies as is.
       expect(writeText).toHaveBeenCalledWith('  Final  ');
       expect(copy.getAttribute('aria-label')).toBe('Copied');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+});
+
+describe('TurnTimer waiting for the user (CAN-4996)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(10_000);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    jest.useRealTimers();
+  });
+
+  function stateOf(container: HTMLElement): string | null | undefined {
+    return container
+      .querySelector('[data-testid="turn-timer"]')
+      ?.getAttribute('data-state');
+  }
+
+  it('pauses in the render the host starts waiting, with no working visuals', () => {
+    const spinner = <span data-testid="spinner" />;
+    const { container, root } = renderTimer(
+      <TurnTimer startedAt={5_000} spinner={spinner} />,
+    );
+    try {
+      expect(container.textContent).toBe('Working… 0:05');
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer startedAt={5_000} spinner={spinner} waitingForUser />
+          </ChatLookProvider>,
+        );
+      });
+      expect(container.textContent).toBe('Waiting for you · 0:05');
+      expect(stateOf(container)).toBe('paused');
+      expect(container.querySelector('[data-testid="spinner"]')).toBeNull();
+
+      act(() => {
+        jest.advanceTimersByTime(3_000);
+      });
+      expect(container.textContent).toBe('Waiting for you · 0:05');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('keeps the wait boundary across rerenders and reconciles the committed pause', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer startedAt={5_000} waitingForUser />,
+    );
+    try {
+      expect(container.textContent).toBe('Waiting for you · 0:05');
+      for (let step = 0; step < 4; step += 1) {
+        act(() => {
+          jest.advanceTimersByTime(2_000);
+        });
+        // A replaced timer object, with and without a pause total.
+        act(() => {
+          root.render(
+            <ChatLookProvider value="classic">
+              <TurnTimer
+                startedAt={5_000}
+                waitingForUser
+                {...(step % 2 === 0 ? { accumulatedPausedDurationMs: 0 } : {})}
+              />
+            </ChatLookProvider>,
+          );
+        });
+        expect(container.textContent).toBe('Waiting for you · 0:05');
+      }
+
+      // The canonical pause opened at the wait's boundary arrives late.
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer
+              startedAt={5_000}
+              pausedAt={10_000}
+              accumulatedPausedDurationMs={0}
+              waitingForUser
+            />
+          </ChatLookProvider>,
+        );
+      });
+      expect(container.textContent).toBe('Waiting for you · 0:05');
+
+      // Answered at 18s: the 8s wait is subtracted once.
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer
+              startedAt={5_000}
+              pausedAt={10_000}
+              resumedAt={18_000}
+              accumulatedPausedDurationMs={8_000}
+            />
+          </ChatLookProvider>,
+        );
+      });
+      act(() => {
+        jest.advanceTimersByTime(2_000);
+      });
+      expect(container.textContent).toBe('Working… 0:07');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each([undefined, 8_000])(
+    'reconciles a closed pause arriving during a host-only wait (total %s)',
+    (accumulatedPausedDurationMs) => {
+      const { container, root } = renderTimer(
+        <TurnTimer startedAt={5_000} waitingForUser />,
+      );
+      try {
+        expect(container.textContent).toBe('Waiting for you · 0:05');
+        act(() => jest.advanceTimersByTime(8_000));
+        const timing = {
+          startedAt: 5_000,
+          pausedAt: 10_000,
+          resumedAt: 18_000,
+          accumulatedPausedDurationMs,
+        };
+        // The open pause was never rendered; its closed interval arrives
+        // before the pending-approval flag clears.
+        act(() =>
+          root.render(
+            <ChatLookProvider value="classic">
+              <TurnTimer {...timing} waitingForUser />
+            </ChatLookProvider>,
+          ),
+        );
+        expect(container.textContent).toBe('Waiting for you · 0:05');
+        act(() => jest.advanceTimersByTime(2_000));
+        act(() =>
+          root.render(
+            <ChatLookProvider value="classic">
+              <TurnTimer {...timing} waitingForUser />
+            </ChatLookProvider>,
+          ),
+        );
+        expect(container.textContent).toBe('Waiting for you · 0:05');
+        act(() =>
+          root.render(
+            <ChatLookProvider value="classic">
+              <TurnTimer {...timing} />
+            </ChatLookProvider>,
+          ),
+        );
+        expect(container.textContent).toBe('Working… 0:07');
+      } finally {
+        act(() => root.unmount());
+      }
+    },
+  );
+
+  it('keeps a recorded pause when the host has nothing waiting', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer startedAt={5_000} pausedAt={8_000} waitingForUser={false} />,
+    );
+    try {
+      expect(container.textContent).toBe('Waiting for you · 0:03');
+      expect(stateOf(container)).toBe('paused');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('lets a finished turn win over a stale waiting flag', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer
+        startedAt={5_000}
+        finishedAt={9_000}
+        waitingForUser
+        isStreaming
+      />,
+    );
+    try {
+      expect(container.textContent).toContain('Completed in 0:04');
+      expect(stateOf(container)).toBe('completed');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('says only that it is waiting without a start time', () => {
+    const { container, root } = renderTimer(<TurnTimer waitingForUser />);
+    try {
+      expect(container.textContent).toBe('Waiting for you');
+      expect(container.textContent).not.toContain('NaN');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each([
+    { startedAt: NaN },
+    { startedAt: Infinity },
+    { startedAt: 5_000, pausedAt: NaN },
+    { startedAt: 5_000, accumulatedPausedDurationMs: NaN },
+  ])('omits unavailable elapsed time for invalid timestamps: %j', (props) => {
+    const { container, root } = renderTimer(
+      <TurnTimer {...props} waitingForUser />,
+    );
+    try {
+      expect(container.textContent).toBe('Waiting for you');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('reconciles an earlier canonical boundary and remounts without resetting', () => {
+    const props = { startedAt: 5_000, waitingForUser: true };
+    const { container, root } = renderTimer(<TurnTimer {...props} />);
+    try {
+      expect(container.textContent).toBe('Waiting for you · 0:05');
+      act(() => jest.advanceTimersByTime(4_000));
+      const canonical = { ...props, pausedAt: 9_000 };
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer {...canonical} />
+          </ChatLookProvider>,
+        ),
+      );
+      // Authoritative timing corrects the provisional display by one second.
+      expect(container.textContent).toBe('Waiting for you · 0:04');
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer key="remounted" {...canonical} />
+          </ChatLookProvider>,
+        ),
+      );
+      expect(container.textContent).toBe('Waiting for you · 0:04');
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer
+              key="remounted"
+              {...canonical}
+              resumedAt={14_000}
+              accumulatedPausedDurationMs={5_000}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      act(() => jest.advanceTimersByTime(2_000));
+      expect(container.textContent).toBe('Waiting for you · 0:04');
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer
+              key="remounted"
+              startedAt={5_000}
+              pausedAt={9_000}
+              resumedAt={14_000}
+              accumulatedPausedDurationMs={5_000}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      expect(container.textContent).toBe('Working… 0:06');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('keeps one start and exact active time through three approvals', () => {
+    jest.setSystemTime(1_000);
+    const startedAt = 1_000;
+    const { container, root } = renderTimer(
+      <TurnTimer startedAt={startedAt} />,
+    );
+    const show = (props: Partial<TurnTimerProps>): void => {
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer startedAt={startedAt} {...props} />
+          </ChatLookProvider>,
+        );
+      });
+    };
+    const advance = (ms: number): void => {
+      act(() => {
+        jest.advanceTimersByTime(ms);
+      });
+    };
+    try {
+      let accumulated = 0;
+      const activeMs = [2_000, 3_000, 1_000, 2_000];
+      const waitMs = [5_000, 4_000, 10_000];
+      let activeTotal = 0;
+      for (let step = 0; step < waitMs.length; step += 1) {
+        advance(activeMs[step]);
+        activeTotal += activeMs[step];
+        const shown = `0:0${activeTotal / 1000}`;
+        expect(container.textContent).toBe(`Working… ${shown}`);
+
+        // The card appears before the committed pause, then with it.
+        show({
+          accumulatedPausedDurationMs: accumulated,
+          waitingForUser: true,
+        });
+        expect(container.textContent).toBe(`Waiting for you · ${shown}`);
+        const pausedAt = Date.now();
+        show({
+          pausedAt,
+          accumulatedPausedDurationMs: accumulated,
+          waitingForUser: true,
+        });
+        advance(waitMs[step]);
+        expect(container.textContent).toBe(`Waiting for you · ${shown}`);
+
+        // Answered: the committed resume closes the wait.
+        accumulated += waitMs[step];
+        show({
+          pausedAt,
+          resumedAt: Date.now(),
+          accumulatedPausedDurationMs: accumulated,
+        });
+        expect(container.textContent).toBe(`Working… ${shown}`);
+      }
+      advance(activeMs[3]);
+      activeTotal += activeMs[3];
+      show({
+        accumulatedPausedDurationMs: accumulated,
+        finishedAt: Date.now(),
+      });
+      expect(activeTotal).toBe(8_000);
+      expect(container.textContent).toContain('Completed in 0:08');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('stays paused until both the host wait and the recorded pause clear', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer startedAt={5_000} pausedAt={8_000} waitingForUser />,
+    );
+    try {
+      expect(container.textContent).toBe('Waiting for you · 0:03');
+      // The host wait clears; another owner keeps the turn paused.
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer startedAt={5_000} pausedAt={8_000} />
+          </ChatLookProvider>,
+        );
+      });
+      expect(stateOf(container)).toBe('paused');
+      expect(container.textContent).toBe('Waiting for you · 0:03');
+
+      // The recorded pause closes while another request still waits.
+      act(() => {
+        jest.advanceTimersByTime(2_000);
+      });
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer
+              startedAt={5_000}
+              pausedAt={8_000}
+              resumedAt={12_000}
+              accumulatedPausedDurationMs={4_000}
+              waitingForUser
+            />
+          </ChatLookProvider>,
+        );
+      });
+      expect(stateOf(container)).toBe('paused');
+      act(() => {
+        jest.advanceTimersByTime(3_000);
+      });
+      expect(container.textContent).toBe('Waiting for you · 0:03');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('restarts the wait boundary for a new turn', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer startedAt={5_000} waitingForUser />,
+    );
+    try {
+      expect(container.textContent).toBe('Waiting for you · 0:05');
+      act(() => {
+        jest.advanceTimersByTime(4_000);
+      });
+      act(() => {
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnTimer startedAt={12_000} waitingForUser />
+          </ChatLookProvider>,
+        );
+      });
+      expect(container.textContent).toBe('Waiting for you · 0:02');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('drops the clean live line for host and recorded pauses', () => {
+    const liveLine = <span data-testid="live-line">Thinking</span>;
+    for (const props of [
+      { waitingForUser: true },
+      { pausedAt: 8_000 },
+    ] satisfies Partial<TurnTimerProps>[]) {
+      const { container, root } = renderTimer(
+        <ChatLookProvider value="clean">
+          <TurnTimer startedAt={5_000} liveLine={liveLine} {...props} />
+        </ChatLookProvider>,
+      );
+      try {
+        expect(stateOf(container)).toBe('paused');
+        expect(container.querySelector('[data-testid="live-line"]')).toBeNull();
+      } finally {
+        act(() => root.unmount());
+      }
+    }
+  });
+});
+
+describe('TurnTimer interrupted turn (CAN-5178)', () => {
+  function label(container: HTMLElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>(
+      '[data-testid="turn-timer-label"]',
+    );
+  }
+
+  it('says "Interrupted after", visible at rest, titled with the time', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer
+        startedAt={1_000}
+        finishedAt={15_000}
+        completionStatus="interrupted"
+      />,
+    );
+    try {
+      const shown = label(container);
+      expect(shown?.textContent).toBe('Interrupted after 0:14');
+      expect(shown?.className.split(/\s+/)).not.toContain('opacity-0');
+      expect(shown?.title).toBe(
+        `Interrupted at ${new Date(15_000).toLocaleString()}`,
+      );
+      expect(container.textContent).not.toContain('Completed');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('says "Interrupted" without inventing a duration', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer finishedAt={15_000} completionStatus="interrupted" />,
+    );
+    try {
+      expect(label(container)?.textContent).toBe('Interrupted');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it('keeps a zero-length interrupted turn’s duration', () => {
+    const { container, root } = renderTimer(
+      <TurnTimer
+        startedAt={15_000}
+        finishedAt={15_000}
+        completionStatus="interrupted"
+      />,
+    );
+    try {
+      expect(label(container)?.textContent).toBe('Interrupted after 0:00');
     } finally {
       act(() => root.unmount());
     }

@@ -13,6 +13,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import {
+  delegationTranscriptMessages,
+  foldTranscriptTodoState,
+} from '@canopy/agent-transcript';
+import type { AgentDelegationTranscript } from '@canopy/protocol/delegation';
 import fs from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import type {
@@ -22,10 +27,19 @@ import type {
 import { isHumanAuthoredUserMessage } from '@canopy/agent-transcript/transcript-storage';
 import {
   ChatTranscriptLog,
+  isDelegationChildRow,
+  MAX_TRANSCRIPT_ROW_BYTES,
   readCompleteTranscriptMessages,
 } from '../lib/chat-transcript-log';
+import {
+  activeSidecarMessageRecordBytes,
+  checkActiveSidecarMessageRecordBudget,
+  type ActiveRowAnchor,
+  type ActiveSidecarMessageRecord,
+} from '../lib/chat-transcript-live-positions';
 import { isPersistedChatMessage } from '../lib/chat-tabs-reader';
 import { isRecord } from '../lib/type-guards';
+import { logicalTranscriptOracle } from './helpers/logical-transcript-oracle';
 
 const fsPromises = jest.requireActual<typeof FsPromises>('node:fs/promises');
 
@@ -41,8 +55,156 @@ function message(
   };
 }
 
+function row(
+  id: string,
+  text = id,
+  parentBlockId?: string,
+): PersistedChatMessage {
+  return {
+    id,
+    role: 'assistant',
+    timestamp: 1,
+    ...(parentBlockId === undefined ? {} : { parentBlockId }),
+    blocks: [{ type: 'text', text }],
+  };
+}
+
+function delegatedCard(id: string): PersistedChatMessage {
+  const messageId = id.startsWith('delegated-agent-')
+    ? id
+    : `delegated-agent-${id}`;
+  const delegationId = messageId.slice('delegated-agent-'.length);
+  const event: AgentDelegationTranscript = {
+    delegationId,
+    runGeneration: 1,
+    sequence: 1,
+    parentHarnessId: 'parent-harness',
+    parentTurnId: 'parent-turn',
+    parentToolCallId: 'parent-tool-call',
+    createdAt: 1,
+    task: {
+      description: 'test delegation',
+      prompt: 'test delegation prompt',
+      executionMode: 'background',
+    },
+    snapshot: {
+      delegationId,
+      status: 'running',
+      outputTruncated: false,
+      routeSnapshot: {
+        selectedModelId: 'model',
+        runtimeModelId: 'model',
+        harnessId: 'claude',
+        runtimeKind: 'sdk',
+        runnerRegistrationId: 'claude-runner',
+        runtimeVersion: '1',
+        adapterVersion: '1',
+        modelSource: 'agent',
+        providerType: 'anthropic',
+        assignmentRevision: '1',
+        billingAuthority: 'local',
+        aiCreditsRouted: false,
+        capabilities: [],
+        supportedThinkingLevels: [],
+        capabilitySnapshotHash: 'hash',
+        capabilityGeneration: 1,
+        policyRevision: '1',
+      },
+    },
+    transcript: [],
+  };
+  const card = delegationTranscriptMessages(event)[0];
+  if (!card || card.id !== messageId)
+    throw new Error('Expected delegation card to match its message ID');
+  return card;
+}
+
+function anchor(
+  runId: string,
+  after: string | null,
+  tie: number,
+): ActiveRowAnchor {
+  return { version: 1, runId, after, tie };
+}
+
+async function invokeLogMethod(
+  log: ChatTranscriptLog,
+  methodName: string,
+  args: unknown[],
+): Promise<unknown> {
+  const method: unknown = Reflect.get(log, methodName);
+  if (typeof method !== 'function')
+    throw new Error(`Missing transcript log method: ${methodName}`);
+  const result: unknown = Reflect.apply(method, log, args);
+  return await Promise.resolve(result);
+}
+
+async function appendWithActiveTail(
+  log: ChatTranscriptLog,
+  chatId: string,
+  messages: readonly PersistedChatMessage[],
+  anchors: ReadonlyMap<string, ActiveRowAnchor>,
+  activeTailCount: number,
+): Promise<void> {
+  await invokeLogMethod(log, 'append', [
+    chatId,
+    messages,
+    anchors,
+    activeTailCount,
+  ]);
+}
+
+function activeSidecarRows(serialized: string): unknown[] {
+  return serialized
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const parsed: unknown = JSON.parse(line);
+      return parsed;
+    });
+}
+
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
+}
+
+async function logicalIteratorMessages(
+  log: ChatTranscriptLog,
+  chatId: string,
+): Promise<PersistedChatMessage[]> {
+  const messages: PersistedChatMessage[] = [];
+  for await (const message of log.iterateLogical(chatId))
+    messages.push(message);
+  return messages;
+}
+
+async function writeUnvalidatedActiveSidecar(
+  root: string,
+  chatId: string,
+  messages: readonly PersistedChatMessage[],
+  anchors: ReadonlyMap<string, ActiveRowAnchor>,
+  transcriptRevision: number,
+): Promise<void> {
+  const records = [
+    JSON.stringify({
+      version: 2,
+      transcriptRevision,
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    }),
+    ...messages.map((message) => {
+      const rowAnchor = anchors.get(message.id);
+      return JSON.stringify({
+        version: 2,
+        kind: 'message',
+        message,
+        ...(rowAnchor ? { anchor: rowAnchor } : {}),
+      });
+    }),
+  ];
+  await writeFile(
+    join(root, `${chatId}.active.json`),
+    `${records.join('\n')}\n`,
+  );
 }
 
 // These tests do real filesystem and git work. Under a loaded multi-worker
@@ -52,15 +214,16 @@ jest.setTimeout(60_000);
 describe('complete-message transcript log', () => {
   let root: string;
   let log: ChatTranscriptLog;
+  // These disk-backed fixtures create thousands of locators on a loaded host.
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'chat-log-'));
     log = new ChatTranscriptLog(root);
     await log.initialize('chat-1');
-  });
+  }, 30_000);
   afterEach(async () => {
     jest.restoreAllMocks();
     await rm(root, { recursive: true, force: true });
-  });
+  }, 30_000); // Removing the largest locator inventories exceeds 5 s on this host.
 
   it('preserves unknown user sources and extra fields in committed JSONL through rewrite and reopen', async () => {
     const futureMessage = {
@@ -282,11 +445,11 @@ describe('complete-message transcript log', () => {
       join(root, 'chat-1.jsonl'),
     );
     scan.mockRestore();
-    await log.replace('chat-1', [message(1601)]);
+    await log.replace('chat-1', [message(1601)], 1);
     expect(await log.readMessage('chat-1', 'm-0')).toBeUndefined();
     expect(await log.readMessage('chat-1', 'm-1600')).toBeUndefined();
     expect(await log.readMessage('chat-1', 'm-1601')).toEqual(message(1601));
-  });
+  }, 30_000); // This existing case writes and replaces 1,600 locator files.
 
   it('publishes derived message locators without syncing each locator file', async () => {
     const open = fsPromises.open;
@@ -312,6 +475,255 @@ describe('complete-message transcript log', () => {
     expect((await new ChatTranscriptLog(root).page('chat-1')).messages).toEqual(
       [message(1), message(2), message(3)],
     );
+  });
+
+  it('answers a negative committed-state probe from a complete locator inventory', async () => {
+    await log.append('chat-1', [message(1)]);
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const originalReadFile = fsPromises.readFile;
+    const locatorReads: string[] = [];
+    jest.spyOn(fsPromises, 'readFile').mockImplementation(async (...args) => {
+      const path = typeof args[0] === 'string' ? args[0] : '';
+      if (path.startsWith(`${locatorDirectory}/`)) locatorReads.push(path);
+      return originalReadFile(...args);
+    });
+
+    await expect(log.committedMessageState('chat-1', message(2))).resolves.toBe(
+      'absent',
+    );
+
+    expect(locatorReads).toEqual([]);
+  });
+
+  it('still reads and digest-checks a positive committed locator', async () => {
+    await log.append('chat-1', [message(1)]);
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const locatorFile = join(
+      locatorDirectory,
+      `${createHash('sha256').update('m-1').digest('hex')}.json`,
+    );
+    const locator: unknown = JSON.parse(await readFile(locatorFile, 'utf8'));
+    if (!isRecord(locator)) throw new Error('Committed locator is invalid');
+    await writeFile(
+      locatorFile,
+      JSON.stringify({ ...locator, digest: '0'.repeat(64) }),
+    );
+    const originalReadFile = fsPromises.readFile;
+    let locatorReads = 0;
+    jest.spyOn(fsPromises, 'readFile').mockImplementation(async (...args) => {
+      const path = typeof args[0] === 'string' ? args[0] : '';
+      if (path === locatorFile) locatorReads += 1;
+      return originalReadFile(...args);
+    });
+
+    await expect(
+      log.committedMessageState('chat-1', message(1)),
+    ).rejects.toThrow('Committed message locator does not match transcript');
+
+    expect(locatorReads).toBe(1);
+  });
+
+  it('adds keys to a cached committed locator inventory after append', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.hasCommittedMessage('chat-1', 'missing');
+    await log.append('chat-1', [message(2)]);
+
+    await expect(log.committedMessageState('chat-1', message(2))).resolves.toBe(
+      'identical',
+    );
+  });
+
+  it('rebuilds committed locator identities after replacement', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.hasCommittedMessage('chat-1', 'missing');
+    await log.replace('chat-1', [message(2)], 1);
+
+    await expect(log.committedMessageState('chat-1', message(2))).resolves.toBe(
+      'identical',
+    );
+    await expect(log.hasCommittedMessage('chat-1', 'm-1')).resolves.toBe(false);
+  });
+
+  it('clears committed locator identities when a chat is deleted', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.hasCommittedMessage('chat-1', 'missing');
+    await log.remove('chat-1');
+    await log.initialize('chat-1');
+
+    await expect(log.hasCommittedMessage('chat-1', 'm-1')).resolves.toBe(false);
+  });
+
+  it('drops and rebuilds identities after an external locator-directory change', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.hasCommittedMessage('chat-1', 'missing');
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const externalFile = join(
+      locatorDirectory,
+      `${createHash('sha256').update('external').digest('hex')}.json`,
+    );
+    await writeFile(externalFile, '{}');
+    // Coarse host timestamps can leave the directory stamp unchanged when this
+    // write lands in the append's tick, so advance it explicitly.
+    const changedAt = new Date(Date.now() + 60_000);
+    await utimes(locatorDirectory, changedAt, changedAt);
+
+    await expect(
+      log.committedMessageState('chat-1', row('external')),
+    ).resolves.toBe('absent');
+
+    expect(await readdir(locatorDirectory)).toEqual([
+      `${createHash('sha256').update('m-1').digest('hex')}.json`,
+    ]);
+  });
+
+  it('falls back to transcript scanning for an incomplete read-only locator inventory', async () => {
+    await log.append('chat-1', [message(1)]);
+    await rm(
+      join(
+        root,
+        'message-index',
+        'chat-1',
+        `${createHash('sha256').update('m-1').digest('hex')}.json`,
+      ),
+    );
+    const readOnly = new ChatTranscriptLog(root, undefined, { readOnly: true });
+    const scan = jest.spyOn(fs, 'createReadStream');
+
+    await expect(
+      readOnly.committedMessageState('chat-1', message(1)),
+    ).resolves.toBe('identical');
+
+    expect(scan.mock.calls.map(([path]) => String(path))).toContain(
+      join(root, 'chat-1.jsonl'),
+    );
+  });
+
+  it('rebuilds committed locator identities after a forced reload', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.hasCommittedMessage('chat-1', 'missing');
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const originalOpenDir = fsPromises.opendir;
+    let inventoryReads = 0;
+    jest.spyOn(fsPromises, 'opendir').mockImplementation(async (...args) => {
+      if (String(args[0]) === locatorDirectory) inventoryReads += 1;
+      return originalOpenDir(...args);
+    });
+
+    await invokeLogMethod(log, 'load', ['chat-1', true]);
+    await expect(log.hasCommittedMessage('chat-1', 'missing')).resolves.toBe(
+      false,
+    );
+
+    expect(inventoryReads).toBe(1);
+  });
+
+  it('keeps the cached index current when a torn locator forces a reload during an active write', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.writeActive('chat-1', [message(2)]);
+    const tornLocator = join(
+      root,
+      'message-index',
+      'chat-1',
+      `${createHash('sha256').update(message(1).id).digest('hex')}.json`,
+    );
+    fs.writeFileSync(tornLocator, '{"torn":');
+
+    // The committed echo of m-1 reads the torn locator, which forces a reload
+    // in the middle of this write.
+    await log.writeActive('chat-1', [message(1), message(2), message(3)]);
+    const persisted: unknown = JSON.parse(
+      fs.readFileSync(join(root, 'chat-1.index.json'), 'utf8'),
+    );
+    const persistedRevision: unknown = Reflect.get(
+      Object(persisted),
+      'transcriptRevision',
+    );
+    const persistedActive: unknown = Reflect.get(
+      Object(persisted),
+      'hasActiveSidecar',
+    );
+    const descriptor = await log.descriptor('chat-1');
+    expect(descriptor.transcriptRevision).toBe(persistedRevision);
+    expect(descriptor.hasActiveSidecar).toBe(persistedActive);
+
+    // The next write advances from the persisted revision, not a stale copy.
+    await log.writeActive('chat-1', [message(2), message(3), message(4)]);
+    expect((await log.descriptor('chat-1')).transcriptRevision).toBe(
+      descriptor.transcriptRevision + 1,
+    );
+  });
+
+  it('drops committed locator identities with the 64-chat loaded-log LRU', async () => {
+    await log.append('chat-1', [message(1)]);
+    await log.hasCommittedMessage('chat-1', 'missing');
+    for (let index = 0; index < 64; index += 1) {
+      const chatId = `lru-${String(index)}`;
+      await log.initialize(chatId);
+      await log.descriptor(chatId);
+    }
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const originalOpenDir = fsPromises.opendir;
+    let inventoryReads = 0;
+    jest.spyOn(fsPromises, 'opendir').mockImplementation(async (...args) => {
+      if (String(args[0]) === locatorDirectory) inventoryReads += 1;
+      return originalOpenDir(...args);
+    });
+
+    await expect(log.hasCommittedMessage('chat-1', 'missing')).resolves.toBe(
+      false,
+    );
+
+    expect(inventoryReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it('falls back to locator reads without a partial inventory above the key cap', async () => {
+    await log.append('chat-1', [message(1)]);
+    const loadedValue: unknown = Reflect.get(log, 'loaded');
+    if (!(loadedValue instanceof Map))
+      throw new Error('Loaded transcript cache is unavailable');
+    const loadedChat: unknown = loadedValue.get('chat-1');
+    if (!isRecord(loadedChat) || !isRecord(loadedChat.index))
+      throw new Error('Loaded transcript cache entry is unavailable');
+    Reflect.set(loadedChat.index, 'committedMessageCount', 100_001);
+
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const originalReadFile = fsPromises.readFile;
+    let locatorReads = 0;
+    jest.spyOn(fsPromises, 'readFile').mockImplementation(async (...args) => {
+      const path = typeof args[0] === 'string' ? args[0] : '';
+      if (path.startsWith(`${locatorDirectory}/`)) locatorReads += 1;
+      return originalReadFile(...args);
+    });
+
+    await expect(log.hasCommittedMessage('chat-1', 'missing')).resolves.toBe(
+      false,
+    );
+
+    expect(locatorReads).toBe(1);
+  });
+
+  it('does not build committed locator identities during a page read', async () => {
+    await log.append('chat-1', [message(1)]);
+    await writeUnvalidatedActiveSidecar(
+      root,
+      'chat-1',
+      [message(2)],
+      new Map(),
+      1,
+    );
+    const locatorDirectory = join(root, 'message-index', 'chat-1');
+    const originalOpenDir = fsPromises.opendir;
+    let inventoryReads = 0;
+    jest.spyOn(fsPromises, 'opendir').mockImplementation(async (...args) => {
+      if (String(args[0]) === locatorDirectory) inventoryReads += 1;
+      return originalOpenDir(...args);
+    });
+
+    await log.page('chat-1');
+    expect(inventoryReads).toBe(0);
+    await log.hasCommittedMessage('chat-1', 'missing');
+
+    expect(inventoryReads).toBe(1);
   });
 
   it('invalidates an active-tail snapshot after same-size replacement and in-place edits', async () => {
@@ -724,7 +1136,250 @@ describe('complete-message transcript log', () => {
     expect(parsedRows).toEqual(messages);
   }, 30_000);
 
-  it.each([1, 2, 3, 4])(
+  it.each([false, true])(
+    'rebuilds version-9 plan edit counts without rewriting rows (plan failure: %s)',
+    async (planFailed) => {
+      const rows: PersistedChatMessage[] = [
+        message(0, 'user'),
+        ...[
+          {
+            toolUseId: 'plan',
+            toolName: 'Write',
+            input:
+              '{"file_path":"/Users/test/.claude/plans/draft.md","content":"# Plan"}',
+            output: planFailed ? 'Write failed' : 'Written',
+            isError: planFailed,
+          },
+          {
+            toolUseId: 'grep',
+            toolName: 'Grep',
+            input: '{}',
+            output: 'Search failed',
+            isError: true,
+          },
+          {
+            toolUseId: 'exit',
+            toolName: 'ExitPlanMode',
+            input: '{}',
+            output: 'canopy_plan_handoff',
+            isError: true,
+          },
+        ].map(
+          (call, index): PersistedChatMessage => ({
+            ...message(index + 1),
+            blocks: [
+              {
+                type: 'tool_use',
+                toolUseId: call.toolUseId,
+                toolName: call.toolName,
+                input: call.input,
+              },
+              {
+                type: 'tool_result',
+                toolUseId: call.toolUseId,
+                toolName: call.toolName,
+                output: call.output,
+                isError: call.isError,
+              },
+            ],
+          }),
+        ),
+        { ...message(4), blocks: [{ type: 'text', text: 'Plan ready' }] },
+        {
+          ...message(5, 'system'),
+          blocks: [{ type: 'turn_timer', completedAt: 5 }],
+        },
+      ];
+      await log.replace('chat-1', rows, 1);
+      const live = await log.page('chat-1', undefined, { view: 'turns' });
+      expect(live.turns?.[0].summary.writeEdit).toBe(0);
+      expect(live.turns?.[0].outcomes).toEqual({
+        blocked: 0,
+        failed: planFailed ? 2 : 1,
+        interrupted: 0,
+      });
+      const cachePath = join(root, 'chat-1.turns.json');
+      const cached: unknown = JSON.parse(await readFile(cachePath, 'utf8'));
+      if (!isRecord(cached) || !isUnknownArray(cached.turns))
+        throw new Error('Missing turn cache');
+      const { checksum: oldChecksum, ...body } = cached;
+      void oldChecksum;
+      body.version = 9;
+      for (const turn of cached.turns) {
+        if (!isRecord(turn) || !isRecord(turn.summary))
+          throw new Error('Invalid turn');
+        turn.summary.writeEdit = 1;
+      }
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          ...body,
+          checksum: createHash('sha256')
+            .update(JSON.stringify(body))
+            .digest('hex'),
+        }),
+      );
+      const before = await readFile(join(root, 'chat-1.jsonl'), 'utf8');
+      const rebuilt = await new ChatTranscriptLog(root).page(
+        'chat-1',
+        undefined,
+        { view: 'turns' },
+      );
+      expect(rebuilt.turns?.[0].summary).toEqual(live.turns?.[0].summary);
+      expect(rebuilt.turns?.[0].outcomes).toEqual(live.turns?.[0].outcomes);
+      expect(await readFile(cachePath, 'utf8')).toContain('"version":10');
+      expect(await readFile(join(root, 'chat-1.jsonl'), 'utf8')).toBe(before);
+      const reloaded = await new ChatTranscriptLog(root).page(
+        'chat-1',
+        undefined,
+        { view: 'turns' },
+      );
+      expect(reloaded.turns).toEqual(rebuilt.turns);
+    },
+  );
+
+  it('rebuilds interrupted outcome counts from a version-8 cache without rewriting authoritative rows', async () => {
+    const rows: PersistedChatMessage[] = [
+      message(0, 'user'),
+      {
+        ...message(1),
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'edit',
+            toolName: 'Edit',
+            input: '{}',
+          },
+          {
+            type: 'tool_result',
+            toolUseId: 'edit',
+            toolName: 'Edit',
+            output: 'Interrupted',
+            isError: true,
+            interruption: { reason: 'app_restart', at: 2 },
+          },
+        ],
+      },
+      {
+        ...message(2, 'system'),
+        blocks: [{ type: 'turn_timer', completedAt: 2 }],
+      },
+    ];
+    await log.replace('chat-1', rows, 1);
+    await log.page('chat-1', undefined, { view: 'turns' });
+    const cachePath = join(root, 'chat-1.turns.json');
+    const cached: unknown = JSON.parse(await readFile(cachePath, 'utf8'));
+    if (!isRecord(cached) || !isUnknownArray(cached.turns))
+      throw new Error('Missing turn cache');
+    const { checksum: oldChecksum, ...body } = cached;
+    void oldChecksum;
+    body.version = 8;
+    for (const turn of cached.turns) {
+      if (!isRecord(turn)) throw new Error('Invalid turn');
+      turn.outcomes = { blocked: 0, failed: 1 };
+    }
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        ...body,
+        checksum: createHash('sha256')
+          .update(JSON.stringify(body))
+          .digest('hex'),
+      }),
+    );
+    const before = await readFile(join(root, 'chat-1.jsonl'), 'utf8');
+    const rebuilt = await new ChatTranscriptLog(root).page(
+      'chat-1',
+      undefined,
+      { view: 'turns' },
+    );
+    expect(rebuilt.turns?.[0].outcomes).toEqual({
+      blocked: 0,
+      failed: 0,
+      interrupted: 1,
+    });
+    expect(await readFile(cachePath, 'utf8')).toContain('"version":10');
+    expect(await readFile(join(root, 'chat-1.jsonl'), 'utf8')).toBe(before);
+  });
+
+  it.each(['outcomes', 'deniedToolUseIds'])(
+    'rebuilds missing %s in a checksummed v8 cache without rewriting the transcript',
+    async (field) => {
+      const rows: PersistedChatMessage[] = [
+        message(0, 'user'),
+        {
+          ...message(1),
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'denied',
+              toolName: 'Bash',
+              input: '{}',
+            },
+          ],
+        },
+        {
+          ...message(2, 'system'),
+          blocks: [
+            {
+              type: 'approval_safety_denied_info',
+              receiptId: 'm-2',
+              timestamp: 2,
+              reason: 'force-push',
+              command: 'fixture only',
+              mode: 'ask',
+              toolUseId: 'denied',
+            },
+          ],
+        },
+        message(3),
+        {
+          ...message(4, 'system'),
+          blocks: [{ type: 'turn_timer', completedAt: 4 }],
+        },
+      ];
+      await log.replace('chat-1', rows, 1);
+      const cachePath = join(root, 'chat-1.turns.json');
+      await log.page('chat-1', undefined, { view: 'turns' });
+      const cached: unknown = JSON.parse(await readFile(cachePath, 'utf8'));
+      if (!isRecord(cached) || !isUnknownArray(cached.turns))
+        throw new Error('Expected turn cache');
+      const { checksum: oldChecksum, ...body } = cached;
+      void oldChecksum;
+      body.version = 8;
+      for (const turn of cached.turns) {
+        if (!isRecord(turn)) throw new Error('Expected cached turn');
+        delete turn[field];
+      }
+      await writeFile(
+        cachePath,
+        JSON.stringify({
+          ...body,
+          checksum: createHash('sha256')
+            .update(JSON.stringify(body))
+            .digest('hex'),
+        }),
+      );
+      const transcriptBefore = await readFile(
+        join(root, 'chat-1.jsonl'),
+        'utf8',
+      );
+      const page = await new ChatTranscriptLog(root).page('chat-1', undefined, {
+        view: 'turns',
+      });
+      expect(page.turns?.[0]).toMatchObject({
+        outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+      });
+      expect(await readFile(join(root, 'chat-1.jsonl'), 'utf8')).toBe(
+        transcriptBefore,
+      );
+      expect(await readFile(cachePath, 'utf8')).toContain(
+        '"outcomes":{"blocked":1,"failed":0,"interrupted":0}',
+      );
+    },
+  );
+
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])(
     'rebuilds a v%s turn cache without inventing a working timer for a standalone historical prompt',
     async (version) => {
       await log.replace('chat-1', [message(0, 'user')], 1);
@@ -748,7 +1403,10 @@ describe('complete-message transcript log', () => {
       await new ChatTranscriptLog(root).page('chat-1', undefined, {
         view: 'turns',
       });
-      expect(await readFile(cachePath, 'utf8')).toContain('"version":5');
+      expect(await readFile(cachePath, 'utf8')).toContain('"version":10');
+      expect(
+        (await log.page('chat-1', undefined, { view: 'turns' })).turns?.[0],
+      ).toMatchObject({ outcomes: { blocked: 0, failed: 0, interrupted: 0 } });
       await log.replace(
         'chat-1',
         [
@@ -836,60 +1494,113 @@ describe('complete-message transcript log', () => {
       view: 'turns',
     });
     expect(after.turns?.[0].finalMessageIds).toEqual(['m-2', 'm-3']);
-    expect(await readFile(cachePath, 'utf8')).toContain('"version":5');
+    expect(await readFile(cachePath, 'utf8')).toContain('"version":10');
   });
 
-  it('keeps created files when their tool calls are outside a historical turn window', async () => {
-    const rows: PersistedChatMessage[] = [
-      message(0, 'user'),
-      {
-        ...message(1),
-        blocks: [
+  it.each(['Write', 'Edit', 'MultiEdit'])(
+    'keeps %s files through disk serialization and historical turn windows',
+    async (toolName) => {
+      const rows: PersistedChatMessage[] = [
+        message(0, 'user'),
+        {
+          ...message(1),
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'write-report',
+              toolName,
+              input: JSON.stringify({
+                file_path: '/project/report.md',
+                content: '# Report',
+              }),
+            },
+          ],
+        },
+        {
+          ...message(2, 'system'),
+          blocks: [
+            {
+              type: 'tool_result',
+              toolUseId: 'write-report',
+              toolName,
+              output: 'File created successfully',
+              isError: false,
+            },
+          ],
+        },
+        ...Array.from({ length: 30 }, (_, i) => message(i + 3)),
+        {
+          ...message(33, 'system'),
+          blocks: [{ type: 'turn_timer', startedAt: 1, completedAt: 2 }],
+        },
+        message(34, 'user'),
+        message(35),
+        {
+          ...message(36, 'system'),
+          blocks: [{ type: 'turn_timer', startedAt: 3, completedAt: 4 }],
+        },
+      ];
+      await log.replace('chat-1', rows, 1);
+      const page = await new ChatTranscriptLog(root).page('chat-1', undefined, {
+        view: 'turns',
+      });
+      expect(page.messages.some((row) => row.id === rows[1].id)).toBe(false);
+      expect(page.turns?.[0]).toMatchObject({
+        files: [
           {
-            type: 'tool_use',
-            toolUseId: 'write-report',
-            toolName: 'Write',
-            input: JSON.stringify({
-              file_path: '/project/report.md',
-              content: '# Report',
-            }),
+            path: '/project/report.md',
+            state: 'ready',
+            ...(toolName === 'Write' ? { saved: true } : { change: 'updated' }),
           },
         ],
-      },
-      {
-        ...message(2, 'system'),
-        blocks: [
-          {
-            type: 'tool_result',
-            toolUseId: 'write-report',
-            toolName: 'Write',
-            output: 'File created successfully',
-            isError: false,
-          },
-        ],
-      },
-      ...Array.from({ length: 30 }, (_, i) => message(i + 3)),
-      {
-        ...message(33, 'system'),
-        blocks: [{ type: 'turn_timer', startedAt: 1, completedAt: 2 }],
-      },
-      message(34, 'user'),
-      message(35),
-      {
-        ...message(36, 'system'),
-        blocks: [{ type: 'turn_timer', startedAt: 3, completedAt: 4 }],
-      },
-    ];
-    await log.replace('chat-1', rows, 1);
-    const page = await new ChatTranscriptLog(root).page('chat-1', undefined, {
-      view: 'turns',
-    });
-    expect(page.messages.some((row) => row.id === rows[1].id)).toBe(false);
-    expect(page.turns?.[0]).toMatchObject({
-      files: [{ path: '/project/report.md', state: 'ready' }],
-    });
-    expect(page.turns?.[1]).toMatchObject({ files: [] });
-  });
+      });
+      expect(page.turns?.[1]).toMatchObject({ files: [] });
+      expect(page.turns?.[0]?.files?.[0]?.evidence).toHaveLength(1);
+      expect(page.turns?.[0]?.files?.[0]?.evidence?.[0]).toMatchObject({
+        path: '/project/report.md',
+        state: 'ready',
+      });
+      expect(typeof page.turns?.[0]?.files?.[0]?.evidence?.[0]?.key).toBe(
+        'string',
+      );
+      const reloaded = await new ChatTranscriptLog(root).page(
+        'chat-1',
+        undefined,
+        { view: 'turns' },
+      );
+      expect(reloaded.turns?.[0]?.files).toEqual(page.turns?.[0]?.files);
+      const cache = await readFile(join(root, 'chat-1.turns.json'), 'utf8');
+      expect(cache).toContain(
+        toolName === 'Write' ? '"saved":true' : '"change":"updated"',
+      );
+      // A v7 index has the correct source length/checksum but lacks ordered evidence.
+      const cached: unknown = JSON.parse(cache);
+      if (!isRecord(cached) || !Array.isArray(cached.turns))
+        throw new Error('Expected turn cache');
+      const { checksum, ...legacyBody } = cached;
+      void checksum;
+      legacyBody.version = 7;
+      for (const turn of cached.turns) {
+        if (!isRecord(turn)) throw new Error('Expected cached turn');
+        turn.files = [];
+      }
+      await writeFile(
+        join(root, 'chat-1.turns.json'),
+        JSON.stringify({
+          ...legacyBody,
+          checksum: createHash('sha256')
+            .update(JSON.stringify(legacyBody))
+            .digest('hex'),
+        }),
+      );
+      const rebuilt = await new ChatTranscriptLog(root).page(
+        'chat-1',
+        undefined,
+        { view: 'turns' },
+      );
+      expect(rebuilt.turns?.[0]?.files).toEqual(page.turns?.[0]?.files);
+    },
+  );
 
   it('reads an older turn by id without a cursor after newer turns', async () => {
     const rows = [0, 3].flatMap((start) => [
@@ -911,6 +1622,89 @@ describe('complete-message transcript log', () => {
     expect(page.messages.map((row) => row.id)).toEqual(['m-0', 'm-1', 'm-2']);
   });
 
+  it.each(['cold', 'cached', 'active', 'anchored', 'replace'])(
+    'attributes a late safety receipt to its owner: %s',
+    async (mode) => {
+      const rows: PersistedChatMessage[] = [0, 10].flatMap((start) => [
+        message(start, 'user'),
+        {
+          ...message(start + 1),
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'reused',
+              toolName: 'Bash',
+              input: '{}',
+            },
+            {
+              type: 'tool_result',
+              toolUseId: 'reused',
+              toolName: 'Bash',
+              output: 'fixture only',
+              isError: start === 0,
+            },
+          ],
+        },
+        message(start + 2),
+        {
+          ...message(start + 3, 'system'),
+          blocks: [{ type: 'turn_timer', completedAt: start + 3 }],
+        },
+      ]);
+      const card = delegatedCard('outcome-card');
+      rows.splice(1, 0, card);
+      await log.replace('chat-1', rows, 1);
+      if (mode !== 'cold')
+        await log.page('chat-1', undefined, { view: 'turns' });
+      const receipt: PersistedChatMessage = {
+        ...message(20, 'system'),
+        blocks: [
+          {
+            type: 'approval_safety_denied_info',
+            receiptId: 'late-receipt',
+            timestamp: 20,
+            reason: 'force-push',
+            command: 'fixture only',
+            mode: 'ask',
+            toolUseId: 'reused',
+            turnUserMessageId: 'm-0',
+          },
+        ],
+      };
+      if (mode === 'active') await log.writeActive('chat-1', [receipt]);
+      else await log.append('chat-1', [receipt]);
+      if (mode === 'anchored') {
+        const progress = row('outcome-progress', 'Still running', card.id);
+        await log.writeActive(
+          'chat-1',
+          [progress],
+          new Map([[progress.id, anchor(card.id, card.id, 0)]]),
+        );
+      }
+      const page = await log.page('chat-1', undefined, { view: 'turns' });
+      expect(page.turns?.[0]).toMatchObject({ deniedToolUseIds: ['reused'] });
+      expect(page.turns?.map((turn) => turn.outcomes)).toEqual([
+        { blocked: 1, failed: 0, interrupted: 0 },
+        { blocked: 0, failed: 0, interrupted: 0 },
+      ]);
+      expect(
+        (
+          await new ChatTranscriptLog(root).page('chat-1', undefined, {
+            view: 'turns',
+          })
+        ).turns,
+      ).toEqual(page.turns);
+      if (mode === 'replace') {
+        await log.replace('chat-1', rows, 2);
+        expect(
+          (await log.page('chat-1', undefined, { view: 'turns' })).turns?.map(
+            (turn) => turn.outcomes?.blocked,
+          ),
+        ).toEqual([0, 0]);
+      }
+    },
+  );
+
   it('projects oversized turns with their sticky frame and exact condensed tool counts', async () => {
     const rows = Array.from({ length: 3 }, (_, turn) => [
       message(turn * 2000, 'user'),
@@ -918,17 +1712,44 @@ describe('complete-message transcript log', () => {
         ...message(turn * 2000 + 1, 'system'),
         blocks: [{ type: 'turn_timer' as const, startedAt: 1, completedAt: 2 }],
       },
-      ...Array.from({ length: 1250 }, (_, index) => ({
-        ...message(turn * 2000 + index + 2),
-        blocks: [
-          {
-            type: 'tool_use' as const,
-            toolUseId: `read-${turn}-${index}`,
-            toolName: 'Read',
-            input: '{}',
-          },
-        ],
-      })),
+      ...Array.from(
+        { length: 1250 },
+        (_, index): PersistedChatMessage => ({
+          ...message(turn * 2000 + index + 2),
+          blocks: [
+            {
+              type: 'tool_use' as const,
+              toolUseId: `read-${turn}-${index}`,
+              toolName: 'Read',
+              input: '{}',
+            },
+            ...(index === 0
+              ? [
+                  {
+                    type: 'approval_safety_denied_info' as const,
+                    receiptId: `receipt-${turn}`,
+                    timestamp: 1,
+                    reason: 'force-push' as const,
+                    command: 'fixture only',
+                    mode: 'ask' as const,
+                    toolUseId: `read-${turn}-${index}`,
+                  },
+                ]
+              : []),
+            ...(index === 1
+              ? [
+                  {
+                    type: 'tool_result' as const,
+                    toolUseId: `read-${turn}-${index}`,
+                    toolName: 'Read',
+                    output: 'fixture failure',
+                    isError: true,
+                  },
+                ]
+              : []),
+          ],
+        }),
+      ),
       message(turn * 2000 + 1252),
     ]).flat();
     await log.replace('chat-1', rows, 1);
@@ -939,6 +1760,13 @@ describe('complete-message transcript log', () => {
     expect(page.messages.length).toBeLessThan(1200);
     expect(page.turns).toHaveLength(3);
     expect(page.turns?.[0].summary.read).toBe(1250);
+    expect(page.turns?.map((turn) => turn.outcomes)).toEqual(
+      Array.from({ length: 3 }, () => ({
+        blocked: 1,
+        failed: 1,
+        interrupted: 1248,
+      })),
+    );
     expect(page.messages.some((row) => row.id === 'm-2')).toBe(false);
     let before = page.turns?.[0].before;
     const loaded = new Map(page.messages.map((row) => [row.id, row]));
@@ -948,6 +1776,11 @@ describe('complete-message transcript log', () => {
         turnId: 'm-0',
       });
       expect(older.turns?.[0].summary.read).toBe(1250);
+      expect(older.turns?.[0].outcomes).toEqual({
+        blocked: 1,
+        failed: 1,
+        interrupted: 1248,
+      });
       for (const row of older.messages) loaded.set(row.id, row);
       before = older.turns?.[0].before;
     }
@@ -1274,12 +2107,417 @@ describe('complete-message transcript log', () => {
     );
   });
 
+  it('commits ordinary sidecar prefixes while preserving the ordered active suffix and anchors', async () => {
+    const card = delegatedCard('append-active-suffix-card');
+    const ordinaryPrefix = row('append-active-suffix-ordinary-prefix');
+    const firstChild = row(
+      'append-active-suffix-first-child',
+      'first',
+      card.id,
+    );
+    const secondChild = row(
+      'append-active-suffix-second-child',
+      'second',
+      card.id,
+    );
+    const ordinaryTail = row('append-active-suffix-ordinary-tail');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [firstChild.id, anchor(card.id, card.id, 0)],
+      [secondChild.id, anchor(card.id, firstChild.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    // Anchored rows are exempt from the ordinary sidecar-prefix rule. The
+    // active suffix that remains is stored in the caller's order.
+    await log.writeActive(
+      'chat-1',
+      [firstChild, ordinaryPrefix, secondChild, ordinaryTail],
+      anchors,
+    );
+
+    await appendWithActiveTail(
+      log,
+      'chat-1',
+      [ordinaryPrefix, firstChild, secondChild, ordinaryTail],
+      anchors,
+      3,
+    );
+
+    expect(
+      (await readFile(join(root, 'chat-1.jsonl'), 'utf8'))
+        .trimEnd()
+        .split('\n')
+        .map((line) => {
+          const value: unknown = JSON.parse(line);
+          if (!isPersistedChatMessage(value))
+            throw new Error('Expected a committed transcript row');
+          return value.id;
+        }),
+    ).toEqual([card.id, ordinaryPrefix.id]);
+    expect(await log.activeMessages('chat-1')).toEqual([
+      firstChild,
+      secondChild,
+      ordinaryTail,
+    ]);
+    expect(await log.activeRowAnchors('chat-1')).toEqual(
+      new Map([
+        [firstChild.id, anchors.get(firstChild.id)],
+        [secondChild.id, anchors.get(secondChild.id)],
+      ]),
+    );
+    const descriptor = await log.descriptor('chat-1');
+    expect(descriptor).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: true,
+    });
+  });
+
+  it('commits a new ordinary row while retaining the complete ordinary suffix', async () => {
+    const retained = row('append-retained-ordinary-tail');
+    const ready = row('append-new-ordinary-ready');
+    await log.writeActive('chat-1', [retained]);
+
+    await log.append('chat-1', [ready, retained], undefined, 1);
+
+    expect(await log.activeMessages('chat-1')).toEqual([retained]);
+    expect(await log.committedMessageState('chat-1', ready)).toBe('identical');
+    expect(await log.committedMessageState('chat-1', retained)).toBe('absent');
+  });
+
+  it('commits a ready anchored run while retaining an unanchored ordinary suffix', async () => {
+    const card = delegatedCard('append-ordinary-suffix-card');
+    const readyChild = row(
+      'append-ordinary-suffix-ready-child',
+      'ready',
+      card.id,
+    );
+    const ordinarySuffix = row('append-ordinary-suffix-live-parent-tail');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [readyChild.id, anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [readyChild, ordinarySuffix], anchors);
+
+    await appendWithActiveTail(
+      log,
+      'chat-1',
+      [readyChild, ordinarySuffix],
+      anchors,
+      1,
+    );
+
+    expect(
+      (await readFile(join(root, 'chat-1.jsonl'), 'utf8'))
+        .trimEnd()
+        .split('\n')
+        .map((line) => {
+          const value: unknown = JSON.parse(line);
+          if (!isPersistedChatMessage(value))
+            throw new Error('Expected a committed transcript row');
+          return value.id;
+        }),
+    ).toEqual([card.id, readyChild.id]);
+    expect(await log.activeMessages('chat-1')).toEqual([ordinarySuffix]);
+    expect(await log.activeRowAnchors('chat-1')).toEqual(new Map());
+    const descriptor = await log.descriptor('chat-1');
+    expect(descriptor).toMatchObject({ hasActiveSidecar: true });
+    expect(
+      Object.prototype.hasOwnProperty.call(descriptor, 'hasOrdinaryActiveRows'),
+    ).toBe(false);
+  });
+
+  it('keeps ordinary active rows in sidecar order when committing a suffix prefix', async () => {
+    const first = row('append-ordinary-order-first');
+    const second = row('append-ordinary-order-second');
+    await log.writeActive('chat-1', [first, second]);
+
+    await expect(
+      appendWithActiveTail(log, 'chat-1', [second, first], new Map(), 1),
+    ).rejects.toThrow('order');
+    expect(await log.activeMessages('chat-1')).toEqual([first, second]);
+  });
+
+  it('reapplies an already committed prefix without rewriting its identical active suffix', async () => {
+    const committed = row('append-replay-committed-prefix');
+    const suffix = row('append-replay-active-suffix');
+    await appendWithActiveTail(
+      log,
+      'chat-1',
+      [committed, suffix],
+      new Map(),
+      1,
+    );
+    const first = await log.descriptor('chat-1');
+
+    await appendWithActiveTail(
+      log,
+      'chat-1',
+      [committed, suffix],
+      new Map(),
+      1,
+    );
+
+    const replayed = await log.descriptor('chat-1');
+    expect(replayed.transcriptRevision).toBe(first.transcriptRevision);
+    expect(await log.activeMessages('chat-1')).toEqual([suffix]);
+    expect((await log.page('chat-1')).messages).toEqual([committed, suffix]);
+  });
+
+  it('applies an all-active suffix once without advancing its revision on replay', async () => {
+    const firstActive = row('append-all-active-first');
+    const secondActive = row('append-all-active-second');
+    await appendWithActiveTail(
+      log,
+      'chat-1',
+      [firstActive, secondActive],
+      new Map(),
+      2,
+    );
+    const first = await log.descriptor('chat-1');
+
+    await appendWithActiveTail(
+      log,
+      'chat-1',
+      [firstActive, secondActive],
+      new Map(),
+      2,
+    );
+
+    expect((await log.descriptor('chat-1')).transcriptRevision).toBe(
+      first.transcriptRevision,
+    );
+    expect(await log.activeMessages('chat-1')).toEqual([
+      firstActive,
+      secondActive,
+    ]);
+    expect((await log.page('chat-1')).messages).toEqual([
+      firstActive,
+      secondActive,
+    ]);
+  });
+
+  it('requires a committed anchored row predecessor to be committed or earlier in the append payload', async () => {
+    const card = delegatedCard('append-predecessor-order-card');
+    const predecessor = row(
+      'append-predecessor-order-parent',
+      'parent',
+      card.id,
+    );
+    const follower = row('append-predecessor-order-child', 'child', card.id);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [predecessor.id, anchor(card.id, card.id, 0)],
+      [follower.id, anchor(card.id, predecessor.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [follower, predecessor], anchors);
+
+    await expect(
+      appendWithActiveTail(log, 'chat-1', [follower, predecessor], anchors, 0),
+    ).rejects.toThrow('predecessor');
+    expect(await log.activeMessages('chat-1')).toEqual([follower, predecessor]);
+    expect(
+      (await readdir(root)).filter((name) => name.endsWith('.append.tmp')),
+    ).toEqual([]);
+  });
+
   it('does not lose active content through an empty replacement', async () => {
     await log.writeActive('chat-1', [message(1)]);
     await expect(log.writeActive('chat-1', [])).rejects.toThrow('discard');
     expect((await new ChatTranscriptLog(root).page('chat-1')).messages).toEqual(
       [message(1)],
     );
+  });
+
+  it('distinguishes anchored-only sidecars from ordinary active rows in descriptors and captured previews', async () => {
+    const card = delegatedCard('ordinary-active-descriptor-card');
+    const child = row('ordinary-active-descriptor-child', 'child', card.id);
+    const ordinary = row('ordinary-active-descriptor-row');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [child.id, anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child], anchors);
+
+    const anchoredOnly = await log.descriptor('chat-1');
+    expect(anchoredOnly).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: false,
+    });
+    const anchoredCapture = await log.capturePreview('chat-1', anchoredOnly);
+    try {
+      expect(anchoredCapture.descriptor.hasOrdinaryActiveRows).toBe(false);
+    } finally {
+      await anchoredCapture.close();
+    }
+
+    await log.writeActive('chat-1', [child, ordinary], anchors);
+    expect(await log.descriptor('chat-1')).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: true,
+    });
+
+    await log.replaceActive('chat-1', [child], anchors);
+    expect(await log.descriptor('chat-1')).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: false,
+    });
+    await log.replaceActive('chat-1', []);
+    const empty = await log.descriptor('chat-1');
+    expect(empty).toMatchObject({ hasActiveSidecar: false });
+    expect(
+      Object.prototype.hasOwnProperty.call(empty, 'hasOrdinaryActiveRows'),
+    ).toBe(false);
+
+    await log.writeActive('chat-1', [ordinary]);
+    const anchorFree = await log.descriptor('chat-1');
+    expect(
+      Object.prototype.hasOwnProperty.call(anchorFree, 'hasOrdinaryActiveRows'),
+    ).toBe(false);
+    const anchorFreeIndex: unknown = JSON.parse(
+      await readFile(join(root, 'chat-1.index.json'), 'utf8'),
+    );
+    if (!isRecord(anchorFreeIndex))
+      throw new Error('Invalid anchor-free index fixture');
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        anchorFreeIndex,
+        'hasOrdinaryActiveRows',
+      ),
+    ).toBe(false);
+  });
+
+  it('recomputes ordinary-row metadata after an older writer strips anchors from an anchored sidecar', async () => {
+    const card = delegatedCard('ordinary-active-downgrade-card');
+    const child = row('ordinary-active-downgrade-child', 'child', card.id);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [child.id, anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child], anchors);
+    const anchoredDescriptor = await log.descriptor('chat-1');
+    expect(anchoredDescriptor.hasOrdinaryActiveRows ?? false).toBe(false);
+
+    // An unchanged writer drops anchor metadata while keeping the row and
+    // leaves the newer optional index field untouched.
+    await writeUnvalidatedActiveSidecar(
+      root,
+      'chat-1',
+      [child],
+      new Map(),
+      anchoredDescriptor.transcriptRevision,
+    );
+    const downgraded = await new ChatTranscriptLog(root).descriptor('chat-1');
+    expect(downgraded).toMatchObject({ hasActiveSidecar: true });
+    expect(
+      Object.prototype.hasOwnProperty.call(downgraded, 'hasOrdinaryActiveRows'),
+    ).toBe(false);
+    const rewrittenIndex: unknown = JSON.parse(
+      await readFile(join(root, 'chat-1.index.json'), 'utf8'),
+    );
+    if (!isRecord(rewrittenIndex))
+      throw new Error('Invalid downgraded index fixture');
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        rewrittenIndex,
+        'hasOrdinaryActiveRows',
+      ),
+    ).toBe(false);
+  });
+
+  it('reports no ordinary active rows when the sidecar is missing despite stale index metadata', async () => {
+    const card = delegatedCard('ordinary-active-missing-sidecar-card');
+    const child = row(
+      'ordinary-active-missing-sidecar-child',
+      'child',
+      card.id,
+    );
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [child.id, anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child], anchors);
+    expect((await log.descriptor('chat-1')).hasOrdinaryActiveRows).toBe(false);
+    await rm(join(root, 'chat-1.active.json'), { force: true });
+
+    const missing = await new ChatTranscriptLog(root).descriptor('chat-1');
+    expect(
+      Object.prototype.hasOwnProperty.call(missing, 'hasOrdinaryActiveRows'),
+    ).toBe(false);
+  });
+
+  it('recomputes ordinary active-row metadata when rebuilding a sparse index', async () => {
+    const card = delegatedCard('ordinary-active-reindex-card');
+    const child = row('ordinary-active-reindex-child', 'child', card.id);
+    const ordinary = row('ordinary-active-reindex-row');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [child.id, anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child, ordinary], anchors);
+    await rm(join(root, 'chat-1.index.json'), { force: true });
+
+    const rebuilt = await new ChatTranscriptLog(root).descriptor('chat-1');
+    expect(rebuilt).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: true,
+    });
+  });
+
+  it('projects ordinary active-row metadata for journal-backed descriptors and captures', async () => {
+    await log.append('chat-1', [message(0, 'user')]);
+    const projected = new ChatTranscriptLog(root);
+    projected.setActiveProjection(() => ({
+      messages: [message(1)],
+      transcriptRevision: 4,
+    }));
+    const descriptor = await projected.descriptor('chat-1');
+    expect(descriptor).toMatchObject({ hasActiveSidecar: true });
+    expect(
+      Object.prototype.hasOwnProperty.call(descriptor, 'hasOrdinaryActiveRows'),
+    ).toBe(false);
+    const captured = await projected.capturePreview('chat-1', descriptor);
+    try {
+      expect(captured.descriptor).toMatchObject({ hasActiveSidecar: true });
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          captured.descriptor,
+          'hasOrdinaryActiveRows',
+        ),
+      ).toBe(false);
+    } finally {
+      await captured.close();
+    }
+  });
+
+  it('propagates projected anchors through descriptors, snapshots and captures', async () => {
+    const card = delegatedCard('ordinary-active-projection-card');
+    const child = row('ordinary-active-projection-child', 'child', card.id);
+    const ordinary = row('ordinary-active-projection-row');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [child.id, anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    const projected = new ChatTranscriptLog(root);
+    projected.setActiveProjection(() => ({
+      messages: [child, ordinary],
+      transcriptRevision: 4,
+      anchors,
+    }));
+
+    expect(await projected.activeSnapshot('chat-1')).toEqual({
+      messages: [child, ordinary],
+      anchors,
+    });
+    const descriptor = await projected.descriptor('chat-1');
+    expect(descriptor).toMatchObject({
+      hasActiveSidecar: true,
+      hasOrdinaryActiveRows: true,
+    });
+    const captured = await projected.capturePreview('chat-1', descriptor);
+    try {
+      expect(captured.descriptor.hasOrdinaryActiveRows).toBe(true);
+    } finally {
+      await captured.close();
+    }
   });
 
   it('streams only the active sidecar when a preview reuses its committed prefix', async () => {
@@ -1712,6 +2950,414 @@ describe('complete-message transcript log', () => {
     );
   });
 
+  it('round-trips row anchors and preserves only surviving anchors across active writes', async () => {
+    const card = delegatedCard('run-card');
+    await log.append('chat-1', [card]);
+    const first = row('child-one', 'first', card.id);
+    const second = row('child-two', 'second', card.id);
+    const originalAnchors = new Map<string, ActiveRowAnchor>([
+      ['child-one', anchor(card.id, card.id, 0)],
+      ['child-two', anchor(card.id, card.id, -1)],
+    ]);
+
+    await invokeLogMethod(log, 'writeActive', [
+      'chat-1',
+      [first, second],
+      originalAnchors,
+    ]);
+    const raw = await readFile(join(root, 'chat-1.active.json'), 'utf8');
+    const records = activeSidecarRows(raw);
+    expect(records[0]).toMatchObject({ version: 2 });
+    expect(records[1]).toMatchObject({
+      anchor: originalAnchors.get('child-one'),
+    });
+    expect(records[2]).toMatchObject({
+      anchor: originalAnchors.get('child-two'),
+    });
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      originalAnchors,
+    );
+
+    const updatedFirst = row('child-one', 'updated first', card.id);
+    await log.writeActive('chat-1', [updatedFirst, second]);
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      originalAnchors,
+    );
+
+    await log.replaceActive('chat-1', [second]);
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      new Map([['child-two', originalAnchors.get('child-two')]]),
+    );
+    const replacedAnchor = anchor(card.id, card.id, 0);
+    const replacementAnchors = new Map([['child-two', replacedAnchor]]);
+    await log.replaceActive('chat-1', [second], replacementAnchors);
+    const surviving = replacementAnchors;
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      surviving,
+    );
+
+    await invokeLogMethod(log, 'writeActiveAtRevision', [
+      'chat-1',
+      [second],
+      17,
+    ]);
+    const revisionAnchor = anchor(card.id, card.id, 1);
+    const revisionAnchors = new Map([['child-two', revisionAnchor]]);
+    await invokeLogMethod(log, 'writeActiveAtRevision', [
+      'chat-1',
+      [second],
+      18,
+      revisionAnchors,
+    ]);
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      revisionAnchors,
+    );
+    surviving.set('child-two', revisionAnchor);
+    await log.append('chat-1', [card]);
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      surviving,
+    );
+
+    const override = new Map([['child-two', anchor(card.id, card.id, 0)]]);
+    await invokeLogMethod(log, 'appendAfterActive', [
+      'chat-1',
+      [],
+      [second],
+      30,
+      override,
+    ]);
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      override,
+    );
+    const beforeStaleAppend = await readFile(
+      join(root, 'chat-1.active.json'),
+      'utf8',
+    );
+    await invokeLogMethod(log, 'appendAfterActive', [
+      'chat-1',
+      [],
+      [second],
+      1,
+      new Map([['child-two', anchor(card.id, card.id, 2)]]),
+    ]);
+    expect(await readFile(join(root, 'chat-1.active.json'), 'utf8')).toBe(
+      beforeStaleAppend,
+    );
+
+    const bothAnchors = new Map([
+      ['child-one', anchor(card.id, card.id, 0)],
+      ['child-two', anchor(card.id, card.id, -1)],
+    ]);
+    await invokeLogMethod(log, 'writeActive', [
+      'chat-1',
+      [first, second],
+      bothAnchors,
+    ]);
+    await log.append('chat-1', [first], bothAnchors);
+    expect(await invokeLogMethod(log, 'activeRowAnchors', ['chat-1'])).toEqual(
+      new Map([['child-two', bothAnchors.get('child-two')]]),
+    );
+  });
+
+  it('snapshots the journal projection without file anchors and snapshots file anchors when unprojected', async () => {
+    const card = delegatedCard('write-snapshot-card');
+    const child = row('write-snapshot-child', 'child', card.id);
+    const projected = row('journal-snapshot-child', 'journal');
+    const anchors = new Map<string, ActiveRowAnchor>([
+      ['write-snapshot-child', anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child], anchors);
+
+    expect(await invokeLogMethod(log, 'activeSnapshot', ['chat-1'])).toEqual({
+      messages: [child],
+      anchors,
+    });
+    log.setActiveProjection((chatId) =>
+      chatId === 'chat-1'
+        ? { messages: [projected], transcriptRevision: 12 }
+        : undefined,
+    );
+    expect(await invokeLogMethod(log, 'activeSnapshot', ['chat-1'])).toEqual({
+      messages: [projected],
+    });
+  });
+
+  it('avoids cloning cached active messages when writers need only anchors', async () => {
+    const card = delegatedCard('anchor-cache-card');
+    const child = row('anchor-cache-child', 'child', card.id);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      ['anchor-cache-child', anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child], anchors);
+    await log.activeMessages('chat-1');
+
+    const clone = jest.spyOn(globalThis, 'structuredClone');
+    try {
+      await log.writeActiveAtRevision('chat-1', [child], 12);
+      expect(clone).not.toHaveBeenCalled();
+      await log.activeMessages('chat-1');
+      clone.mockClear();
+      await log.appendAfterActive('chat-1', [], [child], 13);
+      expect(clone).not.toHaveBeenCalled();
+    } finally {
+      clone.mockRestore();
+    }
+    expect(await log.activeRowAnchors('chat-1')).toEqual(anchors);
+  });
+
+  it('marks a page as anchored only when sidecar anchors placed its rows', async () => {
+    const card = delegatedCard('anchored-flag-card');
+    const child = row('anchored-flag-child', 'child', card.id);
+    await log.append('chat-1', [card]);
+    await log.writeActive('chat-1', [child]);
+    const plain = await log.pageWithActiveMessages('chat-1');
+    expect(plain).not.toHaveProperty('anchored');
+    expect(plain.page.messages).toEqual([card, child]);
+
+    await log.writeActive(
+      'chat-1',
+      [child],
+      new Map<string, ActiveRowAnchor>([
+        ['anchored-flag-child', anchor(card.id, card.id, 0)],
+      ]),
+    );
+    const anchored = await log.pageWithActiveMessages('chat-1');
+    expect(anchored.anchored).toBe(true);
+    expect(anchored.page.messages).toEqual([card, child]);
+    expect(anchored.activeMessages).toEqual([child]);
+  });
+
+  it('carries anchors across consecutive active writes without rereading the sidecar', async () => {
+    const card = delegatedCard('anchor-repeat-card');
+    const child = row('anchor-repeat-child', 'child', card.id);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      ['anchor-repeat-child', anchor(card.id, card.id, 0)],
+    ]);
+    await log.append('chat-1', [card]);
+    await log.writeActiveAtRevision('chat-1', [child], 11, anchors);
+
+    const sidecar = join(root, 'chat-1.active.json');
+    const read = jest.spyOn(fs, 'createReadStream');
+    try {
+      await log.writeActiveAtRevision('chat-1', [child], 12);
+      await log.writeActiveAtRevision('chat-1', [child], 13);
+      expect(read.mock.calls.map(([file]) => String(file))).not.toContain(
+        sidecar,
+      );
+    } finally {
+      read.mockRestore();
+    }
+    expect(await log.activeRowAnchors('chat-1')).toEqual(anchors);
+  });
+
+  it('rejects malformed present anchor fields instead of reading them as legacy records', async () => {
+    const header = {
+      version: 2,
+      transcriptRevision: 0,
+      updatedAt: new Date(0).toISOString(),
+    };
+    const malformedRecord = {
+      version: 2,
+      kind: 'message',
+      message: row('invalid-anchor'),
+      anchor: null,
+    };
+    await writeFile(
+      join(root, 'chat-1.active.json'),
+      `${JSON.stringify(header)}\n${JSON.stringify(malformedRecord)}\n`,
+    );
+    await expect(log.activeMessages('chat-1')).rejects.toThrow(
+      'Invalid active transcript sidecar anchor',
+    );
+  });
+
+  it('shape-validates every explicit anchor before filtering removed rows', async () => {
+    await log.writeActive('chat-1', [row('still-active')]);
+    const before = await readFile(join(root, 'chat-1.active.json'), 'utf8');
+    const malformed = anchor('missing-card', null, 0);
+    Reflect.set(malformed, 'tie', 'zero');
+    const explicit = new Map<string, ActiveRowAnchor>([
+      ['already-removed', malformed],
+    ]);
+
+    await expect(
+      invokeLogMethod(log, 'replaceActive', ['chat-1', [], explicit]),
+    ).rejects.toThrow();
+    expect(await readFile(join(root, 'chat-1.active.json'), 'utf8')).toBe(
+      before,
+    );
+  });
+
+  it('rejects custom-prototype anchors instead of normalizing malformed explicit input', async () => {
+    const custom = anchor('missing-card', null, 0);
+    Reflect.setPrototypeOf(custom, { unexpected: true });
+    const explicit = new Map<string, ActiveRowAnchor>([
+      ['already-removed', custom],
+    ]);
+    await expect(
+      invokeLogMethod(log, 'replaceActive', ['chat-1', [], explicit]),
+    ).rejects.toThrow();
+  });
+
+  it('rejects invalid explicit anchors without changing the canonical sidecar', async () => {
+    const card = delegatedCard('run-card');
+    await log.append('chat-1', [card]);
+    const child = row('owned-child', 'child', card.id);
+    const header = {
+      version: 2,
+      transcriptRevision: 1,
+      updatedAt: new Date(0).toISOString(),
+    };
+    const validRecord: ActiveSidecarMessageRecord = {
+      version: 2,
+      kind: 'message',
+      message: child,
+      anchor: anchor(card.id, card.id, 0),
+    };
+    await writeFile(
+      join(root, 'chat-1.active.json'),
+      `${JSON.stringify(header)}\n${JSON.stringify(validRecord)}\n`,
+    );
+    const before = await readFile(join(root, 'chat-1.active.json'), 'utf8');
+    const invalid = new Map([['owned-child', anchor('unknown-card', null, 0)]]);
+
+    await expect(
+      invokeLogMethod(log, 'writeActive', ['chat-1', [child], invalid]),
+    ).rejects.toThrow(/anchor/i);
+    expect(await readFile(join(root, 'chat-1.active.json'), 'utf8')).toBe(
+      before,
+    );
+  });
+
+  it('checks complete anchored JSON records including escaped IDs and finalizing metadata before rename', async () => {
+    const runId = `delegated-agent-${'😀"\\'.repeat(123)}xyz`;
+    const predecessorId = '🌲"\\'.repeat(128);
+    const childId = '🪴"\\'.repeat(128);
+    const card = delegatedCard(runId);
+    await log.append('chat-1', [card, row(predecessorId)]);
+    const recordFor = (
+      text: string,
+      finalizing = false,
+    ): ActiveSidecarMessageRecord => ({
+      version: 2,
+      kind: 'message',
+      message: row(childId, text, card.id),
+      anchor: anchor(runId, predecessorId, 0),
+      ...(finalizing ? { finalizing: true } : {}),
+    });
+    const ceiling = MAX_TRANSCRIPT_ROW_BYTES + 1024;
+    const emptyRecord = recordFor('');
+    const textLength = ceiling - activeSidecarMessageRecordBytes(emptyRecord);
+    const exactText = 'x'.repeat(textLength);
+    const exactRecord = recordFor(exactText);
+    const overRecord = recordFor(`${exactText}x`);
+    expect(activeSidecarMessageRecordBytes(exactRecord)).toBe(ceiling);
+    expect(checkActiveSidecarMessageRecordBudget(exactRecord)).toEqual({
+      bytes: ceiling,
+      ceiling,
+      withinLimit: true,
+    });
+    expect(checkActiveSidecarMessageRecordBudget(overRecord).withinLimit).toBe(
+      false,
+    );
+
+    const exactMessage = exactRecord.message;
+    const exactAnchor = exactRecord.anchor;
+    if (!exactAnchor) throw new Error('Expected exact-budget record anchor');
+    const exactAnchors = new Map<string, ActiveRowAnchor>([
+      [childId, exactAnchor],
+    ]);
+    await invokeLogMethod(log, 'writeActive', [
+      'chat-1',
+      [exactMessage],
+      exactAnchors,
+    ]);
+    const beforeOverLimit = await readFile(
+      join(root, 'chat-1.active.json'),
+      'utf8',
+    );
+    await expect(
+      invokeLogMethod(log, 'writeActive', [
+        'chat-1',
+        [overRecord.message],
+        exactAnchors,
+      ]),
+    ).rejects.toThrow(/record|size|maximum/i);
+    expect(await readFile(join(root, 'chat-1.active.json'), 'utf8')).toBe(
+      beforeOverLimit,
+    );
+
+    const finalizingRecord = recordFor(exactText, true);
+    expect(
+      checkActiveSidecarMessageRecordBudget(finalizingRecord).withinLimit,
+    ).toBe(false);
+    const interrupted = new ChatTranscriptLog(root, (boundary) =>
+      boundary === 'prepared'
+        ? Promise.reject(new Error('stop before append'))
+        : Promise.resolve(),
+    );
+    await expect(interrupted.append('chat-1', [exactMessage])).rejects.toThrow(
+      /record|size|maximum/i,
+    );
+    expect(await readFile(join(root, 'chat-1.active.json'), 'utf8')).toBe(
+      beforeOverLimit,
+    );
+  });
+
+  it.each([
+    [
+      'unknown run card',
+      (cardId: string): ActiveRowAnchor => anchor('missing-card', cardId, 0),
+    ],
+    [
+      'dangling predecessor',
+      (cardId: string): ActiveRowAnchor =>
+        anchor(cardId, 'missing-predecessor', 0),
+    ],
+  ] as const)(
+    'rejects a semantically invalid pending anchor intent before recovery (%s)',
+    async (_reason, buildAnchor) => {
+      const card = delegatedCard('recovery-card');
+      await log.append('chat-1', [card]);
+      const child = row('pending-child', 'child', card.id);
+      const stagedId = 'pending-anchor-recovery';
+      const byteOffset = (await stat(join(root, 'chat-1.jsonl'))).size;
+      const header = {
+        version: 2,
+        transcriptRevision: 2,
+        updatedAt: new Date(0).toISOString(),
+        finalizing: { stagedId, byteOffset },
+      };
+      const pendingRecord = {
+        version: 2,
+        kind: 'message',
+        message: child,
+        anchor: buildAnchor(card.id),
+        finalizing: true,
+      };
+      const sidecarPath = join(root, 'chat-1.active.json');
+      const stagedPath = join(root, `chat-1.${stagedId}.append.tmp`);
+      await writeFile(
+        sidecarPath,
+        `${JSON.stringify(header)}\n${JSON.stringify(pendingRecord)}\n`,
+      );
+      await writeFile(stagedPath, `${JSON.stringify(child)}\n`);
+      const sidecarBefore = await readFile(sidecarPath, 'utf8');
+      const logBefore = await readFile(join(root, 'chat-1.jsonl'), 'utf8');
+
+      await expect(new ChatTranscriptLog(root).page('chat-1')).rejects.toThrow(
+        /anchor/i,
+      );
+      expect(await readFile(sidecarPath, 'utf8')).toBe(sidecarBefore);
+      expect(await readFile(join(root, 'chat-1.jsonl'), 'utf8')).toBe(
+        logBefore,
+      );
+      await expect(readFile(stagedPath)).resolves.toBeDefined();
+    },
+  );
+
   it.each(['prepared', 'appended'] as const)(
     'recovers a finalization interrupted after %s',
     async (boundary) => {
@@ -1737,6 +3383,1713 @@ describe('complete-message transcript log', () => {
       await expect(
         readFile(join(root, 'chat-1.active.json')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it.each([
+    'prepared',
+    'appended',
+    'index-published',
+    'survivors-published',
+  ] as const)(
+    'preserves survivor anchors when append recovery crosses the %s boundary',
+    async (boundary) => {
+      const card = delegatedCard('anchor-fault-card');
+      const finalized = row('finalized-child', 'finalized', card.id);
+      const survivor = row('surviving-child', 'survivor', card.id);
+      await log.append('chat-1', [card]);
+      const anchors = new Map<string, ActiveRowAnchor>([
+        ['finalized-child', anchor(card.id, card.id, 0)],
+        ['surviving-child', anchor(card.id, card.id, -1)],
+      ]);
+      await log.writeActive('chat-1', [finalized, survivor], anchors);
+      let interrupted = false;
+      const faulting = new ChatTranscriptLog(root, (at) => {
+        if (!interrupted && at === boundary) {
+          interrupted = true;
+          return Promise.reject(new Error(`fault at ${boundary}`));
+        }
+        return Promise.resolve();
+      });
+      await expect(faulting.append('chat-1', [finalized])).rejects.toThrow(
+        `fault at ${boundary}`,
+      );
+
+      const recovered = new ChatTranscriptLog(root);
+      // Pages are in logical order: the survivor's tie (-1) places it nearer
+      // the card than the finalized row (tie 0), before and after recovery.
+      expect((await recovered.page('chat-1')).messages).toEqual([
+        card,
+        survivor,
+        finalized,
+      ]);
+      expect(await recovered.activeRowAnchors('chat-1')).toEqual(
+        new Map([['surviving-child', anchors.get('surviving-child')]]),
+      );
+    },
+  );
+
+  it.each([
+    'prepared',
+    'appended',
+    'index-published',
+    'survivors-published',
+  ] as const)(
+    'recovers a complete active suffix and its anchors after the %s append boundary',
+    async (boundary) => {
+      const card = delegatedCard(`append-suffix-recovery-${boundary}`);
+      const ordinary = row(`append-suffix-recovery-ordinary-${boundary}`);
+      const child = row(
+        `append-suffix-recovery-child-${boundary}`,
+        'child',
+        card.id,
+      );
+      const survivor = row(
+        `append-suffix-recovery-survivor-${boundary}`,
+        'survivor',
+        card.id,
+      );
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [child.id, anchor(card.id, card.id, 0)],
+        [survivor.id, anchor(card.id, child.id, 0)],
+      ]);
+      await log.append('chat-1', [card]);
+      await log.writeActive('chat-1', [ordinary, child, survivor], anchors);
+      let interrupted = false;
+      const faulting = new ChatTranscriptLog(root, (at) => {
+        if (!interrupted && at === boundary) {
+          interrupted = true;
+          return Promise.reject(new Error(`fault at ${boundary}`));
+        }
+        return Promise.resolve();
+      });
+      await expect(
+        appendWithActiveTail(
+          faulting,
+          'chat-1',
+          [ordinary, child, survivor],
+          anchors,
+          2,
+        ),
+      ).rejects.toThrow(`fault at ${boundary}`);
+
+      const recovered = new ChatTranscriptLog(root);
+      expect(await recovered.activeMessages('chat-1')).toEqual([
+        child,
+        survivor,
+      ]);
+      const committedIds = (await readFile(join(root, 'chat-1.jsonl'), 'utf8'))
+        .trimEnd()
+        .split('\n')
+        .map((line) => {
+          const value: unknown = JSON.parse(line);
+          if (!isPersistedChatMessage(value))
+            throw new Error('Expected a committed transcript row');
+          return value.id;
+        });
+      expect(committedIds).toEqual([card.id, ordinary.id]);
+      expect(await recovered.activeRowAnchors('chat-1')).toEqual(anchors);
+      expect((await recovered.page('chat-1')).messages).toEqual([
+        card,
+        child,
+        survivor,
+        ordinary,
+      ]);
+    },
+  );
+
+  it('preserves anchors while abandoning an interrupted append intent', async () => {
+    const card = delegatedCard('anchor-abandon-card');
+    const finalized = row('abandoned-child', 'finalized', card.id);
+    const survivor = row('abandon-survivor', 'survivor', card.id);
+    await log.append('chat-1', [card]);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      ['abandoned-child', anchor(card.id, card.id, 0)],
+      ['abandon-survivor', anchor(card.id, card.id, -1)],
+    ]);
+    await log.writeActive('chat-1', [finalized, survivor], anchors);
+    const interrupted = new ChatTranscriptLog(root, (boundary) =>
+      boundary === 'prepared'
+        ? Promise.reject(new Error('prepared interruption'))
+        : Promise.resolve(),
+    );
+    await expect(interrupted.append('chat-1', [finalized])).rejects.toThrow(
+      'prepared interruption',
+    );
+    const [stagedName] = (await readdir(root)).filter((name) =>
+      name.endsWith('.append.tmp'),
+    );
+    if (!stagedName) throw new Error('Expected a staged append');
+    await rm(join(root, stagedName), { force: true });
+    const abandonFault = new ChatTranscriptLog(root, (boundary) =>
+      boundary === 'abandoned'
+        ? Promise.reject(new Error('abandon interruption'))
+        : Promise.resolve(),
+    );
+    await expect(abandonFault.page('chat-1')).rejects.toThrow(
+      'abandon interruption',
+    );
+    const settledRecords = activeSidecarRows(
+      await readFile(join(root, 'chat-1.active.json'), 'utf8'),
+    );
+    expect(settledRecords[0]).not.toHaveProperty('finalizing');
+    const recovered = new ChatTranscriptLog(root);
+    // Logical order: the survivor's tie (-1) precedes the finalized row's (0).
+    expect((await recovered.page('chat-1')).messages).toEqual([
+      card,
+      survivor,
+      finalized,
+    ]);
+    expect(await recovered.activeRowAnchors('chat-1')).toEqual(anchors);
+  });
+
+  it('reads an active projection for anchor validation without replaying a pending append', async () => {
+    await log.append('chat-1', [message(0, 'user')]);
+    const pending = message(1);
+    const interrupted = new ChatTranscriptLog(root, (boundary) =>
+      boundary === 'prepared'
+        ? Promise.reject(new Error('leave prepared append'))
+        : Promise.resolve(),
+    );
+    await expect(interrupted.append('chat-1', [pending])).rejects.toThrow(
+      'leave prepared append',
+    );
+    const sidecarPath = join(root, 'chat-1.active.json');
+    const stagedNames = (await readdir(root)).filter((name) =>
+      name.endsWith('.append.tmp'),
+    );
+    const sidecarBefore = await readFile(sidecarPath, 'utf8');
+    const logBefore = await readFile(join(root, 'chat-1.jsonl'), 'utf8');
+
+    expect(
+      await new ChatTranscriptLog(root).activeMessagesForAnchorValidation(
+        'chat-1',
+      ),
+    ).toEqual([pending]);
+    expect(await readFile(sidecarPath, 'utf8')).toBe(sidecarBefore);
+    expect(await readFile(join(root, 'chat-1.jsonl'), 'utf8')).toBe(logBefore);
+    expect(
+      (await readdir(root)).filter((name) => name.endsWith('.append.tmp')),
+    ).toEqual(stagedNames);
+  });
+
+  it('validates active anchors through verified committed locators without scanning the JSONL hot path', async () => {
+    const card = delegatedCard('locator-validation-hot-path-card');
+    const predecessor = message(2, 'user');
+    const child = row('locator-validation-hot-path-child', 'child', card.id);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      [child.id, anchor(card.id, predecessor.id, 0)],
+    ]);
+    await log.append('chat-1', [message(0, 'user'), card, predecessor]);
+    await log.writeActive('chat-1', [child], anchors);
+
+    const scan = jest.spyOn(fs, 'createReadStream');
+    await log.validateActiveRowAnchors('chat-1', [child], anchors);
+    expect(
+      scan.mock.calls.filter(
+        ([file]) => String(file) === join(root, 'chat-1.jsonl'),
+      ),
+    ).toHaveLength(0);
+    scan.mockRestore();
+  });
+
+  // Coverage-green-first: missing and invalid derived locators must fall back
+  // without repairing files; the locator hot-path regression above was red.
+  it.each(['missing', 'offset', 'length', 'digest'] as const)(
+    'falls back to a committed JSONL scan for a %s anchor locator without repairing it',
+    async (invalidPart) => {
+      const card = delegatedCard('locator-validation-fallback-card');
+      const child = row('locator-validation-fallback-child', 'child', card.id);
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [child.id, anchor(card.id, card.id, 0)],
+      ]);
+      await log.append('chat-1', [card]);
+      await log.writeActive('chat-1', [child], anchors);
+      const locatorPath = join(
+        root,
+        'message-index',
+        'chat-1',
+        `${createHash('sha256').update(card.id).digest('hex')}.json`,
+      );
+      let locatorBefore: string | undefined;
+      if (invalidPart === 'missing') await rm(locatorPath, { force: true });
+      else {
+        const locator: unknown = JSON.parse(
+          await readFile(locatorPath, 'utf8'),
+        );
+        if (!isRecord(locator) || typeof locator.end !== 'number')
+          throw new Error('Expected committed message locator');
+        if (invalidPart === 'offset') locator.offset = 1;
+        else if (invalidPart === 'length') locator.end -= 1;
+        else locator.digest = '0'.repeat(64);
+        locatorBefore = JSON.stringify(locator);
+        await writeFile(locatorPath, locatorBefore, 'utf8');
+      }
+      const indexBefore = await readFile(
+        join(root, 'chat-1.index.json'),
+        'utf8',
+      );
+
+      const scan = jest.spyOn(fs, 'createReadStream');
+      await log.validateActiveRowAnchors('chat-1', [child], anchors);
+      expect(
+        scan.mock.calls.filter(
+          ([file]) => String(file) === join(root, 'chat-1.jsonl'),
+        ),
+      ).toHaveLength(1);
+      if (invalidPart === 'missing')
+        await expect(readFile(locatorPath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      else expect(await readFile(locatorPath, 'utf8')).toBe(locatorBefore);
+      expect(await readFile(join(root, 'chat-1.index.json'), 'utf8')).toBe(
+        indexBefore,
+      );
+      scan.mockRestore();
+    },
+  );
+
+  it('restores a snapshotted suffix anchor after replace removes the active sidecar', async () => {
+    const card = delegatedCard('replace-snapshot-card');
+    const finalized = row('replace-finalized', 'finalized', card.id);
+    const suffix = row('replace-suffix', 'suffix', card.id);
+    await log.append('chat-1', [card]);
+    const anchors = new Map<string, ActiveRowAnchor>([
+      ['replace-finalized', anchor(card.id, card.id, 0)],
+      ['replace-suffix', anchor(card.id, 'replace-finalized', 0)],
+    ]);
+    await log.writeActive('chat-1', [finalized, suffix], anchors);
+    const saved = await log.activeRowAnchors('chat-1');
+    const faulting = new ChatTranscriptLog(root, undefined, {
+      testHooks: {
+        onReplaceBoundary: (): Promise<void> =>
+          Promise.reject(new Error('replace sidecar removed')),
+      },
+    });
+    await expect(
+      faulting.replace('chat-1', [card, finalized], 20),
+    ).rejects.toThrow('replace sidecar removed');
+    await expect(
+      readFile(join(root, 'chat-1.active.json')),
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    const suffixAnchor = saved.get('replace-suffix');
+    if (!suffixAnchor) throw new Error('Expected a snapshotted suffix anchor');
+    await new ChatTranscriptLog(root).writeActive(
+      'chat-1',
+      [suffix],
+      new Map([['replace-suffix', suffixAnchor]]),
+    );
+    expect(
+      await new ChatTranscriptLog(root).activeRowAnchors('chat-1'),
+    ).toEqual(new Map([['replace-suffix', anchors.get('replace-suffix')]]));
+  });
+
+  it('keeps anchor-free active record bytes unchanged and omits the optional field', async () => {
+    const active = [row('anchor-free-row', 'unchanged')];
+    const clock = jest
+      .spyOn(Date.prototype, 'toISOString')
+      .mockReturnValue(new Date(0).toISOString());
+    try {
+      await log.writeActive('chat-1', active);
+    } finally {
+      clock.mockRestore();
+    }
+    const raw = await readFile(join(root, 'chat-1.active.json'), 'utf8');
+    expect(raw).toBe(
+      `${JSON.stringify({
+        version: 2,
+        transcriptRevision: 1,
+        updatedAt: new Date(0).toISOString(),
+      })}\n${JSON.stringify({ version: 2, kind: 'message', message: active[0] })}\n`,
+    );
+    expect(activeSidecarRows(raw)[1]).not.toHaveProperty('anchor');
+  });
+
+  describe('logical anchored transcript reads', () => {
+    it('reads known run cards without anchors from committed or active storage', async () => {
+      const committedCard = delegatedCard('logical-unanchored-committed-run');
+      const activeCard = delegatedCard('logical-unanchored-active-run');
+      await log.append('chat-1', [message(0, 'user'), committedCard]);
+      await log.writeActive('chat-1', [activeCard]);
+      expect(await log.readRunMessages('chat-1', committedCard.id)).toEqual([
+        committedCard,
+      ]);
+      expect(await log.readRunMessages('chat-1', activeCard.id)).toEqual([
+        activeCard,
+      ]);
+    });
+
+    it.each([true, false])(
+      'matches the logical raw and turn-page oracle with active sidecar present: %s',
+      async (hasActiveSidecar) => {
+        // 501 committed rows exercise newest/older raw pages and 101 turns with a compact locator tree.
+        const committed = [
+          ...Array.from({ length: 100 }, (_, turn) => [
+            message(turn * 5, 'user'),
+            message(turn * 5 + 1),
+            message(turn * 5 + 2),
+            {
+              ...message(turn * 5 + 3, 'system'),
+              blocks: [
+                {
+                  type: 'turn_timer' as const,
+                  startedAt: turn * 5,
+                  completedAt: turn * 5 + 3,
+                },
+              ],
+            },
+            message(turn * 5 + 4),
+          ]).flat(),
+          message(500, 'user'),
+        ];
+        await log.append('chat-1', committed);
+        const active = hasActiveSidecar
+          ? [message(900, 'user'), message(901)]
+          : [];
+        if (active.length > 0) await log.writeActive('chat-1', active);
+
+        const descriptor = await log.descriptor('chat-1');
+        const oracle = await logicalTranscriptOracle({
+          committed,
+          active,
+          anchors: new Map(),
+          revision: descriptor.transcriptRevision,
+        });
+
+        const projectedReader = new ChatTranscriptLog(root, undefined, {
+          readOnly: true,
+        });
+        projectedReader.setActiveProjection((candidateChatId) =>
+          candidateChatId === 'chat-1'
+            ? {
+                messages: active,
+                transcriptRevision: descriptor.transcriptRevision,
+              }
+            : undefined,
+        );
+        expect(await projectedReader.page('chat-1')).toEqual(oracle.rawPage());
+        expect(
+          await projectedReader.page('chat-1', undefined, { view: 'turns' }),
+        ).toEqual(oracle.turnPage());
+        expect(await projectedReader.descriptor('chat-1')).toEqual(descriptor);
+
+        const newestRaw = await log.page('chat-1');
+        expect(newestRaw).toEqual(oracle.rawPage());
+        if (newestRaw.before !== undefined) {
+          expect(await log.page('chat-1', newestRaw.before)).toEqual(
+            oracle.rawPage(newestRaw.before),
+          );
+        }
+        const middleRawCursor = oracle.body.length - 1;
+        expect(await log.page('chat-1', middleRawCursor)).toEqual(
+          oracle.rawPage(middleRawCursor),
+        );
+
+        const newestTurns = await log.page('chat-1', undefined, {
+          view: 'turns',
+        });
+        expect(newestTurns).toEqual(oracle.turnPage());
+        if (newestTurns.before !== undefined) {
+          expect(
+            await log.page('chat-1', newestTurns.before, { view: 'turns' }),
+          ).toEqual(oracle.turnPage(newestTurns.before));
+        }
+        expect(await logicalIteratorMessages(log, 'chat-1')).toEqual(
+          oracle.messages,
+        );
+      },
+      30_000,
+    );
+
+    it('weaves start and tied run anchors depth-first, independent of sidecar order', async () => {
+      // The 505-row base puts the tied cards across the 500-row raw-page boundary.
+      const committed = Array.from({ length: 505 }, (_, id) =>
+        id % 5 === 0 ? message(id, 'user') : message(id),
+      );
+      const startCard = delegatedCard('logical-start-run');
+      const earlyRunCard = delegatedCard('logical-tied-run-early');
+      const laterRunCard = delegatedCard('logical-tied-run-late');
+      const startChild = row(
+        'logical-start-child',
+        'start child',
+        startCard.id,
+      );
+      const earlyLow = {
+        ...row('logical-early-low', 'tie -2', earlyRunCard.id),
+        delegationSequence: 2,
+      };
+      const earlyRoot = {
+        ...row('logical-early-root', 'root', earlyRunCard.id),
+        delegationSequence: 1,
+      };
+      const earlyNested = row(
+        'logical-early-nested',
+        'nested after root',
+        earlyRunCard.id,
+      );
+      const laterRoot = row('logical-late-root', 'later run', laterRunCard.id);
+      // Physical sidecar order deliberately disagrees with the stored tie order.
+      const active = [
+        earlyNested,
+        laterRoot,
+        earlyRunCard,
+        startChild,
+        laterRunCard,
+        earlyRoot,
+        earlyLow,
+        startCard,
+      ];
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [startCard.id, anchor(startCard.id, null, 0)],
+        [earlyRunCard.id, anchor(earlyRunCard.id, 'm-499', -1)],
+        [laterRunCard.id, anchor(laterRunCard.id, 'm-499', 0)],
+        [startChild.id, anchor(startCard.id, startCard.id, 0)],
+        [earlyLow.id, anchor(earlyRunCard.id, earlyRunCard.id, -2)],
+        [earlyRoot.id, anchor(earlyRunCard.id, earlyRunCard.id, 0)],
+        [earlyNested.id, anchor(earlyRunCard.id, earlyRoot.id, 0)],
+        [laterRoot.id, anchor(laterRunCard.id, laterRunCard.id, 0)],
+      ]);
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+      expect(active.indexOf(earlyLow)).toBeGreaterThan(
+        active.indexOf(earlyRoot),
+      );
+      expect(anchors.get(earlyLow.id)?.tie).toBeLessThan(
+        anchors.get(earlyRoot.id)?.tie ?? 0,
+      );
+
+      const descriptor = await log.descriptor('chat-1');
+      const oracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: descriptor.transcriptRevision,
+      });
+      expect(oracle.messages.slice(0, 3)).toEqual([
+        startCard,
+        startChild,
+        committed[0],
+      ]);
+      expect(
+        oracle.messages.slice(
+          oracle.messageOrdinals[earlyRunCard.id],
+          oracle.messageOrdinals[earlyRunCard.id] + 6,
+        ),
+      ).toEqual([
+        earlyRunCard,
+        earlyLow,
+        earlyRoot,
+        earlyNested,
+        laterRunCard,
+        laterRoot,
+      ]);
+      expect(oracle.messageOrdinals[earlyRunCard.id]).toBeLessThan(
+        oracle.messageOrdinals[laterRunCard.id],
+      );
+
+      const newestRaw = await log.page('chat-1');
+      expect(newestRaw).toEqual(oracle.rawPage());
+      if (newestRaw.before !== undefined) {
+        expect(await log.page('chat-1', newestRaw.before)).toEqual(
+          oracle.rawPage(newestRaw.before),
+        );
+      }
+      expect(await log.page('chat-1', 507)).toEqual(oracle.rawPage(507));
+
+      const newestTurns = await log.page('chat-1', undefined, {
+        view: 'turns',
+      });
+      expect(newestTurns).toEqual(oracle.turnPage());
+      if (newestTurns.before !== undefined) {
+        expect(
+          await log.page('chat-1', newestTurns.before, { view: 'turns' }),
+        ).toEqual(oracle.turnPage(newestTurns.before));
+      }
+      const earlyOrdinal = oracle.messageOrdinals[earlyRunCard.id];
+      const owner = oracle.turns.find(
+        (turn) => turn.start <= earlyOrdinal && earlyOrdinal < turn.end,
+      );
+      if (!owner) throw new Error('Expected a turn to own the anchored run');
+      const ownerPage = await log.page('chat-1', owner.end, {
+        view: 'turns',
+        turnId: owner.id,
+      });
+      expect(ownerPage).toEqual(
+        oracle.turnPage(owner.end, { turnId: owner.id }),
+      );
+      expect(ownerPage.messageOrdinals?.[earlyRunCard.id]).toBe(earlyOrdinal);
+      expect(await logicalIteratorMessages(log, 'chat-1')).toEqual(
+        oracle.messages,
+      );
+    }, 30_000);
+
+    it('keeps logical ranks on content edits and appends new rows downstream', async () => {
+      const committed = [
+        message(0, 'user'),
+        message(1),
+        message(2),
+        message(3),
+        message(4),
+      ];
+      const card = delegatedCard('logical-rank-run');
+      const rootChild = row('logical-rank-root', 'root before edit', card.id);
+      const nestedChild = row('logical-rank-nested', 'nested', card.id);
+      const sibling = row('logical-rank-sibling', 'sibling', card.id);
+      const active = [sibling, nestedChild, card, rootChild];
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [card.id, anchor(card.id, 'm-1', 0)],
+        [rootChild.id, anchor(card.id, card.id, 0)],
+        [nestedChild.id, anchor(card.id, rootChild.id, 0)],
+        [sibling.id, anchor(card.id, card.id, 1)],
+      ]);
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+      const firstRevision = (await log.descriptor('chat-1')).transcriptRevision;
+      const firstOracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: firstRevision,
+      });
+
+      const updatedRoot: PersistedChatMessage = {
+        ...rootChild,
+        blocks: [{ type: 'text', text: 'root after content update' }],
+      };
+      const updatedActive = active.map((entry) =>
+        entry.id === rootChild.id ? updatedRoot : entry,
+      );
+      await log.writeActive('chat-1', updatedActive, anchors);
+      const updatedRevision = (await log.descriptor('chat-1'))
+        .transcriptRevision;
+      const updatedOracle = await logicalTranscriptOracle({
+        committed,
+        active: updatedActive,
+        anchors,
+        revision: updatedRevision,
+      });
+      expect(updatedOracle.messageOrdinals).toEqual(
+        firstOracle.messageOrdinals,
+      );
+      expect(updatedOracle.messages).toContainEqual(updatedRoot);
+      expect(await logicalIteratorMessages(log, 'chat-1')).toEqual(
+        updatedOracle.messages,
+      );
+
+      const downstream = row(
+        'logical-rank-added',
+        'new anchored child',
+        card.id,
+      );
+      const finalActive = [...updatedActive, downstream];
+      const finalAnchors = new Map(anchors);
+      finalAnchors.set(downstream.id, anchor(card.id, rootChild.id, -1));
+      await log.writeActive('chat-1', finalActive, finalAnchors);
+      const finalRevision = (await log.descriptor('chat-1')).transcriptRevision;
+      const finalOracle = await logicalTranscriptOracle({
+        committed,
+        active: finalActive,
+        anchors: finalAnchors,
+        revision: finalRevision,
+      });
+      const insertionRank = updatedOracle.messageOrdinals[nestedChild.id];
+      for (const [id, ordinal] of Object.entries(updatedOracle.messageOrdinals))
+        expect(finalOracle.messageOrdinals[id]).toBe(
+          ordinal >= insertionRank ? ordinal + 1 : ordinal,
+        );
+      expect(finalOracle.messageOrdinals[downstream.id]).toBe(insertionRank);
+      expect(await log.page('chat-1')).toEqual(finalOracle.rawPage());
+      expect(await log.page('chat-1', undefined, { view: 'turns' })).toEqual(
+        finalOracle.turnPage(),
+      );
+      expect(await logicalIteratorMessages(log, 'chat-1')).toEqual(
+        finalOracle.messages,
+      );
+    });
+
+    it('projects logical last-message metadata instead of sidecar order', async () => {
+      const committed = [message(0, 'user'), message(1), message(2)];
+      const card = delegatedCard('logical-descriptor-run');
+      const first = {
+        ...row('logical-descriptor-first', 'physical last row', card.id),
+        timestamp: 66,
+      };
+      const last = {
+        ...row('logical-descriptor-last', 'logical final preview', card.id),
+        timestamp: 77,
+      };
+      const active = [last, card, first];
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [card.id, anchor(card.id, 'm-2', 0)],
+        [first.id, anchor(card.id, card.id, 0)],
+        [last.id, anchor(card.id, first.id, 0)],
+      ]);
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+      const descriptor = await log.descriptor('chat-1');
+      const oracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: descriptor.transcriptRevision,
+      });
+      const expectedLast = oracle.messages.at(-1);
+      if (!expectedLast) throw new Error('Expected logical transcript rows');
+
+      expect(descriptor.messageCount).toBe(oracle.messages.length);
+      expect(descriptor.lastMessageId).toBe(expectedLast.id);
+      expect(descriptor.lastMessageAt).toBe(expectedLast.timestamp);
+      expect(descriptor.lastAssistantPreview).toBe('logical final preview');
+      expect(descriptor.userMessageCount).toBe(1);
+      expect(await logicalIteratorMessages(log, 'chat-1')).toEqual(
+        oracle.messages,
+      );
+    });
+
+    function toolRow(
+      id: string,
+      toolName: string,
+      input: Record<string, unknown>,
+      parentBlockId?: string,
+    ): PersistedChatMessage {
+      return {
+        id,
+        role: 'assistant',
+        timestamp: 1,
+        ...(parentBlockId === undefined ? {} : { parentBlockId }),
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: `${id}-tool`,
+            toolName,
+            input: JSON.stringify(input),
+          },
+        ],
+      };
+    }
+
+    function textRow(
+      id: string,
+      text: string,
+      role: PersistedChatMessage['role'] = 'assistant',
+    ): PersistedChatMessage {
+      return { id, role, timestamp: 1, blocks: [{ type: 'text', text }] };
+    }
+
+    /** Write one anchored chat and check its metadata against a fold over the
+     * logical sequence: counts, last row, and TODO state. */
+    async function logicalDescriptorCase(
+      chatId: string,
+      committed: PersistedChatMessage[],
+      active: PersistedChatMessage[],
+      anchors: Map<string, ActiveRowAnchor>,
+    ): Promise<Awaited<ReturnType<ChatTranscriptLog['descriptor']>>> {
+      if (chatId !== 'chat-1') await log.initialize(chatId);
+      await log.append(chatId, committed);
+      await log.writeActive(chatId, active, anchors);
+      const descriptor = await log.descriptor(chatId);
+      const oracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: descriptor.transcriptRevision,
+      });
+      const logical = oracle.messages;
+      expect(await logicalIteratorMessages(log, chatId)).toEqual(logical);
+      const todoState = logical.reduce<
+        Parameters<typeof foldTranscriptTodoState>[0]
+      >(foldTranscriptTodoState, {});
+      expect(descriptor.todos).toEqual(todoState.todos);
+      expect(descriptor.taskTodos).toEqual(todoState.taskTodos);
+      expect(descriptor.messageCount).toBe(logical.length);
+      expect(descriptor.userMessageCount).toBe(
+        logical.filter((entry) => entry.role === 'user').length,
+      );
+      expect(descriptor.lastMessageId).toBe(logical.at(-1)?.id);
+      expect((await log.page(chatId)).totalMessages).toBe(logical.length);
+      return descriptor;
+    }
+
+    it('takes the preview from the newest logical row with text, skipping a tool-only row', async () => {
+      const card = delegatedCard('logical-preview-tool-run');
+      const text = row('logical-preview-text', 'delegate text', card.id);
+      const tool = toolRow(
+        'logical-preview-tool',
+        'Read',
+        { file_path: 'a.ts' },
+        card.id,
+      );
+      const descriptor = await logicalDescriptorCase(
+        'chat-1',
+        [message(0, 'user'), textRow('m-1', 'committed preview')],
+        [tool, card, text],
+        new Map<string, ActiveRowAnchor>([
+          [card.id, anchor(card.id, 'm-1', 0)],
+          [text.id, anchor(card.id, card.id, 0)],
+          [tool.id, anchor(card.id, text.id, 0)],
+        ]),
+      );
+      expect(descriptor.lastAssistantPreview).toBe('delegate text');
+    });
+
+    it('compares an anchored preview with the last committed preview in logical order', async () => {
+      // The anchored text follows the last committed text but precedes a
+      // trailing committed user row.
+      const card = delegatedCard('logical-preview-trailing-run');
+      const child = row('logical-preview-trailing', 'anchored text', card.id);
+      const trailing = await logicalDescriptorCase(
+        'chat-1',
+        [
+          message(0, 'user'),
+          textRow('m-1', 'committed preview'),
+          message(2, 'user'),
+        ],
+        [child, card],
+        new Map<string, ActiveRowAnchor>([
+          [card.id, anchor(card.id, 'm-1', 0)],
+          [child.id, anchor(card.id, card.id, 0)],
+        ]),
+      );
+      expect(trailing.lastAssistantPreview).toBe('anchored text');
+
+      // A later committed text still wins over an earlier anchored one.
+      const earlier = await logicalDescriptorCase(
+        'chat-2',
+        [
+          message(0, 'user'),
+          textRow('m-1', 'early committed'),
+          message(2, 'user'),
+          textRow('m-3', 'later committed'),
+        ],
+        [child, card],
+        new Map<string, ActiveRowAnchor>([
+          [card.id, anchor(card.id, 'm-1', 0)],
+          [child.id, anchor(card.id, card.id, 0)],
+        ]),
+      );
+      expect(earlier.lastAssistantPreview).toBe('later committed');
+    });
+
+    it('folds TODO state in logical order around anchored rows', async () => {
+      const todoWrite = (
+        id: string,
+        content: string,
+        parentBlockId?: string,
+      ): PersistedChatMessage =>
+        toolRow(
+          id,
+          'TodoWrite',
+          { todos: [{ id: content, content, status: 'pending' }] },
+          parentBlockId,
+        );
+      const card = delegatedCard('logical-todo-run');
+      const committed = [
+        message(0, 'user'),
+        todoWrite('todo-a', 'committed first'),
+        message(2, 'user'),
+        todoWrite('todo-b', 'committed last'),
+      ];
+      const child = todoWrite('logical-todo-child', 'anchored', card.id);
+      // Anchored before the last committed TodoWrite: that write still wins.
+      const middle = await logicalDescriptorCase(
+        'chat-1',
+        committed,
+        [child, card],
+        new Map<string, ActiveRowAnchor>([
+          [card.id, anchor(card.id, 'todo-a', 0)],
+          [child.id, anchor(card.id, card.id, 0)],
+        ]),
+      );
+      expect(middle.todos?.map((item) => item.content)).toEqual([
+        'committed last',
+      ]);
+      // Anchored after it: the anchored write wins.
+      const after = await logicalDescriptorCase(
+        'chat-2',
+        committed,
+        [child, card],
+        new Map<string, ActiveRowAnchor>([
+          [card.id, anchor(card.id, 'todo-b', 0)],
+          [child.id, anchor(card.id, card.id, 0)],
+        ]),
+      );
+      expect(after.todos?.map((item) => item.content)).toEqual(['anchored']);
+
+      // Task ids without an explicit id are numbered in logical order.
+      const taskCard = delegatedCard('logical-task-run');
+      const anchoredTask = toolRow(
+        'logical-task-child',
+        'TaskCreate',
+        { subject: 'anchored task' },
+        taskCard.id,
+      );
+      const tasks = await logicalDescriptorCase(
+        'chat-3',
+        [
+          message(0, 'user'),
+          textRow('m-1', 'before the run'),
+          message(2, 'user'),
+          toolRow('later-task', 'TaskCreate', { subject: 'later task' }),
+        ],
+        [anchoredTask, taskCard],
+        new Map<string, ActiveRowAnchor>([
+          [taskCard.id, anchor(taskCard.id, 'm-1', 0)],
+          [anchoredTask.id, anchor(taskCard.id, taskCard.id, 0)],
+        ]),
+      );
+      expect(tasks.taskTodos).toEqual([
+        { id: 'task:1', content: 'anchored task', status: 'pending' },
+        { id: 'task:2', content: 'later task', status: 'pending' },
+      ]);
+    });
+
+    it('reuses committed TODO operations across active TODO updates without changing logical order', async () => {
+      const todoWrite = (
+        id: string,
+        content: string,
+        parentBlockId?: string,
+      ): PersistedChatMessage =>
+        toolRow(
+          id,
+          'TodoWrite',
+          { todos: [{ id: content, content, status: 'pending' }] },
+          parentBlockId,
+        );
+      const card = delegatedCard('bounded-todo-run');
+      const committed = [
+        message(0, 'user'),
+        todoWrite('bounded-todo-first', 'first committed'),
+        message(2, 'user'),
+        todoWrite('bounded-todo-last', 'last committed'),
+      ];
+      const childId = 'bounded-todo-child';
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [card.id, anchor(card.id, 'bounded-todo-first', 0)],
+        [childId, anchor(card.id, card.id, 0)],
+      ]);
+      await log.append('chat-1', committed);
+      let child = todoWrite(childId, 'initial active', card.id);
+      await log.writeActive('chat-1', [child, card], anchors);
+
+      const scan = jest.spyOn(fs, 'createReadStream');
+      await log.descriptor('chat-1');
+      // First identity: one bounded locator-to-rank seek plus one TODO replay.
+      expect(
+        scan.mock.calls.filter(
+          ([file]) => String(file) === join(root, 'chat-1.jsonl'),
+        ),
+      ).toHaveLength(2);
+      scan.mockClear();
+      for (let update = 0; update < 3; update += 1) {
+        child = todoWrite(childId, `active ${update}`, card.id);
+        await log.writeActive('chat-1', [child, card], anchors);
+        const descriptor = await log.descriptor('chat-1');
+        const oracle = await logicalTranscriptOracle({
+          committed,
+          active: [child, card],
+          anchors,
+          revision: descriptor.transcriptRevision,
+        });
+        const expected = oracle.messages.reduce<
+          Parameters<typeof foldTranscriptTodoState>[0]
+        >(foldTranscriptTodoState, {});
+        expect(descriptor.todos).toEqual(expected.todos);
+        expect(descriptor.taskTodos).toEqual(expected.taskTodos);
+      }
+      expect(
+        scan.mock.calls.filter(
+          ([file]) => String(file) === join(root, 'chat-1.jsonl'),
+        ),
+      ).toHaveLength(0);
+      scan.mockRestore();
+    });
+
+    it('counts a committed echo in an anchored sidecar once', async () => {
+      const card = delegatedCard('logical-echo-count-run');
+      const child = row('logical-echo-count-child', 'child', card.id);
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [child.id, anchor(card.id, card.id, 0)],
+      ]);
+      await log.append('chat-1', [message(0, 'user'), card, message(2)]);
+      await log.writeActive('chat-1', [child], anchors);
+      const revision = (await log.descriptor('chat-1')).transcriptRevision;
+      // A sidecar can still hold a row that finalization already committed.
+      await writeUnvalidatedActiveSidecar(
+        root,
+        'chat-1',
+        [message(0, 'user'), child],
+        anchors,
+        revision,
+      );
+      const reader = new ChatTranscriptLog(root, undefined, {
+        readOnly: true,
+      });
+      const logical = await logicalIteratorMessages(reader, 'chat-1');
+      expect(logical.map((entry) => entry.id)).toEqual([
+        'm-0',
+        card.id,
+        child.id,
+        'm-2',
+      ]);
+      const descriptor = await reader.descriptor('chat-1');
+      expect(descriptor.messageCount).toBe(logical.length);
+      expect(descriptor.userMessageCount).toBe(1);
+      expect((await reader.page('chat-1')).totalMessages).toBe(logical.length);
+    });
+
+    it('keeps physical iterate and preview order separate from logical iteration', async () => {
+      const card = delegatedCard('logical-physical-run');
+      const committed = [message(0, 'user'), card, message(2)];
+      const first = row('logical-physical-first', 'logical first', card.id);
+      const last = row('logical-physical-last', 'logical last', card.id);
+      const active = [last, first];
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [first.id, anchor(card.id, card.id, 0)],
+        [last.id, anchor(card.id, first.id, 0)],
+      ]);
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+      const physical: PersistedChatMessage[] = [];
+      for await (const entry of log.iterate('chat-1')) physical.push(entry);
+      expect(physical).toEqual(committed);
+
+      const preview = await log.capturePreview(
+        'chat-1',
+        await log.descriptor('chat-1'),
+      );
+      const previewRows: PersistedChatMessage[] = [];
+      try {
+        for await (const entry of preview.activeMessages())
+          previewRows.push(entry);
+        expect(previewRows).toEqual(active);
+        expect(() => preview.assertComplete()).not.toThrow();
+      } finally {
+        await preview.close();
+      }
+
+      const oracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: (await log.descriptor('chat-1')).transcriptRevision,
+      });
+      expect(await logicalIteratorMessages(log, 'chat-1')).toEqual(
+        oracle.messages,
+      );
+    });
+
+    it.each(['committed', 'live'] as const)(
+      'reads the logical run card and anchored rows when the card is %s',
+      async (cardLocation) => {
+        const card = delegatedCard(`logical-read-run-${cardLocation}`);
+        const committed =
+          cardLocation === 'committed'
+            ? [message(0, 'user'), card, message(2)]
+            : [message(0, 'user'), message(1), message(2)];
+        const first = row(
+          `logical-read-first-${cardLocation}`,
+          'first',
+          card.id,
+        );
+        const last = row(`logical-read-last-${cardLocation}`, 'last', card.id);
+        const active =
+          cardLocation === 'committed' ? [last, first] : [last, card, first];
+        const anchors = new Map<string, ActiveRowAnchor>([
+          ...(cardLocation === 'live'
+            ? [[card.id, anchor(card.id, 'm-1', 0)] as const]
+            : []),
+          [first.id, anchor(card.id, card.id, 0)],
+          [last.id, anchor(card.id, first.id, 0)],
+        ]);
+        await log.append('chat-1', committed);
+        await log.writeActive('chat-1', active, anchors);
+        const descriptor = await log.descriptor('chat-1');
+        const oracle = await logicalTranscriptOracle({
+          committed,
+          active,
+          anchors,
+          revision: descriptor.transcriptRevision,
+        });
+        const expectedRun = oracle.messages.filter(
+          (entry) =>
+            entry.id === card.id || anchors.get(entry.id)?.runId === card.id,
+        );
+        const result = await log.readRunMessages('chat-1', card.id);
+        expect(result).toEqual(expectedRun);
+        expect(expectedRun).toEqual([card, first, last]);
+      },
+    );
+
+    it.each([
+      'dangling descendant before its predecessor',
+      'cycle with an incoming descendant',
+      'self anchor',
+      'duplicate tie at one predecessor',
+      'unknown owner card',
+    ] as const)(
+      'fails closed on an invalid logical anchor graph: %s',
+      async (failureKind) => {
+        const card = delegatedCard(`invalid-logical-run-${failureKind}`);
+        const committed = [message(0, 'user'), card, message(2)];
+        await log.append('chat-1', committed);
+        const active: PersistedChatMessage[] = [];
+        const anchors = new Map<string, ActiveRowAnchor>();
+        let runId = card.id;
+
+        if (failureKind === 'dangling descendant before its predecessor') {
+          const orphan = row('invalid-dangling-child', 'orphan', card.id);
+          const laterRoot = row('invalid-dangling-root', 'later root', card.id);
+          active.push(orphan, laterRoot);
+          anchors.set(orphan.id, anchor(card.id, laterRoot.id, 0));
+          anchors.set(laterRoot.id, anchor(card.id, 'missing-predecessor', 0));
+        } else if (failureKind === 'cycle with an incoming descendant') {
+          const rootRow = row('invalid-cycle-root', 'root', card.id);
+          const cycleA = row('invalid-cycle-a', 'cycle a', card.id);
+          const cycleB = row('invalid-cycle-b', 'cycle b', card.id);
+          const incoming = row('invalid-cycle-incoming', 'incoming', card.id);
+          active.push(incoming, cycleB, rootRow, cycleA);
+          anchors.set(rootRow.id, anchor(card.id, card.id, 0));
+          anchors.set(cycleA.id, anchor(card.id, cycleB.id, 0));
+          anchors.set(cycleB.id, anchor(card.id, cycleA.id, 0));
+          anchors.set(incoming.id, anchor(card.id, cycleA.id, 1));
+        } else if (failureKind === 'self anchor') {
+          const self = row('invalid-self-anchor', 'self', card.id);
+          active.push(self);
+          anchors.set(self.id, anchor(card.id, self.id, 0));
+        } else if (failureKind === 'duplicate tie at one predecessor') {
+          const first = row('invalid-duplicate-tie-first', 'first', card.id);
+          const second = row('invalid-duplicate-tie-second', 'second', card.id);
+          active.push(second, first);
+          anchors.set(first.id, anchor(card.id, card.id, 0));
+          anchors.set(second.id, anchor(card.id, card.id, 0));
+        } else {
+          const unknownOwner = 'missing-delegation-card';
+          const child = row(
+            'invalid-unknown-owner',
+            'unknown owner',
+            unknownOwner,
+          );
+          active.push(child);
+          anchors.set(child.id, anchor(unknownOwner, card.id, 0));
+          runId = unknownOwner;
+        }
+
+        const revision = (await log.descriptor('chat-1')).transcriptRevision;
+        await writeUnvalidatedActiveSidecar(
+          root,
+          'chat-1',
+          active,
+          anchors,
+          revision,
+        );
+        const reader = new ChatTranscriptLog(root, undefined, {
+          readOnly: true,
+        });
+
+        const pageFailed = await reader.page('chat-1').then(
+          () => false,
+          () => true,
+        );
+        const turnPageFailed = await reader
+          .page('chat-1', undefined, { view: 'turns' })
+          .then(
+            () => false,
+            () => true,
+          );
+        const iteratorFailed = await logicalIteratorMessages(
+          reader,
+          'chat-1',
+        ).then(
+          () => false,
+          () => true,
+        );
+        const descriptorFailed = await reader.descriptor('chat-1').then(
+          () => false,
+          () => true,
+        );
+        const runReadFailed = await reader
+          .readRunMessages('chat-1', runId)
+          .then(
+            () => false,
+            () => true,
+          );
+        expect(pageFailed).toBe(true);
+        expect(turnPageFailed).toBe(true);
+        expect(iteratorFailed).toBe(true);
+        expect(descriptorFailed).toBe(true);
+        expect(runReadFailed).toBe(true);
+      },
+    );
+
+    it('pages a large completed affected turn while retaining its live owner card', async () => {
+      // The 1,250 active children stress paged turn reconstruction without a large locator tree.
+      const timer: PersistedChatMessage = {
+        ...message(2, 'system'),
+        blocks: [{ type: 'turn_timer', startedAt: 1, completedAt: 2 }],
+      };
+      const committed = [
+        message(0, 'user'),
+        message(1),
+        timer,
+        message(3, 'user'),
+        message(4),
+      ];
+      const card = delegatedCard('logical-large-turn-run');
+      const children = Array.from({ length: 1250 }, (_, index) =>
+        row(`logical-large-child-${index}`, `child ${index}`, card.id),
+      );
+      const active = [...children].reverse().concat(card);
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [card.id, anchor(card.id, 'm-1', 0)],
+      ]);
+      children.forEach((child, index) => {
+        anchors.set(
+          child.id,
+          anchor(card.id, index === 0 ? card.id : children[index - 1].id, 0),
+        );
+      });
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+
+      // Warm committed and turn indexes before counting page-by-page I/O.
+      await log.page('chat-1');
+      await log.page('chat-1', undefined, { view: 'turns' });
+      const descriptor = await log.descriptor('chat-1');
+      const oracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: descriptor.transcriptRevision,
+      });
+      const cardOrdinal = oracle.messageOrdinals[card.id];
+      const owner = oracle.turns.find(
+        (turn) => turn.start <= cardOrdinal && cardOrdinal < turn.end,
+      );
+      if (!owner) throw new Error('Expected a completed owner turn');
+      expect(owner.complete).toBe(true);
+
+      const jsonlPath = join(root, 'chat-1.jsonl');
+      const sidecarPath = join(root, 'chat-1.active.json');
+      const openFile = fsPromises.open;
+      let committedOpens = 0;
+      let sidecarOpens = 0;
+      const openSpy = jest
+        .spyOn(fsPromises, 'open')
+        .mockImplementation(async (path, flags, mode) => {
+          if (path === jsonlPath) committedOpens += 1;
+          if (path === sidecarPath) sidecarOpens += 1;
+          return openFile(path, flags, mode);
+        });
+      const streamSpy = jest.spyOn(fs, 'createReadStream');
+      const committedReads = (): number =>
+        committedOpens +
+        streamSpy.mock.calls.filter(([path]) => String(path) === jsonlPath)
+          .length;
+      try {
+        const ownerPage = await log.page('chat-1', owner.end, {
+          view: 'turns',
+          turnId: owner.id,
+        });
+        expect(ownerPage).toEqual(
+          oracle.turnPage(owner.end, { turnId: owner.id }),
+        );
+        expect(ownerPage.messages).toEqual(expect.arrayContaining([card]));
+        expect(ownerPage.messageOrdinals?.[card.id]).toBe(cardOrdinal);
+        expect(ownerPage.messages.length).toBeLessThan(children.length);
+        const pageBefore = ownerPage.turns?.[0]?.before;
+        if (pageBefore === undefined)
+          throw new Error('Expected a cursor for the large owner turn');
+
+        const older = await log.page('chat-1', pageBefore, {
+          view: 'turns',
+          turnId: owner.id,
+        });
+        expect(older).toEqual(
+          oracle.turnPage(pageBefore, { turnId: owner.id }),
+        );
+        expect(older.messages).toEqual(expect.arrayContaining([card]));
+        expect(older.messages.length).toBeLessThan(children.length);
+        expect(committedReads()).toBeLessThanOrEqual(2);
+        expect(sidecarOpens).toBeLessThanOrEqual(1);
+        const afterOlderPage = committedReads();
+
+        const repeated = await log.page('chat-1', pageBefore, {
+          view: 'turns',
+          turnId: owner.id,
+        });
+        expect(repeated).toEqual(older);
+        expect(committedReads()).toBe(afterOlderPage);
+      } finally {
+        openSpy.mockRestore();
+        streamSpy.mockRestore();
+      }
+    }, 30_000);
+
+    it('pages distinct ranges of a very large anchored committed turn without rescanning the turn', async () => {
+      // 1,500 committed rows make full-turn rescans distinguishable from page-sized reads.
+      const completedTimer: PersistedChatMessage = {
+        ...message(1499, 'system'),
+        blocks: [{ type: 'turn_timer', startedAt: 1, completedAt: 1499 }],
+      };
+      const committed = [
+        message(0, 'user'),
+        ...Array.from({ length: 1498 }, (_, index) => message(index + 1)),
+        completedTimer,
+        message(1500, 'user'),
+        message(1501),
+      ];
+      const card = delegatedCard('logical-large-committed-turn-run');
+      const firstChild = row('logical-large-committed-first', 'first', card.id);
+      const nestedChild = row(
+        'logical-large-committed-nested',
+        'nested',
+        card.id,
+      );
+      const active = [nestedChild, card, firstChild];
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [card.id, anchor(card.id, 'm-750', 0)],
+        [firstChild.id, anchor(card.id, card.id, 0)],
+        [nestedChild.id, anchor(card.id, firstChild.id, 0)],
+      ]);
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+
+      // Build committed and turn indexes before warming pages and counting reads.
+      await log.page('chat-1');
+      await log.page('chat-1', undefined, { view: 'turns' });
+      const descriptor = await log.descriptor('chat-1');
+      const oracle = await logicalTranscriptOracle({
+        committed,
+        active,
+        anchors,
+        revision: descriptor.transcriptRevision,
+      });
+      const cardOrdinal = oracle.messageOrdinals[card.id];
+      const owner = oracle.turns.find(
+        (turn) => turn.start <= cardOrdinal && cardOrdinal < turn.end,
+      );
+      if (!owner) throw new Error('Expected a completed large owner turn');
+      expect(owner.complete).toBe(true);
+      expect(owner.end - owner.start).toBeGreaterThan(1500);
+
+      const ownerPage = await log.page('chat-1', owner.end, {
+        view: 'turns',
+        turnId: owner.id,
+      });
+      expect(ownerPage).toEqual(
+        oracle.turnPage(owner.end, { turnId: owner.id }),
+      );
+      const firstOlderCursor = ownerPage.turns?.[0]?.before;
+      if (firstOlderCursor === undefined)
+        throw new Error('Expected the large owner turn to have an older page');
+      const olderPage = await log.page('chat-1', firstOlderCursor, {
+        view: 'turns',
+        turnId: owner.id,
+      });
+      expect(olderPage).toEqual(
+        oracle.turnPage(firstOlderCursor, { turnId: owner.id }),
+      );
+      const secondOlderCursor = olderPage.turns?.[0]?.before;
+      if (secondOlderCursor === undefined)
+        throw new Error('Expected another older owner-turn page');
+
+      const jsonlPath = join(root, 'chat-1.jsonl');
+      const affectedTurnBytes = committed
+        .slice(0, 1500)
+        .reduce(
+          (total, entry) =>
+            total + Buffer.byteLength(JSON.stringify(entry)) + 1,
+          0,
+        );
+      const actualCreateReadStream = fs.createReadStream;
+      let committedBytesRead = 0;
+      const streamSpy = jest
+        .spyOn(fs, 'createReadStream')
+        .mockImplementation((...args) => {
+          const stream = actualCreateReadStream(...args);
+          if (String(args[0]) === jsonlPath)
+            stream.on('data', (chunk) => {
+              committedBytesRead += Buffer.isBuffer(chunk)
+                ? chunk.byteLength
+                : Buffer.byteLength(String(chunk));
+            });
+          return stream;
+        });
+      const readMeasuredPage = async (
+        before: number,
+      ): Promise<{
+        page: Awaited<ReturnType<typeof log.page>>;
+        bytes: number;
+      }> => {
+        committedBytesRead = 0;
+        const page = await log.page('chat-1', before, {
+          view: 'turns',
+          turnId: owner.id,
+        });
+        return { page, bytes: committedBytesRead };
+      };
+      try {
+        const warmTail = await readMeasuredPage(owner.end);
+        expect(warmTail.page).toEqual(ownerPage);
+        const warmMiddle = await readMeasuredPage(firstOlderCursor);
+        expect(warmMiddle.page).toEqual(olderPage);
+        expect(warmMiddle.page.messages).toEqual(
+          expect.arrayContaining([card, firstChild, nestedChild]),
+        );
+        expect(warmMiddle.page.messages.length).toBeLessThan(1500);
+        expect(warmMiddle.page.messageOrdinals?.[card.id]).toBe(cardOrdinal);
+        expect(warmTail.bytes).toBeLessThan(affectedTurnBytes * 0.75);
+        expect(warmMiddle.bytes).toBeLessThan(affectedTurnBytes * 0.75);
+        expect(warmTail.bytes + warmMiddle.bytes).toBeLessThan(
+          affectedTurnBytes * 1.5,
+        );
+
+        const repeatedTail = await readMeasuredPage(owner.end);
+        expect(repeatedTail.page).toEqual(ownerPage);
+        expect(repeatedTail.bytes).toBeLessThan(affectedTurnBytes * 0.75);
+        expect(secondOlderCursor).toBeLessThan(firstOlderCursor);
+      } finally {
+        streamSpy.mockRestore();
+      }
+    }, 30_000);
+
+    it('reuses warm committed reads across repeated logical queries and active content updates', async () => {
+      const committed = Array.from({ length: 120 }, (_, id) =>
+        id % 5 === 0 ? message(id, 'user') : message(id),
+      );
+      const card = delegatedCard('logical-warm-run');
+      committed.splice(61, 0, card);
+      const children = Array.from({ length: 24 }, (_, index) =>
+        row(`logical-warm-child-${index}`, `warm child ${index}`, card.id),
+      );
+      const active = [...children].reverse();
+      const anchors = new Map<string, ActiveRowAnchor>();
+      children.forEach((child, index) => {
+        anchors.set(child.id, anchor(card.id, card.id, index));
+      });
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active, anchors);
+      const readQueries = async (): Promise<void> => {
+        await log.page('chat-1');
+        await log.page('chat-1', undefined, { view: 'turns' });
+        await log.descriptor('chat-1');
+        await log.readRunMessages('chat-1', card.id);
+      };
+      await readQueries();
+
+      const jsonlPath = join(root, 'chat-1.jsonl');
+      const openFile = fsPromises.open;
+      let committedOpens = 0;
+      const openSpy = jest
+        .spyOn(fsPromises, 'open')
+        .mockImplementation(async (path, flags, mode) => {
+          if (path === jsonlPath) committedOpens += 1;
+          return openFile(path, flags, mode);
+        });
+      const streamSpy = jest.spyOn(fs, 'createReadStream');
+      const committedReads = (): number =>
+        committedOpens +
+        streamSpy.mock.calls.filter(([path]) => String(path) === jsonlPath)
+          .length;
+      try {
+        await readQueries();
+        const warmReadCount = committedReads();
+        expect(warmReadCount).toBeLessThanOrEqual(4);
+        await readQueries();
+        expect(committedReads()).toBe(warmReadCount);
+
+        const updatedFirst: PersistedChatMessage = {
+          ...children[0],
+          blocks: [{ type: 'text', text: 'warm content updated' }],
+        };
+        const updatedActive = active.map((entry) =>
+          entry.id === updatedFirst.id ? updatedFirst : entry,
+        );
+        await log.writeActive('chat-1', updatedActive, anchors);
+        committedOpens = 0;
+        openSpy.mockClear();
+        streamSpy.mockClear();
+        await readQueries();
+        expect(committedReads()).toBe(0);
+        const runResult = await log.readRunMessages('chat-1', card.id);
+        expect(runResult).toContainEqual(updatedFirst);
+      } finally {
+        openSpy.mockRestore();
+        streamSpy.mockRestore();
+      }
+    });
+
+    it('keeps anchor-free logical reads within the warmed physical-path work', async () => {
+      const committed = [message(0, 'user'), message(1), message(2)];
+      const active = [message(3, 'user'), message(4)];
+      await log.append('chat-1', committed);
+      await log.writeActive('chat-1', active);
+      await log.page('chat-1');
+      await log.page('chat-1', undefined, { view: 'turns' });
+      await log.descriptor('chat-1');
+
+      const jsonlPath = join(root, 'chat-1.jsonl');
+      const activePath = join(root, 'chat-1.active.json');
+      const openFile = fsPromises.open;
+      const readFileOriginal = fsPromises.readFile;
+      let openCalls = 0;
+      let readFileCalls = 0;
+      const openSpy = jest
+        .spyOn(fsPromises, 'open')
+        .mockImplementation(async (path, flags, mode) => {
+          openCalls += 1;
+          return openFile(path, flags, mode);
+        });
+      const streamSpy = jest.spyOn(fs, 'createReadStream');
+      const stringifySpy = jest.spyOn(JSON, 'stringify');
+      const cloneSpy = jest.spyOn(globalThis, 'structuredClone');
+      const readFileSpy = jest
+        .spyOn(fsPromises, 'readFile')
+        .mockImplementation(async (...args) => {
+          readFileCalls += 1;
+          return readFileOriginal(...args);
+        });
+      let runResult: unknown;
+      const metrics = (): {
+        files: number;
+        serializations: number;
+        clones: number;
+      } => ({
+        files:
+          openCalls +
+          readFileCalls +
+          streamSpy.mock.calls.filter(
+            ([path]) =>
+              String(path) === jsonlPath || String(path) === activePath,
+          ).length,
+        serializations: stringifySpy.mock.calls.length,
+        clones: cloneSpy.mock.calls.length,
+      });
+      const measure = async (
+        operation: () => Promise<void>,
+      ): Promise<ReturnType<typeof metrics>> => {
+        openCalls = 0;
+        readFileCalls = 0;
+        openSpy.mockClear();
+        streamSpy.mockClear();
+        stringifySpy.mockClear();
+        cloneSpy.mockClear();
+        readFileSpy.mockClear();
+        await operation();
+        return metrics();
+      };
+      try {
+        const physicalIteration = await measure(async () => {
+          for await (const _entry of log.iterate('chat-1')) void _entry;
+          await log.activeMessages('chat-1');
+        });
+        const logicalIteration = await measure(async () => {
+          await logicalIteratorMessages(log, 'chat-1');
+        });
+        const ordinaryPages = async (): Promise<void> => {
+          await log.page('chat-1');
+          await log.page('chat-1', undefined, { view: 'turns' });
+          await log.descriptor('chat-1');
+        };
+        const physicalQueries = await measure(ordinaryPages);
+        const logicalQueries = await measure(async () => {
+          await ordinaryPages();
+        });
+        expect(logicalIteration).toEqual(physicalIteration);
+        expect(logicalQueries).toEqual(physicalQueries);
+        runResult = await log.readRunMessages('chat-1', 'not-a-known-run');
+      } finally {
+        openSpy.mockRestore();
+        streamSpy.mockRestore();
+        stringifySpy.mockRestore();
+        cloneSpy.mockRestore();
+        readFileSpy.mockRestore();
+      }
+      expect(runResult).toEqual([]);
+    });
+  });
+});
+
+describe('transcript log seams for live delegate runs', () => {
+  let root: string;
+  let log: ChatTranscriptLog;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-log-seams-'));
+    log = new ChatTranscriptLog(root);
+    await log.initialize('chat-1');
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    'prepared',
+    'appended',
+    'index-published',
+    'survivors-published',
+  ] as const)(
+    'recovers an explicit-zero complete append with no anchors after %s',
+    async (boundary) => {
+      const card = delegatedCard('empty-suffix-run');
+      const first = row('empty-suffix-first', 'first');
+      const second = row('empty-suffix-second', 'second');
+      const child = row('empty-suffix-child', 'child', card.id);
+      const anchors = new Map<string, ActiveRowAnchor>([
+        [child.id, anchor(card.id, first.id, 0)],
+      ]);
+      await log.append('chat-1', [card]);
+      await log.writeActive('chat-1', [child, first, second], anchors);
+      const payload = [first, child, second];
+      const faulting = new ChatTranscriptLog(root, (at) =>
+        at === boundary
+          ? Promise.reject(new Error(`fault at ${boundary}`))
+          : Promise.resolve(),
+      );
+      await expect(
+        faulting.append('chat-1', payload, undefined, 0),
+      ).rejects.toThrow(`fault at ${boundary}`);
+      const recovered = new ChatTranscriptLog(root);
+      expect((await recovered.page('chat-1')).messages).toEqual([
+        card,
+        ...payload,
+      ]);
+      expect(await recovered.activeMessages('chat-1')).toEqual([]);
+      expect(await recovered.activeRowAnchors('chat-1')).toEqual(new Map());
+      await recovered.append('chat-1', payload, undefined, 0);
+      expect(
+        (await new ChatTranscriptLog(root).page('chat-1')).messages,
+      ).toEqual([card, ...payload]);
+      await expect(
+        stat(join(root, 'chat-1.active.json')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it('requires an explicit-zero committed anchor predecessor to be committed or earlier in the payload', async () => {
+    const card = delegatedCard('complete-predecessor-run');
+    const first = row('complete-predecessor-first', 'first');
+    const child = row('complete-predecessor-child', 'child', card.id);
+    await log.append('chat-1', [card]);
+    await log.writeActive(
+      'chat-1',
+      [child, first],
+      new Map<string, ActiveRowAnchor>([
+        [child.id, anchor(card.id, first.id, 0)],
+      ]),
+    );
+    await expect(
+      log.append('chat-1', [child, first], undefined, 0),
+    ).rejects.toThrow('must be committed or earlier in append payload');
+    expect(await log.activeMessages('chat-1')).toEqual([child, first]);
+    await log.append('chat-1', [first, child], undefined, 0);
+    expect(await log.activeMessages('chat-1')).toEqual([]);
+  });
+
+  it('allows a new ordinary row before existing ordinary rows in an explicit-zero complete append', async () => {
+    const first = row('complete-first', 'first');
+    const second = row('complete-second', 'second');
+    const ready = row('complete-ready', 'new ready row');
+    await log.writeActive('chat-1', [first, second]);
+    await log.append('chat-1', [ready, first, second], undefined, 0);
+    expect((await log.page('chat-1')).messages).toEqual([ready, first, second]);
+    expect(await log.activeMessages('chat-1')).toEqual([]);
+    expect(await log.activeRowAnchors('chat-1')).toEqual(new Map());
+    await log.append('chat-1', [ready, first, second], undefined, 0);
+    expect((await log.page('chat-1')).messages).toEqual([ready, first, second]);
+  });
+
+  it('reads a committed row with its contiguous direct-child group from its locator', async () => {
+    const card = delegatedCard('seam-group-run');
+    const first = row('seam-group-first', 'first', card.id);
+    const second = row('seam-group-second', 'second', card.id);
+    const unrelated = row('seam-group-unrelated', 'not a child');
+    const late = row('seam-group-late', 'after the group', card.id);
+    await log.append('chat-1', [
+      message(0, 'user'),
+      card,
+      first,
+      second,
+      unrelated,
+      late,
+    ]);
+    await log.writeActive('chat-1', [row('seam-group-active', 'active')]);
+
+    expect(await log.readCommittedGroup('chat-1', card.id)).toEqual([
+      card,
+      first,
+      second,
+    ]);
+    expect(await log.readCommittedGroup('chat-1', 'm-0')).toEqual([
+      message(0, 'user'),
+    ]);
+    expect(
+      await log.readCommittedGroup('chat-1', 'seam-group-active'),
+    ).toBeUndefined();
+    expect(await log.readCommittedGroup('chat-1', 'absent')).toBeUndefined();
+  });
+
+  it('lists only chats whose active sidecar holds anchors', async () => {
+    const card = delegatedCard('seam-anchored-run');
+    const child = row('seam-anchored-child', 'child', card.id);
+    await log.append('chat-1', [message(0, 'user'), card]);
+    await log.writeActive(
+      'chat-1',
+      [child],
+      new Map<string, ActiveRowAnchor>([
+        [child.id, anchor(card.id, card.id, 0)],
+      ]),
+    );
+    await log.initialize('chat-2');
+    await log.writeActive('chat-2', [row('seam-plain', 'plain active row')]);
+    await log.initialize('chat-3');
+
+    expect(await log.anchoredChatIds()).toEqual(['chat-1']);
+    await log.writeActive('chat-1', [child], new Map());
+    expect(await new ChatTranscriptLog(root).anchoredChatIds()).toEqual([
+      'chat-1',
+    ]);
+  });
+
+  it('reports the last committed row id without counting active rows', async () => {
+    expect(await log.lastCommittedMessageId('chat-1')).toBeUndefined();
+
+    await log.append('chat-1', [message(0, 'user'), message(1)]);
+    await log.writeActive('chat-1', [row('seam-last-active', 'active')]);
+    expect(await log.lastCommittedMessageId('chat-1')).toBe('m-1');
+
+    await log.replace('chat-1', [message(0, 'user')], 3);
+    expect(
+      await new ChatTranscriptLog(root).lastCommittedMessageId('chat-1'),
+    ).toBe('m-0');
+  });
+});
+
+describe('isDelegationChildRow', () => {
+  const row = {
+    id: 'delegated-agent-d:item',
+    role: 'assistant',
+    timestamp: 1,
+    parentBlockId: 'delegated-agent-d',
+    delegationSequence: 0,
+    blocks: [{ type: 'text', text: 'hello' }],
+    itemRevision: 0,
+    final: false,
+  };
+
+  it('accepts a child row with its native segment', () => {
+    expect(isDelegationChildRow({ ...row, delegationSegment: 'turn-1' })).toBe(
+      true,
+    );
+    expect(isDelegationChildRow(row)).toBe(true);
+  });
+
+  it.each([[''], [7], [null]])(
+    'rejects a native segment of %p',
+    (delegationSegment) => {
+      expect(isDelegationChildRow({ ...row, delegationSegment })).toBe(false);
     },
   );
 });

@@ -82,17 +82,25 @@ interface WorkspaceItemsState {
     worktreeId?: string,
   ) => Promise<{ meta: WorkspacePromptItem; content: string } | null>;
 
-  loadAttachments: (projectId: string, worktreeId: string) => Promise<void>;
-  importAttachments: (params: {
-    projectId: string;
-    worktreeId: string;
-    filePaths: string[];
-    clipboardItems?: ClipboardAttachmentData[];
-  }) => Promise<WorkspaceAttachmentItem[]>;
+  loadAttachments: (
+    projectId: string,
+    worktreeId: string,
+    isCurrent?: () => boolean,
+  ) => Promise<void>;
+  importAttachments: (
+    params: {
+      projectId: string;
+      worktreeId: string;
+      filePaths: string[];
+      clipboardItems?: ClipboardAttachmentData[];
+    },
+    isCurrent?: () => boolean,
+  ) => Promise<WorkspaceAttachmentItem[]>;
   deleteAttachment: (
     projectId: string,
     worktreeId: string,
     filename: string,
+    isCurrent?: () => boolean,
   ) => Promise<void>;
 }
 
@@ -194,12 +202,18 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
       }
     },
 
-    loadAttachments: async (projectId, worktreeId): Promise<void> => {
+    loadAttachments: async (
+      projectId,
+      worktreeId,
+      isCurrent,
+    ): Promise<void> => {
+      if (isCurrent?.() === false) return;
       try {
         const items = await window.api.workspaceItems.listAttachments({
           projectId,
           worktreeId,
         });
+        if (isCurrent?.() === false) return;
         set((state) => ({
           attachments: {
             ...state.attachments,
@@ -211,10 +225,20 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
       }
     },
 
-    importAttachments: async (params): Promise<WorkspaceAttachmentItem[]> => {
+    importAttachments: async (
+      params,
+      isCurrent,
+    ): Promise<WorkspaceAttachmentItem[]> => {
+      if (isCurrent?.() === false) return [];
       const response =
         await window.api.workspaceItems.importAttachments(params);
-      await get().loadAttachments(params.projectId, params.worktreeId);
+      if (isCurrent?.() === false) return [];
+      await get().loadAttachments(
+        params.projectId,
+        params.worktreeId,
+        isCurrent,
+      );
+      if (isCurrent?.() === false) return [];
       return response.attachments;
     },
 
@@ -222,7 +246,9 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
       projectId,
       worktreeId,
       filename,
+      isCurrent,
     ): Promise<void> => {
+      if (isCurrent?.() === false) return;
       try {
         await window.api.workspaceItems.deleteAttachment({
           projectId,
@@ -230,7 +256,7 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
           filename,
         });
       } finally {
-        await get().loadAttachments(projectId, worktreeId);
+        await get().loadAttachments(projectId, worktreeId, isCurrent);
       }
     },
   }),

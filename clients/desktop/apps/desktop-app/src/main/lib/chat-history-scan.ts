@@ -10,20 +10,10 @@ import {
  * Shared backfill answer to "has this user ever sent a chat message?", for
  * users who installed before a given signal existed.
  *
- * Two independent subsystems need exactly this question and used to each
- * carry their own copy of the walk: the activation notification campaigns
- * (CAN-1967/CAN-2438, `notifications/campaigns/activation-signals.ts`) and the
- * sidebar onboarding checklist's `start-chat` item (CAN-2663,
- * `onboarding-checklist-progress.ts`). They cannot import each other —
- * activation-signals already depends on the checklist evaluator, so the reverse
- * edge would be a cycle — hence this leaf module, which depends only on
- * `paths`.
- *
- * Memoized once per process and shared by both callers: the scan parses chat
- * files, and running it twice to answer the same question is pure waste. Live
- * sends latch through each subsystem's own durable marker
- * (`latchFirstTaskSubmitted`, `notifyOnboardingChecklistChatStarted`), so this
- * never needs to re-run.
+ * The activation notification campaigns use this memoized scan to backfill
+ * installs predating first-task tracking.
+ * Live sends latch through `latchFirstTaskSubmitted`, so the scan never needs
+ * to rerun during this process.
  *
  * Only user-visible workspaces under `workspaces/` are scanned.
  * `app-workspaces/` (App Advisor, Code Review, Pipeline Editor) is excluded on

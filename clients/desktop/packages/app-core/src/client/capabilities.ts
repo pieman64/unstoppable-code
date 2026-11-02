@@ -35,8 +35,12 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
+  /** Selected host implements shared creation/recovery. Missing is default-deny. */
+  readonly sharedMultiRepo?: boolean;
   /** Source management is wired. Optional; unconfigured/unavailable hosts deny. */
   readonly marketplaceSources?: boolean;
+  /** Add uses the selected source client's session, independently of list rollout. */
+  readonly marketplaceSourceAdd?: boolean;
   /** Source plugin installation is wired. Optional, default-deny; web denies. */
   readonly marketplaceSourcePluginInstall?: boolean;
   /**
@@ -51,12 +55,27 @@ export interface CanopyCapabilities {
   readonly repoRulesImport?: boolean;
   /** Human review and desktop preference API; execution also requires terminalPty. */
   readonly scriptActions?: boolean;
+  /**
+   * Host keeps onboarding tip dismissals (CAN-4904) through the
+   * `onboardingTips.*` operations. Optional and default-deny: unset is the
+   * confirmed default for unconfigured and configured-but-unavailable hosts,
+   * and shared UI then shows no tips. Desktop keeps them in its preferences;
+   * the Portal reports it when the paired desktop announces
+   * `onboarding_tips_v1`; cloud chats have no store and leave it unset.
+   */
+  readonly onboardingTips?: boolean;
   /** Chat operations wired by this target's adapter. Missing members deny. */
   readonly chatWorkflows?: {
     readonly planMode?: boolean;
     readonly planReview?: boolean;
     readonly deferredCapabilities?: boolean;
     readonly independentFork?: boolean;
+    /**
+     * Host supports direct, trusted resume of an interrupted turn. Default-deny
+     * for both unconfigured and configured-but-unavailable hosts. Desktop may
+     * enable this for supported chat targets; Portal and cloud leave it unset.
+     */
+    readonly interruptedTurnResume?: boolean;
   };
   /** Complete chat inventory for sidebar Activity. Optional, default-deny.
    * Remote Control requires a live leg and host inventory; cloud has neither.
@@ -135,6 +154,13 @@ export interface CanopyCapabilities {
   /** A host reader for chat visuals is wired. Optional and default-deny; this is not the feature flag. */
   readonly chatVisuals?: boolean;
   /**
+   * Host renders in a document whose clipboard can take a PNG plus HTML item,
+   * for copying a diagram as a picture (CAN-5040). Optional and default-deny
+   * for unconfigured and configured-but-unavailable hosts; shared UI also
+   * checks the browser API, secure context and MIME support at runtime.
+   */
+  readonly imageClipboard?: boolean;
+  /**
    * Host can open a worktree in a native IDE/Finder surface (the desktop
    * `OpenDropdown`). Optional and default-deny like {@link panelLayoutControls}:
    * unset reads as `false` via the gating layer's `=== true` checks. Desktop
@@ -172,6 +198,15 @@ export interface CanopyCapabilities {
    */
   readonly marketplaceSharedCollectionEdit?: boolean;
   /**
+   * Host can open an editor for a custom skill from its Customize row
+   * (CAN-4844). Only the desktop has a skill editor and reports `true`.
+   * Optional and default-deny: absent or false, the shared Customize row
+   * shows Edit disabled with a reason. That is the confirmed default for
+   * unconfigured and configured-but-unavailable hosts and for older
+   * capability payloads.
+   */
+  readonly customSkillEdit?: boolean;
+  /**
    * Host can list, edit, schedule and run automations (the scheduled rows of
    * the Workflows Library, the Schedule tab and automation runs, CAN-3981).
    * Optional and default-deny like {@link marketplaceOwnedAutomationShares}:
@@ -187,6 +222,13 @@ export interface CanopyCapabilities {
    * unset.
    */
   readonly watchers?: boolean;
+  /**
+   * Host can edit, open the runs of, and delete workflows from the Customize
+   * Workflows rows (CAN-4845). Optional and default-deny like
+   * {@link automations}. Desktop reports `true`; the web portal leaves it unset
+   * because it has no pipeline delete/enable or automation commands.
+   */
+  readonly workflowManagement?: boolean;
   /**
    * Workspace creation modes available on this host. Optional and
    * default-deny: unset means workspace creation is unavailable.
@@ -337,6 +379,34 @@ export interface CanopyCapabilities {
    */
   readonly delegationWorktreeDetails?: boolean;
   /**
+   * Host reads a stream-backed delegation's child pages and stored bodies
+   * through `CanopyClient.transcripts`. Optional and default-deny: unset shows
+   * the child activity's unavailable state, never stale inline children.
+   */
+  readonly delegationTranscriptReads?: boolean;
+  /**
+   * Host reads a paged child row's blocks through
+   * `CanopyClient.transcripts.blocks`. Optional and default-deny: unset keeps
+   * the row's partial notice without a way to open its blocks.
+   */
+  readonly delegationBlockReads?: boolean;
+  /** Host can read an authoritative managed-delegation lifetime status. Default-deny. */
+  readonly delegationLifetimeStatusReads?: boolean;
+  /** Host can request a user-authorized managed-delegation lifetime extension. Default-deny. */
+  readonly delegationLifetimeLimitExtension?: boolean;
+  /**
+   * Host shows managed delegates but cannot read their worktree's lifetime
+   * status, so the Subagents panel shows a static explanation instead.
+   * Default-deny: unset renders no lifetime notice without status reads.
+   */
+  readonly delegationLifetimeStatusGated?: boolean;
+  /**
+   * Host reads a primary tool result's full body, stored apart or cut for
+   * display, through `CanopyClient.transcripts.content`. Optional and
+   * default-deny: unset shows only the result's preview.
+   */
+  readonly primaryContentReads?: boolean;
+  /**
    * Host can interrupt a native Claude or Codex subagent. Optional and
    * default-deny: unset hides the native subagent interrupt control.
    */
@@ -348,6 +418,18 @@ export interface CanopyCapabilities {
    */
   readonly ledger?: boolean;
   /**
+   * Host can read the Feed: the account's entries, and its teammates', from
+   * the mirror through a `LedgerFeedClient`. Optional and default-deny: a
+   * host without it never offers the Feed page.
+   */
+  readonly ledgerFeed?: boolean;
+  /**
+   * Host holds a Ledger itself: its scopes' views, entry changes, the
+   * composer, corrections, navigation to sources and files. Optional and
+   * default-deny: without it the Feed reads only.
+   */
+  readonly ledgerLocal?: boolean;
+  /**
    * Host can read a work scope's observed cost through a `CostClient`.
    * Optional and default-deny: a host without one offers no Cost panel, no
    * Session breakdown and no cost row in the usage popover.
@@ -358,6 +440,31 @@ export interface CanopyCapabilities {
    * connections. Default-deny: transcripts render references as plain text.
    */
   readonly referencePreviews?: boolean;
+  /**
+   * Host can stop one native background task (a provider agent, workflow or
+   * shell) by its task id through `activity.stopBackgroundTask`. Optional and
+   * default-deny: a host that has not wired it renders no task Stop.
+   */
+  readonly backgroundTaskStop?: boolean;
+  /**
+   * Host can inspect unreadable destructive lifecycle journal entries and
+   * move one to quarantine (CAN-5335). Default-deny: deletion and archive
+   * refusals then show only their message.
+   */
+  readonly lifecycleJournalQuarantine?: boolean;
+  /**
+   * Host can describe and permanently discard a worktree whose ordinary
+   * removal can't finish (CAN-5336). Default-deny: the refusal then shows
+   * only its message.
+   */
+  readonly worktreeDiscard?: boolean;
+  /**
+   * Host can list what keeps a project's deletion from finishing that a
+   * person can discard, and supersede an interrupted deletion on request
+   * (CAN-5337). Default-deny: the deletion's refusal then shows only its
+   * message.
+   */
+  readonly projectDeletionDiscard?: boolean;
   /**
    * Host can promote the Personal organization into a team (CAN-3706).
    * Default-deny; the server still authorizes every promotion.

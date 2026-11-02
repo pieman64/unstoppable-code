@@ -67,8 +67,8 @@ import { redactSecrets } from './redaction';
  * adding a new `AgentAuditEventType` forces a compile-time decision here —
  * either map it to the matching `TelemetryEventType` or explicitly mark it
  * `null` with a comment. This is what `tsc:check` actually enforces (the
- * type-level assertions in `telemetry-protocol-fidelity.test.ts` do not run
- * under ts-jest's `isolatedModules: true`).
+ * type-level assertions in `telemetry-protocol-fidelity.test.ts` are not
+ * checked by Jest's SWC transform).
  */
 export const AUDIT_EVENT_TELEMETRY_MAPPING: Record<
   AgentAuditEventType,

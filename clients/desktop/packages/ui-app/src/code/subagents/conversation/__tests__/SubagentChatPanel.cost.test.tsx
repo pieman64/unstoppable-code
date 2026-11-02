@@ -44,6 +44,8 @@ function panelProps(costDetails?: ReactNode): SubagentChatPanelProps {
       messaging: true,
       worktreeDetails: true,
       nativeInterrupt: true,
+      openWorkflow: false,
+      stopWorkflow: false,
     },
     transcript: <p>Transcript</p>,
     onOpenLineage: (): void => {},

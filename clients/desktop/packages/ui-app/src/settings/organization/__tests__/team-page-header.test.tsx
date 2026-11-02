@@ -11,7 +11,10 @@ import {
   seatChargeSlot,
 } from './helpers/members-section-harness';
 
-import { TEAM_NAV_ITEMS } from '../../navigation/organization-nav-items';
+import {
+  organizationSettingsSubtabItem,
+  TEAM_NAV_ITEMS,
+} from '../../navigation/organization-nav-items';
 import { TeamPage } from '../team-page';
 
 const client = createFakeSettingsClient();
@@ -58,12 +61,10 @@ function buildDetail(
 function renderShell(overrides: Partial<TeamPageProps> = {}): HTMLElement {
   const props: TeamPageProps = {
     initialDetail: buildDetail(),
-    organizations: [],
     viewerEmail: 'owner@example.com',
     billingEnabled: true,
     memoryEnabled: false,
     projectsEnabled: false,
-    billingNeedsAttention: false,
     mobileBrowser: false,
     activeTab: 'memory',
     ...overrides,
@@ -92,12 +93,10 @@ it('replaces the Personal header when the same organization is promoted by a rou
   const root = createRoot(container);
   const props: TeamPageProps = {
     initialDetail: buildDetail({ isPersonal: true, name: 'Personal' }),
-    organizations: [],
     viewerEmail: 'owner@example.com',
     billingEnabled: false,
     memoryEnabled: false,
     projectsEnabled: false,
-    billingNeedsAttention: false,
     mobileBrowser: false,
     activeTab: 'memory',
   };
@@ -130,10 +129,11 @@ it('replaces the Personal header when the same organization is promoted by a rou
     expect(
       container.querySelector('[data-testid="team-personal-header"]'),
     ).toBeNull();
+    // The settings rail names the organization; the page's h1 is its title.
     expect(
       container.querySelector('[data-testid="team-overview-section"]'),
-    ).not.toBeNull();
-    expect(container.querySelector('h1')?.textContent).toBe('Promoted team');
+    ).toBeNull();
+    expect(container.querySelector('h1')?.textContent).toBe('Memory');
   } finally {
     await act(async () => {
       root.unmount();
@@ -169,26 +169,32 @@ function precedes(first: Element, second: Element): boolean {
 // `WebSettingsNav.test.tsx`). The page only names the destination it is on.
 describe('TeamPage page header', () => {
   it.each(TEAM_NAV_ITEMS.map((item) => [item.key, item] as const))(
-    'names the %s page under the organization block',
-    (activeTab, item) => {
+    'names the %s page as its h1',
+    (activeTab, navItem) => {
       const shell = renderShell({ activeTab, projectsEnabled: true });
+      // Settings shows its first page the viewer gets: General for an owner.
+      const item =
+        activeTab === 'settings'
+          ? organizationSettingsSubtabItem('general')
+          : navItem;
 
       const header = byTestId(shell, 'page-header');
       expect(
         shell.querySelectorAll('[data-testid="page-header"]'),
       ).toHaveLength(1);
       const title = byTestId(header, 'page-header-title');
-      expect(title.tagName).toBe('H2');
+      expect(title.tagName).toBe('H1');
       expect(title.textContent).toBe(item.label);
       expect(byTestId(header, 'page-header-description').textContent).toBe(
         item.description,
       );
 
-      // The organization name stays the page's h1; the header sits under it.
-      expect(shell.querySelector('h1')?.textContent).toBe('Acme');
-      expect(precedes(byTestId(shell, 'team-overview-section'), header)).toBe(
-        true,
-      );
+      // The settings rail's scope picker names the organization, so the page
+      // draws no identity block above its header.
+      expect(shell.querySelectorAll('h1')).toHaveLength(1);
+      expect(
+        shell.querySelector('[data-testid="team-overview-section"]'),
+      ).toBeNull();
 
       expect(shell.querySelector('[data-testid="team-tabs"]')).toBeNull();
       expect(shell.querySelector('[data-testid^="team-tab-"]')).toBeNull();
@@ -239,7 +245,7 @@ describe('TeamPage page header', () => {
     },
   );
 
-  it('sits between the organization block and the page notices', () => {
+  it('sits above the page notices', () => {
     const shell = renderShell({
       activeTab: 'settings',
       justJoined: true,
@@ -247,9 +253,6 @@ describe('TeamPage page header', () => {
     });
 
     const header = byTestId(shell, 'page-header');
-    expect(precedes(byTestId(shell, 'team-overview-section'), header)).toBe(
-      true,
-    );
     expect(precedes(header, byTestId(shell, 'team-joined-notice'))).toBe(true);
     expect(precedes(header, byTestId(shell, 'team-lapsed-notice'))).toBe(true);
   });
@@ -336,13 +339,57 @@ describe('TeamPage header actions', () => {
     },
   );
 
+  it('puts the Timeline live control in the page header, before the search row', async () => {
+    Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+      value: true,
+      configurable: true,
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <WebOrganizationHost>
+            <TeamPage
+              initialDetail={buildDetail()}
+              viewerEmail="owner@example.com"
+              billingEnabled={false}
+              memoryEnabled={false}
+              projectsEnabled={false}
+              mobileBrowser={false}
+              activeTab="feed"
+            />
+          </WebOrganizationHost>,
+        );
+        await Promise.resolve();
+      });
+      const header = byTestId(container, 'page-header');
+      const live =
+        header.querySelector('[data-testid="team-feed-live-toggle"]') ??
+        header.querySelector('[data-testid="team-feed-refresh"]');
+      expect(live).not.toBeNull();
+      expect(
+        container.querySelectorAll(
+          '[data-testid="team-feed-live-toggle"], [data-testid="team-feed-refresh"]',
+        ),
+      ).toHaveLength(1);
+      expect(
+        byTestId(container, 'team-feed-search')
+          .closest('[data-page-search-row]')
+          ?.contains(live),
+      ).toBe(false);
+    } finally {
+      await act(async () => {
+        root.unmount();
+        await Promise.resolve();
+      });
+      container.remove();
+    }
+  });
+
   it('gives the other pages no header action', () => {
-    for (const activeTab of [
-      'feed',
-      'statistics',
-      'projects',
-      'settings',
-    ] as const) {
+    for (const activeTab of ['statistics', 'projects', 'settings'] as const) {
       const shell = renderShell({ activeTab, projectsEnabled: true });
       const header = byTestId(shell, 'page-header');
       expect(header.querySelector('button, a')).toBeNull();
@@ -391,17 +438,6 @@ describe('Projects page', () => {
 });
 
 describe('Personal organization shell (CAN-3597)', () => {
-  const summary = (
-    id: string,
-    name: string,
-  ): TeamPageProps['organizations'][number] => ({
-    id,
-    name,
-    role: 'OWNER',
-    memberCount: 2,
-    subTeamCount: 0,
-    logoUrl: null,
-  });
   const personalDetail = (): OrganizationDetail =>
     buildDetail({
       isPersonal: true,
@@ -419,33 +455,20 @@ describe('Personal organization shell (CAN-3597)', () => {
     });
 
   it('renders the Personal header without branding, counts, or the switcher', () => {
-    const shell = renderShell({
-      initialDetail: personalDetail(),
-      organizations: [summary('org-2', 'Acme'), summary('org-3', 'Zen')],
-    });
+    const shell = renderShell({ initialDetail: personalDetail() });
     const header = shell.querySelector('[data-testid="team-personal-header"]');
     expect(header?.textContent).toContain('Personal');
     expect(
       shell.querySelector('[data-testid="team-overview-section"]'),
     ).toBeNull();
-    expect(
-      shell.querySelector('[data-testid="team-overview-member-count"]'),
-    ).toBeNull();
     expect(shell.querySelector('[data-testid="team-org-switcher"]')).toBeNull();
   });
 
-  it('keeps the ordinary organization shell unchanged', () => {
-    const shell = renderShell({
-      organizations: [summary('org-1', 'Acme'), summary('org-3', 'Zen')],
-    });
-    expect(
-      shell.querySelector('[data-testid="team-overview-section"]'),
-    ).not.toBeNull();
+  it('draws no Personal header for an ordinary organization', () => {
+    const shell = renderShell();
     expect(
       shell.querySelector('[data-testid="team-personal-header"]'),
     ).toBeNull();
-    expect(
-      shell.querySelector('[data-testid="team-org-switcher"]'),
-    ).not.toBeNull();
+    expect(shell.querySelector('[data-testid="team-org-switcher"]')).toBeNull();
   });
 });

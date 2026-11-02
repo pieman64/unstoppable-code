@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import type { HookChatPluginDependencyItem } from '@canopy/desktop-shared/types';
 import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
@@ -452,29 +453,24 @@ export function HookChatPluginInstallDialog({
               : `${selectedCount} of ${installable.length} selected`}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={installing}
-              className="focus-ring rounded-lg px-3 py-1.5 text-xs fg-secondary hover:fg-primary disabled:opacity-60"
-            >
+            <Button size="compact" onClick={onClose} disabled={installing}>
               {completed ? 'Close' : 'Skip for now'}
-            </button>
+            </Button>
             {installable.length > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={(): void => {
                   void handleInstall();
                 }}
                 disabled={installing || selectedCount === 0}
-                className="focus-ring rounded-lg bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
               >
                 {installing
                   ? 'Installing…'
                   : completed
                     ? 'Install again'
                     : 'Install selected'}
-              </button>
+              </Button>
             )}
           </div>
         </div>

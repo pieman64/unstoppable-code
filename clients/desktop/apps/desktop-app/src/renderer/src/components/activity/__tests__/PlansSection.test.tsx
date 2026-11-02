@@ -14,7 +14,17 @@ jest.mock('@/components/chat/PlanReadyPipelineModal', () => ({
         void onRun(
           'pipeline-1',
           {
-            info: { id: 'pipeline-1', source: 'bundled' },
+            info: {
+              id: 'pipeline-1',
+              name: 'Pipeline',
+              filename: 'pipeline.yml',
+              description: '',
+              icon: 'workflow',
+              createdAt: '2026-06-01T00:00:00.000Z',
+              updatedAt: '2026-06-01T00:00:00.000Z',
+              source: 'bundled',
+              readonly: true,
+            },
             content: { name: 'Pipeline', on: 'plan_ready', jobs: {} },
           },
           {
@@ -33,12 +43,22 @@ jest.mock('@/components/chat/PlanReadyPipelineModal', () => ({
     </button>
   ),
 }));
-const openPipelineExecutionFromUiMock = jest.fn(() =>
-  Promise.resolve({ status: 'applied' }),
-);
+const openPipelineExecutionFromUiMock = jest.fn<
+  Promise<unknown>,
+  [request: unknown]
+>(() => Promise.resolve({ status: 'applied' }));
 jest.mock('@/lib/panels/open-pipeline-execution', () => ({
   openPipelineExecutionFromUi: (request: unknown): Promise<unknown> =>
     openPipelineExecutionFromUiMock(request),
+}));
+
+const revealWorktreeChatPanelMock = jest.fn<boolean, [unknown, unknown]>(
+  () => true,
+);
+jest.mock('@/lib/panels/plan-panel-open', () => ({
+  ...jest.requireActual<object>('@/lib/panels/plan-panel-open'),
+  revealWorktreeChatPanel: (scope: unknown, chatId: unknown): boolean =>
+    revealWorktreeChatPanelMock(scope, chatId),
 }));
 
 jest.mock('../PlanSourceMark', () => ({
@@ -49,10 +69,12 @@ jest.mock('@/lib/plans/open-tracked-plan', () => ({
 }));
 
 import { act, type JSX } from 'react';
+import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  type DetectedPlanEntry,
   type TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import type { PlanReadyPipelineModalOnRun } from '@/components/chat/PlanReadyPipelineModal';
@@ -72,6 +94,7 @@ import { PlansSection } from '../PlansSection';
 import { WorkspaceAccessContext } from '@/lib/workspace-access';
 import { PanelWorktreeContext } from '@/lib/panels/panel-worktree-context';
 import { SharePlanModal } from '../../shared/SharePlanModal';
+import { ActivitySectionChromeContext } from '@/components/shared/panel-section';
 
 function resetFeatureFlags(): void {
   useFeatureFlagsStore.setState({
@@ -148,7 +171,12 @@ function makeChatTab(id: string): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    fastModeExplicit: false,
+    modelConfig: {
+      thinkingLevel: 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
   };
 }
 
@@ -213,6 +241,7 @@ beforeEach(() => {
   useGitHubStore.setState({ addToast: addToastMock });
   useActivityStore.setState({
     trackedPlans: { [KEY]: [makePlan()] },
+    trackedPlanInventoryLoaded: { [KEY]: true },
     importModalRequest: null,
     loadTrackedPlans: jest.fn().mockResolvedValue(undefined),
     openImportModal: jest.fn(),
@@ -242,7 +271,9 @@ beforeEach(() => {
       getWorktreePath: jest.fn().mockResolvedValue('/repo'),
       activity: {
         plans: {
-          update: jest.fn().mockResolvedValue(undefined),
+          update: jest
+            .fn()
+            .mockResolvedValue(makePlan({ reviewStatus: 'approved' })),
           import: jest.fn().mockResolvedValue(null),
         },
       },
@@ -360,10 +391,16 @@ describe('PlansSection share button', () => {
         );
         expect(item instanceof HTMLButtonElement && item.disabled).toBe(true);
       }
-      const copy = document.querySelector(
-        '[data-testid="activity-plan-plan-1-execute-copy"]',
+      expect(
+        document.querySelector(
+          '[data-testid="activity-plan-plan-1-execute-copy"]',
+        ),
+      ).toBeNull();
+      const copy = container.querySelector(
+        '[data-testid="activity-plan-plan-1-copy"]',
       );
       expect(copy instanceof HTMLButtonElement && !copy.disabled).toBe(true);
+      expect(copy?.getAttribute('aria-disabled')).toBeNull();
     } finally {
       cleanup();
     }
@@ -401,7 +438,7 @@ describe('PlansSection share button', () => {
               shareScope: 'team',
               teamId: 'team-1',
               syncStatus: 'synced',
-              sharedAt: '2026-09-24T20:00:00.000Z',
+              lastSyncedAt: '2026-09-24T20:00:00.000Z',
             },
           }),
         ],
@@ -633,18 +670,24 @@ describe('PlansSection share button', () => {
       'plan-1',
       { shareScope: 'team', teamId: 'team-7' },
     );
-    // A completed share closes the dialog and raises exactly one toast: the
-    // dialog's own, naming the audience. The host adds none of its own.
-    expect(addToastMock).toHaveBeenCalledTimes(1);
-    expect(addToastMock).toHaveBeenCalledWith(
-      'Plan shared with Team Seven',
-      'success',
-      undefined,
-      expect.objectContaining({ forceInApp: true }),
-    );
+    // A completed share keeps the dialog open on its success notice, naming
+    // the audience, and raises no toast.
+    expect(addToastMock).not.toHaveBeenCalled();
+    expect(
+      document.body.querySelector('[data-testid="share-plan-modal"]'),
+    ).not.toBeNull();
+    expect(
+      document.body.querySelector('[data-testid="share-plan-success"]')
+        ?.textContent,
+    ).toContain('Plan shared with Team Seven');
+
+    // Done closes the dialog.
+    await click(document.body.querySelector('[data-testid="share-plan-done"]'));
+    await flush();
     expect(
       document.body.querySelector('[data-testid="share-plan-modal"]'),
     ).toBeNull();
+    expect(addToastMock).not.toHaveBeenCalled();
     cleanup();
   });
 
@@ -679,6 +722,196 @@ describe('PlansSection share button', () => {
       document.body.querySelector('[data-testid="share-plan-error"]')
         ?.textContent,
     ).toContain('Failed to share plan. no plans-crud-v1');
+    cleanup();
+  });
+});
+
+describe('PlansSection empty state and import entry', () => {
+  const EMPTY_COPY =
+    'Plans your agent writes appear here. Import a Markdown plan to review it, comment on it, and hand it to an agent.';
+
+  function detected(
+    id: string,
+    status: 'detected' | 'dismissed' | 'imported',
+  ): DetectedPlanEntry {
+    return {
+      id,
+      sourceRepoId: 'repo-1',
+      sourceFilePath: `plans/${id}.md`,
+      status,
+      bannerSeen: false,
+      detectedInChatId: 'chat-1',
+      detectedAt: '2026-06-01T00:00:00.000Z',
+    };
+  }
+
+  beforeEach(() => {
+    useActivityStore.setState({ trackedPlans: { [KEY]: [] } });
+  });
+
+  it('explains plans and import when the worktree has none', async () => {
+    const { container, cleanup } = render(<PlansSection />);
+    await flush();
+
+    expect(
+      container.querySelector('[data-testid="activity-plans-empty"]')
+        ?.textContent,
+    ).toBe(EMPTY_COPY);
+    expect(
+      container.querySelector(
+        '[data-testid="activity-plans-suggestions-chip"]',
+      ),
+    ).toBeNull();
+    cleanup();
+  });
+
+  it.each(['body-only', 'frameless'] as const)(
+    'shows the explanation in %s chrome',
+    async (chrome) => {
+      const { container, cleanup } = render(
+        <ActivitySectionChromeContext.Provider value={chrome}>
+          <PlansSection />
+        </ActivitySectionChromeContext.Provider>,
+      );
+      await flush();
+
+      expect(
+        container.querySelector('[data-testid="activity-plans-empty"]')
+          ?.textContent,
+      ).toBe(EMPTY_COPY);
+      cleanup();
+    },
+  );
+
+  it('loads detected plans for the worktree and counts only pending ones', async () => {
+    useActivityStore.setState({
+      detectedPlans: {
+        [KEY]: [
+          detected('a', 'detected'),
+          detected('b', 'detected'),
+          detected('c', 'dismissed'),
+          detected('d', 'imported'),
+        ],
+      },
+    });
+    const { container, cleanup } = render(<PlansSection />);
+    await flush();
+
+    expect(useActivityStore.getState().loadDetectedPlans).toHaveBeenCalledWith(
+      PROJECT_ID,
+      WORKTREE_ID,
+    );
+    const chip = container.querySelector(
+      '[data-testid="activity-plans-suggestions-chip"]',
+    );
+    expect(chip?.textContent).toBe('2 found in chats');
+    await click(chip);
+    expect(useActivityStore.getState().openImportModal).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+    });
+    cleanup();
+  });
+
+  it('waits for the tracked plans before reading detected ones', async () => {
+    useActivityStore.setState({
+      trackedPlans: {},
+      trackedPlanInventoryLoaded: {},
+    });
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+
+    // Until the inventory says the worktree is empty, the chip cannot show.
+    expect(
+      useActivityStore.getState().loadDetectedPlans,
+    ).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('names the header import button', async () => {
+    useActivityStore.setState({ trackedPlans: { [KEY]: [makePlan()] } });
+    const { container, cleanup } = render(<PlansSection />);
+    await flush();
+
+    // The suggestions chip only shows in the empty state, so a worktree with
+    // plans skips the detected-plans read.
+    expect(
+      useActivityStore.getState().loadDetectedPlans,
+    ).not.toHaveBeenCalled();
+
+    expect(
+      container
+        .querySelector('[data-testid="activity-plans-import"]')
+        ?.getAttribute('aria-label'),
+    ).toBe('Import plan');
+    cleanup();
+  });
+
+  it('shows only the first sentence in a read-only scope', async () => {
+    useActivityStore.setState({
+      trackedPlans: {},
+      detectedPlans: { [KEY]: [detected('a', 'detected')] },
+    });
+    const { container, cleanup } = render(
+      <WorkspaceAccessContext.Provider
+        value={{
+          mode: 'read-only',
+          reason: 'shared-container',
+          containerType: 'CODE_WORKTREE',
+          runAllowed: false,
+        }}
+      >
+        <PanelWorktreeContext.Provider
+          value={{ projectId: PROJECT_ID, worktreeId: WORKTREE_ID }}
+        >
+          <ActivitySectionChromeContext.Provider value="body-only">
+            <PlansSection />
+          </ActivitySectionChromeContext.Provider>
+        </PanelWorktreeContext.Provider>
+      </WorkspaceAccessContext.Provider>,
+    );
+    await flush();
+
+    expect(
+      container.querySelector('[data-testid="activity-plans-empty"]')
+        ?.textContent,
+    ).toBe('Plans your agent writes appear here.');
+    expect(
+      container.querySelector('[data-testid="activity-plans-import"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="activity-plans-suggestions-chip"]',
+      ),
+    ).toBeNull();
+    expect(
+      useActivityStore.getState().loadDetectedPlans,
+    ).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('names the source file on an imported plan card', async () => {
+    useActivityStore.setState({
+      trackedPlans: {
+        [KEY]: [
+          makePlan({
+            source: 'imported',
+            sourceRepoId: 'repo-1',
+            sourceFilePath: 'docs/rollout.md',
+          }),
+          makePlan({ id: 'plan-2' }),
+        ],
+      },
+    });
+    const { container, cleanup } = render(<PlansSection />);
+    await flush();
+
+    const provenance = container.querySelectorAll(
+      '[data-testid="plan-provenance"]',
+    );
+    expect(provenance).toHaveLength(1);
+    expect(provenance[0]?.textContent).toBe('Imported · docs/rollout.md');
+    expect(provenance[0]?.getAttribute('title')).toBe('docs/rollout.md');
     cleanup();
   });
 });
@@ -771,6 +1004,7 @@ describe('PlansSection pipeline execution', () => {
           pipeline_id: 'pipeline-1',
           pipeline_name: 'Plan pipeline',
           status: 'running',
+          status_reasons: [],
           started_at: '2026-06-01T00:00:00.000Z',
           cwd: '/repo',
           planId: 'plan-1',
@@ -886,6 +1120,316 @@ describe('PlansSection Implement follow-up targets the owning worktree (correcti
       undefined,
       expect.objectContaining({ throwOnDispatchFailure: true }),
     );
+    cleanup();
+  });
+});
+
+describe('PlansSection status (CAN-5166)', () => {
+  function runSummary(
+    id: string,
+    status: ExecutionSummary['status'],
+  ): ExecutionSummary {
+    return {
+      id,
+      pipeline_id: 'pipeline-1',
+      pipeline_name: `Pipeline ${id}`,
+      status,
+      status_reasons: [],
+      started_at: '2026-06-02T00:00:00.000Z',
+      cwd: '/repo',
+      planId: 'plan-1',
+    };
+  }
+
+  function byTestId(id: string): HTMLElement | null {
+    return document.body.querySelector(`[data-testid="${id}"]`);
+  }
+
+  function executeIsPrimary(): boolean {
+    return (
+      byTestId('activity-plan-plan-1-execute')?.className.includes(
+        'bg-accent',
+      ) ?? false
+    );
+  }
+
+  beforeEach(() => {
+    revealWorktreeChatPanelMock.mockClear();
+  });
+
+  it.each(['idle', 'fresh'] as const)(
+    'disables Activity execution during revision and recovers on %s (CAN-5431)',
+    async (recovery) => {
+      const updateChat = (
+        status: ChatTab['status'],
+        pendingPlanExit?: ChatTab['pendingPlanExit'],
+      ): void => {
+        act(() =>
+          useChatStore.setState({
+            worktreeChats: {
+              [KEY]: {
+                activeTabId: 'revision-chat',
+                tabs: [
+                  {
+                    ...makeChatTab('revision-chat'),
+                    trackedPlanId: 'plan-1',
+                    trackedPlanReviewStatus: 'pending',
+                    status,
+                    pendingPlanExit,
+                  },
+                ],
+              },
+            },
+          }),
+        );
+      };
+      updateChat('streaming');
+      const { cleanup } = render(<PlansSection />);
+      try {
+        await flush();
+        await click(byTestId('activity-plan-plan-1-execute'));
+        for (const action of ['implement', 'pipeline'])
+          expect(
+            byTestId(`activity-plan-plan-1-execute-${action}`)?.hasAttribute(
+              'disabled',
+            ),
+          ).toBe(true);
+        // An already-open menu updates as canonical state settles.
+        updateChat(
+          recovery === 'idle' ? 'idle' : 'streaming',
+          recovery === 'fresh' ? { plan: '# v2' } : undefined,
+        );
+        await flush();
+        for (const action of ['implement', 'pipeline'])
+          expect(
+            byTestId(`activity-plan-plan-1-execute-${action}`)?.hasAttribute(
+              'disabled',
+            ),
+          ).toBe(false);
+      } finally {
+        cleanup();
+      }
+    },
+  );
+
+  it('shows Pending with primary Execute', async () => {
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+
+    expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+      'Pending',
+    );
+    expect(executeIsPrimary()).toBe(true);
+    cleanup();
+  });
+
+  it('demotes Execute when the store records the approval', async () => {
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+
+    act(() => {
+      useActivityStore
+        .getState()
+        .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+    });
+
+    expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+      'Approved',
+    );
+    expect(executeIsPrimary()).toBe(false);
+    cleanup();
+  });
+
+  it('shows Implementing for a running linked run', async () => {
+    useActivityStore.setState({
+      trackedPlans: { [KEY]: [makePlan({ reviewStatus: 'approved' })] },
+    });
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-7', 'paused')],
+    });
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+
+    expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+      'Implementing',
+    );
+    cleanup();
+  });
+
+  it.each([
+    ['failure', 'success', 'Approved'],
+    ['success', 'failure', 'Implemented'],
+  ] as const)(
+    'uses the root %s outcome instead of its nested %s outcome',
+    async (rootStatus, childStatus, expectedLabel) => {
+      useActivityStore.setState({
+        trackedPlans: {
+          [KEY]: [
+            makePlan({
+              reviewStatus: 'approved',
+              linkedExecutionIds: ['root-run', 'child-run'],
+            }),
+          ],
+        },
+      });
+      usePipelineRunsStore.setState({
+        summaries: [
+          runSummary('root-run', rootStatus),
+          {
+            ...runSummary('child-run', childStatus),
+            started_at: '2026-06-02T01:00:00.000Z',
+            parent_execution_id: 'root-run',
+          },
+        ],
+      });
+      const { cleanup } = render(<PlansSection />);
+      await flush();
+
+      expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+        expectedLabel,
+      );
+      expect(
+        byTestId('activity-plan-status-note-plan-1')?.textContent ?? null,
+      ).toBe(rootStatus === 'failure' ? 'Workflow failed·View run' : null);
+      if (rootStatus === 'failure')
+        expect(byTestId('activity-plan-execution-plan-1')).toBeNull();
+      await click(
+        byTestId(
+          rootStatus === 'failure'
+            ? 'activity-plan-status-note-run-plan-1'
+            : 'activity-plan-execution-plan-1',
+        ),
+      );
+      expect(openPipelineExecutionFromUiMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ executionId: 'root-run' }),
+      );
+      cleanup();
+    },
+  );
+
+  it('reports a failed run and opens it from View run', async () => {
+    useActivityStore.setState({
+      trackedPlans: {
+        [KEY]: [
+          makePlan({ reviewStatus: 'approved', linkedExecutionIds: ['run-7'] }),
+        ],
+      },
+    });
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-7', 'failure')],
+    });
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+
+    expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+      'Approved',
+    );
+    expect(byTestId('activity-plan-status-note-plan-1')?.textContent).toBe(
+      'Workflow failed·View run',
+    );
+    expect(byTestId('activity-plan-execution-plan-1')).toBeNull();
+    await click(byTestId('activity-plan-status-note-run-plan-1'));
+    expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'run-7' }),
+    );
+    expect(openTrackedPlanMock).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('opens the newest active attempt regardless of collection order or a later failed retry', async () => {
+    useActivityStore.setState({
+      trackedPlans: { [KEY]: [makePlan({ reviewStatus: 'approved' })] },
+    });
+    usePipelineRunsStore.setState({
+      summaries: [
+        {
+          ...runSummary('old', 'running'),
+          started_at: '2026-06-02T01:00:00.000Z',
+        },
+        {
+          ...runSummary('new', 'paused'),
+          started_at: '2026-06-02T02:00:00.000Z',
+        },
+        {
+          ...runSummary('failed', 'failure'),
+          started_at: '2026-06-02T03:00:00.000Z',
+        },
+      ],
+    });
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+    await click(byTestId('activity-plan-execution-plan-1'));
+    expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'new' }),
+    );
+    cleanup();
+  });
+
+  it("reveals the plan's tracking chat from View chat", async () => {
+    useActivityStore.setState({
+      trackedPlans: { [KEY]: [makePlan({ reviewStatus: 'approved' })] },
+    });
+    useChatStore.setState({
+      worktreeChats: {
+        [KEY]: {
+          tabs: [{ ...makeChatTab('chat-1'), trackedPlanId: 'plan-1' }],
+          activeTabId: 'chat-1',
+        },
+      },
+    });
+    const { cleanup } = render(<PlansSection />);
+    await flush();
+
+    await click(byTestId('activity-plan-status-note-chat-plan-1'));
+    expect(revealWorktreeChatPanelMock).toHaveBeenCalledWith(
+      { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      'chat-1',
+    );
+    expect(openTrackedPlanMock).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('shows the status but no navigation notes when read-only', async () => {
+    const viewerKey = `${SHARED_CONTAINER_VIEWER_PROJECT_ID}/container-1`;
+    useActivityStore.setState({
+      trackedPlans: {
+        [viewerKey]: [
+          makePlan({
+            projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+            worktreeId: 'container-1',
+            reviewStatus: 'approved',
+          }),
+        ],
+      },
+    });
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-7', 'failure')],
+    });
+    const { cleanup } = render(
+      <WorkspaceAccessContext.Provider
+        value={{
+          mode: 'read-only',
+          reason: 'shared-container',
+          containerType: 'CODE_WORKTREE',
+          runAllowed: false,
+        }}
+      >
+        <PanelWorktreeContext.Provider
+          value={{
+            projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+            worktreeId: 'container-1',
+          }}
+        >
+          <PlansSection />
+        </PanelWorktreeContext.Provider>
+      </WorkspaceAccessContext.Provider>,
+    );
+    await flush();
+
+    expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+      'Approved',
+    );
+    expect(byTestId('activity-plan-status-note-plan-1')).toBeNull();
     cleanup();
   });
 });

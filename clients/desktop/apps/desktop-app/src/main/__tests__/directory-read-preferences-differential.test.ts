@@ -123,16 +123,18 @@ async function seed(
 }
 
 /**
- * Desktop reports its selection only through the recovery error: a completed
- * recovery that names last-good restored it; any other error restored
- * defaults; no error means the primary was used or nothing exists.
+ * Desktop reports its selection only through the recovery error: an error
+ * naming last-good served it, whether restored to disk or held in memory after
+ * refused recovery; any other error served defaults; no error means the
+ * primary was used or nothing exists. The value comparison below checks that
+ * the named source is the one actually returned.
  */
 function desktopSource(
   primary: FileFixture,
 ): 'primary' | 'last-good' | 'defaults' {
   const error = peekPreferencesLoadError();
   if (!error) return primary.kind === 'absent' ? 'defaults' : 'primary';
-  return error.backupPath && error.restoredFromPath ? 'last-good' : 'defaults';
+  return error.restoredFromPath ? 'last-good' : 'defaults';
 }
 
 async function digest(root: string): Promise<Record<string, string>> {

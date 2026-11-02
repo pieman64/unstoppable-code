@@ -54,7 +54,9 @@ class MockBrowserWindow extends EventEmitter {
 }
 
 jest.mock('electron', () => ({
-  BrowserWindow: MockBrowserWindow,
+  get BrowserWindow(): typeof MockBrowserWindow {
+    return MockBrowserWindow;
+  },
   dialog: { showOpenDialog: jest.fn() },
   shell: { openExternal: jest.fn() },
 }));

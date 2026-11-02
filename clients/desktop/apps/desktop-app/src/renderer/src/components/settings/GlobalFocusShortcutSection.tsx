@@ -17,8 +17,7 @@ import {
   validateGlobalShortcut,
   type ShortcutPlatform,
 } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
-import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
-import { ShortcutKeys } from '@/components/shared/ShortcutKeys';
+import { Button, Kbd, ToggleSwitch } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
 import {
@@ -38,7 +37,6 @@ import {
   SettingsSection,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const TOGGLE_ID = 'settings-global-focus-shortcut-toggle';
 const TOGGLE_LABEL = 'Global shortcut';
@@ -123,7 +121,6 @@ function statusText(
  * new one is refused.
  */
 export function GlobalFocusShortcutSection(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const { status, hydrated, busy } = useGlobalFocusShortcutStatus();
   const platform = status?.platform ?? rendererShortcutPlatform();
   const chord = formatGlobalFocusShortcutForDisplay(status);
@@ -277,11 +274,11 @@ export function GlobalFocusShortcutSection(): JSX.Element {
           control={
             <>
               <span data-testid="global-focus-shortcut-chord">
-                <ShortcutKeys shortcut={chord} />
+                <Kbd data-testid="shortcut-keys" shortcut={chord} />
               </span>
               {recorder === null && (
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   data-testid="global-focus-shortcut-change"
                   disabled={!hydrated || busy}
@@ -298,8 +295,8 @@ export function GlobalFocusShortcutSection(): JSX.Element {
                 status.accelerator !==
                   GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR && (
                   <Button
-                    size={settingsButtonSize}
-                    variant="ghost"
+                    size="compact"
+                    variant="secondary"
                     data-testid="global-focus-shortcut-reset"
                     disabled={busy}
                     onClick={handleReset}
@@ -334,11 +331,13 @@ export function GlobalFocusShortcutSection(): JSX.Element {
                   className="flex min-h-6 items-center"
                   aria-live="polite"
                 >
-                  {preview !== null && <ShortcutKeys shortcut={preview} />}
+                  {preview !== null && (
+                    <Kbd data-testid="shortcut-keys" shortcut={preview} />
+                  )}
                 </span>
                 <Button
-                  size={settingsButtonSize}
-                  variant="ghost"
+                  size="compact"
+                  variant="secondary"
                   data-testid="global-focus-shortcut-cancel"
                   onClick={(): void => {
                     setRecorder(null);
@@ -348,7 +347,7 @@ export function GlobalFocusShortcutSection(): JSX.Element {
                   Cancel
                 </Button>
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="primary"
                   data-testid="global-focus-shortcut-save"
                   disabled={!canSave || busy}

@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
+import { CloseIcon } from '@canopy/ui-shared/icons';
 
 export interface PendingAttachmentChip {
   localId: string;
@@ -25,7 +27,7 @@ export function PendingAttachmentRow({
       {attachments.map((attachment) => (
         <div
           key={attachment.localId}
-          className="flex max-w-64 shrink-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs"
+          className="flex max-w-64 shrink-0 items-center gap-2 rounded-lg border py-0.5 pl-2.5 pr-0.5 text-xs"
           data-state={attachment.state}
           title={attachment.error ?? attachment.filename}
         >
@@ -46,14 +48,15 @@ export function PendingAttachmentRow({
               Retry
             </button>
           ) : null}
-          <button
-            type="button"
-            className="focus-ring fg-secondary hover:fg-primary"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={(): void => onRemove(attachment.localId)}
             aria-label={`Remove ${attachment.filename}`}
           >
-            ×
-          </button>
+            <CloseIcon size={14} aria-hidden />
+          </Button>
         </div>
       ))}
     </div>

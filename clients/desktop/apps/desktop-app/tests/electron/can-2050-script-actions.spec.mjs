@@ -191,6 +191,35 @@ test('CAN-2050 review, package cwd, aliases, shortcuts, pin reuse and changed de
   }
 });
 
+test('CAN-2050 a mouse click on Run sends a ! draft while the script menu is open', async () => {
+  test.setTimeout(120_000);
+  const fixture = await openScriptActionsFixture();
+  const { window } = fixture;
+  const composer = window.locator('[data-chat-composer-root]:visible').first();
+  const editor = composer.locator('[contenteditable="true"]').first();
+  try {
+    await expect(editor).toBeVisible();
+    const count = (await window.evaluate(() => window.api.terminal.list()))
+      .length;
+    await editor.fill('!echo can-2050-run-click');
+    // Detected scripts await review, so the menu offers its review row.
+    await expect(window.getByTestId('chat-input-scripts-menu')).toBeVisible();
+    await composer
+      .getByRole('button', { name: 'Run terminal command', exact: true })
+      .click();
+    await expect(window.getByTestId('chat-input-scripts-menu')).toHaveCount(0);
+    await expect
+      .poll(
+        async () =>
+          (await window.evaluate(() => window.api.terminal.list())).length,
+      )
+      .toBe(count + 1);
+    await expect(editor).not.toContainText('can-2050-run-click');
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('CAN-2050 refuses a selected script changed before the watcher rescan', async () => {
   const fixture = await openScriptActionsFixture();
   const { window, electronApp, userDataDir } = fixture;

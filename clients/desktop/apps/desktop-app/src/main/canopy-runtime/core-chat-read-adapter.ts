@@ -1,6 +1,10 @@
 import {
+  CoreChatContentReadResultSchema,
   CoreChatTranscriptPageResultSchema,
+  CoreChatTranscriptBlocksPageResultSchema,
   CoreChatSendReceiptResultSchema,
+  type CoreChatContentReadResult,
+  type CoreChatTranscriptBlocksPageResult,
   type CoreChatSendReceiptResult,
   type CoreChatTranscriptPageResult,
   type CoreChatTranscriptSearchResult,
@@ -22,6 +26,7 @@ import type {
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { IdentifierValidationError } from '../lib/identifier-validation-error';
+import { fitBoundedBlockPage } from './bounded-block-page';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 import { ChatVisualReadError } from '../lib/chat-visual-read-errors';
 
@@ -42,6 +47,8 @@ type ChatReadHandlers = Pick<
   | 'core.chat.transcript.page'
   | 'core.chat.transcript.search'
   | 'core.chat.toolOutput.read'
+  | 'core.chat.content.read'
+  | 'core.chat.transcript.blocks.page'
   | 'core.chat.visual.read'
   | 'core.chat.send.receipt'
 >;
@@ -194,25 +201,43 @@ function translateError(error: unknown, chatId?: string): never {
       : error instanceof Error &&
           (error.message === 'Invalid transcript page cursor' ||
             error.message === 'Unknown transcript turn' ||
-            error.message === 'Invalid turn page cursor')
+            error.message === 'Invalid turn page cursor' ||
+            error.message === 'Invalid transcript block range' ||
+            error.message === 'Invalid tool output range' ||
+            error.message === 'Tool output offset splits a UTF-8 character' ||
+            error.message === 'Tool output offset splits a UTF-16 code unit')
         ? 'invalid_argument'
         : error instanceof Error &&
-            (error.message === 'Standalone archive not found' ||
-              (chatId !== undefined &&
-                error.message === `Unknown chat: ${chatId}`))
+            (error.message === 'Unknown child stream' ||
+              error.message === 'Transcript message not found' ||
+              error.message ===
+                'Transcript field has no stored body for this row')
           ? 'not_found'
-          : isChatStateLoadError(error)
-            ? error.code === 'invalid_request'
-              ? 'invalid_argument'
-              : error.code === 'unavailable'
-                ? 'unavailable'
-                : 'failed_precondition'
-            : error instanceof Error && error.name === 'AbortError'
-              ? 'cancelled'
-              : 'internal';
+          : error instanceof Error &&
+              (error.message === 'Stale transcript stream cursor' ||
+                error.message === 'Stale transcript blocks cursor')
+            ? 'failed_precondition'
+            : error instanceof Error &&
+                (error.message === 'Standalone archive not found' ||
+                  (chatId !== undefined &&
+                    error.message === `Unknown chat: ${chatId}`))
+              ? 'not_found'
+              : isChatStateLoadError(error)
+                ? error.code === 'invalid_request'
+                  ? 'invalid_argument'
+                  : error.code === 'unavailable'
+                    ? 'unavailable'
+                    : 'failed_precondition'
+                : error instanceof Error && error.name === 'AbortError'
+                  ? 'cancelled'
+                  : 'internal';
   throw new CanopyOperationError(
     {
       kind,
+      ...(error instanceof Error &&
+      error.message === 'Stale transcript blocks cursor'
+        ? { code: 'core.chat.transcript.blocks.page.staleCursor' }
+        : {}),
       message,
       retry: { kind: 'never' },
     },
@@ -227,19 +252,7 @@ function portablePage(
     message: TranscriptPage['messages'][number],
   ): Record<string, unknown> => ({
     ...message,
-    blocks: message.blocks.map((block) => {
-      if (block.type === 'image') {
-        return Object.fromEntries(
-          Object.entries(block).filter(([key]) => key !== 'path'),
-        );
-      }
-      if (block.type === 'compaction_info') {
-        return Object.fromEntries(
-          Object.entries(block).filter(([key]) => key !== 'transcriptPath'),
-        );
-      }
-      return block;
-    }),
+    blocks: portableBlocks(message.blocks),
   });
   const serialized = JSON.stringify(
     {
@@ -274,6 +287,40 @@ function portablePage(
     },
   );
   return CoreChatTranscriptPageResultSchema.parse(JSON.parse(serialized));
+}
+
+/**
+ * Child pages cross the renderer relay, whose replies are capped at 1 MiB.
+ * The backend already keeps a page's rows within 768 KiB; this is the guard
+ * on the whole result, so an oversized page fails here, not in the relay.
+ */
+const CHILD_PAGE_RESULT_BYTES = 960_000;
+
+const HOST_PATH_FIELDS = [
+  'absolutePath',
+  'attachmentPath',
+  'attachmentPaths',
+  'attachmentPromptContexts',
+];
+
+function portableBlocks(blocks: readonly unknown[]): unknown[] {
+  const project = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(project);
+    if (typeof value !== 'object' || value === null) return value;
+    const imageBlock = 'type' in value && value.type === 'image';
+    const compactionBlock = 'type' in value && value.type === 'compaction_info';
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => {
+          if (HOST_PATH_FIELDS.includes(key)) return false;
+          if (imageBlock && key === 'path') return false;
+          if (compactionBlock && key === 'transcriptPath') return false;
+          return true;
+        })
+        .map(([key, child]) => [key, project(child)]),
+    );
+  };
+  return blocks.map(project);
 }
 
 export function createCoreChatReadAdapter(
@@ -354,6 +401,8 @@ export function createCoreChatReadAdapter(
           ...(params.standaloneHistory === undefined
             ? {}
             : { standaloneHistory: params.standaloneHistory }),
+          ...(params.target === undefined ? {} : { target: params.target }),
+          ...(params.cursor === undefined ? {} : { cursor: params.cursor }),
           ...(params.before === undefined ? {} : { before: params.before }),
           ...(params.view === undefined ? {} : { view: params.view }),
           ...(params.turnId === undefined ? {} : { turnId: params.turnId }),
@@ -362,8 +411,32 @@ export function createCoreChatReadAdapter(
             : { transcriptRevision: params.transcriptRevision }),
         });
         capture?.page(result);
-        return portablePage(result);
+        const page = portablePage(result);
+        if (
+          params.target?.kind === 'delegation' &&
+          Buffer.byteLength(JSON.stringify(page), 'utf8') >
+            CHILD_PAGE_RESULT_BYTES
+        )
+          throw new CanopyOperationError({
+            kind: 'resource_exhausted',
+            message: 'The child transcript page is too large to return.',
+            retry: { kind: 'never' },
+          });
+        return page;
       } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === 'Stale transcript stream cursor'
+        )
+          throw new CanopyOperationError(
+            {
+              kind: 'failed_precondition',
+              code: 'core.chat.transcript.page.staleCursor',
+              message: error.message,
+              retry: { kind: 'never' },
+            },
+            error,
+          );
         return translateError(error, params.scope.chatId);
       }
     },
@@ -376,6 +449,7 @@ export function createCoreChatReadAdapter(
         const result = await requirePort(services).searchTranscript(
           {
             ...chatScope,
+            ...(params.target === undefined ? {} : { target: params.target }),
             query: params.query,
             requestId: capture?.requestId() ?? context.requestId,
           },
@@ -402,6 +476,7 @@ export function createCoreChatReadAdapter(
             ...(params.standaloneHistory === undefined
               ? {}
               : { standaloneHistory: params.standaloneHistory }),
+            ...(params.target === undefined ? {} : { target: params.target }),
             messageId: params.messageId,
             toolUseId: params.toolUseId,
             reference: params.reference,
@@ -415,6 +490,90 @@ export function createCoreChatReadAdapter(
         const result = await read;
         capture?.toolOutput(result);
         return result;
+      } catch (error) {
+        return translateError(error, params.scope.chatId);
+      }
+    },
+    'core.chat.content.read': async (
+      params,
+      context,
+    ): Promise<CoreChatContentReadResult> => {
+      try {
+        const chatScope = requireScope(params.scope);
+        const port = requirePort(services);
+        if (!port.readTranscriptContent) {
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'Transcript content reads are unavailable.',
+            retry: { kind: 'never' },
+          });
+        }
+        const result = await port.readTranscriptContent(
+          {
+            ...chatScope,
+            ...(params.archivedContainerId === undefined
+              ? {}
+              : { archivedContainerId: params.archivedContainerId }),
+            ...(params.standaloneHistory === undefined
+              ? {}
+              : { standaloneHistory: params.standaloneHistory }),
+            ...(params.target === undefined ? {} : { target: params.target }),
+            messageId: params.messageId,
+            blockOrdinal: params.blockOrdinal,
+            field: params.field,
+            ...(params.fieldSource === undefined
+              ? {}
+              : { fieldSource: params.fieldSource }),
+            requestId: capture?.requestId() ?? context.requestId,
+            offset: params.offset,
+            limit: params.limit,
+          },
+          context.signal,
+        );
+        return CoreChatContentReadResultSchema.parse(result);
+      } catch (error) {
+        return translateError(error, params.scope.chatId);
+      }
+    },
+    'core.chat.transcript.blocks.page': async (
+      params,
+      context,
+    ): Promise<CoreChatTranscriptBlocksPageResult> => {
+      try {
+        const chatScope = requireScope(params.scope);
+        const port = requirePort(services);
+        if (!port.getTranscriptBlocks) {
+          throw new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'Transcript block reads are unavailable.',
+            retry: { kind: 'never' },
+          });
+        }
+        const request = {
+          ...chatScope,
+          ...(params.archivedContainerId === undefined
+            ? {}
+            : { archivedContainerId: params.archivedContainerId }),
+          ...(params.standaloneHistory === undefined
+            ? {}
+            : { standaloneHistory: params.standaloneHistory }),
+          ...(params.target === undefined ? {} : { target: params.target }),
+          messageId: params.messageId,
+          ...(params.firstBlockOrdinal === undefined
+            ? {}
+            : { firstBlockOrdinal: params.firstBlockOrdinal }),
+          ...(params.cursor === undefined ? {} : { cursor: params.cursor }),
+          limit: params.limit,
+        };
+        const read = port.getTranscriptBlocks.bind(port);
+        if (params.projection === 'bounded-v1') {
+          return await fitBoundedBlockPage(request, read, context.signal);
+        }
+        const result = await read(request, context.signal);
+        return CoreChatTranscriptBlocksPageResultSchema.parse({
+          ...result,
+          blocks: portableBlocks(result.blocks),
+        });
       } catch (error) {
         return translateError(error, params.scope.chatId);
       }

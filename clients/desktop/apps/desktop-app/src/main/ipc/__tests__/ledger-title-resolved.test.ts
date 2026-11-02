@@ -9,10 +9,9 @@ describe('Ledger title-resolution change events', () => {
   it('preserves titleResolved at the same revision and when coalesced with a later revision', () => {
     jest.useFakeTimers();
     const events: LedgerViewChangedEvent[] = [];
-    const broadcaster = createLedgerChangeBroadcaster(
-      (event): void => events.push(event),
-      25,
-    );
+    const broadcaster = createLedgerChangeBroadcaster((event): void => {
+      events.push(event);
+    }, 25);
     const scope = { projectId: 'workspace-1', worktreeId: 'worktree-1' };
 
     broadcaster.push({

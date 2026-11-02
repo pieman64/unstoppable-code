@@ -61,10 +61,14 @@ const UNAUTHENTICATED_CODEX_SCENARIO = {
   },
 };
 
-function providerCard(window, providerLabel) {
-  return window
-    .locator('article')
-    .filter({ has: window.getByRole('heading', { name: providerLabel }) });
+/** A provider's usage group (`claude` / `codex`). */
+function providerCard(window, provider) {
+  return window.getByTestId(`usage-provider-card-${provider}`);
+}
+
+/** The Usage page's one refresh control, in its heading. */
+function pageRefreshButton(window) {
+  return window.getByTestId('page-usage').getByTestId('usage-refresh');
 }
 
 function claudeUsageScenario({
@@ -113,12 +117,12 @@ test.describe('usage fetch-error UX', () => {
       await app.waitForShell({ timeout: 30_000 });
       await app.openUsagePage();
 
-      const claudeCard = providerCard(window, 'Claude');
+      const claudeCard = providerCard(window, 'claude');
       await expect(claudeCard).toBeVisible({ timeout: 30_000 });
-      await expect(claudeCard).toContainText('Usage: 42.0%', {
+      await expect(claudeCard).toContainText('42%', {
         timeout: 30_000,
       });
-      await expect(claudeCard).toContainText('Usage: 61.0%');
+      await expect(claudeCard).toContainText('61%');
 
       await registerScenario(
         DEFAULT_MOCK_BASE_URL,
@@ -128,15 +132,13 @@ test.describe('usage fetch-error UX', () => {
           usageRetryAfterSeconds: 600,
         }),
       );
-      await window
-        .getByRole('button', { name: 'Refresh Claude usage' })
-        .click();
+      await pageRefreshButton(window).click();
 
       const notice = window.getByTestId('usage-provider-claude-error');
       await expect(notice).toBeVisible({ timeout: 30_000 });
       await expect(notice).toContainText(/limiting usage checks/i);
-      await expect(claudeCard).toContainText('Usage: 42.0%');
-      await expect(claudeCard).toContainText('Usage: 61.0%');
+      await expect(claudeCard).toContainText('42%');
+      await expect(claudeCard).toContainText('61%');
       await expect(
         window.getByTestId('usage-provider-claude-error-retry'),
       ).toBeDisabled();
@@ -165,9 +167,9 @@ test.describe('usage fetch-error UX', () => {
       await app.waitForShell({ timeout: 30_000 });
       await app.openUsagePage();
 
-      const claudeCard = providerCard(window, 'Claude');
+      const claudeCard = providerCard(window, 'claude');
       await expect(claudeCard).toBeVisible({ timeout: 30_000 });
-      await expect(claudeCard).toContainText('Usage: 42.0%', {
+      await expect(claudeCard).toContainText('42%', {
         timeout: 30_000,
       });
 
@@ -179,9 +181,7 @@ test.describe('usage fetch-error UX', () => {
           usageRetryAfterSeconds: 10,
         }),
       );
-      await window
-        .getByRole('button', { name: 'Refresh Claude usage' })
-        .click();
+      await pageRefreshButton(window).click();
 
       const notice = window.getByTestId('usage-provider-claude-error');
       const retry = window.getByTestId('usage-provider-claude-error-retry');
@@ -197,7 +197,7 @@ test.describe('usage fetch-error UX', () => {
       await retry.click();
 
       await expect(notice).toBeHidden({ timeout: 30_000 });
-      await expect(claudeCard).toContainText('Usage: 55.0%', {
+      await expect(claudeCard).toContainText('55%', {
         timeout: 30_000,
       });
     } finally {
@@ -228,7 +228,7 @@ test.describe('usage fetch-error UX', () => {
       await app.waitForShell({ timeout: 30_000 });
       await app.openUsagePage();
 
-      const claudeCard = providerCard(window, 'Claude');
+      const claudeCard = providerCard(window, 'claude');
       const notice = window.getByTestId('usage-provider-claude-error');
       await expect(claudeCard).toBeVisible({ timeout: 30_000 });
       await expect(notice).toBeVisible({ timeout: 30_000 });
@@ -263,12 +263,11 @@ test.describe('usage fetch-error UX', () => {
 
       await app.openUsagePage();
 
-      const codexCard = providerCard(window, 'Codex');
+      const codexCard = providerCard(window, 'codex');
       await expect(codexCard).toBeVisible({ timeout: 30_000 });
-      await expect(codexCard).toContainText('unauthenticated', {
-        timeout: 30_000,
-      });
-      await expect(codexCard).toContainText('Sign in to see usage');
+      await expect(
+        codexCard.getByTestId('usage-provider-codex-account'),
+      ).toContainText('Sign in to see usage', { timeout: 30_000 });
       await expect(
         window.getByTestId('usage-provider-codex-error'),
       ).toHaveCount(0);
@@ -322,8 +321,8 @@ test.describe('usage fetch-error UX', () => {
       // Reopening Usage fetches fresh numbers for every provider with no
       // refresh or retry click, and the page never blanks while it does.
       await app.openUsagePage();
-      const claudeCard = providerCard(window, 'Claude');
-      const codexCard = providerCard(window, 'Codex');
+      const claudeCard = providerCard(window, 'claude');
+      const codexCard = providerCard(window, 'codex');
       await expect(claudeCard).toBeVisible();
       await expect(codexCard).toBeVisible();
 
@@ -333,7 +332,7 @@ test.describe('usage fetch-error UX', () => {
         .poll(async () => (await claudeCard.innerText()).replace(/\s+/g, ' '), {
           timeout: 30_000,
         })
-        .toContain('Usage: 92.0%');
+        .toContain('92%');
       await expect(window.getByTestId('page-usage')).toBeVisible();
     } finally {
       await closeCanopy(electronApp, userDataDir);
@@ -358,7 +357,7 @@ test.describe('usage fetch-error UX', () => {
       await app.openUsagePage();
 
       // ── Codex: endpoint 404 → `unsupported` notice ─────────────────────
-      const codexCard = providerCard(window, 'Codex');
+      const codexCard = providerCard(window, 'codex');
       await expect(codexCard).toBeVisible({ timeout: 30_000 });
 
       const codexNotice = window.getByTestId('usage-provider-codex-error');
@@ -410,7 +409,7 @@ test.describe('usage fetch-error UX', () => {
       await expect(codexDetails).toContainText('responded 404');
 
       // ── Claude: endpoint 500 → transient `service` notice with retry ───
-      const claudeCard = providerCard(window, 'Claude');
+      const claudeCard = providerCard(window, 'claude');
       await expect(claudeCard).toBeVisible();
 
       const claudeNotice = window.getByTestId('usage-provider-claude-error');
@@ -435,7 +434,7 @@ test.describe('usage fetch-error UX', () => {
         .poll(async () => (await claudeCard.innerText()).replace(/\s+/g, ' '), {
           timeout: 30_000,
         })
-        .toContain('Usage: 92.0%');
+        .toContain('92%');
     } finally {
       await closeCanopy(electronApp, userDataDir);
       await clearScenario(DEFAULT_MOCK_BASE_URL, USAGE_KEY).catch(

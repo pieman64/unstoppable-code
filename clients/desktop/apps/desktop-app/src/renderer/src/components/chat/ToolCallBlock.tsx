@@ -1,14 +1,20 @@
 import { TranscriptSearchRevealContext } from './transcript-search-reveal';
-import { DeferredToolOutput } from './DeferredToolOutput';
-import { useContext, memo, useMemo, type JSX } from 'react';
-import { ChatVisualSourceButton, type ChatVisualOwner } from '@canopy/ui-app';
+import { useContext, memo, useMemo, type JSX, type ReactNode } from 'react';
+import {
+  DeferredToolOutput,
+  ChatVisualSourceButton,
+  type ToolOutputIdentity,
+  type ChatVisualOwner,
+} from '@canopy/ui-app';
 import { SHOW_VISUAL_TOOL_ALIASES } from '@/lib/canopy-tool-aliases';
-import { readAuthDependencyFailures } from '@canopy/protocol/auth-recovery';
-import { getCanonicalCanopyToolKey } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import {
   getToolRowInput,
-  parseMcpToolName,
   ToolCallCard,
+  ToolCallResultSection,
+  interruptedToolCallResult,
+  toolCallResultFrom,
+  useCleanChatLook,
+  type ToolCallStatus,
 } from '@canopy/ui-shared/components';
 import { CanopyLogo } from '@/components/CanopyLogo';
 import { brand } from '@/lib/brand';
@@ -22,10 +28,7 @@ import {
   isCodeGraphToolName,
 } from './ToolDisplayInfo';
 import { AuthRecoveryCard } from './AuthRecoveryCard';
-import {
-  isMcpConnectionError,
-  legacyMcpAuthFailure,
-} from './chatConnectionErrors';
+import { readToolAuthRecoveryFailures } from './tool-auth-recovery';
 
 function toUnknown(value: unknown): unknown {
   return value;
@@ -65,20 +68,41 @@ export const ToolCallBlock = memo(function ToolCallBlock({
   result,
   resolvedRecipient,
   isCodeReviewChat,
+  toolUseId,
+  turnSettled = false,
+  label,
+  status,
 }: {
   toolName: string;
   originChatTabId?: string;
   originMessageId?: string;
   input: string;
-  result?: ToolResult;
+  result?: ToolResult & { readonly outputIdentity?: ToolOutputIdentity };
   resolvedRecipient?: string;
   /** True inside a Code Review sidecar chat — lets the shared plan/review
    * comment tools (see `ToolDisplayScope`) pick up the code-flavored icon
    * even for `RespondToComment`, whose raw name is identical in Plan
    * Explore chats. */
   isCodeReviewChat?: boolean;
+  /** The step's identity; a turn summary lands on its row by this id. */
+  toolUseId?: string;
+  /**
+   * True only when the owning turn is authoritatively settled. A call with
+   * no result then renders interrupted instead of a spinner. Inactivity or a
+   * disconnected stream alone never sets this.
+   */
+  turnSettled?: boolean;
+  /** Replaces the row label derived from the tool name and input. */
+  label?: ReactNode;
+  /**
+   * Explicit row status. Without one the card infers it from `result`, so a
+   * settled row that has no result must pass one to avoid a pending spinner.
+   */
+  status?: ToolCallStatus;
 }): JSX.Element {
   const forceExpanded = useContext(TranscriptSearchRevealContext);
+  // Clean rows stay colorless, including their opened output.
+  const clean = useCleanChatLook();
   const toolDisplayScope = {
     isCodeReview: isCodeReviewChat,
     trustedMcpNamespace: brand.tools.namespace,
@@ -100,7 +124,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       reference: result.visualRef,
     };
   }, [result, toolName]);
-  const { icon, label: displayLabel } =
+  const { icon, label: derivedLabel } =
     toolName === 'SendMessage'
       ? getSendMessageDisplayInfo(input, resolvedRecipient)
       : getToolDisplayInfo(
@@ -112,6 +136,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
             : input,
           toolDisplayScope,
         );
+  const displayLabel = label ?? derivedLabel;
   const family = getToolFamilyFromName(toolName, toolDisplayScope, input);
   // Code-graph tools keep their dedicated GraphIcon (from `getToolDisplayInfo`)
   // rather than folding into the neutral branded app logo like other
@@ -126,96 +151,41 @@ export const ToolCallBlock = memo(function ToolCallBlock({
   const appIcon = <CanopyLogo width={14} height={14} aria-hidden="true" />;
 
   const toolResult = result
-    ? {
-        kind: result.isError ? ('error' as const) : ('text' as const),
-        content: result.output,
-      }
-    : null;
-  // Structured data wins when present (CAN-1814), but only after it is
-  // re-validated here. Both write paths enforce `isValidAuthDependencyFailure`;
-  // the READ path does not — `chat-tabs-reader.ts`'s `isPersistedChatBlock`
-  // checks only toolUseId/toolName/output/isError and passes `authFailure`
-  // through untouched. So a persisted block can pair a non-recoverable
-  // `failureClass` with an `mcp_oauth` recovery, and without this guard it
-  // would render "Connect MCP server" for a failure logging in cannot fix.
-  // Reads BOTH the singular `authFailure` written before the multi-blocker
-  // checklist and the `authFailures` array written since (CAN-1814 PR 2), and
-  // reports separately whether main reached any readable verdict — which is
-  // what the two fall-through rules below turn on.
-  const authFailureRead = readAuthDependencyFailures(result ?? {});
-  const structuredAuthFailures = authFailureRead.failures;
-  // A present-but-unusable value is split by WHY it is unusable, because the
-  // two cases mean opposite things (CAN-1814 follow-up):
-  //
-  //   - Shape-valid but semantically invalid (e.g. `quota_exceeded` paired
-  //     with an `mcp_oauth` recovery): main DID reach a verdict, and it says
-  //     this is not something reconnecting fixes. Fail closed — the text
-  //     heuristic must not overrule a readable verdict.
-  //   - Not shape-valid at all (truncated / hand-edited / garbage): there is
-  //     no verdict to defer to. Failing closed here removed the user's only
-  //     recovery path over a corrupt cache entry, while the tool output is
-  //     independent evidence of a real auth failure. Fall through to the
-  //     heuristic instead.
-  const hasUnusableAuthFailure =
-    structuredAuthFailures.length === 0 && authFailureRead.hasVerdict;
-  // The card is driven by the failure itself, not by a boolean: it names the
-  // dependency and derives its action from `recovery.kind`. Gating on
-  // `dependencyClass` alone would render a login CTA for an HTTP 403, which
-  // `classifyMcpAuthFailure` deliberately maps to `insufficient_scope` +
-  // `recovery: { kind: 'none' }` — the token authenticated fine and was
-  // refused on scope, so re-running OAuth cannot fix it. `AuthRecoveryCard`
-  // owns that distinction now, which is why a non-recoverable structured
-  // failure still renders here: it explains the real problem instead of the
-  // nothing-at-all this branch used to show (CAN-1814 PR 2).
-  //
-  // The structured and legacy branches are deliberately ASYMMETRIC on
-  // `result.isError`, and that is not an oversight (raised in CAN-1814 review
-  // round 3). `isError` is a premise of the legacy branch — it has nothing but
-  // the tool name and the output text to go on, so it may only guess from a
-  // result that actually failed. The structured branch is main's verdict,
-  // already reached from the errored `tool_result` (`pairPendingAuthFailures`
-  // selects only from results with `is_error === true`), so re-deriving it
-  // here adds nothing and makes the feature's ONLY user-visible surface
-  // disappear the moment a producer attaches a failure to a result whose
-  // `isError` did not survive projection — Codex signals `status: 'failed'`
-  // rather than `is_error`. Pinned by the `isError false` test in
-  // `__tests__/ToolCallBlock.test.tsx`.
-  //
-  // Canopy's OWN injected tools are excluded (CAN-1814 PR 4). Claude reaches
-  // them over a branded MCP HTTP server, so under a brand whose namespace is
-  // not the legacy `canopy` one `parseMcpToolName` accepts their names — and a
-  // `WatchGitHubItems` error body mentioning a 401 then rendered a bogus
-  // "Connect Watch git hub items" MCP card. They are not third-party servers,
-  // and when one of them really does hit an auth wall main publishes a
-  // structured failure for it, which the branch above already handles.
-  const legacyAuthFailure =
-    structuredAuthFailures.length === 0 &&
-    !hasUnusableAuthFailure &&
-    result?.isError === true &&
-    parseMcpToolName(toolName) !== null &&
-    getCanonicalCanopyToolKey(toolName) === null &&
-    isMcpConnectionError(result.output)
-      ? legacyMcpAuthFailure(toolName)
+    ? toolCallResultFrom({
+        output: result.output,
+        isError: result.isError,
+        ...(result.interruption ? { interruption: result.interruption } : {}),
+      })
+    : turnSettled
+      ? // The owning turn settled with no result recorded for this call.
+        interruptedToolCallResult()
       : null;
-  const authRecoveryFailures =
-    structuredAuthFailures.length > 0
-      ? structuredAuthFailures
-      : legacyAuthFailure
-        ? [legacyAuthFailure]
-        : [];
+  const authRecoveryFailures = readToolAuthRecoveryFailures(toolName, result);
 
   const displayInput = getToolRowInput(toolName, input);
 
-  if (result?.fullOutputRef) {
+  const outputIdentity: ToolOutputIdentity | undefined =
+    result?.outputIdentity ??
+    (result?.fullOutputRef && result.messageId && result.toolUseId
+      ? {
+          kind: 'reference',
+          reference: result.fullOutputRef,
+          messageId: result.messageId,
+          toolUseId: result.toolUseId,
+        }
+      : undefined);
+  if (result && (result.fullOutputRef || outputIdentity)) {
     return (
       <ToolCallCard
         forceExpanded={forceExpanded}
         dataTestId="chat-tool-call"
+        toolUseId={toolUseId}
         toolFamily={family}
         toolName={toolName}
         icon={displayIcon}
         appIcon={appIcon}
         label={displayLabel}
+        status={status}
         result={toolResult}
         expandedSlot={
           <>
@@ -229,17 +199,26 @@ export const ToolCallBlock = memo(function ToolCallBlock({
                 sourceMessageId={result?.messageId ?? originMessageId}
               />
             )}
-            {result.messageId && result.toolUseId ? (
-              <DeferredToolOutput
-                reference={result.fullOutputRef}
-                preview={result.output}
-                messageId={result.messageId}
-                toolUseId={result.toolUseId}
-              />
-            ) : (
-              <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">
-                {result.output}
-              </pre>
+            {toolResult && (
+              <ToolCallResultSection result={toolResult}>
+                {outputIdentity ? (
+                  <DeferredToolOutput
+                    identity={outputIdentity}
+                    preview={toolResult.content}
+                    isError={result.isError}
+                  />
+                ) : (
+                  <pre
+                    className={`max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
+                      toolResult.kind === 'error' && !clean
+                        ? 'fg-destructive/80'
+                        : 'fg-secondary'
+                    }`}
+                  >
+                    {toolResult.content}
+                  </pre>
+                )}
+              </ToolCallResultSection>
             )}
           </>
         }
@@ -252,11 +231,13 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       <ToolCallCard
         forceExpanded={forceExpanded}
         dataTestId="chat-tool-call"
+        toolUseId={toolUseId}
         toolFamily={family}
         toolName={toolName}
         icon={displayIcon}
         appIcon={appIcon}
         label={displayLabel}
+        status={status}
         result={toolResult}
         pendingSpinner={<ThinkingSpinner />}
       />
@@ -273,11 +254,13 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       <ToolCallCard
         forceExpanded={forceExpanded}
         dataTestId="chat-tool-call"
+        toolUseId={toolUseId}
         toolFamily={family}
         toolName={toolName}
         icon={displayIcon}
         appIcon={appIcon}
         label={displayLabel}
+        status={status}
         result={toolResult}
         pendingSpinner={<ThinkingSpinner />}
         expandedSlot={
@@ -288,22 +271,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
             <pre className="max-h-50 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">
               {prompt}
             </pre>
-            {toolResult && (
-              <>
-                <div className="border-t px-2.5 py-1 text-3xs font-medium fg-secondary">
-                  {toolResult.kind === 'error' ? 'Error' : 'Result'}
-                </div>
-                <pre
-                  className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
-                    toolResult.kind === 'error'
-                      ? 'fg-destructive/80'
-                      : 'fg-secondary'
-                  }`}
-                >
-                  {toolResult.content}
-                </pre>
-              </>
-            )}
+            {toolResult && <ToolCallResultSection result={toolResult} />}
           </>
         }
       />
@@ -319,11 +287,13 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       <ToolCallCard
         forceExpanded={forceExpanded}
         dataTestId="chat-tool-call"
+        toolUseId={toolUseId}
         toolFamily={family}
         toolName={toolName}
         icon={displayIcon}
         appIcon={appIcon}
         label={displayLabel}
+        status={status}
         result={toolResult}
         pendingSpinner={<ThinkingSpinner />}
         expandedSlot={
@@ -334,22 +304,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
             <pre className="max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs fg-secondary">
               {message}
             </pre>
-            {toolResult && (
-              <>
-                <div className="border-t px-2.5 py-1 text-3xs font-medium fg-secondary">
-                  {toolResult.kind === 'error' ? 'Error' : 'Result'}
-                </div>
-                <pre
-                  className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
-                    toolResult.kind === 'error'
-                      ? 'fg-destructive/80'
-                      : 'fg-secondary'
-                  }`}
-                >
-                  {toolResult.content}
-                </pre>
-              </>
-            )}
+            {toolResult && <ToolCallResultSection result={toolResult} />}
           </>
         }
       />
@@ -361,11 +316,13 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       <ToolCallCard
         forceExpanded={forceExpanded}
         dataTestId="chat-tool-call"
+        toolUseId={toolUseId}
         toolFamily={family}
         toolName={toolName}
         icon={displayIcon}
         appIcon={appIcon}
         label={displayLabel}
+        status={status}
         input={displayInput}
         result={toolResult}
         pendingSpinner={<ThinkingSpinner />}

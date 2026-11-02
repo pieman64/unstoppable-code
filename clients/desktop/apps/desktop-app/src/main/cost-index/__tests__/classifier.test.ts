@@ -36,6 +36,7 @@ const EMPTY_TOOL_COUNTS: AgentAuditEntry['toolCounts'] = {
   tasks: 0,
   taskStop: 0,
   skills: 0,
+  monitor: 0,
   claude: 0,
   scheduleWakeup: 0,
   askUser: 0,
@@ -179,6 +180,7 @@ describe('classifyAuditEntry', () => {
             reason: 'priced',
             currency: 'usd',
             totalUsd: 9.25,
+            components: [],
           },
           subagents: [
             {
@@ -217,6 +219,7 @@ describe('classifyAuditEntry', () => {
           reason: 'billable_tool_pricing_unavailable',
           currency: 'usd',
           totalUsd: 0.02,
+          components: [],
         },
       }),
     );
@@ -227,6 +230,7 @@ describe('classifyAuditEntry', () => {
           status: 'unpriced',
           reason: 'model_not_priced',
           currency: 'usd',
+          components: [],
         },
       }),
     );

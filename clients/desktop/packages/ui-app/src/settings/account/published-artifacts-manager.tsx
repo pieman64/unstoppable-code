@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Plus, Search } from '@canopy/ui-shared/icons/AppIcons';
-import { DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   MAX_FEATURED_ARTIFACTS,
   PROFILE_ARTIFACT_PATH_KINDS,
@@ -13,21 +13,27 @@ import {
 import type { PublicProfileArtifactDetail } from '@canopy/protocol/profile';
 import { SettingsConfirmDialog, SettingsLink } from '../host';
 import { SETTINGS_LOAD_ERROR_COPY } from '../errors';
+import {
+  WORKFLOW_ITEM_LABEL,
+  WORKFLOW_ITEM_LABEL_PLURAL,
+} from '@canopy/ui-shared/lib/workflow-labels';
+import { formatDate } from '@canopy/ui-shared/lib';
 import { CopyTextButton } from './CopyTextButton';
 import { usePublicProfileEditor } from './use-public-profile-editor';
+import { SETTINGS_GROUP_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
 
 const KIND_LABELS: Record<ProfileArtifactPathKind, string> = {
   skills: 'Skill',
   runs: 'Run',
   plans: 'Plan',
-  pipelines: 'Pipeline',
+  pipelines: WORKFLOW_ITEM_LABEL,
 };
 
 const KIND_TAB_LABELS: Record<ProfileArtifactPathKind, string> = {
   skills: 'Skills',
   runs: 'Runs',
   plans: 'Plans',
-  pipelines: 'Pipelines',
+  pipelines: WORKFLOW_ITEM_LABEL_PLURAL,
 };
 
 /** Human-readable payload the confirm dialog shows verbatim before publishing. */
@@ -51,12 +57,6 @@ function previewBody(detail: PublicProfileArtifactDetail): string {
   return [detail.description, '', detail.rawPipeline]
     .filter(Boolean)
     .join('\n');
-}
-
-function formatDate(iso: string): string {
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return iso;
-  return new Date(ms).toLocaleDateString();
 }
 
 interface PendingPublish {
@@ -156,16 +156,15 @@ export function PublishedArtifactsManager(): JSX.Element {
           row holds only the add control. */}
       <div className="flex justify-end">
         <div className="flex flex-col items-end gap-1">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={() => setPickerOpen(true)}
             disabled={atLimit}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             data-testid="featured-work-add"
           >
-            <Plus size={15} aria-hidden="true" />
+            <Plus size={14} aria-hidden="true" />
             Add work
-          </button>
+          </Button>
           {published && (
             <span
               className={`text-xs ${atLimit ? 'fg-warning' : 'fg-secondary'}`}
@@ -197,18 +196,18 @@ export function PublishedArtifactsManager(): JSX.Element {
         >
           <p className="text-sm font-medium fg-primary">Nothing featured yet</p>
           <p className="mt-1 text-sm fg-secondary">
-            Showcase your best work — add a skill, run, plan, or pipeline to
+            Showcase your best work — add a skill, run, plan, or workflow to
             your profile.
           </p>
         </div>
       )}
 
       {published && published.length > 0 && (
-        <ul className="divide-y rounded-lg border">
+        <ul className={SETTINGS_GROUP_CLASS}>
           {published.map((item) => (
             <li
               key={`${item.kind}-${item.id}`}
-              className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+              className="flex flex-wrap items-center justify-between gap-3"
               data-testid={`featured-row-${item.kind}-${item.id}`}
             >
               <div className="min-w-0">
@@ -248,36 +247,34 @@ export function PublishedArtifactsManager(): JSX.Element {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {item.publishedStale && (
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
                     onClick={() => void beginPublish(item.kind, item)}
                     disabled={editor.busy}
-                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:opacity-50"
                     data-testid={`featured-update-${item.id}`}
                   >
                     Update
-                  </button>
+                  </Button>
                 )}
                 {item.kind === 'skills' && item.sharePath && (
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
+                    variant="ghost-destructive"
                     onClick={() => setPendingRevoke(item)}
                     disabled={editor.busy}
-                    className="rounded-md border px-3 py-1.5 text-sm font-medium fg-destructive transition-colors hover:bg-secondary disabled:opacity-50"
                     data-testid={`featured-revoke-${item.id}`}
                   >
                     Revoke link
-                  </button>
+                  </Button>
                 )}
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={() => void unpublish(item)}
                   disabled={editor.busy}
-                  className="rounded-md border px-3 py-1.5 text-sm font-medium fg-primary transition-colors hover:bg-secondary disabled:opacity-50"
                   data-testid={`featured-remove-${item.id}`}
                 >
                   Remove
-                </button>
+                </Button>
               </div>
             </li>
           ))}
@@ -448,7 +445,7 @@ function AddWorkDialog({
           ))}
         </div>
 
-        <div className="flex items-center gap-2 rounded-md border bg-card px-3 transition focus-within:border-line-accent/50 focus-within:ring-1 focus-within:ring-line-accent/30">
+        <div className="flex items-center gap-2 rounded-md border bg-card px-3 transition-colors focus-within:border-line-accent/50 focus-within:ring-1 focus-within:ring-line-accent/30">
           <Search
             size={15}
             className="shrink-0 fg-secondary"
@@ -501,15 +498,14 @@ function AddWorkDialog({
                         On profile
                       </span>
                     ) : (
-                      <button
-                        type="button"
+                      <Button
+                        size="compact"
                         onClick={() => onPick(kind, item)}
                         disabled={busy || atLimit}
-                        className="shrink-0 rounded-md border px-3 py-1.5 text-sm font-medium fg-primary transition-colors hover:bg-secondary disabled:opacity-50"
                         data-testid={`add-work-pick-${item.id}`}
                       >
                         Add
-                      </button>
+                      </Button>
                     )}
                   </li>
                 );

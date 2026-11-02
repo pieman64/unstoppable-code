@@ -67,11 +67,11 @@ describe('PipelineExecutionDetail watcher controls', () => {
     expect(retryIdx).toBeGreaterThan(watcherIdx);
     expect(rerunIdx).toBeGreaterThan(watcherIdx);
     expect(debugIdx).toBeGreaterThan(watcherIdx);
-    expect(actionBar).toContain('modalTitle="Pipeline watchers"');
+    expect(actionBar).toContain('modalTitle="Workflow watchers"');
     expect(actionBar).toContain(
-      'modalEmptyMessage="No active watchers for this pipeline."',
+      'modalEmptyMessage="No active watchers for this workflow."',
     );
-    expect(actionBar).toContain('ariaLabel="Manage pipeline watchers"');
+    expect(actionBar).toContain('ariaLabel="Manage workflow watchers"');
     expect(actionBar).toContain(
       'dataTestId={`pipeline-detail-watchers-${executionId}`}',
     );

@@ -245,19 +245,26 @@ export async function listAttachmentsForProject(
     return items;
   }
   if (isWorkEntryWorkspace(projectId)) {
-    const attachments = await listCoworkAttachments(projectId);
-    return attachments
-      .map(
-        (meta): WorkspaceAttachmentItem => ({
-          filename: meta.filename,
-          absolutePath: meta.absolutePath,
-          sizeBytes: meta.sizeBytes ?? 0,
-          createdAt: meta.createdAt,
-        }),
-      )
-      .sort((a, b): number => b.createdAt.localeCompare(a.createdAt));
+    return listWorkEntryAttachments(projectId);
   }
   return listAttachmentsInDir(
     resolveAgentAttachmentsDir(projectId, worktreeId),
   );
+}
+
+/** A Cowork or App Advisor workspace's shared attachments, newest first. */
+export async function listWorkEntryAttachments(
+  projectId: string,
+): Promise<WorkspaceAttachmentItem[]> {
+  const attachments = await listCoworkAttachments(projectId);
+  return attachments
+    .map(
+      (meta): WorkspaceAttachmentItem => ({
+        filename: meta.filename,
+        absolutePath: meta.absolutePath,
+        sizeBytes: meta.sizeBytes ?? 0,
+        createdAt: meta.createdAt,
+      }),
+    )
+    .sort((a, b): number => b.createdAt.localeCompare(a.createdAt));
 }

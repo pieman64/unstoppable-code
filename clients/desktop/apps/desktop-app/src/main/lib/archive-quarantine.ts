@@ -7,7 +7,8 @@ import { isErrnoException } from './type-guards';
 
 const execFileAsync = promisify(execFile);
 const ARCHIVE_MOVE_TIMEOUT_MS = 30_000;
-const WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS = [
+/** Also the discard's aside move of the same directories (CAN-5334). */
+export const WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS = [
   50, 100, 150, 200, 250, 500, 750, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
   1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
 ] as const;

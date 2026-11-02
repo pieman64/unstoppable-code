@@ -6,7 +6,10 @@ import {
   claudeProjectDirCandidates,
   findClaudeCodeSessionTranscriptInProjectsDir,
 } from '../integration/claude-terminal-session-service';
-import { resolveClaudeCodeSessionTranscriptPath } from '../lib/claude-project-paths';
+import {
+  findClaudeCodeSessionTranscriptCandidates,
+  resolveClaudeCodeSessionTranscriptPath,
+} from '../lib/claude-project-paths';
 
 // Claude Code ≥2.1.x names ~/.claude/projects/<dir> by slugging the REAL cwd
 // path with [^A-Za-z0-9-] → '-' (underscores become dashes). Older CLIs
@@ -153,5 +156,42 @@ describe('resolveClaudeCodeSessionTranscriptPath', () => {
     await expect(
       resolveClaudeCodeSessionTranscriptPath(sessionId, cwd),
     ).resolves.toBe(join(projectDir, `${sessionId}.jsonl`));
+  });
+});
+
+describe('findClaudeCodeSessionTranscriptCandidates', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = realpathSync(
+      await mkdtemp(join(tmpdir(), 'claude-candidates-test-')),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('returns all slug and scanned transcript paths, without duplicates', async () => {
+    const configDir = join(root, 'claude-home');
+    const projectsDir = join(configDir, 'projects');
+    const cwd = join(root, 'work_tree');
+    const sessionId = 'candidate-session';
+    const fileName = `${sessionId}.jsonl`;
+    await mkdir(cwd, { recursive: true });
+    const slugs = await claudeProjectDirCandidates(cwd);
+    const firstCandidate = join(projectsDir, slugs[0] ?? 'missing');
+    const otherCandidate = join(projectsDir, 'unrelated-project');
+    await mkdir(firstCandidate, { recursive: true });
+    await mkdir(otherCandidate, { recursive: true });
+    const expected = [
+      join(firstCandidate, fileName),
+      join(otherCandidate, fileName),
+    ];
+    await Promise.all(expected.map((filePath) => writeFile(filePath, '{}\n')));
+
+    await expect(
+      findClaudeCodeSessionTranscriptCandidates(sessionId, cwd, configDir),
+    ).resolves.toEqual({ paths: expected, scanExhausted: false });
   });
 });

@@ -15,6 +15,7 @@ import {
   SidebarSection,
 } from '@canopy/ui-app';
 import {
+  Dot,
   RailIconButton,
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
   SIDEBAR_ROW_GRID_CLASSNAME,
@@ -440,6 +441,7 @@ function SharedContainerInvitationDialogHost({
         useNavigationStore.getState().navigate('main');
         void acceptContainer({
           containerId,
+          containerType: entry.container.containerType,
           ...(entry.organizationId
             ? { organizationId: entry.organizationId }
             : {}),
@@ -528,8 +530,8 @@ function SharedContainerInvitationRow({
         className={`${SIDEBAR_ROW_LEADING_SLOT_CLASSNAME} self-start`}
         data-testid={`shared-container-invitation-${entry.container.id}-leading-slot`}
       >
-        <span
-          className="h-1.5 w-1.5 rounded-full bg-accent"
+        <Dot
+          tone="attention"
           data-testid={`shared-container-invitation-${entry.container.id}-pending`}
         />
       </span>

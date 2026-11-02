@@ -68,6 +68,7 @@ describe('CommandPalette availability', () => {
         newChatTabDefinition,
         {
           hasNormalSelectedWorktree: false,
+          hasCoworkSelectedWorkEntry: false,
           hasActiveChatTab: false,
         },
         ['new-chat-tab'],
@@ -82,6 +83,7 @@ describe('CommandPalette availability', () => {
         closeChatTabDefinition,
         {
           hasNormalSelectedWorktree: true,
+          hasCoworkSelectedWorkEntry: false,
           hasActiveChatTab: false,
         },
         ['close-chat-tab'],
@@ -92,6 +94,7 @@ describe('CommandPalette availability', () => {
         closeChatTabDefinition,
         {
           hasNormalSelectedWorktree: true,
+          hasCoworkSelectedWorkEntry: false,
           hasActiveChatTab: true,
         },
         ['close-chat-tab'],
@@ -113,7 +116,7 @@ describe('CommandPalette availability for a file tab', () => {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', fastMode: false, speed: 'standard' },
     fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',

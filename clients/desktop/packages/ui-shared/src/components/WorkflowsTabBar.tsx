@@ -126,7 +126,7 @@ export function WorkflowsTabBar({
             tabIndex={selected ? 0 : -1}
             onClick={(): void => onChange(tab, 'pointer')}
             onKeyDown={onKeyDown}
-            className={`canopy-tab-trigger focus-ring inline-flex items-center gap-1.5 px-3 py-2 text-s transition ${
+            className={`canopy-tab-trigger focus-ring inline-flex items-center gap-1.5 px-3 py-2 text-s transition-colors ${
               selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
             }`}
           >

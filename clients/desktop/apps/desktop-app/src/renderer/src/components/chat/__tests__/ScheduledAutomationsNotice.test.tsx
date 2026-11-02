@@ -4,6 +4,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
+  AutomationUpdateRequest,
   AutomationMutationResponse,
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
@@ -41,7 +42,7 @@ function cronActivity(
     nextRunAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     failureCount: 0,
     ...overrides,
-  } as ScheduledActivity;
+  };
 }
 
 function oneTimeActivity(id: string): ScheduledActivity {
@@ -60,7 +61,7 @@ describe('ScheduledAutomationsNotice', () => {
   let runNow: jest.Mock<Promise<AutomationMutationResponse>, [string]>;
   let updateActivity: jest.Mock<
     Promise<AutomationMutationResponse>,
-    [{ id: string; enabled?: boolean }]
+    [request: AutomationUpdateRequest]
   >;
   let openAutomationEdit: jest.Mock;
   let navigate: jest.Mock;
@@ -71,8 +72,13 @@ describe('ScheduledAutomationsNotice', () => {
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
-    runNow = jest.fn(() => Promise.resolve(OK));
-    updateActivity = jest.fn(() => Promise.resolve(OK));
+    runNow = jest.fn<Promise<AutomationMutationResponse>, [id: string]>(() =>
+      Promise.resolve(OK),
+    );
+    updateActivity = jest.fn<
+      Promise<AutomationMutationResponse>,
+      [request: AutomationUpdateRequest]
+    >(() => Promise.resolve(OK));
     openAutomationEdit = jest.fn();
     navigate = jest.fn();
     useAutomationsStore.setState({ runNow, updateActivity });
@@ -267,9 +273,10 @@ describe('ScheduledAutomationsNotice', () => {
       'Pause this automation?',
     );
 
-    const cancel = Array.from(
-      byTestId('scheduled-automation-pause-dialog').querySelectorAll('button'),
-    ).find((button) => button.textContent === 'Cancel');
+    // The shared confirmation's Cancel (its esc chip is part of its text).
+    const cancel = byTestId(
+      'scheduled-automation-pause-dialog',
+    ).querySelector<HTMLElement>('[data-testid="confirm-dialog-cancel"]');
     if (!cancel) throw new Error('Missing cancel');
     await click(cancel);
     expect(updateActivity).not.toHaveBeenCalled();

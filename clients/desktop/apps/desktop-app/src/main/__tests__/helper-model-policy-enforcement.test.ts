@@ -77,7 +77,8 @@ jest.mock('../observability', () => ({
   }),
 }));
 
-jest.mock('../ipc/settings', () => ({
+jest.mock('../lib/github-auth', () => ({
+  ...jest.requireActual<object>('../lib/github-auth'),
   checkGitHubCliStatus: jest.fn(() => Promise.resolve({ username: '' })),
 }));
 

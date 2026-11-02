@@ -21,15 +21,19 @@ import {
 import type { ProjectDiscoveryCaller } from '../project-discovery';
 import {
   getCallerOwner,
-  requireAuthorizedProject,
+  requireAuthorizedProjectIdentity,
 } from '../project-discovery/owner-policy';
 import {
-  resolveAuthorizedChat,
-  type ChatReadContext,
+  resolveAuthorizedWatcherChat,
+  type AuthorizedWatcherChatIdentity,
 } from '../project-discovery/chat-target';
-import { listDiscoverableTaskIds } from '../project-discovery/chats-list';
-import { readTaskRuntimeSnapshot } from '../project-discovery/runtime-state';
 import {
+  isDiscoverableWorkEntry,
+  isDiscoverableWorktree,
+  listDiscoverableTaskIds,
+} from '../project-discovery/chats-list';
+import {
+  readCommittedTaskSnapshot,
   readProjectEntries,
   readProjectWorktrees,
 } from '../project-discovery/sources';
@@ -38,7 +42,6 @@ import {
   isBotTaskEligible,
   readBotEntries,
   requireBotAccess,
-  resolveBotReadBinding,
 } from '../project-discovery/bots/target';
 
 /** Safe to project: never propagate target-derived errors from policy/storage. */
@@ -58,7 +61,7 @@ export type ChatWatcherAccessDecision =
       sourceOwner: ProjectOwnerContext | null;
       resourceIncarnation: string;
       /** Main-only, authorized scope for TranscriptReader's bound turn query. */
-      context?: ChatReadContext;
+      context?: AuthorizedWatcherChatIdentity;
     }
   | { allowed: false; reason: ChatWatcherAvailability };
 
@@ -157,7 +160,7 @@ type ResourceSnapshot = {
   target: ResolvedChatWatcherTarget;
   sourceOwner: ProjectOwnerContext | null;
   resourceIncarnation: string;
-  context?: ChatReadContext;
+  context?: AuthorizedWatcherChatIdentity;
 };
 
 /**
@@ -215,20 +218,25 @@ async function inspectResource(
         throw new ChatWatcherAccessError('runtime_unavailable');
       taskCreatedAt = entry.createdAt;
     }
-    let context: ChatReadContext | undefined;
+    let context: AuthorizedWatcherChatIdentity | undefined;
     if ('chatId' in address && address.taskId !== undefined) {
-      const resolved = await coherentRead(epoch, () =>
-        resolveBotReadBinding(
-          {
-            type: 'bots.get_last_agent_response',
-            botId: address.botId,
-            taskId: address.taskId,
-            chatId: address.chatId,
-          },
-          resourceCaller,
-        ),
+      const snapshot = await coherentRead(epoch, () =>
+        readCommittedTaskSnapshot(bot.projectId, address.taskId),
       );
-      context = resolved.context;
+      const tab = snapshot.tabsFile.tabs.find(
+        (candidate) =>
+          candidate.id === address.chatId && candidate.kind !== 'file',
+      );
+      if (!tab) throw new ChatWatcherAccessError('runtime_unavailable');
+      context = {
+        scope: {
+          workspaceId: bot.projectId,
+          worktreeId: address.taskId,
+          chatId: tab.id,
+        },
+        tab,
+        snapshot,
+      };
     }
     assertLiveScope(bot.projectId, address.taskId);
     return {
@@ -249,42 +257,49 @@ async function inspectResource(
     throw new ChatWatcherAccessError('migration_required');
   assertLiveScope(address.projectId, address.taskId);
   const project = await coherentRead(epoch, () =>
-    requireAuthorizedProject(address.projectId, resourceCaller),
+    requireAuthorizedProjectIdentity(address.projectId, resourceCaller),
   );
+  // Policy maps legacy aliases; explicit watcher targets must be canonical.
+  if (project.projectId !== address.projectId)
+    throw new ChatWatcherAccessError('runtime_unavailable');
   if (project.readiness !== 'ready' || project.synthetic)
     throw new ChatWatcherAccessError('runtime_unavailable');
   if (project.type !== target.projectType)
     throw new ChatWatcherAccessError('migration_required');
-  let taskCreatedAt: string | undefined;
+  let task: { id: string; createdAt?: string } | undefined;
   if (address.taskId !== undefined) {
-    const ids = await coherentRead(epoch, () =>
-      listDiscoverableTaskIds(address.projectId, project.type),
-    );
-    if (!ids.includes(address.taskId))
-      throw new ChatWatcherAccessError('runtime_unavailable');
-    const tasks =
+    task =
       project.type === 'cowork'
         ? (
             await coherentRead(epoch, () =>
               readProjectEntries(address.projectId),
             )
-          ).entries
-        : await coherentRead(epoch, () =>
-            readProjectWorktrees(address.projectId),
+          ).entries.find(
+            (candidate) =>
+              candidate.id === address.taskId &&
+              isDiscoverableWorkEntry(candidate),
+          )
+        : (
+            await coherentRead(epoch, () =>
+              readProjectWorktrees(address.projectId),
+            )
+          ).find(
+            (candidate) =>
+              candidate.id === address.taskId &&
+              isDiscoverableWorktree(candidate),
           );
-    const task = tasks.find((candidate) => candidate.id === address.taskId);
     if (!task) throw new ChatWatcherAccessError('runtime_unavailable');
-    taskCreatedAt = task.createdAt;
   }
-  let context: ChatReadContext | undefined;
-  if ('chatId' in address && address.taskId !== undefined) {
+  let context: AuthorizedWatcherChatIdentity | undefined;
+  const authorizedTask = task;
+  if ('chatId' in address && address.taskId !== undefined && authorizedTask) {
     const chatAddress = {
       projectId: address.projectId,
       taskId: address.taskId,
       chatId: address.chatId,
     };
     context = await coherentRead(epoch, () =>
-      resolveAuthorizedChat(chatAddress, resourceCaller),
+      resolveAuthorizedWatcherChat(chatAddress, project, authorizedTask),
     );
   }
   assertLiveScope(address.projectId, address.taskId);
@@ -298,7 +313,7 @@ async function inspectResource(
     binding: JSON.stringify([
       incarnation,
       address.taskId ?? null,
-      taskCreatedAt ?? null,
+      task?.createdAt ?? null,
       context?.tab.createdAt ?? null,
     ]),
     ...(context ? { context } : {}),
@@ -405,7 +420,7 @@ export async function resolveChatWatcherTarget(
     const entryTarget = entry.target;
     if ('projectId' in entryTarget) {
       const project = await coherentRead(epoch, () =>
-        requireAuthorizedProject(entryTarget.projectId, resourceCaller),
+        requireAuthorizedProjectIdentity(entryTarget.projectId, resourceCaller),
       );
       target = {
         kind: 'project',
@@ -437,7 +452,7 @@ export async function resolveLegacyChatWatcher(
   try {
     const epoch = await beginRead();
     const project = await coherentRead(epoch, () =>
-      requireAuthorizedProject(legacy.target.projectId, resourceCaller),
+      requireAuthorizedProjectIdentity(legacy.target.projectId, resourceCaller),
     );
     let address: ResolvedChatWatcherTarget & { kind: 'project' };
     if (legacy.trigger === 'standalone_chat_completion') {
@@ -450,7 +465,7 @@ export async function resolveLegacyChatWatcher(
       for (const taskId of tasks) {
         assertLiveScope(project.projectId, taskId);
         const snapshot = await coherentRead(epoch, () =>
-          readTaskRuntimeSnapshot(project.projectId, taskId),
+          readCommittedTaskSnapshot(project.projectId, taskId),
         );
         if (
           snapshot.tabsFile.tabs.some(

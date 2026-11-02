@@ -1,4 +1,4 @@
-import { ResourceContextUnavailableError } from '../lib/resource-context-error';
+import { isResourceContextRefusal } from '../lib/resource-context-error';
 import {
   IPC_CHANNELS,
   type DeepLinkResolveShareResponse,
@@ -135,8 +135,10 @@ async function getCuratedAutomationSnapshot(
  * Resolves a deep-linked public share to its pinned snapshot for the landing
  * modal (CAN-2361). The renderer holds the parsed deep-link payload, so this
  * re-validates the id shape, forwards the reviewed pipeline install pin, and
- * collapses failures to a typed result: `not-found` for unknown/revoked
- * shares (uniform 404 from the web), `client-upgrade-required` for a package
+ * collapses failures to a typed result: `not-found` for unavailable shares
+ * (including uniform 404 and policy denial), `sign-in-required` for missing or
+ * expired credentials, `not-a-member` for account access refusals (403),
+ * `client-upgrade-required` for a package
  * share this build cannot install (426), `share-changed` when the share was
  * republished after the recipient reviewed it (409
  * `pipeline_share_changed`), and `cloud-unreachable` for everything else.
@@ -239,12 +241,22 @@ export async function resolveShareSnapshot(
     }
     return { ok: true, snapshot };
   } catch (error) {
-    if (error instanceof ResourceContextUnavailableError)
+    // Lanes raise their policy denials as plain `<Noun> unavailable (…)`
+    // errors, which are unavailable shares like the typed denial.
+    if (isResourceContextRefusal(error))
       return { ok: false, reason: 'not-found' };
+    if (
+      error instanceof CanopyCloudClientError &&
+      error.code === 'missing-api-key'
+    )
+      return { ok: false, reason: 'sign-in-required' };
     if (
       error instanceof CanopyCloudClientError &&
       error.code === 'http-error'
     ) {
+      if (error.status === 401)
+        return { ok: false, reason: 'sign-in-required' };
+      if (error.status === 403) return { ok: false, reason: 'not-a-member' };
       if (error.status === 404) return { ok: false, reason: 'not-found' };
       // `426` is the web's package-capability gate. This build has no package
       // installer, so it is surfaced as an upgrade prompt and must never fall

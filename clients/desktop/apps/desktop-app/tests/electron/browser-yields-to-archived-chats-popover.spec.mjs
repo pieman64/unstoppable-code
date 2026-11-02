@@ -216,22 +216,13 @@ async function fixtureViewVisible(electronApp) {
   }, BROWSER_PAGE_TITLE);
 }
 
-// Both looks: the classic popover and the Labs Archived chats card, whose
-// shared menu surface sits in the same dropdown layer.
-for (const look of ['classic', 'card']) {
+// The standard Archived chats card sits in the dropdown layer.
+for (const look of ['card']) {
   test(`the native Browser view yields to the header Archived chats popover (${look})`, async () => {
     test.setTimeout(180_000);
     const fixture = await startLocalPage();
     const { electronApp, userDataDir, window } = await launchWithArchivedChat();
     try {
-      if (look === 'card') {
-        await window.evaluate(() =>
-          window.api.experiments.setChoice({
-            experimentId: 'archived-chats-card',
-            enabled: true,
-          }),
-        );
-      }
       const browserId = await addBrowserPanelUnderArchiveControl(window);
       const pane = window.getByTestId(`browser-pane-${browserId}`);
       const urlInput = pane.getByTestId('browser-url-input');

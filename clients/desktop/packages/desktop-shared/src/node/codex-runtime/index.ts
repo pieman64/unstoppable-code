@@ -1,5 +1,6 @@
 export * from './canonical-state';
 export * from './approval-thread-id';
+export * from './background-work-registry';
 export * from './capability-types';
 export * from './capability-store';
 export * from './capability-root';
@@ -15,6 +16,7 @@ export * from './mcp-runtime-dir';
 export * from './profile';
 export * from './runtime-service';
 export * from './rollout-seed';
+export * from './steer-refusal';
 export * from './structured-turn';
 export * from './thread-config';
 export * from './thread-handle';

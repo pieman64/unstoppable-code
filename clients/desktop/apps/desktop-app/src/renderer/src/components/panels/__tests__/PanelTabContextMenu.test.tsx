@@ -744,3 +744,141 @@ describe('PanelTabContextMenu split actions', () => {
     act(() => root.unmount());
   });
 });
+
+describe('PanelTabContextMenu file actions first (Work navigation)', () => {
+  function menuRows(): string[] {
+    const menu = document.body.querySelector(
+      '[data-testid="panel-tab-context-menu"]',
+    );
+    if (!menu) return [];
+    return Array.from(menu.children).map((row) =>
+      row.getAttribute('role') === 'separator'
+        ? '|'
+        : (row.getAttribute('data-testid') ?? '?').replace(
+            'panel-tab-context-',
+            '',
+          ),
+    );
+  }
+
+  function renderMenu(
+    layout: DefaultLayoutDescriptor,
+    target: { groupId: string; panelId: string },
+    {
+      fileActionsFirst,
+      reveal = true,
+    }: { fileActionsFirst?: boolean; reveal?: boolean },
+  ): { rows: string[]; root: Root; onOpen: jest.Mock } {
+    const key = nextKey();
+    store().initializeLayout(key, layout);
+    const onOpen = jest.fn();
+    const { root } = render(
+      <PanelTabContextMenu
+        layoutKey={key}
+        target={{ ...target, x: 10, y: 10 }}
+        onClose={jest.fn()}
+        {...(reveal ? { onOpenFileInFileManager: onOpen } : {})}
+        onCopyFilePath={jest.fn()}
+        onCopyRelativeFilePath={jest.fn()}
+        onNewWindow={jest.fn()}
+        onFullScreen={jest.fn()}
+        {...(fileActionsFirst === undefined ? {} : { fileActionsFirst })}
+      />,
+    );
+    return { rows: menuRows(), root, onOpen };
+  }
+
+  const FILE_TARGET = { groupId: 'group-file', panelId: 'panel-file' };
+  const CLOSE_ROWS = [
+    'close',
+    'close-others',
+    'close-right',
+    'close-left',
+    'close-all',
+  ];
+
+  beforeEach(() => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'darwin',
+    });
+  });
+
+  test('a file tab starts with reveal and omits split and copy relative path', () => {
+    const { rows, root, onOpen } = renderMenu(FILE_GROUP, FILE_TARGET, {
+      fileActionsFirst: true,
+    });
+    expect(rows).toEqual([
+      'open-in-file-manager',
+      'copy-path',
+      '|',
+      'pin',
+      '|',
+      'new-window',
+      'full-screen',
+      '|',
+      ...CLOSE_ROWS,
+    ]);
+    const reveal = getButton('panel-tab-context-open-in-file-manager');
+    expect(reveal.textContent).toBe('Open in Finder');
+    act(() => reveal.click());
+    expect(onOpen).toHaveBeenCalledWith('/repo/src/file.ts');
+    act(() => root.unmount());
+  });
+
+  test('the default ordering is unchanged', () => {
+    for (const fileActionsFirst of [undefined, false]) {
+      const { rows, root } = renderMenu(FILE_GROUP, FILE_TARGET, {
+        ...(fileActionsFirst === undefined ? {} : { fileActionsFirst }),
+      });
+      expect(rows).toEqual([
+        'pin',
+        '|',
+        'split-up',
+        'split-down',
+        'split-left',
+        'split-right',
+        '|',
+        'new-window',
+        'full-screen',
+        '|',
+        'copy-path',
+        'copy-relative-path',
+        'open-in-file-manager',
+        '|',
+        ...CLOSE_ROWS,
+      ]);
+      act(() => root.unmount());
+      document.body.replaceChildren();
+    }
+  });
+
+  test('a chat tab menu is the same in both presentations', () => {
+    const target = { groupId: 'group-a', panelId: 'panel-a' };
+    const work = renderMenu(TWO_GROUPS, target, { fileActionsFirst: true });
+    act(() => work.root.unmount());
+    document.body.replaceChildren();
+    const code = renderMenu(TWO_GROUPS, target, { fileActionsFirst: false });
+    expect(work.rows).toEqual(code.rows);
+    expect(work.rows).toContain('split-up');
+    act(() => code.root.unmount());
+  });
+
+  test('without reveal the menu starts with copy path and leaves no empty section', () => {
+    const { rows, root } = renderMenu(FILE_GROUP, FILE_TARGET, {
+      fileActionsFirst: true,
+      reveal: false,
+    });
+    expect(rows).toEqual([
+      'copy-path',
+      '|',
+      'pin',
+      '|',
+      'new-window',
+      'full-screen',
+      '|',
+      ...CLOSE_ROWS,
+    ]);
+    act(() => root.unmount());
+  });
+});

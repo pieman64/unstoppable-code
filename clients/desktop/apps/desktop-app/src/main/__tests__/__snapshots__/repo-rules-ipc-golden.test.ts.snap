@@ -1,0 +1,956 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`CAN-4905 repo-rules IPC golden applies a reviewed selection to the policy file only and composes the enabled rules 1`] = `
+{
+  "afterApply": {
+    "result": {
+      "disabledRuleIds": [
+        "__single_repo__:.cursor/rules/manual.mdc",
+      ],
+      "enabled": true,
+      "reviewedAt": "<time>",
+      "revision": 1,
+    },
+  },
+  "applied": {
+    "result": {
+      "disabledRuleIds": [
+        "__single_repo__:.cursor/rules/manual.mdc",
+      ],
+      "enabled": true,
+      "reviewedAt": "<time>",
+      "revision": 1,
+    },
+  },
+  "composed": "# Imported repository instructions
+
+These are live Cursor project rules imported with workspace consent. AGENTS.md and CLAUDE.md take precedence on conflicts. Provider safety and tool approval policy still apply. Indexed activation is advisory; @file references are preserved and may require an explicit read.
+
+## Repository "__single_repo__"
+
+Rule ".cursorrules": 
+Legacy root rule body.
+
+Rule ".cursor/rules/agent.mdc": Within "./", read ".cursor/rules/agent.mdc" when relevant to the task: "Use when writing release notes".
+
+Rule ".cursor/rules/always.mdc": 
+Always rule body.
+
+Rule ".cursor/rules/auto.mdc": Within "./", read ".cursor/rules/auto.mdc" before reading or editing files matching "src/**/*.ts". Preserve exclusions in this glob list.
+
+Rule ".cursor/rules/broken.mdc": Read ".cursor/rules/broken.mdc" only on an explicit user mention of this path.
+
+Rule ".cursor/rules/checkout.mdc": 
+Checkout-only body.
+",
+  "composedAfterDisable": "",
+  "disabledApply": {
+    "result": {
+      "disabledRuleIds": [
+        "__single_repo__:.cursor/rules/manual.mdc",
+      ],
+      "enabled": false,
+      "reviewedAt": "<time>",
+      "revision": 2,
+    },
+  },
+  "policy": {
+    "disabledRuleIds": [
+      "__single_repo__:.cursor/rules/manual.mdc",
+    ],
+    "enabled": false,
+    "lastScanAt": "<time>",
+    "nestedDirectories": {},
+    "reviewed": {
+      "__single_repo__:.cursor/rules/agent.mdc": {
+        "hash": "be38ee11a07ef28e72e2096138b4d9c74dad91a8dd645fa98ff59619bea58d59",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/always.mdc": {
+        "hash": "24cddb778adae60ff5cbedec4c9a8f4cdc6c6d8858957b367663b4c6f8215d8a",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/auto.mdc": {
+        "hash": "7defcc907fba3e199bf4714f42081b5ea6a468fdb68269c71b24714b512b721b",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/broken.mdc": {
+        "hash": "6d9aad0e3e41175c27fe7a0b337a632c1430998f69add88782673c1378287573",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/manual.mdc": {
+        "hash": "ff4b0cbf43551e7e3fa009a2282bd202f954d01e2dabacc9779eb68e3fc501f2",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursorrules": {
+        "hash": "452b636f4f952cb2f29aa49c0604443136c8c706f63a9989876c825746e8e5eb",
+        "reviewedAt": "<time>",
+      },
+    },
+    "reviewedAt": "<time>",
+    "revision": 2,
+    "version": 1,
+  },
+  "policyAfterDisable": {
+    "disabledRuleIds": [
+      "__single_repo__:.cursor/rules/manual.mdc",
+    ],
+    "enabled": false,
+    "lastScanAt": "<time>",
+    "nestedDirectories": {},
+    "reviewed": {
+      "__single_repo__:.cursor/rules/agent.mdc": {
+        "hash": "be38ee11a07ef28e72e2096138b4d9c74dad91a8dd645fa98ff59619bea58d59",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/always.mdc": {
+        "hash": "24cddb778adae60ff5cbedec4c9a8f4cdc6c6d8858957b367663b4c6f8215d8a",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/auto.mdc": {
+        "hash": "7defcc907fba3e199bf4714f42081b5ea6a468fdb68269c71b24714b512b721b",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/broken.mdc": {
+        "hash": "6d9aad0e3e41175c27fe7a0b337a632c1430998f69add88782673c1378287573",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursor/rules/manual.mdc": {
+        "hash": "ff4b0cbf43551e7e3fa009a2282bd202f954d01e2dabacc9779eb68e3fc501f2",
+        "reviewedAt": "<time>",
+      },
+      "__single_repo__:.cursorrules": {
+        "hash": "452b636f4f952cb2f29aa49c0604443136c8c706f63a9989876c825746e8e5eb",
+        "reviewedAt": "<time>",
+      },
+    },
+    "reviewedAt": "<time>",
+    "revision": 2,
+    "version": 1,
+  },
+  "replay": {
+    "error": {
+      "message": "This review is unavailable or expired. Scan again.",
+      "name": "Error",
+    },
+  },
+  "rescan": {
+    "result": {
+      "enabled": true,
+      "nestedDirectories": {},
+      "proposals": [
+        {
+          "bytes": 22,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "452b636f4f952cb2f29aa49c0604443136c8c706f63a9989876c825746e8e5eb",
+          "id": "__single_repo__:.cursorrules",
+          "kind": "legacy-cursorrules",
+          "path": ".cursorrules",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 68,
+          "description": "Use when writing release notes",
+          "flags": [],
+          "globs": [],
+          "hash": "be38ee11a07ef28e72e2096138b4d9c74dad91a8dd645fa98ff59619bea58d59",
+          "id": "__single_repo__:.cursor/rules/agent.mdc",
+          "kind": "agent-requested",
+          "path": ".cursor/rules/agent.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 43,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "24cddb778adae60ff5cbedec4c9a8f4cdc6c6d8858957b367663b4c6f8215d8a",
+          "id": "__single_repo__:.cursor/rules/always.mdc",
+          "kind": "always",
+          "path": ".cursor/rules/always.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 74,
+          "description": "TypeScript files",
+          "flags": [],
+          "globs": [
+            "src/**/*.ts",
+          ],
+          "hash": "7defcc907fba3e199bf4714f42081b5ea6a468fdb68269c71b24714b512b721b",
+          "id": "__single_repo__:.cursor/rules/auto.mdc",
+          "kind": "auto",
+          "path": ".cursor/rules/auto.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 36,
+          "description": "",
+          "flags": [
+            "malformed-frontmatter",
+          ],
+          "globs": [],
+          "hash": "6d9aad0e3e41175c27fe7a0b337a632c1430998f69add88782673c1378287573",
+          "id": "__single_repo__:.cursor/rules/broken.mdc",
+          "kind": "manual",
+          "path": ".cursor/rules/broken.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 17,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "ff4b0cbf43551e7e3fa009a2282bd202f954d01e2dabacc9779eb68e3fc501f2",
+          "id": "__single_repo__:.cursor/rules/manual.mdc",
+          "kind": "manual",
+          "path": ".cursor/rules/manual.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": false,
+        },
+      ],
+      "revision": 1,
+      "scanId": "<uuid>",
+      "skipped": [],
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden binds a review to the scanning session and workspace 1`] = `
+{
+  "otherWindow": {
+    "error": {
+      "message": "This review is unavailable or expired. Scan again.",
+      "name": "Error",
+    },
+  },
+  "otherWindowApply": {
+    "error": {
+      "message": "This review is unavailable or expired. Scan again.",
+      "name": "Error",
+    },
+  },
+  "otherWorkspace": {
+    "error": {
+      "message": "This review is unavailable or expired. Scan again.",
+      "name": "Error",
+    },
+  },
+  "sameSession": {
+    "result": {
+      "body": "Legacy root rule body.",
+    },
+  },
+  "unknownReview": {
+    "error": {
+      "message": "This review is unavailable or expired. Scan again.",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden pins every apply refusal message 1`] = `
+{
+  "afterRulesChanged": {
+    "result": {
+      "disabledRuleIds": [],
+      "enabled": false,
+      "reviewedAt": "<time>",
+      "revision": 1,
+    },
+  },
+  "duplicated": {
+    "error": {
+      "message": "Selections must belong to this review.",
+      "name": "Error",
+    },
+  },
+  "enableWithoutReview": {
+    "error": {
+      "message": "This review is unavailable or expired. Scan again.",
+      "name": "Error",
+    },
+  },
+  "foreign": {
+    "error": {
+      "message": "Selections must belong to this review.",
+      "name": "Error",
+    },
+  },
+  "freshApply": {
+    "result": {
+      "disabledRuleIds": [],
+      "enabled": false,
+      "reviewedAt": "<time>",
+      "revision": 1,
+    },
+  },
+  "missingSelections": {
+    "error": {
+      "message": "Selections must belong to this review.",
+      "name": "Error",
+    },
+  },
+  "policyChanged": {
+    "error": {
+      "message": "Workspace policy changed. Scan again.",
+      "name": "Error",
+    },
+  },
+  "rulesChanged": {
+    "error": {
+      "message": "Cursor rules changed since this review. Scan again.",
+      "name": "Error",
+    },
+  },
+  "withoutReview": {
+    "error": {
+      "message": "A review is required to change rule selections.",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden reads the missing policy as disabled without a session binding 1`] = `
+{
+  "first": {
+    "result": {
+      "diagnostic": "missing",
+      "disabledRuleIds": [],
+      "enabled": false,
+      "revision": 0,
+    },
+  },
+  "second": {
+    "result": {
+      "diagnostic": "missing",
+      "disabledRuleIds": [],
+      "enabled": false,
+      "revision": 0,
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden refuses a single-repository workspace without a repository 1`] = `
+{
+  "disable": {
+    "result": {
+      "disabledRuleIds": [],
+      "enabled": false,
+      "revision": 1,
+    },
+  },
+  "scan": {
+    "error": {
+      "message": "The repository is unavailable.",
+      "name": "Error",
+    },
+  },
+  "status": {
+    "result": {
+      "diagnostic": "missing",
+      "disabledRuleIds": [],
+      "enabled": false,
+      "revision": 0,
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden refuses an apply whose reviewed checkouts changed 1`] = `
+{
+  "changed": {
+    "error": {
+      "message": "The reviewed checkout changed. Scan again.",
+      "name": "Error",
+    },
+  },
+  "policy": "unreadable: ENOENT",
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden refuses unavailable workspaces and checkouts with the legacy messages 1`] = `
+{
+  "cowork": {
+    "error": {
+      "message": "Select a code workspace.",
+      "name": "Error",
+    },
+  },
+  "coworkStatus": {
+    "error": {
+      "message": "Select a code workspace.",
+      "name": "Error",
+    },
+  },
+  "otherWorkspaceWorktree": {
+    "error": {
+      "message": "Worktree not found.",
+      "name": "CanopyOperationError",
+    },
+  },
+  "overScanLimit": {
+    "error": {
+      "message": "This workspace exceeds the repository scan limit.",
+      "name": "Error",
+    },
+  },
+  "overScanLimitStatus": {
+    "result": {
+      "diagnostic": "missing",
+      "disabledRuleIds": [],
+      "enabled": false,
+      "revision": 0,
+    },
+  },
+  "unknownWorkspace": {
+    "error": {
+      "message": "Workspace not found.",
+      "name": "CanopyOperationError",
+    },
+  },
+  "unknownWorkspaceStatus": {
+    "error": {
+      "message": "Workspace not found.",
+      "name": "CanopyOperationError",
+    },
+  },
+  "unknownWorktree": {
+    "error": {
+      "message": "Worktree not found.",
+      "name": "CanopyOperationError",
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden rejects malformed requests before authorization 1`] = `
+{
+  "applyMissingEnabled": {
+    "error": {
+      "message": "[
+  {
+    "expected": "boolean",
+    "code": "invalid_type",
+    "path": [
+      "enabled"
+    ],
+    "message": "Invalid input: expected boolean, received undefined"
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+  "applyTooMany": {
+    "error": {
+      "message": "[
+  {
+    "origin": "array",
+    "code": "too_big",
+    "maximum": 200,
+    "inclusive": true,
+    "path": [
+      "disabledRuleIds"
+    ],
+    "message": "Too big: expected array to have <=200 items"
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+  "previewBadScan": {
+    "error": {
+      "message": "[
+  {
+    "origin": "string",
+    "code": "invalid_format",
+    "format": "uuid",
+    "pattern": "/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/",
+    "path": [
+      "scanId"
+    ],
+    "message": "Invalid UUID"
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+  "scanBadId": {
+    "error": {
+      "message": "[
+  {
+    "origin": "string",
+    "code": "invalid_format",
+    "format": "regex",
+    "pattern": "/^[a-z0-9][a-z0-9-]*$/",
+    "path": [
+      "workspaceId"
+    ],
+    "message": "Invalid string: must match pattern /^[a-z0-9][a-z0-9-]*$/"
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+  "scanMissing": {
+    "error": {
+      "message": "[
+  {
+    "expected": "object",
+    "code": "invalid_type",
+    "path": [],
+    "message": "Invalid input: expected object, received undefined"
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+  "scanRoot": {
+    "error": {
+      "message": "[
+  {
+    "code": "unrecognized_keys",
+    "keys": [
+      "root"
+    ],
+    "path": [],
+    "message": "Unrecognized key: \\"root\\""
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+  "statusExtra": {
+    "error": {
+      "message": "[
+  {
+    "code": "unrecognized_keys",
+    "keys": [
+      "worktreeId"
+    ],
+    "path": [],
+    "message": "Unrecognized key: \\"worktreeId\\""
+  }
+]",
+      "name": "ZodError",
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden reports unsaveable and oversized policy with the legacy messages 1`] = `
+{
+  "bigAfter": {
+    "revision": 3,
+  },
+  "bigApply": {
+    "error": {
+      "message": "Workspace rule policy is too large to save. Reduce the selection and scan again.",
+      "name": "Error",
+    },
+  },
+  "bigStatus": {
+    "revision": 3,
+  },
+  "lockedApply": {
+    "error": {
+      "message": "Unable to save workspace rule policy. Try again; this review remains available.",
+      "name": "Error",
+    },
+  },
+  "lockedDisable": {
+    "error": {
+      "message": "Unable to save workspace rule policy. Try again; this review remains available.",
+      "name": "Error",
+    },
+  },
+  "lockedRetry": {
+    "result": {
+      "body": "Member body.",
+    },
+  },
+  "lockedStatus": {
+    "result": {
+      "diagnostic": "unavailable",
+      "disabledRuleIds": [],
+      "enabled": false,
+      "revision": 0,
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden scans a selected checkout and a multi-repository workspace 1`] = `
+{
+  "multi": {
+    "result": {
+      "diagnostic": "missing",
+      "enabled": false,
+      "nestedDirectories": {},
+      "proposals": [
+        {
+          "bytes": 22,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "452b636f4f952cb2f29aa49c0604443136c8c706f63a9989876c825746e8e5eb",
+          "id": "__workspace_root__:.cursorrules",
+          "kind": "legacy-cursorrules",
+          "path": ".cursorrules",
+          "repoId": "__workspace_root__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 68,
+          "description": "Use when writing release notes",
+          "flags": [],
+          "globs": [],
+          "hash": "be38ee11a07ef28e72e2096138b4d9c74dad91a8dd645fa98ff59619bea58d59",
+          "id": "__workspace_root__:.cursor/rules/agent.mdc",
+          "kind": "agent-requested",
+          "path": ".cursor/rules/agent.mdc",
+          "repoId": "__workspace_root__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 43,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "24cddb778adae60ff5cbedec4c9a8f4cdc6c6d8858957b367663b4c6f8215d8a",
+          "id": "__workspace_root__:.cursor/rules/always.mdc",
+          "kind": "always",
+          "path": ".cursor/rules/always.mdc",
+          "repoId": "__workspace_root__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 74,
+          "description": "TypeScript files",
+          "flags": [],
+          "globs": [
+            "src/**/*.ts",
+          ],
+          "hash": "7defcc907fba3e199bf4714f42081b5ea6a468fdb68269c71b24714b512b721b",
+          "id": "__workspace_root__:.cursor/rules/auto.mdc",
+          "kind": "auto",
+          "path": ".cursor/rules/auto.mdc",
+          "repoId": "__workspace_root__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 36,
+          "description": "",
+          "flags": [
+            "malformed-frontmatter",
+          ],
+          "globs": [],
+          "hash": "6d9aad0e3e41175c27fe7a0b337a632c1430998f69add88782673c1378287573",
+          "id": "__workspace_root__:.cursor/rules/broken.mdc",
+          "kind": "manual",
+          "path": ".cursor/rules/broken.mdc",
+          "repoId": "__workspace_root__",
+          "scope": "",
+          "selected": false,
+        },
+        {
+          "bytes": 17,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "ff4b0cbf43551e7e3fa009a2282bd202f954d01e2dabacc9779eb68e3fc501f2",
+          "id": "__workspace_root__:.cursor/rules/manual.mdc",
+          "kind": "manual",
+          "path": ".cursor/rules/manual.mdc",
+          "repoId": "__workspace_root__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 38,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "8f31ece22bc3e0a90a66df0db4d5b36294409aca43ee14b6774db4c033d07d56",
+          "id": "member:.cursor/rules/member.mdc",
+          "kind": "always",
+          "path": ".cursor/rules/member.mdc",
+          "repoId": "member",
+          "scope": "",
+          "selected": true,
+        },
+      ],
+      "revision": 0,
+      "scanId": "<uuid>",
+      "skipped": [],
+    },
+  },
+  "worktree": {
+    "result": {
+      "diagnostic": "missing",
+      "enabled": false,
+      "nestedDirectories": {},
+      "proposals": [
+        {
+          "bytes": 22,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "452b636f4f952cb2f29aa49c0604443136c8c706f63a9989876c825746e8e5eb",
+          "id": "__single_repo__:.cursorrules",
+          "kind": "legacy-cursorrules",
+          "path": ".cursorrules",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 68,
+          "description": "Use when writing release notes",
+          "flags": [],
+          "globs": [],
+          "hash": "be38ee11a07ef28e72e2096138b4d9c74dad91a8dd645fa98ff59619bea58d59",
+          "id": "__single_repo__:.cursor/rules/agent.mdc",
+          "kind": "agent-requested",
+          "path": ".cursor/rules/agent.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 43,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "24cddb778adae60ff5cbedec4c9a8f4cdc6c6d8858957b367663b4c6f8215d8a",
+          "id": "__single_repo__:.cursor/rules/always.mdc",
+          "kind": "always",
+          "path": ".cursor/rules/always.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 74,
+          "description": "TypeScript files",
+          "flags": [],
+          "globs": [
+            "src/**/*.ts",
+          ],
+          "hash": "7defcc907fba3e199bf4714f42081b5ea6a468fdb68269c71b24714b512b721b",
+          "id": "__single_repo__:.cursor/rules/auto.mdc",
+          "kind": "auto",
+          "path": ".cursor/rules/auto.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 36,
+          "description": "",
+          "flags": [
+            "malformed-frontmatter",
+          ],
+          "globs": [],
+          "hash": "6d9aad0e3e41175c27fe7a0b337a632c1430998f69add88782673c1378287573",
+          "id": "__single_repo__:.cursor/rules/broken.mdc",
+          "kind": "manual",
+          "path": ".cursor/rules/broken.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": false,
+        },
+        {
+          "bytes": 45,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "fb1fcfe905b6852fbbbb37b5b4158c38f7eb4925f4f7f08be697d1211cc837f3",
+          "id": "__single_repo__:.cursor/rules/checkout.mdc",
+          "kind": "always",
+          "path": ".cursor/rules/checkout.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+        {
+          "bytes": 17,
+          "description": "",
+          "flags": [],
+          "globs": [],
+          "hash": "ff4b0cbf43551e7e3fa009a2282bd202f954d01e2dabacc9779eb68e3fc501f2",
+          "id": "__single_repo__:.cursor/rules/manual.mdc",
+          "kind": "manual",
+          "path": ".cursor/rules/manual.mdc",
+          "repoId": "__single_repo__",
+          "scope": "",
+          "selected": true,
+        },
+      ],
+      "revision": 0,
+      "scanId": "<uuid>",
+      "skipped": [],
+      "worktreeId": "feature-01",
+    },
+  },
+}
+`;
+
+exports[`CAN-4905 repo-rules IPC golden scans the source repository, previews from the review, and writes nothing 1`] = `
+{
+  "missingRule": {
+    "error": {
+      "message": "This rule is not in the review. Scan again.",
+      "name": "Error",
+    },
+  },
+  "previews": {
+    ".cursor/rules/agent.mdc": {
+      "result": {
+        "body": "Agent rule body.",
+      },
+    },
+    ".cursor/rules/always.mdc": {
+      "result": {
+        "body": "Always rule body.",
+      },
+    },
+    ".cursor/rules/auto.mdc": {
+      "result": {
+        "body": "Auto rule body.",
+      },
+    },
+    ".cursor/rules/broken.mdc": {
+      "result": {
+        "body": "---
+globs: [
+---
+Broken header body.",
+      },
+    },
+    ".cursor/rules/manual.mdc": {
+      "result": {
+        "body": "Manual rule body.",
+      },
+    },
+    ".cursorrules": {
+      "result": {
+        "body": "Legacy root rule body.",
+      },
+    },
+  },
+  "scan": {
+    "diagnostic": "missing",
+    "enabled": false,
+    "nestedDirectories": {},
+    "proposals": [
+      {
+        "bytes": 22,
+        "description": "",
+        "flags": [],
+        "globs": [],
+        "hash": "452b636f4f952cb2f29aa49c0604443136c8c706f63a9989876c825746e8e5eb",
+        "id": "__single_repo__:.cursorrules",
+        "kind": "legacy-cursorrules",
+        "path": ".cursorrules",
+        "repoId": "__single_repo__",
+        "scope": "",
+        "selected": true,
+      },
+      {
+        "bytes": 68,
+        "description": "Use when writing release notes",
+        "flags": [],
+        "globs": [],
+        "hash": "be38ee11a07ef28e72e2096138b4d9c74dad91a8dd645fa98ff59619bea58d59",
+        "id": "__single_repo__:.cursor/rules/agent.mdc",
+        "kind": "agent-requested",
+        "path": ".cursor/rules/agent.mdc",
+        "repoId": "__single_repo__",
+        "scope": "",
+        "selected": true,
+      },
+      {
+        "bytes": 43,
+        "description": "",
+        "flags": [],
+        "globs": [],
+        "hash": "24cddb778adae60ff5cbedec4c9a8f4cdc6c6d8858957b367663b4c6f8215d8a",
+        "id": "__single_repo__:.cursor/rules/always.mdc",
+        "kind": "always",
+        "path": ".cursor/rules/always.mdc",
+        "repoId": "__single_repo__",
+        "scope": "",
+        "selected": true,
+      },
+      {
+        "bytes": 74,
+        "description": "TypeScript files",
+        "flags": [],
+        "globs": [
+          "src/**/*.ts",
+        ],
+        "hash": "7defcc907fba3e199bf4714f42081b5ea6a468fdb68269c71b24714b512b721b",
+        "id": "__single_repo__:.cursor/rules/auto.mdc",
+        "kind": "auto",
+        "path": ".cursor/rules/auto.mdc",
+        "repoId": "__single_repo__",
+        "scope": "",
+        "selected": true,
+      },
+      {
+        "bytes": 36,
+        "description": "",
+        "flags": [
+          "malformed-frontmatter",
+        ],
+        "globs": [],
+        "hash": "6d9aad0e3e41175c27fe7a0b337a632c1430998f69add88782673c1378287573",
+        "id": "__single_repo__:.cursor/rules/broken.mdc",
+        "kind": "manual",
+        "path": ".cursor/rules/broken.mdc",
+        "repoId": "__single_repo__",
+        "scope": "",
+        "selected": false,
+      },
+      {
+        "bytes": 17,
+        "description": "",
+        "flags": [],
+        "globs": [],
+        "hash": "ff4b0cbf43551e7e3fa009a2282bd202f954d01e2dabacc9779eb68e3fc501f2",
+        "id": "__single_repo__:.cursor/rules/manual.mdc",
+        "kind": "manual",
+        "path": ".cursor/rules/manual.mdc",
+        "repoId": "__single_repo__",
+        "scope": "",
+        "selected": true,
+      },
+    ],
+    "revision": 0,
+    "scanId": "<uuid>",
+    "skipped": [],
+  },
+}
+`;

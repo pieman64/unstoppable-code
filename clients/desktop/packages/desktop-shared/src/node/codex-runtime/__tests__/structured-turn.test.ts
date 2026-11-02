@@ -11,6 +11,8 @@ describe('proposedPlanText', () => {
         text: '<proposed_plan>Tagged fallback</proposed_plan>',
         phase: null,
         memoryCitation: null,
+        delivery: null,
+        questions: null,
       },
       { type: 'plan', id: 'plan-2', text: 'Final native plan' },
     ];

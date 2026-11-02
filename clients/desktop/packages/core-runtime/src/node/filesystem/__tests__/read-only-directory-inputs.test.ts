@@ -20,6 +20,7 @@ import {
   type DirectoryReadPreferenceSource,
   type FileIndexingMatchPolicy,
   type GitIgnoreCheckRequest,
+  type GitIgnoredListingRequest,
   type GitIgnoreHostFailureCode,
   type GitIgnoreHostPort,
 } from '../../index';
@@ -90,13 +91,24 @@ function memoryPreferences(files: Map<string, string>): {
 function fakeGit(
   behavior: (request: GitIgnoreCheckRequest) => Promise<Set<string>> = () =>
     Promise.resolve(new Set()),
-): GitIgnoreHostPort & { requests: GitIgnoreCheckRequest[] } {
+  listing: (request: GitIgnoredListingRequest) => Promise<string[]> = () =>
+    Promise.resolve([]),
+): GitIgnoreHostPort & {
+  requests: GitIgnoreCheckRequest[];
+  listings: GitIgnoredListingRequest[];
+} {
   const requests: GitIgnoreCheckRequest[] = [];
+  const listings: GitIgnoredListingRequest[] = [];
   return {
     requests,
+    listings,
     checkIgnoredPaths: (request): Promise<Set<string>> => {
       requests.push(request);
       return behavior(request);
+    },
+    listIgnoredPathEntries: (request): Promise<string[]> => {
+      listings.push(request);
+      return listing(request);
     },
   };
 }
@@ -1056,7 +1068,82 @@ it('imports no host, platform, writer or desktop module', async () => {
     './directory-reader',
     './directory-read-preferences',
     './file-indexing',
+    // Type-only: the search engine's input shape (CAN-5037).
+    './file-search',
   ]);
   expect(source.match(/^\s*import\b/gm)).toHaveLength(specifiers.length);
   expect(source).not.toMatch(/\b(?:require|import)\s*\(|process\.platform/);
+});
+
+describe('createReadOnlyDirectoryInputs search options', () => {
+  it('builds the mentions and explorer matchers from one preference read', async () => {
+    const files = new Map([[PRIMARY, envelope(RULES)]]);
+    const preferences = memoryPreferences(files);
+    const inputs = createReadOnlyDirectoryInputs({
+      preferences: preferences.source,
+      matchPolicy: POLICY,
+      git: fakeGit(),
+    });
+    const mentions = await inputs.searchOptions(signal(), 'mentions');
+    expect(preferences.reads).toEqual([PRIMARY]);
+    expect(mentions.policy).toBe(POLICY);
+    expect(mentions.matcher.isIndexExcluded('dist/a', 'file')).toBe(true);
+    // RULES disables the node_modules built-in for mentions.
+    expect(mentions.matcher.isIndexExcluded('node_modules/a', 'file')).toBe(
+      false,
+    );
+    expect(mentions.matcher.isTraversalDeferred).toBeUndefined();
+    const explorer = await inputs.searchOptions(signal(), 'file-explorer');
+    expect(explorer.matcher.isIndexExcluded('dist/a', 'file')).toBe(false);
+    expect(explorer.matcher.isIndexExcluded('.git/config', 'file')).toBe(true);
+    expect(explorer.matcher.isTraversalDeferred?.('node_modules')).toBe(true);
+    expect('readBoundary' in explorer).toBe(false);
+  });
+
+  it('lists ignored paths with the snapshot Git path, then a fresh read', async () => {
+    const files = new Map([[PRIMARY, envelope(RULES)]]);
+    const preferences = memoryPreferences(files);
+    const seen: string[] = [];
+    const git = fakeGit(undefined, async (request) => {
+      seen.push(await request.readSavedExecutablePath(request.signal));
+      return ['dist/', 'debug.log'];
+    });
+    const { listIgnoredPathEntries } = await createReadOnlyDirectoryInputs({
+      preferences: preferences.source,
+      matchPolicy: POLICY,
+      git,
+    }).searchOptions(signal(), 'mentions');
+    if (!listIgnoredPathEntries) throw new Error('Expected a listing.');
+    await expect(listIgnoredPathEntries('/repo')).resolves.toEqual([
+      'dist/',
+      'debug.log',
+    ]);
+    files.set(PRIMARY, envelope(ALTERNATE));
+    await listIgnoredPathEntries('/repo');
+    expect(seen).toEqual([
+      RULES.gitExecutablePath,
+      ALTERNATE.gitExecutablePath,
+    ]);
+    expect(git.listings.map(({ root }) => root)).toEqual(['/repo', '/repo']);
+    expect(git.requests).toEqual([]);
+  });
+
+  it('reports the request abort instead of a racing listing failure', async () => {
+    const controller = new AbortController();
+    const reason = new Error('request aborted');
+    const git = fakeGit(undefined, () => {
+      controller.abort(reason);
+      return Promise.reject(new GitIgnoreHostError('timeout'));
+    });
+    const { listIgnoredPathEntries } = await createReadOnlyDirectoryInputs({
+      preferences: memoryPreferences(new Map()).source,
+      matchPolicy: POLICY,
+      git,
+    }).searchOptions(controller.signal, 'mentions');
+    if (!listIgnoredPathEntries) throw new Error('Expected a listing.');
+    await expect(listIgnoredPathEntries('/repo')).rejects.toBe(reason);
+    // An aborted request never reaches the host again.
+    await expect(listIgnoredPathEntries('/repo')).rejects.toBe(reason);
+    expect(git.listings).toHaveLength(1);
+  });
 });

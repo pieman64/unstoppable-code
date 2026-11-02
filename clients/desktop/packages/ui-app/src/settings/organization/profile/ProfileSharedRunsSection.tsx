@@ -5,6 +5,7 @@ import { SettingsLink, useSettingsPrivacy } from '../../host';
 import { joinClassNames } from '../join-class-names';
 import { Bot } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   LoadingSpinner,
@@ -115,12 +116,11 @@ export function ProfileSharedRunsSection({
 
       {hasMore && (
         <div className="flex justify-center py-2">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={() => void loadMore()}
             disabled={loadingMore}
             data-testid="profile-sessions-load-more"
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loadingMore ? (
               <>
@@ -130,7 +130,7 @@ export function ProfileSharedRunsSection({
             ) : (
               'Load more'
             )}
-          </button>
+          </Button>
         </div>
       )}
     </div>

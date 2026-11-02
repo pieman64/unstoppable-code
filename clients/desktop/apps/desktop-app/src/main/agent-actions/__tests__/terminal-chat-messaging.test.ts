@@ -1,3 +1,4 @@
+import { createDesktopTranscriptReadPort } from '../desktop-transcript-read-port';
 const mockQuery = jest.fn<Promise<unknown>, [string, unknown, unknown]>();
 const mockInstruction = jest.fn<Promise<unknown>, [string, unknown, unknown]>();
 
@@ -161,6 +162,7 @@ function harness(): {
   const surface = createDesktopAgentActionSurface(runtime, {
     ports: {
       environment,
+      transcriptRead: createDesktopTranscriptReadPort(),
       limits: { ...limits, reserve },
       chatWatchers,
       split,
@@ -211,14 +213,20 @@ beforeEach(() => {
     }
     return Promise.reject(new Error(`Unexpected query ${name}`));
   });
-  mockInstruction.mockImplementation(
-    (_name: string, params: { commandId: string }) =>
-      Promise.resolve({
-        commandId: params.commandId,
-        revision: 2,
-        outcome: 'applied',
-      }),
-  );
+  mockInstruction.mockImplementation((_name: string, params: unknown) => {
+    if (
+      !params ||
+      typeof params !== 'object' ||
+      !('commandId' in params) ||
+      typeof params.commandId !== 'string'
+    )
+      throw new Error('Expected commandId');
+    return Promise.resolve({
+      commandId: params.commandId,
+      revision: 2,
+      outcome: 'applied',
+    });
+  });
 });
 
 beforeAll(async () => {

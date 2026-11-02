@@ -265,7 +265,9 @@ describe('chat archives storage', () => {
     delete stale.tab.providerType;
     stale.tab.model = 'gpt-6-sol';
 
-    expect(toArchivedChatSummary(stale)).not.toHaveProperty('providerType');
+    expect(
+      toArchivedChatSummary(stale, Date.parse('2026-06-11')),
+    ).not.toHaveProperty('providerType');
   });
 
   it('treats recent message activity as restorable even for old chats', () => {

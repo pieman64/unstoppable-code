@@ -57,11 +57,16 @@ import {
 } from '../lib/org-cowork-binding-deps';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
+import * as sidebarItems from '../lib/sidebar-items';
+import * as coworkMigrationMap from '../lib/cowork-migration-map';
+import * as scriptResolver from '../lib/script-resolver';
+import * as hookResolver from '../lib/hook-resolver';
 import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
 import {
   getCallerOwner,
   listAuthorizedProjects,
   requireAuthorizedProject,
+  requireAuthorizedProjectIdentity,
 } from '../project-discovery/owner-policy';
 import { dispatchProjectDiscoveryAction } from '../project-discovery/index';
 import {
@@ -190,26 +195,42 @@ function organizationFixture(): OrganizationFixture {
   });
   const snapshotRead = jest.spyOn(runtime, 'queryChatStateForLegacyIpc');
   snapshotRead.mockImplementation(({ scope }) =>
-    Promise.resolve({
-      canonicalResult: null,
-      legacyResult: {
-        projectId: scope.workspaceId,
-        worktreeId: scope.worktreeId,
-        schemaVersion: 1,
-        revision: 1,
-        tabsFile: {
-          version: 1,
-          tabs: [
-            { id: 'chat-a', title: 'A', createdAt: '2026-10-01', messages: [] },
-            { id: 'chat-b', title: 'B', createdAt: '2026-10-01', messages: [] },
-          ],
-          activeTabId: 'chat-a',
+    Promise.resolve(
+      // This fixture intentionally models the compatibility path before a
+      // canonical chat snapshot is available.
+      {
+        canonicalResult: null,
+        legacyResult: {
+          projectId: scope.workspaceId,
+          worktreeId: scope.worktreeId,
+          schemaVersion: 1,
+          revision: 1,
+          tabsFile: {
+            version: 1,
+            tabs: [
+              {
+                id: 'chat-a',
+                title: 'A',
+                createdAt: '2026-10-01',
+                messages: [],
+              },
+              {
+                id: 'chat-b',
+                title: 'B',
+                createdAt: '2026-10-01',
+                messages: [],
+              },
+            ],
+            activeTabId: 'chat-a',
+          },
+          archives: [],
+          runtimeByChatId: {},
+          queue: [],
         },
-        archives: [],
-        runtimeByChatId: {},
-        queue: [],
-      },
-    }),
+      } as unknown as Awaited<
+        ReturnType<typeof runtime.queryChatStateForLegacyIpc>
+      >,
+    ),
   );
   let organizations = [{ id: ORGANIZATION_ID }];
   let epoch = 1;
@@ -350,6 +371,287 @@ function candidate(
 }
 
 describe('project discovery organization Chats readiness', () => {
+  test.each([18, 180])(
+    'authorizes one mapped target among %s projects without sidebar projection',
+    async (count) => {
+      jest
+        .spyOn(coworkMigrationMap, 'resolveCoworkWorkspaceId')
+        .mockImplementation((id) =>
+          id === 'legacy-project-a' ? 'project-a' : id,
+        );
+      const readIndex = jest.fn().mockResolvedValue({
+        authority: 'ok',
+        entries: Array.from({ length: count }, (_, order) => ({
+          id: order === 0 ? 'project-a' : `unrelated-${order}`,
+          name: `Project ${order}`,
+          type: 'cowork',
+          color: 'blue',
+          collapsed: false,
+          order,
+        })),
+      });
+      jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+        read: readIndex,
+        update: jest.fn(),
+      });
+      const readSidebar = jest
+        .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceListForLegacyIpc')
+        .mockRejectedValue(new Error('full inventory was read'));
+      const hydrateSidebar = jest
+        .spyOn(sidebarItems, 'readAllSidebarItemsSnapshot')
+        .mockRejectedValue(new Error('sidebar was hydrated'));
+      const scripts = jest
+        .spyOn(scriptResolver, 'resolveProjectScripts')
+        .mockRejectedValue(new Error('unrelated scripts were resolved'));
+      const hooks = jest
+        .spyOn(hookResolver, 'resolveProjectHooks')
+        .mockRejectedValue(new Error('unrelated hooks were resolved'));
+      const readConfig = jest
+        .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceGetForLegacyIpc')
+        .mockResolvedValue({
+          canonicalResult: null,
+          legacyResult: {
+            version: 1,
+            type: 'cowork',
+            repos: [],
+          },
+          legacyAuthority: { authority: 'ok' },
+        });
+      jest
+        .spyOn(readinessModule, 'getOrganizationMemberships')
+        .mockResolvedValue([]);
+      jest.mocked(resolveProjectSavedOwner).mockResolvedValue({
+        kind: 'personal',
+      });
+      jest.mocked(decideSameOwnerAccess).mockResolvedValue({
+        kind: 'allowed',
+      });
+
+      await expect(
+        requireAuthorizedProjectIdentity('legacy-project-a', {
+          kind: 'app_advisor',
+          chatId: 'advisor-chat',
+        }),
+      ).resolves.toMatchObject({
+        projectId: 'project-a',
+        type: 'cowork',
+        owner: { kind: 'personal' },
+        readiness: 'ready',
+        synthetic: false,
+      });
+      expect(readIndex).toHaveBeenCalledTimes(1);
+      expect(readConfig).toHaveBeenCalledTimes(1);
+      expect(readConfig).toHaveBeenCalledWith(
+        { workspaceId: 'project-a' },
+        expect.anything(),
+      );
+      expect(readSidebar).not.toHaveBeenCalled();
+      expect(hydrateSidebar).not.toHaveBeenCalled();
+      expect(scripts).not.toHaveBeenCalled();
+      expect(hooks).not.toHaveBeenCalled();
+    },
+  );
+
+  test('targeted identity matches the full project identity for a coherent target', async () => {
+    const item = coworkItem('project-a');
+    jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+      read: jest.fn().mockResolvedValue({
+        authority: 'ok',
+        entries: [{ ...item }],
+      }),
+      update: jest.fn(),
+    });
+    const runtime = getActiveDesktopRuntime();
+    jest.spyOn(runtime, 'queryWorkspaceListForLegacyIpc').mockResolvedValue({
+      canonicalResult: null,
+      legacyResult: { version: 1, items: [item] },
+      legacyAuthority: { authority: 'ok' },
+    });
+    jest.spyOn(runtime, 'queryWorkspaceGetForLegacyIpc').mockResolvedValue({
+      canonicalResult: null,
+      legacyResult: {
+        version: 1,
+        type: 'cowork',
+        repos: [],
+      },
+      legacyAuthority: { authority: 'ok' },
+    });
+    jest
+      .spyOn(readinessModule, 'getOrganizationMemberships')
+      .mockResolvedValue([]);
+    jest.mocked(resolveProjectSavedOwner).mockResolvedValue({
+      kind: 'personal',
+    });
+    jest.mocked(decideSameOwnerAccess).mockResolvedValue({ kind: 'allowed' });
+    const caller = { kind: 'app_advisor', chatId: 'advisor-chat' } as const;
+
+    const full = await requireAuthorizedProject(item.id, caller);
+    const identity = await requireAuthorizedProjectIdentity(item.id, caller);
+    expect(identity).toEqual({
+      projectId: full.projectId,
+      type: full.type,
+      owner: full.owner,
+      incarnation: full.incarnation,
+      readiness: full.readiness,
+      synthetic: full.synthetic,
+      inventoryAuthority: full.inventoryAuthority,
+    });
+  });
+
+  test.each([
+    ['partial', 'execution_failed'],
+    ['unreadable', 'execution_failed'],
+    ['absent', 'not_found'],
+    ['ok', 'not_found'],
+  ] as const)(
+    'targeted identity refuses %s index without target as %s',
+    async (authority, code) => {
+      jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+        read: jest.fn().mockResolvedValue({
+          authority,
+          entries:
+            authority === 'ok'
+              ? []
+              : [
+                  {
+                    id: 'project-a',
+                    name: 'Project',
+                    type: 'cowork',
+                    color: 'blue',
+                    collapsed: false,
+                    order: 0,
+                  },
+                ],
+        }),
+        update: jest.fn(),
+      });
+      const readConfig = jest.spyOn(
+        getActiveDesktopRuntime(),
+        'queryWorkspaceGetForLegacyIpc',
+      );
+      await expect(
+        requireAuthorizedProjectIdentity('project-a', {
+          kind: 'app_advisor',
+          chatId: 'advisor-chat',
+        }),
+      ).rejects.toMatchObject({ code });
+      expect(readConfig).not.toHaveBeenCalled();
+    },
+  );
+
+  test('targeted identity refuses a malformed target owner', async () => {
+    jest
+      .spyOn(readinessModule, 'getOrganizationMemberships')
+      .mockResolvedValue([]);
+    jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+      read: jest.fn().mockResolvedValue({
+        authority: 'ok',
+        entries: [
+          {
+            id: 'project-a',
+            name: 'Project',
+            type: 'cowork',
+            color: 'blue',
+            collapsed: false,
+            order: 0,
+          },
+        ],
+      }),
+      update: jest.fn(),
+    });
+    jest
+      .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceGetForLegacyIpc')
+      .mockResolvedValue({
+        canonicalResult: null,
+        legacyResult: { version: 1, type: 'cowork', repos: [] },
+        legacyAuthority: { authority: 'ok', ownerMalformed: true },
+      });
+    jest.mocked(resolveProjectSavedOwner).mockResolvedValue({
+      kind: 'personal',
+    });
+    await expect(
+      requireAuthorizedProjectIdentity('project-a', {
+        kind: 'app_advisor',
+        chatId: 'advisor-chat',
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  test('targeted identity keeps the sidebar exclusion for invalid single-repo roots', async () => {
+    jest
+      .spyOn(readinessModule, 'getOrganizationMemberships')
+      .mockResolvedValue([]);
+    jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+      read: jest.fn().mockResolvedValue({
+        authority: 'ok',
+        entries: [
+          {
+            id: 'project-a',
+            name: 'Project',
+            type: 'single-repo',
+            color: 'blue',
+            collapsed: false,
+            order: 0,
+          },
+        ],
+      }),
+      update: jest.fn(),
+    });
+    jest
+      .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceGetForLegacyIpc')
+      .mockResolvedValue({
+        canonicalResult: null,
+        legacyResult: {
+          version: 1,
+          type: 'single-repo',
+          repoPath: 'relative/path',
+          repos: [],
+        },
+        legacyAuthority: { authority: 'ok' },
+      });
+    jest.mocked(resolveProjectSavedOwner).mockResolvedValue({
+      kind: 'personal',
+    });
+    jest.mocked(decideSameOwnerAccess).mockResolvedValue({
+      kind: 'allowed',
+    });
+    await expect(
+      requireAuthorizedProjectIdentity('project-a', {
+        kind: 'app_advisor',
+        chatId: 'advisor-chat',
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  test('targeted organization readiness keeps the existing eligibility gate', async () => {
+    const fixture = organizationFixture();
+    jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+      read: jest.fn().mockResolvedValue({
+        authority: 'ok',
+        entries: [
+          {
+            id: fixture.cowork.id,
+            name: fixture.cowork.name,
+            type: 'cowork',
+            color: 'blue',
+            collapsed: false,
+            order: 0,
+          },
+        ],
+      }),
+      update: jest.fn(),
+    });
+    jest.mocked(isOrgCoworkOperationEligible).mockResolvedValue(false);
+    await expect(
+      requireAuthorizedProjectIdentity(fixture.cowork.id, {
+        kind: 'app_advisor',
+        chatId: 'advisor-chat',
+      }),
+    ).resolves.toMatchObject({
+      owner: { kind: 'organization', organizationId: ORGANIZATION_ID },
+      readiness: 'unavailable',
+    });
+  });
   test.each([true, false])(
     'non-default organization project eligibility is type-specific (Cowork eligible: %s)',
     async (coworkEligible) => {
@@ -818,6 +1120,19 @@ describe('project discovery organization Chats readiness', () => {
     expect(decide).not.toHaveBeenCalled();
   });
 
+  test("a pipeline caller's owner is the run's recorded owner, never a saved owner", async () => {
+    const resolveOwner = jest.mocked(resolveProjectSavedOwner);
+    const owner = {
+      kind: 'organization',
+      organizationId: ORGANIZATION_ID,
+    } as const;
+
+    await expect(getCallerOwner({ kind: 'pipeline', owner })).resolves.toEqual(
+      owner,
+    );
+    expect(resolveOwner).not.toHaveBeenCalled();
+  });
+
   test('caller owner comes from saved owner even when selected context would be another owner', async () => {
     const resolveOwner = jest.mocked(resolveProjectSavedOwner);
     resolveOwner.mockResolvedValue({
@@ -874,6 +1189,57 @@ describe('project discovery organization Chats readiness', () => {
     expect(projects.map((project) => project.projectId)).toEqual([
       DEFAULT_COWORK_WORKSPACE_ID,
     ]);
+  });
+
+  test('skips an unjoined organization Chats row before reading its saved owner', async () => {
+    const orgChatsId = orgDefaultCoworkWorkspaceId(ORGANIZATION_ID);
+    jest
+      .spyOn(readinessModule, 'getOrganizationMemberships')
+      .mockResolvedValue([]);
+    jest
+      .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceListForLegacyIpc')
+      .mockResolvedValue({
+        canonicalResult: null,
+        legacyResult: { version: 1, items: [coworkItem(orgChatsId)] },
+        legacyAuthority: { authority: 'ok' },
+      });
+    const resolveOwner = jest.mocked(resolveProjectSavedOwner);
+    resolveOwner.mockRejectedValue(new Error('Unjoined owner lookup'));
+
+    const projects = await listAuthorizedProjects({
+      kind: 'app_advisor',
+      chatId: 'advisor-chat',
+    });
+    expect(projects.map((project) => project.projectId)).toEqual([
+      DEFAULT_COWORK_WORKSPACE_ID,
+    ]);
+    expect(resolveOwner).not.toHaveBeenCalled();
+  });
+
+  test('does not admit a saved organization owner with noncanonical whitespace', async () => {
+    jest
+      .spyOn(readinessModule, 'getOrganizationMemberships')
+      .mockResolvedValue([{ id: ORGANIZATION_ID }]);
+    jest
+      .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceListForLegacyIpc')
+      .mockResolvedValue({
+        canonicalResult: null,
+        legacyResult: { version: 1, items: [coworkItem('project-a')] },
+        legacyAuthority: { authority: 'ok' },
+      });
+    jest.mocked(resolveProjectSavedOwner).mockResolvedValue({
+      kind: 'organization',
+      organizationId: ` ${ORGANIZATION_ID} `,
+    });
+    jest.mocked(decideSameOwnerAccess).mockResolvedValue({ kind: 'allowed' });
+
+    const projects = await listAuthorizedProjects({
+      kind: 'app_advisor',
+      chatId: 'advisor-chat',
+    });
+    expect(projects.some((project) => project.projectId === 'project-a')).toBe(
+      false,
+    );
   });
 
   test('a target whose saved owner becomes unknown is hidden like a nonexistent target', async () => {

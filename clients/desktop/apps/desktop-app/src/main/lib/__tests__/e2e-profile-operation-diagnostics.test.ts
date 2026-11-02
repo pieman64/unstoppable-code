@@ -447,6 +447,7 @@ test('native identity snapshot retains duplicate URL matches and exact cached ow
       width: 30,
       height: 40,
     }),
+    children: [],
   });
   const first = view(10, true),
     exact = view(11, false);
@@ -559,6 +560,7 @@ test('native snapshots bound exact-scope sessions and children and explicitly re
       width: 1,
       height: 1,
     }),
+    children: [],
   };
   const win = {
     id: 1,

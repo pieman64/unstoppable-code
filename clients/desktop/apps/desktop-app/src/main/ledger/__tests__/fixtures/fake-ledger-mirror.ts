@@ -49,7 +49,7 @@ export type FakeMirrorCall =
   | {
       readonly kind: 'register';
       readonly ledgerId: string;
-      readonly audience: 'private' | 'organization';
+      readonly audience: LedgerScopeAudience['kind'];
     }
   | {
       readonly kind: 'push';
@@ -68,6 +68,11 @@ export class FakeLedgerMirror implements LedgerMirrorClient {
   prohibited = false;
   /** Projects that cannot share a scope with an organization. */
   readonly forbiddenProjects = new Set<string>();
+  /**
+   * The mirror holds no global (workflow) scopes, as one that predates them
+   * or rolled back: it refuses every version-2 request as malformed.
+   */
+  refusesGlobalScopes = false;
   /** The time leases are stamped with. */
   now: () => number = Date.now;
   private readonly registerFailures: LedgerSyncFailure[] = [];
@@ -154,9 +159,10 @@ export class FakeLedgerMirror implements LedgerMirrorClient {
     request: LedgerScopeRegisterRequest,
     existing: FakeMirrorScope | undefined,
   ): LedgerSyncFailure | null {
+    const { audience } = request;
     const forbidden =
-      request.audience.kind === 'organization' &&
-      this.forbiddenProjects.has(request.audience.trackedWorkspaceId);
+      audience.kind === 'organization' &&
+      this.forbiddenProjects.has(audience.trackedWorkspaceId);
     if (!this.prohibited && !forbidden) return null;
     // A refused audience is dropped, as the mirror drops it.
     if (existing !== undefined) existing.audience = { kind: 'private' };
@@ -166,14 +172,25 @@ export class FakeLedgerMirror implements LedgerMirrorClient {
   private audienceFor(
     request: LedgerScopeRegisterRequest,
   ): LedgerScopeAudience {
-    return request.audience.kind === 'private'
-      ? { kind: 'private' }
-      : {
+    const { audience } = request;
+    const expiresAt = new Date(this.now() + 72 * 60 * 60 * 1000).toISOString();
+    switch (audience.kind) {
+      case 'private':
+        return { kind: 'private' };
+      case 'organization':
+        return {
           kind: 'organization',
           organizationId: FAKE_MIRROR_ORGANIZATION_ID,
-          trackedWorkspaceId: request.audience.trackedWorkspaceId,
-          expiresAt: new Date(this.now() + 72 * 60 * 60 * 1000).toISOString(),
+          trackedWorkspaceId: audience.trackedWorkspaceId,
+          expiresAt,
         };
+      case 'organization_global':
+        return {
+          kind: 'organization_global',
+          organizationId: audience.organizationId,
+          expiresAt,
+        };
+    }
   }
 
   /**
@@ -206,6 +223,9 @@ export class FakeLedgerMirror implements LedgerMirrorClient {
   ): LedgerSyncResult<LedgerScopeRegisterResponse> {
     const failure = this.registerFailures.shift();
     if (failure !== undefined) return refused(failure);
+    if (this.refusesGlobalScopes && request.schemaVersion !== 1) {
+      return refused({ kind: 'repair', reason: 'invalid_request' });
+    }
     const existing = this.scopes.get(request.ledgerId);
     const policy = this.policyRefusal(request, existing);
     if (policy !== null) return refused(policy);
@@ -289,6 +309,9 @@ export class FakeLedgerMirror implements LedgerMirrorClient {
   ): LedgerSyncResult<LedgerSyncPushResponse> {
     const failure = this.pushFailures.shift();
     if (failure !== undefined) return refused(failure);
+    if (this.refusesGlobalScopes && request.schemaVersion !== 1) {
+      return refused({ kind: 'repair', reason: 'invalid_request' });
+    }
     const scope = this.scopes.get(request.ledgerId);
     const refusal = this.pushRefusal(request, scope);
     if (refusal !== null || scope === undefined) {

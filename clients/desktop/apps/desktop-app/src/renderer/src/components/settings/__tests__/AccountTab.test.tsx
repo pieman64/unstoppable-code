@@ -28,6 +28,10 @@ import { ModelGatewayCredentialSection } from '../ModelGatewayCredentialSection'
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 
+type AccountTabApiDouble = Partial<Omit<CanopyApi, 'browser'>> & {
+  browser: Pick<CanopyApi['browser'], 'openExternal'>;
+};
+
 // The imported store reads this mock before the test module's initializers run.
 // eslint-disable-next-line no-var -- Jest's hoisted imports require this binding before initialization.
 var mockScopingContext:
@@ -105,6 +109,12 @@ jest.mock('@/hooks/useLinearStatus', () => ({
   })),
 }));
 
+let mockGuestCredential: boolean | undefined = false;
+jest.mock('@/hooks/useIsGuestCredential', () => ({
+  ...jest.requireActual<object>('@/hooks/useIsGuestCredential'),
+  useGuestCredentialState: (): boolean | undefined => mockGuestCredential,
+}));
+
 let mockHostedSettingsAvailable = false;
 jest.mock('../hosted/hosted-settings-availability', () => ({
   ...jest.requireActual<object>('../hosted/hosted-settings-availability'),
@@ -124,6 +134,24 @@ jest.mock('../CursorApprovalCheck', () => ({
 }));
 jest.mock('../CursorConnection', () => ({
   CursorConnection: (): null => null,
+}));
+jest.mock('../OpenCodeConnection', () => ({
+  OpenCodeConnection: ({
+    placement,
+  }: {
+    placement?: 'row' | 'section';
+  }): JSX.Element => (
+    <div data-testid="stub-opencode-connection" data-placement={placement} />
+  ),
+}));
+jest.mock('../CopilotConnection', () => ({
+  CopilotConnection: ({
+    placement,
+  }: {
+    placement?: 'row' | 'section';
+  }): JSX.Element => (
+    <div data-testid="stub-copilot-connection" data-placement={placement} />
+  ),
 }));
 
 const CONNECTED_STATUS = {
@@ -205,44 +233,48 @@ describe('AccountTab Canopy Cloud account controls', () => {
       storageAvailable: true,
     });
     refreshGitHubCredentials.mockResolvedValue(undefined);
-    Object.assign(window, {
-      api: {
-        getClaudeAuthStatus: jest.fn(),
-        getCodexAuthStatus: jest.fn(),
-        getGitHubCliStatus: jest.fn(),
-        getGitHubPermissions: jest.fn(),
-        loadGitHubPat: jest.fn(() => Promise.resolve('')),
-        saveGitHubPat: jest.fn(() => Promise.resolve({ success: true })),
-        refreshGitHubCredentials,
-        loadLinearToken: jest.fn(() => Promise.resolve('')),
-        saveLinearToken: jest.fn(() => Promise.resolve({ success: true })),
-        loadPreferences: jest.fn(() =>
-          Promise.resolve(
-            makeTestPreferences({ telemetrySharingPromptSeen: true }),
-          ),
+    const api = {
+      getClaudeAuthStatus: jest.fn(),
+      getCodexAuthStatus: jest.fn(),
+      getGitHubCliStatus: jest.fn(),
+      getGitHubPermissions: jest.fn(),
+      loadGitHubPat: jest.fn(() => Promise.resolve('')),
+      saveGitHubPat: jest.fn(() => Promise.resolve({ success: true })),
+      refreshGitHubCredentials,
+      loadLinearToken: jest.fn(() => Promise.resolve('')),
+      saveLinearToken: jest.fn(() => Promise.resolve({ success: true })),
+      loadPreferences: jest.fn(() =>
+        Promise.resolve(
+          makeTestPreferences({ telemetrySharingPromptSeen: true }),
         ),
-        savePreferences: jest.fn(() => Promise.resolve()),
-        loadCanopyCloudAccount,
-        loadCanopyCloudApiKey,
-        saveCanopyCloudApiKey,
-        clearCanopyCloudApiKey,
-        validateCanopyCloudApiKey,
-        startCanopyCloudOAuthLogin,
-        cancelCanopyCloudOAuthLogin,
-        disconnectCanopyCloudAccount,
-        loadCanopyCloudAiCredits: jest.fn(() =>
-          Promise.resolve({
-            connected: false,
-            email: null,
-            subscription: null,
-            balance: null,
-            noUdAccount: false,
-            error: null,
-          }),
-        ),
-        browser: { openExternal: jest.fn(() => Promise.resolve()) },
-      } as Partial<CanopyApi> as CanopyApi,
-    });
+      ),
+      savePreferences: jest
+        .fn<
+          ReturnType<CanopyApi['savePreferences']>,
+          Parameters<CanopyApi['savePreferences']>
+        >()
+        .mockResolvedValue(makeTestPreferences()),
+      loadCanopyCloudAccount,
+      loadCanopyCloudApiKey,
+      saveCanopyCloudApiKey,
+      clearCanopyCloudApiKey,
+      validateCanopyCloudApiKey,
+      startCanopyCloudOAuthLogin,
+      cancelCanopyCloudOAuthLogin,
+      disconnectCanopyCloudAccount,
+      loadCanopyCloudAiCredits: jest.fn(() =>
+        Promise.resolve({
+          connected: false,
+          email: null,
+          subscription: null,
+          balance: null,
+          noUdAccount: false,
+          error: null,
+        }),
+      ),
+      browser: { openExternal: jest.fn(() => Promise.resolve()) },
+    } satisfies AccountTabApiDouble;
+    Object.assign(window, { api });
   });
 
   afterEach(() => {
@@ -254,6 +286,7 @@ describe('AccountTab Canopy Cloud account controls', () => {
     jest.useRealTimers();
     mockScopingContext = undefined;
     mockHostedSettingsAvailable = false;
+    mockGuestCredential = false;
   });
 
   it('initializes new users with the OAuth segment selected', async () => {
@@ -351,6 +384,159 @@ describe('AccountTab Canopy Cloud account controls', () => {
     ]);
   });
 
+  describe('Copilot provider row', () => {
+    let originalFlags: ReturnType<
+      typeof useFeatureFlagsStore.getState
+    >['snapshot'];
+
+    function setCopilotFlags(harness: boolean, released: boolean): void {
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...originalFlags,
+          values: {
+            ...originalFlags.values,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: harness,
+            [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]:
+              released,
+          },
+        },
+      });
+    }
+
+    function llmProviderRows(): string[] {
+      const header = findByTestId('account-section-header-llm-provider');
+      const section = header?.closest('section');
+      if (!section) throw new Error('LLM provider section not found');
+      return Array.from(
+        section.querySelectorAll(
+          '[data-testid="auth-panel-claude"], [data-testid="auth-panel-codex"], [data-testid="stub-copilot-connection"]',
+        ),
+      ).map((row) => row.getAttribute('data-testid') ?? '');
+    }
+
+    beforeEach(() => {
+      originalFlags = useFeatureFlagsStore.getState().snapshot;
+    });
+
+    afterEach(() => {
+      act(() => {
+        useFeatureFlagsStore.setState({ snapshot: originalFlags });
+      });
+    });
+
+    it.each([false, true])(
+      'lists released Copilot as a provider row after Codex (hosted settings: %s)',
+      async (hosted) => {
+        mockHostedSettingsAvailable = hosted;
+        setCopilotFlags(true, true);
+        await renderAccountTab();
+
+        expect(llmProviderRows()).toEqual([
+          'auth-panel-claude',
+          'auth-panel-codex',
+          'stub-copilot-connection',
+        ]);
+        expect(
+          findByTestId('stub-copilot-connection')?.getAttribute(
+            'data-placement',
+          ),
+        ).toBe('row');
+      },
+    );
+
+    it.each([
+      { harness: true, released: false },
+      { harness: false, released: true },
+    ])(
+      'leaves Copilot off Accounts until it is released (harness=$harness, released=$released)',
+      async ({ harness, released }) => {
+        setCopilotFlags(harness, released);
+        await renderAccountTab();
+
+        expect(findByTestId('stub-copilot-connection')).toBeNull();
+      },
+    );
+  });
+
+  describe('OpenCode provider row', () => {
+    let originalFlags: ReturnType<
+      typeof useFeatureFlagsStore.getState
+    >['snapshot'];
+
+    function setFlags(values: Record<string, boolean>): void {
+      useFeatureFlagsStore.setState({
+        snapshot: {
+          ...originalFlags,
+          values: { ...originalFlags.values, ...values },
+        },
+      });
+    }
+
+    function llmProviderRows(): string[] {
+      const header = findByTestId('account-section-header-llm-provider');
+      const section = header?.closest('section');
+      if (!section) throw new Error('LLM provider section not found');
+      return Array.from(
+        section.querySelectorAll(
+          '[data-testid="auth-panel-claude"], [data-testid="auth-panel-codex"], [data-testid="stub-copilot-connection"], [data-testid="stub-opencode-connection"]',
+        ),
+      ).map((row) => row.getAttribute('data-testid') ?? '');
+    }
+
+    beforeEach(() => {
+      originalFlags = useFeatureFlagsStore.getState().snapshot;
+    });
+
+    afterEach(() => {
+      act(() => {
+        useFeatureFlagsStore.setState({ snapshot: originalFlags });
+      });
+    });
+
+    it.each([false, true])(
+      'lists released OpenCode as a provider row after Codex and Copilot (hosted settings: %s)',
+      async (hosted) => {
+        mockHostedSettingsAvailable = hosted;
+        setFlags({
+          [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: true,
+          [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]: true,
+          [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]: true,
+          [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]: true,
+        });
+        await renderAccountTab();
+
+        expect(llmProviderRows()).toEqual([
+          'auth-panel-claude',
+          'auth-panel-codex',
+          'stub-copilot-connection',
+          'stub-opencode-connection',
+        ]);
+        expect(
+          findByTestId('stub-opencode-connection')?.getAttribute(
+            'data-placement',
+          ),
+        ).toBe('row');
+      },
+    );
+
+    it.each([
+      { harness: true, released: false },
+      { harness: false, released: true },
+    ])(
+      'leaves OpenCode off Accounts until it is released (harness=$harness, released=$released)',
+      async ({ harness, released }) => {
+        setFlags({
+          [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]: harness,
+          [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]:
+            released,
+        });
+        await renderAccountTab();
+
+        expect(findByTestId('stub-opencode-connection')).toBeNull();
+      },
+    );
+  });
+
   describe('with hosted account settings', () => {
     let originalFlags: ReturnType<
       typeof useFeatureFlagsStore.getState
@@ -395,6 +581,15 @@ describe('AccountTab Canopy Cloud account controls', () => {
       expect(findByTestId('auth-panel-github')).toBeNull();
       expect(findByTestId('settings-linear-token-input')).toBeNull();
       expect(window.api.loadLinearToken).not.toHaveBeenCalled();
+    });
+
+    it('keeps the daily credits control reachable for a guest with hosted settings on', async () => {
+      mockHostedSettingsAvailable = true;
+      mockGuestCredential = true;
+      await renderAccountTab();
+
+      expect(findByTestId('stub-cloud-daily-credit-drip')).not.toBeNull();
+      expect(findByTestId('settings-account-canopy-cloud-section')).toBeNull();
     });
 
     it('keeps every Accounts section when hosted settings are unavailable', async () => {
@@ -549,12 +744,14 @@ describe('AccountTab Canopy Cloud account controls', () => {
     const claudePanel = findByTestId('auth-panel-claude');
     expect(heading).not.toBeNull();
     expect(claudePanel).not.toBeNull();
+    if (!card || !heading || !claudePanel) {
+      throw new Error('Expected the gateway card and LLM provider panels');
+    }
     expect(
-      heading?.compareDocumentPosition(card as Node) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
-      card?.compareDocumentPosition(claudePanel as Node) &
+      card.compareDocumentPosition(claudePanel) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
@@ -1711,10 +1908,7 @@ describe('AccountTab Canopy Cloud account controls', () => {
       const [connected, setConnected] = useState(false);
       return (
         <>
-          <CanopyCloudAccountSection
-            variant="embedded"
-            onConnectedChange={setConnected}
-          />
+          <CanopyCloudAccountSection onConnectedChange={setConnected} />
           <button data-testid="privacy-controls" disabled={!connected}>
             Privacy
           </button>

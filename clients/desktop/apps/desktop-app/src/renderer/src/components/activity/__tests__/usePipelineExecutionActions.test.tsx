@@ -124,7 +124,11 @@ function ownedExecution(
     version: 8,
     id: 'exec-1',
     pipeline_id: 'pipeline-1',
-    pipeline_snapshot: { name: 'Build pipeline', jobs: {} },
+    pipeline_snapshot: {
+      name: 'Build pipeline',
+      scope: ['directory'],
+      jobs: {},
+    },
     status: 'failure',
     jobs: {},
     job_definitions: {},
@@ -454,9 +458,15 @@ describe('usePipelineExecutionActions', () => {
           id: 'review',
           name: 'Review',
           source: 'user',
-          triggers: ['plan_ready'],
+          filename: 'review.yaml',
+          description: '',
+          icon: '',
+          createdAt: '2026-05-19T00:00:00.000Z',
+          updatedAt: '2026-05-19T00:00:00.000Z',
+          triggerTypes: ['plan_ready'],
+          readonly: false,
         },
-        content: 'name: Review',
+        content: { name: 'Review', on: 'plan_ready', jobs: {} },
       };
       await act(async () => {
         await onRun('review', pipeline, undefined, undefined, {
@@ -470,7 +480,7 @@ describe('usePipelineExecutionActions', () => {
         repoId: undefined,
       });
       expect(execute).toHaveBeenCalledWith(
-        'name: Review',
+        pipeline.content,
         expect.objectContaining({
           cwd: '/resolved/project-1/owner-wt',
           projectId: 'project-1',

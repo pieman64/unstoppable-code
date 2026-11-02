@@ -144,7 +144,7 @@ test('pipeline-editor chat drawer starts closed for an empty assistant, toggles,
     ).toBeLessThanOrEqual(1);
 
     const separator = window.getByRole('separator', {
-      name: 'Resize pipeline assistant',
+      name: 'Resize workflow assistant',
     });
     const separatorBox = await separator.boundingBox();
     expect(separatorBox).not.toBeNull();

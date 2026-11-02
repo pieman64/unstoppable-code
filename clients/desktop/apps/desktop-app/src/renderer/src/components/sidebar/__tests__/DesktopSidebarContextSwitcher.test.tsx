@@ -18,6 +18,10 @@ import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
+import {
+  useSharedContainerReplicasStore,
+  type SharedContainerListEntry,
+} from '@/stores/sharedContainerReplicasStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { DesktopSidebarContextSwitcher } from '../DesktopSidebarContextSwitcher';
 import { useDesktopWorkspaceContextAvailability } from '@/hooks/useDesktopWorkspaceContextSwitcher';
@@ -37,6 +41,13 @@ let mockForeignProjection: ForeignActivityProjection = {
 jest.mock('@/hooks/useForeignActivityProjection', () => ({
   useForeignActivityProjection: (): ForeignActivityProjection =>
     mockForeignProjection,
+}));
+
+// The share entry point's own gate is covered by its hook's tests.
+let mockShareEntryPointVisible = true;
+jest.mock('@/hooks/useSharedContainerEntryPointVisible', () => ({
+  useSharedContainerEntryPointVisible: (): boolean =>
+    mockShareEntryPointVisible,
 }));
 
 jest.mock('../DesktopCreateTeamDialog', () => ({
@@ -112,7 +123,7 @@ function entitlements(freeAccess: boolean): CanopyCloudEntitlementsState {
 
 function pool(
   organizationId: string,
-  balance: number | null,
+  balance: number,
 ): NativeAiCreditsAvailability {
   return {
     personalEligible: true,
@@ -200,6 +211,72 @@ const ACME_CONTEXT: WorkspaceContext = {
   organizationId: ACME,
 };
 
+/** A foreign-activity projection with one running chat in `context`. */
+function runningIn(context: WorkspaceContext): ForeignActivityProjection {
+  return {
+    epoch: 'epoch',
+    sequence: 1,
+    groups: [
+      {
+        context,
+        workspaces: [
+          {
+            workspaceId: 'workspace',
+            name: 'Workspace',
+            running: 1,
+            unread: 0,
+            interrupted: false,
+            stopTargets: [],
+            latestTarget: {
+              source: 'chat',
+              operationId: 'turn',
+              workspaceId: 'workspace',
+              worktreeId: 'worktree',
+              resultToken: null,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** A viewable invitation listed under `organizationId`, or direct. */
+function invitation(
+  id: string,
+  listed: Pick<SharedContainerListEntry, 'organizationId' | 'access'>,
+  capabilities: SharedContainerListEntry['container']['capabilities'] = [
+    'VIEW',
+  ],
+): SharedContainerListEntry {
+  return {
+    ...listed,
+    container: {
+      id,
+      ownerUserId: 'owner',
+      owner: { userId: 'owner', name: 'Owner' },
+      access: listed.access ?? 'organization',
+      containerType: 'CODE_WORKTREE',
+      title: id,
+      revision: 1,
+      createdAt: '2026-10-01T00:00:00.000Z',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+      capabilities,
+    },
+  };
+}
+
+function seedShares(
+  entries: SharedContainerListEntry[],
+  acceptedIds: string[] = [],
+): void {
+  useSharedContainerReplicasStore.setState({
+    entries,
+    listStatus: 'success',
+    acceptedIds,
+  });
+}
+
 async function flush(): Promise<void> {
   await act(async () => {
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
@@ -235,6 +312,8 @@ describe('DesktopSidebarContextSwitcher', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     mockForeignProjection = { epoch: '', sequence: 0, groups: [] };
+    mockShareEntryPointVisible = true;
+    useSharedContainerReplicasStore.getState().reset();
     setFlags();
   });
 
@@ -561,7 +640,9 @@ describe('DesktopSidebarContextSwitcher', () => {
 
   it('offers no Personal actions until the personal organization is known', async () => {
     seedContext({ kind: 'personal' }, [acme('OWNER')]);
-    installApi({ cloudAccount: account({ personalOrganizationId: null }) });
+    const cloudAccount = account();
+    delete cloudAccount.personalOrganizationId;
+    installApi({ cloudAccount });
     await render();
     openMenu();
     expect(byTestId('sidebar-context-menu')).not.toBeNull();
@@ -617,33 +698,91 @@ describe('DesktopSidebarContextSwitcher', () => {
   );
 
   describe('organization AI Credits pool', () => {
-    it('shows an OWNER the pool, rounded, and refreshes on every open', async () => {
+    it("keeps OWNER to ADMIN continuity and fences a demoted viewer's pending balance on promotion", async () => {
+      const pending: Array<(value: NativeAiCreditsAvailability) => void> = [];
       seedContext(ACME_CONTEXT, [acme('OWNER')]);
       installApi({
         freeAccess: true,
-        availability: () => Promise.resolve(pool(ACME, 412.5)),
+        availability: () => new Promise((resolve) => pending.push(resolve)),
       });
       await render();
       openMenu();
       await flush();
+      act(() => {
+        pending.at(-1)?.(pool(ACME, 12));
+      });
+      await flush();
       expect(
         byTestId('sidebar-context-menu-item-ai-credits-balance')?.textContent,
-      ).toBe('413');
+      ).toBe('12');
       const reads = loadAvailability.mock.calls.length;
-      // One read per open, not a render loop.
+      act(() => seedContext(ACME_CONTEXT, [acme('ADMIN')]));
       await flush();
-      expect(loadAvailability.mock.calls.length).toBe(reads);
-
-      closeMenu();
-      openMenu();
+      expect(
+        byTestId('sidebar-context-menu-item-ai-credits-balance')?.textContent,
+      ).toBe('12');
+      expect(loadAvailability).toHaveBeenCalledTimes(reads);
+      act(() => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      const departed = pending.at(-1);
+      act(() => seedContext(ACME_CONTEXT, [acme('MEMBER')]));
+      expect(byTestId('sidebar-context-menu-item-ai-credits')).toBeNull();
+      const demotedReads = loadAvailability.mock.calls.length;
+      act(() => {
+        window.dispatchEvent(new Event('focus'));
+      });
+      expect(loadAvailability).toHaveBeenCalledTimes(demotedReads);
+      act(() => seedContext(ACME_CONTEXT, [acme('ADMIN')]));
       await flush();
-      expect(loadAvailability.mock.calls.length).toBe(reads + 1);
-
-      click('sidebar-context-menu-item-ai-credits');
-      expect(openPortalPage).toHaveBeenLastCalledWith(
-        organizationBillingPath(ACME),
-      );
+      expect(
+        byTestId('sidebar-context-menu-item-ai-credits-balance'),
+      ).toBeNull();
+      act(() => {
+        pending.at(-1)?.(pool(ACME, 0));
+      });
+      await flush();
+      act(() => {
+        departed?.(pool(ACME, 99));
+      });
+      await flush();
+      expect(
+        byTestId('sidebar-context-menu-item-ai-credits-balance')?.textContent,
+      ).toBe('0');
+      act(() => seedContext(ACME_CONTEXT, []));
+      expect(byTestId('sidebar-context-menu-item-ai-credits')).toBeNull();
     });
+
+    it.each(['OWNER', 'ADMIN'] as const)(
+      'shows %s the pool, rounded, and refreshes on every open',
+      async (role) => {
+        seedContext(ACME_CONTEXT, [acme(role)]);
+        installApi({
+          freeAccess: true,
+          availability: () => Promise.resolve(pool(ACME, 412.5)),
+        });
+        await render();
+        openMenu();
+        await flush();
+        expect(
+          byTestId('sidebar-context-menu-item-ai-credits-balance')?.textContent,
+        ).toBe('413');
+        const reads = loadAvailability.mock.calls.length;
+        // One read per open, not a render loop.
+        await flush();
+        expect(loadAvailability.mock.calls.length).toBe(reads);
+
+        closeMenu();
+        openMenu();
+        await flush();
+        expect(loadAvailability.mock.calls.length).toBe(reads + 1);
+
+        click('sidebar-context-menu-item-ai-credits');
+        expect(openPortalPage).toHaveBeenLastCalledWith(
+          organizationBillingPath(ACME),
+        );
+      },
+    );
 
     it('shows a zero pool and no number while unknown', async () => {
       seedContext(ACME_CONTEXT, [acme('OWNER')]);
@@ -669,7 +808,7 @@ describe('DesktopSidebarContextSwitcher', () => {
     });
 
     it.each([
-      ['an ADMIN', 'ADMIN', true],
+      ['an ADMIN without free access', 'ADMIN', false],
       ['a MEMBER', 'MEMBER', true],
       ['an OWNER without free access', 'OWNER', false],
     ] as const)(
@@ -728,38 +867,216 @@ describe('DesktopSidebarContextSwitcher', () => {
 
   it('marks another context with updates on the trigger', async () => {
     seedContext({ kind: 'personal' }, [acme('MEMBER')]);
-    mockForeignProjection = {
-      epoch: 'epoch',
-      sequence: 1,
-      groups: [
-        {
-          context: ACME_CONTEXT,
-          workspaces: [
-            {
-              workspaceId: 'workspace',
-              name: 'Workspace',
-              running: 1,
-              unread: 0,
-              interrupted: false,
-              stopTargets: [],
-              latestTarget: {
-                source: 'chat',
-                operationId: 'turn',
-                workspaceId: 'workspace',
-                worktreeId: 'worktree',
-                resultToken: null,
-              },
-            },
-          ],
-        },
-      ],
-    };
+    mockForeignProjection = runningIn(ACME_CONTEXT);
     installApi();
     await render();
     expect(byTestId('sidebar-context-attention-dot')).not.toBeNull();
     expect(byTestId('sidebar-context-row')?.getAttribute('aria-label')).toBe(
       'Workspace context: Personal, updates in Acme',
     );
+  });
+
+  describe('pending shares in other contexts (CAN-4783)', () => {
+    function triggerLabel(): string | null | undefined {
+      return byTestId('sidebar-context-row')?.getAttribute('aria-label');
+    }
+    function optionLabel(key: string): string | null | undefined {
+      return byTestId(`sidebar-context-option-${key}`)?.getAttribute(
+        'aria-label',
+      );
+    }
+    function update(apply: () => void): void {
+      act(apply);
+    }
+
+    it('marks the organization holding an invitation while Personal is selected', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      expect(byTestId('sidebar-context-attention-dot')).not.toBeNull();
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme',
+      );
+      openMenu();
+      expect(byTestId(`sidebar-context-activity-${ACME}`)).not.toBeNull();
+      expect(optionLabel(ACME)).toBe('Acme, 1 pending share');
+      expect(byTestId('sidebar-context-activity-personal')).toBeNull();
+    });
+
+    it('follows the listing from none to two and back as shares arrive and resolve', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      installApi();
+      await render();
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+
+      const one = invitation('one', { organizationId: ACME });
+      const two = invitation('two', { organizationId: ACME });
+      update(() => seedShares([one]));
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme',
+      );
+      update(() => seedShares([one, two]));
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 2 pending shares in Acme',
+      );
+      // Accepted, still listed.
+      update(() => seedShares([one, two], ['two']));
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme',
+      );
+      // Removed from the listing.
+      update(() => seedShares([two], ['two']));
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+    });
+
+    it('clears the cue when the last invitation is accepted', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      update(() =>
+        useSharedContainerReplicasStore.setState({ acceptedIds: ['one'] }),
+      );
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+    });
+
+    it('clears the cue when the listing drops the last invitation', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      update(() => seedShares([]));
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+    });
+
+    it('drops shares that lose VIEW or whose organization is no longer listed', async () => {
+      seedContext({ kind: 'personal' }, [
+        acme('MEMBER'),
+        { id: ZEN, name: 'Zen', role: 'MEMBER' },
+      ]);
+      seedShares([
+        invitation('one', { organizationId: ACME }),
+        invitation('two', { organizationId: ZEN }),
+      ]);
+      installApi();
+      await render();
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme, 1 pending share in Zen',
+      );
+      update(() =>
+        seedShares([
+          invitation('one', { organizationId: ACME }, []),
+          invitation('two', { organizationId: ZEN }),
+        ]),
+      );
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Zen',
+      );
+      update(() => seedContext({ kind: 'personal' }, [acme('MEMBER')]));
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+    });
+
+    it('quiets the cue inside its context and restores it on return, without accepting', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      openMenu();
+      await act(async () => {
+        byTestId(`sidebar-context-option-${ACME}`)?.click();
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(byTestId('sidebar-context-row')?.textContent).toBe('Acme');
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      expect(triggerLabel()).toBe('Workspace context: Acme');
+      expect(useSharedContainerReplicasStore.getState().acceptedIds).toEqual(
+        [],
+      );
+
+      openMenu();
+      await act(async () => {
+        byTestId('sidebar-context-option-personal')?.click();
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme',
+      );
+    });
+
+    it('marks Personal for a direct share while an organization is selected', async () => {
+      seedContext(ACME_CONTEXT, [acme('MEMBER')]);
+      seedShares([
+        invitation('direct', { access: 'direct', organizationId: ZEN }),
+      ]);
+      installApi();
+      await render();
+      expect(triggerLabel()).toBe(
+        'Workspace context: Acme, 1 pending share in Personal',
+      );
+      openMenu();
+      expect(optionLabel('personal')).toBe('Personal, 1 pending share');
+    });
+
+    it('keeps chat updates when the shares in the same context resolve', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      mockForeignProjection = runningIn(ACME_CONTEXT);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, updates in Acme, 1 pending share in Acme',
+      );
+      update(() => seedShares([]));
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, updates in Acme',
+      );
+      expect(byTestId('sidebar-context-attention-dot')).not.toBeNull();
+      openMenu();
+      expect(optionLabel(ACME)).toBe('Acme, has updates');
+    });
+
+    it('shows nothing while sharing is hidden or the context is not hydrated', async () => {
+      mockShareEntryPointVisible = false;
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+
+      mockShareEntryPointVisible = true;
+      act(() => {
+        root.render(<ContextSwitcherUnderTest />);
+      });
+      await flush();
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme',
+      );
+
+      update(() => useWorkspaceContextStore.setState({ hydrated: false }));
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      update(() => useWorkspaceContextStore.setState({ hydrated: true }));
+      expect(triggerLabel()).toBe(
+        'Workspace context: Personal, 1 pending share in Acme',
+      );
+    });
+
+    it('forgets the previous account’s shares when the store resets', async () => {
+      seedContext({ kind: 'personal' }, [acme('MEMBER')]);
+      seedShares([invitation('one', { organizationId: ACME })]);
+      installApi();
+      await render();
+      expect(byTestId('sidebar-context-attention-dot')).not.toBeNull();
+      update(() => useSharedContainerReplicasStore.getState().reset());
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+      expect(triggerLabel()).toBe('Workspace context: Personal');
+    });
   });
 
   it('switches through main, disables the row while switching, and toasts a refused switch', async () => {
@@ -816,5 +1133,284 @@ describe('DesktopSidebarContextSwitcher', () => {
     } finally {
       addToast.mockRestore();
     }
+  });
+
+  // CAN-3672: pending organization invitations in the switcher.
+  describe('pending organization invitations', () => {
+    const GLOBEX = '55555555-5555-4555-8555-555555555555';
+    let respond: jest.Mock<Promise<unknown>, [unknown]>;
+    let incoming: jest.Mock<Promise<unknown>, []>;
+
+    function globexInvitation(
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return {
+        id: 'invite-1',
+        organizationId: GLOBEX,
+        organizationName: 'Globex',
+        organizationTeamName: null,
+        role: 'MEMBER',
+        invitedByName: 'Grace',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        expiresAt: '2026-11-01T00:00:00.000Z',
+        enforcedSettings: [],
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      let invitations = [globexInvitation()];
+      incoming = jest.fn<Promise<unknown>, []>(() =>
+        Promise.resolve({ invitations }),
+      );
+      respond = jest.fn<Promise<unknown>, [unknown]>(() => {
+        invitations = [];
+        return Promise.resolve({ ok: true });
+      });
+      mockHostedSettingsClient = {
+        read: (operation: string): Promise<unknown> =>
+          operation === 'organization.invitations.incoming'
+            ? incoming()
+            : Promise.reject(new Error(`unexpected ${operation}`)),
+        write: (operation: string, input: unknown): Promise<unknown> =>
+          operation === 'organization.invitations.respond'
+            ? respond(input)
+            : Promise.reject(new Error(`unexpected ${operation}`)),
+        subscribe: (): (() => void) => (): void => {},
+      };
+    });
+
+    afterEach(() => {
+      mockHostedSettingsClient = null;
+      useRemoteControlStore.setState({ context: { mode: 'local' } });
+      useNavigationStore.getState().closeSettings();
+    });
+
+    function installInvitationApi(): void {
+      installApi();
+      Object.assign(window.api, {
+        refreshCanopyCloudEnforcedSettings: jest
+          .fn()
+          .mockResolvedValue(account()),
+      });
+    }
+
+    it('shows the cue and the invitation with its offered role', async () => {
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      expect(incoming).toHaveBeenCalledTimes(1);
+      expect(byTestId('sidebar-context-row')?.getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, 1 pending invitation',
+      );
+      expect(byTestId('sidebar-context-attention-dot')).not.toBeNull();
+      openMenu();
+      await flush();
+      const row = byTestId('sidebar-context-invitation-invite-1');
+      expect(row?.textContent).toContain('Globex');
+      expect(row?.textContent).toContain('Member');
+    });
+
+    it('accepts once, then selects the organization and opens its Projects after main lists it', async () => {
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      openMenu();
+      await flush();
+      await act(async () => {
+        byTestId('sidebar-context-invitation-accept-invite-1')?.click();
+        byTestId('sidebar-context-invitation-accept-invite-1')?.click();
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond).toHaveBeenCalledWith({
+        inviteId: 'invite-1',
+        action: 'accept',
+      });
+      expect(window.api.refreshCanopyCloudEnforcedSettings).toHaveBeenCalled();
+      // Nothing opens until main lists the membership.
+      expect(setContextIpc).not.toHaveBeenCalled();
+      expect(useNavigationStore.getState().settingsOpen).toBe(false);
+
+      await act(async () => {
+        useWorkspaceContextStore.setState({
+          state: {
+            context: { kind: 'personal' },
+            revision: 2,
+            organizations: [
+              acme('OWNER'),
+              { id: GLOBEX, name: 'Globex', role: 'MEMBER' },
+            ],
+          },
+        });
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      await flush();
+
+      expect(setContextIpc).toHaveBeenCalledWith({
+        context: { kind: 'organization', organizationId: GLOBEX },
+        expectedRevision: 2,
+      });
+      const navigation = useNavigationStore.getState();
+      expect(navigation.settingsOpen).toBe(true);
+      expect(navigation.settingsHostedLocation?.route).toEqual({
+        scope: 'organization',
+        organizationId: GLOBEX,
+        page: 'projects',
+      });
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+    });
+
+    it('declines after confirming, without switching or opening anything', async () => {
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      openMenu();
+      await flush();
+      click('sidebar-context-invitation-decline-invite-1');
+      expect(respond).not.toHaveBeenCalled();
+      await act(async () => {
+        byTestId('sidebar-context-decline-invitation-confirm')?.click();
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(respond).toHaveBeenCalledWith({
+        inviteId: 'invite-1',
+        action: 'decline',
+      });
+      expect(setContextIpc).not.toHaveBeenCalled();
+      expect(useNavigationStore.getState().settingsOpen).toBe(false);
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+    });
+
+    it('a newer explicit selection outside the switcher cancels a pending acceptance destination', async () => {
+      let complete: (value: unknown) => void = () => {};
+      respond.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      openMenu();
+      await flush();
+      click('sidebar-context-invitation-accept-invite-1');
+      await flush();
+      await act(async () => {
+        useWorkspaceContextStore.getState().applyBroadcast({
+          ...useWorkspaceContextStore.getState().state,
+          revision: 2,
+          reason: 'switch',
+          context: { kind: 'personal' },
+        });
+        complete({ ok: true });
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      await act(async () => {
+        useWorkspaceContextStore.setState({
+          state: {
+            context: { kind: 'personal' },
+            revision: 3,
+            organizations: [
+              acme('OWNER'),
+              { id: GLOBEX, name: 'Globex', role: 'MEMBER' },
+            ],
+          },
+        });
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(setContextIpc).not.toHaveBeenCalled();
+      expect(useNavigationStore.getState().settingsOpen).toBe(false);
+    });
+
+    it('re-reads on a same-account refresh that leaves memberships unchanged', async () => {
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      expect(incoming).toHaveBeenCalledTimes(1);
+      incoming.mockResolvedValueOnce({ invitations: [] });
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, {
+            detail: { reason: 'same-account-refresh' },
+          }),
+        );
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      await flush();
+      expect(incoming).toHaveBeenCalledTimes(2);
+      expect(byTestId('sidebar-context-attention-dot')).toBeNull();
+    });
+
+    it('uses refresh completion once when the same refresh also broadcasts memberships', async () => {
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      await act(async () => {
+        useWorkspaceContextStore.setState({
+          state: {
+            context: { kind: 'personal' },
+            revision: 2,
+            organizations: [acme('OWNER')],
+          },
+        });
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(incoming).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, {
+            detail: { reason: 'same-account-refresh' },
+          }),
+        );
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      });
+      expect(incoming).toHaveBeenCalledTimes(2);
+    });
+
+    it('routes an invitation with enforced settings to Settings > Organizations', async () => {
+      incoming.mockResolvedValue({
+        invitations: [
+          globexInvitation({
+            enforcedSettings: [
+              {
+                organizationId: GLOBEX,
+                organizationName: 'Globex',
+                policies: [],
+              },
+            ],
+          }),
+        ],
+      });
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      openMenu();
+      await flush();
+      click('sidebar-context-invitation-review-invite-1');
+      expect(respond).not.toHaveBeenCalled();
+      expect(
+        useNavigationStore.getState().settingsHostedLocation?.route,
+      ).toEqual({ scope: 'organizations' });
+    });
+
+    it('reads nothing in a remote-control window', async () => {
+      useRemoteControlStore.setState({
+        context: {
+          mode: 'remote',
+          deviceId: 'dev-b',
+          name: 'Studio',
+          platform: 'linux',
+        },
+      });
+      seedContext({ kind: 'personal' }, [acme('OWNER')]);
+      installInvitationApi();
+      await render();
+      openMenu();
+      await flush();
+      expect(incoming).not.toHaveBeenCalled();
+      expect(byTestId('sidebar-context-invitations')).toBeNull();
+    });
   });
 });

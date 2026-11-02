@@ -13,7 +13,9 @@ const mockGetEnhancedEnv = jest.fn(() => ({
 }));
 
 jest.mock('../pipelines/config-paths', () => ({
-  getEnhancedEnv: mockGetEnhancedEnv,
+  get getEnhancedEnv(): typeof mockGetEnhancedEnv {
+    return mockGetEnhancedEnv;
+  },
 }));
 
 import { buildWorktreeDataEnv } from '../lib/worktree-data-env';

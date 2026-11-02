@@ -1,5 +1,6 @@
 import { useRef, useState, type JSX } from 'react';
 import { createPortal } from 'react-dom';
+import { Button } from '@canopy/ui-shared/components';
 import { ChevronDownIcon } from '@canopy/ui-shared/icons';
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu';
 import type { CalendarView } from './calendarPreferences';
@@ -47,18 +48,17 @@ export function CalendarViewPicker({
 
   return (
     <>
-      <button
+      <Button
+        size="compact"
         ref={anchorRef}
-        type="button"
         onClick={(): void => setOpen((prev) => !prev)}
         aria-haspopup="listbox"
         aria-expanded={open}
         data-testid="automations-calendar-view-picker"
-        className="focus-ring inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary"
       >
         <span>{VIEW_LABELS[calendarView]}</span>
         <ChevronDownIcon width={12} height={12} />
-      </button>
+      </Button>
       {open &&
         createPortal(
           <div
@@ -88,7 +88,7 @@ export function CalendarViewPicker({
                     setOpen(false);
                     onChange(view);
                   }}
-                  className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-secondary ${
+                  className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
                     selected ? 'bg-secondary fg-primary' : 'fg-primary'
                   }`}
                 >

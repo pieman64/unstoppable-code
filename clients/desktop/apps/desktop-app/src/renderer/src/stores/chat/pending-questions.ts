@@ -177,8 +177,11 @@ export function derivePendingQuestionUnreadState(
       unread: true,
       attentionDismissedAt: undefined,
       // Only a transition into unread is attributable to the question; a tab
-      // that was already unread keeps whatever raised it.
-      ...(tab.unread !== true ? { unreadRaisedByQuestion: true } : {}),
+      // that was already unread keeps whatever raised it, and a manual mark
+      // left over from before is dropped.
+      ...(tab.unread !== true
+        ? { unreadRaisedByQuestion: true, unreadMarkedManually: undefined }
+        : {}),
     };
   });
   return {

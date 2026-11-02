@@ -14,12 +14,12 @@ import {
   ConfirmDialog,
   DetailActionBar,
   LoadingSpinner,
+  PageHeader,
   ShareActionButton,
   Tooltip,
   type ButtonVariant,
 } from '@canopy/ui-shared/components';
 import {
-  BackIcon,
   ChatIcon,
   CopyIcon,
   PauseIcon,
@@ -79,6 +79,8 @@ export interface WorkflowEditShellProps {
   readonly name: string;
   /** An inline rename control shown in the heading instead of `name`. */
   readonly nameEditor?: ReactNode;
+  /** One line under the name saying what the item does. */
+  readonly description?: string;
   /** Where Back goes, e.g. `Library`. */
   readonly backLabel: string;
   readonly onBack: () => void;
@@ -171,7 +173,7 @@ function WorkflowEditActionButton({
   const button = (
     <Button
       variant={variant}
-      size="control"
+      size="compact"
       data-testid={testId}
       disabled={state.disabled && !explained}
       aria-disabled={explained ? true : undefined}
@@ -215,8 +217,8 @@ function useVisitedSections(
 
 /**
  * The one full-page editing shell for a pipeline or an automation
- * (CAN-4072): a Back row with the name, save state and action bar, then the
- * Definition / Trigger / Runs tabs. Visited sections stay mounted and
+ * (CAN-4072): the shared page header (Back above the name, the save state,
+ * the action bar and the Definition / Trigger / Runs tabs), then any notices. Visited sections stay mounted and
  * hidden, so a section's own state (undo, raw text, run paging) survives a
  * tab switch. What each action shows comes from `plan` alone.
  */
@@ -240,6 +242,7 @@ export function WorkflowEditShell({
   kind,
   name,
   nameEditor,
+  description,
   backLabel,
   onBack,
   plan,
@@ -404,7 +407,7 @@ export function WorkflowEditShell({
   }
   const menu =
     menuItems.length > 0 ? (
-      <WorkflowEditMoreMenu name={name} items={menuItems} />
+      <WorkflowEditMoreMenu name={name} items={menuItems} size="compact" />
     ) : null;
   const run = actionButton(
     'run',
@@ -417,6 +420,7 @@ export function WorkflowEditShell({
     shareState.visible && onShare ? (
       <ShareActionButton
         placement="detail"
+        size="compact"
         ariaLabel={actionLabels?.share ?? `Share ${name}`}
         dataTestId={testId('share')}
         disabled={shareState.disabled}
@@ -434,7 +438,7 @@ export function WorkflowEditShell({
   const assistantToggle = assistant ? (
     <Button
       variant="secondary"
-      size="control"
+      size="compact"
       aria-pressed={assistant.open}
       data-testid="workflow-edit-assistant"
       onClick={assistant.onToggle}
@@ -502,27 +506,16 @@ export function WorkflowEditShell({
       data-readonly={plan.saveState === 'read-only' ? 'true' : 'false'}
       data-dirty={plan.dirty ? 'true' : 'false'}
     >
-      <div className="flex shrink-0 items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-4">
-          <button
-            type="button"
-            onClick={onBack}
-            data-testid={testId('back')}
-            className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-sm text-xs fg-secondary transition-colors hover:fg-primary"
-          >
-            <BackIcon width={12} height={12} aria-hidden="true" />
-            {backLabel}
-          </button>
-          <h1
-            ref={headingRef}
-            tabIndex={-1}
-            data-testid={testId('name')}
-            className="min-w-0 truncate text-lg font-semibold fg-primary outline-none"
-          >
-            {nameEditor ?? <span className={REPLAY_MASK_CLASS}>{name}</span>}
-          </h1>
-          {off || saveStateLabel !== null ? (
-            <span className="flex shrink-0 items-center gap-1.5 text-xs fg-tertiary">
+      <PageHeader
+        className="shrink-0"
+        back={{ label: backLabel, onClick: onBack, testId: testId('back') }}
+        title={nameEditor ?? <span className={REPLAY_MASK_CLASS}>{name}</span>}
+        titleTestId={testId('name')}
+        headingRef={headingRef}
+        description={description}
+        badge={
+          off || saveStateLabel !== null ? (
+            <>
               {off ? (
                 <span data-testid="workflow-edit-enabled-state">Off</span>
               ) : null}
@@ -534,54 +527,58 @@ export function WorkflowEditShell({
                   {saveStateLabel}
                 </span>
               ) : null}
-            </span>
-          ) : null}
-        </div>
-        <DetailActionBar
-          dataTestId="workflow-edit-actions"
-          secondary={secondary}
-          share={share ?? undefined}
-          primary={primary ?? undefined}
-        />
-      </div>
+            </>
+          ) : undefined
+        }
+        actions={
+          <DetailActionBar
+            dataTestId="workflow-edit-actions"
+            secondary={secondary}
+            share={share ?? undefined}
+            primary={primary ?? undefined}
+          />
+        }
+        tabs={
+          <div className="canopy-tab-list flex items-start">
+            <div
+              role="tablist"
+              aria-label={`${name} sections`}
+              data-testid="workflow-edit-tabs"
+              className="flex min-w-0 gap-8"
+            >
+              {WORKFLOW_EDIT_SECTIONS.map((id) => {
+                const selected = id === section;
+                return (
+                  <button
+                    key={id}
+                    ref={(element): void => {
+                      if (element) tabRefs.current[id] = element;
+                      else delete tabRefs.current[id];
+                    }}
+                    type="button"
+                    role="tab"
+                    id={tabId(id)}
+                    data-testid={`workflow-edit-tab-${id}`}
+                    aria-selected={selected}
+                    aria-controls={panelId}
+                    tabIndex={selected ? 0 : -1}
+                    onClick={(): void => onSectionChange(id)}
+                    onKeyDown={onTabKeyDown}
+                    className={`canopy-tab-trigger focus-ring inline-flex items-center px-3 py-2 text-s transition-colors ${
+                      selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
+                    }`}
+                  >
+                    {WORKFLOW_EDIT_SECTION_LABELS[id]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        }
+      />
       {notices ? (
         <div className="mt-4 flex shrink-0 flex-col gap-2">{notices}</div>
       ) : null}
-      <div className="canopy-tab-list mt-6 flex shrink-0 items-start">
-        <div
-          role="tablist"
-          aria-label={`${name} sections`}
-          data-testid="workflow-edit-tabs"
-          className="flex min-w-0 gap-8"
-        >
-          {WORKFLOW_EDIT_SECTIONS.map((id) => {
-            const selected = id === section;
-            return (
-              <button
-                key={id}
-                ref={(element): void => {
-                  if (element) tabRefs.current[id] = element;
-                  else delete tabRefs.current[id];
-                }}
-                type="button"
-                role="tab"
-                id={tabId(id)}
-                data-testid={`workflow-edit-tab-${id}`}
-                aria-selected={selected}
-                aria-controls={panelId}
-                tabIndex={selected ? 0 : -1}
-                onClick={(): void => onSectionChange(id)}
-                onKeyDown={onTabKeyDown}
-                className={`canopy-tab-trigger focus-ring inline-flex items-center px-3 py-2 text-s transition ${
-                  selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-                }`}
-              >
-                {WORKFLOW_EDIT_SECTION_LABELS[id]}
-              </button>
-            );
-          })}
-        </div>
-      </div>
       <div
         role="tabpanel"
         id={panelId}

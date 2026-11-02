@@ -1,6 +1,7 @@
 import { useId, useRef, type JSX, type ReactNode } from 'react';
 import { MoreHorizontalIcon } from '../../icons/AppIcons';
-import { CLEAN_FOOTER_ICON_BUTTON_CLASS } from '../chat-look';
+import { Button } from '../Button';
+import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
 import {
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
@@ -36,25 +37,24 @@ export function TurnMoreMenu({
   return (
     <>
       <Tooltip label={label} suppressed={open}>
-        <button
+        <Button
           ref={triggerRef}
-          type="button"
+          variant={CLEAN_ICON_BUTTON_VARIANT}
+          size="sm"
+          iconOnly
           aria-label={label}
           aria-haspopup="menu"
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
           data-testid={dataTestId}
           data-open={open ? '' : undefined}
-          className={`${CLEAN_FOOTER_ICON_BUTTON_CLASS}${
-            open ? ' bg-fg-primary/[0.06] fg-primary' : ''
-          }`}
           onClick={(event): void => {
             event.stopPropagation();
             onOpenChange(!open);
           }}
         >
           <MoreHorizontalIcon width="14" height="14" aria-hidden="true" />
-        </button>
+        </Button>
       </Tooltip>
       <FloatingMenu
         id={menuId}

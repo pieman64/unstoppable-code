@@ -1,6 +1,11 @@
 import { chatVisualsPromptEligible } from '../lib/chat-visuals-feature-flag';
+import { DELEGATION_NOTICE_KIND } from '@canopy/agent-actions';
+import {
+  resolveChatModelChangeHarness,
+  supportsChatHarnessChoice,
+} from '@canopy/desktop-shared/lib/chat-model-selection';
 import { isOpenCodeRuntimeAvailable } from '../opencode/runtime-availability';
-import { assertOpenCodeModelAvailable } from '../opencode/connection';
+import { assertOpenCodeSelectionAvailable } from '../opencode/selection';
 import { assertCopilotModelAvailable } from '../copilot/connection';
 import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
 import { assertCopilotHarnessEnabled } from '../copilot/feature-flag';
@@ -8,10 +13,17 @@ import { TurnAuthPreflightBlockedError } from '../lib/auth-preflight-error';
 import { assertCursorHarnessEnabled } from '../cursor/feature-flag';
 import { buildTrustedUserPromptEvent } from '../lib/chat-trusted-user-prompt';
 import { claudeContinuationSession } from '../lib/claude-fork-continuation';
-import { getOrCreateRoutedSession } from '../agents/session-event-router';
+import {
+  getOrCreateRoutedSession,
+  getTurnRootAcceptance,
+  isOwnedDelegationEvent,
+} from '../agents/session-event-router';
 import { withEffectiveAiCreditsRouting } from '../agents/effective-ai-credits-routing';
 import { randomUUID } from 'node:crypto';
-import { logMainProcessError } from '../lib/main-process-logging';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import { BRAND } from '@canopy/brand/current';
@@ -135,6 +147,7 @@ import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import {
   getSession,
+  chatHasNativeBackgroundWork,
   getActiveChatIds,
   getActiveSessionInfos,
   getActiveSessionCapabilityProfile,
@@ -142,15 +155,18 @@ import {
   buildSessionKey,
   destroySession,
   markSessionForNextTurnRecreation,
+  sessionHasActiveTurnOrNativeWork,
   getSessionSelectedModel,
   getSessionProviderType,
   getSessionGlobalInstructionsSnapshot,
   shouldRecreateSessionOnNextTurn,
   updateSessionModel,
+  updateSessionTurnSettingsModel,
   isSessionAccountProxyRouted,
   isSessionAiCreditsRouted,
   getSessionAiCreditsRoutedState,
   getContextUsageForSession,
+  restrictSessionApprovalRules,
 } from '../agents/session-manager';
 import { generateHandoffSummary } from '../agents/utils';
 import {
@@ -169,6 +185,11 @@ import { forkCodexThreadByIdViaOneShot } from '../codex/fork-thread';
 import { resolveRequest, rejectRequest } from '../mcp/pending-requests';
 import { normalizeAccountMcpSelections } from '../mcp/account-catalog';
 import { getChatStateService } from '../services/chat-state-service';
+import {
+  consumeDispatchAuthorization,
+  type AuthorizedChatDispatch,
+} from '../services/chat-dispatch-authorization';
+import { reservePromptBindingSlot } from '../services/chat-turn-binding-slots';
 import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
@@ -217,7 +238,10 @@ import {
   setWorktreeChatWindowAccessor,
   setSpecialNativeChatDispatcher,
 } from '../services/chat-service';
-import { getChatQueueService } from '../services/chat-queue-service';
+import {
+  getChatQueueService,
+  type ChatQueueRevivalLease,
+} from '../services/chat-queue-service';
 import { getStoppedTurnResumeService } from '../services/stopped-turn-resume-service';
 import { assertNotSplitLocked } from '../services/split-lock-service';
 import { dispatchAppAdvisorChatMessage } from '../app-advisor/chat-service';
@@ -240,6 +264,7 @@ import {
 import { readPersistedChatDispatchMetadata } from '../lib/chat-tabs-reader';
 import { buildPlanFileSystemInstruction } from '../lib/plan-system-instructions';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
+import { holdDispatchForDeferredReload } from '../services/deferred-reload-dispatch-hold';
 import {
   cancelQueuedHookChat,
   forceQueuedHookChat,
@@ -297,8 +322,8 @@ import {
   prepareOrgMemory,
 } from '../lib/worktree-chat-turn';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
+import { resolveChatTurnApprovalAuthority } from '../lib/chat-turn-approval-authority';
 import { latchFirstTaskSubmitted } from '../notifications/campaigns/activation-signals';
-import { notifyOnboardingChecklistChatStarted } from './onboarding-checklist';
 import { routeDesktopAutoTurn } from '../model-routing/route-turn';
 import {
   assertAutoRoutingCodexSpeed,
@@ -756,6 +781,35 @@ async function commitCanonicalTabSettings(
   }
 }
 
+/**
+ * Commit the durable half of an approval-mode transition. The approval-mode
+ * setter orders it against the live runtimes; nothing else writes the mode.
+ * `not_found` is tolerated for the same reasons as a settings patch.
+ */
+async function commitCanonicalApprovalMode(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  approvalMode: ApprovalMode,
+): Promise<void> {
+  const result = await dispatchCanonicalChatCommand({
+    schemaVersion: 1,
+    commandId: `approval-mode-${randomUUID()}`,
+    projectId,
+    worktreeId,
+    command: { type: 'chat.set_approval_mode', tabId: chatId, approvalMode },
+  });
+  if (
+    result.outcome !== 'applied' &&
+    result.outcome !== 'already_applied' &&
+    result.outcome !== 'not_found'
+  ) {
+    throw new Error(
+      `Canonical approval mode change was ${result.outcome}: ${result.reason ?? 'unknown reason'}`,
+    );
+  }
+}
+
 async function commitCanonicalModelChange(
   projectId: string,
   worktreeId: string,
@@ -833,12 +887,11 @@ async function normalizeCanonicalModelSelection(
   model: ChatModel,
   options: { interfaceModeOverride?: ChatInterfaceMode | null } = {},
 ): Promise<NormalizedModelSettings> {
-  const selectedHarness =
-    req.executionHarness ??
-    (previousTab.model === model &&
-    previousTab.executionHarnessExplicitlyChosen === true
-      ? previousTab.executionHarness
-      : undefined);
+  const selectedHarness = resolveChatModelChangeHarness(
+    previousTab,
+    model,
+    req.executionHarness,
+  );
   const providerType =
     getProviderForChatModel(model, selectedHarness) ??
     requireProviderForModel(model);
@@ -847,11 +900,7 @@ async function normalizeCanonicalModelSelection(
     (previousTab.model ? getProviderForModel(previousTab.model) : undefined);
   const providerChanged = previousProviderType !== providerType;
   const executionHarness =
-    req.executionHarness ??
-    (previousTab.model === model &&
-    previousTab.executionHarnessExplicitlyChosen === true
-      ? previousTab.executionHarness
-      : undefined) ??
+    resolveChatModelChangeHarness(previousTab, model, req.executionHarness) ??
     getExecutionHarnessForModel(model) ??
     providerType;
   const preferences = await readPreferencesFile().catch(() => null);
@@ -1069,24 +1118,32 @@ async function changeChatModelLocked(
   if (!model) {
     return false;
   }
-  const workflowHarness = getExecutionHarnessForModel(model);
+  const previousTab = await readCanonicalChatTab(
+    req.projectId,
+    req.worktreeId,
+    req.chatId,
+  );
+  const selectedHarness = resolveChatModelChangeHarness(
+    previousTab,
+    model,
+    req.executionHarness,
+  );
+  if (!selectedHarness || !supportsChatHarnessChoice(model, selectedHarness))
+    return false;
   if (
-    ((workflowHarness === 'copilot' || workflowHarness === 'opencode') &&
+    ((selectedHarness === 'copilot' || selectedHarness === 'opencode') &&
       (req.projectId === PIPELINE_EDITOR_PROJECT_ID ||
         req.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID ||
         req.projectId === CODE_REVIEW_CHAT_PROJECT_ID)) ||
-    (workflowHarness === 'cursor' &&
+    (selectedHarness === 'cursor' &&
       req.projectId === PLAN_EXPLORE_CHAT_PROJECT_ID)
   )
     return false;
-  if (
-    getExecutionHarnessForModel(model) === 'cursor' &&
-    !(await isCursorRuntimeAvailable())
-  ) {
+  if (selectedHarness === 'cursor' && !(await isCursorRuntimeAvailable())) {
     return false;
   }
   if (
-    workflowHarness === 'cursor' &&
+    selectedHarness === 'cursor' &&
     (req.projectId === PIPELINE_EDITOR_PROJECT_ID ||
       req.projectId === CODE_REVIEW_CHAT_PROJECT_ID)
   ) {
@@ -1097,16 +1154,18 @@ async function changeChatModelLocked(
       return false;
     }
   }
-  if (
-    getExecutionHarnessForModel(model) === 'copilot' &&
-    !(await isCopilotRuntimeAvailable())
-  )
+  if (selectedHarness === 'copilot' && !(await isCopilotRuntimeAvailable()))
     return false;
-  if (
-    getExecutionHarnessForModel(model) === 'opencode' &&
-    !(await isOpenCodeRuntimeAvailable())
-  )
-    return false;
+  if (selectedHarness === 'opencode') {
+    await assertOpenCodeSelectionAvailable({
+      model,
+      session: {
+        projectId: req.projectId,
+        worktreeId: req.worktreeId,
+        chatId: req.chatId,
+      },
+    });
+  }
   const workOwner = await resolveAiCreditsScopeOwner({
     kind: 'work',
     projectId: req.projectId,
@@ -1135,23 +1194,6 @@ async function changeChatModelLocked(
   if (!gatewayCheck.ok) {
     return false;
   }
-  if (
-    req.executionHarness !== undefined &&
-    !getChatHarnessOptions(model).includes(req.executionHarness)
-  ) {
-    return false;
-  }
-  const previousTab = await readCanonicalChatTab(
-    req.projectId,
-    req.worktreeId,
-    req.chatId,
-  );
-  const selectedHarness =
-    req.executionHarness ??
-    (previousTab?.model === model &&
-    previousTab.executionHarnessExplicitlyChosen === true
-      ? previousTab.executionHarness
-      : undefined);
   if (
     !isProviderChangeAllowed(
       req.projectId,
@@ -1189,7 +1231,10 @@ async function changeChatModelLocked(
     model,
   });
   const session = getSession(req.projectId, req.worktreeId, req.chatId);
-  if (session) {
+  if (
+    session &&
+    !sessionHasActiveTurnOrNativeWork(req.projectId, req.worktreeId, req.chatId)
+  ) {
     const currentSelectedModel = getSessionSelectedModel(
       req.projectId,
       req.worktreeId,
@@ -1215,8 +1260,19 @@ async function changeChatModelLocked(
         buildSessionKey(req.projectId, req.worktreeId, req.chatId),
         model,
       );
+      updateSessionTurnSettingsModel(
+        req.projectId,
+        req.worktreeId,
+        req.chatId,
+        model,
+      );
     }
   }
+  getChatQueueService().refreshRestartHold({
+    projectId: req.projectId,
+    worktreeId: req.worktreeId,
+    chatId: req.chatId,
+  });
 
   const standaloneChatProjectId = resolveStandaloneChatProjectId(
     req.projectId,
@@ -1235,6 +1291,8 @@ async function changeChatModelLocked(
 type ChatSendMessageHandler = (
   event: IpcMainInvokeEvent | undefined,
   request: ChatSendMessageRequest,
+  /** Host-only queue capability; IPC never supplies it. */
+  authorization?: AuthorizedChatDispatch,
 ) => Promise<ChatSendMessageResult>;
 
 const autoRoutingNotices = new Map<string, string>();
@@ -1264,7 +1322,11 @@ function withChatScopeActivity(
   // the send handler's typed auth refusal (CAN-1814 PR 7) survives the scope
   // lease. Typing this `Promise<void>` would swallow it and the reconnect card
   // would never render.
-  return async (event, request): Promise<ChatSendMessageResult> => {
+  return async (
+    event,
+    request,
+    authorization,
+  ): Promise<ChatSendMessageResult> => {
     if (options.allowMainOwnedAgentInput !== true) {
       assertUntrustedChatInput(request);
     }
@@ -1277,7 +1339,7 @@ function withChatScopeActivity(
         projectId: request.projectId,
         worktreeId: request.worktreeId,
       },
-      () => handler(event, request),
+      () => handler(event, request, authorization),
     );
   };
 }
@@ -1385,6 +1447,7 @@ export function registerChatHandlers(
   const getWindow = accessors.getMainWindow;
   setWorktreeChatWindowAccessor(getWindow);
   deferredToolsReloadCoordinator.subscribe((event) => {
+    holdDispatchForDeferredReload(getChatQueueService(), event);
     const isAppAdvisorTarget = event.scope.projectId === APP_ADVISOR_PROJECT_ID;
     if (isAppAdvisorTarget) {
       sendToWindow(
@@ -1539,6 +1602,7 @@ export function registerChatHandlers(
   const dispatchChatMessageNowBody = async (
     _event: IpcMainInvokeEvent | undefined,
     req: ChatSendMessageRequest,
+    authorization: AuthorizedChatDispatch | undefined,
     allowMainOwnedAgentInput: boolean,
   ): Promise<ChatSendMessageResult> => {
     if (!allowMainOwnedAgentInput) assertUntrustedChatInput(req);
@@ -1578,6 +1642,10 @@ export function registerChatHandlers(
       subscriptionBillingOverride,
       // Stale session routing is ignored, not rewritten here (CAN-4200).
     } = withEffectiveAiCreditsRouting(req);
+    // Set only by main for an admitted agent send; it can only narrow.
+    const admittedApproval = allowMainOwnedAgentInput
+      ? req.admittedApproval
+      : undefined;
     const isAppAdvisorTarget = projectId === APP_ADVISOR_PROJECT_ID;
     const isPipelineEditorTarget =
       projectId === PIPELINE_EDITOR_PROJECT_ID &&
@@ -1602,7 +1670,6 @@ export function registerChatHandlers(
       // knowingly asymmetric — do not "fix" one into matching the other
       // without moving both, since this one's placement is shared with the
       // CAN-2438 activation signal.
-      notifyOnboardingChecklistChatStarted();
     }
     if (isAppAdvisorTarget) {
       const approvalMode = clampToLiveApprovalMode(
@@ -1611,10 +1678,20 @@ export function registerChatHandlers(
         chatId,
         requestedApprovalMode,
       );
-      if (approvalMode) {
-        setLiveApprovalMode(projectId, worktreeId, chatId, approvalMode);
+      if (req.hiddenContext?.kind === 'canopy-watcher-event') {
+        // A watcher's turn runs whether or not the App Advisor window can
+        // load. The window only presents the turn, so open it without waiting.
+        void Promise.resolve()
+          .then(() => accessors.ensureAppAdvisorWindow())
+          .catch((error: unknown) => {
+            logMainProcessWarn(
+              'Opening the App Advisor window for a watcher turn failed',
+              error,
+            );
+          });
+      } else {
+        await accessors.ensureAppAdvisorWindow();
       }
-      await accessors.ensureAppAdvisorWindow();
       const disposition = await dispatchAppAdvisorChatMessage(
         { ...req, approvalMode },
         {
@@ -1626,6 +1703,7 @@ export function registerChatHandlers(
             openAppAdvisorWindow: accessors.openAppAdvisorWindow,
             ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
           },
+          ...(authorization ? { authorization } : {}),
         },
       );
       return { disposition };
@@ -1649,9 +1727,12 @@ export function registerChatHandlers(
         chatId,
         requestedApprovalMode,
       );
-      if (approvalMode) {
-        setLiveApprovalMode(projectId, worktreeId, chatId, approvalMode);
-      }
+      consumeDispatchAuthorization(authorization, {
+        projectId,
+        worktreeId,
+        chatId,
+        userMessageId,
+      });
       await dispatchPipelineEditorChatMessage(
         { ...req, approvalMode },
         {
@@ -1672,12 +1753,6 @@ export function registerChatHandlers(
     validateId(chatId, 'chatId');
     validateId(userMessageId, 'userMessageId');
     validateOptionalRepoId(selectedRepoId, 'selectedRepoId');
-    const approvalMode = clampToLiveApprovalMode(
-      projectId,
-      worktreeId,
-      chatId,
-      requestedApprovalMode,
-    );
     cancelTransientRetryForChat(
       { projectId, worktreeId, chatId },
       'manual-send',
@@ -1687,6 +1762,17 @@ export function registerChatHandlers(
     // are unaffected; a genuine worktree-targeted send whose worktree is
     // mid-split is refused with the typed lock error.
     assertNotSplitLocked(projectId, worktreeId, 'sending a chat message');
+    // Before memory preparation and the prompt commit: a Stop or newer
+    // dispatch since admission makes this attempt stale. Only the inline
+    // Cowork path dispatches here; a worktree send is admitted downstream
+    // by the queue, whose final dispatcher consumes its capability.
+    if (isCoworkWorkspace(projectId))
+      consumeDispatchAuthorization(authorization, {
+        projectId,
+        worktreeId,
+        chatId,
+        userMessageId,
+      });
     const cwd = resolveWorktreeCwd(projectId, worktreeId, selectedRepoId);
     const isStandalone = projectId === STANDALONE_CHAT_PROJECT_ID;
     const isCoworkChat = isCoworkWorkspace(projectId);
@@ -1754,8 +1840,11 @@ export function registerChatHandlers(
         : undefined;
     if (effectiveExecutionHarness === 'opencode') {
       if (!(await isOpenCodeRuntimeAvailable()))
-        throw new Error('Connect OpenCode in Settings > Labs before sending.');
-      await assertOpenCodeModelAvailable(model ?? liveAccountModel);
+        throw new Error('Connect OpenCode in Settings before sending.');
+      await assertOpenCodeSelectionAvailable({
+        model: model ?? liveAccountModel,
+        session: { projectId, worktreeId, chatId },
+      });
     }
     if (effectiveExecutionHarness === 'cursor') assertCursorHarnessEnabled();
     if (
@@ -1775,9 +1864,7 @@ export function registerChatHandlers(
     if (effectiveExecutionHarness === 'copilot') {
       assertCopilotHarnessEnabled();
       if (!(await isCopilotRuntimeAvailable()))
-        throw new Error(
-          'Connect Copilot in Settings > Labs to send with Copilot.',
-        );
+        throw new Error('Connect Copilot in Settings to send with Copilot.');
       if (!model && !liveAccountModel)
         throw new Error('Choose a GitHub Copilot model before sending.');
       await assertCopilotModelAvailable(model ?? liveAccountModel);
@@ -2037,6 +2124,22 @@ export function registerChatHandlers(
         const sessionPluginSelections = await normalizeAccountMcpSelections(
           runtime?.pluginSelections ?? pluginSelections,
         );
+        // The saved chat's authority as the session is created; the request
+        // can only narrow it (CAN-4469).
+        const turnApprovalTarget = {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId,
+          approvalMode: requestedApprovalMode,
+          sessionApprovalRules,
+          admittedApproval,
+        };
+        const {
+          approvalMode,
+          sessionApprovalRules: turnSessionApprovalRules,
+          chatApprovalMode,
+        } = await resolveChatTurnApprovalAuthority(turnApprovalTarget);
         const sessionOptions = {
           cwd,
           ...(selectedRepoId ? { selectedRepoId } : {}),
@@ -2045,7 +2148,7 @@ export function registerChatHandlers(
           chatId,
           planMode,
           approvalMode,
-          sessionApprovalRules,
+          sessionApprovalRules: turnSessionApprovalRules,
           codexProposalMode,
           thinkingLevel: effectiveModelConfig.thinkingLevel,
           modelConfig: effectiveModelConfig,
@@ -2081,9 +2184,9 @@ export function registerChatHandlers(
             ? { subscriptionBillingOverride: true }
             : {}),
         };
-        if (approvalMode) {
-          setLiveApprovalMode(projectId, worktreeId, chatId, approvalMode);
-        }
+        // Without an admitted agent send's cap, which binds only this turn's
+        // session, so the chat's later turns run at its own mode.
+        setLiveApprovalMode(projectId, worktreeId, chatId, chatApprovalMode);
         const watcherAcceptedAt = new Date().toISOString();
         const watcherContext = captureCanonicalChatProducerContext({
           projectId,
@@ -2091,6 +2194,10 @@ export function registerChatHandlers(
           chatId,
         });
         let executionUserMessageId = userMessageId;
+        const rejectedTurnRoots = new Map<
+          string,
+          ChatQueueRevivalLease | undefined
+        >();
         let codexRootThreadId = sdkSessionId;
         const deliverSessionEvent = (
           data: unknown,
@@ -2189,12 +2296,79 @@ export function registerChatHandlers(
         ): Promise<void> => {
           codexRootThreadId = readCodexRootThreadId(data) ?? codexRootThreadId;
           const occurredAt = new Date().toISOString();
+          const dataRecord = isRecord(data) ? data : null;
+          const pickupUserMessageId =
+            dataRecord?.type === 'canopy_input_delivery' &&
+            dataRecord.phase === 'picked-up' &&
+            dataRecord.startsTurn === true &&
+            typeof dataRecord.userMessageId === 'string'
+              ? dataRecord.userMessageId
+              : undefined;
+          // The router keeps its lease metadata outside event data, so inspect
+          // the original routed object before any continuation can clone it.
+          const turnRootAcceptance = getTurnRootAcceptance(data);
           const sequence = sessionEventSequence;
           sessionEventSequence += 1;
           sessionEventCommitTail = sessionEventCommitTail
             .then(async () => {
-              const outcome =
-                await chatStateService.ingestProviderEventWithOutcome({
+              const taggedRootId =
+                dataRecord &&
+                typeof dataRecord.canopy_turn_user_message_id === 'string'
+                  ? dataRecord.canopy_turn_user_message_id
+                  : undefined;
+              const isIdleStatusEvent =
+                dataRecord?.type === 'system' &&
+                dataRecord.subtype === 'status' &&
+                dataRecord.status === 'idle';
+              // A delegate's snapshot keeps the tag of the turn that started
+              // it. Like the router and the worktree route, deliver it under
+              // any root, including a rejected one.
+              const ownedDelegation = isOwnedDelegationEvent(data);
+
+              if (
+                pickupUserMessageId === undefined &&
+                !ownedDelegation &&
+                taggedRootId !== undefined &&
+                rejectedTurnRoots.has(taggedRootId)
+              ) {
+                if (isIdleStatusEvent) {
+                  // Lifecycle activity already has its own session-manager
+                  // listeners. Wake phase-13a reconciliation without
+                  // feeding a rejected root back through canonical ingest.
+                  getChatQueueService().reconcileSessionActivity();
+                } else if (
+                  dataRecord &&
+                  isRootTerminalChatEventData(dataRecord, codexRootThreadId)
+                ) {
+                  const rejectedLease = rejectedTurnRoots.get(taggedRootId);
+                  if (rejectedLease) {
+                    getChatQueueService().rollbackTurnRevival(
+                      { projectId, worktreeId, chatId },
+                      rejectedLease,
+                    );
+                  }
+                }
+                markPersistenceSettled?.();
+                return;
+              }
+
+              // Router-accepted output can arrive after canonical pickup
+              // rejection. Drop a different tagged root before canonical
+              // ingest so it cannot revive state under the current root.
+              if (
+                pickupUserMessageId === undefined &&
+                !ownedDelegation &&
+                dataRecord &&
+                typeof dataRecord.canopy_turn_user_message_id === 'string' &&
+                dataRecord.canopy_turn_user_message_id !==
+                  executionUserMessageId
+              ) {
+                markPersistenceSettled?.();
+                return;
+              }
+
+              const ingestResult =
+                await chatStateService.ingestProviderEventWithResult({
                   projectId,
                   worktreeId,
                   chatId,
@@ -2204,8 +2378,63 @@ export function registerChatHandlers(
                   turnUserMessageId: executionUserMessageId,
                 });
               markPersistenceSettled?.();
+              if (pickupUserMessageId !== undefined && dataRecord) {
+                const queue = getChatQueueService();
+                const target = { projectId, worktreeId, chatId };
+
+                // Router refusal is definitive: it must never surface a
+                // pickup that the route itself declined to adopt.
+                if (turnRootAcceptance?.accepted === false) return;
+
+                if (ingestResult.pickup === 'rejected') {
+                  // Stop may leave a same-root dispatch running while the
+                  // canonical ledger rejects an ambiguous/unknown attempt.
+                  // That verdict cannot release or switch the live root.
+                  if (
+                    pickupUserMessageId !== executionUserMessageId &&
+                    turnRootAcceptance?.accepted === true
+                  ) {
+                    const lease = turnRootAcceptance.lease;
+                    if (lease) queue.rollbackTurnRevival(target, lease);
+                    if (!rejectedTurnRoots.has(pickupUserMessageId)) {
+                      rejectedTurnRoots.set(pickupUserMessageId, lease);
+                    }
+                  }
+                  return;
+                }
+
+                if (turnRootAcceptance?.accepted === true) {
+                  const lease = turnRootAcceptance.lease;
+                  const pickupAccepted =
+                    ingestResult.pickup === 'accepted' ||
+                    ingestResult.pickup === 'already-accepted';
+                  if (!pickupAccepted) {
+                    if (pickupUserMessageId !== executionUserMessageId) {
+                      if (lease) queue.rollbackTurnRevival(target, lease);
+                      if (!rejectedTurnRoots.has(pickupUserMessageId)) {
+                        rejectedTurnRoots.set(pickupUserMessageId, lease);
+                      }
+                    }
+                    return;
+                  }
+                  if (lease) {
+                    if (!queue.confirmTurnRevival(target, lease)) {
+                      queue.rollbackTurnRevival(target, lease);
+                      if (pickupUserMessageId !== executionUserMessageId) {
+                        if (!rejectedTurnRoots.has(pickupUserMessageId)) {
+                          rejectedTurnRoots.set(pickupUserMessageId, lease);
+                        }
+                      }
+                      return;
+                    }
+                    executionUserMessageId = pickupUserMessageId;
+                    rejectedTurnRoots.delete(pickupUserMessageId);
+                  }
+                }
+              }
+
               // Activity-only events carry no durable change but are live.
-              if (outcome === 'not-applied') {
+              if (ingestResult.outcome === 'not-applied') {
                 // Codex emits turn.completed before its synthesized result.
                 // The result can therefore be a canonical no-op even though
                 // the renderer still needs that single cancellation-aware
@@ -2233,30 +2462,6 @@ export function registerChatHandlers(
                 }
                 return;
               }
-              if (
-                isRecord(data) &&
-                data.type === 'canopy_input_delivery' &&
-                data.phase === 'picked-up' &&
-                data.startsTurn === true &&
-                typeof data.userMessageId === 'string'
-              ) {
-                const queue = getChatQueueService();
-                const target = { projectId, worktreeId, chatId };
-                let pickupAccepted: boolean;
-                if (data.turnRootAccepted === false) {
-                  pickupAccepted = false;
-                } else if (data.turnRootAccepted === true) {
-                  queue.confirmTurnRevived(target, data.userMessageId);
-                  pickupAccepted = true;
-                } else {
-                  pickupAccepted = queue.onTurnRevived(
-                    target,
-                    data.userMessageId,
-                  );
-                }
-                if (!pickupAccepted) return;
-                executionUserMessageId = data.userMessageId;
-              }
               deliverSessionEvent(data, occurredAt);
             })
             .catch((error: unknown) => {
@@ -2274,9 +2479,9 @@ export function registerChatHandlers(
           getWindow,
           {
             turnUserMessageId: userMessageId,
-            acceptTurnRoot: async (turnUserMessageId): Promise<boolean> => {
+            acceptTurnRoot: async (turnUserMessageId) => {
               await sessionEventCommitTail;
-              return getChatQueueService().onTurnRevived(
+              return getChatQueueService().acceptTurnRevival(
                 { projectId, worktreeId, chatId },
                 turnUserMessageId,
               );
@@ -2301,128 +2506,180 @@ export function registerChatHandlers(
           { projectId, worktreeId, chatId },
           async (request) => {
             request.signal.throwIfAborted();
-            const resumedRuntime = model
-              ? await resolveAgentModelRuntime({
-                  projectId: standaloneProjectId,
-                  model,
-                  systemPromptAppend,
-                  pluginSelections:
-                    request.pluginSelections ?? pluginSelections,
-                  providerType: request.providerType ?? effectiveProviderType,
-                })
-              : undefined;
-            const resumedProviderType =
-              resumedRuntime?.providerType ??
-              request.providerType ??
-              runtimeProviderType;
-            // The renderer normally captures the init event's session id,
-            // but deferred loading can begin in the same turn that created
-            // the Codex thread. Read the provider-owned id from the old
-            // session as the authoritative fallback so destroying that
-            // session never turns capability materialization into a fresh,
-            // history-less start because of renderer event timing.
-            const providerSessionId = session.getProviderSessionId?.();
-            const resumedSession = await getOrCreateRoutedSession(
-              {
-                ...sessionOptions,
-                approvalMode:
-                  getLiveApprovalMode(projectId, worktreeId, chatId) ??
-                  sessionOptions.approvalMode,
-                model: resumedRuntime?.runtimeModel ?? runtimeModel,
-                ...claudeContinuationSession(sessionOptions, {
-                  requestedSessionId: request.sdkSessionId,
-                  providerSessionId,
-                }),
-                pluginSelections: await normalizeAccountMcpSelections(
+            // The continuation is admitted through the hold the reload took
+            // at its interruption, once its predecessor's end commits, as the
+            // worktree and App Advisor continuations are.
+            const admission =
+              await getChatQueueService().admitDirectDispatchWhenAllowed(
+                { projectId, worktreeId, chatId },
+                request.userMessageId,
+                request.signal,
+                request.requestId,
+              );
+            if (!admission)
+              throw new Error('The reload could not continue this chat.');
+            try {
+              request.signal.throwIfAborted();
+              const resumedRuntime = model
+                ? await resolveAgentModelRuntime({
+                    projectId: standaloneProjectId,
+                    model,
+                    systemPromptAppend,
+                    pluginSelections:
+                      request.pluginSelections ?? pluginSelections,
+                    providerType: request.providerType ?? effectiveProviderType,
+                  })
+                : undefined;
+              const resumedProviderType =
+                resumedRuntime?.providerType ??
+                request.providerType ??
+                runtimeProviderType;
+              // The renderer normally captures the init event's session id,
+              // but deferred loading can begin in the same turn that created
+              // the Codex thread. Read the provider-owned id from the old
+              // session as the authoritative fallback so destroying that
+              // session never turns capability materialization into a fresh,
+              // history-less start because of renderer event timing.
+              const providerSessionId = session.getProviderSessionId?.();
+              const resumedPluginSelections =
+                await normalizeAccountMcpSelections(
                   resumedRuntime?.pluginSelections ??
                     request.pluginSelections ??
                     sessionPluginSelections,
-                ),
-                systemPromptAppend:
-                  resumedRuntime?.systemPromptAppend ??
-                  runtime?.systemPromptAppend ??
-                  systemPromptAppend,
-                providerType: resumedProviderType,
-                codexAppServerIdleTimeoutMinutes:
-                  resumedProviderType === 'codex'
-                    ? preferences?.codexAppServerIdleTimeoutMinutes
-                    : undefined,
-                codexMaxConcurrentSubagents:
-                  resumedProviderType === 'codex'
-                    ? preferences?.codexMaxConcurrentSubagents
-                    : undefined,
-                codexMultiAgentEnabled:
-                  resumedProviderType === 'codex'
-                    ? preferences?.codexMultiAgentStandaloneChatsEnabled
-                    : undefined,
-              },
-              handleSessionEvent,
-              getWindow,
-              {
-                turnUserMessageId: userMessageId,
-                acceptTurnRoot: async (turnUserMessageId): Promise<boolean> => {
-                  await sessionEventCommitTail;
-                  return getChatQueueService().onTurnRevived(
-                    { projectId, worktreeId, chatId },
-                    turnUserMessageId,
-                  );
-                },
-                drainEventsBeforeRemoval: () => sessionEventCommitTail,
-              },
-            );
-            getObservabilityService().recordInjectedPromptForOpenChatTurn(
-              projectId,
-              worktreeId,
-              chatId,
-              {
-                kind: 'system_prompt_append',
-                provider: resumedProviderType,
-                applicationCondition: 'deferred_tools_reload_continuation',
-                text: request.continuationText,
-                deferredToolsReload: {
-                  enabledResources: request.enabledResources,
-                },
-              },
-            );
-            if (typeof planMode === 'boolean') {
-              await resumedSession.setPlanMode(planMode);
-            }
-            if (
-              (resumedProviderType === 'claude' ||
-                resumedProviderType === 'cursor' ||
-                resumedProviderType === 'copilot' ||
-                resumedProviderType === 'opencode') &&
-              resumedSession.setRtkEnabled
-            ) {
-              await resumedSession.setRtkEnabled(rtkEnabled);
-            }
-            if (codexProposalMode && resumedSession.setCodexProposalMode) {
-              await resumedSession.setCodexProposalMode(codexProposalMode);
-            }
-            const resumedCodexIdleTimeoutMinutes =
-              preferences?.codexAppServerIdleTimeoutMinutes;
-            if (
-              resumedProviderType === 'codex' &&
-              typeof resumedCodexIdleTimeoutMinutes === 'number' &&
-              resumedSession.setCodexAppServerIdleTimeoutMinutes
-            ) {
-              await resumedSession.setCodexAppServerIdleTimeoutMinutes(
-                resumedCodexIdleTimeoutMinutes,
+                );
+              const resumedAuthority = await resolveChatTurnApprovalAuthority(
+                turnApprovalTarget,
+                { checkAdmission: false },
               );
+              setLiveApprovalMode(
+                projectId,
+                worktreeId,
+                chatId,
+                resumedAuthority.chatApprovalMode,
+              );
+              const resumedSession = await getOrCreateRoutedSession(
+                {
+                  ...sessionOptions,
+                  approvalMode: resumedAuthority.approvalMode,
+                  sessionApprovalRules: resumedAuthority.sessionApprovalRules,
+                  model: resumedRuntime?.runtimeModel ?? runtimeModel,
+                  ...claudeContinuationSession(sessionOptions, {
+                    requestedSessionId: request.sdkSessionId,
+                    providerSessionId,
+                  }),
+                  pluginSelections: resumedPluginSelections,
+                  systemPromptAppend:
+                    resumedRuntime?.systemPromptAppend ??
+                    runtime?.systemPromptAppend ??
+                    systemPromptAppend,
+                  providerType: resumedProviderType,
+                  codexAppServerIdleTimeoutMinutes:
+                    resumedProviderType === 'codex'
+                      ? preferences?.codexAppServerIdleTimeoutMinutes
+                      : undefined,
+                  codexMaxConcurrentSubagents:
+                    resumedProviderType === 'codex'
+                      ? preferences?.codexMaxConcurrentSubagents
+                      : undefined,
+                  codexMultiAgentEnabled:
+                    resumedProviderType === 'codex'
+                      ? preferences?.codexMultiAgentStandaloneChatsEnabled
+                      : undefined,
+                },
+                handleSessionEvent,
+                getWindow,
+                {
+                  turnUserMessageId: userMessageId,
+                  acceptTurnRoot: async (turnUserMessageId) => {
+                    await sessionEventCommitTail;
+                    return getChatQueueService().acceptTurnRevival(
+                      { projectId, worktreeId, chatId },
+                      turnUserMessageId,
+                    );
+                  },
+                  drainEventsBeforeRemoval: () => sessionEventCommitTail,
+                },
+              );
+              getObservabilityService().recordInjectedPromptForOpenChatTurn(
+                projectId,
+                worktreeId,
+                chatId,
+                {
+                  kind: 'system_prompt_append',
+                  provider: resumedProviderType,
+                  applicationCondition: 'deferred_tools_reload_continuation',
+                  text: request.continuationText,
+                  deferredToolsReload: {
+                    enabledResources: request.enabledResources,
+                  },
+                },
+              );
+              if (typeof planMode === 'boolean') {
+                await resumedSession.setPlanMode(planMode);
+              }
+              if (
+                (resumedProviderType === 'claude' ||
+                  resumedProviderType === 'cursor' ||
+                  resumedProviderType === 'copilot' ||
+                  resumedProviderType === 'opencode') &&
+                resumedSession.setRtkEnabled
+              ) {
+                await resumedSession.setRtkEnabled(rtkEnabled);
+              }
+              if (codexProposalMode && resumedSession.setCodexProposalMode) {
+                await resumedSession.setCodexProposalMode(codexProposalMode);
+              }
+              const resumedCodexIdleTimeoutMinutes =
+                preferences?.codexAppServerIdleTimeoutMinutes;
+              if (
+                resumedProviderType === 'codex' &&
+                typeof resumedCodexIdleTimeoutMinutes === 'number' &&
+                resumedSession.setCodexAppServerIdleTimeoutMinutes
+              ) {
+                await resumedSession.setCodexAppServerIdleTimeoutMinutes(
+                  resumedCodexIdleTimeoutMinutes,
+                );
+              }
+              await applyAgentSessionCodexSpeed(
+                resumedSession,
+                effectiveModelConfig.speed,
+              );
+              const liveResumedAuthority =
+                await resolveChatTurnApprovalAuthority(turnApprovalTarget, {
+                  checkAdmission: false,
+                });
+              restrictSessionApprovalRules(
+                projectId,
+                worktreeId,
+                chatId,
+                liveResumedAuthority.sessionApprovalRules,
+              );
+              setLiveApprovalMode(
+                projectId,
+                worktreeId,
+                chatId,
+                liveResumedAuthority.chatApprovalMode,
+              );
+              await resumedSession.setApprovalMode(
+                liveResumedAuthority.approvalMode,
+              );
+              consumeDispatchAuthorization(admission.authorization, {
+                projectId,
+                worktreeId,
+                chatId,
+                userMessageId: request.userMessageId,
+              });
+              reservePromptBindingSlot(
+                { projectId, worktreeId, chatId },
+                request.userMessageId,
+              );
+              resumedSession.sendMessage(request.continuationText, {
+                userMessageId: request.userMessageId,
+              });
+            } catch (error) {
+              admission.release();
+              throw error;
             }
-            await applyAgentSessionCodexSpeed(
-              resumedSession,
-              effectiveModelConfig.speed,
-            );
-            const resumedApprovalMode =
-              getLiveApprovalMode(projectId, worktreeId, chatId) ??
-              sessionOptions.approvalMode;
-            if (resumedApprovalMode) {
-              await resumedSession.setApprovalMode(resumedApprovalMode);
-            }
-            resumedSession.sendMessage(request.continuationText, {
-              userMessageId: request.userMessageId,
-            });
             if (request.signal.aborted) {
               await destroySession(projectId, worktreeId, chatId, {
                 retainDelegations: true,
@@ -2495,9 +2752,19 @@ export function registerChatHandlers(
         if (typeof planMode === 'boolean') {
           await session.setPlanMode(planMode);
         }
-        if (approvalMode) {
-          await session.setApprovalMode(approvalMode);
-        }
+        // Authority narrowed while the session was created, or held by a
+        // reused session, still applies.
+        const liveApprovalAuthority = await resolveChatTurnApprovalAuthority(
+          turnApprovalTarget,
+          { checkAdmission: false },
+        );
+        restrictSessionApprovalRules(
+          projectId,
+          worktreeId,
+          chatId,
+          liveApprovalAuthority.sessionApprovalRules,
+        );
+        await session.setApprovalMode(liveApprovalAuthority.approvalMode);
         if (
           (effectiveExecutionHarness === 'claude' ||
             effectiveExecutionHarness === 'cursor' ||
@@ -2544,7 +2811,12 @@ export function registerChatHandlers(
         }
         const dispatchStartedAt = Date.now();
         try {
+          reservePromptBindingSlot(
+            { projectId, worktreeId, chatId },
+            userMessageId,
+          );
           session.sendMessage(submittedText, {
+            userMessageId,
             ...(effectiveExecutionHarness === 'opencode' &&
             !req.hiddenContext &&
             attachmentPaths &&
@@ -2556,7 +2828,6 @@ export function registerChatHandlers(
                   },
                 }
               : {}),
-            userMessageId,
             countsTowardSkillUsage:
               (validatedInitiationSource === 'user' ||
                 validatedInitiationSource === 'portal') &&
@@ -2723,21 +2994,24 @@ export function registerChatHandlers(
       ...(modelRoutingNotice ? { modelRoutingNotice } : {}),
     };
   };
-  const dispatchChatMessageNow = withChatScopeActivity((event, req) =>
-    dispatchChatMessageNowBody(event, req, false),
+  const dispatchChatMessageNow = withChatScopeActivity(
+    (event, req, authorization) =>
+      dispatchChatMessageNowBody(event, req, authorization, false),
   );
   // Only the main-owned special-native dispatcher reaches this entry. The
   // caller revalidates captured sender provenance before dispatch; renderer
   // and Portal paths use the guarded public wrapper above.
   const dispatchMainOwnedAgentChatMessageNow = withChatScopeActivity(
-    (event, req) => dispatchChatMessageNowBody(event, req, true),
+    (event, req, authorization) =>
+      dispatchChatMessageNowBody(event, req, authorization, true),
     { allowMainOwnedAgentInput: true },
   );
   setSpecialNativeChatDispatcher(
-    async (request): Promise<void> => {
+    async (request, authorization): Promise<void> => {
       const result = await dispatchMainOwnedAgentChatMessageNow(
         undefined,
         request,
+        authorization,
       );
       if (result.modelRoutingNotice) {
         autoRoutingNotices.set(
@@ -2760,6 +3034,15 @@ export function registerChatHandlers(
   registerIpcHandler<[ChatSendMessageRequest], ChatSendMessageResult>(
     IPC_CHANNELS.chatSendMessage,
     withChatScopeActivity(async (event, req) => {
+      assertUntrustedChatInput(req);
+      if (
+        req.watcherFired?.kind === DELEGATION_NOTICE_KIND &&
+        req.watcherDeliveryId === undefined
+      ) {
+        throw new Error(
+          'Delegation completion notices require a validated watcher delivery.',
+        );
+      }
       if (req.watcherDeliveryId !== undefined)
         validateId(req.watcherDeliveryId, 'watcherDeliveryId');
       // Dispatch rechecks authority at later awaits; every recheck can hold.
@@ -2769,14 +3052,19 @@ export function registerChatHandlers(
         // This handler receives composer sends. Internal services must opt in
         // explicitly so agent-authored messages cannot inherit user eligibility.
         // `agentSent` is main-owned provenance from a validated Portal origin
-        // or an agent send; a renderer can never supply it.
+        // or an agent send, and `admittedApproval` what main admitted an
+        // agent send against; a renderer can never supply either.
         const {
           resumesInterruptedTurn: _resumes,
+          autoResume: _autoResume,
           agentSent: _agentSent,
+          admittedApproval: _admitted,
           ...composerReq
         } = req;
         void _resumes;
+        void _autoResume;
         void _agentSent;
+        void _admitted;
         req = {
           ...composerReq,
           initiationSource: isUsageInitiationSource(req.initiationSource)
@@ -2924,6 +3212,14 @@ export function registerChatHandlers(
             req.worktreeId,
             req.chatId,
           );
+          // Resume is an ordinary admission: its D precedes every prompt and
+          // start effect. A blocked admission fails retryably below.
+          const admission = await getChatQueueService().admitDirectDispatch(
+            req,
+            req.userMessageId,
+          );
+          if (!admission)
+            throw new Error('Another turn owns this chat; Resume must wait.');
           // A newer turn may supersede this resume while canonical metadata is
           // loading. No await follows this check before the queue reservation.
           if (
@@ -2934,19 +3230,32 @@ export function registerChatHandlers(
               attemptId,
             )
           ) {
+            admission.release();
             return false;
           }
-          await resumeStoppedWorktreeChatTurn(
-            {
-              projectId: req.projectId,
-              worktreeId: req.worktreeId,
-              chatId: req.chatId,
-              userMessageId: req.userMessageId,
-              ...canonicalDispatch,
-            },
-            attemptId,
-            { getWindow },
-          );
+          try {
+            await resumeStoppedWorktreeChatTurn(
+              {
+                projectId: req.projectId,
+                worktreeId: req.worktreeId,
+                chatId: req.chatId,
+                userMessageId: req.userMessageId,
+                ...canonicalDispatch,
+              },
+              attemptId,
+              {
+                getWindow,
+                ...(admission.authorization
+                  ? {
+                      queueDispatch: { authorization: admission.authorization },
+                    }
+                  : {}),
+              },
+            );
+          } catch (error) {
+            admission.release();
+            throw error;
+          }
           return true;
         }),
     );
@@ -3374,15 +3683,29 @@ export function registerChatHandlers(
       );
       const session = getSession(req.projectId, req.worktreeId, req.chatId);
       if (session) {
-        await session.setPlanMode(req.enabled);
+        if (
+          !sessionHasActiveTurnOrNativeWork(
+            req.projectId,
+            req.worktreeId,
+            req.chatId,
+          )
+        ) {
+          await session.setPlanMode(req.enabled);
+        }
         if (!isCoworkWorkspace(req.projectId)) {
           markSessionForNextTurnRecreation(
             req.projectId,
             req.worktreeId,
             req.chatId,
+            'plan',
           );
         }
       }
+      getChatQueueService().refreshRestartHold({
+        projectId: req.projectId,
+        worktreeId: req.worktreeId,
+        chatId: req.chatId,
+      });
     },
   );
 
@@ -3462,17 +3785,21 @@ export function registerChatHandlers(
         async () => {
           try {
             const settledRuntimeUpdates = await runtimeUpdates;
-            await commitCanonicalTabSettings(
+            // A failed commit rejects the handler with live and runtimes
+            // already restricted; a restart restores the saved, wider mode.
+            // Accepted (CAN-4469 O6): the user was told the change failed.
+            await commitCanonicalApprovalMode(
               req.projectId,
               req.worktreeId,
               req.chatId,
-              { approvalMode: req.mode },
+              req.mode,
             );
             if (session && !isCoworkWorkspace(req.projectId)) {
               markSessionForNextTurnRecreation(
                 req.projectId,
                 req.worktreeId,
                 req.chatId,
+                'approval',
               );
             }
             const failedRuntimeUpdate = settledRuntimeUpdates.find(
@@ -3545,11 +3872,11 @@ export function registerChatHandlers(
         // A more permissive mode must be durable before any live process can use
         // it. Restrictive transitions are handled above before entering the
         // durable-operation queue.
-        await commitCanonicalTabSettings(
+        await commitCanonicalApprovalMode(
           req.projectId,
           req.worktreeId,
           req.chatId,
-          { approvalMode: req.mode },
+          req.mode,
         );
         const session = getSession(req.projectId, req.worktreeId, req.chatId);
         let sessionModeUpdated = false;
@@ -3655,6 +3982,9 @@ export function registerChatHandlers(
               req.chatId,
               rollbackMode,
             );
+            // A failed rollback commit leaves the saved tab escalated, and a
+            // restart restores that mode. Accepted (CAN-4469 O6): the handler
+            // still rejects below, so the user is told the change failed.
             await Promise.allSettled([
               ...(session && sessionModeUpdated
                 ? [session.setApprovalMode(rollbackMode)]
@@ -3665,11 +3995,11 @@ export function registerChatHandlers(
                 req.chatId,
                 rollbackMode,
               ),
-              commitCanonicalTabSettings(
+              commitCanonicalApprovalMode(
                 req.projectId,
                 req.worktreeId,
                 req.chatId,
-                { approvalMode: rollbackMode },
+                rollbackMode,
               ),
             ]);
           }
@@ -3725,6 +4055,7 @@ export function registerChatHandlers(
             req.projectId,
             req.worktreeId,
             req.chatId,
+            'approval',
           );
         }
         endApprovalModeTransition(
@@ -3829,7 +4160,14 @@ export function registerChatHandlers(
         level: req.level,
       });
       const session = getSession(req.projectId, req.worktreeId, req.chatId);
-      if (session) {
+      if (
+        session &&
+        !sessionHasActiveTurnOrNativeWork(
+          req.projectId,
+          req.worktreeId,
+          req.chatId,
+        )
+      ) {
         await session.setThinkingLevel(req.level);
       }
     },
@@ -3869,6 +4207,9 @@ export function registerChatHandlers(
       activeInfoAtUpdateStart?.executionHarness === 'codex' &&
       activeInfoAtUpdateStart.turnActive &&
       !deferredReloadActive;
+    recreateAfterActiveCodexTurn =
+      recreateAfterActiveCodexTurn ||
+      chatHasNativeBackgroundWork(projectId, worktreeId, chatId);
     if (
       activeInfoAtUpdateStart?.executionHarness === 'codex' &&
       (activeInfoAtUpdateStart.pendingMessageCount ?? 0) > 0
@@ -3928,9 +4269,15 @@ export function registerChatHandlers(
               'Wait for queued Codex messages to finish before updating tools',
             );
           }
+          const hasNativeBackgroundWork = chatHasNativeBackgroundWork(
+            projectId,
+            worktreeId,
+            chatId,
+          );
           recreateAfterActiveCodexTurn =
             recreateAfterActiveCodexTurn ||
-            (Boolean(activeInfo?.turnActive) && !deferredReloadActive);
+            (Boolean(activeInfo?.turnActive) && !deferredReloadActive) ||
+            hasNativeBackgroundWork;
           if (recreateAfterActiveCodexTurn) {
             // Keep the in-flight turn on its original immutable capability
             // snapshot. The renderer persists the new selections immediately;
@@ -4204,13 +4551,24 @@ export function registerChatHandlers(
         projectId,
         worktreeId,
       ).find((info) => info.chatId === chatId);
+      const hasNativeBackgroundWork = chatHasNativeBackgroundWork(
+        projectId,
+        worktreeId,
+        chatId,
+      );
       recreateAfterActiveCodexTurn =
         recreateAfterActiveCodexTurn ||
         (latestActiveInfo?.executionHarness === 'codex' &&
           latestActiveInfo.turnActive &&
-          !deferredReloadActive);
+          !deferredReloadActive) ||
+        hasNativeBackgroundWork;
       if (recreateAfterActiveCodexTurn) {
-        markSessionForNextTurnRecreation(projectId, worktreeId, chatId);
+        markSessionForNextTurnRecreation(
+          projectId,
+          worktreeId,
+          chatId,
+          'plugins',
+        );
       } else {
         // Destroy the idle session so the next sendMessage creates a new one
         // with the updated plugin selections. Claude resumes via sdkSessionId.
@@ -4222,6 +4580,7 @@ export function registerChatHandlers(
         });
       }
     }
+    getChatQueueService().refreshRestartHold({ projectId, worktreeId, chatId });
 
     // The desired plugin snapshot was persisted above under the transition
     // lock; the renderer still mirrors the response into its local tab state.

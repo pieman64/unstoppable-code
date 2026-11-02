@@ -11,7 +11,7 @@ const VIEWPORT_SIZE = { width: 1400, height: 800 };
 const SETTLE_MS = 500;
 const POSITION_TOLERANCE_PX = 0.5;
 
-async function openHome(electronApp, { onboardingCard = false } = {}) {
+async function openHome(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
@@ -19,14 +19,8 @@ async function openHome(electronApp, { onboardingCard = false } = {}) {
 
   const homePage = window.getByTestId('page-home');
   await expect(homePage).toBeVisible();
-  // Every install runs the onboarding suggestions module in production; the
-  // default harness launch holds it back. Specs that opt the module in wait
-  // for its card; the default launch waits for the composer itself (the
-  // workspace-readiness block that used to sit under it left with #3519).
   await expect(
-    homePage.getByTestId(
-      onboardingCard ? 'home-onboarding-suggestions' : 'home-composer-editor',
-    ),
+    homePage.getByTestId('home-composer-editor').locator('visible=true'),
   ).toBeVisible();
   await window.waitForTimeout(SETTLE_MS);
   return { window, homePage };
@@ -101,7 +95,7 @@ test('typing and picker activation do not move the composer', async () => {
   }
 });
 
-test('typing and picker activation do not move the composer with the onboarding card', async () => {
+test('typing and picker activation do not move the composer with legacy setup preferences', async () => {
   // The production default for an existing install: the module is live and
   // its card sits where the chips and readiness block otherwise would.
   const { electronApp, userDataDir } = await launchCanopy({

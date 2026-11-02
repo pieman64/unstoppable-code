@@ -7,6 +7,7 @@ import {
   copyTextToClipboard,
   FloatingMenu,
   FLOATING_PICKER_GAP,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
   CopyIcon,
@@ -507,15 +508,15 @@ export function DigestShareControls({
               disabled={saving}
               onClick={requestToggleSharing}
               data-testid="digest-sharing-toggle"
-              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              className={`relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                 sharingEnabled
                   ? 'bg-accent hover:bg-accent/90'
-                  : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
+                  : 'bg-fg-quaternary hover:bg-fg-tertiary'
               }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-                  sharingEnabled ? 'translate-x-6' : 'translate-x-1'
+                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-fg-emphasis transition-transform ${
+                  sharingEnabled ? 'translate-x-4' : 'translate-x-0.5'
                 }`}
               />
             </button>
@@ -537,7 +538,7 @@ export function DigestShareControls({
                 />
                 <Button
                   ref={copyRef}
-                  variant="primary"
+                  variant="secondary"
                   size="compact"
                   disabled={saving}
                   onClick={(): void => void copyLink()}
@@ -549,7 +550,7 @@ export function DigestShareControls({
               </div>
               <div>
                 <Button
-                  variant="ghost"
+                  variant="secondary"
                   size="compact"
                   disabled={saving}
                   onClick={(): void => requestConfirmation('rotate')}
@@ -610,19 +611,15 @@ export function DigestShareControls({
                         </span>
                       )}
                     </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={audience.featured}
-                      aria-label={`Share on your ${audience.organizationName} profile`}
+                    <ToggleSwitch
                       // Ties the lapse explanation to the control it explains.
                       // Without it a screen-reader user meets a disabled toggle
                       // whose `aria-label` says nothing about why, and the
                       // reason is only available as unassociated adjacent text.
-                      // `aria-describedby` on a disabled native <button> is
+                      // `aria-describedby` on a disabled native button is
                       // still announced by major screen readers, so this does
                       // reach the user.
-                      aria-describedby={
+                      describedBy={
                         audience.lapsed
                           ? `digest-profile-audience-lapsed-${audience.organizationId}`
                           : undefined
@@ -639,20 +636,11 @@ export function DigestShareControls({
                       disabled={
                         saving || (audience.lapsed && !audience.featured)
                       }
-                      onClick={(): void => requestToggleFeature(audience)}
-                      data-testid={`digest-profile-audience-toggle-${audience.organizationId}`}
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                        audience.featured
-                          ? 'bg-accent hover:bg-accent/90'
-                          : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-                          audience.featured ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                      />
-                    </button>
+                      checked={audience.featured}
+                      label={`Share on your ${audience.organizationName} profile`}
+                      onChange={(): void => requestToggleFeature(audience)}
+                      dataTestId={`digest-profile-audience-toggle-${audience.organizationId}`}
+                    />
                   </li>
                 ))}
               </ul>

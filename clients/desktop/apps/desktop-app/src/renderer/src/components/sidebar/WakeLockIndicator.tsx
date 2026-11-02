@@ -71,16 +71,16 @@ export function WakeLockIndicatorView({
     state.holderCount === 1
       ? pt({
           default:
-            'Sleep paused: 1 active agent or pipeline. Your device can lock and turn off the display.',
+            'Sleep paused: 1 active agent or workflow. Your device can lock and turn off the display.',
           darwin:
-            'Sleep paused: 1 active agent or pipeline. Your Mac can lock and turn off the display.',
+            'Sleep paused: 1 active agent or workflow. Your Mac can lock and turn off the display.',
           win32:
-            'Sleep paused: 1 active agent or pipeline. Your PC can lock and turn off the display.',
+            'Sleep paused: 1 active agent or workflow. Your PC can lock and turn off the display.',
         })
       : pt({
-          default: `Sleep paused: ${state.holderCount} active agents or pipelines. Your device can lock and turn off the display.`,
-          darwin: `Sleep paused: ${state.holderCount} active agents or pipelines. Your Mac can lock and turn off the display.`,
-          win32: `Sleep paused: ${state.holderCount} active agents or pipelines. Your PC can lock and turn off the display.`,
+          default: `Sleep paused: ${state.holderCount} active agents or workflows. Your device can lock and turn off the display.`,
+          darwin: `Sleep paused: ${state.holderCount} active agents or workflows. Your Mac can lock and turn off the display.`,
+          win32: `Sleep paused: ${state.holderCount} active agents or workflows. Your PC can lock and turn off the display.`,
         });
 
   // The pill's short label ("Sleep paused") is always visible, so the tooltip

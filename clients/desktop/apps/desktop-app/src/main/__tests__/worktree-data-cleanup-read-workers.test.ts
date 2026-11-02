@@ -109,6 +109,9 @@ jest.mock('../observability/worktree-cleanup', () => ({
 jest.mock('../browser/browser-service-registry', () => ({
   getBrowserService: jest.fn(() => null),
 }));
+jest.mock('../panels/persistence', () => ({
+  panelLayoutPersistenceStore: { cancelPendingWrite: jest.fn() },
+}));
 const mockedCloseWorktree = jest.fn((): Promise<void> => {
   events.push('close');
   return Promise.resolve();

@@ -102,6 +102,11 @@ export interface CreateCanopyRuntimeOptions<
 > {
   profile: CanopyRuntimeProfile;
   identity: CanopyRuntimeIdentity;
+  /**
+   * The epoch of this runtime's cursors, when the host also issues cursors
+   * from another journal it composes (W5e); fresh per runtime by default.
+   */
+  daemonEpoch?: string;
   definitions: CanopyRuntimeDefinitionMaps<Q, I, S>;
   /** Owners of every host operation; `core.runtime` owns the runtime's own. */
   owners: readonly RuntimeOperationOwner[];
@@ -173,7 +178,7 @@ export function createCanopyRuntime<
   });
 
   const journal = createEventJournal<CanopyRuntimeEvent>({
-    epoch: `runtime:${crypto.randomUUID()}`,
+    epoch: options.daemonEpoch ?? `runtime:${crypto.randomUUID()}`,
   });
   const descriptor = (
     state: CoreRuntimeDescriptor['state'],

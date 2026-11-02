@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import ts from 'typescript';
 
-// The checker, not ts-jest's transpile-only pass, proves these surfaces.
+// The checker, not Jest's transpile-only SWC pass, proves these surfaces.
 const header = `
 import type { InProcessCanopyClient as Local } from '@canopy/core-runtime';
 import type {

@@ -61,7 +61,13 @@ function activity(id, name, action) {
 // me" lists.
 const VIEWER_ID = 'account-e2e';
 
-function sharedAutomation(id, name, owner, createdById = 'can3448-author') {
+function sharedAutomation(
+  id,
+  name,
+  owner,
+  createdById = 'can3448-author',
+  publicShare = null,
+) {
   return {
     id,
     name,
@@ -76,9 +82,46 @@ function sharedAutomation(id, name, owner, createdById = 'can3448-author') {
     createdBy: { id: createdById, name: 'Author', email: null },
     canUpdate: false,
     canDelete: false,
-    publicShare: null,
+    publicShare,
   };
 }
+
+// Built-in automations come from the curated catalog: the cloud never shares
+// an automation as a system owner, so a built-in one is a curated row
+// (CAN-4261).
+const BUILT_IN_KEY = 'built-in-digest';
+const BUILT_IN_AUTOMATION = {
+  version: 1,
+  name: 'Built-in digest',
+  description: 'Summarize the day.',
+  trigger: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+  action: { type: 'app_advisor_prompt', prompt: 'Summarize.', plugins: [] },
+  hasRunCondition: false,
+};
+const BUILT_IN = {
+  key: BUILT_IN_KEY,
+  name: BUILT_IN_AUTOMATION.name,
+  shortDescription: BUILT_IN_AUTOMATION.description,
+  icon: '',
+  triggerKind: 'cron',
+  cronExpression: BUILT_IN_AUTOMATION.trigger.expression,
+  actionType: 'app_advisor_prompt',
+  pipelineSource: null,
+  referencedCuratedPipelineKey: null,
+  pluginCount: 0,
+  contentHash: 'b'.repeat(64),
+  contentSizeBytes: 64,
+  categories: [],
+  popular: false,
+  sortOrder: 0,
+  revision: 1,
+  authorName: null,
+  authorUrl: null,
+  docsUrl: null,
+  createdAt: '2026-09-01T00:00:00.000Z',
+  updatedAt: '2026-09-01T00:00:00.000Z',
+  automation: BUILT_IN_AUTOMATION,
+};
 
 // Shares published by each kind of owner, one per page. Main lists the
 // Personal lane plus the selected organization's lane; the page keeps what
@@ -113,6 +156,14 @@ const SHARED_AUTOMATIONS = [
       name: 'Author',
     },
     VIEWER_ID,
+    {
+      externalId: 'share-personal-link',
+      pinnedContentHash: 'share-personal-hash',
+      upToDate: true,
+      sharePath: '/portal/plugins/automations/shared/share-personal-link',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    },
   ),
   sharedAutomation(
     'share-acme',
@@ -130,7 +181,6 @@ const SHARED_AUTOMATIONS = [
     name: 'Platform',
     organization: { id: ORG_CONTEXT_A, name: 'Acme' },
   }),
-  sharedAutomation('share-system', 'Built-in share', { type: 'system' }),
 ];
 
 function watcher(id, label, destinationProjectId) {
@@ -160,6 +210,7 @@ test('automations follow the selected context and bind an out-of-context target 
       organizations: ORG_CONTEXT_ORGANIZATIONS,
       sharedAutomations: SHARED_AUTOMATIONS,
       sharedAutomationsPageSize: 1,
+      curatedAutomations: [BUILT_IN],
     },
   });
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-can3448-'));
@@ -211,6 +262,14 @@ test('automations follow the selected context and bind an out-of-context target 
             ? `customize-row-automation:shared:${id}`
             : `plugins-entry-automation:shared:${id}`,
         );
+    const builtInRow = () =>
+      window
+        .getByTestId(sharedSection)
+        .getByTestId(
+          sharedSection === 'customize-section-shared-by-me'
+            ? `customize-row-automation:curated:${BUILT_IN_KEY}`
+            : `plugins-entry-automation:curated:${BUILT_IN_KEY}`,
+        );
     const loadMore = window.getByTestId('automation-catalog-load-more');
     const showSharedByMe = async () => {
       sharedSection = 'customize-section-shared-by-me';
@@ -248,7 +307,7 @@ test('automations follow the selected context and bind an out-of-context target 
     await loadRemainingShared();
     await expect(sharedRow('share-acme')).toBeVisible();
     await expect(sharedRow('share-acme-team')).toBeVisible();
-    await expect(sharedRow('share-system')).toBeVisible();
+    await expect(builtInRow()).toBeVisible();
     // A public-link-only share is not a share with anyone, so it only lists
     // under "Shared by me".
     await expect(sharedRow('share-personal')).toBeVisible();
@@ -264,7 +323,7 @@ test('automations follow the selected context and bind an out-of-context target 
     await expect(sharedRow('share-personal')).toBeVisible();
     await expect(sharedRow('share-acme')).toBeVisible();
     await expect(sharedRow('share-acme-team')).toHaveCount(0);
-    await expect(sharedRow('share-system')).toHaveCount(0);
+    await expect(builtInRow()).toHaveCount(0);
     await expect(sharedRow('share-other-org')).toHaveCount(0);
     await expect(sharedRow('share-other-org-2')).toHaveCount(0);
     await app.openAutomationsPage();
@@ -354,7 +413,7 @@ test('automations follow the selected context and bind an out-of-context target 
     await window.getByTestId('plugins-type-tab-workflow').click();
     sharedSection = 'customize-section-browse';
     await loadRemainingShared();
-    await expect(sharedRow('share-system')).toBeVisible();
+    await expect(builtInRow()).toBeVisible();
     await expect(sharedRow('share-personal')).toBeVisible();
     await expect(sharedRow('share-acme')).toHaveCount(0);
     await expect(sharedRow('share-acme-team')).toHaveCount(0);
@@ -366,7 +425,7 @@ test('automations follow the selected context and bind an out-of-context target 
     await expect(sharedRow('share-personal')).toBeVisible();
     await expect(sharedRow('share-acme')).toHaveCount(0);
     await expect(sharedRow('share-acme-team')).toHaveCount(0);
-    await expect(sharedRow('share-system')).toHaveCount(0);
+    await expect(builtInRow()).toHaveCount(0);
     await expect(sharedRow('share-other-org-2')).toHaveCount(0);
   } finally {
     await discardWorkflowEditIfOpen(electronApp);

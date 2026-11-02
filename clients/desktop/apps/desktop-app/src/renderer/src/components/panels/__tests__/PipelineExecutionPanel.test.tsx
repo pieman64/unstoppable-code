@@ -108,6 +108,7 @@ function executionState(
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
       name: 'Build pipeline',
+      scope: ['directory'],
       jobs: {
         build: {
           name: 'Build',
@@ -137,7 +138,7 @@ function executionState(
     cwd: '/repo',
     env: {},
     inputs: {},
-    event_name: 'manual',
+    event_name: 'dispatch',
     project_id: 'project',
     worktree_id: 'worktree',
     ...overrides,
@@ -152,6 +153,7 @@ function summaryFor(state: ExecutionState): ExecutionSummary {
     status: state.status,
     status_reasons: [],
     started_at: state.started_at,
+    cwd: state.cwd,
     project_id: 'project',
     worktree_id: 'worktree',
   };
@@ -283,23 +285,35 @@ function resizeEntry(target: Element, width: number): ResizeObserverEntry {
 }
 
 /** Active `setInterval` ids started through `window`, for timer checks. */
-function trackIntervals(): { active: Set<number>; restore: () => void } {
-  const active = new Set<number>();
-  const realSet = window.setInterval.bind(window);
-  const realClear = window.clearInterval.bind(window);
+function trackIntervals(): {
+  active: Set<ReturnType<typeof globalThis.setInterval> | number | string>;
+  restore: () => void;
+} {
+  const active = new Set<
+    ReturnType<typeof globalThis.setInterval> | number | string
+  >();
+  const realSet = globalThis.setInterval.bind(globalThis);
+  const realClear = globalThis.clearInterval.bind(globalThis);
   const setSpy = jest
     .spyOn(window, 'setInterval')
-    .mockImplementation((handler: TimerHandler, timeout?: number): number => {
-      const id = realSet(handler, timeout);
-      active.add(id);
-      return id;
-    });
+    .mockImplementation(
+      (
+        handler: Parameters<typeof globalThis.setInterval>[0],
+        timeout?: number,
+      ): ReturnType<typeof globalThis.setInterval> => {
+        const id = realSet(handler, timeout);
+        active.add(id);
+        return id;
+      },
+    );
   const clearSpy = jest
     .spyOn(window, 'clearInterval')
-    .mockImplementation((id?: number): void => {
-      if (id !== undefined) active.delete(id);
-      realClear(id);
-    });
+    .mockImplementation(
+      (id: Parameters<typeof globalThis.clearInterval>[0]): void => {
+        if (id !== undefined) active.delete(id);
+        realClear(id);
+      },
+    );
   return {
     active,
     restore: (): void => {
@@ -641,12 +655,11 @@ describe('PipelineExecutionPanel', () => {
       act(() => {
         root.unmount();
       });
-      // The run moved on to a new request while the panel was away.
+      // The run moved on to a new request while the panel was away. Full
+      // states are kept only under a detail lease, so the remount reads it.
       const next = pausedWithInput('pause-2');
-      usePipelineRunsStore.setState({
-        summaries: [summaryFor(next)],
-        statesById: { 'exec-1': next },
-      });
+      getExecution.mockResolvedValue({ success: true, data: next });
+      usePipelineRunsStore.setState({ summaries: [summaryFor(next)] });
       root = createRoot(container);
       await render(panel(true));
       const fresh = byTestId('pause-field-scope');

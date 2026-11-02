@@ -750,7 +750,15 @@ export async function buildPageModelWithFallback(
     }
     await Promise.all(
       Array.from(sessionsToCapture.entries(), async ([sessionId, frameId]) => {
-        captures.set(sessionId, await captureSession(deps, sessionId, frameId));
+        captures.set(
+          sessionId,
+          await captureSession(
+            deps,
+            sessionId,
+            frameId,
+            rootCapture.layoutZoom,
+          ),
+        );
       }),
     );
     for (const resolution of resolutions) {

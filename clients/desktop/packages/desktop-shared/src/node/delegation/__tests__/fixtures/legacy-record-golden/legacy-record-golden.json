@@ -1,0 +1,548 @@
+{
+  "recordBytes": {
+    "v1BeforeOwnedUpdate": "{\"version\":1,\"transcriptRevision\":2,\"notificationOnly\":true,\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"v1 fixture result\",\"outputTruncated\":false}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v1-before-update\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"a978555970233712ab7c109064d9559d95363ef07cddc88cab26e520c82321f2\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000001\",\"runGeneration\":1,\"sequence\":2,\"status\":\"completed\",\"nativeSessionId\":\"v1-native-session\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"finalText\":\"v1 fixture result\",\"outputTruncated\":false,\"approvalPending\":true},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000001\",\"launchKey\":\"a978555970233712ab7c109064d9559d95363ef07cddc88cab26e520c82321f2\",\"runGeneration\":1,\"phase\":\"settled\",\"nativeSessionId\":\"v1-native-session\",\"terminalStatus\":\"completed\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v1AfterOwnedUpdate": "{\"version\":2,\"transcriptRevision\":3,\"notificationOnly\":true,\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"v1 fixture result\",\"outputTruncated\":false}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v1-before-update\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"a978555970233712ab7c109064d9559d95363ef07cddc88cab26e520c82321f2\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000001\",\"runGeneration\":1,\"sequence\":2,\"status\":\"completed\",\"nativeSessionId\":\"v1-native-session\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"finalText\":\"v1 fixture result\",\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000001\",\"launchKey\":\"a978555970233712ab7c109064d9559d95363ef07cddc88cab26e520c82321f2\",\"runGeneration\":1,\"phase\":\"settled\",\"nativeSessionId\":\"v1-native-session\",\"terminalStatus\":\"completed\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterLaunch": "{\"version\":2,\"notificationOnly\":true,\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-lifecycle-spawn\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":1,\"sequence\":0,\"status\":\"pending\",\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"launchKey\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"runGeneration\":1,\"phase\":\"starting\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterCompletion": "{\"version\":2,\"transcriptRevision\":2,\"notificationOnly\":true,\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"first v2 result\",\"outputTruncated\":false}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-lifecycle-spawn\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":1,\"sequence\":2,\"status\":\"completed\",\"nativeSessionId\":\"v2-lifecycle-native\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"finalText\":\"first v2 result\",\"outputTruncated\":false,\"approvalPending\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"launchKey\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"runGeneration\":1,\"phase\":\"settled\",\"nativeSessionId\":\"v2-lifecycle-native\",\"terminalStatus\":\"completed\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterFollowUp": "{\"version\":2,\"transcriptRevision\":1,\"notificationOnly\":true,\"deliveryId\":\"00000000-0000-4000-8000-000000000024\",\"resumeSessionId\":\"v2-lifecycle-native\",\"history\":[{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":1,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"v2-lifecycle-spawn\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":1,\"resultIndex\":1,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000022\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"first v2 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[]}],\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"first v2 result\",\"outputTruncated\":false}],\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000022\",\"key\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"requestHash\":\"e08c22d98846b2ddcb134ba7d8eb0fc66302143e4cd46b140a07667594e4c892\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue the legacy golden run.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},\"controls\":[],\"spawnIdentity\":{\"key\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"hash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\"},\"stopRequests\":[],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-lifecycle-follow-up\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Continue the legacy golden run.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"requestHash\":\"5a69e02cb80bac334f245de3594b63ef54f34a9da3b465834f6c21fbf2f41b7d\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":2,\"sequence\":1,\"status\":\"running\",\"nativeSessionId\":\"v2-lifecycle-native\",\"startedAt\":1760000000000,\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000022\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue the legacy golden run.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}],\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"launchKey\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"runGeneration\":2,\"phase\":\"identified\",\"nativeSessionId\":\"v2-lifecycle-native\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterSteer": "{\"version\":2,\"transcriptRevision\":4,\"notificationOnly\":true,\"deliveryId\":\"00000000-0000-4000-8000-000000000024\",\"resumeSessionId\":\"v2-lifecycle-native\",\"history\":[{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":1,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"v2-lifecycle-spawn\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":1,\"resultIndex\":1,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000022\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"first v2 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[]}],\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"first v2 result\",\"outputTruncated\":false}],\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000030\",\"key\":\"ebb5cb9f0e874d1119cbcd92d8793aa904ad21062f64dc479957d8e1f96c241e\",\"requestHash\":\"da1de97fdc46d5c2a5316f42cab78ad6655af928cfa74619ce945bf478ade4c9\",\"occurredAt\":1760000000000,\"operation\":\"steer\",\"message\":\"Check one more file.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0},\"steeringDelivery\":{\"kind\":\"accepted\",\"attemptId\":\"00000000-0000-4000-8000-000000000030\"}},\"controls\":[{\"operationId\":\"00000000-0000-4000-8000-000000000022\",\"key\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"requestHash\":\"e08c22d98846b2ddcb134ba7d8eb0fc66302143e4cd46b140a07667594e4c892\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue the legacy golden run.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}}],\"spawnIdentity\":{\"key\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"hash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\"},\"stopRequests\":[],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-lifecycle-follow-up\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Continue the legacy golden run.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"requestHash\":\"5a69e02cb80bac334f245de3594b63ef54f34a9da3b465834f6c21fbf2f41b7d\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":2,\"sequence\":1,\"status\":\"running\",\"nativeSessionId\":\"v2-lifecycle-native\",\"startedAt\":1760000000000,\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000022\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue the legacy golden run.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"},{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000030\",\"sequence\":2,\"occurredAt\":1760000000000,\"text\":\"Check one more file.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"steer\"}],\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"launchKey\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"runGeneration\":2,\"phase\":\"identified\",\"nativeSessionId\":\"v2-lifecycle-native\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterInterrupt": "{\"version\":2,\"transcriptRevision\":7,\"notificationOnly\":true,\"deliveryId\":\"00000000-0000-4000-8000-000000000024\",\"resumeSessionId\":\"v2-lifecycle-native\",\"history\":[{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":1,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"v2-lifecycle-spawn\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":1,\"resultIndex\":1,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000022\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"first v2 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[]}],\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"first v2 result\",\"outputTruncated\":false},{\"resultIndex\":2,\"runGeneration\":2,\"status\":\"interrupted\",\"settledAt\":1760000000000,\"outputTruncated\":false}],\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000034\",\"key\":\"88b5490013ecc492b4c618dcbea0171a7fca77c2eaf261a6e625ae7cd0412bac\",\"requestHash\":\"32c96cf49df8fcef4aa4fbc947349dc0d5dc2612f10e4983992510033393db06\",\"occurredAt\":1760000000000,\"operation\":\"interrupt\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},\"controls\":[{\"operationId\":\"00000000-0000-4000-8000-000000000022\",\"key\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"requestHash\":\"e08c22d98846b2ddcb134ba7d8eb0fc66302143e4cd46b140a07667594e4c892\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue the legacy golden run.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000030\",\"key\":\"ebb5cb9f0e874d1119cbcd92d8793aa904ad21062f64dc479957d8e1f96c241e\",\"requestHash\":\"da1de97fdc46d5c2a5316f42cab78ad6655af928cfa74619ce945bf478ade4c9\",\"occurredAt\":1760000000000,\"operation\":\"steer\",\"message\":\"Check one more file.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0},\"steeringDelivery\":{\"kind\":\"accepted\",\"attemptId\":\"00000000-0000-4000-8000-000000000030\"}}],\"spawnIdentity\":{\"key\":\"fb12ddb727a67021021e7ac464099b6a92b4bf0efc148bac5f72bcdfcb7b99fb\",\"hash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\"},\"interruptedGeneration\":2,\"stopRequests\":[],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-lifecycle-follow-up\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Continue the legacy golden run.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"requestHash\":\"5a69e02cb80bac334f245de3594b63ef54f34a9da3b465834f6c21fbf2f41b7d\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"runGeneration\":2,\"sequence\":2,\"status\":\"interrupted\",\"nativeSessionId\":\"v2-lifecycle-native\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000022\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue the legacy golden run.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"},{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000030\",\"sequence\":2,\"occurredAt\":1760000000000,\"text\":\"Check one more file.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"steer\"}],\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000014\",\"launchKey\":\"27de77e420b4465efeb5f5426b1b081fa19050aaff3e038ffd186c1a18b0f0b2\",\"runGeneration\":2,\"phase\":\"identified\",\"nativeSessionId\":\"v2-lifecycle-native\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterStopRequest": "{\"version\":2,\"transcriptRevision\":2,\"notificationOnly\":true,\"stopRequested\":{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"915eec3162a7e7171fe8de6314d216d093c803f397fdae94b2f81426d7c03617\",\"runGeneration\":1,\"status\":\"accepted\"},\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-stop-spawn\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"runGeneration\":1,\"sequence\":1,\"status\":\"running\",\"nativeSessionId\":\"v2-stop-native\",\"startedAt\":1760000000000,\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"launchKey\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"runGeneration\":1,\"phase\":\"identified\",\"nativeSessionId\":\"v2-stop-native\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterStopAliases": "{\"version\":2,\"transcriptRevision\":3,\"notificationOnly\":true,\"stopRequested\":{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"915eec3162a7e7171fe8de6314d216d093c803f397fdae94b2f81426d7c03617\",\"runGeneration\":1,\"status\":\"accepted\"},\"stopRequests\":[{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"abd8d4c7c8344534fcd289d85ee3b7be65ef21a9647bd1616156ecddb5af2951\",\"runGeneration\":1,\"status\":\"accepted\"}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-stop-spawn\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"runGeneration\":1,\"sequence\":1,\"status\":\"running\",\"nativeSessionId\":\"v2-stop-native\",\"startedAt\":1760000000000,\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"launchKey\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"runGeneration\":1,\"phase\":\"identified\",\"nativeSessionId\":\"v2-stop-native\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterStopResolution": "{\"version\":2,\"transcriptRevision\":6,\"notificationOnly\":true,\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"cancelled\",\"settledAt\":1760000000000,\"outputTruncated\":false,\"stopReason\":\"user_cancelled\"}],\"stopRequested\":{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"915eec3162a7e7171fe8de6314d216d093c803f397fdae94b2f81426d7c03617\",\"runGeneration\":1,\"status\":\"completed\"},\"stopRequests\":[{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"abd8d4c7c8344534fcd289d85ee3b7be65ef21a9647bd1616156ecddb5af2951\",\"runGeneration\":1,\"status\":\"completed\"}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-stop-spawn\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"runGeneration\":1,\"sequence\":2,\"status\":\"cancelled\",\"nativeSessionId\":\"v2-stop-native\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"outputTruncated\":false,\"stopReason\":\"user_cancelled\",\"cancelledByUser\":true,\"stoppedBy\":{\"kind\":\"user\"}},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"launchKey\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"runGeneration\":1,\"phase\":\"settled\",\"nativeSessionId\":\"v2-stop-native\",\"terminalStatus\":\"cancelled\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterFailedStop": "{\"version\":2,\"transcriptRevision\":3,\"notificationOnly\":true,\"stopRequested\":{\"operationId\":\"00000000-0000-4000-8000-000000000077\",\"key\":\"84ce5968fb60f8f1f72a182c7d846dbcd0bb11eb1214a3ae550a726555f06c33\",\"runGeneration\":1,\"status\":\"failed\"},\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"v2-failed-stop-spawn\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"3cd123b5cbb610516b1b93c47f8402b59948348c453119f7efeffa4cbb6f2eb7\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000071\",\"runGeneration\":1,\"sequence\":1,\"status\":\"running\",\"nativeSessionId\":\"v2-failed-stop-native\",\"startedAt\":1760000000000,\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000071\",\"launchKey\":\"3cd123b5cbb610516b1b93c47f8402b59948348c453119f7efeffa4cbb6f2eb7\",\"runGeneration\":1,\"phase\":\"identified\",\"nativeSessionId\":\"v2-failed-stop-native\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "v2AfterResume": "{\"version\":2,\"transcriptRevision\":0,\"notificationOnly\":true,\"deliveryId\":\"00000000-0000-4000-8000-000000000061\",\"resumeSessionId\":\"v2-stop-native\",\"history\":[{\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"runGeneration\":1,\"sequence\":7,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"v2-stop-spawn\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":1,\"resultIndex\":1,\"permissions\":{\"writePaths\":[]},\"status\":\"cancelled\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000059\",\"operation\":\"resume\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"outputTruncated\":false,\"stopReason\":\"user_cancelled\",\"cancelledByUser\":true,\"stoppedBy\":{\"kind\":\"user\"},\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[]}],\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"cancelled\",\"settledAt\":1760000000000,\"outputTruncated\":false,\"stopReason\":\"user_cancelled\"}],\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000059\",\"key\":\"a7aabf3f6b497be54bc1da20c1485cdccff76da7ab50b2bd2fb993948c9196b6\",\"requestHash\":\"883618400bba2283d260040eec9ca07fde43555794024a7ea96269b8b5693984\",\"occurredAt\":1760000000000,\"operation\":\"resume\",\"message\":\"Resume after the legacy stop.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},\"controls\":[],\"spawnIdentity\":{\"key\":\"663ad91d59514fa4c977fc9da2df56004f562ef6bbc6aa94636cb0b6c56ed373\",\"hash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\"},\"stopRequests\":[{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"abd8d4c7c8344534fcd289d85ee3b7be65ef21a9647bd1616156ecddb5af2951\",\"runGeneration\":1,\"status\":\"completed\"},{\"operationId\":\"00000000-0000-4000-8000-000000000051\",\"key\":\"915eec3162a7e7171fe8de6314d216d093c803f397fdae94b2f81426d7c03617\",\"runGeneration\":1,\"status\":\"completed\"}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"legacy-stop-resume\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Resume after the legacy stop.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"a7aabf3f6b497be54bc1da20c1485cdccff76da7ab50b2bd2fb993948c9196b6\",\"requestHash\":\"a8999aec03abe009be5bec5e10745e9d160d4afd5dabdb86c3bf7080b3cb8414\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"runGeneration\":2,\"sequence\":0,\"status\":\"pending\",\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000039\",\"launchKey\":\"a7aabf3f6b497be54bc1da20c1485cdccff76da7ab50b2bd2fb993948c9196b6\",\"runGeneration\":2,\"phase\":\"starting\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "atHistory16Results17": "{\"version\":2,\"transcriptRevision\":2,\"notificationOnly\":true,\"deliveryId\":\"00000000-0000-4000-8000-000000000244\",\"resumeSessionId\":\"history-results-native\",\"history\":[{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":1,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-cap-spawn\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":1,\"resultIndex\":1,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000092\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 1 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":2,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-1\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 1.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":2,\"resultIndex\":2,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000102\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 2 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000092\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 1.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":3,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-2\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 2.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":3,\"resultIndex\":3,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000112\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 3 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000102\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 2.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":4,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-3\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 3.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":4,\"resultIndex\":4,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000122\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 4 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000112\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 3.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":5,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-4\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 4.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":5,\"resultIndex\":5,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000132\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 5 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000122\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 4.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":6,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-5\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 5.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":6,\"resultIndex\":6,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000142\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 6 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000132\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 5.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":7,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-6\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 6.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":7,\"resultIndex\":7,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000152\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 7 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000142\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 6.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":8,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-7\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 7.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":8,\"resultIndex\":8,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000162\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 8 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000152\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 7.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":9,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-8\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 8.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":9,\"resultIndex\":9,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000172\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 9 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000162\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 8.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":10,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-9\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 9.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":10,\"resultIndex\":10,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000182\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 10 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000172\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 9.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":11,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-10\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 10.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":11,\"resultIndex\":11,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000192\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 11 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000182\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 10.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":12,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-11\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 11.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":12,\"resultIndex\":12,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000202\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 12 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000192\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 11.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":13,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-12\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 12.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":13,\"resultIndex\":13,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000212\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 13 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000202\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 12.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":14,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-13\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 13.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":14,\"resultIndex\":14,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000222\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 14 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000212\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 13.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":15,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-14\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 14.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":15,\"resultIndex\":15,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000232\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 15 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000222\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 14.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]},{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":16,\"sequence\":4,\"parentHarnessId\":\"claude\",\"parentTurnId\":\"turn-1\",\"parentToolCallId\":\"history-results-follow-15\",\"createdAt\":1760000000000,\"task\":{\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 15.\",\"executionMode\":\"background\"},\"snapshot\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"depth\":1,\"nestedDelegation\":\"not_enabled\",\"runGeneration\":16,\"resultIndex\":16,\"permissions\":{\"writePaths\":[]},\"status\":\"completed\",\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000242\",\"operation\":\"follow_up\",\"status\":\"accepted\"},\"routeSnapshot\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\"},\"finalText\":\"generation 16 result\",\"outputTruncated\":false,\"approvalPending\":false,\"phase\":\"idle\",\"queue\":{\"id\":\"default\",\"name\":\"Default\"}},\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000232\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 15.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}]}],\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 1 result\",\"outputTruncated\":false},{\"resultIndex\":2,\"runGeneration\":2,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 2 result\",\"outputTruncated\":false},{\"resultIndex\":3,\"runGeneration\":3,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 3 result\",\"outputTruncated\":false},{\"resultIndex\":4,\"runGeneration\":4,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 4 result\",\"outputTruncated\":false},{\"resultIndex\":5,\"runGeneration\":5,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 5 result\",\"outputTruncated\":false},{\"resultIndex\":6,\"runGeneration\":6,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 6 result\",\"outputTruncated\":false},{\"resultIndex\":7,\"runGeneration\":7,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 7 result\",\"outputTruncated\":false},{\"resultIndex\":8,\"runGeneration\":8,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 8 result\",\"outputTruncated\":false},{\"resultIndex\":9,\"runGeneration\":9,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 9 result\",\"outputTruncated\":false},{\"resultIndex\":10,\"runGeneration\":10,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 10 result\",\"outputTruncated\":false},{\"resultIndex\":11,\"runGeneration\":11,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 11 result\",\"outputTruncated\":false},{\"resultIndex\":12,\"runGeneration\":12,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 12 result\",\"outputTruncated\":false},{\"resultIndex\":13,\"runGeneration\":13,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 13 result\",\"outputTruncated\":false},{\"resultIndex\":14,\"runGeneration\":14,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 14 result\",\"outputTruncated\":false},{\"resultIndex\":15,\"runGeneration\":15,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 15 result\",\"outputTruncated\":false},{\"resultIndex\":16,\"runGeneration\":16,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 16 result\",\"outputTruncated\":false},{\"resultIndex\":17,\"runGeneration\":17,\"status\":\"completed\",\"settledAt\":1760000000000,\"finalText\":\"generation 17 result\",\"outputTruncated\":false}],\"control\":{\"operationId\":\"00000000-0000-4000-8000-000000000242\",\"key\":\"f4892eb006ba7550dd7a1aa284433af57950ebab24ebf217d29e3e6614942334\",\"requestHash\":\"69c0144fef0f56d4bf06c20c2c3773181bfab8ac111db3bfb68ebe55a3204e72\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 16.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},\"controls\":[{\"operationId\":\"00000000-0000-4000-8000-000000000092\",\"key\":\"3ab3b9e8c8ef28b4680854f5523f573a1b0db7664120192ec30c30efc198c94d\",\"requestHash\":\"285f7ec0ab8d36a5525e00000511b601577dd9c6c554ce0b84e098865f071d6d\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 1.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000102\",\"key\":\"9dc5d94af05abf83da07074312cdf8c8c2de90501a8fedc014ca449e4cf151fc\",\"requestHash\":\"6ca0df857c06f3a5d9f595445d9ce898e8d12fc01717d5fea83a686996ddaa26\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 2.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000112\",\"key\":\"55599f0f37ece6ac263affaf2809d6bab827a89c27d24783baca2f9b1ac2b03a\",\"requestHash\":\"8577645d6652ae3f40dc08b033fada5d7a2c53bf8391e3a40177e7749c914c24\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 3.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000122\",\"key\":\"9056fe2e70c95278eda728c6c530322ac9a9cc26cd6373f737c39b6065c39bcd\",\"requestHash\":\"e82c67226f6ba7c863aee9757f1866daed012513b42a0b0166e0fa83b1edfa39\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 4.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000132\",\"key\":\"b7701a33c91b67eea697d33197d5fda05416dc8a8c3fadc42f8249ddbd8f45be\",\"requestHash\":\"967c1a0c61c585fda8f9069b551beeb6ddf226a216d6ab0eb1777cd64c8d10d0\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 5.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000142\",\"key\":\"41015840fbdb289309625f5218506fc91f71783bd3995b18c5ea91cebe199474\",\"requestHash\":\"f8973fb49856e5b7b700cc37f414fcb58115ec9d39f920fb753962fa4666a1c3\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 6.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000152\",\"key\":\"01cccfafd309031d918427bd36de477f2d704704578909b7f65850026ba3e866\",\"requestHash\":\"dae70f54586bc04bbdf252c383451351ef9b3ac36da4ef4084c9a1b36a892235\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 7.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000162\",\"key\":\"eccba0c6b868fa19423dabd535f20fb58a1f8cd82590d844d6d046b9a18c3824\",\"requestHash\":\"1dc151b24efd28d7a6bc57821ee3757bd82830eafb979b4c408acb483919a06b\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 8.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000172\",\"key\":\"9510a62aa29b7aa461ad7a21323520df3433691ef28670f88c5013beb4cd46cd\",\"requestHash\":\"3ef40a4330b02de2622fcf397565518a0c01acc95b1ab00cd7048925c01fa6e9\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 9.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000182\",\"key\":\"67f8786cc682163998d3a504dcbb7726c3c9d670a9fd01fb85db3b2ec91e6619\",\"requestHash\":\"35a93f4e78521570a1c4838f10952d17ddbc346ff808e72f82cfd2b6922fd2ae\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 10.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000192\",\"key\":\"e844a7b267d4a07f831b8dabb2dcc48b9593e94f717cbd9ef9d48d8a81f05e86\",\"requestHash\":\"61362fbdfcee21ce4c041a78dc03e3f4ad699443e01267235c5b5af0e73e4990\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 11.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000202\",\"key\":\"63ae14712bc163f6f1201eb61b3d0d0fdf458fd3e015c4e356b674464b51c8c6\",\"requestHash\":\"a8d9112016122ec810bf5583e70816d2518c1550a7d2d52e8be09da32c5dc39a\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 12.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000212\",\"key\":\"0b5e7cdfc9c11cbdad613635e27f7960b48ef1b05fcb0a32c855800ae8b6d1b8\",\"requestHash\":\"17c360520ebfd62ab935565a062753ba42f6efeedfadf899708b9bedef06af19\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 13.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000222\",\"key\":\"4790a0cb60af6b58fbc002c18d563e826778067d3cdd13e8d49b12ed09660ff0\",\"requestHash\":\"fc22df9608c25801c85c40626560d60a72c9c71ea8f3d4fbd4db6df72197b805\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 14.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}},{\"operationId\":\"00000000-0000-4000-8000-000000000232\",\"key\":\"6382f9460d1f365a43c012119e76c6c51f9513c5c883dab5214b7cf1b3ba23c8\",\"requestHash\":\"0576f14a1df4f0a5437ef61584a12e5508279259f59ff2c3b6361f24a62157a0\",\"occurredAt\":1760000000000,\"operation\":\"follow_up\",\"message\":\"Continue generation 15.\",\"status\":\"completed\",\"sender\":{\"kind\":\"agent\",\"depth\":0}}],\"spawnIdentity\":{\"key\":\"d2bdc8d1504da545b32dedabd740844e7f4d9dbc44711abdcc1cba2b0ec2670a\",\"hash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\"},\"stopRequests\":[],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"history-results-follow-16\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Continue generation 16.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"f4892eb006ba7550dd7a1aa284433af57950ebab24ebf217d29e3e6614942334\",\"requestHash\":\"cbc41a04fbed10c936ca120c5fce8a33db728943d69dd0e58540eae8d20d5e20\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"runGeneration\":17,\"sequence\":2,\"status\":\"completed\",\"nativeSessionId\":\"history-results-native\",\"startedAt\":1760000000000,\"finishedAt\":1760000000000,\"transcript\":[{\"type\":\"text\",\"id\":\"00000000-0000-4000-8000-000000000242\",\"sequence\":1,\"occurredAt\":1760000000000,\"text\":\"Continue generation 16.\",\"author\":{\"kind\":\"agent\",\"depth\":0},\"delivery\":\"follow_up\"}],\"finalText\":\"generation 17 result\",\"outputTruncated\":false,\"approvalPending\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000084\",\"launchKey\":\"f4892eb006ba7550dd7a1aa284433af57950ebab24ebf217d29e3e6614942334\",\"runGeneration\":17,\"phase\":\"settled\",\"nativeSessionId\":\"history-results-native\",\"terminalStatus\":\"completed\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "restartInFlightInterrupted": "{\"version\":2,\"transcriptRevision\":2,\"notificationOnly\":true,\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"interrupted\",\"settledAt\":1760000000000,\"outputTruncated\":false,\"error\":{\"code\":\"launch_uncertain\",\"message\":\"The previous host stopped before child completion was confirmed.\",\"retryable\":false}}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"restart-in-flight\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"route\":{\"selectedModelId\":\"logical-review-model\",\"runtimeModelId\":\"native-model\",\"harnessId\":\"third-harness\",\"runtimeKind\":\"local-sdk\",\"runnerRegistrationId\":\"third-local\",\"runtimeVersion\":\"1.0\",\"adapterVersion\":\"1\",\"modelSource\":\"test\",\"providerType\":\"test-inference\",\"assignmentRevision\":\"assignment-1\",\"billingAuthority\":\"native\",\"aiCreditsRouted\":false,\"capabilities\":[\"read\",\"progress\",\"resume\"],\"supportedThinkingLevels\":[\"low\",\"high\"],\"capabilitySnapshotHash\":\"capability-1\",\"capabilityGeneration\":1,\"policyRevision\":\"read-only-1\",\"authAccountKey\":\"private-account@example.test\"},\"callKey\":\"27cc85b89e5fb23cf960f92f1875265b843a57a093644bf86a84a3a5f0edf567\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000386\",\"runGeneration\":1,\"sequence\":2,\"status\":\"interrupted\",\"nativeSessionId\":\"restart-native-session\",\"startedAt\":1760000000000,\"error\":{\"code\":\"launch_uncertain\",\"message\":\"The previous host stopped before child completion was confirmed.\",\"retryable\":false},\"outputTruncated\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000386\",\"launchKey\":\"27cc85b89e5fb23cf960f92f1875265b843a57a093644bf86a84a3a5f0edf567\",\"runGeneration\":1,\"phase\":\"interrupted\",\"nativeSessionId\":\"restart-native-session\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}",
+    "restartNeverDispatched": "{\"version\":2,\"transcriptRevision\":1,\"notificationOnly\":true,\"results\":[{\"resultIndex\":1,\"runGeneration\":1,\"status\":\"cancelled\",\"settledAt\":1760000000000,\"outputTruncated\":false,\"stopReason\":\"shutdown\"}],\"depth\":1,\"parent\":{\"harnessId\":\"claude\",\"projectId\":\"project\",\"worktreeId\":\"worktree\",\"chatId\":\"chat\",\"sessionKey\":\"project/worktree/chat\",\"turnId\":\"turn-1\",\"toolCallId\":\"restart-never-dispatched\",\"runtimeGeneration\":1,\"depth\":0},\"task\":{\"modelId\":\"logical-review-model\",\"description\":\"Review the supplied task\",\"prompt\":\"Read src/index.ts and identify missing error handling.\",\"executionMode\":\"background\",\"contextPolicy\":\"task_only\",\"isolation\":\"shared_worktree\"},\"admission\":{\"runGeneration\":1,\"state\":\"waiting\",\"queuedAt\":1760000000000},\"callKey\":\"44e8cc2233394a57ec8beca0b0050d54afa4f73a774428e9949296ea8773dcc9\",\"requestHash\":\"35d2ed8989b47de1825b66f3598b8c6a42ed6cd352e4e639b61cfc644e2e06dd\",\"createdAt\":1760000000000,\"state\":{\"delegationId\":\"00000000-0000-4000-8000-000000000392\",\"runGeneration\":1,\"sequence\":1,\"status\":\"cancelled\",\"outputTruncated\":false,\"stopReason\":\"shutdown\",\"cancelledByUser\":false},\"launch\":{\"version\":1,\"delegationId\":\"00000000-0000-4000-8000-000000000392\",\"launchKey\":\"44e8cc2233394a57ec8beca0b0050d54afa4f73a774428e9949296ea8773dcc9\",\"runGeneration\":1,\"phase\":\"settled\",\"terminalStatus\":\"cancelled\"},\"delivery\":{\"status\":\"suppressed\",\"reason\":\"automatic_delivery_removed\"}}"
+  },
+  "snapshots": {
+    "stopAccepted": {
+      "delegationId": "00000000-0000-4000-8000-000000000039",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "running",
+      "stopRequested": {
+        "operationId": "00000000-0000-4000-8000-000000000051",
+        "status": "accepted"
+      },
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress", "resume"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "outputTruncated": false,
+      "phase": "running",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 2,
+        "waiting": 0,
+        "limit": 8
+      }
+    },
+    "stopCompleted": {
+      "delegationId": "00000000-0000-4000-8000-000000000039",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "resultIndex": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "cancelled",
+      "stopRequested": {
+        "operationId": "00000000-0000-4000-8000-000000000051",
+        "status": "completed"
+      },
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress", "resume"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "outputTruncated": false,
+      "stopReason": "user_cancelled",
+      "cancelledByUser": true,
+      "stoppedBy": {
+        "kind": "user"
+      },
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 1,
+        "waiting": 0,
+        "limit": 8
+      }
+    },
+    "stopFailed": {
+      "delegationId": "00000000-0000-4000-8000-000000000071",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "running",
+      "stopRequested": {
+        "operationId": "00000000-0000-4000-8000-000000000077",
+        "status": "failed"
+      },
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress", "resume"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "outputTruncated": false,
+      "phase": "running",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 1,
+        "waiting": 0,
+        "limit": 8
+      }
+    },
+    "afterResume": {
+      "delegationId": "00000000-0000-4000-8000-000000000039",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 2,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "pending",
+      "control": {
+        "operationId": "00000000-0000-4000-8000-000000000059",
+        "operation": "resume",
+        "status": "completed"
+      },
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress", "resume"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "outputTruncated": false,
+      "phase": "starting",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 2,
+        "waiting": 0,
+        "limit": 8
+      }
+    }
+  },
+  "watches": {
+    "pending": [
+      {
+        "delegationId": "00000000-0000-4000-8000-000000000014",
+        "runGeneration": 1,
+        "status": "pending",
+        "resultIndex": null
+      }
+    ],
+    "settled": [
+      {
+        "delegationId": "00000000-0000-4000-8000-000000000014",
+        "runGeneration": 1,
+        "status": "completed",
+        "resultIndex": 1,
+        "settledAt": 1760000000000
+      }
+    ],
+    "historicalGeneration": [
+      {
+        "delegationId": "00000000-0000-4000-8000-000000000014",
+        "runGeneration": 1,
+        "status": "completed",
+        "resultIndex": 1,
+        "settledAt": 1760000000000
+      }
+    ],
+    "registrationResult": {
+      "ok": true,
+      "value": {
+        "watcherId": "legacy-golden-watch",
+        "mode": "all",
+        "deadlineAt": 1760000060000,
+        "targets": [
+          {
+            "delegationId": "00000000-0000-4000-8000-000000000014",
+            "runGeneration": 1
+          }
+        ]
+      }
+    },
+    "settlementNotices": [
+      {
+        "parent": {
+          "harnessId": "claude",
+          "projectId": "project",
+          "worktreeId": "worktree",
+          "chatId": "chat",
+          "sessionKey": "project/worktree/chat",
+          "turnId": "turn-1",
+          "toolCallId": "v2-lifecycle-spawn",
+          "runtimeGeneration": 1,
+          "depth": 0
+        },
+        "delegationId": "00000000-0000-4000-8000-000000000014",
+        "result": {
+          "resultIndex": 1,
+          "runGeneration": 1,
+          "status": "completed",
+          "settledAt": 1760000000000,
+          "finalText": "first v2 result",
+          "outputTruncated": false
+        }
+      }
+    ],
+    "registrationCatchUpNotices": [
+      {
+        "parent": {
+          "harnessId": "claude",
+          "projectId": "project",
+          "worktreeId": "worktree",
+          "chatId": "chat",
+          "sessionKey": "project/worktree/chat",
+          "turnId": "turn-1",
+          "toolCallId": "v2-lifecycle-spawn",
+          "runtimeGeneration": 1,
+          "depth": 0
+        },
+        "delegationId": "00000000-0000-4000-8000-000000000014",
+        "result": {
+          "resultIndex": 1,
+          "runGeneration": 1,
+          "status": "completed",
+          "settledAt": 1760000000000,
+          "finalText": "first v2 result",
+          "outputTruncated": false
+        }
+      }
+    ]
+  },
+  "replays": {
+    "stopSameKey": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000039",
+        "depth": 1,
+        "nestedDelegation": "not_enabled",
+        "runGeneration": 1,
+        "permissions": {
+          "writePaths": []
+        },
+        "status": "running",
+        "stopRequested": {
+          "operationId": "00000000-0000-4000-8000-000000000051",
+          "status": "accepted"
+        },
+        "routeSnapshot": {
+          "selectedModelId": "logical-review-model",
+          "runtimeModelId": "native-model",
+          "harnessId": "third-harness",
+          "runtimeKind": "local-sdk",
+          "runnerRegistrationId": "third-local",
+          "runtimeVersion": "1.0",
+          "adapterVersion": "1",
+          "modelSource": "test",
+          "providerType": "test-inference",
+          "assignmentRevision": "assignment-1",
+          "billingAuthority": "native",
+          "aiCreditsRouted": false,
+          "capabilities": ["read", "progress", "resume"],
+          "supportedThinkingLevels": ["low", "high"],
+          "capabilitySnapshotHash": "capability-1",
+          "capabilityGeneration": 1,
+          "policyRevision": "read-only-1"
+        },
+        "outputTruncated": false,
+        "phase": "running",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 2,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    },
+    "stopChangedTarget": {
+      "ok": false,
+      "error": {
+        "code": "invalid_request",
+        "message": "A cancellation call cannot change its target.",
+        "retryable": false
+      }
+    },
+    "controlSameKey": {
+      "ok": true,
+      "value": {
+        "delegationId": "00000000-0000-4000-8000-000000000014",
+        "depth": 1,
+        "nestedDelegation": "not_enabled",
+        "runGeneration": 2,
+        "permissions": {
+          "writePaths": []
+        },
+        "status": "running",
+        "control": {
+          "operationId": "00000000-0000-4000-8000-000000000030",
+          "operation": "steer",
+          "status": "accepted"
+        },
+        "routeSnapshot": {
+          "selectedModelId": "logical-review-model",
+          "runtimeModelId": "native-model",
+          "harnessId": "third-harness",
+          "runtimeKind": "local-sdk",
+          "runnerRegistrationId": "third-local",
+          "runtimeVersion": "1.0",
+          "adapterVersion": "1",
+          "modelSource": "test",
+          "providerType": "test-inference",
+          "assignmentRevision": "assignment-1",
+          "billingAuthority": "native",
+          "aiCreditsRouted": false,
+          "capabilities": ["read", "progress", "resume"],
+          "supportedThinkingLevels": ["low", "high"],
+          "capabilitySnapshotHash": "capability-1",
+          "capabilityGeneration": 1,
+          "policyRevision": "read-only-1"
+        },
+        "outputTruncated": false,
+        "phase": "running",
+        "queue": {
+          "id": "default",
+          "name": "Default",
+          "running": 1,
+          "waiting": 0,
+          "limit": 8
+        }
+      }
+    },
+    "controlChangedArguments": {
+      "ok": false,
+      "error": {
+        "code": "invalid_request",
+        "message": "A command call cannot change its arguments.",
+        "retryable": false
+      }
+    },
+    "capacityReplies": [
+      {
+        "cap": "1",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The direct parent cannot accept another retained turn.",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "cap": "2",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The direct parent cannot accept another retained turn.",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "cap": "4",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The retained command limit was reached.",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "cap": "5",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The retained cancellation receipt limit was reached.",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "cap": "7",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The retained cancellation receipt limit was reached.",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "cap": "8",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The retained cancellation receipt limit was reached.",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "cap": "9",
+        "reply": {
+          "ok": false,
+          "error": {
+            "code": "capacity_exceeded",
+            "message": "The retained cancellation receipt limit was reached.",
+            "retryable": false
+          }
+        }
+      }
+    ]
+  },
+  "caps": {
+    "historyCount": 16,
+    "resultCount": 17
+  },
+  "restarts": {
+    "inFlightSnapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000386",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "resultIndex": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "interrupted",
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress", "resume"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "outputTruncated": false,
+      "error": {
+        "code": "launch_uncertain",
+        "message": "The previous host stopped before child completion was confirmed.",
+        "retryable": false
+      },
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 0,
+        "waiting": 0,
+        "limit": 1
+      }
+    },
+    "neverDispatchedSnapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000392",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "resultIndex": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "cancelled",
+      "requestedModelId": "logical-review-model",
+      "outputTruncated": false,
+      "stopReason": "shutdown",
+      "cancelledByUser": false,
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default",
+        "running": 0,
+        "waiting": 0,
+        "limit": 1
+      }
+    },
+    "relaunchedRunCount": 0
+  }
+}

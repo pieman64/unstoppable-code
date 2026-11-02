@@ -6,9 +6,12 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
   DEFAULT_MOCK_BASE_URL,
+  injectChatEvent,
+  publishTurnLifecycle,
   registerScenario,
   seedWorkspaceApprovals,
   seedWorktreeChat,
+  turnEventInjector,
 } from './seeders/index.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
@@ -61,6 +64,145 @@ async function waitForBox(locator, label, timeout = 30_000) {
     )
     .toBe(true);
   return box;
+}
+
+/**
+ * The chat's own turn has ended, so its tab draws no working spinner. Its
+ * live task draws the quiet background glyph instead (turn-state phase 38c),
+ * an image whose inner spinner keeps its own `Thinking` label.
+ */
+async function expectIdleTabWithOneBackgroundTask(tab) {
+  await expect(
+    tab.locator('[aria-label="Thinking"]:not([role="img"] *)'),
+  ).toHaveCount(0);
+  // The tab's icon slot is hidden from assistive technology, so match the
+  // glyph's attributes rather than its role.
+  await expect(
+    tab.locator('[role="img"][aria-label="1 background task running"]'),
+  ).toBeVisible();
+}
+
+/** Inject a background task, then finish its owning provider turn. */
+async function startIdleChatWithTask(
+  electronApp,
+  window,
+  { chatId, taskId, toolUseId, taskType },
+) {
+  const turnId = `${chatId}-turn`;
+  const startedAt = Date.now();
+  const prompt = `Start a background ${taskType} task.`;
+  const turn = {
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    chatId,
+    turnUserMessageId: turnId,
+  };
+  // Canonical root turns start and end only from a provider session's
+  // lifecycle receipts (turn-state phase 35c5d); the injector publishes the
+  // end before the root result.
+  const inject = turnEventInjector(electronApp, turn);
+
+  await injectChatEvent(electronApp, {
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    chatId,
+    data: {
+      type: 'claude_terminal_transcript_sync',
+      importedEventCount: 1,
+      messages: [
+        {
+          id: turnId,
+          role: 'user',
+          timestamp: startedAt,
+          blocks: [{ type: 'text', text: prompt }],
+        },
+      ],
+    },
+  });
+  await publishTurnLifecycle(electronApp, {
+    ...turn,
+    phase: 'start',
+    atMs: startedAt,
+  });
+  const panel = window.getByTestId('panel-content-chat');
+  await expect(panel.getByText(prompt)).toBeVisible({ timeout: 30_000 });
+
+  await inject({
+    type: 'system',
+    subtype: 'task_started',
+    task_id: taskId,
+    tool_use_id: toolUseId,
+    task_type: taskType,
+    is_backgrounded: true,
+    description: `Background ${taskType} task for ${chatId}`,
+  });
+  // Keep the task live while making the chat itself idle. Close behavior must
+  // follow task type, not the old running-turn spinner state.
+  await inject({ type: 'result', is_error: false, result: 'Turn completed.' });
+
+  await expect
+    .poll(
+      () =>
+        window.evaluate(
+          async ({ projectId, worktreeId, targetChatId }) => {
+            const state = await window.api.chat.getState({
+              projectId,
+              worktreeId,
+            });
+            const status = state.runtimeByChatId[targetChatId]?.status ?? null;
+            return ![
+              'queued',
+              'starting',
+              'streaming',
+              'awaiting_input',
+              'completing',
+            ].includes(status);
+          },
+          {
+            projectId: WORKSPACE_ID,
+            worktreeId: WORKTREE_ID,
+            targetChatId: chatId,
+          },
+        ),
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(
+          async ({
+            projectId,
+            worktreeId,
+            targetChatId,
+            targetTaskId,
+            targetTaskType,
+          }) => {
+            const snapshot = await window.api.activity.listLiveBgTasks({
+              projectId,
+              worktreeId,
+            });
+            return (
+              snapshot.chats[targetChatId]?.liveTasks?.some(
+                (task) =>
+                  task.taskId === targetTaskId &&
+                  task.taskType === targetTaskType,
+              ) ?? false
+            );
+          },
+          {
+            projectId: WORKSPACE_ID,
+            worktreeId: WORKTREE_ID,
+            targetChatId: chatId,
+            targetTaskId: taskId,
+            targetTaskType: taskType,
+          },
+        ),
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+
+  return { inject };
 }
 
 test.describe('busy chat tab hover (spinner is not swapped for close)', () => {
@@ -226,4 +368,142 @@ test.describe('busy chat tab hover (spinner is not swapped for close)', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
+});
+
+test('background work: an idle chat tab with a live provider agent withholds close until it completes', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-agent-tab-close-blocked-'),
+  );
+  const chatId = 'provider-agent-close-blocked';
+  const keeperId = 'provider-agent-close-keeper';
+  const taskId = 'provider-agent-close-task';
+  const toolUseId = 'provider-agent-close-tool';
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      { id: chatId, title: 'Agent task' },
+      { id: keeperId, title: 'Keeper' },
+    ],
+    activeTabId: chatId,
+  });
+
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({ userDataDir }),
+  );
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_BRANCH);
+
+    const panelId = `panel-chat-${chatId}`;
+    const tab = window.getByTestId(`panel-tab-${panelId}`);
+    const close = window.getByTestId(`panel-tab-close-${panelId}`);
+    await expect(tab).toBeVisible({ timeout: 30_000 });
+    const { inject } = await startIdleChatWithTask(electronApp, window, {
+      chatId,
+      taskId,
+      toolUseId,
+      taskType: 'local_agent',
+    });
+
+    await expectIdleTabWithOneBackgroundTask(tab);
+    await withHover(window, panelId, async () => {
+      await expect(close).toBeHidden({ timeout: 2_000 });
+    });
+
+    await inject({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: taskId,
+      tool_use_id: toolUseId,
+      status: 'completed',
+    });
+    await expect
+      .poll(
+        () =>
+          window.evaluate(
+            async ({ projectId, worktreeId, targetChatId, targetTaskId }) => {
+              const snapshot = await window.api.activity.listLiveBgTasks({
+                projectId,
+                worktreeId,
+              });
+              return (
+                snapshot.chats[targetChatId]?.liveTasks?.some(
+                  (task) => task.taskId === targetTaskId,
+                ) ?? false
+              );
+            },
+            {
+              projectId: WORKSPACE_ID,
+              worktreeId: WORKTREE_ID,
+              targetChatId: chatId,
+              targetTaskId: taskId,
+            },
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(false);
+    await withHover(window, panelId, async () => {
+      await expect(close).toBeVisible({ timeout: 2_000 });
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('background work: an idle chat tab with only a live local_bash task offers close', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-bash-tab-close-allowed-'),
+  );
+  const chatId = 'local-bash-close-allowed';
+  const keeperId = 'local-bash-close-keeper';
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [
+      { id: chatId, title: 'Shell task' },
+      { id: keeperId, title: 'Keeper' },
+    ],
+    activeTabId: chatId,
+  });
+
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({ userDataDir }),
+  );
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_BRANCH);
+
+    const panelId = `panel-chat-${chatId}`;
+    const tab = window.getByTestId(`panel-tab-${panelId}`);
+    const close = window.getByTestId(`panel-tab-close-${panelId}`);
+    await expect(tab).toBeVisible({ timeout: 30_000 });
+    await startIdleChatWithTask(electronApp, window, {
+      chatId,
+      taskId: 'local-bash-close-task',
+      toolUseId: 'local-bash-close-tool',
+      taskType: 'local_bash',
+    });
+
+    await expectIdleTabWithOneBackgroundTask(tab);
+    await withHover(window, panelId, async () => {
+      await expect(close).toBeVisible({ timeout: 2_000 });
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
 });

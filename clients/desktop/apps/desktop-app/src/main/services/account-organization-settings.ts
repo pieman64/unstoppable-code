@@ -115,6 +115,13 @@ export type SettingsWriteFollowUpResolver = (
   validatedInput: unknown,
 ) => SettingsWriteFollowUp | null;
 
+export type SettingsWriteObserver = (
+  name: SettingsOperationName,
+  validatedInput: unknown,
+  validatedResult: unknown,
+  accountId: string,
+) => void;
+
 export interface AccountOrganizationSettingsDeps<
   TSession extends SettingsSessionPort,
 > {
@@ -160,6 +167,8 @@ export interface AccountOrganizationSettingsDeps<
   resolveOrchestrated?: SettingsOrchestrationResolver;
   /** Await synchronization without turning a confirmed write into a retry. */
   resolveWriteFollowUp?: SettingsWriteFollowUpResolver;
+  /** Synchronous no-throw observation before unrelated synchronization. */
+  observeWrite?: SettingsWriteObserver;
   randomId?(this: void): string;
 }
 
@@ -353,7 +362,9 @@ function billingHandoffPath(
   if (intent.kind === 'top-up')
     return buildBillingTopUpIntentPath(billingPath, {
       reason: intent.reason,
-      source: 'desktop',
+      source: intent.source ?? 'desktop',
+      ...(intent.modelId === undefined ? {} : { modelId: intent.modelId }),
+      ...(intent.chatId === undefined ? {} : { chatId: intent.chatId }),
       ...(intent.amountUsd === undefined
         ? {}
         : { amountUsd: intent.amountUsd }),
@@ -524,6 +535,16 @@ export function createAccountOrganizationSettingsService<
         if (!validated.ok) return failure('invalid_response');
         result = validated.result;
         try {
+          deps.observeWrite?.(
+            prepared.name,
+            prepared.input,
+            result,
+            request.accountId,
+          );
+        } catch {
+          /* Product telemetry must not change the result or retries. */
+        }
+        try {
           const followUp = deps.resolveWriteFollowUp?.(
             prepared.name,
             prepared.input,
@@ -647,15 +668,22 @@ export function createAccountOrganizationSettingsService<
       if (membership !== 'member') return { ok: false, reason: membership };
     }
     let path: string;
+    let requestId: string;
     try {
-      path = billingHandoffPath(request, billingRequestId(random));
+      requestId = billingRequestId(random);
+      path = billingHandoffPath(request, requestId);
     } catch {
       return { ok: false, reason: 'failed' };
     }
     if ((await deps.currentAccountId()) !== accountId)
       return { ok: false, reason: 'identity_changed' };
     try {
-      return await deps.openStrictPortalPage(path, credentials);
+      const result = await deps.openStrictPortalPage(path, credentials);
+      return result.ok &&
+        request.intent.kind === 'top-up' &&
+        request.intent.reason === 'unlock_models'
+        ? { ok: true, requestId }
+        : result;
     } catch {
       return { ok: false, reason: 'failed' };
     }

@@ -7,13 +7,17 @@ import {
   setAccountMcpRouteReauthRequired,
   removeAccountMcpRouteStatus,
 } from '../mcp/account-route-status';
+import type * as OAuthTokenStoreModule from '../mcp/oauth-token-store';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let mockRoot = '';
 const mockReadPreferences = jest.fn<Promise<unknown>, []>();
-const mockGetAuthStatus = jest.fn<Promise<unknown>, unknown[]>();
+const mockGetAuthStatus = jest.fn<
+  ReturnType<typeof OAuthTokenStoreModule.getMcpOAuthAuthStatusForDefinition>,
+  Parameters<typeof OAuthTokenStoreModule.getMcpOAuthAuthStatusForDefinition>
+>();
 
 jest.mock('../lib/paths', () => ({
   getMcpServersIndexFilePath: (): string => join(mockRoot, 'index.json'),
@@ -21,10 +25,14 @@ jest.mock('../lib/paths', () => ({
     join(mockRoot, `server-${id}.json`),
 }));
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferences,
+  get readPreferencesFile(): typeof mockReadPreferences {
+    return mockReadPreferences;
+  },
 }));
 jest.mock('../mcp/oauth-token-store', () => ({
-  getMcpOAuthAuthStatusForDefinition: mockGetAuthStatus,
+  get getMcpOAuthAuthStatusForDefinition(): typeof mockGetAuthStatus {
+    return mockGetAuthStatus;
+  },
 }));
 
 import {

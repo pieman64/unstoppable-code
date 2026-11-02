@@ -4,6 +4,7 @@ import {
   formatGuestAllowedModelLabels,
   isGuestAllowedModelId,
 } from '../guest-model-access';
+import { resolveGuestAllowedModelForGatewayId } from '..';
 
 describe('guest model allowlist', () => {
   describe('accepted spellings', () => {
@@ -143,6 +144,92 @@ describe('guest model allowlist', () => {
       expect(formatGuestAllowedModelLabels()).toBe(
         'GPT 6 Luna, GPT 5.6 Luna, DeepSeek V4 Pro or Claude Haiku 5.5',
       );
+    });
+  });
+
+  describe('resolveGuestAllowedModelForGatewayId', () => {
+    it.each([
+      [
+        'anthropic/claude-opus-5',
+        'anthropic/claude-haiku-5.5',
+        'Claude Haiku 5.5',
+      ],
+      ['openai/gpt-6-sol', 'openai/gpt-6-luna', 'GPT 6 Luna'],
+      [
+        'deepseek/deepseek-v4-flash',
+        'deepseek/deepseek-v4-pro',
+        'DeepSeek V4 Pro',
+      ],
+    ])(
+      'prefers the first allowed sibling for %s',
+      (gatewayId, preferredId, label) => {
+        const preferred = GUEST_ALLOWED_MODELS.find(
+          (model) => model.gatewayId === preferredId,
+        );
+        expect(preferred).toBeDefined();
+        expect(resolveGuestAllowedModelForGatewayId(gatewayId)).toBe(preferred);
+        expect(resolveGuestAllowedModelForGatewayId(gatewayId)?.label).toBe(
+          label,
+        );
+        expect(isGuestAllowedModelId(gatewayId)).toBe(false);
+      },
+    );
+
+    it('prefers GPT 6 Luna even for the legacy allowed OpenAI model', () => {
+      expect(
+        resolveGuestAllowedModelForGatewayId('openai/gpt-5.6-luna')?.id,
+      ).toBe('gpt-6-luna');
+    });
+
+    it.each([
+      [' \tANTHROPIC/CLAUDE-OPUS-5\n', 'claude-haiku-5.5'],
+      [' OPENAI/GPT-6-SOL ', 'gpt-6-luna'],
+      ['\nDeepSeek/DeepSeek-V4-Flash\t', 'deepseek-v4-pro'],
+    ])('normalizes the gateway spelling %p', (gatewayId, preferredId) => {
+      expect(resolveGuestAllowedModelForGatewayId(gatewayId)?.id).toBe(
+        preferredId,
+      );
+    });
+
+    const invalidInputs: readonly unknown[] = [
+      undefined,
+      null,
+      12345,
+      true,
+      { gatewayId: 'anthropic/claude-opus-5' },
+      ['anthropic/claude-opus-5'],
+      '',
+      ' \t\n',
+      'haiku',
+      'claude-opus-5',
+      'gpt-6-luna',
+      '/',
+      '/claude-opus-5',
+      'anthropic/',
+      'anthropic/ \t',
+      'anthropic//claude-opus-5',
+      'anthropic/claude-opus-5/',
+      'anthropic/claude-opus-5/variant',
+      'openai/openai/gpt-6-sol',
+      'unknown/claude-opus-5',
+      'anthropic-other/claude-opus-5',
+      'other-vendor/gpt-6-luna',
+    ];
+
+    it.each(invalidInputs)(
+      'has no preference for invalid or unknown input %p',
+      (gatewayId) => {
+        expect(resolveGuestAllowedModelForGatewayId(gatewayId)).toBeUndefined();
+      },
+    );
+
+    it('keeps every allowlist gateway ID structurally valid and resolvable', () => {
+      for (const model of GUEST_ALLOWED_MODELS) {
+        expect(model.gatewayId).toMatch(/^[^/\s]+\/[^/\s]+$/);
+        expect(
+          resolveGuestAllowedModelForGatewayId(model.gatewayId),
+        ).toBeDefined();
+      }
     });
   });
 });

@@ -1,3 +1,4 @@
+import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import {
   memo,
   useEffect,
@@ -19,7 +20,6 @@ import { BulletListIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { openActivitySectionInSidePanel } from '@/lib/panels/activity-section-panel-open';
 import { DEFAULT_CHAT_GROUP_ID } from '@/lib/panels/panel-group-ids';
 import { useChatStore } from '@/stores/chatStore';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import {
   makeWorktreePanelKey,
   usePanelLayoutStore,
@@ -32,7 +32,7 @@ import {
 import { SharedActivityPanelAdapter } from './SharedActivityPanelAdapter';
 
 /**
- * Early access: the button that shows or hides the Activity card, at the
+ * The button that shows or hides the Activity card, at the
  * right end of the main chat group's title row, beside the card it opens.
  * It is a toggle, not a popover trigger: the card stays put while the user
  * works and closes only from here.
@@ -85,6 +85,8 @@ export function ActivityCardToggle({
           its panel shows. */}
       <TitlebarIconButton
         holdHoverWhenExpanded
+        // A tab row chrome control: the row's nested corner radius.
+        surface="panelChrome"
         data-testid="worktree-activity-card-toggle"
         icon={BulletListIcon}
         onClick={(): void => toggleWorktree(worktreeKey)}
@@ -153,7 +155,7 @@ const ActivityCard = memo(function ActivityCard({
     [projectId, worktreeId],
   );
   const content = (
-    <OverlayScrollArea className="min-h-0 min-w-0 flex-1">
+    <OverlayScrollArea className="pointer-events-auto min-h-0 min-w-0 flex-1">
       <SharedActivityPanelAdapter
         key={`${projectId}/${worktreeId}`}
         worktreeSelection={selection}
@@ -185,7 +187,10 @@ const ActivityCard = memo(function ActivityCard({
         aria-label="Activity"
         data-testid="activity-card"
         data-style={over ? 'elevated' : 'flat'}
-        className="pointer-events-auto relative flex min-h-0 flex-col"
+        // Flat, the card has no surface, and the chat's scrollbar runs under
+        // its 4px edge padding: only the rows (8px in, clear of the thumb)
+        // take the pointer, so the thumb stays draggable beside the card.
+        className={`${over ? 'pointer-events-auto' : 'pointer-events-none'} relative flex min-h-0 flex-col`}
       >
         {over ? (
           <DropdownMenuSurface
@@ -362,14 +367,13 @@ export function ActivityCardChatLayout({
     probeRef,
     hostsCard,
   );
-  // While the card shows, the chat gives up only the width it must, and its
-  // scrollbar moves out from under the card to the card's left edge.
+  // While the card shows, the chat gives up only the width it must. Its
+  // scroll area (and so its scrollbar) still reaches the pane's right edge,
+  // past that inset: the card's rows sit 8px in, clear of the resting thumb.
   const chatInset = visible ? chatInsetPx : 0;
   const chatStyle: CSSProperties & Record<'--chat-scrollbar-inset', string> = {
     paddingRight: chatInset,
-    '--chat-scrollbar-inset': `${
-      visible && placement === 'beside' ? ACTIVITY_CARD_WIDTH_PX - chatInset : 0
-    }px`,
+    '--chat-scrollbar-inset': `${-chatInset}px`,
   };
   if (!enabled) {
     return (

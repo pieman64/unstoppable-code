@@ -2,18 +2,20 @@ const emitCoworkRemovalsMock = jest.fn();
 const emitCoworkEntryMock = jest.fn(() => Promise.resolve());
 jest.mock('../services/standalone-chat-service', () => ({
   emitStandaloneChatRemovals: emitCoworkRemovalsMock,
-  emitStandaloneWorkEntrySummary: emitCoworkEntryMock,
+  emitStandaloneWorkEntrySummaryStrict: emitCoworkEntryMock,
 }));
-/* eslint-disable @typescript-eslint/consistent-type-imports, @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await */
+/* eslint-disable @typescript-eslint/consistent-type-imports, @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-panel';
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
   IPC_CHANNELS,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  type ArchivedChatEntry,
   type ArchivedChatSummary,
   type ChatTabsFile,
   type ChatReadArchiveResponse,
@@ -24,6 +26,7 @@ import type {
   isPersistedChatTab as IsPersistedChatTab,
   readChatTabsFile as ReadChatTabsFile,
 } from '../lib/chat-tabs-reader';
+import type * as ChatArchivesModule from '../lib/chat-archives';
 
 type ChatTabsReaderModule = {
   isPersistedChatTab: typeof IsPersistedChatTab;
@@ -51,7 +54,9 @@ jest.mock('../lib/adhoc-migrate-tabs', () => ({
 const mockForkOpenWorktreeTabs = jest.fn().mockResolvedValue(new Map());
 jest.mock('../lib/worktree-open-tabs-fork', () => ({
   ...jest.requireActual('../lib/worktree-open-tabs-fork'),
-  forkOpenWorktreeTabs: mockForkOpenWorktreeTabs,
+  get forkOpenWorktreeTabs() {
+    return mockForkOpenWorktreeTabs;
+  },
 }));
 
 const mockListAccountMcpConnections = jest.fn();
@@ -67,6 +72,7 @@ jest.mock('../lib/chat-tabs', () => ({
 let liveCompatibilityTabs: PersistedChatTab[] = [];
 
 const mockChatStateService = {
+  isDispatchInFlight: jest.fn((): boolean => false),
   getState: jest.fn(
     async (scope: { projectId: string; worktreeId: string }) => ({
       schemaVersion: 1 as const,
@@ -125,7 +131,9 @@ const mockChatStateService = {
         removedTabIds?: readonly string[];
       },
     ): Promise<ChatTabsFile> => {
-      const reader = jest.requireMock('../lib/chat-tabs-reader');
+      const reader = jest.requireMock<ChatTabsReaderModule>(
+        '../lib/chat-tabs-reader',
+      );
       const writer = jest.requireMock('../lib/chat-tabs');
       const current = await Promise.resolve(
         reader.readChatTabsFile(scope.projectId, scope.worktreeId),
@@ -192,9 +200,11 @@ const mockChatStateService = {
   archiveCompatibilityTab: jest.fn(
     async (
       scope: { projectId: string; worktreeId: string },
-      entry: unknown,
+      entry: ArchivedChatEntry,
     ) => {
-      const archives = jest.requireActual('../lib/chat-archives');
+      const archives = jest.requireActual<typeof ChatArchivesModule>(
+        '../lib/chat-archives',
+      );
       return archives.appendChatArchiveSnapshotForTests(
         scope.projectId,
         scope.worktreeId,
@@ -204,7 +214,9 @@ const mockChatStateService = {
   ),
   getCompatibilityArchives: jest.fn(
     async (scope: { projectId: string; worktreeId: string }) => {
-      const archives = jest.requireActual('../lib/chat-archives');
+      const archives = jest.requireActual<typeof ChatArchivesModule>(
+        '../lib/chat-archives',
+      );
       return archives.readChatArchivesSnapshotForTests(
         scope.projectId,
         scope.worktreeId,
@@ -216,7 +228,9 @@ const mockChatStateService = {
       scope: { projectId: string; worktreeId: string },
       chatId: string,
     ) => {
-      const archives = jest.requireActual('../lib/chat-archives');
+      const archives = jest.requireActual<typeof ChatArchivesModule>(
+        '../lib/chat-archives',
+      );
       const file = await archives.readChatArchivesSnapshotForTests(
         scope.projectId,
         scope.worktreeId,
@@ -273,17 +287,33 @@ jest.mock('../services/chat-state-service', () => ({
 // only exists so the suite can assert nothing calls back into the module.
 const mockSyncStandaloneChatMetaFromTabs = jest.fn();
 jest.mock('../ipc/standalone-chat', () => ({
-  syncStandaloneChatMetaFromTabs: mockSyncStandaloneChatMetaFromTabs,
+  get syncStandaloneChatMetaFromTabs() {
+    return mockSyncStandaloneChatMetaFromTabs;
+  },
 }));
 
+const mockGetLiveBackgroundTasksForChat = jest.fn<
+  ActivityLiveBgTask[] | undefined,
+  [string, string, string]
+>();
 jest.mock('../agents/session-manager', () => ({
   destroySession: jest.fn().mockResolvedValue(undefined),
   getActiveChatIds: jest.fn(() => ['chat-a']),
+  getLiveBackgroundTasksForChat: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): ActivityLiveBgTask[] | undefined =>
+    mockGetLiveBackgroundTasksForChat(projectId, worktreeId, chatId),
   markChatSessionIdle: jest.fn(),
 }));
 
 jest.mock('../lib/chat-turn-cancel', () => ({
   cancelChatTurn: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../lib/archived-chat-session-release', () => ({
+  releaseArchivedChatSessionWhenIdle: jest.fn(),
 }));
 
 jest.mock('../agents/delegation/lifecycle', () => ({
@@ -299,7 +329,9 @@ jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: (): {
     removeDelegateWatchersForChat: typeof mockRemoveDelegateWatchersForChat;
   } => ({
-    removeDelegateWatchersForChat: mockRemoveDelegateWatchersForChat,
+    get removeDelegateWatchersForChat() {
+      return mockRemoveDelegateWatchersForChat;
+    },
   }),
 }));
 
@@ -309,11 +341,11 @@ jest.mock('../lib/workspace-registry', () => ({
 }));
 
 jest.mock('../services/chat-service', () => ({
-  projectAppAdvisorChatSummaries: jest.fn().mockResolvedValue(undefined),
+  projectAppAdvisorChatSummariesStrict: jest.fn().mockResolvedValue(undefined),
   projectAppAdvisorChatSummaryRemovals: jest.fn(),
-  projectWorktreeChatSummaries: jest.fn().mockResolvedValue(undefined),
+  projectWorktreeChatSummariesStrict: jest.fn().mockResolvedValue(undefined),
   projectWorktreeChatSummaryRemovals: jest.fn(),
-  projectWorktreeChatTodos: jest.fn().mockResolvedValue(undefined),
+  projectWorktreeChatTodosStrict: jest.fn().mockResolvedValue(undefined),
   projectWorktreeChatTodoRemovals: jest.fn(),
 }));
 
@@ -339,6 +371,7 @@ import {
   markChatSessionIdle,
 } from '../agents/session-manager';
 import { cancelChatTurn } from '../lib/chat-turn-cancel';
+import { releaseArchivedChatSessionWhenIdle } from '../lib/archived-chat-session-release';
 import { adhocMigrateWorktreeTabs } from '../lib/adhoc-migrate-tabs';
 import {
   closeDelegationScope,
@@ -352,11 +385,11 @@ import {
 import { registerIpcHandler } from '../ipc/register';
 import { readChatArchivesFile } from '../lib/chat-archives';
 import {
-  projectAppAdvisorChatSummaries,
+  projectAppAdvisorChatSummariesStrict,
   projectAppAdvisorChatSummaryRemovals,
-  projectWorktreeChatSummaries,
+  projectWorktreeChatSummariesStrict,
   projectWorktreeChatSummaryRemovals,
-  projectWorktreeChatTodos,
+  projectWorktreeChatTodosStrict,
   projectWorktreeChatTodoRemovals,
 } from '../services/chat-service';
 import { isCanopyPortalActive } from '../portal/portal-event-bus';
@@ -369,6 +402,9 @@ const mockedDestroySession = jest.mocked(destroySession);
 const mockedGetActiveChatIds = jest.mocked(getActiveChatIds);
 const mockedMarkChatSessionIdle = jest.mocked(markChatSessionIdle);
 const mockedCancelChatTurn = jest.mocked(cancelChatTurn);
+const mockedReleaseArchivedChatSessionWhenIdle = jest.mocked(
+  releaseArchivedChatSessionWhenIdle,
+);
 const mockedAdhocMigrateWorktreeTabs = jest.mocked(adhocMigrateWorktreeTabs);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedResolveChatArchivesFilePath = jest.mocked(
@@ -508,6 +544,7 @@ describe('chat persistence archive IPC handlers', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetLiveBackgroundTasksForChat.mockReset();
     mockedGetActiveChatIds.mockReturnValue(['chat-a']);
     tempDir = mkdtempSync(join(tmpdir(), 'canopy-chat-persistence-'));
     archivePath = join(tempDir, 'workspace-a', 'chat-archives', 'wt-a.json');
@@ -732,6 +769,29 @@ describe('chat persistence archive IPC handlers', () => {
     }
   });
 
+  it('defers compatibility auto archive while a send to the chat is dispatching', async () => {
+    // An async answer is sent right as the chat looks completed; archiving it
+    // then would reset its turn state and strand the admitted send (43i).
+    mockChatStateService.isDispatchInFlight.mockReturnValueOnce(true);
+    await expect(
+      getHandler(IPC_CHANNELS.chatArchiveTab, expectArchivedChatSummaries)(
+        undefined,
+        {
+          projectId: 'project-a',
+          worktreeId: 'wt-a',
+          tabId: 'chat-a',
+          keepSession: true,
+        },
+      ),
+    ).rejects.toThrow('A message to this chat is still being sent.');
+    expect(mockChatStateService.isDispatchInFlight).toHaveBeenCalledWith({
+      projectId: 'project-a',
+      worktreeId: 'wt-a',
+      chatId: 'chat-a',
+    });
+    expect(mockChatStateService.archiveCompatibilityTab).not.toHaveBeenCalled();
+  });
+
   it('defers compatibility auto archive while delegated work is only queued', async () => {
     const { setDelegationActivity } =
       await import('../agents/delegation/activity');
@@ -774,6 +834,96 @@ describe('chat persistence archive IPC handlers', () => {
       setDelegationActivity('archive-test-close', 'project-a/wt-a/chat-a', 0);
       jest.mocked(hasDelegationLifecycle).mockReturnValue(false);
     }
+  });
+
+  it.each([
+    { taskType: 'local_agent', name: 'a provider agent' },
+    { taskType: 'local_workflow', name: 'a provider workflow' },
+  ])(
+    'refuses to close a chat with $name before cleanup side effects',
+    async ({ taskType }) => {
+      mockGetLiveBackgroundTasksForChat.mockReturnValue([
+        { taskId: 'provider-task', taskType, status: 'running' },
+      ]);
+
+      await expect(
+        getHandler(IPC_CHANNELS.chatArchiveTab, expectArchivedChatSummaries)(
+          undefined,
+          { projectId: 'project-a', worktreeId: 'wt-a', tabId: 'chat-a' },
+        ),
+      ).rejects.toThrow(
+        'Background agents or workflows are still running in this chat. Stop them first.',
+      );
+      expect(closeDelegationScope).not.toHaveBeenCalled();
+      expect(mockedCancelChatTurn).not.toHaveBeenCalled();
+      expect(mockedDestroySession).not.toHaveBeenCalled();
+      expect(
+        mockChatStateService.archiveCompatibilityTab,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps delegate refusal copy when delegates and provider work are both live', async () => {
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      { taskId: 'provider-task', taskType: 'local_agent', status: 'running' },
+    ]);
+    setDelegationActivity(
+      'archive-test-priority',
+      'project-a/wt-a/chat-a',
+      0,
+      1,
+    );
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatArchiveTab, expectArchivedChatSummaries)(
+          undefined,
+          { projectId: 'project-a', worktreeId: 'wt-a', tabId: 'chat-a' },
+        ),
+      ).rejects.toThrow(
+        'Delegates are still running in this chat. Stop them first.',
+      );
+      expect(mockedDestroySession).not.toHaveBeenCalled();
+      expect(
+        mockChatStateService.archiveCompatibilityTab,
+      ).not.toHaveBeenCalled();
+    } finally {
+      setDelegationActivity(
+        'archive-test-priority',
+        'project-a/wt-a/chat-a',
+        0,
+      );
+    }
+  });
+
+  it.each([
+    { taskType: 'local_bash', name: 'a shell' },
+    { taskType: 'mcp_task', name: 'an MCP task' },
+    { taskType: undefined, name: 'an untyped task' },
+  ])('allows close while $name is live', async ({ taskType }) => {
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      {
+        taskId: 'provider-task',
+        ...(taskType !== undefined ? { taskType } : {}),
+        status: 'running',
+      },
+    ]);
+
+    const result = await getHandler(
+      IPC_CHANNELS.chatArchiveTab,
+      expectArchivedChatSummaries,
+    )(undefined, {
+      projectId: 'project-a',
+      worktreeId: 'wt-a',
+      tabId: 'chat-a',
+    });
+
+    expect(result).toHaveLength(1);
+    expect(mockChatStateService.archiveCompatibilityTab).toHaveBeenCalled();
+    expect(mockedDestroySession).toHaveBeenCalledWith(
+      'project-a',
+      'wt-a',
+      'chat-a',
+    );
   });
 
   it('closes the delegation scope when a chat with no live delegates closes', async () => {
@@ -947,6 +1097,7 @@ describe('chat persistence archive IPC handlers', () => {
       toolUseId: 'question-1',
       toolName: 'canopy_ask_user_question',
       output: 'Cancelled',
+      interruption: { reason: 'stopped', at: 1500 },
       isError: true,
     });
     expect(mockedCancelChatTurn).not.toHaveBeenCalled();
@@ -1165,6 +1316,47 @@ describe('chat persistence archive IPC handlers', () => {
     expect(file.archived[0]?.unread).toBe(true);
   });
 
+  it('asks for the kept session to be released once it cannot start a turn by itself', async () => {
+    await getHandler(IPC_CHANNELS.chatArchiveTab, expectArchivedChatSummaries)(
+      undefined,
+      {
+        projectId: 'project-a',
+        worktreeId: 'wt-a',
+        tabId: 'chat-a',
+        keepSession: true,
+      },
+    );
+
+    expect(mockedReleaseArchivedChatSessionWhenIdle).toHaveBeenCalledTimes(1);
+    expect(mockedReleaseArchivedChatSessionWhenIdle).toHaveBeenCalledWith(
+      { projectId: 'project-a', worktreeId: 'wt-a', chatId: 'chat-a' },
+      expect.anything(),
+    );
+    // The handler supplies the chat state service's reads.
+    expect(mockedReleaseArchivedChatSessionWhenIdle.mock.calls[0]?.[1]).toBe(
+      mockChatStateService,
+    );
+    // The release decision reads the idle state the archive just applied.
+    expect(mockedMarkChatSessionIdle.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedReleaseArchivedChatSessionWhenIdle.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(mockedDestroySession).not.toHaveBeenCalled();
+  });
+
+  it('tears the session down directly, not through the idle release, on a user archive', async () => {
+    await getHandler(IPC_CHANNELS.chatArchiveTab, expectArchivedChatSummaries)(
+      undefined,
+      { projectId: 'project-a', worktreeId: 'wt-a', tabId: 'chat-a' },
+    );
+
+    expect(mockedDestroySession).toHaveBeenCalledWith(
+      'project-a',
+      'wt-a',
+      'chat-a',
+    );
+    expect(mockedReleaseArchivedChatSessionWhenIdle).not.toHaveBeenCalled();
+  });
+
   it('reads an archive non-destructively', async () => {
     const archiveHandler = getHandler(
       IPC_CHANNELS.chatArchiveTab,
@@ -1235,9 +1427,11 @@ describe('chat persistence archive IPC handlers', () => {
 });
 
 describe('projectChatTabsMaterialization', () => {
-  const mockedProjectSummaries = jest.mocked(projectWorktreeChatSummaries);
+  const mockedProjectSummaries = jest.mocked(
+    projectWorktreeChatSummariesStrict,
+  );
   const mockedProjectRemovals = jest.mocked(projectWorktreeChatSummaryRemovals);
-  const mockedProjectTodos = jest.mocked(projectWorktreeChatTodos);
+  const mockedProjectTodos = jest.mocked(projectWorktreeChatTodosStrict);
   const mockedProjectMcpServers = jest.mocked(projectWorktreeMcpServersForChat);
   const mockedProjectTodoRemovals = jest.mocked(
     projectWorktreeChatTodoRemovals,
@@ -1260,7 +1454,7 @@ describe('projectChatTabsMaterialization', () => {
 
   it('nudges the cowork sidebar instead of projecting worktree summaries', () => {
     const { window, send } = makeSendableWindow();
-    projectChatTabsMaterialization(
+    void projectChatTabsMaterialization(
       () => window,
       'cowork-default',
       'entry-nudge',
@@ -1277,7 +1471,7 @@ describe('projectChatTabsMaterialization', () => {
   });
 
   it('removes archived cowork chats and refreshes sibling entry metadata', async () => {
-    projectChatTabsMaterialization(
+    void projectChatTabsMaterialization(
       () => null,
       'cowork-default',
       'entry-archive',
@@ -1297,7 +1491,7 @@ describe('projectChatTabsMaterialization', () => {
   });
 
   it('projects removals immediately and throttles full portal projections', async () => {
-    projectChatTabsMaterialization(
+    void projectChatTabsMaterialization(
       () => null,
       'project-a',
       'wt-removals',
@@ -1338,7 +1532,7 @@ describe('projectChatTabsMaterialization', () => {
 
   it('coalesces a burst of materializations into one trailing projection', () => {
     for (let index = 0; index < 5; index += 1) {
-      projectChatTabsMaterialization(
+      void projectChatTabsMaterialization(
         () => null,
         'project-a',
         'wt-burst',
@@ -1351,9 +1545,92 @@ describe('projectChatTabsMaterialization', () => {
     expect(mockedProjectSummaries).toHaveBeenCalledTimes(1);
   });
 
+  it('settles each materialization with the throttled Portal run that covers it', async () => {
+    mockedProjectSummaries.mockRejectedValueOnce(
+      new Error('Portal unavailable'),
+    );
+    const outcomes: string[] = [];
+    const track = (label: string, projection: Promise<void>): void => {
+      projection.then(
+        () => outcomes.push(`${label}:landed`),
+        (error: unknown) =>
+          outcomes.push(
+            `${label}:${error instanceof Error ? error.message : 'failed'}`,
+          ),
+      );
+    };
+    const materialize = (label: string, ids: string[]): void =>
+      track(
+        label,
+        projectChatTabsMaterialization(
+          () => null,
+          'project-a',
+          'wt-settle',
+          tabsFile(ids.map((id) => makeTab(id))),
+          { changedTabIds: ids, removedTabIds: [] },
+        ),
+      );
+
+    materialize('first', ['chat-1']);
+    materialize('second', ['chat-1', 'chat-2']);
+    expect(outcomes).toEqual([]);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mockedProjectSummaries).toHaveBeenCalledTimes(1);
+    expect(outcomes).toEqual([
+      'first:Portal unavailable',
+      'second:Portal unavailable',
+    ]);
+
+    materialize('third', ['chat-3']);
+    await jest.advanceTimersByTimeAsync(500);
+    expect(outcomes).toHaveLength(2);
+    await jest.advanceTimersByTimeAsync(600);
+    expect(outcomes.at(-1)).toBe('third:landed');
+  });
+
+  it.each([
+    [
+      'Cowork Work Entry summaries',
+      'cowork-default',
+      (error: Error) => emitCoworkEntryMock.mockRejectedValueOnce(error),
+    ],
+    [
+      'App Advisor summaries',
+      APP_ADVISOR_PROJECT_ID,
+      (error: Error) =>
+        jest
+          .mocked(projectAppAdvisorChatSummariesStrict)
+          .mockRejectedValueOnce(error),
+    ],
+    [
+      'worktree todos',
+      'project-a',
+      (error: Error) => mockedProjectTodos.mockRejectedValueOnce(error),
+    ],
+  ])(
+    'rejects the materialization when %s fail to project',
+    async (_label, projectId, inject) => {
+      const failure = new Error('Portal projection failed');
+      inject(failure);
+      const projection = projectChatTabsMaterialization(
+        () => null,
+        projectId,
+        'wt-strict',
+        tabsFile([makeTab('chat-1')]),
+        { changedTabIds: ['chat-1'], removedTabIds: [] },
+      );
+      const settled = projection.then(
+        () => 'landed',
+        (error: unknown) => error,
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(settled).resolves.toBe(failure);
+    },
+  );
+
   it('does nothing for a worktree scope when no portal session is active', () => {
     mockedIsPortalActive.mockReturnValue(false);
-    projectChatTabsMaterialization(
+    void projectChatTabsMaterialization(
       () => null,
       'project-a',
       'wt-inactive',
@@ -1368,13 +1645,13 @@ describe('projectChatTabsMaterialization', () => {
 
   it('projects App Advisor materialization without leaking sentinel ids into worktree projections', async () => {
     const mockedProjectAppAdvisorSummaries = jest.mocked(
-      projectAppAdvisorChatSummaries,
+      projectAppAdvisorChatSummariesStrict,
     );
     const mockedProjectAppAdvisorRemovals = jest.mocked(
       projectAppAdvisorChatSummaryRemovals,
     );
 
-    projectChatTabsMaterialization(
+    void projectChatTabsMaterialization(
       () => null,
       APP_ADVISOR_PROJECT_ID,
       'entry-1',

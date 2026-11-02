@@ -46,6 +46,7 @@ const mockedLogMainProcessError = jest.mocked(logMainProcessError);
 
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
   return {
+    getWindow: () => null,
     enqueueEvent: (event) => events.push(event),
     complete: (command, result): void => {
       events.push({
@@ -74,7 +75,7 @@ describe('hooks portal adapter', () => {
     let registered = false;
     mockedRunHookCommand.mockImplementation((_request, options) => {
       registered = true;
-      options.onEnqueued?.();
+      options?.onEnqueued?.();
       return new Promise<never>(() => undefined);
     });
     mockedCancelHook.mockImplementation(() => {
@@ -105,7 +106,7 @@ describe('hooks portal adapter', () => {
         },
         createdAt: '2026-05-06T00:00:00.000Z',
         expiresAt: null,
-      } as Parameters<typeof handlePortalHookRun>[0],
+      },
       context,
     );
 
@@ -130,7 +131,7 @@ describe('hooks portal adapter', () => {
         },
         createdAt: '2026-05-06T00:00:00.000Z',
         expiresAt: null,
-      } as Parameters<typeof handlePortalHookCancel>[0],
+      },
       context,
     );
     expect(mockedCancelHook).toHaveBeenCalled();
@@ -158,7 +159,7 @@ describe('hooks portal adapter', () => {
         },
         createdAt: '2026-05-06T00:00:00.000Z',
         expiresAt: null,
-      } as Parameters<typeof handlePortalHookRun>[0],
+      },
       adapterContext(events),
     );
 
@@ -199,7 +200,7 @@ describe('hooks portal adapter', () => {
         },
         createdAt: '2026-05-06T00:00:00.000Z',
         expiresAt: null,
-      } as Parameters<typeof handlePortalHookCancel>[0],
+      },
       adapterContext(events),
     );
 
@@ -215,7 +216,7 @@ describe('hooks portal adapter', () => {
     const events: PortalEventEnvelope[] = [];
     const failure = new Error('hook failed after start');
     mockedRunHookCommand.mockImplementation((_request, options) => {
-      options.onEnqueued?.();
+      options?.onEnqueued?.();
       return Promise.reject(failure);
     });
 
@@ -232,7 +233,7 @@ describe('hooks portal adapter', () => {
         },
         createdAt: '2026-05-06T00:00:00.000Z',
         expiresAt: null,
-      } as Parameters<typeof handlePortalHookRun>[0],
+      },
       adapterContext(events),
     );
     await Promise.resolve();

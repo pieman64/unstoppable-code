@@ -3,7 +3,7 @@
 import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
 import { buildPreviewQuery } from '@canopy/protocol/settings/memory-preview-query';
-import { CopyButton } from '@canopy/ui-shared/components';
+import { Button, CopyButton } from '@canopy/ui-shared/components';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
 import { previewMemorySearch } from './api';
@@ -91,13 +91,14 @@ export function RetrievalPreview({
             aria-label="Preview query"
             className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
           />
-          <button
+          <Button
             type="submit"
+            size="compact"
             disabled={loading || query.trim().length === 0}
-            className="shrink-0 rounded-lg border bg-base px-4 py-2 text-s font-medium fg-primary hover:bg-card disabled:opacity-50"
+            className="self-center"
           >
             {loading ? 'Previewing…' : 'Preview'}
-          </button>
+          </Button>
         </div>
         <label className="mt-3 flex items-center gap-2 text-xs fg-secondary">
           <input
@@ -185,6 +186,8 @@ export function RetrievalPreview({
               <div className="border-t p-4">
                 <div className="flex justify-end">
                   <CopyButton
+                    size="compact"
+                    variant="secondary"
                     value={preview.renderedBlock}
                     ariaLabel="Copy rendered block"
                     title="Copy rendered block"

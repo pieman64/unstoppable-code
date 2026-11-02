@@ -250,7 +250,7 @@ export function WatcherRecipientPicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         data-testid={`${dataTestId}-trigger`}
-        className="focus-ring inline-flex h-7 min-w-48 max-w-72 items-center justify-between gap-2 rounded-lg border bg-popover px-2 text-xs fg-primary transition hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
+        className="focus-ring inline-flex h-7 min-w-48 max-w-72 items-center justify-between gap-2 rounded-lg border bg-popover px-2 text-xs fg-primary transition-colors hover:bg-fg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           {selected && (
@@ -325,7 +325,7 @@ export function WatcherRecipientPicker({
                         aria-selected={isSelected}
                         onClick={(): void => handleSelect(option.destination)}
                         data-testid={`${dataTestId}-option-${option.destination.chatId}`}
-                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-fg-primary/[0.06] ${
+                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.06] ${
                           isSelected ? 'bg-info-subtle fg-info' : 'fg-primary'
                         }`}
                       >

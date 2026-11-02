@@ -76,6 +76,7 @@ const COLUMN_OWNERS: { readonly [K in SettingsPageDataKind]: ColumnOwner } = {
   'account.digest': 'account frame',
   'account.notifications': 'account frame',
   'account.labs': 'account frame',
+  'account.appearance': 'account frame',
   'account.integrations': 'account frame',
   'account.security': 'account frame',
   'account.billing': 'account frame',
@@ -133,21 +134,33 @@ describe('page kinds', () => {
 });
 
 describe('SettingsPageColumn', () => {
-  it('is the 5xl column that stretches under the header', () => {
+  it("is desktop Settings' 640px column that stretches under the header", () => {
     for (const token of [
       'mx-auto',
       'w-full',
-      'max-w-5xl',
+      'max-w-176',
       'min-h-full',
       'flex-1',
       'flex-col',
       'gap-6',
       'px-4',
-      'py-8',
-      'sm:px-6',
-      'lg:px-8',
+      'sm:px-8',
+      'pt-8',
+      'pb-16',
     ])
       expect(TEAM_PAGE_COLUMN_CLASS.split(' ')).toContain(token);
+    expect(TEAM_PAGE_COLUMN_CLASS).not.toContain('max-w-5xl');
+  });
+
+  it('keeps the wide column for feeds and charts', () => {
+    const container = render(
+      <SettingsPageColumn width="wide">
+        <p />
+      </SettingsPageColumn>,
+    );
+    const column = container.querySelector(COLUMN);
+    expect(column?.className.split(' ')).toContain('max-w-5xl');
+    expect(column?.className.split(' ')).not.toContain('max-w-176');
   });
 
   it('renders a main landmark and adds placement classes', () => {
@@ -173,7 +186,7 @@ describe('SettingsPageColumn', () => {
     const inner = container.querySelector(
       '[data-testid="inner"]',
     )?.parentElement;
-    expect(inner?.className).not.toContain('max-w-5xl');
+    expect(inner?.className).not.toContain('max-w-176');
     expect(inner?.className).not.toContain('px-4');
   });
 });
@@ -191,7 +204,7 @@ describe('SettingsPageNotice', () => {
 });
 
 describe('host frames', () => {
-  it('frames every account page in the column, the body at reading width', () => {
+  it('frames every account page in the column, the body at its full width', () => {
     const container = render(
       <AccountSettingsFrame freeAccess={false}>
         <p data-testid="content" />
@@ -202,7 +215,8 @@ describe('host frames', () => {
     const body = container.querySelector(
       '[data-testid="account-settings-body"]',
     );
-    expect(body?.className).toContain('max-w-3xl');
+    expect(body?.className).not.toContain('max-w-3xl');
+    expect(body?.className.split(' ')).toContain('w-full');
     expect(
       body?.contains(container.querySelector('[data-testid="content"]')),
     ).toBe(true);
@@ -292,29 +306,10 @@ function renderTeamPage(activeTab: TeamTab): HTMLElement {
     >
       <TeamPage
         initialDetail={detail()}
-        organizations={[
-          {
-            id: 'org-1',
-            name: 'Acme',
-            role: 'OWNER',
-            memberCount: 1,
-            subTeamCount: 0,
-            logoUrl: null,
-          },
-          {
-            id: 'org-2',
-            name: 'Globex',
-            role: 'MEMBER',
-            memberCount: 3,
-            subTeamCount: 1,
-            logoUrl: null,
-          },
-        ]}
         viewerEmail="owner@example.com"
         billingEnabled
         memoryEnabled={false}
         projectsEnabled={false}
-        billingNeedsAttention={false}
         mobileBrowser={false}
         activeTab={activeTab}
       />
@@ -324,7 +319,7 @@ function renderTeamPage(activeTab: TeamTab): HTMLElement {
 }
 
 describe('organization pages', () => {
-  it.each<TeamTab>(['memory', 'members', 'groups', 'digests'])(
+  it.each<TeamTab>(['members', 'groups', 'digests', 'settings'])(
     'renders the %s tab shell in the column with a reserved header slot',
     (tab) => {
       const container = renderTeamPage(tab);
@@ -333,13 +328,32 @@ describe('organization pages', () => {
       expect(
         container.querySelector('[data-testid="page-header-actions"]')
           ?.className,
-      ).toContain('min-h-8');
-      // The switcher row has a fixed height, so the block never moves while
-      // the switcher settles.
-      const switcher = container
-        .querySelector('[data-testid="team-org-switcher"]')
-        ?.closest('label');
-      expect(switcher?.className).toContain('h-15');
+        // A 28px capsule's height: every settings header action is compact.
+      ).toContain('min-h-7');
+      expect(column.className.split(' ')).toContain('max-w-176');
+      // The settings rail's scope picker names and switches the
+      // organization, so the page draws no switcher or identity block.
+      expect(
+        container.querySelector('[data-testid="team-org-switcher"]'),
+      ).toBeNull();
+      expect(
+        container.querySelector('[data-testid="team-overview-section"]'),
+      ).toBeNull();
+      expect(container.querySelector('h1')?.textContent).toBe(
+        container.querySelector('[data-testid="page-header-title"]')
+          ?.textContent,
+      );
+    },
+  );
+
+  it.each<TeamTab>(['feed', 'statistics', 'memory'])(
+    'renders the %s tab in the wide column',
+    (tab) => {
+      const container = renderTeamPage(tab);
+      const columns = container.querySelectorAll<HTMLElement>(COLUMN);
+      expect(columns).toHaveLength(1);
+      expect(columns[0]?.className.split(' ')).toContain('max-w-5xl');
+      expect(container.firstElementChild).toBe(columns[0]);
     },
   );
 

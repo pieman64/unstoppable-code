@@ -24,6 +24,7 @@
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
+import { runSkillMutation } from './skill-mutations';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -105,6 +106,14 @@ export interface InstallSubjectCapabilityPackageRequest {
   ): Promise<string | undefined>;
   /** Restore the subject if this install fails before provenance is durable. */
   rollbackFinalization?(): Promise<void>;
+  /**
+   * Told about each standalone skill folder once it is reserved and before
+   * anything is written into it, so a caller can journal it ahead of a crash.
+   * A rejection fails the install, which then rolls back as usual. The
+   * primary skill of a skill import is not reported: its folder is the
+   * import's own.
+   */
+  onSkillFolderReserved?(folder: ReservedSkillFolder): Promise<void>;
   /** Skill imports already write their primary SKILL.md from the shared definition. */
   primarySkill?: {
     localName: string;
@@ -122,14 +131,42 @@ export interface InstallSubjectCapabilityPackageRequest {
   };
 }
 
+/** A local skill folder an install is about to write a packaged tree into. */
+export interface ReservedSkillFolder {
+  resourceId: string;
+  localName: string;
+  /**
+   * True when this install made the folder. False when it reused a folder
+   * that already held a byte-identical SKILL.md, which stays the user's.
+   */
+  created: boolean;
+  /** The packaged files written into it (only missing ones when reused). */
+  files: Array<{ path: string; sha256: string }>;
+}
+
 export interface InstallSubjectCapabilityPackageResult {
   supportingFileCount: number;
-  installedSkills: Array<{ name: string; localName: string }>;
+  /**
+   * `resourceId` is the manifest resource each local skill came from, so a
+   * caller that maps packaged definitions onto local names never has to
+   * guess between two resources that share a root name.
+   */
+  installedSkills: Array<{
+    name: string;
+    localName: string;
+    resourceId: string;
+  }>;
   uninstalledResourceLabels: string[];
   keptLocalFiles: string[];
 }
 
 export async function installSkillCapabilityPackage(
+  request: InstallSkillCapabilityPackageRequest,
+): Promise<InstallSkillCapabilityPackageResult> {
+  return runSkillMutation(() => installSkillCapabilityPackageUnlocked(request));
+}
+
+async function installSkillCapabilityPackageUnlocked(
   request: InstallSkillCapabilityPackageRequest,
 ): Promise<InstallSkillCapabilityPackageResult> {
   // These arrive from the renderer and reach `getSkillDir()`'s bare
@@ -188,8 +225,12 @@ export async function installSkillCapabilityPackage(
       : {}),
   });
   return {
+    supportingFilesComplete: installed.keptLocalFiles.length === 0,
     supportingFileCount: installed.supportingFileCount,
-    installedDependencies: installed.installedSkills,
+    installedDependencies: installed.installedSkills.map((skill) => ({
+      name: skill.name,
+      localName: skill.localName,
+    })),
     uninstalledResourceLabels: installed.uninstalledResourceLabels,
     keptLocalFiles: installed.keptLocalFiles,
   };
@@ -268,7 +309,7 @@ export async function installSubjectCapabilityPackage(
         if (exists)
           throw new Error('Resource install origin cannot be replaced');
       }
-      await bindSkillOrigin(primarySkill.localName);
+      await bindSkillOrigin(primarySkill.localName, undefined, 'primary');
     }
     cachedPackagePath = await installPipelinePackageAtomically({
       packagesRoot: getPipelinePackagesDir(),
@@ -290,6 +331,9 @@ export async function installSubjectCapabilityPackage(
       pipelineContentHash: download.manifest.pipelineContentHash,
       packageDigest: download.digest,
       installedAt: new Date().toISOString(),
+      ...(request.owner.kind === 'skill'
+        ? { supportingFilesComplete: result.keptLocalFiles.length === 0 }
+        : {}),
     });
   } catch (error) {
     const rollbackResults = await Promise.allSettled([
@@ -319,12 +363,24 @@ export async function installSubjectCapabilityPackage(
     throw error;
   }
 
-  async function bindSkillOrigin(name: string): Promise<void> {
+  async function bindSkillOrigin(
+    name: string,
+    localContentHash?: string,
+    role: 'primary' | 'dependency' = 'dependency',
+  ): Promise<void> {
     if (snapshot === undefined) return;
     const localId = `${CUSTOM_SKILL_SOURCE_ID}/${name}`;
     await assertStoredSkillContext(localId);
     if (detail) {
-      const rollback = await recordSharedSkillInstall(detail, localId);
+      // Dependency aliases carry their own SKILL.md baseline, never the
+      // primary shared skill's hash.
+      const rollback = await recordSharedSkillInstall(
+        detail,
+        localId,
+        localContentHash,
+        undefined,
+        role,
+      );
       if (rollback) receiptRollbacks.push(rollback);
       reusableIds?.add(localId);
     }
@@ -384,7 +440,19 @@ export async function installSubjectCapabilityPackage(
       // A folder this install created is removed whole on failure; a reused one
       // is the recipient's, so only the files written into it are.
       if (!reserved.reused) undo.createdFolders.push(destination);
-      await bindSkillOrigin(reserved.name);
+      await request.onSkillFolderReserved?.({
+        resourceId: resource.id,
+        localName: reserved.name,
+        created: !reserved.reused,
+        files: tree.entries.map((entry) => ({
+          path: entry.path,
+          sha256: entry.sha256,
+        })),
+      });
+      await bindSkillOrigin(
+        reserved.name,
+        tree.entries.find((entry) => entry.path === 'SKILL.md')?.sha256,
+      );
       const dependency = await copyTreeInto(
         cachedPackagePath,
         resource.id,
@@ -411,6 +479,7 @@ export async function installSubjectCapabilityPackage(
       result.installedSkills.push({
         name: tree.rootName,
         localName: reserved.name,
+        resourceId: resource.id,
       });
     }
   }
@@ -619,6 +688,68 @@ async function rollBackInstall(undo: InstallUndo): Promise<void> {
       fs.rm(folder, { recursive: true, force: true }),
     ),
   ]);
+}
+
+/**
+ * Remove a custom skill folder an earlier install created, but only while it
+ * still holds nothing except packaged files with their packaged bytes. A
+ * partly written folder qualifies; a folder with any edited, added or
+ * non-regular entry is kept. Used to compensate an install interrupted before
+ * its provenance was recorded, when the in-process rollback never ran.
+ *
+ * Known window, accepted: an edit landing between the check and the removal
+ * is lost. Compensation runs on a folder the user has had no reason to open:
+ * its install never finished.
+ */
+export async function removeMaterializedSkillFolder(
+  localName: string,
+  files: readonly { path: string; sha256: string }[],
+): Promise<'removed' | 'kept' | 'missing'> {
+  assertSafeSkillFolderName(localName, 'skillName');
+  const folder = getSkillDir(CUSTOM_SKILL_SOURCE_ID, localName);
+  const expected = new Map<string, Set<string>>();
+  for (const file of files) {
+    const hashes = expected.get(file.path) ?? new Set<string>();
+    hashes.add(file.sha256);
+    expected.set(file.path, hashes);
+  }
+  let isDirectory: boolean;
+  try {
+    isDirectory = (await fs.lstat(folder)).isDirectory();
+  } catch (error) {
+    if (isErrnoCode(error, 'ENOENT')) return 'missing';
+    throw error;
+  }
+  if (!isDirectory) return 'kept';
+  if (!(await holdsOnlyPackagedFiles(folder, '', expected))) return 'kept';
+  await fs.rm(folder, { recursive: true, force: true });
+  return 'removed';
+}
+
+async function holdsOnlyPackagedFiles(
+  directory: string,
+  prefix: string,
+  expected: ReadonlyMap<string, ReadonlySet<string>>,
+): Promise<boolean> {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!(await holdsOnlyPackagedFiles(absolute, relative, expected)))
+        return false;
+      continue;
+    }
+    // Links and special files are never something an install wrote.
+    if (!entry.isFile()) return false;
+    const hashes = expected.get(relative);
+    if (!hashes) return false;
+    const digest = createHash('sha256')
+      .update(await fs.readFile(absolute))
+      .digest('hex');
+    if (!hashes.has(digest)) return false;
+  }
+  return true;
 }
 
 /** Narrow an unknown thrown value to a Node errno with the given code. */

@@ -1,6 +1,8 @@
-import type {
-  CanopyCallerDescriptor,
-  CanopyJsonRpcMessage,
+import {
+  LEDGER_GRANTS,
+  LedgerEntryAddResultSchema,
+  type CanopyCallerDescriptor,
+  type CanopyJsonRpcMessage,
 } from '@canopy/protocol/canopy-core';
 import type { RuntimeHealthCheck } from '@canopy/core-runtime';
 import type {
@@ -17,6 +19,10 @@ import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
 } from '../../desktop-runtime';
+import {
+  createLedgerServiceHarness,
+  type LedgerServiceHarness,
+} from '../../../ledger/__tests__/fixtures/in-process-ledger-store-client';
 import { CAPABILITIES_REGISTER, RELAY_DEFINITIONS } from '../definitions';
 import {
   createInterimInMemoryBindingProvider,
@@ -56,7 +62,9 @@ const CAPABILITY = {
 const settle = (): Promise<void> =>
   new Promise((resolve) => setImmediate(resolve));
 
-function caller(grants: string[]): CanopyCallerDescriptor {
+function caller(
+  grants: CanopyCallerDescriptor['grants'],
+): CanopyCallerDescriptor {
   return {
     principalId: 'local-desktop-renderer',
     clientInstanceId: 'renderer-1',
@@ -78,6 +86,7 @@ const chatPort: ChatStateCommandPort = {
   getState: unused,
   getTranscriptPage: unused,
   readToolOutput: unused,
+  readVisual: unused,
   command: unused,
   subscribe: (listener) => {
     chatListeners.add(listener);
@@ -109,7 +118,7 @@ beforeEach(async () => {
 afterEach(() => runtime.shutdown());
 
 async function connect(
-  grants: string[],
+  grants: CanopyCallerDescriptor['grants'],
   options: InterimInMemoryBindingOptions = {},
   signal = new AbortController().signal,
 ): Promise<Awaited<ReturnType<typeof createCanopyClient>>> {
@@ -140,7 +149,15 @@ async function call(
   method: string,
   params: Record<string, unknown>,
 ): Promise<number | 'ok'> {
-  await connection.send({ jsonrpc: '2.0', id, method, params });
+  const request: CanopyJsonRpcMessage = {
+    jsonrpc: '2.0' as const,
+    id,
+    method: INITIALIZE,
+    params,
+  };
+  // Keep unknown methods in the wire test without widening the typed request.
+  Reflect.set(request, 'method', method);
+  await connection.send(request);
   const message = await response(connection, id);
   return 'error' in message ? message.error.code : 'ok';
 }
@@ -424,6 +441,24 @@ describe('interim in-memory relay binding', () => {
     ungranted.close();
   });
 
+  // CAN-5496: a renderer `_execution` stays in the params, which refuse it.
+  it('refuses a renderer _execution as invalid params, even where the envelope admits it', async () => {
+    const provider = createInterimInMemoryBindingProvider(runtime);
+    const raw = await provider({
+      caller: caller(['core.runtime.read', 'worker.git.read']),
+      signal: new AbortController().signal,
+    });
+    expect(await call(raw, 1, INITIALIZE, initializeParams)).toBe('ok');
+    expect(
+      await call(raw, 2, 'worker.git.branch.list', {
+        scope: { workspaceId: 'workspace', worktreeId: 'worktree' },
+        repository: { kind: 'checkout' },
+        _execution: { childEnvironment: { GIT_SSH_COMMAND: 'touch /tmp/x' } },
+      }),
+    ).toBe(-32602);
+    raw.close();
+  });
+
   const MiB = 1024 * 1024;
   const bytes = (value: unknown): number =>
     Buffer.byteLength(JSON.stringify(value));
@@ -574,5 +609,101 @@ describe('interim in-memory relay binding', () => {
     });
     expect(client.connection.signal.aborted).toBe(false);
     await client.close();
+  });
+});
+
+// The Ledger's keyed params declare `_meta` inside a preprocess pipe, so the
+// relay keeps it in params (core-runtime's paramsDeclareMeta).
+describe('interim in-memory relay binding: Ledger keyed instructions', () => {
+  let harness: LedgerServiceHarness;
+  let ledgerRuntime: DesktopCanopyDispatcher;
+
+  beforeEach(() => {
+    harness = createLedgerServiceHarness();
+    harness.enabled = true;
+    ledgerRuntime = createDesktopRuntime({
+      getChatStatePort: () => chatPort,
+      shutdownTimeoutMs: 60_000,
+      ledgerService: harness.service,
+    });
+  });
+  afterEach(async () => {
+    await ledgerRuntime.shutdown();
+    harness.dispose();
+  });
+
+  async function connectAs(
+    principalId: string,
+  ): Promise<Awaited<ReturnType<typeof createCanopyClient>>> {
+    const provider = createInterimInMemoryBindingProvider(ledgerRuntime);
+    const connection = await provider({
+      caller: {
+        ...caller([LEDGER_GRANTS.read, LEDGER_GRANTS.write]),
+        principalId,
+      },
+      signal: new AbortController().signal,
+    });
+    return createCanopyClient({
+      connection,
+      clientName: 'relay-test',
+      clientVersion: '1.0.0',
+      definitions: RELAY_DEFINITIONS,
+    });
+  }
+
+  const addEntry = (
+    client: Awaited<ReturnType<typeof createCanopyClient>>,
+    idempotencyKey: string,
+  ): Promise<unknown> =>
+    client.instruction(
+      'core.ledger.entry.add',
+      {
+        type: 'TASK',
+        title: 'Plan the work',
+        content: 'Write the plan.',
+        _meta: { idempotencyKey },
+      },
+      { metadata: { idempotencyKey } },
+    );
+
+  it('keeps _meta in params so a bound caller adds and updates an entry', async () => {
+    const client = await connectAs(harness.register());
+    try {
+      const added = LedgerEntryAddResultSchema.parse(
+        await addEntry(client, 'relay-ledger-add'),
+      );
+      expect(added.entry.title).toBe('Plan the work');
+      await expect(
+        client.instruction(
+          'core.ledger.entry.update',
+          {
+            entryId: added.entry.entryId,
+            expectedRevision: 1,
+            status: 'IN_PROGRESS',
+            _meta: { idempotencyKey: 'relay-ledger-update' },
+          },
+          { metadata: { idempotencyKey: 'relay-ledger-update' } },
+        ),
+      ).resolves.toMatchObject({ entry: { status: 'IN_PROGRESS' } });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('reaches the service, which refuses an unbound renderer principal', async () => {
+    const client = await connectAs('local-desktop-renderer:main');
+    try {
+      await expect(
+        addEntry(client, 'relay-ledger-unbound'),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'permission_denied',
+          message: 'The caller may not perform this Feed operation.',
+        },
+      });
+      expect(harness.store.client.calls).toEqual([]);
+    } finally {
+      await client.close();
+    }
   });
 });

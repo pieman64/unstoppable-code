@@ -14,7 +14,7 @@ export const AUTOMATION_CATALOG_API_VERSION = 1;
 
 export type CuratedAutomationPipelineSource = Exclude<
   SharedAutomationPipelineRef['source'],
-  'shared' | 'unresolved'
+  'shared' | 'unresolved' | 'packaged'
 >;
 
 export interface AutomationCatalogIssue {

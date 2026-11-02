@@ -67,9 +67,13 @@ jest.mock('../lib/resolve-worktree', () => ({
     (projectId: string, worktreeId: string) =>
       `/mock/workspaces/${projectId}/worktrees/${worktreeId}`,
   ),
+  resolveRegisteredChatWorktree: jest.fn(
+    (projectId: string, worktreeId: string) => ({ projectId, worktreeId }),
+  ),
 }));
 jest.mock('../lib/validation', () => ({
   validateId: jest.fn(),
+  validateOptionalRepoId: jest.fn(),
 }));
 jest.mock('../lib/workspace-persistence', () => ({
   readWorkspaceConfig: jest.fn(),
@@ -138,23 +142,26 @@ import {
   checkoutBranch,
   createBranchAndCheckout,
   isBranchNameAvailable,
-  listBranches,
   renameBranch,
   validateBranchName,
 } from '../lib/git';
 import { getWorkspaceWorktreeRepoDir } from '../lib/paths';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
-import { validateId } from '../lib/validation';
+import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { updateWorkspaceWorktree } from '../lib/workspace-persistence';
 import { updateWorktree } from '../lib/worktree-update';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
-import { resolveFreshDefaultBranch } from '../lib/git-default-branch';
+import type {
+  WorkerGitDispatcher,
+  WorkerGitWriteDispatcher,
+} from '../canopy-runtime/worker-git-adapter';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '@canopy/core-runtime';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedCheckoutBranch = jest.mocked(checkoutBranch);
 const mockedCreateBranchAndCheckout = jest.mocked(createBranchAndCheckout);
 const mockedIsBranchNameAvailable = jest.mocked(isBranchNameAvailable);
-const mockedListBranches = jest.mocked(listBranches);
 const mockedRenameBranch = jest.mocked(renameBranch);
 const mockedValidateBranchName = jest.mocked(validateBranchName);
 const mockedUpdateWorkspaceWorktree = jest.mocked(updateWorkspaceWorktree);
@@ -164,6 +171,16 @@ const mockedGetWorkspaceWorktreeRepoDir = jest.mocked(
 );
 const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 const mockedValidateId = jest.mocked(validateId);
+const gitQuery: WorkerGitDispatcher['query'] & jest.Mock = jest.fn();
+const gitInstruction: WorkerGitWriteDispatcher['instruction'] & jest.Mock =
+  jest.fn();
+const desktopCaller: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: ['core.workspace.read', 'worker.filesystem.read'],
+};
 
 type RenameHandler = (
   event: unknown,
@@ -254,13 +271,19 @@ beforeEach(() => {
   mockedCreateBranchAndCheckout.mockResolvedValue('created-branch');
   mockedValidateBranchName.mockResolvedValue(true);
   mockedIsBranchNameAvailable.mockResolvedValue(true);
-  mockedListBranches.mockResolvedValue({
+  gitQuery.mockResolvedValue({
     branches: [],
     defaultBranch: 'main',
+    defaultBranchSource: 'hint',
   });
   mockedRenameBranch.mockResolvedValue(undefined);
+  gitInstruction.mockReset();
+  gitInstruction.mockResolvedValue({ branch: 'renamed' });
 
-  registerWorktreeHandlers(() => null);
+  registerWorktreeHandlers(() => null, {
+    dispatcher: { query: gitQuery, instruction: gitInstruction },
+    resolveCaller: () => desktopCaller,
+  });
 
   const renameCall = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === 'worktree:rename-branch',
@@ -412,10 +435,22 @@ describe('worktree:rename-branch handler', () => {
       '/mock/workspaces/ws-1/worktrees/wt-1',
       'new-root-branch',
     );
-    expect(mockedRenameBranch).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-1/worktrees/wt-1',
-      'new-root-branch',
+    // The Git effect dispatches worker.git.branch.rename with
+    // worker.git.write only; the outcomes over real checkouts are pinned by
+    // worktree-branch-rename-ipc.test.ts.
+    expect(gitInstruction).toHaveBeenCalledWith(
+      'worker.git.branch.rename',
+      {
+        scope: {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-1',
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        },
+        name: 'new-root-branch',
+      },
+      { caller: { ...desktopCaller, grants: ['worker.git.write'] } },
     );
+    expect(mockedRenameBranch).not.toHaveBeenCalled();
     expect(mockedUpdateWorkspaceWorktree).toHaveBeenCalledWith(
       'ws-1',
       'wt-1',
@@ -471,27 +506,73 @@ describe('worktree:rename-branch handler', () => {
       }),
     ).rejects.toThrow('Worktree metadata not found for ws-1/wt-missing');
 
-    expect(mockedRenameBranch).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-1/worktrees/wt-missing',
-      'new-root-branch',
+    expect(gitInstruction).toHaveBeenCalledWith(
+      'worker.git.branch.rename',
+      {
+        scope: {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-missing',
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        },
+        name: 'new-root-branch',
+      },
+      { caller: { ...desktopCaller, grants: ['worker.git.write'] } },
     );
+  });
+
+  it('rethrows the host error a failed rename carries, and records nothing', async () => {
+    const hostError = new Error(
+      'fatal: cannot rename the current branch while not on any',
+    );
+    gitInstruction.mockRejectedValue(
+      new CanopyOperationError(
+        {
+          kind: 'internal',
+          message: 'Git failed',
+          retry: { kind: 'never' },
+        },
+        hostError,
+      ),
+    );
+
+    await expect(
+      renameHandler(null, {
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        newBranchName: 'new-root-branch',
+      }),
+    ).rejects.toBe(hostError);
+    expect(mockedUpdateWorkspaceWorktree).not.toHaveBeenCalled();
+  });
+
+  it('checks the name before dispatching, so a refusal never reaches the worker', async () => {
+    mockedIsBranchNameAvailable.mockResolvedValue(false);
+
+    await expect(
+      renameHandler(null, {
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        newBranchName: 'taken',
+      }),
+    ).rejects.toThrow('Branch name "taken" is already in use');
+    expect(gitInstruction).not.toHaveBeenCalled();
   });
 });
 
 describe('worktree:list-branches handler', () => {
-  it('lists branches from the project root path', async () => {
-    mockedListBranches.mockResolvedValue({
-      branches: [
-        {
-          name: 'main',
-          isRemote: false,
-          isCurrent: true,
-          isUsedByWorktree: false,
-          hasLocalRef: true,
-          hasRemoteRef: true,
-        },
-      ],
+  it('lists the project root checkout through worker.git.branch.list', async () => {
+    const branch = {
+      name: 'main',
+      isRemote: false,
+      isCurrent: true,
+      isUsedByWorktree: false,
+      hasLocalRef: true,
+      hasRemoteRef: true,
+    };
+    gitQuery.mockResolvedValue({
+      branches: [branch],
       defaultBranch: 'main',
+      defaultBranchSource: 'hint',
     });
 
     const result = await listHandler(null, {
@@ -500,19 +581,29 @@ describe('worktree:list-branches handler', () => {
       repoId: WORKSPACE_ROOT_REPO_ID,
     });
 
-    expect(result.defaultBranch).toBe('main');
+    expect(result).toEqual({ branches: [branch], defaultBranch: 'main' });
     expect(mockedValidateId).toHaveBeenCalledWith('ws-1', 'projectId');
     expect(mockedValidateId).toHaveBeenCalledWith('wt-1', 'worktreeId');
-    expect(mockedResolveWorktreeCwd).toHaveBeenCalledWith('ws-1', 'wt-1');
-    expect(mockedListBranches).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-1/worktrees/wt-1',
-      { resolveDefaultBranch: resolveFreshDefaultBranch },
+    expect(gitQuery).toHaveBeenCalledWith(
+      'worker.git.branch.list',
+      {
+        scope: {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-1',
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        },
+        repository: { kind: 'checkout' },
+      },
+      { caller: { ...desktopCaller, grants: ['worker.git.read'] } },
     );
   });
 });
 
+// The Git outcomes are pinned against real checkouts by
+// worktree-branch-checkout-ipc.test.ts; these pin the projection.
 describe('worktree:switch-branch handler', () => {
-  it('switches a child repo branch using the repo worktree path', async () => {
+  it('switches a child repo branch through worker.git.checkout with worker.git.write only', async () => {
+    gitInstruction.mockResolvedValue({ branch: 'release' });
     const result = await switchHandler(null, {
       projectId: 'ws-1',
       worktreeId: 'wt-1',
@@ -522,21 +613,35 @@ describe('worktree:switch-branch handler', () => {
     });
 
     expect(result).toEqual({ success: true, branchName: 'release' });
-    expect(mockedValidateId).toHaveBeenCalledWith('repo-a', 'repoId');
-    expect(mockedGetWorkspaceWorktreeRepoDir).toHaveBeenCalledWith(
-      'ws-1',
-      'wt-1',
+    expect(jest.mocked(validateOptionalRepoId)).toHaveBeenCalledWith(
       'repo-a',
+      'repoId',
     );
-    expect(mockedCheckoutBranch).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-1/worktrees/wt-1/repos/repo-a',
-      'release',
+    expect(gitInstruction).toHaveBeenCalledWith(
+      'worker.git.checkout',
+      {
+        scope: { workspaceId: 'ws-1', worktreeId: 'wt-1', repoId: 'repo-a' },
+        branch: 'release',
+      },
+      { caller: { ...desktopCaller, grants: ['worker.git.write'] } },
     );
+    expect(mockedCheckoutBranch).not.toHaveBeenCalled();
   });
 
-  it('propagates branch switch errors from the git layer', async () => {
-    mockedCheckoutBranch.mockRejectedValue(
-      new Error('Branch "release" is already checked out in another worktree'),
+  it('rethrows the host error a refusal carries', async () => {
+    const hostError = new Error(
+      'Branch "release" is already checked out in another worktree',
+    );
+    gitInstruction.mockRejectedValue(
+      new CanopyOperationError(
+        {
+          kind: 'failed_precondition',
+          code: 'worker.git.checkout.branchOccupied',
+          message: hostError.message,
+          retry: { kind: 'never' },
+        },
+        hostError,
+      ),
     );
 
     await expect(
@@ -546,15 +651,13 @@ describe('worktree:switch-branch handler', () => {
         branchName: 'release',
         isRemote: false,
       }),
-    ).rejects.toThrow(
-      'Branch "release" is already checked out in another worktree',
-    );
+    ).rejects.toBe(hostError);
   });
 });
 
 describe('worktree:create-branch handler', () => {
-  it('creates a branch from a remote base branch', async () => {
-    mockedCreateBranchAndCheckout.mockResolvedValue('feature-2');
+  it('creates a branch from a remote base branch through worker.git.branch.create', async () => {
+    gitInstruction.mockResolvedValue({ branch: 'feature-2' });
 
     const result = await createHandler(null, {
       projectId: 'ws-1',
@@ -566,16 +669,36 @@ describe('worktree:create-branch handler', () => {
     });
 
     expect(result).toEqual({ success: true, branchName: 'feature-2' });
-    expect(mockedCreateBranchAndCheckout).toHaveBeenCalledWith(
-      '/mock/workspaces/ws-1/worktrees/wt-1',
-      'feature',
-      'origin/main',
+    expect(gitInstruction).toHaveBeenCalledWith(
+      'worker.git.branch.create',
+      {
+        scope: {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-1',
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        },
+        name: 'feature',
+        startPoint: { branch: 'main', remote: true },
+      },
+      { caller: { ...desktopCaller, grants: ['worker.git.write'] } },
     );
+    expect(mockedCreateBranchAndCheckout).not.toHaveBeenCalled();
   });
 
-  it('propagates create-branch errors from the git layer', async () => {
-    mockedCreateBranchAndCheckout.mockRejectedValue(
-      new Error('Cannot create a branch with uncommitted changes'),
+  it('rethrows the host error a refusal carries', async () => {
+    const hostError = new Error(
+      'Cannot create a branch with uncommitted changes',
+    );
+    gitInstruction.mockRejectedValue(
+      new CanopyOperationError(
+        {
+          kind: 'failed_precondition',
+          code: 'worker.git.branch.uncommittedChanges',
+          message: hostError.message,
+          retry: { kind: 'never' },
+        },
+        hostError,
+      ),
     );
 
     await expect(
@@ -586,7 +709,7 @@ describe('worktree:create-branch handler', () => {
         baseBranch: 'main',
         baseBranchIsRemote: false,
       }),
-    ).rejects.toThrow('Cannot create a branch with uncommitted changes');
+    ).rejects.toBe(hostError);
   });
 });
 

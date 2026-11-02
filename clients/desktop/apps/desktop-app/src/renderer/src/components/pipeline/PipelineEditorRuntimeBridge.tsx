@@ -32,7 +32,7 @@ const PAGE_CONTROLLER_TIMEOUT_MS = 5_000;
 const EDITOR_CONTROLLER_TIMEOUT_MS = 5_000;
 const BRIDGE_WAIT_INTERVAL_MS = 25;
 const SHARED_PIPELINE_SAVE_IMPACT_MESSAGE =
-  'People using this pipeline in their automations will need to approve your changes before they run again.';
+  'People using this workflow in their automations will need to approve your changes before they run again.';
 
 async function sharedPipelineSaveImpactNote(
   editorController: PipelineEditorControllerAdapter,

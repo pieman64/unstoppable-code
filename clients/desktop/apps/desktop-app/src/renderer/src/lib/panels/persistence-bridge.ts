@@ -100,7 +100,7 @@ import {
   repairMinimalLayout,
   type MinimalAuxiliaryLayoutSource,
 } from './minimal-layout';
-import { earlyAccessMinimalFor } from './early-access-minimal';
+import { usesSimplifiedMinimalDefaults } from './minimal-layout-defaults';
 import { withoutEphemeralPanels } from './ephemeral-panels';
 import { useChatStore } from '@/stores/chatStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -327,29 +327,9 @@ function canonicalLiveMinimalLayout(
     persisted,
   );
   return repairMinimalLayout(current, [...auxiliary, ...missing], {
-    // Early access adds nothing to the Side Panel and keeps what it holds.
-    seedSidePanels: !earlyAccessMinimalFor(worktreeKey),
+    // Minimal adds nothing to the Side Panel and keeps what it holds.
+    seedSidePanels: !usesSimplifiedMinimalDefaults(worktreeKey),
   });
-}
-
-/**
- * Restores what a live Minimal layout holds without early access after early
- * access turns off: New tabs go, and a Side Panel missing Activity or File
- * explorer gets them back. Turning early access on re-shapes nothing. A
- * layout that already holds all of that is left untouched.
- */
-export function refreshLiveMinimalLayout(worktreeKey: string): void {
-  if (getWorkspaceLayoutMode(worktreeKey) !== 'minimal') return;
-  if (earlyAccessMinimalFor(worktreeKey)) return;
-  const store = usePanelLayoutStore.getState();
-  const current = store.serializeLayout(worktreeKey);
-  if (current === null) return;
-  const next = canonicalLiveMinimalLayout(
-    worktreeKey,
-    withoutEphemeralPanels(current),
-  );
-  if (JSON.stringify(next) === JSON.stringify(current)) return;
-  store.restoreLayout(worktreeKey, next);
 }
 
 /**
@@ -365,7 +345,8 @@ function minimalLayoutOnLoad(
 ): SerializablePanelLayoutFile {
   const canonical = canonicalLiveMinimalLayout(worktreeKey, persisted);
   const hide =
-    earlyAccessMinimalFor(worktreeKey) && !isMinimalLayoutShape(persisted);
+    usesSimplifiedMinimalDefaults(worktreeKey) &&
+    !isMinimalLayoutShape(persisted);
   return hide ? hideOptionalMinimalRegions(canonical) : canonical;
 }
 
@@ -1132,14 +1113,14 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
         if (current !== null) {
           const seeded = planMinimalLayout(current, [], {
             initial: true,
-            // Early access: the Side Panel starts empty and lists what can
+            // Simplified Minimal: the Side Panel starts empty and lists what can
             // be opened there.
-            seedSidePanels: !earlyAccessMinimalFor(worktreeKey),
+            seedSidePanels: !usesSimplifiedMinimalDefaults(worktreeKey),
           }).layout;
           usePanelLayoutStore.getState().restoreLayout(
             worktreeKey,
-            // Early access: no automatic reopening of the Side Panel.
-            earlyAccessMinimalFor(worktreeKey)
+            // Simplified Minimal: no automatic reopening of the Side Panel.
+            usesSimplifiedMinimalDefaults(worktreeKey)
               ? hideOptionalMinimalRegions(seeded)
               : seeded,
           );

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { TRANSCRIPT_READ_ACTION_TYPES } from '../families/transcript-read/actions';
+import { transcriptReadActionCatalog } from '../families/transcript-read/catalog';
 import {
   ENVIRONMENT_ACTION_TYPES,
   ENVIRONMENT_CHAT_CREATE_PLACEMENTS,
@@ -95,6 +97,8 @@ export interface AgentConformanceCallIdentity {
  * such as a user archiving a chat between a call and its retry.
  */
 export interface AgentConformanceWorldControl {
+  /** Counts transcript body reads, excluding metadata and rejected cursors. */
+  transcriptReadCount(): number;
   archiveChat(chatId: string): Promise<void>;
   /**
    * Makes a seeded chat one the host cannot deliver chat.send_message to,
@@ -394,7 +398,18 @@ function advertisesProperty(actual: unknown, expected: unknown): boolean {
       (typeof advertised === 'string' && advertised.includes(description))
     );
   };
-  return sameSchema(actual) || arrayAt(actual, 'anyOf').some(sameSchema);
+  if (sameSchema(actual)) return true;
+  if (
+    arrayAt(actual, 'anyOf').some((branch) =>
+      advertisesProperty(branch, expected),
+    )
+  )
+    return true;
+  const expectedBranches = arrayAt(expected, 'anyOf');
+  return (
+    expectedBranches.length > 0 &&
+    expectedBranches.every((branch) => advertisesProperty(actual, branch))
+  );
 }
 
 /** The shared actions a host offers, in its advertised order. */
@@ -404,6 +419,7 @@ function sharedActionOffer(
 ): AgentActionDescriptionOffer {
   const supported = new Set<string>([
     ...environmentSupportedTypes(capabilities),
+    ...TRANSCRIPT_READ_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES,
     ...PULL_REQUEST_ACTION_TYPES,
@@ -411,6 +427,7 @@ function sharedActionOffer(
   const catalog = new Map(
     [
       ...environmentActionCatalog(world.brand),
+      ...transcriptReadActionCatalog(),
       ...experimentActionCatalog(),
       ...settingsActionCatalog(),
       ...pullRequestActionCatalog(),
@@ -514,6 +531,26 @@ function checkDispatchSchema(
     ),
     'DispatchAction environment action types',
   );
+  const transcriptTypes = TRANSCRIPT_READ_ACTION_TYPES.filter((type) =>
+    capabilities.actionTypes.includes(type),
+  );
+  checkEqual(
+    arrayAt(schema, ...ACTION_PATH, 'properties', 'type', 'enum').filter(
+      (type) => TRANSCRIPT_READ_ACTION_TYPES.some((read) => read === type),
+    ),
+    transcriptTypes,
+    'DispatchAction transcript action types',
+  );
+  const hasTranscripts = transcriptTypes.length > 0;
+  const transcriptOnly = new Set([
+    'target',
+    'messageId',
+    'blockOrdinal',
+    'field',
+    'fieldSource',
+    'offset',
+    'firstBlockOrdinal',
+  ]);
   const properties = at(expected, ...ACTION_PATH, 'properties');
   const placementSchema = {
     type: 'string',
@@ -524,7 +561,8 @@ function checkDispatchSchema(
   for (const [name, property] of Object.entries(
     isJsonRecord(properties) ? properties : {},
   )) {
-    if (name === 'type') continue;
+    if (name === 'type' || (!hasTranscripts && transcriptOnly.has(name)))
+      continue;
     const actualProperty = at(schema, ...ACTION_PATH, 'properties', name);
     if (name === 'placement' && placementSchema.enum.length === 0) {
       check(
@@ -533,7 +571,14 @@ function checkDispatchSchema(
       );
       continue;
     }
-    const expectedProperty = name === 'placement' ? placementSchema : property;
+    const expectedProperty =
+      name === 'placement'
+        ? placementSchema
+        : !hasTranscripts &&
+            name === 'limit' &&
+            arrayAt(property, 'anyOf').length > 0
+          ? at(property, 'anyOf', 0)
+          : property;
     check(
       advertisesProperty(actualProperty, expectedProperty),
       `DispatchAction property ${name}\nexpected to accept: ${canonicalJson(expectedProperty)}\nreceived: ${canonicalJson(actualProperty)}`,
@@ -543,6 +588,13 @@ function checkDispatchSchema(
     arrayAt(schema, ...ACTION_PATH, 'allOf').map(canonicalJson),
   );
   for (const rule of arrayAt(expected, ...ACTION_PATH, 'allOf')) {
+    if (
+      !hasTranscripts &&
+      TRANSCRIPT_READ_ACTION_TYPES.some(
+        (type) => type === at(rule, 'if', 'properties', 'type', 'const'),
+      )
+    )
+      continue;
     check(
       allOf.has(canonicalJson(rule)),
       `DispatchAction is missing the conditional ${canonicalJson(rule)}`,
@@ -1194,6 +1246,343 @@ export function runAgentActionConformance<H>(
         }
       });
     }
+
+    t.describe('transcript reads', () => {
+      const target = world.transcript.target;
+      const contentAction = {
+        type: 'chat.content.read',
+        target,
+        messageId: 'retained-older',
+        blockOrdinal: 0,
+        field: 'text',
+        offset: 0,
+        limit: 48,
+      };
+      const blocksAction = {
+        type: 'chat.transcript.blocks.page',
+        target,
+        messageId: 'retained-older',
+        limit: 2,
+      };
+      const payload = (type: string): Record<string, unknown> =>
+        type === 'chat.transcript.page'
+          ? { type, target }
+          : type === 'chat.content.read'
+            ? contentAction
+            : blocksAction;
+      const offered = (current: Session<H>, type: string): boolean =>
+        current.host.capabilities.actionTypes.includes(type);
+      const invalidArguments = async (
+        current: Session<H>,
+        action: Record<string, unknown>,
+        label: string,
+      ): Promise<void> => {
+        const { result } = await current.dispatch(action);
+        check(
+          result.isError === true &&
+            result.text.startsWith('Invalid arguments for '),
+          label,
+        );
+      };
+
+      t.it(
+        'pages retained child rows with the returned opaque cursor',
+        async () => {
+          const current = await session();
+          if (!offered(current, 'chat.transcript.page')) return;
+          const first = await current.dispatch({
+            type: 'chat.transcript.page',
+            target,
+          });
+          checkEqual(at(first.json, 'ok'), true, 'first child page success');
+          checkEqual(
+            arrayAt(first.json, 'result', 'messages').map((row) =>
+              at(row, 'id'),
+            ),
+            ['retained-third', 'retained-newest'],
+            'newest child page',
+          );
+          const cursor = stringAt(first.json, 'result', 'cursor');
+          check(
+            typeof cursor === 'string' && cursor.length > 0,
+            'first child page cursor',
+          );
+          const second = await current.dispatch({
+            type: 'chat.transcript.page',
+            target,
+            cursor,
+          });
+          checkEqual(at(second.json, 'ok'), true, 'older child page success');
+          checkEqual(
+            arrayAt(second.json, 'result', 'messages').map((row) =>
+              at(row, 'id'),
+            ),
+            ['retained-older', 'retained-second'],
+            'older child page',
+          );
+          checkSubset(
+            at(second.json, 'result'),
+            { totalMessages: 4, transcriptRevision: 7 },
+            'retained page metadata',
+          );
+          checkEqual(
+            at(second.json, 'result', 'cursor'),
+            undefined,
+            'oldest child page has no continuation',
+          );
+        },
+      );
+
+      t.it(
+        'reconstructs exact Unicode content using byte offsets and nextOffset',
+        async () => {
+          const current = await session();
+          if (!offered(current, 'chat.content.read')) return;
+          const first = await current.dispatch(contentAction);
+          checkEqual(at(first.json, 'ok'), true, 'first content range success');
+          checkSubset(
+            at(first.json, 'result'),
+            {
+              text: 'début 🌿 retained child -- VCONF-MIDDLE -- ca',
+              nextOffset: 48,
+              byteLength: 71,
+            },
+            'first byte range',
+          );
+          const second = await current.dispatch({
+            ...contentAction,
+            offset: at(first.json, 'result', 'nextOffset'),
+          });
+          checkEqual(
+            at(second.json, 'ok'),
+            true,
+            'second content range success',
+          );
+          checkSubset(
+            at(second.json, 'result'),
+            { text: 'fé 漢字 -- VCONF-END', byteLength: 71 },
+            'second byte range',
+          );
+          checkEqual(
+            at(second.json, 'result', 'nextOffset'),
+            undefined,
+            'last range has no nextOffset',
+          );
+          checkEqual(
+            `${stringAt(first.json, 'result', 'text')}${stringAt(second.json, 'result', 'text')}`,
+            'début 🌿 retained child -- VCONF-MIDDLE -- café 漢字 -- VCONF-END',
+            'exact Unicode reconstruction',
+          );
+        },
+      );
+
+      t.it(
+        'continues bounded-v1 block pages without dropping blocks',
+        async () => {
+          const current = await session();
+          if (!offered(current, 'chat.transcript.blocks.page')) return;
+          const first = await current.dispatch(blocksAction);
+          checkEqual(at(first.json, 'ok'), true, 'first block page success');
+          checkSubset(
+            at(first.json, 'result'),
+            {
+              projection: 'bounded-v1',
+              firstBlockOrdinal: 0,
+              nextBlockOrdinal: 2,
+              blockCount: 3,
+              transcriptRevision: 7,
+            },
+            'bounded first block page',
+          );
+          checkEqual(
+            arrayAt(first.json, 'result', 'entries').map((entry) =>
+              at(entry, 'ordinal'),
+            ),
+            [0, 1],
+            'first block ordinals',
+          );
+          const cursor = stringAt(first.json, 'result', 'cursor');
+          check(
+            typeof cursor === 'string' && cursor.length > 0,
+            'block continuation cursor',
+          );
+          const second = await current.dispatch({ ...blocksAction, cursor });
+          checkEqual(
+            at(second.json, 'ok'),
+            true,
+            `second block page success: ${canonicalJson(second.json)}`,
+          );
+          checkSubset(
+            at(second.json, 'result'),
+            {
+              projection: 'bounded-v1',
+              firstBlockOrdinal: 2,
+              entries: [
+                {
+                  kind: 'block',
+                  ordinal: 2,
+                  block: { type: 'text', text: 'Final block.' },
+                },
+              ],
+              blockCount: 3,
+            },
+            'last block page',
+          );
+          checkEqual(
+            at(second.json, 'result', 'cursor'),
+            undefined,
+            'last block page has no cursor',
+          );
+          checkEqual(
+            at(second.json, 'result', 'nextBlockOrdinal'),
+            undefined,
+            'last block page has no ordinal continuation',
+          );
+        },
+      );
+
+      t.it(
+        'rejects unknown and foreign owners and hidden scope without body reads',
+        async () => {
+          const current = await session();
+          for (const type of TRANSCRIPT_READ_ACTION_TYPES) {
+            if (!offered(current, type)) continue;
+            for (const chatId of [
+              'unknown-transcript-chat',
+              world.foreign.chatId,
+            ]) {
+              checkErrorCode(
+                await current.dispatch({
+                  ...payload(type),
+                  target: { ...target, chatId },
+                }),
+                ['not_found'],
+                `${type} inaccessible owner`,
+              );
+            }
+            for (const hidden of [
+              { scope: world.current },
+              { workspaceId: world.foreign.workspaceId },
+              { grants: ['core.chat.read'] },
+              { accountId: 'foreign-account' },
+            ]) {
+              await invalidArguments(
+                current,
+                { ...payload(type), ...hidden },
+                `${type} hidden scope`,
+              );
+            }
+          }
+          if (offered(current, 'chat.content.read'))
+            await invalidArguments(
+              current,
+              { ...contentAction, field: 'unknown-field' },
+              'unknown content field',
+            );
+          checkEqual(
+            current.host.control.transcriptReadCount(),
+            0,
+            'invalid reads never reach body storage',
+          );
+        },
+      );
+
+      t.it(
+        'rejects stale and wrong-kind cursors and cursor plus firstBlockOrdinal without reads',
+        async () => {
+          const current = await session();
+          for (const type of [
+            'chat.transcript.page',
+            'chat.transcript.blocks.page',
+          ]) {
+            if (!offered(current, type)) continue;
+            checkErrorCode(
+              await current.dispatch({
+                ...payload(type),
+                cursor: 'stale-retained-cursor',
+              }),
+              ['invalid_target'],
+              `${type} stale cursor`,
+            );
+          }
+          if (offered(current, 'chat.transcript.blocks.page'))
+            await invalidArguments(
+              current,
+              {
+                ...blocksAction,
+                cursor: 'stale-retained-cursor',
+                firstBlockOrdinal: 0,
+              },
+              'cursor excludes firstBlockOrdinal',
+            );
+          checkEqual(
+            current.host.control.transcriptReadCount(),
+            0,
+            'stale and invalid cursors read nothing',
+          );
+          if (
+            !offered(current, 'chat.transcript.page') ||
+            !offered(current, 'chat.transcript.blocks.page')
+          )
+            return;
+          const first = await current.dispatch(blocksAction);
+          const cursor = stringAt(first.json, 'result', 'cursor');
+          check(typeof cursor === 'string', 'cursor used for wrong-kind check');
+          const before = current.host.control.transcriptReadCount();
+          checkErrorCode(
+            await current.dispatch({
+              type: 'chat.transcript.page',
+              target,
+              cursor,
+            }),
+            ['invalid_target'],
+            'block cursor cannot page rows',
+          );
+          checkErrorCode(
+            await current.dispatch({
+              ...blocksAction,
+              target: { ...target, runGeneration: 2 },
+              cursor,
+            }),
+            ['invalid_target'],
+            'cursor bound to retained run',
+          );
+          checkEqual(
+            current.host.control.transcriptReadCount(),
+            before,
+            'foreign cursors read nothing',
+          );
+        },
+      );
+
+      t.it(
+        'omits unsupported transcript types from search and rejects every dispatch before reads',
+        async () => {
+          const current = await session();
+          for (const type of TRANSCRIPT_READ_ACTION_TYPES) {
+            if (offered(current, type)) continue;
+            const search = await current.execute('search_actions', {
+              actionType: type,
+            });
+            checkEqual(
+              arrayAt(parseJson(search.text), 'actions'),
+              [],
+              `${type} unsupported search`,
+            );
+            checkErrorCode(
+              await current.dispatch(payload(type)),
+              ['unsupported_action'],
+              `${type} unsupported dispatch`,
+            );
+          }
+          checkEqual(
+            current.host.control.transcriptReadCount(),
+            0,
+            'unsupported reads never reach backend',
+          );
+        },
+      );
+    });
 
     t.describe('chat.create', () => {
       t.it('starts an independent chat in the current worktree', async () => {

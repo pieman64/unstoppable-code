@@ -27,6 +27,7 @@ import {
   isGatewayRoutableModel,
   resolveGatewayModelEntry,
 } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { isCodexModelAvailableToAccount } from '@canopy/desktop-shared/lib/default-model-lane';
 import { isProviderNativelyAuthenticatedForRouting } from '../auth/provider-auth-state';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { buildDesktopRoutingCandidateSet } from './candidates';
@@ -113,6 +114,14 @@ export async function routeDesktopAutoTurn(input: {
   /** Owner bound to the chat session; sent with the resolve call (CAN-3462). */
   workOwner?: WorkOwner;
 }): Promise<DesktopAutoTurnResolution | null> {
+  // Auto currently negotiates Claude/Codex routes. Never spend routing credits
+  // or change the provider underneath an explicit OpenCode selection.
+  if (
+    input.tab.executionHarness === 'opencode' ||
+    input.tab.providerType === 'opencode' ||
+    input.request.executionHarness === 'opencode'
+  )
+    return null;
   const lane: ModelExecutionLane = input.request.aiCreditsRouting
     ? 'ai_credits'
     : 'provider_subscription';
@@ -180,8 +189,7 @@ export async function routeDesktopAutoTurn(input: {
         native:
           source === `${harness}-managed` &&
           (harness !== 'codex' ||
-            codexAccountModels === null ||
-            codexAccountModels.has(id)),
+            isCodexModelAvailableToAccount(id, codexAccountModels)),
         gateway: isGatewayRoutableModel(id),
         supportsThinking: getEffectiveSupportedThinkingLevelsForModel(
           id,

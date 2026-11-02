@@ -54,13 +54,19 @@ describe('durable browser profile switch decisions', () => {
     };
     adapter = {
       allocate: jest.fn(() => Promise.resolve({})),
-      discard: jest.fn(() => Promise.resolve(undefined)),
+      discard: jest.fn<
+        ReturnType<BrowserSwitchAdapter<object>['discard']>,
+        [target: object]
+      >(() => Promise.resolve()),
       authorize: jest.fn(() => Promise.resolve(undefined)),
       closeSource: jest.fn(() => Promise.resolve(true)),
       commit: jest.fn(async (_target, save) => {
         await save();
       }),
-      openTarget: jest.fn(() => Promise.resolve(target)),
+      openTarget: jest.fn<
+        ReturnType<BrowserSwitchAdapter<object>['openTarget']>,
+        [target: object]
+      >(() => Promise.resolve(target)),
       reloadSource: jest.fn(() => Promise.resolve(source)),
     };
   });

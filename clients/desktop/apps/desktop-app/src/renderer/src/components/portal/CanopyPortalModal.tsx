@@ -1,5 +1,6 @@
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { CopyButton } from '@/components/shared/CopyButton';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -89,6 +90,8 @@ const DISABLE_BUTTON = `Disable ${REMOTE_CONTROL_LABEL}`;
 const REGENERATE_BUTTON = 'Regenerate code';
 const PAIR_ANOTHER_DEVICE_BUTTON = 'Pair another device';
 const CANCEL_PAIRING_CODE_BUTTON = 'Cancel pairing code';
+const HOST_ID_LABEL = 'Host ID for agents';
+const HOST_ID_HELPER = 'It stays the same unless the app is reinstalled.';
 const PAIR_ANOTHER_DEVICE_HELPER =
   'Enter this code on the other device. Devices already connected stay connected.';
 const PAIR_ANOTHER_DEVICE_QR_HELPER =
@@ -602,14 +605,14 @@ export function CanopyPortalModal({
               {noAccountMessage(accountLocation)}
             </p>
             <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
+              <Button
+                variant="primary"
+                size="compact"
                 onClick={onRequestSignIn}
                 data-testid="canopy-portal-sign-in"
-                className="rounded-lg bg-accent px-3 py-1.5 text-s font-semibold fg-emphasis hover:bg-accent/90 transition-colors focus-ring"
               >
                 {SIGN_IN_BUTTON}
-              </button>
+              </Button>
               <button
                 type="button"
                 onClick={onOpenAccountSettings}
@@ -678,14 +681,14 @@ export function CanopyPortalModal({
               helper={statusInfo.helper}
               action={
                 viewPortalVisible ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="primary"
+                    size="compact"
                     onClick={openPortal}
-                    className="rounded-lg bg-accent px-3 py-1.5 text-s font-semibold fg-emphasis hover:bg-accent/90 transition-colors focus-ring"
                     data-testid="canopy-portal-view-web-portal"
                   >
                     {VIEW_PORTAL_BUTTON}
-                  </button>
+                  </Button>
                 ) : undefined
               }
             />
@@ -738,6 +741,24 @@ export function CanopyPortalModal({
                 )}
               </div>
             )}
+            {portal.status === 'active' &&
+              typeof portal.hostCode === 'string' &&
+              portal.hostCode.length > 0 && (
+                <div className="space-y-1" data-testid="portal-host-id">
+                  <dl>
+                    <dt className="text-s fg-secondary">{HOST_ID_LABEL}</dt>
+                    <dd>
+                      <code
+                        className="font-mono text-s fg-primary select-all"
+                        data-testid="portal-host-id-value"
+                      >
+                        {portal.hostCode}
+                      </code>
+                    </dd>
+                  </dl>
+                  <p className="text-xs fg-secondary">{HOST_ID_HELPER}</p>
+                </div>
+              )}
           </div>
         )}
 
@@ -782,116 +803,116 @@ export function CanopyPortalModal({
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-2 border-t px-5 py-3">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           onClick={onClose}
           disabled={isBusy}
-          className="rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors focus-ring disabled:opacity-50"
           data-testid="canopy-portal-close"
         >
           {CLOSE_BUTTON}
-        </button>
+        </Button>
 
         {portal.status === 'disabled' &&
           cloudReady &&
           !showUpgradeCta &&
           !showGuestCta && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={() => void enable()}
               disabled={isBusy}
-              className="rounded-lg bg-accent px-3 py-1.5 text-s font-semibold fg-emphasis hover:bg-accent/90 transition-colors focus-ring disabled:opacity-50"
               data-testid="canopy-portal-enable"
             >
               {busy === 'starting' ? 'Enabling…' : ENABLE_BUTTON}
-            </button>
+            </Button>
           )}
 
         {portal.status === 'pending_auth' && (
           <>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={() => void regenerate()}
               disabled={isBusy}
-              className="rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary transition-colors focus-ring disabled:opacity-50"
               data-testid="canopy-portal-regenerate"
             >
               {busy === 'regenerating' ? 'Regenerating…' : REGENERATE_BUTTON}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={() => void disable()}
               disabled={isBusy}
-              className="whitespace-nowrap rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary transition-colors focus-ring disabled:opacity-50"
               data-testid="canopy-portal-disable"
             >
               {busy === 'stopping' ? 'Disabling…' : DISABLE_BUTTON}
-            </button>
+            </Button>
           </>
         )}
 
         {(portal.status === 'active' || portal.status === 'reconnecting') && (
           <>
             {portal.status === 'active' && portal.pairingCode !== null && (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
                 onClick={() => void cancelPairingCode()}
                 disabled={isBusy}
-                className="whitespace-nowrap rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary transition-colors focus-ring disabled:opacity-50"
                 data-testid="canopy-portal-cancel-pairing-code"
               >
                 {busy === 'regenerating'
                   ? 'Cancelling…'
                   : CANCEL_PAIRING_CODE_BUTTON}
-              </button>
+              </Button>
             )}
             {portal.status === 'active' && portal.pairingCode === null && (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
                 onClick={() => void pairAnotherDevice()}
                 disabled={isBusy}
-                className="whitespace-nowrap rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary transition-colors focus-ring disabled:opacity-50"
                 data-testid="canopy-portal-pair-another-device"
               >
                 {busy === 'regenerating'
                   ? 'Generating code…'
                   : PAIR_ANOTHER_DEVICE_BUTTON}
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={() => void disable()}
               disabled={isBusy}
-              className="whitespace-nowrap rounded-lg border bg-base px-3 py-1.5 text-s font-medium fg-primary hover:bg-secondary transition-colors focus-ring disabled:opacity-50"
               data-testid="canopy-portal-disable"
             >
               {busy === 'stopping' ? 'Disabling…' : DISABLE_BUTTON}
-            </button>
+            </Button>
           </>
         )}
 
         {portal.status === 'inactive' && (
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void enable()}
             disabled={isBusy || !cloudReady}
-            className="rounded-lg bg-accent px-3 py-1.5 text-s font-semibold fg-emphasis hover:bg-accent/90 transition-colors focus-ring disabled:opacity-50"
             data-testid="canopy-portal-reconnect"
           >
             {busy === 'starting' ? 'Reconnecting…' : RECONNECT_BUTTON}
-          </button>
+          </Button>
         )}
 
         {portal.status === 'error' && (
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void enable()}
             disabled={isBusy || !cloudReady}
-            className="rounded-lg bg-accent px-3 py-1.5 text-s font-semibold fg-emphasis hover:bg-accent/90 transition-colors focus-ring disabled:opacity-50"
             data-testid="canopy-portal-try-again"
           >
             {busy === 'starting' ? 'Retrying…' : TRY_AGAIN_BUTTON}
-          </button>
+          </Button>
         )}
       </div>
     </DialogModal>

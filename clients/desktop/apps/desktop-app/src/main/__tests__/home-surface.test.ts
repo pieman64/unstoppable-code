@@ -8,10 +8,14 @@ import type {
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
+  IPC_CHANNELS,
 } from '@canopy/desktop-shared/types';
 import type { RepoShadowInfo } from '../lib/repo-shadow';
 import type * as PreferencesStoreModule from '../lib/preferences-store';
 
+jest.mock('../ipc/register', () => ({
+  registerIpcHandler: jest.fn(),
+}));
 jest.mock('../lib/workspace-persistence', () => ({
   readWorkspaceConfig: jest.fn(),
 }));
@@ -31,10 +35,6 @@ jest.mock('../lib/git', () => ({
     .fn()
     .mockResolvedValue('git@example.com:org/repo.git'),
   isGitRepo: jest.fn().mockResolvedValue(true),
-  listBranches: jest.fn(),
-}));
-jest.mock('../lib/git-default-branch', () => ({
-  resolveFreshDefaultBranch: jest.fn(),
 }));
 jest.mock('../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: jest.fn(),
@@ -67,8 +67,7 @@ jest.mock('../lib/preferences-store', () => {
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { getCoworkWorkspaceRootDir } from '../lib/paths';
 import { ensureRepoShadow } from '../lib/repo-shadow';
-import { getRemoteUrlStrict, isGitRepo, listBranches } from '../lib/git';
-import { resolveFreshDefaultBranch } from '../lib/git-default-branch';
+import { getRemoteUrlStrict, isGitRepo } from '../lib/git';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { ensureAppAdvisorHomeScaffold } from '../lib/app-advisor-workspace';
 import { runProviderDiscovery } from '../ipc/worktree-discovery';
@@ -83,18 +82,17 @@ import {
   handleHomeDiscoverEnvironment,
   handleConfigurationComposerAdvisorEnvironment,
   handleHomeFileIndex,
-  handleListBranchTargets,
-  resolveHomeBranchRepoPath,
+  registerHomeSurfaceHandlers,
   resolveHomeDiscoveryCwd,
 } from '../ipc/home-surface';
+import { registerIpcHandler } from '../ipc/register';
+import { resolveHomeBranchRepoPath } from '../lib/home-branch-repo';
 
 const mockedReadConfig = jest.mocked(readWorkspaceConfig);
 const mockedGetCoworkRootDir = jest.mocked(getCoworkWorkspaceRootDir);
 const mockedEnsureRepoShadow = jest.mocked(ensureRepoShadow);
 const mockedGetRemoteUrlStrict = jest.mocked(getRemoteUrlStrict);
 const mockedIsGitRepo = jest.mocked(isGitRepo);
-const mockedListBranches = jest.mocked(listBranches);
-const mockedResolveFreshDefaultBranch = jest.mocked(resolveFreshDefaultBranch);
 const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 const mockedEnsureAppAdvisorHomeScaffold = jest.mocked(
   ensureAppAdvisorHomeScaffold,
@@ -202,32 +200,6 @@ const singleRepoConfigFixture: WorkspaceConfigFile = buildConfig({
 
 const nonSourceMultiRepoConfigFixture: WorkspaceConfigFile = buildConfig({
   type: 'multi-repo',
-});
-
-describe('handleListBranchTargets', () => {
-  it('uses advisory default-branch freshness for Home branch discovery', async () => {
-    mockedReadConfig.mockResolvedValue(singleRepoConfigFixture);
-    mockedListBranches.mockResolvedValue({
-      branches: [],
-      defaultBranch: 'trunk',
-    });
-    mockedResolveFreshDefaultBranch.mockResolvedValue('trunk');
-
-    await expect(
-      handleListBranchTargets({ workspaceId: 'ws-1' }),
-    ).resolves.toEqual({
-      supported: true,
-      branches: [],
-      defaultBranch: 'trunk',
-    });
-
-    expect(mockedListBranches).toHaveBeenCalledWith(
-      '/Users/me/repo',
-      expect.objectContaining({
-        resolveDefaultBranch: mockedResolveFreshDefaultBranch,
-      }),
-    );
-  });
 });
 
 function buildMultiRepoConfig(
@@ -583,6 +555,36 @@ describe('handleHomeFileIndex', () => {
       projectId: 'ws-1',
       worktreeId: 'wt-1',
     });
+  });
+
+  it('serves home:file-index from the retained direct walk, never the dispatcher (CAN-5037)', async () => {
+    const response: FileIndexResponse = { repos: [] };
+    mockedBuildFileIndexes.mockResolvedValue(response);
+    const query = jest.fn(
+      (): Promise<never> => Promise.reject(new Error('dispatcher called')),
+    );
+    const resolveCaller = jest.fn();
+    jest.mocked(registerIpcHandler).mockClear();
+    registerHomeSurfaceHandlers({ dispatcher: { query }, resolveCaller });
+    const registration = jest
+      .mocked(registerIpcHandler)
+      .mock.calls.find(([channel]) => channel === IPC_CHANNELS.homeFileIndex);
+    if (!registration) throw new Error('home:file-index is not registered.');
+    const request: HomeFileIndexRequest = {
+      workspaceId: 'ws-1',
+      target: { kind: 'worktree', worktreeId: 'wt-1' },
+    };
+    await expect(
+      Promise.resolve(
+        Reflect.apply(registration[1], undefined, [undefined, request]),
+      ),
+    ).resolves.toEqual(response);
+    expect(mockedBuildFileIndexes).toHaveBeenCalledWith({
+      projectId: 'ws-1',
+      worktreeId: 'wt-1',
+    });
+    expect(query).not.toHaveBeenCalled();
+    expect(resolveCaller).not.toHaveBeenCalled();
   });
 
   it('cowork targets build a single RepoFileIndex over the cowork root, non-git-aware', async () => {

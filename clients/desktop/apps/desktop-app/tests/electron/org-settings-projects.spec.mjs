@@ -13,6 +13,7 @@ import {
 } from './seeders/hostedSettingsCloud.mjs';
 import { ORG_CONTEXT_ENV } from './seeders/seedOrgContextScoping.mjs';
 import { defaultHostedSettingsOrganizations } from './mock-server/routes/hosted-settings-fixtures.mjs';
+import { openOrganizationsList } from './hostedSettingsLocators.mjs';
 
 // The organization Projects page in desktop Settings (CAN-4532): the
 // first-run checklist routes Connect GitHub to the Integrations tab in place,
@@ -51,7 +52,7 @@ async function openProjectsPage(apiKey, owned, { cloud, env } = {}) {
   await app.waitForShell({ timeout: 30_000 });
   await connectMockCloudAccount(window, apiKey);
   await app.openSettings();
-  await window.getByTestId('settings-nav-organizations-list').click();
+  await openOrganizationsList(window);
   const content = window.getByTestId('hosted-settings-content');
   await content
     .getByTestId('team-panel-org')

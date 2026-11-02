@@ -1,9 +1,9 @@
 /**
  * Canonical thinking levels shared by every host and UI surface.
  *
- * `low` remains valid for persisted/provider configuration, but UI controls
- * display and cycle it as `medium`. Legacy persisted `auto` values migrate to
- * `high`.
+ * Model-aware controls preserve a declared `low` tier. Legacy UI helpers
+ * retain the Low-to-Medium alias for hosts without canonical capabilities.
+ * Legacy persisted `auto` values migrate to `high`.
  */
 export const THINKING_LEVELS = [
   'off',
@@ -114,14 +114,16 @@ export function clampThinkingLevel(
  * {@link clampThinkingLevel} is a UI clamp — it never returns `low` (which
  * displays as Medium), so for a set whose only member is `low` it falls back
  * to `off`, a level the host never declared. Payload builders must use this
- * variant instead: it reuses the UI clamp, but when that result is not in the
- * declared set it returns the weakest declared level — preserving `low` when
- * it is the only declared option.
+ * variant instead. An exactly declared level passes through unchanged, so a
+ * Low the composer showed runs at Low. Otherwise it reuses the UI clamp, and
+ * when that result is not in the declared set it returns the weakest declared
+ * level — preserving `low` when it is the only declared option.
  */
 export function clampThinkingLevelToDeclared(
   level: ThinkingLevel,
   declared: readonly ThinkingLevel[],
 ): ThinkingLevel {
+  if (declared.includes(level)) return level;
   const clamped = clampThinkingLevel(level, declared);
   if (declared.includes(clamped)) return clamped;
   // The UI clamp only leaves the set via its terminal `off` fallback, which is
@@ -167,4 +169,35 @@ export function thinkingDotCount(
       : clamped === 'max' || clamped === 'ultra'
         ? 3
         : 0;
+}
+
+/**
+ * Model-aware clamp used by desktop: preserve every declared canonical tier,
+ * including Low. An unsupported Low retains the legacy Medium fallback.
+ * Legacy UI-only clamps above intentionally keep their existing semantics.
+ */
+export function clampModelThinkingLevel(
+  level: ThinkingLevel,
+  supported: readonly ThinkingLevel[],
+): ThinkingLevel {
+  if (supported.includes(level)) {
+    return level;
+  }
+  // When a model omits Low, preserve the legacy Medium alias before finding
+  // a supported fallback instead of falling straight through to Off.
+  const requested = level === 'low' ? 'medium' : level;
+  if (supported.includes(requested)) {
+    return requested;
+  }
+  // THINKING_LEVELS is ordered ascending with 'off' first; walk down from the
+  // requested level to the highest supported level below it.
+  for (let i = THINKING_LEVELS.indexOf(requested) - 1; i >= 1; i--) {
+    const candidate = THINKING_LEVELS[i];
+    if (candidate && supported.includes(candidate)) {
+      return candidate;
+    }
+  }
+  return (
+    THINKING_LEVELS.find((candidate) => supported.includes(candidate)) ?? 'off'
+  );
 }

@@ -7,6 +7,7 @@
 // hydrates every entry's slice (idempotent aggregate) before reading them
 // here.
 
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useMemo } from 'react';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -80,7 +81,7 @@ export function useWatcherRecipientGroups(
     }
     groups.push({
       key: 'app-advisor',
-      label: 'App Advisor',
+      label: ORCHESTRATOR_LABEL,
       options: appAdvisorOptions,
     });
 

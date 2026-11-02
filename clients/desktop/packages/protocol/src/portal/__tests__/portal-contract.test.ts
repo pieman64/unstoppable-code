@@ -3,6 +3,8 @@ import {
   PORTAL_CAPABILITY_APP_ADVISOR,
   PORTAL_CAPABILITY_INVOCABLE_INVENTORY,
   PORTAL_CAPABILITY_PIPELINE_CHAT_FOLLOW_UP,
+  PORTAL_CAPABILITY_PIPELINE_CONTENT,
+  PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
   PORTAL_CAPABILITY_SIDEBAR_ACTIVITY_INVENTORY,
   PORTAL_CAPABILITY_PIPELINE_DISPATCH,
   PORTAL_CAPABILITY_PIPELINE_RUN_CHAT_LINKS,
@@ -39,6 +41,7 @@ import {
   WORKTREE_SCOPE_ENTITY_TYPES,
   type PortalAppAdvisorAnswerQuestionPayload,
   type PortalPipelineChatFollowUpPrepareResult,
+  type PortalPipelineContentReadResult,
   type PortalPipelineRun,
   type PortalAppAdvisorCancelPayload,
   type PortalAppAdvisorChatEventPayload,
@@ -104,6 +107,100 @@ import {
 } from '../index';
 import * as portalContract from '../index';
 import * as portalPackageEntry from '@canopy/protocol/portal';
+import type {
+  PortalChangedFiles,
+  PortalChangedFilesPageResult,
+  PortalChangedFilesPayload,
+  PortalStateRequestPayload,
+} from '../index';
+
+describe('changed-files paging contract compatibility', () => {
+  it('round-trips legacy payloads and state requests without paging metadata', () => {
+    const legacyPayload: PortalChangedFilesPayload = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+      uncommitted: [{ filePath: 'src/a.ts', status: 'modified' }],
+      committed: [],
+    };
+    const legacyProjection: PortalChangedFiles = {
+      worktreeLocalId: 'worktree-1',
+      uncommitted: legacyPayload.uncommitted,
+      committed: [],
+    };
+    const legacyRequest: PortalStateRequestPayload = {
+      scope: 'diff',
+      target: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'worktree-1',
+      },
+    };
+
+    expect(JSON.parse(JSON.stringify(legacyPayload))).toEqual(legacyPayload);
+    expect(JSON.parse(JSON.stringify(legacyProjection))).toEqual(
+      legacyProjection,
+    );
+    expect(JSON.parse(JSON.stringify(legacyRequest))).toEqual(legacyRequest);
+  });
+
+  it('round-trips capped payloads and typed changed-files page results', () => {
+    const payload: PortalChangedFilesPayload = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+      uncommitted: [{ filePath: 'src/a.ts', status: 'modified' }],
+      committed: [],
+      notices: [{ kind: 'truncated' }],
+      page: {
+        revision: '0123456789abcdef',
+        uncommitted: { total: 3, nextCursor: 'cursor-u' },
+        committed: { total: 0 },
+      },
+    };
+    const projection: PortalChangedFiles = {
+      worktreeLocalId: 'worktree-1',
+      uncommitted: payload.uncommitted,
+      committed: [],
+      page: payload.page,
+    };
+    const request: PortalStateRequestPayload = {
+      scope: 'diff',
+      target: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'worktree-1',
+      },
+      changedFilesPage: {
+        group: 'uncommitted',
+        cursor: 'cursor-u',
+        limit: 2000,
+      },
+    };
+    const result: PortalChangedFilesPageResult = {
+      changedFilesPage: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'worktree-1',
+        group: 'uncommitted',
+        revision: '0123456789abcdef',
+        files: [{ filePath: 'src/b.ts', status: 'modified' }],
+        total: 3,
+        nextCursor: 'cursor-u-2',
+      },
+    };
+    const errorResult: PortalChangedFilesPageResult = {
+      changedFilesPage: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'worktree-1',
+        group: 'committed',
+        cursor: 'cursor-c',
+        error: 'stale_cursor',
+      },
+    };
+
+    expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
+    expect(JSON.parse(JSON.stringify(projection))).toEqual(projection);
+    expect(JSON.parse(JSON.stringify(request))).toEqual(request);
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+    expect(JSON.parse(JSON.stringify(errorResult))).toEqual(errorResult);
+  });
+});
 
 describe('repository owner Portal command', () => {
   it('is a read-only small RPC with a URL payload', () => {
@@ -459,6 +556,82 @@ describe('portal protocol contract', () => {
     }
   });
 
+  it('parses pipeline step and automation agent-sent senders, dropping unknown keys', () => {
+    const step = {
+      sender: {
+        kind: 'pipeline',
+        executionId: 'exec-1',
+        pipelineId: 'pipeline-1',
+        stepId: 'notify',
+        automationId: 'automation-1',
+        owner: { kind: 'organization', organizationId: 'private-owner' },
+      },
+      chatTitle: 'Nightly triage',
+      projectLabel: '',
+      hiddenContext: 'private outer context',
+    };
+    expect(parseChatAgentSentInfo(step)).toEqual({
+      sender: {
+        kind: 'pipeline',
+        executionId: 'exec-1',
+        pipelineId: 'pipeline-1',
+        stepId: 'notify',
+        automationId: 'automation-1',
+      },
+      chatTitle: 'Nightly triage',
+      projectLabel: '',
+    });
+    expect(JSON.stringify(parseChatAgentSentInfo(step))).not.toContain(
+      'private',
+    );
+
+    const stepOnly = {
+      kind: 'pipeline',
+      executionId: 'exec-1',
+      pipelineId: 'pipeline-1',
+      stepId: 'notify',
+    };
+    expect(
+      parseChatAgentSentInfo({ ...step, sender: stepOnly })?.sender,
+    ).toEqual({
+      kind: 'pipeline',
+      executionId: 'exec-1',
+      pipelineId: 'pipeline-1',
+      stepId: 'notify',
+    });
+    expect(
+      parseChatAgentSentInfo({
+        ...step,
+        sender: { kind: 'pipeline', automationId: 'automation-1' },
+      })?.sender,
+    ).toEqual({ kind: 'pipeline', automationId: 'automation-1' });
+  });
+
+  it('rejects partial, empty, blank and mixed pipeline agent-sent senders', () => {
+    const base = { chatTitle: 'Nightly triage', projectLabel: '' };
+    const step = {
+      kind: 'pipeline',
+      executionId: 'exec-1',
+      pipelineId: 'pipeline-1',
+      stepId: 'notify',
+    };
+    for (const sender of [
+      { kind: 'pipeline' },
+      { kind: 'pipeline', executionId: 'exec-1', pipelineId: 'pipeline-1' },
+      { kind: 'pipeline', stepId: 'notify', automationId: 'automation-1' },
+      { ...step, executionId: '  ' },
+      { kind: 'pipeline', automationId: '' },
+      { ...step, automationId: '\n' },
+      { ...step, projectId: 'project-1' },
+      { ...step, projectType: 'code' },
+      { ...step, botId: 'app_advisor' },
+      { ...step, chatId: 'chat-1' },
+      { ...step, taskId: 'task-1' },
+    ]) {
+      expect(parseChatAgentSentInfo({ ...base, sender })).toBeUndefined();
+    }
+  });
+
   it('projects only valid agent-sent metadata onto input-delivery views', () => {
     const view = {
       id: 'row-agent',
@@ -752,6 +925,7 @@ describe('portal protocol contract', () => {
         ok: true,
         meta,
         content: '# Note',
+        truncated: false,
       };
       expect(result.content).toBe('# Note');
       expect(result.meta.origin?.worktreeExists).toBe(true);
@@ -761,6 +935,7 @@ describe('portal protocol contract', () => {
         ok: true,
         meta,
         content: 'Explain this',
+        truncated: false,
       };
       expect(result.content).toBe('Explain this');
       expect(result.meta.origin).toBeUndefined();
@@ -844,6 +1019,7 @@ describe('portal protocol contract', () => {
     expect(PORTAL_FEATURE_SCOPE_ENTITY_TYPES.chat).toEqual([
       'chat_summary',
       'chat_todo',
+      'watcher',
     ]);
   });
 
@@ -1331,6 +1507,7 @@ describe('portal protocol contract', () => {
     expect(PORTAL_FEATURE_SCOPE_ENTITY_TYPES.app_advisor).toEqual([
       'app_advisor_chat',
       'app_advisor_item_groups',
+      'watcher',
     ]);
     expect(PORTAL_CAPABILITY_APP_ADVISOR).toBe('app_advisor');
     expect(PORTAL_CAPABILITY_WORKTREE_RETENTION).toBe('worktree_retention');
@@ -1931,6 +2108,44 @@ describe('pipeline chat follow-up (CAN-3719)', () => {
       chatId: 'chat-1',
     };
     for (const value of [run, payload, result]) {
+      expect(JSON.parse(JSON.stringify(value))).toEqual(value);
+    }
+  });
+});
+
+describe('pipeline content reads (CAN-3717)', () => {
+  it('pins the capability key and the small-RPC read command', () => {
+    expect(PORTAL_CAPABILITY_PIPELINE_CONTENT).toBe('pipeline_content');
+    expect(PORTAL_COMMAND_TYPES).toContain('portal.pipeline.content.read');
+    expect(
+      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.pipeline.content.read'),
+    ).toBe(true);
+  });
+
+  it('keeps a fully escaped page under the result cap', () => {
+    expect(PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS * 6).toBeLessThan(
+      PORTAL_CATALOG_RESULT_MAX_BYTES,
+    );
+  });
+
+  it('round-trips path-free read shapes', () => {
+    const payload: PortalCommandPayloadMap['portal.pipeline.content.read'] = {
+      projectId: 'ws-1',
+      worktreeId: 'wt-1',
+      executionId: 'exec-1',
+      source: { kind: 'step_output', jobId: 'build', stepId: 'agent' },
+      offset: 10,
+      revision: 'r1',
+    };
+    const result: PortalPipelineContentReadResult = {
+      format: 'markdown',
+      content: '## Done',
+      offset: 10,
+      nextOffset: 17,
+      length: 17,
+      revision: 'r1',
+    };
+    for (const value of [payload, result]) {
       expect(JSON.parse(JSON.stringify(value))).toEqual(value);
     }
   });

@@ -7,6 +7,11 @@ import type { PipelineRepoChoice } from './PipelineTriggerModal';
 
 interface PipelineWorktreeContext {
   cwd?: string;
+  /**
+   * The task's folder lookup has settled (or there is no task), so the
+   * dialog can list pipelines once instead of again when `cwd` arrives.
+   */
+  cwdResolved: boolean;
   repoChoices: PipelineRepoChoice[];
 }
 
@@ -33,6 +38,11 @@ export function usePipelineWorktreeContext(
   worktreeId: string | undefined,
 ): PipelineWorktreeContext {
   const [cwd, setCwd] = useState<string | undefined>(undefined);
+  // The task whose folder lookup last settled, so a switched task reads as
+  // unresolved until its own lookup settles.
+  const [resolvedTask, setResolvedTask] = useState<string | null>(null);
+  const taskKey =
+    projectId && worktreeId ? JSON.stringify([projectId, worktreeId]) : null;
   const [repoChoices, setRepoChoices] = useState<PipelineRepoChoice[]>([]);
 
   useEffect(() => {
@@ -52,6 +62,7 @@ export function usePipelineWorktreeContext(
       } catch {
         if (!cancelled) setCwd(undefined);
       }
+      if (!cancelled) setResolvedTask(taskKey);
     }
 
     async function loadRepos(): Promise<void> {
@@ -84,7 +95,11 @@ export function usePipelineWorktreeContext(
     return (): void => {
       cancelled = true;
     };
-  }, [projectId, worktreeId]);
+  }, [projectId, taskKey, worktreeId]);
 
-  return { cwd, repoChoices };
+  return {
+    cwd,
+    cwdResolved: taskKey === null || resolvedTask === taskKey,
+    repoChoices,
+  };
 }

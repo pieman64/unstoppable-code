@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useEffect, useRef, type JSX } from 'react';
 import type {
   AppAdvisorRendererToolRequest,
@@ -208,7 +209,7 @@ function RuntimeBridge({
         return surfaceUnavailableResponse(
           request.requestId,
           surface,
-          'Only App Advisor browser actions can be handled by this window.',
+          `Only ${ORCHESTRATOR_LABEL} browser actions can be handled by this window.`,
         );
       }
       let action = request.action;
@@ -217,7 +218,7 @@ function RuntimeBridge({
           return surfaceUnavailableResponse(
             request.requestId,
             surface,
-            'Only browser actions can be handled by the App Advisor window.',
+            `Only browser actions can be handled by the ${ORCHESTRATOR_LABEL} window.`,
           );
         }
         if (request.action.projectId || request.action.worktreeId) {
@@ -231,7 +232,7 @@ function RuntimeBridge({
           return surfaceUnavailableResponse(
             request.requestId,
             surface,
-            'The originating App Advisor Work Entry is unavailable.',
+            `The originating ${ORCHESTRATOR_LABEL} Work Entry is unavailable.`,
           );
         }
         const advisorBrowserAction: AppAdvisorBrowserAction = {
@@ -278,7 +279,7 @@ function RuntimeBridge({
         return surfaceUnavailableResponse(
           request.requestId,
           surface,
-          'AskUserQuestion must be handled by the App Advisor window.',
+          `AskUserQuestion must be handled by the ${ORCHESTRATOR_LABEL} window.`,
         );
       }
       const answer = await useAppAdvisorStore
@@ -291,7 +292,7 @@ function RuntimeBridge({
           ok: false,
           error: {
             code: 'execution_failed',
-            message: 'App Advisor question was dismissed without an answer.',
+            message: `${ORCHESTRATOR_LABEL} question was dismissed without an answer.`,
           },
           uiState,
         };
@@ -314,7 +315,7 @@ function RuntimeBridge({
           request.requestId,
           surface,
           targetsAdvisor
-            ? 'App Advisor files must be opened in the App Advisor window.'
+            ? `${ORCHESTRATOR_LABEL} files must be opened in the ${ORCHESTRATOR_LABEL} window.`
             : 'Project files must be opened in the main window.',
         );
       }

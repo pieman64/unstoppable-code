@@ -1,3 +1,12 @@
+import type { ChatTab } from '../types';
+import {
+  clearSetupQueueScope,
+  confirmSetupQueueCommittedDispatch,
+} from '../setup-queue-dispatch';
+import {
+  getWorktreeEntry,
+  isCurrentWorktreeEntry,
+} from '../attention-landing-intent';
 // Revisioned chat-state slice (frontend plan).
 //
 // Binds the pure sync engine (`revisioned-sync.ts`), canonical delta
@@ -11,6 +20,7 @@
 // overlays. When the service is unavailable (older main process), callers
 // fall back to the legacy hydration path.
 import type { StateCreator } from 'zustand';
+import { readTryItDraft } from '@/lib/tryItDraftStorage';
 import type {
   ChatCommand,
   ChatGetStateRequest,
@@ -49,8 +59,10 @@ import {
 } from '../canonical-changes';
 import { fromPersistedTabs } from '../persisted-tabs';
 import {
+  attachHostQueueSummariesFromQueueSnapshots,
   attachHostQueueMirror,
   hostQueueViewsToQueuedMessages,
+  preserveHostQueueSummaries,
 } from '../queue-mirror';
 import { hydratePendingQuestionsFromFile } from '../pending-questions';
 import {
@@ -81,12 +93,19 @@ import type { PendingQuestion } from '../types';
 import type { ChatRevisionedSlice, ChatState } from '../state';
 import { pendingTabCreation } from '../pending-tab-creation';
 import { pendingApprovalModeTransitions } from './approvals';
+import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import {
   chatHasLiveDelegates,
   subscribeChatDelegatesSettled,
   useDelegationActivityStore,
   type ChatDelegationTarget,
 } from '../../delegationActivityStore';
+import {
+  chatProviderBlocksClose,
+  isWorktreeLiveTasksHydrated,
+  subscribeChatProviderWorkSettled,
+  useLiveBackgroundTaskStore,
+} from '../../liveBackgroundTaskStore';
 
 // ---------------------------------------------------------------------------
 // Module state (engine + tracker singletons, availability detection)
@@ -97,7 +116,8 @@ type RevisionedAvailability = 'unknown' | 'available' | 'unavailable';
 let availability: RevisionedAvailability = 'unknown';
 let controller: RevisionedChatSync | null = null;
 const commandTracker = new OptimisticCommandTracker();
-const pendingUnreadByScope = new Map<string, Set<string>>();
+/** Chat id -> whether the queued unread mark is the user's manual mark. */
+const pendingUnreadByScope = new Map<string, Map<string, boolean>>();
 interface OptimisticActiveTabSelection {
   token: number;
   tabId: string;
@@ -128,11 +148,71 @@ const canonicalAutoArchivesRetryPending = new Set<string>();
 const canonicalTerminalUnread = new Map<string, boolean>();
 /**
  * Legacy (non-revisioned) scopes decide auto-archive once, on the completed
- * turn's terminal event. A chat whose delegates were still live then is
- * remembered here and archived when its delegates finish.
+ * turn's terminal event. A chat whose delegates or provider agents/workflows
+ * were still live then is remembered here and archived when they finish.
  */
 const legacyAutoArchivesAwaitingDelegates = new Set<string>();
+interface LiveTaskHydrationAttempt {
+  retries: Set<() => void>;
+}
+const liveTaskHydrationsInFlight = new Map<string, LiveTaskHydrationAttempt>();
+const liveTaskHydrationAttempts = new Set<string>();
 let disposeAutoArchiveAfterDelegates: (() => void) | null = null;
+
+export function chatHasCloseBlockingWork(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): boolean {
+  return (
+    chatHasLiveDelegates(projectId, worktreeId, chatId) ||
+    chatProviderBlocksClose(projectId, worktreeId, chatId)
+  );
+}
+
+function clearLiveTaskHydrationRetryState(): void {
+  liveTaskHydrationsInFlight.clear();
+  liveTaskHydrationAttempts.clear();
+}
+
+/** Pull unknown worktree task state once before an auto-archive can proceed. */
+function continueAfterLiveTaskHydration(
+  projectId: string,
+  worktreeId: string,
+  retry: () => void,
+): boolean {
+  if (isWorktreeLiveTasksHydrated(projectId, worktreeId)) return true;
+
+  const key = chatScopeKey(projectId, worktreeId);
+  if (liveTaskHydrationAttempts.has(key)) return true;
+
+  const existing = liveTaskHydrationsInFlight.get(key);
+  if (existing !== undefined) {
+    existing.retries.add(retry);
+    return false;
+  }
+
+  const attempt: LiveTaskHydrationAttempt = {
+    retries: new Set([retry]),
+  };
+  liveTaskHydrationsInFlight.set(key, attempt);
+  void useLiveBackgroundTaskStore
+    .getState()
+    .ensureWorktreesHydrated([{ projectId, worktreeId }])
+    .then(() => {
+      if (liveTaskHydrationsInFlight.get(key) !== attempt) return;
+      liveTaskHydrationsInFlight.delete(key);
+      if (!isWorktreeLiveTasksHydrated(projectId, worktreeId)) {
+        // A failed pull is a one-shot best effort. Main still enforces the
+        // close guard, and later chat updates must not start a pull loop.
+        liveTaskHydrationAttempts.add(key);
+      }
+      attempt.retries.forEach((retryAfterHydration) => {
+        retryAfterHydration();
+      });
+    });
+  return false;
+}
 
 function clearCanonicalAutoArchiveRetryState(targetKey: string): void {
   canonicalTerminalUnread.delete(targetKey);
@@ -209,10 +289,16 @@ export function scheduleCanonicalAutoArchives(
     if (!canonicalTerminalUnread.has(targetKey)) {
       canonicalTerminalUnread.set(targetKey, tab.unread === true);
     }
-    // Live delegates keep the chat open. Keep the flag and its eligibility;
-    // the chat is re-evaluated when its delegates finish
-    // (`installAutoArchiveAfterDelegates`).
-    if (chatHasLiveDelegates(projectId, worktreeId, tab.id)) {
+    // Delegates keep priority; provider agents and workflows use the same
+    // deferral and keep the flag and eligibility for their settle edge.
+    if (chatHasCloseBlockingWork(projectId, worktreeId, tab.id)) {
+      continue;
+    }
+    if (
+      !continueAfterLiveTaskHydration(projectId, worktreeId, () => {
+        scheduleCanonicalAutoArchives(projectId, worktreeId, new Set([tab.id]));
+      })
+    ) {
       continue;
     }
     if (canonicalAutoArchivesInFlight.has(targetKey)) {
@@ -259,7 +345,7 @@ export function scheduleCanonicalAutoArchives(
 
 /**
  * Legacy-scope counterpart of the canonical deferral: the completed turn's
- * auto-archive waits for this chat's live delegates to finish.
+ * auto-archive waits for live delegates or provider agents/workflows to finish.
  */
 export function deferLegacyAutoArchiveUntilDelegatesFinish(
   projectId: string,
@@ -272,16 +358,24 @@ export function deferLegacyAutoArchiveUntilDelegatesFinish(
 }
 
 /**
- * Re-evaluate a chat's pending auto-archive once its delegates finished.
+ * Re-evaluate a chat's pending auto-archive once its delegates or provider
+ * agents/workflows finished.
  * Archives only when the chat is still marked, its parent turn is idle (the
  * same completion checks the turn's own auto-archive applies), and no
- * delegate restarted in the meantime.
+ * close-blocking work restarted in the meantime.
  */
 export function reevaluateAutoArchiveAfterDelegates(
   target: ChatDelegationTarget,
 ): void {
   const { projectId, worktreeId, chatId } = target;
-  if (chatHasLiveDelegates(projectId, worktreeId, chatId)) return;
+  if (chatHasCloseBlockingWork(projectId, worktreeId, chatId)) return;
+  if (
+    !continueAfterLiveTaskHydration(projectId, worktreeId, () => {
+      reevaluateAutoArchiveAfterDelegates(target);
+    })
+  ) {
+    return;
+  }
   const api = chatStoreApi();
   const state = api.getState();
   const key = chatScopeKey(projectId, worktreeId);
@@ -325,8 +419,9 @@ export function reevaluateAutoArchiveAfterDelegates(
 }
 
 /**
- * Re-run auto-archive for chats whose delegates just finished. Idempotent;
- * installed once at app start beside the delegation activity store.
+ * Re-run auto-archive for chats whose delegates or provider agents/workflows
+ * just finished. Idempotent; installed once at app start beside the activity
+ * stores.
  */
 export function installAutoArchiveAfterDelegates(): () => void {
   if (disposeAutoArchiveAfterDelegates !== null) {
@@ -334,6 +429,12 @@ export function installAutoArchiveAfterDelegates(): () => void {
   }
   const reconciled = new Set<string>();
   const unsubscribe = subscribeChatDelegatesSettled((target) => {
+    reconciled.add(
+      `${chatScopeKey(target.projectId, target.worktreeId)}/${target.chatId}`,
+    );
+    reevaluateAutoArchiveAfterDelegates(target);
+  });
+  const unsubscribeProvider = subscribeChatProviderWorkSettled((target) => {
     reconciled.add(
       `${chatScopeKey(target.projectId, target.worktreeId)}/${target.chatId}`,
     );
@@ -355,13 +456,31 @@ export function installAutoArchiveAfterDelegates(): () => void {
       if (separator < 0) continue;
       const projectId = scopeKey.slice(0, separator);
       const worktreeId = scopeKey.slice(separator + 1);
+      // Pull a worktree's live-task state only when one of its chats is
+      // waiting to auto-archive, not for every loaded worktree.
+      const hasCandidate = scope.tabs.some(
+        (tab) =>
+          !reconciled.has(`${scopeKey}/${tab.id}`) &&
+          tab.autoArchive === true &&
+          tab.status !== 'streaming',
+      );
+      if (
+        !hasCandidate ||
+        !continueAfterLiveTaskHydration(
+          projectId,
+          worktreeId,
+          reconcileHydratedTabs,
+        )
+      ) {
+        continue;
+      }
       for (const tab of scope.tabs) {
         const targetKey = `${scopeKey}/${tab.id}`;
         if (
           reconciled.has(targetKey) ||
           tab.autoArchive !== true ||
           tab.status === 'streaming' ||
-          chatHasLiveDelegates(projectId, worktreeId, tab.id)
+          chatHasCloseBlockingWork(projectId, worktreeId, tab.id)
         ) {
           continue;
         }
@@ -379,14 +498,24 @@ export function installAutoArchiveAfterDelegates(): () => void {
       if (!previous.hydrated && state.hydrated) reconcileHydratedTabs();
     },
   );
+  const unsubscribeLiveTaskHydration = useLiveBackgroundTaskStore.subscribe(
+    (state, previous) => {
+      if (state.hydratedWorktrees !== previous.hydratedWorktrees) {
+        reconcileHydratedTabs();
+      }
+    },
+  );
   const unsubscribeChats = chatStoreApi().subscribe((state, previous) => {
     if (state.worktreeChats !== previous.worktreeChats) reconcileHydratedTabs();
   });
   reconcileHydratedTabs();
   const dispose = (): void => {
     unsubscribe();
+    unsubscribeProvider();
     unsubscribeActivity();
+    unsubscribeLiveTaskHydration();
     unsubscribeChats();
+    clearLiveTaskHydrationRetryState();
     if (disposeAutoArchiveAfterDelegates === dispose) {
       disposeAutoArchiveAfterDelegates = null;
     }
@@ -548,11 +677,22 @@ function enqueuePendingUnread(
   projectId: string,
   worktreeId: string,
   chatId: string,
+  manual: boolean,
 ): void {
   const key = chatScopeKey(projectId, worktreeId);
-  const pending = pendingUnreadByScope.get(key) ?? new Set<string>();
-  pending.add(chatId);
+  const pending = pendingUnreadByScope.get(key) ?? new Map<string, boolean>();
+  // Last write wins: a later automatic mark replaces a queued manual one.
+  pending.set(chatId, manual);
   pendingUnreadByScope.set(key, pending);
+}
+
+/** Drops a queued unread mark the user has since replaced with a read. */
+export function dropPendingUnread(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): void {
+  pendingUnreadByScope.get(chatScopeKey(projectId, worktreeId))?.delete(chatId);
 }
 
 function flushPendingUnread(projectId: string, worktreeId: string): void {
@@ -560,36 +700,52 @@ function flushPendingUnread(projectId: string, worktreeId: string): void {
   const pending = pendingUnreadByScope.get(key);
   if (!pending || pending.size === 0) return;
   pendingUnreadByScope.delete(key);
-  pending.forEach((chatId: string) => {
-    void persistUnreadWhenScopeLive(projectId, worktreeId, chatId);
+  pending.forEach((manual: boolean, chatId: string) => {
+    void persistUnreadWhenScopeLive(
+      projectId,
+      worktreeId,
+      chatId,
+      manual ? { manual: true } : undefined,
+    );
   });
 }
 
-/** Commit focus-derived unread state once the canonical scope is writable. */
+/**
+ * Commit focus-derived unread state once the canonical scope is writable.
+ * `manual` records the user's own "Mark as unread".
+ */
 export async function persistUnreadWhenScopeLive(
   projectId: string,
   worktreeId: string,
   chatId: string,
+  options?: { manual?: true },
 ): Promise<void> {
   const key = chatScopeKey(projectId, worktreeId);
   const api = chatStoreApi();
+  const manual = options?.manual === true;
   const phase = api.getState().chatStateSync[key]?.phase;
   if (phase === 'refreshing' || phase === 'refresh_error') {
-    enqueuePendingUnread(projectId, worktreeId, chatId);
+    enqueuePendingUnread(projectId, worktreeId, chatId, manual);
     return;
   }
   const disposition = await api
     .getState()
     .dispatchChatCommand(
       { projectId, worktreeId },
-      { type: 'chat.mark_unread', chatId },
+      manual
+        ? { type: 'chat.mark_unread', chatId, manual: true }
+        : { type: 'chat.mark_unread', chatId },
     );
   const latestPhase = api.getState().chatStateSync[key]?.phase;
   if (
     disposition === 'transport_failed' &&
     (latestPhase === 'refreshing' || latestPhase === 'refresh_error')
   ) {
-    enqueuePendingUnread(projectId, worktreeId, chatId);
+    enqueuePendingUnread(projectId, worktreeId, chatId, manual);
+  } else if (manual && disposition === 'rejected') {
+    // A refused manual mark (an older remote-control host rejects the flag)
+    // must not leave the optimistic unread on screen.
+    refreshChatScopeRevisioned(projectId, worktreeId);
   }
 }
 
@@ -675,17 +831,48 @@ function declareChatStateScopes(scopes: ChatGetStateRequest[]): void {
 // Store mutation helpers (called from engine host callbacks)
 // ---------------------------------------------------------------------------
 
+function bumpedDelegationHints(
+  state: ChatState,
+  key: string,
+): ChatState['delegationStreamHints'] {
+  return {
+    ...state.delegationStreamHints,
+    [key]: {
+      epoch: (state.delegationStreamHints[key]?.epoch ?? 0) + 1,
+      runs: {},
+    },
+  };
+}
+
 function publishScopeStatus(
   projectId: string,
   worktreeId: string,
   status: ChatScopeSyncStatus | null,
 ): void {
   const key = chatScopeKey(projectId, worktreeId);
+  // First-send initialization may start tracking after the setup input was
+  // observed. Only a refresh of an already-live scope invalidates that live
+  // identity; an initial snapshot cannot itself emit provider acceptance.
+  if (
+    status === null ||
+    (status.phase === 'refreshing' &&
+      chatStoreApi().getState().chatStateSync[key]?.phase === 'live')
+  )
+    clearSetupQueueScope(projectId, worktreeId);
   chatStoreApi().setState((state) => {
     const next = { ...state.chatStateSync };
     if (status === null) delete next[key];
     else next[key] = status;
-    return { chatStateSync: next };
+    const invalidates =
+      status === null ||
+      (status.phase === 'refreshing' &&
+        state.chatStateSync[key]?.phase !== 'refreshing');
+    return {
+      chatStateSync: next,
+      ...(invalidates
+        ? { delegationStreamHints: bumpedDelegationHints(state, key) }
+        : {}),
+    };
   });
   if (status?.phase === 'live') {
     const selection = optimisticActiveTabByScope.get(key);
@@ -752,6 +939,29 @@ function commandChatIds(command: ChatCommand): string[] {
     return [command.chatId];
   }
   return [];
+}
+
+/** Keep the legacy request lookup consistent with the canonical tab projection. */
+function reconcilePlanExitRequests(
+  current: ChatState,
+  projectId: string,
+  worktreeId: string,
+  tabs: readonly ChatTab[],
+): ChatState['pendingPlanExits'] {
+  let next = current.pendingPlanExits;
+  for (const entry of Object.values(current.pendingPlanExits)) {
+    if (entry.projectId !== projectId || entry.worktreeId !== worktreeId)
+      continue;
+    const tab = tabs.find((candidate) => candidate.id === entry.chatId);
+    if (
+      tab?.pendingPlanExit &&
+      tab.pendingPlanExitRequestId === entry.requestId
+    )
+      continue;
+    if (next === current.pendingPlanExits) next = { ...next };
+    delete next[entry.requestId];
+  }
+  return next;
 }
 
 function recoverUntrackedPlanProposals(
@@ -870,6 +1080,16 @@ function installSnapshotIntoStore(
     }
   }
 
+  // A manual choice made while this initial snapshot was in flight wins.
+  const entry = getWorktreeEntry(key);
+  if (
+    reason === 'hydrate' &&
+    entry?.explicitTabId !== undefined &&
+    chatState.tabs.some((tab) => tab.id === entry.explicitTabId)
+  ) {
+    chatState.activeTabId = entry.explicitTabId;
+  }
+
   const queuedByChatId = new Map(
     snapshot.queue.map((entry) => [
       entry.chatId,
@@ -877,6 +1097,10 @@ function installSnapshotIntoStore(
     ]),
   );
   chatState.tabs = attachHostQueueMirror(chatState.tabs, queuedByChatId);
+  chatState.tabs = attachHostQueueSummariesFromQueueSnapshots(
+    chatState.tabs,
+    snapshot.queue,
+  );
 
   const hydratedPendingQuestions = hydratePendingQuestionsFromFile(
     snapshot.tabsFile,
@@ -886,6 +1110,12 @@ function installSnapshotIntoStore(
   );
 
   api.setState((current) => {
+    let tabDrafts = current.tabDrafts;
+    for (const tab of chatState.tabs) {
+      if (tab.id in tabDrafts) continue;
+      const restored = readTryItDraft(tab.id);
+      if (restored) tabDrafts = { ...tabDrafts, [tab.id]: restored.content };
+    }
     const pendingQuestions = { ...current.pendingQuestions };
     for (const requestId of scopePendingQuestions(
       pendingQuestions,
@@ -910,6 +1140,14 @@ function installSnapshotIntoStore(
       : pruneUnreadWorktreeKey(current.unreadWorktreeKeys, key, chatState.tabs);
 
     return {
+      tabDrafts,
+      delegationStreamHints: bumpedDelegationHints(current, key),
+      pendingPlanExits: reconcilePlanExitRequests(
+        current,
+        projectId,
+        worktreeId,
+        chatState.tabs,
+      ),
       worktreeChats: { ...current.worktreeChats, [key]: chatState },
       archivedChats: {
         ...current.archivedChats,
@@ -955,6 +1193,7 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
     changes: event.changes.length,
   });
   const api = chatStoreApi();
+  confirmSetupQueueCommittedDispatch(event, api.getState().runtimeByChatId);
   const { projectId, worktreeId } = event;
   const key = chatScopeKey(projectId, worktreeId);
   const correlationId = `${key}:${event.revision}`;
@@ -962,6 +1201,7 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
   const commitChatIds = new Set<string>();
   for (const change of event.changes) {
     switch (change.type) {
+      case 'delegation.card_state_updated':
       case 'messages.omitted':
       case 'transcript.updated':
       case 'message.upserted':
@@ -1080,11 +1320,21 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
       archives: current.archivedChats[key] ?? [],
       runtimeByChatId: current.runtimeByChatId,
       pendingQuestions: current.pendingQuestions,
+      delegationStreamHints: current.delegationStreamHints[key],
     };
     let next = applyCanonicalChanges(projection, event.changes, {
       projectId,
       worktreeId,
     });
+    if (event.changes.some((change) => change.type === 'tab.upserted')) {
+      next = {
+        ...next,
+        chatState: {
+          ...next.chatState,
+          tabs: preserveHostQueueSummaries(chatState.tabs, next.chatState.tabs),
+        },
+      };
+    }
     for (const change of event.changes) {
       if (change.type === 'tab.active_changed') {
         canonicalActiveTabByScope.set(key, change.activeTabId);
@@ -1135,6 +1385,12 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
         );
 
     return {
+      pendingPlanExits: reconcilePlanExitRequests(
+        current,
+        event.projectId,
+        event.worktreeId,
+        next.chatState.tabs,
+      ),
       worktreeChats: { ...current.worktreeChats, [key]: next.chatState },
       // Unchanged archives keep the map's identity, so a selector of the
       // whole map (the Cowork page) does not re-render for every commit. A
@@ -1143,6 +1399,13 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
         current.archivedChats[key] === next.archives
           ? current.archivedChats
           : { ...current.archivedChats, [key]: next.archives },
+      delegationStreamHints:
+        next.delegationStreamHints === current.delegationStreamHints[key]
+          ? current.delegationStreamHints
+          : {
+              ...current.delegationStreamHints,
+              [key]: next.delegationStreamHints ?? { epoch: 0, runs: {} },
+            },
       runtimeByChatId: next.runtimeByChatId,
       pendingQuestions: next.pendingQuestions,
       unreadWorktreeKeys,
@@ -1181,6 +1444,7 @@ export const createRevisionedSlice: StateCreator<
   [],
   ChatRevisionedSlice
 > = (set, get) => ({
+  delegationStreamHints: {},
   chatStateSync: {},
   runtimeByChatId: {},
   chatStateNotices: {},
@@ -1269,13 +1533,32 @@ export const createRevisionedSlice: StateCreator<
       delete chatStateSync[key];
       return { chatStateSync };
     });
-    void get().hydrateChatScopeRevisioned(projectId, worktreeId);
+    const entry = getWorktreeEntry(key);
+    void get()
+      .hydrateChatScopeRevisioned(projectId, worktreeId)
+      .then((result) => {
+        const selected = get().selectedWorktree;
+        if (
+          result === 'installed' &&
+          isCurrentWorktreeEntry(entry) &&
+          selected?.projectId === projectId &&
+          selected.worktreeId === worktreeId
+        ) {
+          return get().loadTabs();
+        }
+      });
+  },
+
+  refreshChatScopeRevisioned: (projectId, worktreeId): void => {
+    controller?.forceRefresh(projectId, worktreeId);
   },
 
   releaseChatScopeRevisioned: (projectId, worktreeId): void => {
+    const key = chatScopeKey(projectId, worktreeId);
+    const epochBeforeRelease = get().delegationStreamHints[key]?.epoch ?? 0;
     controller?.release(projectId, worktreeId);
     commandTracker.dropScope(projectId, worktreeId);
-    const key = chatScopeKey(projectId, worktreeId);
+    useIngestionLagStore.getState().clearForScope(projectId, worktreeId);
     pendingUnreadByScope.delete(key);
     clearCanonicalTerminalUnreadForScope(key);
     optimisticActiveTabByScope.delete(key);
@@ -1290,7 +1573,17 @@ export const createRevisionedSlice: StateCreator<
       for (const tab of state.worktreeChats[key]?.tabs ?? []) {
         delete runtimeByChatId[tab.id];
       }
-      return { chatStateSync, chatStateNotices, runtimeByChatId };
+      return {
+        chatStateSync,
+        chatStateNotices,
+        runtimeByChatId,
+        // release() publishes null for a tracked scope; untracked releases
+        // still fence old cache entries without double-bumping tracked ones.
+        delegationStreamHints:
+          (state.delegationStreamHints[key]?.epoch ?? 0) === epochBeforeRelease
+            ? bumpedDelegationHints(state, key)
+            : state.delegationStreamHints,
+      };
     });
   },
 
@@ -1480,4 +1773,30 @@ export function isChatScopeCommandBlocked(
 ): boolean {
   const phase = state.chatStateSync[chatScopeKey(projectId, worktreeId)]?.phase;
   return phase === 'refreshing' || phase === 'refresh_error';
+}
+
+/** Stable selector factory for one exact run, including empty-snapshot epochs. */
+export function selectDelegationStreamHint(
+  scopeKey: string,
+  chatId: string,
+  delegationId: string,
+  generation: number,
+): (state: ChatState) => { epoch: number; streamRevision: number } | undefined {
+  const runKey = `${chatId}:${delegationId}:${generation}`;
+  let selected: { epoch: number; streamRevision: number } | undefined;
+  return (state) => {
+    const scope = state.delegationStreamHints[scopeKey];
+    if (!scope) {
+      selected = undefined;
+      return selected;
+    }
+    const streamRevision = scope.runs[runKey]?.streamRevision ?? 0;
+    if (
+      selected?.epoch !== scope.epoch ||
+      selected.streamRevision !== streamRevision
+    ) {
+      selected = { epoch: scope.epoch, streamRevision };
+    }
+    return selected;
+  };
 }

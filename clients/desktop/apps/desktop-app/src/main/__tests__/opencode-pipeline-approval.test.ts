@@ -1,3 +1,26 @@
+import { openOpenCodeInferenceLease } from '../opencode/inference-host';
+import { resolveRoutingOverrideAttribution } from '../agents/ai-credits-routing';
+jest.mock('../opencode/inference-host', () => ({
+  openOpenCodeInferenceLease: jest.fn(),
+}));
+jest.mock('../agents/ai-credits-routing', () => ({
+  resolveRoutingOverrideAttribution: jest.fn(),
+}));
+jest.mock('@canopy/desktop-shared/lib/gateway-model-availability', () => ({
+  resolveOwnerScopedModelId: (model: string): string => model,
+  resolveGatewayModelEntry: (
+    model: string,
+  ):
+    | { modelId: string; gatewayId: string; contextWindow: number }
+    | undefined =>
+    model === 'gateway-model'
+      ? {
+          modelId: model,
+          gatewayId: 'vendor/model',
+          contextWindow: 128000,
+        }
+      : undefined,
+}));
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,16 +86,32 @@ const check = jest.fn<
 >();
 const dispose = jest.fn();
 const invalidatePending = jest.fn();
+const reevaluatePendingApprovals =
+  (): ApprovalSessionHandle['reevaluatePendingApprovals'] =>
+    jest.fn<
+      ReturnType<ApprovalSessionHandle['reevaluatePendingApprovals']>,
+      Parameters<ApprovalSessionHandle['reevaluatePendingApprovals']>
+    >(() => Promise.resolve());
 let cwd: string;
 beforeEach(async () => {
   jest.clearAllMocks();
+  jest.mocked(prepareOpenCodePipelineCapabilities).mockReset();
   mockRuntimeController = new AbortController();
   cwd = await mkdtemp(join(tmpdir(), 'opencode-pipeline-approval-'));
-  jest
-    .mocked(createApprovalSession)
-    .mockReturnValue({ check, dispose, invalidatePending, setMode: jest.fn() });
+  jest.mocked(createApprovalSession).mockReturnValue({
+    check,
+    dispose,
+    invalidatePending,
+    reevaluatePendingApprovals: reevaluatePendingApprovals(),
+    setMode: jest.fn(),
+  });
   jest.mocked(runOpenCodeTurn).mockImplementation(async (_request, host) => {
-    await host.onSession?.('session');
+    await host.onSession?.('session', {
+      version: 3,
+      sessionId: 'session',
+      digest: 'a'.repeat(64),
+      generation: 1,
+    });
     const outcome = await host.authorize({
       sessionId: 'session',
       toolCallId: 'write',
@@ -297,19 +336,27 @@ test('a failed driver releases its approval session and runtime', async () => {
 test('schema retries receive separate approval sessions that are each disposed', async () => {
   const approvals: ApprovalSessionHandle[] = [];
   const observedApprovals: ApprovalSessionHandle[] = [];
-  const disposeCapabilities = jest.fn();
+  const capabilityDisposers: jest.Mock[] = [];
   let currentApproval: (() => ApprovalSessionHandle) | undefined;
   let capabilitySignal: AbortSignal | undefined;
   jest.mocked(createApprovalSession).mockImplementation(() => {
-    const approval = { check, dispose, invalidatePending, setMode: jest.fn() };
+    const approval = {
+      check,
+      dispose,
+      invalidatePending,
+      reevaluatePendingApprovals: reevaluatePendingApprovals(),
+      setMode: jest.fn(),
+    };
     approvals.push(approval);
     return approval;
   });
   jest
     .mocked(prepareOpenCodePipelineCapabilities)
-    .mockImplementationOnce((_request, _profile, signal, readApproval) => {
+    .mockImplementation((_request, _profile, signal, readApproval) => {
       currentApproval = readApproval;
       capabilitySignal = signal;
+      const disposeCapabilities = jest.fn();
+      capabilityDisposers.push(disposeCapabilities);
       return Promise.resolve({ dispose: disposeCapabilities });
     });
   jest.mocked(runOpenCodeTurn).mockImplementation(() => {
@@ -339,11 +386,14 @@ test('schema retries receive separate approval sessions that are each disposed',
     .mock.calls.map(([context]) => context.sessionKey);
   expect(sessions).toHaveLength(2);
   expect(new Set(sessions).size).toBe(2);
-  expect(prepareOpenCodePipelineCapabilities).toHaveBeenCalledTimes(1);
+  expect(prepareOpenCodePipelineCapabilities).toHaveBeenCalledTimes(2);
   expect(observedApprovals[0]).toBe(approvals[0]);
   expect(observedApprovals[1]).toBe(approvals[1]);
   expect(approvals[1]).not.toBe(approvals[0]);
-  expect(disposeCapabilities).toHaveBeenCalledTimes(1);
+  expect(capabilityDisposers).toHaveLength(2);
+  for (const disposeCapabilities of capabilityDisposers) {
+    expect(disposeCapabilities).toHaveBeenCalledTimes(1);
+  }
   expect(dispose).toHaveBeenCalledTimes(2);
   expect(mockClose).toHaveBeenCalledTimes(2);
 });
@@ -428,3 +478,56 @@ test.each(['read_only', 'plan'] as const)(
     });
   },
 );
+
+test('managed pipeline inference keeps its captured owner and shared approval checks', async () => {
+  const owner = {
+    kind: 'organization' as const,
+    organizationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  };
+  jest
+    .mocked(resolveRoutingOverrideAttribution)
+    .mockResolvedValue({ workOwner: owner });
+  const releaseLease = jest.fn();
+  const route = {
+    bindingKey: 'a'.repeat(64),
+    protocol: 'openai-responses' as const,
+    baseUrl: `http://127.0.0.1:43123/codex-gateway/${'b'.repeat(48)}`,
+    model: {
+      id: 'vendor/model',
+      contextWindow: 128000,
+      outputLimit: 16384,
+      supportsVision: false,
+    },
+  };
+  jest.mocked(openOpenCodeInferenceLease).mockResolvedValue({
+    route,
+    funding: 'org-gateway',
+    signal: new AbortController().signal,
+    dispose: releaseLease,
+    failureError: () => new Error('terminal'),
+  });
+  check.mockResolvedValue({ decision: 'deny', message: 'Saved deny' });
+  const result = await run(undefined, {
+    model: 'gateway-model',
+    worktreeId: 'captured-worktree',
+    executionContext: `organization:${owner.organizationId}`,
+  });
+  expect(result.status).toBe('success');
+  if (result.status === 'success') expect(result.rawText).toBe('deny');
+  expect(resolveRoutingOverrideAttribution).toHaveBeenCalledWith({
+    workspaceId: 'project',
+    worktreeId: 'captured-worktree',
+    executionContext: `organization:${owner.organizationId}`,
+    environmentRuntime: 'pipeline',
+  });
+  expect(openOpenCodeInferenceLease).toHaveBeenCalledWith(
+    expect.objectContaining({ attribution: { workOwner: owner } }),
+  );
+  expect(jest.mocked(runOpenCodeTurn).mock.calls[0]?.[0]).toMatchObject({
+    inferenceRoute: route,
+    rawModelId: 'canopy-inference/vendor/model',
+  });
+  expect(check).toHaveBeenCalled();
+  expect(releaseLease).toHaveBeenCalledTimes(1);
+  expect(mockClose).toHaveBeenCalledTimes(1);
+});

@@ -28,14 +28,14 @@ function makeTab(overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', fastMode: false, speed: 'standard' },
     fastModeExplicit: false,
     ...overrides,
   };
 }
 
 function commandById(id: string): PaletteCommand | undefined {
-  return buildBaseCommands(SELECTION, true).find(
+  return buildBaseCommands(SELECTION).find(
     (command) => command.commandKey === id,
   );
 }

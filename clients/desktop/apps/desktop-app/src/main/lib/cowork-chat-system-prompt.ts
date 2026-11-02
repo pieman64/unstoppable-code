@@ -32,8 +32,8 @@ export function buildLocalMemoryPromptNudge(
  * outside this folder in app-level storage, so it is intentionally not
  * listed as a location the agent can browse.
  *
- * For Cursor and Copilot only the folder description is returned; see the
- * inline comment. Production dispatchers do not call this directly: they go
+ * For Cursor, Copilot and OpenCode only the common Cowork guidance is returned;
+ * see the inline comment. Production dispatchers do not call this directly: they go
  * through `buildCoworkDispatchSystemPromptAppend`, which selects the harness
  * variant, so a caller cannot forget the Cursor option.
  */
@@ -52,9 +52,11 @@ export function buildCoworkSystemPromptAppend(
 - ${managedDirName}/notes for durable notes
 - ${managedDirName}/prompts for reusable prompt snippets
 - ${managedDirName}/attachments for user-provided files
-Default to writing durable generated outputs directly into the folder root unless the user names a different location.`;
-  // Cursor and Copilot cannot call the deferred-tool loaders (they are not on its
-  // surfaces), and each session appends the local-memory nudge itself
+Default to writing durable generated outputs directly into the folder root unless the user names a different location.
+
+Write diagrams in Mermaid fenced blocks. Use the supported diagram families: flowchart/graph, sequence, class, state, entity relationship and Gantt. Styling support varies by family. Highlight nodes with classDef/class or style using only fill, stroke, color, stroke-width, stroke-dasharray and font-weight. Use hex, rgb or named colours for colour properties, numeric widths and space-separated dash patterns, and supported font weights. Avoid click/link directives, HTML, images, icons, config blocks and url() values. Add a text cue such as “(pain point)” as well as colour so the meaning survives without highlighting.`;
+  // Cursor, Copilot and OpenCode cannot call the deferred-tool loaders (they are
+  // not on their surfaces), and each session appends the local-memory nudge itself
   // once the app's MCP servers are known to have reached the CLI.
   if (
     options.harness === 'cursor' ||
@@ -91,11 +93,11 @@ Default to writing durable generated outputs directly into the folder root unles
 /**
  * The complete system-prompt append a dispatcher hands a Cowork chat turn.
  * Shared by the chat IPC send path and `dispatchWorktreeChatTurn` so the two
- * cannot drift. Claude and Codex get the folder description, the deferred-tool
- * and memory paragraphs, and the Cowork injected-tool steering. Each Cursor/Copilot
- * session appends the Cowork tool steering and the memory nudge itself once
+ * cannot drift. Claude and Codex get the common Cowork guidance, the deferred-tool
+ * and memory paragraphs, and the Cowork injected-tool steering. Each Cursor,
+ * Copilot and OpenCode session appends the Cowork tool steering and memory nudge once
  * the app's MCP servers are known to have reached the CLI, so those harnesses get only
- * the folder description here.
+ * the common Cowork guidance here.
  */
 export function buildCoworkDispatchSystemPromptAppend(
   harness: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode',

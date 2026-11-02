@@ -61,6 +61,15 @@ describe('FrontmatterBlock', () => {
     expect(definitions).toEqual(['My Doc', 'Yes', '["a","b"]']);
   });
 
+  it('keeps rendered metadata in a selectable content region', () => {
+    act(() => {
+      root.render(<FrontmatterBlock frontmatter={{ title: 'My Doc' }} />);
+    });
+    expect(
+      container.querySelector('dd')?.closest('[data-selectable]'),
+    ).not.toBeNull();
+  });
+
   it('appends a provided className to the outer card', () => {
     act(() => {
       root.render(

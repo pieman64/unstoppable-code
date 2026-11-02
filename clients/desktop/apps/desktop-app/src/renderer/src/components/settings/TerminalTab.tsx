@@ -33,7 +33,12 @@ import {
 } from '@/lib/terminalShellProfiles';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { Tooltip } from '@canopy/ui-shared/components/Tooltip';
-import { Button, Notice, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  SettingsSelect,
+  ToggleSwitch,
+} from '@canopy/ui-shared/components';
 import {
   TerminalDefaultShellBadge,
   TERMINAL_DEFAULT_SHELL_TOOLTIP,
@@ -48,11 +53,9 @@ import {
   SettingsPage,
   SettingsRow,
   SettingsSection,
-  SettingsSelect,
   SettingsSubRow,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 interface ShellOption {
   id: TerminalShellProfileId;
@@ -102,12 +105,11 @@ function PresetImageButton({
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
   children: ReactNode;
 }): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const inputRef = useRef<HTMLInputElement | null>(null);
   return (
     <>
       <Button
-        size={settingsButtonSize}
+        size="compact"
         variant="secondary"
         onClick={() => inputRef.current?.click()}
       >
@@ -172,7 +174,6 @@ function presetCountLabel(count: number): string {
 }
 
 export function TerminalTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const colorMode = useTerminalPresetColorMode();
   const [profiles, setProfiles] = useState<TerminalShellProfile[]>([]);
   const [disabledShells, setDisabledShells] = useState<
@@ -182,7 +183,11 @@ export function TerminalTab(): JSX.Element {
   const [draft, setDraft] = useState<TerminalPreset | null>(null);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A failure shows in the section whose change failed.
+  const [error, setError] = useState<{
+    readonly section: 'shells' | 'presets';
+    readonly message: string;
+  } | null>(null);
 
   useEffect(() => {
     let canceled = false;
@@ -215,6 +220,7 @@ export function TerminalTab(): JSX.Element {
   const persist = async (
     nextDisabledShells: TerminalShellProfileId[],
     nextPresets: TerminalPreset[],
+    section: 'shells' | 'presets' = 'presets',
   ): Promise<boolean> => {
     setSaving(true);
     setError(null);
@@ -228,7 +234,10 @@ export function TerminalTab(): JSX.Element {
       setCachedTerminalPanelPreferences(saved);
       return true;
     } catch {
-      setError('Could not save Terminal settings. Try again.');
+      setError({
+        section,
+        message: 'Could not save Terminal settings. Try again.',
+      });
       return false;
     } finally {
       setSaving(false);
@@ -243,7 +252,7 @@ export function TerminalTab(): JSX.Element {
       ? disabledShells.filter((id) => id !== profileId)
       : Array.from(new Set([...disabledShells, profileId]));
     setDisabledShells(next);
-    void persist(next, presets);
+    void persist(next, presets, 'shells');
   };
 
   const startAddPreset = (): void => {
@@ -281,18 +290,27 @@ export function TerminalTab(): JSX.Element {
     event.target.value = '';
     if (!file) return;
     if (!isTerminalPresetImageMimeType(file.type)) {
-      setError('Preset icons must be PNG, JPEG, GIF, WebP, or SVG images.');
+      setError({
+        section: 'presets',
+        message: 'Preset icons must be PNG, JPEG, GIF, WebP, or SVG images.',
+      });
       return;
     }
     if (file.size > getTerminalPresetImageMaxFileBytes(file.type)) {
-      setError('Preset icons must be smaller than 1 MB after encoding.');
+      setError({
+        section: 'presets',
+        message: 'Preset icons must be smaller than 1 MB after encoding.',
+      });
       return;
     }
     setError(null);
     const reader = new FileReader();
     reader.onload = (): void => {
       if (!isTerminalPresetImageDataUrl(reader.result)) {
-        setError('Could not read this preset icon. Try a different image.');
+        setError({
+          section: 'presets',
+          message: 'Could not read this preset icon. Try a different image.',
+        });
         return;
       }
       const dataUrl = reader.result;
@@ -352,6 +370,9 @@ export function TerminalTab(): JSX.Element {
         description="Show or hide shells detected on this computer."
         dataTestId="terminal-settings-shells"
       >
+        {error?.section === 'shells' ? (
+          <Notice intent="destructive">{error.message}</Notice>
+        ) : null}
         <SettingsGroup>
           {shellOptions.map((option) => {
             const switchId = `terminal-shell-switch-${option.id}`;
@@ -392,13 +413,16 @@ export function TerminalTab(): JSX.Element {
         description="Open a selected shell and immediately run a default command."
         dataTestId="terminal-settings-presets"
       >
+        {error?.section === 'presets' ? (
+          <Notice intent="destructive">{error.message}</Notice>
+        ) : null}
         <SettingsGroup>
           <SettingsRow
             label="Saved presets"
             description={presetCountLabel(presets.length)}
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 data-testid="terminal-preset-add"
                 onClick={startAddPreset}
@@ -413,7 +437,7 @@ export function TerminalTab(): JSX.Element {
             <div
               key={preset.id}
               data-testid={`terminal-preset-${preset.id}`}
-              className="flex items-center gap-3"
+              className="flex min-h-10 items-center gap-3"
             >
               <div className="flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md bg-muted px-1 fg-secondary">
                 {presetIconPreview(preset)}
@@ -434,8 +458,8 @@ export function TerminalTab(): JSX.Element {
                 </div>
               </div>
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 onClick={() =>
                   setDraft({
                     ...preset,
@@ -463,8 +487,8 @@ export function TerminalTab(): JSX.Element {
                 }}
               />
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 iconOnly
                 aria-label={`Remove ${preset.name}`}
                 disabled={saving}
@@ -508,10 +532,14 @@ export function TerminalTab(): JSX.Element {
                 <SettingsSelect
                   id="terminal-preset-shell"
                   aria-label="Shell"
+                  options={shellOptions.map((option) => ({
+                    value: option.id,
+                    label: option.label,
+                  }))}
                   value={draft.terminalProfileId}
-                  onChange={(event) => {
+                  onValueChange={(next) => {
                     const selected = shellOptions.find(
-                      (option) => option.id === event.target.value,
+                      (option) => option.id === next,
                     );
                     if (!selected) return;
                     setDraft({
@@ -519,13 +547,7 @@ export function TerminalTab(): JSX.Element {
                       terminalProfileId: selected.id,
                     });
                   }}
-                >
-                  {shellOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </SettingsSelect>
+                />
               }
             />
             <SettingsRow
@@ -590,8 +612,8 @@ export function TerminalTab(): JSX.Element {
                   draftImage.lightDataUrl && draftImage.darkDataUrl ? (
                     <Tooltip label="Swap light and dark images">
                       <Button
-                        size={settingsButtonSize}
-                        variant="ghost"
+                        size="compact"
+                        variant="secondary"
                         iconOnly
                         aria-label="Swap light and dark preset images"
                         onClick={handleSwapImages}
@@ -618,14 +640,14 @@ export function TerminalTab(): JSX.Element {
             ) : null}
             <div className="flex justify-end gap-2">
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 onClick={() => setDraft(null)}
               >
                 Cancel
               </Button>
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="primary"
                 onClick={handleSavePreset}
                 disabled={saving || !draft.name.trim() || !draft.command.trim()}
@@ -636,7 +658,6 @@ export function TerminalTab(): JSX.Element {
           </SettingsGroup>
         ) : null}
       </SettingsSection>
-      {error ? <Notice intent="destructive">{error}</Notice> : null}
     </SettingsPage>
   );
 }

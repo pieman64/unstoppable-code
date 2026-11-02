@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type {
   GlobalInstructionHarness,
   GlobalInstructionMode,
@@ -181,7 +182,7 @@ function intersect<T>(a: readonly T[], b: readonly T[]): T[] {
 const WORKSPACE_TYPE_LABELS: Record<GlobalInstructionWorkspaceType, string> = {
   code: 'Code',
   cowork: 'Cowork',
-  'app-advisor': 'App Advisor',
+  'app-advisor': ORCHESTRATOR_LABEL,
 };
 
 const HARNESS_LABELS: Record<GlobalInstructionHarness, string> = {

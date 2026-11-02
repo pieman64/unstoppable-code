@@ -2,7 +2,11 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const execFileMock = jest.fn();
-jest.mock('node:child_process', () => ({ execFile: execFileMock }));
+jest.mock('node:child_process', () => ({
+  get execFile(): typeof execFileMock {
+    return execFileMock;
+  },
+}));
 import { readCursorAccessToken } from '../cursor/account-credentials';
 
 describe('native Cursor credential reads', () => {

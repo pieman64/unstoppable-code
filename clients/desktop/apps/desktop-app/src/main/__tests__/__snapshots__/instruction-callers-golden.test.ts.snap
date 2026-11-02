@@ -1,0 +1,3017 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`combine destination scaffold (adhoc-combine-core) pins a faulted link (EPERM) on win32 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Combined>
+",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "link /destination/AGENTS.md",
+    "copyFile /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) pins a faulted symlink (EPERM) on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "result": "rejected EPERM",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-dangling on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-directory on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-link on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-link on win32 1`] = `
+{
+  "files": {
+    "AGENTS.md": "hard link to CLAUDE.md: <default Combined>
+",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "link /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-other-link on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-user on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over agents-user on win32 1`] = `
+{
+  "files": {
+    "AGENTS.md": "hard link to CLAUDE.md: <default Combined>
+",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "link /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over claude-link on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over claude-link on win32 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "repos": true,
+  "result": "rejected ENOENT",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "link /destination/AGENTS.md",
+    "copyFile /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over claude-user on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over none on darwin 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "symlink /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`combine destination scaffold (adhoc-combine-core) scaffolds over none on win32 1`] = `
+{
+  "files": {
+    "AGENTS.md": "hard link to CLAUDE.md: <default Combined>
+",
+    "CLAUDE.md": "<default Combined>
+",
+  },
+  "repos": true,
+  "result": "resolved",
+  "writes": [
+    "writeFile /destination/CLAUDE.md",
+    "rm /destination/AGENTS.md",
+    "link /destination/AGENTS.md",
+  ],
+}
+`;
+
+exports[`multi-repo create (workspace-service + source-control initialize) hard-links the source repo alias on win32 1`] = `
+{
+  "id": "golden-multi",
+  "sourceRepo": {
+    "AGENTS.md": "hard link to CLAUDE.md: <default Golden Multi>
+",
+    "CLAUDE.md": "<default Golden Multi>
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/golden-multi",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 0a1b34701fe23e63e09bb531ba7d9e074ce4f561 0	AGENTS.md
+100644 0a1b34701fe23e63e09bb531ba7d9e074ce4f561 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "workspaceCopy": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<default Golden Multi>
+",
+  },
+  "writes": [
+    "writeFile /data/workspaces/golden-multi/CLAUDE.md",
+    "copyFile /data/repos/golden-multi/CLAUDE.md",
+    "rm /data/repos/golden-multi/AGENTS.md",
+    "link /data/repos/golden-multi/AGENTS.md",
+  ],
+}
+`;
+
+exports[`multi-repo create (workspace-service + source-control initialize) writes the local default without an alias and restores it into the source repo 1`] = `
+{
+  "id": "golden-multi",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Golden Multi>
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/golden-multi",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 0a1b34701fe23e63e09bb531ba7d9e074ce4f561 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "workspaceCopy": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<default Golden Multi>
+",
+  },
+  "writes": [
+    "writeFile /data/workspaces/golden-multi/CLAUDE.md",
+    "copyFile /data/repos/golden-multi/CLAUDE.md",
+    "symlink /data/repos/golden-multi/AGENTS.md",
+  ],
+}
+`;
+
+exports[`pins the default workspace template 1`] = `
+"# Alpha - Multi-Repository Project
+
+This project contains multiple individual git repositories. Each repository may provide AGENTS.md or legacy CLAUDE.md files with specific guidance; read the applicable instructions from both when present. The individual repos exist within the repos/ subdirectory.
+
+**Working across repos:** Start by identifying the relevant repo(s) with lightweight, read-only discovery at the project level — for example, reading the task, checking file paths and imports, reviewing ticket context, and consulting repo AGENTS.md and legacy CLAUDE.md files when present. If you're still unsure after that and there are multiple plausible repos, ask the user to confirm. Do not do deeper project exploration or run repo-specific commands yourself at the top level.
+
+**Important:** For any non-trivial task, deeper exploration, file changes, or command execution, always use Agent Teams or Sub Agents isolated to individual repos. Always instruct sub agents to work within the designated repo only and to review its AGENTS.md and legacy CLAUDE.md files when present before beginning work. Agents should set their working directory to the individual repo directory and execute git commands within that context.
+
+**Important:** Handling git branches:
+- Git branches/repos only exist in the individual nested repos, not top level. When the user is asking for a git related change or command, they mean within the individual nested repos.
+- When renaming git branches, always ensure branch names stay in sync across all repos within the project. If any branches have been pushed to a remote, warn the user and allow them to confirm the rename for each repo before proceeding.
+"
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over agents-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over agents-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<directory>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over agents-escape 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over agents-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over agents-other-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> OTHER.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over agents-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over claude-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over claude-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over claude-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over claude-legacy-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over claude-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over claude-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over equal-mirror 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over none 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode replace over unequal 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over agents-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over agents-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<directory>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over agents-escape 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over agents-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over agents-other-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> OTHER.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over agents-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over claude-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over claude-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over claude-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Mine
+
+Keep this.
+
+## Canopy Multi-Repo Project Guidance
+
+Old generated text.
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over claude-legacy-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Mine
+
+## Canopy Multi-Repo Workspace Guidance
+
+Old legacy text.
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over claude-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over claude-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over equal-mirror 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over none 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode unchanged over unequal 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Agents side
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over agents-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over agents-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<directory>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over agents-escape 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over agents-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over agents-other-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> OTHER.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over agents-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over claude-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over claude-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over claude-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Mine
+
+Keep this.
+
+## Canopy Multi-Repo Project Guidance
+
+Old generated text.
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over claude-legacy-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Mine
+
+## Canopy Multi-Repo Workspace Guidance
+
+Old legacy text.
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over claude-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over claude-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over equal-mirror 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over none 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode undefined over unequal 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Agents side
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over agents-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Single>
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over agents-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<directory>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over agents-escape 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over agents-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over agents-other-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> OTHER.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over agents-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# User Agents
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over claude-dangling 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over claude-directory 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over claude-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Mine
+
+Keep this.
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over claude-legacy-guidance 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Mine
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over claude-link 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Linked Agents
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over claude-user 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over equal-mirror 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Mirror
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+    "CLAUDE.md": "# Mirror
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+    "writeFile /single/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over none 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Single>
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`single-repo to multi-repo conversion (workspace-type-conversion) mode update over unequal 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Agents side
+
+## Canopy Multi-Repo Project Guidance
+
+<default Single>
+
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /single/AGENTS.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-dangling with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Applied
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-dangling with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-directory with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<directory>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-directory with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<directory>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-escape with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-escape with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-link with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Applied
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-link with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-other-link with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> OTHER.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-other-link with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> OTHER.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-user with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Applied
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/AGENTS.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies agents-user with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-dangling with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Applied
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/AGENTS.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-dangling with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-directory with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-directory with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-link with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Applied
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/AGENTS.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-link with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-user with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Applied
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies claude-user with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies equal-mirror with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Applied
+",
+    "CLAUDE.md": "# Applied
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/AGENTS.md",
+    "writeFile /data/workspaces/multi/worktrees/wt-one/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies equal-mirror with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies none with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Applied
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/AGENTS.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies none with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies unequal with changed content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Applied
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [
+    "writeFile /data/workspaces/multi/worktrees/wt-one/AGENTS.md",
+  ],
+}
+`;
+
+exports[`source change instruction apply (workspace-source-change-apply) applies unequal with equal content 1`] = `
+{
+  "files": {
+    "AGENTS.md": "# Agents side
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "writes": [],
+}
+`;
+
+exports[`temporary workspace create (workspace-service) copies AGENTS.md on win32 when hard links fail 1`] = `
+{
+  "files": {
+    "AGENTS.md": "<default Alpha>
+",
+    "CLAUDE.md": "<default Alpha>
+",
+  },
+  "id": "alpha",
+  "result": "resolved",
+  "workspaceDirExists": true,
+  "writes": [
+    "writeFile /data/workspaces/alpha/CLAUDE.md",
+    "rm /data/workspaces/alpha/AGENTS.md",
+    "link /data/workspaces/alpha/AGENTS.md",
+    "copyFile /data/workspaces/alpha/AGENTS.md",
+  ],
+}
+`;
+
+exports[`temporary workspace create (workspace-service) fails and cleans up when the POSIX symlink is refused 1`] = `
+{
+  "files": null,
+  "id": "",
+  "result": "rejected EPERM",
+  "workspaceDirExists": false,
+  "writes": [
+    "writeFile /data/workspaces/alpha/CLAUDE.md",
+    "symlink /data/workspaces/alpha/AGENTS.md",
+  ],
+}
+`;
+
+exports[`temporary workspace create (workspace-service) hard-links AGENTS.md on win32 1`] = `
+{
+  "files": {
+    "AGENTS.md": "hard link to CLAUDE.md: <default Alpha>
+",
+    "CLAUDE.md": "<default Alpha>
+",
+  },
+  "id": "alpha",
+  "result": "resolved",
+  "workspaceDirExists": true,
+  "writes": [
+    "writeFile /data/workspaces/alpha/CLAUDE.md",
+    "rm /data/workspaces/alpha/AGENTS.md",
+    "link /data/workspaces/alpha/AGENTS.md",
+  ],
+}
+`;
+
+exports[`temporary workspace create (workspace-service) writes the default CLAUDE.md and an AGENTS.md symlink 1`] = `
+{
+  "files": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<default Alpha>
+",
+  },
+  "id": "alpha",
+  "result": "resolved",
+  "workspaceDirExists": true,
+  "writes": [
+    "writeFile /data/workspaces/alpha/CLAUDE.md",
+    "symlink /data/workspaces/alpha/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a agents-link local copy with a agents-dangling worktree root on darwin 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 935fc011dde79423d81b7f4d457db8a27f644e63 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [
+    "copyFile /data/repos/settings/CLAUDE.md",
+    "symlink /data/repos/settings/AGENTS.md",
+    "rename /data/workspaces/settings/worktrees/.wt-old-root-repair/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a agents-link local copy with a null worktree root on darwin 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 935fc011dde79423d81b7f4d457db8a27f644e63 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": null,
+  "writes": [
+    "copyFile /data/repos/settings/CLAUDE.md",
+    "symlink /data/repos/settings/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a claude-user local copy with a agents-user worktree root on darwin 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/repos/settings/CLAUDE.md",
+    "symlink /data/repos/settings/AGENTS.md",
+    "rename /data/workspaces/settings/worktrees/.wt-old-root-repair/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a claude-user local copy with a none worktree root on darwin 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/repos/settings/CLAUDE.md",
+    "symlink /data/repos/settings/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a claude-user local copy with a none worktree root on win32 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "hard link to CLAUDE.md: # User Claude
+",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	AGENTS.md
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": {
+    "AGENTS.md": "# User Claude
+",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/repos/settings/CLAUDE.md",
+    "rm /data/repos/settings/AGENTS.md",
+    "link /data/repos/settings/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a claude-user local copy with a null worktree root on darwin 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": null,
+  "writes": [
+    "copyFile /data/repos/settings/CLAUDE.md",
+    "symlink /data/repos/settings/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize from settings, then repair recorded worktree roots initializes from a none local copy with a null worktree root on darwin 1`] = `
+{
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "sourceRepoPath": "<root>/data/repos/settings",
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "worktreeRoot": null,
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a agents-dangling local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a agents-escape local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a agents-link local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 935fc011dde79423d81b7f4d457db8a27f644e63 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/CLAUDE.md",
+    "symlink /new-source/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a agents-link local copy on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "hard link to CLAUDE.md: # Linked
+",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 935fc011dde79423d81b7f4d457db8a27f644e63 0	AGENTS.md
+100644 935fc011dde79423d81b7f4d457db8a27f644e63 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/CLAUDE.md",
+    "copyFile /new-source/AGENTS.md",
+    "rm /new-source/AGENTS.md",
+    "link /new-source/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a agents-user local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 ff8ee6ff019f66ab24d8674ddfb3451177c5d687 0	AGENTS.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a claude-dangling local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a claude-link local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 39a1854927bffa491927e8e209103a17297b0141 0	AGENTS.md
+120000 47dc3e3d863cfb5727b87d785d09abf9743c0a72 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/AGENTS.md",
+    "symlink /new-source/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a claude-link local copy on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "# Linked Agents
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 39a1854927bffa491927e8e209103a17297b0141 0	AGENTS.md
+100644 39a1854927bffa491927e8e209103a17297b0141 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/AGENTS.md",
+    "copyFile /new-source/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a claude-user local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+120000 681311eb9cf453d0faddf3aacaec7357e97ba8e9 0	AGENTS.md
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/CLAUDE.md",
+    "symlink /new-source/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a claude-user local copy on darwin (fault symlink) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/CLAUDE.md",
+    "symlink /new-source/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a claude-user local copy on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "hard link to CLAUDE.md: # User Claude
+",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	AGENTS.md
+100644 5ff1636dff153c64cca74e280e15719110106f02 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/CLAUDE.md",
+    "rm /new-source/AGENTS.md",
+    "link /new-source/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a equal-mirror local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 f0c8c654e8588b9aa0704dcfaef58c056fa7a310 0	AGENTS.md
+100644 f0c8c654e8588b9aa0704dcfaef58c056fa7a310 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/AGENTS.md",
+    "copyFile /new-source/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a none local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) initialize: new source repository from the local copy restores a unequal local copy on darwin (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "result": "resolved",
+  "sourceRepo": {
+    "AGENTS.md": "# Agents side
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "tracked": "100644 f0c7ae4eb3cd0175a44152959508183d1bfbc55c 0	.gitignore
+100644 4d089d8c3d826543b66b7560e7cb770c5c1b5c86 0	AGENTS.md
+100644 fb8a3ee465c2a2cf71aa67e3a9df67116fef9364 0	CLAUDE.md
+100644 9679dc9641c65254c6984e6a5d05bbe7c8d326ec 0	canopy.json
+",
+  "writes": [
+    "copyFile /new-source/AGENTS.md",
+    "copyFile /new-source/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root fills a dangling AGENTS.md alias target from a agents-link source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root fills a dangling AGENTS.md alias target from a claude-link source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked Agents
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root fills a dangling AGENTS.md alias target from a unequal source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Agents side
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-dangling target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-dangling target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-escape target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-escape target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> ../outside.md",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-link target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-link target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-user target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a agents-user target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-dangling target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-dangling target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# User Claude
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-directory target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-directory target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<directory>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-link target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-link target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-user target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a claude-user target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a equal-mirror target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a equal-mirror target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a none target (restore false) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root keeps or restores a none target (restore true) from a CLAUDE.md source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a agents-dangling target from a claude-user source on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a claude-user target from a claude-user source on darwin (fault symlink) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a claude-user target from a claude-user source on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "hard link to CLAUDE.md: # User Claude
+",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "rm /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "link /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a none target from a agents-link source on darwin (fault symlink) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "rm /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a none target from a agents-link source on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "hard link to CLAUDE.md: # Linked
+",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "rm /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "link /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a none target from a claude-link source on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "# Linked Agents
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a none target from a claude-user source on darwin (fault symlink) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root pins a none target from a claude-user source on win32 (fault null) 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "hard link to CLAUDE.md: # User Claude
+",
+    "CLAUDE.md": "# User Claude
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+    "rm /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "link /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a agents-dangling source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a agents-escape source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a agents-link source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "symlink -> CLAUDE.md",
+    "CLAUDE.md": "# Linked
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+    "symlink /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a agents-user source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# User Agents
+",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a claude-dangling source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a claude-link source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Linked Agents
+",
+    "CLAUDE.md": "symlink -> AGENTS.md",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "symlink /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a equal-mirror source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Mirror
+",
+    "CLAUDE.md": "# Mirror
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a none source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [
+    {
+      "blocking": false,
+      "code": "missing-claude-md",
+      "message": "AGENTS.md is missing from the project root",
+    },
+    {
+      "blocking": false,
+      "code": "invalid-agents-md",
+      "message": "AGENTS.md must mirror CLAUDE.md",
+    },
+  ],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "<absent>",
+    "CLAUDE.md": "<absent>",
+  },
+  "writes": [],
+}
+`;
+
+exports[`workspace root restore and alias (workspace-source-control) repair: an existing worktree root restores an empty target from a unequal source 1`] = `
+{
+  "canopyJson": true,
+  "gitignore": true,
+  "issues": [],
+  "outside": "# Outside
+",
+  "result": "resolved",
+  "target": {
+    "AGENTS.md": "# Agents side
+",
+    "CLAUDE.md": "# Claude side
+",
+  },
+  "writes": [
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/AGENTS.md",
+    "copyFile /data/workspaces/repair/worktrees/wt-fix/CLAUDE.md",
+  ],
+}
+`;

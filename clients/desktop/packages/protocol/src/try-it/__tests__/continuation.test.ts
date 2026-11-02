@@ -77,6 +77,33 @@ describe('account MCP selection', () => {
 });
 
 describe('continuation validation', () => {
+  it('distinguishes selection resolution from authoritative turn acceptance', () => {
+    const selection = {
+      ...bound,
+      status: 'completed',
+      selectionResolution: {
+        accountKey: 'account:1',
+        chatId: pending.sourceChatId,
+        requestId: pending.requestId,
+      },
+    };
+    expect(isTryItContinuation(selection, { nowMs })).toBe(true);
+    expect(
+      isTryItContinuation(
+        {
+          ...selection,
+          selectionResolution: {
+            ...selection.selectionResolution,
+            accountKey: 'other',
+          },
+        },
+        { nowMs },
+      ),
+    ).toBe(false);
+    expect(
+      isTryItContinuation({ ...selection, status: 'pending' }, { nowMs }),
+    ).toBe(false);
+  });
   it('accepts the portable record and preserves the exact prompt', () => {
     const decoded: unknown = JSON.parse(JSON.stringify(pending));
     expect(isTryItContinuation(decoded, { nowMs })).toBe(true);
@@ -176,8 +203,8 @@ describe('continuation validation', () => {
         { ...pending, host: {} },
         {
           nowMs,
-          isHost: (_value: unknown): _value is never => {
-            throw new Error('malformed host data');
+          isHost: (value: unknown): value is never => {
+            throw new Error('malformed host data', { cause: value });
           },
         },
       ),
@@ -321,6 +348,20 @@ describe('sign-in gate precedence', () => {
     { capability: null },
   ])('hides until provenance and the initial attempt are ready %#', (patch) => {
     expect(resolveTryItSignInGate({ ...guest, ...patch })).toBe('hidden');
+  });
+
+  it('shows for a staged draft before any user turn (CAN-5218)', () => {
+    expect(
+      resolveTryItSignInGate({ ...guest, hasUserTurn: false, staged: true }),
+    ).toBe('sign-in');
+    expect(
+      resolveTryItSignInGate({
+        ...guest,
+        hasUserTurn: false,
+        staged: true,
+        initialAttemptSettled: false,
+      }),
+    ).toBe('hidden');
   });
 
   it.each([

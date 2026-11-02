@@ -37,9 +37,9 @@ jest.mock('@canopy/app-state', () => ({
 }));
 jest.mock('@/components/activity/useDispatchPipelineModal', () => ({
   useDispatchPipelineModal: (): {
-    openDispatchPipelineModal: jest.Mock;
+    openWorkflowsRunModal: jest.Mock;
     dispatchPipelineModal: null;
-  } => ({ openDispatchPipelineModal: jest.fn(), dispatchPipelineModal: null }),
+  } => ({ openWorkflowsRunModal: jest.fn(), dispatchPipelineModal: null }),
 }));
 jest.mock('@/components/pipeline/flow/PipelineFlowDiagram', () => ({
   PipelineFlowDiagram: (): JSX.Element => (
@@ -257,7 +257,7 @@ describe('PipelineEditAdapter shared save impact confirm', () => {
       byTestId('shared-pipeline-save-impact-dialog')?.querySelectorAll(
         'button',
       ) ?? [],
-    ).find((button) => button.textContent === 'Cancel');
+    ).find((button) => button.firstChild?.textContent === 'Cancel');
     expect(cancel).toBeDefined();
     click(cancel);
     await flush();

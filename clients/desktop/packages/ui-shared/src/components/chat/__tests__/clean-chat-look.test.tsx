@@ -5,7 +5,12 @@
  */
 import type { JSX, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ChatLookProvider, type ChatLook } from '../../chat-look';
+import { DEFAULT_CHAT_DETAIL } from '@canopy/protocol/chat-detail';
+import {
+  ChatDetailProvider,
+  ChatLookProvider,
+  type ChatLook,
+} from '../../chat-look';
 import { ChatToolStepGroup } from '../../ChatToolStepGroup';
 import { ForkChatButton } from '../../ForkChatButton';
 import {
@@ -20,7 +25,13 @@ import { CompactionInfoBlock } from '../CompactionInfoBlock';
 import { CollapsedTurnSummary } from '../CollapsedTurnSummary';
 import { CollapsibleBlock, thinkingHeadline } from '../CollapsibleBlock';
 import { STEP_ROW_BODY_CLASS, StepRow } from '../StepRow';
-import { ToolCallCard } from '../ToolCallCard';
+import { ToolCallCard, toolCallResultFrom } from '../ToolCallCard';
+import {
+  safetyDeniedMessage,
+  savedRuleDeniedMessage,
+  userDeniedMessage,
+  POLICY_DENIED_FALLBACK_MESSAGE,
+} from '@canopy/protocol/approvals';
 import { GitBranchLineIcon } from '../../../icons/AppIcons';
 import { TurnMoreMenu } from '../TurnMoreMenu';
 import { TurnWorkHeader, formatWorkDuration } from '../TurnWorkHeader';
@@ -31,9 +42,14 @@ import {
   readableToolInput,
 } from '../tool-display';
 
+// At the default chat detail level; Detailed's badges have their own tests.
 function render(look: ChatLook, node: ReactNode): string {
   return renderToStaticMarkup(
-    <ChatLookProvider value={look}>{node}</ChatLookProvider>,
+    <ChatLookProvider value={look}>
+      <ChatDetailProvider value={DEFAULT_CHAT_DETAIL}>
+        {node}
+      </ChatDetailProvider>
+    </ChatLookProvider>,
   );
 }
 
@@ -47,13 +63,55 @@ const BASH_INPUT = JSON.stringify({
 });
 
 describe('clean chat look', () => {
-  it('leaves every part classic without a provider', () => {
-    const html = renderToStaticMarkup(
-      <ToolCallCard toolName="Bash" input={BASH_INPUT} status="error" />,
+  it('draws every part clean without a provider, since Clean chat graduated', () => {
+    const card = (
+      <ToolCallCard toolName="Bash" input={BASH_INPUT} status="error" />
     );
-    expect(html).not.toContain('tool-call-failed');
-    expect(html).toContain('fg-destructive');
+    const html = renderToStaticMarkup(card);
+    // Without a host's chat detail every step keeps its own row (Detailed).
+    expect(html).toBe(
+      renderToStaticMarkup(
+        <ChatLookProvider value="clean">
+          <ChatDetailProvider value="detailed">{card}</ChatDetailProvider>
+        </ChatLookProvider>,
+      ),
+    );
+    expect(html).not.toBe(render('classic', card));
+    expect(html).not.toContain('fg-destructive');
   });
+
+  it.each(['classic', 'clean'] as const)(
+    'names every denial source in the %s look',
+    (look) => {
+      const cases = [
+        [safetyDeniedMessage('force-push'), 'safety rule'],
+        [savedRuleDeniedMessage('repository'), 'saved rule'],
+        [userDeniedMessage('<b>No.</b>\nNot on this branch.'), 'you'],
+        [POLICY_DENIED_FALLBACK_MESSAGE, 'approval system'],
+      ];
+      for (const [output, source] of cases) {
+        const html = render(
+          look,
+          <ToolCallCard
+            toolName="Bash"
+            input={BASH_INPUT}
+            label={<Label name="Bash" input={BASH_INPUT} />}
+            result={toolCallResultFrom({ output, isError: true })}
+            defaultCollapsed={false}
+          />,
+        );
+        expect(html).toContain('data-tool-status="blocked"');
+        expect(html).toContain(source);
+        expect(html).not.toContain('fg-destructive');
+        expect(html).not.toContain('tool-call-failed');
+        expect(html).not.toContain('<b>No.</b>');
+        if (look === 'clean') {
+          expect(html).toContain('Didn’t run');
+          expect(html).not.toContain('Couldn’t run');
+        }
+      }
+    },
+  );
 
   describe('tool rows', () => {
     function bashCard(status: 'pending' | 'success' | 'error'): JSX.Element {
@@ -83,6 +141,44 @@ describe('clean chat look', () => {
       );
     });
 
+    it('says a blocked command didn’t run and names who blocked it', () => {
+      const card = (
+        <ToolCallCard
+          toolName="Bash"
+          input={BASH_INPUT}
+          label={<Label name="Bash" input={BASH_INPUT} />}
+          result={toolCallResultFrom({
+            output: `PreToolUse:Bash hook error: ${safetyDeniedMessage('force-push')}`,
+            isError: true,
+          })}
+        />
+      );
+      const clean = render('clean', card);
+      expect(clean).toContain('data-tool-status="blocked"');
+      expect(clean).toContain('Didn’t run npx jest packages/ui-shared');
+      expect(clean).toContain('blocked by safety rule · force-push');
+      expect(clean).not.toContain('Ran npx');
+      expect(clean).not.toContain('Couldn’t run');
+      expect(clean).not.toContain('tool-call-failed');
+      const opened = render(
+        'clean',
+        <ToolCallCard
+          toolName="WebFetch"
+          input="{}"
+          defaultCollapsed={false}
+          result={toolCallResultFrom({
+            output:
+              'PreToolUse:WebFetch hook error: The user denied this tool call: No.',
+            isError: true,
+          })}
+        />,
+      );
+      expect(opened).toContain('denied by you');
+      expect(opened).toContain('The user denied this tool call: No.');
+      expect(opened).not.toContain('PreToolUse');
+      expect(opened).not.toContain('tool-call-failed');
+    });
+
     it('names a failure in words when the label has no verb for it', () => {
       const card = (
         <ToolCallCard toolName="WebFetch" input="{}" status="error" />
@@ -90,7 +186,7 @@ describe('clean chat look', () => {
       expect(render('classic', card)).not.toContain('tool-call-failed');
       const clean = render('clean', card);
       expect(clean).toContain('data-testid="tool-call-failed"');
-      expect(clean).toContain('>failed<');
+      expect(clean).toContain('>error<');
       expect(clean).not.toContain('fg-destructive');
     });
 
@@ -238,18 +334,73 @@ describe('clean chat look', () => {
       expect(render('clean', group)).toContain('kind-icon');
     });
 
-    it('stays open while a step runs, only under the clean look', () => {
-      const running = (
-        <ChatToolStepGroup summary="Ran commands" runningLabel="Running ls">
+    it('stays one closed line while it runs under the clean look', () => {
+      const live = (
+        <ChatToolStepGroup
+          summary="Ran 2 commands"
+          live={{ label: 'Running ls', icon: <span data-testid="live-icon" /> }}
+        >
           <span data-testid="group-step" />
         </ChatToolStepGroup>
       );
-      expect(render('classic', running)).not.toContain('group-step');
-      const clean = render('clean', running);
-      expect(clean).toContain('group-step');
-      // The running step shimmers in the list, so the row doesn't repeat it.
-      expect(clean).not.toContain('chat-tool-step-running');
+      const clean = render('clean', live);
+      // What the turn does now shimmers in the line, which stays closed.
+      expect(clean).not.toContain('group-step');
+      expect(clean).toContain('Running ls');
+      expect(clean).toContain('live-icon');
+      expect(clean).toContain('canopy-text-shimmer');
+      expect(clean).not.toContain('Ran 2 commands');
       expect(render('clean', group)).not.toContain('group-step');
+    });
+
+    it('joins the shared shimmer sweep instead of restarting it', () => {
+      const html = render('clean', <StepRow label="Running ls" running />);
+      expect(html).toContain('canopy-text-shimmer-strong');
+      expect(html).toMatch(/--canopy-shimmer-delay:-\d+ms/);
+      expect(render('clean', <StepRow label="Ran ls" />)).not.toContain(
+        '--canopy-shimmer-delay',
+      );
+    });
+
+    it('says how many steps ran into an error after a finished run', () => {
+      const failed = (
+        <ChatToolStepGroup summary="Ran 4 commands" failedCount={1}>
+          <span />
+        </ChatToolStepGroup>
+      );
+      expect(render('clean', failed)).toContain('· 1 error');
+      expect(render('clean', failed)).not.toContain('1 failed');
+      expect(render('clean', group)).not.toContain('chat-tool-step-failed');
+      const several = (
+        <ChatToolStepGroup summary="Ran 4 commands" failedCount={2}>
+          <span />
+        </ChatToolStepGroup>
+      );
+      expect(render('clean', several)).toContain('· 2 errors');
+    });
+
+    it('says blocked steps before errors and omits zero counts', () => {
+      const mixed = render(
+        'clean',
+        <ChatToolStepGroup
+          summary="Ran 3 commands"
+          blockedCount={2}
+          failedCount={1}
+        >
+          <span />
+        </ChatToolStepGroup>,
+      );
+      expect(mixed).toContain('· 2 blocked');
+      expect(mixed).toContain('· 1 error');
+      expect(mixed.indexOf('blocked')).toBeLessThan(mixed.indexOf('1 error'));
+      const blockedOnly = render(
+        'clean',
+        <ChatToolStepGroup summary="Ran 1 command" blockedCount={1}>
+          <span />
+        </ChatToolStepGroup>,
+      );
+      expect(blockedOnly).toContain('· 1 blocked');
+      expect(blockedOnly).not.toContain('chat-tool-step-failed');
     });
   });
 
@@ -280,6 +431,7 @@ describe('clean chat look', () => {
     it.each([
       ['failed', 'Failed after 3m 24s'],
       ['cancelled', 'Stopped after 3m 24s'],
+      ['interrupted', 'Interrupted after 3m 24s'],
     ] as const)('says a %s turn ended that way', (completionStatus, text) => {
       const html = render(
         'clean',
@@ -317,6 +469,53 @@ describe('clean chat look', () => {
       expect(html).toContain('Waiting for you');
     });
 
+    it('waits for the person while the host shows a request (CAN-4996)', () => {
+      const html = renderToStaticMarkup(
+        <TurnWorkHeader startedAt={now - 60_000} live waitingForUser />,
+      );
+      expect(html).toContain('Waiting for you · 1:00');
+      expect(html).toContain('data-turn-header="paused"');
+      expect(html).not.toContain('Working for');
+    });
+
+    it('keeps a recorded pause when the host has nothing waiting', () => {
+      const html = renderToStaticMarkup(
+        <TurnWorkHeader
+          startedAt={now - 60_000}
+          pausedAt={now - 30_000}
+          live
+          waitingForUser={false}
+        />,
+      );
+      expect(html).toContain('data-turn-header="paused"');
+    });
+
+    it('lets a finished turn win over a stale waiting flag', () => {
+      const html = renderToStaticMarkup(
+        <TurnWorkHeader
+          startedAt={now - 60_000}
+          finishedAt={now - 30_000}
+          live
+          waitingForUser
+        />,
+      );
+      expect(html).toContain('Worked for 30s');
+      expect(html).toContain('data-turn-header="done"');
+    });
+
+    it('includes frozen active time for a projected block pause', () => {
+      const html = renderToStaticMarkup(
+        <TurnWorkHeader
+          startedAt={now - 90_000}
+          pausedAt={now - 20_000}
+          accumulatedPausedDurationMs={5_000}
+          live
+        />,
+      );
+      expect(html).toContain('Waiting for you · 1:05');
+      expect(html).toContain('data-turn-header="paused"');
+    });
+
     it('says how a finished turn ended, with a chevron when it folds', () => {
       const done = renderToStaticMarkup(
         <TurnWorkHeader elapsedMs={204_000} expandable />,
@@ -333,6 +532,48 @@ describe('clean chat look', () => {
           <TurnWorkHeader elapsedMs={31_000} completionStatus="cancelled" />,
         ),
       ).toContain('Stopped after 31s');
+      expect(
+        renderToStaticMarkup(
+          <TurnWorkHeader elapsedMs={14_000} completionStatus="interrupted" />,
+        ),
+      ).toContain('Interrupted after 14s');
+      expect(
+        renderToStaticMarkup(
+          <TurnWorkHeader elapsedMs={0} completionStatus="interrupted" />,
+        ),
+      ).toContain('Interrupted after 0s');
+    });
+
+    it('announces a just-submitted turn once, without a ticking time', () => {
+      const html = renderToStaticMarkup(
+        <TurnWorkHeader
+          starting
+          startedAt={now - 28_000}
+          expandable
+          dataTestId="turn-starting-status"
+        />,
+      );
+      expect(html).toContain('Starting…');
+      expect(html).toContain('role="status"');
+      expect(html).toContain('aria-live="polite"');
+      expect(html).toContain('data-turn-header="starting"');
+      expect(html).toContain('data-testid="turn-starting-status"');
+      expect(html).not.toContain('28s');
+      expect(html).not.toContain('aria-expanded');
+      // A working spinner before the words, silent so the status reads once,
+      // and no hairline under a header that has no steps to close yet.
+      expect(html).toContain('data-testid="turn-starting-spinner"');
+      expect(html).not.toContain('aria-label="Loading"');
+      expect(html.indexOf('turn-starting-spinner')).toBeLessThan(
+        html.indexOf('Starting…'),
+      );
+      expect(html).not.toContain('border-b');
+      expect(
+        renderToStaticMarkup(<TurnWorkHeader startedAt={now - 28_000} live />),
+      ).toContain('border-b');
+      expect(
+        renderToStaticMarkup(<TurnWorkHeader startedAt={now - 28_000} live />),
+      ).not.toContain('role="status"');
     });
 
     it('reads as a plain step row, without a stopwatch', () => {
@@ -392,6 +633,30 @@ describe('clean chat look', () => {
   });
 
   describe('helper agents', () => {
+    it.each(['classic', 'clean'] as const)(
+      'shows a denied native agent as blocked in the %s look',
+      (look) => {
+        const html = render(
+          look,
+          <AgentBlockCard
+            subagentType="Explore"
+            description="Inspect the repository"
+            prompt="Find the implementation"
+            result={`PreToolUse:Agent hook error: ${userDeniedMessage('Keep this local.')}`}
+            isError
+          />,
+        );
+        expect(html).toContain('data-tool-status="blocked"');
+        expect(html).toContain(
+          look === 'clean' ? 'denied by you' : 'Denied by you',
+        );
+        expect(html).not.toContain('fg-destructive');
+        expect(html).not.toContain('PreToolUse');
+        expect(html).not.toContain('>failed<');
+        expect(html).not.toContain('>error<');
+      },
+    );
+
     const agent = (
       <AgentBlockCard
         subagentType="Explore"
@@ -413,7 +678,7 @@ describe('clean chat look', () => {
         <AgentBlockCard subagentType="Explore" isError dataTestId="a" />
       );
       expect(render('classic', failed)).toContain('>error<');
-      expect(render('clean', failed)).toContain('>failed<');
+      expect(render('clean', failed)).toContain('>error<');
       expect(render('clean', failed)).not.toContain('fg-destructive');
     });
   });
@@ -464,23 +729,17 @@ describe('clean chat look', () => {
   });
 
   describe('working line', () => {
-    it('leaves the time to the header under the clean look', () => {
+    it('leaves the time to the header and the status to the transcript', () => {
       const timer = <TurnTimer isStreaming startedAt={Date.now() - 31_000} />;
       expect(render('classic', timer)).toContain('Working… 0:31');
       const clean = render('clean', timer);
-      expect(clean).toContain('Thinking');
+      // The transcript's live line says what the turn does, so the row never
+      // swaps a label in and out beside its actions.
+      expect(clean).not.toContain('turn-timer-label');
       expect(clean).not.toContain('0:31');
     });
 
-    it('stays quiet while a step on screen shimmers', () => {
-      const timer = <TurnTimer isStreaming liveStatusShown />;
-      expect(render('classic', timer)).toContain('Working…');
-      expect(render('clean', timer)).not.toContain('turn-timer-label');
-    });
-
-    it('draws the live status and the stamp in the step rows’ text', () => {
-      const live = render('clean', <TurnTimer isStreaming />);
-      expect(live).toContain('data-step-row');
+    it('draws the stamp in the step rows’ text', () => {
       const now = Date.now();
       const done = render(
         'clean',
@@ -488,9 +747,6 @@ describe('clean chat look', () => {
       );
       expect(done).toContain('text-s fg-secondary');
       expect(done).not.toContain('fg-quaternary"');
-      expect(render('classic', <TurnTimer isStreaming />)).not.toContain(
-        'data-step-row',
-      );
     });
 
     it('drops the completed time under the clean look', () => {
@@ -502,14 +758,12 @@ describe('clean chat look', () => {
       expect(render('clean', timer)).not.toContain('Completed in');
     });
 
-    it('shimmers the live label instead of showing a spinner', () => {
+    it('drops the spinner under the clean look', () => {
       const timer = (
         <TurnTimer isStreaming spinner={<span data-testid="spinner" />} />
       );
       expect(render('classic', timer)).toContain('data-testid="spinner"');
-      const clean = render('clean', timer);
-      expect(clean).not.toContain('data-testid="spinner"');
-      expect(clean).toContain('canopy-text-shimmer');
+      expect(render('clean', timer)).not.toContain('data-testid="spinner"');
     });
   });
 
@@ -554,7 +808,7 @@ describe('clean chat look', () => {
     ).not.toContain('turn-copy-message');
   });
 
-  it('keeps Copy visible while the other finished-turn actions reveal on hover or focus', () => {
+  it('puts every finished-turn action in one row that is always in view', () => {
     const html = render(
       'clean',
       <TurnTimer
@@ -566,12 +820,13 @@ describe('clean chat look', () => {
       />,
     );
     const row = html.slice(html.indexOf('data-testid="turn-actions"'));
-    expect(row).toContain('gap-0.5 -ml-1.25');
+    // Never hidden until hover: Copy, the rest of the row and the time
+    // all show at rest.
+    expect(html).not.toContain('opacity-0');
+    expect(row).toContain('class="flex items-center gap-0.5 -ml-1.75"');
     expect(row.indexOf('aria-label="Copy message"')).toBeLessThan(
       row.indexOf('data-testid="turn-actions-reveal"'),
     );
-    expect(row).toContain('opacity-0 group-hover/turn:opacity-100');
-    expect(row).toContain('group-focus-within/turn:opacity-100');
     for (const name of [
       'Copy message',
       'Good response',
@@ -579,10 +834,33 @@ describe('clean chat look', () => {
       'Fork chat',
     ])
       expect(row).toContain(`aria-label="${name}"`);
-    // One size and ink for every button in the row.
-    expect(html).toContain('[&amp;_button]:size-6');
+    // One button for every action in the row: the shared ghost capsule.
+    expect(
+      row.match(/bg-transparent fg-tertiary hover:bg-subtle/g),
+    ).toHaveLength(4);
+    expect(html).not.toContain('[&amp;_button]:size-6');
     expect(html).toContain('[&amp;_svg]:size-3.5');
     expect(html).not.toContain('pointer-fine:[&amp;_svg]:size-3');
+  });
+
+  it('draws the reply row a step quieter, the time in the small caption style', () => {
+    const html = render(
+      'clean',
+      <TurnTimer
+        startedAt={1_000}
+        finishedAt={61_000}
+        copyText="Done."
+        trailing={<ForkChatButton ariaLabel="Fork chat" onClick={jest.fn()} />}
+      />,
+    );
+    const row = html.slice(html.indexOf('data-testid="turn-actions"'));
+    // Tertiary ink at rest, primary on hover, the same 28px capsule.
+    expect(
+      row.match(/fg-tertiary hover:bg-subtle hover:fg-primary/g),
+    ).toHaveLength(2);
+    expect(row).toContain('h-7 rounded-full');
+    const stamp = html.slice(html.indexOf('data-testid="turn-timer-relative"'));
+    expect(stamp).toMatch(/class="[^"]*text-2xs[^"]*fg-tertiary/);
   });
 
   it('orders the reply row: Copy, Fork, “•••”, thumbs, then the time', () => {
@@ -620,6 +898,7 @@ describe('clean chat look', () => {
   it.each([
     ['failed', 'Failed after'],
     ['cancelled', 'Cancelled after'],
+    ['interrupted', 'Interrupted after'],
   ] as const)(
     'keeps a %s turn’s outcome in the clean reply row',
     (completionStatus, text) => {
@@ -644,12 +923,26 @@ describe('clean chat look', () => {
     expect(render('classic', timer)).toContain('Completed in');
   });
 
-  it('marks thinking with a lightbulb under the clean look only', () => {
+  it('shows "Thinking" in a running row whose host sends no live line', () => {
+    // A host such as the Portal mounts the timer alone: the row still says
+    // the turn is working.
+    const html = render('clean', <TurnTimer startedAt={1_000} isStreaming />);
+    expect(html).toContain('Thinking');
+    expect(html).toContain('canopy-text-shimmer-strong');
+    // A host that shows the step itself leaves the slot empty on purpose.
+    const empty = render(
+      'clean',
+      <TurnTimer startedAt={1_000} isStreaming liveLine={null} />,
+    );
+    expect(empty).not.toContain('Thinking');
+  });
+
+  it('marks thinking with a lightbulb under either look', () => {
     const block = <CollapsibleBlock label="Thinking" content="Plan" running />;
     expect(render('clean', block)).toContain('data-glyph="lightbulb"');
-    expect(render('classic', block)).not.toContain('data-glyph="lightbulb"');
-    expect(render('clean', <TurnTimer startedAt={1_000} />)).toContain(
-      'data-glyph="lightbulb"',
+    expect(render('classic', block)).toContain('data-glyph="lightbulb"');
+    expect(render('classic', block)).not.toContain(
+      'data-glyph="brain-circuit"',
     );
   });
 
@@ -698,36 +991,49 @@ describe('clean chat look', () => {
     expect(menu).toContain('data-glyph="git-branch"');
   });
 
-  it("keeps a running turn's actions in view", () => {
+  it("keeps a running turn's actions in view in its header", () => {
     const live = (
       <TurnTimer
         startedAt={1_000}
         trailing={<button type="button">Watch this chat</button>}
+        liveLine={<span data-testid="live-line" />}
       />
     );
     const html = render('clean', live);
-    expect(html).toContain('Watch this chat');
-    expect(html).not.toContain('opacity-0 group-hover/turn:opacity-100');
+    // The row under the reply is the live line's slot while the turn runs;
+    // its actions ride in the header, always in view.
+    expect(html).toContain('live-line');
+    expect(html).not.toContain('Watch this chat');
+    const header = render(
+      'clean',
+      <TurnWorkHeader
+        startedAt={1_000}
+        live
+        trailing={<button type="button">Watch this chat</button>}
+      />,
+    );
+    expect(header).toContain('Watch this chat');
+    expect(header).not.toContain('opacity-0 group-hover/turn:opacity-100');
   });
 
-  it("shows a prompt's Copy and Revert in a row under it on hover or focus", () => {
+  it("keeps a prompt's Copy and Revert on the bubble's corner, as classic", () => {
     const bubble = (
       <UserBubble copyText="Add the robot glyph" onRevert={jest.fn()}>
         Add the robot glyph
       </UserBubble>
     );
-    const classic = render('classic', bubble);
-    expect(classic).toContain('aria-label="Copy to clipboard"');
-    expect(classic).toContain('-right-2 -top-2');
-    const clean = render('clean', bubble);
-    expect(clean).toContain('aria-label="Copy message"');
-    expect(clean).toContain('aria-label="Revert this turn"');
-    expect(clean).toContain('top-full');
-    expect(clean).toContain('group-focus-within:opacity-100');
-    expect(clean).not.toContain('-right-2 -top-2');
+    // Same placement, badges and hover reveal as the default look: nothing
+    // hangs under the bubble beside the turn's "Worked for" line.
+    expect(render('clean', bubble)).toBe(render('classic', bubble));
+    expect(render('clean', bubble)).toContain('-right-2 -top-2');
+    expect(render('clean', bubble)).not.toContain('top-full');
+    // Tabbing to Copy or Revert reveals the badges, as hovering does.
+    expect(render('clean', bubble)).toContain(
+      'group-hover:opacity-100 group-focus-within:opacity-100',
+    );
   });
 
-  it('draws the footer thumbs and fork as plain 14px icons in the text ink', () => {
+  it('draws the footer thumbs and fork as plain 14px icons in the quiet ink', () => {
     const footer = (
       <>
         <TurnFeedbackControl onRate={jest.fn()} />
@@ -740,7 +1046,7 @@ describe('clean chat look', () => {
     const clean = render('clean', footer);
     expect(clean).not.toContain('fg-quaternary');
     expect(clean).not.toContain('ring-1');
-    expect(clean).toContain('fg-secondary');
+    expect(clean).toContain('fg-tertiary hover:bg-subtle hover:fg-primary');
     expect(clean).toContain('width="14px"');
     expect(clean).not.toContain('width="13px"');
   });

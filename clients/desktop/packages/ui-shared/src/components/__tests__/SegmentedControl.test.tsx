@@ -111,7 +111,7 @@ describe('SegmentedControl', () => {
     act(() => root.render(<Harness onChange={onChange} />));
 
     const surface = query('picker-indicator');
-    expect(surface?.style.transform).toBe('translateX(2px)');
+    expect(surface?.style.left).toBe('2px');
     expect(surface?.style.width).toBe('60px');
     // The surface is the secondary button's resting shell; the segments
     // only change their ink.
@@ -120,10 +120,86 @@ describe('SegmentedControl', () => {
 
     act(() => query('segment-complete')?.click());
     expect(onChange).toHaveBeenCalledWith('complete');
-    expect(surface?.style.transform).toBe('translateX(64px)');
+    expect(surface?.style.left).toBe('64px');
     expect(surface?.style.width).toBe('90px');
     expect(query('segment-complete')?.className).toContain('fg-primary');
     expect(query('segment-short')?.className).toContain('fg-secondary');
+  });
+
+  it('slides the surface on the compositor instead of animating left and width', () => {
+    // The surface reports the box its own styles lay it out in.
+    const prototype = HTMLElement.prototype;
+    const descriptors = {
+      offsetLeft: Object.getOwnPropertyDescriptor(prototype, 'offsetLeft'),
+      offsetWidth: Object.getOwnPropertyDescriptor(prototype, 'offsetWidth'),
+      offsetHeight: Object.getOwnPropertyDescriptor(prototype, 'offsetHeight'),
+    };
+    const surfaceOr = (
+      element: HTMLElement,
+      own: number,
+      fallback: PropertyDescriptor | undefined,
+    ): number =>
+      element.dataset.testid === 'picker-indicator'
+        ? own
+        : Number(fallback?.get?.call(element) ?? 0);
+    Object.defineProperty(prototype, 'offsetLeft', {
+      configurable: true,
+      get(this: HTMLElement): number {
+        return surfaceOr(
+          this,
+          Number.parseFloat(this.style.left),
+          descriptors.offsetLeft,
+        );
+      },
+    });
+    Object.defineProperty(prototype, 'offsetWidth', {
+      configurable: true,
+      get(this: HTMLElement): number {
+        return surfaceOr(
+          this,
+          Number.parseFloat(this.style.width),
+          descriptors.offsetWidth,
+        );
+      },
+    });
+    Object.defineProperty(prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement): number {
+        return surfaceOr(this, 24, descriptors.offsetHeight);
+      },
+    });
+    const animate = jest.fn();
+    Object.defineProperty(prototype, 'animate', {
+      configurable: true,
+      writable: true,
+      value: animate,
+    });
+    try {
+      act(() => root.render(<Harness onChange={jest.fn()} />));
+      const surface = query('picker-indicator');
+      // Drawn in place on mount: no slide in.
+      expect(animate).not.toHaveBeenCalled();
+      expect(surface?.className).not.toMatch(/transition-\[[^\]]*(width|left)/);
+      expect(surface?.className).toContain('origin-top-left');
+
+      act(() => query('segment-complete')?.click());
+      // Laid out at the new segment at once, then drawn from the old one.
+      expect(surface?.style.left).toBe('64px');
+      expect(surface?.style.width).toBe('90px');
+      expect(animate).toHaveBeenCalledTimes(1);
+      expect(animate).toHaveBeenCalledWith(
+        [
+          { transform: `translate(-62px, 0px) scale(${60 / 90}, 1)` },
+          { transform: 'none' },
+        ],
+        { duration: 200, easing: 'cubic-bezier(0, 0, 0.2, 1)' },
+      );
+    } finally {
+      Reflect.deleteProperty(prototype, 'animate');
+      for (const [name, descriptor] of Object.entries(descriptors)) {
+        if (descriptor) Object.defineProperty(prototype, name, descriptor);
+      }
+    }
   });
 
   it('holds the control-column width by default and hugs its labels at content width', () => {
@@ -217,7 +293,7 @@ describe('SegmentedControl', () => {
     expect(off?.hasAttribute('disabled')).toBe(false);
     act(() => off?.click());
     expect(onChange).not.toHaveBeenCalled();
-    expect(query('picker-indicator')?.style.transform).toBe('translateX(2px)');
+    expect(query('picker-indicator')?.style.left).toBe('2px');
   });
 
   it('shows each option tooltip on hover', () => {

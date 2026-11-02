@@ -1014,6 +1014,7 @@ describe('Advisor storage scope through canonical chat adapters', () => {
       }),
       searchTranscript: jest.fn(),
       readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
       command: jest.fn(),
       subscribe: jest.fn().mockReturnValue(() => undefined),
     };

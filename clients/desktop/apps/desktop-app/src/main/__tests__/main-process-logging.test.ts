@@ -40,7 +40,9 @@ jest.mock('node:os', () => ({
 }));
 
 jest.mock('node:fs', () => ({
-  existsSync: mockExistsSync,
+  get existsSync(): typeof mockExistsSync {
+    return mockExistsSync;
+  },
 }));
 
 jest.mock('electron', () => ({
@@ -48,28 +50,48 @@ jest.mock('electron', () => ({
     get isPackaged(): boolean {
       return mockIsPackaged;
     },
-    getPath: mockGetPath,
-    setAppLogsPath: mockSetAppLogsPath,
+    get getPath(): typeof mockGetPath {
+      return mockGetPath;
+    },
+    get setAppLogsPath(): typeof mockSetAppLogsPath {
+      return mockSetAppLogsPath;
+    },
   },
 }));
 
 jest.mock('electron-log/main.js', () => ({
   __esModule: true,
   default: {
-    debug: mockLogDebug,
-    error: mockLogError,
-    info: mockLogInfo,
-    initialize: mockLogInitialize,
-    transports: {
-      console: mockConsoleTransport,
-      file: mockFileTransport,
+    get debug(): typeof mockLogDebug {
+      return mockLogDebug;
     },
-    warn: mockLogWarn,
+    get error(): typeof mockLogError {
+      return mockLogError;
+    },
+    get info(): typeof mockLogInfo {
+      return mockLogInfo;
+    },
+    get initialize(): typeof mockLogInitialize {
+      return mockLogInitialize;
+    },
+    transports: {
+      get console(): typeof mockConsoleTransport {
+        return mockConsoleTransport;
+      },
+      get file(): typeof mockFileTransport {
+        return mockFileTransport;
+      },
+    },
+    get warn(): typeof mockLogWarn {
+      return mockLogWarn;
+    },
   },
 }));
 
 jest.mock('../lib/e2e-gate', () => ({
-  isE2eBuild: mockIsE2eBuild,
+  get isE2eBuild(): typeof mockIsE2eBuild {
+    return mockIsE2eBuild;
+  },
 }));
 
 import {

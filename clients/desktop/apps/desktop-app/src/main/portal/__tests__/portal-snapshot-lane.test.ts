@@ -318,6 +318,46 @@ describe('portal snapshot lane (CAN-2360)', () => {
     expect(harness.log).toContain('persist:duplicate-2');
   });
 
+  it('does not coalesce changed-files requests with different cursors', async () => {
+    const gate = deferred();
+    const harness = createHarness(async (command) => {
+      if (command.id === 'barrier') await gate.promise;
+    });
+    const lane = createPortalSnapshotLane(harness.deps);
+    lane.enqueue({
+      command: stateRequestCommand('barrier', 1),
+      request: overviewRequest,
+      receivedAtPerf: 0,
+    });
+    const target = { workspaceLocalId: 'workspace', worktreeLocalId: 'diff' };
+    const enqueuePageRequest = (
+      id: string,
+      sequence: number,
+      cursor: string,
+    ): void => {
+      lane.enqueue({
+        command: stateRequestCommand(id, sequence),
+        request: {
+          scope: 'diff',
+          target,
+          changedFilesPage: { group: 'uncommitted', cursor },
+        },
+        receivedAtPerf: 0,
+      });
+    };
+    enqueuePageRequest('page-0', 2, 'cursor-1');
+    enqueuePageRequest('page-1', 3, 'cursor-2');
+
+    gate.resolve();
+    await lane.idle();
+
+    expect(harness.log.filter((item) => item.startsWith('execute:'))).toEqual([
+      'execute:barrier',
+      'execute:page-0',
+      'execute:page-1',
+    ]);
+  });
+
   it('keeps worktree and chat requests in FIFO through persistence', async () => {
     const gate = deferred();
     const harness = createHarness(async (command, context) => {

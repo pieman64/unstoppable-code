@@ -17,6 +17,7 @@ import {
   type SharedItemInstallRecord,
 } from '../canopy-cloud/shared-item-subscriptions';
 import { createHash, randomUUID } from 'node:crypto';
+import * as os from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { access, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -32,13 +33,22 @@ import {
   type CapabilityPackagePortableResourceInput,
   type CapabilityPackageRequest,
   type CapabilityPackagePromptSource,
+  type AutomationPipelinePortableInput,
+  type FileAssetPortableInput,
 } from '@canopy/desktop-shared/node';
+import {
+  AUTOMATION_ACTION_PIPELINE_KEY,
+  resolveAutomationPipelineReferences,
+  type AutomationPipelineSource,
+} from '@canopy/desktop-shared/node/pipelines/automation-pipeline-references';
+import { canonicalizeSharedAutomationPrompt } from '@canopy/protocol/automations';
 import {
   computePipelinePackageDigestSync,
   buildPipelinePackageOverlay,
   filterPackageOverlayForBindingKey,
   hashPipelinePackageYaml,
   installPipelinePackageAtomically,
+  pipelinePackageCarriesPipeline,
   verifyCachedPipelinePackage,
 } from '@canopy/desktop-shared/node';
 import type {
@@ -55,13 +65,16 @@ import type {
   PipelinePackageInstallRecordV1,
   PipelinePackageInstallRequest,
   PipelinePackageInstallResult,
+  PipelinePackageAnalysisBlocker,
   PipelinePackageInvocationDismissal,
   PipelinePackageProgressEvent,
   PipelinePackageReadiness,
+  PipelinePackageReferenceDismissal,
   PipelinePackageReadinessRequest,
   SharedPipelineDetail,
 } from '@canopy/desktop-shared/types/pipeline';
 import type {
+  AutomationPipelineDependency,
   ChatTabPluginSelections,
   CommitAutomationCapabilityPackageRequest,
 } from '@canopy/desktop-shared/types';
@@ -71,6 +84,7 @@ import type {
   PipelinePackageEnvironmentRequirement,
   PipelinePackageManifestV1,
   PipelinePackageRef,
+  PipelinePackageResource,
   PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
 import {
@@ -97,7 +111,15 @@ import {
   interpolateExpression,
   templateInputReferences,
 } from '@canopy/desktop-shared/node/pipelines/executor/expression-evaluator';
-import { buildExpressionContext } from '@canopy/desktop-shared/node/pipelines/executor/execution-context';
+import {
+  buildExpressionContext,
+  cascadeEnv,
+} from '@canopy/desktop-shared/node/pipelines/executor/execution-context';
+import {
+  resolveChildPipelineRef,
+  type ChildPipelineRefResolution,
+} from '@canopy/desktop-shared/node/pipelines/child-pipeline-ref';
+import { getStoredPipelinePathWithSource } from '@canopy/desktop-shared/pipelines/store';
 import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
@@ -130,6 +152,13 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { discoverProjectInvocableSources } from '../agents/project-slash-command-discovery';
 import * as localPipelineService from './pipeline-service';
+import {
+  buildAutomationPipelineInventory,
+  packagedPipelineFileAssets,
+  pipelineFileDir,
+  publicAudienceAssetsBlockers,
+  type PackagedAutomationPipeline,
+} from './automation-pipeline-sources';
 import {
   deleteUserPipelineLocalMetadata,
   readPipelineLocalMetadata,
@@ -193,6 +222,7 @@ import {
 import { getAiCreditsRoutingContextWithStatus } from '../agents/ai-credits-routing';
 import { resolveNavigationWorkOwner } from '../agents/work-owner';
 import { resolveGatewayModelEntry } from '@canopy/desktop-shared/lib/gateway-model-availability';
+import { AUTOMATION_SHARE_BLOCK_MESSAGES } from '@canopy/desktop-shared/lib/automation-sharing';
 import {
   getEnhancedEnv,
   getProjectActionsDirCandidates,
@@ -201,6 +231,7 @@ import {
 import {
   findPipelinePackageInstall,
   findCapabilityPackageInstallByOwner,
+  listCapabilityPackageInstalls,
   listPipelinePackageInstalls,
   removeCapabilityPackageInstall,
   removePipelinePackageInstall,
@@ -237,6 +268,13 @@ const PACKAGE_DEADLINE_MESSAGE =
 const AUTOMATION_ACTION_BINDING_JOB_ID = 'automation';
 const AUTOMATION_ACTION_BINDING_STEP_ID = 'action';
 const AUTOMATION_ACTION_BINDING_KEY = `${AUTOMATION_ACTION_BINDING_JOB_ID}\0${AUTOMATION_ACTION_BINDING_STEP_ID}`;
+/** Resources an automation install materializes rather than hands an agent. */
+const AUTOMATION_INSTALLED_RESOURCE_KINDS: ReadonlySet<
+  PipelinePackageResource['kind']
+> = new Set<PipelinePackageResource['kind']>([
+  'automation_pipeline',
+  'file_asset',
+]);
 const analyses = new Map<
   string,
   PipelinePackageAnalysisInternal & {
@@ -577,7 +615,7 @@ export function resolvePipelinePackageProviderByStep(
   return result;
 }
 
-async function capabilityInventoryEntryIdsByKey(
+export async function capabilityInventoryEntryIdsByKey(
   pipeline: Pipeline,
   inventory: Awaited<
     ReturnType<typeof loadPipelinePackageInventorySources>
@@ -743,12 +781,18 @@ async function firstExistingPath(
   return undefined;
 }
 
-interface PortablePipelineDiscovery {
+export interface PortablePipelineDiscovery {
   resources: CapabilityPackagePortableResourceInput[];
   requests: CapabilityPackageRequest[];
   promptSources: CapabilityPackagePromptSource[];
   environmentRequirements: PipelinePackageEnvironmentRequirement[];
   capabilityInventoryEntryIdsByKey: Record<string, string[]>;
+  /** Child refs that can't be resolved before a run, not dismissed. */
+  blockers: PipelinePackageAnalysisBlocker[];
+  /** Child ref dismissals that matched a ref, so the child was left out. */
+  dismissedReferences: PipelinePackageReferenceDismissal[];
+  /** Authored refs of packaged children that declare their own `assets`. */
+  childrenWithAssets: string[];
 }
 
 function emptyPortablePipelineDiscovery(): PortablePipelineDiscovery {
@@ -758,10 +802,75 @@ function emptyPortablePipelineDiscovery(): PortablePipelineDiscovery {
     promptSources: [],
     environmentRequirements: [],
     capabilityInventoryEntryIdsByKey: {},
+    blockers: [],
+    dismissedReferences: [],
+    childrenWithAssets: [],
   };
 }
 
-async function buildPortablePipelineResources(input: {
+/**
+ * Only a pipeline that gets a local id on install resolves `assets` (v1), so
+ * a packaged child that declares them can't be shared with its parent.
+ */
+function childAssetsBlockers(
+  childRefs: readonly string[],
+): PipelinePackageAnalysisBlocker[] {
+  return Array.from(new Set(childRefs)).map((ref) => ({
+    code: 'ASSETS_ON_PACKAGED_CHILD',
+    subject: ref,
+    message: `Child pipeline ${ref} declares assets. Declare them on the pipeline the share starts from instead.`,
+    occurrences: [],
+  }));
+}
+
+function declaresAssets(pipeline: Pipeline): boolean {
+  return Array.isArray(pipeline.assets) && pipeline.assets.length > 0;
+}
+
+type PipelineEnv = Pipeline['env'];
+
+/** What a `builtin/run-pipeline` step's `with.pipeline` resolves to before a run. */
+function childPipelineRefResolution(
+  step: { env?: PipelineEnv; with?: Record<string, unknown> },
+  pipelineEnv: PipelineEnv,
+  jobEnv: PipelineEnv,
+): ChildPipelineRefResolution | undefined {
+  const childRefValue = step.with?.pipeline;
+  if (typeof childRefValue !== 'string' || !childRefValue.trim())
+    return undefined;
+  return resolveChildPipelineRef({
+    ref: childRefValue,
+    pipelineEnv,
+    jobEnv,
+    stepEnv: step.env,
+  });
+}
+
+function unresolvedChildPipelineRefMessage(
+  location: string,
+  raw: string,
+): string {
+  return `Step ${location} picks its child pipeline with ${raw}, which is only known when the pipeline runs, so the child can't be shared with it. Define the pipeline ID as a literal in \`env\` and reference it as \`\${{ env.NAME }}\`, or dismiss this to share without the child.`;
+}
+
+/**
+ * A user pipeline the store resolves `ref` to, as a run resolves a child by
+ * id before any file root. Only a file named for one of the candidate refs
+ * is returned: the packaged child is found again by that name at run time.
+ */
+function storedUserChildPipelinePath(
+  ref: string,
+  candidateRefs: readonly string[],
+): string | undefined {
+  const stored = getStoredPipelinePathWithSource(ref);
+  if (!stored.success || !stored.data || stored.data.source !== 'user')
+    return undefined;
+  return candidateRefs.includes(path.basename(stored.data.filePath))
+    ? stored.data.filePath
+    : undefined;
+}
+
+export async function buildPortablePipelineResources(input: {
   pipeline: Pipeline;
   inventory: Awaited<
     ReturnType<typeof loadPipelinePackageInventorySources>
@@ -769,10 +878,14 @@ async function buildPortablePipelineResources(input: {
   pipelineFileDir?: string;
   repoPath?: string;
   bindingKey?: string;
+  /** Env a parent run passes down to this (child) pipeline. */
+  inheritedEnv?: Record<string, string>;
+  dismissedReferences?: readonly PipelinePackageReferenceDismissal[];
   visited?: Set<string>;
 }): Promise<PortablePipelineDiscovery> {
   const discovered = emptyPortablePipelineDiscovery();
   const visited = input.visited ?? new Set<string>();
+  const pipelineEnv = cascadeEnv(input.inheritedEnv, input.pipeline.env);
   for (const [jobId, job] of Object.entries(input.pipeline.jobs)) {
     const steps = assignStepIds(job.steps, jobId);
     for (const step of steps) {
@@ -797,7 +910,7 @@ async function buildPortablePipelineResources(input: {
         discovered.resources.push({
           kind: 'pipeline_action',
           displayName: actionRef,
-          invocationKey: actionRef,
+          invocationKeys: [actionRef],
           bindingKey,
           descriptor: {
             sourceRoot,
@@ -809,14 +922,45 @@ async function buildPortablePipelineResources(input: {
         });
       }
       if (step.uses !== 'builtin/run-pipeline') continue;
-      const childRefValue = step.with?.pipeline;
+      const resolution = childPipelineRefResolution(step, pipelineEnv, job.env);
+      if (!resolution) continue;
+      const [parentJobId, parentStepId] = bindingKey.split('\0');
+      if (resolution.kind === 'unresolved') {
+        const dismissal = input.dismissedReferences?.find(
+          (candidate) =>
+            candidate.kind === 'child_pipeline_ref' &&
+            candidate.token === resolution.raw,
+        );
+        if (dismissal) {
+          discovered.dismissedReferences.push(dismissal);
+          continue;
+        }
+        discovered.blockers.push({
+          code: 'UNRESOLVED_CHILD_PIPELINE_REF',
+          subject: resolution.raw,
+          origin: input.bindingKey ? 'transitive' : 'direct',
+          message: unresolvedChildPipelineRefMessage(
+            `${jobId}.${step.id}`,
+            resolution.raw,
+          ),
+          ...(parentJobId && parentStepId
+            ? { jobId: parentJobId, stepId: parentStepId }
+            : {}),
+          occurrences: [],
+          referenceDismissal: {
+            kind: 'child_pipeline_ref',
+            token: resolution.raw,
+          },
+        });
+        continue;
+      }
+      // The display name stays the authored ref; the share UI and save-time
+      // repackaging match on it. A run looks the child up by the value it
+      // interpolates.
+      const displayName = resolution.raw;
       const childRef =
-        typeof childRefValue === 'string' ? childRefValue.trim() : '';
-      if (
-        !childRef ||
-        path.isAbsolute(childRef) ||
-        !isSafeCapabilityRelativePath(childRef)
-      )
+        resolution.kind === 'resolved' ? resolution.evaluated : resolution.raw;
+      if (path.isAbsolute(childRef) || !isSafeCapabilityRelativePath(childRef))
         continue;
       const candidateRefs = path.extname(childRef)
         ? [childRef]
@@ -830,25 +974,33 @@ async function buildPortablePipelineResources(input: {
             ]
           : []),
       ];
-      const childPath = await firstExistingPath(
-        roots.flatMap((root) =>
-          candidateRefs.map((candidate) => path.resolve(root, candidate)),
-        ),
+      const storedChildPath = storedUserChildPipelinePath(
+        childRef,
+        candidateRefs,
       );
-      const sourceRoot = childPath
-        ? roots.find((root) => {
-            const relative = path.relative(root, childPath);
-            return !relative.startsWith('..') && !path.isAbsolute(relative);
-          })
-        : roots[0];
+      const childPath =
+        storedChildPath ??
+        (await firstExistingPath(
+          roots.flatMap((root) =>
+            candidateRefs.map((candidate) => path.resolve(root, candidate)),
+          ),
+        ));
+      const sourceRoot = storedChildPath
+        ? path.dirname(storedChildPath)
+        : childPath
+          ? roots.find((root) => {
+              const relative = path.relative(root, childPath);
+              return !relative.startsWith('..') && !path.isAbsolute(relative);
+            })
+          : roots[0];
       if (!sourceRoot) continue;
       const memberPath = childPath
         ? path.relative(sourceRoot, childPath)
         : childRef;
       discovered.resources.push({
         kind: 'child_pipeline',
-        displayName: childRef,
-        invocationKey: childRef,
+        displayName,
+        invocationKeys: [displayName, childRef],
         bindingKey,
         descriptor: {
           sourceRoot,
@@ -868,13 +1020,14 @@ async function buildPortablePipelineResources(input: {
         const childPipeline = parsePipelineText(
           await readFile(childPath, 'utf8'),
         );
+        if (declaresAssets(childPipeline))
+          discovered.childrenWithAssets.push(displayName);
         const providerByStep =
           resolvePipelinePackageProviderByStep(childPipeline);
         const sources = buildPipelineCapabilityPackageSources(
           childPipeline,
           providerByStep,
         );
-        const [parentJobId, parentStepId] = bindingKey.split('\0');
         discovered.requests.push(
           ...sources.requests.map((request) => ({ ...request, bindingKey })),
         );
@@ -902,12 +1055,15 @@ async function buildPortablePipelineResources(input: {
             input.inventory,
           ),
         );
+        // A child run starts from the env of the step that launched it.
         const nested = await buildPortablePipelineResources({
           pipeline: childPipeline,
           inventory: input.inventory,
           pipelineFileDir: path.dirname(childPath),
           repoPath: input.repoPath,
           bindingKey,
+          inheritedEnv: cascadeEnv(pipelineEnv, job.env, step.env),
+          dismissedReferences: input.dismissedReferences,
           visited,
         });
         discovered.resources.push(...nested.resources);
@@ -920,12 +1076,28 @@ async function buildPortablePipelineResources(input: {
           discovered.capabilityInventoryEntryIdsByKey,
           nested.capabilityInventoryEntryIdsByKey,
         );
+        discovered.blockers.push(...nested.blockers);
+        discovered.dismissedReferences.push(...nested.dismissedReferences);
+        discovered.childrenWithAssets.push(...nested.childrenWithAssets);
       } catch {
         // The normal analyzer reports the missing/invalid child resource.
       }
     }
   }
   return discovered;
+}
+
+/** Dismissals in first-seen order, one per kind and token. */
+function uniqueReferenceDismissals(
+  dismissals: readonly PipelinePackageReferenceDismissal[],
+): PipelinePackageReferenceDismissal[] {
+  const seen = new Set<string>();
+  return dismissals.filter(({ kind, token }) => {
+    const key = `${kind}\0${token}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function analyzePackageRequest(
@@ -1003,6 +1175,7 @@ export async function analyzePackageRequest(
       inventory,
       pipelineFileDir,
       repoPath,
+      dismissedReferences: input.dismissedReferences,
     });
     const rootInventoryEntryIds = await capabilityInventoryEntryIdsByKey(
       pipeline,
@@ -1025,6 +1198,26 @@ export async function analyzePackageRequest(
       additionalRequests: portable.requests,
       additionalPromptSources: portable.promptSources,
       additionalEnvironmentRequirements: portable.environmentRequirements,
+      hostBlockers: [
+        ...portable.blockers,
+        // Assets install into a pipeline's data dir, which only an automation
+        // install sets up in v1.
+        ...(declaresAssets(pipeline)
+          ? [
+              {
+                code: 'ASSETS_REQUIRE_AUTOMATION_SHARE' as const,
+                subject: pipeline.name,
+                message:
+                  'This pipeline declares assets, which only travel with an automation. Share the automation that runs this pipeline instead.',
+                occurrences: [],
+              },
+            ]
+          : []),
+        ...childAssetsBlockers(portable.childrenWithAssets),
+      ],
+      dismissedReferences: uniqueReferenceDismissals(
+        portable.dismissedReferences,
+      ),
     });
     if (options.persistDismissals !== false)
       await replaceDismissalsIfCurrent(
@@ -1054,15 +1247,57 @@ export interface AnalyzeAutomationCapabilityPackageInput {
    * The automation action's prompt. Scanned for invocation tokens exactly as a
    * pipeline step prompt is, so a `/skill` the author typed is packaged even
    * when it was never added to `selections`, and an unresolvable one blocks.
+   * Also scanned for pipeline references; spans index into the canonical,
+   * untrimmed prompt the shared document carries.
    */
   promptText?: string;
   worktree?: PackageWorktreeContext;
   pipelineContent?: string;
   dismissedInvocations?: PipelinePackageInvocationDismissal[];
+  /** The automation's stored `dependencies.pipelines` plus manual adds. */
+  pipelineDependencies?: AutomationPipelineDependency[];
+  /** Keys of the optional (name-matched) pipelines the author selected. */
+  pipelineSelections?: string[];
+  /** Share audience; Public shares can't carry file assets. */
+  audience?: 'private' | 'team' | 'organization' | 'public';
+  /** Reference blockers the author dismissed. */
+  dismissedReferences?: PipelinePackageReferenceDismissal[];
+  /** False when the server can't publish v5 documents: no pipelines travel. */
+  packagePipelines?: boolean;
+}
+
+/**
+ * Trusted host facts for an automation analysis. Main derives them; they are
+ * never read from the renderer's request.
+ */
+export interface AnalyzeAutomationCapabilityPackageOptions {
+  /**
+   * The stored `worktree_pipeline` action's own pipeline, when it is a user
+   * or project pipeline. Its YAML (`pipelineContent`) then travels as the
+   * `action` packaged pipeline, with its children, actions and assets.
+   */
+  actionPipeline?: {
+    source: AutomationPipelineSource;
+    pipelineId: string;
+    name?: string;
+  };
+  /** Home folder asset paths expand against; defaults to the user's. */
+  homedir?: string;
+}
+
+function storedPipelineFilePath(pipelineId: string): string | undefined {
+  const stored = localPipelineService.getPipelinePath(pipelineId);
+  return stored.success ? stored.data : undefined;
+}
+
+/** A pipeline whose children, actions, skills and assets travel with it. */
+interface PackagedPipelineSource extends PackagedAutomationPipeline {
+  fileDir?: string;
 }
 
 export async function analyzeAutomationCapabilityPackage(
   input: AnalyzeAutomationCapabilityPackageInput,
+  options: AnalyzeAutomationCapabilityPackageOptions = {},
 ): Promise<PipelinePackageAnalysisSummary> {
   pruneAnalyses();
   if (input.activityId !== undefined)
@@ -1085,10 +1320,27 @@ export async function analyzeAutomationCapabilityPackage(
     const repoLocal = input.worktree
       ? await buildRepoLocalInvocables(input.worktree)
       : undefined;
+    const repoPath = input.worktree
+      ? resolveWorktreeCwd(
+          input.worktree.projectId,
+          input.worktree.worktreeId,
+          input.worktree.repoId,
+        )
+      : undefined;
+    const homedir = options.homedir ?? os.homedir();
     const effectiveSelections = await resolveEffectivePluginSelectionRefs(
       input.selections,
     );
     const inventoryEntryIdsByKey: Record<string, string[]> = {};
+    const mergeInventoryEntryIds = (
+      entryIds: Record<string, string[]>,
+    ): void => {
+      for (const [key, ids] of Object.entries(entryIds)) {
+        inventoryEntryIdsByKey[key] = Array.from(
+          new Set([...(inventoryEntryIdsByKey[key] ?? []), ...ids]),
+        );
+      }
+    };
     const requestedKeys: string[] = [];
     for (const skill of effectiveSelections.skillRefs) {
       const key = `skill:${skill.sourceId}:${skill.skillName}`;
@@ -1114,7 +1366,9 @@ export async function analyzeAutomationCapabilityPackage(
         )
         .map((entry) => entry.id);
     }
-    const requests = Array.from(new Set(requestedKeys)).flatMap((key) =>
+    const requests: CapabilityPackageRequest[] = Array.from(
+      new Set(requestedKeys),
+    ).flatMap((key) =>
       (['claude', 'codex'] as const).map((provider) => ({
         key,
         provider,
@@ -1122,37 +1376,193 @@ export async function analyzeAutomationCapabilityPackage(
         bindingKey: AUTOMATION_ACTION_BINDING_KEY,
       })),
     );
-    const promptSources = [];
-    let environmentRequirements: PipelinePackageEnvironmentRequirement[] = [];
-    const promptText = input.promptText?.trim();
-    if (promptText) {
+    const promptSources: CapabilityPackagePromptSource[] = [];
+    const environmentRequirements: PipelinePackageEnvironmentRequirement[] = [];
+    const portableResources: CapabilityPackagePortableResourceInput[] = [];
+    const hostBlockers: PipelinePackageAnalysisBlocker[] = [];
+    const childReferenceDismissals: PipelinePackageReferenceDismissal[] = [];
+    // Without server support for v5 documents the share keeps its pre-v5
+    // shape: no pipeline is detected or packaged, and the action pipeline
+    // takes the inline path below.
+    const packagePipelines = input.packagePipelines !== false;
+    // The canonical prompt, untrimmed: pipeline reference spans index into the
+    // exact string the shared document carries. A blank prompt is no source.
+    const promptText =
+      input.promptText === undefined
+        ? undefined
+        : canonicalizeSharedAutomationPrompt(input.promptText);
+    if (promptText?.trim()) {
       promptSources.push({
         jobId: AUTOMATION_ACTION_BINDING_JOB_ID,
         stepId: AUTOMATION_ACTION_BINDING_STEP_ID,
-        provider: 'claude' as const,
+        provider: 'claude',
         text: promptText,
+        pipelineReferences: packagePipelines,
       });
+    }
+    const pipelineInventory = await buildAutomationPipelineInventory({
+      repoPath,
+    });
+    const pipelineRequests = packagePipelines
+      ? input.pipelineDependencies?.map(({ pipelineId, source }) => ({
+          pipelineId,
+          source,
+        }))
+      : undefined;
+    const pipelineReferences = resolveAutomationPipelineReferences(
+      {
+        ...(promptText ? { promptText } : {}),
+        inventory: pipelineInventory,
+        ...(pipelineRequests ? { requests: pipelineRequests } : {}),
+        ...(input.pipelineSelections
+          ? { selections: input.pipelineSelections }
+          : {}),
+        ...(input.dismissedReferences
+          ? { dismissedReferences: input.dismissedReferences }
+          : {}),
+      },
+      {
+        jobId: AUTOMATION_ACTION_BINDING_JOB_ID,
+        stepId: AUTOMATION_ACTION_BINDING_STEP_ID,
+      },
+    );
+    const automationPipelines: AutomationPipelinePortableInput[] = [];
+    const packagedPipelines: PackagedPipelineSource[] = [];
+    for (const resolved of packagePipelines
+      ? pipelineReferences.pipelines
+      : []) {
+      let rawPipeline: string;
+      try {
+        rawPipeline = await readFile(resolved.path, 'utf8');
+      } catch {
+        // The analyzer reports a selected pipeline it gets no YAML for.
+        continue;
+      }
+      automationPipelines.push({
+        pipelineKey: resolved.key,
+        name: resolved.name,
+        source: resolved.source,
+        rawContent: rawPipeline,
+        bindingKey: AUTOMATION_ACTION_BINDING_KEY,
+        sourcePath: resolved.path,
+      });
+      // Unselected suggestions only feed the summary.
+      if (!resolved.selected) continue;
+      try {
+        packagedPipelines.push({
+          key: resolved.key,
+          name: resolved.name,
+          pipeline: parsePipelineText(rawPipeline),
+          fileDir: pipelineFileDir(resolved.path),
+        });
+      } catch (error) {
+        hostBlockers.push({
+          code: 'INVALID_PACKAGE',
+          subject: resolved.name,
+          message: `"${resolved.name}" could not be read: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          occurrences: [],
+        });
+      }
     }
     if (input.pipelineContent !== undefined) {
       const pipeline = parsePipelineText(input.pipelineContent);
-      const providerByStep = resolvePipelinePackageProviderByStep(pipeline);
-      const pipelineSources = buildPipelineCapabilityPackageSources(
-        pipeline,
-        providerByStep,
-      );
-      requests.push(...pipelineSources.requests);
-      promptSources.push(...pipelineSources.promptSources);
-      environmentRequirements = pipelineSources.environmentRequirements;
-      const pipelineEntryIds = await capabilityInventoryEntryIdsByKey(
-        pipeline,
-        inventory,
-      );
-      for (const [key, ids] of Object.entries(pipelineEntryIds)) {
-        inventoryEntryIdsByKey[key] = Array.from(
-          new Set([...(inventoryEntryIdsByKey[key] ?? []), ...ids]),
+      const actionPipeline = packagePipelines
+        ? options.actionPipeline
+        : undefined;
+      if (actionPipeline) {
+        // A user or project action pipeline travels as the `action` packaged
+        // pipeline, so its children, actions and assets come along.
+        const actionPath =
+          actionPipeline.source === 'user'
+            ? storedPipelineFilePath(actionPipeline.pipelineId)
+            : pipelineInventory.find(
+                (entry) =>
+                  entry.source === 'project' &&
+                  entry.pipelineId === actionPipeline.pipelineId,
+              )?.path;
+        const name =
+          actionPipeline.name?.trim() || pipeline.name.trim() || 'Pipeline';
+        automationPipelines.push({
+          pipelineKey: AUTOMATION_ACTION_PIPELINE_KEY,
+          name,
+          source: actionPipeline.source,
+          rawContent: input.pipelineContent,
+          bindingKey: AUTOMATION_ACTION_BINDING_KEY,
+          ...(actionPath ? { sourcePath: actionPath } : {}),
+        });
+        packagedPipelines.push({
+          key: AUTOMATION_ACTION_PIPELINE_KEY,
+          name,
+          pipeline,
+          fileDir: pipelineFileDir(actionPath),
+        });
+      } else {
+        // Shared and other pipelines keep the inline handling: their skills
+        // and plugins travel under their real step bindings.
+        const pipelineSources = buildPipelineCapabilityPackageSources(
+          pipeline,
+          resolvePipelinePackageProviderByStep(pipeline),
+        );
+        requests.push(...pipelineSources.requests);
+        promptSources.push(...pipelineSources.promptSources);
+        environmentRequirements.push(
+          ...pipelineSources.environmentRequirements,
+        );
+        mergeInventoryEntryIds(
+          await capabilityInventoryEntryIdsByKey(pipeline, inventory),
         );
       }
     }
+    const fileAssets: FileAssetPortableInput[] = [];
+    const childrenWithAssets: string[] = [];
+    for (const packaged of packagedPipelines) {
+      // Each packaged pipeline keeps its own job/step bindings, as an inline
+      // pipeline does; the `automation_pipeline` resource itself is bound to
+      // the automation action.
+      const pipelineSources = buildPipelineCapabilityPackageSources(
+        packaged.pipeline,
+        resolvePipelinePackageProviderByStep(packaged.pipeline),
+      );
+      requests.push(...pipelineSources.requests);
+      promptSources.push(...pipelineSources.promptSources);
+      // Declared `local_runtime` / `local_package` dependencies surface as
+      // setup requirements, next to connectors and MCP servers.
+      environmentRequirements.push(...pipelineSources.environmentRequirements);
+      mergeInventoryEntryIds(
+        await capabilityInventoryEntryIdsByKey(packaged.pipeline, inventory),
+      );
+      const portable = await buildPortablePipelineResources({
+        pipeline: packaged.pipeline,
+        inventory,
+        pipelineFileDir: packaged.fileDir,
+        repoPath,
+        dismissedReferences: input.dismissedReferences,
+      });
+      portableResources.push(
+        ...portable.resources.map((resource) => ({
+          ...resource,
+          idScope: packaged.key,
+        })),
+      );
+      requests.push(...portable.requests);
+      promptSources.push(...portable.promptSources);
+      environmentRequirements.push(...portable.environmentRequirements);
+      mergeInventoryEntryIds(portable.capabilityInventoryEntryIdsByKey);
+      hostBlockers.push(...portable.blockers);
+      childReferenceDismissals.push(...portable.dismissedReferences);
+      childrenWithAssets.push(...portable.childrenWithAssets);
+      // Public shares carry no files, so their assets are never collected.
+      if (input.audience === 'public') continue;
+      const assets = packagedPipelineFileAssets(packaged, homedir);
+      if (assets.ok) fileAssets.push(...assets.assets);
+      else hostBlockers.push(assets.blocker);
+    }
+    hostBlockers.push(
+      ...childAssetsBlockers(childrenWithAssets),
+      ...publicAudienceAssetsBlockers(input.audience, packagedPipelines),
+    );
     const dismissalStorePath = getPipelinePackageDismissalStorePath();
     if (input.dismissedInvocations !== undefined) {
       await replaceDismissalsIfCurrent(
@@ -1180,6 +1590,26 @@ export async function analyzeAutomationCapabilityPackage(
       promptSources,
       environmentRequirements,
       dismissedInvocations,
+      portableResources,
+      ...(packagePipelines
+        ? {
+            pipelineInventory,
+            ...(pipelineRequests ? { pipelineRequests } : {}),
+            ...(input.pipelineSelections
+              ? { pipelineSelections: input.pipelineSelections }
+              : {}),
+            automationPipelines,
+            fileAssets,
+          }
+        : {}),
+      homedir,
+      hostBlockers,
+      dismissedReferences: uniqueReferenceDismissals([
+        ...childReferenceDismissals,
+        ...(input.dismissedReferences ?? []).filter(
+          (dismissal) => dismissal.kind === 'pipeline_reference',
+        ),
+      ]),
     });
     await replaceDismissalsIfCurrent(
       dismissalStorePath,
@@ -1756,7 +2186,7 @@ async function commitAnalyzedCapabilityPackage(
   );
 }
 
-async function commitCapabilityPackageUpload(
+export async function commitCapabilityPackageUpload(
   manifest: PipelinePackageManifestV1,
   readBlob: (sha256: string) => Uint8Array | Promise<Uint8Array>,
   getWindow?: () => BrowserWindow | null,
@@ -1831,15 +2261,29 @@ async function commitCapabilityPackageUpload(
   };
 }
 
+/**
+ * Every resource with files is reachable from a binding: bound directly, or
+ * a dependency of a reachable resource (a `file_asset` is listed by its
+ * `automation_pipeline` resource, never bound itself).
+ */
 function automationPackageHasValidBindings(
   manifest: PipelinePackageManifestV1,
 ): boolean {
-  const boundResourceIds = new Set(
-    manifest.bindings.flatMap((binding) => binding.resourceIds),
+  const resourcesById = new Map(
+    manifest.resources.map((resource) => [resource.id, resource]),
   );
+  const reachable = new Set<string>();
+  const pending = manifest.bindings.flatMap((binding) => binding.resourceIds);
+  for (let index = 0; index < pending.length; index += 1) {
+    const resourceId = pending[index];
+    if (resourceId === undefined || reachable.has(resourceId)) continue;
+    reachable.add(resourceId);
+    pending.push(
+      ...(resourcesById.get(resourceId)?.dependencyResourceIds ?? []),
+    );
+  }
   return manifest.resources.every(
-    (resource) =>
-      resource.trees.length === 0 || boundResourceIds.has(resource.id),
+    (resource) => resource.trees.length === 0 || reachable.has(resource.id),
   );
 }
 
@@ -1899,6 +2343,21 @@ async function commitInstalledAutomationCapabilityPackage(
       'The installed automation capability package is missing or invalid. Reinstall the automation.',
     );
   }
+  // Packaged pipelines and files install only through the `packaged` refs of
+  // the document they came with. A re-share rebuilds the document without
+  // them, so its recipients would never install them.
+  if (
+    manifest.resources.some(
+      (resource) =>
+        resource.kind === 'automation_pipeline' ||
+        resource.kind === 'file_asset',
+    )
+  ) {
+    throw new ShareOperationError(
+      'unavailable',
+      AUTOMATION_SHARE_BLOCK_MESSAGES.installed_pipeline_dependencies,
+    );
+  }
   assertAutomationPackageHasValidBindings(manifest);
   return commitCapabilityPackageUpload(
     manifest,
@@ -1926,14 +2385,14 @@ export async function createPackagedSharedPipeline(
       !isDeepStrictEqual(source, analysis.shareSource) ||
       analysis.shareBytes === undefined
     )
-      throw new Error('Pipeline unavailable (unknown-provenance)');
+      throw new Error('Workflow unavailable (unknown-provenance)');
     await withShareStage('access', () =>
       assertPipelineShareSourceContext(source),
     );
   }
   const rawPipeline = source ? analysis?.shareBytes : request.rawPipeline;
   if (rawPipeline === undefined)
-    throw new Error('Pipeline unavailable (unknown-provenance)');
+    throw new Error('Workflow unavailable (unknown-provenance)');
   const authorize = async (): Promise<void> => {
     if (source)
       await authorizeSharedPipelineCreate(
@@ -1977,7 +2436,7 @@ export async function createPackagedSharedPipeline(
 }
 
 export const SHARED_PACKAGE_REVIEW_REQUIRED_MESSAGE =
-  'This pipeline is shared with its dependencies, and this edit changes what would be packaged. Open Share to review the dependencies and re-share it; the edit was not saved.';
+  'This workflow is shared with its dependencies, and this edit changes what would be packaged. Open Share to review the dependencies and re-share it; the edit was not saved.';
 
 function hasUnresolvedPortableResourceReference(
   rawPipeline: string,
@@ -1994,16 +2453,21 @@ function hasUnresolvedPortableResourceReference(
         );
       }
       if (step.uses !== 'builtin/run-pipeline') return false;
-      const childRefValue = step.with?.pipeline;
+      const resolution = childPipelineRefResolution(
+        step,
+        pipeline.env,
+        job.env,
+      );
+      if (!resolution) return false;
+      // A ref only a run can resolve has nothing to bind to.
+      if (resolution.kind === 'unresolved') return true;
       const childRef =
-        typeof childRefValue === 'string' ? childRefValue.trim() : '';
-      return (
-        childRef.length > 0 &&
-        !manifest.resources.some(
-          (resource) =>
-            resource.kind === 'child_pipeline' &&
-            resource.displayName === childRef,
-        )
+        resolution.kind === 'resolved' ? resolution.evaluated : resolution.raw;
+      return !manifest.resources.some(
+        (resource) =>
+          resource.kind === 'child_pipeline' &&
+          resource.displayName === resolution.raw &&
+          resource.invocationKeys.includes(childRef),
       );
     }),
   );
@@ -2167,7 +2631,7 @@ export async function createSubjectCapabilityPackage(
   };
 }
 
-function packagePathForDigest(digest: string): string {
+export function packagePathForDigest(digest: string): string {
   return `${getPipelinePackagesDir()}/packages/${digest.slice('pp:v1:'.length)}`;
 }
 
@@ -2218,12 +2682,14 @@ export async function resolveInstalledPipelinePackageForExecution(
     cachedPackagePath,
     install.packageDigest,
   );
+  // A pipeline an automation install materialized runs under the automation's
+  // package, which carries its YAML as an `automation_pipeline` resource.
   if (
     !manifest ||
-    manifest.pipelineContentHash !== install.pipelineContentHash
+    !pipelinePackageCarriesPipeline(manifest, install.pipelineContentHash)
   ) {
     throw new Error(
-      'The installed pipeline package is missing or invalid. Reinstall it from the share link.',
+      'The installed workflow package is missing or invalid. Reinstall it from the share link.',
     );
   }
   return {
@@ -2234,14 +2700,27 @@ export async function resolveInstalledPipelinePackageForExecution(
   };
 }
 
-export async function installAutomationCapabilityPackage(input: {
+export interface AutomationCapabilityPackageSource {
   remoteId: string;
-  localAutomationId: string;
   packageRef: PipelinePackageRef;
   publicShare?: boolean;
   source?: 'shared' | 'public' | 'curated';
-  localContentHash?: string;
-}): Promise<void> {
+}
+
+export interface DownloadedAutomationCapabilityPackage {
+  digest: string;
+  manifest: PipelinePackageManifestV1;
+  fetchBlob: (sha256: string) => Promise<Uint8Array>;
+}
+
+/**
+ * Fetch an automation's package manifest from its source and check it is the
+ * reviewed package. Writes nothing; {@link cacheAutomationCapabilityPackage}
+ * stores it.
+ */
+export async function downloadAutomationCapabilityPackage(
+  input: AutomationCapabilityPackageSource,
+): Promise<DownloadedAutomationCapabilityPackage> {
   const source = input.source ?? (input.publicShare ? 'public' : 'shared');
   const download =
     source === 'public'
@@ -2261,8 +2740,7 @@ export async function installAutomationCapabilityPackage(input: {
     );
   }
   assertAutomationPackageHasValidBindings(download.manifest);
-  await installPipelinePackageAtomically({
-    packagesRoot: getPipelinePackagesDir(),
+  return {
     digest: download.digest,
     manifest: download.manifest,
     fetchBlob: (sha256) =>
@@ -2283,8 +2761,42 @@ export async function installAutomationCapabilityPackage(input: {
               input.packageRef.digest,
               sha256,
             ),
+  };
+}
+
+/** Verify and store a downloaded package in the cache; idempotent. */
+export async function cacheAutomationCapabilityPackage(
+  download: DownloadedAutomationCapabilityPackage,
+): Promise<string> {
+  return installPipelinePackageAtomically({
+    packagesRoot: getPipelinePackagesDir(),
+    digest: download.digest,
+    manifest: download.manifest,
+    fetchBlob: download.fetchBlob,
   });
-  await upsertCapabilityPackageInstall(getPipelinePackageInstallStorePath(), {
+}
+
+/**
+ * Stage B of an automation install: record the automation-owner install.
+ * When this replaces an install of another package (an update), the
+ * pipelines the old package materialized lose their link to it once nothing
+ * else references it; a dependency the new share still lists was already
+ * relinked to the new package by Stage A.
+ */
+export async function installAutomationCapabilityPackage(
+  input: AutomationCapabilityPackageSource & {
+    localAutomationId: string;
+    localContentHash?: string;
+  },
+): Promise<void> {
+  const download = await downloadAutomationCapabilityPackage(input);
+  await cacheAutomationCapabilityPackage(download);
+  const storePath = getPipelinePackageInstallStorePath();
+  const previous = await findCapabilityPackageInstallByOwner(storePath, {
+    kind: 'automation',
+    localAutomationId: input.localAutomationId,
+  });
+  await upsertCapabilityPackageInstall(storePath, {
     owner: { kind: 'automation', localAutomationId: input.localAutomationId },
     originExternalId: input.remoteId,
     ...(input.localContentHash !== undefined
@@ -2294,6 +2806,40 @@ export async function installAutomationCapabilityPackage(input: {
     packageDigest: download.digest,
     installedAt: new Date().toISOString(),
   });
+  if (
+    previous &&
+    previous.distributionMode !== 'definition_only' &&
+    previous.packageDigest !== download.digest
+  ) {
+    await releaseAutomationPackagePipelineInstalls(previous.packageDigest);
+  }
+}
+
+/**
+ * Unlink the pipelines an automation install materialized for
+ * `packageDigest` once no automation (or other non-pipeline owner) install
+ * references that package. The local pipelines stay; only their
+ * pipeline-owner records go, so they run as plain user pipelines.
+ */
+export async function releaseAutomationPackagePipelineInstalls(
+  packageDigest: string,
+): Promise<void> {
+  const storePath = getPipelinePackageInstallStorePath();
+  const records = await listCapabilityPackageInstalls(storePath);
+  const isPackageRecord = (record: (typeof records)[number]): boolean =>
+    record.distributionMode !== 'definition_only' &&
+    record.packageDigest === packageDigest;
+  if (
+    records.some(
+      (record) => record.owner.kind !== 'pipeline' && isPackageRecord(record),
+    )
+  ) {
+    return;
+  }
+  for (const record of records) {
+    if (record.owner.kind !== 'pipeline' || !isPackageRecord(record)) continue;
+    await removePipelinePackageInstall(storePath, record.owner.localPipelineId);
+  }
 }
 
 export async function resolveInstalledAutomationPackageOverlay(
@@ -2330,20 +2876,53 @@ export async function resolveInstalledAutomationPackageOverlay(
       'The installed automation capability package is missing or invalid. Reinstall the automation.',
     );
   }
+  // Packaged pipelines and their assets are bound to the action for display
+  // and validation, but they install as local pipelines; the prompt's agent
+  // sees only skills and plugins.
   const overlay = filterPackageOverlayForBindingKey(
     buildPipelinePackageOverlay(install.packageDigest, packagePath, manifest),
     manifest.bindings,
     AUTOMATION_ACTION_BINDING_KEY,
   );
+  const actionResources =
+    overlay?.resources.filter(
+      (resource) => !AUTOMATION_INSTALLED_RESOURCE_KINDS.has(resource.kind),
+    ) ?? [];
+  // A package may hold nothing for the action (a prompt automation whose
+  // only content is pipelines). It is invalid only when a resource the action
+  // binding names, with files, is missing from the overlay.
+  const boundResourceIds = new Set(
+    manifest.bindings
+      .filter(
+        (binding) =>
+          capabilityPackageBindingKey(binding) ===
+          AUTOMATION_ACTION_BINDING_KEY,
+      )
+      .flatMap((binding) => binding.resourceIds),
+  );
+  const overlaidResourceIds = new Set(
+    overlay?.resources.map((resource) => resource.resourceId) ?? [],
+  );
   if (
-    manifest.resources.some((resource) => resource.trees.length > 0) &&
-    !overlay
+    !automationPackageHasValidBindings(manifest) ||
+    manifest.resources.some(
+      (resource) =>
+        boundResourceIds.has(resource.id) &&
+        resource.trees.length > 0 &&
+        !overlaidResourceIds.has(resource.id),
+    ) ||
+    Array.from(boundResourceIds).some(
+      (resourceId) =>
+        !manifest.resources.some((resource) => resource.id === resourceId),
+    )
   ) {
     throw new Error(
       'The automation capability package is missing its automation action binding.',
     );
   }
-  return overlay;
+  return actionResources.length > 0
+    ? { packageDigest: install.packageDigest, resources: actionResources }
+    : undefined;
 }
 
 /**
@@ -2374,13 +2953,13 @@ export async function resolveInstalledAutomationPipelinePackage(
   const pipelinePath = localPipelineService.getPipelinePath(localPipelineId);
   if (!pipelinePath.success || !pipelinePath.data) {
     throw new Error(
-      'The pipeline bundled with this automation is missing. Reinstall the automation.',
+      'The workflow bundled with this automation is missing. Reinstall the automation.',
     );
   }
   const rawPipeline = await readFile(pipelinePath.data, 'utf8');
   if (hashPipelinePackageYaml(rawPipeline) !== install.pipelineContentHash) {
     throw new Error(
-      'The pipeline bundled with this automation changed. Reinstall the automation to restore its packaged dependencies.',
+      'The workflow bundled with this automation changed. Reinstall the automation to restore its packaged dependencies.',
     );
   }
   const cachedPackagePath = packagePathForDigest(install.packageDigest);
@@ -2405,13 +2984,21 @@ export async function resolveInstalledAutomationPipelinePackage(
   };
 }
 
+/**
+ * Remove an automation's package install. The pipelines its install
+ * materialized stay as local pipelines; their pipeline-owner records go
+ * when no other install references the same package.
+ */
 export async function removeAutomationCapabilityPackageInstall(
   localAutomationId: string,
 ): Promise<void> {
-  await removeCapabilityPackageInstall(getPipelinePackageInstallStorePath(), {
-    kind: 'automation',
-    localAutomationId,
-  });
+  const storePath = getPipelinePackageInstallStorePath();
+  const owner = { kind: 'automation' as const, localAutomationId };
+  const previous = await findCapabilityPackageInstallByOwner(storePath, owner);
+  await removeCapabilityPackageInstall(storePath, owner);
+  if (previous && previous.distributionMode !== 'definition_only') {
+    await releaseAutomationPackagePipelineInstalls(previous.packageDigest);
+  }
 }
 
 export async function getAutomationCapabilityPackageReadiness(input: {
@@ -2474,7 +3061,7 @@ export async function downloadSharedPipelinePackageForExecution(input: {
     download.manifest.pipelineContentHash !==
       hashPipelinePackageYaml(input.rawPipeline)
   ) {
-    throw new Error('Shared pipeline package does not match its pipeline YAML');
+    throw new Error('Shared workflow package does not match its workflow YAML');
   }
   const cachedPackagePath = await installPipelinePackageAtomically({
     packagesRoot:
@@ -2511,12 +3098,12 @@ export async function copyPackageInstall(
     sourceLocalPipelineId,
   );
   if (!rawPipeline.success || !rawPipeline.data) {
-    throw new Error(rawPipeline.error ?? 'Failed to read source pipeline');
+    throw new Error(rawPipeline.error ?? 'Failed to read source workflow');
   }
   if (
     hashPipelinePackageYaml(rawPipeline.data) !== source.pipelineContentHash
   ) {
-    throw new Error('Source pipeline no longer matches its installed package');
+    throw new Error('Source workflow no longer matches its installed package');
   }
   await replaceStoredPipelineYaml(targetLocalPipelineId, rawPipeline.data);
   await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
@@ -2526,8 +3113,13 @@ export async function copyPackageInstall(
   });
 }
 
-async function findReusableUnlinkedPipeline(
+/**
+ * A writable local pipeline with exactly this YAML and no package link, so an
+ * install can adopt it instead of saving a duplicate.
+ */
+export async function findReusableUnlinkedPipeline(
   pipelineContentHash: string,
+  excludedPipelineIds: ReadonlySet<string> = new Set(),
 ): Promise<string | undefined> {
   const linkedPipelineIds = new Set(
     (await listPackageInstalls()).map((install) => install.localPipelineId),
@@ -2535,7 +3127,12 @@ async function findReusableUnlinkedPipeline(
   const listed = localPipelineService.listPipelines();
   if (!listed.success || !listed.data) return undefined;
   for (const pipeline of listed.data) {
-    if (pipeline.readonly || linkedPipelineIds.has(pipeline.id)) continue;
+    if (
+      pipeline.readonly ||
+      linkedPipelineIds.has(pipeline.id) ||
+      excludedPipelineIds.has(pipeline.id)
+    )
+      continue;
     const raw = localPipelineService.getPipelineText(pipeline.id);
     if (
       raw.success &&
@@ -2586,7 +3183,7 @@ async function replaceStoredPipelineYaml(
 ): Promise<void> {
   const storedPath = localPipelineService.getPipelinePath(localPipelineId);
   if (!storedPath.success || !storedPath.data) {
-    throw new Error(storedPath.error ?? 'Failed to resolve saved pipeline');
+    throw new Error(storedPath.error ?? 'Failed to resolve saved workflow');
   }
   const temporaryPath = `${storedPath.data}.${randomUUID()}.tmp`;
   try {
@@ -2627,7 +3224,7 @@ async function trackPipelineInstallRollback(
     if (created) {
       const removed = localPipelineService.deletePipeline(localPipelineId);
       if (!removed.success)
-        throw new Error(removed.error ?? 'Failed to roll back pipeline');
+        throw new Error(removed.error ?? 'Failed to roll back workflow');
     } else if (previous?.success && previous.data && raw?.success && raw.data) {
       const restored = localPipelineService.savePipeline({
         id: localPipelineId,
@@ -2637,7 +3234,7 @@ async function trackPipelineInstallRollback(
         content: previous.data.content,
       });
       if (!restored.success)
-        throw new Error('Failed to restore pipeline install');
+        throw new Error('Failed to restore workflow install');
       await replaceStoredPipelineYaml(localPipelineId, raw.data);
     }
     if (record)
@@ -2694,7 +3291,7 @@ async function performPublicPackageShareInstall(
       snapshot.package?.digest !== request.expectedPackageDigest)
   ) {
     throw new Error(
-      'This shared pipeline changed. Return to the share page to review the updated dependencies.',
+      'This shared workflow changed. Return to the share page to review the updated dependencies.',
     );
   }
 
@@ -2754,7 +3351,7 @@ async function performPublicPackageShareInstall(
         ? localPipelineService.savePipeline(input, { id: scopedLocalId })
         : localPipelineService.savePipeline(input);
       if (!saved.success || !saved.data) {
-        throw new Error(saved.error ?? 'Failed to save the pipeline');
+        throw new Error(saved.error ?? 'Failed to save the workflow');
       }
       localPipelineId = saved.data.id;
       createdPipeline = true;
@@ -2784,7 +3381,7 @@ async function performPublicPackageShareInstall(
           content: pipeline,
         });
         if (!saved.success) {
-          throw new Error(saved.error ?? 'Failed to update the pipeline');
+          throw new Error(saved.error ?? 'Failed to update the workflow');
         }
       }
       if (createdPipeline || updateTarget) {
@@ -2812,7 +3409,7 @@ async function performPublicPackageShareInstall(
           });
           if (!restored.success) {
             throw new Error(
-              restored.error ?? 'Failed to restore the previous pipeline',
+              restored.error ?? 'Failed to restore the previous workflow',
             );
           }
           await replaceStoredPipelineYaml(
@@ -2827,7 +3424,7 @@ async function performPublicPackageShareInstall(
               ? rollbackError.message
               : String(rollbackError);
           throw new Error(
-            `Definition-only pipeline update failed (${installMessage}) and the previous pipeline could not be restored (${rollbackMessage})`,
+            `Definition-only workflow update failed (${installMessage}) and the previous workflow could not be restored (${rollbackMessage})`,
           );
         }
       }
@@ -2848,7 +3445,7 @@ async function performPublicPackageShareInstall(
 
   if (snapshot.distributionMode !== 'package' || !snapshot.package) {
     throw new Error(
-      'This shared pipeline changed. Return to the share page to review the updated dependencies.',
+      'This shared workflow changed. Return to the share page to review the updated dependencies.',
     );
   }
   const existing = await findPipelinePackageInstall(
@@ -2900,7 +3497,7 @@ async function performPublicPackageShareInstall(
   )(request.externalId, request.expectedPackageDigest);
   if (download.manifest.pipelineContentHash !== snapshot.contentHash) {
     throw new Error(
-      'Pipeline package content hash does not match the reviewed YAML',
+      'Workflow package content hash does not match the reviewed YAML',
     );
   }
   let transferred = 0;
@@ -2963,7 +3560,7 @@ async function performPublicPackageShareInstall(
       ? localPipelineService.savePipeline(input, { id: scopedPackageLocalId })
       : localPipelineService.savePipeline(input);
     if (!saved.success || !saved.data) {
-      throw new Error(saved.error ?? 'Failed to save the pipeline');
+      throw new Error(saved.error ?? 'Failed to save the workflow');
     }
     localPipelineId = saved.data.id;
     createdPipeline = true;
@@ -2993,7 +3590,7 @@ async function performPublicPackageShareInstall(
         content: pipeline,
       });
       if (!saved.success) {
-        throw new Error(saved.error ?? 'Failed to update the pipeline');
+        throw new Error(saved.error ?? 'Failed to update the workflow');
       }
     }
     // The package hash pins the exact shared YAML bytes. The normal local
@@ -3025,7 +3622,7 @@ async function performPublicPackageShareInstall(
         });
         if (!restored.success) {
           throw new Error(
-            restored.error ?? 'Failed to restore the previous pipeline',
+            restored.error ?? 'Failed to restore the previous workflow',
           );
         }
         await replaceStoredPipelineYaml(
@@ -3040,7 +3637,7 @@ async function performPublicPackageShareInstall(
             ? rollbackError.message
             : String(rollbackError);
         throw new Error(
-          `Pipeline package update failed (${installMessage}) and the previous pipeline could not be restored (${rollbackMessage})`,
+          `Workflow package update failed (${installMessage}) and the previous workflow could not be restored (${rollbackMessage})`,
         );
       }
     }
@@ -3067,7 +3664,7 @@ async function performPublicPackageShareInstall(
  * and a rolled-back install undoes these changes once the pipeline itself was
  * removed or restored.
  */
-async function recordInstalledPipelineMetadata(
+export async function recordInstalledPipelineMetadata(
   localPipelineId: string,
   created: boolean,
   contentWritten: boolean,
@@ -3095,6 +3692,109 @@ async function recordInstalledPipelineMetadata(
       error,
     );
   }
+}
+
+/**
+ * A user pipeline installed from a shared container's capability package
+ * (CAN-4655). The caller chooses the id so an attempt journal can name the
+ * pipeline before it exists. The packaged YAML bytes are stored verbatim.
+ *
+ * When the definition carries child pipelines or project actions, `overlay`
+ * is a manifest derived from the already verified container package: the
+ * same files, bound to this pipeline's YAML hash, so the existing run-time
+ * package resolution overlays them without a container-specific path.
+ *
+ * The install record carries no `originExternalId`: that field names a
+ * Public pipeline share, and the shared item backfill subscribes to every
+ * such origin. The container install's provenance is its ledger row and
+ * attempt journal.
+ */
+export async function createContainerInstalledPipeline(input: {
+  localPipelineId: string;
+  name: string;
+  description?: string;
+  rawPipeline: string;
+  overlay?: {
+    digest: string;
+    manifest: PipelinePackageManifestV1;
+    /** The container package whose cached blobs back the overlay. */
+    sourcePackageDigest: string;
+  };
+}): Promise<{ localPipelineId: string; contentHash: string }> {
+  const pipeline = parsePipelineText(input.rawPipeline);
+  const contentHash = hashPipelinePackageYaml(input.rawPipeline);
+  const saved = localPipelineService.savePipeline(
+    {
+      name: input.name,
+      description: input.description ?? pipeline.description ?? '',
+      icon: pipeline.icon ?? '',
+      content: pipeline,
+      rawContent: input.rawPipeline,
+    },
+    { id: input.localPipelineId },
+  );
+  if (!saved.success || !saved.data) {
+    throw new Error(saved.error ?? 'Failed to save the pipeline');
+  }
+  try {
+    const overlay = input.overlay;
+    if (overlay) {
+      if (overlay.manifest.pipelineContentHash !== contentHash) {
+        throw new Error(
+          'Pipeline package content hash does not match the pipeline YAML',
+        );
+      }
+      const sourcePath = packagePathForDigest(overlay.sourcePackageDigest);
+      await installPipelinePackageAtomically({
+        packagesRoot: getPipelinePackagesDir(),
+        digest: overlay.digest,
+        manifest: overlay.manifest,
+        fetchBlob: (sha256) =>
+          readFile(path.join(sourcePath, 'blobs', sha256)).then(
+            (bytes) => new Uint8Array(bytes),
+          ),
+      });
+      await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
+        localPipelineId: input.localPipelineId,
+        pipelineContentHash: contentHash,
+        distributionMode: 'package',
+        packageDigest: overlay.digest,
+        installedAt: new Date().toISOString(),
+      });
+    }
+  } catch (error) {
+    await removeContainerInstalledPipeline(
+      input.localPipelineId,
+      contentHash,
+    ).catch(() => undefined);
+    throw error;
+  }
+  await recordInstalledPipelineMetadata(input.localPipelineId, true, true);
+  return { localPipelineId: input.localPipelineId, contentHash };
+}
+
+/**
+ * Compensation for {@link createContainerInstalledPipeline}. A pipeline whose
+ * YAML no longer matches what the install wrote was edited by the user and
+ * is kept; only an untouched copy is removed.
+ */
+export async function removeContainerInstalledPipeline(
+  localPipelineId: string,
+  expectedContentHash: string,
+): Promise<'removed' | 'kept' | 'missing'> {
+  const raw = localPipelineService.getPipelineText(localPipelineId);
+  if (!raw.success || raw.data === undefined) {
+    await removePackageInstall(localPipelineId);
+    return 'missing';
+  }
+  if (hashPipelinePackageYaml(raw.data) !== expectedContentHash) return 'kept';
+  const removed = localPipelineService.deletePipeline(localPipelineId);
+  if (!removed.success) {
+    throw new Error(removed.error ?? 'Failed to remove the pipeline');
+  }
+  await removePackageInstall(localPipelineId);
+  deleteUserPipelineLocalMetadata(localPipelineId);
+  return 'removed';
 }
 
 export async function installPublicPackageShare(
@@ -3173,7 +3873,7 @@ export async function installPublicPackageShare(
             new Error(
               error instanceof Error
                 ? `${error.message}; rollback failed: ${failures.map((failure) => (failure instanceof Error ? failure.message : String(failure))).join('; ')}`
-                : 'Pipeline install failed',
+                : 'Workflow install failed',
             ),
             { cause: error, rollbackErrors: failures },
           );
@@ -3349,7 +4049,7 @@ export async function getPackageReadiness(
       return { status: 'ready', requirements: [] };
     }
     if (localPipelineId.startsWith('project--'))
-      throw new Error('Pipeline unavailable (unknown-provenance)');
+      throw new Error('Workflow unavailable (unknown-provenance)');
     await assertStoredPipelineContext(localPipelineId);
   }
   const install = (await listPackageInstalls()).find(
@@ -3392,7 +4092,7 @@ export async function getPackageReadiness(
       requirements: [],
     };
   }
-  if (manifest.pipelineContentHash !== install.pipelineContentHash) {
+  if (!pipelinePackageCarriesPipeline(manifest, install.pipelineContentHash)) {
     await removePackageInstall(localPipelineId);
     return { status: 'ready', requirements: [] };
   }
@@ -3478,7 +4178,7 @@ async function probePipelinePackageModel(
       ? { status: 'available', detail: 'Cursor is connected.' }
       : {
           status: 'missing',
-          detail: 'Connect Cursor in Settings to run this pipeline.',
+          detail: 'Connect Cursor in Settings to run this workflow.',
         };
   }
   if (provider === 'ollama') {

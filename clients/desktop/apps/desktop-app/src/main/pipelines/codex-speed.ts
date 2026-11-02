@@ -6,6 +6,6 @@ export function pipelineSpeedError(
   modelConfig: AgentModelConfig | undefined,
 ): string | undefined {
   return readCodexSpeedRecord(modelConfig) === 'ultrafast'
-    ? 'Pipelines do not support Ultra fast. Choose Regular or Fast.'
+    ? 'Workflows do not support Ultra fast. Choose Regular or Fast.'
     : undefined;
 }

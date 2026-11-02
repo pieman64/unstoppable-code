@@ -175,23 +175,21 @@ describe('isPrInMergeQueue with a phase', () => {
   it('stays queued for every phase, unknown included, and without one', () => {
     expect(isPrInMergeQueue(queued)).toBe(true);
     for (const phase of ALL_MERGE_QUEUE_PHASES) {
-      expect(
-        isPrInMergeQueue({
-          ...queued,
-          mergeQueue: { ...queued.mergeQueue, phase },
-        }),
-      ).toBe(true);
+      const withPhase = {
+        ...queued,
+        mergeQueue: { ...queued.mergeQueue, phase },
+      };
+      expect(isPrInMergeQueue(withPhase)).toBe(true);
     }
   });
 
   it('does not treat a mergeable or locked phase as merged', () => {
     for (const phase of ['mergeable', 'locked'] as const) {
-      expect(
-        isPrInMergeQueue({
-          state: 'merged',
-          mergeQueue: { required: true, inQueue: true, phase },
-        }),
-      ).toBe(false);
+      const mergedWithPhase = {
+        state: 'merged' as const,
+        mergeQueue: { required: true, inQueue: true, phase },
+      };
+      expect(isPrInMergeQueue(mergedWithPhase)).toBe(false);
     }
   });
 });

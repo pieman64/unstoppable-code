@@ -12,6 +12,7 @@ export {
   type CanopyDaemonHostLaunchOptions,
   type CanopyDaemonHostSupervision,
   type CanopyOwnedDaemonChild,
+  type CanopyDaemonMigrationLaunch,
   type CanopyOwnedDaemonChildren,
 } from './daemon-host';
 export type { CanopyClientEndpoint } from './endpoint';

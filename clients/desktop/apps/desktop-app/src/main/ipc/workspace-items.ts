@@ -45,14 +45,9 @@ import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isWorkEntryWorkspace } from '../lib/workspace-registry';
 import {
-  copyAttachmentFileToDir,
   deleteAttachment as deleteCoworkAttachment,
-  importAttachment as importCoworkAttachment,
-  importClipboardAttachment as importCoworkClipboardAttachment,
   saveNote as saveCoworkNote,
   savePrompt as saveCoworkPrompt,
-  writeClipboardAttachmentToDir,
-  type CopiedAttachmentFile,
 } from '../lib/standalone-workspace-files';
 import {
   deleteWorkspaceNote,
@@ -75,9 +70,21 @@ import {
   readNoteForProject,
   listPromptsForProject,
   readPromptForProject,
-  listAttachmentsForProject,
 } from '../services/workspace-items-service';
+import {
+  importAttachmentsForIpc,
+  listAttachmentsForIpc,
+  workspaceItemsChannelScope,
+  type WorkspaceItemsDispatcher,
+} from '../canopy-runtime/workspace-item-attachments-dispatch';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
+
+/** The dispatcher and caller resolver the attachment channels project onto. */
+export interface WorkspaceItemsIpcRuntime {
+  dispatcher: WorkspaceItemsDispatcher;
+  resolveCaller: DesktopIpcCallerResolver;
+}
 
 function scheduleWorkspaceItemPublication(projectId: string): void {
   void getSharedContainerPublishScheduler()
@@ -114,24 +121,9 @@ function coworkItemToWorkspaceItem(
   };
 }
 
-// Attachment dirs resolve through the shared agent-attachments helper so this
-// adapter, browser screenshot/recording saves, and chat uploads all agree:
-// `workspaces/{ws}/attachments/{worktreeId}` for code workspaces, the
-// brand-managed attachments dir for cowork.
-const resolveWorktreeAttachmentsDir = resolveAgentAttachmentsDir;
-
-function copiedToAttachmentItem(
-  copied: CopiedAttachmentFile,
-): WorkspaceAttachmentItem {
-  return {
-    filename: copied.filename,
-    absolutePath: copied.absolutePath,
-    sizeBytes: copied.sizeBytes,
-    createdAt: copied.createdAt,
-  };
-}
-
-export function registerWorkspaceItemHandlers(): void {
+export function registerWorkspaceItemHandlers(
+  runtime: WorkspaceItemsIpcRuntime,
+): void {
   registerIpcHandler<[WorkspaceNotesListRequest], WorkspaceNoteItem[]>(
     IPC_CHANNELS.workspaceNotesList,
     async (_event, req) => {
@@ -318,8 +310,17 @@ export function registerWorkspaceItemHandlers(): void {
   registerIpcHandler<
     [WorkspaceAttachmentsListRequest],
     WorkspaceAttachmentItem[]
-  >(IPC_CHANNELS.workspaceAttachmentsList, async (_event, req) => {
-    return listAttachmentsForProject(req.projectId, req.worktreeId);
+  >(IPC_CHANNELS.workspaceAttachmentsList, async (event, req) => {
+    // core.workspace.item.list; read the fields first so a missing payload
+    // keeps its legacy TypeError.
+    const projectId = req.projectId;
+    const worktreeId = req.worktreeId;
+    return listAttachmentsForIpc(
+      runtime.dispatcher,
+      runtime.resolveCaller(event),
+      projectId,
+      worktreeId,
+    );
   });
 
   registerIpcHandler<
@@ -329,9 +330,11 @@ export function registerWorkspaceItemHandlers(): void {
     validateId(req.projectId, 'projectId');
     validateId(req.worktreeId, 'worktreeId');
     assertWritableScope(req.projectId);
+    const caller = runtime.resolveCaller(event);
 
     const hasClipboardItems =
       req.clipboardItems !== undefined && req.clipboardItems.length > 0;
+    // The native chooser stays in this host handler; only its picks travel.
     const selectedFilePaths =
       req.filePaths.length > 0 || hasClipboardItems
         ? req.filePaths
@@ -340,41 +343,15 @@ export function registerWorkspaceItemHandlers(): void {
       return { attachments: [] };
     }
 
-    if (isWorkEntryWorkspace(req.projectId)) {
-      const fromFiles = [];
-      for (const filePath of selectedFilePaths) {
-        fromFiles.push(await importCoworkAttachment(req.projectId, filePath));
-      }
-      const fromClipboard = [];
-      for (const item of req.clipboardItems ?? []) {
-        fromClipboard.push(
-          await importCoworkClipboardAttachment(req.projectId, item),
-        );
-      }
-      return {
-        attachments: [...fromFiles, ...fromClipboard].map((meta) => ({
-          filename: meta.filename,
-          absolutePath: meta.absolutePath,
-          sizeBytes: meta.sizeBytes ?? 0,
-          createdAt: meta.createdAt,
-        })),
-      };
-    }
-
-    const dir = resolveWorktreeAttachmentsDir(req.projectId, req.worktreeId);
-    const fromFiles = [];
-    for (const filePath of selectedFilePaths) {
-      fromFiles.push(
-        copiedToAttachmentItem(await copyAttachmentFileToDir(dir, filePath)),
-      );
-    }
-    const fromClipboard = [];
-    for (const item of req.clipboardItems ?? []) {
-      fromClipboard.push(
-        copiedToAttachmentItem(await writeClipboardAttachmentToDir(dir, item)),
-      );
-    }
-    return { attachments: [...fromFiles, ...fromClipboard] };
+    // core.workspace.item.import; Cowork and App Advisor keep workspace-level
+    // attachments.
+    return {
+      attachments: await importAttachmentsForIpc(runtime.dispatcher, caller, {
+        scope: workspaceItemsChannelScope(req.projectId, req.worktreeId),
+        filePaths: selectedFilePaths,
+        clipboardItems: req.clipboardItems ?? [],
+      }),
+    };
   });
 
   registerIpcHandler<[WorkspaceAttachmentDeleteRequest], void>(
@@ -387,7 +364,9 @@ export function registerWorkspaceItemHandlers(): void {
         await deleteCoworkAttachment(req.projectId, req.filename);
         return;
       }
-      const dir = resolveWorktreeAttachmentsDir(req.projectId, req.worktreeId);
+      // shortcut: delete stays on the host writer until CAN-4152 lands
+      // core.workspace.item.delete (CAN-4105 inventory debt).
+      const dir = resolveAgentAttachmentsDir(req.projectId, req.worktreeId);
       const target = join(dir, req.filename);
       if (!isPathInside(dir, target)) {
         throw new Error('Invalid attachment filename');

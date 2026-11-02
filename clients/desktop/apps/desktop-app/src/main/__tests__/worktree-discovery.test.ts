@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises';
+import type { BrowserWindow } from 'electron';
 import {
   APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
@@ -55,7 +56,6 @@ jest.mock('../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: jest.fn((projectId: string) =>
     projectId === 'app-advisor' ? '/tmp/app-advisor-home' : '/tmp/worktree',
   ),
-  resolveWorktreesFilePath: jest.fn(() => '/tmp/worktrees.json'),
 }));
 
 jest.mock('../lib/app-advisor-workspace', () => ({
@@ -124,8 +124,8 @@ function invokeRegisteredHandler(...args: unknown[]): void {
   Reflect.apply(handler, undefined, args);
 }
 
-function makeBrowserWindow(): SendableBrowserWindow {
-  return {
+function makeBrowserWindow(): BrowserWindow {
+  const window: SendableBrowserWindow = {
     isDestroyed: jest.fn(() => false),
     webContents: {
       isDestroyed: jest.fn(() => false),
@@ -137,6 +137,8 @@ function makeBrowserWindow(): SendableBrowserWindow {
       },
     },
   };
+  // These tests exercise only the IPC-safe window surface, not Electron APIs.
+  return window as unknown as BrowserWindow;
 }
 
 function isWorktreeDiscoveryEvent(

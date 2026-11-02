@@ -21,8 +21,10 @@ import {
   createTestSettingsHost,
 } from '../../__tests__/helpers/test-settings-host';
 import { HostedSettingsPage } from '../HostedSettingsPage';
+import { SLOW_LOAD_NOTE_DELAY_MS } from '@canopy/ui-shared/lib';
 import {
   HOSTED_SETTINGS_PAGE_SKELETONS,
+  SETTINGS_PAGE_SLOW_LOAD_NOTE,
   settingsPageSkeleton,
   type SettingsPageSkeletonVariant,
 } from '../loading-skeletons';
@@ -105,6 +107,25 @@ describe('settingsPageSkeleton', () => {
       expect(container.textContent).toBe('Loading');
     },
   );
+
+  it('says the page is slow below its skeleton once the load runs long', async () => {
+    jest.useFakeTimers();
+    try {
+      await render(settingsPageSkeleton('account.account'));
+      const note = (): Element | null =>
+        container.querySelector(
+          '[data-testid="delayed-loading-placeholder"] > [data-testid="slow-load-note"]',
+        );
+      expect(note()?.textContent).toBe('');
+      await act(async () => {
+        jest.advanceTimersByTime(SLOW_LOAD_NOTE_DELAY_MS);
+      });
+      expect(note()?.textContent).toBe(SETTINGS_PAGE_SLOW_LOAD_NOTE);
+      expect(SETTINGS_PAGE_SLOW_LOAD_NOTE).toBe('Still loading settings…');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 
   it('draws the requested number of list rows', async () => {
     await render(settingsPageSkeleton('organization.members', 5));

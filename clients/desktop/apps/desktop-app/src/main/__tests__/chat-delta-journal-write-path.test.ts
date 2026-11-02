@@ -52,7 +52,7 @@ function comparedStorage(root: string, journal: boolean): ComparedStorage {
   const backend = new ChatStateV2Backend(storeAt(root, 'scope'));
   return {
     transact: async (scope, mutations, options) => ({
-      ...(await backend.transact(() => mutations, options)),
+      ...(await backend.transact(() => [...mutations], options)),
       ...scope,
     }),
     getState: (_scope, options) => backend.state(options),
@@ -295,21 +295,38 @@ describe('delta journal write path', () => {
         });
         const pages = [];
         for (const tab of state.tabsFile.tabs) {
-          pages.push(await repository.page(SCOPE, tab.id));
-          pages.push(
-            await repository.page(SCOPE, tab.id, undefined, undefined, {
-              view: 'turns',
-            }),
+          const messagePage = await repository.page(SCOPE, tab.id);
+          const turnPage = await repository.page(
+            SCOPE,
+            tab.id,
+            undefined,
+            undefined,
+            { view: 'turns' },
           );
+          // Each path must still expose one consistent transcript revision.
+          expect(messagePage.transcriptRevision).toBe(
+            tab.transcript?.transcriptRevision,
+          );
+          expect(turnPage.transcriptRevision).toBe(
+            tab.transcript?.transcriptRevision,
+          );
+          pages.push(messagePage, turnPage);
         }
         views.push(
-          JSON.stringify({
-            revision: result.revision,
-            record: result.record.mutations,
-            state,
-            transcripts: state.tabsFile.tabs.map((tab) => tab.transcript),
-            pages,
-          }),
+          JSON.stringify(
+            {
+              revision: result.revision,
+              record: result.record.mutations,
+              state,
+              transcripts: state.tabsFile.tabs.map((tab) => tab.transcript),
+              pages,
+            },
+            (key, value: unknown) =>
+              // Phase 25 deliberately appends journal-off mixed tails while
+              // journal-on keeps replacing. These log-operation counters need
+              // not match; scope revisions, state and page contents still must.
+              key === 'transcriptRevision' ? undefined : value,
+          ),
         );
       }
       await repository.drainAll();
@@ -383,6 +400,12 @@ describe('delta journal write path', () => {
     const off = await reported(false);
     const on = await reported(true);
     expect(off).toHaveLength(1);
+    for (const record of [...off, ...on]) {
+      expect(Number.isFinite(record.chatTranscriptRewriteDurationMs)).toBe(
+        true,
+      );
+      expect(record.chatTranscriptRewriteDurationMs).toBeGreaterThanOrEqual(0);
+    }
     expect(off[0]).toMatchObject({
       kind: 'chat_transcript_full_rewrite',
       reason: 'patch',
@@ -392,9 +415,17 @@ describe('delta journal write path', () => {
     });
     const comparable = (
       record: ChatTranscriptFullRewriteDiagnostic,
-    ): Omit<ChatTranscriptFullRewriteDiagnostic, 'timestamp'> => {
-      const { timestamp: _timestamp, ...rest } = record;
+    ): Omit<
+      ChatTranscriptFullRewriteDiagnostic,
+      'timestamp' | 'chatTranscriptRewriteDurationMs'
+    > => {
+      const {
+        timestamp: _timestamp,
+        chatTranscriptRewriteDurationMs: _duration,
+        ...rest
+      } = record;
       void _timestamp;
+      void _duration;
       return rest;
     };
     expect(on.map(comparable)).toEqual(off.map(comparable));

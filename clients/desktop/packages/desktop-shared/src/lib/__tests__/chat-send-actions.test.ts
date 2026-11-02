@@ -267,7 +267,7 @@ describe('phase 11 creation action contracts', () => {
       const { initialMessage, ...empty } = action;
       expect(initialMessage).toBe('  message  ');
       expect(parseChatCreationAction(empty).ok).toBe(
-        type.startsWith('projects.'),
+        type.startsWith('projects.') || type === 'bots.create_task',
       );
       if (type.endsWith('_chat')) {
         expect(parseChatCreationAction({ ...action, title: 'No' }).ok).toBe(

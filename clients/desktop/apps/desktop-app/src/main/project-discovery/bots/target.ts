@@ -4,6 +4,7 @@ import type {
   BotsReadHistoryAction,
 } from '@canopy/desktop-shared/lib/bot-discovery';
 import {
+  APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
   COWORK_HOME_WORKTREE_ID,
   type CoworkWorkEntryData,
@@ -38,18 +39,40 @@ export interface BotAccessContext {
   gate: { allowed: true };
 }
 
-/** Advisor is never evaluated by the project-agent setting. */
+/**
+ * The project agent whose access gates bot targets, or null when none does:
+ * App Advisor itself, and pipeline runs that no project agent started.
+ */
+export function botAccessAgent(
+  caller: ProjectDiscoveryCaller,
+): { projectId: string; worktreeId: string } | null {
+  if (caller.kind === 'app_advisor') return null;
+  if (caller.kind === 'pipeline') {
+    // Orchestrator is never gated by the project-agent setting.
+    return caller.agentOrigin &&
+      caller.agentOrigin.projectId !== APP_ADVISOR_PROJECT_ID
+      ? {
+          projectId: caller.agentOrigin.projectId,
+          worktreeId: caller.agentOrigin.worktreeId,
+        }
+      : null;
+  }
+  return { projectId: caller.projectId, worktreeId: caller.worktreeId };
+}
+
+/**
+ * Advisor is never evaluated by the project-agent setting, nor is a
+ * user-originated pipeline run; an agent-originated one is gated by its agent.
+ */
 async function assertGate(caller: ProjectDiscoveryCaller): Promise<void> {
-  if (caller.kind === 'app_advisor') return;
-  const decision = await decideAppAdvisorAccessForCaller({
-    projectId: caller.projectId,
-    worktreeId: caller.worktreeId,
-  });
+  const agent = botAccessAgent(caller);
+  if (!agent) return;
+  const decision = await decideAppAdvisorAccessForCaller(agent);
   if (!decision.allowed)
     throw new DiscoveryError(
       ADVISOR_ACCESS_DISABLED,
       decision.reason === 'owner_unknown'
-        ? 'The project owner could not be determined. App Advisor bot actions are unavailable until the owner can be verified.'
+        ? 'The project owner could not be determined. Orchestrator bot actions are unavailable until the owner can be verified.'
         : ADVISOR_ACCESS_DISABLED_MESSAGE,
     );
 }
@@ -63,13 +86,12 @@ export async function requireBotAccess(
   await service.initialize();
   await service.whenIdle();
   const accountEpoch = service.accountEpoch();
-  const owner =
-    caller.kind === 'app_advisor'
-      ? null
-      : await resolveProjectSavedOwner({
-          projectId: caller.projectId,
-          worktreeId: caller.worktreeId,
-        });
+  const agent = botAccessAgent(caller);
+  const owner = agent
+    ? await resolveProjectSavedOwner(agent)
+    : caller.kind === 'pipeline'
+      ? caller.owner
+      : null;
   await service.whenIdle();
   await assertGate(caller);
   if (accountEpoch !== service.accountEpoch())
@@ -81,7 +103,7 @@ export async function requireBotAccess(
   if (owner?.kind === 'unknown')
     throw new DiscoveryError(
       ADVISOR_ACCESS_DISABLED,
-      'The project owner could not be determined. App Advisor bot actions are unavailable until the owner can be verified.',
+      'The project owner could not be determined. Orchestrator bot actions are unavailable until the owner can be verified.',
     );
   return { accountEpoch, caller, owner, gate: { allowed: true } };
 }

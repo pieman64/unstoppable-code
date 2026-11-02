@@ -9,7 +9,7 @@ import {
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { BrandLogo } from '@/components/BrandLogo';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, ProviderStatusDot } from '@canopy/ui-shared/components';
 import { CanopyCloudApiKeyField } from '@/components/auth/CanopyCloudApiKeyField';
 import { CloudAccountRecoveryNotice } from '@/components/auth/CloudAccountRecoveryNotice';
 import {
@@ -21,16 +21,6 @@ import {
   showGuestMergeFailureToast,
 } from '@/components/auth/guestMergeFailure';
 import { SettingsRow } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
-
-/**
- * Shared link treatment for the two mode-switch affordances. The segmented
- * `OAuth | API Key` control is gone: on a surface whose whole job is one
- * decision, presenting the manual fallback as an equal-weight peer of browser
- * sign-in split the user's attention between the method and the action.
- */
-const MODE_LINK_CLASS =
-  'focus-ring w-fit rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline disabled:cursor-not-allowed disabled:opacity-60';
 
 export interface CanopyCloudAccountSectionProps {
   /**
@@ -47,8 +37,14 @@ export interface CanopyCloudAccountSectionProps {
 /**
  * The cloud account as one settings row, for a `SettingsGroup` on Settings →
  * Accounts and Privacy: mark, name, and status dot as the label, the account
- * state as the hint, the sign-in actions as the control, and the API-key
- * fallback under it.
+ * state as the hint, and every action as a capsule in the row's control: the
+ * sign-in actions, and the switch between browser sign-in and an API key.
+ * The API-key field sits under the row while that mode is active.
+ *
+ * The mode switch is a quiet (ghost) capsule, not a peer of the sign-in
+ * action: on a surface whose whole job is one decision, presenting the manual
+ * fallback with equal weight split the user's attention between the method
+ * and the action.
  *
  * The blocking sign-in splash and the cloud-connect modal do not render this
  * row: they share `components/auth/CloudAuthPanel`, which is built for a
@@ -57,7 +53,6 @@ export interface CanopyCloudAccountSectionProps {
 export function CanopyCloudAccountSection({
   onConnectedChange,
 }: CanopyCloudAccountSectionProps = {}): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const handleConnectSuccess = useCallback(
     (result: CanopyCloudConnectSuccess): void => {
       if (didGuestMergeFail(result)) showGuestMergeFailureToast();
@@ -195,25 +190,37 @@ export function CanopyCloudAccountSection({
             <BrandLogo size={16} className="shrink-0" aria-hidden />
             {cloudName}
             {!loading && mode && (
-              <span
+              <ProviderStatusDot
                 data-testid="settings-account-canopy-cloud-status-dot"
-                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-                  statusGreen ? 'bg-success' : 'bg-destructive'
-                }`}
+                tone={statusGreen ? 'connected' : 'failed'}
               />
             )}
           </span>
         }
         description={statusLine}
         control={
-          // OAuth mode only: API-key mode connects through its field below.
           oauthActive ? (
             <>
+              {/* A manual key overwrites the guest credential without a
+                  guest-link ticket, so it cannot preserve guest work. Keep the
+                  fallback hidden until that destructive transition has
+                  confirmation and recovery semantics. */}
+              {!guestAccount && (
+                <Button
+                  size="compact"
+                  variant="secondary"
+                  onClick={(): void => setMode('api_key')}
+                  disabled={busy}
+                  data-testid="settings-account-canopy-cloud-mode-api-key"
+                >
+                  Use an API key instead
+                </Button>
+              )}
               {oauthPending && (
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   ref={oauthCancelRef}
-                  variant="ghost"
+                  variant="secondary"
                   onClick={(): void => void auth.handleCancelOAuthLogin()}
                   data-testid="settings-account-canopy-cloud-oauth-cancel"
                 >
@@ -224,8 +231,8 @@ export function CanopyCloudAccountSection({
                   "Change account". */}
               {oauthConnected && !oauthPending && (
                 <Button
-                  size={settingsButtonSize}
-                  variant="ghost"
+                  size="compact"
+                  variant="secondary"
                   onClick={(): void => void auth.handleDisconnect()}
                   disabled={busy}
                   data-testid="settings-account-canopy-cloud-disconnect"
@@ -234,7 +241,7 @@ export function CanopyCloudAccountSection({
                 </Button>
               )}
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 ref={oauthLoginRef}
                 variant="secondary"
                 onClick={(): void => void auth.handleStartOAuthLogin()}
@@ -248,6 +255,17 @@ export function CanopyCloudAccountSection({
                     : 'Sign in'}
               </Button>
             </>
+          ) : apiKeyActive ? (
+            // API-key mode connects through its field under the row.
+            <Button
+              size="compact"
+              variant="secondary"
+              onClick={(): void => setMode('oauth')}
+              disabled={busy}
+              data-testid="settings-account-canopy-cloud-mode-oauth"
+            >
+              Back to sign in
+            </Button>
           ) : null
         }
       >
@@ -283,34 +301,6 @@ export function CanopyCloudAccountSection({
             onToggleVisible={(): void => setApiKeyVisible((prev) => !prev)}
             disabled={loading || !storageAvailable || busy}
           />
-        )}
-
-        {/* A manual key overwrites the guest credential without a guest-link
-            ticket, so it cannot preserve guest work. Keep the fallback hidden
-            until that destructive transition has confirmation and recovery
-            semantics. */}
-        {oauthActive && !guestAccount && (
-          <button
-            type="button"
-            onClick={(): void => setMode('api_key')}
-            disabled={busy}
-            data-testid="settings-account-canopy-cloud-mode-api-key"
-            className={MODE_LINK_CLASS}
-          >
-            Use an API key instead
-          </button>
-        )}
-
-        {apiKeyActive && (
-          <button
-            type="button"
-            onClick={(): void => setMode('oauth')}
-            disabled={busy}
-            data-testid="settings-account-canopy-cloud-mode-oauth"
-            className={MODE_LINK_CLASS}
-          >
-            Back to sign in
-          </button>
         )}
       </SettingsRow>
     </>

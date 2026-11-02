@@ -27,6 +27,7 @@ interface PendingConnection {
   readonly done: Promise<void>;
   id?: string;
   cancelled: boolean;
+  observing: boolean;
   /** Shared cleanup barrier for both cancellation paths. */
   releasePromise?: Promise<void>;
 }
@@ -91,6 +92,8 @@ export type AccountMcpConnectOutcome =
   | { kind: 'recovering' }
   | { kind: 'failed'; message: string | null };
 export interface AccountMcpActions {
+  /** Stops UI observation without disconnecting or removing credentials. */
+  stopObserving: () => void;
   pending: ReadonlySet<string>;
   error: string | null;
   /** The cloud's code behind {@link error}, kept out of the sentence. */
@@ -138,6 +141,7 @@ export function useAccountMcpActions(
   refresh: () => Promise<void>,
 ): AccountMcpActions {
   const flows = useRef(new Map<string, PendingConnection>());
+  const observationRevision = useRef(0);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [failure, setFailure] = useState<{
     message: string;
@@ -171,10 +175,12 @@ export function useAccountMcpActions(
     configId = 'default',
     options: AccountMcpConnectOptions = {},
   ): Promise<AccountMcpConnectionErrorCode | undefined> => {
+    const revision = observationRevision.current;
     const key = options.pendingKey ?? serverKey ?? options.customUrl;
     let outcome: AccountMcpConnectOutcome | null = null;
+
     const report = (next: AccountMcpConnectOutcome): void => {
-      if (outcome) return;
+      if (outcome || flow.observing === false) return;
       outcome = next;
       options.onOutcome?.(next);
     };
@@ -182,15 +188,16 @@ export function useAccountMcpActions(
     // Finish its disconnect before another start can own the same connection.
     const previous = key ? flows.current.get(key) : undefined;
     if (previous?.cancelled) await previous.done;
+    if (revision !== observationRevision.current) return undefined;
     if (!key || (!serverKey && !options.customUrl) || flows.current.has(key)) {
-      report({ kind: 'failed', message: null });
+      options.onOutcome?.({ kind: 'failed', message: null });
       return undefined;
     }
     let finish: () => void = (): void => undefined;
     const done = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const flow: PendingConnection = { cancelled: false, done };
+    const flow: PendingConnection = { cancelled: false, observing: true, done };
     // Every key this flow is registered under; a row can change key mid-flow.
     const keys = [key];
     flows.current.set(key, flow);
@@ -222,6 +229,7 @@ export function useAccountMcpActions(
         options.expectedAccountId !== currentAccountId
       )
         throw new AccountMcpConnectionError('account-changed');
+      if (!flow.observing) return undefined;
       const expectedAccountId = options.expectedAccountId ?? currentAccountId;
       const credentials = {
         configId,
@@ -259,7 +267,9 @@ export function useAccountMcpActions(
               : {}),
             ...credentials,
           };
+      if (!flow.observing) return undefined;
       const result = await window.mcpServers.startAccountConnection(request);
+      if (!flow.observing) return undefined;
       if ('error' in result)
         throw new AccountMcpConnectionError(
           result.error.code,
@@ -298,6 +308,7 @@ export function useAccountMcpActions(
             row.accountConnection?.configId === configId,
         )?.accountConnection;
       }
+      if (!flow.observing) return undefined;
       if (!connection) throw new Error('Pending connection unavailable.');
       if ('authorizationUrl' in result && !flow.cancelled)
         options.onAuthorizing?.(result.embeddedUrl);
@@ -310,6 +321,7 @@ export function useAccountMcpActions(
         updatePending();
       }
       // Cancelled before the connection was known: bind nothing to it.
+      if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
       try {
         await options.onStarted?.(connection);
@@ -320,13 +332,16 @@ export function useAccountMcpActions(
         throw startedError;
       }
       started = connection;
+      if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
       await refresh();
+      if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
       const settled =
         connection.status === 'PENDING'
           ? await window.mcpServers.awaitAccountConnection(connection.id)
           : connection;
+      if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
       if ('error' in settled)
         throw new AccountMcpConnectionError(
@@ -348,6 +363,7 @@ export function useAccountMcpActions(
       report({ kind: 'connected', connection: settled });
       return undefined;
     } catch (error) {
+      if (!flow.observing) return undefined;
       if (flow.cancelled) await rollBack();
       const code =
         typeof error === 'object' && error !== null && 'code' in error
@@ -412,9 +428,9 @@ export function useAccountMcpActions(
       for (const registered of keys)
         if (flows.current.get(registered) === flow)
           flows.current.delete(registered);
-      updatePending();
+      if (flow.observing) updatePending();
       finish();
-      await refresh();
+      if (flow.observing) await refresh();
     }
   };
   const cancel = async (serverKey: string): Promise<void> => {
@@ -425,7 +441,17 @@ export function useAccountMcpActions(
     flow.releasePromise ??= disconnect(flow.id);
     await flow.releasePromise;
   };
+  const stopObserving = (): void => {
+    observationRevision.current += 1;
+    flows.current.forEach((flow): void => {
+      flow.observing = false;
+    });
+    flows.current.clear();
+    updatePending();
+    setError(null);
+  };
   return {
+    stopObserving,
     pending,
     error: failure?.message ?? null,
     errorCode: failure?.code ?? null,

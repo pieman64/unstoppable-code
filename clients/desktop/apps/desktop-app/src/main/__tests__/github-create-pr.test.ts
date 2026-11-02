@@ -3,6 +3,15 @@ import { GitHubBrokerError } from '../lib/github-broker/errors';
 const mockRecordCreatedPullRequest = jest.fn();
 const mockWindowSend = jest.fn();
 
+jest.mock('../lib/desktop-telemetry', () => ({
+  recordGitCommitTelemetry: jest.fn(),
+  recordPullRequestOpenedTelemetry: jest.fn(),
+  recordPullRequestMergedTelemetry: jest.fn(),
+}));
+import {
+  recordGitCommitTelemetry,
+  recordPullRequestOpenedTelemetry,
+} from '../lib/desktop-telemetry';
 jest.mock('node:fs/promises', () => ({
   readdir: jest.fn(),
 }));
@@ -35,7 +44,7 @@ jest.mock('../lib/git', () => ({
   pushBranch: jest.fn(),
   hasUncommittedChanges: jest.fn(),
   hasCommitsAhead: jest.fn(),
-  hasBranchBeenPushedToRemote: jest.fn(),
+  readBranchPublication: jest.fn(),
   hasRemoteTrackingBranch: jest.fn(),
   hasUnpulledCommits: jest.fn(),
   hasUnpushedCommits: jest.fn(),
@@ -112,7 +121,7 @@ import {
   pushBranch,
   hasUncommittedChanges,
   hasCommitsAhead,
-  hasBranchBeenPushedToRemote,
+  readBranchPublication,
   hasRemoteTrackingBranch,
   hasUnpulledCommits,
   stageAllChanges,
@@ -158,9 +167,7 @@ const mockedResolveRepoDefaultBranch = jest.mocked(resolveRepoDefaultBranch);
 const mockedGetDiffStats = jest.mocked(getDiffStats);
 const mockedHasUncommittedChanges = jest.mocked(hasUncommittedChanges);
 const mockedHasCommitsAhead = jest.mocked(hasCommitsAhead);
-const mockedHasBranchBeenPushedToRemote = jest.mocked(
-  hasBranchBeenPushedToRemote,
-);
+const mockedReadBranchPublication = jest.mocked(readBranchPublication);
 const mockedHasRemoteTrackingBranch = jest.mocked(hasRemoteTrackingBranch);
 const mockedHasUnpulledCommits = jest.mocked(hasUnpulledCommits);
 const mockedGetCurrentBranch = jest.mocked(getCurrentBranch);
@@ -243,7 +250,18 @@ describe('githubCreatePr handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no dispatched pull request call: no workspace
+      // records their checkouts, so the writes keep their direct path.
+      dispatcher: {} as never,
+      resolveCaller: () => ({
+        principalId: 'local-desktop-user',
+        clientInstanceId: 'electron-web-contents:1',
+        authorityId: 'local-desktop',
+        interfaceKind: 'desktop',
+        grants: [],
+      }),
+    });
     handler = getCreatePrHandler();
     cancelHandler = getCancelGitActionHandler();
   });
@@ -270,7 +288,7 @@ describe('githubCreatePr handler', () => {
     mockedResolveRepoDefaultBranch.mockResolvedValue('main');
     mockedFetchOrigin.mockResolvedValue();
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 0 });
-    mockedHasBranchBeenPushedToRemote.mockResolvedValue(false);
+    mockedReadBranchPublication.mockResolvedValue(false);
     mockedHasRemoteTrackingBranch.mockResolvedValue(false);
     mockedHasUnpulledCommits.mockResolvedValue(false);
     mockedFetchRepoPrTrackingData.mockResolvedValue({
@@ -354,6 +372,7 @@ describe('githubCreatePr handler', () => {
     });
 
     await expect(operation).resolves.toMatchObject({ cancelled: true });
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledTimes(1);
     expect(mockRecordCreatedPullRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         prNumber: 10,
@@ -645,6 +664,13 @@ describe('githubCreatePr handler', () => {
       reason: 'no_changes',
     });
     expect(mockRecordCreatedPullRequest).toHaveBeenCalledTimes(2);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledTimes(2);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledWith({
+      projectId: 'workspace-a',
+      source: 'manual',
+      flow: 'pull_request',
+      repoCount: 3,
+    });
     expect(mockRecordCreatedPullRequest).toHaveBeenCalledWith({
       projectId: 'workspace-a',
       worktreeId: 'wt-1',
@@ -770,6 +796,90 @@ describe('githubCreatePr handler', () => {
     ).rejects.toThrow('No repos have changes');
   });
 
+  it('preserves original target count when PR creation resumes a subset', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(false);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
+    setupRepoForPr('single-repo');
+    mockedHasUncommittedChanges.mockResolvedValue(true);
+    await handler(
+      {},
+      {
+        projectId: 'project-a',
+        worktreeId: 'wt-1',
+        source: 'chat',
+        telemetryRepoCount: 3,
+      },
+    );
+    const expected = {
+      projectId: 'project-a',
+      source: 'chat',
+      flow: 'pull_request',
+      repoCount: 3,
+    };
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith(expected);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledWith(expected);
+  });
+
+  it('counts a pre-PR commit when its later push fails, but no PR outcome', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(false);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
+    setupRepoForPr('single-repo');
+    mockedHasUncommittedChanges.mockResolvedValue(true);
+    mockedPushBranch.mockRejectedValueOnce(new Error('push failed'));
+    await expect(
+      handler(
+        {},
+        { projectId: 'project-a', worktreeId: 'wt-1', source: 'chat' },
+      ),
+    ).rejects.toThrow('push failed');
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
+  });
+
+  it('preserves PR creation when the injected recorder throws', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(false);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
+    setupRepoForPr('single-repo');
+    jest.mocked(recordPullRequestOpenedTelemetry).mockImplementationOnce(() => {
+      throw new Error('telemetry');
+    });
+    await expect(
+      handler({}, { projectId: 'project-a', worktreeId: 'wt-1' }),
+    ).resolves.toMatchObject({
+      repos: [expect.objectContaining({ prNumber: 1 })],
+    });
+  });
+
+  it('preserves chat attribution for pre-PR commits and counts PR success before bookkeeping failure', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(false);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
+    setupRepoForPr('single-repo');
+    mockedHasUncommittedChanges.mockResolvedValue(true);
+    mockedCreatePrForRepo.mockResolvedValue({
+      prNumber: 10,
+      prUrl: 'https://github.com/org/repo/pull/10',
+      created: true,
+    });
+    mockRecordCreatedPullRequest.mockImplementationOnce(() => {
+      throw new Error('bookkeeping failed');
+    });
+    await expect(
+      handler(
+        {},
+        { projectId: 'project-a', worktreeId: 'wt-1', source: 'chat' },
+      ),
+    ).rejects.toThrow('bookkeeping failed');
+    const input = {
+      projectId: 'project-a',
+      source: 'chat',
+      flow: 'pull_request',
+      repoCount: 1,
+    };
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith(input);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledWith(input);
+  });
+
   it('returns empty skippedRepos for single-repo project', async () => {
     mockedIsMultiRepoWorkspace.mockReturnValue(false);
     mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
@@ -777,6 +887,7 @@ describe('githubCreatePr handler', () => {
       version: 1,
       type: 'single-repo',
       repoPath: '/source/repos/underlying-repo',
+      repos: [],
     });
 
     setupRepoForPr('underlying-repo');
@@ -837,6 +948,7 @@ describe('githubCreatePr handler', () => {
       },
     ]);
     expect(mockRecordCreatedPullRequest).not.toHaveBeenCalled();
+    expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
   });
 
   it('uses a remote-backed worktree base branch when creating a PR', async () => {
@@ -1113,6 +1225,7 @@ describe('githubCreatePr handler', () => {
       },
     ]);
     expect(mockRecordCreatedPullRequest).not.toHaveBeenCalled();
+    expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
   });
 
   it('auto-commits uncommitted changes before creating a PR', async () => {
@@ -1167,7 +1280,7 @@ describe('githubCreatePr handler', () => {
     mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
     setupRepoForPr('single-repo');
     mockedHasUncommittedChanges.mockResolvedValue(true);
-    mockedHasBranchBeenPushedToRemote.mockResolvedValue(true);
+    mockedReadBranchPublication.mockResolvedValue(true);
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
     await expect(
@@ -1208,12 +1321,29 @@ describe('githubCreatePr handler', () => {
     expect(mockedCreatePrForRepo).not.toHaveBeenCalled();
   });
 
+  it('blocks before mutation when branch publication is unknown', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(false);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
+    setupRepoForPr('single-repo');
+    mockedHasUncommittedChanges.mockResolvedValue(true);
+    mockedReadBranchPublication.mockResolvedValue(null);
+
+    await expect(
+      handler({}, { projectId: 'project-a', worktreeId: 'wt-1' }),
+    ).rejects.toThrow('Unable to verify');
+
+    expect(mockedStageAllChanges).not.toHaveBeenCalled();
+    expect(mockedCommitWithMessage).not.toHaveBeenCalled();
+    expect(mockedPushBranch).not.toHaveBeenCalled();
+    expect(mockedCreatePrForRepo).not.toHaveBeenCalled();
+  });
+
   it('allows a never-pushed branch whose configured upstream is another branch', async () => {
     mockedIsMultiRepoWorkspace.mockReturnValue(false);
     mockedResolveWorktreeCwd.mockReturnValue('/workspace/single-repo');
     setupRepoForPr('single-repo');
     mockedHasRemoteTrackingBranch.mockResolvedValue(true);
-    mockedHasBranchBeenPushedToRemote.mockResolvedValue(false);
+    mockedReadBranchPublication.mockResolvedValue(false);
     mockedGetAheadBehindCounts.mockRejectedValue(
       new Error('unknown revision origin/feature-branch'),
     );
@@ -1237,7 +1367,7 @@ describe('githubCreatePr handler', () => {
     setupRepoForPr('single-repo');
     mockedHasUncommittedChanges.mockResolvedValue(true);
     mockedHasRemoteTrackingBranch.mockResolvedValue(false);
-    mockedHasBranchBeenPushedToRemote.mockResolvedValue(true);
+    mockedReadBranchPublication.mockResolvedValue(true);
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
     await expect(
@@ -1457,6 +1587,7 @@ describe('githubCreatePr handler', () => {
     mockedCreatePrForRepo.mockResolvedValue({
       prNumber: 1,
       prUrl: 'https://github.com/a/b/pull/1',
+      created: true,
     });
     await handler({} as any, {
       projectId: 'workspace-a',
@@ -1524,6 +1655,7 @@ describe('githubCreatePr handler', () => {
     mockedCreatePrForRepo.mockResolvedValue({
       prNumber: 1,
       prUrl: 'https://github.com/a/b/pull/1',
+      created: true,
     });
     await handler(
       {},
@@ -1562,6 +1694,7 @@ describe('githubCreatePr handler', () => {
       .mockResolvedValueOnce({
         prNumber: 1,
         prUrl: 'https://github.com/org/repo-a/pull/1',
+        created: true,
       })
       .mockRejectedValueOnce(new Error('GitHub API error'));
 

@@ -18,9 +18,82 @@ import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 // Imported directly: the seeders barrel is part of the pinned perf harness.
 import { seedEarlyAccess } from './seeders/seedEarlyAccess.mjs';
+import {
+  seedPostImportRulesFixture,
+  importFirstRunRuleProjects,
+} from './postImportRules.mjs';
+import { setUiScale } from './uiScale.mjs';
 
 const LONG_PROJECT_NAME = 'unstoppable-domains-website-monorepo-production';
 const CAPTURE_DIR = process.env.HOME_CONTEXT_ROW_CAPTURE_DIR;
+
+test('CAN-4674 long project, hint and branch controls fit a narrow scaled window', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can4674-row-'));
+  const fixture = seedPostImportRulesFixture(
+    userDataDir,
+    `side-quest-${LONG_PROJECT_NAME}`,
+  );
+  writeFileSync(
+    path.join(userDataDir, 'preferences.json'),
+    JSON.stringify({ version: 1, preferences: { onboardingCompleted: [] } }),
+  );
+  const launch = await launchCanopy({
+    userDataDir,
+    env: fixture.env,
+    viewportSize: { width: 1050, height: 800 },
+  });
+  try {
+    const window = await launch.electronApp.firstWindow();
+    const home = await importFirstRunRuleProjects(window, fixture);
+    await setUiScale(window, 125);
+    for (const dark of [false, true]) {
+      await window.evaluate(
+        (enabled) => document.documentElement.classList.toggle('dark', enabled),
+        dark,
+      );
+      const action = home.getByRole('button', {
+        name: 'Switch project',
+        exact: true,
+      });
+      await action.focus();
+      await expect(action).toBeFocused();
+      const geometry = await home
+        .getByTestId('home-composer-context')
+        .evaluate((row) => {
+          const controls = Array.from(row.children).map((child) =>
+            child.getBoundingClientRect(),
+          );
+          const bounds = row.getBoundingClientRect();
+          return {
+            left: bounds.left,
+            right: bounds.right,
+            controls: controls.map((box) => ({
+              left: box.left,
+              right: box.right,
+              center: box.top + box.height / 2,
+            })),
+          };
+        });
+      for (const control of geometry.controls) {
+        expect(control.left).toBeGreaterThanOrEqual(geometry.left - 1);
+        expect(control.right).toBeLessThanOrEqual(geometry.right + 1);
+        expect(control.center).toBeCloseTo(geometry.controls[0].center, 0);
+      }
+      for (let index = 1; index < geometry.controls.length; index += 1) {
+        expect(geometry.controls[index - 1].right).toBeLessThanOrEqual(
+          geometry.controls[index].left + 1,
+        );
+      }
+      const [project, , base] = await readPickers(home);
+      expect(project.truncated).toBe(true);
+      expect(base.truncated).toBe(false);
+    }
+  } finally {
+    await closeCanopy(launch.electronApp, userDataDir);
+    fixture.cleanup();
+  }
+});
 
 async function openNewTask({ earlyAccess }) {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-home-row-'));
@@ -115,14 +188,14 @@ test('early access keeps the New Task pickers on one line by truncating the proj
   }
 });
 
-test('without early access the New Task pickers still wrap', async () => {
+test('without early access the New Task pickers remain on one row', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window, homePage } = await openNewTask({
     earlyAccess: false,
   });
   try {
     const [project, , base] = await readPickers(homePage);
-    expect(base.top).toBeGreaterThan(project.top + 4);
+    expect(base.top).toBeCloseTo(project.top, 0);
 
     await capture(window, homePage, 'context-row-before');
   } finally {

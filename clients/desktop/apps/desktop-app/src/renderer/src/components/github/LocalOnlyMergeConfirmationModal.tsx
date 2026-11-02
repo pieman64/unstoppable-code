@@ -1,5 +1,6 @@
 import { memo, useCallback, type JSX } from 'react';
 import type { RepoBranchInfo } from '@canopy/desktop-shared/types';
+import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 
 interface LocalOnlyMergeConfirmationModalProps {
@@ -51,22 +52,22 @@ export const LocalOnlyMergeConfirmationModal = memo(
           </ul>
         </div>
         <div className="flex items-center justify-end gap-2 border-t p-4">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="compact"
             onClick={onClose}
             disabled={isSubmitting}
-            className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80 disabled:opacity-60"
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={handleConfirm}
             disabled={isSubmitting}
-            className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90 disabled:opacity-60"
           >
             {isSubmitting ? 'Merging…' : 'Merge'}
-          </button>
+          </Button>
         </div>
       </DialogModal>
     );

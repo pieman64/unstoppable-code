@@ -1,15 +1,16 @@
+import type { AgentDelegationSnapshot } from '..';
 import {
   isAgentDelegationPhase,
   isAgentDelegationQueueState,
   isAgentDelegationTranscript,
+  isAgentDelegationCardData,
   isDelegationCapabilitySummary,
-  AGENT_DELEGATION_INPUT_LIMITS,
   parseGetDelegateOutputRequest,
   parseManageDelegateWorktreeRequest,
   parseMessageDelegateRequest,
   parseRequestSteeringRequest,
   parseAgentDelegationSpawnRequest,
-  parseWatchDelegatesRequest,
+  isAgentDelegationTranscriptItem,
 } from '..';
 import {
   DEFAULT_MANAGED_DELEGATION_MAX_CONCURRENT,
@@ -19,7 +20,97 @@ import {
 
 const capabilityId = `deferred:v1:${'a'.repeat(43)}`;
 
-function transcriptWithSnapshot(snapshot: Record<string, unknown>): unknown {
+describe('delegation transcript store marker', () => {
+  const snapshot = {
+    delegationId: 'child-a',
+    status: 'pending',
+    requestedModelId: 'review-model',
+    outputTruncated: false,
+    parentHarnessId: 'claude',
+    description: 'Review',
+    prompt: 'Inspect the change.',
+    executionMode: 'background',
+  };
+
+  it('accepts stream and legacy markers, rejects an unknown transcript marker, and keeps rendering cards whatever their marker', () => {
+    for (const transcriptStore of [
+      undefined,
+      'chat-log-v1',
+      'chat-stream-v2',
+    ]) {
+      expect(
+        isAgentDelegationTranscript({
+          ...transcriptWithSnapshot(snapshot),
+          transcriptStore,
+        }),
+      ).toBe(true);
+      expect(isAgentDelegationCardData({ ...snapshot, transcriptStore })).toBe(
+        true,
+      );
+    }
+    expect(
+      isAgentDelegationTranscript({
+        ...transcriptWithSnapshot(snapshot),
+        transcriptStore: 'future-store',
+      }),
+    ).toBe(false);
+    // Presentation never reads a child log, so a newer marker still renders as a managed card.
+    expect(
+      isAgentDelegationCardData({
+        ...snapshot,
+        transcriptStore: 'future-store',
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('delegation card stream revision', () => {
+  const card = {
+    delegationId: 'child-a',
+    status: 'pending',
+    requestedModelId: 'review-model',
+    outputTruncated: false,
+    parentHarnessId: 'claude',
+    description: 'Review',
+    prompt: 'Inspect the change.',
+    executionMode: 'background',
+  };
+
+  it('accepts a card without a revision and with a safe nonnegative one', () => {
+    expect(isAgentDelegationCardData(card)).toBe(true);
+    for (const streamRevision of [0, 7, Number.MAX_SAFE_INTEGER]) {
+      expect(isAgentDelegationCardData({ ...card, streamRevision })).toBe(true);
+    }
+  });
+
+  it('keeps the revision out of the snapshot type', () => {
+    // A compile-time pin: durable snapshots never carry the display hint.
+    const snapshotHasNoRevision: 'streamRevision' extends keyof AgentDelegationSnapshot
+      ? false
+      : true = true;
+    expect(snapshotHasNoRevision).toBe(true);
+  });
+
+  it('rejects a revision that is not a safe nonnegative integer', () => {
+    for (const streamRevision of [
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      '3',
+      null,
+    ]) {
+      expect(isAgentDelegationCardData({ ...card, streamRevision })).toBe(
+        false,
+      );
+    }
+  });
+});
+
+function transcriptWithSnapshot(
+  snapshot: Record<string, unknown>,
+): Record<string, unknown> {
   return {
     delegationId: 'child-a',
     runGeneration: 1,
@@ -202,73 +293,6 @@ describe('managed delegation input boundary', () => {
     expect(parseAgentDelegationSpawnRequest(value)).toMatchObject({
       ok: false,
     });
-  });
-
-  it('requires a bounded any/all delegate watch without treating timeout as cancellation', () => {
-    expect(
-      parseWatchDelegatesRequest({
-        delegationIds: ['child-a', 'child-b'],
-        mode: 'all',
-        timeoutMs: 0,
-      }),
-    ).toEqual({
-      ok: true,
-      value: {
-        delegationIds: ['child-a', 'child-b'],
-        mode: 'all',
-        timeoutMs: 0,
-      },
-    });
-    for (const timeoutMs of [-1, 1_800_001, 0.5, Number.NaN, Infinity]) {
-      expect(
-        parseWatchDelegatesRequest({
-          delegationIds: ['child-a'],
-          mode: 'any',
-          timeoutMs,
-        }),
-      ).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
-    }
-    // A planner can sleep until its children finish instead of re-arming
-    // every minute: the deadline accepts up to thirty minutes.
-    expect(AGENT_DELEGATION_INPUT_LIMITS.waitTimeoutMs).toBe(1_800_000);
-    for (const timeoutMs of [60_001, 1_800_000])
-      expect(
-        parseWatchDelegatesRequest({
-          delegationIds: ['child-a'],
-          mode: 'any',
-          timeoutMs,
-        }),
-      ).toEqual({
-        ok: true,
-        value: { delegationIds: ['child-a'], mode: 'any', timeoutMs },
-      });
-    for (const delegationIds of [
-      [],
-      ['a', 'a'],
-      Array.from({ length: 17 }, (_, i) => `child-${i}`),
-    ]) {
-      expect(
-        parseWatchDelegatesRequest({
-          delegationIds,
-          mode: 'any',
-          timeoutMs: 1,
-        }),
-      ).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
-    }
-    for (const value of [
-      { delegationIds: ['child-a'], timeoutMs: 1 },
-      { delegationIds: ['child-a'], mode: 'first', timeoutMs: 1 },
-      {
-        delegationIds: ['child-a'],
-        mode: 'any',
-        timeoutMs: 1,
-        destinationId: 'forged',
-      },
-    ])
-      expect(parseWatchDelegatesRequest(value)).toMatchObject({
-        ok: false,
-        error: { code: 'invalid_request' },
-      });
   });
 
   it('separates worktree mutation from delegate messaging and rejects resume', () => {
@@ -654,5 +678,63 @@ describe('managed delegation input boundary', () => {
     expect(normalizeManagedDelegationMaxConcurrent(65)).toBe(
       DEFAULT_MANAGED_DELEGATION_MAX_CONCURRENT,
     );
+  });
+});
+
+describe('compatibility transcript item truncation flag', () => {
+  const item = {
+    id: 'row',
+    sequence: 1,
+    occurredAt: 2,
+    type: 'text',
+    text: 'hi',
+  };
+
+  it('accepts legacy items without the flag and projections marked truncated', () => {
+    expect(isAgentDelegationTranscriptItem(item)).toBe(true);
+    expect(isAgentDelegationTranscriptItem({ ...item, truncated: true })).toBe(
+      true,
+    );
+  });
+
+  it.each([false, 'yes', 1, null])('rejects truncated: %p', (truncated) => {
+    expect(isAgentDelegationTranscriptItem({ ...item, truncated })).toBe(false);
+  });
+});
+
+describe('Get Delegate Output byte-range parser (11c2)', () => {
+  it.each([
+    { delegationId: 'child', offset: 0 },
+    { delegationId: 'child', limit: 4 },
+    { delegationId: 'child', resultIndex: 1, offset: 4, limit: 65_536 },
+  ])('accepts and retains a bounded range %j', (request) => {
+    expect(parseGetDelegateOutputRequest(request)).toEqual({
+      ok: true,
+      value: request,
+    });
+  });
+  it.each([
+    { offset: -1 },
+    { offset: 0.5 },
+    { offset: Number.MAX_SAFE_INTEGER + 1 },
+    { offset: NaN },
+    { offset: Infinity },
+    { offset: '0' },
+    { offset: null },
+    { limit: 0 },
+    { limit: 1 },
+    { limit: 2 },
+    { limit: 3 },
+    { limit: 65_537 },
+    { limit: 4.5 },
+    { limit: NaN },
+    { limit: '4' },
+    { limit: null },
+    { offset: 1 },
+    { unknown: 0 },
+  ])('rejects invalid or unpinned range %j', (fields) => {
+    expect(
+      parseGetDelegateOutputRequest({ delegationId: 'child', ...fields }),
+    ).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
   });
 });

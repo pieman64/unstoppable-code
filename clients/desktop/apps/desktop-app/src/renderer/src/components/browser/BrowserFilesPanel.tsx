@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { BrowserTransfer } from '@canopy/desktop-shared/types';
+import { Button } from '@canopy/ui-shared';
 import { useBrowserStore } from '@/stores/browserStore';
 import { BrowserTransferRow } from './BrowserTransferRow';
 import { transferStoppedAnnouncement } from './browserTransferFormat';
@@ -49,13 +50,9 @@ export function BrowserFilesPanel({
           <span role="alert" className="min-w-0 flex-1 fg-destructive">
             Couldn't load downloads.
           </span>
-          <button
-            type="button"
-            onClick={load}
-            className="inline-flex shrink-0 items-center rounded border bg-base/50 px-1.5 py-0.5 text-2xs fg-primary/80 transition hover:bg-base"
-          >
+          <Button variant="secondary" size="compact" onClick={load}>
             Retry
-          </button>
+          </Button>
         </div>
       )}
       {transfers.length > 0 ? (

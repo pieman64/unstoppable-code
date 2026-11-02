@@ -214,6 +214,19 @@ describe('WorkflowEditShell header', () => {
     click(getByTestId('workflow-edit-back'));
     expect(onBack).toHaveBeenCalledTimes(1);
     expect(getByTestId('workflow-edit-back').textContent).toBe('Library');
+    // The shared page header: Back on its own line above the name, never
+    // beside it; the actions end the name's row.
+    const header = getByTestId('page-header');
+    const back = getByTestId('workflow-edit-back');
+    const name = getByTestId('workflow-edit-name');
+    expect(back.parentElement).toBe(header);
+    expect(header.firstElementChild).toBe(back);
+    const titleRow = name.parentElement;
+    expect(titleRow).toBeInstanceOf(HTMLElement);
+    expect(titleRow?.parentElement).toBe(header);
+    expect(titleRow?.contains(back)).toBe(false);
+    expect(titleRow?.contains(getByTestId('workflow-edit-actions'))).toBe(true);
+    expect(header.contains(getByTestId('workflow-edit-tabs'))).toBe(true);
   });
 
   it('keeps an adapter’s test ids and labels', () => {
@@ -525,7 +538,7 @@ describe('WorkflowEditShell delete', () => {
     click(getByTestId('workflow-edit-delete'));
     const cancel = Array.from(
       getByTestId('workflow-edit-delete-dialog').querySelectorAll('button'),
-    ).find((button) => button.textContent === 'Cancel');
+    ).find((button) => button.firstChild?.textContent === 'Cancel');
     if (!cancel) throw new Error('Missing Cancel');
     click(cancel);
 
@@ -800,7 +813,7 @@ describe('WorkflowEditShell unsaved prompt', () => {
 
     render(<WorkflowEditShell {...shellProps({ unsavedPrompt: prompt })} />);
     expect(getByTestId('workflows-unsaved-dialog').textContent).toContain(
-      'Save changes to "Nightly triage"?',
+      'Save changes to “Nightly triage”?',
     );
     click(getByTestId('workflows-unsaved-discard'));
     expect(prompt.onDiscard).toHaveBeenCalledTimes(1);

@@ -209,7 +209,7 @@ export function RemoteAccessTab(): JSX.Element {
                   <>
                     <Button
                       size="compact"
-                      variant="ghost"
+                      variant="secondary"
                       disabled={busyDevice === host.deviceId}
                       onClick={() => {
                         setRemoveError(null);
@@ -279,7 +279,7 @@ export function RemoteAccessTab(): JSX.Element {
                   <>
                     <Button
                       size="compact"
-                      variant="ghost"
+                      variant="secondary"
                       disabled={busyDevice === controller.deviceId}
                       onClick={() => {
                         setRemoveError(null);

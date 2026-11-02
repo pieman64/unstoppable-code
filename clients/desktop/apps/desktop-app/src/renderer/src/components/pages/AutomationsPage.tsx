@@ -30,6 +30,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
   AutomationAction,
+  AutomationMutationResponse,
   ScheduledActivity,
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
@@ -65,7 +66,7 @@ import {
   type AutomationsViewMode,
   type CalendarView,
 } from '@/components/automations/calendar/calendarPreferences';
-import { formatRelativeTime } from '@/components/watchers/watcherDisplay';
+import { formatRelativeTime } from '@/lib/format';
 import {
   ChevronDownIcon,
   PipelineIcon,
@@ -85,7 +86,11 @@ import {
 } from '@/hooks/useAutomationScope';
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu';
 import { TableActionButton, TableActionsCell } from '@canopy/ui-shared';
-import { Notice, SortableColumnHeader } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  SortableColumnHeader,
+} from '@canopy/ui-shared/components';
 import {
   cycleTriggeredSort,
   loadTriggeredSort,
@@ -177,6 +182,8 @@ export interface AutomationsPageBodyApi {
   /** The first load has not finished. */
   readonly loading: boolean;
   readonly error: string | null;
+  /** Loads the automations again, such as after a failed load. */
+  readonly reload: () => Promise<void>;
   readonly mutationError: string | null;
   readonly scope: AutomationScope;
   readonly describeAction: (action: AutomationAction) => string;
@@ -184,8 +191,18 @@ export interface AutomationsPageBodyApi {
   readonly beginEdit: (activity: ScheduledActivity) => void;
   /** Opens an automation's run history. */
   readonly beginView: (activity: ScheduledActivity) => void;
-  readonly runNow: (activity: ScheduledActivity) => Promise<void>;
-  readonly toggleEnabled: (activity: ScheduledActivity) => Promise<void>;
+  /**
+   * Runs the automation now and reports how that call went. An automation
+   * whose shared workflow changed opens its review instead, which is not a
+   * failure.
+   */
+  readonly runNow: (
+    activity: ScheduledActivity,
+  ) => Promise<AutomationMutationResponse>;
+  /** Turns the automation on or off and reports how that call went. */
+  readonly toggleEnabled: (
+    activity: ScheduledActivity,
+  ) => Promise<AutomationMutationResponse>;
   readonly share: (activity: ScheduledActivity) => void;
   readonly remove: (activity: ScheduledActivity) => Promise<void>;
   /** The automation whose Run now is in flight. */
@@ -606,9 +623,8 @@ export function AutomationsPage({
   // -------------------------------------------------------------------------
 
   const handleToggleEnabled = useCallback(
-    async (activity: ScheduledActivity): Promise<void> => {
-      await updateActivity({ id: activity.id, enabled: !activity.enabled });
-    },
+    (activity: ScheduledActivity): Promise<AutomationMutationResponse> =>
+      updateActivity({ id: activity.id, enabled: !activity.enabled }),
     [updateActivity],
   );
 
@@ -622,15 +638,17 @@ export function AutomationsPage({
   );
 
   const handleRunNow = useCallback(
-    async (activity: ScheduledActivity): Promise<void> => {
+    async (
+      activity: ScheduledActivity,
+    ): Promise<AutomationMutationResponse> => {
       // A changed shared pipeline must be reviewed before it can run again.
       if (activity.sharedPipelineReview) {
         handleReview(activity);
-        return;
+        return { ok: true };
       }
       setActivityRunning(activity.id);
       try {
-        await runNow(activity.id);
+        return await runNow(activity.id);
       } finally {
         setActivityRunning(null);
       }
@@ -686,6 +704,7 @@ export function AutomationsPage({
           recentRuns,
           loading: loading && !hydrated,
           error,
+          reload: () => useAutomationsStore.getState().hydrate(),
           mutationError,
           scope,
           describeAction,
@@ -718,14 +737,14 @@ export function AutomationsPage({
       <PageContent className="flex flex-1 flex-col">
         <WorkflowsPageHeader
           actions={
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={beginCreate}
               data-testid="automations-new-activity"
-              className="focus-ring inline-flex shrink-0 items-center rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90"
             >
               New automation
-            </button>
+            </Button>
           }
         />
         <WorkflowsTabPanel className="flex flex-1 flex-col">
@@ -783,10 +802,10 @@ interface TriggeredActivitiesTabProps {
   /** The selected context, when it hides automations from this list. */
   hiddenByContextLabel?: string | null;
   loading: boolean;
-  onRunNow: (activity: ScheduledActivity) => Promise<void>;
+  onRunNow: (activity: ScheduledActivity) => Promise<unknown>;
   /** Opens the shared-pipeline review for an automation that needs one. */
   onReview: (activity: ScheduledActivity) => void;
-  onToggleEnabled: (activity: ScheduledActivity) => Promise<void>;
+  onToggleEnabled: (activity: ScheduledActivity) => Promise<unknown>;
   onEdit: (activity: ScheduledActivity) => void;
   /** Row/entry click: opens the read-only details modal (not the edit form). */
   onView: (activity: ScheduledActivity) => void;
@@ -930,14 +949,14 @@ function TriggeredActivitiesTab({
               ? 'Create one here, or switch to see the others.'
               : 'Create a scheduled or one-time trigger.'}
           </p>
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onBeginCreate}
             data-testid="automations-empty-new"
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
           >
             New automation
-          </button>
+          </Button>
         </div>
       </>
     );
@@ -1029,10 +1048,10 @@ function TriggeredActivitiesTab({
 }
 
 interface TriggeredActivityRowHandlers {
-  onRunNow: (activity: ScheduledActivity) => Promise<void>;
+  onRunNow: (activity: ScheduledActivity) => Promise<unknown>;
   /** Opens the shared-pipeline review for an automation that needs one. */
   onReview: (activity: ScheduledActivity) => void;
-  onToggleEnabled: (activity: ScheduledActivity) => Promise<void>;
+  onToggleEnabled: (activity: ScheduledActivity) => Promise<unknown>;
   onEdit: (activity: ScheduledActivity) => void;
   /** Row click: opens the read-only details modal (not the edit form). */
   onView: (activity: ScheduledActivity) => void;
@@ -1161,7 +1180,7 @@ function TriggeredActivitiesTable({
                   onSelect(activity.id);
                   onView(activity);
                 }}
-                className={`cursor-pointer border-t align-middle transition ${
+                className={`cursor-pointer border-t align-middle transition-colors ${
                   isSelected ? 'bg-accent-subtle' : 'hover:bg-fg-primary/[0.04]'
                 }`}
               >
@@ -1304,12 +1323,13 @@ function PreviouslyTriggeredSection({
   }
   return (
     <div className="flex flex-col gap-2">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="compact"
         onClick={(): void => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
         data-testid="automations-previously-triggered-toggle"
-        className="focus-ring flex items-center gap-1.5 self-start rounded-md px-1 py-1 text-xs font-medium fg-secondary transition hover:fg-primary"
+        className="self-start"
       >
         <ChevronDownIcon
           width={12}
@@ -1320,7 +1340,7 @@ function PreviouslyTriggeredSection({
         <span className="rounded-full bg-fg-primary/[0.06] px-1.5 py-0.5 text-3xs tabular-nums fg-secondary">
           {activities.length}
         </span>
-      </button>
+      </Button>
       {expanded && (
         <div data-testid="automations-previously-triggered-table">
           <TriggeredActivitiesTable activities={activities} {...handlers} />
@@ -1335,7 +1355,7 @@ const STATUS_DROPDOWN_WIDTH = 168;
 interface StatusBadgeDropdownProps {
   activity: ScheduledActivity;
   isRunning: boolean;
-  onToggleEnabled: (activity: ScheduledActivity) => Promise<void>;
+  onToggleEnabled: (activity: ScheduledActivity) => Promise<unknown>;
 }
 
 function StatusBadgeDropdown({
@@ -1388,7 +1408,7 @@ function StatusBadgeDropdown({
         aria-haspopup="listbox"
         aria-expanded={open}
         data-testid={`automations-toggle-${activity.id}`}
-        className={`focus-ring inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-3xs font-medium transition ${toneClasses}`}
+        className={`focus-ring inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-3xs font-medium transition-colors ${toneClasses}`}
       >
         <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
         <span>{label}</span>
@@ -1459,7 +1479,7 @@ function StatusDropdownOption({
       role="option"
       aria-selected={selected}
       onClick={onSelect}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-secondary ${
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
         selected ? 'bg-secondary' : ''
       }`}
     >

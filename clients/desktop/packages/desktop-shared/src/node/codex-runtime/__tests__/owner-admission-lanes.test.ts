@@ -3,6 +3,8 @@ import {
   type OwnerAdmissionLanesHost,
   type OwnerLaneFrame,
   type OwnerLaneFrameKind,
+  type CodexIngestionLagChange,
+  type CodexIngestionLagSample,
   type StdoutHoldReport,
 } from '../owner-admission-lanes';
 import { RequestDeadline } from '../request-deadline';
@@ -36,6 +38,15 @@ interface FakeHost extends OwnerAdmissionLanesHost<string> {
   warnings: string[];
   admissionFailures: Error[];
   deliveryFailures: Error[];
+  ingestionLagChanges: Array<{
+    owner: string;
+    change: CodexIngestionLagChange;
+  }>;
+  ingestionLagSamples: Array<{
+    owner: string;
+    sample: CodexIngestionLagSample;
+  }>;
+  onIngestionLagSample(owner: string, sample: CodexIngestionLagSample): void;
 }
 
 function fakeHost(owners: readonly string[]): FakeHost {
@@ -46,6 +57,8 @@ function fakeHost(owners: readonly string[]): FakeHost {
     warnings: [],
     admissionFailures: [],
     deliveryFailures: [],
+    ingestionLagChanges: [],
+    ingestionLagSamples: [],
     isLiveOwner: (owner) => host.live.has(owner),
     pauseSource: () => host.events.push('pause'),
     resumeSource: () => host.events.push('resume'),
@@ -55,8 +68,18 @@ function fakeHost(owners: readonly string[]): FakeHost {
     onDeliveryFailure: (error) => host.deliveryFailures.push(error),
     reportLongHold: (report) => host.reports.push(report),
     warnLongHold: (message) => host.warnings.push(message),
+    onIngestionLagChange: (owner, change) =>
+      host.ingestionLagChanges.push({ owner, change }),
+    onIngestionLagSample: (owner, sample) =>
+      host.ingestionLagSamples.push({ owner, sample }),
   };
   return host;
+}
+
+function ingestionLagOutcomes(
+  host: FakeHost,
+): Array<'entered' | 'drained' | 'aborted'> {
+  return host.ingestionLagChanges.map((entry) => entry.change.outcome);
 }
 
 function frame(
@@ -66,10 +89,14 @@ function frame(
     kind?: OwnerLaneFrameKind;
     bytes?: number;
     admission?: Promise<void>;
+    producedAtMs?: number;
+    overlap?: boolean;
   } = {},
 ): OwnerLaneFrame {
   return {
     kind: options.kind ?? 'notification',
+    producedAtMs: options.producedAtMs,
+    overlap: options.overlap,
     measureBytes: () => options.bytes ?? 10,
     deliver: (): void | Promise<void> => {
       log.push(label);
@@ -85,6 +112,499 @@ const LIMITS = {
 };
 
 describe('OwnerAdmissionLanes', () => {
+  it('tracks per-owner lag as queued frames wait and returns to zero when drained', async () => {
+    let now = 10_000;
+    const host = fakeHost(['a']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const first = deferred();
+    const second = deferred();
+
+    lanes.dispatch('a', frame([], 'first', { admission: first.promise }));
+    now = 11_000;
+    lanes.dispatch('a', frame([], 'second', { admission: second.promise }));
+    expect(lanes.ingestionLag('a')?.lagMs).toBe(1_000);
+    now = 12_500;
+    expect(lanes.ingestionLag('a')).toEqual({
+      lagMs: 2_500,
+      catchingUp: false,
+      source: 'receipt',
+    });
+
+    first.resolve();
+    await settle();
+    expect(lanes.ingestionLag('a')).toEqual({
+      lagMs: 1_500,
+      catchingUp: false,
+      source: 'receipt',
+    });
+
+    second.resolve();
+    await settle();
+    expect(lanes.ingestionLag('a')).toEqual({
+      lagMs: 0,
+      catchingUp: false,
+      source: 'receipt',
+    });
+  });
+
+  it('enters only above 5,000 ms and latches one episode through recovery until drain', async () => {
+    let now = 100_000;
+    const host = fakeHost(['a']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const first = deferred();
+    const second = deferred();
+    lanes.dispatch(
+      'a',
+      frame([], 'first', {
+        admission: first.promise,
+        producedAtMs: 95_000,
+      }),
+    );
+
+    expect(lanes.ingestionLag('a')?.lagMs).toBe(5_000);
+    expect(host.ingestionLagChanges).toHaveLength(0);
+    now = 100_001;
+    expect(lanes.ingestionLag('a')).toEqual({
+      lagMs: 5_001,
+      catchingUp: true,
+      source: 'provider',
+    });
+    expect(ingestionLagOutcomes(host)).toEqual(['entered']);
+
+    now = 100_100;
+    lanes.dispatch('a', frame([], 'second', { admission: second.promise }));
+    first.resolve();
+    await settle();
+    expect(lanes.ingestionLag('a')).toEqual({
+      lagMs: 0,
+      catchingUp: true,
+      source: 'receipt',
+    });
+    now = 105_101;
+    expect(lanes.ingestionLag('a')?.catchingUp).toBe(true);
+    expect(ingestionLagOutcomes(host)).toEqual(['entered']);
+
+    second.resolve();
+    await settle();
+    expect(ingestionLagOutcomes(host)).toEqual(['entered', 'drained']);
+    expect(host.ingestionLagChanges[1]?.change).toMatchObject({
+      lagMs: 0,
+      peakLagMs: 5_100,
+      episodeMs: 5_100,
+      thresholdMs: 5_000,
+      source: 'receipt',
+    });
+  });
+
+  it('samples only after strictly exceeding 5,000 ms using one clock read', () => {
+    let now = 100_000;
+    const host = fakeHost(['a']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const hold = deferred();
+    lanes.dispatch(
+      'a',
+      frame([], 'exact threshold', {
+        admission: hold.promise,
+        producedAtMs: 95_000,
+      }),
+    );
+
+    expect(host.ingestionLagSamples).toEqual([]);
+    now = 100_001;
+    lanes.ingestionLag('a');
+    expect(host.ingestionLagSamples).toEqual([
+      {
+        owner: 'a',
+        sample: {
+          lagMs: 5_001,
+          source: 'provider',
+          sampledAtMs: 100_001,
+          catchingUp: true,
+        },
+      },
+    ]);
+    lanes.discardAll();
+  });
+
+  it('throttles active samples per owner during frequent evaluations on a short watch interval', () => {
+    jest.useFakeTimers();
+    try {
+      let now = 100_000;
+      const host = fakeHost(['a', 'b']);
+      const lanes = new OwnerAdmissionLanes(
+        host,
+        { ...LIMITS, longHoldThresholdMs: 100 },
+        () => now,
+      );
+      lanes.dispatch(
+        'a',
+        frame([], 'a', {
+          admission: deferred().promise,
+          producedAtMs: 94_999,
+        }),
+      );
+      now = 100_500;
+      lanes.dispatch(
+        'b',
+        frame([], 'b', {
+          admission: deferred().promise,
+          producedAtMs: 95_499,
+        }),
+      );
+
+      expect(host.ingestionLagSamples.map((entry) => entry.owner)).toEqual([
+        'a',
+        'b',
+      ]);
+      for (let index = 0; index < 4; index += 1) {
+        now += 100;
+        jest.advanceTimersByTime(100);
+        lanes.ingestionLag('a');
+        lanes.ingestionLag('b');
+      }
+      expect(host.ingestionLagSamples).toHaveLength(2);
+
+      now += 100;
+      jest.advanceTimersByTime(100);
+      expect(host.ingestionLagSamples).toHaveLength(3);
+      expect(host.ingestionLagSamples[2]).toEqual({
+        owner: 'a',
+        sample: {
+          lagMs: 6_001,
+          source: 'provider',
+          sampledAtMs: 101_000,
+          catchingUp: true,
+        },
+      });
+
+      for (let index = 0; index < 5; index += 1) {
+        now += 100;
+        jest.advanceTimersByTime(100);
+      }
+      expect(host.ingestionLagSamples).toHaveLength(4);
+      expect(host.ingestionLagSamples[3]).toEqual({
+        owner: 'b',
+        sample: {
+          lagMs: 6_001,
+          source: 'provider',
+          sampledAtMs: 101_500,
+          catchingUp: true,
+        },
+      });
+      lanes.discardAll();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('samples the decreasing lag and source of the current oldest outstanding frame', async () => {
+    jest.useFakeTimers();
+    try {
+      let now = 100_000;
+      const host = fakeHost(['a']);
+      const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+      const first = deferred();
+      const second = deferred();
+      lanes.dispatch(
+        'a',
+        frame([], 'provider frame', {
+          admission: first.promise,
+          producedAtMs: 94_999,
+        }),
+      );
+      lanes.dispatch(
+        'a',
+        frame([], 'receipt frame', { admission: second.promise }),
+      );
+
+      now = 100_600;
+      first.resolve();
+      await Promise.resolve();
+      now = 101_000;
+      jest.advanceTimersByTime(1_000);
+
+      expect(host.ingestionLagSamples).toEqual([
+        {
+          owner: 'a',
+          sample: {
+            lagMs: 5_001,
+            source: 'provider',
+            sampledAtMs: 100_000,
+            catchingUp: true,
+          },
+        },
+        {
+          owner: 'a',
+          sample: {
+            lagMs: 1_000,
+            source: 'receipt',
+            sampledAtMs: 101_000,
+            catchingUp: true,
+          },
+        },
+      ]);
+      lanes.discardAll();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('immediately samples drained and aborted episodes without losing current abort lag', async () => {
+    let now = 100_000;
+    const host = fakeHost(['drained', 'aborted']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const drained = deferred();
+    lanes.dispatch(
+      'drained',
+      frame([], 'drained', {
+        admission: drained.promise,
+        producedAtMs: 94_999,
+      }),
+    );
+
+    now = 101_250;
+    drained.resolve();
+    await settle();
+    expect(host.ingestionLagSamples.slice(0, 2)).toEqual([
+      {
+        owner: 'drained',
+        sample: {
+          lagMs: 5_001,
+          source: 'provider',
+          sampledAtMs: 100_000,
+          catchingUp: true,
+        },
+      },
+      {
+        owner: 'drained',
+        sample: {
+          lagMs: 0,
+          source: 'provider',
+          sampledAtMs: 101_250,
+          catchingUp: false,
+        },
+      },
+    ]);
+
+    const aborted = deferred();
+    now = 110_000;
+    lanes.dispatch(
+      'aborted',
+      frame([], 'aborted', {
+        admission: aborted.promise,
+        producedAtMs: 104_999,
+      }),
+    );
+    now = 111_000;
+    lanes.retire('aborted');
+    expect(host.ingestionLagSamples.slice(2)).toEqual([
+      {
+        owner: 'aborted',
+        sample: {
+          lagMs: 5_001,
+          source: 'provider',
+          sampledAtMs: 110_000,
+          catchingUp: true,
+        },
+      },
+      {
+        owner: 'aborted',
+        sample: {
+          lagMs: 6_001,
+          source: 'provider',
+          sampledAtMs: 111_000,
+          catchingUp: false,
+        },
+      },
+    ]);
+  });
+
+  it('isolates ingestion-lag sample observer failures from transitions and admission', async () => {
+    const host = fakeHost(['a']);
+    host.onIngestionLagSample = (): void => {
+      throw new Error('sample observer failed');
+    };
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => 100_000);
+    const first = deferred();
+    const second = deferred();
+    const log: string[] = [];
+    lanes.dispatch(
+      'a',
+      frame(log, 'first', {
+        admission: first.promise,
+        producedAtMs: 94_999,
+      }),
+    );
+    lanes.dispatch('a', frame(log, 'second', { admission: second.promise }));
+
+    first.resolve();
+    await settle();
+    second.resolve();
+    await settle();
+
+    expect(log).toEqual(['first', 'second']);
+    expect(host.admissionFailures).toEqual([]);
+    expect(ingestionLagOutcomes(host)).toEqual(['entered', 'drained']);
+  });
+
+  it('starts a fresh episode after drain and aborts entered episodes on discard or retirement', () => {
+    let now = 100_000;
+    const host = fakeHost(['discarded', 'retired']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const discardedHold = deferred();
+    lanes.dispatch(
+      'discarded',
+      frame([], 'discarded', {
+        admission: discardedHold.promise,
+        producedAtMs: 90_000,
+      }),
+    );
+    expect(lanes.ingestionLag('discarded')?.catchingUp).toBe(true);
+    lanes.discardAll();
+    expect(ingestionLagOutcomes(host)).toEqual(['entered', 'aborted']);
+
+    const secondLanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const retiredHold = deferred();
+    secondLanes.dispatch(
+      'retired',
+      frame([], 'retired', {
+        admission: retiredHold.promise,
+        producedAtMs: 90_000,
+      }),
+    );
+    secondLanes.retire('retired');
+    expect(ingestionLagOutcomes(host)).toEqual([
+      'entered',
+      'aborted',
+      'entered',
+      'aborted',
+    ]);
+
+    const drainedLanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    const first = deferred();
+    drainedLanes.dispatch(
+      'discarded',
+      frame([], 'first episode', {
+        admission: first.promise,
+        producedAtMs: 90_000,
+      }),
+    );
+    first.resolve();
+    return settle().then(() => {
+      now = 110_000;
+      const second = deferred();
+      drainedLanes.dispatch(
+        'discarded',
+        frame([], 'second episode', {
+          admission: second.promise,
+          producedAtMs: 90_000,
+        }),
+      );
+      expect(ingestionLagOutcomes(host)).toEqual([
+        'entered',
+        'aborted',
+        'entered',
+        'aborted',
+        'entered',
+        'drained',
+        'entered',
+      ]);
+      drainedLanes.discardAll();
+    });
+  });
+
+  it('keeps lag and episodes independent for each owner', () => {
+    const now = 100_000;
+    const host = fakeHost(['a', 'b']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    lanes.dispatch(
+      'a',
+      frame([], 'a', {
+        admission: deferred().promise,
+        producedAtMs: 90_000,
+      }),
+    );
+    lanes.dispatch('b', frame([], 'b', { admission: deferred().promise }));
+
+    expect(lanes.ingestionLag('a')).toEqual({
+      lagMs: 10_000,
+      catchingUp: true,
+      source: 'provider',
+    });
+    expect(lanes.ingestionLag('b')).toEqual({
+      lagMs: 0,
+      catchingUp: false,
+      source: 'receipt',
+    });
+    expect(host.ingestionLagChanges.map((entry) => entry.owner)).toEqual(['a']);
+    lanes.discardAll();
+  });
+
+  it('uses older valid provider timestamps and falls back to receipt time for malformed or future values', () => {
+    const now = 50_000;
+    const host = fakeHost(['provider', 'nan', 'zero', 'infinite', 'future']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+    lanes.dispatch(
+      'provider',
+      frame([], 'provider', {
+        admission: deferred().promise,
+        producedAtMs: 45_000,
+      }),
+    );
+    expect(lanes.ingestionLag('provider')).toEqual({
+      lagMs: 5_000,
+      catchingUp: false,
+      source: 'provider',
+    });
+
+    const invalidTimestamps: Array<[string, number]> = [
+      ['nan', Number.NaN],
+      ['zero', 0],
+      ['infinite', Number.POSITIVE_INFINITY],
+      ['future', now + 1],
+    ];
+    for (const [owner, producedAtMs] of invalidTimestamps) {
+      lanes.dispatch(
+        owner,
+        frame([], owner, {
+          admission: deferred().promise,
+          producedAtMs,
+        }),
+      );
+      expect(lanes.ingestionLag(owner)).toEqual({
+        lagMs: 0,
+        catchingUp: false,
+        source: 'receipt',
+      });
+    }
+    lanes.discardAll();
+  });
+
+  it('uses the existing watch timer to enter a quiet held lane episode', () => {
+    jest.useFakeTimers();
+    try {
+      let now = 100_000;
+      const host = fakeHost(['a']);
+      const lanes = new OwnerAdmissionLanes(host, LIMITS, () => now);
+      lanes.dispatch(
+        'a',
+        frame([], 'quiet', { admission: deferred().promise }),
+      );
+
+      now = 105_001;
+      jest.advanceTimersByTime(1_000);
+      expect(ingestionLagOutcomes(host)).toEqual(['entered']);
+      expect(lanes.ingestionLag('a')).toEqual({
+        lagMs: 5_001,
+        catchingUp: true,
+        source: 'receipt',
+      });
+      lanes.discardAll();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('delivers synchronously when the owner lane is clear', () => {
     const host = fakeHost(['a']);
     const lanes = new OwnerAdmissionLanes(host, LIMITS);
@@ -365,6 +885,59 @@ describe('OwnerAdmissionLanes', () => {
       ]),
     );
     lanes.discardAll();
+  });
+
+  it('settles a drain once the frames read before it are admitted, while later frames stay pending', async () => {
+    const host = fakeHost(['a']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS);
+    const log: string[] = [];
+    const first = deferred();
+    const second = deferred();
+    const later = deferred();
+    lanes.dispatch('a', frame(log, 'a1', { admission: first.promise }));
+    lanes.dispatch('a', frame(log, 'a2', { admission: second.promise }));
+    const drain = lanes.whenDrained('a');
+    expect(drain).toBeDefined();
+    let drained = false;
+    void drain?.then(() => {
+      drained = true;
+    });
+    lanes.dispatch('a', frame(log, 'a3', { admission: later.promise }));
+
+    first.resolve();
+    await settle();
+    expect(log).toEqual(['a1', 'a2']);
+    expect(drained).toBe(false);
+
+    second.resolve();
+    await settle();
+    // a3 reached the lane after the drain began: its pending admission does
+    // not extend the drain.
+    expect(log).toEqual(['a1', 'a2', 'a3']);
+    expect(drained).toBe(true);
+    expect(lanes.isBusy('a')).toBe(true);
+
+    later.resolve();
+    await settle();
+    expect(lanes.isBusy('a')).toBe(false);
+  });
+
+  it('never leaves an unobserved drain as an unhandled rejection when the worker goes away', async () => {
+    const host = fakeHost(['a']);
+    const lanes = new OwnerAdmissionLanes(host, LIMITS);
+    const unhandled = jest.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const hold = deferred();
+      lanes.dispatch('a', frame([], 'a1', { admission: hold.promise }));
+      // The caller drops the drain without observing it.
+      expect(lanes.whenDrained('a')).toBeDefined();
+      lanes.discardAll();
+      await settle();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 });
 

@@ -1,3 +1,7 @@
+import {
+  MODEL_LIBRARY_PROTOCOL_HEADER,
+  MODEL_LIBRARY_PROTOCOL_VERSION,
+} from '@canopy/protocol/models';
 import { EventEmitter } from 'node:events';
 import {
   createServer,
@@ -19,6 +23,7 @@ import {
   CODEX_GATEWAY_RETRY_DELAYS_MS,
   CodexGatewayProxyService,
   type CodexGatewayProxyDiagnosticRecord,
+  type CodexGatewayRouteLease,
   deriveProxyDiagnosticIdentity,
   setCodexGatewayProxyDiagnosticSink,
   waitForResponseDrain,
@@ -295,6 +300,552 @@ describe('CodexGatewayProxyService', () => {
       },
     ]);
     expect(lease.baseUrl).not.toContain('sentinel');
+  });
+
+  describe('OpenCode inference leases', () => {
+    afterEach(() => clearSessionProxyFailure('project/worktree/chat'));
+    const requestBody = JSON.stringify({
+      model: 'managed-model',
+      input: 'hello',
+    });
+
+    function registerInferenceRoute(): Promise<CodexGatewayRouteLease> {
+      return service.registerRoute({
+        sessionId: 'project/worktree/chat',
+        upstreamUrl,
+        resolveToken: () => Promise.resolve('sentinel'),
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {},
+        },
+      });
+    }
+
+    async function post(
+      baseUrl: string,
+      body = requestBody,
+    ): Promise<Response> {
+      return fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+    }
+
+    function readInferenceFailure(lease: CodexGatewayRouteLease): unknown {
+      if (!lease.readInferenceFailure)
+        throw new Error(
+          'The lease does not retain host inference failure evidence.',
+        );
+      return lease.readInferenceFailure();
+    }
+
+    it('retains the first failed HTTP status after native replay and lease cleanup', async () => {
+      upstreamFailuresRemaining = 1;
+      upstreamFailureStatus = 502;
+      const lease = await registerInferenceRoute();
+      expect((await post(lease.baseUrl)).status).toBe(502);
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      service.unregisterRoute(lease.routeId);
+      expect(readInferenceFailure(lease)).toEqual({ status: 502 });
+      expect(received).toHaveLength(1);
+    });
+
+    it('keeps marked billing evidence on its own lease and returns independent snapshots', async () => {
+      upstreamFailuresRemaining = 1;
+      upstreamFailureStatus = 402;
+      upstreamFailureBody = JSON.stringify({
+        error: {
+          canopy_proxy: 'CANOPY_AI_CREDITS_PROXY',
+          code: 'no_billing_source',
+          reason: 'personal_wallet_empty',
+          message: 'No spendable balance.',
+          correlation_id: 'billing-refusal',
+        },
+      });
+      const failed = await registerInferenceRoute();
+      const sibling = await registerInferenceRoute();
+      await (await post(failed.baseUrl)).text();
+      await (await post(sibling.baseUrl)).text();
+      expect(readInferenceFailure(sibling)).toBeUndefined();
+      expect(
+        consumeSessionProxyFailure('project/worktree/chat'),
+      ).toBeUndefined();
+      const evidence = readInferenceFailure(failed);
+      expect(evidence).toEqual({
+        status: 402,
+        proxyFailure: {
+          code: 'no_billing_source',
+          reason: 'personal_wallet_empty',
+          message: 'No spendable balance.',
+          correlationId: 'billing-refusal',
+        },
+      });
+      if (evidence && typeof evidence === 'object')
+        Reflect.set(evidence, 'status', 200);
+      expect(readInferenceFailure(failed)).toEqual(
+        expect.objectContaining({ status: 402 }),
+      );
+    });
+
+    it('retains a credential-read failure without exposing the thrown secret or forwarding', async () => {
+      const lease = await service.registerRoute({
+        sessionId: 'project/worktree/chat',
+        upstreamUrl,
+        resolveToken: () =>
+          Promise.reject(new Error('PRIVATE_CREDENTIAL_MARKER')),
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {},
+        },
+      });
+      await (await post(lease.baseUrl)).text();
+      const failure = readInferenceFailure(lease);
+      expect(failure).toEqual({ status: 401 });
+      expect(JSON.stringify(failure)).not.toContain(
+        'PRIVATE_CREDENTIAL_MARKER',
+      );
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      expect(received).toHaveLength(0);
+    });
+
+    it.each(['{"model":"another-model"}', '{}', 'null', '[]', 'invalid JSON'])(
+      'rejects an unbound model before forwarding: %s',
+      async (body) => {
+        const lease = await registerInferenceRoute();
+        const response = await post(lease.baseUrl, body);
+        expect(response.status).toBe(400);
+        expect(received).toHaveLength(0);
+        expect((await post(lease.baseUrl)).status).toBe(200);
+      },
+    );
+
+    it('records a correlated refusal without retaining request contents or credentials', async () => {
+      const diagnostics: CodexGatewayProxyDiagnosticRecord[] = [];
+      setCodexGatewayProxyDiagnosticSink((record) => diagnostics.push(record));
+      const lease = await registerInferenceRoute();
+      const response = await post(
+        lease.baseUrl,
+        JSON.stringify({ model: 'wrong', input: 'PRIVATE_PROMPT_MARKER' }),
+      );
+      expect(response.status).toBe(400);
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          providerType: 'opencode',
+          codexGatewayFailureCode: 'invalid_request',
+          codexGatewayRetryReason: 'opencode_model_mismatch',
+          codexGatewayCorrelationId: response.headers.get(
+            AI_CREDITS_CORRELATION_HEADER,
+          ),
+        }),
+      );
+      const encoded = JSON.stringify(diagnostics);
+      expect(encoded).not.toContain('PRIVATE_PROMPT_MARKER');
+      expect(encoded).not.toContain('sentinel');
+      expect(encoded).not.toContain(lease.routeId);
+    });
+
+    it('captures host policy and replaces all native attribution headers', async () => {
+      const seenHeaders: Array<Record<string, string | string[] | undefined>> =
+        [];
+      upstream.on('request', (request) => {
+        seenHeaders.push(request.headers);
+      });
+      const policy = {
+        providerType: 'opencode' as const,
+        modelId: 'managed-model',
+        headers: {
+          'x-canopy-work-owner': 'trusted-owner',
+          'x-canopy-workspace': 'workspace',
+        },
+      };
+      const lease = await service.registerRoute({
+        sessionId: 'chat',
+        upstreamUrl,
+        resolveToken: () => Promise.resolve('sentinel'),
+        inferencePolicy: policy,
+      });
+      policy.modelId = 'mutated-model';
+      policy.headers['x-canopy-work-owner'] = 'mutated-owner';
+      const response = await fetch(lease.baseUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-canopy-work-owner': 'forged-owner',
+          'x-canopy-org-project': 'forged-project',
+          'x-canopy-unknown': 'forged-attribute',
+          authorization: 'Bearer native-secret',
+        },
+        body: requestBody,
+      });
+      expect(response.status).toBe(200);
+      expect(seenHeaders[0]).toMatchObject({
+        authorization: 'Bearer sentinel',
+        'x-canopy-work-owner': 'trusted-owner',
+        'x-canopy-workspace': 'workspace',
+      });
+      expect(seenHeaders[0]).not.toHaveProperty('x-canopy-org-project');
+      expect(seenHeaders[0]).not.toHaveProperty('x-canopy-unknown');
+    });
+
+    it.each(['ambiguous', 'unmarked'])(
+      'prevents native replay after a %s failure',
+      async (kind) => {
+        upstreamFailuresRemaining = 1;
+        upstreamFailureStatus = 502;
+        if (kind === 'ambiguous')
+          upstreamFailureHeaders = {
+            [AI_CREDITS_GATEWAY_DELIVERY.header]:
+              AI_CREDITS_GATEWAY_DELIVERY.ambiguous,
+          };
+        const lease = await registerInferenceRoute();
+        expect((await post(lease.baseUrl)).status).toBe(502);
+        expect((await post(lease.baseUrl)).status).toBe(404);
+        expect(received).toHaveLength(1);
+      },
+    );
+
+    it('retains safe not-sent retries and tags diagnostics with the actual harness', async () => {
+      const diagnostics: CodexGatewayProxyDiagnosticRecord[] = [];
+      setCodexGatewayProxyDiagnosticSink((record) => diagnostics.push(record));
+      upstreamFailuresRemaining = 1;
+      upstreamFailureStatus = 502;
+      upstreamFailureHeaders = {
+        [AI_CREDITS_GATEWAY_DELIVERY.header]:
+          AI_CREDITS_GATEWAY_DELIVERY.notSent,
+      };
+      const lease = await registerInferenceRoute();
+      expect((await post(lease.baseUrl)).status).toBe(200);
+      expect(received).toHaveLength(2);
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          providerType: 'opencode',
+          kind: 'codex_gateway_proxy_retry',
+          sessionKey: 'project/worktree/chat',
+          codexGatewayAttemptCount: 2,
+        }),
+      );
+    });
+
+    it('rechecks a revoked lease after resolving credentials', async () => {
+      let resolveToken: (value: string) => void = (): void => {};
+      let markStarted = (): void => {};
+      const token = new Promise<string>((resolve) => {
+        resolveToken = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const lease = await service.registerRoute({
+        sessionId: 'chat',
+        upstreamUrl,
+        resolveToken: () => {
+          markStarted();
+          return token;
+        },
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {},
+        },
+      });
+      const pending = post(lease.baseUrl);
+      await started;
+      service.unregisterRoutesForSession('chat');
+      resolveToken('sentinel');
+      expect((await pending).status).toBe(404);
+      expect(received).toHaveLength(0);
+    });
+
+    it('revokes before a delayed credential-rejection callback settles', async () => {
+      upstreamFailuresRemaining = 1;
+      upstreamFailureStatus = 401;
+      let release = (): void => {};
+      let markStarted = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const lease = await service.registerRoute({
+        sessionId: 'chat',
+        upstreamUrl,
+        resolveToken: () => Promise.resolve('sentinel'),
+        onCredentialRejected: () => {
+          markStarted();
+          return gate;
+        },
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {},
+        },
+      });
+      const first = post(lease.baseUrl);
+      await started;
+      const second = await post(lease.baseUrl);
+      release();
+      expect((await first).status).toBe(401);
+      expect(second.status).toBe(404);
+      expect(received).toHaveLength(1);
+    });
+
+    it('allows distinct successful title and tool requests with rotated credentials', async () => {
+      let version = 0;
+      const lease = await service.registerRoute({
+        sessionId: 'chat',
+        upstreamUrl,
+        resolveToken: () => Promise.resolve(`sentinel-${++version}`),
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {},
+        },
+      });
+      const responses = await Promise.all(
+        ['title', 'tool-result'].map((input) =>
+          post(
+            lease.baseUrl,
+            JSON.stringify({ model: 'managed-model', input }),
+          ),
+        ),
+      );
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(received.map((request) => request.authorization).sort()).toEqual([
+        'Bearer sentinel-1',
+        'Bearer sentinel-2',
+      ]);
+    });
+
+    it('releases one turn lease without revoking a sibling with the same session key', async () => {
+      const first = await registerInferenceRoute();
+      const second = await registerInferenceRoute();
+      service.unregisterRoute(first.routeId);
+      service.unregisterRoute(first.routeId);
+      expect((await post(first.baseUrl)).status).toBe(404);
+      expect((await post(second.baseUrl)).status).toBe(200);
+      expect(received).toHaveLength(1);
+    });
+
+    it('refuses a repeated payload even when the provider returned a complete HTTP 200', async () => {
+      const lease = await registerInferenceRoute();
+      expect((await post(lease.baseUrl)).status).toBe(200);
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      expect(received).toHaveLength(1);
+    });
+
+    it('admits only one of two concurrent identical payloads', async () => {
+      const lease = await registerInferenceRoute();
+      const responses = await Promise.all([
+        post(lease.baseUrl),
+        post(lease.baseUrl),
+      ]);
+      expect(responses.map((response) => response.status).sort()).toEqual([
+        200, 404,
+      ]);
+      expect(received).toHaveLength(1);
+    });
+
+    it('bounds retained request hashes and requires a fresh lease at the ceiling', async () => {
+      const lease = await registerInferenceRoute();
+      for (let index = 0; index < 1024; index += 1) {
+        const response = await post(
+          lease.baseUrl,
+          JSON.stringify({ model: 'managed-model', input: index }),
+        );
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      expect(received).toHaveLength(1024);
+    });
+
+    it('does not follow a provider redirect with a paid request', async () => {
+      let count = 0;
+      upstream.removeAllListeners('request');
+      upstream.on('request', (request, response) => {
+        request.resume();
+        count += 1;
+        response.writeHead(307, { location: `${upstreamUrl}/redirected` });
+        response.end();
+      });
+      const lease = await registerInferenceRoute();
+      expect((await post(lease.baseUrl)).status).toBe(502);
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      expect(count).toBe(1);
+    });
+
+    it.each(['authorization', 'x-canopy-unknown', 'X-Canopy-Work-Owner'])(
+      'rejects an unsupported host attribution header: %s',
+      async (name) => {
+        await expect(
+          service.registerRoute({
+            sessionId: 'chat',
+            upstreamUrl,
+            resolveToken: () => Promise.resolve('sentinel'),
+            inferencePolicy: {
+              providerType: 'opencode',
+              modelId: 'managed-model',
+              headers: { [name]: 'secret' },
+            },
+          }),
+        ).rejects.toThrow('Invalid OpenCode inference lease policy');
+        expect(received).toHaveLength(0);
+      },
+    );
+
+    it('forwards the host model-library protocol and ignores a caller override', async () => {
+      const lease = await service.registerRoute({
+        sessionId: 'chat',
+        upstreamUrl,
+        resolveToken: () => Promise.resolve('sentinel'),
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {
+            [MODEL_LIBRARY_PROTOCOL_HEADER]: String(
+              MODEL_LIBRARY_PROTOCOL_VERSION,
+            ),
+          },
+        },
+      });
+      const response = await fetch(lease.baseUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [MODEL_LIBRARY_PROTOCOL_HEADER]: '9999',
+        },
+        body: requestBody,
+      });
+      expect(response.status).toBe(200);
+      expect(receivedHeaders[0]?.[MODEL_LIBRARY_PROTOCOL_HEADER]).toBe(
+        String(MODEL_LIBRARY_PROTOCOL_VERSION),
+      );
+    });
+
+    it.each(['', '0', '9999', '1\r\nx-header: injected'])(
+      'rejects an unsupported host model-library protocol: %s',
+      async (version) => {
+        await expect(
+          service.registerRoute({
+            sessionId: 'chat',
+            upstreamUrl,
+            resolveToken: () => Promise.resolve('sentinel'),
+            inferencePolicy: {
+              providerType: 'opencode',
+              modelId: 'managed-model',
+              headers: { [MODEL_LIBRARY_PROTOCOL_HEADER]: version },
+            },
+          }),
+        ).rejects.toThrow('Invalid OpenCode inference lease policy');
+        expect(received).toHaveLength(0);
+      },
+    );
+
+    it('rechecks revocation after reading a delayed request body', async () => {
+      let markStarted = (): void => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const lease = await service.registerRoute({
+        sessionId: 'chat',
+        upstreamUrl,
+        resolveToken: () => {
+          markStarted();
+          return Promise.resolve('sentinel');
+        },
+        inferencePolicy: {
+          providerType: 'opencode',
+          modelId: 'managed-model',
+          headers: {},
+        },
+      });
+      let finish = (): void => {};
+      const pending = new Promise<number | undefined>((resolve, reject) => {
+        const request = httpRequest(
+          lease.baseUrl,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode);
+          },
+        );
+        request.on('error', reject);
+        request.write('{"model":');
+        finish = (): void => {
+          request.end('"managed-model"}');
+        };
+      });
+      await started;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      service.unregisterRoutesForSession('chat');
+      finish();
+      expect(await pending).toBe(404);
+      expect(received).toHaveLength(0);
+    });
+
+    it('rechecks revocation before a safe internal retry', async () => {
+      await service.shutdown();
+      service = new CodexGatewayProxyService({ retryDelaysMs: [100] });
+      upstreamFailuresRemaining = 1;
+      upstreamFailureStatus = 502;
+      upstreamFailureHeaders = {
+        [AI_CREDITS_GATEWAY_DELIVERY.header]:
+          AI_CREDITS_GATEWAY_DELIVERY.notSent,
+      };
+      let markStarted = (): void => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      upstream.once('request', (request) => {
+        request.once('end', markStarted);
+      });
+      const lease = await registerInferenceRoute();
+      const pending = post(lease.baseUrl);
+      await started;
+      service.unregisterRoutesForSession('project/worktree/chat');
+      expect((await pending).status).toBe(404);
+      expect(received).toHaveLength(1);
+    });
+
+    it('revokes a route after the provider drops a transmitted request', async () => {
+      let count = 0;
+      upstream.removeAllListeners('request');
+      upstream.on('request', (request) => {
+        request.resume();
+        request.once('end', () => {
+          count += 1;
+          request.socket.destroy();
+        });
+      });
+      const lease = await registerInferenceRoute();
+      expect((await post(lease.baseUrl)).status).toBe(502);
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      expect(count).toBe(1);
+    });
+
+    it('revokes a route after an interrupted successful stream', async () => {
+      let count = 0;
+      upstream.removeAllListeners('request');
+      upstream.on('request', (request, response) => {
+        request.resume();
+        count += 1;
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write('data: partial\n\n');
+        setTimeout(() => response.destroy(), 20);
+      });
+      const lease = await registerInferenceRoute();
+      const first = await post(lease.baseUrl);
+      await expect(first.text()).rejects.toThrow();
+      expect((await post(lease.baseUrl)).status).toBe(404);
+      expect(count).toBe(1);
+    });
   });
 
   it('preserves the Codex API path and query when forwarding upstream', async () => {

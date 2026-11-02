@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { chatTabLabel } from '@canopy/protocol';
+import type { TranscriptTarget } from '@canopy/protocol/canopy-core';
 import {
   getProviderForModel,
   type ArchivedContainerManifest,
   type ArchivedChatsFile,
+  type ChatSearchChildLocator,
   type ChatSearchCatalogEntry,
   type ChatSearchDocumentKind,
   type ChatTabsFile,
@@ -33,6 +35,10 @@ export interface ChatSearchDoc extends ChatSearchCatalogEntry {
   committedFingerprint?: string;
   /** Text of the transcript's in-flight (active sidecar) rows. */
   activeBody?: string;
+  /** Present only for a child transcript, whose owner remains a parent chat. */
+  parentDocId?: string;
+  /** Identity of the registered delegation target represented by this row. */
+  childLocator?: ChatSearchChildLocator;
 }
 
 /** Indexed text a scope replacement can carry forward unchanged. */
@@ -55,6 +61,44 @@ export function isIndexedChatSearchBodies(
 }
 
 function isChatSearchDoc(value: unknown): value is ChatSearchDoc {
+  const childLocator = isRecord(value) ? value.childLocator : undefined;
+  const isChildLocator =
+    isRecord(childLocator) &&
+    typeof childLocator.delegationId === 'string' &&
+    childLocator.delegationId.length > 0 &&
+    typeof childLocator.runGeneration === 'number' &&
+    Number.isSafeInteger(childLocator.runGeneration) &&
+    childLocator.runGeneration >= 0;
+  const isChildDocument =
+    isRecord(value) && value.documentKind === 'chat-child';
+  const expectedParentDocId =
+    isChildDocument &&
+    isRecord(value) &&
+    typeof value.projectId === 'string' &&
+    typeof value.worktreeId === 'string' &&
+    typeof value.chatId === 'string' &&
+    typeof value.source === 'string'
+      ? `${value.projectId}/${value.worktreeId}/${value.chatId}/${value.source}`
+      : null;
+  const expectedChildDocId =
+    isChildDocument &&
+    isRecord(value) &&
+    isRecord(childLocator) &&
+    typeof value.projectId === 'string' &&
+    typeof value.worktreeId === 'string' &&
+    typeof value.chatId === 'string' &&
+    typeof value.source === 'string' &&
+    typeof childLocator.delegationId === 'string' &&
+    typeof childLocator.runGeneration === 'number'
+      ? `chat-child:${JSON.stringify([
+          value.projectId,
+          value.worktreeId,
+          value.chatId,
+          value.source,
+          childLocator.delegationId,
+          childLocator.runGeneration,
+        ])}`
+      : null;
   return (
     isRecord(value) &&
     typeof value.docId === 'string' &&
@@ -68,9 +112,16 @@ function isChatSearchDoc(value: unknown): value is ChatSearchDoc {
       'archived-container',
       'plan',
     ].includes(typeof value.source === 'string' ? value.source : '') &&
-    ['chat', 'plan', 'archived-container'].includes(
+    ['chat', 'chat-child', 'plan', 'archived-container'].includes(
       typeof value.documentKind === 'string' ? value.documentKind : '',
     ) &&
+    (!isChildDocument ||
+      (typeof value.parentDocId === 'string' &&
+        value.parentDocId === expectedParentDocId &&
+        isChildLocator &&
+        value.docId === expectedChildDocId &&
+        typeof value.transcriptFingerprint === 'string' &&
+        value.transcriptFingerprint.length > 0)) &&
     typeof value.title === 'string' &&
     typeof value.body === 'string' &&
     (value.transcriptFingerprint === undefined ||
@@ -227,6 +278,59 @@ export function buildChatSearchDoc(
         ? transcriptFingerprint(tab.transcript)
         : undefined,
   };
+}
+
+/** Builds one independently owned FTS document for a registered child run. */
+export function buildChatChildSearchDoc(
+  parent: ChatSearchDoc,
+  target: TranscriptTarget,
+  fingerprint: string,
+  body: string,
+): ChatSearchDoc {
+  if (
+    parent.documentKind !== 'chat' ||
+    parent.docId !==
+      `${parent.projectId}/${parent.worktreeId}/${parent.chatId}/${parent.source}` ||
+    target.kind !== 'delegation' ||
+    target.chatId !== parent.chatId ||
+    target.delegationId.length === 0 ||
+    !Number.isSafeInteger(target.runGeneration) ||
+    target.runGeneration < 0 ||
+    fingerprint.length === 0
+  )
+    throw new Error(
+      'A child search document requires a chat parent and target',
+    );
+  const childLocator: ChatSearchChildLocator = {
+    delegationId: target.delegationId,
+    runGeneration: target.runGeneration,
+  };
+  const docId = childSearchDocId(parent, childLocator);
+  return {
+    ...parent,
+    docId,
+    documentKind: 'chat-child',
+    body,
+    transcriptFingerprint: fingerprint,
+    committedFingerprint: undefined,
+    activeBody: undefined,
+    parentDocId: parent.docId,
+    childLocator,
+  };
+}
+
+function childSearchDocId(
+  parent: Pick<ChatSearchDoc, 'projectId' | 'worktreeId' | 'chatId' | 'source'>,
+  childLocator: ChatSearchChildLocator,
+): string {
+  return `chat-child:${JSON.stringify([
+    parent.projectId,
+    parent.worktreeId,
+    parent.chatId,
+    parent.source,
+    childLocator.delegationId,
+    childLocator.runGeneration,
+  ])}`;
 }
 
 /**
@@ -425,12 +529,8 @@ export class ChatSearchIndexer {
     worktreeId: string,
     data: ChatTabsFile,
   ): void {
-    this.replaceScope(
-      projectId,
-      worktreeId,
-      'live',
-      chatTabsToDocs(projectId, worktreeId, data),
-    );
+    const docs = chatTabsToDocs(projectId, worktreeId, data);
+    this.replaceScope(projectId, worktreeId, 'live', docs);
   }
 
   replaceWorktreeArchives(
@@ -438,12 +538,8 @@ export class ChatSearchIndexer {
     worktreeId: string,
     data: ArchivedChatsFile,
   ): void {
-    this.replaceScope(
-      projectId,
-      worktreeId,
-      'worktree-archive',
-      archiveTabsToDocs(projectId, worktreeId, data),
-    );
+    const docs = archiveTabsToDocs(projectId, worktreeId, data);
+    this.replaceScope(projectId, worktreeId, 'worktree-archive', docs);
   }
 
   replaceWorktreePlans(
@@ -451,12 +547,8 @@ export class ChatSearchIndexer {
     worktreeId: string,
     plans: readonly TrackedPlanIndexEntry[],
   ): void {
-    this.replaceScope(
-      projectId,
-      worktreeId,
-      'plan',
-      plansToDocs(projectId, worktreeId, plans),
-    );
+    const docs = plansToDocs(projectId, worktreeId, plans);
+    this.replaceScope(projectId, worktreeId, 'plan', docs);
   }
 
   replaceArchivedContainer(
@@ -482,7 +574,7 @@ export class ChatSearchIndexer {
       (total, doc) => total + doc.messageCount,
       0,
     );
-    this.replaceScope(projectId, containerId, 'archived-container', [
+    const docs = [
       buildArchivedContainerEntityDoc(
         manifest,
         summary,
@@ -503,7 +595,8 @@ export class ChatSearchIndexer {
             expiresAt,
           }),
         ),
-    ]);
+    ];
+    this.replaceScope(projectId, containerId, 'archived-container', docs);
   }
 
   deleteArchivedContainerDocs(projectId: string, containerId: string): void {
@@ -547,6 +640,7 @@ export class ChatSearchIndexer {
   ): void {
     const docId = `${projectId}/${worktreeId}/${chatId}/${source}`;
     withImmediateTransaction(this.db, () => {
+      this.deleteChildDocuments(docId);
       this.db.prepare('DELETE FROM chat_fts WHERE doc_id = ?').run(docId);
       this.db.prepare('DELETE FROM chat_docs WHERE doc_id = ?').run(docId);
     });
@@ -554,6 +648,7 @@ export class ChatSearchIndexer {
 
   deleteDocById(docId: string): void {
     withImmediateTransaction(this.db, () => {
+      this.deleteChildDocuments(docId);
       this.db.prepare('DELETE FROM chat_fts WHERE doc_id = ?').run(docId);
       this.db.prepare('DELETE FROM chat_docs WHERE doc_id = ?').run(docId);
     });
@@ -609,6 +704,15 @@ export class ChatSearchIndexer {
 
   deleteSourceFile(fileKey: string): void {
     this.db.prepare('DELETE FROM source_files WHERE file_key = ?').run(fileKey);
+  }
+
+  getMetadata(key: string): string | null {
+    const result: unknown = this.db
+      .prepare('SELECT value FROM search_meta WHERE key = ?')
+      .get(key);
+    if (result === undefined) return null;
+    const row = requireSqliteRow(result);
+    return typeof row.value === 'string' ? row.value : null;
   }
 
   setMetadata(key: string, value: string): void {
@@ -693,42 +797,325 @@ export class ChatSearchIndexer {
     this.db.prepare('DELETE FROM chat_search_staging WHERE job = ?').run(job);
   }
 
+  /** Creates a retained-set stage owned by one indexed parent chat. */
+  public beginChildDocumentStage(parentDocId: string): string {
+    if (parentDocId.length === 0)
+      throw new Error('A child-document stage requires a parent document');
+    this.db.exec(
+      `CREATE TEMP TABLE IF NOT EXISTS chat_search_child_stages (
+         job TEXT PRIMARY KEY,
+         parent_doc_id TEXT NOT NULL
+       );
+       CREATE TEMP TABLE IF NOT EXISTS chat_search_child_staging (
+         job TEXT NOT NULL,
+         doc_id TEXT NOT NULL,
+         document TEXT,
+         fingerprint TEXT,
+         reused INTEGER NOT NULL,
+         PRIMARY KEY (job, doc_id)
+       )`,
+    );
+    const job = randomUUID();
+    this.db
+      .prepare(
+        'INSERT INTO chat_search_child_stages (job, parent_doc_id) VALUES (?, ?)',
+      )
+      .run(job, parentDocId);
+    return job;
+  }
+
+  /** Records a fingerprint match without reading the stored FTS body back. */
+  public reuseChildDocument(
+    job: string,
+    childDocId: string,
+    fingerprint: string,
+  ): boolean {
+    const parentDocId = this.childDocumentStageParent(job);
+    if (!this.isReusableChildDocument(childDocId, parentDocId, fingerprint))
+      return false;
+    this.db
+      .prepare(
+        `INSERT INTO chat_search_child_staging
+           (job, doc_id, document, fingerprint, reused)
+         VALUES (?, ?, NULL, ?, 1)`,
+      )
+      .run(job, childDocId, fingerprint);
+    return true;
+  }
+
+  /** Stages a newly read child body; it is not visible until the whole set commits. */
+  public stageChildDocument(job: string, doc: ChatSearchDoc): void {
+    const parentDocId = this.childDocumentStageParent(job);
+    if (
+      !isChatSearchDoc(doc) ||
+      doc.documentKind !== 'chat-child' ||
+      doc.parentDocId !== parentDocId ||
+      typeof doc.transcriptFingerprint !== 'string' ||
+      doc.transcriptFingerprint.length === 0
+    ) {
+      throw new Error('Invalid staged child search document');
+    }
+    this.db
+      .prepare(
+        `INSERT INTO chat_search_child_staging
+           (job, doc_id, document, fingerprint, reused)
+         VALUES (?, ?, ?, ?, 0)`,
+      )
+      .run(job, doc.docId, JSON.stringify(doc), doc.transcriptFingerprint);
+  }
+
+  /** Atomically replaces exactly one parent's child set if that parent still exists. */
+  public commitChildDocumentStage(job: string): boolean {
+    const parentDocId = this.childDocumentStageParent(job);
+    try {
+      return withImmediateTransaction(this.db, () => {
+        const parentResult: unknown = this.db
+          .prepare(
+            `SELECT project_id, worktree_id, chat_id, source
+             FROM chat_docs WHERE doc_id = ? AND document_kind = 'chat'`,
+          )
+          .get(parentDocId);
+        if (parentResult === undefined) return false;
+        const parent = requireSqliteRow(parentResult);
+        const stagedMetadata = this.db.prepare(
+          `SELECT doc_id, fingerprint, reused, document IS NOT NULL AS has_document
+           FROM chat_search_child_staging WHERE job = ? ORDER BY doc_id`,
+        );
+        const stagedMetadataRows = stagedMetadata.iterate(job);
+        for (
+          let next = stagedMetadataRows.next();
+          !next.done;
+          next = stagedMetadataRows.next()
+        ) {
+          const row = requireSqliteRow(next.value);
+          if (
+            typeof row.doc_id !== 'string' ||
+            typeof row.fingerprint !== 'string'
+          )
+            throw new Error('Invalid child search stage row');
+          if (row.reused === 1) {
+            if (row.has_document !== 0) {
+              throw new Error('Invalid reused child search stage row');
+            }
+            if (
+              !this.isReusableChildDocument(
+                row.doc_id,
+                parentDocId,
+                row.fingerprint,
+              )
+            )
+              return false;
+            continue;
+          }
+          if (row.reused !== 0 || row.has_document !== 1)
+            throw new Error('Invalid staged child search document');
+        }
+
+        this.db
+          .prepare(
+            `DELETE FROM chat_fts
+             WHERE doc_id IN (
+               SELECT doc_id FROM chat_docs
+               WHERE parent_doc_id = ? AND document_kind = 'chat-child'
+                 AND doc_id NOT IN (
+                   SELECT doc_id FROM chat_search_child_staging WHERE job = ?
+                 )
+             )`,
+          )
+          .run(parentDocId, job);
+        this.db
+          .prepare(
+            `DELETE FROM chat_docs
+             WHERE parent_doc_id = ? AND document_kind = 'chat-child'
+               AND doc_id NOT IN (
+                 SELECT doc_id FROM chat_search_child_staging WHERE job = ?
+               )`,
+          )
+          .run(parentDocId, job);
+
+        const stagedDocuments = this.db.prepare(
+          `SELECT doc_id, document, fingerprint
+           FROM chat_search_child_staging
+           WHERE job = ? AND reused = 0 ORDER BY doc_id`,
+        );
+        const stagedDocumentsRows = stagedDocuments.iterate(job);
+        for (
+          let next = stagedDocumentsRows.next();
+          !next.done;
+          next = stagedDocumentsRows.next()
+        ) {
+          const row = requireSqliteRow(next.value);
+          if (
+            typeof row.doc_id !== 'string' ||
+            typeof row.document !== 'string' ||
+            typeof row.fingerprint !== 'string'
+          )
+            throw new Error('Invalid staged child search document');
+          const parsed: unknown = JSON.parse(row.document);
+          if (
+            !isChatSearchDoc(parsed) ||
+            parsed.documentKind !== 'chat-child' ||
+            parsed.parentDocId !== parentDocId ||
+            parsed.docId !== row.doc_id ||
+            parsed.transcriptFingerprint !== row.fingerprint ||
+            parsed.projectId !== parent.project_id ||
+            parsed.worktreeId !== parent.worktree_id ||
+            parsed.chatId !== parent.chat_id ||
+            parsed.source !== parent.source
+          ) {
+            throw new Error('Invalid staged child search document');
+          }
+          this.db
+            .prepare('DELETE FROM chat_fts WHERE doc_id = ?')
+            .run(parsed.docId);
+          this.writeDoc(parsed);
+        }
+        this.updateChildMetadataFromParent(parentDocId);
+        return true;
+      });
+    } finally {
+      this.discardChildDocumentStage(job);
+    }
+  }
+
+  public discardChildDocumentStage(job: string): void {
+    this.db
+      .prepare('DELETE FROM chat_search_child_staging WHERE job = ?')
+      .run(job);
+    this.db
+      .prepare('DELETE FROM chat_search_child_stages WHERE job = ?')
+      .run(job);
+  }
+
+  private childDocumentStageParent(job: string): string {
+    const result: unknown = this.db
+      .prepare(
+        'SELECT parent_doc_id FROM chat_search_child_stages WHERE job = ?',
+      )
+      .get(job);
+    if (result === undefined) throw new Error('Unknown child-document stage');
+    const row = requireSqliteRow(result);
+    if (typeof row.parent_doc_id !== 'string')
+      throw new Error('Invalid child-document stage');
+    return row.parent_doc_id;
+  }
+
+  /** Validates ownership and identity without projecting any indexed body text. */
+  private isReusableChildDocument(
+    childDocId: string,
+    parentDocId: string,
+    fingerprint: string,
+  ): boolean {
+    const result: unknown = this.db
+      .prepare(
+        `SELECT d.project_id, d.worktree_id, d.chat_id, d.source,
+                d.delegation_id, d.run_generation
+         FROM chat_docs d
+         WHERE d.doc_id = ? AND d.parent_doc_id = ?
+           AND d.document_kind = 'chat-child'
+           AND d.transcript_fingerprint = ?
+           AND EXISTS (SELECT 1 FROM chat_fts f WHERE f.doc_id = d.doc_id)`,
+      )
+      .get(childDocId, parentDocId, fingerprint);
+    if (result === undefined) return false;
+    const row = requireSqliteRow(result);
+    const runGeneration =
+      typeof row.run_generation === 'bigint'
+        ? Number(row.run_generation)
+        : row.run_generation;
+    if (
+      typeof row.project_id !== 'string' ||
+      typeof row.worktree_id !== 'string' ||
+      typeof row.chat_id !== 'string' ||
+      typeof row.source !== 'string' ||
+      typeof row.delegation_id !== 'string' ||
+      row.delegation_id.length === 0 ||
+      typeof runGeneration !== 'number' ||
+      !Number.isSafeInteger(runGeneration) ||
+      runGeneration < 0
+    ) {
+      return false;
+    }
+    return (
+      parentDocId ===
+        `${row.project_id}/${row.worktree_id}/${row.chat_id}/${row.source}` &&
+      childDocId ===
+        `chat-child:${JSON.stringify([
+          row.project_id,
+          row.worktree_id,
+          row.chat_id,
+          row.source,
+          row.delegation_id,
+          runGeneration,
+        ])}`
+    );
+  }
+
   private replaceScope(
     projectId: string,
     worktreeId: string,
     source: ChatSearchSource,
     docs: Iterable<ChatSearchDoc>,
   ): void {
-    withImmediateTransaction(this.db, () => {
-      const existing: unknown[] = this.db
-        .prepare(
-          `SELECT doc_id FROM chat_docs
-           WHERE project_id = ? AND worktree_id = ? AND source = ?`,
-        )
-        .all(projectId, worktreeId, source);
-      const deleteFts = this.db.prepare(
-        'DELETE FROM chat_fts WHERE doc_id = ?',
-      );
-      for (const result of existing) {
-        const row = requireSqliteRow(result);
-        if (typeof row.doc_id === 'string') deleteFts.run(row.doc_id);
-      }
+    const job = randomUUID();
+    this.db.exec(
+      `CREATE TEMP TABLE IF NOT EXISTS chat_search_retained_parents (
+         job TEXT NOT NULL,
+         doc_id TEXT NOT NULL,
+         PRIMARY KEY (job, doc_id)
+       )`,
+    );
+    try {
+      withImmediateTransaction(this.db, () => {
+        const rememberParent = this.db.prepare(
+          'INSERT INTO chat_search_retained_parents (job, doc_id) VALUES (?, ?)',
+        );
+        const deleteFts = this.db.prepare(
+          'DELETE FROM chat_fts WHERE doc_id = ?',
+        );
+        const iterator = docs[Symbol.iterator]();
+        for (let row = iterator.next(); !row.done; row = iterator.next()) {
+          const doc = row.value;
+          if (!isChatSearchDoc(doc) || doc.documentKind === 'chat-child')
+            throw new Error('Invalid parent search scope document');
+          deleteFts.run(doc.docId);
+          this.writeDoc(doc);
+          rememberParent.run(job, doc.docId);
+          this.updateChildMetadataFromParent(doc.docId);
+        }
+
+        const obsoleteDocs = `
+          SELECT d.doc_id FROM chat_docs d
+          WHERE d.project_id = ? AND d.worktree_id = ? AND d.source = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM chat_search_retained_parents retained
+              WHERE retained.job = ?
+                AND retained.doc_id = CASE
+                  WHEN d.document_kind = 'chat-child' THEN d.parent_doc_id
+                  ELSE d.doc_id
+                END
+            )`;
+        this.db
+          .prepare(`DELETE FROM chat_fts WHERE doc_id IN (${obsoleteDocs})`)
+          .run(projectId, worktreeId, source, job);
+        this.db
+          .prepare(`DELETE FROM chat_docs WHERE doc_id IN (${obsoleteDocs})`)
+          .run(projectId, worktreeId, source, job);
+      });
+    } finally {
       this.db
-        .prepare(
-          `DELETE FROM chat_docs
-           WHERE project_id = ? AND worktree_id = ? AND source = ?`,
-        )
-        .run(projectId, worktreeId, source);
-      const iterator = docs[Symbol.iterator]();
-      for (let row = iterator.next(); !row.done; row = iterator.next())
-        this.writeDoc(row.value);
-    });
+        .prepare('DELETE FROM chat_search_retained_parents WHERE job = ?')
+        .run(job);
+    }
   }
 
   public upsertDoc(doc: ChatSearchDoc): void {
+    if (!isChatSearchDoc(doc)) throw new Error('Invalid chat search document');
     withImmediateTransaction(this.db, () => {
       this.db.prepare('DELETE FROM chat_fts WHERE doc_id = ?').run(doc.docId);
       this.writeDoc(doc);
+      if (doc.documentKind !== 'chat-child')
+        this.updateChildMetadataFromParent(doc.docId);
     });
   }
 
@@ -817,6 +1204,7 @@ export class ChatSearchIndexer {
           .run(doc.title, doc.docId);
       this.writeDocMetadata(doc);
       this.writeActiveRow(doc);
+      this.updateChildMetadataFromParent(doc.docId);
       return true;
     });
   }
@@ -858,6 +1246,7 @@ export class ChatSearchIndexer {
         this.db
           .prepare('UPDATE chat_fts SET title = ? WHERE doc_id = ?')
           .run(doc.title, doc.docId);
+      this.updateChildMetadataFromParent(doc.docId);
       return true;
     });
   }
@@ -891,10 +1280,11 @@ export class ChatSearchIndexer {
     this.db
       .prepare(
         `INSERT INTO chat_docs (
-           doc_id, project_id, worktree_id, chat_id, source, document_kind, title,
-           description, provider_type, updated_at, archived_at, message_count,
-           expires_at, review_status, transcript_fingerprint
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         doc_id, project_id, worktree_id, chat_id, source, document_kind, title,
+         description, provider_type, updated_at, archived_at, message_count,
+           expires_at, review_status, transcript_fingerprint, parent_doc_id,
+           delegation_id, run_generation
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(doc_id) DO UPDATE SET
            project_id = excluded.project_id,
            worktree_id = excluded.worktree_id,
@@ -909,7 +1299,10 @@ export class ChatSearchIndexer {
            message_count = excluded.message_count,
            expires_at = excluded.expires_at,
            review_status = excluded.review_status,
-           transcript_fingerprint = excluded.transcript_fingerprint`,
+           transcript_fingerprint = excluded.transcript_fingerprint,
+           parent_doc_id = excluded.parent_doc_id,
+           delegation_id = excluded.delegation_id,
+           run_generation = excluded.run_generation`,
       )
       .run(
         doc.docId,
@@ -927,7 +1320,85 @@ export class ChatSearchIndexer {
         doc.expiresAt,
         doc.reviewStatus ?? null,
         doc.transcriptFingerprint ?? null,
+        doc.parentDocId ?? null,
+        doc.childLocator?.delegationId ?? null,
+        doc.childLocator?.runGeneration ?? null,
       );
+  }
+
+  /** Keep a parent's current display and retention metadata on its children. */
+  private updateChildMetadataFromParent(parentDocId: string): void {
+    this.db
+      .prepare(
+        `WITH parent AS (
+           SELECT doc_id, project_id, worktree_id, chat_id, source, title,
+                  description, provider_type, updated_at, archived_at,
+                  expires_at, message_count, review_status
+           FROM chat_docs WHERE doc_id = ? AND document_kind = 'chat'
+         )
+         UPDATE chat_docs SET
+           project_id = (SELECT project_id FROM parent),
+           worktree_id = (SELECT worktree_id FROM parent),
+           chat_id = (SELECT chat_id FROM parent),
+           source = (SELECT source FROM parent),
+           title = (SELECT title FROM parent),
+           description = (SELECT description FROM parent),
+           provider_type = (SELECT provider_type FROM parent),
+           updated_at = (SELECT updated_at FROM parent),
+           archived_at = (SELECT archived_at FROM parent),
+           expires_at = (SELECT expires_at FROM parent),
+           message_count = (SELECT message_count FROM parent),
+           review_status = (SELECT review_status FROM parent)
+         WHERE document_kind = 'chat-child'
+           AND parent_doc_id = (SELECT doc_id FROM parent)
+           AND (
+             project_id IS NOT (SELECT project_id FROM parent) OR
+             worktree_id IS NOT (SELECT worktree_id FROM parent) OR
+             chat_id IS NOT (SELECT chat_id FROM parent) OR
+             source IS NOT (SELECT source FROM parent) OR
+             title IS NOT (SELECT title FROM parent) OR
+             description IS NOT (SELECT description FROM parent) OR
+             provider_type IS NOT (SELECT provider_type FROM parent) OR
+             updated_at IS NOT (SELECT updated_at FROM parent) OR
+             archived_at IS NOT (SELECT archived_at FROM parent) OR
+             expires_at IS NOT (SELECT expires_at FROM parent) OR
+             message_count IS NOT (SELECT message_count FROM parent) OR
+             review_status IS NOT (SELECT review_status FROM parent)
+           )`,
+      )
+      .run(parentDocId);
+    this.db
+      .prepare(
+        `WITH parent AS (
+           SELECT doc_id, title FROM chat_docs
+           WHERE doc_id = ? AND document_kind = 'chat'
+         )
+         UPDATE chat_fts SET title = (SELECT title FROM parent)
+         WHERE title IS NOT (SELECT title FROM parent)
+           AND doc_id IN (
+             SELECT child.doc_id FROM chat_docs child, parent
+             WHERE child.parent_doc_id = parent.doc_id
+               AND child.document_kind = 'chat-child'
+           )`,
+      )
+      .run(parentDocId);
+  }
+
+  private deleteChildDocuments(parentDocId: string): void {
+    this.db
+      .prepare(
+        `DELETE FROM chat_fts WHERE doc_id IN (
+           SELECT doc_id FROM chat_docs
+           WHERE parent_doc_id = ? AND document_kind = 'chat-child'
+         )`,
+      )
+      .run(parentDocId);
+    this.db
+      .prepare(
+        `DELETE FROM chat_docs
+         WHERE parent_doc_id = ? AND document_kind = 'chat-child'`,
+      )
+      .run(parentDocId);
   }
 
   private deleteMatchingDocs(whereClause: string, params: string[]): void {

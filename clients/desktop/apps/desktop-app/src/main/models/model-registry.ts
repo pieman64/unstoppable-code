@@ -38,6 +38,8 @@ import {
 } from '@canopy/desktop-shared/node/model-harnesses';
 import type { AgentModelRegistryEntry } from '@canopy/desktop-shared/types/agent-models';
 import { getOllamaService } from '../ollama';
+import { isOpenCodeGatewayRouteSupported } from '@canopy/desktop-shared/lib/opencode-gateway-models';
+import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';
 import { getAiGatewayCatalogStatus } from '../ai-gateway-models/status';
 
 type ModelRegistryBroadcastHandler = (snapshot: ModelRegistrySnapshot) => void;
@@ -54,9 +56,23 @@ let assignmentRevision = 0;
 let assignmentStore: ModelHarnessOverrideStore | undefined;
 let assignmentInitialization: Promise<void> | undefined;
 
+function getHostModelHarnessCatalog(): ReturnType<
+  typeof getCurrentModelHarnessCatalog
+> {
+  return {
+    ...getCurrentModelHarnessCatalog(),
+    openCodeGatewayModels:
+      peekOpenCodeRuntimeAvailability() === true
+        ? getGatewayModelEntries()
+            .filter(isOpenCodeGatewayRouteSupported)
+            .map((entry) => entry.modelId)
+        : [],
+  };
+}
+
 function getAssignmentStore(): ModelHarnessOverrideStore {
   assignmentStore ??= new ModelHarnessOverrideStore({
-    getCatalog: getCurrentModelHarnessCatalog,
+    getCatalog: getHostModelHarnessCatalog,
   });
   return assignmentStore;
 }
@@ -76,7 +92,7 @@ export function refreshModelHarnessAssignments(
 ): ReturnType<typeof getModelHarnessAssignmentSnapshot> {
   const previous = getModelHarnessAssignmentSnapshot();
   const candidate = buildModelHarnessAssignmentSnapshot({
-    catalog: getCurrentModelHarnessCatalog(),
+    catalog: getHostModelHarnessCatalog(),
     overrides,
     revision: assignmentRevision,
   });
@@ -94,6 +110,11 @@ export function refreshModelHarnessAssignments(
 export async function initializeModelHarnessRegistry(): Promise<void> {
   assignmentInitialization ??= (async (): Promise<void> => {
     const overrides = await getAssignmentStore().load();
+    if (Object.values(overrides).includes('opencode')) {
+      const { isOpenCodeRuntimeAvailable } =
+        await import('../opencode/runtime-availability');
+      await isOpenCodeRuntimeAvailable();
+    }
     refreshModelHarnessAssignments(overrides);
     if (Object.values(overrides).includes('cursor')) {
       // Give saved defaults a short opportunity to hydrate before the window
@@ -142,8 +163,18 @@ export const modelHarnessAssignmentController = {
   },
   async set(input: {
     modelId: string;
-    harness: 'claude' | 'codex' | 'cursor';
+    harness: 'claude' | 'codex' | 'cursor' | 'opencode';
   }): Promise<ReturnType<typeof getModelHarnessAssignmentSnapshot>> {
+    if (input.harness === 'opencode') {
+      const { isOpenCodeRuntimeAvailable } =
+        await import('../opencode/runtime-availability');
+      if (!(await isOpenCodeRuntimeAvailable())) {
+        throw new ModelHarnessPolicyError(
+          'INVALID_HARNESS',
+          'OpenCode is unavailable for this model',
+        );
+      }
+    }
     if (input.harness === 'cursor') {
       // Runtime status is local filesystem/provider plumbing. Defer that graph
       // until a Cursor assignment is requested; native assignments stay light.
@@ -270,7 +301,7 @@ function buildSnapshotFromOllamaModels(
     aliases: getModelAliases(),
     aiGatewayModels,
     gatewayRoutes,
-    harnessAssignments: getModelHarnessAssignmentSnapshot(),
+    harnessAssignments: refreshModelHarnessAssignments(),
     ...(aiGatewayCatalogStatus ? { aiGatewayCatalogStatus } : {}),
   };
 }

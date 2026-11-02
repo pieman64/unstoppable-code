@@ -1,16 +1,15 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { ReactNode } from 'react';
-import { ErrorBanner } from '@canopy/ui-shared/components';
-import { Mail } from '@canopy/ui-shared/icons/AppIcons';
+import { ErrorBanner, SettingsSelect } from '@canopy/ui-shared/components';
 import {
   DIGEST_WEEKDAY_LABELS,
   digestOrdinalDay,
   parseDigestPreferences,
 } from '@canopy/protocol/digests';
 import {
+  SETTINGS_CARD_ROW_CLASS,
   SettingsCard,
   SettingsCardSwitch,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
@@ -241,7 +240,6 @@ export function DigestPreferencesCard({
 
   return (
     <SettingsCard
-      icon={<Mail size={18} />}
       title={title}
       subtitle={description}
       testId={`${testIdPrefix}-digest-preferences`}
@@ -251,7 +249,7 @@ export function DigestPreferencesCard({
         onRetry={error?.retryLoad === true ? retryLoad : undefined}
       />
 
-      <ul className="mt-4 divide-y overflow-hidden rounded-lg border">
+      <ul className="flex flex-col">
         {DIGEST_CADENCES.map((cadence) => {
           const checked = preferences[cadence.field];
           const anchorField =
@@ -261,10 +259,7 @@ export function DigestPreferencesCard({
                 ? 'monthlyAnchorDay'
                 : null;
           return (
-            <li
-              key={cadence.key}
-              className="flex items-center justify-between gap-4 px-4 py-3"
-            >
+            <li key={cadence.key} className={SETTINGS_CARD_ROW_CLASS}>
               <div className="min-w-0">
                 <p className="text-s font-medium fg-primary">{cadence.label}</p>
                 <p className="text-xs fg-secondary">
@@ -277,30 +272,29 @@ export function DigestPreferencesCard({
                         ? 'Send on'
                         : 'Send on day'}
                     </span>
-                    <SettingsControlSelect
-                      value={preferences[anchorField]}
+                    <SettingsSelect
+                      value={String(preferences[anchorField])}
                       // Unresolved state carries placeholder anchors, so writing
                       // from it would persist a value the user never chose —
                       // the same hazard the toggles guard against.
                       disabled={savingField !== null || !resolved}
                       aria-label={`${cadence.label} digest anchor`}
                       data-testid={`${testIdPrefix}-digest-anchor-${cadence.field}`}
-                      onChange={(event) =>
-                        handleAnchorChange(anchorField, event.target.value)
+                      onValueChange={(value) =>
+                        handleAnchorChange(anchorField, value)
                       }
-                    >
-                      {anchorField === 'weeklyAnchorDay'
-                        ? WEEKLY_ANCHOR_OPTIONS.map((day) => (
-                            <option key={day} value={day}>
-                              {DIGEST_WEEKDAY_LABELS[day - 1]}
-                            </option>
-                          ))
-                        : MONTHLY_ANCHOR_OPTIONS.map((day) => (
-                            <option key={day} value={day}>
-                              {digestOrdinalDay(day)}
-                            </option>
-                          ))}
-                    </SettingsControlSelect>
+                      options={
+                        anchorField === 'weeklyAnchorDay'
+                          ? WEEKLY_ANCHOR_OPTIONS.map((day) => ({
+                              value: String(day),
+                              label: DIGEST_WEEKDAY_LABELS[day - 1],
+                            }))
+                          : MONTHLY_ANCHOR_OPTIONS.map((day) => ({
+                              value: String(day),
+                              label: digestOrdinalDay(day),
+                            }))
+                      }
+                    />
                   </label>
                 )}
               </div>
@@ -319,7 +313,7 @@ export function DigestPreferencesCard({
         })}
       </ul>
 
-      {footer ? <div className="mt-4">{footer}</div> : null}
+      {footer ? <div className="border-t py-3">{footer}</div> : null}
     </SettingsCard>
   );
 }

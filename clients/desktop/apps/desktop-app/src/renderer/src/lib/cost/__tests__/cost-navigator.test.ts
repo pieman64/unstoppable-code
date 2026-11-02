@@ -1,4 +1,5 @@
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import type { CostNavigator } from '@canopy/app-core';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import { openAutomationRunDestination } from '@/components/automations/resolveAutomationRunDestination';
 import { requestChatPanelReveal } from '@/lib/chatPanelReveal';
@@ -47,6 +48,16 @@ const RETAINED: CostScopeRef = {
   containerId: 'archive-1',
 };
 
+function requireCostNavigatorMethod<K extends keyof CostNavigator>(
+  name: K,
+): NonNullable<CostNavigator[K]> {
+  const method = DESKTOP_COST_NAVIGATOR[name];
+  if (method === undefined) {
+    throw new Error(`Desktop cost navigator does not implement ${name}`);
+  }
+  return method;
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   useChatStore.setState({
@@ -72,33 +83,33 @@ async function flush(): Promise<void> {
 }
 
 test('routes every navigator target to the desktop destination', async () => {
-  DESKTOP_COST_NAVIGATOR.openSessionBreakdown(ENTRY, 'chat-1');
+  requireCostNavigatorMethod('openSessionBreakdown')(ENTRY, 'chat-1');
   expect(openSessionBreakdownPanel).toHaveBeenCalledWith(
     { projectId: 'project-1', worktreeId: 'worktree-1' },
     'chat-1',
   );
 
-  DESKTOP_COST_NAVIGATOR.openCostPanel(ENTRY);
+  requireCostNavigatorMethod('openCostPanel')(ENTRY);
   expect(openCostPanel).toHaveBeenCalledWith({
     projectId: 'project-1',
     worktreeId: 'worktree-1',
   });
 
-  DESKTOP_COST_NAVIGATOR.openPipelineRun(ENTRY, 'run-1');
+  requireCostNavigatorMethod('openPipelineRun')(ENTRY, 'run-1');
   expect(openPipelineExecutionFromUi).toHaveBeenCalledWith({
     executionId: 'run-1',
     owner: { projectId: 'project-1', worktreeId: 'worktree-1' },
     target: { entry: 'cost' },
   });
 
-  DESKTOP_COST_NAVIGATOR.openPipelineJob(ENTRY, 'run-2', 'job-3');
+  requireCostNavigatorMethod('openPipelineJob')(ENTRY, 'run-2', 'job-3');
   expect(openPipelineExecutionFromUi).toHaveBeenCalledWith({
     executionId: 'run-2',
     owner: { projectId: 'project-1', worktreeId: 'worktree-1' },
     target: { jobId: 'job-3' },
   });
 
-  DESKTOP_COST_NAVIGATOR.openSubagent(ENTRY, {
+  requireCostNavigatorMethod('openSubagent')(ENTRY, {
     chatId: 'root-1',
     subagentId: 'agent-1',
     kind: 'claude_task',
@@ -139,10 +150,10 @@ describe('opening a subagent', () => {
     });
     jest.mocked(openSubagentChatPanel).mockImplementationOnce(() => {
       order.push('open-panel');
-      return Promise.resolve();
+      return Promise.resolve({ status: 'failed' });
     });
 
-    DESKTOP_COST_NAVIGATOR.openSubagent(ENTRY, {
+    requireCostNavigatorMethod('openSubagent')(ENTRY, {
       chatId: 'root-1',
       subagentId: 'agent-1',
       kind: 'delegation',
@@ -163,7 +174,7 @@ describe('opening a subagent', () => {
       transcriptLoaded: true,
     } as Partial<ChatTab>);
 
-    DESKTOP_COST_NAVIGATOR.openSubagent(ENTRY, {
+    requireCostNavigatorMethod('openSubagent')(ENTRY, {
       chatId: 'root-1',
       subagentId: 'agent-1',
       kind: 'delegation',
@@ -183,7 +194,7 @@ describe('opening a subagent', () => {
       .mocked(loadChatTranscriptPage)
       .mockRejectedValueOnce(new Error('offline'));
 
-    DESKTOP_COST_NAVIGATOR.openSubagent(ENTRY, {
+    requireCostNavigatorMethod('openSubagent')(ENTRY, {
       chatId: 'root-1',
       subagentId: 'agent-1',
       kind: 'delegation',
@@ -234,7 +245,7 @@ test('opens an archived root chat read-only instead of a subagent panel that can
     selectWorktree,
   });
   try {
-    DESKTOP_COST_NAVIGATOR.openSubagent(ENTRY, {
+    requireCostNavigatorMethod('openSubagent')(ENTRY, {
       chatId: 'root-archived',
       subagentId: 'agent-1',
       kind: 'claude_task',
@@ -331,7 +342,7 @@ describe('an archived Cowork chat', () => {
   it('opens its archived root chat on the Cowork page for a subagent', async () => {
     seedArchivedChat(true);
 
-    DESKTOP_COST_NAVIGATOR.openSubagent(
+    requireCostNavigatorMethod('openSubagent')(
       { kind: 'entry', ...COWORK_SCOPE },
       { chatId: 'cowork-archived', subagentId: 'agent-1', kind: 'delegation' },
     );
@@ -357,16 +368,16 @@ test('maps cost subagent kinds to their panel kinds', () => {
 });
 
 test('ignores every navigation request for a retained scope', () => {
-  DESKTOP_COST_NAVIGATOR.openSessionBreakdown(RETAINED, 'chat-1');
-  DESKTOP_COST_NAVIGATOR.openCostPanel(RETAINED);
-  DESKTOP_COST_NAVIGATOR.openPipelineRun(RETAINED, 'run-1');
-  DESKTOP_COST_NAVIGATOR.openPipelineJob(RETAINED, 'run-1', 'job-1');
-  DESKTOP_COST_NAVIGATOR.openSubagent(RETAINED, {
+  requireCostNavigatorMethod('openSessionBreakdown')(RETAINED, 'chat-1');
+  requireCostNavigatorMethod('openCostPanel')(RETAINED);
+  requireCostNavigatorMethod('openPipelineRun')(RETAINED, 'run-1');
+  requireCostNavigatorMethod('openPipelineJob')(RETAINED, 'run-1', 'job-1');
+  requireCostNavigatorMethod('openSubagent')(RETAINED, {
     chatId: 'root-1',
     subagentId: 'agent-1',
     kind: 'delegation',
   });
-  DESKTOP_COST_NAVIGATOR.openChat(RETAINED, 'chat-1');
+  requireCostNavigatorMethod('openChat')(RETAINED, 'chat-1');
 
   expect(openSessionBreakdownPanel).not.toHaveBeenCalled();
   expect(openCostPanel).not.toHaveBeenCalled();
@@ -437,7 +448,11 @@ test('opens a live App Advisor chat without loading an archive', async () => {
     planMode: false,
     proposalMode: 'optional' as const,
     thinkingLevel: 'high' as const,
-    modelConfig: { thinkingLevel: 'high' as const, fastMode: false },
+    modelConfig: {
+      thinkingLevel: 'high' as const,
+      speed: 'standard' as const,
+      fastMode: false,
+    },
     fastModeExplicit: false,
   };
   useChatStore.setState({

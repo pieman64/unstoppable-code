@@ -7,6 +7,7 @@ import { LoadingIndicatorStyleProvider } from '../LoadingIndicatorStyle';
 import {
   SPACE_NOTIFICATION_MENU_COPY,
   SpaceNotificationMenuStatusLine,
+  isSpaceNotificationMuted,
   spaceNotificationMenuChoices,
   spaceNotificationMenuStatus,
   spaceNotificationMenuUnavailable,
@@ -537,5 +538,54 @@ describe('notification choices in menus', () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(byTestId('menu')).not.toBeNull();
     expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isSpaceNotificationMuted', () => {
+  test('true only for a known, acknowledged Mute', () => {
+    expect(isSpaceNotificationMuted({ ...ready, override: 'mute' })).toBe(true);
+    expect(
+      isSpaceNotificationMuted({
+        ...ready,
+        override: 'mute',
+        selectionKnown: true,
+      }),
+    ).toBe(true);
+  });
+
+  test('an acknowledged Mute stays muted while a save away from it runs', () => {
+    expect(
+      isSpaceNotificationMuted({
+        status: 'saving',
+        override: 'mute',
+        pendingChoice: null,
+      }),
+    ).toBe(true);
+  });
+
+  test('false while unknown, saving toward Mute, or not muted', () => {
+    expect(isSpaceNotificationMuted(undefined)).toBe(false);
+    expect(
+      isSpaceNotificationMuted({ status: 'loading', override: 'mute' }),
+    ).toBe(false);
+    expect(
+      isSpaceNotificationMuted({
+        status: 'failed',
+        override: 'mute',
+        selectionKnown: false,
+      }),
+    ).toBe(false);
+    expect(
+      isSpaceNotificationMuted({
+        status: 'saving',
+        override: null,
+        pendingChoice: 'mute',
+      }),
+    ).toBe(false);
+    expect(isSpaceNotificationMuted({ ...ready, override: 'attention' })).toBe(
+      false,
+    );
+    expect(isSpaceNotificationMuted({ ...ready, override: 'all' })).toBe(false);
+    expect(isSpaceNotificationMuted(ready)).toBe(false);
   });
 });

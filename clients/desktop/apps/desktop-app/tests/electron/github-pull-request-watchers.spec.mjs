@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { openBackgroundDrawer } from './backgroundDrawer.mjs';
 import {
   cleanupDemoWorkspaces,
   seedDemoWorkspaces,
@@ -327,41 +328,20 @@ async function launch(userDataDir, token) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
-  await recordWatcherSends(electronApp);
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   return { electronApp, window, app };
 }
 
 /**
- * Record every watcher message the renderer sends to main, then pass it on
- * unchanged. The hidden context is the exact event payload the agent sees.
- * Installed well before the observer's first PR read is due.
+ * Every watcher message main dispatched in this app process (#5144: main, not
+ * the renderer, delivers fired watchers). The hidden context is the exact
+ * event payload the agent sees.
  */
-async function recordWatcherSends(electronApp) {
-  await electronApp.evaluate(({ ipcMain }) => {
-    const channel = 'chat:send-message';
-    const original = ipcMain._invokeHandlers?.get(channel);
-    if (typeof original !== 'function') {
-      throw new Error(`Expected a registered ${channel} handler`);
-    }
-    globalThis.__prWatcherSends = [];
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, (event, request, ...rest) => {
-      if (request?.watcherFired) {
-        globalThis.__prWatcherSends.push({
-          chatId: request.chatId,
-          text: request.text,
-          hiddenContextText: request.hiddenContext?.text ?? null,
-        });
-      }
-      return original(event, request, ...rest);
-    });
-  });
-}
-
 async function watcherSends(electronApp) {
-  return electronApp.evaluate(() => globalThis.__prWatcherSends ?? []);
+  return electronApp.evaluate(
+    () => globalThis.__CANOPY_E2E_WATCHER_DELIVERIES__ ?? [],
+  );
 }
 
 /** The JSON fired context inside the hidden `<…_watcher_event>` envelope. */
@@ -632,6 +612,17 @@ test.describe('GitHub pull request watchers against the GraphQL mock', () => {
       expect(requestKeys.slice(0, 3)).toEqual([prKey(7), prKey(8), prKey(9)]);
       expect(requestKeys.filter((key) => key === prKey(8))).toHaveLength(1);
 
+      // The composer's background drawer lists the watched pull request,
+      // from its watcher's last snapshot (D1b); the settled ones are not.
+      const drawerRow = (await openBackgroundDrawer(panel)).getByTestId(
+        `background-tray-run-github-pr:${REPOSITORY}#7`,
+      );
+      await expect(drawerRow).toContainText('#7');
+      await expect(drawerRow).toContainText('Open');
+      await expect(
+        panel.getByTestId(`background-tray-run-github-pr:${REPOSITORY}#8`),
+      ).toHaveCount(0);
+
       await setGithubScenario(TOOL_TOKEN, {
         pullRequests: {
           [prKey(7)]: {
@@ -672,6 +663,12 @@ test.describe('GitHub pull request watchers against the GraphQL mock', () => {
           timeout: 30_000,
         })
         .toBe('fired');
+      // Merged, it stays in the drawer until dismissed.
+      await expect(drawerRow).toContainText('Merged', { timeout: 30_000 });
+      await drawerRow
+        .getByTestId(`background-tray-run-github-pr:${REPOSITORY}#7-dismiss`)
+        .click();
+      await expect(drawerRow).toHaveCount(0);
       await expect(panel.getByTestId('watcher-fired-title')).toHaveCount(1, {
         timeout: 30_000,
       });

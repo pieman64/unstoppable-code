@@ -169,10 +169,10 @@ describe('terminateAllCodexAppServerProcesses', () => {
     killChildProcessGroupMock.mockImplementation(
       (child: ChildProcess, signal: NodeJS.Signals): void => {
         if (child.pid === 11 && signal === 'SIGTERM') {
-          graceful.exitCode = 0;
+          Reflect.set(graceful, 'exitCode', 0);
         }
         if (child.pid === 22 && signal === 'SIGKILL') {
-          stubborn.signalCode = 'SIGKILL';
+          Reflect.set(stubborn, 'signalCode', 'SIGKILL');
         }
       },
     );
@@ -190,7 +190,7 @@ describe('terminateAllCodexAppServerProcesses', () => {
 
   it('returns immediately when nothing is live', async () => {
     const exited = fakeProcess(33);
-    exited.exitCode = 0;
+    Reflect.set(exited, 'exitCode', 0);
     registerCodexAppServerProcess(exited);
 
     await terminateAllCodexAppServerProcesses(50);

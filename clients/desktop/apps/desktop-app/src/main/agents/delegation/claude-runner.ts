@@ -20,7 +20,10 @@ import {
   delegateAppToolGuidance,
   type DelegateCanopyTools,
 } from './canopy-tools';
-import { DelegationTranscriptRecorder } from './transcript-recorder';
+import {
+  DELEGATION_STREAM_PREVIEW_LIMITS,
+  DelegationTranscriptRecorder,
+} from './transcript-recorder';
 import {
   query,
   type Query,
@@ -33,6 +36,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { redactSecrets } from '@canopy/desktop-shared/lib/redaction';
 import { ClaudeInputDelivery } from '../claude-input-delivery';
+import { chatInputRefusal } from '@canopy/protocol/portal/input-delivery';
 import type { AgentDelegationUsage } from '@canopy/protocol/delegation';
 import { buildClaudeThinkingOptions } from '@canopy/desktop-shared/types';
 import {
@@ -45,9 +49,14 @@ import type {
   ResolvedAgentRouteSnapshot,
   RunnerAvailability,
 } from '@canopy/desktop-shared/node/delegation';
+import type { DelegationTranscriptPort } from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { getBundledClaudeBinaryPath } from '../../pipelines/config-paths';
 import { spawnClaudeCodeProcessOffMain } from '../claude-process-host-runner';
+import { recordHostedClaudeProcessDiagnostic } from '../claude-process-diagnostics';
 import { ClaudeDelegationUsage } from './claude-usage';
+import { DelegationChildNormalizer } from './child-row-normalizers';
+import type { DelegationTranscriptChange } from '@canopy/desktop-shared/node/delegation/transcript-port';
+import { delegationBlockId } from '@canopy/agent-transcript';
 import {
   getClaudeSessionCostLedger,
   readClaudeMainLoopUsage,
@@ -272,6 +281,7 @@ export function createClaudeDelegationRunner(options: {
   ledger?: (
     context: LocalDelegationContext,
   ) => Promise<ChildLedgerTools | undefined>;
+  transcriptPort?: DelegationTranscriptPort;
 }): LocalDelegationRunner {
   return new LocalDelegationRunner(
     'claude',
@@ -328,8 +338,26 @@ export function createClaudeDelegationRunner(options: {
           retryable: false,
         });
 
+      const appendChildChanges = context.appendChildChanges;
+      const childNormalizer = appendChildChanges
+        ? new DelegationChildNormalizer(
+            delegationBlockId(
+              context.request.delegationId,
+              context.request.runGeneration,
+            ),
+          )
+        : undefined;
       // Shared across every provider-turn segment inside this run generation.
-      const transcript = new DelegationTranscriptRecorder();
+      const transcript = new DelegationTranscriptRecorder(
+        childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
+      );
+      const appendNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => {
+        if (!changes.length || !appendChildChanges) return;
+        await appendChildChanges(changes);
+        childNormalizer?.acknowledge(changes);
+      };
       let costUsd = 0;
       let hasRecordedCost = false;
       let segmentIndex = 0;
@@ -384,7 +412,9 @@ export function createClaudeDelegationRunner(options: {
       // bundled source; it has not been verified against a live bundled CLI
       // process, so treat it as the documented, not yet field-verified,
       // basis for this design.
-      for (;;) {
+      // Keep the provider loop and its post-loop handling inside the row-finalization boundary.
+      // prettier-ignore
+      try { for (;;) {
         if (context.signal.aborted) break;
         const queryId = `${context.request.delegationId}:${context.request.runGeneration}:${segmentIndex}`;
         segmentIndex += 1;
@@ -509,7 +539,8 @@ export function createClaudeDelegationRunner(options: {
                             ...(bound.ok
                               ? { updatedInput: bound.value }
                               : {
-                                  permissionDecisionReason: bound.error.message,
+                                  permissionDecisionReason:
+                                    bound.error.message,
                                 }),
                           },
                         };
@@ -540,7 +571,9 @@ export function createClaudeDelegationRunner(options: {
                         return {
                           hookSpecificOutput: {
                             hookEventName: 'PreToolUse',
-                            permissionDecision: approvedMcp ? 'allow' : 'deny',
+                            permissionDecision: approvedMcp
+                              ? 'allow'
+                              : 'deny',
                             ...(approvedMcp
                               ? {}
                               : {
@@ -555,7 +588,10 @@ export function createClaudeDelegationRunner(options: {
                       // Transport-gated MCP tools are approved by the host
                       // route gate; app-owned tools are approved when they run.
                       if (
-                        selectedMcpTool(input.tool_name, selectedMcpServers) ||
+                        selectedMcpTool(
+                          input.tool_name,
+                          selectedMcpServers,
+                        ) ||
                         nested?.ownsAppTool(input.tool_name)
                       )
                         return {
@@ -592,10 +628,24 @@ export function createClaudeDelegationRunner(options: {
             spawnClaudeCodeProcess: (spawnOptions) => {
               // The SDK normally merges ambient process state. Replace it at the
               // final native boundary with the captured delegation environment.
-              const child = spawnClaudeCodeProcessOffMain({
-                ...spawnOptions,
-                env: { ...prepared.environment },
-              });
+              const processOwner = {
+                sessionKey: context.request.parent.sessionKey,
+                delegationId: context.request.delegationId,
+              };
+              const child = spawnClaudeCodeProcessOffMain(
+                {
+                  ...spawnOptions,
+                  env: { ...prepared.environment },
+                },
+                {
+                  ...processOwner,
+                  recordDiagnostic: (diagnostic) =>
+                    recordHostedClaudeProcessDiagnostic(
+                      { ...processOwner, providerType: 'claude' },
+                      diagnostic,
+                    ),
+                },
+              );
               const exited = new Promise<void>((resolve) => {
                 child.once('exit', () => resolve());
                 child.on('error', options.reportError);
@@ -685,12 +735,23 @@ export function createClaudeDelegationRunner(options: {
               attemptId: uuid,
               reason: 'The delegated SDK turn has ended',
               fallback: 'ordinary' as const,
+              refusal: chatInputRefusal('turn-ended'),
             });
-          if (!isUUID(uuid) || !sessionId)
+          if (!isUUID(uuid))
             return Promise.resolve({
               kind: 'rejected' as const,
               attemptId: uuid,
               reason: 'The delegated session cannot correlate this message',
+              refusal: chatInputRefusal('not-correlated'),
+            });
+          // Still starting: nothing is sent, so the run's end can take it.
+          if (!sessionId)
+            return Promise.resolve({
+              kind: 'rejected' as const,
+              attemptId: uuid,
+              reason: 'The delegated session cannot correlate this message',
+              fallback: 'ordinary' as const,
+              refusal: chatInputRefusal('not-correlated'),
             });
           steerMessages.set(uuid, request.message);
           return inputDelivery.submit(
@@ -711,6 +772,7 @@ export function createClaudeDelegationRunner(options: {
                     uuid,
                     session_id: sessionId,
                   };
+                  if (!inputDelivery.claimYield(uuid)) return;
                   yield steeringMessage;
                 })();
               void activeQuery.streamInput(input).catch(() => {
@@ -720,6 +782,14 @@ export function createClaudeDelegationRunner(options: {
                 );
               });
             },
+          ).then((admission) =>
+            // Refused before the SDK reported its steering support, so
+            // nothing was enqueued and the run's end can take the message.
+            admission.kind === 'rejected' &&
+            admission.fallback === undefined &&
+            admission.refusal?.code === 'steering-unavailable'
+              ? { ...admission, fallback: 'ordinary' as const }
+              : admission,
           );
         });
 
@@ -745,7 +815,10 @@ export function createClaudeDelegationRunner(options: {
             inputDelivery.observe(event);
             if (context.signal.aborted) break;
             transcript.claude(event);
-            if (transcript.limitExceeded) {
+            await appendNormalizedChanges(
+              childNormalizer ? await childNormalizer.claude(event) : [],
+            );
+            if (transcript.limitExceeded && !childNormalizer) {
               cancel();
               throw new DelegationRunnerError({
                 code: 'runtime_error',
@@ -800,7 +873,9 @@ export function createClaudeDelegationRunner(options: {
                 pendingLoadToolUseIds.add(id);
             if (event.type === 'assistant' && event.error) {
               const detail = event.message.content
-                .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+                .flatMap((block) =>
+                  block.type === 'text' ? [block.text] : [],
+                )
                 .join(' ');
               assistantError = `${event.error}${detail ? `: ${detail}` : ''}`;
             }
@@ -997,7 +1072,9 @@ export function createClaudeDelegationRunner(options: {
           // by `prepared.capabilityReload`, and `prepared` has not been
           // reassigned since — this can only fail if that invariant breaks.
           if (!capabilityReload)
-            throw new Error('Delegated capability reload host is unavailable');
+            throw new Error(
+              'Delegated capability reload host is unavailable',
+            );
           const result = await capabilityReload.controller.perform(
             capabilityReload.host,
             context.signal,
@@ -1015,21 +1092,25 @@ export function createClaudeDelegationRunner(options: {
           break;
         }
       }
-
-      prepared.capabilityReload?.controller.discardUndelivered();
-      if (streamFailure) throw streamFailure;
-      return (
-        outcome ?? {
-          status: context.signal.aborted ? 'cancelled' : 'failed',
-          usage,
-          error: {
-            code: 'runtime_error',
-            message: 'The delegated SDK stream ended before completion.',
-            retryable: false,
-          },
-        }
-      );
+        prepared.capabilityReload?.controller.discardUndelivered();
+        if (streamFailure) throw streamFailure;
+        return (
+          outcome ?? {
+            status: context.signal.aborted ? 'cancelled' : 'failed',
+            usage,
+            error: {
+              code: 'runtime_error',
+              message: 'The delegated SDK stream ended before completion.',
+              retryable: false,
+            },
+          }
+        );
+      } finally {
+        if (childNormalizer)
+          await appendNormalizedChanges(await childNormalizer.finish());
+      }
     },
     options.reportError,
+    { transcriptPort: options.transcriptPort },
   );
 }

@@ -501,6 +501,7 @@ describe('managed delegate Canopy tools', () => {
         tools.find((tool) => tool.key === key)?.description ?? '';
       expect(description).toContain('IDs your root supplied');
       expect(description).toContain("root project's saved owner");
+      expect(description.split('formerly App Advisor').length - 1).toBe(1);
       expect(description).not.toMatch(
         /any project|in any project|GetCurrentUiState|projects\.list|bots\.list/,
       );

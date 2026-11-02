@@ -30,11 +30,30 @@ export async function readProfileJson(path: string): Promise<unknown> {
   }
 }
 
+const TEMPORARY_SUFFIX =
+  /^\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+/**
+ * Whether `name` is an unrenamed temporary for `target`: writeProfileJson's
+ * `<target>.<pid>.<uuid>.tmp`, which earlier repository versions also left,
+ * or the repository's durable writer's `.<target>.<pid>.<uuid>.tmp`
+ * (writeFileAtomically). Keep both in step with their writers.
+ */
+export function isProfileJsonTemporary(name: string, target: string): boolean {
+  const prefix = [target, `.${target}`].find((candidate) =>
+    name.startsWith(candidate),
+  );
+  return (
+    prefix !== undefined && TEMPORARY_SUFFIX.test(name.slice(prefix.length))
+  );
+}
+
 export async function writeProfileJson(
   path: string,
   value: unknown,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  // Termination before the rename leaves this file; keep isProfileJsonTemporary in step.
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(temporary, 'wx', 0o600);
   try {

@@ -23,7 +23,7 @@
  * writes the slice (unmount cleanups run before mount effects within a React
  * commit, so ownership handoff cannot clobber the new owner's write).
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
   type AppAdvisorJson,
@@ -59,6 +59,7 @@ import {
 import { isClaudeTerminalEligibleChatTab } from '@/lib/chat-provider';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
+import { hasPendingUsageLimitResume } from '@/lib/scheduledUsageLimitResume';
 import type { ActiveComposerView, ActiveTranscriptView } from './types';
 import { toActiveComposerView, toActiveTranscriptView } from './types';
 
@@ -338,6 +339,16 @@ export function useWorktreeChatTabSurfaceState(
     automationsActivities,
     resolvedWorktree,
   ]);
+  // A scheduled message that fires or is deleted while its editor is open
+  // takes the editor with it; drop its id so the queue's Edit comes back.
+  const editingScheduledGone =
+    editingScheduledId !== null &&
+    !scheduledMessages.some(
+      (scheduled) => scheduled.automationId === editingScheduledId,
+    );
+  useEffect(() => {
+    if (editingScheduledGone) setEditingScheduledId(null);
+  }, [editingScheduledGone]);
 
   // Sanitized App Advisor snapshot flags (counts/booleans/ids only — never
   // prompt text or transcripts).
@@ -347,20 +358,15 @@ export function useWorktreeChatTabSurfaceState(
       composerTab.llmProviderUsageLimitBanner.dismissKey;
   const usageResumeScheduled = useMemo(() => {
     if (!resolvedWorktree || !isChatKindTab) return false;
-    const now = Date.now();
-    return automationsActivities.some((activity) => {
-      if (!activity.enabled) return false;
-      const action = activity.action;
-      return (
-        action.type === 'worktree_session_prompt' &&
-        action.purpose === 'usage_limit_resume' &&
-        action.workspaceId === resolvedWorktree.projectId &&
-        action.worktreeId === resolvedWorktree.worktreeId &&
-        action.chatId === resolvedChatTabId &&
-        activity.nextRunAt !== undefined &&
-        new Date(activity.nextRunAt).getTime() > now
-      );
-    });
+    return hasPendingUsageLimitResume(
+      automationsActivities,
+      {
+        workspaceId: resolvedWorktree.projectId,
+        worktreeId: resolvedWorktree.worktreeId,
+        chatId: resolvedChatTabId,
+      },
+      Date.now(),
+    );
   }, [
     automationsActivities,
     resolvedChatTabId,

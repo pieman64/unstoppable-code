@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type * as path from 'node:path';
 import type { CanopyWorkspaceScope } from '@canopy/protocol/canopy-core';
 import {
+  COWORK_WORKSPACE_FILE_ROOT_ID,
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
 } from '@canopy/protocol/ui-labels';
@@ -15,12 +16,14 @@ import {
   readWorkspaceManifest,
   readWorktreeList,
   type WorkspaceFileRead,
+  type WorkspaceIndexReadEntry,
 } from '../workspace/read-formats';
 import {
   buildCoworkRootCatalog,
   buildMultiRepoRootCatalog,
   buildSingleRepoRootCatalog,
   readRootVisibility,
+  resolveCoworkWorkspaceRootName,
   type FilesystemRootCatalog,
   type NamedRootPath,
 } from './root-catalog';
@@ -30,14 +33,23 @@ export interface FilesystemScopeDependencies {
   authorityId: string;
   targetId: string;
   organizationId?: string;
-  paths: Pick<typeof path, 'join' | 'resolve' | 'isAbsolute' | 'sep'>;
+  paths: Pick<
+    typeof path,
+    'join' | 'resolve' | 'isAbsolute' | 'sep' | 'basename'
+  >;
   coworkManagedDirName: string;
   readFile?(this: void, absolutePath: string): Promise<WorkspaceFileRead>;
   rootIdentity(this: void, absolutePath: string): Promise<string>;
   rootVisibility?(this: void, absolutePath: string): Promise<boolean>;
 }
 
-export type FilesystemReadOperation = 'roots' | 'directory';
+/** The `worker.filesystem.<operation>.*` namespace a scope failure uses. */
+export type FilesystemReadOperation =
+  | 'roots'
+  | 'directory'
+  | 'file'
+  | 'search'
+  | 'link';
 
 export interface FilesystemScopeCatalog extends FilesystemRootCatalog {
   containerCreatedAt: string | null;
@@ -110,6 +122,32 @@ function persistedOrganizationId(
   return owner.kind === 'organization' ? owner.owner.organizationId : undefined;
 }
 
+/** Selects trusted tracking without treating invalid selection or I/O as missing display metadata. */
+export function readFilesystemWorkspaceIndexEntry(
+  workspaceId: string,
+  input: WorkspaceFileRead,
+  operation: FilesystemReadOperation = 'roots',
+): WorkspaceIndexReadEntry<string> {
+  const fail = (
+    reason: 'invalidState' | 'notFound' = 'invalidState',
+  ): never => {
+    throw filesystemScopeError(operation, reason);
+  };
+  if (!safeId(workspaceId)) fail();
+  const index = readWorkspaceIndex(input, () => undefined);
+  if (index.authority === 'unreadable') fail();
+  const matches = index.entries.filter((entry) => entry.id === workspaceId);
+  if (
+    index.unreadableEntries.some(
+      (entry) => typeof entry.id !== 'string' || entry.id === workspaceId,
+    )
+  )
+    fail();
+  if (matches.length === 0) fail('notFound');
+  if (matches.length !== 1) fail();
+  return matches[0] ?? fail();
+}
+
 /**
  * Selects one tracked workspace and reads its manifest. Every selector is
  * validated before the first read, so an unsafe id never reaches a path join.
@@ -118,8 +156,10 @@ async function readSelectedManifest(
   scope: CanopyWorkspaceScope,
   dependencies: Omit<FilesystemScopeDependencies, 'organizationId'>,
   fail: ScopeFailure,
+  operation: FilesystemReadOperation,
 ): Promise<{
   workspaceId: string;
+  name: string;
   type: unknown;
   base: string;
   config: Record<string, unknown>;
@@ -140,23 +180,12 @@ async function readSelectedManifest(
   const workspaceId = scope.workspaceId;
   if (!workspaceId) return fail();
   const read = dependencies.readFile ?? readScopeFile;
-  const index = readWorkspaceIndex(
+  const selected = readFilesystemWorkspaceIndexEntry(
+    workspaceId,
     await read(paths.join(dataRoot, 'workspaces', 'index.json')),
-    () => undefined,
+    // Retain the operation-specific error supplied by this reader.
+    operation,
   );
-  if (index.authority === 'unreadable') fail();
-  const matches = index.entries.filter((entry) => entry.id === workspaceId);
-  if (
-    index.unreadableEntries.some(
-      (entry) => typeof entry.id !== 'string' || entry.id === workspaceId,
-    )
-  )
-    fail();
-  if (matches.length === 0) fail('notFound');
-  // Tracking duplicates cannot prove one selected authority, even if display readers retain them.
-  if (matches.length !== 1) fail();
-  const selected = matches[0];
-  if (!selected) return fail();
   const base = paths.join(dataRoot, 'workspaces', workspaceId);
   const manifest = readWorkspaceManifest(
     await read(paths.join(base, 'workspace.json')),
@@ -175,7 +204,7 @@ async function readSelectedManifest(
     const expected = key === 'workspaceId' ? workspaceId : dependencies[key];
     if (config[key] !== undefined && config[key] !== expected) fail();
   }
-  return { workspaceId, type, base, config };
+  return { workspaceId, name: selected.name, type, base, config };
 }
 
 /**
@@ -191,7 +220,12 @@ export async function resolveFilesystemScopeOwner(
   const fail: ScopeFailure = (reason = 'invalidState') => {
     throw filesystemScopeError(operation, reason);
   };
-  const { config } = await readSelectedManifest(scope, dependencies, fail);
+  const { config } = await readSelectedManifest(
+    scope,
+    dependencies,
+    fail,
+    operation,
+  );
   const organizationId = persistedOrganizationId(config, fail);
   if (
     scope.organizationId !== undefined &&
@@ -216,10 +250,11 @@ export async function readFilesystemScope(
     normalizeUuid(scope.organizationId) !== dependencies.organizationId
   )
     fail();
-  const { workspaceId, type, base, config } = await readSelectedManifest(
+  const { workspaceId, name, type, base, config } = await readSelectedManifest(
     scope,
     dependencies,
     fail,
+    operation,
   );
   if (persistedOrganizationId(config, fail) !== dependencies.organizationId)
     fail();
@@ -295,7 +330,14 @@ export async function readFilesystemScope(
       fail();
     const managed = paths.join(home, dependencies.coworkManagedDirName);
     catalog = buildCoworkRootCatalog({
-      workspace: { id: 'workspace', name: 'Workspace', absolutePath: home },
+      workspace: {
+        id: COWORK_WORKSPACE_FILE_ROOT_ID,
+        name: resolveCoworkWorkspaceRootName(
+          name,
+          paths.basename(home) || home,
+        ),
+        absolutePath: home,
+      },
       notesPath: paths.join(managed, 'notes'),
       promptsPath: paths.join(managed, 'prompts'),
       attachments: await attachments(paths.join(managed, 'attachments')),

@@ -10,4 +10,9 @@ export type ContentItem =
       | { file_id: string }
     ))
   | { type: 'input_audio'; audio_url: string }
-  | { type: 'output_text'; text: string };
+  | {
+      type: 'output_text';
+      text: string;
+      annotations?: unknown[];
+      logprobs?: unknown[];
+    };

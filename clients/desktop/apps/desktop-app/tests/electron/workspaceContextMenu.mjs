@@ -15,6 +15,27 @@ function expectedContext(contextId) {
     : { kind: 'organization', organizationId: contextId };
 }
 
+/**
+ * The suffixes the switcher's trigger label may carry after the selected
+ * context's name: other contexts with updates, then their pending shares
+ * (CAN-4783), each after a comma.
+ */
+const ATTENTION_SUFFIX =
+  /^, (?:updates in .|\d+ pending shares? in .|\d+ pending invitations?(?:, |$))/;
+
+/**
+ * Whether the trigger's accessible name names `contextName` as the selected
+ * context. The whole base label must match, so a name that only starts the
+ * same (`Acme` against `Acme, Inc`) does not, and a name with commas still
+ * does.
+ */
+export function triggerLabelNamesContext(label, contextName) {
+  const base = `Workspace context: ${contextName}`;
+  if (typeof label !== 'string' || !label.startsWith(base)) return false;
+  const rest = label.slice(base.length);
+  return rest === '' || ATTENTION_SUFFIX.test(rest);
+}
+
 /** Opens the context switcher's menu. */
 export async function openWorkspaceContextMenu(window) {
   const row = window.getByTestId('sidebar-context-row');
@@ -57,16 +78,16 @@ export async function selectWorkspaceContext(window, contextId) {
         );
   expect(label, `organization ${contextId} is listed`).toBeTruthy();
   // The switcher row names the context the renderer holds, and lists any
-  // contexts with updates after a comma.
+  // contexts with updates or pending shares after a comma.
+  const expected = `Workspace context: ${label}`;
   await expect
-    .poll(async () =>
-      (
-        await window
-          .getByTestId('sidebar-context-row')
-          .getAttribute('aria-label')
-      )?.replace(/, updates in .*$/, ''),
-    )
-    .toBe(`Workspace context: ${label}`);
+    .poll(async () => {
+      const actual = await window
+        .getByTestId('sidebar-context-row')
+        .getAttribute('aria-label');
+      return triggerLabelNamesContext(actual, label) ? expected : actual;
+    })
+    .toBe(expected);
 }
 
 /**
@@ -174,15 +195,33 @@ export async function expectWorkspaceContextListFirst(window) {
   expect(create).toBeGreaterThan(0);
   expect(
     shape
-      .slice(0, create)
+      .slice(
+        0,
+        shape.indexOf('---') === -1
+          ? create
+          : Math.min(create, shape.indexOf('---')),
+      )
       .every((id) => id.startsWith('sidebar-context-option-')),
   ).toBe(true);
+  const invitationStart = shape.indexOf('---');
+  if (invitationStart !== -1 && invitationStart < create) {
+    const invitations = shape.slice(invitationStart + 1, create);
+    expect(invitations.length).toBeGreaterThan(0);
+    expect(
+      invitations.every((id) =>
+        /^sidebar-context-invitation-(accept|review|decline)-/.test(id),
+      ),
+    ).toBe(true);
+  }
   expect(shape[create + 1]).toBe('---');
   const actions = shape.slice(create + 2);
   expect(actions.length).toBeGreaterThan(0);
   expect(
     actions.some(
-      (id) => id === '---' || id.startsWith('sidebar-context-option-'),
+      (id) =>
+        id === '---' ||
+        id.startsWith('sidebar-context-option-') ||
+        id.startsWith('sidebar-context-invitation-'),
     ),
   ).toBe(false);
   await expect(

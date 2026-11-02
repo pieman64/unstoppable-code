@@ -9,11 +9,13 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { GitExecutableStatus } from '@canopy/desktop-shared/types';
 import {
-  GitHubUsernamePrefixOption,
+  BranchNamePrefixSelect,
   MergeQueueSettingsSection,
   WindowsGitExecutableSection,
 } from '../GitTab';
 import { outermostReplayBlock } from '@/test-utils/replay';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { settingsSelectTrigger } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 import { createGitTabFailedLoadPreferences } from '../git-tab-fallback-preferences';
 
 jest.mock('../SettingsPluginPicker', () => ({
@@ -45,6 +47,7 @@ describe('WindowsGitExecutableSection', () => {
   const getGitExecutableStatus = jest.fn<Promise<GitExecutableStatus>, []>();
   const redetectGitExecutable = jest.fn<Promise<GitExecutableStatus>, []>();
   const browseGitExecutable = jest.fn<Promise<GitExecutableStatus>, []>();
+  const openExternal = jest.fn<Promise<void>, [{ url: string }]>();
 
   function setPlatform(platform: NodeJS.Platform): void {
     Object.defineProperty(window, 'platform', {
@@ -57,12 +60,14 @@ describe('WindowsGitExecutableSection', () => {
     getGitExecutableStatus.mockReset();
     redetectGitExecutable.mockReset();
     browseGitExecutable.mockReset();
+    openExternal.mockReset().mockResolvedValue(undefined);
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
         getGitExecutableStatus,
         redetectGitExecutable,
         browseGitExecutable,
+        browser: { openExternal },
       },
     });
   });
@@ -103,7 +108,7 @@ describe('WindowsGitExecutableSection', () => {
     };
   }
 
-  it('renders nothing on Linux', async () => {
+  it('shows Linux executable status using the same Git query', async () => {
     setPlatform('linux');
     getGitExecutableStatus.mockResolvedValue(makeStatus());
     const { container, cleanup } = await mount();
@@ -112,8 +117,59 @@ describe('WindowsGitExecutableSection', () => {
         container.querySelector(
           '[data-testid="settings-git-executable-section"]',
         ),
+      ).not.toBeNull();
+      expect(getGitExecutableStatus).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('offers branded Ubuntu install guidance when Linux Git is unusable and hides it after recovery', async () => {
+    setPlatform('linux');
+    getGitExecutableStatus.mockResolvedValue(
+      makeStatus({
+        platform: 'linux',
+        error: 'Selected Git executable cannot be used.',
+      }),
+    );
+    redetectGitExecutable.mockResolvedValue(
+      makeStatus({ platform: 'linux', ready: true, path: '/usr/bin/git' }),
+    );
+    const { container, cleanup } = await mount();
+    try {
+      const guidance = container.querySelector(
+        '[data-testid="git-gate-install-explanation"]',
+      );
+      expect(guidance?.textContent).toContain('Ubuntu');
+      expect(guidance?.textContent).toContain('sudo apt install git');
+      expect(guidance?.textContent).toContain('Redetect');
+      const instructions = container.querySelector(
+        '[data-testid="git-gate-manual"]',
+      );
+      if (!(instructions instanceof HTMLButtonElement))
+        throw new Error('Missing installation instructions');
+      await act(async () => {
+        instructions.click();
+        await Promise.resolve();
+      });
+      expect(openExternal).toHaveBeenCalledWith({
+        url: 'https://git-scm.com/install/linux',
+      });
+      const redetect = container.querySelector(
+        '[data-testid="settings-git-executable-redetect"]',
+      );
+      if (!(redetect instanceof HTMLButtonElement))
+        throw new Error('Missing Redetect');
+      await act(async () => {
+        redetect.click();
+        await Promise.resolve();
+      });
+      expect(
+        container.querySelector('[data-testid="git-gate-install-explanation"]'),
       ).toBeNull();
-      expect(getGitExecutableStatus).not.toHaveBeenCalled();
+      expect(
+        container.querySelector('[data-testid="git-gate-manual"]'),
+      ).toBeNull();
     } finally {
       cleanup();
     }
@@ -441,30 +497,55 @@ describe('MergeQueueSettingsSection', () => {
   });
 });
 
-describe('GitHubUsernamePrefixOption', () => {
-  function renderOption(username: string | null): HTMLOptionElement | null {
+describe('BranchNamePrefixSelect', () => {
+  function renderSelect(username: string | null): HTMLButtonElement {
     const container = document.createElement('div');
+    document.body.appendChild(container);
     const root = createRoot(container);
     act(() => {
       root.render(
-        <select>
-          <GitHubUsernamePrefixOption username={username} />
-        </select>,
+        <BranchNamePrefixSelect
+          username={username}
+          value="github"
+          onValueChange={() => undefined}
+        />,
       );
     });
-    return container.querySelector('option');
+    return settingsSelectTrigger(container, 'button[role="combobox"]');
   }
 
-  it('blocks the option naming the GitHub login from session replay', () => {
-    const option = renderOption('octo-ada');
-    expect(option?.textContent).toBe('GitHub username (octo-ada)');
-    expect(outermostReplayBlock(option)).toBe(option);
-    expect(outermostReplayBlock(option?.parentElement)).toBeNull();
+  /** The open menu, which renders outside the page. */
+  function menu(trigger: HTMLButtonElement): HTMLElement | null {
+    act(() => trigger.click());
+    const listId = trigger.getAttribute('aria-controls');
+    return listId ? document.getElementById(listId) : null;
+  }
+
+  it('blocks only the label text naming the GitHub login from session replay', () => {
+    const trigger = renderSelect('octo-ada');
+    expect(trigger.textContent).toBe('GitHub username (octo-ada)');
+    // The control itself stays recorded; only the text naming the login is
+    // blocked, on the trigger and in the menu.
+    expect(trigger.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
+    const label = Array.from(trigger.querySelectorAll('span')).find(
+      (span) => span.textContent === 'GitHub username (octo-ada)',
+    );
+    expect(outermostReplayBlock(label ?? null)).toBe(label);
+    const list = menu(trigger);
+    expect(list?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
+    expect(list?.getAttribute('aria-label')).toBeNull();
+    const option = list?.querySelector('[role="option"][data-value="github"]');
+    expect(
+      option?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)?.textContent,
+    ).toBe('GitHub username (octo-ada)');
   });
 
-  it('records the option when no login is known', () => {
-    const option = renderOption(null);
-    expect(option?.textContent).toBe('GitHub username');
-    expect(outermostReplayBlock(option)).toBeNull();
+  it('records the dropdown when no login is known', () => {
+    const trigger = renderSelect(null);
+    expect(trigger.textContent).toBe('GitHub username');
+    expect(outermostReplayBlock(trigger)).toBeNull();
+    expect(
+      menu(trigger)?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`),
+    ).toBeNull();
   });
 });

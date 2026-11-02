@@ -65,7 +65,7 @@ describe('project read contracts', () => {
       order: 'asc',
     });
   });
-  it.each(['projectId', 'taskId', 'chatId'])(
+  it.each(['projectId', 'taskId', 'chatId'] as const)(
     'shares discovery bounds for %s',
     (key) => {
       for (const type of PROJECT_READ_ACTION_TYPES) {
@@ -87,8 +87,10 @@ describe('project read contracts', () => {
             [key]: 'X:/opaque'.padEnd(PROJECT_DISCOVERY_ID_MAX, 'x'),
           }).ok,
         ).toBe(true);
-        const { [key]: omitted, ...missing } = address;
-        expect(omitted).toBeDefined();
+        expect(address[key]).toBeDefined();
+        const missing = Object.fromEntries(
+          Object.entries(address).filter(([addressKey]) => addressKey !== key),
+        );
         expect(parseProjectReadAction({ type, ...missing }).ok).toBe(false);
       }
     },

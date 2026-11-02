@@ -1,11 +1,46 @@
-import type {
-  ExecutionState,
-  JobResult,
-} from '@canopy/desktop-shared/types/pipeline';
 import type { DagJobMeta, DagJobStatus } from '@canopy/ui-shared/components';
 
+export interface DagProgressExecutionState {
+  readonly pipeline_snapshot: {
+    readonly jobs: Readonly<
+      Record<
+        string,
+        {
+          readonly name?: string;
+          readonly needs: readonly string[];
+          readonly steps: readonly { readonly id: string }[];
+        }
+      >
+    >;
+  };
+  readonly jobs: Readonly<
+    Record<
+      string,
+      {
+        readonly status: string;
+        readonly started_at?: string;
+        readonly completed_at?: string;
+        readonly steps: Readonly<Record<string, { readonly status: string }>>;
+      }
+    >
+  >;
+  readonly job_groups: Readonly<
+    Record<
+      string,
+      {
+        readonly kind: 'single' | 'matrix';
+        readonly status: string;
+        readonly variant_job_ids: readonly string[];
+        readonly started_at?: string;
+        readonly completed_at?: string;
+        readonly resolved_max_parallel?: number;
+      }
+    >
+  >;
+}
+
 export function buildDagJobs(
-  executionState: ExecutionState,
+  executionState: DagProgressExecutionState,
 ): Record<string, DagJobMeta> {
   const out: Record<string, DagJobMeta> = {};
   for (const [jobId, jobDef] of Object.entries(
@@ -17,8 +52,7 @@ export function buildDagJobs(
     const executionStatus = group?.status ?? result?.status;
     // The portable DAG surface has no separate queued state; queued work is
     // pending from the presentation layer's perspective.
-    const status: DagJobStatus | undefined =
-      executionStatus === 'queued' ? 'pending' : executionStatus;
+    const status = toDagJobStatus(executionStatus);
     const variants = (group?.variant_job_ids ?? []).map(
       (id) => executionState.jobs[id],
     );
@@ -68,8 +102,8 @@ export function buildDagJobs(
 }
 
 function getStepProgress(
-  jobResult: JobResult | undefined,
-  jobDef: { steps: { id: string }[] },
+  jobResult: DagProgressExecutionState['jobs'][string] | undefined,
+  jobDef: { readonly steps: readonly { readonly id: string }[] },
 ): string | undefined {
   if (!jobResult) return undefined;
   // Logical matrix groups have no steps of their own; variant progress is
@@ -89,4 +123,22 @@ function getStepProgress(
     }
   }
   return `${completed}/${total}`;
+}
+
+function toDagJobStatus(status: string | undefined): DagJobStatus | undefined {
+  switch (status) {
+    case 'queued':
+      return 'pending';
+    case 'pending':
+    case 'running':
+    case 'restarting':
+    case 'success':
+    case 'failure':
+    case 'paused':
+    case 'cancelled':
+    case 'skipped':
+      return status;
+    default:
+      return undefined;
+  }
 }

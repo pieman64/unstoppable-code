@@ -190,7 +190,7 @@ test('off-screen bodies stay off IPC, the switch shows the latest rows, and comp
     await expect(
       window
         .getByTestId(`panel-tab-panel-chat-${chatId}`)
-        .locator('[data-unread]'),
+        .locator('[data-testid^="panel-tab-unread-dot-"]'),
     ).toBeVisible({ timeout: 30_000 });
     await app.openOverviewPage();
     await expect(window.getByTestId('overview-notification-card')).toBeVisible({

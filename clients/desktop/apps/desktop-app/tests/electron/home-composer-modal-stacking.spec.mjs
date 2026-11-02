@@ -47,7 +47,7 @@ async function expectRowCoveredBy(window, rowTestId, dialogContentTestId) {
     .toBe('modal');
 }
 
-test('Home composer modals cover the Getting started checklist', async () => {
+test('Home composer modals cover the underlying composer', async () => {
   const userDataDir = seedWelcomeChecklist({ pendingEntry: 'import-projects' });
   const externalRoot = seedNativeClaudeStore(userDataDir, {
     prefix: 'canopy-home-modal-stacking-',
@@ -62,9 +62,9 @@ test('Home composer modals cover the Getting started checklist', async () => {
     await app.waitForShell();
     await window.getByTestId('sidebar-create-task').click();
 
-    const importRow = window.getByTestId(
-      'home-onboarding-suggestion-cta-import-projects',
-    );
+    const importRow = window
+      .getByTestId('page-home')
+      .getByTestId('home-composer-editor');
     await expect(importRow).toBeVisible({ timeout: 30_000 });
 
     await window
@@ -75,7 +75,7 @@ test('Home composer modals cover the Getting started checklist', async () => {
     await expect(window.getByTestId('plugin-picker-region')).toBeVisible();
     await expectRowCoveredBy(
       window,
-      'home-onboarding-suggestion-cta-import-projects',
+      'home-composer-editor',
       'plugin-picker-region',
     );
     await window.keyboard.press('Escape');

@@ -17,7 +17,9 @@ const spawnMock = jest.fn<
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn(): typeof spawnMock {
+    return spawnMock;
+  },
 }));
 
 // Fake PIDs must never reach the host's process-group signal path.
@@ -211,21 +213,21 @@ describe('CodexAppServerConnection per-owner in-flight budget', () => {
         params: { threadId: 'thread', sequence: 5 },
       });
       await flushMany();
-      // Three admissions are pending for one chat, delivered in pipe order.
-      // The turn boundary waits for all of them.
+      // Transcript admissions overlap in order; control never waits for them.
       expect(received).toEqual([
         'item/started#1',
         'item/started#2',
         'item/started#3',
+        'turn/completed#4',
+        'item/started#5',
       ]);
       holds[1].resolve();
       holds[0].resolve();
       await flushMany();
-      expect(received).toHaveLength(3);
+      expect(received).toHaveLength(5);
       holds[2].resolve();
       await flushMany();
-      // Delivered alone: nothing overlaps a turn boundary's admission.
-      expect(received.slice(3)).toEqual(['turn/completed#4']);
+      expect(received.slice(3)).toEqual(['turn/completed#4', 'item/started#5']);
       holds[3].resolve();
       await flushMany();
       expect(received.slice(4)).toEqual(['item/started#5']);

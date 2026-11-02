@@ -142,6 +142,17 @@ function persistedDelegationInput(
   };
 }
 
+/**
+ * Model a persisted row whose sender metadata is malformed at the projection
+ * parser boundary. Keep this narrow cast local to rejection coverage; valid
+ * rows use the exported PersistedChatMessage shape without coercion.
+ */
+function malformedPersistedAgentSent(
+  value: object,
+): NonNullable<PersistedChatMessage['agentSent']> {
+  return value as NonNullable<PersistedChatMessage['agentSent']>;
+}
+
 function serializedPartBytes(part: PortalChatPart | undefined): number {
   return part === undefined
     ? 0
@@ -149,6 +160,259 @@ function serializedPartBytes(part: PortalChatPart | undefined): number {
 }
 
 describe('bounded managed delegation wire projection', () => {
+  it.each(['chat-log-v1', 'chat-stream-v2'] as const)(
+    'preserves the %s marker',
+    (transcriptStore) => {
+      const input = persistedDelegationInput(1, 10);
+      const block = input.message.blocks[0];
+      if (block?.type !== 'delegated_agent_call')
+        throw new Error('Missing fixture');
+      block.transcriptStore = transcriptStore;
+      const local = persistedMessageToPortalMessage(
+        input,
+        PORTAL_CHAT_UNBOUNDED_LIMITS,
+      );
+      const projected = projectPortalDelegationPart(agentPart(local.parts));
+      expect(agentData(projected)?.delegation).toMatchObject({
+        transcriptStore,
+      });
+    },
+  );
+
+  it.each(['chat-stream-v2', 'future-store'])(
+    'suppresses stale inline children for %s before traversal',
+    (transcriptStore) => {
+      const input = persistedDelegationInput(1, 10);
+      const local = persistedMessageToPortalMessage(
+        input,
+        PORTAL_CHAT_UNBOUNDED_LIMITS,
+      );
+      const base = agentPart(local.parts);
+      const data = agentData(base);
+      if (!data || !isRecord(data.delegation))
+        throw new Error('Missing fixture');
+      let traversed = false;
+      const stale = {
+        get kind(): string {
+          traversed = true;
+          return 'text';
+        },
+        data: { text: 'STALE_SENTINEL' },
+      };
+      const projected = projectPortalDelegationPart({
+        kind: 'agent',
+        data: {
+          delegation: { ...data.delegation, transcriptStore },
+          subBlocks: [stale],
+          omittedSubBlocks: 3,
+          subBlocksTruncated: true,
+        },
+      });
+      expect(traversed).toBe(false);
+      expect(subBlocks(projected)).toEqual([]);
+      expect(agentData(projected)).toMatchObject({
+        subBlocksTruncated: true,
+        omittedSubBlocks: 4,
+      });
+      expect(JSON.stringify(projected)).not.toContain('STALE_SENTINEL');
+      expect(projectPortalDelegationPart(projected)).toBe(projected);
+      expect(
+        projectPortalDelegationPart(JSON.parse(JSON.stringify(projected))),
+      ).toEqual(projected);
+    },
+  );
+
+  it('keeps an otherwise valid unknown-marker card and answer visible without children', () => {
+    const projected = projectPortalDelegationPart({
+      kind: 'agent',
+      data: {
+        delegation: {
+          delegationId: 'unknown-card',
+          parentHarnessId: 'claude',
+          requestedModelId: 'model',
+          description: 'Inspect the issue',
+          prompt: 'Prompt',
+          executionMode: 'foreground',
+          status: 'failed',
+          outputTruncated: false,
+          finalText: 'Retained answer',
+          transcriptStore: 'future-store',
+        },
+        subBlocks: [{ kind: 'text', data: { text: 'STALE_SENTINEL' } }],
+      },
+    });
+    const card = agentData(projected)?.delegation;
+    expect(card).toMatchObject({
+      delegationId: 'unknown-card',
+      status: 'failed',
+      description: 'Inspect the issue',
+      finalText: 'Retained answer',
+    });
+    expect(card).not.toHaveProperty('transcriptStore');
+    expect(isAgentDelegationCardData(card)).toBe(true);
+    expect(subBlocks(projected)).toEqual([]);
+    expect(
+      projectPortalDelegationPart(JSON.parse(JSON.stringify(projected))),
+    ).toEqual(projected);
+  });
+
+  it('returns bounded omission data instead of null for an invalid managed card', () => {
+    const projected = projectPortalDelegationPart({
+      kind: 'agent',
+      data: {
+        delegation: {
+          transcriptStore: 'chat-stream-v2',
+          delegationId: '界'.repeat(30000),
+        },
+        subBlocks: [{ kind: 'text', data: { text: 'STALE_SENTINEL' } }],
+      },
+    });
+    expect(projected).not.toBeNull();
+    expect(agentData(projected)).toMatchObject({
+      snapshotTruncated: true,
+      subBlocksTruncated: true,
+      omittedSubBlocks: 1,
+    });
+    expect(subBlocks(projected)).toEqual([]);
+    expect(JSON.parse(JSON.stringify(projected))).toEqual({
+      kind: 'agent',
+      data: {
+        delegation: { transcriptStore: 'chat-stream-v2' },
+        subBlocks: [],
+        snapshotTruncated: true,
+        subBlocksTruncated: true,
+        omittedSubBlocks: 1,
+      },
+    });
+    expect(
+      Buffer.byteLength(JSON.stringify({ parts: [projected] }), 'utf8'),
+    ).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  it.each([undefined, 'chat-log-v1', 'chat-stream-v2'] as const)(
+    'keeps live/persisted rendering parity and exact identities for %s',
+    (transcriptStore) => {
+      const event = liveDelegationEvent(1, 10);
+      if (!isRecord(event) || !isRecord(event.delegation))
+        throw new Error('Missing fixture');
+      event.delegation.transcriptStore = transcriptStore;
+      const live = runtimeChatEventToPortalMessage({
+        scope: 'worktree',
+        chatId: 'chat-1',
+        data: event,
+      });
+      const input = persistedDelegationInput(1, 10);
+      const block = input.message.blocks[0];
+      if (block?.type !== 'delegated_agent_call')
+        throw new Error('Missing fixture');
+      block.transcriptStore = transcriptStore;
+      const hydrated = persistedMessageToPortalMessage(input);
+      const liveData = agentData(agentPart(live?.parts));
+      const persistedData = agentData(agentPart(hydrated.parts));
+      expect(liveData?.delegation).toMatchObject({
+        delegationId: 'delegate-1',
+        ...(transcriptStore ? { transcriptStore } : {}),
+      });
+      expect(persistedData?.delegation).toMatchObject({
+        delegationId: 'delegate-1',
+        ...(transcriptStore ? { transcriptStore } : {}),
+      });
+      const expectedChildren = transcriptStore === 'chat-stream-v2' ? 0 : 1;
+      expect(subBlocks(agentPart(live?.parts))).toHaveLength(expectedChildren);
+      expect(subBlocks(agentPart(hydrated.parts))).toHaveLength(
+        expectedChildren,
+      );
+      expect(JSON.stringify(live)).toContain(
+        transcriptStore === 'chat-stream-v2' ? 'omittedSubBlocks' : 'child-0',
+      );
+      expect(JSON.stringify(hydrated)).toContain(
+        transcriptStore === 'chat-stream-v2' ? 'omittedSubBlocks' : 'child-0',
+      );
+      for (const message of [live, hydrated]) {
+        expect(
+          Buffer.byteLength(JSON.stringify({ message }), 'utf8'),
+        ).toBeLessThanOrEqual(24 * 1024);
+      }
+    },
+  );
+
+  it('does not manufacture shortened stream read identities', () => {
+    const input = persistedDelegationInput(1, 10);
+    const base = agentPart(
+      persistedMessageToPortalMessage(input, PORTAL_CHAT_UNBOUNDED_LIMITS)
+        .parts,
+    );
+    const data = agentData(base);
+    if (!data || !isRecord(data.delegation)) throw new Error('Missing fixture');
+    for (const identity of ['界\\"exact', '界\\"'.repeat(300)]) {
+      const projected = projectPortalDelegationPart({
+        kind: 'agent',
+        data: {
+          delegation: {
+            ...data.delegation,
+            transcriptStore: 'chat-stream-v2',
+            delegationId: identity,
+            agentBlockId: identity,
+          },
+          subBlocks: [{ kind: 'text', data: { text: 'STALE_SENTINEL' } }],
+        },
+      });
+      const card = agentData(projected)?.delegation;
+      expect(card).toMatchObject({ transcriptStore: 'chat-stream-v2' });
+      if (identity.length < 512) {
+        expect(card).toMatchObject({
+          delegationId: '界\\"exact',
+          agentBlockId: '界\\"exact',
+        });
+      } else {
+        expect(card).not.toHaveProperty('delegationId');
+        expect(card).not.toHaveProperty('agentBlockId');
+      }
+      expect(JSON.stringify(projected)).not.toContain('STALE_SENTINEL');
+      expect(
+        projectPortalDelegationPart(JSON.parse(JSON.stringify(projected))),
+      ).toEqual(projected);
+    }
+  });
+
+  it('keeps stream/log mixtures card-only at nested boundaries', () => {
+    const input = persistedDelegationInput(1, 10);
+    const base = agentPart(
+      persistedMessageToPortalMessage(input, PORTAL_CHAT_UNBOUNDED_LIMITS)
+        .parts,
+    );
+    const data = agentData(base);
+    if (!data || !isRecord(data.delegation)) throw new Error('Missing fixture');
+    const card = data.delegation;
+    const nested = (transcriptStore: string): PortalChatPart => ({
+      kind: 'agent',
+      data: {
+        delegation: { ...card, transcriptStore },
+        subBlocks: [{ kind: 'text', data: { text: 'STALE_SENTINEL' } }],
+      },
+    });
+    const projected = projectPortalDelegationPart({
+      kind: 'agent',
+      data: {
+        delegation: { ...card, transcriptStore: 'chat-log-v1' },
+        subBlocks: [nested('chat-stream-v2'), nested('chat-log-v1')],
+      },
+    });
+    expect(subBlocks(projected)).toHaveLength(2);
+    expect(agentData(subBlocks(projected)[0])?.delegation).toMatchObject({
+      transcriptStore: 'chat-stream-v2',
+    });
+    expect(agentData(subBlocks(projected)[1])?.delegation).toMatchObject({
+      transcriptStore: 'chat-log-v1',
+    });
+    expect(subBlocks(subBlocks(projected)[0])).toEqual([]);
+    expect(subBlocks(subBlocks(projected)[1])).toEqual([]);
+    expect(JSON.stringify(projected)).not.toContain('STALE_SENTINEL');
+    expect(
+      projectPortalDelegationPart(JSON.parse(JSON.stringify(projected))),
+    ).toEqual(projected);
+  });
+
   it('bounds a live runtime delegation card and its newest child parts', () => {
     const message = runtimeChatEventToPortalMessage({
       scope: 'worktree',
@@ -245,11 +509,11 @@ describe('bounded managed delegation wire projection', () => {
       {
         ...malformed,
         role: 'user',
-        agentSent: {
+        agentSent: malformedPersistedAgentSent({
           sender: { kind: 'bot', taskId: 'task-b', chatId: 'chat-b' },
           chatTitle: 'Missing bot id',
           projectLabel: 'App Advisor',
-        },
+        }),
       },
       {
         ...assistant,
@@ -299,6 +563,80 @@ describe('bounded managed delegation wire projection', () => {
     }
   });
 
+  it('flattens a pipeline agent-sent sender without chat or project fields', () => {
+    const input = persistedDelegationInput(2, 10);
+    const [stepSent, automationSent] = input.relatedMessages;
+    if (!stepSent || !automationSent) throw new Error('Expected two children');
+    input.relatedMessages = [
+      {
+        ...stepSent,
+        role: 'user',
+        agentSent: {
+          sender: {
+            kind: 'pipeline',
+            executionId: 'exec-1',
+            pipelineId: 'pipeline-1',
+            stepId: 'notify',
+          },
+          chatTitle: 'Release checks',
+          projectLabel: '',
+        },
+      },
+      {
+        ...automationSent,
+        role: 'user',
+        agentSent: {
+          sender: { kind: 'pipeline', automationId: 'automation-1' },
+          chatTitle: 'Nightly triage',
+          projectLabel: '',
+        },
+      },
+    ];
+    const children = subBlocks(
+      agentPart(persistedMessageToPortalMessage(input).parts),
+    );
+    const dataFor = (id: string): unknown[] =>
+      children
+        .filter((child) => isRecord(child.data) && child.data.messageId === id)
+        .map((child) => child.data);
+
+    const stepData = dataFor(stepSent.id);
+    expect(stepData.length).toBeGreaterThan(0);
+    for (const data of stepData) {
+      expect(data).toEqual(
+        expect.objectContaining({
+          agentSentSenderKind: 'pipeline',
+          agentSentExecutionId: 'exec-1',
+          agentSentPipelineId: 'pipeline-1',
+          agentSentStepId: 'notify',
+          agentSentChatTitle: 'Release checks',
+          agentSentProjectLabel: '',
+        }),
+      );
+      for (const key of [
+        'agentSentAutomationId',
+        'agentSentTaskId',
+        'agentSentChatId',
+        'agentSentProjectId',
+        'agentSentBotId',
+      ]) {
+        expect(data).not.toHaveProperty(key);
+      }
+    }
+    const automationData = dataFor(automationSent.id);
+    expect(automationData.length).toBeGreaterThan(0);
+    for (const data of automationData) {
+      expect(data).toEqual(
+        expect.objectContaining({
+          agentSentSenderKind: 'pipeline',
+          agentSentAutomationId: 'automation-1',
+          agentSentChatTitle: 'Nightly triage',
+        }),
+      );
+      expect(data).not.toHaveProperty('agentSentExecutionId');
+    }
+  });
+
   it('projects the same bounded delegation data live and from persisted history', () => {
     const live = runtimeChatEventToPortalMessage({
       scope: 'worktree',
@@ -310,6 +648,27 @@ describe('bounded managed delegation wire projection', () => {
     );
 
     expect(agentPart(live?.parts)).toEqual(agentPart(persisted.parts));
+  });
+
+  it('round-trips the spawn-only lifetime refusal without losing its code or retryability', () => {
+    const base = agentPart(
+      persistedMessageToPortalMessage(persistedDelegationInput(1, 10)).parts,
+    );
+    const data = agentData(base);
+    if (!base || !data || !isRecord(data.delegation))
+      throw new Error('Expected delegation card fixture');
+    const error = {
+      code: 'lifetime_limit_reached',
+      message:
+        'This worktree has reached its lifetime subagent limit. This is the most this build allows.',
+      retryable: false,
+    };
+    const projected = projectPortalDelegationPart({
+      ...base,
+      data: { ...data, delegation: { ...data.delegation, error } },
+    });
+    const wire: unknown = JSON.parse(JSON.stringify(projected));
+    expect(wire).toHaveProperty('data.delegation.error', error);
   });
 
   it('keeps valid card metadata while bounding oversized optional fields and host keys', () => {
@@ -477,6 +836,7 @@ describe('bounded managed delegation wire projection', () => {
     };
     const largeDelegation: Record<string, unknown> = {
       ...delegation,
+      streamRevision: 17,
       parentDelegationId: longLabel,
       parentTurnId: longLabel,
       requestedModelId: longLabel,
@@ -524,12 +884,33 @@ describe('bounded managed delegation wire projection', () => {
       ...base,
       data: { ...data, delegation: largeDelegation },
     });
+    for (const transcriptStore of ['chat-log-v1', 'chat-stream-v2']) {
+      const marked = projectPortalDelegationPart({
+        ...base,
+        data: { ...data, delegation: { ...largeDelegation, transcriptStore } },
+      });
+      expect(agentData(marked)?.delegation).toMatchObject({
+        transcriptStore,
+        streamRevision: 17,
+      });
+      expect(agentData(marked)?.snapshotTruncated).toBe(true);
+      expect(isAgentDelegationCardData(agentData(marked)?.delegation)).toBe(
+        true,
+      );
+      expect(
+        Buffer.byteLength(JSON.stringify(marked), 'utf8'),
+      ).toBeLessThanOrEqual(24 * 1024);
+      expect(
+        projectPortalDelegationPart(JSON.parse(JSON.stringify(marked))),
+      ).toEqual(marked);
+    }
     expect(projected).not.toBeNull();
     if (!projected || !isRecord(projected.data)) return;
     const projectedCard = projected.data.delegation;
     expect(isAgentDelegationCardData(projectedCard)).toBe(true);
     expect(isRecord(projectedCard)).toBe(true);
     if (!isRecord(projectedCard)) return;
+    expect(projectedCard).toHaveProperty('streamRevision', 17);
     expect(projectedCard).toHaveProperty('description');
     expect(projectedCard).toHaveProperty('prompt');
     expect(typeof projectedCard.prompt).toBe('string');
@@ -668,4 +1049,43 @@ describe('bounded managed delegation wire projection', () => {
       sequence: 8,
     });
   });
+});
+
+describe('16d stream revision on bounded wire cards', () => {
+  it.each([0, 17, Number.MAX_SAFE_INTEGER])(
+    'keeps revision %s through persisted projection, fitting and reprojection',
+    (revision) => {
+      const input = persistedDelegationInput(120, 10000);
+      input.message.blocks = input.message.blocks.map((block) => ({
+        ...block,
+        streamRevision: revision,
+      }));
+      const projected = persistedMessageToPortalMessage(input);
+      const part = agentPart(projected.parts);
+      const data = agentData(part);
+      expect(data?.delegation).toHaveProperty('streamRevision', revision);
+      expect(data?.subBlocksTruncated).toBe(true);
+      expect(serializedPartBytes(part)).toBeLessThanOrEqual(
+        PORTAL_DELEGATION_PART_MAX_BYTES,
+      );
+      expect(
+        agentData(projectPortalDelegationPart(JSON.parse(JSON.stringify(part))))
+          ?.delegation,
+      ).toHaveProperty('streamRevision', revision);
+    },
+  );
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN])(
+    'drops invalid revision %s',
+    (revision) => {
+      const input = persistedDelegationInput(0, 1);
+      input.message.blocks = input.message.blocks.map((block) => ({
+        ...block,
+        streamRevision: revision,
+      }));
+      const projected = persistedMessageToPortalMessage(input);
+      expect(
+        agentData(agentPart(projected.parts))?.delegation,
+      ).not.toHaveProperty('streamRevision');
+    },
+  );
 });

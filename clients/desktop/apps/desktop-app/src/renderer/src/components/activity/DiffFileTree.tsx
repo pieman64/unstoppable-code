@@ -12,6 +12,7 @@ import type {
   ChangedFileStatus,
   FileDiffSource,
 } from '@canopy/desktop-shared/types';
+import { DiffLineCounts } from '@canopy/ui-shared/components';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -26,6 +27,7 @@ import {
 import { normalizeRepoKey } from '@/components/code-review/codeReviewLayout';
 import { ResizeHandle } from '@/components/shared/ResizeHandle';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { Button } from '@canopy/ui-shared/components';
 
 const STATUS_DOT_COLORS: Record<ChangedFileStatus, string> = {
   added: 'bg-fg-success-strong',
@@ -100,7 +102,9 @@ function fileRowTestId(file: ChangedFileInfo, source: FileDiffSource): string {
  *   rename/copy rows published as plain adds), and "+0 −0" would assert the
  *   file is unchanged when it plainly is not. Callers whose `0`/`0` is a real
  *   measurement — a mode-only change, an added empty file — leave this unset
- *   and keep their chips.
+ *   and keep the counts in the row title.
+ *
+ * Even when counts show, a zero count renders no chip.
  */
 function showsDiffCounts(
   file: ChangedFileInfo,
@@ -343,14 +347,12 @@ function FileNodeRow({
             </span>
           )}
           {showDiffCounts && (
-            <>
-              <span className="text-3xs fg-success-strong">
-                +{entry.file.insertions}
-              </span>
-              <span className="text-3xs fg-destructive-strong">
-                -{entry.file.deletions}
-              </span>
-            </>
+            <DiffLineCounts
+              insertions={entry.file.insertions}
+              deletions={entry.file.deletions}
+              size="compact"
+              tone="strong"
+            />
           )}
         </span>
       </button>
@@ -688,14 +690,15 @@ export function DiffFileTree({
         data-testid="diff-file-tree"
         className="flex w-10 shrink-0 flex-col items-center border-r py-2"
       >
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
           onClick={onToggleCollapsed}
-          className="focus-ring rounded-md p-1.5 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
           aria-label="Expand file tree"
         >
           <AppCatalogChevronRightMediumIcon width="16" height="16" />
-        </button>
+        </Button>
       </div>
     );
   }
@@ -722,14 +725,15 @@ export function DiffFileTree({
               </span>
               {headerAccessory}
             </div>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={onToggleCollapsed}
-              className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
               aria-label="Collapse file tree"
             >
               <AppCatalogChevronLeftMediumIcon width="14" height="14" />
-            </button>
+            </Button>
           </div>
         )}
         {/* `overflow-auto` (both axes): deeply nested paths are never

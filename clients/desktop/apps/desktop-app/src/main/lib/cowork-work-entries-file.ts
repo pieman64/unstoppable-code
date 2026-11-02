@@ -95,7 +95,9 @@ function isUnreadChatRef(value: unknown): boolean {
     typeof value.chatId === 'string' &&
     (value.title === undefined || typeof value.title === 'string') &&
     (value.providerType === undefined || isProviderType(value.providerType)) &&
-    (value.preview === undefined || typeof value.preview === 'string')
+    (value.preview === undefined || typeof value.preview === 'string') &&
+    (value.markedUnread === undefined ||
+      typeof value.markedUnread === 'boolean')
   );
 }
 

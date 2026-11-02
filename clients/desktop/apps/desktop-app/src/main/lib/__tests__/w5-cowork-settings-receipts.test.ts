@@ -1,7 +1,10 @@
 // CAN-4719 (W3a1): the keyed, settings-only core.workspace.cowork.update
 // (A28′(a)) and the unkeyed mixed Cowork save it leaves in place, with the
 // real commit-log worker and filesystem.
-import { createW5BoundaryFixture } from './fixtures/w5-boundary-fixture';
+import {
+  createW5BoundaryFixture,
+  isW5FinalPreflightRead,
+} from './fixtures/w5-boundary-fixture';
 import { W5CommitLog } from '@canopy/desktop-shared/node/w5-commit-log';
 import type {
   ChatTabPluginSelections,
@@ -43,6 +46,7 @@ jest.mock('../archived-containers', () => {
   const held = new AsyncLocalStorage<ReadonlySet<string>>();
   const tails = new Map<string, Promise<unknown>>();
   return {
+    countArchivedContainers: jest.fn(() => Promise.resolve(0)),
     withArchivedWorkspaceOperationLock: jest.fn(
       (id: string, work: () => Promise<unknown>) => {
         const outer = held.getStore() ?? new Set<string>();
@@ -68,10 +72,14 @@ import {
   withW5Commit,
 } from '../w5-commit-log-file-store';
 import { nodeW5FileStore } from '../w5-file-store';
-import { __resetSidebarItemsStateForTests } from '../sidebar-items';
+import * as SidebarItems from '../sidebar-items';
+import { schedulePortalStructuralSync } from '../../portal/portal-structural-sync';
+import { notifyPortalStructureChanged } from '../../portal/portal-event-bus';
 import { registerWorkspaceTypes } from '../workspace-registry';
 import {
   PROJECT_PLUGIN_DEFAULTS_NORMALIZATION_FAILED,
+  isWorkspaceWorktreeRecentlyRemoved,
+  markWorkspaceWorktreeRecentlyRemoved,
   readProjectPluginDefaults,
   setBeforeProjectPluginDefaultsChangeHandler,
 } from '../workspace-persistence';
@@ -130,7 +138,7 @@ function startHost(): void {
     workerEntry: join(__dirname, '../../w5-commit-log/commit-log-worker.ts'),
   });
   __setDesktopW5FileStoreForTests(createW5CommitLogFileStore(() => host));
-  __resetSidebarItemsStateForTests();
+  SidebarItems.__resetSidebarItemsStateForTests();
   registerWorkspaceTypes(
     new Map([
       ['a', 'single-repo'],
@@ -318,11 +326,13 @@ function receiptOf(reserve: {
 }
 
 /** The next decision lands, but its response is lost. */
-function loseNextResponse(): jest.SpyInstance {
+function loseNextResponse(
+  failure = new Error('response lost'),
+): jest.SpyInstance {
   const commit = host.commit.bind(host);
   return jest.spyOn(host, 'commit').mockImplementationOnce(async (request) => {
     await commit(request);
-    throw new Error('response lost');
+    throw failure;
   });
 }
 
@@ -362,7 +372,7 @@ function armPreflightForeignWrite(): () => number {
     if (
       fired === 0 &&
       path === manifestPath() &&
-      /w5-commit-log-file-store\.ts:182:/.test(new Error().stack ?? '')
+      isW5FinalPreflightRead(new Error().stack ?? '')
     ) {
       fired += 1;
       writeFileSync(
@@ -376,6 +386,179 @@ function armPreflightForeignWrite(): () => number {
 }
 
 describe('CW2 keyed Cowork settings', () => {
+  it.each([
+    ['Portal sync', schedulePortalStructuralSync],
+    ['sidebar invalidation', notifyPortalStructureChanged],
+  ] as const)(
+    'CAN-4797: runs %s after a lost response',
+    async (_name, effect) => {
+      const commits = loseNextResponse();
+      await expect(
+        update({ description: 'keyed', idempotencyKey: 'key' }),
+      ).rejects.toThrow('response lost');
+      expect(cowork().description).toBe('keyed');
+      expect(commits).toHaveBeenCalledTimes(1);
+      expect(effect).toHaveBeenCalledTimes(1);
+      expect(effect).toHaveBeenCalledWith();
+    },
+  );
+
+  it.each([
+    ['Portal sync', schedulePortalStructuralSync],
+    ['sidebar invalidation', notifyPortalStructureChanged],
+  ] as const)(
+    'CAN-4797: runs %s on every replay, including after restart',
+    async (_name, effect) => {
+      const request = { description: 'keyed', idempotencyKey: 'key' };
+      await update(request);
+      await updateCoworkWorkspace({ projectId: 'one', description: 'newer' });
+      const applied = images();
+      jest.clearAllMocks();
+      for (const restart of [false, true, false]) {
+        if (restart) await restartHost();
+        const commits = jest.spyOn(host, 'commit').mockClear();
+        jest.mocked(effect).mockClear();
+        expect(await update({ ...request, expectedRevision: 999 })).toEqual(
+          OUTCOME,
+        );
+        expect(effect).toHaveBeenCalledTimes(1);
+        expect(effect).toHaveBeenCalledWith();
+        expect(commits).not.toHaveBeenCalled();
+        expect(images()).toEqual(applied);
+        expect(cowork().description).toBe('newer');
+      }
+    },
+  );
+
+  it('CAN-4797: typed refusals skip Portal sync and sidebar invalidation', async () => {
+    await expect(
+      update({
+        description: 'keyed',
+        idempotencyKey: 'key',
+        expectedRevision: 1,
+      }),
+    ).rejects.toBeInstanceOf(W5RevisionConflictError);
+    await expect(
+      updateCoworkWorkspaceSettings({
+        projectId: 'a',
+        description: 'keyed',
+        idempotencyKey: 'key',
+      }),
+    ).rejects.toMatchObject({ reason: 'not-found' });
+    expect(schedulePortalStructuralSync).not.toHaveBeenCalled();
+    expect(notifyPortalStructureChanged).not.toHaveBeenCalled();
+
+    await update({ description: 'keyed', idempotencyKey: 'key' });
+    jest.clearAllMocks();
+    await expect(
+      update({ description: 'changed', idempotencyKey: 'key' }),
+    ).rejects.toMatchObject({ reason: 'key-reused' });
+    expect(schedulePortalStructuralSync).not.toHaveBeenCalled();
+    expect(notifyPortalStructureChanged).not.toHaveBeenCalled();
+  });
+
+  it.each(['lost response', 'replay'] as const)(
+    'CAN-4797: %s refresh does not persist removal cleanup in another workspace',
+    async (attempt) => {
+      const request = { description: 'keyed', idempotencyKey: 'key' };
+      if (attempt === 'replay') await update(request);
+      else loseNextResponse();
+      const createdAt = '2026-01-01T00:00:00.000Z';
+      const worktreeId = `removed-${attempt.replace(' ', '-')}`;
+      const worktreesPath = join(root, 'a', 'worktrees.json');
+      writeFileSync(
+        worktreesPath,
+        JSON.stringify({
+          version: 1,
+          worktrees: [{ id: worktreeId, branchName: 'removed', createdAt }],
+        }),
+      );
+      expect(
+        isWorkspaceWorktreeRecentlyRemoved('a', worktreeId, createdAt),
+      ).toBe(false);
+      markWorkspaceWorktreeRecentlyRemoved('a', worktreeId, createdAt);
+      const before = images();
+      jest.clearAllMocks();
+      const commits = jest.spyOn(host, 'commit');
+      const readSidebar = SidebarItems.readAllSidebarItems;
+      let sidebar: Awaited<ReturnType<typeof readSidebar>> | undefined;
+      const refresh = jest
+        .spyOn(SidebarItems, 'readAllSidebarItems')
+        .mockImplementation(async (options) => {
+          sidebar = await readSidebar(options);
+          return sidebar;
+        });
+
+      const pending = update(request);
+      if (attempt === 'replay') await expect(pending).resolves.toEqual(OUTCOME);
+      else await expect(pending).rejects.toThrow('response lost');
+
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledWith({ persistRemovalCleanup: false });
+      expect(sidebar?.items.find((item) => item.id === 'a')).toMatchObject({
+        worktrees: [],
+      });
+      expect(sidebar?.items.find((item) => item.id === 'one')).toMatchObject({
+        cowork: { description: 'keyed' },
+      });
+      expect(sidebar?.warnings).toBeUndefined();
+      expect(commits).toHaveBeenCalledTimes(attempt === 'replay' ? 0 : 1);
+      expect(readFileSync(worktreesPath, 'utf8')).toBe(before[worktreesPath]);
+      expect(readFileSync(indexPath(), 'utf8')).toBe(before[indexPath()]);
+      expect(await host.revision({ kind: 'workspace', workspaceId: 'a' })).toBe(
+        0,
+      );
+      expect(await revision()).toBe(1);
+      if (attempt === 'replay') expect(images()).toEqual(before);
+      expect(schedulePortalStructuralSync).toHaveBeenCalledTimes(1);
+      expect(notifyPortalStructureChanged).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['lost response', 'replay'] as const)(
+    'CAN-4797: %s still notifies with unreadable worktree tracking',
+    async (attempt) => {
+      const request = { description: 'keyed', idempotencyKey: 'key' };
+      if (attempt === 'replay') await update(request);
+      else loseNextResponse();
+      const worktreesPath = join(root, 'a', 'worktrees.json');
+      const unreadable = '{broken worktree tracking';
+      writeFileSync(worktreesPath, unreadable);
+      jest.clearAllMocks();
+      const commits = jest.spyOn(host, 'commit');
+
+      const pending = update(request);
+      if (attempt === 'replay') await expect(pending).resolves.toEqual(OUTCOME);
+      else await expect(pending).rejects.toThrow('response lost');
+
+      expect(readFileSync(worktreesPath, 'utf8')).toBe(unreadable);
+      expect(commits).toHaveBeenCalledTimes(attempt === 'replay' ? 0 : 1);
+      expect(schedulePortalStructuralSync).toHaveBeenCalledTimes(1);
+      expect(notifyPortalStructureChanged).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['lost response', 'replay'] as const)(
+    'CAN-4797: a failed sidebar refresh does not block notifications or mask the %s',
+    async (attempt) => {
+      const request = { description: 'keyed', idempotencyKey: 'key' };
+      const responseFailure = new Error('response lost');
+      if (attempt === 'replay') await update(request);
+      else loseNextResponse(responseFailure);
+      jest.clearAllMocks();
+      const refresh = jest
+        .spyOn(SidebarItems, 'readAllSidebarItems')
+        .mockRejectedValueOnce(new Error('sidebar refresh failed'));
+
+      const pending = update(request);
+      if (attempt === 'replay') await expect(pending).resolves.toEqual(OUTCOME);
+      else await expect(pending).rejects.toBe(responseFailure);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(schedulePortalStructuralSync).toHaveBeenCalledTimes(1);
+      expect(notifyPortalStructureChanged).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('commits only the manifest, revision, receipt and outcome in one decision under the queue and archive lock', async () => {
     const commits = jest.spyOn(host, 'commit');
     const indexBefore = readFileSync(indexPath(), 'utf8');
@@ -742,6 +925,8 @@ describe('CW2 keyed Cowork settings', () => {
     expect(fired()).toBe(1);
     expect(commits).not.toHaveBeenCalled();
     expect(normalize).toHaveBeenCalledTimes(1);
+    expect(schedulePortalStructuralSync).not.toHaveBeenCalled();
+    expect(notifyPortalStructureChanged).not.toHaveBeenCalled();
     expect(restamped()).toBe(true);
     expect(cowork()).not.toHaveProperty('autoArchiveDays');
     expect(manifest()).not.toHaveProperty('defaultPluginSelections');
@@ -806,6 +991,8 @@ describe('CW2 keyed Cowork settings', () => {
     });
     expect(commits).not.toHaveBeenCalled();
     expect(normalize).not.toHaveBeenCalled();
+    expect(schedulePortalStructuralSync).not.toHaveBeenCalled();
+    expect(notifyPortalStructureChanged).not.toHaveBeenCalled();
     expect(images()).toEqual(before);
     expect(await revision()).toBe(0);
     expect(await host.lookupReceipt(receiptOf(reserve))).toMatchObject({

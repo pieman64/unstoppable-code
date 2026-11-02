@@ -18,13 +18,16 @@ export class CodexDelegationProgress {
     string,
     { text: string; complete: boolean }
   >();
+  private joinedText: string | undefined;
   usage?: AgentDelegationUsage;
 
   get text(): string {
-    const text = Array.from(this.items.values(), (item) => item.text).join(
-      '\n',
-    );
-    return text;
+    if (this.joinedText === undefined)
+      this.joinedText = Array.from(
+        this.items.values(),
+        (item) => item.text,
+      ).join('\n');
+    return this.joinedText;
   }
 
   get truncated(): boolean {
@@ -71,5 +74,6 @@ export class CodexDelegationProgress {
       text: complete ? text : `${prior?.text ?? ''}${text}`,
       complete,
     });
+    this.joinedText = undefined;
   }
 }

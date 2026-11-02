@@ -31,12 +31,14 @@ type EffectiveWorkspaceConfig = Awaited<
 describe('resolveWorktreePlanDetectionRules', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedReadPreferencesFile.mockResolvedValue({
+    const preferences: Partial<PreferencesFile> = {
       planDetection: {
         disabledBuiltinRuleIds: [],
         customRules: [],
       },
-    } as PreferencesFile);
+    };
+    // A partial fixture: these tests rely on unset preferences staying undefined.
+    mockedReadPreferencesFile.mockResolvedValue(preferences as PreferencesFile);
     mockedReadEffectiveWorkspaceConfig.mockResolvedValue({
       manifest: null,
       localConfig: {},

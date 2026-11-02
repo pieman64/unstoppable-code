@@ -51,7 +51,7 @@ import { getArchivedContainerCostDir, getEntryCostDir } from '../../lib/paths';
 describe.each([
   ['Code worktree', 'code-project', 'worktree'],
   ['Cowork Work Entry', 'cowork-project', 'work-entry'],
-  ['App Advisor Work Entry', 'app-advisor', 'app-advisor-entry'],
+  ['App Advisor Work Entry', 'app-advisor', 'work-entry'],
 ] as const)('%s cost lifecycle seam', (_label, projectId, kind) => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'cost-lifecycle-'));

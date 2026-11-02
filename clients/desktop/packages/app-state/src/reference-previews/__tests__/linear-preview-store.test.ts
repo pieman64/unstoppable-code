@@ -23,6 +23,14 @@ import {
   setReferenceEnrichmentModes,
 } from '../linear-preview-store';
 
+function disposePreviewStore<State>(store: ClientStore<State>): void {
+  const disposer = store[CLIENT_STORE_DISPOSE];
+  if (typeof disposer !== 'function') {
+    throw new Error('Expected reference preview store to provide a disposer.');
+  }
+  disposer.call(store);
+}
+
 class MemoryStorage implements Storage {
   readonly values = new Map<string, string>();
   failWrites = false;
@@ -177,7 +185,7 @@ describe('reference enrichment modes', () => {
     t.store.getState().ensureTeamCatalog();
     await flush();
     expect(t.teamReads()).toBe(2);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('blocks every Linear read while Off and resumes without evicting a warm cache', async () => {
@@ -199,7 +207,7 @@ describe('reference enrichment modes', () => {
       preview('CAN-1'),
     );
     expect(t.reads).toEqual(['CAN-1']);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('drops queued passive reads when leaving Replace, but Hover can demand-load', async () => {
@@ -213,7 +221,7 @@ describe('reference enrichment modes', () => {
     );
     expect(t.reads).toEqual(['CAN-3']);
     release();
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('does not promote a pending passive read after in-flight slots settle in Hover', async () => {
@@ -242,7 +250,7 @@ describe('reference enrichment modes', () => {
     await jest.advanceTimersByTimeAsync(0);
     expect(t.reads).toEqual(['CAN-1', 'CAN-2']);
     releases.forEach((release) => release());
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('holds in-flight passive slots across Off and Replace before admitting resumed work', async () => {
@@ -279,7 +287,7 @@ describe('reference enrichment modes', () => {
     releaseFirst();
     releaseSecond();
     releaseThird();
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('fences a late Off result and permits a fresh read after re-enabling', async () => {
@@ -303,7 +311,7 @@ describe('reference enrichment modes', () => {
       preview('CAN-4'),
     );
     expect(t.reads).toEqual(['CAN-4', 'CAN-4']);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('does not start a provider read when Off interrupts a pending scope check', async () => {
@@ -315,7 +323,7 @@ describe('reference enrichment modes', () => {
     scope.resolve({ scope: 'scope-a' });
     expect(await read).toBeNull();
     expect(t.reads).toEqual([]);
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 
   it('fences a pending connection and catalog result without scheduling an Off retry', async () => {
@@ -328,7 +336,7 @@ describe('reference enrichment modes', () => {
     await jest.advanceTimersByTimeAsync(LIMITS.negativeMs * 2);
     expect(t.scopeReads()).toBe(1);
     expect(t.store.getState().teamCatalog.status).not.toBe('ready');
-    t.store[CLIENT_STORE_DISPOSE]();
+    disposePreviewStore(t.store);
   });
 });
 
@@ -527,7 +535,7 @@ describe('createLinearPreviewStore', () => {
       }),
     );
     expect(t.store.getState().views).toEqual({});
-    t.store[CLIENT_STORE_DISPOSE]?.();
+    disposePreviewStore(t.store);
     await t.store.getState().load({ identifier: 'CAN-10' });
     window.dispatchEvent(
       new StorageEvent('storage', {

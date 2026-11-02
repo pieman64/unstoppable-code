@@ -11,6 +11,8 @@ const { bindCombinationAfterJoin } = jest.requireMock<{
   >;
 }>('../lib/adhoc-combination-binding');
 import type * as DestructiveRecovery from '../lib/w5-destructive-recovery';
+import type * as ValidationModule from '../lib/validation';
+import type * as WorkspacePersistenceModule from '../lib/workspace-persistence';
 // This suite controls the legacy filesystem. Durable lifecycle evidence is
 // exercised with real files and workers in w5-destructive-recovery.test.ts.
 jest.mock('../lib/w5-destructive-recovery', () => ({
@@ -19,6 +21,8 @@ jest.mock('../lib/w5-destructive-recovery', () => ({
   ),
   readDestructiveRecovery: jest.fn(() => Promise.resolve(null)),
   assertNoDestructiveRecovery: jest.fn(() => Promise.resolve()),
+  readInFlightWorktreeDestructiveOperations: jest.fn(() => Promise.resolve([])),
+  assertFailedChildArchivesResumed: jest.fn(() => Promise.resolve()),
   assertNoLegacyArchiveRecovery: jest.fn(() => Promise.resolve()),
   refuseInterruptedArchiveJournal: jest.fn(() => Promise.resolve()),
   findCompletedDestructiveArchive: jest.fn(() => Promise.resolve(null)),
@@ -228,6 +232,15 @@ jest.mock('../lib/animals', () => ({
 }));
 jest.mock('../lib/workspace-persistence', () => {
   const readWorkspaceConfig = jest.fn<Promise<WorkspaceConfigFile>, [string]>();
+  const readWorkspaceConfigDetailed = jest.fn<
+    ReturnType<typeof WorkspacePersistenceModule.readWorkspaceConfigDetailed>,
+    [string]
+  >(async (workspaceId) => ({
+    config: await readWorkspaceConfig(workspaceId),
+    authority: 'ok',
+    ownerMalformed: false,
+    memoryMalformed: false,
+  }));
   const writeWorkspaceConfig = jest.fn();
   return {
     markWorkspaceWorktreeRecentlyRemoved: jest.fn(),
@@ -238,12 +251,24 @@ jest.mock('../lib/workspace-persistence', () => {
     ),
     removeWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
     readWorkspaceConfig,
-    readWorkspaceConfigDetailed: jest.fn(async (workspaceId: string) => ({
-      config: await readWorkspaceConfig(workspaceId),
-      authority: 'ok',
-      ownerMalformed: false,
-      memoryMalformed: false,
-    })),
+    readWorkspaceConfigDetailed,
+    readWorkspaceOwnership: jest.fn(
+      async (
+        workspaceId: string,
+      ): ReturnType<
+        typeof WorkspacePersistenceModule.readWorkspaceOwnership
+      > => {
+        const detail = await readWorkspaceConfigDetailed(workspaceId);
+        if (detail.authority !== 'ok') return { authority: detail.authority };
+        if (detail.ownerMalformed) return { authority: 'unreadable' };
+        return {
+          authority: 'ok',
+          type: detail.config.type,
+          owner: detail.config.owner,
+          ownershipTransfer: detail.config.ownershipTransfer,
+        };
+      },
+    ),
     readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
     writeWorkspaceWorktrees: jest.fn(() => Promise.resolve()),
     isWorkspaceWorktreeRecentlyRemoved: jest.fn(() => false),
@@ -324,6 +349,10 @@ jest.mock('../lib/archived-container-git', () => ({
 }));
 jest.mock('../lib/archived-container-recovery', () => ({
   finishArchivedContainerRecovery: jest.fn(() => Promise.resolve([])),
+  readProjectWorktreeRegistrations: jest.fn((projectId: string) =>
+    Promise.resolve({ projectId, repositories: [] }),
+  ),
+  removeProjectWorktreeRegistrations: jest.fn(() => Promise.resolve()),
 }));
 jest.mock('../lib/workspace-activity', () => ({
   runWithWorkspaceTargetActivityDeletion: <T>(
@@ -474,7 +503,16 @@ jest.mock('../lib/desktop-telemetry', () => ({
   recordWorktreeCrudTelemetry: jest.fn(),
 }));
 jest.mock('../agents/session-manager', () => ({
+  getLiveBackgroundTasksForChat: jest.fn(),
+  listLiveBackgroundTaskOwners: jest.fn(),
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
+  hasPendingCodexContinuation: jest.fn(() => false),
+  getChatSessionLiveness: jest.fn(() => ({
+    foreground: false,
+    background: false,
+  })),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
   destroyWorktreeSessions: jest.fn(),
@@ -641,13 +679,21 @@ import { validateId } from '../lib/validation';
 import { cleanupPersistedWorktreeData } from '../lib/worktree-data-cleanup';
 import { clearWorkEntrySummariesForWorkspace } from '../lib/cowork-work-entries';
 import { cleanupUnreferencedRepoShadows } from '../lib/repo-shadow';
+import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   previewSplitTemporaryWorkspaceWorktree,
   splitTemporaryWorkspaceWorktree,
 } from '../lib/split-temporary-workspace';
 import { destroyWorktreeSessions } from '../agents/session-manager';
 import { setDelegationActivity } from '../agents/delegation/activity';
+import {
+  getLiveBackgroundTasksForChat,
+  listLiveBackgroundTaskOwners,
+  type LiveBackgroundTaskOwner,
+} from '../agents/session-manager';
+import { createLiveBackgroundTaskOwner } from '../ipc/__tests__/background-work-removal-test-helpers';
 import { registerIpcHandler } from '../ipc/register';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import {
   collectReferencedRepoPaths,
   registerWorkspaceHandlers,
@@ -721,6 +767,12 @@ const mockedStartWorkspaceWorktreePostCreateSetup = jest.mocked(
   startWorkspaceWorktreePostCreateSetup,
 );
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+const mockedGetLiveBackgroundTasksForChat = jest.mocked(
+  getLiveBackgroundTasksForChat,
+);
+const mockedListLiveBackgroundTaskOwners = jest.mocked(
+  listLiveBackgroundTaskOwners,
+);
 const mockedReadFile = jest.mocked(readFile);
 const mockedReaddir = jest.mocked(readdir);
 const mockedRm = jest.mocked(rm);
@@ -773,7 +825,9 @@ function requireRegisteredHandler(channel: string): HandlerFn {
   if (typeof handler !== 'function') {
     throw new Error(`Expected IPC handler for ${channel} to be a function`);
   }
-  return handler;
+  // Test calls intentionally pass minimal fake Electron events; registration
+  // keeps the real event type, so adapt it at this one test-harness boundary.
+  return handler as unknown as HandlerFn;
 }
 
 let createWorktreeHandler: HandlerFn;
@@ -850,6 +904,18 @@ function expectDeferredSetupFailure(expectedGitError: string | RegExp): void {
   });
   const gitError = persistedWorktrees[0]?.healthIssue?.gitError;
   expect(gitError).toEqual(expect.stringMatching(expectedGitError));
+}
+
+function setProviderTask(owner: LiveBackgroundTaskOwner): void {
+  mockedGetLiveBackgroundTasksForChat.mockImplementation(
+    (projectId, worktreeId, chatId) =>
+      owner.projectId === projectId &&
+      owner.worktreeId === worktreeId &&
+      owner.chatId === chatId
+        ? owner.liveTasks
+        : undefined,
+  );
+  mockedListLiveBackgroundTaskOwners.mockReturnValue([owner]);
 }
 
 // CAN-3817: retention and private memory changes go through their typed W5
@@ -1057,10 +1123,24 @@ describe('workspace:check-add-from-folder', () => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockedGetLiveBackgroundTasksForChat.mockReset().mockReturnValue(undefined);
+  mockedListLiveBackgroundTaskOwners.mockReset().mockReturnValue([]);
   persistedWorktrees = [];
 
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      query: (
+        ...args: Parameters<DesktopCanopyDispatcher['query']>
+      ): Promise<never> => {
+        void args;
+        return Promise.reject(new Error('Unexpected dispatcher query'));
+      },
+      instruction: (
+        ...args: Parameters<DesktopCanopyDispatcher['instruction']>
+      ): Promise<never> => {
+        void args;
+        return Promise.reject(new Error('Unexpected dispatcher instruction'));
+      },
       queryWorktreeListForLegacyIpc: async ({
         scope,
       }: {
@@ -1356,6 +1436,7 @@ describe('project split destructive approval', () => {
           repoId: 'repo-a',
           repoName: 'Repo A',
           repoPath: '/repos/repo-a',
+          destinationWorkspaceName: 'Destination workspace',
           removalMode: 'delete',
           chats: { count: 0, entries: [] },
           pipelines: { count: 0, entries: [] },
@@ -1394,11 +1475,23 @@ describe('project split destructive approval', () => {
     ).rejects.toThrow('Split project dialog');
     expect(mockedSplitTemporaryWorkspaceWorktree).toHaveBeenCalledTimes(1);
 
-    const approval: SplitTemporaryWorkspaceDestructiveApprovalResponse =
+    const approvalResponse =
       await approveSplitTemporaryWorkspaceDestructiveHandler(
         {},
         destructiveRequest,
       );
+    if (
+      typeof approvalResponse !== 'object' ||
+      approvalResponse === null ||
+      !('approvalToken' in approvalResponse) ||
+      (typeof approvalResponse.approvalToken !== 'string' &&
+        approvalResponse.approvalToken !== null)
+    ) {
+      throw new Error('Expected split approval response');
+    }
+    const approval: SplitTemporaryWorkspaceDestructiveApprovalResponse = {
+      approvalToken: approvalResponse.approvalToken,
+    };
     expect(approval.approvalToken).toEqual(expect.any(String));
 
     await expect(
@@ -2167,7 +2260,7 @@ describe('workspace:repair-worktree', () => {
       clientInstanceId: 'test-client',
       authorityId: 'local-desktop',
       interfaceKind: 'test' as const,
-      grants: ['core.worktree.read'],
+      grants: ['core.worktree.read' as const],
     };
     const queryWorktreeListForLegacyIpc = jest.fn(() =>
       Promise.resolve({
@@ -2178,7 +2271,21 @@ describe('workspace:repair-worktree', () => {
     const resolveCaller = jest.fn(() => caller);
     mockedRegisterIpcHandler.mockClear();
     registerWorkspaceHandlers(() => null, {
-      dispatcher: { queryWorktreeListForLegacyIpc },
+      dispatcher: {
+        query: (
+          ...args: Parameters<DesktopCanopyDispatcher['query']>
+        ): Promise<never> => {
+          void args;
+          return Promise.reject(new Error('Unexpected dispatcher query'));
+        },
+        instruction: (
+          ...args: Parameters<DesktopCanopyDispatcher['instruction']>
+        ): Promise<never> => {
+          void args;
+          return Promise.reject(new Error('Unexpected dispatcher instruction'));
+        },
+        queryWorktreeListForLegacyIpc,
+      },
       resolveCaller,
     });
     const repair = requireRegisteredHandler('workspace:repair-worktree');
@@ -2465,7 +2572,7 @@ describe('workspace:add-repo-to-worktree', () => {
   };
 
   it('refuses to remove a non-empty non-git repo directory', async () => {
-    const debugEntry = new Dirent<Buffer>();
+    const debugEntry = new Dirent<Buffer<ArrayBuffer>>();
     debugEntry.name = Buffer.from('debug.txt');
     mockedReadFile.mockRejectedValue(new Error('ENOENT'));
     mockedReaddir.mockImplementation(() => Promise.resolve([debugEntry]));
@@ -2518,6 +2625,15 @@ describe('workspace:archive-worktree chat cleanup', () => {
   });
 
   it('removes archived worktree chat tabs from the unified project chats directory', async () => {
+    const owner = createLiveBackgroundTaskOwner(
+      'test-workspace',
+      'test-animal',
+      'chat-a',
+      'local_bash',
+    );
+    mockedGetLiveBackgroundTasksForChat.mockReturnValue(owner.liveTasks);
+    mockedListLiveBackgroundTaskOwners.mockReturnValue([owner]);
+
     await archiveWorktreeHandler(
       {},
       {
@@ -2550,6 +2666,14 @@ describe('workspace:archive-worktree chat cleanup', () => {
   });
 
   it('refuses while a chat in the worktree has live delegates, without tearing down', async () => {
+    setProviderTask(
+      createLiveBackgroundTaskOwner(
+        'test-workspace',
+        'test-animal',
+        'chat-a',
+        'local_agent',
+      ),
+    );
     setDelegationActivity(
       'workspace-archive-owner',
       'test-workspace/test-animal/chat-a',
@@ -2572,6 +2696,34 @@ describe('workspace:archive-worktree chat cleanup', () => {
       );
     }
   });
+
+  it.each(['local_agent', 'local_workflow'] as const)(
+    'refuses while a chat in the worktree has a live %s, without tearing down',
+    async (taskType) => {
+      const owner = createLiveBackgroundTaskOwner(
+        'test-workspace',
+        'test-animal',
+        'chat-a',
+        taskType,
+      );
+      mockedGetLiveBackgroundTasksForChat.mockReturnValue(owner.liveTasks);
+      mockedListLiveBackgroundTaskOwners.mockReturnValue([owner]);
+
+      await expect(
+        archiveWorktreeHandler(
+          {},
+          { workspaceId: 'test-workspace', worktreeId: 'test-animal' },
+        ),
+      ).rejects.toMatchObject({
+        code: 'conflict',
+        message:
+          'Background agents or workflows are still running here. Stop them first.',
+      });
+      expect(mockedRemoveWorktree).not.toHaveBeenCalled();
+      expect(mockedCleanupPersistedWorktreeData).not.toHaveBeenCalled();
+      expect(mockedRecordWorktreeCrudTelemetry).not.toHaveBeenCalled();
+    },
+  );
 
   it('rethrows Linux project teardown failures instead of swallowing them', async () => {
     // macOS can recover with its native fallback; Linux must surface rm failure.
@@ -3319,7 +3471,22 @@ describe('project type conversion', () => {
 });
 
 describe('workspace:delete', () => {
+  // A deletion's repo-shadow reap is detached work; let it settle so it
+  // cannot run into the next test's mocks. This drains every tracked item in
+  // the process, so a tracked promise that never settles hangs this hook.
+  afterEach(async () => {
+    await settleDetachedWork();
+  });
+
   it('refuses while any chat in the workspace has live delegates', async () => {
+    setProviderTask(
+      createLiveBackgroundTaskOwner(
+        'test-workspace',
+        'test-animal',
+        'chat-a',
+        'local_agent',
+      ),
+    );
     setDelegationActivity(
       'workspace-delete-owner',
       'test-workspace/test-animal/chat-a',
@@ -3338,6 +3505,40 @@ describe('workspace:delete', () => {
         0,
       );
     }
+    expect(jest.mocked(removeWorkspaceIndexEntry)).not.toHaveBeenCalled();
+    expect(mockedRm).not.toHaveBeenCalledWith(
+      '/mock/workspaces/test-workspace',
+      expect.anything(),
+    );
+  });
+
+  it('rejects a malformed supersede operation id at the IPC boundary', async () => {
+    // The suite stubs the validator. Run the real one for this field only,
+    // not as a queued `Once` value another test's late call could take.
+    const realValidateId: typeof ValidationModule.validateId =
+      jest.requireActual<typeof ValidationModule>(
+        '../lib/validation',
+      ).validateId;
+    jest.mocked(validateId).mockImplementation((value, label) => {
+      if (label === 'supersedeInterruptedDeletion')
+        realValidateId(value, label);
+    });
+    const deleteHandler = requireRegisteredHandler('workspace:delete');
+    try {
+      await expect(
+        deleteHandler(
+          {},
+          {
+            workspaceId: 'test-workspace',
+            supersedeInterruptedDeletion: 'NOT/an-operation-id',
+          },
+        ),
+      ).rejects.toThrow('Invalid supersedeInterruptedDeletion');
+    } finally {
+      jest.mocked(validateId).mockReset();
+    }
+
+    expect(mockedListArchivedContainerManifestsStrict).not.toHaveBeenCalled();
     expect(jest.mocked(removeWorkspaceIndexEntry)).not.toHaveBeenCalled();
     expect(mockedRm).not.toHaveBeenCalledWith(
       '/mock/workspaces/test-workspace',
@@ -3524,23 +3725,30 @@ describe('workspace:delete', () => {
       collapsed: false,
       order: 0,
     };
-    // Read before archiving the worktrees and again under the archive lock.
+    // Answer from the deletion's progress rather than queued `Once` values:
+    // `clearAllMocks` keeps an earlier test's unconsumed queue, and a read
+    // that test's background work makes late would take this test's value.
+    const indexEntryRemoved = (): boolean =>
+      jest
+        .mocked(removeWorkspaceIndexEntry)
+        .mock.calls.some(([workspaceId]) => workspaceId === 'to-delete');
     mockedReadWorkspaceIndexEntry
-      .mockResolvedValueOnce(indexEntry)
-      .mockResolvedValueOnce(indexEntry);
-    // Read before archiving the worktrees (CAN-3799 B2), again under the
-    // archive lock, and once more after the deletion.
-    mockedReadAllSidebarItems
-      .mockResolvedValueOnce({ version: 1, items: preDeletionItems })
-      .mockResolvedValueOnce({ version: 1, items: preDeletionItems })
-      .mockResolvedValueOnce({ version: 1, items: postDeletionItems });
+      .mockReset()
+      .mockImplementation(() =>
+        Promise.resolve(indexEntryRemoved() ? null : indexEntry),
+      );
+    mockedReadAllSidebarItems.mockReset().mockImplementation(() =>
+      Promise.resolve({
+        version: 1,
+        items: indexEntryRemoved() ? postDeletionItems : preDeletionItems,
+      }),
+    );
 
     const deleteHandler = requireRegisteredHandler(
       IPC_CHANNELS.workspaceDelete,
     );
     await deleteHandler({}, { workspaceId: 'to-delete' });
 
-    expect(mockedReadAllSidebarItems).toHaveBeenCalledTimes(3);
     expect(mockedCleanupUnreferencedRepoShadows).toHaveBeenCalledWith([
       '/repos/keep-source',
       '/repos/keep-a',
@@ -3845,6 +4053,8 @@ describe('CAN-3846 reply binding', () => {
           });
       const refreshed = {
         ...original,
+        filePathRewrites: [],
+        compatibilitySymlinks: [],
         repoMappings: [
           {
             destinationRepoId: 'added',
@@ -3855,6 +4065,7 @@ describe('CAN-3846 reply binding', () => {
         ],
         destinationWorkspace: {
           ...original.destinationWorkspace,
+          collapsed: false,
           repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
           temporary: true,
           owner: {

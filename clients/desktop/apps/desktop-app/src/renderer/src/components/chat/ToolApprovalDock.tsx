@@ -1,9 +1,28 @@
-import { memo, useCallback, useEffect, useState, type JSX } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import { useShallow } from 'zustand/shallow';
 import { useChatStore } from '@/stores/chatStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import type { ApprovalRequestEvent } from '@canopy/desktop-shared/types';
-import { ToolApprovalCard } from './ToolApprovalCard';
+import {
+  Button,
+  STATUS_ANNOUNCEMENT_DURATION_MS,
+  type StatusAnnouncement,
+  StatusAnnouncer,
+} from '@canopy/ui-shared/components';
+import { getDocument } from '@canopy/ui-shared/panels';
+import {
+  ToolApprovalCard,
+  type ToolApprovalCardHandle,
+} from './ToolApprovalCard';
+import { approvalAnnouncementText } from './approval-content-preview';
 import {
   ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
@@ -16,6 +35,119 @@ export interface ToolApprovalDockProps {
   projectId: string;
   worktreeId: string;
   chatId: string;
+  /**
+   * Whether a newly displayed card may take focus now. The composer applies
+   * `canApprovalTakeFocus` (`approval-focus-policy.ts`) to the live focus and
+   * draft. Without it the dock never takes focus on arrival.
+   */
+  canTakeFocus?: () => boolean;
+  /**
+   * Returns focus to the composer, keeping its draft, after the last card
+   * that owned focus is answered. The host declines when it is hidden.
+   */
+  focusComposer?: () => void;
+}
+
+interface ArrivalQueue {
+  chatKey: string;
+  items: readonly StatusAnnouncement[];
+}
+
+/**
+ * Polite announcements for newly pending approvals, one per request id and
+ * chat activation (CAN-4997). Arrivals behind the displayed card are
+ * announced too; simultaneous arrivals queue so a later one never overwrites
+ * an earlier one before it is heard. Navigation, rerenders, and Strict Mode
+ * effect replays announce nothing new; a request that resolves drops out of
+ * the queue, and a chat switch discards it.
+ */
+function useApprovalArrivalAnnouncement(
+  chatKey: string,
+  pending: readonly ApprovalRequestEvent[],
+): StatusAnnouncement | null {
+  const [queue, setQueue] = useState<ArrivalQueue>({ chatKey, items: [] });
+  const announcedRef = useRef<{ chatKey: string; ids: Set<string> }>({
+    chatKey,
+    ids: new Set(),
+  });
+
+  useEffect(() => {
+    if (announcedRef.current.chatKey !== chatKey) {
+      announcedRef.current = { chatKey, ids: new Set() };
+    }
+    const announced = announcedRef.current.ids;
+    const pendingIds = new Set(pending.map((p) => p.requestId));
+    const arrivals = pending.filter((p) => !announced.has(p.requestId));
+    for (const arrival of arrivals) announced.add(arrival.requestId);
+    setQueue((previous) => {
+      const kept =
+        previous.chatKey === chatKey
+          ? previous.items.filter((item) => pendingIds.has(String(item.id)))
+          : [];
+      if (
+        previous.chatKey === chatKey &&
+        arrivals.length === 0 &&
+        kept.length === previous.items.length
+      ) {
+        return previous;
+      }
+      return {
+        chatKey,
+        items: [
+          ...kept,
+          ...arrivals.map(
+            (p): StatusAnnouncement => ({
+              id: p.requestId,
+              text: approvalAnnouncementText(p),
+            }),
+          ),
+        ],
+      };
+    });
+  }, [chatKey, pending]);
+
+  const head = queue.chatKey === chatKey ? (queue.items[0] ?? null) : null;
+  const headId = head?.id;
+  // Each announcement holds the region for its full display time, then the
+  // next one takes over.
+  useEffect(() => {
+    if (headId === undefined) return undefined;
+    const advance = setTimeout(() => {
+      setQueue((previous) =>
+        previous.items[0]?.id === headId
+          ? { chatKey: previous.chatKey, items: previous.items.slice(1) }
+          : previous,
+      );
+    }, STATUS_ANNOUNCEMENT_DURATION_MS);
+    return (): void => {
+      clearTimeout(advance);
+    };
+  }, [headId]);
+
+  return head;
+}
+
+/** Focus was lost rather than moved: nothing, the body, or a detached node. */
+function focusIsUnowned(doc: Document): boolean {
+  const active = doc.activeElement;
+  return active === null || active === doc.body || !active.isConnected;
+}
+
+/** Lost, or left on a dock button that just became disabled. */
+function focusDropped(doc: Document, host: HTMLElement | null): boolean {
+  if (focusIsUnowned(doc)) return true;
+  const active = doc.activeElement;
+  return (
+    active instanceof HTMLButtonElement &&
+    active.disabled &&
+    host?.contains(active) === true
+  );
+}
+
+interface DockSelection {
+  chatKey: string;
+  index: number;
+  requestId: string | null;
 }
 
 /**
@@ -32,22 +164,37 @@ export interface ToolApprovalDockProps {
  * "Approval N of M" count plus ← → navigation, and the currently-selected
  * approval's card renders below it.
  *
- * Selection is local component state — a plain index into the chat's
- * pending-approvals array, ordered by store insertion order (stable arrival
- * order; hydration re-populates the store in persisted-array order, so a
- * restored dock's ordering is deterministic too). The index resets to 0 when
- * `chatId` changes and is otherwise just clamped to the current list length
- * on every render: resolving the currently-viewed approval removes it from
- * the record, the list shifts up beneath the same index, and the user lands
- * on whatever is now at that position — the next unresolved approval, or the
+ * Selection is local component state — the displayed request id plus its
+ * index into the chat's pending-approvals array, ordered by store insertion
+ * order (stable arrival order; hydration re-populates the store in
+ * persisted-array order, so a restored dock's ordering is deterministic
+ * too). Selection resets to the first approval when the chat changes.
+ * Removing another request keeps the displayed one on screen. Resolving the
+ * currently-viewed approval removes it from the record, the list shifts up
+ * beneath the same index, clamped to the list length, and the user lands on
+ * whatever is now at that position — the next unresolved approval, or the
  * new last approval if the one they resolved was previously last. When the
- * list empties entirely the dock unmounts.
+ * list empties entirely the card unmounts; the empty live region stays so
+ * the next arrival's announcement is heard.
+ *
+ * Keyboard focus (CAN-4997, `docs/tool-approvals.md`): a newly displayed
+ * card takes focus on its primary action only when `canTakeFocus` allows
+ * it. When the card that owned focus is answered or removed, focus moves to
+ * the next displayed card, or to the composer after the last one. Ownership
+ * is tracked from focus events, so it is known before the card's DOM is
+ * gone: a focus inside the dock's React tree (including the card's portaled
+ * menus and modal) claims it, and a focus anywhere else releases it, which
+ * preserves focus the user moved elsewhere while a response was in flight.
+ * Entering a chat announces its approvals but leaves focus to the
+ * composer's own startup focus.
  */
 export const ToolApprovalDock = memo(function ToolApprovalDock({
   projectId,
   worktreeId,
   chatId,
-}: ToolApprovalDockProps): JSX.Element | null {
+  canTakeFocus,
+  focusComposer,
+}: ToolApprovalDockProps): JSX.Element {
   const pending = useChatStore(
     useShallow((s): ApprovalRequestEvent[] => {
       const forChat = Object.values(s.pendingApprovals).filter(
@@ -60,32 +207,127 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
     }),
   );
 
-  const [selectedIndex, setSelectedIndex] = useState(0);
-
-  // Reset navigation position when the active chat changes — a dock should
-  // never carry over another chat's scroll position into this one.
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [projectId, worktreeId, chatId]);
-
+  const chatKey = `${projectId}\u0000${worktreeId}\u0000${chatId}`;
+  // The displayed request is followed by identity, so removing another
+  // request keeps it on screen; the index is the fallback when the displayed
+  // request itself goes. Another chat's selection never carries over.
+  const [selection, setSelection] = useState<DockSelection>({
+    chatKey,
+    index: 0,
+    requestId: null,
+  });
+  const ownSelection =
+    selection.chatKey === chatKey
+      ? selection
+      : { chatKey, index: 0, requestId: null };
+  const selectedById =
+    ownSelection.requestId === null
+      ? -1
+      : pending.findIndex((p) => p.requestId === ownSelection.requestId);
   const activeIndex =
-    pending.length === 0 ? 0 : Math.min(selectedIndex, pending.length - 1);
+    pending.length === 0
+      ? 0
+      : selectedById >= 0
+        ? selectedById
+        : Math.min(ownSelection.index, pending.length - 1);
   const canGoPrev = activeIndex > 0;
   const canGoNext = activeIndex < pending.length - 1;
-
-  const goPrev = useCallback((): void => {
-    setSelectedIndex((current) =>
-      Math.max(0, Math.min(current, pending.length - 1) - 1),
-    );
-  }, [pending.length]);
-
-  const goNext = useCallback((): void => {
-    setSelectedIndex((current) =>
-      Math.min(pending.length - 1, Math.min(current, pending.length - 1) + 1),
-    );
-  }, [pending.length]);
-
   const current = pending[activeIndex];
+  const currentRequestId = current?.requestId ?? null;
+  if (
+    selection.chatKey !== chatKey ||
+    selection.index !== activeIndex ||
+    selection.requestId !== currentRequestId
+  ) {
+    setSelection({ chatKey, index: activeIndex, requestId: currentRequestId });
+  }
+
+  const select = useCallback(
+    (index: number): void => {
+      setSelection({
+        chatKey,
+        index,
+        requestId: pending[index]?.requestId ?? null,
+      });
+    },
+    [chatKey, pending],
+  );
+  const goPrev = useCallback((): void => {
+    select(Math.max(0, activeIndex - 1));
+  }, [activeIndex, select]);
+  const goNext = useCallback((): void => {
+    select(Math.min(pending.length - 1, activeIndex + 1));
+  }, [activeIndex, pending.length, select]);
+
+  const announcement = useApprovalArrivalAnnouncement(chatKey, pending);
+
+  const hostRef = useRef<HTMLDivElement>(null);
+  const cardHandleRef = useRef<ToolApprovalCardHandle>(null);
+  const ownsFocusRef = useRef(false);
+  const displayedRef = useRef<{
+    chatKey: string | null;
+    requestId: string | null;
+  }>({ chatKey: null, requestId: null });
+
+  // A focus anywhere releases ownership in the capture phase; the dock's
+  // own React `onFocus` (bubbling, so after this) claims it back when the
+  // focus landed inside the dock's tree.
+  useEffect(() => {
+    const doc = getDocument(hostRef.current);
+    const release = (): void => {
+      ownsFocusRef.current = false;
+    };
+    doc.addEventListener('focusin', release, true);
+    return (): void => {
+      doc.removeEventListener('focusin', release, true);
+    };
+  }, []);
+  const claimFocus = useCallback((): void => {
+    ownsFocusRef.current = true;
+  }, []);
+
+  const pendingIdsKey = pending.map((p) => p.requestId).join('\u0000');
+  useLayoutEffect(() => {
+    const previous = displayedRef.current;
+    displayedRef.current = { chatKey, requestId: currentRequestId };
+    const doc = getDocument(hostRef.current);
+    if (previous.chatKey !== chatKey) {
+      ownsFocusRef.current = false;
+      return;
+    }
+    const previousStillPending =
+      previous.requestId !== null &&
+      pendingIdsKey.split('\u0000').includes(previous.requestId);
+    if (previous.requestId === currentRequestId || previousStillPending) {
+      // The same card, or arrow navigation: focus stays where it is unless a
+      // count change removed or disabled the navigation button that had it.
+      // Then it lands on the displayed card instead of the body.
+      if (
+        currentRequestId !== null &&
+        ownsFocusRef.current &&
+        focusDropped(doc, hostRef.current)
+      ) {
+        cardHandleRef.current?.focusPrimaryAction();
+      }
+      return;
+    }
+    if (
+      previous.requestId !== null &&
+      ownsFocusRef.current &&
+      focusDropped(doc, hostRef.current)
+    ) {
+      if (currentRequestId !== null) {
+        cardHandleRef.current?.focusPrimaryAction();
+      } else {
+        focusComposer?.();
+      }
+      return;
+    }
+    if (currentRequestId !== null && canTakeFocus?.() === true) {
+      cardHandleRef.current?.focusPrimaryAction();
+    }
+  }, [canTakeFocus, chatKey, currentRequestId, focusComposer, pendingIdsKey]);
+
   useCurrentUiStateReporter(
     'chat.toolApprovalDock',
     current
@@ -99,55 +341,68 @@ export const ToolApprovalDock = memo(function ToolApprovalDock({
         }
       : null,
   );
-  if (!current) {
-    return null;
-  }
-
   return (
-    // The dock chrome is recorded; the card blocks the command, path, or
-    // input the agent asks to run.
-    <div data-testid="tool-approval-dock" className="mb-1.5">
-      {pending.length > 1 && (
-        <div className="mb-1 flex items-center justify-between px-0.5">
-          <span
-            data-testid="tool-approval-count"
-            className="text-2xs fg-secondary"
-          >
-            Approval {activeIndex + 1} of {pending.length}
-          </span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              data-testid="tool-approval-nav-prev"
-              aria-label="Previous approval"
-              disabled={!canGoPrev}
-              onClick={goPrev}
-              className="rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary/80 disabled:pointer-events-none disabled:opacity-30"
-            >
-              <AppCatalogChevronLeftMediumIcon
-                aria-hidden="true"
-                width="14"
-                height="14"
-              />
-            </button>
-            <button
-              type="button"
-              data-testid="tool-approval-nav-next"
-              aria-label="Next approval"
-              disabled={!canGoNext}
-              onClick={goNext}
-              className="rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary/80 disabled:pointer-events-none disabled:opacity-30"
-            >
-              <AppCatalogChevronRightMediumIcon
-                aria-hidden="true"
-                width="14"
-                height="14"
-              />
-            </button>
-          </div>
+    <div ref={hostRef} onFocus={claimFocus}>
+      {/* Mounted while empty so the first arrival is heard. The text names
+          the command or path, so it is blocked from session replay. */}
+      <StatusAnnouncer
+        announcement={announcement}
+        privacy="block"
+        data-testid="tool-approval-announcer"
+      />
+      {current && (
+        // The dock chrome is recorded; the card blocks the command, path, or
+        // input the agent asks to run.
+        <div data-testid="tool-approval-dock" className="mb-1.5">
+          {pending.length > 1 && (
+            <div className="mb-1 flex items-center justify-between px-0.5">
+              <span
+                data-testid="tool-approval-count"
+                className="text-2xs fg-secondary"
+              >
+                Approval {activeIndex + 1} of {pending.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  data-testid="tool-approval-nav-prev"
+                  aria-label="Previous approval"
+                  disabled={!canGoPrev}
+                  onClick={goPrev}
+                >
+                  <AppCatalogChevronLeftMediumIcon
+                    aria-hidden="true"
+                    width="14"
+                    height="14"
+                  />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  data-testid="tool-approval-nav-next"
+                  aria-label="Next approval"
+                  disabled={!canGoNext}
+                  onClick={goNext}
+                >
+                  <AppCatalogChevronRightMediumIcon
+                    aria-hidden="true"
+                    width="14"
+                    height="14"
+                  />
+                </Button>
+              </div>
+            </div>
+          )}
+          <ToolApprovalCard
+            key={current.requestId}
+            pending={current}
+            focusHandleRef={cardHandleRef}
+          />
         </div>
       )}
-      <ToolApprovalCard key={current.requestId} pending={current} />
     </div>
   );
 });

@@ -157,7 +157,13 @@ describe('githubMergeLocalBranches handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
     handler = getMergeHandler();
   });
 
@@ -258,7 +264,7 @@ describe('githubMergeLocalBranches handler', () => {
       sourceRepoPath: '/workspace/source',
       repos: [],
     } as any);
-    mockedReaddir.mockResolvedValue([] as any);
+    mockedReaddir.mockResolvedValue([]);
     mockedGetRemoteUrl.mockResolvedValue(null);
     mockedHasUncommittedChanges.mockResolvedValue(false);
     mockedGetCurrentBranch.mockResolvedValue('feature/root');
@@ -269,7 +275,7 @@ describe('githubMergeLocalBranches handler', () => {
     });
     mockedHasCommitsAhead.mockResolvedValue(true);
     mockedMergeBranchIntoLocalBase.mockResolvedValue('merge123');
-    mockedValidateId.mockImplementation((value: string): void => {
+    mockedValidateId.mockImplementation((value): void => {
       if (value === WORKSPACE_ROOT_REPO_ID) {
         throw new Error('project root repo id should bypass validateId');
       }

@@ -10,7 +10,11 @@ import type {
   ArchivedContainerRefreshPullRequestsResponse,
   ArchivedContainerSummary,
 } from '@canopy/desktop-shared/types';
-import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  ExecutionState,
+  ExecutionSummary,
+  NormalizedJob,
+} from '@canopy/desktop-shared/types/pipeline';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import type { CostScopeRowTarget } from '@canopy/ui-app/cost';
@@ -94,8 +98,13 @@ jest.mock('@/components/activity/PipelineExecutionDetailModal', () => ({
 }));
 
 jest.mock('@/components/activity/DagProgressBar', () => ({
-  DagProgressBar: (): JSX.Element => <div data-testid="mock-dag" />,
+  DagProgressBar: (props: { executionState: unknown }): JSX.Element => {
+    archivedDagProps.push(props);
+    return <div data-testid="mock-dag" />;
+  },
 }));
+
+const archivedDagProps: Array<{ executionState: unknown }> = [];
 
 jest.mock('@/components/shared/AttachmentPreviewPopover', () => ({
   AttachmentPreviewPopover: ({
@@ -154,9 +163,14 @@ jest.mock('@/lib/chatTabPersistence', () => ({
   }),
 }));
 
+type ArchivedContainerSummaryV1 = Extract<
+  ArchivedContainerSummary,
+  { version: 1 }
+>;
+
 function containerSummary(
-  overrides: Partial<ArchivedContainerSummary> = {},
-): ArchivedContainerSummary {
+  overrides: Partial<Omit<ArchivedContainerSummaryV1, 'version'>> = {},
+): ArchivedContainerSummaryV1 {
   return {
     version: 1,
     id: 'container-1',
@@ -179,6 +193,32 @@ type ArchivedContainerSummaryV2 = Extract<
   ArchivedContainerSummary,
   { version: 2 }
 >;
+
+type ArchivedContainerSummaryV3 = Extract<
+  ArchivedContainerSummary,
+  { version: 3 }
+>;
+
+function containerSummaryV3(
+  overrides: Pick<ArchivedContainerSummaryV3, 'recovery'> &
+    Partial<Omit<ArchivedContainerSummaryV3, 'version' | 'kind' | 'recovery'>>,
+): ArchivedContainerSummaryV3 {
+  return {
+    version: 3,
+    kind: 'worktree',
+    id: 'container-1',
+    projectId: 'ws-1',
+    name: 'feature-x',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    archivedAt: '2026-07-20T00:00:00.000Z',
+    retentionDays: 7,
+    expiresAt: '2026-07-27T00:00:00.000Z',
+    chatCount: 2,
+    archivedChatCount: 1,
+    executionCount: 1,
+    ...overrides,
+  };
+}
 
 /** Confirmed-none capture: GitHub answered and there is no PR. */
 const CONFIRMED_NONE_PR_CAPTURE: ArchivedContainerSummaryV2['pullRequestMetadata'] =
@@ -206,7 +246,12 @@ const COMPLETE_BASE_BRANCHES: ArchivedContainerSummaryV2['baseBranches'] = [
 
 function v2Summary(
   gitChanges: ArchivedContainerSummaryV2['gitChanges'],
-  overrides: Partial<ArchivedContainerSummary> = {},
+  overrides: Partial<
+    Omit<
+      ArchivedContainerSummaryV2,
+      'version' | 'kind' | 'baseBranches' | 'gitChanges' | 'pullRequestMetadata'
+    >
+  > = {},
   pullRequestMetadata: ArchivedContainerSummaryV2['pullRequestMetadata'] = CONFIRMED_NONE_PR_CAPTURE,
 ): ArchivedContainerSummaryV2 {
   const summary: ArchivedContainerSummaryV2 = {
@@ -293,6 +338,59 @@ function executionSummary(
   };
 }
 
+function archivedExecutionState(): ExecutionState {
+  const job: NormalizedJob = {
+    name: 'Build',
+    needs: [],
+    timeout_minutes: 60,
+    max_retries: 0,
+    continue_on_error: false,
+    steps: [
+      {
+        id: 'compile',
+        name: 'Compile',
+        run: 'ARCHIVED_STEP_SCRIPT_SENTINEL',
+        shell: 'bash',
+        continue_on_error: false,
+        timeout_minutes: 30,
+        skip_on_missing_action: false,
+      },
+    ],
+  };
+  return {
+    version: 8,
+    id: 'exec-1',
+    pipeline_id: 'pipe-1',
+    pipeline_snapshot: {
+      name: 'Build pipeline',
+      scope: ['worktree'],
+      jobs: { build: job },
+    },
+    status: 'success',
+    jobs: {
+      build: {
+        status: 'success',
+        steps: {
+          compile: {
+            status: 'success',
+            outputs: {},
+            dynamic_env: {},
+          },
+        },
+        outputs: {},
+      },
+    },
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
+    started_at: '2026-07-19T00:00:00.000Z',
+    cwd: '/archive/project',
+    env: {},
+    inputs: {},
+  };
+}
+
 const listMock = jest.fn();
 const listChatsMock = jest.fn();
 const readChatMock = jest.fn();
@@ -336,6 +434,7 @@ async function render(
 }
 
 beforeEach(() => {
+  archivedDagProps.length = 0;
   mockRetainedCostViewProps.length = 0;
   setTestEarlyAccessFeatures({ enabled: false, hydrated: true });
   container = document.createElement('div');
@@ -678,7 +777,7 @@ describe('ArchivedContainerView', () => {
       container.querySelector(
         '[data-testid="archived-container-tab-pipelines"]',
       )?.textContent,
-    ).toBe('Pipelines (1)');
+    ).toBe('Workflows (1)');
     expect(
       container.querySelector(
         '[data-testid="archived-container-tab-attachments"]',
@@ -1022,7 +1121,7 @@ describe('ArchivedContainerView', () => {
       await Promise.resolve();
     });
 
-    expect(useArchivedContainersStore.getState().viewer.selectedPlanId).toBe(
+    expect(useArchivedContainersStore.getState().viewer?.selectedPlanId).toBe(
       'plan-2',
     );
 
@@ -1048,7 +1147,7 @@ describe('ArchivedContainerView', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(useArchivedContainersStore.getState().viewer.selectedPlanId).toBe(
+    expect(useArchivedContainersStore.getState().viewer?.selectedPlanId).toBe(
       'plan-2',
     );
   });
@@ -1073,6 +1172,39 @@ describe('ArchivedContainerView', () => {
         '[data-testid="archived-execution-row-exec-child"]',
       ),
     ).toBeNull();
+  });
+
+  it('projects archived list state before retaining the row and keeps detail on its archive route', async () => {
+    listExecutionsMock.mockResolvedValue({
+      executions: [executionSummary()],
+      statesById: { 'exec-1': archivedExecutionState() },
+    });
+    await render();
+    const pipelinesTab = container.querySelector(
+      '[data-testid="archived-container-tab-pipelines"]',
+    );
+    await act(async () => {
+      pipelinesTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const retainedRow = archivedDagProps.at(-1)?.executionState;
+    expect(retainedRow).toBeDefined();
+    expect(JSON.stringify(retainedRow)).not.toContain(
+      'ARCHIVED_STEP_SCRIPT_SENTINEL',
+    );
+
+    const row = container.querySelector(
+      '[data-testid="archived-execution-row-exec-1"]',
+    );
+    act(() => {
+      row?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readExecutionMock).not.toHaveBeenCalled();
+    expect(detailModalProps.at(-1)?.archivedSource).toEqual({
+      projectId: 'ws-1',
+      containerId: 'container-1',
+    });
   });
 
   it('opens the pipeline detail modal with archivedSource and no mutation/action props', async () => {
@@ -1135,14 +1267,14 @@ describe('ArchivedContainerView', () => {
     expect(
       container.querySelector('[data-testid="archived-partial-restore-banner"]')
         ?.textContent,
-    ).toBe('Partially restored — pipeline runs pending');
+    ).toBe('Partially restored — workflow runs pending');
     expect(
       container.querySelector('[data-testid="archived-container-tab-chats"]'),
     ).toBeNull();
     expect(listChatsMock).not.toHaveBeenCalled();
     expect(
       container.querySelector('[data-testid="archived-restore"]')?.textContent,
-    ).toBe('Retry pipeline import');
+    ).toBe('Retry workflow import');
     expect(
       container.querySelector('[data-testid="archived-execution-row-exec-1"]'),
     ).toBeTruthy();
@@ -1152,8 +1284,7 @@ describe('ArchivedContainerView', () => {
     useArchivedContainersStore.setState({
       byWorkspace: {
         'ws-1': [
-          containerSummary({
-            version: 3,
+          containerSummaryV3({
             restoredTo: {
               kind: 'worktree',
               id: 'wt-new',
@@ -1162,8 +1293,6 @@ describe('ArchivedContainerView', () => {
             recovery: {
               kind: 'files-only',
               source: 'partial',
-              digest: 'a'.repeat(64),
-              payloadId: '11111111-1111-4111-8111-111111111111',
               gitCleanupPending: true,
             },
           }),
@@ -1191,8 +1320,7 @@ describe('ArchivedContainerView', () => {
   });
 
   it('prioritizes a pending pipeline import over concurrent Git cleanup', async () => {
-    const combined = containerSummary({
-      version: 3,
+    const combined = containerSummaryV3({
       restoredTo: {
         kind: 'worktree',
         id: 'wt-new',
@@ -1201,8 +1329,6 @@ describe('ArchivedContainerView', () => {
       recovery: {
         kind: 'files-only',
         source: 'partial',
-        digest: 'a'.repeat(64),
-        payloadId: '11111111-1111-4111-8111-111111111111',
         gitCleanupPending: true,
       },
     });
@@ -1216,10 +1342,10 @@ describe('ArchivedContainerView', () => {
     expect(
       container.querySelector('[data-testid="archived-partial-restore-banner"]')
         ?.textContent,
-    ).toBe('Partially restored — pipeline runs pending');
+    ).toBe('Partially restored — workflow runs pending');
     expect(
       container.querySelector('[data-testid="archived-restore"]')?.textContent,
-    ).toBe('Retry pipeline import');
+    ).toBe('Retry workflow import');
   });
 
   it('restore navigates to the destination when the container is consumed', async () => {

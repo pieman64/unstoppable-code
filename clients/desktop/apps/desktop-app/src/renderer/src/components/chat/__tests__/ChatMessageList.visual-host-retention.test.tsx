@@ -18,6 +18,8 @@ import {
   useChatVisualsSource,
   type ChatVisualsSource,
 } from '@canopy/ui-app/code/chat-visuals-source';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import { desktopChatVisualsKey } from '@/lib/desktop-chat-visual-host';
 import type { ChatMessage } from '@/stores/chatStore';
@@ -143,16 +145,19 @@ function mountAndClose(): WeakRef<ChatMessage[]> {
   const root = createRoot(host);
   const messages = transcript();
   act(() => {
+    // The list stops native tasks through the client (turn-state D5).
     root.render(
-      <ChatMessageList
-        messages={messages}
-        queuedMessages={[]}
-        chatId={mockChatId}
-        transcriptTurns={[]}
-        onLoadTurn={(): Promise<void> => Promise.resolve()}
-        targetOverride={{ projectId, worktreeId, chatId: mockChatId }}
-        onClearQueuedMessage={(): void => undefined}
-      />,
+      <CanopyClientProvider client={ipcCanopyClient}>
+        <ChatMessageList
+          messages={messages}
+          queuedMessages={[]}
+          chatId={mockChatId}
+          transcriptTurns={[]}
+          onLoadTurn={(): Promise<void> => Promise.resolve()}
+          targetOverride={{ projectId, worktreeId, chatId: mockChatId }}
+          onClearQueuedMessage={(): void => undefined}
+        />
+      </CanopyClientProvider>,
     );
   });
   act(() => {

@@ -151,9 +151,10 @@ test.describe('Settings links in chat (CAN-4692)', () => {
         await expect(hostedPage(window, 'organization/settings')).toBeVisible({
           timeout: 20_000,
         });
+        // Billing is its own rail row.
         await expect(
-          window.getByTestId('team-settings-tab-billing'),
-        ).toHaveAttribute('aria-pressed', 'true');
+          window.getByTestId('settings-nav-organization-settings-billing'),
+        ).toHaveAttribute('aria-current', 'page');
         expect(await ordinaryOpens(window, capture)).toBe(0);
         await app.closeSettings();
       });

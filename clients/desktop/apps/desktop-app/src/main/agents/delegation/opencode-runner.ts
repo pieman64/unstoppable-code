@@ -1,3 +1,5 @@
+import { openOpenCodeExecutionRuntime } from '../../opencode/execution-runtime';
+import type { AiCreditsAttribution } from '../ai-credits-routing';
 import { clampThinkingLevelToDeclared } from '@canopy/protocol/thinking';
 import { snapshotOpenCodeMcpTools } from '../../opencode/capability-snapshot';
 import { openCodeMcpCallMatchesSnapshot } from '@canopy/desktop-shared/node/opencode/mcp-snapshot';
@@ -24,15 +26,18 @@ import type {
   ResolvedAgentRouteSnapshot,
   RunnerAvailability,
 } from '@canopy/desktop-shared/node/delegation';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptPort,
+} from '@canopy/desktop-shared/node/delegation/transcript-port';
 import { isJsonValue } from '@canopy/desktop-shared/node/codex-runtime';
 import { openCodeNativeOperations } from '@canopy/desktop-shared/node/opencode/tool-input';
 import { openCodeToolDisplay } from '@canopy/desktop-shared/node/opencode/tool-display';
 import type { OpenCodeToolInput } from '@canopy/desktop-shared/node/opencode/runtime';
+import { DelegationChildNormalizer } from './child-row-normalizers';
+import { delegationBlockId } from '@canopy/agent-transcript';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
-import {
-  openManagedOpenCodeRuntime,
-  assertOpenCodeConnectionGeneration,
-} from '../../opencode/connection';
+import { assertOpenCodeConnectionGeneration } from '../../opencode/connection';
 import {
   buildOpenCodeMcpServers,
   resolveOpenCodeMcpCall,
@@ -45,7 +50,10 @@ import {
   type DelegateCanopyTools,
 } from './canopy-tools';
 import { childDelegationGuidance } from './child-tools';
-import { DelegationTranscriptRecorder } from './transcript-recorder';
+import {
+  DELEGATION_STREAM_PREVIEW_LIMITS,
+  DelegationTranscriptRecorder,
+} from './transcript-recorder';
 import { openCodeDelegationPolicyIdentity } from './opencode-policy';
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -54,6 +62,7 @@ function record(value: unknown): value is Record<string, unknown> {
 
 export interface OpenCodeDelegationPreparation {
   readonly model: string;
+  readonly attribution?: AiCreditsAttribution;
   readonly profileDir: string;
   readonly tools: DelegationNativePolicy;
   /** Private copies of retained capabilities, whose location changes each run. */
@@ -112,6 +121,7 @@ export function createOpenCodeDelegationRunner(options: {
   ): Promise<OpenCodeDelegationPreparation>;
   delegation?(context: LocalDelegationContext): DelegationParent | undefined;
   reportError(error: unknown): void;
+  transcriptPort?: DelegationTranscriptPort;
 }): LocalDelegationRunner {
   return new LocalDelegationRunner(
     'opencode',
@@ -127,7 +137,12 @@ export function createOpenCodeDelegationRunner(options: {
           return Promise.resolve();
         });
       const interrupted = new AbortController();
-      const runtime = await openManagedOpenCodeRuntime({
+      const runtime = await openOpenCodeExecutionRuntime({
+        model: request.route.runtimeModelId,
+        expectedInferenceBindingKey: request.route.authAccountKey,
+        sessionId: `${request.parent.sessionKey}:delegated:${request.delegationId}`,
+        cwd: prepared.tools.cwd,
+        attribution: () => Promise.resolve(prepared.attribution ?? {}),
         signal: AbortSignal.any([context.signal, interrupted.signal]),
         workspaceId: request.parent.projectId,
         restrictedEnvironment: true,
@@ -255,7 +270,6 @@ export function createOpenCodeDelegationRunner(options: {
                 namespace,
                 name,
                 [
-                  'WatchDelegates',
                   'GetDelegateOutput',
                   'InspectDelegate',
                   'ListDelegates',
@@ -307,7 +321,25 @@ export function createOpenCodeDelegationRunner(options: {
         signal,
         true,
       );
-      const transcript = new DelegationTranscriptRecorder();
+      const appendChildChanges = context.appendChildChanges;
+      const childNormalizer = appendChildChanges
+        ? new DelegationChildNormalizer(
+            delegationBlockId(
+              context.request.delegationId,
+              context.request.runGeneration,
+            ),
+          )
+        : undefined;
+      const transcript = new DelegationTranscriptRecorder(
+        childNormalizer ? DELEGATION_STREAM_PREVIEW_LIMITS : undefined,
+      );
+      const appendNormalizedChanges = async (
+        changes: readonly DelegationTranscriptChange[],
+      ): Promise<void> => {
+        if (!changes.length || !appendChildChanges) return;
+        await appendChildChanges(changes);
+        childNormalizer?.acknowledge(changes);
+      };
       let lastTranscript = 0;
       const flush = async (): Promise<void> => {
         const items = transcript.take();
@@ -320,132 +352,151 @@ export function createOpenCodeDelegationRunner(options: {
       };
       const { runOpenCodeTurn } =
         await import('@canopy/desktop-shared/node/opencode/turn-driver');
-      const outcome = await runOpenCodeTurn(
-        {
-          ...runtime,
-          cwd: prepared.tools.cwd,
-          profileDir: prepared.profileDir,
-          rawModelId: prepared.model,
-          model: request.route.runtimeModelId,
-          thinkingLevel:
-            request.route.effectiveThinkingLevel !== undefined &&
-            request.route.supportedThinkingLevels.length
-              ? clampThinkingLevelToDeclared(
-                  request.route.effectiveThinkingLevel,
-                  request.route.supportedThinkingLevels,
-                )
-              : undefined,
-          capabilityRoots: [capabilityRoot],
-          mcpSnapshot,
-          capabilityContext: {
-            capabilityOverlay: request.route.capabilityOverlay,
-            agentOverlay: request.route.agentOverlay,
-            account: request.route.authAccountKey,
-            policy: await openCodeDelegationPolicyIdentity(
-              prepared.tools,
-              prepared.retainedReadRoots ?? [],
-              signal,
-            ),
-            providerSettingsSources: [
-              'managed-provider-config',
-              'native-opencode-auth',
-            ],
+      let outcome: Awaited<ReturnType<typeof runOpenCodeTurn>>;
+      try {
+        outcome = await runOpenCodeTurn(
+          {
+            ...runtime,
+            cwd: prepared.tools.cwd,
+            profileDir: prepared.profileDir,
+            rawModelId: runtime.rawModelId,
+            model: request.route.runtimeModelId,
+            thinkingLevel:
+              request.route.effectiveThinkingLevel !== undefined &&
+              runtime.supportedThinkingLevels.length
+                ? clampThinkingLevelToDeclared(
+                    request.route.effectiveThinkingLevel,
+                    runtime.supportedThinkingLevels,
+                  )
+                : undefined,
+            capabilityRoots: [capabilityRoot],
+            mcpSnapshot,
+            capabilityContext: {
+              capabilityOverlay: request.route.capabilityOverlay,
+              agentOverlay: request.route.agentOverlay,
+              account: request.route.authAccountKey,
+              policy: await openCodeDelegationPolicyIdentity(
+                prepared.tools,
+                prepared.retainedReadRoots ?? [],
+                signal,
+              ),
+              providerSettingsSources: runtime.inferenceRoute
+                ? ['host-inference']
+                : ['managed-provider-config', 'native-opencode-auth'],
+            },
+            sessionId: request.resumeSessionId,
+            signal,
+            prompt: expandLeadingCursorCommand(request.task.prompt, commands),
+            instructions: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'opencode')}\n${commandGuidance}\n${skillGuidance}\nRead only specific granted files. Native directory searches, native subagents, background processes, and unselected skills are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.`,
+            mcpServers: servers,
           },
-          sessionId: request.resumeSessionId,
-          signal,
-          prompt: expandLeadingCursorCommand(request.task.prompt, commands),
-          instructions: `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'opencode')}\n${commandGuidance}\n${skillGuidance}\nRead only specific granted files. Native directory searches, native subagents, background processes, and unselected skills are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.`,
-          mcpServers: servers,
-        },
-        {
-          authorize: async (input) => {
-            check();
-            const call = resolveOpenCodeMcpCall(
-              input.toolName,
-              servers,
-              'default',
-              definitions.map((tool) => tool.name),
-              mcpSnapshot,
-            );
-            if (
-              call &&
-              !(await openCodeMcpCallMatchesSnapshot(
-                mcpSnapshot,
-                call.server,
-                call.tool,
-                input.toolArgs,
-                { validate: validateOpenCodeMcpSchema, signal },
-              ))
-            )
-              return { decision: 'deny' };
-            check();
-            if (call)
-              return {
-                decision:
-                  call.server === namespace
-                    ? definitions.some((tool) => tool.name === call.tool)
-                      ? 'allow'
-                      : 'deny'
-                    : (await prepared.tools.canUseMcp(
-                          call.server,
-                          call.tool,
-                          signal,
-                        ))
-                      ? 'allow'
-                      : 'deny',
-              };
-            return authorizeDelegatedOpenCodeTool(
-              input,
-              prepared.tools,
-              signal,
-            );
-          },
-          displayTool: (tool) => {
-            const call = resolveOpenCodeMcpCall(
-              tool.name,
-              servers,
-              'default',
-              definitions.map((tool) => tool.name),
-              mcpSnapshot,
-            );
-            return call
-              ? { name: `mcp__${call.server}__${call.tool}`, input: tool.input }
-              : openCodeToolDisplay(tool, prepared.tools.cwd);
-          },
-          onSession: async (sessionId, snapshot) => {
-            const temporary = `${bindingFile}.${randomUUID()}.tmp`;
-            try {
-              await writeFile(
-                temporary,
-                JSON.stringify({
-                  version: 1,
-                  sessionId,
-                  capabilityDigest: snapshot.digest,
-                  resourceGeneration: snapshot.generation,
-                  cwd: prepared.tools.cwd,
-                }),
-                { flag: 'wx', mode: 0o600 },
-              );
+          {
+            authorize: async (input) => {
               check();
-              await rename(temporary, bindingFile);
-            } finally {
-              await rm(temporary, { force: true });
-            }
-            await context.emit({ type: 'started', nativeSessionId: sessionId });
-          },
-          emit: async (event) => {
-            transcript.cursor(event);
-            if (transcript.limitExceeded)
-              throw new Error(
-                'Delegated OpenCode transcript exceeds retention limits.',
+              const call = resolveOpenCodeMcpCall(
+                input.toolName,
+                servers,
+                'default',
+                definitions.map((tool) => tool.name),
+                mcpSnapshot,
               );
-            if (Date.now() - lastTranscript >= 100) {
-              lastTranscript = Date.now();
-              await flush();
-            }
+              if (
+                call &&
+                !(await openCodeMcpCallMatchesSnapshot(
+                  mcpSnapshot,
+                  call.server,
+                  call.tool,
+                  input.toolArgs,
+                  { validate: validateOpenCodeMcpSchema, signal },
+                ))
+              )
+                return { decision: 'deny' };
+              check();
+              if (call)
+                return {
+                  decision:
+                    call.server === namespace
+                      ? definitions.some((tool) => tool.name === call.tool)
+                        ? 'allow'
+                        : 'deny'
+                      : (await prepared.tools.canUseMcp(
+                            call.server,
+                            call.tool,
+                            signal,
+                          ))
+                        ? 'allow'
+                        : 'deny',
+                };
+              return authorizeDelegatedOpenCodeTool(
+                input,
+                prepared.tools,
+                signal,
+              );
+            },
+            displayTool: (tool) => {
+              const call = resolveOpenCodeMcpCall(
+                tool.name,
+                servers,
+                'default',
+                definitions.map((tool) => tool.name),
+                mcpSnapshot,
+              );
+              return call
+                ? {
+                    name: `mcp__${call.server}__${call.tool}`,
+                    input: tool.input,
+                  }
+                : openCodeToolDisplay(tool, prepared.tools.cwd);
+            },
+            onSession: async (sessionId, snapshot) => {
+              const temporary = `${bindingFile}.${randomUUID()}.tmp`;
+              try {
+                await writeFile(
+                  temporary,
+                  JSON.stringify({
+                    version: 1,
+                    sessionId,
+                    capabilityDigest: snapshot.digest,
+                    resourceGeneration: snapshot.generation,
+                    cwd: prepared.tools.cwd,
+                  }),
+                  { flag: 'wx', mode: 0o600 },
+                );
+                check();
+                await rename(temporary, bindingFile);
+              } finally {
+                await rm(temporary, { force: true });
+              }
+              await context.emit({
+                type: 'started',
+                nativeSessionId: sessionId,
+              });
+            },
+            emit: async (event) => {
+              transcript.cursor(event);
+              await appendNormalizedChanges(
+                childNormalizer ? await childNormalizer.patch(event) : [],
+              );
+              if (transcript.limitExceeded && !childNormalizer)
+                throw new Error(
+                  'Delegated OpenCode transcript exceeds retention limits.',
+                );
+              if (Date.now() - lastTranscript >= 100) {
+                lastTranscript = Date.now();
+                await flush();
+              }
+            },
           },
-        },
-      );
+        ).catch((error: unknown) => {
+          throw !context.signal.aborted && runtime.failureError
+            ? runtime.failureError(error)
+            : error;
+        });
+      } finally {
+        await appendNormalizedChanges(
+          childNormalizer ? await childNormalizer.finish() : [],
+        );
+      }
       await flush();
       const usage = outcome.usage
         ? {
@@ -456,19 +507,27 @@ export function createOpenCodeDelegationRunner(options: {
           }
         : undefined;
       if (usage) await context.emit({ type: 'usage', usage });
-      if (outcome.cancelled) return { status: 'cancelled', usage };
-      if (outcome.isError)
+      const failure =
+        outcome.isError ||
+        (outcome.cancelled &&
+          !context.signal.aborted &&
+          !interrupted.signal.aborted)
+          ? runtime.failureError?.(outcome.message, outcome.requestRejected)
+          : undefined;
+      if (outcome.cancelled && !failure) return { status: 'cancelled', usage };
+      if (outcome.isError || failure)
         return {
           status: 'failed',
           usage,
           error: {
             code: 'runtime_error',
-            message: outcome.message,
+            message: failure?.message ?? outcome.message,
             retryable: false,
           },
         };
       return { status: 'completed', finalText: outcome.responseText, usage };
     },
     (error) => options.reportError(error),
+    { transcriptPort: options.transcriptPort },
   );
 }

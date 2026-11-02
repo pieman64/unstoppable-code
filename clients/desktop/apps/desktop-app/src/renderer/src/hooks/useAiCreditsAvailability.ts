@@ -16,6 +16,11 @@ import {
  */
 export interface AiCreditsAvailability {
   /**
+   * The last answer has expired or been invalidated and a new read is pending.
+   * Existing optimistic selection may keep using it; readiness cues may not.
+   */
+  stale?: boolean;
+  /**
    * True when the account can keep working through the gateway right now: a
    * spendable personal balance (source-agnostic — native Canopy wallet OR an
    * already-linked UD account with credits) OR an org with spendable headroom.
@@ -313,6 +318,23 @@ export function useAiCreditsAvailability(
   // Only a value read for the CURRENT scope is shown; a key change reads as
   // loading until its own answer lands.
   const current = availability?.key === key ? availability.value : null;
+  const entry = entries.get(key);
+  const stale =
+    current !== null && (entry?.cache !== current || !isCacheFresh(entry));
+
+  // A continuously open picker must not assert readiness from an expired
+  // balance forever. Share the ordinary scoped read and its existing dedupe;
+  // leave the previous selection signal intact while that read is pending.
+  useEffect(() => {
+    if (current === null || current.inconclusive) return undefined;
+    const cached = entries.get(key);
+    if (!cached) return undefined;
+    const timer = setTimeout(
+      () => setRefreshSignal((n) => n + 1),
+      Math.max(0, cached.cacheTimestamp + CACHE_TTL_MS - Date.now()),
+    );
+    return (): void => clearTimeout(timer);
+  }, [current, key, stale]);
 
   // Recovery read for an inconclusive result. Without it the value only
   // refreshes on the next mount or explicit invalidation, so a consumer that
@@ -335,5 +357,5 @@ export function useAiCreditsAvailability(
     return (): void => clearTimeout(timer);
   }, [current, key]);
 
-  return toAvailability(current);
+  return { ...toAvailability(current), stale };
 }

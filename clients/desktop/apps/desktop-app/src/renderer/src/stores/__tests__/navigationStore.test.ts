@@ -6,11 +6,53 @@ import { LEGACY_AUTOMATIONS_VIEW_MODE_KEY } from '@/lib/navigation/workflows-tar
 import type { WorkflowEditTarget } from '@/lib/workflows/edit-target';
 import {
   askNavigationGuard,
+  desktopSectionRoot,
   registerNavigationGuard,
   runWithoutNavigationGuard,
   useNavigationStore,
+  type PluginsNavigationIntent,
 } from '../navigationStore';
 import { useWorkflowsViewStore } from '../workflowsViewStore';
+import { useWorkspaceContextStore } from '../workspaceContextStore';
+
+describe('Customize pending context ownership (CAN-4267)', () => {
+  it.each(['workspace', 'account'])(
+    'abandons a pre-mount request and saved presentation on %s change',
+    (context) => {
+      const navigation = useNavigationStore.getState();
+      navigation.openPluginsNavigation({
+        kind: 'marketplace-source',
+        target: 'detail',
+        sourceId: 'private-source',
+        pluginKey: 'reviewer',
+      });
+      navigation.setPluginsPresentation({
+        browse: { query: 'private', tab: 'sources' },
+      });
+      const workspace = useWorkspaceContextStore.getState();
+      if (context === 'workspace') {
+        useWorkspaceContextStore.setState({
+          appliedGeneration: workspace.appliedGeneration + 1,
+        });
+      } else
+        useWorkspaceContextStore.setState({
+          accountEpoch: workspace.accountEpoch + 1,
+        });
+      expect(
+        useNavigationStore.getState().pendingPluginsNavigation,
+      ).toBeUndefined();
+      expect(useNavigationStore.getState().pluginsPresentation).toBeUndefined();
+      navigation.openPluginsTab('skills');
+      expect(
+        useNavigationStore.getState().pendingPluginsNavigation,
+      ).toMatchObject({
+        kind: 'marketplace-browse',
+        tab: 'skill',
+      });
+      navigation.consumePluginsNavigation();
+    },
+  );
+});
 
 describe('navigationStore openAddWorkspaceModal', () => {
   beforeEach(() => {
@@ -260,12 +302,16 @@ describe('navigationStore automation edit deep link', () => {
   });
 
   it('normalizes legacy ownership into a Workflows section focus', () => {
-    useNavigationStore.getState().openPluginsNavigation({
+    const intent: PluginsNavigationIntent = {
       kind: 'marketplace-browse',
       query: '',
-      tab: 'automation',
-      ownership: 'shared-by-me',
-    });
+      tab: 'workflow',
+    };
+    // Links from before the Workflows rename still carry the legacy tab id
+    // and `ownership` field at runtime; the store normalizes both.
+    Reflect.set(intent, 'tab', 'automation');
+    Reflect.set(intent, 'ownership', 'shared-by-me');
+    useNavigationStore.getState().openPluginsNavigation(intent);
     const state = useNavigationStore.getState();
     expect(state.activePage).toBe('plugins');
     expect(state.pendingPluginsNavigation).toEqual({
@@ -382,7 +428,13 @@ describe('navigationStore plugin tab deep links', () => {
 
     expect(useNavigationStore.getState()).toMatchObject({
       activePage: 'plugins',
-      pendingPluginsNavigation: { kind: 'management', section: 'mcp' },
+      pendingPluginsNavigation: {
+        kind: 'marketplace-browse',
+        tab: 'app',
+        query: '',
+        focusSection: 'installed',
+        installedExpanded: true,
+      },
     });
 
     useNavigationStore.getState().consumePluginsNavigation();
@@ -651,7 +703,7 @@ describe('navigationStore navigation guard', () => {
   it.each<[string, () => void]>([
     [
       'openSkillViewer',
-      (): void => store().openSkillViewer({ skillId: 'skill' }),
+      (): void => store().openSkillViewer({ kind: 'shared', skillId: 'skill' }),
     ],
     ['openPluginsTab', (): void => store().openPluginsTab('marketplace')],
     [
@@ -664,12 +716,17 @@ describe('navigationStore navigation guard', () => {
     ],
     [
       'openWorkspaceSettings',
-      (): void => store().openWorkspaceSettings({ projectId: 'project' }),
+      (): void => store().openWorkspaceSettings({ workspaceId: 'project' }),
     ],
     ['openWorkers', (): void => store().openWorkers()],
     [
       'openPipelineDispatch',
-      (): void => store().openPipelineDispatch({ pipelineId: 'pipeline' }),
+      (): void =>
+        store().openPipelineDispatch({
+          pipelineId: 'pipeline',
+          projectId: 'project',
+          worktreeId: 'worktree',
+        }),
     ],
     [
       'requestHomeComposerText',
@@ -1079,7 +1136,7 @@ describe('navigationStore Workflows edit shell (CAN-4072)', () => {
   it('closes to a Plugins destination asking the guard once', () => {
     store().openPipelineEdit({
       pipelineId: 'deploy',
-      returnToMarketplace: { query: 'deploy', tab: 'pipeline' },
+      returnToMarketplace: { query: 'deploy', tab: 'workflow' },
     });
     const guard = jest.fn(() => true);
     clear = registerNavigationGuard(guard);
@@ -1195,5 +1252,245 @@ describe('navigationStore Workflows edit shell (CAN-4072)', () => {
       }),
     ).toThrow('boom');
     expect(askNavigationGuard('home')).toBe(false);
+  });
+});
+
+describe('navigationStore returning a section to its root (2026-10-22)', () => {
+  let clear: (() => void) | undefined;
+  const store = (): ReturnType<typeof useNavigationStore.getState> =>
+    useNavigationStore.getState();
+  const automation: WorkflowEditTarget = {
+    kind: 'automation',
+    activityId: 'act-1',
+  };
+  const flushDecision = async (): Promise<void> => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  beforeEach(() => {
+    useNavigationStore.setState({
+      activePage: 'workflows-library',
+      workflowEdit: automation,
+      pluginsBrowseSectionId: null,
+      sectionRootRequest: 0,
+    });
+  });
+
+  afterEach(() => {
+    clear?.();
+    clear = undefined;
+  });
+
+  it('active row click returns to root: Workflows closes the editor and opens Runs', () => {
+    store().returnToSectionRoot('workflows');
+    expect(store().activePage).toBe('workflows');
+    expect(store().workflowEdit).toBeUndefined();
+    expect(store().sectionRootRequest).toBe(1);
+  });
+
+  it('active row click returns to root: Customize remounts on its home', () => {
+    useNavigationStore.setState({
+      activePage: 'plugins',
+      workflowEdit: undefined,
+      pluginsBrowseSectionId: 'section-1',
+    });
+    store().returnToSectionRoot('plugins');
+    expect(store().activePage).toBe('plugins');
+    expect(store().pluginsBrowseSectionId).toBeNull();
+    expect(store().sectionRootRequest).toBe(1);
+  });
+
+  it('active row click from a Customize detail drops the restored detail (CAN-4267)', () => {
+    useNavigationStore.setState({
+      activePage: 'plugins',
+      workflowEdit: undefined,
+      pluginsBrowseSectionId: null,
+      pluginsPresentation: {
+        browse: { query: 'lint', tab: 'skill' },
+        entry: { id: 'skill:local:lint', stack: [], fromInstalled: false },
+      },
+    });
+    store().returnToSectionRoot('plugins');
+    expect(store().activePage).toBe('plugins');
+    // The remounted page reads this presentation; keeping it would reopen
+    // the detail instead of the Customize home.
+    expect(store().pluginsPresentation).toBeUndefined();
+    expect(store().sectionRootRequest).toBe(1);
+  });
+
+  it('dirty editor shows the confirm, even on the page already shown', () => {
+    const guard = jest.fn(() => new Promise<boolean>(() => undefined));
+    clear = registerNavigationGuard(guard);
+    store().returnToSectionRoot('workflows');
+    expect(guard).toHaveBeenCalledWith('workflows');
+    // Nothing moves while the confirm is open.
+    expect(store().activePage).toBe('workflows-library');
+    expect(store().workflowEdit).toEqual(automation);
+    expect(store().sectionRootRequest).toBe(0);
+  });
+
+  it('Stay keeps you and your changes', async () => {
+    clear = registerNavigationGuard(() => Promise.resolve(false));
+    store().returnToSectionRoot('workflows');
+    await flushDecision();
+    expect(store().activePage).toBe('workflows-library');
+    expect(store().workflowEdit).toEqual(automation);
+    expect(store().sectionRootRequest).toBe(0);
+  });
+
+  it('Discard navigates to the root without asking again', async () => {
+    const guard = jest.fn(() => Promise.resolve(true));
+    clear = registerNavigationGuard(guard);
+    store().returnToSectionRoot('workflows');
+    await flushDecision();
+    expect(store().activePage).toBe('workflows');
+    expect(store().workflowEdit).toBeUndefined();
+    expect(store().sectionRootRequest).toBe(1);
+    expect(guard).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('navigationStore re-click on a section root (QA, 2026-10-23)', () => {
+  let release: (() => void) | undefined;
+  const store = (): ReturnType<typeof useNavigationStore.getState> =>
+    useNavigationStore.getState();
+
+  beforeEach(() => {
+    useNavigationStore.setState({
+      activePage: 'plugins',
+      workflowEdit: undefined,
+      pluginsBrowseSectionId: null,
+      sectionRootRequest: 0,
+    });
+  });
+
+  afterEach(() => {
+    release?.();
+    release = undefined;
+  });
+
+  it('re-click on root does not remount, resets tab and scroll', () => {
+    const resetInPlace = jest.fn();
+    release = desktopSectionRoot.register({
+      atRoot: () => true,
+      resetInPlace,
+    });
+    store().returnToSectionRoot('plugins');
+    expect(resetInPlace).toHaveBeenCalledTimes(1);
+    expect(store().activePage).toBe('plugins');
+    expect(store().sectionRootRequest).toBe(0);
+  });
+
+  it('a deeper page still mounts the root fresh', () => {
+    const resetInPlace = jest.fn();
+    release = desktopSectionRoot.register({
+      atRoot: () => false,
+      resetInPlace,
+    });
+    store().returnToSectionRoot('plugins');
+    expect(resetInPlace).not.toHaveBeenCalled();
+    expect(store().sectionRootRequest).toBe(1);
+  });
+
+  it('an open category is deeper than the root', () => {
+    useNavigationStore.setState({ pluginsBrowseSectionId: 'section-1' });
+    const resetInPlace = jest.fn();
+    release = desktopSectionRoot.register({
+      atRoot: () => true,
+      resetInPlace,
+    });
+    store().returnToSectionRoot('plugins');
+    expect(resetInPlace).not.toHaveBeenCalled();
+    expect(store().pluginsBrowseSectionId).toBeNull();
+    expect(store().sectionRootRequest).toBe(1);
+  });
+
+  it('another tab of the section enters its root', () => {
+    useNavigationStore.setState({ activePage: 'workflows-library' });
+    const resetInPlace = jest.fn();
+    release = desktopSectionRoot.register({
+      atRoot: () => true,
+      resetInPlace,
+    });
+    store().returnToSectionRoot('workflows');
+    expect(resetInPlace).not.toHaveBeenCalled();
+    expect(store().activePage).toBe('workflows');
+  });
+});
+
+describe('navigationStore forked container focus requests (CAN-4782)', () => {
+  const copy = {
+    projectId: 'workspace-1',
+    worktreeId: 'worktree-1',
+    page: 'main',
+    accountEpoch: 0,
+  } as const;
+
+  beforeEach(() => {
+    useNavigationStore.setState({
+      activePage: 'main',
+      pendingForkedContainerFocus: undefined,
+      forkedContainerFocusHolds: 0,
+    });
+  });
+
+  it('keeps nonces increasing after a request is consumed', () => {
+    const store = useNavigationStore.getState();
+    store.requestForkedContainerFocus(copy);
+    const first = useNavigationStore.getState().pendingForkedContainerFocus;
+    expect(first).toMatchObject(copy);
+    store.consumeForkedContainerFocus(first?.nonce ?? -1);
+    expect(
+      useNavigationStore.getState().pendingForkedContainerFocus,
+    ).toBeUndefined();
+
+    store.requestForkedContainerFocus(copy);
+    const second = useNavigationStore.getState().pendingForkedContainerFocus;
+    expect(second?.nonce).toBeGreaterThan(first?.nonce ?? Infinity);
+  });
+
+  it('does not let an old nonce clear a newer request', () => {
+    const store = useNavigationStore.getState();
+    store.requestForkedContainerFocus(copy);
+    const first = useNavigationStore.getState().pendingForkedContainerFocus;
+    store.requestForkedContainerFocus(copy);
+    const second = useNavigationStore.getState().pendingForkedContainerFocus;
+
+    store.consumeForkedContainerFocus(first?.nonce ?? -1);
+
+    expect(useNavigationStore.getState().pendingForkedContainerFocus).toBe(
+      second,
+    );
+  });
+
+  it('cancels the request when navigation leaves its page', () => {
+    useNavigationStore.getState().requestForkedContainerFocus(copy);
+    useNavigationStore.getState().navigate('main');
+    expect(
+      useNavigationStore.getState().pendingForkedContainerFocus,
+    ).toBeDefined();
+
+    useNavigationStore.getState().navigate('chat');
+
+    expect(
+      useNavigationStore.getState().pendingForkedContainerFocus,
+    ).toBeUndefined();
+  });
+
+  it('counts holds and releases each one once', () => {
+    const releaseFirst = useNavigationStore
+      .getState()
+      .holdForkedContainerFocus();
+    const releaseSecond = useNavigationStore
+      .getState()
+      .holdForkedContainerFocus();
+    expect(useNavigationStore.getState().forkedContainerFocusHolds).toBe(2);
+
+    releaseFirst();
+    releaseFirst();
+    expect(useNavigationStore.getState().forkedContainerFocusHolds).toBe(1);
+    releaseSecond();
+    expect(useNavigationStore.getState().forkedContainerFocusHolds).toBe(0);
   });
 });

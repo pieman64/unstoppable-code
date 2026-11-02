@@ -1,8 +1,12 @@
 import type { getCodexGatewayProxyService } from '../../agents/codex-gateway-proxy-service';
 import type { ModelGatewayRequirement } from '@canopy/desktop-shared/lib/org-model-gateway';
-import type { WorkOwner } from '@canopy/protocol/llm-gateway';
+import type {
+  GatewayModelEntry,
+  WorkOwner,
+} from '@canopy/protocol/llm-gateway';
 import type * as GatewayModelAvailability from '@canopy/desktop-shared/lib/gateway-model-availability';
 import type { AccountProxyRouteTarget } from '../service';
+import type { AccountProxyQuotaWait } from '../quota-wait';
 
 type RouteOptions = Parameters<
   ReturnType<typeof getCodexGatewayProxyService>['registerRoute']
@@ -22,10 +26,14 @@ const recorded: Array<{
 }> = [];
 
 const rejected: string[] = [];
-const mockWaitForCapacity = jest.fn((): Promise<void> => Promise.resolve());
+const mockWaitForCapacity = jest.fn<
+  Promise<void>,
+  Parameters<AccountProxyQuotaWait>
+>(() => Promise.resolve());
 jest.mock('../quota-wait', () => ({
-  waitForAccountProxyCapacity: (...args: unknown[]): Promise<void> =>
-    mockWaitForCapacity(...args),
+  waitForAccountProxyCapacity: (
+    ...args: Parameters<AccountProxyQuotaWait>
+  ): Promise<void> => mockWaitForCapacity(...args),
 }));
 const mockServing = new AbortController();
 jest.mock('../service', () => ({
@@ -44,6 +52,17 @@ jest.mock('../../lib/model-gateway-state', () => ({
   ),
 }));
 const GATEWAY_ONLY_MODEL = 'org-gateway-only-model';
+const GATEWAY_ONLY_ENTRY: GatewayModelEntry = {
+  modelId: GATEWAY_ONLY_MODEL,
+  gatewayId: 'anthropic/claude-sonnet-4-5',
+  family: 'claude',
+  recommendedHarness: 'claude',
+  gatewayOnly: true,
+  contextWindow: 200_000,
+  supportsPromptCaching: true,
+  supportedThinkingLevels: [],
+  toolSchemaProfile: 'standard',
+};
 jest.mock('@canopy/desktop-shared/lib/gateway-model-availability', () => {
   const actual = jest.requireActual<typeof GatewayModelAvailability>(
     '@canopy/desktop-shared/lib/gateway-model-availability',
@@ -54,7 +73,7 @@ jest.mock('@canopy/desktop-shared/lib/gateway-model-availability', () => {
       model: string | undefined,
     ): ReturnType<typeof actual.resolveGatewayModelEntry> =>
       model === GATEWAY_ONLY_MODEL
-        ? { ...actual.resolveGatewayModelEntry('opus'), gatewayOnly: true }
+        ? GATEWAY_ONLY_ENTRY
         : actual.resolveGatewayModelEntry(model),
   };
 });

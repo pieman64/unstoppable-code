@@ -13,6 +13,25 @@ import {
 } from '../pipeline-package-install-store';
 
 describe('pipeline package install store', () => {
+  it('round-trips incomplete skill materialization without losing the retryable state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'skill-package-completion-'));
+    const storePath = join(root, 'installs.json');
+    try {
+      await upsertCapabilityPackageInstall(storePath, {
+        owner: { kind: 'skill', localId: 'helper' },
+        originExternalId: 'source',
+        pipelineContentHash: 'a'.repeat(64),
+        packageDigest: `pp:v1:${'A'.repeat(43)}`,
+        installedAt: '2026-10-29T12:00:00Z',
+        supportingFilesComplete: false,
+      });
+      await expect(listCapabilityPackageInstalls(storePath)).resolves.toEqual([
+        expect.objectContaining({ supportingFilesComplete: false }),
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('persists one idempotent record per local pipeline', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pipeline-package-ledger-'));
     const storePath = join(root, 'installs.json');
@@ -82,7 +101,13 @@ describe('pipeline package install store', () => {
     }
   });
 
-  it.each(['skill', 'agent', 'collection', 'blueprint'] as const)(
+  it.each([
+    'skill',
+    'agent',
+    'collection',
+    'blueprint',
+    'shared-container',
+  ] as const)(
     'persists and resolves a %s-owned capability package',
     async (kind) => {
       const root = await mkdtemp(join(tmpdir(), `${kind}-package-ledger-`));
@@ -197,7 +222,7 @@ describe('pipeline package install store', () => {
         distributionMode: 'definition_only' as const,
         installedAt: '2026-08-30T12:00:00.000Z',
       };
-      await upsertPipelinePackageInstall(storePath, record as never);
+      await upsertPipelinePackageInstall(storePath, record);
 
       await expect(listPipelinePackageInstalls(storePath)).resolves.toEqual([
         record,

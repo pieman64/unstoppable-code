@@ -155,7 +155,7 @@ describe('runStep through the account proxy', () => {
   it('pauses a Codex proxy quota failure while preserving its existing thread', async () => {
     runtime.resolveModelHarnessInvocation = jest.fn(() =>
       Promise.resolve({
-        source: 'codex' as const,
+        source: 'codex-managed' as const,
         harness: 'codex' as const,
         runtimeModel: CODEX_MODEL,
         aiCreditsRouted: false,
@@ -234,7 +234,7 @@ describe('runStep through the account proxy', () => {
   it('marks a Codex step the account proxy served for audit', async () => {
     runtime.resolveModelHarnessInvocation = jest.fn(() =>
       Promise.resolve({
-        source: 'codex' as const,
+        source: 'codex-managed' as const,
         harness: 'codex' as const,
         runtimeModel: CODEX_MODEL,
         aiCreditsRouted: false,

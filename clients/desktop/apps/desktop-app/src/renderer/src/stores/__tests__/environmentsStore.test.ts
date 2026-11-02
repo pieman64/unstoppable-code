@@ -31,6 +31,15 @@ function installApi(api: TestApi): void {
   });
 }
 
+function mockSaveEnvironmentConfig(
+  implementation: () => Promise<SaveEnvironmentConfigResponse>,
+): TestApi['saveEnvironmentConfig'] {
+  return jest.fn<
+    Promise<SaveEnvironmentConfigResponse>,
+    [EnvironmentConfigData]
+  >(implementation);
+}
+
 function resetStore(): void {
   useEnvironmentsStore.setState({
     data: null,
@@ -133,7 +142,7 @@ describe('environmentsStore', () => {
       loadEnvironmentConfig: jest.fn(() =>
         Promise.resolve({ data: config, encryptionAvailable: true }),
       ),
-      saveEnvironmentConfig: jest.fn(() =>
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(() =>
         Promise.resolve({ ok: false, error: 'Inheritance cycle detected.' }),
       ),
     });
@@ -213,7 +222,7 @@ describe('environmentsStore', () => {
       loadEnvironmentConfig: jest.fn(() =>
         Promise.resolve({ data: config, encryptionAvailable: true }),
       ),
-      saveEnvironmentConfig: jest.fn(() =>
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(() =>
         Promise.resolve({
           ok: true,
           data: savedConfig,
@@ -257,7 +266,7 @@ describe('environmentsStore', () => {
       loadEnvironmentConfig: jest.fn(() =>
         Promise.resolve({ data: config, encryptionAvailable: true }),
       ),
-      saveEnvironmentConfig: jest.fn(() =>
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(() =>
         Promise.resolve({
           ok: true,
           data: assigned,
@@ -331,7 +340,7 @@ describe('environmentsStore', () => {
       loadEnvironmentConfig: jest.fn(() =>
         Promise.resolve({ data: config, encryptionAvailable: true }),
       ),
-      saveEnvironmentConfig: jest.fn(() =>
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(() =>
         Promise.resolve({
           ok: true,
           data: savedConfig,
@@ -644,7 +653,7 @@ describe('environmentsStore', () => {
     );
     installApi({
       loadEnvironmentConfig,
-      saveEnvironmentConfig: jest.fn(() =>
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(() =>
         Promise.resolve({ ok: true, data: edited, encryptionAvailable: true }),
       ),
     });
@@ -740,7 +749,7 @@ describe('environmentsStore', () => {
         Promise<LoadEnvironmentConfigResponse>,
         []
       >(),
-      saveEnvironmentConfig: jest.fn(
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(
         () =>
           new Promise((resolve) => {
             resolveSave = resolve;
@@ -772,7 +781,7 @@ describe('environmentsStore', () => {
         Promise<LoadEnvironmentConfigResponse>,
         []
       >(),
-      saveEnvironmentConfig: jest.fn(
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(
         () =>
           new Promise((_resolve, reject) => {
             rejectSave = reject;
@@ -813,7 +822,7 @@ describe('environmentsStore', () => {
         Promise<LoadEnvironmentConfigResponse>,
         []
       >(),
-      saveEnvironmentConfig: jest.fn(
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(
         () =>
           new Promise((resolve) => {
             resolveSave = resolve;

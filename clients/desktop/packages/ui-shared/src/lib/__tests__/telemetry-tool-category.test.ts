@@ -16,6 +16,12 @@ describe('telemetry tool category labels', () => {
     expect(getTelemetryToolCategoryLabel('CANOPY')).toBe('Built-in');
   });
 
+  it('names the workflow editor category as a workflow (CAN-4651)', () => {
+    expect(getTelemetryToolCategoryLabel('pipelineEditor')).toBe(
+      'Workflow editor',
+    );
+  });
+
   it('humanizes unknown categories from newer clients', () => {
     expect(getTelemetryToolCategoryLabel('future_tool')).toBe('Future tool');
     expect(getTelemetryToolCategoryLabel('FUTURE_TOOL')).toBe('Future Tool');

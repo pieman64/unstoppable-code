@@ -20,7 +20,9 @@ class MockCanopyCloudClientError extends Error {
 jest.mock('../canopy-cloud/client', () => ({
   requestCanopyCloudJson: (...args: unknown[]): unknown =>
     requestCanopyCloudJsonMock(...args),
-  CanopyCloudClientError: MockCanopyCloudClientError,
+  get CanopyCloudClientError(): typeof MockCanopyCloudClientError {
+    return MockCanopyCloudClientError;
+  },
 }));
 
 // Per-org billing state (CAN-2311) is read off the persisted account snapshot,

@@ -2,16 +2,14 @@
  * Commit overlap for one session's provider events, used while chat storage
  * group-commits through the delta journal.
  *
- * A session's events are committed and then delivered one after the other:
- * the next event's commit starts only once the previous event is durable
- * and delivered. One chat therefore never has two commits in flight, and
- * group commit has nothing to batch for it.
+ * A session's events are delivered in provider order after durability. For
+ * eligible streamed content, overlap allows the next commit to start once the
+ * previous one is queued; without an eligible event, commits stay serial.
  *
  * {@link SessionEventCommitPipeline.overlap} relaxes exactly one thing for
- * the streaming events {@link isOverlappableProviderEvent} admits: the next
- * event's commit may start as soon as this one holds its place in the
- * scope's commit order, instead of when it is durable. Everything else is
- * kept:
+ * the streaming events admitted by the captured mode's predicate: the next
+ * event's commit may start as soon as this one holds its place in the scope's
+ * commit order, instead of when it is durable. Everything else is kept:
  *
  * - **Commit order** is the provider's order: the next commit starts only
  *   after this one was queued (the repository's `onQueued` signal), or after

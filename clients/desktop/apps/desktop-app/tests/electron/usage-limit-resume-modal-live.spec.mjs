@@ -123,17 +123,32 @@ test.describe('account-change usage-limit resume modal', () => {
         await new CanopyAppDriver(window).waitForShell();
         const pill = window.getByTestId('resume-queue-sidebar');
         await expect(pill).toBeVisible();
-        await pill.click();
+        // A healthy single session's chip opens its chat; its trailing
+        // action opens the queue. A failed session's chip opens the queue.
+        await (
+          status === 'resumed'
+            ? window.getByTestId('resume-queue-sidebar-open-queue')
+            : pill
+        ).click();
         const modal = window.getByTestId('resume-queue-modal');
         await expect(modal).toBeVisible();
+        // A handoff is a start, not a finished task; one entry has no counts.
+        await expect(modal.getByTestId('resume-queue-status')).toHaveText(
+          status === 'resumed' ? 'Started' : 'Needs attention',
+        );
+        await expect(modal).not.toContainText('of 1');
         await window.waitForTimeout(31_000);
         await expect(pill).toBeVisible();
         expect(
           JSON.parse(readFileSync(queuePath, 'utf8')).entries,
         ).toHaveLength(1);
-        await modal.getByRole('button', { name: 'Close', exact: true }).click();
+        // A finished queue's footer offers only Done; Escape is its close.
+        await window.keyboard.press('Escape');
+        await expect(modal).toBeHidden();
         if (status === 'resumed') {
-          await expect(pill).toBeHidden({ timeout: 45_000 });
+          // Closing the modal over a clean queue clears the pill at once,
+          // well before the 30-second auto-dismiss (CAN-4970).
+          await expect(pill).toBeHidden({ timeout: 5_000 });
           expect(JSON.parse(readFileSync(queuePath, 'utf8')).entries).toEqual(
             [],
           );
@@ -143,7 +158,151 @@ test.describe('account-change usage-limit resume modal', () => {
           expect(
             JSON.parse(readFileSync(queuePath, 'utf8')).entries,
           ).toHaveLength(1);
+          await pill.click();
+          await expect(modal).toContainText('Fixture session needs attention.');
+          await expect(modal.getByTestId('resume-queue-done')).toBeEnabled();
         }
+      } finally {
+        await closeCanopy(electronApp, userDataDir);
+      }
+    });
+  }
+
+  test('a persisted single resumed chat has one Done action that opens it and durably clears the queue', async () => {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-single-resumed-done-'),
+    );
+    seedWorkspacesAndChats(userDataDir);
+    const workspace = WORKSPACES[0];
+    const queuePath = path.join(userDataDir, 'resume-queue.json');
+    writeFileSync(
+      queuePath,
+      JSON.stringify({
+        version: 1,
+        revision: 1,
+        paused: false,
+        entries: [
+          {
+            id: 'persisted-resumed-chat',
+            target: {
+              kind: 'chat',
+              projectId: workspace.workspaceId,
+              worktreeId: WORKTREE_ID,
+              chatId: workspace.chatId,
+            },
+            interruptionId: 'persisted-handoff',
+            title: workspace.chatTitle,
+            workspaceName: workspace.workspaceName,
+            createdAt: 1,
+            status: 'resumed',
+          },
+        ],
+      }),
+    );
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      await window.getByTestId('resume-queue-sidebar-open-queue').click();
+      const modal = window.getByTestId('resume-queue-modal');
+      const dialog = window.getByRole('dialog', { name: 'Resume queue' });
+      await expect(modal.locator('[role="status"]')).toContainText('Started');
+      await expect(modal).toContainText(
+        'Your chat has started again. Open it to follow along.',
+      );
+      await expect(modal).not.toContainText(
+        /Finished|processed|every 10 seconds|\d+ of \d+|\d+ waiting/,
+      );
+      await expect(modal.getByRole('progressbar')).toHaveCount(0);
+      await expect(dialog).not.toContainText('You can close this');
+      const footer = modal.getByTestId('resume-queue-footer');
+      await expect(footer.getByRole('button')).toHaveCount(1);
+      await expect(
+        footer.getByRole('button', { name: 'Close', exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        dialog.getByRole('button', { name: 'Close', exact: true }),
+      ).toBeVisible();
+      await footer.getByRole('button', { name: 'Done', exact: true }).click();
+      await expect(
+        window.locator(`[data-panel-id="panel-chat-${workspace.chatId}"]`),
+      ).toBeVisible();
+      await expect(modal).toBeHidden();
+      await expect(window.getByTestId('resume-queue-sidebar')).toBeHidden();
+      await expect
+        .poll(() => JSON.parse(readFileSync(queuePath, 'utf8')).entries)
+        .toEqual([]);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  for (const paused of [false, true]) {
+    test(`a terminal queue error retains its reopen route after Escape (paused: ${paused})`, async () => {
+      const userDataDir = mkdtempSync(
+        path.join(os.tmpdir(), 'canopy-queue-error-'),
+      );
+      seedWorkspacesAndChats(userDataDir);
+      const queuePath = path.join(userDataDir, 'resume-queue.json');
+      const error =
+        'The resume queue stopped unexpectedly. Your saved queue is safe. Restart the app to retry.';
+      writeFileSync(
+        queuePath,
+        JSON.stringify({
+          version: 1,
+          revision: 1,
+          paused,
+          error,
+          entries: [
+            {
+              id: 'error-chat',
+              target: {
+                kind: 'chat',
+                projectId: WORKSPACES[0].workspaceId,
+                worktreeId: WORKTREE_ID,
+                chatId: WORKSPACES[0].chatId,
+              },
+              interruptionId: 'error-handoff',
+              title: WORKSPACES[0].chatTitle,
+              workspaceName: WORKSPACES[0].workspaceName,
+              createdAt: 1,
+              status: 'resumed',
+            },
+          ],
+        }),
+      );
+      const { electronApp } = await launchCanopy({ userDataDir });
+      try {
+        const window = await electronApp.firstWindow();
+        await new CanopyAppDriver(window).waitForShell();
+        const chip = window.getByTestId('resume-queue-sidebar');
+        await chip.click();
+        const modal = window.getByTestId('resume-queue-modal');
+        await expect(modal.getByTestId('resume-queue-status')).toHaveText(
+          'Paused',
+        );
+        await expect(modal.getByRole('alert')).toHaveText(error);
+        await expect(
+          modal.getByTestId('resume-queue-footer').getByRole('button'),
+        ).toHaveCount(1);
+        await expect(modal.getByTestId('resume-queue-done')).toBeDisabled();
+        await expect(modal).not.toContainText('every 10 seconds');
+        await window.keyboard.press('Escape');
+        await expect(modal).toBeHidden();
+        await expect(chip).toBeVisible();
+        expect(JSON.parse(readFileSync(queuePath, 'utf8'))).toMatchObject({
+          error,
+          entries: [{ id: 'error-chat' }],
+        });
+        await chip.click();
+        await expect(modal.getByRole('alert')).toHaveText(error);
+        await expect(modal.getByTestId('resume-queue-done')).toBeDisabled();
+        await window
+          .getByRole('dialog', { name: 'Resume queue' })
+          .getByRole('button', { name: 'Close', exact: true })
+          .click();
+        await expect(modal).toBeHidden();
+        await expect(chip).toBeVisible();
       } finally {
         await closeCanopy(electronApp, userDataDir);
       }
@@ -152,6 +311,150 @@ test.describe('account-change usage-limit resume modal', () => {
 
   // Completion allows ten seconds between handoffs and real provider startup.
   // Admission while providers stay active is asserted separately.
+  test('single resume opens the selected chat and shows gated streaming without Continue', async () => {
+    await withResumeQueue(
+      async ({ window, starts, chatIds, fixture }) => {
+        await window.getByTestId('usage-limit-resume-confirm').click();
+        await expect(
+          window.getByTestId('usage-limit-resume-modal'),
+        ).toBeHidden();
+        await expect(window.getByTestId('resume-queue-modal')).toBeHidden();
+        const chat = window.locator(
+          `[data-panel-id="panel-chat-${chatIds[0]}"]`,
+        );
+        await expect(chat).toBeVisible();
+        await expect(chat).toContainText('E2E_CODEX_STREAM_007', {
+          timeout: 30_000,
+        });
+        expect(starts()).toHaveLength(1);
+        await window.getByTestId('sidebar-create-task').click();
+        await window.getByTestId('resume-queue-sidebar').click();
+        await expect(chat).toBeVisible();
+        await window.getByTestId('resume-queue-sidebar-open-queue').focus();
+        await window.keyboard.press('Enter');
+        const queue = window.getByTestId('resume-queue-modal');
+        await expect(queue).toBeVisible();
+        await expect(
+          queue.getByRole('button', { name: 'Open chat', exact: true }),
+        ).toHaveCount(1);
+        await queue.getByTestId('resume-queue-done').click();
+        await expect(queue).toBeHidden();
+        await expect(chat).toBeVisible();
+        expect(starts()).toHaveLength(1);
+        writeFileSync(fixture.releasePath, 'release');
+        await expect(chat).toContainText('E2E_CODEX_STREAM_015');
+      },
+      1,
+      'staged',
+    );
+  });
+
+  test('single resume shows a fast completed reply even with a saved earlier scroll position', async () => {
+    const messages = Array.from({ length: 20 }, (_, index) => [
+      {
+        id: `history-user-${index}`,
+        role: 'user',
+        blocks: [{ type: 'text', text: `Earlier request ${index}` }],
+        timestamp: 1790060000000 + index * 2,
+      },
+      {
+        id: `history-reply-${index}`,
+        role: 'assistant',
+        blocks: [
+          {
+            type: 'text',
+            text: `Earlier reply ${index}\n\n${'Previous work.\n'.repeat(15)}`,
+          },
+        ],
+        timestamp: 1790060000001 + index * 2,
+      },
+    ]).flat();
+    await withResumeQueue(
+      async ({ window, starts, chatIds }) => {
+        await window.getByTestId('usage-limit-resume-confirm').click();
+        const chat = window.locator(
+          `[data-panel-id="panel-chat-${chatIds[0]}"]`,
+        );
+        await expect(chat).toBeVisible();
+        const reply = chat.getByText('done', { exact: true });
+        await expect(reply).toBeVisible({ timeout: 30_000 });
+        await expect(window.getByTestId('resume-queue-modal')).toBeHidden();
+        const scroller = chat.getByTestId('chat-message-list-scroll');
+        await scroller.evaluate((element) => {
+          element.scrollTop = 0;
+          element.dispatchEvent(new Event('scroll'));
+        });
+        await expect(reply).not.toBeInViewport();
+        await window.getByTestId('sidebar-create-task').click();
+        await window.getByTestId('resume-queue-sidebar').click();
+        await expect(reply).toBeInViewport({ timeout: 15_000 });
+        expect(starts()).toHaveLength(1);
+      },
+      1,
+      'complete',
+      { messages },
+    );
+  });
+
+  test('opening a waiting queue row leaves later resumes running', async () => {
+    await withResumeQueue(async ({ window, starts, chatIds }) => {
+      await window.getByTestId('usage-limit-resume-confirm').click();
+      const queue = window.getByTestId('resume-queue-modal');
+      await expect(queue).toBeVisible();
+      await queue
+        .locator('li')
+        .filter({ hasText: 'Interrupted task 2' })
+        .getByRole('button', { name: 'Open chat', exact: true })
+        .click();
+      await expect(queue).toBeHidden();
+      await expect(
+        window.locator(`[data-panel-id="panel-chat-${chatIds[1]}"]`),
+      ).toBeVisible();
+      await expect.poll(() => starts().length, { timeout: 45_000 }).toBe(2);
+      await expect(
+        window.locator(`[data-panel-id="panel-chat-${chatIds[1]}"]`),
+      ).toBeVisible();
+      expect(
+        new Set(starts().map((request) => request.params.threadId)).size,
+      ).toBe(2);
+    }, 2);
+  });
+
+  test('Continue observes a real resume working offscreen and its unread activity', async () => {
+    await withResumeQueue(
+      async ({ window, app, starts, fixture }) => {
+        await window.getByTestId('usage-limit-resume-confirm').click();
+        const queue = window.getByTestId('resume-queue-modal');
+        await expect(queue).toBeVisible();
+        await window.keyboard.press('Escape');
+        await expect(queue).toBeHidden();
+        await app.openPipelinesPage();
+        await window.getByTestId('sidebar-create-task').click();
+        const home = window.getByTestId('page-home');
+        const activity = home.getByTestId('home-resume-activity');
+        await expect(activity).toHaveText('· Agent working', {
+          timeout: 30_000,
+        });
+        await expect.poll(() => starts().length, { timeout: 45_000 }).toBe(2);
+        writeFileSync(fixture.releasePath, 'release');
+        // Once the resumed chats finish, Continue names each unread result
+        // (CAN-4958), and Last viewed, with its activity cue, steps aside
+        // because attention already leads to its worktree.
+        const unreadRows = home.getByTestId('home-continue-unread-row');
+        await expect(unreadRows).toHaveCount(2, { timeout: 30_000 });
+        await expect(home.getByTestId('home-resume-details')).toHaveCount(0);
+        await expect(activity).toHaveCount(0);
+        await unreadRows.first().getByRole('button').click();
+        await expect(
+          window.locator('[data-testid="panel-content-chat"]:visible'),
+        ).toBeVisible();
+      },
+      2,
+      'staged',
+      { startupOffer: true },
+    );
+  });
+
   test('resumes seventeen interrupted sessions through the normal provider path', async () => {
     test.setTimeout(300_000);
     await withResumeQueue(async ({ window, starts }) => {
@@ -170,11 +473,18 @@ test.describe('account-change usage-limit resume modal', () => {
       await expect(
         window.getByRole('heading', { name: 'Resume queue', exact: true }),
       ).toBeVisible();
+      // Pacing is promised only while a batch keeps starting (CAN-4898).
+      await expect(window.getByTestId('resume-queue-modal')).toContainText(
+        'every 10 seconds',
+      );
       await window
         .getByRole('button', { name: 'Pause queue', exact: true })
         .click();
       await expect(window.getByTestId('resume-queue-modal')).toContainText(
         'Paused',
+      );
+      await expect(window.getByTestId('resume-queue-modal')).not.toContainText(
+        'every 10 seconds',
       );
       await window.keyboard.press('Escape');
       await expect(window.getByTestId('resume-queue-sidebar')).toContainText(
@@ -211,7 +521,7 @@ test.describe('account-change usage-limit resume modal', () => {
         .click();
       await expect.poll(() => starts().length, { timeout: 210_000 }).toBe(3);
       await expect(next.window.getByTestId('resume-queue-modal')).toContainText(
-        '3 resumed',
+        '3 of 3 started',
       );
     }, 3);
   });
@@ -222,10 +532,13 @@ test.describe('account-change usage-limit resume modal', () => {
       await window.getByTestId('usage-limit-resume-select-all').click();
       await window.getByTestId(`usage-limit-resume-chat-${chatIds[0]}`).check();
       await window.getByTestId('usage-limit-resume-confirm').click();
+      // One confirmed chat opens directly; the chip reopens its queue.
+      await window.getByTestId('resume-queue-sidebar-open-queue').click();
       await window
         .getByRole('button', { name: 'Pause queue', exact: true })
         .click();
       await window.keyboard.press('Escape');
+      await window.getByTestId('sidebar-create-task').click();
       await window.getByTestId('home-interrupted-sessions-resume').click();
       await expect(
         window.getByTestId('usage-limit-resume-modal'),
@@ -249,7 +562,7 @@ test.describe('account-change usage-limit resume modal', () => {
     await withResumeQueue(async ({ window, starts, restart }) => {
       await window.getByTestId('usage-limit-resume-confirm').click();
       await expect(window.getByTestId('resume-queue-modal')).toContainText(
-        '1 resumed',
+        '1 of 3 started',
       );
       await expect.poll(() => starts().length).toBeGreaterThan(0);
       const next = await restart(true);
@@ -259,7 +572,7 @@ test.describe('account-change usage-limit resume modal', () => {
       await next.window.getByTestId('resume-queue-sidebar').click();
       await expect.poll(() => starts().length, { timeout: 210_000 }).toBe(3);
       await expect(next.window.getByTestId('resume-queue-modal')).toContainText(
-        '3 resumed',
+        '3 of 3 started',
       );
       expect(
         new Set(starts().map((request) => request.params.threadId)).size,
@@ -288,12 +601,15 @@ test.describe('account-change usage-limit resume modal', () => {
         await window
           .getByRole('button', { name: 'Stop remaining', exact: true })
           .click();
-        await expect(window.getByTestId('resume-queue-modal')).toContainText(
-          'Finished',
-        );
         await expect(
           window
             .getByTestId('resume-queue-modal')
+            .getByTestId('resume-queue-status'),
+        ).toHaveText('Stopped');
+        await expect(
+          window
+            .getByTestId('resume-queue-modal')
+            .locator('li')
             .getByText('Stopped', { exact: true }),
         ).toHaveCount(12);
         expect(starts()).toHaveLength(5);
@@ -513,19 +829,22 @@ test.describe('account-change usage-limit resume modal', () => {
       await expect(firstChatCheckbox).toBeChecked();
       await expect(secondChatCheckbox).toBeChecked();
       await expect(pipelineCheckbox).toBeChecked();
-      await expect(
-        pipelineCheckbox.locator('xpath=following-sibling::span'),
-      ).toContainText('Usage-limited pipeline');
+      // The row's title is the checkbox's label.
+      await expect(pipelineCheckbox).toHaveAccessibleName(
+        'Usage-limited pipeline',
+      );
 
       const confirmButton = window.getByTestId('usage-limit-resume-confirm');
-      await expect(confirmButton).toContainText('3');
+      // CAN-4896: the button names what it resumes rather than a bare count.
+      const ALL_SELECTED = 'Resume 2 chats and 1 workflow';
+      await expect(confirmButton).toHaveText(ALL_SELECTED);
 
-      // Toggle one workspace off -> the confirm counter drops to the single
+      // Toggle one workspace off -> the confirm button names the single
       // remaining chat.
       await firstWorkspaceCheckbox.click();
       await expect(firstChatCheckbox).not.toBeChecked();
       await expect(pipelineCheckbox).not.toBeChecked();
-      await expect(confirmButton).toContainText('1');
+      await expect(confirmButton).toHaveText('Resume chat');
 
       // Restore full selection before exercising the select-all control, so
       // "click select-all to deselect all" below starts from a fully-checked
@@ -533,7 +852,7 @@ test.describe('account-change usage-limit resume modal', () => {
       await firstWorkspaceCheckbox.click();
       await expect(firstChatCheckbox).toBeChecked();
       await expect(pipelineCheckbox).toBeChecked();
-      await expect(confirmButton).toContainText('3');
+      await expect(confirmButton).toHaveText(ALL_SELECTED);
 
       const selectAll = window.getByTestId('usage-limit-resume-select-all');
       await expect(selectAll).toHaveText('Deselect all');
@@ -549,14 +868,14 @@ test.describe('account-change usage-limit resume modal', () => {
       await expect(firstChatCheckbox).toBeChecked();
       await expect(secondChatCheckbox).toBeChecked();
       await expect(pipelineCheckbox).toBeChecked();
-      await expect(confirmButton).toContainText('3');
+      await expect(confirmButton).toHaveText(ALL_SELECTED);
 
       await confirmButton.click();
       await expect(modal).toBeHidden({ timeout: 20_000 });
       const queueRows = window.getByTestId('resume-queue-modal').locator('li');
       await expect(
         queueRows.filter({ hasText: 'Usage-limited pipeline' }),
-      ).toContainText('Pipeline · Claude');
+      ).toContainText('Workflow · Claude');
       await expect(
         queueRows.filter({ hasText: first.chatTitle }),
       ).toContainText('Claude');

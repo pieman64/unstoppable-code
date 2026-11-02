@@ -27,6 +27,10 @@ const saveDailyCreditDripChoiceMock = jest.mocked(saveDailyCreditDripChoice);
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { useSidebarItemGroupsStore } from '@/stores/sidebarItemGroupsStore';
 import {
+  backgroundTaskStopKey,
+  backgroundTaskStopStoreFor,
+} from '@canopy/app-state';
+import {
   initOllamaModels,
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
@@ -101,6 +105,7 @@ import type {
   SharedCollectionDetail,
   UpdateSharedCollectionRequest,
 } from '@canopy/desktop-shared/types/collections';
+import type { ShareOperationResult } from '@canopy/protocol/sharing';
 import type {
   MergePrQueueChatResult,
   MergePrRepoResult,
@@ -138,6 +143,10 @@ import { useRunCommentsStore } from '@/stores/runCommentsStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useSkillSuggestionStore } from '@/stores/skillSuggestionStore';
 import { useActivityStore } from '@/stores/activityStore';
+import {
+  liveBackgroundTaskKey,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
@@ -720,6 +729,10 @@ beforeEach(() => {
   initCodexModels([{ id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna' }]);
   initModelAliases({ 'claude-sonnet-4-6': 'sonnet' });
   __resetAppActionDispatcherForTests();
+  const stopStore = backgroundTaskStopStoreFor(ipcCanopyClient);
+  Object.keys(stopStore.getState().pending).forEach((key) =>
+    stopStore.getState().clearPending(key),
+  );
   __resetClaudeTerminalStoreForTests();
   getWorktreePathMock.mockReset();
   loadCanopyCloudAccountMock.mockReset();
@@ -829,6 +842,7 @@ beforeEach(() => {
   activityPlansShareMock.mockResolvedValue(null);
   activityStopBgProcessMock.mockReset();
   activityStopBgProcessMock.mockResolvedValue('stopped');
+  useLiveBackgroundTaskStore.setState({ byChat: {} });
   managedDelegationStopMock.mockReset();
   managedDelegationStopMock.mockResolvedValue({ ok: true });
   managedDelegationStopAllMock.mockReset();
@@ -1153,7 +1167,11 @@ beforeEach(() => {
     driftTargetPath: '/repo',
   });
   workspaceApiMock.getWorkspaceReadiness.mockResolvedValue({ issues: [] });
-  launchWorkspaceReadinessFixMock.mockResolvedValue({ ok: true });
+  launchWorkspaceReadinessFixMock.mockResolvedValue({
+    ok: true,
+    worktreeId: 'worktree-1',
+    chatId: 'chat-1',
+  });
   workspaceApiMock.loadClaudeMd.mockResolvedValue('# Instructions');
   workspaceApiMock.saveProjectDefaultPlugins.mockResolvedValue(undefined);
   workspaceApiMock.saveWorkspaceDefaultPlugins.mockResolvedValue(undefined);
@@ -1749,6 +1767,7 @@ beforeEach(() => {
       digest: 'fixed-digest',
       snapshot: {
         activePage: 'overview',
+        archivedContainers: { count: 0, viewerOpen: false },
         overlays: {
           commandPaletteOpen: false,
           fileSearchPaletteOpen: false,
@@ -1805,7 +1824,9 @@ function makeChatTab(overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     ...overrides,
+    fastModeExplicit: overrides.fastModeExplicit ?? false,
   };
 }
 
@@ -2695,6 +2716,7 @@ describe('dispatchAppAction', () => {
         granted: 50,
       },
       refreshed: new Promise(() => undefined),
+      accountChanged: false,
     });
 
     const response = await dispatchAppAction({
@@ -2721,6 +2743,7 @@ describe('dispatchAppAction', () => {
         granted: 0,
       },
       refreshed: new Promise(() => undefined),
+      accountChanged: false,
     });
 
     const response = await dispatchAppAction({
@@ -3330,7 +3353,7 @@ describe('dispatchAppAction', () => {
     );
     const save = jest
       .spyOn(window.api, 'savePreferences')
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(makeTestPreferences());
     for (const enabled of [true, false]) {
       const response = await dispatchAppAction({
         requestId: `personal-catalog-${enabled}`,
@@ -3401,7 +3424,7 @@ describe('dispatchAppAction', () => {
     );
     const save = jest
       .spyOn(window.api, 'savePreferences')
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(makeTestPreferences());
     const disabled = await dispatchAppAction({
       requestId: 'personal-catalog-disable-current',
       source: 'assistant',
@@ -4761,7 +4784,7 @@ describe('dispatchAppAction', () => {
   });
 
   it('rejects project settings tabs unavailable for the project type', async () => {
-    useNavigationStore.setState({ pendingWorkspaceSettings: null });
+    useNavigationStore.setState({ pendingWorkspaceSettings: undefined });
     useProjectsStore.setState({
       projects: [
         {
@@ -4793,11 +4816,13 @@ describe('dispatchAppAction', () => {
         message: 'Repositories settings are not available for this project.',
       },
     });
-    expect(useNavigationStore.getState().pendingWorkspaceSettings).toBeNull();
+    expect(
+      useNavigationStore.getState().pendingWorkspaceSettings,
+    ).toBeUndefined();
   });
 
   it('rejects Repositories settings for single-repo projects', async () => {
-    useNavigationStore.setState({ pendingWorkspaceSettings: null });
+    useNavigationStore.setState({ pendingWorkspaceSettings: undefined });
     useProjectsStore.setState({
       projects: [makeWorkspace()],
       hasHydratedProjects: true,
@@ -4820,11 +4845,13 @@ describe('dispatchAppAction', () => {
         message: 'Repositories settings are not available for this project.',
       },
     });
-    expect(useNavigationStore.getState().pendingWorkspaceSettings).toBeNull();
+    expect(
+      useNavigationStore.getState().pendingWorkspaceSettings,
+    ).toBeUndefined();
   });
 
   it('rejects Code Graph project settings while the feature is disabled', async () => {
-    useNavigationStore.setState({ pendingWorkspaceSettings: null });
+    useNavigationStore.setState({ pendingWorkspaceSettings: undefined });
     useProjectsStore.setState({
       projects: [makeWorkspace()],
       hasHydratedProjects: true,
@@ -4851,11 +4878,13 @@ describe('dispatchAppAction', () => {
         message: 'Code Graph is not available.',
       },
     });
-    expect(useNavigationStore.getState().pendingWorkspaceSettings).toBeNull();
+    expect(
+      useNavigationStore.getState().pendingWorkspaceSettings,
+    ).toBeUndefined();
   });
 
   it('rejects Code Graph navigation while the feature is disabled', async () => {
-    useNavigationStore.setState({ pendingWorkspaceSettings: null });
+    useNavigationStore.setState({ pendingWorkspaceSettings: undefined });
     useProjectsStore.setState({
       projects: [makeWorkspace()],
       hasHydratedProjects: true,
@@ -4882,7 +4911,9 @@ describe('dispatchAppAction', () => {
         message: 'Code Graph is not available.',
       },
     });
-    expect(useNavigationStore.getState().pendingWorkspaceSettings).toBeNull();
+    expect(
+      useNavigationStore.getState().pendingWorkspaceSettings,
+    ).toBeUndefined();
   });
 
   it('accepts navigation to the advertised Labs settings section', async () => {
@@ -5046,7 +5077,10 @@ describe('dispatchAppAction', () => {
         activePage: 'pipelines',
         homeComposerFocusRequest: 0,
         pendingWorkerHighlight: 'worker-1',
-        pendingAutomationReveal: { activityId: 'activity-1', nonce: 1 },
+        pendingAutomationReveal: {
+          activityId: 'activity-1',
+          outcome: 'installed',
+        },
       });
     });
 
@@ -5065,7 +5099,7 @@ describe('dispatchAppAction', () => {
       expect(state.pendingWorkerHighlight).toBe('worker-1');
       expect(state.pendingAutomationReveal).toEqual({
         activityId: 'activity-1',
-        nonce: 1,
+        outcome: 'installed',
       });
     }
 
@@ -5366,7 +5400,7 @@ describe('dispatchAppAction', () => {
     expect(JSON.stringify(response)).not.toContain('/secret/');
   });
 
-  it('stops a live background process through the activity boundary', async () => {
+  it('keeps a stopped background process live until its terminal update arrives', async () => {
     useActivityStore.setState({
       bgProcesses: {
         'project-1/worktree-1': [
@@ -5412,7 +5446,229 @@ describe('dispatchAppAction', () => {
     });
     expect(
       useActivityStore.getState().bgProcesses['project-1/worktree-1']?.[0],
-    ).toMatchObject({ status: 'stopped', canStop: false });
+    ).toMatchObject({ status: 'running', canStop: true });
+    expect(
+      backgroundTaskStopStoreFor(ipcCanopyClient).getState().pending[
+        backgroundTaskStopKey({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          taskId: 'provider-task-1',
+        })
+      ],
+    ).toBeDefined();
+  });
+
+  it('clears the shared pending stop when the host reports an already-finished task', async () => {
+    activityStopBgProcessMock.mockResolvedValueOnce('already-finished');
+    useActivityStore.setState({
+      bgProcesses: {
+        'project-1/worktree-1': [
+          {
+            id: 'process-1',
+            chatId: 'chat-1',
+            toolUseId: 'tool-1',
+            taskId: 'provider-task-1',
+            toolName: 'Task',
+            kind: 'agent',
+            description: 'Review the change',
+            status: 'running',
+            startedAt: 1,
+            updatedAt: 2,
+            outputLines: [],
+            canStop: true,
+          },
+        ],
+      },
+    });
+
+    await dispatchAppAction({
+      requestId: 'req-stop-already-finished-background-process',
+      source: 'assistant',
+      action: {
+        type: 'worktree-chat.stop_background_process',
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        taskId: 'provider-task-1',
+      },
+    });
+
+    expect(
+      useActivityStore.getState().bgProcesses['project-1/worktree-1']?.[0],
+    ).toMatchObject({ status: 'running', canStop: true });
+    expect(
+      backgroundTaskStopStoreFor(ipcCanopyClient).getState().pending[
+        backgroundTaskStopKey({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          taskId: 'provider-task-1',
+        })
+      ],
+    ).toBeUndefined();
+  });
+
+  describe('live provider tasks no process card shows (turn-state phase 41d)', () => {
+    function liveTaskChat(executionHarness: ChatTab['executionHarness']): void {
+      useChatStore.setState({
+        worktreeChats: {
+          'project-1/worktree-1': {
+            activeTabId: 'chat-1',
+            tabs: [makeChatTab({ id: 'chat-1', executionHarness })],
+          },
+        },
+      });
+      useActivityStore.setState({
+        bgProcesses: {
+          'project-1/worktree-1': [
+            {
+              id: 'process-1',
+              chatId: 'chat-1',
+              toolUseId: 'tool-1',
+              taskId: 'provider-task-1',
+              toolName: 'Bash',
+              kind: 'bash',
+              description: 'npm test',
+              status: 'running',
+              startedAt: 1,
+              updatedAt: 2,
+              outputLines: [],
+              canStop: true,
+            },
+          ],
+        },
+      });
+      useLiveBackgroundTaskStore.setState({
+        byChat: {
+          [liveBackgroundTaskKey('project-1', 'worktree-1', 'chat-1')]: {
+            projectId: 'project-1',
+            worktreeId: 'worktree-1',
+            chatId: 'chat-1',
+            sessionActive: true,
+            liveTasks: [
+              { taskId: 'provider-task-1', taskType: 'local_bash' },
+              {
+                taskId: 'native-agent-1',
+                taskType: 'local_agent',
+                description: 'SECRET agent prompt',
+                status: 'running',
+              },
+            ],
+          },
+        },
+      });
+    }
+
+    function stopNativeAgent(): ReturnType<typeof dispatchAppAction> {
+      return dispatchAppAction({
+        requestId: 'req-stop-native-agent',
+        source: 'assistant',
+        action: {
+          type: 'worktree-chat.stop_background_process',
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          taskId: 'native-agent-1',
+        },
+      });
+    }
+
+    it('lists them beside the process cards, without their descriptions', async () => {
+      liveTaskChat('claude');
+
+      const response = await dispatchAppAction({
+        requestId: 'req-list-live-tasks',
+        source: 'assistant',
+        action: {
+          type: 'worktree-chat.list_background_processes',
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+        },
+      });
+
+      expect(response).toMatchObject({
+        ok: true,
+        result: {
+          processes: [
+            { id: 'process-1', taskId: 'provider-task-1', kind: 'bash' },
+            {
+              id: 'native-agent-1',
+              chatId: 'chat-1',
+              taskId: 'native-agent-1',
+              kind: 'agent',
+              status: 'running',
+              canStop: true,
+            },
+          ],
+        },
+      });
+      expect(JSON.stringify(response)).not.toContain('SECRET');
+    });
+
+    it('stops one through the per-row Stop path and reports the outcome', async () => {
+      liveTaskChat('claude');
+      activityStopBgProcessMock.mockResolvedValueOnce('already-finished');
+
+      const response = await stopNativeAgent();
+
+      expect(response).toMatchObject({
+        ok: true,
+        result: { taskId: 'native-agent-1', status: 'already-finished' },
+      });
+      expect(activityStopBgProcessMock).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        taskId: 'native-agent-1',
+      });
+    });
+
+    it("refuses a Codex chat's task, whose row has no Stop (D10)", async () => {
+      liveTaskChat('codex');
+
+      const listed = await dispatchAppAction({
+        requestId: 'req-list-codex-live-tasks',
+        source: 'assistant',
+        action: {
+          type: 'worktree-chat.list_background_processes',
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+        },
+      });
+      const response = await stopNativeAgent();
+
+      expect(listed).toMatchObject({
+        result: {
+          processes: [
+            { id: 'process-1' },
+            { id: 'native-agent-1', canStop: false },
+          ],
+        },
+      });
+      expect(response).toMatchObject({
+        ok: false,
+        error: {
+          code: 'surface_unavailable',
+          message:
+            "Background task native-agent-1 has no per-task Stop in this chat's provider.",
+        },
+      });
+      expect(activityStopBgProcessMock).not.toHaveBeenCalled();
+    });
+
+    it("stops one in a chat whose transcript isn't loaded", async () => {
+      liveTaskChat('claude');
+      useChatStore.setState({ worktreeChats: {} });
+
+      const response = await stopNativeAgent();
+
+      expect(response).toMatchObject({
+        ok: true,
+        result: { taskId: 'native-agent-1', status: 'stopped' },
+      });
+      expect(activityStopBgProcessMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("reads an isolated delegate's changes as the card does", async () => {
@@ -6803,7 +7059,7 @@ describe('dispatchAppAction', () => {
     }
   });
 
-  it('opens the plugins management view at a requested section', async () => {
+  it('routes a plugins management section to its Customize destination', async () => {
     const sections: Array<string | undefined> = [];
     let pageAtEventTime: string | null = null;
     const listener = (event: Event): void => {
@@ -6839,13 +7095,19 @@ describe('dispatchAppAction', () => {
       expect(pageAtEventTime).toBeNull();
       expect(
         Reflect.get(useNavigationStore.getState(), 'pendingPluginsNavigation'),
-      ).toEqual({ kind: 'management', section: 'skills' });
+      ).toEqual({
+        kind: 'marketplace-browse',
+        query: '',
+        tab: 'skill',
+        focusSection: 'installed',
+        installedExpanded: true,
+      });
     } finally {
       window.removeEventListener('canopy:plugins-open-management', listener);
     }
   });
 
-  it('defaults the plugins management view to the installed section', async () => {
+  it('defaults plugins management to the Installed destination', async () => {
     const sections: Array<string | undefined> = [];
     const listener = (event: Event): void => {
       if (!(event instanceof CustomEvent)) {
@@ -6877,7 +7139,13 @@ describe('dispatchAppAction', () => {
       expect(sections).toEqual([]);
       expect(
         Reflect.get(useNavigationStore.getState(), 'pendingPluginsNavigation'),
-      ).toEqual({ kind: 'management', section: 'installed' });
+      ).toEqual({
+        kind: 'marketplace-browse',
+        query: '',
+        tab: 'all',
+        focusSection: 'installed',
+        installedExpanded: true,
+      });
     } finally {
       window.removeEventListener('canopy:plugins-open-management', listener);
     }
@@ -7300,8 +7568,8 @@ describe('dispatchAppAction', () => {
       expect(useNavigationStore.getState().activePage).toBe('plugins');
       expect(tabEvents).toEqual([]);
       expect(useNavigationStore.getState().pendingPluginsNavigation).toEqual({
-        kind: 'management',
-        section: 'marketplaces',
+        kind: 'marketplace-source',
+        target: 'list',
       });
 
       const listResponse = await dispatchAppAction({
@@ -7927,7 +8195,7 @@ describe('dispatchAppAction', () => {
     expect(createWorktree).toHaveBeenCalledTimes(2);
   });
 
-  it('gates assistant branch creation on the source worktree preflight', async () => {
+  it('creates assistant branches from dirty sources without opening confirmation', async () => {
     const createWorktree = jest.fn().mockResolvedValue({ id: 'worktree-new' });
     const refreshWorktreeDiffStatsVerified = jest.fn().mockResolvedValue(true);
     useProjectsStore.setState({
@@ -7938,7 +8206,7 @@ describe('dispatchAppAction', () => {
       createWorktree,
     });
 
-    const responsePromise = dispatchAppAction({
+    const response = await dispatchAppAction({
       requestId: 'req-worktree-create-from-dirty-base',
       source: 'assistant',
       action: {
@@ -7948,26 +8216,11 @@ describe('dispatchAppAction', () => {
       },
     });
 
-    for (
-      let attempt = 0;
-      attempt < 5 && useBranchFromStore.getState().pending === null;
-      attempt += 1
-    ) {
-      await Promise.resolve();
-    }
-    expect(useBranchFromStore.getState().pending).toMatchObject({
-      projectId: 'project-1',
-      worktreeId: 'worktree-1',
-    });
-    expect(createWorktree).not.toHaveBeenCalled();
-
-    useBranchFromStore.getState().resolveConfirmation('do-not-commit');
-    const response = await responsePromise;
-
     expect(refreshWorktreeDiffStatsVerified).toHaveBeenCalledWith(
       'project-1',
       'worktree-1',
     );
+    expect(useBranchFromStore.getState().pending).toBeNull();
     expect(createWorktree).toHaveBeenCalledWith('project-1', {
       baseWorktreeId: 'worktree-1',
       suppressStartPage: true,
@@ -7975,7 +8228,7 @@ describe('dispatchAppAction', () => {
     expect(response.ok).toBe(true);
   });
 
-  it('distinguishes cancellation from retryable status failure for worktree creation', async () => {
+  it('returns a retryable status failure without opening confirmation', async () => {
     const createWorktree = jest.fn().mockResolvedValue({ id: 'worktree-new' });
     const refreshWorktreeDiffStatsVerified = jest.fn().mockResolvedValue(true);
     useProjectsStore.setState({
@@ -7985,35 +8238,6 @@ describe('dispatchAppAction', () => {
       refreshWorktreeDiffStatsVerified,
       createWorktree,
     });
-
-    const cancelledPromise = dispatchAppAction({
-      requestId: 'req-worktree-create-cancelled',
-      source: 'assistant',
-      action: {
-        type: 'worktree.create',
-        workspaceId: 'project-1',
-        baseWorktreeId: 'worktree-1',
-      },
-    });
-    for (
-      let attempt = 0;
-      attempt < 5 && useBranchFromStore.getState().pending === null;
-      attempt += 1
-    ) {
-      await Promise.resolve();
-    }
-    useBranchFromStore.getState().resolveConfirmation(null);
-
-    await expect(cancelledPromise).resolves.toEqual(
-      expect.objectContaining({
-        ok: false,
-        error: {
-          code: 'execution_failed',
-          message: 'Worktree creation was cancelled.',
-          retryable: false,
-        },
-      }),
-    );
 
     refreshWorktreeDiffStatsVerified.mockResolvedValue(false);
     await expect(
@@ -8036,6 +8260,7 @@ describe('dispatchAppAction', () => {
         },
       }),
     );
+    expect(useBranchFromStore.getState().pending).toBeNull();
     expect(createWorktree).not.toHaveBeenCalled();
   });
 
@@ -8235,7 +8460,11 @@ describe('dispatchAppAction', () => {
       expectedRevision: 0,
     });
     expect(response.ok).toBe(true);
-    if (!response.ok) throw new Error(response.error.message);
+    if (!response.ok) {
+      throw new Error(
+        response.error?.message ?? 'Action failed without an error detail',
+      );
+    }
     expect(response.result).toMatchObject({ level: 'attention' });
 
     // All activity clears the override, as the row menu does, rather than
@@ -8329,7 +8558,11 @@ describe('dispatchAppAction', () => {
       { existsLocally: true, existsInRemote: false },
     );
     expect(response.ok).toBe(true);
-    if (!response.ok) throw new Error(response.error.message);
+    if (!response.ok) {
+      throw new Error(
+        response.error?.message ?? 'Action failed without an error detail',
+      );
+    }
     expect(response.result).toMatchObject({ baseBranch: 'develop' });
   });
 
@@ -9029,7 +9262,7 @@ describe('dispatchAppAction', () => {
     );
   });
 
-  it('lists curated metadata without downloading and pins hydrated content when App Advisor runs it', async () => {
+  it('lists curated metadata without downloading', async () => {
     const info = makePipelineInfo({
       id: 'curated:review',
       name: 'Curated review',
@@ -9038,20 +9271,11 @@ describe('dispatchAppAction', () => {
       triggerTypes: ['dispatch'],
       curatedContentHash: 'a'.repeat(64),
     });
-    const content = {
-      name: 'Curated review',
-      on: 'dispatch',
-      jobs: { review: { steps: [{ run: 'echo review' }] } },
-    };
     getWorktreePathMock.mockResolvedValue('/repo');
     pipelinesApiMock.list.mockResolvedValue({ success: true, data: [info] });
     pipelinesApiMock.discoverProject.mockResolvedValue({
       success: true,
       data: [],
-    });
-    pipelinesApiMock.get.mockResolvedValue({
-      success: true,
-      data: { info, content },
     });
     const listed = await dispatchAppAction({
       requestId: 'managed-curated-list',
@@ -9061,132 +9285,6 @@ describe('dispatchAppAction', () => {
     expect(listed.ok).toBe(true);
     expect(JSON.stringify(listed.result)).toContain('curated:review');
     expect(pipelinesApiMock.get).not.toHaveBeenCalled();
-    pipelinesApiMock.execute.mockResolvedValue({
-      success: true,
-      data: makeExecutionState({
-        status: 'running',
-        completed_at: undefined,
-        event_data: undefined,
-      }),
-    });
-    const run = await dispatchAppAction({
-      requestId: 'managed-curated-run',
-      source: 'assistant',
-      action: {
-        type: 'pipeline.run',
-        pipelineId: info.id,
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-      },
-    });
-    expect(run.ok).toBe(true);
-    expect(pipelinesApiMock.execute).toHaveBeenCalledWith(
-      content,
-      expect.objectContaining({
-        pipelinePreferenceLocator: {
-          type: 'stored',
-          source: 'curated',
-          value: info.id,
-          contentHash: info.curatedContentHash,
-        },
-      }),
-    );
-  });
-
-  it('loads a real project pipeline payload before running pipeline.run', async () => {
-    const pipelineContent = {
-      name: 'Project pipeline',
-      on: 'dispatch',
-      jobs: {
-        test: {
-          steps: [],
-        },
-      },
-    };
-    getWorktreePathMock.mockResolvedValue('/repo');
-    pipelinesApiMock.list.mockResolvedValue({
-      success: true,
-      data: [],
-    });
-    pipelinesApiMock.discoverProject.mockResolvedValue({
-      success: true,
-      data: [
-        {
-          id: 'pipe-1',
-          name: 'Project pipeline',
-          source: 'project',
-          readonly: false,
-          filePath: '/repo/.canopy/pipelines/project.yaml',
-        },
-      ],
-    });
-    pipelinesApiMock.get.mockResolvedValue({
-      success: true,
-      data: {
-        info: {
-          id: 'pipe-1',
-          name: 'Project pipeline',
-          source: 'project',
-          readonly: false,
-          filePath: '/repo/.canopy/pipelines/project.yaml',
-        },
-        content: pipelineContent,
-      },
-    });
-    pipelinesApiMock.execute.mockResolvedValue({
-      success: true,
-      data: makeExecutionState({
-        status: 'running',
-        completed_at: undefined,
-        event_data: undefined,
-      }),
-    });
-
-    const response = await dispatchAppAction({
-      requestId: 'req-7',
-      source: 'assistant',
-      action: {
-        type: 'pipeline.run',
-        pipelineId: 'pipe-1',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        inputs: { target: 'unit' },
-      },
-    });
-
-    expect(response.ok).toBe(true);
-    expect(response).toMatchObject({
-      result: {
-        success: true,
-        data: { id: 'execution-1' },
-        agentArtifacts: [
-          expect.objectContaining({
-            kind: 'pipeline_run',
-            executionId: 'execution-1',
-          }),
-        ],
-      },
-    });
-    expect(getWorktreePathMock).toHaveBeenCalledWith({
-      projectId: 'project-1',
-      worktreeId: 'worktree-1',
-    });
-    expect(pipelinesApiMock.get).toHaveBeenCalledWith({
-      id: 'pipe-1',
-      cwd: '/repo',
-      filePath: '/repo/.canopy/pipelines/project.yaml',
-    });
-    expect(pipelinesApiMock.execute).toHaveBeenCalledWith(pipelineContent, {
-      cwd: '/repo',
-      pipelineId: 'pipe-1',
-      pipelineFilePath: '/repo/.canopy/pipelines/project.yaml',
-      repoPath: '/repo',
-      projectId: 'project-1',
-      worktreeId: 'worktree-1',
-      initiationSource: 'app_advisor',
-      eventName: 'dispatch',
-      inputs: { target: 'unit' },
-    });
   });
 
   it('opens shared and project pipeline editors with source-specific locators', async () => {
@@ -10685,11 +10783,22 @@ describe('dispatchAppAction', () => {
   it('lists a scoped create PR action for changed multi-repo repos without PRs', async () => {
     useProjectsStore.setState({
       projects: [
-        makeWorkspace({
-          type: 'multi-repo',
+        makeMultiRepoWorkspace({
+          id: 'project-1',
+          name: 'Project One',
           repos: [
-            { id: 'repo-a', name: 'Repo A', repoPath: '/repo/a' },
-            { id: 'repo-b', name: 'Repo B', repoPath: '/repo/b' },
+            {
+              id: 'repo-a',
+              name: 'Repo A',
+              repoPath: '/repo/a',
+              source: 'local',
+            },
+            {
+              id: 'repo-b',
+              name: 'Repo B',
+              repoPath: '/repo/b',
+              source: 'local',
+            },
           ],
         }),
       ],
@@ -10787,9 +10896,17 @@ describe('dispatchAppAction', () => {
   it('matches PrStatusBar single-repo fallback before PR data is loaded', async () => {
     useProjectsStore.setState({
       projects: [
-        makeWorkspace({
-          type: 'multi-repo',
-          repos: [{ id: 'repo-a', name: 'Repo A', repoPath: '/repo/a' }],
+        makeMultiRepoWorkspace({
+          id: 'project-1',
+          name: 'Project One',
+          repos: [
+            {
+              id: 'repo-a',
+              name: 'Repo A',
+              repoPath: '/repo/a',
+              source: 'local',
+            },
+          ],
         }),
       ],
       hasHydratedProjects: true,
@@ -10845,7 +10962,14 @@ describe('dispatchAppAction', () => {
     });
 
     expect(response.ok).toBe(true);
-    expect(createPr).toHaveBeenCalledWith('project-1', 'worktree-1', undefined);
+    expect(createPr).toHaveBeenCalledWith(
+      'project-1',
+      'worktree-1',
+      undefined,
+      {
+        source: 'chat',
+      },
+    );
     expect(useChatStore.getState().selectedWorktree).toEqual({
       projectId: 'project-1',
       worktreeId: 'worktree-1',
@@ -11205,7 +11329,7 @@ describe('dispatchAppAction', () => {
     it('opens the Change Diagram panel for a known worktree without arming generation', async () => {
       const openCodeReview = jest
         .spyOn(useCodeReviewStore.getState(), 'openCodeReview')
-        .mockImplementation(() => undefined);
+        .mockResolvedValue(undefined);
 
       const response = await dispatchAppAction({
         requestId: 'req-code-review-open',
@@ -11234,7 +11358,7 @@ describe('dispatchAppAction', () => {
     it('returns not_found for an unknown worktree', async () => {
       const openCodeReview = jest
         .spyOn(useCodeReviewStore.getState(), 'openCodeReview')
-        .mockImplementation(() => undefined);
+        .mockResolvedValue(undefined);
 
       const response = await dispatchAppAction({
         requestId: 'req-code-review-missing-worktree',
@@ -11258,7 +11382,7 @@ describe('dispatchAppAction', () => {
     const SHARED_RUN = {
       externalId: 'run-ext-1',
       url: 'https://example.test/runs/run-ext-1',
-      scope: 'team',
+      shareScope: 'team',
       sharedAt: '2026-08-11T00:00:00.000Z',
       unreadCommentCount: 3,
       commentRevision: 7,
@@ -11856,25 +11980,6 @@ describe('dispatchAppAction', () => {
 
         expect(response.ok).toBe(true);
       });
-    });
-
-    it('refuses pipeline.run for a locked worktree', async () => {
-      lockWorktree('project-1', 'worktree-1');
-
-      const response = await dispatchAppAction({
-        requestId: 'req-lock-pipeline-run',
-        source: 'assistant',
-        action: {
-          type: 'pipeline.run',
-          pipelineId: 'pipe-1',
-          projectId: 'project-1',
-          worktreeId: 'worktree-1',
-        },
-      });
-
-      expectLockRefusal(response);
-      expect(getWorktreePathMock).not.toHaveBeenCalled();
-      expect(pipelinesApiMock.execute).not.toHaveBeenCalled();
     });
 
     it('refuses terminal.open for a locked worktree', async () => {
@@ -12487,7 +12592,185 @@ describe('dispatchAppAction', () => {
       expect(mergePr).toHaveBeenCalledWith('project-1', 'worktree-1', {
         repoIds: undefined,
         confirmUnresolvedComments: false,
+        source: 'chat',
       });
+    });
+
+    describe('analytics attribution', () => {
+      type RequestSource = 'assistant' | 'ui';
+      const attributionCases: Array<{
+        source: RequestSource;
+        expected: 'chat' | undefined;
+      }> = [
+        { source: 'assistant', expected: 'chat' },
+        { source: 'ui', expected: undefined },
+      ];
+
+      async function runGitAction(
+        source: RequestSource,
+        gitAction:
+          | 'create-pr'
+          | 'commit'
+          | 'commit-and-push'
+          | 'pull-commit-and-push'
+          | 'merge-pr',
+      ): Promise<void> {
+        const response = await dispatchAppAction({
+          requestId: `req-attribution-${source}-${gitAction}`,
+          source,
+          action: {
+            type: 'worktree.run_git_action',
+            projectId: 'project-1',
+            worktreeId: 'worktree-1',
+            action: gitAction,
+          },
+        });
+        expect(response.ok).toBe(true);
+      }
+
+      afterEach(() => {
+        useProjectsStore.setState({ hasUnpulledCommits: {} });
+      });
+
+      it.each(attributionCases)(
+        'forwards $expected attribution for a $source create-pr',
+        async ({ source, expected }) => {
+          const createPr = jest.fn().mockResolvedValue(undefined);
+          useProjectsStore.setState({
+            projects: [makeWorkspace()],
+            hasHydratedProjects: true,
+            uncommittedChanges: { 'project-1/worktree-1': true },
+            hasRemoteTracking: { 'project-1/worktree-1': true },
+            hasOriginRemote: { 'project-1/worktree-1': true },
+          });
+          useGitHubStore.setState({
+            createPr,
+            prStatuses: {
+              'project-1/worktree-1': {
+                repos: [
+                  {
+                    repoId: 'project-1',
+                    repoName: 'Project One',
+                    status: null,
+                  },
+                ],
+                lastCheckedAt: new Date(0).toISOString(),
+              },
+            },
+          });
+
+          await runGitAction(source, 'create-pr');
+
+          expect(createPr).toHaveBeenCalledWith(
+            'project-1',
+            'worktree-1',
+            undefined,
+            { source: expected },
+          );
+        },
+      );
+
+      it.each(attributionCases)(
+        'forwards $expected attribution for a $source commit',
+        async ({ source, expected }) => {
+          const commitOnly = jest.fn().mockResolvedValue(undefined);
+          useProjectsStore.setState({
+            projects: [makeWorkspace()],
+            hasHydratedProjects: true,
+            uncommittedChanges: { 'project-1/worktree-1': true },
+            hasOriginRemote: { 'project-1/worktree-1': false },
+          });
+          useGitHubStore.setState({ commitOnly });
+
+          await runGitAction(source, 'commit');
+
+          expect(commitOnly).toHaveBeenCalledWith(
+            'project-1',
+            'worktree-1',
+            undefined,
+            { source: expected },
+          );
+        },
+      );
+
+      it.each(attributionCases)(
+        'forwards $expected attribution for a $source commit-and-push',
+        async ({ source, expected }) => {
+          setupMergeablePr(0);
+          const commitAndPush = jest.fn().mockResolvedValue(undefined);
+          useProjectsStore.setState({
+            uncommittedChanges: { 'project-1/worktree-1': true },
+          });
+          useGitHubStore.setState({ commitAndPush });
+
+          await runGitAction(source, 'commit-and-push');
+
+          expect(commitAndPush).toHaveBeenCalledWith(
+            'project-1',
+            'worktree-1',
+            {
+              source: expected,
+            },
+          );
+        },
+      );
+
+      it.each(attributionCases)(
+        'forwards $expected attribution for a $source pull-commit-and-push',
+        async ({ source, expected }) => {
+          setupMergeablePr(0);
+          const commitAndPush = jest.fn().mockResolvedValue(undefined);
+          useProjectsStore.setState({
+            uncommittedChanges: { 'project-1/worktree-1': true },
+            hasUnpulledCommits: { 'project-1/worktree-1': true },
+          });
+          useGitHubStore.setState({ commitAndPush });
+
+          await runGitAction(source, 'pull-commit-and-push');
+
+          expect(commitAndPush).toHaveBeenCalledWith(
+            'project-1',
+            'worktree-1',
+            {
+              pullFirst: true,
+              source: expected,
+            },
+          );
+        },
+      );
+
+      it.each(attributionCases)(
+        'forwards $expected attribution for a $source merge-pr',
+        async ({ source, expected }) => {
+          setupMergeablePr(0);
+          const mergePr = jest.fn().mockResolvedValue({
+            dryRun: false,
+            verifiedRepos: [],
+            mergedRepos: [
+              {
+                repoId: 'project-1',
+                repoName: 'Project One',
+                prNumber: 5,
+                prUrl: 'https://github.com/org/repo/pull/5',
+                mergeMethod: 'squash',
+                mergeCommitSha: 'sha',
+                status: 'merged',
+              },
+            ],
+            requiresUnresolvedConfirmation: [],
+            failedRepos: [],
+          });
+          useGitHubStore.setState({ mergePr });
+
+          await runGitAction(source, 'merge-pr');
+
+          expect(mergePr).toHaveBeenCalledWith(
+            'project-1',
+            'worktree-1',
+            expect.objectContaining({ source: expected }),
+          );
+        },
+      );
     });
 
     it('reports PRs added to a merge queue separately from merged PRs', async () => {
@@ -12950,6 +13233,7 @@ describe('dispatchAppAction', () => {
       expect(mergePr).toHaveBeenCalledWith('project-1', 'worktree-1', {
         repoIds: undefined,
         confirmUnresolvedComments: false,
+        source: 'chat',
       });
     });
 
@@ -12990,6 +13274,7 @@ describe('dispatchAppAction', () => {
       expect(mergePr).toHaveBeenCalledWith('project-1', 'worktree-1', {
         repoIds: undefined,
         confirmUnresolvedComments: true,
+        source: 'chat',
       });
     });
 
@@ -13178,12 +13463,13 @@ describe('dispatchAppAction', () => {
       });
 
       expect(response.ok).toBe(true);
-      expect(response.result?.busy).toBe(true);
-      expect(response.result?.actions).toEqual(
-        expect.not.arrayContaining([
-          expect.objectContaining({ action: 'merge-pr' }),
-        ]),
-      );
+      const withoutMergePr: unknown = expect.not.arrayContaining([
+        expect.objectContaining({ action: 'merge-pr' }),
+      ]);
+      expect(response.result).toMatchObject({
+        busy: true,
+        actions: withoutMergePr,
+      });
     });
 
     it('blocks merge-pr dispatch while a PR merge is already running', async () => {
@@ -13473,11 +13759,22 @@ describe('dispatchAppAction', () => {
     const createPr = jest.fn().mockResolvedValue(undefined);
     useProjectsStore.setState({
       projects: [
-        makeWorkspace({
-          type: 'multi-repo',
+        makeMultiRepoWorkspace({
+          id: 'project-1',
+          name: 'Project One',
           repos: [
-            { id: 'repo-a', name: 'Repo A', path: '/repo/a' },
-            { id: 'repo-b', name: 'Repo B', path: '/repo/b' },
+            {
+              id: 'repo-a',
+              name: 'Repo A',
+              repoPath: '/repo/a',
+              source: 'local',
+            },
+            {
+              id: 'repo-b',
+              name: 'Repo B',
+              repoPath: '/repo/b',
+              source: 'local',
+            },
           ],
         }),
       ],
@@ -14151,8 +14448,8 @@ describe('dispatchAppAction', () => {
   });
 
   // The dialog has no mode switch: it opens as "Delete worktree?" unless the
-  // request asks for Archive, and the branch choice is the pair of confirm
-  // buttons. A user who asks to archive must get the Archive dialog.
+  // request asks for Archive, and the branch choice is its Keep the local
+  // branch switch. A user who asks to archive must get the Archive dialog.
   it('opens the Archive confirmation when the request asks for Archive mode', async () => {
     const confirmationRequests: unknown[] = [];
     const handleConfirmationRequest = (event: Event): void => {
@@ -14194,7 +14491,9 @@ describe('dispatchAppAction', () => {
         mode: 'archive',
       },
     });
-    expect(JSON.stringify(response.result)).toContain('Preserve local');
+    expect(JSON.stringify(response.result)).toContain(
+      'starts on, so the local branch is kept',
+    );
     expect(confirmationRequests).toEqual([
       {
         projectId: 'project-1',
@@ -14884,14 +15183,28 @@ describe('dispatchAppAction', () => {
   });
 
   it('adds multiple projects to a worktree through app actions', async () => {
-    const destinationWorkspace = makeWorkspace({
+    const destinationWorkspace = makeMultiRepoWorkspace({
       id: 'dest-workspace',
       name: 'Destination',
-      type: 'multi-repo',
       repos: [
-        { id: 'repo-a', name: 'Repo A', repoPath: '/repos/a' },
-        { id: 'repo-b', name: 'Repo B', repoPath: '/repos/b' },
-        { id: 'repo-c', name: 'Repo C', repoPath: '/repos/c' },
+        {
+          id: 'repo-a',
+          name: 'Repo A',
+          repoPath: '/repos/a',
+          source: 'local',
+        },
+        {
+          id: 'repo-b',
+          name: 'Repo B',
+          repoPath: '/repos/b',
+          source: 'local',
+        },
+        {
+          id: 'repo-c',
+          name: 'Repo C',
+          repoPath: '/repos/c',
+          source: 'local',
+        },
       ],
     });
     useProjectsStore.setState({
@@ -15004,7 +15317,7 @@ describe('dispatchAppAction', () => {
         sourceWorktreeId: 'worktree-1',
         joinWorkspaceId: 42,
         joinWorkspaceIds: ['join-a'],
-      } as never,
+      },
     });
 
     expect(response.ok).toBe(false);
@@ -15795,7 +16108,7 @@ describe('dispatchAppAction', () => {
       chatId: 'chat-1',
       pluginSelections: {
         collectionIds: [],
-        skillRefs: [{ sourceId: 'builtin/app', skillName: 'example' }],
+        skillRefs: [{ sourceId: 'builtin:app', skillName: 'example' }],
         pluginRefs: [],
         mcpServerRefs: [],
       },
@@ -16010,7 +16323,7 @@ describe('dispatchAppAction', () => {
     const dismissChatStateNotice = jest.fn();
     useChatStore.setState({
       chatStateSync: {
-        'project-1/worktree-1': { phase: 'refresh_error' },
+        'project-1/worktree-1': { phase: 'refresh_error', revision: null },
       },
       chatStateNotices: {
         'project-1/worktree-1': {
@@ -16321,6 +16634,7 @@ describe('dispatchAppAction', () => {
           tabs: [
             makeChatTab({
               pluginSelections: {
+                collectionIds: [],
                 bundleIds: [],
                 skillRefs: [],
                 pluginRefs: [
@@ -17256,7 +17570,7 @@ describe('dispatchAppAction', () => {
       chatId: 'standalone-1',
       pluginSelections: {
         collectionIds: [],
-        skillRefs: [{ sourceId: 'builtin/app', skillName: 'example' }],
+        skillRefs: [{ sourceId: 'builtin:app', skillName: 'example' }],
         pluginRefs: [],
         mcpServerRefs: [],
       },
@@ -17266,7 +17580,10 @@ describe('dispatchAppAction', () => {
       projectId: 'project-a',
       worktreeId: 'entry-1',
       chatId: 'standalone-1',
-      pluginSelections: selections,
+      pluginSelections: {
+        ...selections,
+        skillRefs: [{ sourceId: 'builtin:app', skillName: 'summary' }],
+      },
     });
   });
 
@@ -17471,13 +17788,15 @@ describe('dispatchAppAction', () => {
   });
 
   it('updates project environment assignments through the canonical config store', async () => {
-    const currentData = {
+    const currentData: EnvironmentConfigData = {
       version: 2 as const,
       environments: [
         {
           id: 'environment-1',
           name: 'Environment One',
           parentId: null,
+          isDefault: false,
+          uiMode: 'key-value',
           variables: [],
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-01T00:00:00.000Z',
@@ -17645,6 +17964,8 @@ describe('dispatchAppAction', () => {
               id: 'container-received',
               organizationId: 'org-1',
               ownerUserId: 'owner-1',
+              owner: { userId: 'owner-1', name: 'Owner' },
+              access: 'organization',
               worktreeId: 'worktree-1',
               containerType: 'CODE_WORKTREE',
               title: 'Feature branch',
@@ -17741,6 +18062,8 @@ describe('dispatchAppAction', () => {
             container: {
               id: 'container-personal',
               ownerUserId: 'owner-1',
+              owner: { userId: 'owner-1', name: 'Owner' },
+              access: 'direct',
               worktreeId: 'worktree-personal',
               containerType: 'CODE_WORKTREE',
               title: 'Personal share',
@@ -18362,7 +18685,7 @@ describe('dispatchAppAction', () => {
       loadCollection: jest.Mock;
       getShared: jest.Mock;
       updateShared: jest.Mock<
-        Promise<SharedCollectionDetail>,
+        Promise<ShareOperationResult<SharedCollectionDetail>>,
         [UpdateSharedCollectionRequest]
       >;
     };
@@ -19183,6 +19506,97 @@ describe('dispatchAppAction', () => {
       expect(sentDocument).not.toContain('test -f ready');
     });
 
+    it.each<[string, Record<string, unknown>]>([
+      [
+        'stored pipeline dependencies',
+        {
+          action: { type: 'app_advisor_prompt', prompt: 'Triage.' },
+          dependencies: {
+            pipelines: [{ pipelineId: 'pipeline-1', source: 'user' }],
+          },
+        },
+      ],
+      [
+        'a user pipeline action',
+        {
+          action: {
+            type: 'worktree_pipeline',
+            workspaceId: 'workspace-1',
+            pipelineId: 'pipeline-1',
+            pipelineSource: 'user',
+            inputs: {},
+          },
+        },
+      ],
+      [
+        'a project pipeline action',
+        {
+          action: {
+            type: 'worktree_pipeline',
+            workspaceId: 'workspace-1',
+            pipelineId: 'pipeline-1',
+            pipelineSource: 'project',
+            inputs: {},
+          },
+        },
+      ],
+      [
+        'a pipeline ID in the prompt',
+        {
+          action: {
+            type: 'app_advisor_prompt',
+            prompt: 'Run pipeline 3F2504E0-4F89-41D3-9A0C-0305E82C3301 daily.',
+          },
+        },
+      ],
+    ])(
+      'automation.share refuses an automation with %s',
+      async (_label, fields) => {
+        automationsApiMock.createShared.mockClear();
+        automationsApiMock.list.mockResolvedValueOnce({
+          activities: [
+            {
+              version: 1,
+              id: 'activity-pipelines',
+              name: 'Journey specialist',
+              enabled: true,
+              schedule: {
+                kind: 'cron',
+                expression: '0 2 * * *',
+                timezone: 'local',
+              },
+              createdAt: '2026-08-19T00:00:00.000Z',
+              updatedAt: '2026-08-19T00:00:00.000Z',
+              failureCount: 0,
+              ...fields,
+            },
+          ],
+          recentRuns: [],
+        });
+
+        const response = await dispatchAppAction({
+          requestId: 'req-automation-share-pipelines',
+          source: 'assistant',
+          action: {
+            type: 'automation.share',
+            id: 'activity-pipelines',
+            shareScope: 'team',
+            teamId: 'team-1',
+          },
+        });
+
+        expect(response.ok).toBe(false);
+        expect(response.error).toMatchObject({
+          code: 'execution_failed',
+          retryable: false,
+          message: expect.stringContaining(
+            'use Share so its pipelines can be included',
+          ) as unknown,
+        });
+        expect(automationsApiMock.createShared).not.toHaveBeenCalled();
+      },
+    );
+
     it('automation.share never invites a retry of an uncertain publication', async () => {
       automationsApiMock.list.mockResolvedValueOnce({
         activities: [
@@ -19301,7 +19715,12 @@ describe('dispatchAppAction', () => {
       expect(JSON.stringify(sent)).not.toContain('full-access');
     });
 
-    it('automation.share bundles a referenced user pipeline', async () => {
+    // The Share dialog packages a user pipeline with its children and files;
+    // the agent path cannot, so it refuses before reading the pipeline.
+    it('automation.share leaves a referenced user pipeline to the Share dialog', async () => {
+      automationsApiMock.createShared.mockClear();
+      pipelinesApiMock.list.mockClear();
+      pipelinesApiMock.get.mockClear();
       automationsApiMock.list.mockResolvedValueOnce({
         activities: [
           {
@@ -19328,34 +19747,6 @@ describe('dispatchAppAction', () => {
         ],
         recentRuns: [],
       });
-      const info = {
-        id: 'user-review',
-        name: 'User review',
-        filename: 'user-review.yaml',
-        description: '',
-        icon: '',
-        createdAt: '2026-08-19T00:00:00.000Z',
-        updatedAt: '2026-08-19T00:00:00.000Z',
-        source: 'user',
-        readonly: false,
-      };
-      pipelinesApiMock.list.mockResolvedValueOnce({
-        success: true,
-        data: [info],
-      });
-      pipelinesApiMock.get.mockResolvedValueOnce({
-        success: true,
-        data: {
-          info,
-          content: { name: 'User review', on: 'dispatch', jobs: {} },
-        },
-      });
-      automationsApiMock.createShared.mockResolvedValueOnce({
-        id: 'shared-automation-pipeline',
-        contentHash: 'a'.repeat(64),
-        shareScope: 'private',
-      });
-
       const response = await dispatchAppAction({
         requestId: 'req-automation-pipeline-share',
         source: 'assistant',
@@ -19367,22 +19758,94 @@ describe('dispatchAppAction', () => {
         },
       });
 
-      expect(response.ok).toBe(true);
-      const sent = automationsApiMock.createShared.mock.calls.find(
-        ([request]) => request.activityId === 'activity-pipeline-share',
-      )?.[0];
-      expect(sent?.automation.action.type).toBe('worktree_pipeline');
-      const pipeline =
-        sent?.automation.action.type === 'worktree_pipeline'
-          ? sent.automation.action.pipeline
-          : undefined;
-      expect(pipeline?.source).toBe('inline');
-      if (pipeline?.source !== 'inline') {
-        throw new Error('Expected an inline pipeline reference.');
-      }
-      expect(pipeline.name).toBe('User review');
-      expect(pipeline.rawPipeline).toContain('User review');
-      expect(pipeline.pipelineContentHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(response.ok).toBe(false);
+      expect(response.error?.message).toContain(
+        'use Share so its pipelines can be included',
+      );
+      expect(pipelinesApiMock.list).not.toHaveBeenCalled();
+      expect(pipelinesApiMock.get).not.toHaveBeenCalled();
+      expect(automationsApiMock.createShared).not.toHaveBeenCalled();
+    });
+
+    it('automation.share refuses a pipeline destination the sharing server cannot carry', async () => {
+      automationsApiMock.createShared.mockClear();
+      automationsApiMock.list.mockResolvedValueOnce({
+        activities: [
+          {
+            version: 1,
+            id: 'activity-destination-share',
+            name: 'Folder pipeline',
+            enabled: true,
+            schedule: {
+              kind: 'cron',
+              expression: '0 2 * * *',
+              timezone: 'local',
+            },
+            action: {
+              type: 'worktree_pipeline',
+              workspaceId: 'workspace-1',
+              target: { kind: 'project' },
+              pipelineId: 'bundled-review',
+              pipelineSource: 'bundled',
+              pipelineName: 'Bundled review',
+            },
+            createdAt: '2026-08-19T00:00:00.000Z',
+            updatedAt: '2026-08-19T00:00:00.000Z',
+            failureCount: 0,
+          },
+        ],
+        recentRuns: [],
+      });
+      const info = {
+        id: 'bundled-review',
+        name: 'Bundled review',
+        filename: 'bundled-review.yaml',
+        description: '',
+        icon: '',
+        createdAt: '2026-08-19T00:00:00.000Z',
+        updatedAt: '2026-08-19T00:00:00.000Z',
+        source: 'bundled',
+        readonly: true,
+      };
+      pipelinesApiMock.list.mockResolvedValueOnce({
+        success: true,
+        data: [info],
+      });
+      pipelinesApiMock.get.mockResolvedValueOnce({
+        success: true,
+        data: {
+          info,
+          content: { name: 'Bundled review', on: 'dispatch', jobs: {} },
+        },
+      });
+      loadCanopyCloudAccountMock.mockResolvedValueOnce({
+        hasApiKey: true,
+        capabilities: [
+          'automations-crud-v1',
+          'automations-target-requirements-v3',
+        ],
+      });
+
+      const response = await dispatchAppAction({
+        requestId: 'req-automation-destination-share',
+        source: 'assistant',
+        action: {
+          type: 'automation.share',
+          id: 'activity-destination-share',
+          shareScope: 'organization',
+          organizationId: 'org-1',
+        },
+      });
+
+      expect(response).toMatchObject({
+        ok: false,
+        error: {
+          code: 'execution_failed',
+          message:
+            'Update the sharing server to share this workflow destination.',
+        },
+      });
+      expect(automationsApiMock.createShared).not.toHaveBeenCalled();
     });
 
     it('automation.share downgrades a session-bound activity instead of refusing it', async () => {
@@ -19915,13 +20378,11 @@ describe('dispatchAppAction', () => {
       });
     });
 
-    it('automation.create forwards `input` and resolves to ok + activity', async () => {
-      automationsApiMock.create.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'created' },
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-create',
+    // CAN-4551 7c: agents' automation writes run in main, which marks them
+    // agent-authored and converts them; the renderer refuses them.
+    it('refuses automation.create and automation.update, which run in main', async () => {
+      const create = await dispatchAppAction({
+        requestId: 'req-create-main',
         source: 'assistant',
         action: {
           type: 'automation.create',
@@ -19936,629 +20397,85 @@ describe('dispatchAppAction', () => {
           },
         },
       });
-      expect(automationsApiMock.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'Daily',
-          action: {
-            type: 'app_advisor_prompt',
-            prompt: 'hi',
-            approvalMode: 'ask',
-          },
-        }),
-      );
-      expect(response.ok).toBe(true);
-      expect(response.result).toEqual({ activity: { id: 'created' } });
-    });
-
-    it('automation mutation receipts reflect current running state without exposing prompt content', async () => {
-      const created: ScheduledActivity = {
-        version: 1,
-        id: 'created-running',
-        name: 'Daily',
-        enabled: true,
-        schedule: {
-          kind: 'cron',
-          expression: '0 9 * * *',
-          timezone: 'local',
-        },
-        action: { type: 'app_advisor_prompt', prompt: 'private prompt' },
-        createdAt: '2026-08-04T00:00:00.000Z',
-        updatedAt: '2026-08-04T00:00:00.000Z',
-        failureCount: 0,
-      };
-      automationsApiMock.create.mockResolvedValueOnce({
-        ok: true,
-        activity: created,
-      });
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [created],
-        recentRuns: [
-          {
-            id: 'run-1',
-            activityId: created.id,
-            status: 'running',
-          },
-        ],
-      });
-
-      const response = await dispatchAppAction({
-        requestId: 'req-create-running-receipt',
+      const update = await dispatchAppAction({
+        requestId: 'req-update-main',
         source: 'assistant',
         action: {
-          type: 'automation.create',
-          input: {
-            name: 'Daily',
-            schedule: created.schedule,
-            action: created.action,
-          },
+          type: 'automation.update',
+          id: 'activity-1',
+          patch: { name: 'Renamed' },
         },
       });
-
-      expect(response).toMatchObject({
-        ok: true,
-        result: {
-          activity: { id: created.id },
-          agentArtifacts: [
-            {
-              kind: 'automation',
-              operation: 'automation.create',
-              activityId: created.id,
-              running: true,
-              ifCommandConfigured: false,
-            },
-          ],
-        },
-      });
-      if (
-        !response.ok ||
-        typeof response.result !== 'object' ||
-        response.result === null ||
-        Array.isArray(response.result) ||
-        !('agentArtifacts' in response.result)
-      ) {
-        throw new Error('Expected automation artifact receipts');
+      for (const response of [create, update]) {
+        expect(response).toMatchObject({
+          ok: false,
+          error: { code: 'unsupported_action' },
+        });
       }
-      const receiptJson = JSON.stringify(response.result.agentArtifacts);
-      expect(receiptJson).not.toContain('private prompt');
-    });
-
-    it('automation.create ignores stale expectedUiRevision', async () => {
-      automationsApiMock.create.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'created-after-stale-revision' },
-      });
-
-      const response = await dispatchAppAction({
-        requestId: 'req-create-stale-revision',
-        source: 'assistant',
-        expectedUiRevision: 99,
-        action: {
-          type: 'automation.create',
-          input: {
-            name: 'Daily',
-            schedule: {
-              kind: 'cron',
-              expression: '0 9 * * *',
-              timezone: 'local',
-            },
-            action: { type: 'app_advisor_prompt', prompt: 'hi' },
-          },
-        },
-      });
-
-      expect(automationsApiMock.create).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Daily' }),
-      );
-      expect(response.ok).toBe(true);
-      expect(response.result).toEqual({
-        activity: { id: 'created-after-stale-revision' },
-      });
-    });
-
-    it('rejects advisor-created Full Access automations', async () => {
-      const response = await dispatchAppAction({
-        requestId: 'req-create-full-access',
-        source: 'assistant',
-        action: {
-          type: 'automation.create',
-          input: {
-            name: 'Unattended task',
-            schedule: {
-              kind: 'cron',
-              expression: '0 9 * * *',
-              timezone: 'local',
-            },
-            action: {
-              type: 'app_advisor_prompt',
-              prompt: 'Run unattended',
-              approvalMode: 'full-access',
-            },
-          },
-        },
-      });
-
-      expect(response.ok).toBe(false);
-      expect(response.error).toMatchObject({ code: 'invalid_payload' });
       expect(automationsApiMock.create).not.toHaveBeenCalled();
-    });
-
-    it('rejects automation.create with terminal chat mode when Claude TUI chats are disabled', async () => {
-      setFeatureFlagForTest(
-        CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key,
-        false,
-      );
-
-      const response = await dispatchAppAction({
-        requestId: 'req-create-terminal-mode-disabled',
-        source: 'assistant',
-        action: {
-          type: 'automation.create',
-          input: {
-            name: 'Daily',
-            schedule: {
-              kind: 'cron',
-              expression: '0 9 * * *',
-              timezone: 'local',
-            },
-            action: {
-              type: 'worktree_prompt',
-              workspaceId: 'workspace-1',
-              prompt: 'hi',
-              interfaceMode: 'claude-code',
-            },
-          },
-        },
-      });
-
-      expect(response.ok).toBe(false);
-      expect(response.error).toMatchObject({
-        code: 'surface_unavailable',
-        message:
-          'Claude terminal chat mode cannot be configured for automations while it is unavailable.',
-      });
-      expect(automationsApiMock.create).not.toHaveBeenCalled();
-    });
-
-    it('automation.update merges id and patch into the IPC request', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'updated',
-            action: { type: 'app_advisor_prompt', prompt: 'safe' },
-          },
-        ],
-        recentRuns: [],
-      });
-      automationsApiMock.update.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'updated' },
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'updated',
-          patch: { enabled: false },
-        },
-      });
-      expect(automationsApiMock.update).toHaveBeenCalledWith({
-        id: 'updated',
-        enabled: false,
-      });
-      expect(response.ok).toBe(true);
-    });
-
-    it('rejects advisor updates that grant Full Access', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'updated',
-            action: { type: 'app_advisor_prompt', prompt: 'safe' },
-          },
-        ],
-        recentRuns: [],
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update-full-access',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'updated',
-          patch: {
-            action: {
-              type: 'app_advisor_prompt',
-              prompt: 'Run unattended',
-              approvalMode: 'full-access',
-            },
-          },
-        },
-      });
-
-      expect(response.ok).toBe(false);
-      expect(response.error).toMatchObject({ code: 'invalid_payload' });
       expect(automationsApiMock.update).not.toHaveBeenCalled();
     });
 
-    it('rejects re-enabling an existing Full Access automation', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'full-access',
-            enabled: false,
-            action: {
-              type: 'app_advisor_prompt',
-              prompt: 'Run unattended',
-              approvalMode: 'full-access',
-            },
+    it.each([
+      [
+        { kind: 'global' } as const,
+        undefined,
+        'pipeline nightly with no project',
+      ],
+      [
+        { kind: 'task', taskId: 'wt-1' } as const,
+        'project-1',
+        'pipeline nightly in task wt-1 of project project-1',
+      ],
+      [
+        { kind: 'project' } as const,
+        'project-1',
+        'pipeline nightly in project project-1 folder',
+      ],
+    ])(
+      'describes a %j pipeline destination in its receipt',
+      async (target, workspaceId, targetSummary) => {
+        const created: ScheduledActivity = {
+          version: 1,
+          id: 'created-pipeline',
+          name: 'Nightly',
+          enabled: true,
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * *',
+            timezone: 'local',
           },
-        ],
-        recentRuns: [],
-      });
-
-      const response = await dispatchAppAction({
-        requestId: 'req-reenable-full-access',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'full-access',
-          patch: { enabled: true },
-        },
-      });
-
-      expect(response.ok).toBe(false);
-      expect(response.error).toMatchObject({ code: 'invalid_payload' });
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
-    });
-
-    it('persists Ask for advisor action updates with an omitted approval mode', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'updated',
-            action: { type: 'app_advisor_prompt', prompt: 'before' },
+          action: {
+            type: 'worktree_pipeline',
+            pipelineId: 'nightly',
+            target,
+            ...(workspaceId ? { workspaceId } : {}),
           },
-        ],
-        recentRuns: [],
-      });
-      automationsApiMock.update.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'updated' },
-      });
+          createdAt: '2026-08-04T00:00:00.000Z',
+          updatedAt: '2026-08-04T00:00:00.000Z',
+          failureCount: 0,
+        };
+        automationsApiMock.update.mockResolvedValueOnce({
+          ok: true,
+          activity: created,
+        });
+        automationsApiMock.list.mockResolvedValueOnce({
+          activities: [created],
+          recentRuns: [],
+        });
 
-      const response = await dispatchAppAction({
-        requestId: 'req-update-implicit-approval-mode',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'updated',
-          patch: {
-            action: {
-              type: 'app_advisor_prompt',
-              prompt: 'after',
-            },
-          },
-        },
-      });
+        const response = await dispatchAppAction({
+          requestId: 'req-disable-pipeline-receipt',
+          source: 'assistant',
+          action: { type: 'automation.disable', id: created.id },
+        });
 
-      expect(response.ok).toBe(true);
-      expect(automationsApiMock.update).toHaveBeenCalledWith({
-        id: 'updated',
-        action: {
-          type: 'app_advisor_prompt',
-          prompt: 'after',
-          approvalMode: 'ask',
-        },
-      });
-    });
-
-    it('rejects automation.update with terminal chat mode when Claude TUI chats are disabled', async () => {
-      setFeatureFlagForTest(
-        CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key,
-        false,
-      );
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'updated',
-            action: { type: 'app_advisor_prompt', prompt: 'hi' },
-          },
-        ],
-        recentRuns: [],
-      });
-
-      const response = await dispatchAppAction({
-        requestId: 'req-update-terminal-mode-disabled',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'updated',
-          patch: {
-            action: {
-              type: 'worktree_prompt',
-              workspaceId: 'workspace-1',
-              prompt: 'hi',
-              interfaceMode: 'auto',
-            },
-          },
-        },
-      });
-
-      expect(response.ok).toBe(false);
-      expect(response.error).toMatchObject({
-        code: 'surface_unavailable',
-        message:
-          'Claude terminal chat mode cannot be configured for automations while it is unavailable.',
-      });
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
-    });
-
-    it('automation.update keeps the top-level id authoritative', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'updated',
-            action: { type: 'app_advisor_prompt', prompt: 'safe' },
-          },
-        ],
-        recentRuns: [],
-      });
-      automationsApiMock.update.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'updated' },
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update-id-authoritative',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'updated',
-          patch: {
-            id: 'other-activity',
-            enabled: false,
-          } as never,
-        },
-      });
-      expect(automationsApiMock.update).toHaveBeenCalledWith({
-        id: 'updated',
-        enabled: false,
-      });
-      expect(response.ok).toBe(true);
-    });
-
-    it('rejects advisor automation.create of a worktree_session_prompt', async () => {
-      const response = await dispatchAppAction({
-        requestId: 'req-create-session-prompt',
-        source: 'assistant',
-        action: {
-          type: 'automation.create',
-          input: {
-            name: 'Resume',
-            schedule: {
-              kind: 'one_time',
-              runAt: '2099-01-01T00:00:00.000Z',
-              timezone: 'local',
-            },
-            action: {
-              type: 'worktree_session_prompt',
-              workspaceId: 'ws',
-              worktreeId: 'wt',
-              chatId: 'chat',
-              prompt: 'Continue',
-            },
-          },
-        },
-      });
-      expect(response.ok).toBe(false);
-      expect(response.error?.code).toBe('invalid_payload');
-      expect(automationsApiMock.create).not.toHaveBeenCalled();
-    });
-
-    it('rejects advisor automation.update that CONVERTS to a worktree_session_prompt', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'act-1',
-            action: { type: 'app_advisor_prompt', prompt: 'hi' },
-          },
-        ],
-        recentRuns: [],
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update-convert',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'act-1',
-          patch: {
-            action: {
-              type: 'worktree_session_prompt',
-              workspaceId: 'ws',
-              worktreeId: 'wt',
-              chatId: 'chat',
-              prompt: 'Continue',
-            },
-          },
-        },
-      });
-      expect(response.ok).toBe(false);
-      expect(response.error?.code).toBe('invalid_payload');
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
-    });
-
-    it('rejects advisor automation.update that RETARGETS an existing worktree_session_prompt', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'act-1',
-            action: {
-              type: 'worktree_session_prompt',
-              workspaceId: 'ws',
-              worktreeId: 'wt',
-              chatId: 'chat',
-              prompt: 'Continue',
-              purpose: 'scheduled_send',
-            },
-          },
-        ],
-        recentRuns: [],
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update-retarget',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'act-1',
-          patch: {
-            action: {
-              type: 'worktree_session_prompt',
-              workspaceId: 'ws',
-              worktreeId: 'wt',
-              chatId: 'other-chat',
-              prompt: 'Continue',
-              purpose: 'scheduled_send',
-            },
-          },
-        },
-      });
-      expect(response.ok).toBe(false);
-      expect(response.error?.code).toBe('invalid_payload');
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
-    });
-
-    it('refuses agent content edits of an agent-scheduled message', async () => {
-      const action = {
-        type: 'worktree_session_prompt',
-        workspaceId: 'ws',
-        worktreeId: 'wt',
-        chatId: 'chat',
-        prompt: 'Continue',
-        purpose: 'scheduled_send',
-      } as const;
-      // The policy only needs the presence of trusted main-owned scheduling facts.
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          { id: 'act-1', action, agentScheduledSend: { version: 1 } },
-        ],
-        recentRuns: [],
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-agent-scheduled-edit',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'act-1',
-          patch: { action: { ...action, prompt: 'Changed' } },
-        },
-      });
-      expect(response).toMatchObject({
-        ok: false,
-        error: { code: 'invalid_payload' },
-      });
-      expect(response.error?.message).toContain(
-        'Agent-scheduled messages keep their sender.',
-      );
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
-    });
-
-    it('allows advisor automation.update with no action patch (name/schedule/enabled)', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'act-1',
-            action: { type: 'app_advisor_prompt', prompt: 'safe' },
-          },
-        ],
-        recentRuns: [],
-      });
-      automationsApiMock.update.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'act-1', enabled: false },
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update-no-action',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'act-1',
-          patch: { enabled: false },
-        },
-      });
-      expect(response.ok).toBe(true);
-      expect(automationsApiMock.list).toHaveBeenCalled();
-      expect(automationsApiMock.update).toHaveBeenCalledWith({
-        id: 'act-1',
-        enabled: false,
-      });
-    });
-
-    it('allows advisor automation.update with schedule and payload edits to a session prompt', async () => {
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'act-1',
-            action: {
-              type: 'worktree_session_prompt',
-              workspaceId: 'ws',
-              worktreeId: 'wt',
-              chatId: 'chat',
-              prompt: 'Continue',
-              purpose: 'scheduled_send',
-              attachmentPaths: ['/tmp/old.md'],
-            },
-          },
-        ],
-        recentRuns: [],
-      });
-      automationsApiMock.update.mockResolvedValueOnce({
-        ok: true,
-        activity: { id: 'act-1' },
-      });
-      const response = await dispatchAppAction({
-        requestId: 'req-update-payload-only',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'act-1',
-          patch: {
-            schedule: {
-              kind: 'one_time',
-              runAt: '2099-01-01T01:00:00.000Z',
-              timezone: 'local',
-            },
-            action: {
-              type: 'worktree_session_prompt',
-              workspaceId: 'ws',
-              worktreeId: 'wt',
-              chatId: 'chat',
-              prompt: 'Continue please',
-              purpose: 'scheduled_send',
-              attachmentPaths: ['/tmp/new.md'],
-              inputMode: 'typed',
-            },
-          },
-        },
-      });
-      expect(response.ok).toBe(true);
-      expect(automationsApiMock.update).toHaveBeenCalledWith({
-        id: 'act-1',
-        schedule: {
-          kind: 'one_time',
-          runAt: '2099-01-01T01:00:00.000Z',
-          timezone: 'local',
-        },
-        action: {
-          type: 'worktree_session_prompt',
-          workspaceId: 'ws',
-          worktreeId: 'wt',
-          chatId: 'chat',
-          prompt: 'Continue please',
-          purpose: 'scheduled_send',
-          attachmentPaths: ['/tmp/new.md'],
-          inputMode: 'typed',
-        },
-      });
-    });
+        expect(response).toMatchObject({
+          ok: true,
+          result: { agentArtifacts: [{ kind: 'automation', targetSummary }] },
+        });
+      },
+    );
 
     it('automation.disable patches enabled false', async () => {
       automationsApiMock.update.mockResolvedValueOnce({
@@ -20615,43 +20532,7 @@ describe('dispatchAppAction', () => {
       expect(response.result).toEqual({ run: { id: 'run-1' } });
     });
 
-    it('rejects If Command creation, updates, and immediate runs', async () => {
-      const create = await dispatchAppAction({
-        requestId: 'req-create-if-command',
-        source: 'assistant',
-        action: {
-          type: 'automation.create',
-          input: {
-            name: 'Unsafe gate',
-            schedule: {
-              kind: 'cron',
-              expression: '0 9 * * *',
-              timezone: 'local',
-            },
-            action: { type: 'app_advisor_prompt', prompt: 'hi' },
-            ifCommand: 'touch /tmp/agent-command',
-          },
-        },
-      });
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'unsafe',
-            action: { type: 'app_advisor_prompt', prompt: 'hi' },
-            ifCommand: 'touch /tmp/agent-command',
-          },
-        ],
-        recentRuns: [],
-      });
-      const update = await dispatchAppAction({
-        requestId: 'req-update-if-command',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'unsafe',
-          patch: { ifCommand: 'touch /tmp/agent-command' },
-        },
-      });
+    it('rejects If Command immediate runs', async () => {
       automationsApiMock.list.mockResolvedValueOnce({
         activities: [{ id: 'unsafe', ifCommand: 'existing command' }],
         recentRuns: [],
@@ -20662,18 +20543,14 @@ describe('dispatchAppAction', () => {
         action: { type: 'automation.run_now', id: 'unsafe' },
       });
 
-      for (const response of [create, update, runNow]) {
-        expect(response).toMatchObject({
-          ok: false,
-          error: { code: 'invalid_payload' },
-        });
-      }
-      expect(automationsApiMock.create).not.toHaveBeenCalled();
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
+      expect(runNow).toMatchObject({
+        ok: false,
+        error: { code: 'invalid_payload' },
+      });
       expect(automationsApiMock.runNow).not.toHaveBeenCalled();
     });
 
-    it('rejects pipeline-resume automation creation, retargeting, and immediate runs', async () => {
+    it('rejects pipeline-resume automation immediate runs', async () => {
       const resumeAction = {
         type: 'pipeline_execution_resume' as const,
         executionId: 'execution-1',
@@ -20682,40 +20559,6 @@ describe('dispatchAppAction', () => {
         purpose: 'usage_limit_resume' as const,
         pipelineName: 'Release',
       };
-      const create = await dispatchAppAction({
-        requestId: 'req-create-resume',
-        source: 'assistant',
-        action: {
-          type: 'automation.create',
-          input: {
-            name: 'Resume release',
-            schedule: {
-              kind: 'one_time',
-              runAt: '2099-01-01T00:00:00.000Z',
-              timezone: 'local',
-            },
-            action: resumeAction,
-          },
-        },
-      });
-      automationsApiMock.list.mockResolvedValueOnce({
-        activities: [
-          {
-            id: 'resume-target',
-            action: { type: 'app_advisor_prompt', prompt: 'Continue' },
-          },
-        ],
-        recentRuns: [],
-      });
-      const update = await dispatchAppAction({
-        requestId: 'req-update-resume',
-        source: 'assistant',
-        action: {
-          type: 'automation.update',
-          id: 'resume-target',
-          patch: { action: resumeAction },
-        },
-      });
       automationsApiMock.list.mockResolvedValueOnce({
         activities: [{ id: 'resume-target', action: resumeAction }],
         recentRuns: [],
@@ -20726,16 +20569,14 @@ describe('dispatchAppAction', () => {
         action: { type: 'automation.run_now', id: 'resume-target' },
       });
 
-      for (const response of [create, update, runNow]) {
-        expect(response).toMatchObject({
-          ok: false,
-          error: { code: 'invalid_payload' },
-        });
-        if (response.ok) throw new Error('resume policy fixture');
-        expect(response.error.message).toContain('Pipeline resume activities');
-      }
-      expect(automationsApiMock.create).not.toHaveBeenCalled();
-      expect(automationsApiMock.update).not.toHaveBeenCalled();
+      expect(runNow).toMatchObject({
+        ok: false,
+        error: { code: 'invalid_payload' },
+      });
+      if (runNow.ok) throw new Error('resume policy fixture');
+      expect(
+        runNow.error?.message ?? 'Action failed without an error detail',
+      ).toContain('Pipeline resume activities');
       expect(automationsApiMock.runNow).not.toHaveBeenCalled();
     });
 
@@ -21241,6 +21082,7 @@ describe('dispatchAppAction', () => {
           projectId: 'project-1',
           worktreeId: 'worktree-1',
           planId: 'plan-1',
+          shareScope: 'organization',
         },
       };
       Reflect.deleteProperty(request.action, 'planId');
@@ -21260,7 +21102,7 @@ describe('dispatchAppAction', () => {
           projectId: 'project-1',
           worktreeId: 'worktree-1',
           planId: 'plan-1',
-          shareScope: 'private',
+          shareScope: 'organization',
         },
       };
       Object.defineProperty(request.action, 'shareScope', {
@@ -21404,10 +21246,13 @@ describe('dispatchAppAction', () => {
       });
 
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(
+          response.error?.message ?? 'Action failed without an error detail',
+        ).toBe('Profile locked');
+      } else {
         throw new Error('Expected browser.open to fail');
       }
-      expect(response.error.message).toBe('Profile locked');
       expect(browserApiMock.destroy).toHaveBeenCalledTimes(1);
     });
 
@@ -21428,11 +21273,14 @@ describe('dispatchAppAction', () => {
 
       expect(response.requestId).toBe('req-browser-open-bind-failure');
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(response.error?.code).toBe('execution_failed');
+        expect(
+          response.error?.message ?? 'Action failed without an error detail',
+        ).toBe('Unable to open Browser panel.');
+      } else {
         throw new Error('Expected browser.open panel binding to fail');
       }
-      expect(response.error.code).toBe('execution_failed');
-      expect(response.error.message).toBe('Unable to open Browser panel.');
       expect(browserApiMock.destroy).toHaveBeenCalledTimes(1);
     });
 
@@ -21526,10 +21374,11 @@ describe('dispatchAppAction', () => {
       });
 
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(response.error?.code).toBe('invalid_target');
+      } else {
         throw new Error('Expected browser.open to refuse a network share.');
       }
-      expect(response.error.code).toBe('invalid_target');
       expect(browserApiMock.openExternal).not.toHaveBeenCalled();
       expect(browserApiMock.create).not.toHaveBeenCalled();
     });
@@ -21550,10 +21399,11 @@ describe('dispatchAppAction', () => {
       });
 
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(response.error?.code).toBe('invalid_target');
+      } else {
         throw new Error('Expected browser.open to refuse a `~` path.');
       }
-      expect(response.error.code).toBe('invalid_target');
       expect(browserApiMock.openExternal).not.toHaveBeenCalled();
       expect(browserApiMock.create).not.toHaveBeenCalled();
     });
@@ -21876,11 +21726,12 @@ describe('dispatchAppAction', () => {
 
       expect(response.requestId).toBe('req-browser-click-invalid-generation');
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(response.error?.code).toBe('invalid_payload');
+        expect(typeof response.error?.message).toBe('string');
+      } else {
         throw new Error('Expected invalid browser generation to be rejected.');
       }
-      expect(response.error.code).toBe('invalid_payload');
-      expect(typeof response.error.message).toBe('string');
       expect(browserApiMock.automation).not.toHaveBeenCalled();
     });
 
@@ -23503,11 +23354,14 @@ describe('dispatchAppAction', () => {
       });
 
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(response.error?.code).toBe('invalid_target');
+        expect(
+          response.error?.message ?? 'Action failed without an error detail',
+        ).toBe('Enter an http or https URL.');
+      } else {
         throw new Error('Expected browser.open_external to refuse a file.');
       }
-      expect(response.error.code).toBe('invalid_target');
-      expect(response.error.message).toBe('Enter an http or https URL.');
       expect(browserApiMock.openExternal).not.toHaveBeenCalled();
     });
 
@@ -23525,13 +23379,16 @@ describe('dispatchAppAction', () => {
         });
 
         expect(response.ok).toBe(false);
-        if (response.ok) {
+        if (!response.ok) {
+          expect(response.error?.code).toBe('invalid_target');
+          expect(
+            response.error?.message ?? 'Action failed without an error detail',
+          ).toBe('Enter an http or https URL.');
+        } else {
           throw new Error(
             'Expected browser.open_external to refuse an unsupported URL.',
           );
         }
-        expect(response.error.code).toBe('invalid_target');
-        expect(response.error.message).toBe('Enter an http or https URL.');
         expect(browserApiMock.openExternal).not.toHaveBeenCalled();
       },
     );
@@ -23552,11 +23409,14 @@ describe('dispatchAppAction', () => {
       });
 
       expect(response.ok).toBe(false);
-      if (response.ok) {
+      if (!response.ok) {
+        expect(response.error?.code).toBe('invalid_target');
+        expect(
+          response.error?.message ?? 'Action failed without an error detail',
+        ).toBe('Enter an http or https URL.');
+      } else {
         throw new Error('Expected browser.open_external to refuse a file.');
       }
-      expect(response.error.code).toBe('invalid_target');
-      expect(response.error.message).toBe('Enter an http or https URL.');
       expect(browserApiMock.openExternal).not.toHaveBeenCalled();
     });
   });
@@ -23722,7 +23582,7 @@ describe('dispatchAppAction', () => {
         action: {
           type: 'panel.split',
           direction: 'sideways',
-        } as never,
+        },
       });
 
       expect(response.ok).toBe(false);
@@ -24670,7 +24530,7 @@ describe('dispatchAppAction', () => {
         action: {
           type: 'panel.add_tab',
           kind: 'video',
-        } as never,
+        },
       });
       expect(badKind.ok).toBe(false);
       expect(badKind.error?.code).toBe('invalid_payload');
@@ -24878,7 +24738,7 @@ describe('dispatchAppAction', () => {
         action: {
           type: 'panel.arrange',
           arrangement: 'stacked',
-        } as never,
+        },
       });
       expect(invalid.ok).toBe(false);
       expect(invalid.error?.code).toBe('invalid_payload');
@@ -25298,7 +25158,10 @@ describe('workspace.add_org_project organization scope', (): void => {
   beforeEach((): void => {
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': true },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': true,
+      },
     });
     useWorkspaceContextStore.setState({
       hydrated: true,
@@ -25421,7 +25284,10 @@ describe('workspace.add_org_project organization scope', (): void => {
     // action type learned while the feature was on must still be refused.
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': false },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': false,
+      },
     });
     const response = await dispatchAppAction({
       requestId: 'add-flag-off',
@@ -26090,7 +25956,10 @@ describe('org_project.create_cowork (CAN-3453)', (): void => {
     });
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': true },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': true,
+      },
     });
     inOrganization();
   });
@@ -26126,7 +25995,10 @@ describe('org_project.create_cowork (CAN-3453)', (): void => {
   it('refuses when organization projects are off', async (): Promise<void> => {
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': false },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': false,
+      },
     });
     const response = await create('cowork-flag-off');
     expect(response.ok).toBe(false);
@@ -26329,7 +26201,10 @@ describe('org_project.create_code (CAN-3534)', (): void => {
     });
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': true },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': true,
+      },
     });
     useWorkspaceContextStore.setState({
       hydrated: true,
@@ -26387,7 +26262,10 @@ describe('org_project.create_code (CAN-3534)', (): void => {
   it('refuses when organization projects are off', async (): Promise<void> => {
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': false },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': false,
+      },
     });
     const response = await create('code-flag-off');
     expect(response.error).toEqual({
@@ -27079,6 +26957,7 @@ describe('standalone reveal after main-owned creation', () => {
           id: 'main-created-entry',
           createdAt: new Date(0).toISOString(),
           chatCount: 1,
+          title: 'New work entry',
         },
       ],
     });
@@ -27100,6 +26979,11 @@ describe('standalone reveal after main-owned creation', () => {
     const refresh = jest
       .spyOn(useStandaloneChatStore.getState(), 'refreshWorkEntries')
       .mockImplementationOnce(async (projectId) => {
+        if (projectId === undefined) {
+          throw new Error(
+            'Expected a project ID when refreshing work entries.',
+          );
+        }
         expect(projectId).toBe('project-a');
         const { entries } = await workEntriesApiMock.list({ projectId });
         useStandaloneChatStore.setState({ workEntries: entries });
@@ -27381,7 +27265,10 @@ describe('workspace.create_multi_repo (CAN-3573)', (): void => {
   const setOrgProjectsEnabled = (enabled: boolean): void => {
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': enabled },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': enabled,
+      },
     });
   };
 
@@ -28189,7 +28076,10 @@ describe('workspace.add_repo and workspace.remove_repo (CAN-3573)', (): void => 
     });
     useFeatureFlagsStore.getState().setSnapshot({
       ...getDefaultFeatureFlagSnapshot(),
-      values: { 'canopy-shared-org-projects-enabled': false },
+      values: {
+        ...getDefaultFeatureFlagSnapshot().values,
+        'canopy-shared-org-projects-enabled': false,
+      },
     });
     useProjectsStore.setState({
       projects: [

@@ -20,13 +20,20 @@ import {
   type ChatTabStripTab,
 } from '@/stores/chatStore';
 import {
-  DELEGATES_BLOCK_CLOSE_TOOLTIP,
+  closeBlockedTooltip,
   getChatTabCloseBlocker,
 } from '@/stores/chat/close-guard';
 import {
-  selectChatHasLiveDelegates,
+  chatDelegationKey,
   useDelegationActivityStore,
+  type DelegationActivityState,
 } from '@/stores/delegationActivityStore';
+import {
+  liveBackgroundTaskKey,
+  useLiveBackgroundTaskStore,
+  type LiveBackgroundTaskState,
+} from '@/stores/liveBackgroundTaskStore';
+import { backgroundTaskCount } from '@canopy/desktop-shared/lib/background-work';
 import {
   desktopFileSessionController,
   useDesktopFileSessionRevision,
@@ -53,7 +60,12 @@ import {
   PinIcon,
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { ChatTab as SharedChatTab } from '@canopy/ui-shared/components';
+import {
+  AgentStateGlyph,
+  ChatTab as SharedChatTab,
+  Dot,
+  TitlebarIconButton,
+} from '@canopy/ui-shared/components';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { ArchivedChatsControl } from './ArchivedChatsControl';
@@ -100,6 +112,23 @@ function scrollTabIntoView(
   } else if (tabRight > visibleRight) {
     container.scrollLeft = tabRight - container.clientWidth;
   }
+}
+
+/** A chat's own background tasks (D11): its delegations and live provider tasks. */
+function chatBackgroundTasks(
+  delegations: DelegationActivityState,
+  liveTasks: LiveBackgroundTaskState['byChat'],
+  scope: { projectId: string; worktreeId: string } | null,
+  chatId: string,
+): number {
+  if (scope === null) return 0;
+  return backgroundTaskCount(
+    delegations.byChat[
+      chatDelegationKey(scope.projectId, scope.worktreeId, chatId)
+    ],
+    liveTasks[liveBackgroundTaskKey(scope.projectId, scope.worktreeId, chatId)]
+      ?.liveTasks ?? [],
+  );
 }
 
 export const ChatTabBar = memo(function ChatTabBar({
@@ -184,9 +213,11 @@ export const ChatTabBar = memo(function ChatTabBar({
   // Effective (projectId, worktreeId) the bar operates on. `scope` wins for the
   // modal-hosted tab bar; otherwise the globally selected worktree.
   const effectiveScope = scope ?? selectedWorktree ?? null;
-  // Live managed delegates keep a chat active (spinner) and open (disabled ×)
-  // even after its own turn ended. Never read from `tab.status`.
+  // Managed delegates keep a chat working (spinner); delegates and provider
+  // background agents/workflows keep it open (disabled ×). Never read from
+  // `tab.status` for background work.
   const delegationState = useDelegationActivityStore((state) => state);
+  const liveTaskByChat = useLiveBackgroundTaskStore((state) => state.byChat);
   const share = useShareRunAction(
     effectiveScope?.projectId ?? null,
     effectiveScope?.worktreeId ?? null,
@@ -616,18 +647,17 @@ export const ChatTabBar = memo(function ChatTabBar({
     const provider = isFileTab
       ? undefined
       : resolveChatTabProvider(tab, defaultWorktreeModel);
-    const hasLiveDelegates =
-      !isFileTab &&
-      effectiveScope !== null &&
-      selectChatHasLiveDelegates(
-        delegationState,
-        effectiveScope.projectId,
-        effectiveScope.worktreeId,
-        tab.id,
-      );
-    // Working: its own turn streams or its delegates still run.
-    const isWorking =
-      !isFileTab && (tab.status === 'streaming' || hasLiveDelegates);
+    // Working: its own turn streams. Delegates and provider tasks alone are
+    // background work, drawn with the quiet spinner (turn-state D15).
+    const isWorking = !isFileTab && tab.status === 'streaming';
+    const backgroundTasks = isFileTab
+      ? 0
+      : chatBackgroundTasks(
+          delegationState,
+          liveTaskByChat,
+          effectiveScope,
+          tab.id,
+        );
     const closeBlocker =
       effectiveScope === null
         ? null
@@ -636,6 +666,7 @@ export const ChatTabBar = memo(function ChatTabBar({
             effectiveScope.projectId,
             effectiveScope.worktreeId,
             delegationState,
+            { byChat: liveTaskByChat },
           );
     const leading = isFileTab ? (
       <FileTypeIcon
@@ -656,6 +687,13 @@ export const ChatTabBar = memo(function ChatTabBar({
         // own colour — that is a different signal, shared with the unread dot.
         tone={tab.unread ? 'unread' : 'accent'}
         className="shrink-0"
+      />
+    ) : backgroundTasks > 0 && !awaitingApproval && !awaitingToolApproval ? (
+      <AgentStateGlyph
+        state="background"
+        backgroundTasks={backgroundTasks}
+        sizePx={12}
+        unread={tab.unread === true}
       />
     ) : awaitingApproval ? (
       <PlanModeIcon
@@ -711,16 +749,12 @@ export const ChatTabBar = memo(function ChatTabBar({
         label={tabLabel}
         maskLabel={!isFileTab}
         active={isActive}
-        busy={isWorking}
-        // A busy chat cannot close. Delegates are not visible from the tab,
-        // so that reason is spelled out on an always-visible disabled ×; a
-        // chat's own running turn already shows its spinner.
+        busy={isWorking || backgroundTasks > 0}
+        // A busy chat cannot close. Delegates and provider background work
+        // are not visible from the tab, so their reason is spelled out on an
+        // always-visible disabled ×; a chat's own turn already shows its spinner.
         closeDisabled={closeBlocker !== null}
-        closeDisabledReason={
-          closeBlocker === 'delegates'
-            ? DELEGATES_BLOCK_CLOSE_TOOLTIP
-            : undefined
-        }
+        closeDisabledReason={closeBlockedTooltip(closeBlocker)}
         unread={tab.kind === 'file' ? false : tab.unread}
         readOnly={tab.readOnly}
         tooltip={tabTooltip}
@@ -798,15 +832,14 @@ export const ChatTabBar = memo(function ChatTabBar({
         })}
       </div>
       <ArchivedChatsControl scope={scope} />
-      <button
-        type="button"
+      <TitlebarIconButton
         data-testid="chat-tab-new"
+        // A tab row chrome control, like the archive control beside it.
+        surface="panelChrome"
+        icon={AppCatalogPlusIcon}
         onClick={() => createTab()}
-        className="electron-no-drag shrink-0 px-2.5 py-2 fg-secondary transition hover:fg-primary"
         aria-label={`New ${CHAT_UNIT_LABEL} tab`}
-      >
-        <AppCatalogPlusIcon width="13" height="13" />
-      </button>
+      />
       {effectiveScope &&
         canTransferChatSession(effectiveScope.projectId) &&
         ((): JSX.Element | null => {
@@ -827,7 +860,7 @@ export const ChatTabBar = memo(function ChatTabBar({
                 aria-label="Session actions"
                 aria-haspopup="menu"
                 aria-expanded={sessionMenuOpen}
-                className="electron-no-drag relative px-1.5 py-2 fg-secondary transition hover:fg-primary"
+                className="electron-no-drag relative px-1.5 py-2 fg-secondary transition-colors hover:fg-primary"
               >
                 <AppCatalogMoreVerticalIcon
                   width="13"
@@ -837,10 +870,10 @@ export const ChatTabBar = memo(function ChatTabBar({
                 {/* Unread shared-run comments (CAN-397): the menu hosts the
                     Comments entry, so the dot advertises it without opening. */}
                 {(activeTab.sharedRun?.unreadCommentCount ?? 0) > 0 && (
-                  <span
-                    aria-hidden="true"
+                  <Dot
+                    tone="unread"
                     data-testid="chat-tab-session-menu-unread"
-                    className="pointer-events-none absolute top-1 right-0.5 h-1.5 w-1.5 rounded-full bg-accent"
+                    className="pointer-events-none absolute top-1 right-0.5"
                   />
                 )}
               </button>
@@ -883,8 +916,8 @@ export const ChatTabBar = memo(function ChatTabBar({
           if (!tab) return null;
           const tabIndex = tabIndexById.get(tab.id) ?? -1;
           const isFileTab = tab.kind === 'file';
-          // The same busy predicate `closeTab` enforces (active turn or live
-          // delegates).
+          // The same busy predicate `closeTab` enforces (active turn,
+          // delegates, or provider background agents/workflows).
           const isChatTabBusy =
             effectiveScope !== null &&
             getChatTabCloseBlocker(
@@ -892,6 +925,7 @@ export const ChatTabBar = memo(function ChatTabBar({
               effectiveScope.projectId,
               effectiveScope.worktreeId,
               delegationState,
+              { byChat: liveTaskByChat },
             ) !== null;
           // Chrome-like semantics: bulk "Close *" actions never touch pinned
           // tabs. Individual "Close" on the clicked tab itself still works
@@ -1103,16 +1137,15 @@ export const ChatTabBar = memo(function ChatTabBar({
           const provider = isFileTab
             ? undefined
             : resolveChatTabProvider(tab, defaultWorktreeModel);
-          const isWorking =
-            !isFileTab &&
-            (tab.status === 'streaming' ||
-              (effectiveScope !== null &&
-                selectChatHasLiveDelegates(
-                  delegationState,
-                  effectiveScope.projectId,
-                  effectiveScope.worktreeId,
-                  tab.id,
-                )));
+          const isWorking = !isFileTab && tab.status === 'streaming';
+          const backgroundTasks = isFileTab
+            ? 0
+            : chatBackgroundTasks(
+                delegationState,
+                liveTaskByChat,
+                effectiveScope,
+                tab.id,
+              );
           const popoverLeading: ReactNode = isFileTab ? (
             <FileTypeIcon
               filename={tab.title}
@@ -1122,6 +1155,14 @@ export const ChatTabBar = memo(function ChatTabBar({
             />
           ) : isWorking && !awaitingApproval && !awaitingToolApproval ? (
             <ThinkingSpinner tone="accent" className="shrink-0" />
+          ) : backgroundTasks > 0 &&
+            !awaitingApproval &&
+            !awaitingToolApproval ? (
+            <AgentStateGlyph
+              state="background"
+              backgroundTasks={backgroundTasks}
+              unread={tab.unread === true}
+            />
           ) : awaitingApproval ? (
             <PlanModeIcon
               width={14}

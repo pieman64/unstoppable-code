@@ -3,6 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
+  CanopyOrganizationSummary,
   CanopyCloudAccountPublicState,
   DataSharingOptInResult,
   PreferencesData,
@@ -20,6 +21,15 @@ import { useNavigationStore } from '@/stores/navigationStore';
 const ORG = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
+function organization(id: string, name: string): CanopyOrganizationSummary {
+  return {
+    id,
+    name,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+}
+
 function account(
   overrides: Partial<CanopyCloudAccountPublicState> = {},
 ): CanopyCloudAccountPublicState {
@@ -29,16 +39,14 @@ function account(
     authMode: 'oauth',
     credentialSource: null,
     capabilities: [],
+    storageAvailable: true,
     account: {
       id: 'user-1',
       name: 'Ada',
       email: 'ada@example.test',
       role: 'DEVELOPER',
     },
-    organizations: [
-      { id: ORG, name: 'Acme' },
-      { id: OTHER, name: 'Other' },
-    ],
+    organizations: [organization(ORG, 'Acme'), organization(OTHER, 'Other')],
     enforcedSettings: [],
     ...overrides,
   };
@@ -308,8 +316,18 @@ describe('DesktopDataSharingOptIn', () => {
           policies: [
             {
               kind: 'telemetry-sync',
-              scopes: {},
-              prohibitedScopes: { transcripts: true },
+              scopes: {
+                transcripts: false,
+                plans: false,
+                metadata: false,
+                summaries: false,
+              },
+              prohibitedScopes: {
+                transcripts: true,
+                plans: false,
+                metadata: false,
+                summaries: false,
+              },
             },
           ],
         },
@@ -432,7 +450,7 @@ describe('DesktopDataSharingOptIn', () => {
       .mockReturnValueOnce(slow.promise)
       .mockImplementation(() =>
         Promise.resolve(
-          account({ organizations: [{ id: OTHER, name: 'Other' }] }),
+          account({ organizations: [organization(OTHER, 'Other')] }),
         ),
       );
     Object.assign(window.api, { loadCanopyCloudAccount: loadAccount });

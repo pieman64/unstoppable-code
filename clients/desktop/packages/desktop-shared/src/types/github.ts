@@ -350,6 +350,10 @@ export interface CancelGitActionResponse {
 }
 
 export interface CreatePrRequest extends GitActionOperationRequest {
+  /** Original distinct target count retained across scoped retries; analytics only. */
+  telemetryRepoCount?: number;
+  /** Analytics attribution only; never grants permission. Main defaults to manual. */
+  source?: 'manual' | 'chat';
   /** Continue after an auth failure using existing commits; leave new edits uncommitted. */
   skipCommit?: boolean;
   /** Continue PR creation after its push succeeded; requires skipCommit and a head guard. */
@@ -496,6 +500,12 @@ export interface GenerateCommitMessagesResponse extends GitActionOperationRespon
 }
 
 export interface CommitAndPushRequest extends GitActionOperationRequest {
+  /** Reviewed commits made as preparation for a PR retain their parent flow. */
+  telemetryFlow?: 'pull_request';
+  /** Original distinct target count retained across scoped retries; analytics only. */
+  telemetryRepoCount?: number;
+  /** Analytics attribution only; never grants permission. Main defaults to manual. */
+  source?: 'manual' | 'chat';
   projectId: string;
   worktreeId: string;
   messages?: Array<{ repoId?: string; repoName: string; message: string }>;
@@ -1091,7 +1101,7 @@ export const SPLIT_PR_BLOCKER_COPY: Record<SplitPrBlocker, string> = {
   uncommitted_changes: 'Commit or discard local changes first',
   unpushed_commits: 'Push local commits first',
   merge_conflicts: 'Resolve the merge conflicts reported by GitHub first',
-  active_pipelines: 'Wait for active pipelines to finish',
+  active_pipelines: 'Wait for active workflows to finish',
   active_chats: 'Wait for active agent chats to finish',
 };
 
@@ -1333,6 +1343,8 @@ export interface UpdatePrBaseBranchResponse {
 export type PrMergeMethod = 'merge' | 'squash' | 'rebase';
 
 export interface MergePrRequest extends GitActionOperationRequest {
+  /** Analytics attribution only; never grants permission. Main defaults to manual. */
+  source?: 'manual' | 'chat';
   projectId: string;
   worktreeId: string;
   /**

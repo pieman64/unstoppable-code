@@ -16,6 +16,8 @@ import {
   isTerminalBackgroundProcessStatus,
 } from '@canopy/ui-shared/lib';
 import type { BackgroundTaskHostActions } from './background-tasks-section';
+import { backgroundTaskStopAccessibleLabel } from './BackgroundProcessesSectionBody';
+import { TaskStopAction } from './TaskStopAction';
 
 const MAX_DETAIL_OUTPUT_LINES = 5000;
 
@@ -45,20 +47,19 @@ interface BackgroundTaskDetailModalProps {
   readonly task: BackgroundTask;
   readonly actions?: BackgroundTaskHostActions;
   readonly onClose: () => void;
-  readonly onStop?: () => void;
-  readonly isStopping?: boolean;
 }
 
 export function BackgroundTaskDetailModal({
   task,
   actions,
   onClose,
-  onStop,
-  isStopping,
 }: BackgroundTaskDetailModalProps): JSX.Element {
   const isWorkflow = task.kind === 'workflow';
   const terminal = isTerminalBackgroundProcessStatus(task.status);
   const detail = actions?.getDetail?.(task) ?? null;
+  const stopTarget = task.canStop
+    ? (actions?.stopTarget?.(task) ?? null)
+    : null;
   // Effects read host callbacks through a ref and depend only on output keys.
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
@@ -233,15 +234,16 @@ export function BackgroundTaskDetailModal({
                 {task.status}
               </span>
             </div>
-            {onStop && task.canStop && !terminal && (
-              <button
-                type="button"
-                onClick={onStop}
-                disabled={isStopping}
-                className="focus-ring shrink-0 rounded-md border border-fg-destructive-strong/25 bg-destructive-subtle px-2.5 py-1.5 text-2xs font-medium fg-destructive-strong transition hover:bg-destructive-subtle/80 disabled:cursor-wait disabled:opacity-60"
-              >
-                {isStopping ? 'Stopping…' : 'Stop'}
-              </button>
+            {stopTarget && (
+              <TaskStopAction
+                target={stopTarget}
+                live={!terminal}
+                accessibleLabel={backgroundTaskStopAccessibleLabel(task.kind)}
+                dataTestId="bg-process-detail-stop"
+                onError={actions?.onStopError}
+                // The dialog closes on Escape from any of its controls.
+                stopKeyDownPropagation={false}
+              />
             )}
           </div>
           <div>
@@ -272,7 +274,7 @@ export function BackgroundTaskDetailModal({
               <span className="ml-2 fg-primary/80">{detail.toolName}</span>
             </div>
           )}
-          {!isWorkflow && detail && (
+          {!isWorkflow && detail && detail.outputLocationLabel !== null && (
             <div className="col-span-2">
               <span className="fg-secondary">Output file</span>
               <span className="ml-2 break-all font-mono text-xs fg-primary/80">

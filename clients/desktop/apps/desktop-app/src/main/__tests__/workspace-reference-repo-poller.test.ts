@@ -5,10 +5,14 @@ import type {
   WorkspaceReferenceRepoStatus,
 } from '@canopy/desktop-shared/types';
 import type { SendableBrowserWindow } from '../lib/window-send';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
 
 jest.mock('../lib/workspace-reference-repo-health', () => ({
   inspectReferenceRepo: jest.fn(),
 }));
+
+// Inspection is mocked; the poller only hands its dispatcher through.
+const gitDispatcher = unusedGitReadRuntime().dispatcher;
 
 function createStatus(
   overrides: Partial<WorkspaceReferenceRepoStatus> = {},
@@ -83,7 +87,7 @@ describe('workspace-reference-repo-poller', () => {
 
     const window = createWindow();
 
-    poller.startPolling(() => window);
+    poller.startPolling(() => window, gitDispatcher);
     poller.syncTrackedWorkspaces([
       createWorkspace('workspace-a'),
       createWorkspace('workspace-b'),
@@ -96,10 +100,12 @@ describe('workspace-reference-repo-poller', () => {
 
     expect(mockedInspectReferenceRepo).toHaveBeenNthCalledWith(
       1,
+      gitDispatcher,
       'workspace-b',
     );
     expect(mockedInspectReferenceRepo).toHaveBeenNthCalledWith(
       2,
+      gitDispatcher,
       'workspace-a',
     );
 
@@ -110,13 +116,16 @@ describe('workspace-reference-repo-poller', () => {
     const { poller, mockedInspectReferenceRepo } = await importFreshPoller();
     mockedInspectReferenceRepo.mockResolvedValue(createStatus());
 
-    poller.startPolling(() => createWindow());
+    poller.startPolling(() => createWindow(), gitDispatcher);
     poller.syncTrackedWorkspaces([createWorkspace('workspace-a')]);
     poller.syncTrackedWorkspaces([], new Set(['workspace-a']));
 
     await jest.advanceTimersByTimeAsync(30_000);
 
-    expect(mockedInspectReferenceRepo).toHaveBeenCalledWith('workspace-a');
+    expect(mockedInspectReferenceRepo).toHaveBeenCalledWith(
+      gitDispatcher,
+      'workspace-a',
+    );
 
     poller.stopPolling();
   });
@@ -130,7 +139,7 @@ describe('workspace-reference-repo-poller', () => {
     const send = jest.fn();
     const window = createWindow(send);
 
-    poller.startPolling(() => window);
+    poller.startPolling(() => window, gitDispatcher);
     poller.syncTrackedWorkspaces([createWorkspace('workspace-a')]);
     poller.requestRefresh('workspace-a', true);
     await jest.advanceTimersByTimeAsync(1_000);
@@ -161,7 +170,7 @@ describe('workspace-reference-repo-poller', () => {
 
     const window = createWindow();
 
-    poller.startPolling(() => window);
+    poller.startPolling(() => window, gitDispatcher);
     poller.syncTrackedWorkspaces([createWorkspace('workspace-a')]);
     poller.requestRefresh('workspace-a', true);
     await jest.advanceTimersByTimeAsync(1_000);
@@ -181,7 +190,7 @@ describe('workspace-reference-repo-poller', () => {
     const send = jest.fn();
     const window = createWindow(send);
 
-    poller.startPolling(() => window);
+    poller.startPolling(() => window, gitDispatcher);
     poller.syncTrackedWorkspaces([createWorkspace('workspace-a')]);
     poller.requestRefresh('workspace-a', true);
     await jest.advanceTimersByTimeAsync(1_000);
@@ -194,7 +203,10 @@ describe('workspace-reference-repo-poller', () => {
     poller.requestRefresh('workspace-a', true);
     await jest.advanceTimersByTimeAsync(1_000);
 
-    expect(mockedInspectReferenceRepo).toHaveBeenCalledWith('workspace-a');
+    expect(mockedInspectReferenceRepo).toHaveBeenCalledWith(
+      gitDispatcher,
+      'workspace-a',
+    );
     expect(send).toHaveBeenCalledWith(
       'workspace:reference-repo-status-event',
       expect.objectContaining({
@@ -212,7 +224,7 @@ describe('workspace-reference-repo-poller', () => {
 
     const window = createWindow();
 
-    poller.startPolling(() => window);
+    poller.startPolling(() => window, gitDispatcher);
     poller.syncTrackedWorkspaces([createWorkspace('workspace-a')]);
     poller.requestRefresh('workspace-a', true);
     await jest.advanceTimersByTimeAsync(1_000);
@@ -221,7 +233,10 @@ describe('workspace-reference-repo-poller', () => {
     await poller.resolveWarning('workspace-a', 'shadow-sync-failed');
     await jest.advanceTimersByTimeAsync(1_000);
 
-    expect(mockedInspectReferenceRepo).toHaveBeenCalledWith('workspace-a');
+    expect(mockedInspectReferenceRepo).toHaveBeenCalledWith(
+      gitDispatcher,
+      'workspace-a',
+    );
 
     poller.stopPolling();
   });

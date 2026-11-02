@@ -9,7 +9,7 @@ import {
 } from 'react';
 import type { ArchivedChatSummary } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
-import { TitlebarIconButton } from '@canopy/ui-shared';
+import { Count, TitlebarIconButton } from '@canopy/ui-shared';
 import { ArchiveIcon, CheckIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { TabContextMenu } from './TabContextMenu';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
@@ -19,7 +19,6 @@ import {
 } from '@/stores/chatStore';
 import type { WorktreeChatOpenArchiveTranscriptDetail } from '@/stores/chatStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { getArchivedChatDisplayLabel } from '@/components/standalone-chat/chat-label';
 import { ArchivedChatsPopover } from './ArchivedChatsPopover';
 
@@ -37,10 +36,6 @@ const ArchivedChatTranscriptModal = lazy(() =>
 
 const EMPTY_ARCHIVES: ArchivedChatSummary[] = [];
 
-/** Corner-badge copy: past two digits the exact number stops mattering. */
-function formatArchiveBadgeCount(count: number): string {
-  return count > 99 ? '99+' : String(count);
-}
 const WORKTREE_CHAT_OPEN_ARCHIVES_EVENT = 'canopy:worktree-chat-open-archives';
 
 interface WorktreeChatOpenArchivesDetail {
@@ -174,7 +169,6 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
   );
   const selectedWorktree = useChatStore((s) => s.selectedWorktree);
   // Labs: draw the hover card on the shared menu surface.
-  const archivedChatsCard = useLabsExperimentEnabled('archived-chats-card');
 
   // Archive surfacing: hover popover + full modal, plus per-chat in-flight
   // tracking so the row actions can show spinners and disable while the async
@@ -451,6 +445,8 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
         <>
           <TitlebarIconButton
             data-testid="chat-tab-archive"
+            // A tab row chrome control: the row's nested corner radius.
+            surface="panelChrome"
             data-unread={hasUnreadArchived ? 'true' : undefined}
             icon={ArchiveIcon}
             onPointerEnter={() => setArchivePopoverOpen(true)}
@@ -503,14 +499,12 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
           aria-haspopup="dialog"
         >
           <ArchiveIcon size={16} />
-          <span
+          <Count
+            value={archivedSummaries.length}
+            placement="icon"
             data-testid="chat-tab-archive-count"
-            // Same material as the `Open in` split control next to it:
-            // `bg-quaternary` + `shadow-sm` + a 0.5px `line-secondary` ring.
-            className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-3.25 min-w-3.25 items-center justify-center rounded-full bg-quaternary px-0.75 text-3xs font-medium leading-none tabular-nums fg-primary shadow-sm ring-[length:var(--border-hairline)] ring-line-secondary"
-          >
-            {formatArchiveBadgeCount(archivedSummaries.length)}
-          </span>
+            className="pointer-events-none absolute -right-1 -top-1"
+          />
         </button>
       )}
       {archivePopoverOpen && (
@@ -527,7 +521,7 @@ export const ArchivedChatsControl = memo(function ArchivedChatsControl({
           restoringIds={restoringIds}
           align={popoverAlign}
           anchor={variant === 'tabStrip' ? tabStripAnchor : null}
-          look={archivedChatsCard ? 'card' : 'classic'}
+          look="card"
         />
       )}
       {archiveMenu && (

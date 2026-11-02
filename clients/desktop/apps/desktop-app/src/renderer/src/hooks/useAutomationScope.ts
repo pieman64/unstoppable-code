@@ -7,7 +7,10 @@ import type {
   SidebarItem,
 } from '@canopy/desktop-shared/types';
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
-import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import {
+  parseWorkspaceContext,
+  type WorkspaceContext,
+} from '@canopy/protocol/workspace-context';
 import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { useProjectsStore } from '@/stores/projectsStore';
 import {
@@ -30,7 +33,10 @@ import {
 export interface AutomationScope {
   /** `undefined` while org projects are off or the context hasn't loaded. */
   context: WorkspaceContext | undefined;
-  inContext: (activity: { action: AutomationAction }) => boolean;
+  inContext: (activity: {
+    action: AutomationAction;
+    executionContext?: string;
+  }) => boolean;
   watcherInContext: (
     watcher: Pick<AppAdvisorWatcherSummary, 'destination'>,
   ) => boolean;
@@ -41,6 +47,12 @@ export interface AutomationScope {
   runsInLabel: (
     activity: Pick<ScheduledActivity, 'enabled' | 'executionContext'>,
   ) => string | null;
+  /**
+   * `Personal` or the organization name of an automation owner: a saved
+   * `executionContext`, or the selected context (Personal when unscoped)
+   * for a new automation.
+   */
+  ownerLabel: (executionContext: string | undefined) => string;
   /** Label for the context a workspace belongs to. */
   labelForWorkspace: (workspace: Pick<SidebarItem, 'id' | 'owner'>) => string;
   /** Whether the account may run in the context a workspace belongs to. */
@@ -79,6 +91,14 @@ function buildAutomationScope({
       : null,
     runsInLabel: (activity) =>
       context ? automationRunsInLabel(activity, organizations) : null,
+    ownerLabel: (executionContext) =>
+      workspaceContextLabel(
+        (executionContext !== undefined
+          ? parseWorkspaceContext(executionContext)
+          : null) ??
+          context ?? { kind: 'personal' },
+        organizations,
+      ),
     labelForWorkspace: (workspace) =>
       workspaceContextLabel(workspaceOwnerContext(workspace), organizations),
     memberOfWorkspace: (workspace) =>

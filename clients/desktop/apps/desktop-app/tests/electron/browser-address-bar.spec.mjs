@@ -191,28 +191,28 @@ test.describe('browser address bar', () => {
     }
   });
 
-  test('early access off: the classic bar is unchanged', async () => {
+  test('early access off: the graduated address bar remains available', async () => {
     test.setTimeout(240_000);
     const server = await pageServer();
-    const { pane, input, close } = await openBrowserPanel({
+    const { page, pane, input, close } = await openBrowserPanel({
       earlyAccess: false,
       origin: server.origin,
     });
     try {
       const bar = pane.getByTestId('browser-bar');
       await expect(bar).toBeVisible();
-      await expect(bar).not.toHaveAttribute('data-variant', 'address-bar');
-      await expect(pane.getByTestId('browser-profile-picker')).toBeVisible();
-      await expect(pane.getByTestId('browser-more')).toHaveCount(0);
-      // The classic field keeps the full URL at rest.
+      await expect(bar).toHaveAttribute('data-variant', 'address-bar');
+      await expect(pane.getByTestId('browser-profile-picker')).toHaveCount(0);
+      await expect(pane.getByTestId('browser-more')).toBeVisible();
+      // The graduated field shows only the host at rest.
       await input.blur();
-      await expect(input).toHaveValue(`${server.origin}${PAGE_PATH}`);
-      // Details has no close button of its own there.
-      await pane.getByRole('button', { name: 'Show browser details' }).click();
+      await expect(input).toHaveValue(new URL(server.origin).host);
+      await pane.getByTestId('browser-more').click();
+      await page.getByTestId('browser-more-details').click();
       await expect(
         pane.getByRole('tablist', { name: 'Browser details' }),
       ).toBeVisible();
-      await expect(pane.getByTestId('browser-inspector-close')).toHaveCount(0);
+      await expect(pane.getByTestId('browser-inspector-close')).toBeVisible();
     } finally {
       await close();
       await server.close();

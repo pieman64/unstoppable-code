@@ -2,8 +2,20 @@ import { useEffect } from 'react';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { cloudAccountIdentityKey } from '@canopy/desktop-shared/lib/guest-account';
 import { MODEL_LIBRARY_UNLOCK_COPY } from '@canopy/ui-shared/components';
+import {
+  hasAiCreditsArrivalSession,
+  reconcileAiCreditsArrivalAccount,
+  suspendAiCreditsArrivalAccount,
+} from '@/lib/aiCreditsArrivalConfirmation';
 import { useNavigationScopeKey } from '@/lib/aiCreditsScope';
 import { ensureModelLibraryAccessSubscribed } from '@/lib/modelLibraryAccess';
+import {
+  hasModelUnlockConfirmationSession,
+  reconcileModelUnlockConfirmationAccount,
+  recordModelUnlockConfirmation,
+  suspendModelUnlockConfirmationAccount,
+  useModelUnlockConfirmationStore,
+} from '@/lib/modelUnlockConfirmation';
 import {
   checkModelUnlockNow,
   clearModelUnlockIntent,
@@ -12,6 +24,7 @@ import {
   runModelUnlockPolling,
   setModelUnlockConfirmedListener,
   useModelUnlockIntentStore,
+  type PendingModelUnlockIntent,
 } from '@/lib/modelUnlockIntent';
 import { useGitHubStore } from '@/stores/githubStore';
 
@@ -40,11 +53,21 @@ export function useModelUnlockReturn(): void {
   }, [pollingRequestId]);
 
   useEffect(() => {
+    let accountReadGeneration = 0;
+    let active = true;
+    let queuedConfirmation: PendingModelUnlockIntent | null = null;
     ensureModelLibraryAccessSubscribed();
-    setModelUnlockConfirmedListener((): void => {
+    setModelUnlockConfirmedListener((intent): void => {
       useGitHubStore
         .getState()
         .addToast(MODEL_LIBRARY_UNLOCK_COPY.confirmed, 'success');
+      if (intent.chatId === null) return;
+      // The in-chat confirmation (CAN-5027) for the chat it started in.
+      if (useModelUnlockConfirmationStore.getState().accountReady) {
+        recordModelUnlockConfirmation(intent);
+      } else {
+        queuedConfirmation = intent;
+      }
     });
     const unsubscribeReturn = window.api?.onDeepLinkBillingUnlocked?.(
       handleBillingReturnLink,
@@ -59,18 +82,46 @@ export function useModelUnlockReturn(): void {
     };
     // Sign-out and account switches. Resolved against the saved credential
     // rather than assumed from the event, which also fires for a balance
-    // change on the same account.
+    // change on the same account. A confirmed unlock outlives its pending
+    // intent, so its confirmation is reconciled even when nothing is pending.
+    // The usage-limit arrival confirmation (CAN-5160) shares the same guard.
     const handleAccountChanged = (): void => {
-      if (useModelUnlockIntentStore.getState().intent === null) return;
+      if (
+        useModelUnlockIntentStore.getState().intent === null &&
+        !hasModelUnlockConfirmationSession() &&
+        !hasAiCreditsArrivalSession()
+      ) {
+        return;
+      }
+      const generation = ++accountReadGeneration;
+      suspendModelUnlockConfirmationAccount();
+      suspendAiCreditsArrivalAccount();
+      const reconcile = (accountKey: string | null): void => {
+        if (!active || generation !== accountReadGeneration) return;
+        reconcileModelUnlockIntentAccount(accountKey);
+        reconcileModelUnlockConfirmationAccount(accountKey);
+        reconcileAiCreditsArrivalAccount(accountKey);
+        if (queuedConfirmation?.accountId === accountKey) {
+          recordModelUnlockConfirmation(queuedConfirmation);
+        }
+        queuedConfirmation = null;
+      };
       const loadAccount = window.api?.loadCanopyCloudAccount;
-      if (typeof loadAccount !== 'function') return;
+      if (typeof loadAccount !== 'function') {
+        reconcile(null);
+        return;
+      }
       void loadAccount().then(
         (account): void => {
-          reconcileModelUnlockIntentAccount(cloudAccountIdentityKey(account));
+          reconcile(
+            account.read !== undefined && account.read !== 'ok'
+              ? null
+              : cloudAccountIdentityKey(account),
+          );
         },
         (): void => {
           // An unreadable account cannot be shown to still be the buyer.
-          reconcileModelUnlockIntentAccount(null);
+          reconcile(null);
         },
       );
     };
@@ -80,6 +131,8 @@ export function useModelUnlockReturn(): void {
       handleAccountChanged,
     );
     return (): void => {
+      active = false;
+      accountReadGeneration++;
       setModelUnlockConfirmedListener(null);
       unsubscribeReturn?.();
       window.removeEventListener('focus', handleFocus);
@@ -92,7 +145,8 @@ export function useModelUnlockReturn(): void {
 
   // Owner change. The navigation context is part of every owner scope, so a
   // switch means the pending model may now belong to different work. The
-  // purchase itself is unaffected; only the follow-up is dropped.
+  // purchase itself is unaffected; only the follow-up is dropped, and a
+  // confirmation already shown stays.
   const navigationKey = useNavigationScopeKey();
   useEffect(
     () => (): void => {

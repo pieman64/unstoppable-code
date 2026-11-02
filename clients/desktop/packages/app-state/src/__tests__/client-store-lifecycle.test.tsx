@@ -35,6 +35,7 @@ function trackedClient(): {
       settingsScope: 'api-keys-only',
       pipelines: 'crud-only',
       routing: 'url',
+      overviewNotifications: false,
     },
     query<K extends QueryName>(): Promise<QueryMap[K]['result']> {
       return Promise.reject(new Error('unused'));

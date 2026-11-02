@@ -1,4 +1,5 @@
 import type { JSX, Ref } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { EyeIcon, EyeOffIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 export interface CanopyCloudApiKeyFieldProps {
@@ -41,18 +42,22 @@ export function CanopyCloudApiKeyField({
             data-testid="settings-account-canopy-cloud-api-key-input"
             className={`focus-ring w-full rounded-lg border bg-base px-3 py-2 pr-10 text-s font-mono disabled:opacity-50 ${inputClassName}`}
           />
-          <button
-            type="button"
-            onClick={onToggleVisible}
-            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 fg-secondary hover:fg-primary transition-colors focus-ring rounded"
-            aria-label={visible ? 'Hide API key' : 'Show API key'}
-          >
-            {visible ? (
-              <EyeOffIcon size={16} aria-hidden />
-            ) : (
-              <EyeIcon size={16} aria-hidden />
-            )}
-          </button>
+          <span className="absolute right-1 top-1/2 flex -translate-y-1/2">
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
+              data-settings-control="field"
+              onClick={onToggleVisible}
+              aria-label={visible ? 'Hide API key' : 'Show API key'}
+            >
+              {visible ? (
+                <EyeOffIcon size={16} aria-hidden />
+              ) : (
+                <EyeIcon size={16} aria-hidden />
+              )}
+            </Button>
+          </span>
         </div>
       </label>
     </div>

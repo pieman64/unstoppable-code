@@ -1,10 +1,11 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
+import { ToggleSwitch } from '@canopy/ui-shared/components';
 
 /**
- * Shared Billing-tab subcard with a titled master on/off switch: the muted
- * container, the title line, the description (with an optional "Learn more"
+ * Shared Billing block with a titled master on/off switch, set off from the
+ * rows above it by a hairline: the title line, the description (with an optional "Learn more"
  * link), the `role="switch"` button, an inline error line, and a `children`
  * slot for content rendered below the switch (for example the auto top-up
  * meter and settings summary).
@@ -18,7 +19,7 @@ export interface BillingTogglePanelProps {
   /** Test id on the switch button. */
   toggleTestId: string;
   title: string;
-  description: string;
+  description: ReactNode;
   /** Optional "Learn more" destination rendered under the description. */
   learnMoreHref?: string;
   /** Current switch state. */
@@ -47,7 +48,7 @@ export function BillingTogglePanel({
   children,
 }: BillingTogglePanelProps): JSX.Element {
   return (
-    <div className="mt-4 rounded-lg bg-muted p-4" data-testid={testId}>
+    <div className="mt-4 border-t pt-4" data-testid={testId}>
       {/* Master toggle */}
       <p className="text-s font-medium fg-primary">{title}</p>
       {/* Toggle aligns with the description line, not the subheader above it. */}
@@ -65,24 +66,13 @@ export function BillingTogglePanel({
             </a>
           ) : null}
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={checked}
-          aria-label={ariaLabel}
+        <ToggleSwitch
+          checked={checked}
+          label={ariaLabel}
           disabled={disabled}
-          onClick={onToggle}
-          data-testid={toggleTestId}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-            checked ? 'bg-accent' : 'bg-fg-secondary/40'
-          }`}
-        >
-          <span
-            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform ${
-              checked ? 'translate-x-5' : 'translate-x-0.5'
-            }`}
-          />
-        </button>
+          onChange={() => onToggle()}
+          dataTestId={toggleTestId}
+        />
       </div>
 
       {error ? (

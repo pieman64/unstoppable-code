@@ -5,11 +5,20 @@ import type {
   AgentDelegationTranscript,
   AgentDelegationTranscriptItem,
 } from '@canopy/protocol/delegation';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { ManagedDelegationTranscriptPageResult } from '@canopy/desktop-shared/types';
+import type { DisplayBlock } from '../../components/chat/types';
+import {
+  DelegationTranscriptSourceContext,
+  useDelegatedAgentTranscript,
+} from '../../components/chat/delegated-agent-transcript';
 import {
   DELEGATION_TRANSCRIPT_RUN_LIMIT,
   delegationRunKey,
   holdDelegationRun,
   useDelegationTranscriptStore,
+  type DelegationTranscriptSource,
 } from '../delegationTranscriptStore';
 
 const TARGET = { projectId: 'project', worktreeId: 'tree', chatId: 'chat' };
@@ -176,5 +185,203 @@ describe('useDelegationTranscriptStore', () => {
     applyLive(TARGET, snapshot(1, [text('a', 1, 'x'), text('b', 2, 'y')]));
     applyLive(TARGET, snapshot(2, [text('a', 1, 'x2')]));
     expect(liveItems()).toEqual(['a:x2']);
+  });
+});
+
+describe('logged delegation card reconnect hydration', () => {
+  type Card = Extract<DisplayBlock, { type: 'delegated_agent_call' }>;
+  const card: Card = {
+    type: 'delegated_agent_call',
+    ...RUN,
+    agentBlockId: 'delegated-agent-child',
+    sequence: 3,
+    parentHarnessId: 'claude',
+    parentTurnId: 'turn',
+    parentToolCallId: 'spawn',
+    createdAt: 1,
+    selectedModelId: 'model',
+    runtimeModelId: 'model',
+    targetHarnessId: 'claude',
+    description: 'Review',
+    prompt: 'Review',
+    executionMode: 'background',
+    status: 'pending',
+    outputTruncated: false,
+    transcriptStore: 'chat-log-v1',
+    subBlocks: [],
+  };
+  function page(
+    revision = 3,
+    runGeneration = 1,
+  ): ManagedDelegationTranscriptPageResult {
+    return {
+      ok: true,
+      task: {
+        description: 'Review',
+        prompt: 'Review',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: RUN.delegationId,
+        runGeneration,
+        status: 'pending',
+        phase: 'queued',
+        queue: { id: 'default', name: 'Default' },
+        outputTruncated: false,
+      },
+      runGeneration,
+      revision,
+      items: [],
+      hasMore: false,
+    };
+  }
+  let transcript: jest.Mock;
+  let transcriptPage: jest.Mock;
+  let root: ReturnType<typeof createRoot>;
+  let host: HTMLDivElement;
+  let displayed: Card;
+  let originalApi: PropertyDescriptor | undefined;
+
+  function Probe({ block }: { block: Card }): null {
+    displayed = useDelegatedAgentTranscript(block);
+    return null;
+  }
+  async function renderCard(
+    block = card,
+    source: DelegationTranscriptSource = TARGET,
+  ): Promise<void> {
+    await act(async () => {
+      root.render(
+        createElement(
+          DelegationTranscriptSourceContext.Provider,
+          { value: source },
+          createElement(Probe, { block }),
+        ),
+      );
+      await settle();
+    });
+  }
+
+  beforeEach(() => {
+    useDelegationTranscriptStore.getState().reset();
+    transcript = jest.fn().mockResolvedValue({
+      ok: true,
+      items: [text('logged', 1, 'Read before reload')],
+    });
+    transcriptPage = jest.fn().mockResolvedValue(page());
+    originalApi = Object.getOwnPropertyDescriptor(window, 'api');
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { managedDelegation: { transcript, transcriptPage } },
+    });
+    host = document.createElement('div');
+    root = createRoot(host);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    if (originalApi) Object.defineProperty(window, 'api', originalApi);
+    else Reflect.deleteProperty(window, 'api');
+  });
+
+  it('hydrates a cold queued card from the existing current snapshot', async () => {
+    await renderCard();
+    expect(transcriptPage).toHaveBeenCalledWith({ ...TARGET, ...RUN });
+    expect(useDelegationTranscriptStore.getState().runs[KEY]?.loading).toBe(
+      false,
+    );
+    expect(displayed).toMatchObject({
+      status: 'pending',
+      phase: 'queued',
+      runGeneration: 1,
+      sequence: 3,
+      queue: { id: 'default', name: 'Default' },
+    });
+    expect(displayed.subBlocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'Read before reload' }),
+      ]),
+    );
+    await renderCard();
+    expect(transcriptPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps newer live progress when a queued hydration response is delayed', async () => {
+    let respond: (
+      value: ManagedDelegationTranscriptPageResult,
+    ) => void = () => {};
+    transcriptPage.mockReturnValue(
+      new Promise<ManagedDelegationTranscriptPageResult>((resolve) => {
+        respond = resolve;
+      }),
+    );
+    await renderCard();
+    await act(async () => {
+      useDelegationTranscriptStore
+        .getState()
+        .applyLive(TARGET, snapshot(5, []));
+      respond(page());
+      await settle();
+    });
+    expect(transcriptPage).toHaveBeenCalledTimes(1);
+    expect(displayed).toMatchObject({ status: 'running', sequence: 5 });
+    expect(displayed.phase).not.toBe('queued');
+  });
+
+  it('keeps a newer committed card when a queued hydration response is delayed', async () => {
+    let respond: (
+      value: ManagedDelegationTranscriptPageResult,
+    ) => void = () => {};
+    transcriptPage.mockReturnValue(
+      new Promise<ManagedDelegationTranscriptPageResult>((resolve) => {
+        respond = resolve;
+      }),
+    );
+    await renderCard();
+    await renderCard({
+      ...card,
+      status: 'completed',
+      sequence: 6,
+      finalText: 'Done',
+    });
+    await act(async () => {
+      respond(page());
+      await settle();
+    });
+    expect(transcriptPage).toHaveBeenCalledTimes(1);
+    expect(displayed).toMatchObject({
+      status: 'completed',
+      sequence: 6,
+      finalText: 'Done',
+    });
+    expect(displayed.phase).not.toBe('queued');
+  });
+
+  it('does not overlay a snapshot from another run generation', async () => {
+    transcriptPage.mockResolvedValue(page(20, 2));
+    await renderCard();
+    expect(transcriptPage).toHaveBeenCalledTimes(1);
+    expect(displayed).toMatchObject({
+      status: 'pending',
+      runGeneration: 1,
+      sequence: 3,
+    });
+    expect(displayed.phase).toBeUndefined();
+  });
+
+  it('never hydrates archived or standalone-history cards from current state', async () => {
+    await renderCard(card, { ...TARGET, archivedContainerId: 'archive' });
+    await renderCard(card, { ...TARGET, standaloneHistory: true });
+    expect(transcriptPage).not.toHaveBeenCalled();
+    expect(transcript).toHaveBeenCalledWith({
+      ...TARGET,
+      ...RUN,
+      archivedContainerId: 'archive',
+    });
+    expect(transcript).toHaveBeenCalledWith({
+      ...TARGET,
+      ...RUN,
+      standaloneHistory: true,
+    });
+    expect(displayed.phase).toBeUndefined();
   });
 });

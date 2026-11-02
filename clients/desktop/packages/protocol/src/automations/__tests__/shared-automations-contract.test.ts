@@ -12,13 +12,20 @@ import {
   MAX_SHARED_AUTOMATION_NAME_LENGTH,
   MAX_SHARED_AUTOMATION_PROMPT_BYTES,
   MAX_SHARED_AUTOMATION_RUN_CONDITION_CHARS,
+  SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
   SHARED_AUTOMATION_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY,
   SHARED_AUTOMATION_RUN_CONDITION_API_VERSION,
   SHARED_AUTOMATION_RUN_CONDITION_CAPABILITY,
   SHARED_AUTOMATION_INTERFACE_MODES,
+  SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION,
+  SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
   SHARED_AUTOMATION_THINKING_LEVELS,
   isSharedAutomationContentHash,
+  canonicalizeSharedAutomationPrompt,
   isSharedAutomationDocument,
+  sharedAutomationPromptSpansError,
   validateSharedAutomationDocument,
   type AutomationShareScope,
   type CreateSharedAutomationRequest,
@@ -668,6 +675,450 @@ describe('shared-Automation API contract', () => {
     });
   });
 
+  describe('version-5 pipeline dependencies', () => {
+    const pipelineId = '3f1c2a9e-1b2c-4d5e-8f90-123456789abc';
+    const otherPipelineId = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+    const hash = 'c'.repeat(64);
+    const capabilityPackage = {
+      version: 1,
+      digest: `pp:v1:${'b'.repeat(43)}`,
+    } as const;
+    const prompt = `Run ${pipelineId} then ${otherPipelineId}, and ${pipelineId} again.`;
+
+    function packagedDependency(
+      key: string,
+      spans: unknown[],
+    ): Record<string, unknown> {
+      return {
+        key,
+        pipeline: { source: 'packaged', key, pipelineContentHash: hash },
+        promptSpans: spans,
+      };
+    }
+
+    function spansOf(
+      text: string,
+      within: string = prompt,
+    ): Array<{ textStart: number; text: string }> {
+      const spans: Array<{ textStart: number; text: string }> = [];
+      let index = within.indexOf(text);
+      while (index !== -1) {
+        spans.push({ textStart: index, text });
+        index = within.indexOf(text, index + text.length);
+      }
+      return spans;
+    }
+
+    function makeV5(
+      dependencies: unknown,
+      overrides: Record<string, unknown> = {},
+      actionPrompt: string = prompt,
+    ): unknown {
+      return {
+        ...makeDocument(),
+        version: SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION,
+        capabilityPackage,
+        action: {
+          type: 'standalone_prompt',
+          target: { kind: 'cowork' },
+          prompt: actionPrompt,
+          plugins: [],
+          pipelineDependencies: dependencies,
+        },
+        ...overrides,
+      };
+    }
+
+    function makeV5Pipeline(
+      pipeline: unknown,
+      overrides: Record<string, unknown> = {},
+    ): unknown {
+      return {
+        ...makeDocument(),
+        version: SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION,
+        capabilityPackage,
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'workspace' },
+          pipeline,
+          inputKeys: [],
+        },
+        ...overrides,
+      };
+    }
+
+    it('advertises the v5 capability from the server capability list', () => {
+      expect(SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_API_VERSION).toBe(5);
+      expect(SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY).toBe(
+        'automations-pipeline-dependencies-v5',
+      );
+      expect(CANOPY_SERVER_CAPABILITIES).toContain(
+        SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY,
+      );
+      expect(REQUIRED_CANOPY_SERVER_CAPABILITIES).not.toContain(
+        SHARED_AUTOMATION_PIPELINE_DEPENDENCIES_CAPABILITY,
+      );
+    });
+
+    it('round-trips packaged and plain dependencies with repeated spans', () => {
+      const dependencies = [
+        packagedDependency(pipelineId, spansOf(pipelineId)),
+        packagedDependency(otherPipelineId, spansOf(otherPipelineId)),
+        {
+          key: 'shared-reviewer',
+          pipeline: { source: 'shared', remoteId: 'remote-1', name: 'Review' },
+          promptSpans: [],
+        },
+        {
+          key: 'bundled-triage',
+          pipeline: { source: 'bundled', pipelineId: 'triage' },
+          promptSpans: [],
+        },
+        {
+          key: 'curated-digest',
+          pipeline: { source: 'curated', curatedKey: 'digest' },
+          promptSpans: [],
+        },
+      ];
+      const document = makeV5(dependencies);
+      expect(validateSharedAutomationDocument(document)).toEqual({
+        ok: true,
+        document,
+      });
+      expect(spansOf(pipelineId)).toHaveLength(2);
+    });
+
+    it.each(['app_advisor_prompt', 'worktree_prompt'])(
+      'accepts dependencies on %s',
+      (type) => {
+        const base =
+          type === 'worktree_prompt'
+            ? { type, target: { kind: 'workspace' } }
+            : { type };
+        const result = validateSharedAutomationDocument(
+          makeV5(undefined, {
+            action: {
+              ...base,
+              prompt,
+              plugins: [],
+              pipelineDependencies: [
+                packagedDependency(pipelineId, spansOf(pipelineId)),
+              ],
+            },
+          }),
+        );
+        expect(result.ok).toBe(true);
+      },
+    );
+
+    it('accepts a packaged worktree_pipeline action keyed "action" and a v5 run condition', () => {
+      const document = makeV5Pipeline(
+        {
+          source: 'packaged',
+          key: 'action',
+          pipelineContentHash: hash,
+          name: 'Entry',
+        },
+        { hasRunCondition: true, runCondition: { command: 'test -f ready' } },
+      );
+      expect(validateSharedAutomationDocument(document)).toEqual({
+        ok: true,
+        document,
+      });
+    });
+
+    it('rejects a packaged action pipeline with a key other than "action"', () => {
+      expectRejected(
+        makeV5Pipeline({
+          source: 'packaged',
+          key: pipelineId,
+          pipelineContentHash: hash,
+        }),
+        'must use the key "action"',
+      );
+    });
+
+    it('rejects packaged refs without a capability package', () => {
+      expectRejected(
+        makeV5Pipeline(
+          { source: 'packaged', key: 'action', pipelineContentHash: hash },
+          { capabilityPackage: undefined },
+        ),
+        'require the document to carry a capability package',
+      );
+      expectRejected(
+        makeV5([packagedDependency(pipelineId, spansOf(pipelineId))], {
+          capabilityPackage: undefined,
+        }),
+        'require the document to carry a capability package',
+      );
+    });
+
+    it.each([1, 2, 3, 4])(
+      'rejects packaged refs and pipelineDependencies on version %s',
+      (version) => {
+        expectRejected(
+          makeV5Pipeline(
+            { source: 'packaged', key: 'action', pipelineContentHash: hash },
+            { version },
+          ),
+          'require version 5',
+        );
+        expectRejected(
+          makeV5([packagedDependency(pipelineId, spansOf(pipelineId))], {
+            version,
+          }),
+          'Unexpected field "pipelineDependencies"',
+        );
+      },
+    );
+
+    it('rejects malformed packaged refs', () => {
+      expectRejected(
+        makeV5Pipeline({ source: 'packaged', key: 'action' }),
+        'invalid content hash',
+      );
+      expectRejected(
+        makeV5Pipeline({
+          source: 'packaged',
+          key: '../escape',
+          pipelineContentHash: hash,
+        }),
+        'invalid key',
+      );
+      expectRejected(
+        makeV5Pipeline({
+          source: 'packaged',
+          key: 'action',
+          pipelineContentHash: hash,
+          rawPipeline: 'name: x',
+        }),
+        'Unexpected field "rawPipeline"',
+      );
+    });
+
+    it('rejects duplicate, invalid, and reserved dependency keys', () => {
+      expectRejected(
+        makeV5([
+          packagedDependency(pipelineId, []),
+          packagedDependency(pipelineId, []),
+        ]),
+        'Duplicate automation pipeline dependency key',
+      );
+      for (const key of ['', 'has space', '../escape', 'action', 7]) {
+        expectRejected(
+          makeV5([
+            {
+              key,
+              pipeline: { source: 'bundled', pipelineId: 'triage' },
+              promptSpans: [],
+            },
+          ]),
+          'invalid key',
+        );
+      }
+    });
+
+    it('rejects a packaged dependency whose pipeline key differs from the dependency key', () => {
+      expectRejected(
+        makeV5([
+          {
+            ...packagedDependency(pipelineId, []),
+            key: otherPipelineId,
+          },
+        ]),
+        'dependency key must equal its pipeline key',
+      );
+    });
+
+    it('rejects inline and unresolved dependencies and unknown fields', () => {
+      expectRejected(
+        makeV5([
+          {
+            key: 'inline-one',
+            pipeline: {
+              source: 'inline',
+              rawPipeline: 'name: x',
+              pipelineContentHash: hash,
+            },
+            promptSpans: [],
+          },
+        ]),
+        'must be packaged, bundled, curated, or shared',
+      );
+      expectRejected(
+        makeV5([
+          {
+            key: 'unresolved-one',
+            pipeline: { source: 'unresolved' },
+            promptSpans: [],
+          },
+        ]),
+        'must be packaged, bundled, curated, or shared',
+      );
+      expectRejected(
+        makeV5([{ ...packagedDependency(pipelineId, []), localPath: '/x' }]),
+        'Unexpected field "localPath"',
+      );
+      expectRejected(makeV5({}), 'pipelineDependencies must be an array');
+    });
+
+    it('rejects prompt spans on non-packaged dependencies', () => {
+      expectRejected(
+        makeV5([
+          {
+            key: 'bundled-triage',
+            pipeline: { source: 'bundled', pipelineId: 'triage' },
+            promptSpans: spansOf(pipelineId).slice(0, 1),
+          },
+        ]),
+        'Only packaged automation pipeline dependencies may carry prompt spans',
+      );
+    });
+
+    it('rejects overlapping spans within and across dependencies', () => {
+      const [first] = spansOf(pipelineId);
+      expectRejected(
+        makeV5([packagedDependency(pipelineId, [first, first])]),
+        'must not overlap',
+      );
+      expectRejected(
+        makeV5([
+          packagedDependency(pipelineId, [first]),
+          packagedDependency(otherPipelineId, [
+            {
+              textStart: first.textStart + 4,
+              text: prompt.slice(first.textStart + 4, first.textStart + 10),
+            },
+          ]),
+        ]),
+        'must not overlap',
+      );
+    });
+
+    it('accepts adjacent spans that touch without overlapping', () => {
+      const adjacentPrompt = `${pipelineId}${otherPipelineId}`;
+      const result = validateSharedAutomationDocument(
+        makeV5(
+          [
+            packagedDependency(pipelineId, spansOf(pipelineId, adjacentPrompt)),
+            packagedDependency(
+              otherPipelineId,
+              spansOf(otherPipelineId, adjacentPrompt),
+            ),
+          ],
+          {},
+          adjacentPrompt,
+        ),
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects a span whose text no longer matches the prompt slice', () => {
+      const [first] = spansOf(pipelineId);
+      expectRejected(
+        makeV5([
+          packagedDependency(pipelineId, [
+            { textStart: first.textStart + 1, text: pipelineId },
+          ]),
+        ]),
+        'span text does not match the prompt',
+      );
+    });
+
+    it.each([
+      ['past the end', { textStart: prompt.length - 2, text: 'abc' }],
+      ['negative', { textStart: -1, text: 'R' }],
+      ['fractional', { textStart: 1.5, text: 'u' }],
+      ['empty', { textStart: 0, text: '' }],
+    ])('rejects a span that is %s', (_label, span) => {
+      expectRejected(
+        makeV5([packagedDependency(pipelineId, [span])]),
+        'outside the prompt',
+      );
+    });
+
+    it('rejects malformed span objects', () => {
+      expectRejected(
+        makeV5([
+          packagedDependency(pipelineId, [{ textStart: '4', text: 'x' }]),
+        ]),
+        'promptSpans must be',
+      );
+      expectRejected(
+        makeV5([
+          packagedDependency(pipelineId, [
+            { textStart: 4, text: pipelineId, extra: true },
+          ]),
+        ]),
+        'Unexpected field "extra"',
+      );
+    });
+
+    it('validates spans against the canonical prompt with CRLF and leading whitespace', () => {
+      const rawPrompt = `\r\n  \tUse ${pipelineId}\r\nthen stop.  `;
+      expect(canonicalizeSharedAutomationPrompt(rawPrompt)).toBe(rawPrompt);
+      const canonical = canonicalizeSharedAutomationPrompt(rawPrompt);
+      const document = makeV5(
+        [packagedDependency(pipelineId, spansOf(pipelineId, canonical))],
+        {},
+        rawPrompt,
+      );
+      expect(validateSharedAutomationDocument(document)).toEqual({
+        ok: true,
+        document,
+      });
+      // Offsets computed on a trimmed or LF-normalized prompt never shift into
+      // place: they are rejected.
+      const trimmed = rawPrompt.trim();
+      expectRejected(
+        makeV5(
+          [packagedDependency(pipelineId, spansOf(pipelineId, trimmed))],
+          {},
+          rawPrompt,
+        ),
+        'span text does not match the prompt',
+      );
+      expect(
+        sharedAutomationPromptSpansError(canonical, [
+          {
+            key: pipelineId,
+            pipeline: {
+              source: 'packaged',
+              key: pipelineId,
+              pipelineContentHash: hash,
+            },
+            promptSpans: spansOf(pipelineId, canonical),
+          },
+        ]),
+      ).toBeNull();
+    });
+
+    it('leaves v1 through v4 documents unchanged', () => {
+      const documents: SharedAutomationDocument[] = [
+        makeDocument(),
+        makeDocument({ version: 2 }),
+        makeDocument({
+          version: 3,
+          action: makeWorktreePipelineAction(),
+          targetRequirement: { contexts: ['worktree'] },
+        }),
+        makeDocument({
+          version: 4,
+          hasRunCondition: true,
+          runCondition: { command: 'exit 0' },
+          capabilityPackage,
+        }),
+      ];
+      for (const document of documents) {
+        expect(validateSharedAutomationDocument(document)).toEqual({
+          ok: true,
+          document,
+        });
+      }
+    });
+  });
+
   describe('validateSharedAutomationDocument — structural rejection', () => {
     it('rejects non-object values', () => {
       expectRejected(null, 'must be an object');
@@ -676,9 +1127,9 @@ describe('shared-Automation API contract', () => {
     });
 
     it('rejects an unsupported version', () => {
-      expectRejected(makeInvalidDocument({ version: 5 }), 'version');
+      expectRejected(makeInvalidDocument({ version: 7 }), 'version');
       expectRejected(
-        makeInvalidDocument({ version: 5 }),
+        makeInvalidDocument({ version: 7 }),
         'Unsupported shared Automation version',
       );
     });
@@ -1086,7 +1537,7 @@ describe('shared-Automation API contract', () => {
       );
     });
 
-    it('rejects local-only pipeline sources with share-the-pipeline guidance', () => {
+    it('rejects local-only pipeline sources with travel-inside guidance', () => {
       for (const source of ['user', 'project']) {
         expectRejected(
           makeInvalidDocument({
@@ -1097,7 +1548,7 @@ describe('shared-Automation API contract', () => {
               inputKeys: [],
             },
           }),
-          'Share the pipeline',
+          'must travel inside the shared automation',
         );
       }
     });
@@ -1225,6 +1676,143 @@ describe('shared-Automation API contract', () => {
     });
   });
 
+  describe('validateSharedAutomationDocument — pipeline destinations (v6)', () => {
+    function pipelineDocument(
+      kind: string,
+      version: number,
+      extra: Record<string, unknown> = {},
+    ): unknown {
+      return makeInvalidDocument({
+        version,
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind },
+          pipeline: { source: 'bundled', pipelineId: 'bundled-review' },
+          inputKeys: [],
+        },
+        ...extra,
+      });
+    }
+
+    it('advertises the v6 capability without requiring it', () => {
+      expect(SHARED_AUTOMATION_PIPELINE_TARGET_API_VERSION).toBe(6);
+      expect(CANOPY_SERVER_CAPABILITIES).toContain(
+        SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
+      );
+      expect(REQUIRED_CANOPY_SERVER_CAPABILITIES).not.toContain(
+        SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
+      );
+    });
+
+    it.each(['workspace', 'global', 'new_worktree', 'task', 'project'])(
+      'accepts a %s destination in v6',
+      (kind) => {
+        const result = validateSharedAutomationDocument(
+          pipelineDocument(kind, 6),
+        );
+        expect(result.ok).toBe(true);
+        if (result.ok && result.document.action.type === 'worktree_pipeline')
+          expect(result.document.action.target).toEqual({ kind });
+      },
+    );
+
+    it.each([1, 2, 3, 4, 5])(
+      'rejects new destination kinds in v%s',
+      (version) => {
+        for (const kind of ['global', 'new_worktree', 'task', 'project'])
+          expectRejected(pipelineDocument(kind, version), 'workspace');
+      },
+    );
+
+    it('rejects unknown kinds and local ids on a destination', () => {
+      expectRejected(pipelineDocument('elsewhere', 6), 'target kind');
+      expectRejected(
+        makeInvalidDocument({
+          version: 6,
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'task', taskId: 'wt-1' },
+            pipeline: { source: 'bundled', pipelineId: 'bundled-review' },
+            inputKeys: [],
+          },
+        }),
+        'Unexpected field',
+      );
+    });
+
+    it('keeps v3 requirements in v6 but refuses them on a global destination', () => {
+      const requirement = { targetRequirement: { contexts: ['worktree'] } };
+      expect(
+        validateSharedAutomationDocument(
+          pipelineDocument('task', 6, requirement),
+        ).ok,
+      ).toBe(true);
+      expectRejected(
+        pipelineDocument('global', 6, requirement),
+        'targetRequirement',
+      );
+    });
+
+    it('keeps worktree prompts workspace-only in v6', () => {
+      expectRejected(
+        makeInvalidDocument({
+          version: 6,
+          action: {
+            ...makeWorktreePromptAction(),
+            target: { kind: 'global' },
+          },
+        }),
+        'workspace',
+      );
+    });
+
+    it('carries a v4 run condition alongside a v6 destination', () => {
+      const result = validateSharedAutomationDocument(
+        pipelineDocument('task', 6, {
+          hasRunCondition: true,
+          runCondition: { command: 'test -f ready' },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        document: {
+          version: 6,
+          action: { target: { kind: 'task' } },
+          runCondition: { command: 'test -f ready' },
+        },
+      });
+    });
+
+    it('keeps v5 packaged pipelines alongside a v6 destination', () => {
+      const result = validateSharedAutomationDocument(
+        makeInvalidDocument({
+          version: 6,
+          capabilityPackage: { version: 1, digest: `pp:v1:${'b'.repeat(43)}` },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'task' },
+            pipeline: {
+              source: 'packaged',
+              key: SHARED_AUTOMATION_ACTION_PIPELINE_KEY,
+              pipelineContentHash: 'c'.repeat(64),
+            },
+            inputKeys: [],
+          },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        document: {
+          version: 6,
+          action: {
+            target: { kind: 'task' },
+            pipeline: { source: 'packaged' },
+          },
+        },
+      });
+    });
+  });
+
   describe('validateSharedAutomationDocument — total size', () => {
     it('rejects a document over the total byte cap', () => {
       const result = validateSharedAutomationDocument(
@@ -1272,7 +1860,12 @@ describe('shared-Automation API contract', () => {
       actionType: 'app_advisor_prompt',
       contentHash: 'c'.repeat(64),
       shareScope: 'team',
-      owner: { type: 'team', id: 'team-1', name: 'Platform' },
+      owner: {
+        type: 'team',
+        id: 'team-1',
+        name: 'Platform',
+        organization: { id: 'org-1', name: 'Canopy' },
+      },
       createdAt: '2026-08-17T00:00:00.000Z',
       updatedAt: '2026-08-17T00:00:00.000Z',
       createdBy: { id: 'user-1', name: 'Ada', email: 'ada@example.com' },

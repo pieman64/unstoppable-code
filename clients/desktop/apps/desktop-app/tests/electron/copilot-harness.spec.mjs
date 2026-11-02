@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { seedCoworkWorkspace } from './seeders/seedCoworkWorkspace.mjs';
 import { openWorkspaceAndRun } from './codexPipelineRuntime.mjs';
 import { seedStoredPipeline } from './seeders/seedStoredPipeline.mjs';
@@ -18,6 +18,13 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { launchCanopy, closeCanopy } from './launchCanopy.mjs';
 import { launchCopilotSelectionFixture } from './fixtures/copilot-selection.mjs';
+import {
+  copilotProcessAlive,
+  copilotReceiptEvidence,
+  priorCopilotReceipts,
+  readCopilotReceipts,
+} from './fixtures/copilot-receipts.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 test('Copilot rollout defaults off and rejects direct setup', async () => {
   const launched = await launchCanopy();
@@ -40,6 +47,52 @@ test('Copilot rollout defaults off and rejects direct setup', async () => {
     ).toContain('GitHub Copilot is unavailable');
   } finally {
     await closeCanopy(launched.electronApp, launched.userDataDir);
+  }
+});
+
+test('Copilot release moves setup live from Labs to Accounts and keeps the account', async () => {
+  const f = await launchCopilotSelectionFixture();
+  try {
+    const setReleased = async (released) => {
+      await f.app.evaluate((_, value) => {
+        const flags = JSON.parse(process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS);
+        flags['canopy-desktop-copilot-harness-released'] = value;
+        process.env.CANOPY_E2E_CLIENT_FEATURE_FLAGS = JSON.stringify(flags);
+      }, released);
+      await f.window.evaluate(() => window.api.featureFlags.refreshContext());
+    };
+    await f.driver.openSettings();
+    await f.driver.openSettingsSection('experiments');
+    await expect(f.window.getByTestId('copilot-connection')).toBeVisible();
+
+    await setReleased(true);
+    await expect(f.window.getByTestId('copilot-connection')).toHaveCount(0);
+    await f.driver.openSettingsSection('account');
+    // A provider row beside Claude and Codex: name and status dot in the
+    // label, the account actions on its trailing edge.
+    const row = f.window.getByTestId('copilot-connection');
+    await expect(row).toContainText('GitHub Copilot');
+    await expect(row.getByTestId('copilot-connection-status-dot')).toHaveClass(
+      /bg-destructive/,
+    );
+    await row.getByTestId('copilot-connect').click();
+    await f.approveDeviceCode();
+    await expect(row.getByTestId('copilot-connection-status-dot')).toHaveClass(
+      /bg-success/,
+    );
+    await expect(row.getByTestId('copilot-connection-account')).toHaveText(
+      'Signed in as copilot-fixture',
+    );
+
+    // Turning the release off returns setup to Labs without signing out.
+    await setReleased(false);
+    await expect(f.window.getByTestId('copilot-connection')).toHaveCount(0);
+    await f.driver.openSettingsSection('experiments');
+    await expect(f.window.getByTestId('copilot-connection-account')).toHaveText(
+      'Signed in as copilot-fixture',
+    );
+  } finally {
+    await f.close();
   }
 });
 
@@ -426,9 +479,10 @@ test('Copilot delegates to a managed Copilot child and integrates its result aft
     await f.connect();
     await f.driver.openSettings();
     await f.driver.openSettingsSection('experiments');
-    await f.window
-      .getByTestId('settings-managed-delegation-mode')
-      .selectOption('explicit-only');
+    await chooseSettingsOption(
+      f.window.getByTestId('settings-managed-delegation-mode'),
+      'explicit-only',
+    );
     await f.driver.closeSettings();
     await f.select();
     writeFileSync(
@@ -487,6 +541,19 @@ for (const preset of ['read_only', 'dangerous_all'])
       expect(
         existsSync(path.join(f.worktreePath, 'copilot-sentinel.txt')),
       ).toBe(preset === 'dangerous_all');
+
+      await f.driver.openAuditPage();
+      await f.window.getByPlaceholder('Search').fill('copilot:fixture-model');
+      const auditRow = f.window
+        .getByTestId('audit-entry-list')
+        .locator('[data-testid^="audit-entry-"]');
+      await expect(auditRow).toHaveCount(1);
+      await expect(
+        auditRow.getByText('copilot', { exact: true }),
+      ).toBeVisible();
+      await expect(auditRow.getByText('claude', { exact: true })).toHaveCount(
+        0,
+      );
     } finally {
       await f.close();
     }
@@ -1088,6 +1155,349 @@ for (const scenario of [
       await expect(f.window.getByTestId('tool-approval-card')).toHaveCount(0);
     } finally {
       await f.close();
+    }
+  });
+}
+
+for (const termination of ['quit', 'SIGTERM', 'SIGINT', 'SIGKILL']) {
+  const outcomes =
+    termination === 'SIGKILL'
+      ? ['lost response']
+      : ['received successor', 'lost response'];
+  for (const outcome of outcomes) {
+    test(`Copilot lifecycle ${termination} with rotation in flight: ${outcome}`, async () => {
+      test.setTimeout(120_000);
+      test.skip(
+        process.platform === 'win32' && termination !== 'quit',
+        'POSIX signals; Windows real-process qualification is separate',
+      );
+      const f = await launchCopilotSelectionFixture();
+      const receiptEvidence = {};
+      const login = `lifecycle-${randomUUID()}`;
+      const key = `ghu_e2e_${login}`;
+      const originalGrant = `ghr_e2e_${key}`;
+      const credentialPath = path.join(
+        `${f.userDataDir}-secure`,
+        'copilot-account.enc',
+      );
+      const attemptPath = path.join(
+        `${f.userDataDir}-secure`,
+        'copilot-rotation-attempt.json',
+      );
+      const control = `${f.managed.mockBaseUrl}/__mock/github/refresh/${key}`;
+      const refreshState = async () => {
+        const response = await fetch(control, {
+          signal: AbortSignal.timeout(5000),
+        });
+        expect(response.ok).toBe(true);
+        return response.json();
+      };
+      const holdRefresh = async (held) => {
+        const response = await fetch(control, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ held }),
+          signal: AbortSignal.timeout(5000),
+        });
+        expect(response.ok).toBe(true);
+      };
+      try {
+        await f.managed.registerAccount(login);
+        await holdRefresh(true);
+        // Seed an expired grant through the existing startup fixture, not a clock
+        // override or production refresh hook. The next real consumer must rotate.
+        await f.restartWith({
+          seed: (userDataDir) => {
+            f.managed.seedConnected(userDataDir, login);
+          },
+          env: f.managed.credentialEnv(login, {
+            accessTokenExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+          }),
+        });
+        // Start an actual model consumer; startup discovery may already have joined it.
+        const demand = f.window
+          .evaluate(async () => {
+            try {
+              await window.api.copilotConnection.listModels();
+            } catch {
+              /* The renderer is deliberately terminated with this pending. */
+            }
+          })
+          .catch(() => undefined);
+        await expect.poll(async () => (await refreshState()).waiting).toBe(1);
+        expect(await refreshState()).toMatchObject({
+          presentations: [originalGrant],
+          delivered: 0,
+        });
+        const record = readFileSync(attemptPath, 'utf8');
+        const attempt = JSON.parse(record);
+        expect(attempt).toEqual({
+          version: 1,
+          attemptId: expect.any(String),
+          bootId: expect.any(String),
+          accountEpoch: {
+            host: 'https://github.com',
+            id: '4242',
+            entryId: expect.any(String),
+          },
+          fromDigest: createHash('sha256').update(originalGrant).digest('hex'),
+        });
+        for (const secret of [
+          key,
+          originalGrant,
+          'ghu_',
+          'ghr_',
+          'accessToken',
+          'refreshToken',
+        ])
+          expect(record).not.toContain(secret);
+        const logPath = path.join(f.userDataDir, 'logs', 'main.log');
+        const logOffset = readFileSync(logPath, 'utf8').length;
+        const beforeExit = readCopilotReceipts(f.userDataDir);
+        receiptEvidence.beforeExit = copilotReceiptEvidence(beforeExit);
+        const pid = await f.app.evaluate(() => process.pid);
+        const closed = f.app.waitForEvent('close');
+        const terminatedAt = Date.now();
+        const quit =
+          termination === 'quit'
+            ? f.app.evaluate(({ app }) => app.quit()).catch(() => undefined)
+            : Promise.resolve(process.kill(pid, termination));
+        if (outcome === 'received successor') {
+          // Release only after cleanup has started, while the D30 drain is pending.
+          await expect
+            .poll(() => readFileSync(logPath, 'utf8').slice(logOffset))
+            .toContain('runtime_cleanup_stage');
+          expect(Date.now() - terminatedAt).toBeLessThan(2000);
+          await holdRefresh(false);
+        }
+        await closed;
+        await quit;
+        await demand;
+        const afterExitReceipts = readCopilotReceipts(f.userDataDir);
+        receiptEvidence.afterExit = copilotReceiptEvidence(afterExitReceipts);
+        const priorReceipts = [...beforeExit, ...afterExitReceipts];
+        const afterExit = await refreshState();
+        expect(afterExit.presentations).toEqual([originalGrant]);
+        if (outcome === 'received successor') {
+          expect(afterExit.delivered).toBe(1);
+          expect(existsSync(attemptPath)).toBe(false);
+        } else {
+          // The retired grant remains stored, not cleared on an ambiguous exit.
+          await expect.poll(async () => (await refreshState()).waiting).toBe(0);
+          expect(afterExit.delivered).toBe(0);
+          expect(existsSync(credentialPath)).toBe(true);
+          expect(readFileSync(attemptPath, 'utf8')).toBe(record);
+          await holdRefresh(false);
+        }
+        await f.restartAfterExit();
+        receiptEvidence.afterRestart = copilotReceiptEvidence(
+          readCopilotReceipts(f.userDataDir),
+        );
+        await expect
+          .poll(() =>
+            priorReceipts.some((receipt) =>
+              receipt.processes.some((row) => copilotProcessAlive(row.pid)),
+            ),
+          )
+          .toBe(false);
+        await expect
+          .poll(() =>
+            priorCopilotReceipts(
+              priorReceipts,
+              readCopilotReceipts(f.userDataDir),
+            ),
+          )
+          .toEqual([]);
+        // Recovery alone cannot infer an authentication outcome from the record.
+        // Demand (including startup discovery) presents the stored grant once.
+        await f.window
+          .evaluate(() => window.api.copilotConnection.listModels())
+          .catch(() => undefined);
+        if (outcome === 'lost response') {
+          await expect
+            .poll(async () => (await refreshState()).presentations)
+            .toEqual([originalGrant, originalGrant]);
+          await expect.poll(() => existsSync(credentialPath)).toBe(false);
+          await expect.poll(() => existsSync(attemptPath)).toBe(false);
+          await f.driver.openSettings();
+          await f.driver.openSettingsSection('experiments');
+          await expect(
+            f.window.getByTestId('copilot-connection-status'),
+          ).toHaveText('Ready to connect');
+          expect((await refreshState()).delivered).toBe(0);
+          // Rejection is terminal: repeated demand cannot present the retired grant again.
+          await f.window
+            .evaluate(() => window.api.copilotConnection.listModels())
+            .catch(() => undefined);
+          expect((await refreshState()).presentations).toEqual([
+            originalGrant,
+            originalGrant,
+          ]);
+          await f.driver.closeSettings();
+          await f.connect({ login });
+        } else {
+          expect((await refreshState()).presentations).toEqual([originalGrant]);
+          expect(existsSync(credentialPath)).toBe(true);
+        }
+        await f.select();
+        await f.send('Hello after rotation recovery');
+        await expect(
+          f.panel.getByText('Copilot fixture reply 1.', { exact: true }),
+        ).toBeVisible();
+      } finally {
+        try {
+          receiptEvidence.final = copilotReceiptEvidence(
+            readCopilotReceipts(f.userDataDir),
+          );
+          await test.info().attach('rotation-lifecycle-receipts', {
+            body: JSON.stringify(receiptEvidence, null, 2),
+            contentType: 'application/json',
+          });
+        } finally {
+          try {
+            await holdRefresh(false);
+          } finally {
+            await f.close();
+          }
+        }
+      }
+    });
+  }
+}
+
+for (const termination of ['quit', 'SIGTERM', 'SIGINT', 'SIGKILL']) {
+  test(`Copilot ${termination} recovers receipts and resumes a consumer on next boot`, async () => {
+    test.setTimeout(120_000);
+    test.skip(
+      process.platform === 'win32' && termination !== 'quit',
+      'POSIX signals; Windows real-process qualification is separate',
+    );
+    const f = await launchCopilotSelectionFixture();
+    const readReceipts = () => readCopilotReceipts(f.userDataDir);
+    const receiptEvidence = {};
+    try {
+      await f.connect();
+      await f.select();
+      await f.send('Hello before termination');
+      await expect(
+        f.panel.getByText('Copilot fixture reply 1.', { exact: true }),
+      ).toBeVisible();
+      // Completed turns close their runtime. Keep a second turn active so the
+      // receipt names a live process when teardown begins.
+      await expect(f.panel.getByTestId('chat-stop-generation')).toBeHidden();
+      await f.send('COPILOT_HOLD');
+      await expect(
+        f.panel.getByText('Waiting for Stop.', { exact: true }),
+      ).toBeVisible();
+      await expect
+        .poll(async () => (await f.managed.readHeldTurn())?.turns)
+        .toBe(2);
+      const oldHeldTurn = await f.managed.readHeldTurn();
+      await expect
+        .poll(() =>
+          readReceipts().some((receipt) =>
+            receipt.processes.some((row) => row.pid === oldHeldTurn.pid),
+          ),
+        )
+        .toBe(true);
+      const beforeExit = readReceipts();
+      const heldReceipt = beforeExit.find((receipt) =>
+        receipt.processes.some((row) => row.pid === oldHeldTurn.pid),
+      );
+      expect(copilotProcessAlive(oldHeldTurn.pid)).toBe(true);
+      receiptEvidence.beforeExit = copilotReceiptEvidence(beforeExit);
+      receiptEvidence.oldHeldTurn = oldHeldTurn;
+      const pid = await f.app.evaluate(() => process.pid);
+      const closed = f.app.waitForEvent('close');
+      if (termination === 'quit')
+        await f.app.evaluate(({ app }) => app.quit()).catch(() => undefined);
+      else process.kill(pid, termination);
+      await closed;
+      const afterExit = readReceipts();
+      receiptEvidence.afterExit = copilotReceiptEvidence(afterExit);
+      // Include receipts created during teardown as well as the held consumer.
+      const priorReceipts = [...beforeExit, ...afterExit];
+      if (termination === 'SIGKILL') {
+        // The supervisor also reaps descendants; this flow proves receipt recovery,
+        // not which owner killed them. The real-orphan Jest case isolates the reaper.
+        expect(afterExit.map((receipt) => receipt.name)).toContain(
+          heldReceipt.name,
+        );
+      }
+      await f.restartAfterExit();
+      receiptEvidence.afterRestart = copilotReceiptEvidence(readReceipts());
+      // Make current-boot admission overlap the recovery assertions deliberately.
+      // Startup discovery may also own a receipt; neither is prior-boot residue.
+      await f.openChat();
+      await expect(f.panel.getByTestId('chat-stop-generation')).toBeHidden();
+      await f.send('COPILOT_HOLD');
+      await expect
+        .poll(async () => (await f.managed.readHeldTurn())?.turns)
+        .toBe(3);
+      await expect(f.panel.getByTestId('chat-stop-generation')).toBeVisible();
+      const currentHeldTurn = await f.managed.readHeldTurn();
+      receiptEvidence.currentHeldTurn = currentHeldTurn;
+      // Admission proves recovery finished: every old identity and named receipt
+      // must already be absent, even though this new consumer's receipt is live.
+      expect(
+        priorReceipts.some((receipt) =>
+          receipt.processes.some((row) => copilotProcessAlive(row.pid)),
+        ),
+      ).toBe(false);
+      expect(priorCopilotReceipts(priorReceipts, readReceipts())).toEqual([]);
+      await expect
+        .poll(() =>
+          readReceipts().some((receipt) =>
+            receipt.processes.some((row) => row.pid === currentHeldTurn.pid),
+          ),
+        )
+        .toBe(true);
+      const currentReceipts = readReceipts();
+      receiptEvidence.currentConsumer = copilotReceiptEvidence(currentReceipts);
+      const currentReceipt = currentReceipts.find((receipt) =>
+        receipt.processes.some((row) => row.pid === currentHeldTurn.pid),
+      );
+      expect(currentReceipt).toBeTruthy();
+      expect(copilotProcessAlive(currentHeldTurn.pid)).toBe(true);
+      expect(priorReceipts.map((receipt) => receipt.name)).not.toContain(
+        currentReceipt.name,
+      );
+      // Concurrent demands must not re-run successful recovery against the
+      // already-admitted current consumer.
+      await f.window.evaluate(() =>
+        Promise.all([
+          window.api.copilotConnection.listModels(),
+          window.api.copilotConnection.listModels(),
+        ]),
+      );
+      expect(copilotProcessAlive(currentHeldTurn.pid)).toBe(true);
+      expect(readReceipts().map((receipt) => receipt.name)).toContain(
+        currentReceipt.name,
+      );
+      receiptEvidence.afterConcurrentDemand =
+        copilotReceiptEvidence(readReceipts());
+      await f.panel.getByTestId('chat-stop-generation').click();
+      await expect(f.panel.getByTestId('chat-stop-generation')).toBeHidden();
+      await expect
+        .poll(() => copilotProcessAlive(currentHeldTurn.pid))
+        .toBe(false);
+      await expect
+        .poll(() => priorCopilotReceipts([currentReceipt], readReceipts()))
+        .toEqual([]);
+      await f.send('Continue after recovery');
+      await expect(
+        f.panel.getByText('Copilot fixture reply 4.', { exact: true }),
+      ).toBeVisible();
+    } finally {
+      try {
+        receiptEvidence.final = copilotReceiptEvidence(readReceipts());
+        await test.info().attach('receipt-boot-identities', {
+          body: JSON.stringify(receiptEvidence, null, 2),
+          contentType: 'application/json',
+        });
+      } finally {
+        await f.close();
+      }
     }
   });
 }

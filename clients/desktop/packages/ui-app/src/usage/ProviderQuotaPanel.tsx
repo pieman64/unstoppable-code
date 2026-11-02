@@ -9,13 +9,17 @@ import type {
 } from '@canopy/protocol/portal';
 import {
   getModelCatalogProviderLabel,
-  LimitSubCardView,
+  newestUsageUpdate,
   OpenCodeAccountCard,
-  ModelProviderIcon,
   ProviderAccountUsage,
   ProviderUsageAccountRow,
-  UsageCardHeader,
+  UsageGroup,
+  UsageProviderGroup,
+  UsageRow,
+  usagePlanLabel,
+  UsageUpdatedLine,
   useMinuteClock,
+  type UsageLimitCard,
 } from '@canopy/ui-shared';
 
 interface ProviderQuotaPanelProps {
@@ -23,23 +27,6 @@ interface ProviderQuotaPanelProps {
   projection?: PortalProviderUsageProjection;
   disabled?: boolean;
   isVisible: boolean;
-}
-
-/** The latest usage read across the proxy's accounts, if any. */
-function newestAccountUpdate(
-  accounts: readonly PortalProviderUsageAccount[],
-): string | undefined {
-  let newest: string | undefined;
-  let newestMs = -Infinity;
-  for (const account of accounts) {
-    if (!account.lastUpdatedAt) continue;
-    const ms = new Date(account.lastUpdatedAt).getTime();
-    if (Number.isFinite(ms) && ms > newestMs) {
-      newestMs = ms;
-      newest = account.lastUpdatedAt;
-    }
-  }
-  return newest;
 }
 
 /** A short state beside a proxy account that cannot serve now. */
@@ -74,13 +61,13 @@ function AccountProxyAccounts({
 }): JSX.Element {
   if (accounts.length === 0) {
     return (
-      <p className="text-s fg-secondary">
+      <p className="px-0.5 text-s fg-secondary">
         {`Add a ${providerLabel} account to the account proxy.`}
       </p>
     );
   }
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-2">
       {accounts.map((account) => {
         const state = accountState(account);
         return (
@@ -89,7 +76,6 @@ function AccountProxyAccounts({
             account={account}
             providerLabel={providerLabel}
             nowMs={nowMs}
-            frameless
           >
             {state === null ? null : (
               <span className="shrink-0 text-xs fg-secondary">{state}</span>
@@ -101,132 +87,128 @@ function AccountProxyAccounts({
   );
 }
 
-function QuotaCard({
+function entryWindows(entry: PortalProviderUsageEntry): UsageLimitCard[] {
+  return entry.windows.map((window) => ({
+    key: window.id,
+    title: window.label,
+    unlimited: window.unlimited,
+    usedPercent: window.usedPercent,
+    resetsAt: window.resetsAt,
+    windowDurationMs: window.windowDurationMs,
+    spend: window.spend,
+    creditsAreCount: window.credits?.unit === 'credits',
+    credits: window.credits
+      ? {
+          usedUsd: window.credits.spent,
+          remainingUsd: window.credits.remaining,
+          totalUsd: window.credits.total,
+        }
+      : undefined,
+  }));
+}
+
+function QuotaGroup({
   entry,
-  workspaceLocalId,
-  disabled,
   nowMs,
 }: {
   entry: PortalProviderUsageEntry;
-  workspaceLocalId: string;
-  disabled: boolean;
   nowMs: number;
 }): JSX.Element {
-  const client = useCanopyClient();
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState(false);
   const authenticated = entry.authState === 'authenticated';
   const label = getModelCatalogProviderLabel(entry.provider);
-  const refresh = async (): Promise<void> => {
-    if (disabled || refreshing) return;
-    setRefreshing(true);
-    setRefreshError(false);
-    try {
-      await client.command('providerUsage.refresh', {
-        workspaceLocalId,
-        provider: entry.provider,
-      });
-    } catch {
-      setRefreshError(true);
-    } finally {
-      setRefreshing(false);
-    }
-  };
-  return (
-    <article
-      className="min-w-0 space-y-2"
-      data-testid={`usage-provider-card-${entry.provider}`}
-    >
-      <UsageCardHeader
-        icon={
-          <ModelProviderIcon provider={entry.provider} width={18} height={18} />
-        }
+  const testId = `usage-provider-card-${entry.provider}`;
+  if (entry.accounts !== undefined) {
+    return (
+      <UsageGroup
         title={label}
-        authState={entry.authState}
-        {...(entry.accounts === undefined
-          ? {
-              planLabel: entry.planLabel,
-              planActive: authenticated,
-              lastUpdatedAt: entry.lastUpdatedAt,
-            }
-          : {
-              authLabel: 'via account proxy',
-              planActive: false,
-              lastUpdatedAt: newestAccountUpdate(entry.accounts),
-            })}
-        refreshing={refreshing}
-        refreshDisabled={disabled}
-        onRefresh={() => {
-          void refresh();
-        }}
-        refreshLabel={`Refresh ${label} usage`}
-        compact
-        frameless
-      />
-      {entry.accounts !== undefined ? (
+        provider={entry.provider}
+        plan="Account proxy"
+        testId={testId}
+      >
         <AccountProxyAccounts
           accounts={entry.accounts}
           providerLabel={label}
           nowMs={nowMs}
         />
-      ) : (
-        <ProviderUsageAccountRow
-          accountLabel={
-            authenticated
-              ? (entry.accountLabel ?? entry.accountEmail ?? null)
-              : null
-          }
-          statusLabel={
-            authenticated
-              ? 'Account name unavailable'
-              : entry.authState === 'unknown'
-                ? 'Account status unavailable'
-                : 'Connect in the desktop app'
-          }
-          frameless
-        >
-          {null}
-        </ProviderUsageAccountRow>
-      )}
-      {entry.accounts === undefined &&
-        authenticated &&
-        entry.windows.map((window) => (
-          <LimitSubCardView
-            key={window.id}
-            nowMs={nowMs}
-            frameless
-            card={{
-              key: window.id,
-              title: window.label,
-              unlimited: window.unlimited,
-              usedPercent: window.usedPercent,
-              resetsAt: window.resetsAt,
-              windowDurationMs: window.windowDurationMs,
-              creditsAreCount: window.credits?.unit === 'credits',
-              credits: window.credits
-                ? {
-                    usedUsd: window.credits.spent,
-                    remainingUsd: window.credits.remaining,
-                    totalUsd: window.credits.total,
-                  }
-                : undefined,
-            }}
-          />
-        ))}
-      {entry.accounts === undefined &&
-        authenticated &&
-        entry.windows.length === 0 && (
-          <p className="text-s fg-secondary">Usage unavailable</p>
-        )}
-      {((entry.accounts === undefined && entry.error) || refreshError) && (
-        <p role="status" className="text-s fg-secondary">
-          {refreshError
-            ? 'Could not refresh usage. Try again.'
-            : entry.error?.message}
-        </p>
-      )}
-    </article>
+      </UsageGroup>
+    );
+  }
+  const windows = authenticated ? entryWindows(entry) : [];
+  return (
+    <UsageProviderGroup
+      title={label}
+      provider={entry.provider}
+      plan={authenticated ? usagePlanLabel(label, entry.planLabel) : null}
+      testId={testId}
+      windows={windows}
+      nowMs={nowMs}
+      rows={
+        <>
+          {authenticated && windows.length === 0 ? (
+            <UsageRow title="Limits" detail="Usage unavailable" />
+          ) : null}
+          <ProviderUsageAccountRow
+            accountLabel={
+              authenticated
+                ? (entry.accountLabel ?? entry.accountEmail ?? null)
+                : null
+            }
+            statusLabel={
+              authenticated
+                ? 'Account name unavailable'
+                : entry.authState === 'unknown'
+                  ? 'Account status unavailable'
+                  : 'Connect in the desktop app'
+            }
+          >
+            {null}
+          </ProviderUsageAccountRow>
+        </>
+      }
+      footer={
+        entry.error ? (
+          <p role="status" className="mt-1.5 px-0.5 text-xs fg-secondary">
+            {entry.error.message}
+          </p>
+        ) : null
+      }
+    />
   );
+}
+
+/** The newest read across the groups the panel shows. */
+function projectionUpdatedAt(
+  projection: PortalProviderUsageProjection,
+): number | null {
+  return newestUsageUpdate([
+    ...projection.providers.flatMap((entry) =>
+      entry.accounts === undefined
+        ? [entry.lastUpdatedAt]
+        : entry.accounts.map((account) => account.lastUpdatedAt),
+    ),
+    projection.openCodeAccounts?.updatedAt,
+  ]);
+}
+
+/**
+ * Which accounts the panel shows. A refresh started for one set of accounts
+ * neither blocks nor reports a failure for the next.
+ */
+function accountsSignature(
+  projection: PortalProviderUsageProjection | undefined,
+): string {
+  return (projection?.providers ?? [])
+    .map(
+      (entry) =>
+        `${entry.provider}:${entry.authState}:${entry.accountLabel ?? entry.accountEmail ?? ''}`,
+    )
+    .join('|');
+}
+
+interface RefreshState {
+  readonly signature: string;
+  readonly refreshing: boolean;
+  readonly failed: boolean;
 }
 
 function QuotaCards({
@@ -236,6 +218,11 @@ function QuotaCards({
 }: Omit<ProviderQuotaPanelProps, 'isVisible'>): JSX.Element {
   const nowMs = useMinuteClock();
   const client = useCanopyClient();
+  const signature = accountsSignature(projection);
+  const [refreshState, setRefreshState] = useState<RefreshState | null>(null);
+  const current = refreshState?.signature === signature ? refreshState : null;
+  const refreshing = current?.refreshing === true;
+  const refreshFailed = current?.failed === true;
   if (!projection)
     return (
       <p className="p-4 text-s fg-secondary">
@@ -244,17 +231,53 @@ function QuotaCards({
     );
   if (projection.providers.length === 0 && !projection.openCodeAccounts)
     return <p className="p-4 text-s fg-secondary">Usage unavailable</p>;
+  // One refresh reads every group again: each provider, then OpenCode.
+  const refresh = async (): Promise<void> => {
+    if (disabled === true || refreshing) return;
+    setRefreshState({ signature, refreshing: true, failed: false });
+    const providers: Array<PortalProviderUsageEntry['provider'] | 'opencode'> =
+      projection.providers.map((entry) => entry.provider);
+    if (projection.openCodeAccounts) providers.push('opencode');
+    const results = await Promise.allSettled(
+      providers.map((provider) =>
+        client.command('providerUsage.refresh', {
+          workspaceLocalId,
+          provider,
+        }),
+      ),
+    );
+    const failed = results.some((result) => result.status === 'rejected');
+    setRefreshState((state) =>
+      state?.signature === signature
+        ? { signature, refreshing: false, failed }
+        : state,
+    );
+  };
   return (
     <div
       className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-4"
       data-testid="provider-quota-panel"
     >
+      <div>
+        <UsageUpdatedLine
+          updatedAt={projectionUpdatedAt(projection)}
+          nowMs={nowMs}
+          refreshing={refreshing}
+          disabled={disabled}
+          onRefresh={() => {
+            void refresh();
+          }}
+        />
+        {refreshFailed && (
+          <p role="status" className="text-xs fg-secondary">
+            Could not refresh usage. Try again.
+          </p>
+        )}
+      </div>
       {projection.providers.map((entry) => (
-        <QuotaCard
+        <QuotaGroup
           key={`${workspaceLocalId}:${entry.provider}:${entry.authState}:${entry.accountLabel ?? entry.accountEmail ?? ''}`}
           entry={entry}
-          workspaceLocalId={workspaceLocalId}
-          disabled={disabled === true}
           nowMs={nowMs}
         />
       ))}
@@ -262,13 +285,6 @@ function QuotaCards({
         <OpenCodeAccountCard
           key={workspaceLocalId}
           snapshot={projection.openCodeAccounts}
-          disabled={disabled}
-          onRefresh={() =>
-            client.command('providerUsage.refresh', {
-              workspaceLocalId,
-              provider: 'opencode',
-            })
-          }
         />
       )}
     </div>
@@ -289,6 +305,7 @@ export function ProviderQuotaPanel(
     );
   return (
     <QuotaCards
+      key={props.workspaceLocalId}
       projection={props.projection}
       workspaceLocalId={props.workspaceLocalId}
       disabled={props.disabled}

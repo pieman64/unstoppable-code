@@ -1,3 +1,13 @@
+let mockCopilotHarnessEnabled = false;
+jest.mock('../../copilot/feature-flag', () => ({
+  isCopilotHarnessEnabled: (): boolean => mockCopilotHarnessEnabled,
+}));
+jest.mock('../../cursor/feature-flag', () => ({
+  isCursorHarnessEnabled: (): boolean => true,
+}));
+jest.mock('../../opencode/feature-flag', () => ({
+  isOpenCodeHarnessEnabled: (): boolean => true,
+}));
 jest.mock('../../mcp/connection-status', () => ({
   listMcpServerStatuses: jest.fn(() => Promise.resolve([])),
 }));
@@ -29,7 +39,10 @@ jest.mock('../../skills/skill-service', () => ({
 }));
 const mockFilterStoredSkillContexts = jest.fn();
 const mockFilterPersonalStoredSkills = jest.fn();
+const mockAnnotateSharedSkillInstalls = jest.fn();
 jest.mock('../../skills/skill-install-context', () => ({
+  annotateSharedSkillInstalls: (...args: unknown[]): unknown =>
+    mockAnnotateSharedSkillInstalls(...args),
   assertStoredSkillContext: jest.fn(),
   filterStoredSkillContexts: (...args: unknown[]): unknown =>
     mockFilterStoredSkillContexts(...args),
@@ -91,6 +104,10 @@ jest.mock('../../ipc/mcp-servers', () => ({
   readServer: jest.fn(),
   resolveStandaloneHttpHandler: jest.fn(() => Promise.resolve('canopy')),
 }));
+jest.mock('../../mcp/provider-connectors', () => ({
+  listAdvertisedProviderConnectors: jest.fn().mockResolvedValue([]),
+}));
+import { listAdvertisedProviderConnectors } from '../../mcp/provider-connectors';
 jest.mock('../../mcp/account-catalog', () => ({
   loadAccountMcpRefConnections: jest.fn(),
 }));
@@ -126,6 +143,7 @@ import type {
   SharedPluginDetail,
   SharedPluginPublicShareInfo,
 } from '@canopy/protocol/plugins';
+import type { CanopyOrganizationSummary } from '@canopy/protocol/pipelines';
 import type { McpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
 import {
   getPortalCollection,
@@ -367,12 +385,23 @@ describe('portal plugin browse service', () => {
     mockFilterStoredSkillContexts.mockImplementation((rows) =>
       Promise.resolve(rows),
     );
+    mockAnnotateSharedSkillInstalls.mockImplementation((rows) =>
+      Promise.resolve(rows),
+    );
     mockedWriteCollectionRemoteMetadata.mockResolvedValue(true);
     mockedLoadAccountPublicState.mockResolvedValue({
-      status: 'ok',
+      read: 'ok',
       hasApiKey: true,
+      authMode: null,
+      credentialSource: null,
       capabilities: [],
-      account: { id: 'account-1' },
+      account: {
+        id: 'account-1',
+        name: 'Test account',
+        email: 'test@example.com',
+        role: 'DEVELOPER',
+      },
+      storageAvailable: true,
     });
   });
 
@@ -382,7 +411,14 @@ describe('portal plugin browse service', () => {
         {
           id: 'team-1',
           name: 'Platform',
-          organization: { id: 'org-1', name: 'Acme' },
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+          organization: {
+            id: 'org-1',
+            name: 'Acme',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
         },
       ],
     });
@@ -542,6 +578,9 @@ describe('portal plugin browse service', () => {
     it('creates the shared plugin in Cloud and publishes its public share', async () => {
       primeShareableMarketplaceCache();
       const created: SharedPluginDetail = {
+        owner: { type: 'user', id: 'account-1', name: null },
+        shareScope: 'private',
+        createdBy: { id: 'account-1', name: null },
         externalId: 'ext-1',
         refKey: 'claude_plugin:github:acme/marketplace:plugin',
         ref: {
@@ -816,9 +855,325 @@ describe('portal plugin browse service', () => {
         lastRefreshed: '',
       });
     });
+
+    // CAN-3653: the web joins a plugin to the MCP server it bundles and labels
+    // the plugin's publisher, so the row carries endpoints and source URL.
+    describe('plugin provenance (CAN-3653)', () => {
+      function primeSinglePlugin(
+        overrides: Partial<MarketplaceInfo['plugins'][number]>,
+      ): void {
+        mockedLoadCacheOnly.mockResolvedValue({
+          success: true,
+          data: {
+            version: 2,
+            lastRefreshed: '2026-08-27T00:00:00.000Z',
+            marketplaces: [
+              {
+                ...marketplace,
+                plugins: [{ ...marketplace.plugins[0], ...overrides }],
+              },
+            ],
+          },
+        });
+      }
+
+      it('projects bundled MCP server endpoints and the external source URL without credentials', async () => {
+        const [basePlugin] = marketplace.plugins;
+        if (!basePlugin.details) throw new Error('Missing fixture details');
+        primeSinglePlugin({
+          externalSource: {
+            source: 'url',
+            url: 'https://github.com/slackapi/slack-mcp-plugin.git',
+          },
+          details: {
+            ...basePlugin.details,
+            mcpServers: [
+              {
+                name: 'slack',
+                type: 'http',
+                url: 'https://u:p@mcp.slack.com/mcp?x=1',
+              },
+              {
+                name: 'local',
+                type: 'command',
+                command: '/bin/x',
+                args: ['--token', 's'],
+              },
+            ],
+          },
+        });
+        const result = await listPortalMarketplaces();
+        const row = result.marketplaces[0].plugins[0];
+        expect(row.mcpServers).toEqual([
+          { name: 'slack', type: 'http', url: 'https://mcp.slack.com/mcp' },
+          { name: 'local', type: 'command' },
+        ]);
+        expect(row.externalSourceUrl).toBe(
+          'https://github.com/slackapi/slack-mcp-plugin.git',
+        );
+        const serialized = JSON.stringify(row);
+        expect(serialized).not.toContain('--token');
+        expect(serialized).not.toContain('/bin/x');
+        expect(serialized).not.toContain('u:p');
+        expect(serialized).not.toContain('x=1');
+      });
+
+      it('strips credentials from the external source URL', async () => {
+        primeSinglePlugin({
+          externalSource: {
+            source: 'url',
+            url: 'https://src-user:src-secret@github.com/acme/plugin.git?t=q#f',
+          },
+        });
+        const result = await listPortalMarketplaces();
+        expect(result.marketplaces[0].plugins[0].externalSourceUrl).toBe(
+          'https://github.com/acme/plugin.git',
+        );
+        expect(JSON.stringify(result)).not.toContain('src-secret');
+      });
+
+      it('omits a non-http(s) external source URL, keeping host paths out', async () => {
+        primeSinglePlugin({
+          externalSource: {
+            source: 'url',
+            url: 'file:///Users/someone/plugins/slack',
+          },
+        });
+        const result = await listPortalMarketplaces();
+        const row = result.marketplaces[0].plugins[0];
+        expect(row).not.toHaveProperty('externalSourceUrl');
+        expect(JSON.stringify(row)).not.toContain('/Users/someone');
+      });
+
+      it('omits both fields when details and external source are absent', async () => {
+        primeSinglePlugin({ details: null, externalSource: undefined });
+        const result = await listPortalMarketplaces();
+        const row = result.marketplaces[0].plugins[0];
+        expect(row).not.toHaveProperty('mcpServers');
+        expect(row).not.toHaveProperty('externalSourceUrl');
+      });
+
+      it('omits mcpServers when the plugin bundles none', async () => {
+        const [basePlugin] = marketplace.plugins;
+        if (!basePlugin.details) throw new Error('Missing fixture details');
+        primeSinglePlugin({
+          details: { ...basePlugin.details, mcpServers: [] },
+        });
+        const result = await listPortalMarketplaces();
+        expect(result.marketplaces[0].plugins[0]).not.toHaveProperty(
+          'mcpServers',
+        );
+      });
+
+      it('drops an http server whose url does not sanitize', async () => {
+        const [basePlugin] = marketplace.plugins;
+        if (!basePlugin.details) throw new Error('Missing fixture details');
+        primeSinglePlugin({
+          externalSource: { source: 'git-subdir', url: 'not a url' },
+          details: {
+            ...basePlugin.details,
+            mcpServers: [
+              { name: 'broken', type: 'http', url: 'not a url' },
+              { name: 'missing', type: 'http' },
+              { name: 'ok', type: 'http', url: 'https://ok.example/mcp' },
+            ],
+          },
+        });
+        const result = await listPortalMarketplaces();
+        const row = result.marketplaces[0].plugins[0];
+        expect(row.mcpServers).toEqual([
+          { name: 'ok', type: 'http', url: 'https://ok.example/mcp' },
+        ]);
+        expect(row).not.toHaveProperty('externalSourceUrl');
+      });
+
+      // CAN-4844: the browser lists a plugin's skills under its status.
+      it('includes bundled skill names and descriptions without paths', async () => {
+        const [basePlugin] = marketplace.plugins;
+        if (!basePlugin.details) throw new Error('Missing fixture details');
+        primeSinglePlugin({
+          details: {
+            ...basePlugin.details,
+            skills: [
+              {
+                name: 'summarize-channel',
+                description: 'Summarize a channel',
+                path: '/Users/someone/plugins/slack/skills/x/SKILL.md',
+                userInvocable: false,
+              },
+            ],
+          },
+        });
+        const result = await listPortalMarketplaces();
+        const row = result.marketplaces[0].plugins[0];
+        expect(row.skills).toEqual([
+          { name: 'summarize-channel', description: 'Summarize a channel' },
+        ]);
+        expect(row.skills?.[0]).not.toHaveProperty('path');
+        expect(JSON.stringify(row)).not.toContain('/Users/someone');
+      });
+
+      it('omits skills when the plugin bundles none or details were not fetched', async () => {
+        const [basePlugin] = marketplace.plugins;
+        if (!basePlugin.details) throw new Error('Missing fixture details');
+        primeSinglePlugin({ details: { ...basePlugin.details, skills: [] } });
+        const bundlesNone = await listPortalMarketplaces();
+        expect(bundlesNone.marketplaces[0].plugins[0]).not.toHaveProperty(
+          'skills',
+        );
+        primeSinglePlugin({ details: null });
+        const noDetails = await listPortalMarketplaces();
+        expect(noDetails.marketplaces[0].plugins[0]).not.toHaveProperty(
+          'skills',
+        );
+      });
+
+      // The browser lists bundled skills only under an installed plugin, so
+      // an uninstalled plugin's skills would only spend the result budget.
+      it('omits skills when the plugin is not installed', async () => {
+        primeSinglePlugin({
+          cachePath: undefined,
+          globalInstallStatus: undefined,
+        });
+        const result = await listPortalMarketplaces();
+        const row = result.marketplaces[0].plugins[0];
+        expect(row.installed).toBe(false);
+        expect(row).not.toHaveProperty('skills');
+      });
+
+      it('keeps the real-sized marketplace list under PORTAL_CATALOG_RESULT_MAX_BYTES', async () => {
+        // The real cache this ticket was reproduced on: 9 marketplaces, 436
+        // plugins in total, each with one bundled http server.
+        const [basePlugin] = marketplace.plugins;
+        const baseDetails = basePlugin.details;
+        if (!baseDetails) throw new Error('Missing fixture details');
+        const marketplaceCount = 9;
+        const pluginTotal = 436;
+        const marketplaces: MarketplaceInfo[] = Array.from(
+          { length: marketplaceCount },
+          (_, marketplaceIndex) => {
+            const id = `market-${marketplaceIndex}`;
+            const count =
+              Math.floor(pluginTotal / marketplaceCount) +
+              (marketplaceIndex < pluginTotal % marketplaceCount ? 1 : 0);
+            return {
+              ...marketplace,
+              id,
+              sourceUrl: `https://github.com/acme/${id}`,
+              pluginCount: count,
+              plugins: Array.from({ length: count }, (_, pluginIndex) => ({
+                ...basePlugin,
+                name: `plugin-${marketplaceIndex}-${pluginIndex}`,
+                marketplaceId: id,
+                description: 'A plugin description of realistic length.',
+                externalSource: {
+                  source: 'url',
+                  url: `https://github.com/publisher/plugin-${String(pluginIndex).padStart(3, '0')}-repository.git`,
+                },
+                details: {
+                  ...baseDetails,
+                  skills: baseDetails.skills ?? [],
+                  mcpServers: [
+                    {
+                      name: `server-${pluginIndex}`,
+                      type: 'http' as const,
+                      url: `https://mcp.publisher-${pluginIndex}.example/mcp`,
+                    },
+                  ],
+                },
+              })),
+            };
+          },
+        );
+        mockedLoadCacheOnly.mockResolvedValue({
+          success: true,
+          data: {
+            version: 2,
+            lastRefreshed: '2026-08-27T00:00:00.000Z',
+            marketplaces,
+          },
+        });
+        const result = await listPortalMarketplaces();
+        expect(result.truncated).toBeUndefined();
+        expect(
+          result.marketplaces.reduce((sum, row) => sum + row.plugins.length, 0),
+        ).toBe(pluginTotal);
+        expect(
+          result.marketplaces.every((row) =>
+            row.plugins.every((plugin) => plugin.mcpServers?.length === 1),
+          ),
+        ).toBe(true);
+        expect(
+          Buffer.byteLength(JSON.stringify(result), 'utf8'),
+        ).toBeLessThanOrEqual(PORTAL_CATALOG_RESULT_MAX_BYTES);
+      });
+    });
   });
 
   describe('getPortalPluginDetail', () => {
+    it('carries per-provider install state and the Codex compatibility setting (CAN-4842)', async () => {
+      mockedReadComponentContent.mockReturnValue({
+        success: true,
+        data: { frontmatter: {}, body: '# Plugin readme' },
+      });
+      primeMarketplaceCache();
+      expect(await getPortalPluginDetail('mkt', 'plugin')).not.toHaveProperty(
+        'harnessInstallation',
+      );
+      mockedLoadCacheOnly.mockResolvedValue({
+        success: true,
+        data: {
+          version: 2,
+          lastRefreshed: '2026-08-27T00:00:00.000Z',
+          marketplaces: [
+            {
+              ...marketplace,
+              plugins: [
+                {
+                  ...marketplace.plugins[0],
+                  codexCompatDisabled: true,
+                  globalInstallStatus: {
+                    checkedAt: '2026-01-01T00:00:00.000Z',
+                    claude: { available: true, installed: true },
+                    codex: { available: true, installed: false },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const detail = await getPortalPluginDetail('mkt', 'plugin');
+      expect(detail.harnessInstallation).toEqual({
+        claude: true,
+        codex: false,
+      });
+      expect(detail.codexCompatDisabled).toBe(true);
+    });
+
+    it('carries the harnesses this desktop offers, so the Portal lists the same rows (CAN-4842)', async () => {
+      primeMarketplaceCache();
+      mockedReadComponentContent.mockReturnValue({
+        success: true,
+        data: { frontmatter: {}, body: '# Plugin readme' },
+      });
+      mockCopilotHarnessEnabled = false;
+      expect((await getPortalPluginDetail('mkt', 'plugin')).harnesses).toEqual([
+        'claude',
+        'codex',
+        'cursor',
+        'opencode',
+      ]);
+      mockCopilotHarnessEnabled = true;
+      try {
+        expect(
+          (await getPortalPluginDetail('mkt', 'plugin')).harnesses,
+        ).toEqual(['claude', 'codex', 'cursor', 'copilot', 'opencode']);
+      } finally {
+        mockCopilotHarnessEnabled = false;
+      }
+    });
+
     it('returns detail rows with a README read from the trusted root', async () => {
       primeMarketplaceCache();
       mockedReadComponentContent.mockReturnValue({
@@ -937,6 +1292,85 @@ describe('portal plugin browse service', () => {
   });
 
   describe('skills', () => {
+    it.each([
+      { remoteId: 'shared-1' },
+      {
+        remoteId: 'shared-1',
+        shareScope: 'team' as const,
+        ownerContext: {
+          kind: 'organization' as const,
+          organizationId: 'org-1',
+        },
+        contentHash: 'installed-hash',
+        authorizedAt: '2026-10-26T00:00:00Z',
+        sharedByName: 'Lena',
+        ownerName: 'Acme',
+        teamName: 'Release',
+        packageDigest: 'sha256:package',
+      },
+    ])(
+      'serializes receipt origins through the existing annotation boundary (%p)',
+      async (installedFromShare) => {
+        const skill = {
+          name: 'review',
+          sourceId: 'custom:app',
+          description: '',
+          source: '',
+          installedAt: 'i',
+          updatedAt: 'u',
+          updateAvailable: false,
+          custom: true,
+        };
+        mockedLoadSkills.mockReturnValue({ success: true, data: [skill] });
+        mockAnnotateSharedSkillInstalls.mockResolvedValueOnce([
+          { ...skill, installedFromShare },
+        ]);
+        const result = await listPortalSkills();
+        expect(mockAnnotateSharedSkillInstalls).toHaveBeenCalledWith([skill]);
+        expect(result.skills[0].installedFromShare).toEqual(installedFromShare);
+        expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+      },
+    );
+
+    it('does not annotate or publish receipt display names in the Personal catalog sync', async () => {
+      const skill = {
+        name: 'review',
+        sourceId: 'custom:app',
+        description: '',
+        source: '',
+        installedAt: 'i',
+        updatedAt: 'u',
+        updateAvailable: false,
+        installedFromShare: { remoteId: 'private', sharedByName: 'Lena' },
+      };
+      mockedLoadSkills.mockReturnValue({ success: true, data: [skill] });
+      mockFilterPersonalStoredSkills.mockResolvedValueOnce([skill]);
+      const result = await listPersonalPortalSkills();
+      expect(mockAnnotateSharedSkillInstalls).not.toHaveBeenCalled();
+      expect(result.skills[0]).not.toHaveProperty('installedFromShare');
+    });
+
+    it('annotates only the rows allowed by the existing context boundary', async () => {
+      const allowed = {
+        name: 'allowed',
+        sourceId: 'custom:app',
+        description: '',
+        source: '',
+        installedAt: 'i',
+        updatedAt: 'u',
+        updateAvailable: false,
+      };
+      const unrelated = { ...allowed, name: 'unrelated-context' };
+      mockedLoadSkills.mockReturnValue({
+        success: true,
+        data: [allowed, unrelated],
+      });
+      mockFilterStoredSkillContexts.mockResolvedValueOnce([allowed]);
+      const result = await listPortalSkills();
+      expect(mockAnnotateSharedSkillInstalls).toHaveBeenCalledWith([allowed]);
+      expect(result.skills.map((row) => row.name)).toEqual(['allowed']);
+    });
+
     it('builds the synced list from the Personal filter', async () => {
       const personal = {
         name: 'personal',
@@ -1196,7 +1630,12 @@ describe('portal plugin browse service', () => {
         canUpdate: true,
       } as never);
       mockedPublishSkillPublicShare.mockResolvedValue({
+        externalId: 'share-1',
+        pinnedContentHash: 'hash-1',
+        upToDate: true,
         sharePath: '/portal/plugins/skills/shared/abc',
+        createdAt: '2026-10-01T00:00:00.000Z',
+        updatedAt: '2026-10-01T00:00:00.000Z',
       });
 
       await expect(
@@ -1339,10 +1778,18 @@ describe('portal plugin browse service', () => {
       ).resolves.toEqual({ audience: 'public', publicLinkStale: true });
 
       mockedLoadAccountPublicState.mockResolvedValue({
-        status: 'ok',
+        read: 'ok',
         hasApiKey: true,
+        authMode: null,
+        credentialSource: null,
         capabilities: [],
-        account: { id: 'account-2' },
+        account: {
+          id: 'account-2',
+          name: 'Test account',
+          email: 'test@example.com',
+          role: 'DEVELOPER',
+        },
+        storageAvailable: true,
       });
       mockedGetSharedSkill.mockClear();
       await expect(
@@ -1496,13 +1943,25 @@ describe('portal plugin browse service', () => {
 
     // Review on #3159: the browser must gate on the DESKTOP's real account.
     it('reports the desktop account state, treating a degraded read as not connected', async () => {
+      // Deliberately minimal legacy summary: the projection omits an absent name.
+      const organizationWithoutName = {
+        id: 'org-1',
+      } as unknown as CanopyOrganizationSummary;
       mockedLoadAccountPublicState.mockResolvedValue({
-        status: 'ok',
+        read: 'ok',
         hasApiKey: true,
+        authMode: null,
+        credentialSource: null,
         capabilities: ['skills-crud-v1', 'teams-v1'],
-        account: { id: 'acc-1' },
-        organizations: [{ id: 'org-1' }],
+        account: {
+          id: 'acc-1',
+          name: 'Test account',
+          email: 'test@example.com',
+          role: 'DEVELOPER',
+        },
+        organizations: [organizationWithoutName],
         teams: [],
+        storageAvailable: true,
       });
       await expect(getPortalSharingAccount()).resolves.toEqual({
         connected: true,
@@ -1519,9 +1978,12 @@ describe('portal plugin browse service', () => {
       });
 
       mockedLoadAccountPublicState.mockResolvedValue({
-        status: 'error',
+        read: 'error',
         hasApiKey: false,
+        authMode: null,
+        credentialSource: null,
         capabilities: [],
+        storageAvailable: true,
       });
       await expect(getPortalSharingAccount()).resolves.toEqual({
         connected: false,
@@ -1536,11 +1998,19 @@ describe('portal plugin browse service', () => {
     it('projects the desktop policy and Personal exception for Portal sharing', async () => {
       jest.mocked(resourceContextEnabled).mockReturnValue(true);
       mockedLoadAccountPublicState.mockResolvedValue({
-        status: 'ok',
+        read: 'ok',
         hasApiKey: true,
+        authMode: null,
+        credentialSource: null,
         capabilities: ['skills-crud-v1'],
-        account: { id: 'desktop-account' },
+        account: {
+          id: 'desktop-account',
+          name: 'Test account',
+          email: 'test@example.com',
+          role: 'DEVELOPER',
+        },
         personalOrganizationId: 'desktop-personal',
+        storageAvailable: true,
       });
       await expect(getPortalSharingAccount()).resolves.toMatchObject({
         organizationOwnershipPolicy: {
@@ -1552,13 +2022,32 @@ describe('portal plugin browse service', () => {
 
     it('projects advisory organization access facts for Portal sharing', async () => {
       mockedLoadAccountPublicState.mockResolvedValue({
-        status: 'ok',
+        read: 'ok',
         hasApiKey: true,
+        authMode: null,
+        credentialSource: null,
         capabilities: ['skills-crud-v1'],
-        account: { id: 'desktop-account' },
+        account: {
+          id: 'desktop-account',
+          name: 'Test account',
+          email: 'test@example.com',
+          role: 'DEVELOPER',
+        },
         organizations: [
-          { id: 'org-lapsed', name: 'Lapsed Org', role: 'OWNER' },
-          { id: 'org-unknown', name: 'Unknown Org', role: 'MEMBER' },
+          {
+            id: 'org-lapsed',
+            name: 'Lapsed Org',
+            role: 'OWNER',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
+          {
+            id: 'org-unknown',
+            name: 'Unknown Org',
+            role: 'MEMBER',
+            createdAt: '2026-10-01T00:00:00.000Z',
+            updatedAt: '2026-10-01T00:00:00.000Z',
+          },
         ],
         orgBillingStates: [
           {
@@ -1568,6 +2057,7 @@ describe('portal plugin browse service', () => {
             trialEndedAt: '2026-10-07T00:00:00.000Z',
           },
         ],
+        storageAvailable: true,
       });
       await expect(getPortalSharingAccount()).resolves.toMatchObject({
         organizationAccess: [
@@ -1692,6 +2182,98 @@ describe('portal plugin browse service', () => {
   });
 
   describe('MCP servers', () => {
+    it('returns cached MCP rows promptly while optional provider discovery stays pending (CAN-5272)', async () => {
+      jest.useFakeTimers();
+      const cachedServer = {
+        id: 'cached',
+        name: 'Cached MCP',
+        description: '',
+        type: 'http',
+        configs: [{ id: 'default', name: 'Default', enabled: true }],
+        updatedAt: '',
+      };
+      mockedReadFile.mockResolvedValue(
+        JSON.stringify({ servers: [cachedServer] }),
+      );
+      const discovery =
+        Promise.withResolvers<
+          Awaited<ReturnType<typeof listAdvertisedProviderConnectors>>
+        >();
+      jest
+        .mocked(listAdvertisedProviderConnectors)
+        .mockReturnValue(discovery.promise);
+      const results: Awaited<ReturnType<typeof listPortalMcpServers>>[] = [];
+      const reads = [
+        listPortalMcpServers().then((result) => results.push(result)),
+        listPortalMcpServers().then((result) => results.push(result)),
+      ];
+      try {
+        await jest.advanceTimersByTimeAsync(250);
+        expect(results).toHaveLength(2);
+        for (const result of results) {
+          expect(result.servers).toEqual([
+            expect.objectContaining(cachedServer),
+          ]);
+          expect(result).not.toHaveProperty('providerConnectors');
+        }
+        // Later callers must also finish without spawning another discovery.
+        reads.push(
+          listPortalMcpServers().then((result) => results.push(result)),
+        );
+        await jest.advanceTimersByTimeAsync(250);
+        expect(results).toHaveLength(3);
+        expect(
+          jest.mocked(listAdvertisedProviderConnectors),
+        ).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        // A late failure must be consumed, and release discovery for a retry.
+        discovery.reject(new Error('provider health check failed'));
+        await Promise.all(reads);
+        await discovery.promise.catch(() => undefined);
+        jest.mocked(listAdvertisedProviderConnectors).mockResolvedValue([]);
+        jest.useRealTimers();
+      }
+    });
+
+    it('omits failed provider discovery without inventing provider facts (CAN-5272)', async () => {
+      mockedReadFile.mockResolvedValue(JSON.stringify({ servers: [] }));
+      jest
+        .mocked(listAdvertisedProviderConnectors)
+        .mockRejectedValueOnce(new Error('provider unavailable'));
+      await expect(listPortalMcpServers()).resolves.toEqual({ servers: [] });
+    });
+
+    it('carries proven provider links through the existing Portal and sync read (CAN-5272)', async () => {
+      mockedReadFile.mockResolvedValue(JSON.stringify({ servers: [] }));
+      jest.mocked(listAdvertisedProviderConnectors).mockResolvedValueOnce([
+        {
+          provider: 'codex',
+          connectors: [
+            {
+              name: 'drive',
+              status: 'connected',
+              displayName: 'Drive',
+              connected: true,
+              installUrl: 'https://example.test/private?token=secret',
+            },
+          ],
+          detail: '/private/host/path',
+        },
+      ]);
+      const result = await listPortalMcpServers();
+      expect(result).toMatchObject({
+        providerConnectors: [
+          {
+            provider: 'codex',
+            connectors: [{ displayName: 'Drive', connected: true }],
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('secret');
+      expect(JSON.stringify(result)).not.toContain('/private/host/path');
+    });
+
     it('lists servers from the persisted index without extra fields', async () => {
       mockedReadFile.mockResolvedValue(
         JSON.stringify({
@@ -2280,7 +2862,14 @@ describe('portal plugin browse service', () => {
       });
       mockedLoadSkills.mockReturnValue({ success: true, data: [] });
       mockFilterPersonalStoredSkills.mockResolvedValue([]);
-      mockedLoadCacheOnly.mockResolvedValue({ marketplaces: [], warnings: [] });
+      mockedLoadCacheOnly.mockResolvedValue({
+        success: true,
+        data: {
+          version: 2,
+          lastRefreshed: '2026-10-01T00:00:00.000Z',
+          marketplaces: [],
+        },
+      });
 
       await expect(listPersonalPortalCollections()).resolves.toEqual({
         collections: [expect.objectContaining({ id: 'personal' })],
@@ -2319,7 +2908,14 @@ describe('portal plugin browse service', () => {
       });
       mockedLoadSkills.mockReturnValue({ success: true, data: [] });
       mockFilterPersonalStoredSkills.mockResolvedValue([]);
-      mockedLoadCacheOnly.mockResolvedValue({ marketplaces: [], warnings: [] });
+      mockedLoadCacheOnly.mockResolvedValue({
+        success: true,
+        data: {
+          version: 2,
+          lastRefreshed: '2026-10-01T00:00:00.000Z',
+          marketplaces: [],
+        },
+      });
 
       const personalContext = await listPersonalPortalCollections();
       mockedReadCollectionIndex.mockResolvedValue({
@@ -2627,7 +3223,12 @@ describe('portal plugin browse service', () => {
         contentHash: 'hash',
         itemCounts: { skills: 0, plugins: 1, customSkills: 1 },
         shareScope: 'team',
-        owner: { type: 'team', id: 'team-1', name: 'Team' },
+        owner: {
+          type: 'team',
+          id: 'team-1',
+          name: 'Team',
+          organization: { id: 'org-1', name: 'Org' },
+        },
         createdBy: { id: 'user-1', name: null, email: null },
         createdAt: 'c',
         updatedAt: 'u',
@@ -2830,6 +3431,7 @@ describe('portal plugin browse service', () => {
 
     it('does not mark an MCP-backed collection shareable', async (): Promise<void> => {
       mockedReadCollectionIndex.mockResolvedValue({
+        version: 2,
         collections: [
           {
             id: 'plain',
@@ -2858,6 +3460,7 @@ describe('portal plugin browse service', () => {
       // become requirements; configuration never travels.
       mockedReadCollectionConfig.mockImplementation((id) =>
         Promise.resolve({
+          version: 2,
           collection: {
             id,
             name: id === 'plain' ? 'Plain' : 'With MCP',
@@ -2886,6 +3489,7 @@ describe('portal plugin browse service', () => {
     // shareable source, so those must not advertise Share either.
     it('does not mark a Collection shareable when its refs cannot be converted', async (): Promise<void> => {
       mockedReadCollectionIndex.mockResolvedValue({
+        version: 2,
         collections: [
           {
             id: 'dangling',
@@ -2899,6 +3503,7 @@ describe('portal plugin browse service', () => {
         ],
       });
       mockedReadCollectionConfig.mockResolvedValue({
+        version: 2,
         collection: {
           id: 'dangling',
           name: 'Dangling',
@@ -3043,8 +3648,10 @@ describe('portal plugin browse service', () => {
           updatedAt: 'u',
           remote: {
             remoteId: 'remote-1',
-            remoteAccountId: 'account-1',
-            remoteContentHash: 'hash-1',
+            accountId: 'account-1',
+            contentHash: 'hash-1',
+            shareScope: 'private',
+            sharedAt: '2026-10-01T00:00:00.000Z',
           },
         },
       });

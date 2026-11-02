@@ -1,5 +1,5 @@
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
-import { fingerprintCustomLanguageInputs } from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import type { CodeGraphRepositoryInput } from '@canopy/desktop-shared/types/code-graph';
 import { runCodeGraphWorkerEagerSeed } from '../code-graph/build-runner';

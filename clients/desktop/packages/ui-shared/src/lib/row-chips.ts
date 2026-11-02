@@ -1,7 +1,5 @@
-import {
-  OPERATIONAL_STATUS_COLORS,
-  type OperationalStatus,
-} from './operational-status-colors';
+import { BADGE_BASE_CLASS, badgeClassName, type BadgeTone } from './badge';
+import type { OperationalStatus } from './operational-status-colors';
 
 /**
  * The two chip shapes that sit in a pipeline run row (and any other compact
@@ -9,9 +7,8 @@ import {
  * chip in the row composes one of these two builders so the row cannot drift
  * back into a mix of paddings, radii, and border utilities.
  *
- * Status badges tint with the `*-subtle` surface, matching ink, and a
- * hairline `ring` on a `line-*` role (the theme-token check reserves the
- * intent names for surfaces). Action chips never tint: they sit on the
+ * Status badges are the shared Badge capsule: a `*-subtle` tint and the
+ * tone's strong ink, with no ring or border. Action chips never tint: they sit on the
  * shared {@link SECONDARY_SURFACE_CLASS} and differ by ink only. Neither
  * uses a `border-<color>` utility, which the unlayered base border rule
  * paints over (CAN-2734).
@@ -27,9 +24,11 @@ import {
 export const HAIRLINE_INSET_RING_CLASS =
   'ring-[length:var(--border-hairline)] ring-inset';
 
-/** 20px pill, 3xs label, 12px icons. */
-export const STATUS_BADGE_BASE_CLASS =
-  'inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-full px-2 text-3xs font-medium ring-[length:var(--border-hairline)]';
+/**
+ * Status badges are the shared 18px {@link badgeClassName} capsule: tinted
+ * `-subtle` fill and strong ink, no ring and no border.
+ */
+export const STATUS_BADGE_BASE_CLASS = BADGE_BASE_CLASS;
 
 /**
  * Operational statuses map onto the app-wide status vocabulary; `warning`
@@ -40,40 +39,40 @@ export type StatusBadgeTone = OperationalStatus | 'warning' | 'neutral';
 
 export interface StatusBadgeClassNameOptions {
   /**
-   * Reduced-emphasis colour set for a completed row: quiet tint, quiet ink,
-   * and a quieter ring. Geometry is unchanged.
+   * Reduced-emphasis colour set for a completed row: quiet ink. Geometry is
+   * unchanged.
    */
   readonly muted?: boolean;
 }
 
-function statusBadgeTint(tone: StatusBadgeTone, muted: boolean): string {
-  switch (tone) {
-    case 'warning':
-      return muted
-        ? 'bg-warning-subtle fg-warning/70 ring-line-attention/20'
-        : 'bg-warning-subtle fg-warning ring-line-attention/30';
-    case 'neutral':
-      return muted
-        ? 'bg-subtle fg-secondary/70 ring-line-secondary'
-        : 'bg-subtle fg-secondary ring-line-secondary';
-    default: {
-      const colors = OPERATIONAL_STATUS_COLORS[tone];
-      return muted
-        ? `${colors.backgroundQuiet} ${colors.foregroundQuiet} ${colors.ringQuiet}`
-        : `${colors.backgroundSubtle} ${colors.foreground} ${colors.ring}`;
-    }
-  }
+/**
+ * Run state to badge tone, following `OPERATIONAL_STATUS_COLORS`: unread and
+ * running are info, failed is danger, merged is special, paused is neutral.
+ */
+const STATUS_BADGE_TONE: Readonly<Record<StatusBadgeTone, BadgeTone>> = {
+  unread: 'info',
+  active: 'info',
+  failed: 'danger',
+  success: 'success',
+  merged: 'special',
+  paused: 'neutral',
+  warning: 'warning',
+  neutral: 'neutral',
+};
+
+/** The badge tone a status badge paints. */
+export function statusBadgeTone(tone: StatusBadgeTone): BadgeTone {
+  return STATUS_BADGE_TONE[tone];
 }
 
-/**
- * Full class string for a status badge: shared geometry plus the tone's
- * tint, ink, and ring.
- */
+/** Full class string for a status badge: the shared badge in the status's tone. */
 export function statusBadgeClassName(
   tone: StatusBadgeTone,
   options: StatusBadgeClassNameOptions = {},
 ): string {
-  return `${STATUS_BADGE_BASE_CLASS} ${statusBadgeTint(tone, options.muted === true)}`;
+  return badgeClassName(STATUS_BADGE_TONE[tone], {
+    muted: options.muted === true,
+  });
 }
 
 /**
@@ -112,14 +111,14 @@ export const SECONDARY_SURFACE_CLASS = `${SECONDARY_SURFACE_SHELL_CLASS} ${SECON
  * with the card recipe's radius, inset, and 12px label so the two never
  * drift apart.
  */
-export const SECONDARY_ACTION_BUTTON_CLASS = `focus-ring inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-xs font-medium fg-primary transition pointer-coarse:h-11 ${SECONDARY_SURFACE_CLASS}`;
+export const SECONDARY_ACTION_BUTTON_CLASS = `focus-ring inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-xs font-medium fg-primary transition-colors pointer-coarse:h-11 ${SECONDARY_SURFACE_CLASS}`;
 
 /**
  * The 28px square icon-only sibling of {@link SECONDARY_ACTION_BUTTON_CLASS}
  * (the header `Open in` app segment, a detail page's Share). Same shell, no
  * inset, centred glyph.
  */
-export const SECONDARY_ICON_BUTTON_CLASS = `focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md fg-primary transition pointer-coarse:h-11 pointer-coarse:w-11 ${SECONDARY_SURFACE_CLASS}`;
+export const SECONDARY_ICON_BUTTON_CLASS = `focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md fg-primary transition-colors pointer-coarse:h-11 pointer-coarse:w-11 ${SECONDARY_SURFACE_CLASS}`;
 
 /**
  * Ink tones for a control on {@link SECONDARY_SURFACE_CLASS}. The tone never
@@ -145,7 +144,7 @@ export function secondaryToneClassName(tone: SecondaryTone): string {
  * and hover come from {@link SECONDARY_SURFACE_CLASS}.
  */
 export const ACTION_CHIP_BASE_CLASS =
-  'focus-ring inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-2xs font-medium transition';
+  'focus-ring inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-2xs font-medium transition-colors';
 
 export type ActionChipTone = Exclude<SecondaryTone, 'accent'>;
 

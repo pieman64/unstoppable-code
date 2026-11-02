@@ -1,8 +1,9 @@
+import { Button } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeading } from '../shared/PageHeading';
+import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import type {
   AgentAuditLinkTarget,
   WorkerCardData,
@@ -12,7 +13,6 @@ import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import { ClaudeLogo } from '@canopy/ui-shared/icons';
 import { ExternalIcon as AppCatalogExternalIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { DialogModal } from '@/components/shared/DialogModal';
-import { EnlargeIcon } from '@/components/activity/RunOutputControls';
 import { TerminalPane } from '@/components/terminal/TerminalPane';
 import { TERMINAL_BG_COLOR } from '@canopy/ui-app/terminal';
 import { formatRelativeTime } from '@/lib/format';
@@ -223,15 +223,16 @@ function WorkerCard({
               </span>
             )}
             {!compact && onExpand && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
                 onClick={() => onExpand(worker.workerId)}
-                className="focus-ring rounded p-0.5 fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
                 aria-label="Enlarge worker terminal"
                 data-testid={testId(`worker-expand-${worker.workerId}`)}
               >
-                <EnlargeIcon />
-              </button>
+                <AppCatalogExternalIcon size={14} />
+              </Button>
             )}
           </div>
         </div>
@@ -249,7 +250,7 @@ function WorkerCard({
         )}
         {worker.chatId && <IdentifierChip label="Chat" value={worker.chatId} />}
         {worker.pipelineExecutionId && (
-          <IdentifierChip label="pipeline" value={worker.pipelineExecutionId} />
+          <IdentifierChip label="workflow" value={worker.pipelineExecutionId} />
         )}
         {worker.stepId && <IdentifierChip label="step" value={worker.stepId} />}
       </div>
@@ -298,37 +299,35 @@ function WorkerCard({
       )}
 
       <div className="flex items-center justify-between gap-3 px-4 py-3">
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={() => {
             void openLinkTarget(worker.linkTarget);
           }}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs fg-secondary transition hover:bg-secondary hover:fg-primary"
           data-testid={testId(`worker-inspect-${worker.workerId}`)}
         >
           <AppCatalogExternalIcon width="14" height="14" />
           Inspect
-        </button>
+        </Button>
         {unsettled && (
           <div className="flex items-center gap-2">
             {!compact && (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => onRetry(worker.workerId)}
-                className="focus-ring inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs fg-secondary transition hover:bg-secondary hover:fg-primary"
                 data-testid={testId(`worker-retry-${worker.workerId}`)}
               >
                 Retry
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
+            <Button
+              variant="ghost-destructive"
+              size="compact"
               onClick={() => onCancel(worker.workerId)}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-line-destructive/40 px-2.5 py-1 text-xs fg-destructive transition hover:bg-destructive-subtle"
               data-testid={testId(`worker-cancel-${worker.workerId}`)}
             >
               Cancel
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -497,9 +496,9 @@ export function WorkersPage(): JSX.Element {
     >
       <PageTitlebar />
       <PageContent bottomInset="tight" className="shrink-0">
-        <PageHeading
+        <PageHeader
           title="Claude workers"
-          subtitle="Live, read-only view of background and pipeline tasks running as managed Claude Code terminal sessions."
+          description="Live, read-only view of background and workflow tasks running as managed Claude Code terminal sessions."
         />
         {alreadyCompletedNotice && (
           <p
@@ -526,18 +525,17 @@ export function WorkersPage(): JSX.Element {
                 No active workers
               </h2>
               <p className="mt-1 text-s fg-secondary">
-                When {brandText.appName} runs background helpers or pipeline
+                When {brandText.appName} runs background helpers or workflow
                 steps in Terminal mode, each appears here as a read-only
                 terminal you can watch, inspect, or cancel.
               </p>
-              <button
-                type="button"
+              <Button
                 onClick={openClaudeSettings}
-                className="focus-ring mt-4 inline-flex items-center gap-1.5 rounded-md border bg-base px-3 py-1.5 text-s fg-primary transition hover:bg-secondary"
                 data-testid="workers-empty-open-settings"
+                className="mt-4"
               >
                 Open Claude settings
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="space-y-8">

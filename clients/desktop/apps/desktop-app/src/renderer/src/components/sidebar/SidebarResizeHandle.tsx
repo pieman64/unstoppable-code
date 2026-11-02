@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX, type MouseEvent } from 'react';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from '@/stores/sidebarStore';
 
 export interface SidebarResizeHandleProps {
-  /** Called with the raw candidate width (px) while dragging. */
+  /** Latest raw candidate width (px), at most once per drag frame plus release. */
   onResize: (widthPx: number) => void;
   /** Current sidebar width (px), reflected via `aria-valuenow`. */
   width: number;
@@ -46,13 +46,32 @@ export function SidebarResizeHandle({
       return;
     }
 
-    const handleMouseMove = (event: globalThis.MouseEvent): void => {
-      onResize(event.clientX);
+    let frame: number | null = null;
+    let pendingWidth: number | null = null;
+    const cancelFrame = (): void => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = null;
     };
-
-    const handleMouseUp = (): void => {
+    const flush = (): void => {
+      frame = null;
+      if (pendingWidth === null) return;
+      const nextWidth = pendingWidth;
+      pendingWidth = null;
+      onResize(nextWidth);
+    };
+    const handleMouseMove = (event: globalThis.MouseEvent): void => {
+      pendingWidth = event.clientX;
+      if (frame === null) frame = window.requestAnimationFrame(flush);
+    };
+    const finish = (): void => {
+      cancelFrame();
+      flush();
       setIsResizing(false);
       onDragStateChange?.(false);
+    };
+    const handleMouseUp = (event: globalThis.MouseEvent): void => {
+      pendingWidth = event.clientX;
+      finish();
     };
 
     const originalCursor = document.body.style.cursor;
@@ -63,10 +82,13 @@ export function SidebarResizeHandle({
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('blur', finish);
 
     return (): void => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('blur', finish);
+      cancelFrame();
       document.body.style.cursor = originalCursor;
       document.body.style.userSelect = originalUserSelect;
     };

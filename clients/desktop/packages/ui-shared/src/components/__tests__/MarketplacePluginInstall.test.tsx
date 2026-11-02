@@ -2,8 +2,7 @@
  * Server-rendered tests for the marketplace install trio moved out of the
  * desktop renderer (phase B of
  * docs/planning/2026-08-27-portal-plugins-section/design.md). These lock the
- * rendered output the desktop's `PluginsManagementView` still depends on
- * through its re-export shim.
+ * rendered output the shared marketplace source list and detail depend on.
  */
 import { renderToString } from 'react-dom/server';
 import {

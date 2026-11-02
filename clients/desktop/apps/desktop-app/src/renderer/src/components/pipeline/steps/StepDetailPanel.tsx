@@ -4,6 +4,10 @@ import type {
   PipelineScalar,
   Step,
 } from '@canopy/desktop-shared/types/pipeline';
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
@@ -34,6 +38,11 @@ interface StepDetailPanelProps {
 }
 
 type StepMode = 'action' | 'script';
+
+const STEP_MODE_OPTIONS: readonly SegmentedControlOption<StepMode>[] = [
+  { value: 'action', label: 'Action' },
+  { value: 'script', label: 'Script' },
+];
 
 function buildShellOptions(): PipelineShellOption[] {
   return [
@@ -200,32 +209,15 @@ export function StepDetailPanel({
 
       {/* Type toggle */}
       <FormField label="Type">
-        <div className="flex rounded-md border overflow-hidden">
-          <button
-            type="button"
-            disabled={readonly}
-            onClick={(): void => handleModeSwitch('action')}
-            className={`flex-1 px-3 py-2 text-s font-medium transition-colors ${
-              mode === 'action'
-                ? 'bg-accent fg-emphasis'
-                : 'bg-base fg-secondary hover:fg-primary'
-            } ${readonly ? 'cursor-not-allowed' : ''}`}
-          >
-            Action
-          </button>
-          <button
-            type="button"
-            disabled={readonly}
-            onClick={(): void => handleModeSwitch('script')}
-            className={`flex-1 px-3 py-2 text-s font-medium transition-colors ${
-              mode === 'script'
-                ? 'bg-accent fg-emphasis'
-                : 'bg-base fg-secondary hover:fg-primary'
-            } ${readonly ? 'cursor-not-allowed' : ''}`}
-          >
-            Script
-          </button>
-        </div>
+        <SegmentedControl
+          label="Step type"
+          value={mode}
+          options={STEP_MODE_OPTIONS}
+          onChange={handleModeSwitch}
+          disabled={readonly}
+          width="fill"
+          shape="capsule"
+        />
       </FormField>
 
       {/* Mode-specific fields */}
@@ -278,7 +270,7 @@ export function StepDetailPanel({
 
                 <FormField
                   label="Scope"
-                  hint="Where the child pipeline runs. Inherit reuses this step’s context."
+                  hint="Where the child workflow runs. Inherit reuses this step’s context."
                 >
                   <SelectField
                     value={targetForm.scope}
@@ -299,7 +291,7 @@ export function StepDetailPanel({
                       onChange={(e): void =>
                         updateTargetForm({ path: e.target.value })
                       }
-                      placeholder="Path for child pipeline"
+                      placeholder="Path for child workflow"
                       disabled={readonly}
                     />
                   </FormField>
@@ -439,6 +431,7 @@ export function StepDetailPanel({
               handleFieldChange('continue_on_error', checked || undefined)
             }
             disabled={readonly}
+            label="Continue on error"
           />
         </FormField>
 
@@ -453,6 +446,7 @@ export function StepDetailPanel({
                 )
               }
               disabled={readonly}
+              label="Skip on missing action"
             />
           </FormField>
         )}

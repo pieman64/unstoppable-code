@@ -110,8 +110,8 @@ export function SharePlanModal({
       });
       if (!plan) throw new Error('The plan could not be shared.');
       pendingPlan.current = plan;
-      // The dialog's success toast carries the link; best-effort, so the
-      // toast still fires without one when the cloud base URL is unavailable.
+      // The dialog's success notice carries the link; best-effort, so the
+      // notice still shows without one when the cloud base URL is unavailable.
       const remoteId = plan.share?.remoteId;
       const shareUrl = remoteId ? await resolveSharedPlanUrl(remoteId) : null;
       return shareUrl ? { shareUrl } : {};

@@ -10,7 +10,10 @@ import {
   SIDEBAR_ITEM_GROUP_SWATCHES,
   type SidebarItemGroupLabelCommit,
 } from '../SidebarItemGroup';
-import { sidebarItemGroupRowMenu } from '../sidebar-item-group-menu';
+import {
+  sidebarItemGroupBulkMenu,
+  sidebarItemGroupRowMenu,
+} from '../sidebar-item-group-menu';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 const group: GroupData = {
@@ -708,6 +711,112 @@ it('editor focuses its labelled input, applies semantic color, and cancels draft
   }
 });
 
+describe('Enter in the group name', () => {
+  const setup = (): {
+    anchor: HTMLButtonElement;
+    input: HTMLInputElement;
+    commit: jest.Mock;
+    close: jest.Mock;
+    cleanup: () => void;
+  } => {
+    const anchor = document.createElement('button');
+    document.body.append(anchor);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const commit = jest.fn();
+    const close = jest.fn(() => root.render(null));
+    act(() =>
+      root.render(
+        <SidebarItemGroupEditor
+          group={group}
+          groups={[group]}
+          unitLabel={unitLabel}
+          anchorRef={{ current: anchor }}
+          returnFocusRef={{ current: anchor }}
+          onClose={close}
+          onLabelCommit={commit}
+          onColorChange={jest.fn()}
+          onKeepWhenEmptyChange={jest.fn()}
+          onCreate={jest.fn()}
+          onUngroup={jest.fn()}
+        />,
+      ),
+    );
+    const input = document.querySelector<HTMLInputElement>(
+      '[data-testid="sidebar-item-group-name"]',
+    );
+    if (!input) throw new Error('Missing group name input');
+    return {
+      anchor,
+      input,
+      commit,
+      close,
+      cleanup: (): void => {
+        void act(() => root.unmount());
+        container.remove();
+        anchor.remove();
+      },
+    };
+  };
+  const pressEnter = (
+    input: HTMLInputElement,
+    init: KeyboardEventInit = {},
+  ): void => {
+    void act(() =>
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, ...init }),
+      ),
+    );
+  };
+
+  it('commits the name, closes the editor and returns focus', () => {
+    const { anchor, input, commit, close, cleanup } = setup();
+    try {
+      setInputValue(input, 'Renamed');
+      pressEnter(input);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(commit).toHaveBeenCalledWith({ name: 'Renamed' });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledWith();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(anchor);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('closes an untouched draft without committing', () => {
+    const { anchor, input, commit, close, cleanup } = setup();
+    try {
+      pressEnter(input);
+      expect(commit).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(anchor);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // Safari sends the candidate-confirming Enter after compositionend, with
+  // isComposing false and keyCode 229.
+  it.each([{ isComposing: true }, { keyCode: 229 }])(
+    'neither commits nor closes during IME composition (%o)',
+    (init) => {
+      const { input, commit, close, cleanup } = setup();
+      try {
+        setInputValue(input, 'Renamed');
+        pressEnter(input, init);
+        expect(commit).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      } finally {
+        cleanup();
+      }
+    },
+  );
+});
+
 it.each([false, true])(
   'offers group membership only to eligible independent rows (%s)',
   (eligible) => {
@@ -1293,4 +1402,88 @@ it('shows an empty group named, and toggles whether it is removed when empty', (
     void act(() => root.unmount());
     container.remove();
   }
+});
+
+describe('sidebarItemGroupBulkMenu', () => {
+  const groups: GroupData[] = [
+    {
+      id: 'g1',
+      name: 'Alpha',
+      color: 'neutral',
+      collapsed: false,
+      memberIds: [],
+    },
+    {
+      id: 'g2',
+      name: 'Beta',
+      color: 'neutral',
+      collapsed: false,
+      memberIds: [],
+    },
+  ];
+  const handlers = {
+    onNewGroup: jest.fn(),
+    onMove: jest.fn(),
+    onRemove: jest.fn(),
+  };
+
+  it('offers New group, every other group, and Remove when a row is grouped', () => {
+    const [organize] = sidebarItemGroupBulkMenu({
+      groups,
+      currentGroupIds: ['g1', 'g1'],
+      ...handlers,
+    });
+    expect(organize?.label).toBe('Move to group');
+    expect(organize?.key).toBe('sidebar-group-organize');
+    expect(organize?.submenu?.map((item) => item.label)).toEqual([
+      'New group',
+      'Beta',
+      'Remove from group',
+    ]);
+    organize?.submenu?.find((item) => item.label === 'Beta')?.onSelect?.();
+    expect(handlers.onMove).toHaveBeenCalledWith('g2');
+  });
+
+  it('lists every group when the rows are in different groups', () => {
+    const [organize] = sidebarItemGroupBulkMenu({
+      groups,
+      currentGroupIds: ['g1', undefined],
+      ...handlers,
+    });
+    expect(organize?.submenu?.map((item) => item.label)).toEqual([
+      'New group',
+      'Alpha',
+      'Beta',
+      'Remove from group',
+    ]);
+  });
+
+  it('offers no Remove when nothing is grouped', () => {
+    const [organize] = sidebarItemGroupBulkMenu({
+      groups,
+      currentGroupIds: [undefined, undefined],
+      ...handlers,
+    });
+    expect(organize?.submenu?.map((item) => item.label)).toEqual([
+      'New group',
+      'Alpha',
+      'Beta',
+    ]);
+  });
+
+  it('is one Add to new group row with no groups and nothing grouped', () => {
+    expect(
+      sidebarItemGroupBulkMenu({
+        groups: [],
+        currentGroupIds: [undefined, undefined],
+        ...handlers,
+      }).map((item) => item.label),
+    ).toEqual(['Add to new group']);
+  });
+
+  it('is empty when no selected row can move', () => {
+    expect(
+      sidebarItemGroupBulkMenu({ groups, currentGroupIds: [], ...handlers }),
+    ).toEqual([]);
+  });
 });

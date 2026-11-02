@@ -95,6 +95,7 @@ function FactCardComponent({ fact, onSelect }: FactCardProps): JSX.Element {
       ) : (
         <button
           type="button"
+          data-settings-control="row"
           className="w-full text-left"
           onClick={() => onSelect(fact.id)}
         >

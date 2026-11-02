@@ -17,15 +17,11 @@ import type { Plugin, UserConfig } from 'vite';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import type { UserConfig as ElectronViteUserConfig } from 'electron-vite';
 import { build as esbuildBuild } from 'esbuild';
-import type { RendererObfuscationSettings } from './src/main/build/renderer-obfuscation';
 import {
   rendererManualChunk,
   rendererStartupBoundaryPlugin,
 } from './src/main/build/renderer-chunks';
-import {
-  rendererOutputPlugins,
-  rendererWorkerOutputPlugins,
-} from './src/main/build/renderer-minification';
+import { rendererOutputPlugins } from './src/main/build/renderer-minification';
 import { getDesktopTelemetryBuildIdentity } from './src/main/build/desktop-telemetry-build-identity';
 import {
   compileRendererReactWorkHook,
@@ -188,6 +184,7 @@ const aliases = {
   '@canopy/core-platform': resolve(repoRoot, 'packages/core-platform/src'),
   '@canopy/core-transport': resolve(repoRoot, 'packages/core-transport/src'),
   '@canopy/core-client': resolve(repoRoot, 'packages/core-client/src'),
+  '@canopy/code-graph': resolve(repoRoot, 'packages/code-graph/src'),
   '@canopy/desktop-shared': resolve(repoRoot, 'packages/desktop-shared/src'),
   '@canopy/desktop-instrumentation': resolve(
     repoRoot,
@@ -388,6 +385,9 @@ function createDependencyVersionDefines(mode: string): Record<string, string> {
     __CANOPY_UPDATE_BASE_URL__: JSON.stringify(
       readEnvString('CANOPY_UPDATE_BASE_URL'),
     ),
+    __CANOPY_SOURCE_BUILD__: JSON.stringify(
+      readEnvString('CANOPY_SOURCE_BUILD') === 'true',
+    ),
   };
 }
 
@@ -536,11 +536,6 @@ const datadogSourceMapsEnabled = readEnvBoolean(
   'CANOPY_DATADOG_SOURCEMAPS',
   false,
 );
-
-const rendererObfuscation: RendererObfuscationSettings = {
-  enabled: readEnvBoolean('CANOPY_RENDERER_OBFUSCATION', true),
-  obfuscateVendor: readEnvBoolean('CANOPY_RENDERER_OBFUSCATE_VENDOR', false),
-};
 
 interface BytecodeFallbackEntry {
   entryFile: string;
@@ -1062,6 +1057,10 @@ export default defineConfig(({ mode }) => {
         __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__: JSON.stringify(
           resolve(repoRoot, '.cache/bin/win32-x64/canopy-process-identity.exe'),
         ),
+        // The dev W5 commit-log host's owned-child addon (CAN-5202).
+        __CANOPY_OWNED_CHILD_SOURCE_DIR__: JSON.stringify(
+          resolve(repoRoot, '.cache/native-owned-child'),
+        ),
       },
       resolve: { alias: aliases },
       build: {
@@ -1113,16 +1112,16 @@ export default defineConfig(({ mode }) => {
       worker: {
         format: 'es',
         plugins: () => [
-          ...rendererWorkerOutputPlugins(),
+          ...rendererOutputPlugins(),
           ...e2eBuildInputGuardPlugins('renderer'),
         ],
       },
       plugins: [
         ...e2eBuildInputGuardPlugins('renderer'),
         pdfWorkerAssetsPlugin(),
-        // Obfuscation, then a final per-chunk minification pass that runs
-        // after Vite's own output transforms (see renderer-minification.ts).
-        ...rendererOutputPlugins(rendererObfuscation),
+        // A final per-chunk minification pass that runs after Vite's own
+        // output transforms (see renderer-minification.ts).
+        ...rendererOutputPlugins(),
         // Each window's startup loads only its own app and no on-demand
         // vendor chunk; the build fails otherwise.
         rendererStartupBoundaryPlugin([

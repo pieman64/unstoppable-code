@@ -7,7 +7,7 @@
 import type { ChatTabPanelSeed } from './chat-panel-binding';
 
 /** Default tab title for a run panel (also the registry's kind title). */
-export const PIPELINE_EXECUTION_PANEL_TITLE = 'Pipeline run';
+export const PIPELINE_EXECUTION_PANEL_TITLE = 'Workflow run';
 
 /**
  * Deterministic panel id for a run's panel, mirroring

@@ -1,0 +1,88 @@
+name: Send Agent Message
+description: Send a message to a project or Orchestrator chat. It can create the chat, queue behind a running turn, steer into it, or wait until the task's setup finishes, and it can change the chat's settings for this turn. Runs in the desktop app.
+scope: [global, directory, worktree]
+inputs:
+  project_id:
+    description: Project that holds the task. Exactly one of project_id or bot_id is required.
+    required: false
+  bot_id:
+    description: Orchestrator bot that holds the task, for example app_advisor. Exactly one of project_id or bot_id is required.
+    required: false
+  task_id:
+    description: Task (Work Entry or worktree) whose chat gets the message. Required.
+    required: false
+  chat_id:
+    description: Existing chat to send to. Optional; without it, the step creates a chat in the task, or reuses its empty first chat when no new-chat settings are set.
+    required: false
+  text:
+    description: Message text, sent as written. Exactly one of text or text_file is required.
+    required: false
+  text_file:
+    description: File inside the step's working folder whose UTF-8 text is the message, at most 1 MB. Exactly one of text or text_file is required.
+    required: false
+  mode:
+    description: "queue (default) waits behind a running turn. steer adds the message to the running turn and needs chat_id; when the chat can't steer, the message stays queued and steer_unavailable_reason says why."
+    required: false
+  model:
+    description: Model id or alias for this turn, or for the new chat. Optional.
+    required: false
+  thinking_effort:
+    description: Thinking effort for this turn. Optional.
+    required: false
+  fast_mode:
+    description: "'true' or 'false'. Optional."
+    required: false
+  plan_mode:
+    description: "'true' or 'false'. Optional."
+    required: false
+  approval_mode:
+    description: ask, auto or full-access. Optional.
+    required: false
+  plugins:
+    description: JSON array of shareable plugin references to turn on. Optional.
+    required: false
+  interface_mode:
+    description: canopy, claude-code or auto, for a new chat only. Optional; fails with chat_id.
+    required: false
+  text_references:
+    description: JSON array of file and plugin references that point into the message text, as an automation prompt stores them. Optional.
+    required: false
+  attachments:
+    description: JSON array of file paths inside the step's working folder to attach. Needs chat_id. Optional.
+    required: false
+  literal_text:
+    description: "'true' to send text and text_references exactly as written, without evaluating expressions in them. Needs text. Optional."
+    required: false
+  replace_empty_chat:
+    description: "'true' to replace the task's only chat with the new one while it is still empty, so the task keeps one chat. Applies in runs an automation started, for a new chat only; other runs ignore it. Optional."
+    required: false
+  new_chat:
+    description: "'true' to always create a new chat instead of reusing the task's empty chat, which may be someone's draft. New chats only; refused with chat_id. Optional."
+    required: false
+outputs:
+  chat_id:
+    description: The chat that received the message.
+  state:
+    description: 'sent when the chat started a turn with the message, queued when it waits behind a running turn, steered when it joined the running turn.'
+  project_id:
+    description: The project that holds the chat, or empty for an Orchestrator chat.
+  bot_id:
+    description: The Orchestrator bot that holds the chat, or empty for a project chat.
+  task_id:
+    description: The task that holds the chat.
+  chat_created:
+    description: 'true when this step created the chat.'
+  message_id:
+    description: Id of the accepted message.
+  queued_message_id:
+    description: Id of the queued message when the message was queued or steered, or empty.
+  turn_id:
+    description: Id of the turn that took the message, when known.
+  accepted_at:
+    description: When the chat accepted the message (ISO 8601).
+  steer_unavailable_reason:
+    description: "Why mode steer left the message queued: missing_capability when the chat's agent can't steer. Empty otherwise."
+  failure_reason:
+    description: Typed reason when the step failed (not_found, advisor_access_disabled, owner_context_unavailable, validation_failed, target_not_ready, unsupported_action, authorization_conflict, needs_desktop). A timeout after the step planned its send is target_not_ready. Empty on success, and also when the step timed out before planning its send, was cancelled or hit an unexpected error; check the step outcome for those.
+runs:
+  using: host

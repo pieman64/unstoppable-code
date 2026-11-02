@@ -1,4 +1,4 @@
-import { useState, type JSX, type ReactNode } from 'react';
+import { useId, useState, type JSX, type ReactNode } from 'react';
 import { ChevronRightIcon } from '../icons/ChevronRightIcon';
 
 export const ADVANCED_DISCLOSURE_LABEL = 'Advanced';
@@ -15,6 +15,11 @@ export interface AdvancedDisclosureProps {
   readonly label?: string;
   /** Root test id; the toggle and body append `-toggle` / `-body`. */
   readonly dataTestId?: string;
+  /**
+   * A 12px mark after the chevron, for a disclosure about another product
+   * (the Grok hint under Cursor). Decorative: the label names it.
+   */
+  readonly leadingIcon?: ReactNode;
 }
 
 /**
@@ -28,15 +33,18 @@ export function AdvancedDisclosure({
   defaultExpanded = false,
   label = ADVANCED_DISCLOSURE_LABEL,
   dataTestId = 'advanced-disclosure',
+  leadingIcon,
 }: AdvancedDisclosureProps): JSX.Element {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const bodyId = useId();
   return (
     <div data-testid={dataTestId}>
       <button
         type="button"
         aria-expanded={expanded}
+        aria-controls={expanded ? bodyId : undefined}
         data-testid={`${dataTestId}-toggle`}
-        className="focus-ring inline-flex items-center gap-1 rounded-md py-0.5 pr-1 text-xs font-medium fg-secondary transition hover:fg-primary"
+        className="focus-ring inline-flex items-center gap-1 rounded-md py-0.5 pr-1 text-xs font-medium fg-secondary transition-colors hover:fg-primary"
         onClick={() => setExpanded((current) => !current)}
       >
         <ChevronRightIcon
@@ -45,13 +53,22 @@ export function AdvancedDisclosure({
           aria-hidden="true"
           className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
         />
+        {leadingIcon ? (
+          <span aria-hidden="true" className="flex shrink-0 items-center">
+            {leadingIcon}
+          </span>
+        ) : null}
         {label}
         {!expanded && collapsedHint && (
           <span className="font-normal fg-tertiary">{` · ${collapsedHint}`}</span>
         )}
       </button>
       {expanded && (
-        <div className="mt-2 space-y-2" data-testid={`${dataTestId}-body`}>
+        <div
+          id={bodyId}
+          className="mt-2 space-y-2"
+          data-testid={`${dataTestId}-body`}
+        >
           {children}
         </div>
       )}

@@ -321,12 +321,18 @@ it('re-exports the same Git selection helpers from core-runtime/node and desktop
           'LINUX_SYSTEM_GIT_PATH',
           'MAC_COMMAND_LINE_TOOLS_GIT_PATH',
           'MAC_HOMEBREW_GIT_PATHS',
+          'getGitExecutableDetectionMode',
+          'getGitExecutableProbeOrder',
+          'getGitExecutableRequirement',
           'getLinuxGitCandidates',
           'getMacGitCandidates',
           'getWindowsGitCandidates',
           'isMacGitShim',
           'parseGitVersion',
           'parseWhereExeOutput',
+          'selectLinuxExplicitGitChoice',
+          'shapeGitExecutableStatus',
+          'shouldJoinGitExecutableDetection',
         ]);
         for (const name of names) {
           assert.equal(runtime[name], helpers[name], name);

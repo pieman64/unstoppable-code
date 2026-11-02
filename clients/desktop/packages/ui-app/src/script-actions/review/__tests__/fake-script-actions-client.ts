@@ -1,4 +1,11 @@
-import type { CanopyCapabilities, CanopyClient } from '@canopy/app-core';
+import type {
+  CanopyCapabilities,
+  CanopyClient,
+  CommandMap,
+  CommandName,
+  QueryMap,
+  QueryName,
+} from '@canopy/app-core';
 import type {
   ScriptAction,
   ScriptActionsSnapshot,
@@ -12,6 +19,7 @@ export const BASE_CAPABILITIES: CanopyCapabilities = {
   settingsScope: 'api-keys-only',
   pipelines: 'crud-only',
   routing: 'url',
+  overviewNotifications: false,
 };
 
 export function action(overrides: Partial<ScriptAction> = {}): ScriptAction {
@@ -156,8 +164,18 @@ export function createFakeScriptActionsClient(
   };
   const client: CanopyClient = {
     capabilities: { ...BASE_CAPABILITIES, ...capabilities },
-    query: jest.fn(run),
-    command: jest.fn(run),
+    query<K extends QueryName>(
+      name: K,
+      args: QueryMap[K]['args'],
+    ): Promise<QueryMap[K]['result']> {
+      return run(name, args) as Promise<QueryMap[K]['result']>;
+    },
+    command<K extends CommandName>(
+      name: K,
+      args: CommandMap[K]['args'],
+    ): Promise<CommandMap[K]['result']> {
+      return run(name, args) as Promise<CommandMap[K]['result']>;
+    },
     subscribe: () => () => undefined,
   };
   return Object.assign(fake, { client });

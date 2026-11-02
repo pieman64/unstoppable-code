@@ -1,16 +1,18 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { CopilotClient, GetStatusResponse } from '@github/copilot-sdk';
 import type * as CopilotSdkModule from '@github/copilot-sdk';
 import { copilotRuntimeEnvironment } from './runtime-environment';
 import {
+  describeCopilotProcessFailure,
   snapshotCopilotDescendants,
   terminateCopilotDescendants,
   withCopilotCleanupDeadline,
   killCopilotProcess,
 } from './process-ownership';
+import { CopilotProcessReceipt } from './process-receipts';
 import { loadRequiredNodeModule } from '../lib/packaged-module-loader';
 
 export interface CopilotRuntimeOptions {
@@ -18,11 +20,21 @@ export interface CopilotRuntimeOptions {
   expectedVersion: string;
   workingDirectory: string;
   stateDirectory: string;
+  receiptDirectory?: string;
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
 }
 
+export interface CopilotRecipientIdentity {
+  readonly runtimeId: string;
+  readonly pid: number;
+  /** Spawn identity on the host's monotonic clock, disambiguated by runtimeId. */
+  readonly started: number;
+}
+
 export interface OwnedCopilotRuntime {
+  readonly identity: CopilotRecipientIdentity;
+  isClosed(): boolean;
   client: CopilotClient;
   /** Resolves when the native process has been reaped. */
   exited: Promise<void>;
@@ -45,6 +57,7 @@ export async function startCopilotRuntime(
     options.executable,
     options.workingDirectory,
     options.stateDirectory,
+    ...(options.receiptDirectory ? [options.receiptDirectory] : []),
   ]) {
     if (!isAbsolute(value))
       throw new Error('Copilot runtime paths must be absolute.');
@@ -78,6 +91,8 @@ export async function startCopilotRuntime(
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
+  const started = performance.now();
+  const runtimeId = randomUUID();
   let reap!: () => void;
   const exited = new Promise<void>((resolve) => {
     reap = resolve;
@@ -97,6 +112,9 @@ export async function startCopilotRuntime(
   child.stderr.resume();
   let client: CopilotClient | undefined;
   let closing: Promise<void> | undefined;
+  const receipt = options.receiptDirectory
+    ? new CopilotProcessReceipt(options.receiptDirectory)
+    : undefined;
   const observedDescendants = new Map<
     string,
     Awaited<ReturnType<typeof snapshotCopilotDescendants>>[number]
@@ -105,6 +123,7 @@ export async function startCopilotRuntime(
   let observation: Promise<void> | undefined;
   let observationError: Error | undefined;
   let ownershipLimitReached = false;
+  let receiptConfirmed = false;
   let failedObservations = 0;
   const childIsRunning = (): boolean =>
     !childExited && child.exitCode === null && child.signalCode === null;
@@ -113,28 +132,52 @@ export async function startCopilotRuntime(
   const observeDescendants = (): Promise<void> => {
     if (observation) return observation;
     if (!child.pid || !childIsRunning()) return Promise.resolve();
-    observation = snapshotCopilotDescendants(child.pid)
-      .then((descendants) => {
-        // The OS query is asynchronous; do not admit a replacement root
-        // whose PID was reused while enumeration was in flight.
-        if (!childIsRunning()) return;
-        for (const descendant of descendants) {
-          const key = `${descendant.pid}:${descendant.started}`;
-          if (
-            observedDescendants.size >= 16_384 &&
-            !observedDescendants.has(key)
-          ) {
-            ownershipLimitReached = true;
-            throw new Error('Copilot process ownership limit exceeded.');
+    observation = snapshotCopilotDescendants(child.pid, !!receipt)
+      .then(
+        async (descendants) => {
+          failedObservations = 0;
+          // The OS query is asynchronous; do not admit a replacement root
+          // whose PID was reused while enumeration was in flight.
+          if (!childIsRunning()) return;
+          for (const descendant of descendants) {
+            const key = `${descendant.pid}:${descendant.started}`;
+            if (
+              observedDescendants.size >= 16_384 &&
+              !observedDescendants.has(key)
+            ) {
+              ownershipLimitReached = true;
+              throw new Error('Copilot process ownership limit exceeded.');
+            }
+            observedDescendants.set(key, descendant);
           }
-          observedDescendants.set(key, descendant);
-        }
-      })
+          try {
+            await receipt?.save(Array.from(observedDescendants.values()));
+            if (descendants.some((row) => row.pid === child.pid))
+              receiptConfirmed = true;
+          } catch (error) {
+            ownershipLimitReached = true;
+            throw error;
+          }
+        },
+        (error: unknown) => {
+          // Count each probe once, however many callers share it.
+          failedObservations++;
+          throw error;
+        },
+      )
       .finally(() => {
         observation = undefined;
       });
     return observation;
   };
+  // A busy host can push one OS process query past its deadline. Earlier
+  // observations stay owned, so only a hard limit or repeated failures mean
+  // ownership was lost. Probes never overlap, so descendants can go
+  // unrecorded until the runtime stops, for up to
+  // MAX_CONSECUTIVE_OBSERVATION_FAILURES × (probe timeout + tick).
+  const ownershipLost = (): boolean =>
+    ownershipLimitReached ||
+    failedObservations >= MAX_CONSECUTIVE_OBSERVATION_FAILURES;
   const close = (): Promise<void> => {
     closing ??= (async (): Promise<void> => {
       options.signal.removeEventListener('abort', abort);
@@ -152,7 +195,23 @@ export async function startCopilotRuntime(
               : new Error('Copilot process cleanup failed.');
         });
       };
-      await cleanup(observeDescendants);
+      // A transient final probe falls back to the descendants already
+      // observed; it shares the polling failure budget. A probe that outlives
+      // the cleanup deadline still fails cleanup; a warning it logs later is
+      // only diagnostic.
+      await cleanup(() =>
+        observeDescendants().catch((error: unknown) => {
+          if (ownershipLost()) throw error;
+          const detail = describeCopilotProcessFailure(error);
+          process.emitWarning(
+            'Copilot process ownership could not be confirmed during cleanup; using the processes observed earlier.',
+            {
+              code: 'COPILOT_OWNERSHIP_PROBE_SKIPPED',
+              ...(detail ? { detail } : {}),
+            },
+          );
+        }),
+      );
       const descendants = Array.from(observedDescendants.values());
       if (process.platform === 'win32') {
         // taskkill needs the live parent to discover its tree. RPC shutdown
@@ -177,6 +236,11 @@ export async function startCopilotRuntime(
       await cleanup(() => kill('SIGKILL'));
       if (client) await cleanup(() => client?.forceStop() ?? Promise.resolve());
       await cleanup(() => exited);
+      // A late observation may still be writing after the wrapper's deadline.
+      if (!cleanupError && !observation && receipt)
+        await cleanup(() =>
+          receipt.removeIfReaped(Array.from(observedDescendants.values())),
+        );
       if (cleanupError) throw cleanupError;
     })();
     return closing;
@@ -186,7 +250,7 @@ export async function startCopilotRuntime(
   };
   options.signal.addEventListener('abort', abort, { once: true });
   try {
-    const port = await new Promise<number>((resolve, reject) => {
+    const portReady = new Promise<number>((resolve, reject) => {
       let output = '';
       const timeout = setTimeout(
         () => finish(new Error('Copilot did not start in time.')),
@@ -223,6 +287,12 @@ export async function startCopilotRuntime(
       options.signal.addEventListener('abort', onAbort, { once: true });
       if (options.signal.aborted) onAbort();
     });
+    const [port] = await Promise.all([
+      portReady,
+      observeDescendants().catch((error: unknown) => {
+        if (ownershipLost()) throw error;
+      }),
+    ]);
     options.signal.throwIfAborted();
     // The desktop entry is V8 bytecode and has no dynamic-import callback.
     // Load the SDK's official CJS export lazily through the packaged resolver.
@@ -270,36 +340,36 @@ export async function startCopilotRuntime(
       throw new Error(
         `Copilot CLI ${options.expectedVersion} is required. Reconnect Copilot in Settings.`,
       );
-    await observeDescendants();
+    // A failed first probe is transient like any other; polling retries it.
+    await observeDescendants().catch((error: unknown) => {
+      if (ownershipLost()) throw error;
+    });
     options.signal.throwIfAborted();
+    if (receipt && !receiptConfirmed)
+      throw new Error('Copilot process ownership could not be inspected.');
     // Keep identities before a crash can orphan separate PTY/process groups.
     // Only one bounded enumeration can be in flight per owned runtime.
     observationTimer = setInterval(() => {
-      // Count each probe once, not once per tick that overlapped it.
       if (observation) return;
-      void observeDescendants().then(
-        () => {
-          failedObservations = 0;
-        },
-        (error: unknown) => {
-          // A busy host can push one OS process query past its deadline.
-          // Earlier observations stay owned, so only a hard limit or repeated
-          // failures stop the runtime.
-          if (
-            !ownershipLimitReached &&
-            ++failedObservations < MAX_CONSECUTIVE_OBSERVATION_FAILURES
-          )
-            return;
-          observationError =
-            error instanceof Error
-              ? error
-              : new Error('Copilot process ownership could not be inspected.');
-          void close().catch(() => undefined);
-        },
-      );
+      void observeDescendants().catch((error: unknown) => {
+        if (!ownershipLost()) return;
+        observationError =
+          error instanceof Error
+            ? error
+            : new Error('Copilot process ownership could not be inspected.');
+        void close().catch(() => undefined);
+      });
     }, 500);
     observationTimer.unref();
-    return { client, exited, close };
+    if (!child.pid) throw new Error('Copilot process identity is missing.');
+    const identity = Object.freeze({ runtimeId, pid: child.pid, started });
+    return {
+      client,
+      exited,
+      close,
+      identity,
+      isClosed: () => closing !== undefined || !childIsRunning(),
+    };
   } catch (error) {
     await close();
     throw error;

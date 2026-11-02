@@ -114,7 +114,18 @@ describe('githubUpdatePrBaseBranch handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    registerGitHubHandlers(() => mockWindow as any, {
+      // These tests reach no dispatched pull request call: no workspace
+      // records their checkouts, so the writes keep their direct path.
+      dispatcher: {} as never,
+      resolveCaller: () => ({
+        principalId: 'local-desktop-user',
+        clientInstanceId: 'electron-web-contents:1',
+        authorityId: 'local-desktop',
+        interfaceKind: 'desktop',
+        grants: [],
+      }),
+    });
     handler = getUpdatePrBaseBranchHandler();
   });
 

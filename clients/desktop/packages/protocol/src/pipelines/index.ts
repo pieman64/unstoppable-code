@@ -102,6 +102,8 @@ export interface PipelineIndexEntry {
   createdAt: string;
   updatedAt: string;
   triggerTypes?: PipelineTriggerType[];
+  /** Number of declared pipeline steps, when the listing host loaded the definition. */
+  stepCount?: number;
   /**
    * Normalized execution scopes for this pipeline. Optional in the index so UI
    * surfaces can filter without re-parsing every YAML file; consumers default
@@ -112,6 +114,11 @@ export interface PipelineIndexEntry {
   scopes?: PipelineExecutionScope[];
   /** Author-side link to the pipeline's current cloud share. */
   remote?: ShareRemoteMetadata;
+  /**
+   * Revision of a user pipeline's document, raised by every save. Absent
+   * means 0: the entry predates revisions or is bundled.
+   */
+  revision?: number;
 }
 
 /**

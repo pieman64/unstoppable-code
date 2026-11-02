@@ -1,3 +1,6 @@
+'use client';
+
+import { useContinuousMotion } from '../lib/continuous-motion';
 import type { JSX } from 'react';
 import {
   spinnerClassName,
@@ -23,8 +26,7 @@ interface ThinkingSpinnerProps {
   sizePx?: number;
 }
 
-const DOT =
-  'h-0.5 w-0.5 rounded-full bg-current will-change-[transform,opacity]';
+const DOT = 'h-0.5 w-0.5 rounded-full bg-current';
 /** The 3×3 grid's natural box: three 2px dots and two 2px gaps. */
 const DOT_GRID_SIZE_PX = 10;
 
@@ -41,6 +43,7 @@ export function ThinkingSpinner({
   quiet = false,
   sizePx,
 }: ThinkingSpinnerProps): JSX.Element {
+  const motionRef = useContinuousMotion<HTMLSpanElement>();
   // A host that draws spinners as the comet (desktop early access) gets the
   // ring at the dot grid's footprint, keeping the "Thinking" name.
   if (useSpinnerStyle() === 'comet') {
@@ -56,6 +59,7 @@ export function ThinkingSpinner({
   }
   return (
     <span
+      ref={motionRef}
       className={`inline-grid grid-cols-3 gap-0.5 ${spinnerClassName(tone, quiet)} ${className}`}
       style={spinnerGapStyle(sizePx)}
       aria-label="Thinking"

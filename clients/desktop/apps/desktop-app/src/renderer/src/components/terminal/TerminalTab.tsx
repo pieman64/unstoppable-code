@@ -8,6 +8,7 @@ import {
 import { TerminalPane } from './TerminalPane';
 import { TerminalSplitGutter } from './TerminalSplitGutter';
 import { TerminalList } from './TerminalList';
+import { Button } from '@canopy/ui-shared/components';
 
 interface TerminalTabProps {
   projectId: string;
@@ -221,14 +222,9 @@ function EmptyState({
           {spawnError}
         </span>
       )}
-      <button
-        type="button"
-        onClick={onCreate}
-        disabled={spawning}
-        className="rounded border bg-base/50 px-3 py-1 text-xs hover:bg-base disabled:opacity-50"
-      >
+      <Button size="compact" onClick={onCreate} disabled={spawning}>
         + Create terminal
-      </button>
+      </Button>
     </div>
   );
 }

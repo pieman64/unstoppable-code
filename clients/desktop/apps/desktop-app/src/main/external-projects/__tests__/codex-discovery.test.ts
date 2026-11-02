@@ -11,9 +11,9 @@ jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
   return {
     ...actual,
-    stat: (...args: Parameters<typeof actual.stat>): Promise<Stats> => {
-      mockStatTracker.paths.push(String(args[0]));
-      return actual.stat(...args);
+    stat: (path: Parameters<typeof actual.stat>[0]): Promise<Stats> => {
+      mockStatTracker.paths.push(String(path));
+      return actual.stat(path);
     },
   };
 });

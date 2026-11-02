@@ -41,29 +41,35 @@ jest.mock('../services/chat-state-service', () => {
   const actual = jest.requireActual<typeof ChatStateServiceModule>(
     '../services/chat-state-service',
   );
-  return {
-    ...actual,
-    getChatStateService: (): ChatStateServiceModule.ChatStateService => {
-      const service = actual.getChatStateService();
-      return new Proxy(service, {
-        get(target, key): unknown {
-          if (key === 'flushScope')
-            return async (
-              projectId: string,
-              worktreeId: string,
-            ): Promise<void> => {
-              await flushScopeMock(projectId, worktreeId);
-              await target.flushScope(projectId, worktreeId);
-            };
-          const value: unknown = Reflect.get(target, key);
-          return typeof value === 'function'
-            ? (...args: unknown[]): unknown =>
-                Reflect.apply(value, target, args)
-            : value;
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      getChatStateService: {
+        value: (): ChatStateServiceModule.ChatStateService => {
+          const service = actual.getChatStateService();
+          return new Proxy(service, {
+            get(target, key): unknown {
+              if (key === 'flushScope')
+                return async (
+                  projectId: string,
+                  worktreeId: string,
+                ): Promise<void> => {
+                  await flushScopeMock(projectId, worktreeId);
+                  await target.flushScope(projectId, worktreeId);
+                };
+              const value: unknown = Reflect.get(target, key);
+              return typeof value === 'function'
+                ? (...args: unknown[]): unknown =>
+                    Reflect.apply(value, target, args)
+                : value;
+            },
+          });
         },
-      });
+        enumerable: true,
+      },
     },
-  };
+  );
 });
 
 import {
@@ -134,19 +140,28 @@ async function writeTextFile(filePath: string, content: string): Promise<void> {
   await writeFile(filePath, content, 'utf8');
 }
 
+function hasChatProjectDataShape(value: unknown): value is ChatProjectData {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('id' in value) ||
+    typeof value.id !== 'string' ||
+    !('name' in value) ||
+    typeof value.name !== 'string' ||
+    !('createdAt' in value) ||
+    typeof value.createdAt !== 'string'
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function asChatProjectData(value: unknown): ChatProjectData {
   if (
     typeof value !== 'object' ||
     value === null ||
     !('project' in value) ||
-    typeof value.project !== 'object' ||
-    value.project === null ||
-    !('id' in value.project) ||
-    typeof value.project.id !== 'string' ||
-    !('name' in value.project) ||
-    typeof value.project.name !== 'string' ||
-    !('createdAt' in value.project) ||
-    typeof value.project.createdAt !== 'string'
+    !hasChatProjectDataShape(value.project)
   ) {
     throw new Error('Expected a StandaloneProjectImportResponse');
   }

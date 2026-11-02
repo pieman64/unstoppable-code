@@ -1,7 +1,12 @@
 import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
 import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
 import { unknownSecureStorageFailure } from '@/lib/secureStorageNotice';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Notice,
+  ProviderStatusDot,
+  ExternalTextLink,
+} from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -23,7 +28,6 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { SettingsRow, SettingsTextField } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const TOKEN_SAVE_DEBOUNCE_MS = 600;
 
@@ -38,7 +42,6 @@ let linearTokenWriteQueue: Promise<void> = Promise.resolve();
  * it in a group (the legacy Accounts tab) or a card (hosted Integrations).
  */
 export function LinearKeyRow(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [linearValue, setLinearValue] = useState('');
   const [debouncedLinearValue, setDebouncedLinearValue] = useState('');
   const [linearLoaded, setLinearLoaded] = useState(false);
@@ -221,14 +224,10 @@ export function LinearKeyRow(): JSX.Element {
           'Optional.'
         )}{' '}
         Create a personal API key in{' '}
-        <a
+        <ExternalTextLink
           href="https://linear.app/settings/account/security/api-keys"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="fg-accent underline transition-colors hover:fg-primary"
-        >
-          Linear API settings
-        </a>
+          label="Linear API settings"
+        />
         .
       </>
     );
@@ -241,10 +240,8 @@ export function LinearKeyRow(): JSX.Element {
           <LinearIcon size={16} className="shrink-0 fg-primary" aria-hidden />
           Linear
           {!linearError && linearStatus && (
-            <span
-              className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-                linearStatus.authenticated ? 'bg-success' : 'bg-destructive'
-              }`}
+            <ProviderStatusDot
+              tone={linearStatus.authenticated ? 'connected' : 'failed'}
             />
           )}
         </span>
@@ -264,7 +261,7 @@ export function LinearKeyRow(): JSX.Element {
             data-testid="settings-linear-token-input"
           />
           <Button
-            size={settingsButtonSize}
+            size="compact"
             variant="ghost"
             iconOnly
             aria-label={linearVisible ? 'Hide token' : 'Show token'}

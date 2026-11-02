@@ -5,9 +5,17 @@
 // tests drive each producer through the canonical provider-event ingress and
 // assert that a completed turn moves the chat out of the live strip and into
 // the archived-chat UI.
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import {
@@ -18,7 +26,8 @@ import {
 } from './codexPipelineRuntime.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { seedWorktreeChat } from './seeders/index.mjs';
-import { launchCanopy } from './launchCanopy.mjs';
+import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
+import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
 import {
   openAutoArchiveSurface,
@@ -483,6 +492,216 @@ test('a hook-configured auto-archive chat moves to archives after its first comp
     await expectArchived(window, 'hook-auto-archive');
   } finally {
     await closeFixture(launched.electronApp, userDataDir, fixture.runtimeDir);
+  }
+});
+
+const CLAUDE_AUTO_ARCHIVE_FIXTURE = fileURLToPath(
+  new URL('./fixtures/fake-claude-auto-archive-cli.mjs', import.meta.url),
+);
+// Matches the fixture's provider session id.
+const CLAUDE_AUTO_ARCHIVE_SESSION_ID = '6f1c2a3e-1b2c-4d5e-8f90-0a1b2c3d4e5f';
+
+function readClaudeAutoArchiveLog(logPath) {
+  if (!existsSync(logPath)) return [];
+  return readFileSync(logPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+async function launchClaudeAutoArchive(chatId) {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-claude-auto-archive-'),
+  );
+  const fakeCliPath = path.join(userDataDir, 'fake-claude-auto-archive.mjs');
+  const logPath = path.join(userDataDir, 'fake-claude-auto-archive.log');
+  copyFileSync(CLAUDE_AUTO_ARCHIVE_FIXTURE, fakeCliPath);
+  chmodSync(fakeCliPath, 0o755);
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    activeTabId: chatId,
+    tabs: [
+      {
+        id: chatId,
+        title: 'Claude auto archive',
+        autoArchive: true,
+        providerType: 'claude',
+      },
+      { id: 'keeper', title: 'Keeper chat', providerType: 'claude' },
+    ],
+  });
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({
+      userDataDir,
+      env: {
+        CLAUDE_CODE_EXECUTABLE: fakeCliPath,
+        CANOPY_CLAUDE_AUTO_ARCHIVE_LOG: logPath,
+      },
+    }),
+  );
+  return { electronApp, userDataDir, logPath };
+}
+
+async function openClaudeAutoArchiveWorktree(electronApp) {
+  const window = await electronApp.firstWindow();
+  const app = new CanopyAppDriver(window);
+  await app.waitForShell({ timeout: 30_000 });
+  await app.openMainPage();
+  await app.selectWorktree(WORKTREE_ID);
+  return window;
+}
+
+function claudeChatStarts(logPath) {
+  return readClaudeAutoArchiveLog(logPath).filter(
+    (entry) => entry.type === 'chat_start',
+  );
+}
+
+async function readArchivedClaudeChat(window, chatId) {
+  const { tab } = await window.evaluate(
+    (request) => window.api.chat.readArchive(request),
+    {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId,
+      fullTranscript: true,
+    },
+  );
+  return tab;
+}
+
+async function expectStillArchived(window, chatId) {
+  const state = await window.evaluate(
+    ({ projectId, worktreeId }) =>
+      window.api.chat.getState({ projectId, worktreeId }),
+    { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+  );
+  expect(state.archives.some((archive) => archive.chatId === chatId)).toBe(
+    true,
+  );
+  expect(state.tabsFile.tabs.some((tab) => tab.id === chatId)).toBe(false);
+}
+
+test('an auto-archived Claude chat releases its CLI and resumes the same session on restore', async () => {
+  test.setTimeout(150_000);
+  const chatId = 'claude-auto-archive';
+  const { electronApp, userDataDir, logPath } =
+    await launchClaudeAutoArchive(chatId);
+  try {
+    const window = await openClaudeAutoArchiveWorktree(electronApp);
+
+    await sendMessage(window, chatId, 'Finish and auto archive.');
+    await expectArchived(window, chatId);
+
+    const [firstStart] = claudeChatStarts(logPath);
+    const firstPid = firstStart?.pid;
+    expect(firstPid).toEqual(expect.any(Number));
+    expect(firstStart.resume).toBeNull();
+    // The leaked process is the one whose MCP route names the chat.
+    expect(firstStart.mcpConfigNamesChat).toBe(true);
+    const archivedBefore = await readArchivedClaudeChat(window, chatId);
+    expect(archivedBefore.sdkSessionId).toBe(CLAUDE_AUTO_ARCHIVE_SESSION_ID);
+
+    // Released after its settle period, with nothing written to the chat.
+    await expect
+      .poll(() => processIsAlive(firstPid), { timeout: 45_000 })
+      .toBe(false);
+    await expectStillArchived(window, chatId);
+    const archivedAfter = await readArchivedClaudeChat(window, chatId);
+    expect(archivedAfter.messages).toEqual(archivedBefore.messages);
+    expect(archivedAfter.sdkSessionId).toBe(CLAUDE_AUTO_ARCHIVE_SESSION_ID);
+
+    await window.getByTestId('chat-tab-archive').click();
+    const modal = window.getByTestId('archived-chats-modal');
+    await expect(modal).toBeVisible();
+    await modal
+      .locator(
+        `[data-testid="archived-chats-modal-row"][data-archived-chat-id="${chatId}"]`,
+      )
+      .getByTestId('archived-chat-restore')
+      .click();
+    await expect(
+      window.getByTestId(`panel-tab-panel-chat-${chatId}`),
+    ).toBeVisible({ timeout: 15_000 });
+
+    await sendMessage(window, chatId, 'Continue with the earlier context.');
+    await expect
+      .poll(
+        () =>
+          claudeChatStarts(logPath)
+            .filter((entry) => entry.pid !== firstPid)
+            .map((entry) => entry.resume),
+        { timeout: 45_000 },
+      )
+      .toEqual([CLAUDE_AUTO_ARCHIVE_SESSION_ID]);
+    const panel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${chatId}"]`,
+    );
+    await expect(
+      panel.getByText(`Resumed ${CLAUDE_AUTO_ARCHIVE_SESSION_ID} turn 1`),
+    ).toBeVisible({ timeout: 15_000 });
+    // A user restore ends auto-archiving, so the chat stays open.
+    await expect(
+      window.getByTestId(`panel-tab-panel-chat-${chatId}`),
+    ).toBeVisible();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('an auto-archived Claude chat keeps its CLI while a background Bash task runs', async () => {
+  test.setTimeout(150_000);
+  const chatId = 'claude-auto-archive';
+  const { electronApp, userDataDir, logPath } =
+    await launchClaudeAutoArchive(chatId);
+  try {
+    const window = await openClaudeAutoArchiveWorktree(electronApp);
+
+    await sendMessage(window, chatId, 'Start the dev server [background-task]');
+    await expectArchived(window, chatId);
+    const [start] = claudeChatStarts(logPath);
+    expect(start?.pid).toEqual(expect.any(Number));
+    expect(
+      readClaudeAutoArchiveLog(logPath).some(
+        (entry) => entry.type === 'task_started',
+      ),
+    ).toBe(true);
+
+    // Longer than the idle settle period: the live task holds the CLI.
+    await new Promise((resolve) => setTimeout(resolve, 8_000));
+    expect(processIsAlive(start.pid)).toBe(true);
+    await expectStillArchived(window, chatId);
+
+    writeFileSync(`${logPath}.finish-task`, '');
+    await expect
+      .poll(
+        () =>
+          readClaudeAutoArchiveLog(logPath).some(
+            (entry) => entry.type === 'task_finished',
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+    // Released once the task ends and its continuation window passes.
+    await expect
+      .poll(() => processIsAlive(start.pid), { timeout: 60_000 })
+      .toBe(false);
+    await expectStillArchived(window, chatId);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
   }
 });
 

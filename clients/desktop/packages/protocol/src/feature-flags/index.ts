@@ -55,6 +55,8 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the Chat activity card experiment.',
   },
+  // Historical UI rollout keys remain reserved for older client snapshots.
+  // Current clients ignore them; see docs/feature-flags.md for retirement policy.
   canopyDesktopLabsMinimalLayout: {
     key: 'canopy-desktop-labs-minimal-layout',
     launchDarklyDisabledDefaultValue: 'offered',
@@ -71,7 +73,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-chat-tab-previews',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the Chat tab previews experiment.',
+    description: 'Availability of the Tab previews experiment.',
   },
   canopyDesktopLabsSubagentsView: {
     key: 'canopy-desktop-labs-subagents-view',
@@ -85,11 +87,11 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the Archived chats card experiment.',
   },
-  canopyDesktopLabsCleanChat: {
-    key: 'canopy-desktop-labs-clean-chat',
+  canopyDesktopLabsCompactQueue: {
+    key: 'canopy-desktop-labs-compact-queue',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
-    description: 'Availability of the Clean chat experiment.',
+    description: 'Availability of the Compact queue experiment.',
   },
   canopyDesktopLabsProxyAccountCards: {
     key: 'canopy-desktop-labs-proxy-account-cards',
@@ -102,6 +104,26 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the Pull request cards experiment.',
+  },
+  canopyDesktopLabsSmoothStreaming: {
+    key: 'canopy-desktop-labs-smooth-streaming',
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the Smooth streaming experiment.',
+  },
+  canopyDesktopLabsDaemonFilesReads: {
+    key: 'canopy-desktop-labs-daemon-files-reads',
+    // Brand defaults are injected by desktop main; raw snapshots stay offered.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the independent Files reads experiment.',
+  },
+  canopyDesktopLabsChatAutomationPipelines: {
+    key: 'canopy-desktop-labs-chat-automation-pipelines',
+    // Off until opted in: an edited chat automation saves as a pipeline.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the chat automation pipelines experiment.',
   },
   canopyDesktopLabsOverviewPage: {
     key: 'canopy-desktop-labs-overview-page',
@@ -316,12 +338,26 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Controls desktop GitHub Copilot setup, model selection, and runtime access.',
   },
+  canopyDesktopCopilotHarnessReleased: {
+    key: 'canopy-desktop-copilot-harness-released',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Promotes GitHub Copilot setup out of Labs into Accounts when the Copilot harness gate is also enabled.',
+  },
   canopyDesktopOpenCodeHarness: {
     key: 'canopy-desktop-opencode-harness',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     description:
       'Controls desktop OpenCode setup, model selection, and runtime access.',
+  },
+  canopyDesktopOpenCodeHarnessReleased: {
+    key: 'canopy-desktop-opencode-harness-released',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Promotes OpenCode setup out of Labs into Accounts when the OpenCode harness gate is also enabled.',
   },
   canopyDesktopClaudeTuiWorkers: {
     key: 'canopy-desktop-claude-tui-workers',
@@ -536,13 +572,11 @@ export const CLIENT_FEATURE_FLAGS = {
   },
   canopyDesktopDaemonFilesReads: {
     key: 'canopy-desktop-daemon-files-reads',
-    // CAN-4305. Launched dark in both fallback modes: Files roots and
-    // directory reads stay on the direct desktop path unless LaunchDarkly
-    // serves `true`.
+    // Obsolete boolean retained for wire compatibility; no longer selects Files routing.
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     description:
-      'Routes eligible desktop Files roots and directory reads through the local core daemon instead of the direct desktop reader.',
+      'Obsolete Files selector. Use the daemon-files-reads Labs experiment.',
   },
   canopyDesktopExternalAgentsMenu: {
     key: 'canopy-desktop-external-agents-menu',
@@ -594,11 +628,17 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard
     .key]: LabsExperimentAvailability;
-  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards
+    .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming
+    .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
+    .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
     .key]: LabsExperimentAvailability;
@@ -628,7 +668,9 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph.key]: boolean;
@@ -705,14 +747,23 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard
         .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -784,8 +835,14 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers
@@ -890,14 +947,23 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard
         .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key]:
-      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -971,8 +1037,14 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers
@@ -1060,9 +1132,12 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatTabPreviews.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsSubagentsView.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard.key,
-  CLIENT_FEATURE_FLAGS.canopyDesktopLabsCleanChat.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,

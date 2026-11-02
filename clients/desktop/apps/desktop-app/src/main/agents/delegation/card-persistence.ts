@@ -3,6 +3,9 @@ import {
   type AgentDelegationSnapshot,
   type AgentDelegationTranscript,
 } from '@canopy/protocol/delegation';
+import { persistedDelegationSnapshot } from '@canopy/agent-transcript';
+
+export { persistedDelegationSnapshot } from '@canopy/agent-transcript';
 
 const SETTLED_STATUSES: ReadonlySet<AgentDelegationSnapshot['status']> =
   new Set<AgentDelegationSnapshot['status']>([
@@ -12,34 +15,6 @@ const SETTLED_STATUSES: ReadonlySet<AgentDelegationSnapshot['status']> =
     'deadline_exceeded',
     'interrupted',
   ]);
-
-type MutableSnapshot = {
-  -readonly [Key in keyof AgentDelegationSnapshot]: AgentDelegationSnapshot[Key];
-};
-
-/**
- * The card fields a parent transcript keeps for a delegate whose child
- * transcript is in the chat's delegate log. Progress (partial text, phase,
- * queue position, pending approval or stop, workspace observation, an
- * accepted control operation, running usage) is live-only: it reaches the
- * renderer and Portal as it happens and is never committed, so a running
- * delegate does not rewrite its parent's history. Restart recovery rebuilds
- * the card's state from the run record.
- */
-export function persistedDelegationSnapshot(
-  snapshot: AgentDelegationSnapshot,
-): AgentDelegationSnapshot {
-  const persisted: MutableSnapshot = { ...snapshot };
-  delete persisted.partialText;
-  delete persisted.phase;
-  delete persisted.queue;
-  delete persisted.approvalPending;
-  delete persisted.stopRequested;
-  delete persisted.workspaceObservation;
-  if (persisted.control?.status === 'accepted') delete persisted.control;
-  if (!SETTLED_STATUSES.has(snapshot.status)) delete persisted.usage;
-  return persisted;
-}
 
 function runKey(transcript: AgentDelegationTranscript): string {
   return `${transcript.delegationId}:${String(transcript.runGeneration)}`;

@@ -10,6 +10,7 @@ import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
+  IPCResult,
   Pipeline,
   PipelineInfo,
   SharedPipelineDetail,
@@ -175,7 +176,10 @@ const sharedDetail: SharedPipelineDetail = {
   icon: '',
   createdAt: '2026-08-30T00:00:00.000Z',
   updatedAt: '2026-08-30T00:00:00.000Z',
+  contentHash: 'a'.repeat(64),
+  version: '1',
   triggerTypes: ['dispatch'],
+  createdBy: { id: 'user-1', name: 'Alice' },
   canUpdate: true,
   canDelete: true,
   shareScope: 'private',
@@ -203,15 +207,15 @@ describe('SharePipelineModal', () => {
   let container: HTMLElement;
   let root: Root;
   const createShared = jest.fn<
-    Promise<{ success: boolean; data: SharedPipelineDetail }>,
+    Promise<IPCResult<SharedPipelineDetail>>,
     [SharedPipelineWriteRequest]
   >();
   const createSharedPackaged = jest.fn<
-    Promise<{ success: boolean; data: SharedPipelineDetail }>,
+    Promise<IPCResult<SharedPipelineDetail>>,
     [PipelinePackageCreateSharedRequest]
   >();
   const analyzePackage = jest.fn<
-    Promise<{ success: boolean; data?: PipelinePackageAnalysisSummary }>,
+    Promise<IPCResult<PipelinePackageAnalysisSummary>>,
     [PipelinePackageAnalyzeRequest]
   >();
   const deletePipeline = jest.fn();
@@ -368,6 +372,25 @@ describe('SharePipelineModal', () => {
     });
   }
 
+  /** Hovers the summary's help icon and returns its tooltip text. */
+  function includedFilesHelp(): string {
+    act(() => {
+      document
+        .querySelector('[data-testid="share-pipeline-dependencies-help"]')
+        ?.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
+    });
+    return (
+      document.querySelector(
+        '[data-testid="share-pipeline-dependencies-help-details"]',
+      )?.textContent ?? ''
+    );
+  }
+
   async function clickShare(): Promise<void> {
     await act(async () => {
       const button = Array.from(document.querySelectorAll('button')).find(
@@ -448,12 +471,14 @@ describe('SharePipelineModal', () => {
       });
     }
     expect(
-      document.querySelector('[data-testid="share-pipeline-scope-public"]'),
-    ).toBeNull();
+      document
+        .querySelector('[data-testid="share-pipeline-scope-public"]')
+        ?.getAttribute('aria-checked'),
+    ).toBe('true');
     expect(
       document.querySelector('[data-testid="share-pipeline-scope-description"]')
         ?.textContent,
-    ).toContain('Anyone can view this pipeline');
+    ).toContain('Anyone can view this workflow');
     expect(
       document.querySelector('[data-testid="share-pipeline-copy-link"]'),
     ).not.toBeNull();
@@ -939,7 +964,13 @@ describe('SharePipelineModal', () => {
     expect(request?.rawPipeline).toContain('pipeline:');
     expect(request?.rawPipeline).toContain('name: Review Pipeline');
     expect(deletePipeline).not.toHaveBeenCalled();
-    expect(onShared).toHaveBeenCalledWith(sharedDetail);
+    expect(onShared).toHaveBeenCalledWith({
+      ...sharedDetail,
+      publicShare: {
+        externalId: 'public-pipeline-id',
+        sharePath: '/portal/plugins/pipelines/shared/public-pipeline-id',
+      },
+    });
   });
 
   it('analyzes again instead of sharing an analysis that expired while open', async () => {
@@ -1047,30 +1078,25 @@ describe('SharePipelineModal', () => {
   it('reviews the private member closure and locks required rows on', async () => {
     enablePackaging(makeAnalysis());
     await renderModal('user');
-    await expandDependencies();
 
-    const section = document.querySelector(
-      '[data-testid="share-pipeline-dependencies"]',
-    );
-    expect(section?.textContent).toContain('/open-pr');
+    // Everything is required, so there is no file choice to open; the help
+    // icon after the summary names the closure instead.
+    expect(
+      document.querySelector(
+        '[data-testid="share-pipeline-dependencies-toggle"]',
+      ),
+    ).toBeNull();
+    const help = includedFilesHelp();
+    expect(help).toContain('/open-pr');
     // The transitive private support file is included even though no step
     // names it directly.
-    expect(section?.textContent).toContain('pr-template');
-    expect(section?.textContent).toContain('Private source');
+    expect(help).toContain('pr-template');
+    expect(help).toContain('From private sources:');
     // Credentials are disclosed separately and never packaged.
-    expect(section?.textContent).toContain('Recipient setup required');
-    expect(section?.textContent).toContain('GitHub authentication');
-    expect(section?.textContent).toContain(
-      'Credentials and external runtimes are never included.',
+    expect(help).toContain('Recipients set up: GitHub authentication');
+    expect(help).toContain(
+      'Credentials, private configuration, and other local files are never included.',
     );
-
-    // A required row says so instead of offering a checkbox.
-    const openPrRow = document.querySelector(
-      '[data-testid="share-pipeline-dependencies-item-ud-git.open-pr"]',
-    );
-    expect(openPrRow?.getAttribute('data-required')).toBe('true');
-    expect(openPrRow?.querySelector('input')).toBeNull();
-    expect(openPrRow?.textContent).toContain('Required');
   });
 
   it('shares a package without another acknowledgment and sends package mode', async () => {
@@ -1201,13 +1227,10 @@ describe('SharePipelineModal', () => {
     };
     enablePackaging(empty);
     await renderModal('user');
-    await expandDependencies();
 
-    expect(
-      document.querySelector(
-        '[data-testid="share-pipeline-dependencies-empty"]',
-      )?.textContent,
-    ).toContain('This pipeline has no local dependencies to copy.');
+    expect(includedFilesHelp()).toContain(
+      'Only the workflow definition is shared.',
+    );
     await clickShare();
 
     expect(createSharedPackaged).toHaveBeenCalledWith(
@@ -1236,7 +1259,7 @@ describe('SharePipelineModal', () => {
       await Promise.resolve();
     });
     expect(document.body.textContent).toContain(
-      'Anyone can view this pipeline. It may appear in public discovery and search.',
+      'Anyone can view this workflow. It may appear in public discovery and search.',
     );
     expect(document.body.textContent).not.toContain(
       'download its included dependency files',
@@ -1251,7 +1274,7 @@ describe('SharePipelineModal', () => {
       await Promise.resolve();
     });
     expect(document.body.textContent).toContain(
-      'Anyone can view this pipeline and download its included dependency files.',
+      'Anyone can view this workflow and download its included dependency files.',
     );
   });
 
@@ -1381,18 +1404,15 @@ describe('SharePipelineModal', () => {
       }),
     );
     await renderModal('user');
-    await expandDependencies();
 
     const section = document.querySelector(
       '[data-testid="share-pipeline-dependencies"]',
     );
-    expect(
-      section?.querySelector(
-        '[data-testid="share-pipeline-dependencies-list"]',
-      ),
-    ).not.toBeNull();
-    expect(section?.textContent).toContain('Recipient setup required');
-    expect(section?.textContent).toContain('GitHub authentication');
+    // Blocked, the help icon follows the heading and still names what
+    // resolved and what recipients set up.
+    const help = includedFilesHelp();
+    expect(help).toContain('/open-pr');
+    expect(help).toContain('Recipients set up: GitHub authentication');
     expect(
       section?.querySelector(
         '[data-testid="share-pipeline-dependency-problems"]',
@@ -1469,6 +1489,50 @@ describe('SharePipelineModal', () => {
       { provider: 'claude', token: '/collect.py' },
     ]);
     expect(document.body.textContent).toContain('Marked as not commands (1)');
+  });
+
+  it('re-analyzes with a dismissed child pipeline reference', async () => {
+    const dismissal = {
+      kind: 'child_pipeline_ref' as const,
+      token: '${{ inputs.target }}',
+    };
+    enablePackaging(
+      makeBlockedAnalysis([
+        {
+          code: 'UNRESOLVED_CHILD_PIPELINE_REF',
+          subject: '${{ inputs.target }}',
+          message:
+            'Step "run" picks its child pipeline from ${{ inputs.target }}.',
+          jobId: 'build',
+          stepId: 'run',
+          occurrences: [{ jobId: 'build', stepId: 'run' }],
+          referenceDismissal: dismissal,
+        },
+      ]),
+    );
+    await renderModal('user');
+    expect(
+      analyzePackage.mock.calls[0]?.[0]?.dismissedReferences,
+    ).toBeUndefined();
+
+    analyzePackage.mockResolvedValue({
+      success: true,
+      data: makeAnalysis({ dismissedReferences: [dismissal] }),
+    });
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          '[data-testid^="share-pipeline-dependency-problems-dismiss-"]',
+        )
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(analyzePackage).toHaveBeenCalledTimes(2);
+    expect(analyzePackage.mock.calls[1]?.[0]?.dismissedReferences).toEqual([
+      dismissal,
+    ]);
   });
 
   it('keeps the dependency section after the last blocker is dismissed', async () => {
@@ -1646,10 +1710,18 @@ describe('SharePipelineModal', () => {
     await clickShare();
 
     expect(deletePipeline).not.toHaveBeenCalled();
-    expect(onShared).toHaveBeenCalledWith(sharedDetail);
-    expect(mockPostShareToast).toHaveBeenCalledWith(
-      expect.objectContaining({ tone: 'success' }),
-    );
+    expect(onShared).toHaveBeenCalledWith({
+      ...sharedDetail,
+      publicShare: {
+        externalId: 'public-pipeline-id',
+        sharePath: '/portal/plugins/pipelines/shared/public-pipeline-id',
+      },
+    });
+    // The dialog stays open on its success notice instead of toasting.
+    expect(mockPostShareToast).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="share-pipeline-success"]'),
+    ).not.toBeNull();
   });
 
   it('renders a copyable member-only link after sharing with an organization', async () => {
@@ -1716,11 +1788,17 @@ describe('SharePipelineModal', () => {
         organizationId: '22222222-2222-4222-8222-222222222222',
       }),
     );
-    expect(mockPostShareToast).toHaveBeenCalledWith({
-      tone: 'success',
-      message: 'Pipeline shared with Acme',
-      link: 'https://cloud.example.test/portal/plugins/pipelines/shared/shared-pipeline-1',
-    });
+    expect(mockPostShareToast).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="share-pipeline-success"]')
+        ?.textContent,
+    ).toContain('Workflow shared with Acme');
+    expect(
+      document.querySelector('[data-testid="share-pipeline-link"]')
+        ?.textContent,
+    ).toBe(
+      'https://cloud.example.test/portal/plugins/pipelines/shared/shared-pipeline-1',
+    );
     expect(onShared).toHaveBeenCalledWith(sharedDetail);
   });
 });

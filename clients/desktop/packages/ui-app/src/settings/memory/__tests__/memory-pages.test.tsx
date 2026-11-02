@@ -19,6 +19,11 @@ import {
   type FakeSettingsHandler,
   type TestSettingsHostOptions,
 } from '../../__tests__/helpers/test-settings-host';
+import {
+  chooseSettingsOption,
+  settingsSelectOptionLabels,
+  settingsSelectTrigger,
+} from '../../__tests__/helpers/settings-select';
 import { MemorySettingsSlotsProvider } from '../memory-settings-slots';
 import { OrganizationMemoryFactPage } from '../OrganizationMemoryFactPage';
 import { OrganizationMemoryFactsPage } from '../OrganizationMemoryFactsPage';
@@ -44,7 +49,8 @@ jest.mock('../EntityForceGraph', () => ({
 const ORG_ID = 'org-1';
 /** Server text that must reach logs only, never the page. */
 const SENTINEL = 'SENTINEL server body: stack at db.query';
-const LOAD_COPY = "Couldn't load this. Try again.";
+/** Load copy beside its own Try again, which the banner does not repeat. */
+const LOAD_COPY = "Couldn't load this.";
 
 function serverFailure(status = 500): SettingsOperationError {
   return new SettingsOperationError({
@@ -318,7 +324,7 @@ describe('OrganizationMemoryFactsPage', () => {
     expect(container.textContent).not.toContain('500');
 
     await act(async () => {
-      buttonNamed('Retry').click();
+      buttonNamed('Try again').click();
       await Promise.resolve();
     });
     await flush();
@@ -487,15 +493,10 @@ describe('OrganizationMemoryGraphPage', () => {
     );
     await flush();
 
-    const select = container.querySelector(
-      'select[aria-label="Fact liveness"]',
+    await chooseSettingsOption(
+      settingsSelectTrigger(container, '[aria-label="Fact liveness"]'),
+      'superseded',
     );
-    if (!(select instanceof HTMLSelectElement)) throw new Error('no select');
-    await act(async () => {
-      select.value = 'superseded';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
 
     expect(replace).toHaveBeenCalledWith(
       '/organization/org-1/memory/graph?tab=keep&liveness=superseded&q=deploy',
@@ -503,7 +504,7 @@ describe('OrganizationMemoryGraphPage', () => {
     );
   });
 
-  it('shows load copy for a failed graph read and Retry reads it again', async () => {
+  it('shows load copy for a failed graph read and Try again reads it again', async () => {
     let attempts = 0;
     const { host, client } = setup(
       {
@@ -534,7 +535,7 @@ describe('OrganizationMemoryGraphPage', () => {
     expect(container.textContent).not.toContain('SENTINEL');
 
     await act(async () => {
-      buttonNamed('Retry').click();
+      buttonNamed('Try again').click();
       await Promise.resolve();
     });
     await flush();
@@ -542,6 +543,63 @@ describe('OrganizationMemoryGraphPage', () => {
 
     expect(client.calls).toHaveLength(2);
     expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="force-graph"]')?.textContent,
+    ).toBe('1 nodes');
+  });
+
+  it('keeps the failed graph on screen, Try again spinning, while it reads again', async () => {
+    let attempts = 0;
+    let finish: (value: typeof GRAPH) => void = () => undefined;
+    const { host } = setup(
+      {
+        'organization.memory.graph': () => {
+          attempts += 1;
+          if (attempts === 1) throw serverFailure();
+          return new Promise<typeof GRAPH>((resolve) => {
+            finish = resolve;
+          });
+        },
+      },
+      {
+        pathname: '/organization/org-1/memory/graph',
+        search: 'q=retry-in-place',
+      },
+    );
+    await render(
+      host,
+      <OrganizationMemoryGraphPage
+        route={memoryRoute({ memoryView: 'graph' })}
+        page={{ kind: 'organization.memory.graph', data: { enabled: true } }}
+      />,
+    );
+    await flush();
+    await flush();
+
+    await act(async () => {
+      buttonNamed('Try again').click();
+      await Promise.resolve();
+    });
+    await flush();
+
+    const failed = container.querySelector(
+      '[data-testid="memory-graph-load-failed"]',
+    );
+    expect(failed?.querySelector('[role="alert"]')?.textContent).toBe(
+      LOAD_COPY,
+    );
+    const busy = failed?.querySelector('button');
+    expect(busy?.textContent).toBe('Trying again…');
+    expect(busy?.getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => {
+      finish(GRAPH);
+      await Promise.resolve();
+    });
+    await flush();
+    expect(
+      container.querySelector('[data-testid="memory-graph-load-failed"]'),
+    ).toBeNull();
     expect(
       container.querySelector('[data-testid="force-graph"]')?.textContent,
     ).toBe('1 nodes');
@@ -626,7 +684,11 @@ describe('OrganizationMemoryOpsPage', () => {
     );
 
     expect(container.textContent).toContain('embedder timeout');
-    expect(container.textContent).toContain('FAILED (1)');
+    expect(
+      settingsSelectOptionLabels(
+        settingsSelectTrigger(container, '[aria-label="Filter ingest jobs"]'),
+      ),
+    ).toContain('FAILED (1)');
     expect(container.textContent).toContain('Ada Lovelace · 1 facts injected');
     expect(container.textContent).toContain('embedder-v1');
     expect(blocked('when do we deploy')).toBe(true);
@@ -667,15 +729,10 @@ describe('OrganizationMemoryOpsPage', () => {
         }}
       />,
     );
-    const select = container.querySelector(
-      'select[aria-label="Filter ingest jobs"]',
+    await chooseSettingsOption(
+      settingsSelectTrigger(container, '[aria-label="Filter ingest jobs"]'),
+      'DEAD',
     );
-    if (!(select instanceof HTMLSelectElement)) throw new Error('no select');
-    await act(async () => {
-      select.value = 'DEAD';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
     await flush();
 
     expect(client.calls).toEqual([
@@ -812,7 +869,7 @@ describe('OrganizationMemoryFactPage', () => {
     expect(container.textContent).not.toContain('404');
 
     await act(async () => {
-      buttonNamed('Retry').click();
+      buttonNamed('Try again').click();
       await Promise.resolve();
     });
     await flush();
@@ -914,15 +971,10 @@ describe('memory loading placeholders', () => {
     );
     expect(testId('settings-skeleton-table')).toBeNull();
 
-    const select = container.querySelector(
-      'select[aria-label="Filter ingest jobs"]',
+    await chooseSettingsOption(
+      settingsSelectTrigger(container, '[aria-label="Filter ingest jobs"]'),
+      'DEAD',
     );
-    if (!(select instanceof HTMLSelectElement)) throw new Error('no select');
-    await act(async () => {
-      select.value = 'DEAD';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
 
     expect(testId('settings-skeleton-table')?.getAttribute('role')).toBe(
       'status',

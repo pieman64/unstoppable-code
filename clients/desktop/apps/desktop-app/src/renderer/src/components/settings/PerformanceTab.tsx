@@ -232,9 +232,9 @@ export function PerformanceTab(): JSX.Element {
     useState(0);
   const supportsWakeLock = isWakeLockSupportedPlatform(window.platform);
   const wakeLockDescription = pt({
-    default: `Prevents idle sleep while ${brandText.appName} has active chat turns or pipeline runs. The display can still lock and sleep. Choosing Sleep, forced shutdown, or critical battery may still suspend the device.`,
-    darwin: `Prevents idle sleep while ${brandText.appName} has active chat turns or pipeline runs. The display can still lock and sleep. Closing the lid or choosing Sleep may still suspend the Mac depending on macOS power settings.`,
-    win32: `Prevents idle sleep while ${brandText.appName} has active chat turns or pipeline runs. The display can still lock and sleep. Choosing Sleep, hibernation, forced shutdown, or critical battery may still suspend Windows.`,
+    default: `Prevents idle sleep while ${brandText.appName} has active chat turns or workflow runs. The display can still lock and sleep. Choosing Sleep, forced shutdown, or critical battery may still suspend the device.`,
+    darwin: `Prevents idle sleep while ${brandText.appName} has active chat turns or workflow runs. The display can still lock and sleep. Closing the lid or choosing Sleep may still suspend the Mac depending on macOS power settings.`,
+    win32: `Prevents idle sleep while ${brandText.appName} has active chat turns or workflow runs. The display can still lock and sleep. Choosing Sleep, hibernation, forced shutdown, or critical battery may still suspend Windows.`,
   });
 
   function applyPreferences(prefs: PreferencesData): void {
@@ -334,8 +334,8 @@ export function PerformanceTab(): JSX.Element {
 
           <LimitRow
             checked={maxActivePipelineExecutions !== null}
-            label="Limit active pipeline executions"
-            description="Caps the pipeline runs that can be active or starting at the same time."
+            label="Limit active workflow executions"
+            description="Caps the workflow runs that can be active or starting at the same time."
             value={
               maxActivePipelineExecutions ??
               DEFAULT_MAX_ACTIVE_PIPELINE_EXECUTIONS
@@ -409,7 +409,7 @@ export function PerformanceTab(): JSX.Element {
 
           <MemoryThresholdRow
             label="Critical at"
-            description="Blocks new chat turns and pipeline runs while the guard below is on."
+            description="Blocks new chat turns and workflow runs while the guard below is on."
             value={bytesToGibInput(memoryPressureCriticalThresholdBytes)}
             testId="settings-memory-pressure-critical-gib"
             onChange={(input) => {

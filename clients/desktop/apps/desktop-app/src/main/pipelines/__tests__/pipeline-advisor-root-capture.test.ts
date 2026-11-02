@@ -137,11 +137,12 @@ import { getPipelineAdvisorService } from '../pipeline-advisor';
 initCodexModels([{ id: 'gpt-5.6', label: 'GPT 5.6' }]);
 
 function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
-  return {
+  // A version-4 persisted state predates the newer required fields.
+  const state: Partial<ExecutionState> = {
     version: 4,
     id: 'execution',
     pipeline_id: 'pipeline',
-    pipeline_snapshot: { name: 'Pipeline', jobs: {} },
+    pipeline_snapshot: { name: 'Pipeline', scope: ['directory'], jobs: {} },
     status: 'running',
     jobs: {},
     started_at: '2026-10-08T12:00:00.000Z',
@@ -151,6 +152,7 @@ function createState(overrides: Partial<ExecutionState> = {}): ExecutionState {
     project_id: 'project',
     ...overrides,
   };
+  return state as ExecutionState;
 }
 
 function createRuntime(): ExecutionRuntime {

@@ -94,7 +94,7 @@ describe('scriptsStore', () => {
     if (originalWindowDescriptor) {
       Object.defineProperty(globalThis, 'window', originalWindowDescriptor);
     } else {
-      delete (globalThis as typeof globalThis & { window?: unknown }).window;
+      Reflect.deleteProperty(globalThis, 'window');
     }
   });
 

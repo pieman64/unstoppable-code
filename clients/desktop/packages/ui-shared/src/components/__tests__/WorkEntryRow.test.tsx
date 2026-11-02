@@ -120,7 +120,7 @@ describe('WorkEntryRow', () => {
         'py-0',
         'text-left',
         'text-s',
-        'transition',
+        'transition-opacity',
         'fg-secondary',
         'hover:bg-subtle',
       ]) {
@@ -147,6 +147,17 @@ describe('WorkEntryRow', () => {
       expect(row().getAttribute('data-sidebar-selected-item')).toBe('');
     });
 
+    it('marks only the selected in-flow row as the current page', () => {
+      render({ selected: true });
+      expect(row().getAttribute('aria-current')).toBe('page');
+      render({ selected: false });
+      expect(row().hasAttribute('aria-current')).toBe(false);
+      render({ selected: true, pinnedSurface: 'pin-top' });
+      expect(byTestId(`${BASE}-pin-top`)?.hasAttribute('aria-current')).toBe(
+        false,
+      );
+    });
+
     it('opts a row out of the selected-item pin on request', () => {
       render({ selected: true, disableSelectedPin: true });
       expect(row().getAttribute('data-sidebar-selected-pin-disabled')).toBe('');
@@ -170,10 +181,11 @@ describe('WorkEntryRow', () => {
   });
 
   describe('status', () => {
-    it('shows the purple done checkmark and no trailing status when done', () => {
+    it('shows the shared Done glyph and no trailing status when done', () => {
       render({
         status: 'done',
         working: true,
+        backgroundTasks: 3,
         hasPendingQuestion: true,
         hasUnread: true,
       });
@@ -181,15 +193,57 @@ describe('WorkEntryRow', () => {
       expect(row().getAttribute('data-entry-status')).toBe('done');
       const done = byTestId(`${BASE}-done`);
       expect(done?.getAttribute('aria-label')).toBe('Done');
-      expect(done?.className).toContain('fg-purple');
-      expect(done?.querySelector('svg')).not.toBeNull();
+      const glyph = done?.querySelector('[data-status-glyph="done"]');
+      expect(glyph).toBeInstanceOf(Element);
+      expect(glyph?.className).toContain('fg-success-strong');
+      expect(glyph?.querySelector('svg')).toBeInstanceOf(Element);
       expect(
         byTestId(`${BASE}-leading-slot`)?.hasAttribute('aria-hidden'),
       ).toBe(false);
       expect(byTestId(`${BASE}-status-slot`)).toBeNull();
       expect(byTestId(`${BASE}-thinking`)).toBeNull();
+      expect(byTestId(`${BASE}-background`)).toBeNull();
       expect(byTestId(`${BASE}-question`)).toBeNull();
       expect(byTestId(`${BASE}-unread`)).toBeNull();
+    });
+
+    it('shows the neutral background spinner while only background work runs', () => {
+      render({ backgroundTasks: 2 });
+      const background = byTestId(`${BASE}-background`);
+      expect(background?.getAttribute('aria-label')).toBe(
+        '2 background tasks running',
+      );
+      expect(background?.querySelector('.fg-tertiary')).not.toBeNull();
+      expect(
+        byTestId(`${BASE}-status-slot`)?.contains(background ?? null),
+      ).toBe(true);
+      expect(byTestId(`${BASE}-thinking`)).toBeNull();
+    });
+
+    it('lets a running turn outrank background work', () => {
+      render({ working: true, backgroundTasks: 1 });
+      expect(byTestId(`${BASE}-thinking`)).not.toBeNull();
+      expect(byTestId(`${BASE}-background`)).toBeNull();
+    });
+
+    it('keeps one attention dot beside the background spinner', () => {
+      render({ backgroundTasks: 1, hasUnread: true });
+      expect(byTestId(`${BASE}-background`)?.getAttribute('aria-label')).toBe(
+        '1 background task running',
+      );
+      expect(byTestId(`${BASE}-unread`)).not.toBeNull();
+    });
+
+    it('names background work in a tooltip in the leading placement too', () => {
+      render({ statusPlacement: 'leading', backgroundTasks: 2 });
+      const status = byTestId(`${BASE}-status`);
+      expect(status?.getAttribute('data-row-status')).toBe('background');
+      act(() => {
+        status?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe(
+        '2 background tasks running',
+      );
     });
 
     it('shows the Working spinner in the status slot', () => {

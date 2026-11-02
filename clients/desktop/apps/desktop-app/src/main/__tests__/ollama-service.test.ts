@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE } from '@canopy/desktop-shared/types';
 import type * as DesktopSharedTypes from '@canopy/desktop-shared/types';
+import type { ProviderConnectionEvent } from '../lib/provider-connection-events';
 
 const readFileMock = jest.fn();
 const writeFileMock = jest.fn();
@@ -18,7 +19,9 @@ const readOllamaPreferencesMock = jest.fn();
 const readOllamaServerPortPreferenceMock = jest.fn();
 const writeOllamaServerPortPreferenceMock = jest.fn();
 const writeOllamaConfigurationPreferenceMock = jest.fn();
-const getEnhancedEnvMock = jest.fn(() => ({ PATH: '/mock/bin' }));
+const getEnhancedEnvMock = jest.fn<Record<string, string>, []>(() => ({
+  PATH: '/mock/bin',
+}));
 const detectOllamaInstallationMock = jest.fn();
 const validateOllamaExecutableMock = jest.fn();
 const installOllamaMock = jest.fn();
@@ -272,6 +275,127 @@ describe('ollama service', () => {
     );
   });
 
+  it('writes no preferences when detection finds the stored executable', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    await getOllamaService().initialize();
+
+    expect(detectOllamaInstallationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ persistedPath: '/mock/bin/ollama' }),
+    );
+    expect(writeOllamaConfigurationPreferenceMock).not.toHaveBeenCalled();
+  });
+
+  it('shares initialization with a configuration save so a late startup read cannot restore the old port', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const detectionStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    detectOllamaInstallationMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = (): void =>
+            resolve({
+              platform: process.platform,
+              ready: true,
+              path: '/mock/bin/ollama',
+              version: '0.14.0',
+              source: 'persisted',
+              checkedAt: '2026-10-28T00:00:00Z',
+              automaticInstallSupported: true,
+            });
+          started();
+        }),
+    );
+    const initialization = service.initialize();
+    await detectionStarted;
+    const changingPort = service.setPort(11535);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([initialization, changingPort]);
+    expect(detectOllamaInstallationMock).toHaveBeenCalledTimes(2);
+    expect(await service.getState()).toMatchObject({ port: 11535 });
+  });
+
+  it('does not run a superseded refresh against setup committed during initialization', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const detectionStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    detectOllamaInstallationMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = (): void =>
+            resolve({
+              platform: process.platform,
+              ready: true,
+              path: '/mock/bin/ollama',
+              version: '0.14.0',
+              source: 'persisted',
+              checkedAt: '2026-10-28T00:00:00Z',
+              automaticInstallSupported: true,
+            });
+          started();
+        }),
+    );
+    mockServerVersion('0.14.0');
+    const refresh = service.refreshModels({ allowStart: true });
+    await detectionStarted;
+    const changingPort = service.setPort(11535);
+    release();
+    await Promise.all([refresh, changingPort]);
+    expect(await service.getState()).toMatchObject({ port: 11535 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it('allows initialization to retry after a failed installation read', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    const failure = new Error('Installation read failed');
+    detectOllamaInstallationMock.mockRejectedValueOnce(failure);
+    await expect(service.initialize()).rejects.toBe(failure);
+    await expect(service.initialize()).resolves.toBeUndefined();
+    expect(await service.getState()).toMatchObject({
+      port: 11534,
+      installation: { ready: true },
+    });
+  });
+
+  it('preserves the saved mode when a legacy port update initializes the service', async () => {
+    readOllamaPreferencesMock.mockResolvedValueOnce({
+      mode: 'manual',
+      port: 11534,
+      executablePath: '',
+    });
+    const { getOllamaService } = await import('../ollama/service');
+    expect(await getOllamaService().setPort(11535)).toMatchObject({
+      mode: 'manual',
+      port: 11535,
+    });
+  });
+
+  it('applies a queued legacy port update to the mode committed ahead of it', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    const modeChange = service.setConfiguration({
+      mode: 'manual',
+      port: 11534,
+    });
+    const portChange = service.setPort(11535);
+    await Promise.all([modeChange, portChange]);
+    expect(await service.getState()).toMatchObject({
+      mode: 'manual',
+      port: 11535,
+    });
+  });
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
     jest.useRealTimers();
@@ -415,6 +539,903 @@ describe('ollama service', () => {
     });
   });
 
+  it('reports an unsuccessful runtime installation without claiming a connection', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    const unavailable = {
+      platform: process.platform,
+      ready: false,
+      path: null,
+      version: null,
+      source: 'not-found',
+      checkedAt: '2026-10-27T00:00:00.000Z',
+      automaticInstallSupported: true,
+      error: 'private installer detail',
+    };
+    detectOllamaInstallationMock.mockResolvedValue(unavailable);
+    installOllamaMock.mockResolvedValue(unavailable);
+    const { getOllamaService } = await import('../ollama/service');
+    await expect(getOllamaService().install()).resolves.toMatchObject({
+      installation: { ready: false },
+    });
+    expect(connection).toHaveBeenCalledTimes(1);
+    expect(connection).toHaveBeenCalledWith({
+      provider: 'ollama',
+      connectionMethod: 'local',
+      connectSource: 'in_app',
+      failureReason: 'runtime_unavailable',
+    });
+    stop();
+  });
+
+  it('baselines an unchanged running server on the first interactive refresh without startup probes', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    mockServerVersion('0.14.0');
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+
+    await service.initialize();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await service.refreshModels({ allowStart: true });
+    await service.refreshModels({ allowStart: true });
+
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'ollama',
+          connectionMethod: 'local',
+          connectSource: 'at_startup',
+        },
+      ],
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it.each([undefined, 11534])(
+    'baselines a saved server on the first initialized connection test (%s)',
+    async (port) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      mockServerVersion('0.14.0');
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+
+      await service.initialize();
+      await service.testConnection(port);
+      await service.testConnection(port);
+      await service.refreshModels({ allowStart: true });
+
+      expect(connection.mock.calls).toEqual([
+        [
+          {
+            provider: 'ollama',
+            connectionMethod: 'local',
+            connectSource: 'at_startup',
+          },
+        ],
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      stop();
+    },
+  );
+
+  it.each([undefined, 11534])(
+    'discards a pending connection test (%s) across configuration changes, including a return to the original port',
+    async (port) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      mockServerVersion('0.14.0');
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+      await service.initialize();
+      await service.testConnection();
+      connection.mockClear();
+      let release: (value: Response) => void = () => {
+        throw new Error('Expected a pending probe');
+      };
+      let started: () => void = () => {};
+      const probeStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+            started();
+          }),
+      );
+      const pending = service.testConnection(port);
+      await probeStarted;
+      await service.setPort(11535);
+      await service.testConnection();
+      release(versionResponse('0.14.0'));
+      await pending;
+      await service.testConnection();
+      expect(
+        connection.mock.calls.map(([event]) => event.connectSource),
+      ).toEqual(['in_app']);
+
+      // A port comparison alone cannot fence an A -> B -> A configuration.
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+            started();
+          }),
+      );
+      const stale = service.testConnection();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await service.setPort(11534);
+      await service.setPort(11535);
+      await service.testConnection();
+      release(new Response('{}'));
+      await stale;
+      await service.testConnection();
+      expect(
+        connection.mock.calls.map(([event]) => event.connectSource),
+      ).toEqual(['in_app']);
+      stop();
+    },
+  );
+
+  it.each(['chat', 'helper', 'pipeline'] as const)(
+    'baselines an automatic managed %s start without a funnel connection on each launch',
+    async (reason) => {
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      for (let launch = 0; launch < 2; launch += 1) {
+        jest.resetModules();
+        const events = await import('../lib/provider-connection-events');
+        const { getOllamaService } = await import('../ollama/service');
+        const service = getOllamaService();
+        const unsubscribe = events.subscribeProviderConnections(connection);
+        fetchMock
+          .mockRejectedValueOnce(new Error('offline'))
+          .mockImplementation(() => Promise.resolve(versionResponse('0.14.0')));
+        spawnMock.mockReturnValue(createMockChildProcess());
+        await service.ensureServerRunning(reason);
+        await service.refreshModels();
+        await service.testConnection();
+        await service.shutdown('app-quit');
+        unsubscribe();
+      }
+      expect(
+        connection.mock.calls.map(([event]) => event.connectSource),
+      ).toEqual(['at_startup', 'at_startup']);
+    },
+  );
+
+  it.each([
+    'redetect',
+    'unchanged-save',
+    'invalid-browse',
+    'already-installed',
+  ] as const)(
+    'does not cancel an automatic start when %s leaves configuration unchanged',
+    async (action) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      let release: (response: Response) => void = () => {};
+      let started: () => void = () => {};
+      const readinessStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      fetchMock
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              release = resolve;
+              started();
+            }),
+        );
+      const child = createMockChildProcess();
+      spawnMock.mockReturnValue(child);
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+      const startup = service.ensureServerRunning('chat').then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await readinessStarted;
+      if (action === 'redetect') await service.redetectInstallation();
+      else if (action === 'unchanged-save')
+        await service.setConfiguration({ mode: 'managed', port: 11534 });
+      else if (action === 'already-installed') await service.install();
+      else {
+        validateOllamaExecutableMock.mockResolvedValueOnce({
+          ready: false,
+          path: null,
+          error: 'Invalid executable',
+        });
+        await service.setExecutablePath('/mock/invalid');
+      }
+      release(versionResponse('0.14.0'));
+      const outcome = await startup;
+      const killedBeforeQuit = child.kill.mock.calls.length;
+      await service.shutdown('app-quit');
+      expect(outcome).toBeNull();
+      expect(killedBeforeQuit).toBe(0);
+      expect(
+        connection.mock.calls.map(([event]) => event.connectSource),
+      ).toEqual(['at_startup']);
+      stop();
+    },
+  );
+
+  it('keeps committed setup attributed in-app when chat first confirms the new endpoint', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.setPort(11535);
+    fetchMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(() => Promise.resolve(versionResponse('0.14.0')));
+    spawnMock.mockReturnValue(createMockChildProcess());
+    await service.ensureServerRunning('chat');
+    await service.refreshModels();
+    await service.testConnection();
+    expect(connection.mock.calls.map(([event]) => event.connectSource)).toEqual(
+      ['in_app'],
+    );
+    await service.shutdown('app-quit');
+    stop();
+  });
+
+  it('does not publish an old model refresh as a connection to the new port', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    mockServerVersion('0.14.0');
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    await service.testConnection();
+    connection.mockClear();
+    let release: () => void = () => {
+      throw new Error('Expected pending models');
+    };
+    let started: () => void = () => {};
+    const listStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    listMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = (): void =>
+            resolve({
+              models: [{ name: 'stale-model', model: 'stale-model' }],
+            });
+          started();
+        }),
+    );
+    const refresh = service.refreshModels({ allowStart: true });
+    await listStarted;
+    await service.setPort(11535);
+    release();
+    await refresh;
+    expect(connection).not.toHaveBeenCalled();
+    expect(await service.getState()).toMatchObject({
+      port: 11535,
+      models: [],
+      status: 'stopped',
+    });
+    expect(service.getCachedModels()).toEqual([]);
+    await service.testConnection();
+    expect(connection.mock.calls.map(([event]) => event.connectSource)).toEqual(
+      ['in_app'],
+    );
+    stop();
+  });
+
+  it.each(['probe', 'models'] as const)(
+    'discards a stale %s failure after configuration changes',
+    async (stage) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      mockServerVersion('0.14.0');
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+      await service.initialize();
+      await service.testConnection();
+      connection.mockClear();
+      let rejectOperation: (error: Error) => void = () => {};
+      let started: () => void = () => {};
+      const operationStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const deferred = (): Promise<never> =>
+        new Promise((_resolve, reject) => {
+          rejectOperation = reject;
+          started();
+        });
+      if (stage === 'probe') fetchMock.mockImplementationOnce(deferred);
+      else listMock.mockImplementationOnce(deferred);
+      const pending =
+        stage === 'probe'
+          ? service.testConnection()
+          : service.refreshModels({ allowStart: true });
+      const outcome = pending.catch((error: unknown) => error);
+      await operationStarted;
+      await service.setPort(11535);
+      const failure = new Error('old endpoint failed');
+      rejectOperation(failure);
+      if (stage === 'models') expect(await outcome).toBe(failure);
+      else expect(await outcome).toMatchObject({ ok: false, port: 11534 });
+      expect(connection).not.toHaveBeenCalled();
+      stop();
+    },
+  );
+
+  it('still reports a failing explicit draft-port test without changing the saved baseline', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    mockServerVersion('0.14.0');
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    await service.testConnection();
+    connection.mockClear();
+    fetchMock.mockRejectedValueOnce(new Error('draft unreachable'));
+    await expect(service.testConnection(11535)).resolves.toMatchObject({
+      ok: false,
+      port: 11535,
+    });
+    await service.testConnection();
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'ollama',
+          connectionMethod: 'local',
+          connectSource: 'in_app',
+          failureReason: 'network',
+        },
+      ],
+    ]);
+    stop();
+  });
+
+  it('preserves a stale preferences-read rejection without publishing a setup failure', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    let rejectRead: (error: Error) => void = () => {};
+    let started: () => void = () => {};
+    const readStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    readOllamaPreferencesMock.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRead = reject;
+          started();
+        }),
+    );
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    const pending = service.testConnection().catch((error: unknown) => error);
+    await readStarted;
+    await service.setPort(11535);
+    const failure = new Error('Could not read preferences');
+    rejectRead(failure);
+    expect(await pending).toBe(failure);
+    expect(connection).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('attributes a committed manual endpoint confirmed by a chat read to in-app', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    mockServerVersion('0.14.0');
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    await service.testConnection();
+    connection.mockClear();
+    await service.setConfiguration({ mode: 'manual', port: 11535 });
+    listMock.mockResolvedValue({ models: [{ model: 'llama3:8b' }] });
+    showMock.mockResolvedValue(
+      showResponse({ capabilities: ['completion', 'tools'] }),
+    );
+    await service.ensureServerRunning('chat');
+    await service.assertInstalled('llama3:8b');
+    expect(connection.mock.calls.map(([event]) => event.connectSource)).toEqual(
+      ['in_app'],
+    );
+    stop();
+  });
+
+  it('does not start or update the new endpoint from a stale unreachable refresh', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    let release: (value: Response) => void = () => {};
+    let started: () => void = () => {};
+    const probeStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+          started();
+        }),
+    );
+    const refresh = service.refreshModels({ allowStart: true });
+    await probeStarted;
+    await service.setPort(11535);
+    mockServerVersion('0.14.0');
+    release(new Response('{}'));
+    await refresh;
+    expect(await service.getState()).toMatchObject({
+      port: 11535,
+      status: 'stopped',
+      models: [],
+    });
+    expect(listMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report a cancelled settings start overtaken by a port change', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    let started: () => void = () => {};
+    const startupProbe = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    fetchMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => reject(new Error('aborted')),
+              { once: true },
+            );
+            started();
+          }),
+      );
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    const refresh = service
+      .refreshModels({ allowStart: true })
+      .catch((error: unknown) => error);
+    await startupProbe;
+    await service.setPort(11535);
+    expect(await refresh).toBeInstanceOf(Error);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(connection).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('counts changed runtime setup on an already-baselined port once', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    mockServerVersion('0.14.0');
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    await service.testConnection();
+    connection.mockClear();
+    validateOllamaExecutableMock.mockResolvedValueOnce({
+      platform: process.platform,
+      ready: true,
+      path: '/mock/bin/new-ollama',
+      version: '0.14.0',
+      source: 'browse',
+      checkedAt: '2026-10-28T00:00:00Z',
+      automaticInstallSupported: true,
+    });
+    await service.setExecutablePath('/mock/bin/new-ollama');
+    fetchMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(() => Promise.resolve(versionResponse('0.14.0')));
+    spawnMock.mockReturnValue(createMockChildProcess());
+    await service.ensureServerRunning('chat');
+    await service.refreshModels();
+    await service.testConnection();
+    expect(connection.mock.calls.map(([event]) => event.connectSource)).toEqual(
+      ['in_app'],
+    );
+    await service.shutdown('app-quit');
+    stop();
+  });
+
+  it('does not retain an old endpoint version after a configuration change', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    let release: (response: Response) => void = () => {};
+    let started: () => void = () => {};
+    const probeStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+          started();
+        }),
+    );
+    const assertion = service
+      .assertResponsesCompatibleApi()
+      .catch((error: unknown) => error);
+    await probeStarted;
+    await service.setPort(11535);
+    release(versionResponse('0.14.0'));
+    expect(await assertion).toBeInstanceOf(Error);
+    mockServerVersion('0.1.0');
+    await expect(service.assertResponsesCompatibleApi()).rejects.toThrow(
+      /Upgrade Ollama/,
+    );
+  });
+
+  it('waits for committed configuration before starting a new server', async () => {
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.initialize();
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const detectionStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    detectOllamaInstallationMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = (): void =>
+            resolve({
+              platform: process.platform,
+              ready: true,
+              path: '/mock/bin/ollama',
+              version: '0.14.0',
+              source: 'persisted',
+              checkedAt: '2026-10-28T00:00:00Z',
+              automaticInstallSupported: true,
+            });
+          started();
+        }),
+    );
+    const changingPort = service.setPort(11535);
+    await detectionStarted;
+    fetchMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(() => Promise.resolve(versionResponse('0.14.0')));
+    const child = createMockChildProcess();
+    spawnMock.mockReturnValue(child);
+    const demand = service.ensureServerRunning('chat');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const startsDuringSave = spawnMock.mock.calls.length;
+    release();
+    await changingPort;
+    await demand;
+    expect(startsDuringSave).toBe(0);
+    expect(spawnMock.mock.calls[0]?.[2].env?.OLLAMA_HOST).toBe(
+      '127.0.0.1:11535',
+    );
+    expect(await service.getState()).toMatchObject({
+      port: 11535,
+      status: 'running-managed',
+    });
+    await service.shutdown('app-quit');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('does not consume pending setup from a probe started during the next save', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+    await service.setPort(11535);
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const detectionStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    detectOllamaInstallationMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = (): void =>
+            resolve({
+              platform: process.platform,
+              ready: true,
+              path: '/mock/bin/ollama',
+              version: '0.14.0',
+              source: 'persisted',
+              checkedAt: '2026-10-28T00:00:00Z',
+              automaticInstallSupported: true,
+            });
+          started();
+        }),
+    );
+    mockServerVersion('0.14.0');
+    const changingPort = service.setPort(11536);
+    await detectionStarted;
+    const probe = service.testConnection();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const probesDuringSave = fetchMock.mock.calls.length;
+    release();
+    await changingPort;
+    await probe;
+    await service.testConnection();
+    expect(probesDuringSave).toBe(0);
+    expect(connection.mock.calls.map(([event]) => event.connectSource)).toEqual(
+      ['in_app'],
+    );
+    stop();
+  });
+
+  it('counts a managed server started by interactive refresh once as an in-app connection', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    fetchMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementation(() => Promise.resolve(versionResponse('0.14.0')));
+    spawnMock.mockReturnValue(createMockChildProcess());
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+
+    await service.refreshModels({ allowStart: true });
+    await service.refreshModels({ allowStart: true });
+    await service.testConnection();
+
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'ollama',
+          connectionMethod: 'local',
+          connectSource: 'in_app',
+        },
+      ],
+    ]);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    await service.shutdown('app-quit');
+    stop();
+  });
+
+  it.each(['pull', 'delete'] as const)(
+    'attributes a managed start from %s to in-app once before later reads',
+    async (action) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      fetchMock
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockImplementation(() => Promise.resolve(versionResponse('0.14.0')));
+      spawnMock.mockReturnValue(createMockChildProcess());
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+
+      if (action === 'pull') await service.pullModel('llama3:8b');
+      else await service.deleteModel('llama3:8b');
+      await service.refreshModels();
+      await service.testConnection();
+
+      expect(connection.mock.calls).toEqual([
+        [
+          {
+            provider: 'ollama',
+            connectionMethod: 'local',
+            connectSource: 'in_app',
+          },
+        ],
+      ]);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(action === 'pull' ? pullMock : deleteMock).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'llama3:8b' }),
+      );
+      await service.shutdown('app-quit');
+      stop();
+    },
+  );
+
+  it.each([
+    ['pull', 'manual', 'network'],
+    ['delete', 'manual', 'network'],
+    ['refresh', 'manual', 'network'],
+    ['pull', 'managed', 'runtime_unavailable'],
+    ['delete', 'managed', 'runtime_unavailable'],
+    ['refresh', 'managed', 'runtime_unavailable'],
+  ] as const)(
+    'reports exactly one %s startup failure in %s mode',
+    async (action, mode, failureReason) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      readOllamaPreferencesMock.mockResolvedValue({
+        mode,
+        port: 11534,
+        executablePath: '',
+      });
+      detectOllamaInstallationMock.mockResolvedValue({
+        platform: process.platform,
+        ready: false,
+        path: null,
+        version: null,
+        source: 'not-found',
+        checkedAt: '2026-07-14T00:00:00.000Z',
+        automaticInstallSupported: true,
+      });
+      fetchMock.mockRejectedValue(new Error('fetch failed'));
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+      const attempt =
+        action === 'pull'
+          ? service.pullModel('llama3:8b')
+          : action === 'delete'
+            ? service.deleteModel('llama3:8b')
+            : service.refreshModels({ allowStart: true });
+
+      await expect(attempt).rejects.toMatchObject({
+        code: OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE,
+      });
+      expect(connection.mock.calls).toEqual([
+        [
+          {
+            provider: 'ollama',
+            connectionMethod: 'local',
+            connectSource: 'in_app',
+            failureReason,
+          },
+        ],
+      ]);
+      expect(pullMock).not.toHaveBeenCalled();
+      expect(deleteMock).not.toHaveBeenCalled();
+      stop();
+    },
+  );
+
+  it.each(['pull', 'delete', 'refresh'] as const)(
+    'preserves the native missing-executable category for %s startup',
+    async (action) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      fetchMock.mockRejectedValue(new Error('fetch failed'));
+      const missing = Object.assign(
+        new Error('spawn /mock/bin/ollama ENOENT'),
+        { code: 'ENOENT' },
+      );
+      spawnMock.mockImplementationOnce(() => {
+        throw missing;
+      });
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+
+      await expect(
+        action === 'pull'
+          ? service.pullModel('llama3:8b')
+          : action === 'delete'
+            ? service.deleteModel('llama3:8b')
+            : service.refreshModels({ allowStart: true }),
+      ).rejects.toMatchObject({ code: OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE });
+      expect(connection.mock.calls).toEqual([
+        [
+          {
+            provider: 'ollama',
+            connectionMethod: 'local',
+            connectSource: 'in_app',
+            failureReason: 'runtime_unavailable',
+          },
+        ],
+      ]);
+      stop();
+    },
+  );
+
+  it.each(['pull', 'delete'] as const)(
+    'does not classify a %s model-operation failure as a connection failure',
+    async (action) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      mockServerVersion('0.14.0');
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+      await service.refreshModels();
+      connection.mockClear();
+      const failure = new Error('model is not available');
+      (action === 'pull' ? pullMock : deleteMock).mockRejectedValueOnce(
+        failure,
+      );
+
+      await expect(
+        action === 'pull'
+          ? service.pullModel('missing-model')
+          : service.deleteModel('missing-model'),
+      ).rejects.toBe(failure);
+      expect(connection).not.toHaveBeenCalled();
+      stop();
+    },
+  );
+
+  it.each(['refresh', 'test'] as const)(
+    'counts a saved port change before any probe as in-app on %s',
+    async (action) => {
+      const events = await import('../lib/provider-connection-events');
+      const connection = jest.fn<void, [ProviderConnectionEvent]>();
+      const stop = events.subscribeProviderConnections(connection);
+      mockServerVersion('0.14.0');
+      const { getOllamaService } = await import('../ollama/service');
+      const service = getOllamaService();
+
+      await service.setPort(11535);
+      expect(fetchMock).not.toHaveBeenCalled();
+      if (action === 'refresh')
+        await service.refreshModels({ allowStart: true });
+      else await service.testConnection();
+      await service.testConnection();
+      await service.refreshModels({ allowStart: true });
+
+      expect(connection.mock.calls).toEqual([
+        [
+          {
+            provider: 'ollama',
+            connectionMethod: 'local',
+            connectSource: 'in_app',
+          },
+        ],
+      ]);
+      stop();
+    },
+  );
+
+  it('counts a connection after new runtime setup before any probe as in-app', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    detectOllamaInstallationMock.mockResolvedValueOnce({
+      platform: process.platform,
+      ready: false,
+      path: null,
+      version: null,
+      source: 'not-found',
+      checkedAt: '2026-10-27T00:00:00.000Z',
+      automaticInstallSupported: true,
+    });
+    mockServerVersion('0.14.0');
+    const { getOllamaService } = await import('../ollama/service');
+    const service = getOllamaService();
+
+    await service.install();
+    expect(connection).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    await service.testConnection();
+    await service.refreshModels({ allowStart: true });
+
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'ollama',
+          connectionMethod: 'local',
+          connectSource: 'in_app',
+        },
+      ],
+    ]);
+    stop();
+  });
+
   it('connection testing probes a requested port without mutating saved runtime state', async () => {
     mockServerVersion('0.14.0');
 
@@ -446,7 +1467,10 @@ describe('ollama service', () => {
   });
 
   it('connection testing before initialization does not detect or persist executable configuration', async () => {
-    readOllamaPreferencesMock.mockResolvedValueOnce({
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
+    readOllamaPreferencesMock.mockResolvedValue({
       mode: 'managed',
       port: 11535,
       executablePath: '',
@@ -457,6 +1481,17 @@ describe('ollama service', () => {
     const service = getOllamaService();
 
     const result = await service.testConnection();
+
+    expect(connection).toHaveBeenCalledWith({
+      provider: 'ollama',
+      connectionMethod: 'local',
+      connectSource: 'at_startup',
+    });
+    await service.testConnection(11535);
+    await service.testConnection();
+    expect(connection).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    stop();
 
     expect(result).toMatchObject({
       ok: true,
@@ -525,6 +1560,9 @@ describe('ollama service', () => {
   });
 
   it('surfaces startup failure when a managed server never becomes ready', async () => {
+    const events = await import('../lib/provider-connection-events');
+    const connection = jest.fn<void, [ProviderConnectionEvent]>();
+    const stop = events.subscribeProviderConnections(connection);
     fetchMock.mockRejectedValue(new Error('offline'));
     spawnMock.mockReturnValue(createMockChildProcess());
     const dateNowSpy = jest
@@ -543,8 +1581,10 @@ describe('ollama service', () => {
       expect(await service.getState()).toMatchObject({
         status: 'error',
       });
+      expect(connection).not.toHaveBeenCalled();
     } finally {
       dateNowSpy.mockRestore();
+      stop();
     }
   });
 

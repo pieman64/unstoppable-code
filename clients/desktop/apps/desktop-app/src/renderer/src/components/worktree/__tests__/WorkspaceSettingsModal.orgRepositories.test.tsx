@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   MultiRepoSidebarItem,
@@ -10,7 +10,27 @@ import type {
   SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
 import { WorkspaceSettingsModal } from '../WorkspaceSettingsModal';
+import { useSharedMultiRepoRequired } from '../DesktopOrgSharedMultiRepoSetup';
 import { useProjectsStore } from '@/stores/projectsStore';
+
+jest.mock('../DesktopOrgSharedMultiRepoSetup', () => ({
+  useSharedMultiRepoRequired: jest.fn(() => true),
+  DesktopOrgSharedMultiRepoSetup: ({
+    mode,
+    sources,
+  }: {
+    mode: string;
+    sources: { id: string }[];
+  }): JSX.Element => (
+    <div
+      data-testid="shared-setup"
+      data-mode={mode}
+      data-source={sources[0]?.id}
+    >
+      New shared multi-repo project
+    </div>
+  ),
+}));
 
 jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: jest.fn(),
@@ -36,6 +56,7 @@ function singleRepoProject(name: string): SingleRepoSidebarItem {
     type: 'single-repo',
     name,
     repoPath: `/repos/${name}`,
+    color: '#123456',
     worktrees: [],
     collapsed: false,
     order: 0,
@@ -49,6 +70,7 @@ function workspace(
     id: 'acme-platform',
     type: 'multi-repo',
     name: 'Platform',
+    color: '#123456',
     repos: [],
     worktrees: [],
     collapsed: false,
@@ -130,6 +152,7 @@ function existingOption(name: string): HTMLButtonElement {
 
 beforeEach((): void => {
   jest.clearAllMocks();
+  jest.mocked(useSharedMultiRepoRequired).mockReturnValue(true);
   installApi();
   useProjectsStore.setState({
     projects: [singleRepoProject('payments'), singleRepoProject('docs')],
@@ -147,8 +170,40 @@ afterEach((): void => {
   document.body.innerHTML = '';
 });
 
-describe('adding a repository to an organization multi-repo project (CAN-3546)', (): void => {
-  it("disables Existing repositories the organization doesn't hold and says why", async (): Promise<void> => {
+describe('adding repositories (CAN-3571)', () => {
+  it('lists shared organization repositories with the existing add/remove controls', async () => {
+    const project = workspace();
+    project.repos = ['setup-repo', 'second-repo'].map((name) => ({
+      id: name,
+      name,
+      repoPath: `/repos/acme/${name}`,
+    }));
+    act(() => {
+      root.render(
+        <WorkspaceSettingsModal
+          isOpen
+          onClose={jest.fn()}
+          workspace={project}
+        />,
+      );
+    });
+    await flush();
+    expect(document.body.textContent).toContain('setup-repo');
+    expect(document.body.textContent).toContain('second-repo');
+    expect(document.body.textContent).not.toContain(
+      'worktree ⋯ → Add repository',
+    );
+    expect(document.querySelector('[data-testid="shared-setup"]')).toBeNull();
+    expect(document.body.textContent).toContain('+ Add repo');
+    for (const name of ['setup-repo', 'second-repo']) {
+      expect(
+        document.querySelector(`button[aria-label="Remove ${name}"]`),
+      ).not.toBeNull();
+    }
+  });
+
+  it('preserves private-member repository eligibility and refusal explanations', async (): Promise<void> => {
+    jest.mocked(useSharedMultiRepoRequired).mockReturnValue(false);
     checkRepositories.mockResolvedValue({
       kind: 'checked',
       organizationName: 'Acme',
@@ -187,7 +242,8 @@ describe('adding a repository to an organization multi-repo project (CAN-3546)',
     expect(existingOption('docs')).toBeTruthy();
   });
 
-  it('refuses a local folder beside its tab and stages nothing', async (): Promise<void> => {
+  it('preserves private-member local-folder refusals', async (): Promise<void> => {
+    jest.mocked(useSharedMultiRepoRequired).mockReturnValue(false);
     checkRepositories.mockImplementation((request) =>
       Promise.resolve({
         kind: 'checked',
@@ -234,9 +290,9 @@ describe('adding a repository to an organization multi-repo project (CAN-3546)',
     );
   });
 
-  it('checks nothing for a Personal project', async (): Promise<void> => {
+  it('preserves the existing Personal repository picker', async () => {
+    jest.mocked(useSharedMultiRepoRequired).mockReturnValue(false);
     await openAddRepo(workspace(null));
-
     expect(checkRepositories).not.toHaveBeenCalled();
     expect(existingOption('docs').disabled).toBe(false);
   });

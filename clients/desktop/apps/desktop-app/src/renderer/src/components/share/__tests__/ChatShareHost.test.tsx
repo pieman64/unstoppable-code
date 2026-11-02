@@ -28,7 +28,9 @@ jest.mock('@/hooks/useChatShareData', () => ({
   },
 }));
 
-const mockDispatch = jest.fn(() => Promise.resolve({ ok: true }));
+const mockDispatch = jest.fn<Promise<unknown>, [unknown]>(() =>
+  Promise.resolve({ ok: true }),
+);
 jest.mock('@/lib/app-actions/dispatcher', () => ({
   dispatchAppAction: (request: unknown): Promise<unknown> =>
     mockDispatch(request),
@@ -448,7 +450,7 @@ describe('ChatShareHost', () => {
     unsubscribe();
   });
 
-  it('reports a completed share with its nudge origin', async () => {
+  it('reports a completed share with its nudge origin and clears on Done', async () => {
     const completed = jest.fn<void, [ShareRequest]>();
     const unsubscribe = subscribeShareCompleted(completed);
     const origin = {
@@ -470,13 +472,27 @@ describe('ChatShareHost', () => {
       source: 'usage_nudge',
       origin,
     });
-    expect(useShareRequestStore.getState().request).toBeNull();
+    // The dialog stays open on its success notice until the author is done.
+    // Share data refreshes only on close: a refresh now would unsettle the
+    // inventory the dialog resolves from and remount it.
+    expect(useShareRequestStore.getState().request).not.toBeNull();
+    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="mock-share-plugin"]'),
+    ).not.toBeNull();
     await flush();
     expect(resolveNudge).toHaveBeenCalledWith({
       ...origin,
       target: PLUGIN_TARGET,
       resolution: 'shared',
     });
+    act(() => mockPluginProps?.onClose());
+    expect(useShareRequestStore.getState().request).toBeNull();
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+    expect(completed).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector('[data-testid="mock-share-plugin"]'),
+    ).toBeNull();
     unsubscribe();
   });
 
@@ -577,7 +593,7 @@ describe('ChatShareHost', () => {
     closed = true;
     const repick = view.addEventListener.mock.calls.find(
       ([type]) => type === 'pagehide',
-    )?.[1] as (() => void) | undefined;
+    )?.[1];
     act(() => repick?.());
     await flush();
     expect(mockSkillProps?.ownerDocument).toBeUndefined();

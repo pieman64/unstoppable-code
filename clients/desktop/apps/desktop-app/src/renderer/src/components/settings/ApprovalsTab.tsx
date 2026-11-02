@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   useCallback,
   useEffect,
@@ -21,18 +22,24 @@ import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import { useChatStore } from '@/stores/chatStore';
 import { invalidateApprovalDefaults } from '@/stores/chat/approval-defaults';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { Button, Notice, StatusBadge } from '@canopy/ui-shared/components';
+import {
+  POSTHOG_REPLAY_BLOCK_CLASS,
+  POSTHOG_REPLAY_MASK_CLASS,
+} from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import {
+  Button,
+  Notice,
+  SettingsSelect,
+  StatusBadge,
+} from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsPage,
   SettingsLoading,
   SettingsRow,
   SettingsSection,
-  SettingsSelect,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 type RuleScope = 'global' | 'project';
 type RuleKind = ApprovalRuleTarget['kind'];
@@ -203,14 +210,14 @@ interface AddRuleFormProps {
 
 /**
  * The new-rule fields on one wrapping line, each captioned above its field,
- * with the Add action last. Rendered as a row of its own group.
+ * with the Add action last. Rendered under a `New rule` row at the end of
+ * the rules group.
  */
 function AddRuleForm({
   scope,
   disabled = false,
   onAdd,
 }: AddRuleFormProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [form, setForm] = useState<AddRuleFormValues>(EMPTY_ADD_RULE_FORM);
 
   const submit = useCallback((): void => {
@@ -227,40 +234,39 @@ function AddRuleForm({
       <label className={ADD_RULE_FIELD_CLASS_NAME}>
         <span className={ADD_RULE_CAPTION_CLASS_NAME}>Behavior</span>
         <SettingsSelect
+          options={[
+            { value: 'allow', label: 'Allow' },
+            { value: 'deny', label: 'Deny' },
+          ]}
           value={form.behavior}
           disabled={disabled}
-          onChange={(e): void =>
+          onValueChange={(next): void =>
             setForm((prev) => ({
               ...prev,
-              behavior: e.target.value === 'deny' ? 'deny' : 'allow',
+              behavior: next === 'deny' ? 'deny' : 'allow',
             }))
           }
-        >
-          <option value="allow">Allow</option>
-          <option value="deny">Deny</option>
-        </SettingsSelect>
+        />
       </label>
 
       <label className={ADD_RULE_FIELD_CLASS_NAME}>
         <span className={ADD_RULE_CAPTION_CLASS_NAME}>Kind</span>
         <SettingsSelect
+          options={RULE_KIND_OPTIONS.map((option) => ({
+            value: option.kind,
+            label: option.label,
+          }))}
           value={form.kind}
           disabled={disabled}
-          onChange={(e): void => {
-            const kind = parseRuleKind(e.target.value);
+          onValueChange={(next): void => {
+            const kind = parseRuleKind(next);
             setForm((prev) => ({
               ...EMPTY_ADD_RULE_FORM,
               behavior: prev.behavior,
               kind,
             }));
           }}
-        >
-          {RULE_KIND_OPTIONS.map((option) => (
-            <option key={option.kind} value={option.kind}>
-              {option.label}
-            </option>
-          ))}
-        </SettingsSelect>
+        />
       </label>
 
       {form.kind === 'mcp' ? (
@@ -353,7 +359,7 @@ function AddRuleForm({
       )}
 
       <Button
-        size={settingsButtonSize}
+        size="compact"
         variant="secondary"
         data-testid={`approval-add-rule-${scope}`}
         disabled={disabled}
@@ -378,6 +384,8 @@ interface RuleListProps {
   tableTestId?: string;
   /** A row above the rules in the same group, such as the project picker. */
   leadingRow?: ReactNode;
+  /** A row under the rules in the same group: the new-rule form. */
+  trailingRow?: ReactNode;
   /** The rules are loading: a placeholder stands in for them. */
   loading?: boolean;
 }
@@ -385,7 +393,7 @@ interface RuleListProps {
 /**
  * The rules as a table inside one group: an optional leading row, a caption
  * row, then one row per rule on the same column template, or the empty line
- * when there are none.
+ * when there are none, and an optional trailing row (the new-rule form).
  */
 function RuleList({
   rules,
@@ -393,14 +401,15 @@ function RuleList({
   onRemove,
   tableTestId = 'approval-rules-table',
   leadingRow,
+  trailingRow,
   loading = false,
 }: RuleListProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   if (loading) {
     return (
       <SettingsGroup dataTestId={tableTestId}>
         {leadingRow}
         <SettingsLoading rows={2} />
+        {trailingRow}
       </SettingsGroup>
     );
   }
@@ -424,6 +433,7 @@ function RuleList({
       {rules.map((rule) => (
         <div
           key={rule.id}
+          data-testid={`approval-rule-row-${rule.id}`}
           className="grid items-center gap-x-3 text-s"
           style={{ gridTemplateColumns: RULE_GRID_COLUMNS }}
         >
@@ -461,8 +471,8 @@ function RuleList({
               </span>
             ) : (
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 data-testid={`approval-rule-remove-${rule.id}`}
                 onClick={(): void => onRemove(rule.id)}
               >
@@ -472,6 +482,7 @@ function RuleList({
           </span>
         </div>
       ))}
+      {trailingRow}
     </SettingsGroup>
   );
 }
@@ -500,17 +511,15 @@ function ApprovalDefaultRow({
         <SettingsSelect
           id={id}
           data-testid={testId}
+          options={APPROVAL_MODE_OPTIONS.map((option) => ({
+            value: option.mode,
+            label: option.label,
+          }))}
           value={value}
-          onChange={(e): void =>
-            onChange(surface, parseApprovalMode(e.target.value))
+          onValueChange={(next): void =>
+            onChange(surface, parseApprovalMode(next))
           }
-        >
-          {APPROVAL_MODE_OPTIONS.map((option) => (
-            <option key={option.mode} value={option.mode}>
-              {option.label}
-            </option>
-          ))}
-        </SettingsSelect>
+        />
       }
     />
   );
@@ -522,8 +531,8 @@ export function ApprovalsTab(): JSX.Element {
     () => [
       ...visibleWorkspaces,
       ...[
-        { id: APP_ADVISOR_PROJECT_ID, name: 'App Advisor' },
-        { id: PIPELINE_EDITOR_PROJECT_ID, name: 'Pipeline editor' },
+        { id: APP_ADVISOR_PROJECT_ID, name: ORCHESTRATOR_LABEL },
+        { id: PIPELINE_EDITOR_PROJECT_ID, name: 'Workflow editor' },
       ].filter(
         (managed) =>
           !visibleWorkspaces.some((workspace) => workspace.id === managed.id),
@@ -779,7 +788,7 @@ export function ApprovalsTab(): JSX.Element {
           />
           <ApprovalDefaultRow
             surface="appAdvisor"
-            label="App Advisor"
+            label={ORCHESTRATOR_LABEL}
             testId="approval-default-app-advisor"
             value={defaults.appAdvisor}
             onChange={handleDefaultChange}
@@ -799,12 +808,12 @@ export function ApprovalsTab(): JSX.Element {
           emptyMessage="No global rules yet."
           onRemove={removeGlobalRule}
           tableTestId="approval-rules-table"
+          trailingRow={
+            <SettingsRow label="New rule">
+              <AddRuleForm scope="global" onAdd={addGlobalRule} />
+            </SettingsRow>
+          }
         />
-        {/* Its own group, so the rules table's text never includes the
-            form's option labels. */}
-        <SettingsGroup>
-          <AddRuleForm scope="global" onAdd={addGlobalRule} />
-        </SettingsGroup>
       </SettingsSection>
 
       <SettingsSection
@@ -836,28 +845,30 @@ export function ApprovalsTab(): JSX.Element {
                     <SettingsSelect
                       id={PROJECT_SELECT_ID}
                       data-testid="approval-project-workspace"
+                      options={workspaces.map((workspace) => ({
+                        value: workspace.id,
+                        label: workspace.name,
+                      }))}
                       value={selectedWorkspaceId}
-                      onChange={(e): void =>
-                        setSelectedWorkspaceId(e.target.value)
-                      }
-                    >
-                      {workspaces.map((workspace) => (
-                        <option key={workspace.id} value={workspace.id}>
-                          {workspace.name}
-                        </option>
-                      ))}
-                    </SettingsSelect>
+                      onValueChange={setSelectedWorkspaceId}
+                      // Project names are the user's own; mask the label text.
+                      replayPrivacy={{
+                        maskClassName: POSTHOG_REPLAY_MASK_CLASS,
+                      }}
+                    />
                   }
                 />
               }
+              trailingRow={
+                <SettingsRow label="New rule">
+                  <AddRuleForm
+                    scope="project"
+                    disabled={!selectedWorkspaceId}
+                    onAdd={addProjectRule}
+                  />
+                </SettingsRow>
+              }
             />
-            <SettingsGroup>
-              <AddRuleForm
-                scope="project"
-                disabled={!selectedWorkspaceId}
-                onAdd={addProjectRule}
-              />
-            </SettingsGroup>
           </>
         )}
       </SettingsSection>

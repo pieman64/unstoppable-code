@@ -16,7 +16,10 @@ import {
   type CanopyRequestMetadata,
   type CanopyRetryDirective,
 } from '@canopy/protocol/canopy-core';
-import type { CanopyCoreRelayReply } from '../../../shared/canopy-core-relay';
+import {
+  relayRetryFor,
+  type CanopyCoreRelayReply,
+} from '../../../shared/canopy-core-relay';
 import type { DesktopIpcEvent, DesktopIpcSender } from '../desktop-ipc-caller';
 import {
   RELAY_DEFINITIONS,
@@ -702,11 +705,13 @@ export function createRendererRelay(
 
   return {
     async invoke(event, input): Promise<CanopyCoreRelayReply> {
+      let method: string | undefined;
       try {
         if (disposed)
           throw failure('unavailable', 'The renderer relay is closed.');
         const session = sessionFor(event);
         const request = parseRequest(input);
+        if (request.kind === 'request') method = request.method;
         const value = await dispatch(session, request);
         // Results never cross an identity change: a closed connection drops
         // them. Close requests carry no result and may close it themselves.
@@ -729,7 +734,12 @@ export function createRendererRelay(
           );
         return { ok: true, value: value ?? null };
       } catch (error) {
-        return { ok: false, error: toPayload(error) };
+        // One exit for every layer's failure: dispatcher, binding and relay.
+        const payload = toPayload(error);
+        return {
+          ok: false,
+          error: { ...payload, retry: relayRetryFor(method, payload.retry) },
+        };
       }
     },
     dispose(): void {

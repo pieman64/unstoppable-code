@@ -18,14 +18,15 @@
  * `@canopy/desktop-shared/lib/titlebar-geometry`), so a change to the row's
  * height must update `APP_ADVISOR_TITLEBAR_ROW_HEIGHT_PX` too.
  */
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { memo, useCallback, type JSX } from 'react';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { dismissPageLikeViewers } from '@/lib/dismissPageLikeViewers';
 import {
-  PlusIcon,
-  SettingsGearIcon,
-  SidebarPanelToggleIcon,
-} from '@/components/app-advisor/AppAdvisorNavIcons';
+  PlusMediumIcon,
+  SettingsIcon,
+  SidebarHiddenLeftWideIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import {
   shouldReserveSidebarTrafficLightRegion,
   titlebarToggleLeadingCss,
@@ -33,7 +34,7 @@ import {
   TITLEBAR_TOGGLE_GAP_PX,
   withTrafficLightReserveCss,
 } from '../sidebar-layout';
-import { Tooltip } from '@canopy/ui-shared';
+import { TitlebarIconButton } from '@canopy/ui-shared';
 import { localPlatform } from '@/lib/local-platform';
 
 /** Controls hosted in the corner: toggle, settings, new entry. */
@@ -41,9 +42,6 @@ const CORNER_CONTROL_COUNT = 3;
 
 /** Trailing padding after the corner controls (main-app corner parity). */
 const CORNER_TRAILING_PX = 8;
-
-const CORNER_CONTROL_CLASS =
-  'electron-no-drag focus-ring inline-flex shrink-0 items-center justify-center rounded-md p-1.5 fg-secondary transition-colors hover:bg-secondary hover:fg-primary';
 
 /**
  * Total corner footprint as a CSS length. The top bar's collapsed spacer
@@ -102,38 +100,30 @@ export const AppAdvisorTitlebarCorner = memo(function AppAdvisorTitlebarCorner({
         className="electron-drag h-full shrink-0"
         style={{ width: leadingCss }}
       />
-      <button
-        type="button"
+      <TitlebarIconButton
         onClick={onToggleCollapsed}
+        icon={SidebarHiddenLeftWideIcon}
         aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
         aria-expanded={!collapsed}
         data-testid="app-advisor-nav-collapse"
-        className={CORNER_CONTROL_CLASS}
-      >
-        <SidebarPanelToggleIcon />
-      </button>
-      <Tooltip label="Settings">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          aria-label="App Advisor settings"
-          data-testid="app-advisor-nav-settings"
-          className={CORNER_CONTROL_CLASS}
-        >
-          <SettingsGearIcon />
-        </button>
-      </Tooltip>
-      <Tooltip label="New work entry">
-        <button
-          type="button"
-          onClick={handleNewEntry}
-          aria-label="New work entry"
-          data-testid="app-advisor-nav-new-entry"
-          className={CORNER_CONTROL_CLASS}
-        >
-          <PlusIcon />
-        </button>
-      </Tooltip>
+        // The control had no visible tooltip before; keep it that way.
+        tooltipLabel=""
+      />
+      <TitlebarIconButton
+        onClick={onOpenSettings}
+        icon={SettingsIcon}
+        iconSize={14}
+        aria-label={`${ORCHESTRATOR_LABEL} settings`}
+        tooltipLabel="Settings"
+        data-testid="app-advisor-nav-settings"
+      />
+      <TitlebarIconButton
+        onClick={handleNewEntry}
+        icon={PlusMediumIcon}
+        iconSize={14}
+        aria-label="New work entry"
+        data-testid="app-advisor-nav-new-entry"
+      />
     </div>
   );
 });

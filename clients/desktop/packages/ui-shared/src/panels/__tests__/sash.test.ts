@@ -97,6 +97,15 @@ describe('Sash', () => {
       expect(el.classList.contains('horizontal')).toBe(false);
     });
 
+    it('marks its element to draw above an in-app browser page while hovered', () => {
+      createVerticalSash();
+      expect(
+        queryHtmlElement(container, '.canopy-sash').getAttribute(
+          'data-canopy-above-browser',
+        ),
+      ).toBe('hover');
+    });
+
     it('marks horizontal sashes with the horizontal class', () => {
       createHorizontalSash();
 

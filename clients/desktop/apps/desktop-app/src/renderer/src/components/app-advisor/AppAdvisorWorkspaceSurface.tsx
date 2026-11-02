@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { draftHasContent } from '@/lib/chat-draft-content';
 import {
   desktopFileSessionController,
@@ -39,6 +40,8 @@ import {
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import {
   APP_ADVISOR_PROJECT_ID,
+  type AppAdvisorJson,
+  type AppAdvisorWindowBatchRemovalDialog,
   type AppAdvisorWindowUiState,
 } from '@canopy/desktop-shared/types';
 import { useChatStore, useWorktreeChatRenderState } from '@/stores/chatStore';
@@ -306,6 +309,15 @@ export function AppAdvisorWorkspaceSurface({
       ? slice.groupId
       : null;
   });
+  // The nav's bulk removal dialog reports into this window's store; main
+  // only reads the main window's, so it crosses with the window report.
+  const batchRemovalDialogSlice = useCurrentUiStateStore(
+    (state) => state.slices['appAdvisor.batchRemovalDialog'],
+  );
+  const batchRemovalDialog = useMemo(
+    () => readBatchRemovalDialog(batchRemovalDialogSlice),
+    [batchRemovalDialogSlice],
+  );
   const reportTimerRef = useRef<number | null>(null);
   const lastReportedRef = useRef<string | null>(null);
   useEffect(() => {
@@ -325,6 +337,7 @@ export function AppAdvisorWorkspaceSurface({
       lastArchivedOverviewConfirmationOpened:
         lastArchivedOverviewRequest?.confirmationOpened ?? null,
       hasUnsentDraft,
+      batchRemovalDialog,
     };
     const serialized = JSON.stringify(state);
     if (serialized === lastReportedRef.current) return;
@@ -356,6 +369,7 @@ export function AppAdvisorWorkspaceSurface({
     emptyTrashRunning,
     lastArchivedOverviewRequest,
     hasUnsentDraft,
+    batchRemovalDialog,
   ]);
 
   // Early access: the window can be a small floating chat (see
@@ -506,7 +520,7 @@ export function AppAdvisorWorkspaceSurface({
             >
               <div className="flex flex-col items-center gap-3 fg-secondary">
                 <LoadingSpinner tone="secondary" />
-                <span className="text-sm">Loading App Advisor…</span>
+                <span className="text-sm">Loading {ORCHESTRATOR_LABEL}…</span>
               </div>
             </div>
           )}
@@ -521,4 +535,27 @@ export function AppAdvisorWorkspaceSurface({
       />
     </div>
   );
+}
+
+/** The nav's open batch removal dialog slice, or `null` when closed. */
+function readBatchRemovalDialog(
+  slice: AppAdvisorJson | undefined,
+): AppAdvisorWindowBatchRemovalDialog | null {
+  if (
+    slice === null ||
+    typeof slice !== 'object' ||
+    Array.isArray(slice) ||
+    slice.open !== true
+  ) {
+    return null;
+  }
+  const { mode, phase, count } = slice;
+  if (
+    (mode !== 'archive' && mode !== 'delete') ||
+    (phase !== 'confirm' && phase !== 'running' && phase !== 'results') ||
+    typeof count !== 'number'
+  ) {
+    return null;
+  }
+  return { open: true, mode, count, phase };
 }

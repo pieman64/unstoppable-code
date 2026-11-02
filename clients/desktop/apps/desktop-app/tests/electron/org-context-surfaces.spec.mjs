@@ -502,7 +502,8 @@ test('Home Continue lists and resumes interrupted sessions only in the selected 
     for (const [index, item] of interrupted.entries()) {
       if (index > 0) await selectWorkspaceContext(window, item.context);
       const banner = window.getByTestId('home-interrupted-sessions-banner');
-      await expect(banner).toContainText('Resume 1 interrupted session');
+      // A single interrupted entry is named by its chat (CAN-4895).
+      await expect(banner).toContainText(`Resume ${item.title}`);
       await banner.getByTestId('home-interrupted-sessions-resume').click();
       const modal = window.getByTestId('usage-limit-resume-modal');
       await expect(modal).toBeVisible();
@@ -922,9 +923,18 @@ test('Audit Trail shows the selected context and switches context to open anothe
   );
   try {
     await app.openAuditPage();
+    // With a selected context the page has four filters, more than fit
+    // inline: Scope joins Provider, Status and Event behind one Filter
+    // dropdown, which counts the selected context as on.
+    const auditFilter = window.getByTestId('audit-trail-filter');
+    await expect(auditFilter).toHaveText('Filter · 1');
+    await auditFilter.click();
     await expect(
-      window.getByTestId('audit-trail-context-filter'),
-    ).toHaveAccessibleName('Scope');
+      window
+        .getByTestId('audit-trail-filter-menu')
+        .getByTestId('audit-trail-context-filter'),
+    ).toHaveText('Scope');
+    await window.keyboard.press('Escape');
     const personalEntry = window.getByTestId('audit-entry-audit-personal');
     const acmeEntry = window.getByTestId('audit-entry-audit-acme');
     const betaEntry = window.getByTestId('audit-entry-audit-beta');
@@ -944,7 +954,7 @@ test('Audit Trail shows the selected context and switches context to open anothe
 
     // Every context stays one choice away; opening a foreign entry switches
     // to its context before it navigates.
-    await window.getByTestId('audit-trail-context-filter').selectOption('all');
+    await app.chooseAuditTrailFilter('context', 'all');
     await expect(acmeEntry).toBeVisible();
     await expect(betaEntry).toBeVisible();
     await window.getByTestId('audit-inspect-button-audit-acme').click();
@@ -958,9 +968,7 @@ test('Audit Trail shows the selected context and switches context to open anothe
     ).toHaveAttribute('data-project-id', ORG_CONTEXT_WORKSPACE);
 
     await app.openAuditPage();
-    await window
-      .getByTestId('audit-trail-context-filter')
-      .selectOption('context');
+    await app.chooseAuditTrailFilter('context', 'context');
     await expect(window.getByTestId('audit-entry-audit-acme')).toBeVisible();
     await expect(planExploreEntry).toBeVisible();
     await expect(codeReviewEntry).toBeVisible();

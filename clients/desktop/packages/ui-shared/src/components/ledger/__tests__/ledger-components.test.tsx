@@ -1,9 +1,12 @@
 /** @jest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { LedgerViewFilters } from '@canopy/protocol/ledger-view';
+import type {
+  LedgerFeedFilters,
+  LedgerViewFilters,
+} from '@canopy/protocol/ledger-view';
 import type { LedgerStatus } from '@canopy/protocol/canopy-core';
-import { LedgerFilterMenu } from '../LedgerFilterMenu';
+import { LedgerFeedFilterMenu, LedgerFilterMenu } from '../LedgerFilterMenu';
 import {
   LedgerEntryTypeAvatar,
   LedgerEntryTypeLabel,
@@ -53,6 +56,8 @@ const THEME_FOREGROUND_ROLES: ReadonlySet<string> = new Set([
   'fg-info',
   'fg-success-strong',
   'fg-destructive-strong',
+  'fg-warning-strong',
+  'fg-special-strong',
   'fg-attention',
   'fg-warning',
 ]);
@@ -98,6 +103,78 @@ describe('Ledger status colors', () => {
       inkOf('NEEDS_REVIEW'),
     ]);
     expect(inks.size).toBe(4);
+  });
+});
+
+describe('LedgerFeedFilterMenu page trigger', () => {
+  const FEED_NONE: LedgerFeedFilters = {
+    types: [],
+    statuses: [],
+    owner: 'anyone',
+    author: 'anyone',
+    period: 'any',
+    includeArchived: false,
+  };
+
+  it('is the quiet Filter dropdown with a row per group, each opening its choices', () => {
+    const onChange = jest.fn();
+    act(() =>
+      root.render(
+        <LedgerFeedFilterMenu
+          trigger="page"
+          filters={{
+            ...FEED_NONE,
+            types: ['TASK'],
+            statuses: ['BLOCKED', 'TODO'],
+            author: 'you',
+          }}
+          onChange={onChange}
+        />,
+      ),
+    );
+    const trigger = byTestId('ledger-filter-trigger');
+    expect(trigger.textContent).toBe('Filter · 3');
+    expect(trigger.getAttribute('aria-label')).toBe('Filter entries: 3 on');
+    expect(trigger.className).toContain('h-7');
+    expect(
+      document.querySelector('[data-testid="ledger-filter-active-dot"]'),
+    ).toBeNull();
+    act(() => trigger.click());
+    expect(
+      [
+        'ledger-filter-type',
+        'ledger-filter-status',
+        'ledger-filter-owner',
+        'ledger-filter-author',
+        'ledger-filter-period',
+        'ledger-filter-archived',
+      ].map((testId) => byTestId(testId).textContent),
+    ).toEqual([
+      'Type',
+      'Status',
+      'Owner',
+      'Added by',
+      'Last changed',
+      'Archived',
+    ]);
+    // A group whose filter is on keeps the selected surface.
+    expect(
+      byTestId('ledger-filter-status').getAttribute('data-contains-selection'),
+    ).toBe('true');
+    expect(
+      byTestId('ledger-filter-owner').getAttribute('data-contains-selection'),
+    ).toBeNull();
+    act(() => byTestId('ledger-filter-period').click());
+    act(() => byTestId('ledger-filter-period-option-week').click());
+    expect(onChange).toHaveBeenLastCalledWith({
+      ...FEED_NONE,
+      types: ['TASK'],
+      statuses: ['BLOCKED', 'TODO'],
+      author: 'you',
+      period: 'week',
+    });
+    act(() => byTestId('ledger-filter-trigger-clear').click());
+    expect(onChange).toHaveBeenLastCalledWith(FEED_NONE);
   });
 });
 

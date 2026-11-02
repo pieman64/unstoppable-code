@@ -20,7 +20,7 @@ import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
 // The drip is off until the user answers. These specs walk the three desktop
 // surfaces that answer it: the Home "Getting started" card (first in the
 // queue for an undecided account), the Settings → Accounts toggle, and the
-// `needs-credits` model recovery modal's "Turn on free daily credits" action.
+// `needs-credits` model recovery modal's "Turn on free daily AI Credits" action.
 //
 // Deterministic: no live agents and no network. Every cloud read goes to the
 // shared mock server (`mock-server/routes/cloud.mjs`), keyed by the connected
@@ -95,7 +95,9 @@ async function openHome(window) {
   await expect(window.getByTestId('page-home')).toBeVisible({
     timeout: 15_000,
   });
-  await expect(window.getByTestId('home-onboarding-suggestions')).toBeVisible({
+  await expect(
+    window.getByTestId('home-composer-editor').locator('visible=true'),
+  ).toBeVisible({
     timeout: 15_000,
   });
 }
@@ -118,165 +120,6 @@ async function cleanup(launch, key) {
 }
 
 test.describe('daily free AI Credits opt-in', () => {
-  test('an undecided account sees the daily credits card first in Getting started', async () => {
-    test.setTimeout(120_000);
-    const key = 'csk_daily_drip_first_in_queue_e2e';
-    await registerScenario(
-      DEFAULT_MOCK_BASE_URL,
-      key,
-      zeroBalanceScenario({ enabled: false, decidedAt: null }),
-    );
-    let launch;
-    try {
-      launch = await launchHome({
-        key,
-        pendingEntries: ['focus-shortcut'],
-      });
-      const { window } = launch;
-      await openHome(window);
-
-      const card = window.getByTestId(
-        'home-onboarding-suggestion-daily-credits',
-      );
-      await expect(card).toBeVisible({ timeout: 30_000 });
-      await expect(card).toHaveAttribute('data-step', 'enable-daily-credits');
-      await expect(card).toHaveAttribute('data-status', 'pending');
-      await expect(card).toContainText('Free AI Credits, every single day');
-      await expect(card).toContainText(
-        `Claim ${CAP_CREDITS} free AI Credits daily. Use them with any model, on top of your own plan.`,
-      );
-      await expect(
-        window.getByTestId('home-onboarding-daily-credits-turn-on'),
-      ).toHaveText('Claim');
-      await expect(
-        window.getByTestId('home-onboarding-daily-credits-turn-on'),
-      ).toBeEnabled();
-      await expect(
-        window.getByTestId('home-onboarding-daily-credits-not-now'),
-      ).toBeEnabled();
-
-      // Getting started shows one entry at a time; the opt-in leads the
-      // queue, ahead of the other pending entry (`focus-shortcut`). The counter
-      // reads "done + 1" (#4697), so leading the queue leaves exactly that one
-      // step after the live one. A new counted onboarding step left pending by
-      // the seed changes this count.
-      const progress = window.getByTestId('home-onboarding-checklist-progress');
-      await expect
-        .poll(async () => {
-          const match = /^(\d+)\/(\d+)$/.exec(await progress.innerText());
-          return match ? Number(match[2]) - Number(match[1]) : null;
-        })
-        .toBe(1);
-
-      // Showing the card answers nothing.
-      expect(await dripActivity(key)).toEqual({ enable: 0, disable: 0 });
-    } finally {
-      await cleanup(launch, key);
-    }
-  });
-
-  test('Claim saves enabled, removes the card, and credits the balance', async () => {
-    test.setTimeout(150_000);
-    const key = 'csk_daily_drip_turn_on_e2e';
-    await registerScenario(
-      DEFAULT_MOCK_BASE_URL,
-      key,
-      zeroBalanceScenario({ enabled: false, decidedAt: null }),
-    );
-    let launch;
-    try {
-      launch = await launchHome({
-        key,
-        pendingEntries: ['focus-shortcut'],
-      });
-      const { window, app } = launch;
-
-      // The empty wallet before the opt-in.
-      await app.openUsagePage();
-      await expect(
-        window.getByTestId('usage-card-ai-credits-balance'),
-      ).toHaveText('0 credits', { timeout: 30_000 });
-
-      await openHome(window);
-      const card = window.getByTestId(
-        'home-onboarding-suggestion-daily-credits',
-      );
-      await expect(card).toBeVisible({ timeout: 30_000 });
-      await window.getByTestId('home-onboarding-daily-credits-turn-on').click();
-
-      await expect
-        .poll(() => dripActivity(key), { timeout: 20_000 })
-        .toEqual({ enable: 1, disable: 0 });
-      await expect(card).toHaveCount(0);
-      await expect(
-        window.getByTestId('home-onboarding-daily-credits-error'),
-      ).toHaveCount(0);
-      await expect(
-        window.getByTestId('home-onboarding-suggestion-focus-shortcut'),
-      ).toBeVisible();
-
-      // Settings reflects the saved answer.
-      const toggle = await openAccountSettings(app);
-      await expect(toggle).toHaveAttribute('aria-checked', 'true');
-      await app.closeSettings();
-
-      // The grant reached the balance surfaces without a relaunch.
-      await app.openUsagePage();
-      await expect(
-        window.getByTestId('usage-card-ai-credits-balance'),
-      ).toHaveText(`${CAP_CREDITS} credits`, { timeout: 30_000 });
-      expect(await dripActivity(key)).toEqual({ enable: 1, disable: 0 });
-    } finally {
-      await cleanup(launch, key);
-    }
-  });
-
-  test('Not now saves disabled, removes the card, and leaves Settings off', async () => {
-    test.setTimeout(120_000);
-    const key = 'csk_daily_drip_not_now_e2e';
-    await registerScenario(
-      DEFAULT_MOCK_BASE_URL,
-      key,
-      zeroBalanceScenario({ enabled: false, decidedAt: null }),
-    );
-    let launch;
-    try {
-      launch = await launchHome({ key, pendingEntries: ['focus-shortcut'] });
-      const { window, app } = launch;
-      await openHome(window);
-
-      const card = window.getByTestId(
-        'home-onboarding-suggestion-daily-credits',
-      );
-      await expect(card).toBeVisible({ timeout: 30_000 });
-      await window.getByTestId('home-onboarding-daily-credits-not-now').click();
-
-      await expect
-        .poll(() => dripActivity(key), { timeout: 20_000 })
-        .toEqual({ enable: 0, disable: 1 });
-      await expect(card).toHaveCount(0);
-      await expect(
-        window.getByTestId('home-onboarding-suggestion-focus-shortcut'),
-      ).toBeVisible();
-
-      const toggle = await openAccountSettings(app);
-      await expect(toggle).toHaveAttribute('aria-checked', 'false');
-
-      // The answer is durable server-side: a fresh read reports decided.
-      const state = await window.evaluate(() =>
-        window.api.loadCloudDailyCreditDrip(),
-      );
-      expect(state).toMatchObject({
-        available: true,
-        resolved: true,
-        preference: { enabled: false, capCredits: CAP_CREDITS },
-      });
-      expect(state.preference.decidedAt).not.toBeNull();
-    } finally {
-      await cleanup(launch, key);
-    }
-  });
-
   test('the Settings toggle round-trips off, on, and off', async () => {
     test.setTimeout(120_000);
     const key = 'csk_daily_drip_settings_toggle_e2e';
@@ -293,7 +136,7 @@ test.describe('daily free AI Credits opt-in', () => {
       // Already decided (off), so Home never asks.
       await openHome(window);
       await expect(
-        window.getByTestId('home-onboarding-suggestion-focus-shortcut'),
+        window.getByTestId('home-composer-editor').locator('visible=true'),
       ).toBeVisible();
       await expect(
         window.getByTestId('home-onboarding-suggestion-daily-credits'),
@@ -344,8 +187,9 @@ test.describe('daily free AI Credits opt-in', () => {
     let launch;
     try {
       launch = await launchHome({ key, pendingEntries: ['focus-shortcut'] });
-      const { window } = launch;
+      const { window, app } = launch;
       await openHome(window);
+      await openAccountSettings(app);
 
       // Prove the preference was actually read before asserting absence.
       await expect
@@ -365,8 +209,9 @@ test.describe('daily free AI Credits opt-in', () => {
         preference: { enabled: true, decidedAt: DECIDED_AT },
       });
 
+      await app.closeSettings();
       await expect(
-        window.getByTestId('home-onboarding-suggestion-focus-shortcut'),
+        window.getByTestId('home-composer-editor').locator('visible=true'),
       ).toBeVisible();
       await expect(
         window.getByTestId('home-onboarding-suggestion-daily-credits'),
@@ -490,17 +335,39 @@ async function openNeedsCreditsRecovery(window, picker) {
 
   const modal = window.getByTestId('model-recovery-modal');
   await expect(modal).toBeVisible();
+  // CAN-5214 — the amount, recurrence and terms show before opting in.
   await expect(
-    window.getByTestId('model-recovery-daily-credits'),
-  ).toContainText('Turn on free daily credits', { timeout: 30_000 });
+    window.getByTestId('model-recovery-daily-credits-offer'),
+  ).toHaveText(`Get ${CAP_CREDITS} free every day, no card needed.`, {
+    timeout: 30_000,
+  });
+  await expect(modal.locator('h2')).toContainText('Choose how to use');
+  await expect(
+    window.getByTestId('model-recovery-daily-credits-body'),
+  ).toHaveText("You're out of AI Credits.");
   const turnOn = window.getByTestId('model-recovery-turn-on-daily-credits');
-  await expect(turnOn).toBeVisible();
+  await expect(turnOn).toHaveText('Turn on free daily AI Credits');
   await expect(turnOn).toBeEnabled();
+  await expect(window.getByTestId('model-recovery-get-credits')).toHaveText(
+    'Get AI Credits',
+  );
+  // The X is the only dismiss, and every action label renders the same way.
+  await expect(window.getByTestId('model-recovery-cancel')).toHaveCount(0);
+  const labelStyles = await modal
+    .locator('button[data-testid^="model-recovery-"]')
+    .evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const style = getComputedStyle(button);
+        return `${style.fontSize}/${style.fontWeight}`;
+      }),
+    );
+  expect(labelStyles.length).toBeGreaterThan(1);
+  expect(new Set(labelStyles).size).toBe(1);
   return { modal, turnOn };
 }
 
 test.describe('needs-credits recovery offers the daily drip', () => {
-  test('turning on free daily credits clears the needs-credits step', async () => {
+  test('turning on free daily AI Credits clears the needs-credits step', async () => {
     test.setTimeout(150_000);
     const key = 'csk_daily_drip_recovery_commit_e2e';
     await registerScenario(
@@ -516,6 +383,8 @@ test.describe('needs-credits recovery offers the daily drip', () => {
       });
       const { window, picker } = launch;
       const { turnOn } = await openNeedsCreditsRecovery(window, picker);
+      // Reading the terms saves nothing.
+      expect(await dripActivity(key)).toEqual({ enable: 0, disable: 0 });
 
       await turnOn.click();
       await expect
@@ -566,7 +435,7 @@ test.describe('needs-credits recovery offers the daily drip', () => {
       await turnOn.click();
       await expect(
         window.getByTestId('model-recovery-daily-credits-saved'),
-      ).toContainText('Your free daily credits start tomorrow.', {
+      ).toContainText('Your free daily AI Credits start tomorrow.', {
         timeout: 30_000,
       });
       await expect(modal).toBeVisible();
@@ -579,7 +448,10 @@ test.describe('needs-credits recovery offers the daily drip', () => {
       expect(await dripActivity(key)).toEqual({ enable: 1, disable: 0 });
 
       // Nothing was committed: the chat keeps its model.
-      await window.getByTestId('model-recovery-cancel').click();
+      await window
+        .getByTestId('model-recovery-modal')
+        .getByRole('button', { name: 'Close', exact: true })
+        .click();
       await expect(modal).toHaveCount(0);
       await expect(picker).toContainText('Luna');
       await expect(picker).not.toContainText(GATEWAY_MODEL_LABEL);

@@ -148,6 +148,7 @@ export function XlsxPreview({
       </div>
       <div
         role="tabpanel"
+        data-selectable
         id={`${tabsId}-panel`}
         aria-labelledby={sheet ? `${tabsId}-tab-${activeSheet}` : undefined}
         tabIndex={0}

@@ -18,7 +18,10 @@ import {
   buildCoworkRevisionArtifacts,
   type CoworkRevisionArtifact,
 } from './cowork-artifacts';
-import { publishSharedContainerRevision } from './pipeline';
+import {
+  publishSharedContainerRevision,
+  type PublishSharedContainerRevisionDependencies,
+} from './pipeline';
 
 export { buildCoworkRevisionArtifacts };
 export type { CoworkRevisionArtifact };
@@ -52,6 +55,7 @@ export interface PublishCoworkRevisionDependencies {
     worktreeId: string;
     inventory: CoworkPublishInventory;
   }) => Promise<{ publishedTitle: string; listTitle: string }>;
+  prepareCapabilityPackage?: PublishSharedContainerRevisionDependencies<CoworkPublishInventory>['prepareCapabilityPackage'];
 }
 
 /**
@@ -88,6 +92,12 @@ const DEFAULT_DEPENDENCIES: PublishCoworkRevisionDependencies = {
   fetchRevision: fetchSharedContainerRevision,
   readDeviceId: async () => (await readPortalStateStore()).clientDeviceId,
   resolveTitles: resolveCoworkSharedContainerTitles,
+  // Deferred: the package analyzer is heavy and only needed while publishing.
+  prepareCapabilityPackage: async (input) => {
+    const { prepareCoworkSharedContainerCapabilityPackage } =
+      await import('../capability-package/prepare');
+    return prepareCoworkSharedContainerCapabilityPackage(input);
+  },
 };
 
 export async function publishCoworkSharedContainerRevision(

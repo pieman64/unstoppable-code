@@ -3,6 +3,8 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -45,6 +47,87 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
 const WORKTREE_BRANCH = 'demo-main';
 const STAGED_ERROR = 'An incomplete archived Git capture requires recovery.';
+
+// Backend leg A: exercise the real preload/IPC transport, not the renderer's
+// removal handler (its pre-IPC effects are separately owned by leg B).
+for (const missingCheckout of [false, true]) {
+  test(`CAN-5158: source refusal through IPC can retry (missing checkout: ${missingCheckout})`, async () => {
+    test.setTimeout(120_000);
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-can5158-'));
+    const { workspace, worktree, worktreesPath, containerManifestPath } =
+      seedWorktree(userDataDir);
+    const hiddenSource = `${workspace.repoPath}-unavailable`;
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      if (missingCheckout) rmSync(workspace.worktreePath, { recursive: true });
+      const readRemovalState = () => {
+        const file = JSON.parse(readFileSync(worktreesPath, 'utf8'));
+        // Launch backfill/chat commits independently update badges. Compare
+        // every other row and envelope field, including removal/recovery state.
+        for (const row of file.worktrees) delete row.chatBadges;
+        return file;
+      };
+      const before = readRemovalState();
+      const journals = path.join(userDataDir, 'w5', 'destructive-lifecycles');
+      const readJournals = () =>
+        existsSync(journals)
+          ? readdirSync(journals)
+              .sort()
+              .map((name) => [
+                name,
+                readFileSync(path.join(journals, name), 'utf8'),
+              ])
+          : [];
+      const beforeJournals = readJournals();
+      renameSync(workspace.repoPath, hiddenSource);
+      const request = {
+        projectId: workspace.id,
+        worktreeId: worktree.id,
+        repoPath: workspace.repoPath,
+        expectedCreatedAt: worktree.createdAt,
+        deleteBranch: false,
+        deleteWithoutRetentionIfMissing: missingCheckout,
+      };
+      const refusal = await window.evaluate(async (request) => {
+        try {
+          await window.api.archiveWorktree(request);
+          return null;
+        } catch (error) {
+          return String(error);
+        }
+      }, request);
+      expect(refusal).toContain(
+        "Couldn't verify the worktree's source repositories. Check repository access and retry.",
+      );
+      expect(readRemovalState()).toEqual(before);
+      expect(readJournals()).toEqual(beforeJournals);
+      expect(existsSync(containerManifestPath)).toBe(false);
+      expect(existsSync(workspace.worktreePath)).toBe(!missingCheckout);
+
+      renameSync(hiddenSource, workspace.repoPath);
+      expect(
+        await window.evaluate(
+          (request) => window.api.archiveWorktree(request),
+          request,
+        ),
+      ).toMatchObject({ success: true });
+      expect(JSON.parse(readFileSync(worktreesPath, 'utf8')).worktrees).toEqual(
+        [],
+      );
+      expect(existsSync(containerManifestPath)).toBe(!missingCheckout);
+      expect(existsSync(workspace.worktreePath)).toBe(false);
+      expect(
+        gitRefExists(workspace.repoPath, `refs/heads/${worktree.branchName}`),
+      ).toBe(true);
+    } finally {
+      if (existsSync(hiddenSource))
+        renameSync(hiddenSource, workspace.repoPath);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
 
 /** Seed a live worktree that the test will delete outside the running app. */
 function seedWorktree(userDataDir) {
@@ -134,18 +217,20 @@ for (const removal of [
   {
     mode: 'archive',
     menuTestId: 'worktree-actions-menu-archive',
-    dialogName: 'Archive worktree?',
-    confirmLabel: 'Archive',
+    dialogName: /^Archive worktree/,
+    confirmLabel: 'Archive worktree',
     branchChoiceTestId: 'worktree-removal-preserve-branch',
+    keepBranch: true,
     // Archive retains, so anything still pinned for this worktree survives.
     expectRetainedContainer: true,
   },
   {
     mode: 'delete',
     menuTestId: 'worktree-actions-menu-delete',
-    dialogName: 'Delete worktree?',
-    confirmLabel: 'Delete',
+    dialogName: /^Delete worktree/,
+    confirmLabel: 'Delete worktree',
     branchChoiceTestId: 'worktree-removal-delete-branch',
+    keepBranch: false,
     // Nothing is restorable, so Delete retains nothing and main is authorized
     // to release the pinned capture along with the row.
     expectRetainedContainer: false,
@@ -221,8 +306,12 @@ for (const removal of [
 
       // Delete may take the existing safe-delete bypass when the last clean
       // diff result is still cached. Archive always confirms. When a dialog is
-      // present, its Preserve local or Delete local button commits the removal.
+      // present, its Keep the local branch switch picks the branch handling
+      // and its one action commits the removal.
       if (await dialog.isVisible()) {
+        if (!removal.keepBranch) {
+          await dialog.getByTestId('worktree-removal-keep-branch').click();
+        }
         await window.getByTestId(removal.branchChoiceTestId).click();
       }
 

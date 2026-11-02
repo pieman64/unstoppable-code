@@ -7,13 +7,23 @@ import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import {
   GitIgnoreHostError,
   type GitIgnoreCheckRequest,
+  type GitIgnoredListingRequest,
   type GitIgnoreHostFailureCode,
   type GitIgnoreHostPort,
 } from '@canopy/core-runtime/node';
 import {
+  GitRepositoryReadError,
+  type GitExecutableSelectionFacts,
+  type GitExecutableSelectionRequest,
+  type GitRepositoryReadPort,
+  type GitRepositoryReadRequest,
+} from '@canopy/core-runtime/node/git';
+import {
+  gitRepositoryCommandFor,
   GitReadError,
   type GitReadEnvironment,
   isHostAbsolute,
+  type SelectedGit,
   validateEnvironment,
 } from './commands';
 import {
@@ -38,18 +48,59 @@ export interface GitReadHostCleanupReport {
 
 export interface GitReadHostOptions {
   readonly os: PlatformOperatingSystem;
-  /** Daemon's own startup env after claim-marker removal. Copied once; undefined dropped. Never a client's. */
+  /**
+   * Daemon's own startup env after claim-marker removal. Copied once;
+   * undefined dropped. Never a client's: a repository read's own
+   * `environment` replaces it for that read only (CAN-5496).
+   */
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** Trusted absolute directory: cwd for validation/discovery probes. L2 passes the canonical data root (0700). */
   readonly probeDirectory: string;
   readonly onCleanupReport?: (report: GitReadHostCleanupReport) => void;
 }
 
+/** A Git a `check-ignore` or `ls-files` process started with; `version` is null when unvalidated. */
+export interface GitReadSelected {
+  readonly executable: string;
+  readonly version: string | null;
+}
+
+/** Every distinct Git a started `check-ignore` or `ls-files` ran, in first-start order. */
+export interface GitReadSelections {
+  readonly selections: readonly GitReadSelected[];
+  /** A further distinct Git, or one with an over-long field, was not kept. */
+  readonly overflow: boolean;
+}
+
+/** Bounds on the selections a host keeps, so its report stays bounded. */
+export const GIT_READ_SELECTION_LIMITS = Object.freeze({
+  selections: 4,
+  executableLength: 4096,
+  versionLength: 256,
+});
+
 export interface GitReadHost {
   readonly port: GitIgnoreHostPort;
-  /** darwin and linux-x64: start the login-PATH refresh; otherwise a no-op. Never throws. */
+  /**
+   * The `worker.git.*` repository reads (POSIX only) and executable
+   * selection facts, over the same selection, runner and stop as `port`.
+   */
+  readonly repository: GitRepositoryReadPort;
+  /**
+   * The executable this host's selection chose, for the daemon's Git write
+   * host (CAN-4108), so one daemon selects Git once. The path stays in
+   * process. Rejects as `readRepository`'s selection does.
+   */
+  selectWriteExecutable(
+    this: void,
+    readSavedExecutablePath: (signal: AbortSignal) => Promise<string>,
+    signal: AbortSignal,
+  ): Promise<string>;
+  /** macOS and Linux x64/arm64: start the login-PATH refresh; otherwise a no-op. Never throws. */
   prewarm(this: void): void;
   lastFailure(this: void): GitIgnoreHostFailureCode | null;
+  /** A snapshot of the Gits `check-ignore` and `ls-files` have started with so far. Never throws. */
+  selections(this: void): GitReadSelections;
   stop(
     this: void,
     signal: AbortSignal,
@@ -111,9 +162,10 @@ function defaultAccount(): SelectionAccount {
 }
 
 /**
- * Read-only Git selection and `check-ignore` for a long-lived daemon, over
- * the private runner. Construction does no I/O and never throws; a request
- * with an unusable snapshot or probe directory rejects `invalid_request`.
+ * Read-only Git selection, `check-ignore` and the ignored listing for a
+ * long-lived daemon, over the private runner. Construction does no I/O and
+ * never throws; a request with an unusable snapshot or probe directory
+ * rejects `invalid_request`.
  */
 export function createGitReadHost(options: GitReadHostOptions): GitReadHost {
   return createGitReadHostWith(options, {});
@@ -139,6 +191,28 @@ export function createGitReadHostWith(
   const stopping = new AbortController();
   let stopped = false;
   let failure: GitIgnoreHostFailureCode | null = null;
+  const selected: GitReadSelected[] = [];
+  let selectionOverflow = false;
+
+  /** Keeps `chosen` once, within GIT_READ_SELECTION_LIMITS. */
+  function recordSelected({ executable, version }: SelectedGit): void {
+    const entry = { executable, version: version ?? null };
+    if (
+      selected.some(
+        (kept) =>
+          kept.executable === entry.executable &&
+          kept.version === entry.version,
+      )
+    )
+      return;
+    if (
+      selected.length >= GIT_READ_SELECTION_LIMITS.selections ||
+      entry.executable.length > GIT_READ_SELECTION_LIMITS.executableLength ||
+      (entry.version?.length ?? 0) > GIT_READ_SELECTION_LIMITS.versionLength
+    )
+      selectionOverflow = true;
+    else selected.push(Object.freeze(entry));
+  }
 
   function report(outcome: GitReadHostCleanupReport): void {
     try {
@@ -268,12 +342,245 @@ export function createGitReadHostWith(
             throw new GitIgnoreHostError('git_unavailable');
           }
         },
+        // Not on selection: an aborted or unspawned chunk ran no Git.
+        onChunkStarted: (_chunk, started) => recordSelected(started),
       });
       failure = null;
       return ignored;
     } catch (error) {
       signal.throwIfAborted();
       return failWith(codeOf(error));
+    }
+  }
+
+  /** `work`, or the first abort of `signals`, rethrowing its reason. */
+  async function untilAborted<T>(
+    work: Promise<T>,
+    signals: readonly AbortSignal[],
+  ): Promise<T> {
+    const outcome = await new Promise<
+      { readonly value: T } | { readonly error: unknown }
+    >((settle) => {
+      let done = false;
+      const listeners = signals.map((each): [AbortSignal, () => void] => [
+        each,
+        (): void => finish({ error: each.reason }),
+      ]);
+      function finish(
+        result: { readonly value: T } | { readonly error: unknown },
+      ): void {
+        if (done) return;
+        done = true;
+        listeners.forEach(([each, listener]) =>
+          each.removeEventListener('abort', listener),
+        );
+        settle(result);
+      }
+      const preAborted = signals.find((each) => each.aborted);
+      if (preAborted) return finish({ error: preAborted.reason });
+      listeners.forEach(([each, listener]) =>
+        each.addEventListener('abort', listener, { once: true }),
+      );
+      work.then(
+        (value) => finish({ value }),
+        (error: unknown) => finish({ error }),
+      );
+    });
+    if ('error' in outcome) throw outcome.error;
+    return outcome.value;
+  }
+
+  /**
+   * One repository read: selection, then the fixed command, under one request
+   * deadline from the call, as `check-ignore`. The runner's limits, group kill
+   * and host stop apply to the command.
+   */
+  async function readRepository(
+    request: GitRepositoryReadRequest,
+  ): Promise<string> {
+    checkClosureContext?.();
+    const signal = fieldOf(request, 'signal');
+    if (signal instanceof AbortSignal) signal.throwIfAborted();
+    const failRead = (code: GitIgnoreHostFailureCode): never => {
+      throw new GitRepositoryReadError(code);
+    };
+    if (stopped) failRead('stopped');
+    const cwd = fieldOf(request, 'cwd');
+    const read = fieldOf(request, 'read');
+    const readSaved = fieldOf(request, 'readSavedExecutablePath');
+    const forwarded = fieldOf(request, 'environment');
+    if (
+      !(signal instanceof AbortSignal) ||
+      typeof cwd !== 'string' ||
+      typeof readSaved !== 'function'
+    )
+      return failRead('invalid_request');
+    const host = readiness();
+    if (host === null || !isHostAbsolute(host.os, cwd))
+      return failRead('invalid_request');
+    // Validated per request and used for this command only; selection keeps
+    // the snapshot (D2).
+    let environment = host.environment;
+    if (forwarded !== undefined) {
+      const copied = copyEnvironment(forwarded);
+      try {
+        environment = validateEnvironment(copied);
+      } catch {
+        return failRead('invalid_request');
+      }
+    }
+    const deadlineAt = performance.now() + timing.requestDeadlineMs;
+    // The deadline also ends a selection still waiting on detection.
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () => deadline.abort(new GitReadError('deadline_exceeded')),
+      timing.requestDeadlineMs,
+    );
+    try {
+      const command = gitRepositoryCommandFor(host.os, read);
+      const readSavedExecutablePath = (saved: AbortSignal): Promise<unknown> =>
+        Promise.resolve().then((): unknown =>
+          Reflect.apply(readSaved, request, [saved]),
+        );
+      const selectionSignal = AbortSignal.any([signal, deadline.signal]);
+      const selected = await untilAborted(
+        host.selection.select(readSavedExecutablePath, selectionSignal),
+        [selectionSignal, stopping.signal],
+      ).catch((error: unknown) => {
+        // As check-ignore: a failed saved-preference read is no usable Git.
+        if (
+          error instanceof GitIgnoreHostError ||
+          selectionSignal.aborted ||
+          stopping.signal.aborted
+        )
+          throw error;
+        throw new GitIgnoreHostError('git_unavailable');
+      });
+      const output = await host.runner.run(command(selected.executable), {
+        cwd,
+        environment,
+        deadlineAt,
+        signal,
+      });
+      if (output.code !== 0 || output.signal !== null)
+        throw new GitReadError('exit_status', {
+          exitCode: output.code,
+          signal: output.signal,
+        });
+      return output.stdout;
+    } catch (error) {
+      signal.throwIfAborted();
+      const code = codeOf(error);
+      // The exit code alone: `rev-parse --verify` exits 1 for an absent object.
+      if (code === 'exit_status' && error instanceof GitReadError)
+        throw new GitRepositoryReadError(code, { exitCode: error.exitCode });
+      return failRead(code);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function selectExecutable(
+    request: GitExecutableSelectionRequest,
+  ): Promise<GitExecutableSelectionFacts> {
+    checkClosureContext?.();
+    const signal = fieldOf(request, 'signal');
+    if (signal instanceof AbortSignal) signal.throwIfAborted();
+    const readSaved = fieldOf(request, 'readSavedExecutablePath');
+    const recheck = fieldOf(request, 'recheck');
+    if (stopped) return { ready: false, code: 'stopped', explicit: false };
+    if (
+      !(signal instanceof AbortSignal) ||
+      typeof readSaved !== 'function' ||
+      typeof recheck !== 'boolean'
+    )
+      throw new GitRepositoryReadError('invalid_request');
+    const host = readiness();
+    if (host === null) throw new GitRepositoryReadError('invalid_request');
+    const readSavedExecutablePath = (saved: AbortSignal): Promise<unknown> =>
+      Promise.resolve().then((): unknown =>
+        Reflect.apply(readSaved, request, [saved]),
+      );
+    return untilAborted(
+      host.selection.observe(readSavedExecutablePath, signal, recheck),
+      [signal],
+    );
+  }
+
+  async function listIgnoredPathEntries(
+    request: GitIgnoredListingRequest,
+  ): Promise<string[]> {
+    checkClosureContext?.();
+    // Each field is read once: an untyped caller's getters run no later.
+    const signal = fieldOf(request, 'signal');
+    if (signal instanceof AbortSignal) signal.throwIfAborted();
+    if (stopped) failWith('stopped');
+    const root = fieldOf(request, 'root');
+    const readSaved = fieldOf(request, 'readSavedExecutablePath');
+    if (
+      !(signal instanceof AbortSignal) ||
+      typeof root !== 'string' ||
+      typeof readSaved !== 'function'
+    )
+      failWith('invalid_request');
+    const host = readiness();
+    if (host === null) failWith('invalid_request');
+    const readSavedExecutablePath = (saved: AbortSignal): Promise<unknown> =>
+      Promise.resolve().then((): unknown =>
+        Reflect.apply(readSaved, request, [saved]),
+      );
+    try {
+      const entries = await host.runner.listIgnoredPathsSelected({
+        cwd: root,
+        environment: host.environment,
+        deadlineAt: performance.now() + timing.requestDeadlineMs,
+        signal,
+        selectExecutable: async (selectionSignal) => {
+          try {
+            return await host.selection.select(
+              readSavedExecutablePath,
+              selectionSignal,
+            );
+          } catch (error) {
+            if (error instanceof GitIgnoreHostError || selectionSignal.aborted)
+              throw error;
+            throw new GitIgnoreHostError('git_unavailable');
+          }
+        },
+        // Not on selection: an aborted or unspawned listing ran no Git.
+        onStarted: recordSelected,
+      });
+      failure = null;
+      return entries;
+    } catch (error) {
+      signal.throwIfAborted();
+      return failWith(codeOf(error));
+    }
+  }
+
+  async function selectWriteExecutable(
+    readSaved: (signal: AbortSignal) => Promise<string>,
+    signal: AbortSignal,
+  ): Promise<string> {
+    checkClosureContext?.();
+    if (!(signal instanceof AbortSignal) || typeof readSaved !== 'function')
+      throw new GitRepositoryReadError('invalid_request');
+    signal.throwIfAborted();
+    if (stopped) throw new GitRepositoryReadError('stopped');
+    const host = readiness();
+    if (host === null) throw new GitRepositoryReadError('invalid_request');
+    try {
+      const selected = await untilAborted(
+        host.selection.select(readSaved, signal),
+        [signal, stopping.signal],
+      );
+      return selected.executable;
+    } catch (error) {
+      signal.throwIfAborted();
+      if (stopping.signal.aborted) throw new GitRepositoryReadError('stopped');
+      throw new GitRepositoryReadError(
+        error instanceof GitIgnoreHostError ? error.code : 'git_unavailable',
+      );
     }
   }
 
@@ -313,9 +620,16 @@ export function createGitReadHostWith(
   }
 
   return Object.freeze({
-    port: Object.freeze({ checkIgnoredPaths }),
+    port: Object.freeze({ checkIgnoredPaths, listIgnoredPathEntries }),
+    repository: Object.freeze({ readRepository, selectExecutable }),
+    selectWriteExecutable,
     prewarm,
     lastFailure: (): GitIgnoreHostFailureCode | null => failure,
+    selections: (): GitReadSelections =>
+      Object.freeze({
+        selections: Object.freeze([...selected]),
+        overflow: selectionOverflow,
+      }),
     stop,
   });
 }

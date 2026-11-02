@@ -20,8 +20,12 @@ import type * as CanopyCloudConfigModule from '../canopy-cloud/config';
 const getCanopyCloudCredentialsMock = jest.fn();
 const mergeCanopyCloudAccountCapabilitiesMock = jest.fn();
 jest.mock('../lib/canopy-cloud-account-store', () => ({
-  getCanopyCloudCredentials: getCanopyCloudCredentialsMock,
-  mergeCanopyCloudAccountCapabilities: mergeCanopyCloudAccountCapabilitiesMock,
+  get getCanopyCloudCredentials(): typeof getCanopyCloudCredentialsMock {
+    return getCanopyCloudCredentialsMock;
+  },
+  get mergeCanopyCloudAccountCapabilities(): typeof mergeCanopyCloudAccountCapabilitiesMock {
+    return mergeCanopyCloudAccountCapabilitiesMock;
+  },
 }));
 jest.mock('../canopy-cloud/config', () => ({
   ...jest.requireActual<typeof CanopyCloudConfigModule>(
@@ -482,7 +486,7 @@ describe('canopy cloud client error decoding', () => {
 
   it('keeps the request timeout active until the JSON body is consumed', async () => {
     jest.useFakeTimers();
-    let requestSignal: AbortSignal | null = null;
+    const requestState: { signal: AbortSignal | null } = { signal: null };
     let releaseBody!: () => void;
     const body = new Promise<unknown>((resolve) => {
       releaseBody = (): void => resolve({ ok: true });
@@ -490,7 +494,7 @@ describe('canopy cloud client error decoding', () => {
     const response = jsonResponse(200, { ok: true });
     jest.spyOn(response, 'json').mockImplementation(() => body);
     global.fetch = jest.fn((_input, init): Promise<Response> => {
-      requestSignal = init?.signal ?? null;
+      requestState.signal = init?.signal ?? null;
       return Promise.resolve(response);
     });
 
@@ -501,7 +505,7 @@ describe('canopy cloud client error decoding', () => {
     await Promise.resolve();
     await jest.advanceTimersByTimeAsync(25);
 
-    expect(requestSignal?.aborted).toBe(true);
+    expect(requestState.signal?.aborted).toBe(true);
     releaseBody();
     await request;
   });

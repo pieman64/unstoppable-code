@@ -150,7 +150,7 @@ export async function drainWorktreePipelines(
     const executionId =
       failed.reason instanceof Error ? failed.reason.message : 'unknown';
     throw new Error(
-      `Failed to drain pipeline execution '${executionId}' before worktree teardown.`,
+      `Failed to drain workflow execution '${executionId}' before worktree teardown.`,
     );
   }
 }
@@ -176,7 +176,7 @@ export async function cleanupWorktreePipelines(
         // nothing, and failing the archive here would brick every worktree
         // deletion over a single foreign file in the shared executions dir.
         warnings.push(
-          `Skipped ${listed.unreadableFiles.length} unreadable pipeline execution state file(s) left in place: ${listed.unreadableFiles.join(', ')}`,
+          `Skipped ${listed.unreadableFiles.length} unreadable workflow execution state file(s) left in place: ${listed.unreadableFiles.join(', ')}`,
         );
       }
     } else {
@@ -187,7 +187,7 @@ export async function cleanupWorktreePipelines(
       throw error;
     }
     return {
-      warnings: ['Failed to list pipeline executions for cleanup'],
+      warnings: ['Failed to list workflow executions for cleanup'],
       relocatedCount: 0,
       failedRelocationIds: [],
     };
@@ -219,7 +219,7 @@ export async function cleanupWorktreePipelines(
       const failedSummary = running.find((s) => s.id === failedId);
       const name = failedSummary?.pipeline_name ?? 'unknown';
       warnings.push(
-        `Failed to cancel pipeline execution '${failedId}' (pipeline: ${name}). It may still be running.`,
+        `Failed to cancel workflow execution '${failedId}' (workflow: ${name}). It may still be running.`,
       );
     }
   }
@@ -302,12 +302,12 @@ export async function cleanupWorktreePipelines(
     ) {
       failedRelocationIds.push(summary.id);
       warnings.push(
-        `Failed to archive pipeline execution '${summary.id}' artifacts; the live artifacts were preserved.`,
+        `Failed to archive workflow execution '${summary.id}' artifacts; the live artifacts were preserved.`,
       );
       return;
     }
     warnings.push(
-      `Failed to delete pipeline execution '${summary.id}' artifacts. They may need manual cleanup.`,
+      `Failed to delete workflow execution '${summary.id}' artifacts. They may need manual cleanup.`,
     );
   });
 

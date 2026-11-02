@@ -1,9 +1,7 @@
 import {
   IPC_CHANNELS,
-  type PortalCommandEnvelope,
   type PortalEventEnvelope,
 } from '@canopy/desktop-shared/types';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { handlePortalSetSectionOrder } from '../session-adapter';
 import type { PortalAdapterContext } from '../types';
 import { setWorkspaceActivitySectionOrder } from '../../../lib/sidebar-items';
@@ -25,7 +23,11 @@ jest.mock('../../../lib/window-send', () => ({
 const mockedSetOrder = jest.mocked(setWorkspaceActivitySectionOrder);
 const mockedSendToWindow = jest.mocked(sendToWindow);
 
-function command(payload: unknown): PortalCommandEnvelope {
+type SetSectionOrderCommand = Parameters<typeof handlePortalSetSectionOrder>[0];
+
+function command(
+  payload: SetSectionOrderCommand['payload'],
+): SetSectionOrderCommand {
   return {
     id: 'cmd-1',
     sequence: 1,
@@ -33,12 +35,13 @@ function command(payload: unknown): PortalCommandEnvelope {
     payload,
     createdAt: '2026-06-10T00:00:00.000Z',
     expiresAt: null,
-  } as PortalCommandEnvelope;
+  };
 }
 
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
   return {
     enqueueEvent: (event) => events.push(event),
+    getWindow: () => null,
     complete: (cmd, result): void => {
       events.push({
         type: 'portal.command.completed',
@@ -53,7 +56,7 @@ function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
         payload: { error: { code, message } },
       } as PortalEventEnvelope);
     },
-  } as PortalAdapterContext;
+  };
 }
 
 describe('session portal adapter — set_section_order id validation (SEC5)', () => {
@@ -69,9 +72,9 @@ describe('session portal adapter — set_section_order id validation (SEC5)', ()
     );
     const failed = events.find((e) => e.type === 'portal.command.failed');
     expect(failed).toBeDefined();
-    expect((failed?.payload as { error: { code: string } }).error.code).toBe(
-      'invalid_payload',
-    );
+    expect(
+      (failed?.payload as { error: { code: string } } | undefined)?.error.code,
+    ).toBe('invalid_payload');
     expect(mockedSetOrder).not.toHaveBeenCalled();
     expect(mockedSendToWindow).not.toHaveBeenCalled();
   });

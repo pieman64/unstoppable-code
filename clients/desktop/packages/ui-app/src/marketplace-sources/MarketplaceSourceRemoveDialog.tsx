@@ -58,7 +58,6 @@ export function MarketplaceSourceRemoveDialog({
       busyLabel="Removing…"
       busy={busy}
       destructive
-      focusCancel
       restoreFocusRef={restoreFocusRef}
       dataTestId="marketplace-source-remove-dialog"
       confirmTestId={confirmTestId ?? 'marketplace-source-remove-confirm'}

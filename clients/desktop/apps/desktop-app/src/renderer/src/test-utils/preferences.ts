@@ -3,6 +3,7 @@ import {
   createDefaultApprovalDefaults,
   DEFAULT_APP_ADVISOR_MODEL,
   DEFAULT_CLAUDE_MODEL,
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CRON_GENERATION_MODEL,
@@ -86,6 +87,7 @@ export function makeTestPreferences(
     approvalDefaults: createDefaultApprovalDefaults(),
     globalApprovalRules: [],
     approvalsUpgradeNoticeDismissed: false,
+    onboardingTipsDismissed: {},
     summaryModel: DEFAULT_CLAUDE_MODEL,
     summaryThinkingLevel: 'off',
     handoffSummaryModel: DEFAULT_HANDOFF_SUMMARY_MODEL,
@@ -151,6 +153,8 @@ export function makeTestPreferences(
     scriptTimeoutMinutes: 5,
     codexAppServerIdleTimeoutMinutes:
       DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
+    claudeSessionIdleTimeoutMinutes:
+      DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
     defaultChatInterfaceMode: 'canopy',
     defaultStandaloneChatInterfaceMode: 'canopy',
     defaultAppAdvisorInterfaceMode: 'canopy',
@@ -187,6 +191,7 @@ export function makeTestPreferences(
     colorMode: 'system',
     sidebarAppearance: 'translucent',
     scrollbarBehavior: 'system',
+    singleDollarMath: true,
     uiScale: 100,
     windowBounds: null,
     windowMaximized: false,
@@ -254,7 +259,6 @@ export function makeTestPreferences(
     activationQuietHours: { enabled: true, startHour: 22, endHour: 8 },
     promotionalNotifications: {
       enabled: true,
-      gettingStarted: true,
       arbitrary: true,
     },
     mcpHttpAuthDefaultHandler: DEFAULT_MCP_HTTP_AUTH_HANDLER,

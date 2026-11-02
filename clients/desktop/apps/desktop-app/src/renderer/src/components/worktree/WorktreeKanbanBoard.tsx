@@ -66,6 +66,7 @@ interface KanbanStatusIndicatorProps {
   isTearingDown: boolean;
   isPendingGitSetup: boolean;
   isStreaming: boolean;
+  backgroundTasks: number;
 }
 
 function KanbanStatusIndicator({
@@ -76,18 +77,17 @@ function KanbanStatusIndicator({
   isTearingDown,
   isPendingGitSetup,
   isStreaming,
+  backgroundTasks,
 }: KanbanStatusIndicatorProps): JSX.Element {
   const prStatus = useGitHubStore(
     (state) => state.prStatuses[getWorktreeRecordKey(projectId, worktree.id)],
   );
   const effectivePrStatus =
     prStatus === undefined ? worktree.lastKnownPrStatus : prStatus;
-  const doneLabel = shouldShowWorktreeMergedState(
+  const merged = shouldShowWorktreeMergedState(
     worktree.status,
     effectivePrStatus,
-  )
-    ? 'PR merged'
-    : 'Done';
+  );
 
   return (
     <WorktreeStatusIndicator
@@ -96,7 +96,9 @@ function KanbanStatusIndicator({
       isTearingDown={isTearingDown}
       isPendingGitSetup={isPendingGitSetup}
       isStreaming={isStreaming}
-      doneLabel={doneLabel}
+      backgroundTasks={backgroundTasks}
+      doneLabel={merged ? 'PR merged' : 'Done'}
+      merged={merged}
     />
   );
 }
@@ -235,6 +237,7 @@ export function WorktreeKanbanBoard({
     const isTearingDown = adapterProps.tearingDownWorktrees.has(wtKey);
     const isPendingGitSetup = worktree.setupPhase === 'git-pending';
     const isStreaming = adapterProps.streamingWorktreeKeys.has(wtKey);
+    const backgroundTasks = adapterProps.backgroundTaskCounts?.get(wtKey) ?? 0;
 
     return (
       <div
@@ -259,6 +262,7 @@ export function WorktreeKanbanBoard({
             isTearingDown={isTearingDown}
             isPendingGitSetup={isPendingGitSetup}
             isStreaming={isStreaming}
+            backgroundTasks={backgroundTasks}
           />
         </div>
         <div

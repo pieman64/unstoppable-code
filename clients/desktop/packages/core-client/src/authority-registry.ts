@@ -5,13 +5,14 @@ import {
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyClientError, MAX_ERROR_MESSAGE_LENGTH } from './errors';
-import type { CanopyClient } from './types';
+import type { CanopyClient, CanopyRuntimeIdentity } from './types';
 
 /** The client surface the registry reads; any typed `CanopyClient` fits. */
-export type CanopyAuthorityConnection = Pick<
-  CanopyClient,
-  'identity' | 'signal'
->;
+export interface CanopyAuthorityConnection {
+  // CAN-4163 part two restores the full identity (runtimeId, hostId, daemonEpoch) for cursor domains once the CAN-4155 web-core handshake supplies it.
+  readonly identity: Pick<CanopyRuntimeIdentity, 'authorityId' | 'profile'>;
+  readonly signal: CanopyClient['signal'];
+}
 
 export type CanopyCommandDestination =
   | { readonly mode: 'authority'; readonly authorityId: string }

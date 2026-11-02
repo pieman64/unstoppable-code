@@ -48,6 +48,8 @@ test('the Notice States gallery renders every notice family', async () => {
     // picked notice above it. Switching the picker swaps which notice shows.
     const surface = page.getByTestId('notice-preview-surface');
     await expect(surface.locator('[data-chat-composer-root]')).toBeVisible();
+    // Pick the target explicitly: new gallery entries can change the default.
+    await page.getByTestId('notice-preview-pick-usage-limit-offer').click();
     await expect(
       surface.getByTestId('notice-gallery-usage-limit-offer'),
     ).toBeVisible();
@@ -90,8 +92,9 @@ test('the Notice States gallery renders every notice family', async () => {
       ).toBeVisible();
     }
 
-    // The usage-limit offer: a short title, the choice on the same line, and
-    // three text-only actions on their own row with the accent action last.
+    // The usage-limit offer: a short title, a message that ends with the
+    // question, and three short text-only answers on their own row with the
+    // accent action, the per-chat Just this chat, last (CAN-5159).
     // Scoped to the section: the preview above renders the same entry with
     // the same test id while it is picked, so an unscoped lookup would match
     // two elements.
@@ -100,12 +103,16 @@ test('the Notice States gallery renders every notice family', async () => {
       .getByTestId('notice-gallery-usage-limit-offer');
     await usageLimit.scrollIntoViewIfNeeded();
     await expect(usageLimit).toContainText('Claude usage limit reached');
-    await expect(usageLimit).toContainText('Continue on');
+    await expect(usageLimit).toContainText(
+      'Do you want to use AI Credits to keep going?',
+    );
     const below = usageLimit.locator('[data-notice-actions="below"]');
     await expect(below).toBeVisible();
     const buttons = below.getByRole('button');
     await expect(buttons).toHaveCount(3);
-    await expect(buttons.nth(2)).toHaveText('Always use credits');
+    await expect(buttons.nth(0)).toHaveText('No, resume at 6:00 PM');
+    await expect(buttons.nth(1)).toHaveText('Always');
+    await expect(buttons.nth(2)).toHaveText('Just this chat');
     for (let index = 0; index < 3; index += 1) {
       await expect(buttons.nth(index).locator('svg')).toHaveCount(0);
     }

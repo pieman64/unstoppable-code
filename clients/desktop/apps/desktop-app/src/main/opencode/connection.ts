@@ -1,4 +1,9 @@
 import {
+  observeProviderConnection,
+  withProviderConnectionAttempt,
+  type ConnectionMethod,
+} from '../lib/provider-connection-events';
+import {
   openCodeAccountMetadataSchema,
   type OpenCodeAccountSnapshot,
 } from '@canopy/protocol/portal';
@@ -127,6 +132,8 @@ function installer(): OpenCodeRuntimeInstaller {
 export async function opencodeConnectionStatus(): Promise<OpenCodeConnectionStatus> {
   const publish = beginOpenCodeAvailabilityProbe();
   const epoch = generation;
+  const enabledRevision = getOpenCodeEnabledRevision();
+  const pendingSetup = setupAbort;
   const selected = artifact();
   const preferences = await readPreferencesFile();
   const installed = !!selected && (await installer().isInstalled());
@@ -134,9 +141,20 @@ export async function opencodeConnectionStatus(): Promise<OpenCodeConnectionStat
     !connecting &&
     isOpenCodeHarnessEnabled() &&
     preferences.opencodeEnabled === true;
-  if (epoch === generation && installed && enabled && !peekOpenCodeAccounts())
+  // Setup commits without revoking its model-discovery generation. Reads begun
+  // during setup, or before a preference change, cannot replace its observations.
+  const current =
+    epoch === generation &&
+    enabledRevision === getOpenCodeEnabledRevision() &&
+    pendingSetup === setupAbort;
+  if (current && installed && enabled && !peekOpenCodeAccounts())
     publishOpenCodeAccounts(unavailableAccounts());
-  publish(!!selected && installed && enabled);
+  if (current) publish(!!selected && installed && enabled);
+  if (current && !connecting && isOpenCodeHarnessEnabled()) {
+    observeOpenCodeRuntime(installed && enabled, 'read');
+    if (installed && enabled) observeOpenCodeConnection('read');
+    else resetOpenCodeAccountConnection();
+  }
   return {
     supported: !!selected,
     installed,
@@ -172,6 +190,8 @@ export async function openManagedOpenCodeRuntime(options: {
   workspaceId?: string;
   requireEnabled?: boolean;
   restrictedEnvironment?: boolean;
+  /** Host-managed routes must not load unrelated native provider settings. */
+  providerConfiguration?: 'host-inference';
   executionKind?: 'agent' | 'pipeline';
   environment?: Record<string, string>;
 }): Promise<ManagedOpenCodeRuntime> {
@@ -198,7 +218,7 @@ export async function openManagedOpenCodeRuntime(options: {
   try {
     const preferences = await readPreferencesFile();
     if (options.requireEnabled !== false && !preferences.opencodeEnabled)
-      throw new Error('Connect OpenCode in Settings > Labs.');
+      throw new Error('Connect OpenCode in Settings.');
     const executable = await installer().verify(signal);
     const env = {
       ...getEnhancedEnv({
@@ -223,7 +243,10 @@ export async function openManagedOpenCodeRuntime(options: {
         ),
       ),
     };
-    const providerConfig = await readOpenCodeProviderConfig(env);
+    const providerConfig =
+      options.providerConfiguration === 'host-inference'
+        ? {}
+        : await readOpenCodeProviderConfig(env);
     signal.throwIfAborted();
     assertOpenCodeConnectionGeneration(epoch);
     return {
@@ -249,6 +272,7 @@ export async function openManagedOpenCodeRuntime(options: {
 
 export async function revokeOpenCodeRuntimes(): Promise<void> {
   generation++;
+  if (!connecting) observedAccountIdentities = undefined;
   cached = undefined;
   publishOpenCodeAccounts(undefined);
   invalidateOpenCodeRuntimeAvailability();
@@ -341,6 +365,10 @@ async function discover(
       };
       initOpenCodeModels(models);
       publishOpenCodeAccounts(accounts);
+      observeOpenCodeConnection(
+        pendingInAppAccountConnection ? 'in_app' : 'read',
+      );
+      pendingInAppAccountConnection = false;
     }
     return { models, accounts };
   } finally {
@@ -431,7 +459,101 @@ export async function listOpenCodeModels(
   });
 }
 
+function openCodeConnectionMethod(): ConnectionMethod {
+  const accounts = (peekOpenCodeAccounts()?.providers ?? [])
+    .flatMap((provider) => provider.accounts)
+    .filter((account) => !account.needsSignIn);
+  if (
+    accounts.some(
+      (account) => account.method === 'key' || account.method === 'env',
+    )
+  )
+    return 'api_key';
+  return accounts.length > 0 ? 'native_login' : 'provider_runtime';
+}
+
+let pendingInAppAccountConnection = false;
+let observedAccountIdentities: string[] | undefined;
+
+function observeOpenCodeRuntime(
+  connected: boolean,
+  via: 'read' | 'in_app',
+): void {
+  observeProviderConnection({
+    provider: 'opencode',
+    connectionMethod: openCodeConnectionMethod(),
+    via,
+    scope: 'runtime',
+    fingerprint: connected ? 'runtime' : null,
+  });
+}
+
+function resetOpenCodeAccountConnection(): void {
+  observedAccountIdentities = undefined;
+  observeProviderConnection({
+    provider: 'opencode',
+    connectionMethod: 'native_login',
+    via: 'read',
+    scope: 'accounts',
+    fingerprint: null,
+  });
+}
+
+function observeOpenCodeConnection(
+  via: 'read' | 'in_app',
+  baselineOnly = false,
+): void {
+  const snapshot = peekOpenCodeAccounts();
+  // Unavailable metadata is not account loss. Retain the last known baseline.
+  if (snapshot?.status !== 'ready') return;
+  const identities = snapshot.providers
+    .flatMap((provider) =>
+      provider.accounts
+        .filter((account) => !account.needsSignIn)
+        .map((account) =>
+          JSON.stringify([provider.id, account.method, account.label]),
+        ),
+    )
+    .sort();
+  const lossOnly =
+    observedAccountIdentities !== undefined &&
+    identities.every((identity) =>
+      observedAccountIdentities?.includes(identity),
+    );
+  observedAccountIdentities = identities;
+  observeProviderConnection({
+    provider: 'opencode',
+    connectionMethod: openCodeConnectionMethod(),
+    via,
+    scope: 'accounts',
+    fingerprint: identities.length > 0 ? JSON.stringify(identities) : null,
+    baselineOnly: baselineOnly || lossOnly,
+  });
+}
+
 export async function connectOpenCode(
+  signal: AbortSignal,
+  progress: (status: OpenCodeConnectionStatus) => void,
+): Promise<OpenCodeConnectionStatus> {
+  return withProviderConnectionAttempt(
+    'opencode',
+    openCodeConnectionMethod(),
+    signal,
+    async () => {
+      const previous = await opencodeConnectionStatus();
+      const newRuntimeConnection = !previous.installed || !previous.enabled;
+      const connected = await connectOpenCodeImpl(signal, progress);
+      if (connected.phase === 'connected') {
+        observeOpenCodeRuntime(true, 'in_app');
+        // A new runtime event already carries the discovered account method.
+        observeOpenCodeConnection('in_app', newRuntimeConnection);
+      }
+      return connected;
+    },
+  );
+}
+
+async function connectOpenCodeImpl(
   signal: AbortSignal,
   progress: (status: OpenCodeConnectionStatus) => void,
 ): Promise<OpenCodeConnectionStatus> {
@@ -513,6 +635,8 @@ export async function disconnectOpenCode(): Promise<void> {
     ...preferences,
     opencodeEnabled: false,
   }));
+  observeOpenCodeRuntime(false, 'in_app');
+  resetOpenCodeAccountConnection();
   try {
     await revokeOpenCodeRuntimes();
   } finally {
@@ -570,8 +694,10 @@ function unavailableAccounts(): OpenCodeAccountSnapshot {
 /** Explicit refresh joins owned discovery. Snapshot reads never start a process. */
 export async function refreshOpenCodeAccounts(
   signal: AbortSignal = AbortSignal.timeout(60_000),
+  via: 'read' | 'in_app' = 'read',
 ): Promise<void> {
   const epoch = generation;
+  if (via === 'in_app') pendingInAppAccountConnection = true;
   try {
     const preferences = await readPreferencesFile();
     if (epoch !== generation) return;
@@ -589,5 +715,7 @@ export async function refreshOpenCodeAccounts(
   } catch {
     if (epoch === generation && isOpenCodeHarnessEnabled())
       publishOpenCodeAccounts(unavailableAccounts());
+  } finally {
+    if (via === 'in_app') pendingInAppAccountConnection = false;
   }
 }

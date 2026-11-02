@@ -19,7 +19,6 @@ import { PortalServiceError } from '../../../services/portal-service-error';
 
 jest.mock('../../../services/scripts-service', () => ({
   cancelScript: jest.fn(),
-  getScriptSourceInfo: jest.fn(),
   readAndEmitScriptRunTail: jest.fn(),
   runScript: jest.fn(),
 }));
@@ -47,12 +46,13 @@ function command(
     payload,
     createdAt: '2026-05-06T00:00:00.000Z',
     expiresAt: null,
-  } as PortalCommandEnvelope;
+  };
 }
 
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
   return {
     enqueueEvent: (event) => events.push(event),
+    getWindow: () => null,
     complete: (cmd, result): void => {
       events.push({
         type: 'portal.command.completed',
@@ -79,7 +79,7 @@ describe('scripts portal adapter', () => {
     const events: PortalEventEnvelope[] = [];
     const activeRun = new Promise<never>(() => undefined);
     mockedRunScript.mockImplementation((_request, options) => {
-      options.onExecutionStarted?.();
+      options?.onExecutionStarted?.();
       return activeRun;
     });
 
@@ -108,7 +108,7 @@ describe('scripts portal adapter', () => {
     let registered = false;
     mockedRunScript.mockImplementation((_request, options) => {
       registered = true;
-      options.onExecutionStarted?.();
+      options?.onExecutionStarted?.();
       return new Promise<never>(() => undefined);
     });
     mockedCancelScript.mockImplementation(() => {
@@ -177,10 +177,10 @@ describe('scripts portal adapter', () => {
     const events: PortalEventEnvelope[] = [];
     const window = { marker: 'window' };
     mockedRunScript.mockImplementation((_request, options) => {
-      options.onExecutionStarted?.();
-      options.onRendererStarted?.({ marker: 'started' } as never);
-      options.onRendererOutput?.({ marker: 'output' } as never);
-      options.onRendererComplete?.({ marker: 'complete' } as never);
+      options?.onExecutionStarted?.();
+      options?.onRendererStarted?.({ marker: 'started' } as never);
+      options?.onRendererOutput?.({ marker: 'output' } as never);
+      options?.onRendererComplete?.({ marker: 'complete' } as never);
       return Promise.resolve({
         success: true,
         exitCode: 0,
@@ -210,8 +210,8 @@ describe('scripts portal adapter', () => {
   it('does not throw when no renderer window exists', async () => {
     const events: PortalEventEnvelope[] = [];
     mockedRunScript.mockImplementation((_request, options) => {
-      options.onExecutionStarted?.();
-      options.onRendererStarted?.({ marker: 'started' } as never);
+      options?.onExecutionStarted?.();
+      options?.onRendererStarted?.({ marker: 'started' } as never);
       return new Promise<never>(() => undefined);
     });
 
@@ -240,8 +240,8 @@ describe('scripts portal adapter', () => {
       throw new Error('Render frame was disposed');
     });
     mockedRunScript.mockImplementation((_request, options) => {
-      options.onExecutionStarted?.();
-      options.onRendererStarted?.({ marker: 'started' } as never);
+      options?.onExecutionStarted?.();
+      options?.onRendererStarted?.({ marker: 'started' } as never);
       return new Promise<never>(() => undefined);
     });
 
@@ -268,7 +268,7 @@ describe('scripts portal adapter', () => {
     const events: PortalEventEnvelope[] = [];
     const failure = new Error('process failed after start');
     mockedRunScript.mockImplementation((_request, options) => {
-      options.onExecutionStarted?.();
+      options?.onExecutionStarted?.();
       return Promise.reject(failure);
     });
 

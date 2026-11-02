@@ -1,11 +1,17 @@
 import {
   LedgerContainerSchema,
+  ledgerGlobalOwnerKey,
   type LedgerContainer,
+  type LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
 import { readWorkEntriesFile } from '../lib/cowork-work-entries-file';
 import { getWorkspaceWorktreeCreatedAt } from '../lib/workspace-persistence';
-import type { LedgerScopeRecord } from '@canopy/desktop-shared/node/ledger';
+import {
+  ledgerGlobalAccountKey,
+  type LedgerScopeRecord,
+} from '@canopy/desktop-shared/node/ledger';
 import type { LedgerStoreClient } from './ledger-store-client';
+import { LedgerStorageHostError } from './storage-host';
 
 /*
  * Scope identity follows the browser task-slot pattern (E03): a container
@@ -39,6 +45,12 @@ export interface LedgerScopeBindingsOptions {
    * rebound. Null when signed out.
    */
   readonly getAccountId: () => string | null | Promise<string | null>;
+  /**
+   * The account a global (workflow) Ledger belongs to, null when signed out.
+   * Throws when the account cannot be read, so a failed read never picks the
+   * signed-out Ledger. Defaults to `getAccountId`.
+   */
+  readonly getGlobalAccountId?: () => Promise<string | null>;
 }
 
 /** The parent and item IDs of a container tuple. */
@@ -50,6 +62,8 @@ function containerIds(container: LedgerContainer): [string, string] {
       return [container.workspaceId, container.entryId];
     case 'advisor_entry':
       return [container.appWorkspaceId, container.entryId];
+    case 'global':
+      return ['global', ledgerGlobalOwnerKey(container.owner)];
   }
 }
 
@@ -101,6 +115,8 @@ export class LedgerScopeBindings {
   private readonly options: LedgerScopeBindingsOptions;
   private authorityId: Promise<string> | undefined;
   private readonly byIncarnation = new Map<string, LedgerCachedIncarnation>();
+  /** Global (workflow) Ledgers by owner and account. */
+  private readonly byGlobalOwner = new Map<string, Promise<LedgerBoundScope>>();
 
   constructor(options: LedgerScopeBindingsOptions) {
     this.options = options;
@@ -108,7 +124,9 @@ export class LedgerScopeBindings {
 
   /**
    * The ledger bound to a container incarnation, minting it on first use
-   * under the store's writer authority and the signed-in account.
+   * under the store's writer authority and the signed-in account. A global
+   * (workflow) incarnation is never minted here: it is only found, as
+   * `resolveGlobal` bound it.
    */
   resolve(
     container: LedgerContainer,
@@ -119,7 +137,10 @@ export class LedgerScopeBindings {
     if (cached !== undefined) return cached.scope;
     const entry: LedgerCachedIncarnation = {
       containerKey: ledgerContainerKey(container),
-      scope: this.bind(container, containerCreatedAt),
+      scope:
+        container.kind === 'global'
+          ? this.findBound(container, containerCreatedAt)
+          : this.bind(container, containerCreatedAt),
     };
     this.byIncarnation.set(key, entry);
     // A failed bind is not cached, so the next use tries again.
@@ -145,11 +166,57 @@ export class LedgerScopeBindings {
   }
 
   /**
+   * The owner's global (workflow) Ledger for the signed-in account, or the
+   * signed-out one, minting it on first use. Each account keeps its own, so
+   * the account is read on every call and is part of the key.
+   */
+  async resolveGlobal(owner: LedgerGlobalOwner): Promise<LedgerBoundScope> {
+    const accountId = await this.readGlobalAccountId();
+    const key = JSON.stringify([
+      ledgerGlobalOwnerKey(owner),
+      // One Ledger per owner and account: two accounts never share one.
+      ledgerGlobalAccountKey(accountId),
+    ]);
+    const cached = this.byGlobalOwner.get(key);
+    if (cached !== undefined) return cached;
+    const pending = this.bindGlobal(owner, accountId);
+    this.byGlobalOwner.set(key, pending);
+    // A failed bind is not cached, so the next use tries again.
+    void pending.catch((): void => {
+      if (this.byGlobalOwner.get(key) === pending) {
+        this.byGlobalOwner.delete(key);
+      }
+    });
+    return pending;
+  }
+
+  /**
+   * The owner's global Ledger for an account, looked up without writing.
+   * Null when the account never recorded there.
+   */
+  async findGlobal(
+    owner: LedgerGlobalOwner,
+    accountId: string | null,
+  ): Promise<LedgerBoundScope | null> {
+    const scope = await this.options
+      .store()
+      .findGlobalScope({ owner, accountId });
+    return scope === null ? null : toBoundScope(scope);
+  }
+
+  /** The account a global Ledger belongs to; throws when it is unknown. */
+  readGlobalAccountId(): Promise<string | null> {
+    const read = this.options.getGlobalAccountId ?? this.options.getAccountId;
+    return Promise.resolve(read());
+  }
+
+  /**
    * Forgets every cached incarnation, as after the scopes of a merged guest
    * account moved to the account it became.
    */
   forgetAll(): void {
     this.byIncarnation.clear();
+    this.byGlobalOwner.clear();
   }
 
   /**
@@ -181,6 +248,36 @@ export class LedgerScopeBindings {
       accountId,
     });
     return toBoundScope(scope);
+  }
+
+  private async bindGlobal(
+    owner: LedgerGlobalOwner,
+    accountId: string | null,
+  ): Promise<LedgerBoundScope> {
+    const store = this.options.store();
+    const authorityId = await this.getAuthorityId(store);
+    const { scope } = await store.bindGlobalScope({
+      authorityId,
+      owner,
+      accountId,
+    });
+    return toBoundScope(scope);
+  }
+
+  /** A global incarnation `resolveGlobal` bound earlier; never minted. */
+  private async findBound(
+    container: LedgerContainer,
+    containerCreatedAt: string,
+  ): Promise<LedgerBoundScope> {
+    const scope = await this.find(container, containerCreatedAt);
+    if (scope === null) {
+      throw new LedgerStorageHostError(
+        'NOT_FOUND',
+        'The global Ledger is not bound',
+        { field: 'ledgerId' },
+      );
+    }
+    return scope;
   }
 
   /** The durable writer identity minted with the database, read once. */
@@ -239,6 +336,8 @@ export async function resolveLedgerContainerCreatedAt(
   container: LedgerContainer,
   readers: LedgerContainerCreatedAtReaders = DESKTOP_LEDGER_CONTAINER_CREATED_AT_READERS,
 ): Promise<string | null> {
+  // A global (workflow) Ledger has no persisted container.
+  if (container.kind === 'global') return null;
   const [parentId, itemId] = containerIds(container);
   if (!SAFE_CONTAINER_ID.test(parentId) || !SAFE_CONTAINER_ID.test(itemId)) {
     return null;

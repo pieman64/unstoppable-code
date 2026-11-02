@@ -34,7 +34,7 @@ export interface LinkTargetChipProps {
 }
 
 const ACTION_CLASS =
-  'focus-ring inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium fg-primary ring-1 ring-inset ring-line-base transition hover:bg-subtle';
+  'focus-ring inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium fg-primary ring-1 ring-inset ring-line-base transition-colors hover:bg-subtle';
 
 /**
  * Displays the worktree destination proposed for a link in a draft. Pure

@@ -41,6 +41,8 @@ jest.mock('electron', () => {
 });
 
 import { utilityProcess } from 'electron';
+import { EXECUTION_HOST_LIMIT_EXIT_CODES } from '@canopy/core-platform/execution-host/port';
+import { getExecutionAccounting } from '../execution-accounting';
 import {
   CODE_GRAPH_FIRST_BUILD_OVERTAKE_LIMIT,
   CodeGraphWorkerBuildError,
@@ -74,8 +76,8 @@ import {
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import type { CodeGraphBuildResult } from '@canopy/desktop-shared/types/code-graph';
-import { CodeGraphEngine } from '@canopy/desktop-shared/node/code-graph/engine';
-import { fingerprintCustomLanguageInputs } from '@canopy/desktop-shared/node/code-graph/languages/custom-config';
+import { CodeGraphEngine } from '@canopy/code-graph/engine';
+import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import {
   resetCodeGraphAvailabilityForTests,
   setCodeGraphPreferences,
@@ -145,6 +147,7 @@ function sampleResult(): CodeGraphBuildResult {
     durationMs: 5,
     derived: [],
     customLanguages: null,
+    lastBuildAt: 1_800_000_000_000,
   };
 }
 
@@ -216,6 +219,19 @@ describe('code-graph build runner (mocked utilityProcess)', () => {
     child.emit('message', response);
     await expect(promise).resolves.toEqual(response);
     expect(isCodeGraphBuildPending('ws/wt')).toBe(false);
+  });
+
+  it('holds the execution lease until a host stopped at its heap limit exits', async () => {
+    const accounting = getExecutionAccounting();
+    const active = (): number => accounting.familyStatus().codeGraph.active;
+    const before = active();
+    const promise = runCodeGraphWorkerBuild('ws/limit', makeRequest());
+    const child = forkedChild(0);
+    expect(active()).toBe(before + 1);
+    child.emit('exit', EXECUTION_HOST_LIMIT_EXIT_CODES.heap);
+    await expect(promise).rejects.toMatchObject({ reason: 'worker-exit' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(active()).toBe(before);
   });
 
   it('stamps the queue wait into a build request that carries a timing prelude', async () => {

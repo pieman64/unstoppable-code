@@ -66,6 +66,7 @@ function runState(status: ExecutionState['status']): ExecutionState {
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
       name: 'Release check',
+      scope: ['directory'],
       jobs: {
         build: {
           name: 'Build',
@@ -87,7 +88,7 @@ function runState(status: ExecutionState['status']): ExecutionState {
     cwd: '/repo',
     env: {},
     inputs: {},
-    event_name: 'manual',
+    event_name: 'dispatch',
   };
 }
 

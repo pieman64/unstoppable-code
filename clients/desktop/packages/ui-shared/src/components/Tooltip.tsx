@@ -1,3 +1,5 @@
+'use client';
+
 import {
   Children,
   cloneElement,
@@ -13,9 +15,10 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
-import { shortcutGlyphSitsLow } from '../lib/shortcut-keys';
-import { useSingleOpenTooltip } from './tooltip-exclusivity';
+import { Kbd } from './Kbd';
+import { useTooltipHandoff } from './tooltip-handoff';
 
 const TOOLTIP_GAP = 6;
 /** Side placements sit farther out so a menu surface doesn't crowd the tip. */
@@ -30,7 +33,7 @@ const CLOSE_GRACE_MS = 120;
 /** Hover delay for `delay="long"`: long enough that passing over does not open it. */
 const LONG_OPEN_DELAY_MS = 500;
 
-export interface TooltipLink {
+export interface TooltipHrefLink {
   href: string;
   /** Visible link text; defaults to "Learn more". */
   text?: string;
@@ -40,7 +43,23 @@ export interface TooltipLink {
    * routes, which should navigate in the same tab.
    */
   external?: boolean;
+  /** Test id for the rendered link. */
+  testId?: string;
 }
+
+/**
+ * An in-app step with no URL, such as opening a setup flow inside the current
+ * dialog. Rendered as a link-styled button.
+ */
+export interface TooltipActionLink {
+  onClick: () => void;
+  /** Visible link text. */
+  text: string;
+  /** Test id for the rendered button. */
+  testId?: string;
+}
+
+export type TooltipLink = TooltipHrefLink | TooltipActionLink;
 
 /**
  * Side of the trigger the tooltip prefers to render on. `'top'` (default)
@@ -56,8 +75,9 @@ export interface TooltipProps {
   /** Optional inline link rendered under the label. Makes the tooltip interactive. */
   link?: TooltipLink;
   /**
-   * A key or chord that performs the same action, shown as a compact key cap
-   * after the label (`@`, `⌘K`). Sized to the tooltip's own line.
+   * A key or chord that performs the same action, shown as one key cap per
+   * key after the label (`@`, `⌘K`). Pass `formatShortcut(id)` so the keys
+   * match the platform. Sized to the tooltip's own line.
    */
   shortcut?: string;
   /**
@@ -82,6 +102,8 @@ export interface TooltipProps {
    * its parent (e.g. full-width sidebar buttons) pass `className="w-full"`.
    */
   className?: string;
+  /** Surface classes; replaces the default `whitespace-nowrap` when supplied. */
+  contentClassName?: string;
   /**
    * Drops the wrapper's `shrink-0` so a trigger inside a space-constrained flex
    * rail can still be squeezed (the desktop composer toolbar, which compresses
@@ -112,6 +134,7 @@ export interface TooltipProps {
 interface TooltipTargetProps {
   children?: ReactNode;
   'aria-describedby'?: string;
+  tabIndex?: number;
 }
 
 function mergeDescribedBy(
@@ -126,11 +149,12 @@ function mergeDescribedBy(
 /**
  * Wires `aria-describedby` onto the tooltip trigger.
  *
- * Traversal contract: when the child is a `<span>` (a string-typed element),
+ * Traversal contract: when the child is a non-focusable `<span>`,
  * we recurse into its children rather than annotating the span itself, then
  * attach `aria-describedby` to the first non-span React element we reach
- * (typically a native `button`/`a`). This lets callers wrap their trigger in
- * layout spans without losing the description link.
+ * (typically a native `button`/`a`). A span with a tab stop is itself the
+ * trigger. This lets callers wrap their trigger in layout spans without
+ * losing the description link or describing a decorative child instead.
  *
  * It silently no-ops (returns the node unchanged) when the child is not a valid
  * element. Note that a child which is itself a React component is annotated as a
@@ -146,7 +170,11 @@ function attachTooltipDescription(
     return node;
   }
 
-  if (typeof node.type === 'string' && node.type === 'span') {
+  if (
+    typeof node.type === 'string' &&
+    node.type === 'span' &&
+    (node.props.tabIndex === undefined || node.props.tabIndex < 0)
+  ) {
     return cloneElement(
       node,
       undefined,
@@ -172,6 +200,7 @@ export function Tooltip({
   placement = 'top',
   tone = 'default',
   className,
+  contentClassName = 'whitespace-nowrap',
   allowShrink = false,
   disabled = false,
   openDelay = 0,
@@ -183,7 +212,6 @@ export function Tooltip({
   const wrapperRef = useRef<HTMLSpanElement | null>(null);
   const tooltipRef = useRef<HTMLSpanElement | null>(null);
   const hideTimerRef = useRef<number | null>(null);
-  const showTimerRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const [tooltipMounted, setTooltipMounted] = useState(false);
   const [position, setPosition] = useState<{
@@ -271,48 +299,57 @@ export function Tooltip({
     }
   }, []);
 
-  const clearShowTimer = useCallback((): void => {
-    if (showTimerRef.current !== null) {
-      window.clearTimeout(showTimerRef.current);
-      showTimerRef.current = null;
-    }
-  }, []);
-
-  const showTooltip = useCallback((): void => {
-    if (suppressed) {
-      return;
-    }
+  const hideTooltip = useCallback((): void => {
+    clearOpenTimer();
     clearHideTimer();
-    clearShowTimer();
-    if (openTimerRef.current !== null) return;
-    if (openDelay <= 0) {
-      setTooltipMounted(true);
-      return;
-    }
-    openTimerRef.current = (
-      wrapperRef.current?.ownerDocument.defaultView ?? window
-    ).setTimeout(() => {
-      openTimerRef.current = null;
-      setTooltipMounted(true);
-    }, openDelay);
-  }, [openDelay, clearHideTimer, clearShowTimer, suppressed]);
+    setTooltipMounted(false);
+    setPosition(null);
+  }, [clearOpenTimer, clearHideTimer]);
 
-  // `delay="long"` holds a hover open for half a second; keyboard focus uses
-  // `showTooltip` directly (and so `openDelay` alone).
+  const handoff = useTooltipHandoff({
+    open: tooltipMounted && !disabled && !suppressed,
+    positioned: position !== null,
+    close: hideTooltip,
+    triggerRef: wrapperRef,
+    surfaceRef: tooltipRef,
+  });
+
+  const showTooltipAfter = useCallback(
+    (delayMs: number): void => {
+      if (suppressed) {
+        return;
+      }
+      clearHideTimer();
+      handoff.setLeaving(false);
+      if (openTimerRef.current !== null) return;
+      if (delayMs <= 0) {
+        setTooltipMounted(true);
+        return;
+      }
+      openTimerRef.current = (
+        wrapperRef.current?.ownerDocument.defaultView ?? window
+      ).setTimeout(() => {
+        openTimerRef.current = null;
+        setTooltipMounted(true);
+      }, delayMs);
+    },
+    [clearHideTimer, handoff, suppressed],
+  );
+
+  const showTooltip = useCallback(
+    (): void => showTooltipAfter(openDelay),
+    [openDelay, showTooltipAfter],
+  );
+
+  // `delay="long"` holds a first hover for half a second; once another
+  // tooltip is showing or just closed, the hover opens at once (see
+  // `useTooltipHandoff`). Keyboard focus uses `showTooltip` and so
+  // `openDelay` alone.
   const showTooltipOnHover = useCallback((): void => {
-    if (delay === 'none') {
-      showTooltip();
-      return;
-    }
-    if (suppressed || showTimerRef.current !== null) {
-      return;
-    }
-    clearHideTimer();
-    showTimerRef.current = window.setTimeout((): void => {
-      showTimerRef.current = null;
-      showTooltip();
-    }, LONG_OPEN_DELAY_MS);
-  }, [clearHideTimer, delay, showTooltip, suppressed]);
+    const requested =
+      delay === 'long' ? Math.max(LONG_OPEN_DELAY_MS, openDelay) : openDelay;
+    showTooltipAfter(handoff.pointerOpenDelay(requested));
+  }, [delay, handoff, openDelay, showTooltipAfter]);
 
   // Native `:focus-visible` semantics: open for focus the user reached by
   // keyboard, never for pointer or programmatic focus. A menu that returns
@@ -328,34 +365,26 @@ export function Tooltip({
     [showTooltip],
   );
 
-  const hideTooltip = useCallback((): void => {
+  // Leaving cancels a pending open. An open tooltip stays for the host's
+  // close delay (longer for a link, so the pointer can reach it); a
+  // neighbour that opens meanwhile replaces it at once.
+  const requestHide = useCallback((): void => {
     clearOpenTimer();
     clearHideTimer();
-    clearShowTimer();
-    setTooltipMounted(false);
-    setPosition(null);
-  }, [clearOpenTimer, clearHideTimer, clearShowTimer]);
-
-  const requestHide = useCallback((): void => {
-    clearShowTimer();
-    if (!interactive) {
+    const linger = Math.max(
+      handoff.closeDelay,
+      interactive ? CLOSE_GRACE_MS : 0,
+    );
+    if (linger <= 0) {
       hideTooltip();
       return;
     }
-    clearHideTimer();
+    handoff.setLeaving(true);
     hideTimerRef.current = window.setTimeout((): void => {
       hideTimerRef.current = null;
       hideTooltip();
-    }, CLOSE_GRACE_MS);
-  }, [clearHideTimer, clearShowTimer, hideTooltip, interactive]);
-
-  // Early access: one tooltip or card open at a time per window.
-  useSingleOpenTooltip({
-    open: tooltipMounted && !disabled,
-    close: hideTooltip,
-    triggerRef: wrapperRef,
-    surfaceRef: tooltipRef,
-  });
+    }, linger);
+  }, [clearHideTimer, clearOpenTimer, handoff, hideTooltip, interactive]);
 
   const handleBlur = useCallback(
     (event: FocusEvent<HTMLSpanElement>): void => {
@@ -428,9 +457,8 @@ export function Tooltip({
   useEffect((): (() => void) => {
     return (): void => {
       clearHideTimer();
-      clearShowTimer();
     };
-  }, [clearHideTimer, clearShowTimer]);
+  }, [clearHideTimer]);
 
   // Record input modality from mount, in the trigger's own document, so the
   // Tab press that precedes the user's first keyboard focus is seen by the
@@ -497,16 +525,18 @@ export function Tooltip({
             ref={tooltipRef}
             id={tooltipId}
             role="tooltip"
+            // A plain tip draws over an in-app browser page without freezing
+            // it; a tip with a link must take the pointer, so it does not.
+            {...(interactive ? {} : { [ABOVE_BROWSER_ATTRIBUTE]: 'true' })}
             onMouseEnter={interactive ? showTooltip : undefined}
             onMouseLeave={interactive ? requestHide : undefined}
             onFocus={interactive ? handleFocus : undefined}
             onBlur={interactive ? handleBlur : undefined}
             // Single-line by default, as every pre-existing caller expects.
-            // Multi-line tips belong in RichHoverTooltip, which owns its own
-            // surface width via `surfaceClassName`.
+            // Callers can opt into a bounded, wrapping surface via contentClassName.
             // With a shortcut the key cap sits in the corner: its top, bottom
             // and right insets are all the 4px vertical padding.
-            className={`fixed z-tooltip flex flex-col gap-1 whitespace-nowrap rounded-md py-1 text-xs font-normal shadow-tooltip ${
+            className={`fixed z-tooltip flex flex-col gap-1 ${contentClassName} rounded-md py-1 text-xs font-normal shadow-tooltip ${
               shortcut ? 'pl-2 pr-1' : 'px-2'
             } ${
               tone === 'inverse'
@@ -522,34 +552,35 @@ export function Tooltip({
             {shortcut ? (
               <span className="inline-flex items-center gap-2">
                 <span>{label}</span>
-                {/* Nested corner: the tooltip's 8px radius less the cap's
-                    4px inset. */}
-                <kbd className="inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-sm bg-muted px-1 font-sans text-2xs leading-none fg-secondary">
-                  <span
-                    className={
-                      shortcutGlyphSitsLow(shortcut)
-                        ? '-translate-y-px'
-                        : undefined
-                    }
-                  >
-                    {shortcut}
-                  </span>
-                </kbd>
+                {/* One capsule per key; its 4px inset from the tooltip's
+                    top, bottom and end matches the vertical padding. */}
+                <Kbd shortcut={shortcut} data-testid="tooltip-shortcut" />
               </span>
             ) : (
               <span>{label}</span>
             )}
-            {link && (
-              <a
-                href={link.href}
-                {...(link.external === false
-                  ? {}
-                  : { target: '_blank', rel: 'noopener noreferrer' })}
-                className="fg-accent underline underline-offset-2 hover:fg-accent/80"
-              >
-                {link.text ?? 'Learn more'}
-              </a>
-            )}
+            {link &&
+              ('href' in link ? (
+                <a
+                  href={link.href}
+                  {...(link.external === false
+                    ? {}
+                    : { target: '_blank', rel: 'noopener noreferrer' })}
+                  data-testid={link.testId}
+                  className="fg-accent underline underline-offset-2 hover:fg-accent/80"
+                >
+                  {link.text ?? 'Learn more'}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={link.onClick}
+                  data-testid={link.testId}
+                  className="self-start fg-accent underline underline-offset-2 hover:fg-accent/80"
+                >
+                  {link.text}
+                </button>
+              ))}
           </span>,
           portalBody,
         )}

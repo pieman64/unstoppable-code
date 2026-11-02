@@ -315,8 +315,11 @@ export async function buildSharedContainerReplicaFixture(
       id: 'container-1',
       organizationId: 'org-1',
       ownerUserId: 'owner-1',
+      owner: { userId: 'owner-1', name: 'Owner' },
+      access: 'organization',
       worktreeId: 'worktree-1',
       containerType,
+      title: 'Shared worktree',
       revision: revisionNumber,
       capabilities: ['VIEW'],
       createdAt,
@@ -391,6 +394,9 @@ export function fetchForSharedContainerFixture(
         : input instanceof URL
           ? input.href
           : input.url;
-    return Promise.resolve(new Response(fixture.responses.get(url)));
+    const body = fixture.responses.get(url);
+    return Promise.resolve(
+      new Response(body ? new Uint8Array(body) : undefined),
+    );
   };
 }

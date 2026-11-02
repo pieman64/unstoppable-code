@@ -16,6 +16,7 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { CHAT_EFFORT_TRIGGER_TEST_ID } from './effortPanel.mjs';
 import { seedPreferences } from './codexPipelineRuntime.mjs';
 import { DEFAULT_MOCK_BASE_URL, registerScenario } from './seeders/index.mjs';
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -481,6 +482,20 @@ test.describe('chat composer layout', () => {
       await expect(menu).toBeVisible();
       const menuRect = await menu.boundingBox();
       expect(menuRect.y + menuRect.height).toBeLessThanOrEqual(directoryRect.y);
+      const rootOption = menu.getByRole('option', { name: 'Project root' });
+      await expect(rootOption).toHaveAttribute('aria-selected', 'true');
+      const childOption = menu.getByRole('option').nth(1);
+      const childName = (await childOption.innerText()).trim();
+      await childOption.click();
+      await expect(menu).toHaveCount(0);
+      await expect(directory).toContainText(childName);
+      await directory.click();
+      await expect(
+        menu.getByRole('option', { name: childName, exact: true }),
+      ).toHaveAttribute('aria-selected', 'true');
+      await rootOption.click();
+      await expect(directory).toContainText('Project root');
+      await directory.click();
       await window.keyboard.press('Escape');
       await expect(menu).toHaveCount(0);
 
@@ -564,9 +579,13 @@ test.describe('chat composer layout', () => {
         )
         .toBe(expected.warning);
 
-      // Clearing the ! returns the ordinary composer.
-      await window.keyboard.press('Home');
+      // Clearing the ! returns the ordinary composer. Arrow keys move Slate's
+      // own selection; Home moves only the DOM caret, which Slate syncs on a
+      // 100ms throttle, so a render in that window snaps it back to the end.
+      for (let i = 0; i < '!ls'.length; i += 1)
+        await window.keyboard.press('ArrowLeft');
       await window.keyboard.press('Delete');
+      await expect(composer.getByRole('textbox').first()).toHaveText('ls');
       await expect(label).toHaveCount(0);
       expect(await boxStyle('outline-style')).toBe('none');
     } finally {
@@ -578,6 +597,8 @@ test.describe('chat composer layout', () => {
     const { electronApp, userDataDir, composer, window } =
       await openSeededChat();
     try {
+      // Attachments need sign-in; a guest drop opens the sign-in prompt.
+      await connectMockCloudAccount(window, 'csk_composer_density_drop_e2e');
       const zone = window.locator('[data-chat-drop-zone]:visible').first();
       await expect(zone).toBeVisible();
       const overlay = zone.getByTestId('chat-drop-overlay');
@@ -717,6 +738,10 @@ test('CAN-2050 script suggestions and pins keep composer and launch controls usa
       expect(await overflowOf(composer)).toBeLessThanOrEqual(1);
       await editor.press('Escape');
       await editor.fill('');
+      // Escape dismissed the `hold` query until the draft changes; let the
+      // empty draft render before retyping, or both edits can commit as one
+      // and the next `!hold` stays dismissed.
+      await expect(composer.locator('[data-slate-placeholder]')).toBeVisible();
     }
   } finally {
     await fixture.close();

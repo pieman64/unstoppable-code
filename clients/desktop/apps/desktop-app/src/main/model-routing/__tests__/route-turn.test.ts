@@ -11,7 +11,9 @@ jest.mock('../codex-account-models', () => ({
   readCodexAccountModelIds: (): Promise<null> => Promise.resolve(null),
 }));
 jest.mock('../client', () => ({
-  resolveDesktopAutoModel: mockResolveDesktopAutoModel,
+  get resolveDesktopAutoModel(): typeof mockResolveDesktopAutoModel {
+    return mockResolveDesktopAutoModel;
+  },
 }));
 jest.mock('@canopy/desktop-shared/lib/gateway-model-availability', () => ({
   isGatewayRoutableModel: (): boolean => true,
@@ -36,86 +38,97 @@ import { routeDesktopAutoTurn } from '../route-turn';
 import { finalizeModelRoutingSavings } from '@canopy/protocol/model-routing';
 
 describe('routeDesktopAutoTurn', () => {
-  it('returns an attributed fallback when only one candidate remains', async () => {
-    mockResolveDesktopAutoModel.mockResolvedValueOnce({
-      durableLoss: false,
-      response: {
-        schemaVersion: 1,
-        requestId: 'message-1',
-        outcome: 'fallback',
-        modelId: 'anthropic/only-model',
-        fallbackReason: 'no_eligible_models',
-        routingCostUsd: 0,
-        routingCredits: 0,
-      },
-    });
-    const resolution = await routeDesktopAutoTurn({
-      request: {
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        chatId: 'chat-1',
-        userMessageId: 'message-1',
-        text: 'Do the work',
-        model: 'only-model',
-      },
-      tab: {
-        id: 'chat-1',
-        title: 'Chat',
-        createdAt: '2026-09-21T00:00:00.000Z',
-        messages: [],
-      },
-      preferences: {
-        defaultChatModelByProvider: {
-          claude: { model: 'only-model' },
-          codex: { model: 'only-model' },
+  it.each([false, true])(
+    'keeps the selected harness when only one candidate remains (OpenCode: %s)',
+    async (opencode) => {
+      mockResolveDesktopAutoModel.mockClear();
+      mockResolveDesktopAutoModel.mockResolvedValueOnce({
+        durableLoss: false,
+        response: {
+          schemaVersion: 1,
+          requestId: 'message-1',
+          outcome: 'fallback',
+          modelId: 'anthropic/only-model',
+          fallbackReason: 'no_eligible_models',
+          routingCostUsd: 0,
+          routingCredits: 0,
         },
-        defaultWorktreeModelByProvider: {
-          claude: { model: 'only-model' },
-          codex: { model: 'only-model' },
+      });
+      const resolution = await routeDesktopAutoTurn({
+        request: {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'message-1',
+          text: 'Do the work',
+          model: 'only-model',
         },
-      } as never,
-      standalone: true,
-      workspace: 'cowork',
-    });
+        tab: {
+          id: 'chat-1',
+          ...(opencode ? { executionHarness: 'opencode' as const } : {}),
+          title: 'Chat',
+          createdAt: '2026-09-21T00:00:00.000Z',
+          messages: [],
+        },
+        preferences: {
+          defaultChatModelByProvider: {
+            claude: { model: 'only-model' },
+            codex: { model: 'only-model' },
+          },
+          defaultWorktreeModelByProvider: {
+            claude: { model: 'only-model' },
+            codex: { model: 'only-model' },
+          },
+        } as never,
+        standalone: true,
+        workspace: 'cowork',
+      });
 
-    expect(mockResolveDesktopAutoModel).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestId: 'message-1',
-        fallbackModelId: 'anthropic/only-model',
-        candidates: [
-          expect.objectContaining({ modelId: 'anthropic/only-model' }),
-        ],
-      }),
-      {},
-    );
-    expect(resolution).not.toBeNull();
-    if (resolution === null) throw new Error('Expected routing resolution');
-    expect(resolution).toMatchObject({
-      modelId: 'only-model',
-      harness: 'claude',
-      durableLoss: false,
-      attribution: {
-        selectionMode: 'auto',
-        outcome: 'fallback',
-        selectedModelId: 'only-model',
-        routingCostUsd: 0,
-        routingCredits: 0,
-      },
-    });
-    expect(
-      finalizeModelRoutingSavings({
-        attribution: resolution.attribution,
-        usageComplete: true,
-        selectedExecutionCostUsd: 0.01,
-        selectedCostBasis: 'api_equivalent',
-        benchmark: {
-          status: 'priced',
-          costUsd: 0.02,
-          pricingRevision: 'test',
+      if (opencode) {
+        expect(mockResolveDesktopAutoModel).not.toHaveBeenCalled();
+        expect(resolution).toBeNull();
+        return;
+      }
+
+      expect(mockResolveDesktopAutoModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestId: 'message-1',
+          fallbackModelId: 'anthropic/only-model',
+          candidates: [
+            expect.objectContaining({ modelId: 'anthropic/only-model' }),
+          ],
+        }),
+        {},
+      );
+      expect(resolution).not.toBeNull();
+      if (resolution === null) throw new Error('Expected routing resolution');
+      expect(resolution).toMatchObject({
+        modelId: 'only-model',
+        harness: 'claude',
+        durableLoss: false,
+        attribution: {
+          selectionMode: 'auto',
+          outcome: 'fallback',
+          selectedModelId: 'only-model',
+          routingCostUsd: 0,
+          routingCredits: 0,
         },
-      }).savings,
-    ).toMatchObject({ status: 'computed', netEstimatedSavingsUsd: 0.01 });
-  });
+      });
+      expect(
+        finalizeModelRoutingSavings({
+          attribution: resolution.attribution,
+          usageComplete: true,
+          selectedExecutionCostUsd: 0.01,
+          selectedCostBasis: 'api_equivalent',
+          benchmark: {
+            status: 'priced',
+            costUsd: 0.02,
+            pricingRevision: 'test',
+          },
+        }).savings,
+      ).toMatchObject({ status: 'computed', netEstimatedSavingsUsd: 0.01 });
+    },
+  );
   it('sends the session work owner and signal with the resolve call (CAN-3462)', async () => {
     mockResolveDesktopAutoModel.mockResolvedValueOnce({
       durableLoss: false,

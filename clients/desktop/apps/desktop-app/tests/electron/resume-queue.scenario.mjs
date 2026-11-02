@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect } from '@playwright/test';
@@ -12,15 +12,65 @@ import {
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { seedUsageLimitedChats, seedWorktreeChat } from './seeders/index.mjs';
 import { launchCanopy, closeCanopy } from './launchCanopy.mjs';
+import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
 
-export async function withResumeQueue(verify, count = 17, mode = 'complete') {
-  const userDataDir = mkdtempSync(
-    path.join(os.tmpdir(), 'canopy-resume-queue-'),
-  );
+export async function withResumeQueue(
+  verify,
+  count = 17,
+  mode = 'complete',
+  {
+    startupOffer = false,
+    messages = [],
+    beforeResume,
+    welcomeChecklist = false,
+    chatTitle,
+    otherActiveChat = false,
+  } = {},
+) {
+  const userDataDir = welcomeChecklist
+    ? seedWelcomeChecklist()
+    : mkdtempSync(path.join(os.tmpdir(), 'canopy-resume-queue-'));
   const projectId = 'demo-ts-pnpm-vite';
   const worktreeId = 'demo-main';
+  const welcomePreferences = welcomeChecklist
+    ? JSON.parse(
+        readFileSync(path.join(userDataDir, 'preferences.json'), 'utf8'),
+      ).preferences
+    : {};
   seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
   seedPreferences(userDataDir);
+  if (welcomeChecklist) {
+    const preferencesPath = path.join(userDataDir, 'preferences.json');
+    const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+    preferences.preferences = {
+      ...preferences.preferences,
+      ...welcomePreferences,
+    };
+    // Complete the demo repository's readiness steps too, so the normal
+    // window contains several interchangeable examples and can prove trim.
+    for (const repo of ['app', 'ts-pnpm-vite']) {
+      for (const code of [
+        'configure-scripts',
+        'configure-hooks',
+        'configure-agent-instructions',
+      ]) {
+        preferences.preferences.homeOnboardingSuggestions.entries[
+          `advanced:readiness:${projectId}:${repo}:${code}`
+        ] = { completedAt: '2026-09-01T12:00:00.000Z' };
+      }
+    }
+    writeFileSync(preferencesPath, JSON.stringify(preferences));
+  }
+  if (startupOffer) {
+    const preferencesPath = path.join(userDataDir, 'preferences.json');
+    const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+    preferences.preferences.lastActiveContext = {
+      kind: 'worktree',
+      workspaceId: projectId,
+      worktreeId,
+    };
+    writeFileSync(preferencesPath, JSON.stringify(preferences));
+  }
   const chatIds = Array.from(
     { length: count },
     (_, index) => `resume-queue-${index + 1}`,
@@ -30,11 +80,18 @@ export async function withResumeQueue(verify, count = 17, mode = 'complete') {
     workspaceId: projectId,
     worktreeId,
     providerType: 'codex',
-    tabs: chatIds.map((id, index) => ({
-      id,
-      title: `Interrupted task ${index + 1}`,
-      model: 'gpt-6-sol',
-    })),
+    activeTabId: otherActiveChat ? 'other-active-chat' : chatIds[0],
+    tabs: [
+      ...chatIds.map((id, index) => ({
+        id,
+        title: chatTitle ?? `Interrupted task ${index + 1}`,
+        model: 'gpt-6-sol',
+        messages,
+      })),
+      ...(otherActiveChat
+        ? [{ id: 'other-active-chat', title: 'Different active chat' }]
+        : []),
+    ],
   });
   seedUsageLimitedChats({
     userDataDir,
@@ -65,6 +122,7 @@ export async function withResumeQueue(verify, count = 17, mode = 'complete') {
   try {
     const initial = await start();
     await initial.window.getByTestId('sidebar-create-task').click();
+    await beforeResume?.({ ...initial, userDataDir, chatIds });
     await initial.window
       .getByTestId('home-interrupted-sessions-resume')
       .click();

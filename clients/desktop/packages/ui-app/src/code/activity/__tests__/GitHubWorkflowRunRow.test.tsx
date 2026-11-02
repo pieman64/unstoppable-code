@@ -30,7 +30,11 @@ Object.defineProperty(Element.prototype, 'scrollTo', {
   value: (): void => undefined,
 });
 
-const run: GitHubWorkflowRunRowData = {
+type TestRun = GitHubWorkflowRunRowData & {
+  readonly jobs: GitHubWorkflowRunRowJob[];
+};
+
+const run: TestRun = {
   repository: 'acme/api',
   runId: '101',
   runAttempt: 1,

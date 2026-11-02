@@ -27,21 +27,17 @@ function watcher(
     trigger: overrides.trigger ?? 'worktree_chat_completion',
     status: overrides.status ?? 'active',
     label: overrides.label ?? 'My watcher',
-    target:
-      overrides.target ??
-      ({
-        kind: 'worktree_chat',
-        projectId: 'p1',
-        worktreeId: 'w1',
-        chatId: 'c1',
-      } as AppAdvisorWatcherSummary['target']),
-    destination:
-      overrides.destination ??
-      ({
-        projectId: APP_ADVISOR_PROJECT_ID,
-        worktreeId: APP_ADVISOR_WORKTREE_ID,
-        chatId: 'app-chat',
-      } as AppAdvisorWatcherSummary['destination']),
+    target: overrides.target ?? {
+      kind: 'worktree_chat',
+      projectId: 'p1',
+      worktreeId: 'w1',
+      chatId: 'c1',
+    },
+    destination: overrides.destination ?? {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: APP_ADVISOR_WORKTREE_ID,
+      chatId: 'app-chat',
+    },
     createdAt: overrides.createdAt ?? new Date().toISOString(),
     ...(overrides.ownerDelegate
       ? { ownerDelegate: overrides.ownerDelegate }
@@ -74,6 +70,7 @@ function githubWatcher(
   const sample = items.slice(0, 5).map((item, index) => ({
     repository: item.repository,
     runId: item.runId,
+    runAttempt: 1,
     workflowName: `Workflow ${index + 1}`,
     runNumber: (index + 1) * 10,
   }));
@@ -87,6 +84,7 @@ function githubWatcher(
       notifyOn: {
         statuses: [...GITHUB_WORKFLOW_RUN_INTERMEDIATE_STATUSES],
         conclusions: ['failure', 'success'],
+        jobConclusions: [],
       },
       display: { repositories: repos, sample },
     },
@@ -105,7 +103,7 @@ function chatTab(id: string, title: string): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
   };
 }
@@ -118,6 +116,29 @@ describe('WatcherManagementButton', () => {
     [string | { watcherId: string; notifySubscriber?: boolean }]
   >();
   const openWindowMock = jest.fn();
+
+  it('offers drawer watchers as a quiet labeled action opening the existing management dialog', () => {
+    const items = [watcher()];
+    act(() =>
+      root.render(
+        <WatcherManagementButton
+          watchers={items}
+          appearance="drawer"
+          modalTitle="Pipeline watchers"
+          modalEmptyMessage="No active watchers."
+          ariaLabel="Manage pipeline watchers"
+          dataTestId="drawer-watchers"
+        />,
+      ),
+    );
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="drawer-watchers"]',
+    );
+    expect(button?.textContent).toBe('Watchers 1');
+    expect(button?.getAttribute('aria-haspopup')).toBe('dialog');
+    act(() => button?.click());
+    expect(document.body.textContent).toContain('Pipeline watchers');
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();

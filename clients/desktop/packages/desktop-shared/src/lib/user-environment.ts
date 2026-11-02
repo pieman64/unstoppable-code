@@ -154,7 +154,7 @@ const DEFAULT_ENVIRONMENT_NAMES: Record<DefaultEnvironmentKind, string> = {
   overall: 'Overall',
   canopy: BRAND.shortName,
   agent: 'Agents',
-  pipeline: 'Pipelines',
+  pipeline: 'Workflows',
 };
 
 const DEFAULT_ENVIRONMENT_PARENTS: Record<

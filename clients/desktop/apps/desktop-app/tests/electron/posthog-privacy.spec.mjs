@@ -154,9 +154,13 @@ const PRESET_IMAGE_SVG =
 const FLUSH_TAG = 'can-3119-privacy-flush';
 const CLICK_EVENTS = new Set(['$autocapture', '$rageclick', '$dead_click']);
 const HEATMAP_EVENT = '$$heatmap';
-// The sidebar step rage-clicks the Workflows row on its Library tab
-// (CAN-3981), so its heatmap samples key under that page's route.
+// The sidebar step rage-clicks the open Library tab of Workflows (CAN-3981),
+// so its heatmap samples key under that page's route. Since #6126 the current
+// sidebar row returns its section to the root, so the tab is the inert target.
 const RAGE_CLICK_ROUTE = 'app://main/workflows-library';
+const RAGE_CLICK_TAB = 'workflows-tab-workflows-library';
+// The tab reads its label, then its row count when it has rows ("Library 6").
+const RAGE_CLICK_TEXT = /^Library\s*\d*$/;
 
 function analyticsEvents(events) {
   return events.filter(
@@ -565,8 +569,8 @@ test('PostHog replay payload keeps user content private and chrome readable', as
 
     await test.step('navigate Settings and pick a preset image file', async () => {
       await app.openSettings();
-      // CAN-4421: the cloud sign-in is the hosted Account page's
-      // "Signed in on this computer" card.
+      // CAN-4421: the cloud sign-in is in the hosted Account page's
+      // "On this computer" section.
       await app.openAccountSettingsPage('account');
       const accountStatus = mainWindow
         .getByTestId('account-device-card-cloud-account')
@@ -617,10 +621,16 @@ test('PostHog replay payload keeps user content private and chrome readable', as
     await test.step('open the MCP server form dialog', async () => {
       await app.openPluginsPage();
       await app.openPluginsTab('mcp');
+      // CAN-4267: the installed server opens its detail page; Advanced
+      // configuration opens the same server editor the old table's Edit did.
       const row = mainWindow
-        .getByTestId('plugins-management-section-mcp')
-        .locator('tr', { hasText: SEEDED.mcpServer });
-      await row.getByTestId('mcp-server-edit-button').click();
+        .getByTestId('customize-section-installed')
+        .getByTestId(`customize-row-mcp-local:${MCP_SERVER_ID}`);
+      // Customize rows title-case display names.
+      await expect(row).toContainText(new RegExp(SEEDED.mcpServer, 'i'));
+      await row.click();
+      await expect(mainWindow.getByTestId('mcp-browse-detail')).toBeVisible();
+      await mainWindow.getByTestId('plugin-advanced-configuration').click();
       const dialog = mainWindow.getByRole('dialog', {
         name: 'Edit MCP server',
       });
@@ -634,17 +644,21 @@ test('PostHog replay payload keeps user content private and chrome readable', as
       );
       await mainWindow.keyboard.press('Escape');
       await expect(dialog).toBeHidden();
-      // The management view swaps the main sidebar for its own page nav.
-      await mainWindow.getByTestId('plugins-management-back').click();
+      // Leave the detail for Customize; the main sidebar stays beside it.
+      await mainWindow
+        .getByTestId('plugins-entry-detail-breadcrumb-root')
+        .click();
       await expect(
-        mainWindow.getByTestId('plugins-management-view'),
+        mainWindow.getByTestId('plugins-entry-detail-page'),
       ).toBeHidden();
+      await expect(
+        mainWindow.getByTestId('sidebar-nav-workflows'),
+      ).toBeVisible();
     });
 
     await test.step('navigate the sidebar', async () => {
       // `openAutomationsPage` clicks the main nav row whose label is
-      // SIDEBAR_NAV_LABEL, then opens the Library tab. The row stays put on
-      // every Workflows tab, so a repeat click below changes nothing.
+      // SIDEBAR_NAV_LABEL, then opens the Library tab.
       await app.openAutomationsPage();
       await expect(
         mainWindow
@@ -653,16 +667,18 @@ test('PostHog replay payload keeps user content private and chrome readable', as
       ).toBeVisible();
     });
 
-    await test.step('rage-click the open page nav row', async () => {
-      // Clicking the already-open page changes nothing: a rage click, and
-      // once the DOM stays quiet, a dead click.
-      const navRow = mainWindow.getByTestId('sidebar-nav-workflows');
+    await test.step('rage-click the open Workflows tab', async () => {
+      // Clicking the tab already open changes nothing: a rage click, and once
+      // the DOM stays quiet, a dead click. (The current sidebar row is no
+      // longer inert: it returns Workflows to its root.)
+      const openTab = mainWindow.getByTestId(RAGE_CLICK_TAB);
+      await expect(openTab).toHaveAttribute('aria-selected', 'true');
       const captured = (name) =>
         readPostHogCapture(collector).events.some(
           (event) => event.event === name,
         );
       await waitForQuietDom(mainWindow);
-      await navRow.click({ clickCount: 3 });
+      await openTab.click({ clickCount: 3 });
       await expect
         .poll(() => captured('$rageclick'), {
           timeout: 30_000,
@@ -672,12 +688,12 @@ test('PostHog replay payload keeps user content private and chrome readable', as
       // The SDK drops a dead click if anything in the document mutates within
       // 2.5 s of it, and a late background response can land in that window
       // after the DOM looked quiet. Such a click was not dead, so click the
-      // row again once the DOM settles.
+      // tab again once the DOM settles.
       let attempt = 0;
       await expect(async () => {
         if (attempt++ > 0 && !captured('$dead_click')) {
           await waitForQuietDom(mainWindow);
-          await navRow.click();
+          await openTab.click();
         }
         await expect
           .poll(() => captured('$dead_click'), { timeout: 8_000 })
@@ -908,21 +924,20 @@ test('PostHog replay payload keeps user content private and chrome readable', as
           )
           .toBe(true);
       }
-      const namesNavRow = (event) =>
+      const namesOpenTab = (event) =>
         Array.isArray(event.properties.$elements) &&
         event.properties.$elements.some(
-          (element) =>
-            element?.['attr__data-testid'] === 'sidebar-nav-workflows',
+          (element) => element?.['attr__data-testid'] === RAGE_CLICK_TAB,
         );
       expect
         .soft(
           clicks.some(
             (event) =>
               event.event === '$rageclick' &&
-              namesNavRow(event) &&
-              event.properties.$el_text === SIDEBAR_NAV_LABEL,
+              namesOpenTab(event) &&
+              RAGE_CLICK_TEXT.test(event.properties.$el_text ?? ''),
           ),
-          'the rage click must name the Workflows nav row',
+          'the rage click must name the open Library tab',
         )
         .toBe(true);
       expect

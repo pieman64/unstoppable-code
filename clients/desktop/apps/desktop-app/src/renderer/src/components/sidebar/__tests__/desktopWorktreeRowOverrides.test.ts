@@ -26,6 +26,7 @@ function keys(
     pipelineUnseen: new Set(),
     pipelineUnseenFailed: new Set(),
     pipelinePaused: new Set(),
+    backgroundTasks: new Map(),
     ...partial,
   };
 }
@@ -66,7 +67,19 @@ describe('deriveDesktopRowAttention', () => {
       hasPendingToolApproval: true,
       hasUnread: true,
       pipelineStatus: undefined,
+      backgroundTasks: 0,
     });
+  });
+
+  it('reads the row’s background task count from the live keys', () => {
+    expect(
+      deriveDesktopRowAttention(
+        keys({ backgroundTasks: new Map([[KEY, 3]]) }),
+        KEY,
+        false,
+        false,
+      )?.backgroundTasks,
+    ).toBe(3);
   });
 
   it('clears what the live sets no longer carry, and folds in plan-chat unread', () => {
@@ -86,6 +99,7 @@ describe('deriveDesktopRowAttention', () => {
       hasPendingToolApproval: false,
       hasUnread: true,
       pipelineStatus: undefined,
+      backgroundTasks: 0,
     });
   });
 
@@ -135,6 +149,7 @@ describe('deriveDesktopRowAttention', () => {
       hasPendingToolApproval: false,
       hasUnread: false,
       pipelineStatus: undefined,
+      backgroundTasks: 0,
     });
   });
 
@@ -210,8 +225,12 @@ describe('deriveDesktopRowPr', () => {
           prUrl: 'https://example.test/pr/42',
           title: 'Ship it',
           checkStatus: 'passing',
+          checkDetails: [],
           reviewStatus: 'approved',
+          reviewers: [],
           hasConflicts: false,
+          commentCount: 0,
+          updatedAt: '2026-01-01T00:00:00.000Z',
           ...extra,
         },
       },

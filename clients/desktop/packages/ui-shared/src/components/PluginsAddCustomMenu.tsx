@@ -5,6 +5,7 @@ import {
   DropdownMenuSurface,
 } from './DropdownMenu';
 import { ActionMenuRowStyle } from './ActionMenuItems';
+import { Button } from './Button';
 import { isMenuOpenBodyFlagSet } from '../lib/menu-open-body-flag';
 import {
   AgentIcon,
@@ -23,7 +24,7 @@ import {
  */
 export interface PluginsAddCustomMenuProps {
   onAddMarketplace?: () => void;
-  onAddMcpServer: () => void;
+  onAddMcpServer?: () => void;
   onInstallSkillsFromGitHub?: () => void;
   onCreateCustomSkill?: () => void;
   /**
@@ -47,7 +48,7 @@ export function PluginsAddCustomMenu({
   onCreateCustomSkill,
   onCreateCollection,
   onCreateAgent,
-}: PluginsAddCustomMenuProps): JSX.Element {
+}: PluginsAddCustomMenuProps): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -78,12 +79,27 @@ export function PluginsAddCustomMenu({
     action();
   };
 
+  if (
+    ![
+      onAddMarketplace,
+      onAddMcpServer,
+      onInstallSkillsFromGitHub,
+      onCreateCustomSkill,
+      onCreateCollection,
+      onCreateAgent,
+    ].some(Boolean)
+  )
+    return null;
+
   // One "Add custom" menu on every host (CAN-4261), even when custom MCP
   // servers are its only item, so desktop and web read the same.
   return (
-    <div className="relative inline-block" ref={containerRef}>
-      <button
-        type="button"
+    // The desktop Plugins page seats this in the title bar's drag region;
+    // the class is inert on the web.
+    <div className="electron-no-drag relative inline-block" ref={containerRef}>
+      <Button
+        variant="primary"
+        size="compact"
         data-testid="plugins-add-custom-menu"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -96,29 +112,25 @@ export function PluginsAddCustomMenu({
           }
         }}
         onClick={() => setOpen((value) => !value)}
-        // The desktop Plugins page seats this in the title bar's drag region;
-        // the class is inert on the web.
-        className="focus-ring electron-no-drag inline-flex h-7 items-center gap-1 overflow-hidden rounded-md bg-accent px-2.5 fg-emphasis transition hover:bg-accent/90 pointer-coarse:h-11"
       >
-        <span className="flex items-center text-xs font-medium">
-          Add custom
-        </span>
-        <span className="-ml-0.5 flex items-center justify-center">
-          <ChevronDownMediumIcon size={16} aria-hidden="true" />
-        </span>
-      </button>
+        <span>Add custom</span>
+        {/* The chevron sits 2px past the label, inside the button's gap. */}
+        <ChevronDownMediumIcon size={16} aria-hidden="true" className="-ml-1" />
+      </Button>
       {open && (
         <DropdownMenuSurface className="absolute right-0 z-30 mt-3 w-56">
           <ActionMenuRowStyle>
-            <DropdownMenuItem
-              data-testid="plugins-add-custom-mcp"
-              onClick={() => runAndClose(onAddMcpServer)}
-            >
-              <DropdownMenuItemIcon data-testid="plugins-add-custom-mcp-icon">
-                <McpServerIcon />
-              </DropdownMenuItemIcon>
-              Add custom MCP server…
-            </DropdownMenuItem>
+            {onAddMcpServer && (
+              <DropdownMenuItem
+                data-testid="plugins-add-custom-mcp"
+                onClick={() => runAndClose(onAddMcpServer)}
+              >
+                <DropdownMenuItemIcon data-testid="plugins-add-custom-mcp-icon">
+                  <McpServerIcon />
+                </DropdownMenuItemIcon>
+                Add custom MCP server…
+              </DropdownMenuItem>
+            )}
             {onAddMarketplace && (
               <DropdownMenuItem
                 data-testid="plugins-add-custom-marketplace"

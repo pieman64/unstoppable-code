@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,27 @@ test('MCP warning-only body uses standard spacing and warning ink', async () => 
     userDataDir,
     apps: ['ts-pnpm-vite'],
     checkRuntimes: false,
+  });
+  // The activity MCP card lists detected servers only for an active chat
+  // that selects capabilities.
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    activeTabId: CHAT_ID,
+    tabs: [
+      {
+        id: CHAT_ID,
+        title: 'MCP warning',
+        messages: [],
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [{ serverId: 'linear', configId: 'linear-default' }],
+        },
+      },
+    ],
   });
   const { electronApp } = await launchCanopy({ userDataDir });
   try {
@@ -174,6 +196,10 @@ test('activity sidebar exposes accessible grouped controls and interactions', as
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    await connectMockCloudAccount(
+      window,
+      'csk_activity_sidebar_polish_attachments_e2e',
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
@@ -382,7 +408,7 @@ test('activity sidebar exposes accessible grouped controls and interactions', as
       {
         sectionTestId: 'activity-section-pipeline-runs',
         actionTestId: 'pipeline-dispatch-open',
-        label: 'Dispatch pipeline',
+        label: 'Dispatch workflow',
       },
       {
         sectionTestId: 'activity-section-hooks',
@@ -642,6 +668,10 @@ test('attachment imports report files that disappear before they are read', asyn
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    await connectMockCloudAccount(
+      window,
+      'csk_activity_sidebar_polish_attachments_e2e',
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 

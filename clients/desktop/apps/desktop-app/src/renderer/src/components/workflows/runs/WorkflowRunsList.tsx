@@ -144,19 +144,10 @@ export function useWorkflowRunRowActions(
     [executionsById],
   );
 
-  const openRow = useCallback(
-    (row: WorkflowRunRow): void => {
-      if (row.kind === 'watcher') {
-        setInspectingWatcherId(row.watcherId);
-        return;
-      }
-      const executionId = executionIdFor(row);
-      if (executionId !== undefined) {
-        void openPipelineExecutionFromUi({ executionId });
-        return;
-      }
-      if (row.kind !== 'automation') return;
-      const run = runsById.get(row.runId);
+  /** Opens what an automation run produced: its chat, or what it started. */
+  const openAutomationRunResult = useCallback(
+    (runId: string): void => {
+      const run = runsById.get(runId);
       if (!run) return;
       void (async (): Promise<void> => {
         const destination = await resolveAvailableAutomationRunDestination(
@@ -170,7 +161,24 @@ export function useWorkflowRunRowActions(
         if (!result.ok) showError(result.error);
       })();
     },
-    [executionIdFor, runsById],
+    [runsById],
+  );
+
+  const openRow = useCallback(
+    (row: WorkflowRunRow): void => {
+      if (row.kind === 'watcher') {
+        setInspectingWatcherId(row.watcherId);
+        return;
+      }
+      const executionId = executionIdFor(row);
+      if (executionId !== undefined) {
+        void openPipelineExecutionFromUi({ executionId });
+        return;
+      }
+      if (row.kind !== 'automation') return;
+      openAutomationRunResult(row.runId);
+    },
+    [executionIdFor, openAutomationRunResult],
   );
 
   const openInLibrary = useCallback((row: WorkflowRunRow): void => {
@@ -204,6 +212,11 @@ export function useWorkflowRunRowActions(
           openInLibrary(row);
           return;
         case 'go-to-chat': {
+          // An automation row that opens its execution reaches its chat here.
+          if (row.kind === 'automation') {
+            openAutomationRunResult(row.runId);
+            return;
+          }
           if (row.kind !== 'watcher') return;
           const watcher = watchersById.get(row.watcherId);
           if (!watcher) return;
@@ -258,6 +271,7 @@ export function useWorkflowRunRowActions(
       executionActions,
       executionIdFor,
       watchersById,
+      openAutomationRunResult,
       openInLibrary,
       openRow,
       withBusy,
@@ -450,7 +464,7 @@ export function WorkflowRunsList({
             <div className="flex justify-center">
               <Button
                 variant="secondary"
-                size="control"
+                size="compact"
                 disabled={loadingMore}
                 aria-busy={loadingMore}
                 data-testid="workflows-runs-load-more"

@@ -707,7 +707,7 @@ async function runCliCodexPrompt(
         throw lastError;
       }
     }
-    throw lastError ?? new Error('Codex pipeline turn failed');
+    throw lastError ?? new Error('Codex workflow turn failed');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const classification = classifyAgentFailure({
@@ -773,7 +773,7 @@ async function runCliCursorPrompt(
             provider: 'cursor',
             agent_harness: 'cursor',
             had_agent_activity: false,
-            message: 'Cursor pipeline turn was cancelled.',
+            message: 'Cursor workflow turn was cancelled.',
           },
         }
       : {

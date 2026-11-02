@@ -7,6 +7,7 @@ import {
   type SharedAutomationDocument,
 } from '../automations';
 import type { ShareablePluginRef } from '../plugins';
+import type { ResourceOwner } from '../resource-owner';
 import type {
   SharedCollectionDocument,
   SharedCollectionItemCounts,
@@ -117,6 +118,13 @@ export interface SkillPublisherProvenance {
   pluginName: string;
 }
 
+/** Authenticated scoped display metadata; never an installation grant. */
+export interface ScopedShareProvenance {
+  name: string | null;
+  owner: ResourceOwner;
+  shareScope: 'team' | 'organization';
+}
+
 /**
  * Anonymous pinned-snapshot views of a public share, served by the web
  * public-share resolve endpoints (see {@link publicShareSnapshotApiPath}) and
@@ -126,6 +134,8 @@ export interface SkillPublisherProvenance {
  */
 export interface PublicSkillShareSnapshot {
   publisher?: SkillPublisherProvenance;
+  /** Absent on public shares and snapshots resolved by older clients. */
+  sharedBy?: ScopedShareProvenance;
   /** Authenticated scoped fallback; main reauthorizes on install. */
   sourceRemoteId?: string;
   entity: 'skill';
@@ -250,6 +260,32 @@ export type PublicShareSnapshot =
   | PublicCollectionShareSnapshot
   | PublicAutomationShareSnapshot;
 
+export type DeepLinkResolveShareResponse =
+  | { ok: true; snapshot: PublicShareSnapshot }
+  | {
+      ok: false;
+      /**
+       * `not-found` includes masked 404s, private resources, policy denial and
+       * malformed requests; it does not establish revocation.
+       * `sign-in-required` means missing credentials or HTTP 401.
+       * `not-a-member` means HTTP 403, including account-level refusals; it
+       * does not establish organization membership or resource availability.
+       * `cloud-unreachable` covers configuration, transport and other failures.
+       * `client-upgrade-required` mirrors the server's `426`
+       * (`pipeline_package_client_upgrade_required`) for a package share this
+       * build cannot install; `share-changed` mirrors `409`
+       * (`pipeline_share_changed`) when the pinned review no longer matches.
+       * Neither may be downgraded to a definition-only install.
+       */
+      reason:
+        | 'not-found'
+        | 'sign-in-required'
+        | 'not-a-member'
+        | 'cloud-unreachable'
+        | 'client-upgrade-required'
+        | 'share-changed';
+    };
+
 /**
  * API path for the anonymous pinned-snapshot resolve of a public share.
  * `apiNamespace` is the brand's `web.apiNamespace` (e.g. `desktop-app`).
@@ -340,13 +376,19 @@ export interface DesktopRemoteControlDeepLink {
 }
 
 /**
- * Validated desktop Settings section opened from the web. Only Privacy is
- * linkable: the web Personal project list points there so the user can turn
- * on "Show my Personal projects on the web".
+ * Settings sections the web may open. `privacy`: the web Personal project
+ * list points there so the user can turn on "Show my Personal projects on the
+ * web". `organizations`: the invite lander points at the Organizations list,
+ * which finds pending invitations by the account's verified emails, so the
+ * link carries no invite code.
  */
+export type DesktopSettingsDeepLinkSection = 'privacy' | 'organizations';
+
+/** Validated desktop Settings section opened from the web. */
 export interface DesktopSettingsDeepLink {
   destination: 'settings';
-  section: 'privacy';
+  section: DesktopSettingsDeepLinkSection;
+  /** Privacy only; the parser never attaches it to another section. */
   optIn?: { feature: DataSharingOptInFeature; organizationId: string };
 }
 
@@ -397,6 +439,21 @@ export function buildDesktopPrivacySettingsDeepLink(scheme: string): string {
   return `${scheme}://settings/privacy`;
 }
 
+/**
+ * Builds the browser-to-desktop link that opens Settings → Organizations.
+ * The path mirrors the web's `/organization` list route.
+ */
+export function buildDesktopOrganizationsSettingsDeepLink(
+  scheme: string,
+): string {
+  if (!SCHEME_PATTERN.test(scheme)) {
+    throw new Error(
+      `Invalid desktop deep-link scheme (must match ${String(SCHEME_PATTERN)})`,
+    );
+  }
+  return `${scheme}://settings/organization`;
+}
+
 /** Builds a review request; receipt never authorizes a preference write. */
 export function buildDesktopPrivacyOptInDeepLink(
   scheme: string,
@@ -420,6 +477,10 @@ export function parseDesktopSettingsDeepLink(
   scheme: string,
 ): DesktopSettingsDeepLink | null {
   if (!SCHEME_PATTERN.test(scheme) || rawUrl.length > 256) return null;
+  // Exact match only: no query, fragment or trailing path.
+  if (rawUrl === buildDesktopOrganizationsSettingsDeepLink(scheme)) {
+    return { destination: 'settings', section: 'organizations' };
+  }
   const base = buildDesktopPrivacySettingsDeepLink(scheme);
   if (rawUrl !== base && !rawUrl.startsWith(`${base}?`)) return null;
   if (rawUrl.includes('#') || rawUrl === `${base}?` || /[\s\\]/.test(rawUrl))

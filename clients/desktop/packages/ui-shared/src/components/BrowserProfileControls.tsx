@@ -1,5 +1,6 @@
 import type { CSSProperties, JSX } from 'react';
 import { ToggleSwitch } from './ToggleSwitch';
+import { SettingsRowsRow } from './settings/SettingsRows';
 
 export interface BrowserProfileBadgeProps {
   name: string;
@@ -74,8 +75,9 @@ export function BrowserProfilePermissions({
   onEnableChange,
   onClearChange,
 }: BrowserProfilePermissionsProps): JSX.Element {
+  // Two rows of the host's settings group: each permission is its own row.
   return (
-    <div className="space-y-4">
+    <>
       <Permission
         label="Allow agent to enable this profile"
         value={task || allowEnable}
@@ -94,7 +96,7 @@ export function BrowserProfilePermissions({
         description="Agents may clear browser cache or site data and reset this profile. This is independent of opening tabs."
         onChange={onClearChange}
       />
-    </div>
+    </>
   );
 }
 
@@ -114,17 +116,17 @@ function Permission({
   onChange,
 }: PermissionProps): JSX.Element {
   return (
-    <div className="flex items-start justify-between gap-4">
-      <div>
-        <div className="text-s font-medium fg-primary">{label}</div>
-        <p className="mt-1 text-xs fg-secondary">{description}</p>
-      </div>
-      <ToggleSwitch
-        checked={value}
-        disabled={disabled}
-        label={label}
-        onChange={onChange}
-      />
-    </div>
+    <SettingsRowsRow
+      label={label}
+      description={description}
+      control={
+        <ToggleSwitch
+          checked={value}
+          disabled={disabled}
+          label={label}
+          onChange={onChange}
+        />
+      }
+    />
   );
 }

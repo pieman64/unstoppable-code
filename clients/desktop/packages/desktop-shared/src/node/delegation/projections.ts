@@ -1,3 +1,8 @@
+import { classifyCodexDynamicToolResult } from '../codex-runtime/host-tools';
+import {
+  DELEGATE_OUTPUT_CONTINUATION_NOTICE,
+  DELEGATE_OUTPUT_PAGE_MAX_LIMIT,
+} from './output-page';
 import {
   CLAUDE_DELEGATION_SPAWN_SCHEMA,
   CODEX_DELEGATION_SPAWN_SCHEMA,
@@ -11,7 +16,6 @@ import {
   parseManageDelegateWorktreeRequest,
   parseMessageDelegateRequest,
   parseRequestSteeringRequest,
-  parseWatchDelegatesRequest,
   type AgentDelegationResult,
   type AgentDelegationSnapshot,
   type AgentDelegationSpawnRequest,
@@ -22,8 +26,6 @@ import {
   type ManageDelegateWorktreeRequest,
   type MessageDelegateRequest,
   type RequestSteeringRequest,
-  type WatchDelegatesRequest,
-  type WatchDelegatesValue,
 } from '@canopy/protocol/delegation';
 
 import type { DelegationModelDiscovery } from '@canopy/protocol/delegation/discovery';
@@ -47,7 +49,6 @@ export interface DelegationTool {
 
 export interface DelegationProjectionNames {
   readonly spawn: string;
-  readonly watch: string;
   readonly output: string;
   readonly inspect: string;
   readonly list: string;
@@ -78,14 +79,10 @@ export interface DelegationProjectionBroker {
     parent: DelegationParentContext,
     task: AgentDelegationSpawnRequest,
   ): Promise<AgentDelegationResult<AgentDelegationSnapshot>>;
-  watch(
-    parent: DelegationParentContext,
-    request: WatchDelegatesRequest,
-  ): Promise<AgentDelegationResult<WatchDelegatesValue>>;
   getOutput(
     parent: DelegationParentContext,
     request: GetDelegateOutputRequest,
-  ): AgentDelegationResult<GetDelegateOutputValue>;
+  ): Promise<AgentDelegationResult<GetDelegateOutputValue>>;
   inspect(
     parent: DelegationParentContext,
     id: string,
@@ -111,26 +108,6 @@ const ID_SCHEMA = {
     delegationId: { type: 'string', minLength: 1, maxLength: 256 },
   },
 } as const;
-const WATCH_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['delegationIds', 'mode', 'timeoutMs'],
-  properties: {
-    delegationIds: {
-      type: 'array',
-      minItems: 1,
-      maxItems: 16,
-      uniqueItems: true,
-      items: { type: 'string', minLength: 1, maxLength: 256 },
-    },
-    mode: { type: 'string', enum: ['any', 'all'] },
-    timeoutMs: {
-      type: 'integer',
-      minimum: 0,
-      maximum: AGENT_DELEGATION_INPUT_LIMITS.waitTimeoutMs,
-    },
-  },
-} as const;
 const OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -138,6 +115,8 @@ const OUTPUT_SCHEMA = {
   properties: {
     delegationId: { type: 'string', minLength: 1, maxLength: 256 },
     resultIndex: { type: 'integer', minimum: 1 },
+    offset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+    limit: { type: 'integer', minimum: 4, maximum: 65_536 },
   },
 } as const;
 const UNDER_DELEGATION_SCHEMA = {
@@ -158,6 +137,76 @@ function isDelegationId(value: unknown): value is string {
     value === value.trim() &&
     !/[\0\r\n]/.test(value)
   );
+}
+
+/** Classify the exact JSON envelope used by the Codex delegation adapter. */
+function codexOutputFits(
+  result: AgentDelegationResult<GetDelegateOutputValue>,
+): boolean {
+  return (
+    classifyCodexDynamicToolResult({
+      success: result.ok,
+      contentItems: [{ type: 'inputText', text: JSON.stringify(result) }],
+    }).kind === 'ok'
+  );
+}
+
+/** C4: preserve the first reply unless a pinned page can actually be delivered. */
+async function fitCodexDelegateOutput(
+  broker: DelegationProjectionBroker,
+  parent: DelegationParentContext,
+  request: GetDelegateOutputRequest,
+  original: AgentDelegationResult<GetDelegateOutputValue>,
+): Promise<AgentDelegationResult<GetDelegateOutputValue>> {
+  if (codexOutputFits(original)) return original;
+  if (!original.ok || original.value.result === null) return original;
+  const page =
+    request.offset !== undefined || request.limit !== undefined
+      ? original
+      : await broker.getOutput(parent, {
+          delegationId: request.delegationId,
+          resultIndex: original.value.result.resultIndex,
+          offset: 0,
+          limit: DELEGATE_OUTPUT_PAGE_MAX_LIMIT,
+        });
+  if (!page.ok) return page;
+  if (codexOutputFits(page)) return page;
+  const result = page.value.result;
+  const answer = result?.answer;
+  if (!result || !answer || answer.text.length === 0) return original;
+
+  // Prefixes are counted in Unicode characters, never split surrogate pairs.
+  const characters = Array.from(answer.text);
+  let low = 1;
+  let high = characters.length - 1;
+  let best: AgentDelegationResult<GetDelegateOutputValue> | undefined;
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2);
+    const text = characters.slice(0, count).join('');
+    const candidate: AgentDelegationResult<GetDelegateOutputValue> = {
+      ok: true,
+      value: {
+        ...page.value,
+        result: {
+          ...result,
+          answer: {
+            ...answer,
+            text,
+            nextOffset:
+              answer.offset + Buffer.byteLength(text, answer.encoding),
+            notice: DELEGATE_OUTPUT_CONTINUATION_NOTICE,
+          },
+        },
+      },
+    };
+    if (codexOutputFits(candidate)) {
+      best = candidate;
+      low = count + 1;
+    } else {
+      high = count - 1;
+    }
+  }
+  return best ?? original;
 }
 
 /** Collision-free names are selected by the host's injected brand namespace. */
@@ -197,7 +246,6 @@ export function createDelegationProjection(
     throw new Error('Invalid delegation tool namespace');
   const names = options.names ?? {
     spawn: `${namespace}_${harness !== 'codex' ? 'delegate_task' : 'spawn_delegate'}`,
-    watch: `${namespace}_watch_delegates`,
     output: `${namespace}_get_delegate_output`,
     inspect: `${namespace}_inspect_delegate`,
     list: `${namespace}_list_delegates`,
@@ -259,7 +307,7 @@ export function createDelegationProjection(
                     {
                       name: names.message,
                       description:
-                        'Send a follow-up, steer an active delegate, or interrupt its current run. follow_up starts an inactive retained session or queues its next turn; steer injects into an active turn and becomes an ordinary follow-up only when inactive. Only follow_up may replace bounded write grants. Returns a durable receipt immediately. When the delegation limit is reached, a new run waits in the queue and starts automatically: the result reports its runGeneration and phase (queued or starting) with its queue position. Register Watch Delegates and end your turn instead of polling List Delegates. Set if_busy to reject to fail at once with capacity_exceeded instead of waiting.',
+                        'Send a follow-up, steer an active delegate, or interrupt its current run. follow_up starts an inactive retained session or queues its next turn; steer injects into an active turn and becomes an ordinary follow-up only when inactive. Only follow_up may replace bounded write grants. Returns a durable receipt immediately. When the concurrency limit is reached, a new run waits in the queue and starts automatically: the result reports its runGeneration and phase (queued or starting) with its queue position. A follow_up run sends its own completion notice when it finishes; do not poll List Delegates for completion. Set if_busy to reject to fail at once with capacity_exceeded instead of waiting.',
                       inputSchema: {
                         type: 'object',
                         additionalProperties: false,
@@ -293,22 +341,16 @@ export function createDelegationProjection(
                 name: names.spawn,
                 description: options.developmentProbe
                   ? 'Development probe: start a fresh read-only delegated task using a logical model. No provider process is launched.'
-                  : 'Start a delegated task using a logical model ID or configured Agent ID from List Delegates with includeModels: true. A configured Agent carries its model, system instructions and selected plugins, skills and MCP servers. Children start with your plugins, skills and MCP servers by default; set inherit_capabilities: false to start one without them (a configured Agent keeps its own). To give a child more, pass capabilities IDs from List Delegates with includeCapabilities: true. Grant writes explicitly with permissions.writePaths (relative files/directories, or a dot for the workspace); omitted grants allow read/search only. Parent approval settings always apply to commands and MCP tools too. isolation defaults to shared_worktree; choose worktree only when isolation is wanted. Supply a self-contained prompt with paths, scope and expected output. Every call returns a durable ID promptly. When the delegation limit is reached, the task waits in a queue (phase queued, with its position) and starts automatically; set if_busy to reject to fail at once with capacity_exceeded instead. Completion is silent unless you explicitly register Watch Delegates; register it and end your turn rather than polling List Delegates, then retrieve output with Get Delegate Output. Reads share the live working tree and can observe parent edits; returned revision and dirty state describe launch-time observation, not an immutable snapshot.',
+                  : 'Start a delegated task using a logical model ID or configured Agent ID from List Delegates with includeModels: true. A configured Agent carries its model, system instructions and selected plugins, skills and MCP servers. Children start with your plugins, skills and MCP servers by default; set inherit_capabilities: false to start one without them (a configured Agent keeps its own). To give a child more, pass capabilities IDs from List Delegates with includeCapabilities: true. Grant writes explicitly with permissions.writePaths (relative files/directories, or a dot for the workspace); omitted grants allow read/search only. Parent approval settings always apply to commands and MCP tools too. isolation defaults to shared_worktree; choose worktree only when isolation is wanted. Supply a self-contained prompt with paths, scope and expected output. Every call returns a durable ID promptly. When the concurrency limit is reached, the task waits in a queue (phase queued, with its position) and starts automatically; set if_busy to reject to fail at once with capacity_exceeded instead. The lifetime limit refuses new tasks with lifetime_limit_reached instead of queueing. When a run finishes, its parent receives an automatic completion notice naming the delegate and status; use Get Delegate Output with the resultIndex from the notice to read the result. Reads share the live working tree and can observe parent edits; returned revision and dirty state describe launch-time observation, not an immutable snapshot.',
                 inputSchema:
                   harness !== 'codex'
                     ? CLAUDE_DELEGATION_SPAWN_SCHEMA
                     : CODEX_DELEGATION_SPAWN_SCHEMA,
               },
               {
-                name: names.watch,
-                description:
-                  'Register one durable, nonblocking, one-shot completion watch for the delegates’ current run generations. Pass only delegation IDs returned by Delegate Task or List Delegates; the watch is refused until at least one delegate exists. mode any fires when one settles; all waits for every captured run. Returns immediately. Notifications contain metadata and result indices, never output. timeoutMs is a real deadline of up to 30 minutes (1800000); reaching it notifies you with a timeout outcome and does not cancel delegates.',
-                inputSchema: WATCH_SCHEMA,
-              },
-              {
                 name: names.output,
                 description:
-                  'Read a settled delegate result explicitly. Omit resultIndex for the latest settled result, or provide a one-based result index from a watch notification for that exact historical result. Reads never resume execution, consume output, or change watcher state.',
+                  'Read a settled delegate result explicitly. Omit resultIndex for the latest settled result, or provide the one-based resultIndex from a completion notice for that exact historical result. Reads never resume execution or consume output. Use offset and limit for byte ranges, pin continuations with resultIndex, and continue from the returned nextOffset.',
                 inputSchema: OUTPUT_SCHEMA,
               },
               {
@@ -383,7 +425,7 @@ export function createDelegationProjection(
           error: {
             code: 'invalid_request',
             message:
-              'Wait Delegates is no longer available. Use Watch Delegates to register a nonblocking completion notification, then Get Delegate Output to read the result.',
+              'Wait Delegates is no longer available. Completion notices arrive automatically. Use Get Delegate Output with the notice resultIndex to read the result.',
             retryable: false,
           },
         };
@@ -419,13 +461,13 @@ export function createDelegationProjection(
             : parseCodexDelegationSpawn(input);
         return parsed.ok ? broker.spawn(parent, parsed.value) : parsed;
       }
-      if (name === names.watch) {
-        const parsed = parseWatchDelegatesRequest(input);
-        return parsed.ok ? broker.watch(parent, parsed.value) : parsed;
-      }
       if (name === names.output) {
         const parsed = parseGetDelegateOutputRequest(input);
-        return parsed.ok ? broker.getOutput(parent, parsed.value) : parsed;
+        if (!parsed.ok) return parsed;
+        const result = await broker.getOutput(parent, parsed.value);
+        return harness === 'codex'
+          ? fitCodexDelegateOutput(broker, parent, parsed.value, result)
+          : result;
       }
       if (name === names.list) {
         if (!record(input)) return invalid;

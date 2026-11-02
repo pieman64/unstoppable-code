@@ -22,18 +22,28 @@ export interface W5FileIssue {
     | 'missing-file'
     | 'unknown-artifact'
     | 'log-mismatch'
-    | 'untracked-file';
+    | 'untracked-file'
+    /** An unreadable lifecycle journal entry the user moved aside (CAN-5335). */
+    | 'quarantined-journal';
 }
 export interface W5Diagnosis {
   readonly files: readonly W5FileIssue[];
+  /** Filename-matching regular files, not operations; null if inspection is unavailable. */
+  readonly destructiveJournalArtifactCount: number | null;
   readonly logIssue: 'unavailable' | 'incompatible-schema' | null;
+  /** Commits not yet applied, oldest first. */
   readonly commits: readonly {
     readonly commitId: number;
+    readonly operation: string;
     readonly state: string;
     readonly diagnostics: string | null;
+    /** Operations of the receipts (keys) the commit holds; abandoning it releases them. */
+    readonly receiptOperations: readonly string[];
   }[];
+  /** Each reservation's operation and state (A24): resolve decisions key on both. */
   readonly reservations: readonly {
     readonly reservationId: string;
+    readonly operation: string;
     readonly state: string;
     readonly diagnostics: string;
   }[];
@@ -51,6 +61,60 @@ function validId(id: string): boolean {
 interface DiagnosticCopy {
   readonly db: DatabaseSync;
   close(): Promise<void>;
+}
+
+async function countDestructiveJournalArtifacts(
+  w5Root: string,
+  issues: W5FileIssue[],
+): Promise<number | null> {
+  const path = 'w5/destructive-lifecycles';
+  const directory = join(w5Root, 'destructive-lifecycles');
+  try {
+    const stat = await lstat(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      issues.push({ path, reason: 'unknown-artifact' });
+      return null;
+    }
+    let count = 0;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (
+        entry.isFile() &&
+        !entry.isSymbolicLink() &&
+        /^([a-f0-9]{64}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-8][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)\.json$/.test(
+          entry.name,
+        )
+      )
+        count += 1;
+      else
+        issues.push({
+          path: `${path}/${entry.name}`,
+          reason: 'unknown-artifact',
+        });
+    }
+    return count;
+  } catch {
+    issues.push({ path, reason: 'corrupt-file' });
+    return null;
+  }
+}
+
+/** No journal scanner reads these; each is user-moved evidence, never deleted. */
+async function reportQuarantinedJournals(
+  w5Root: string,
+  issues: W5FileIssue[],
+): Promise<void> {
+  const path = 'w5/quarantined-lifecycles';
+  try {
+    const stat = await lstat(join(w5Root, 'quarantined-lifecycles'));
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      issues.push({ path, reason: 'unknown-artifact' });
+      return;
+    }
+    for (const entry of await readdir(join(w5Root, 'quarantined-lifecycles')))
+      issues.push({ path: `${path}/${entry}`, reason: 'quarantined-journal' });
+  } catch {
+    issues.push({ path, reason: 'corrupt-file' });
+  }
 }
 
 async function copyLogForDiagnosis(logPath: string): Promise<DiagnosticCopy> {
@@ -179,16 +243,9 @@ export async function diagnoseW5State(dataRoot: string): Promise<W5Diagnosis> {
   }
 
   let logIssue: W5Diagnosis['logIssue'] = null;
-  const commits: Array<{
-    commitId: number;
-    state: string;
-    diagnostics: string | null;
-  }> = [];
-  const reservations: Array<{
-    reservationId: string;
-    state: string;
-    diagnostics: string;
-  }> = [];
+  let destructiveJournalArtifactCount: number | null = null;
+  const commits: Array<W5Diagnosis['commits'][number]> = [];
+  const reservations: Array<W5Diagnosis['reservations'][number]> = [];
   let copy: DiagnosticCopy | undefined;
   try {
     // Check the complete parent chain, including sidecars, before SQLite opens.
@@ -204,10 +261,20 @@ export async function diagnoseW5State(dataRoot: string): Promise<W5Diagnosis> {
       'backups',
       'restore-evidence',
     ]);
-    for (const entry of await readdir(join(dataRoot, 'w5'), {
+    const logArtifacts = await readdir(join(dataRoot, 'w5'), {
       withFileTypes: true,
-    }))
-      if (!recognizedLogArtifacts.has(entry.name) || entry.isSymbolicLink())
+    });
+    destructiveJournalArtifactCount = 0;
+    for (const entry of logArtifacts)
+      if (entry.name === 'destructive-lifecycles')
+        destructiveJournalArtifactCount =
+          await countDestructiveJournalArtifacts(join(dataRoot, 'w5'), issues);
+      else if (entry.name === 'quarantined-lifecycles')
+        await reportQuarantinedJournals(join(dataRoot, 'w5'), issues);
+      else if (
+        !recognizedLogArtifacts.has(entry.name) ||
+        entry.isSymbolicLink()
+      )
         issues.push({ path: `w5/${entry.name}`, reason: 'unknown-artifact' });
     const logPath = join(dataRoot, 'w5/commit-log.sqlite');
     for (const path of [logPath, `${logPath}-wal`, `${logPath}-shm`]) {
@@ -233,37 +300,52 @@ export async function diagnoseW5State(dataRoot: string): Promise<W5Diagnosis> {
     if (version !== String(W5_COMMIT_LOG_SCHEMA_VERSION)) {
       logIssue = 'incompatible-schema';
     } else {
+      const receipts = db.prepare(
+        'SELECT operation FROM w5_receipts WHERE commit_id = ? ORDER BY operation',
+      );
       for (const row of db
         .prepare(
-          "SELECT commit_id, state, diagnostics_json FROM w5_commits WHERE state != 'applied' ORDER BY commit_id",
+          "SELECT commit_id, operation, state, diagnostics_json FROM w5_commits WHERE state != 'applied' ORDER BY commit_id",
         )
         .all()) {
         if (
           typeof row.commit_id !== 'number' ||
+          typeof row.operation !== 'string' ||
           typeof row.state !== 'string' ||
           (row.diagnostics_json !== null &&
             typeof row.diagnostics_json !== 'string')
         )
           throw new Error('Invalid commit');
+        const receiptOperations = receipts
+          .all(row.commit_id)
+          .map(({ operation }) => {
+            if (typeof operation !== 'string')
+              throw new Error('Invalid receipt');
+            return operation;
+          });
         commits.push({
           commitId: row.commit_id,
+          operation: row.operation,
           state: row.state,
           diagnostics: row.diagnostics_json,
+          receiptOperations,
         });
       }
       for (const row of db
         .prepare(
-          'SELECT reservation_id, state, diagnostics_json FROM w5_reservations ORDER BY reservation_id',
+          'SELECT reservation_id, operation, state, diagnostics_json FROM w5_reservations ORDER BY reservation_id',
         )
         .all()) {
         if (
           typeof row.reservation_id !== 'string' ||
+          typeof row.operation !== 'string' ||
           typeof row.state !== 'string' ||
           typeof row.diagnostics_json !== 'string'
         )
           throw new Error('Invalid reservation');
         reservations.push({
           reservationId: row.reservation_id,
+          operation: row.operation,
           state: row.state,
           diagnostics: row.diagnostics_json,
         });
@@ -320,6 +402,7 @@ export async function diagnoseW5State(dataRoot: string): Promise<W5Diagnosis> {
         a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason),
     ),
     logIssue,
+    destructiveJournalArtifactCount,
     commits,
     reservations,
   };

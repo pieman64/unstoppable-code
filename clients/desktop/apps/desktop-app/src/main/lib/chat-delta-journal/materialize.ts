@@ -12,18 +12,20 @@ import { join } from 'node:path';
 import type { TranscriptDescriptor } from '@canopy/agent-transcript/transcript-storage';
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
 import type { ChatStorageIndexes } from '../chat-storage-transactions';
+import type { ActiveRowAnchor } from '../chat-transcript-live-positions';
 import {
   readCompleteTranscriptMessages,
   type ChatTranscriptLog,
+  type TranscriptFieldMode,
 } from '../chat-transcript-log';
 import { writeJsonValuesCooperatively } from '../cooperative-json';
 import { isErrnoException } from '../type-guards';
 import {
   ChatDeltaJournalIntegrityError,
-  type DeltaJournalCommitRecord,
   type DeltaJournalPatchEffect,
   type DeltaJournalTranscriptEffect,
 } from './format';
+import { primaryEffects, type JournalCommit } from './replay';
 import { upsertActiveMessages } from './transcript-overlay';
 
 /** The rewrite revision a version 2 transaction assigns a replaced log. */
@@ -58,9 +60,21 @@ async function replaceWithSuffix(
     | AsyncIterable<PersistedChatMessage>,
   mutable: readonly PersistedChatMessage[],
   revision: number,
+  fields: TranscriptFieldMode = 'legacy',
+  capturedAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
 ): Promise<void> {
-  await log.replace(chatId, committed, revision);
-  if (mutable.length) await log.writeActive(chatId, mutable);
+  const anchors =
+    capturedAnchors ??
+    (await log.activeSnapshot(chatId)).anchors ??
+    new Map<string, ActiveRowAnchor>();
+  const mutableIds = new Set(mutable.map((message) => message.id));
+  const suffixAnchors = new Map(
+    Array.from(anchors).filter(([id]) => mutableIds.has(id)),
+  );
+  // The log derives finality: replaced rows are final, the suffix open.
+  await log.replace(chatId, committed, revision, fields);
+  if (mutable.length)
+    await log.writeActive(chatId, mutable, suffixAnchors, fields);
 }
 
 async function applyPatch(
@@ -68,6 +82,8 @@ async function applyPatch(
   effect: DeltaJournalPatchEffect,
   toRevision: number,
   workDirectory: string,
+  fields: TranscriptFieldMode = 'legacy',
+  capturedAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
 ): Promise<void> {
   const tailIds = new Set(effect.tail.map((message) => message.id));
   const dropped = new Set([
@@ -77,6 +93,19 @@ async function applyPatch(
   const replacements = new Map(
     effect.patches.map((message) => [message.id, message]),
   );
+  const split = effect.tail.length - effect.activeTailCount;
+  const tail = effect.tail;
+  // The record's rows were prepared by its format 4 writer; the rows kept
+  // from the log may predate promotion and hold a whole field inline.
+  let rewriteFields = fields;
+  if (fields === 'format4-verify') {
+    await log.verifyPrepared(
+      effect.chatId,
+      [...effect.patches, ...tail.slice(0, split)],
+      true,
+    );
+    rewriteFields = 'format4-committed';
+  }
   await mkdir(workDirectory, { recursive: true });
   // Stage the surviving rows first: the replacement must not read the log it
   // is rewriting, and a long history must not be held in memory.
@@ -90,8 +119,6 @@ async function applyPatch(
       })(),
       { pretty: false, separator: '\n', trailingSeparator: true },
     );
-    const split = effect.tail.length - effect.activeTailCount;
-    const tail = effect.tail;
     await replaceWithSuffix(
       log,
       effect.chatId,
@@ -101,19 +128,27 @@ async function applyPatch(
       })(),
       tail.slice(split),
       rewriteRevision(toRevision, effect.priorTranscriptRevision),
+      rewriteFields,
+      capturedAnchors,
     );
   } finally {
     await rm(staged, { force: true });
   }
 }
 
-/** Apply one effect through the log, as a version 2 transaction would. */
+/**
+ * Apply one effect through the log, as a version 2 transaction would.
+ * `fields`: the scope's field mode for re-applying prepared rows; a format 4
+ * scope passes `format4-verify`, so materialization never publishes.
+ */
 export async function applyTranscriptEffect(
   log: ChatTranscriptLog,
   transcriptsRoot: string,
   effect: DeltaJournalTranscriptEffect,
   toRevision: number,
   workDirectory: string,
+  fields: TranscriptFieldMode = 'legacy',
+  capturedAnchors?: ReadonlyMap<string, ActiveRowAnchor>,
 ): Promise<void> {
   if (effect.kind === 'delete') {
     await log.remove(effect.chatId);
@@ -122,11 +157,22 @@ export async function applyTranscriptEffect(
   await ensureTranscript(log, transcriptsRoot, effect);
   switch (effect.kind) {
     case 'append':
-      return log.append(effect.chatId, effect.messages);
+      return log.append(
+        effect.chatId,
+        effect.messages,
+        undefined,
+        undefined,
+        fields,
+      );
     case 'active':
-      return log.writeActive(effect.chatId, effect.messages);
+      return log.writeActive(effect.chatId, effect.messages, undefined, fields);
     case 'active-replace':
-      return log.replaceActive(effect.chatId, effect.messages);
+      return log.replaceActive(
+        effect.chatId,
+        effect.messages,
+        undefined,
+        fields,
+      );
     case 'active-upsert':
       return log.writeActive(
         effect.chatId,
@@ -134,6 +180,8 @@ export async function applyTranscriptEffect(
           await log.activeMessages(effect.chatId),
           effect.messages,
         ),
+        undefined,
+        fields,
       );
     case 'replace': {
       const split = effect.messages.length - effect.activeTailCount;
@@ -144,10 +192,19 @@ export async function applyTranscriptEffect(
         rows.slice(0, split),
         rows.slice(split),
         rewriteRevision(toRevision, effect.priorTranscriptRevision),
+        fields,
+        capturedAnchors,
       );
     }
     case 'patch':
-      return applyPatch(log, effect, toRevision, workDirectory);
+      return applyPatch(
+        log,
+        effect,
+        toRevision,
+        workDirectory,
+        fields,
+        capturedAnchors,
+      );
   }
 }
 
@@ -160,17 +217,31 @@ export async function applyTranscriptEffect(
 export async function applyRecordTranscripts(
   log: ChatTranscriptLog,
   transcriptsRoot: string,
-  record: DeltaJournalCommitRecord,
+  record: JournalCommit,
   workDirectory: string,
+  fields: TranscriptFieldMode = 'legacy',
+  capturedAnchors?: (
+    record: JournalCommit,
+    effect: DeltaJournalTranscriptEffect,
+    effectIndex: number,
+  ) => Promise<ReadonlyMap<string, ActiveRowAnchor> | undefined>,
 ): Promise<void> {
-  for (const effect of record.transcripts)
+  // Anchor captures are keyed by the effect's index among the primary
+  // effects, as the writer that captured them iterates.
+  const effects = primaryEffects(record);
+  for (let effectIndex = 0; effectIndex < effects.length; effectIndex += 1) {
+    const effect = effects[effectIndex];
+    if (!effect) throw new Error('Missing transcript effect');
     await applyTranscriptEffect(
       log,
       transcriptsRoot,
       effect,
       record.toRevision,
       workDirectory,
+      fields,
+      await capturedAnchors?.(record, effect, effectIndex),
     );
+  }
 }
 
 /**

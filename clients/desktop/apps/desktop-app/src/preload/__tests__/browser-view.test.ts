@@ -1154,7 +1154,7 @@ describe('browser-view preload bridges, pick mode and recording', () => {
     expect(uniqueButton).not.toBeNull();
     expect(duplicateButton).not.toBeNull();
 
-    const uniqueCandidates = generateLocatorCandidates(uniqueButton as Element);
+    const uniqueCandidates = generateLocatorCandidates(uniqueButton);
     const uniqueText = uniqueCandidates.find(
       (candidate) => candidate.kind === 'text',
     );
@@ -1170,9 +1170,7 @@ describe('browser-view preload bridges, pick mode and recording', () => {
       uniqueCandidates.findIndex((candidate) => candidate.kind === 'css'),
     );
 
-    const duplicateCandidates = generateLocatorCandidates(
-      duplicateButton as Element,
-    );
+    const duplicateCandidates = generateLocatorCandidates(duplicateButton);
     expect(
       duplicateCandidates.some((candidate) => candidate.kind === 'text'),
     ).toBe(false);
@@ -1515,7 +1513,7 @@ describe('browser-view preload bridges, pick mode and recording', () => {
       (autocomplete) => {
         const input = document.createElement('input');
         input.id = 'cardholder';
-        input.autocomplete = autocomplete;
+        input.setAttribute('autocomplete', autocomplete);
         input.value = 'private-cardholder-9284';
         input.setAttribute('value', input.value);
         document.getElementById('sign-in')?.append(input);

@@ -13,6 +13,10 @@ export async function launchCursorTranscriptFixture({
     approvalMode: 'ask',
   });
   try {
+    // These fixtures assert individual tool cards and turn folding.
+    await fixture.window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await fixture.connection(true);
     await fixture.openChat();
     const panel = fixture.window.getByTestId('panel-content-chat');

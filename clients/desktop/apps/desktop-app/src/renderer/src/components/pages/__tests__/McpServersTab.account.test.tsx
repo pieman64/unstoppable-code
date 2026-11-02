@@ -13,7 +13,12 @@ jest.mock('@/hooks/useCurrentUiStateReporter', (): object => ({
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
+  CanopyCloudAccountPublicState,
+  CanopyServerAccountInfo,
+} from '@canopy/desktop-shared/types';
+import type {
   AccountMcpConnection,
+  McpServerFile,
   McpServerIndexEntry,
   McpServersAPI,
   SaveMcpServerRequest,
@@ -27,6 +32,38 @@ import { AccountMcpDetails, McpTierBadge } from '../../mcp/AccountMcpControls';
 import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
+function accountInfo(id: string): CanopyServerAccountInfo {
+  return {
+    id,
+    name: 'Test account',
+    email: 'test@example.test',
+    role: 'DEVELOPER',
+  };
+}
+
+function cloudAccountState(
+  hasApiKey: boolean,
+  account?: CanopyServerAccountInfo,
+): CanopyCloudAccountPublicState {
+  return {
+    hasApiKey,
+    authMode: hasApiKey ? 'oauth' : null,
+    credentialSource: hasApiKey ? 'oauth_desktop' : null,
+    capabilities: [],
+    storageAvailable: true,
+    ...(account === undefined ? {} : { account }),
+  };
+}
+
+function createSaveServerMock(): jest.Mock<
+  Promise<McpServerFile>,
+  [SaveMcpServerRequest]
+> {
+  return jest.fn<Promise<McpServerFile>, [SaveMcpServerRequest]>(
+    (server): Promise<McpServerFile> => Promise.resolve({ version: 1, server }),
+  );
+}
+
 let mockEntries: Awaited<ReturnType<McpServersAPI['listCurated']>>['servers'] =
   [];
 let mockEnabled = true;
@@ -38,6 +75,11 @@ let mockRefreshedEntries: typeof mockEntries = [];
 const mockRefreshCurated = jest.fn(
   (): Promise<typeof mockEntries> => Promise.resolve(mockRefreshedEntries),
 );
+const mockLoadPreferences = jest.fn<Promise<unknown>, []>();
+const mockLoadCanopyCloudAccount = jest.fn<
+  Promise<CanopyCloudAccountPublicState>,
+  []
+>();
 jest.mock(
   '@/stores/featureFlagsStore',
   (): Record<string, unknown> => ({
@@ -125,17 +167,21 @@ beforeEach((): void => {
   jest.clearAllMocks();
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
     configurable: true,
+    writable: true,
     value: true,
   });
   originalApi = Object.getOwnPropertyDescriptor(window, 'mcpServers');
   originalPreferencesApi = Object.getOwnPropertyDescriptor(window, 'api');
+  mockLoadPreferences.mockResolvedValue({});
+  mockLoadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('acct-1')),
+  );
   Object.defineProperty(window, 'api', {
     configurable: true,
+    writable: true,
     value: {
-      loadPreferences: jest.fn().mockResolvedValue({}),
-      loadCanopyCloudAccount: jest
-        .fn()
-        .mockResolvedValue({ hasApiKey: true, account: { id: 'acct-1' } }),
+      loadPreferences: mockLoadPreferences,
+      loadCanopyCloudAccount: mockLoadCanopyCloudAccount,
     },
   });
   container = document.createElement('div');
@@ -154,6 +200,7 @@ afterEach((): void => {
 function install(api: Partial<McpServersAPI>): void {
   Object.defineProperty(window, 'mcpServers', {
     configurable: true,
+    writable: true,
     value: api,
   });
 }
@@ -225,16 +272,14 @@ it('closes an open account setup dialog when the signed-in account changes', asy
     document.querySelector('[data-testid="mcp-account-setup"]'),
   ).not.toBeNull();
   if (!authChanged) throw new Error('Missing auth change subscription');
-  const loadAccount = window.api?.loadCanopyCloudAccount;
-  if (!loadAccount) throw new Error('Missing account loader');
   // Inventory changes under the same account leave the dialog alone.
   await flush((): void => authChanged?.());
   expect(
     document.querySelector('[data-testid="mcp-account-setup"]'),
   ).not.toBeNull();
-  jest
-    .mocked(loadAccount)
-    .mockResolvedValue({ hasApiKey: true, account: { id: 'acct-2' } });
+  mockLoadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('acct-2')),
+  );
   await flush((): void => authChanged?.());
   // Credentials typed for the previous sign-in are discarded with the dialog.
   expect(
@@ -274,11 +319,9 @@ it('refuses to submit account setup credentials captured under another account',
   ).not.toBeNull();
   // The dialog captured acct-1 when it opened; sign-in changes before submit
   // without the dialog hearing about it.
-  const loadAccount = window.api?.loadCanopyCloudAccount;
-  if (!loadAccount) throw new Error('Missing account loader');
-  jest
-    .mocked(loadAccount)
-    .mockResolvedValue({ hasApiKey: true, account: { id: 'acct-2' } });
+  mockLoadCanopyCloudAccount.mockResolvedValue(
+    cloudAccountState(true, accountInfo('acct-2')),
+  );
   const clientId = document.querySelector<HTMLInputElement>(
     '[data-testid="mcp-account-oauth-client-id"]',
   );
@@ -296,7 +339,7 @@ it('refuses to submit account setup credentials captured under another account',
   expect(container.textContent).toContain('Account changed. Connect again.');
 });
 it.each([
-  ['signed out', { hasApiKey: false }],
+  ['signed out', cloudAccountState(false)],
   ['unreadable', new Error('offline')],
 ] as const)(
   'keeps account setup closed when the account is %s',
@@ -319,11 +362,9 @@ it.each([
         ],
       },
     ];
-    const loadAccount = window.api?.loadCanopyCloudAccount;
-    if (!loadAccount) throw new Error('Missing account loader');
     if (outcome instanceof Error)
-      jest.mocked(loadAccount).mockRejectedValue(outcome);
-    else jest.mocked(loadAccount).mockResolvedValue(outcome);
+      mockLoadCanopyCloudAccount.mockRejectedValue(outcome);
+    else mockLoadCanopyCloudAccount.mockResolvedValue(outcome);
     const start = jest.fn();
     install({
       startAccountConnection: start,
@@ -2274,9 +2315,7 @@ describe('custom HTTP servers and the cloud account', (): void => {
           { ...connection, id: 'existing' },
           { ...customConnection, status: 'PENDING' },
         ]);
-      const save = jest
-        .fn<Promise<void>, [SaveMcpServerRequest]>()
-        .mockResolvedValue(undefined);
+      const save = createSaveServerMock();
       const onClose = jest.fn();
       const onSaved = jest.fn((): Promise<void> => Promise.resolve());
       install({
@@ -2362,9 +2401,7 @@ describe('custom HTTP servers and the cloud account', (): void => {
 
   it('keeps a new server on this device when asked', async (): Promise<void> => {
     const start = jest.fn();
-    const save = jest
-      .fn<Promise<void>, [SaveMcpServerRequest]>()
-      .mockResolvedValue(undefined);
+    const save = createSaveServerMock();
     install({ startAccountConnection: start, saveServer: save });
     await renderCustomDialog('https://mcp.example.test/mcp');
     expect(scopeChoice()).toBe('cloud');
@@ -2501,9 +2538,7 @@ describe('custom HTTP servers and the cloud account', (): void => {
   });
 
   it('falls back to this device when signed out', async (): Promise<void> => {
-    const loadAccount = window.api?.loadCanopyCloudAccount;
-    if (!loadAccount) throw new Error('Missing account loader');
-    jest.mocked(loadAccount).mockResolvedValue({ hasApiKey: false });
+    mockLoadCanopyCloudAccount.mockResolvedValue(cloudAccountState(false));
     const start = jest.fn();
     install({ startAccountConnection: start, saveServer: jest.fn() });
     await renderCustomDialog('https://mcp.example.test/mcp');
@@ -2644,20 +2679,18 @@ describe('custom HTTP servers and the cloud account', (): void => {
   ])(
     'saves %s locally when the global default is the cloud account',
     async (_label, url, reason, signedIn): Promise<void> => {
-      const loadPreferences = window.api?.loadPreferences;
-      if (!loadPreferences) throw new Error('Missing preferences loader');
-      jest
-        .mocked(loadPreferences)
-        .mockResolvedValue({ mcpHttpAuthDefaultHandler: 'account' });
+      mockLoadPreferences.mockResolvedValue({
+        mcpHttpAuthDefaultHandler: 'account',
+      });
       if (!signedIn) {
-        const loadAccount = window.api?.loadCanopyCloudAccount;
-        if (!loadAccount) throw new Error('Missing account loader');
-        jest.mocked(loadAccount).mockResolvedValue({ hasApiKey: false });
+        mockLoadCanopyCloudAccount.mockResolvedValue(cloudAccountState(false));
       }
       const start = jest.fn();
       const save = jest
-        .fn<Promise<void>, [SaveMcpServerRequest]>()
-        .mockResolvedValue(undefined);
+        .fn<ReturnType<McpServersAPI['saveServer']>, [SaveMcpServerRequest]>()
+        .mockImplementation((server) =>
+          Promise.resolve({ version: 1, server }),
+        );
       const onClose = jest.fn();
       install({
         startAccountConnection: start,
@@ -2791,9 +2824,7 @@ describe('promoting existing custom HTTP rows', (): void => {
       const start = jest
         .fn()
         .mockResolvedValue({ connection: customConnection });
-      const save = jest
-        .fn<Promise<void>, [SaveMcpServerRequest]>()
-        .mockResolvedValue(undefined);
+      const save = createSaveServerMock();
       const disconnect = jest.fn().mockResolvedValue(undefined);
       const rewrite = jest
         .fn()
@@ -3293,16 +3324,13 @@ describe('promoting existing custom HTTP rows', (): void => {
     mockServers = [customDevice];
     const start = jest.fn().mockResolvedValue({ connection: customConnection });
     const disconnect = jest.fn().mockResolvedValue(undefined);
-    let bound: () => void = (): void => undefined;
-    const save = jest
-      .fn<Promise<void>, [SaveMcpServerRequest]>()
-      .mockImplementationOnce(
-        (): Promise<void> =>
-          new Promise((resolve): void => {
-            bound = resolve;
-          }),
-      )
-      .mockResolvedValue(undefined);
+    let resolveSave: ((file: McpServerFile) => void) | undefined;
+    const save = createSaveServerMock().mockImplementationOnce(
+      (): Promise<McpServerFile> =>
+        new Promise((resolve): void => {
+          resolveSave = resolve;
+        }),
+    );
     install({
       startAccountConnection: start,
       listAccountConnections: jest.fn().mockResolvedValue([]),
@@ -3318,7 +3346,10 @@ describe('promoting existing custom HTTP rows', (): void => {
     await flush((): void => undefined);
     expect(save).toHaveBeenCalledTimes(1);
     await flush((): void => button('Cancel').click());
-    await flush((): void => bound());
+    await flush((): void => {
+      if (!resolveSave) throw new Error('Missing pending server save');
+      resolveSave({ version: 1, server: customServer });
+    });
     await flush((): void => undefined);
     await flush((): void => undefined);
     expect(save).toHaveBeenCalledTimes(2);
@@ -3339,9 +3370,7 @@ describe('promoting existing custom HTTP rows', (): void => {
     });
     const disconnect = jest.fn().mockResolvedValue(undefined);
     let finish: (value: AccountMcpConnection) => void = (): void => undefined;
-    const save = jest
-      .fn<Promise<void>, [SaveMcpServerRequest]>()
-      .mockResolvedValue(undefined);
+    const save = createSaveServerMock();
     install({
       startAccountConnection: start,
       listAccountConnections: jest.fn().mockResolvedValue([]),
@@ -3386,9 +3415,8 @@ describe('promoting existing custom HTTP rows', (): void => {
       .mockResolvedValue({ connection: pendingConnection });
     const disconnect = jest.fn().mockResolvedValue(undefined);
     let finish: (value: AccountMcpConnection) => void = (): void => undefined;
-    const save = jest
-      .fn<Promise<void>, [SaveMcpServerRequest]>()
-      .mockImplementationOnce((): Promise<void> => {
+    const save = createSaveServerMock()
+      .mockImplementationOnce((): Promise<McpServerFile> => {
         // The bind moves the device row under the account connection, the
         // way the merged index lists it after the next refresh.
         mockServers = [
@@ -3412,11 +3440,11 @@ describe('promoting existing custom HTTP rows', (): void => {
             ],
           },
         ];
-        return Promise.resolve();
+        return Promise.resolve({ version: 1, server: customServer });
       })
-      .mockImplementation((): Promise<void> => {
+      .mockImplementation((): Promise<McpServerFile> => {
         mockServers = [customDevice];
-        return Promise.resolve();
+        return Promise.resolve({ version: 1, server: customServer });
       });
     install({
       startAccountConnection: start,
@@ -4624,9 +4652,7 @@ describe('provider connector feedback', () => {
       },
     ];
     const start = jest.fn();
-    const save = jest
-      .fn<Promise<void>, [SaveMcpServerRequest]>()
-      .mockResolvedValue(undefined);
+    const save = createSaveServerMock();
     install({
       startAccountConnection: start,
       saveServer: save,

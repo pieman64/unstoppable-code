@@ -5,6 +5,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { ReviewPopoverShell } from './reviewPopoverShell';
 import { ReviewAnnotationCard, ReviewThreadCard } from './reviewPopoverCards';
+import { Button } from '@canopy/ui-shared/components';
 
 export interface ReviewCommentPopoverProps {
   mode: 'compose' | 'thread' | 'annotation';
@@ -106,22 +107,18 @@ export function ReviewCommentPopover({
             className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
           />
           <div className="flex items-center justify-end gap-1.5">
-            <button
-              type="button"
-              onClick={onClose}
-              className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
-            >
+            <Button size="compact" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
+              size="compact"
               onClick={submitDraft}
               disabled={draftBody.trim().length === 0}
               data-testid="review-comment-submit-draft"
-              className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
             >
               Add comment
-            </button>
+            </Button>
           </div>
         </div>
       )}

@@ -100,15 +100,15 @@ describe('GitHubCloudReauthNotice', () => {
     );
   });
 
-  it('offers one primary Reconnect GitHub action that calls onReconnect once per press', () => {
+  it('offers one secondary Reconnect GitHub action that calls onReconnect once per press', () => {
     const onReconnect = render();
 
     const button = reconnect();
     expect(button.textContent).toBe('Reconnect GitHub');
     expect(button.tagName).toBe('BUTTON');
     expect(button.getAttribute('type')).toBe('button');
-    // The shared NoticeButton primary tier.
-    expect(button.className).toContain('bg-accent');
+    // Settings actions are secondary; the accent is a dialog's primary.
+    expect(button.className).not.toContain('bg-accent');
     expect(container.querySelectorAll('button')).toHaveLength(1);
 
     act(() => {

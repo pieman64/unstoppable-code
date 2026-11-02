@@ -194,6 +194,20 @@ export function selectWorktreeHasLiveDelegates(
   return false;
 }
 
+/** Queued and live delegations per worktree (or Work Entry) of a project. */
+export function selectDelegationCountsByWorktree(
+  state: DelegationActivityState,
+  projectId: string,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of Object.values(state.byChat)) {
+    if (entry.projectId !== projectId || !hasWork(entry)) continue;
+    counts[entry.worktreeId] =
+      (counts[entry.worktreeId] ?? 0) + entry.live + entry.queued;
+  }
+  return counts;
+}
+
 /** Non-reactive read of {@link selectChatHasLiveDelegates}. */
 export function chatHasLiveDelegates(
   projectId: string,

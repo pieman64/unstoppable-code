@@ -1,6 +1,5 @@
-import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { utilityProcess, type UtilityProcess } from 'electron';
+import type { ExecutionHostProcess } from '@canopy/desktop-shared/node/execution-host/port';
 import type {
   ExecutionResourceMonitor,
   ExecutionResourceRegistrationHandle,
@@ -13,6 +12,7 @@ import type {
   PipelineProcessHostRequest,
   PipelineProcessHostResponse,
 } from './process-host-protocol';
+import { getExecutionHostPort } from '../execution-host/utility-process-host';
 
 const WORKER_ENTRY_FILENAME = 'pipeline-process-host-worker.js';
 const WORKER_SERVICE_NAME = 'pipeline-process-host';
@@ -20,7 +20,7 @@ const SHUTDOWN_WAIT_MS = 6_000;
 const FORCED_EXIT_CLEANUP_WAIT_MS = 6_000;
 
 interface PendingRun {
-  child: UtilityProcess;
+  child: ExecutionHostProcess;
   options: SpawnedProcessRunOptions;
   monitor?: ExecutionResourceMonitor;
   resourceHandle: ExecutionResourceRegistrationHandle | null;
@@ -30,17 +30,17 @@ interface PendingRun {
 }
 
 interface WorkerExitState {
-  child: UtilityProcess;
+  child: ExecutionHostProcess;
   promise: Promise<void>;
   resolve: () => void;
 }
 
 interface TrackedCleanupProcess {
-  child: UtilityProcess;
+  child: ExecutionHostProcess;
   pid: number;
 }
 
-let worker: UtilityProcess | null = null;
+let worker: ExecutionHostProcess | null = null;
 let workerExitState: WorkerExitState | null = null;
 let shuttingDown = false;
 const pending = new Map<string, PendingRun>();
@@ -64,7 +64,7 @@ function isResponse(value: unknown): value is PipelineProcessHostResponse {
 }
 
 function post(
-  child: UtilityProcess,
+  child: ExecutionHostProcess,
   message: PipelineProcessHostRequest,
 ): void {
   child.postMessage(message);
@@ -114,7 +114,7 @@ function registerResource(record: PendingRun, pid: number): void {
 }
 
 async function terminateTrackedProcessGroups(
-  child: UtilityProcess,
+  child: ExecutionHostProcess,
 ): Promise<void> {
   const tracked = Array.from(cleanupProcesses.entries()).filter(
     ([, process]) => process.child === child,
@@ -130,8 +130,8 @@ async function terminateTrackedProcessGroups(
   }
 }
 
-function handleMessage(source: UtilityProcess, message: unknown): void {
-  // UtilityProcess emits the posted payload directly. Test doubles and some
+function handleMessage(source: ExecutionHostProcess, message: unknown): void {
+  // Execution hosts emit the posted payload directly. Test doubles and some
   // MessageEvent-shaped adapters wrap it in `{ data }`. Check the protocol
   // object first because an output response itself intentionally has a `data`
   // field; blindly unwrapping that field drops every live stdout/stderr event.
@@ -167,15 +167,14 @@ function handleMessage(source: UtilityProcess, message: unknown): void {
   }
 }
 
-function ensureWorker(): UtilityProcess {
+function ensureWorker(): ExecutionHostProcess {
   if (shuttingDown) throw new Error('Pipeline process host is shutting down.');
   if (worker) return worker;
 
-  const child = utilityProcess.fork(
-    path.join(__dirname, WORKER_ENTRY_FILENAME),
-    [],
-    { serviceName: WORKER_SERVICE_NAME },
-  );
+  const child = getExecutionHostPort().launch({
+    entry: WORKER_ENTRY_FILENAME,
+    serviceName: WORKER_SERVICE_NAME,
+  });
   worker = child;
   let resolveExit = (): void => undefined;
   const exitPromise = new Promise<void>((resolve) => {
@@ -206,7 +205,7 @@ function ensureWorker(): UtilityProcess {
   return child;
 }
 
-export function runPipelineProcessInUtilityProcess(
+export function runPipelineProcessInExecutionHost(
   processSpec: SpawnedProcessSpec,
   options: SpawnedProcessRunOptions,
   monitor?: ExecutionResourceMonitor,
@@ -223,7 +222,7 @@ export function runPipelineProcessInUtilityProcess(
   }
 
   return new Promise((resolve, reject) => {
-    let child: UtilityProcess;
+    let child: ExecutionHostProcess;
     try {
       child = ensureWorker();
     } catch (error) {

@@ -51,7 +51,10 @@ const mockFakeSession = {
 };
 const mockFromPartition = jest.fn();
 const mockAppOn = jest.fn<void, [event: string, listener: () => void]>();
-const mockAppRemoveListener = jest.fn();
+const mockAppRemoveListener = jest.fn<
+  void,
+  [event: string, listener: () => void]
+>();
 const mockRequestCanopyCloudJson = jest.fn<
   Promise<unknown>,
   [path: string, init: Record<string, unknown>]
@@ -175,9 +178,10 @@ class MockClientRequest extends EventEmitter {
 
 jest.mock('electron', () => ({
   app: {
-    on: (...args: unknown[]): unknown => mockAppOn(...args),
-    removeListener: (...args: unknown[]): unknown =>
-      mockAppRemoveListener(...args),
+    on: (event: string, listener: () => void): unknown =>
+      mockAppOn(event, listener),
+    removeListener: (event: string, listener: () => void): unknown =>
+      mockAppRemoveListener(event, listener),
   },
   session: {
     fromPartition: (...args: unknown[]): unknown => mockFromPartition(...args),
@@ -200,15 +204,18 @@ jest.mock('../canopy-cloud/client', () => {
   }
   return {
     CanopyCloudClientError,
-    requestCanopyCloudJson: (...args: unknown[]): unknown =>
-      mockRequestCanopyCloudJson(...args),
+    requestCanopyCloudJson: (
+      path: string,
+      init: Record<string, unknown>,
+    ): unknown => mockRequestCanopyCloudJson(path, init),
   };
 });
 jest.mock('../lib/canopy-cloud-account-store', () => ({
   getCanopyCloudCredentials: (): unknown => mockGetCanopyCloudCredentials(),
   peekCanopyCloudAccount: (): unknown => mockPeekCanopyCloudAccount(),
-  subscribeCanopyCloudAccountChanges: (...args: unknown[]): unknown =>
-    mockSubscribeAccountChanges(...args),
+  subscribeCanopyCloudAccountChanges: (
+    listener: (entry: unknown) => void,
+  ): unknown => mockSubscribeAccountChanges(listener),
   hasCanopyCloudIdentityChanged: (
     previous: { apiKey: string; account?: { id: string } } | null,
     next: { apiKey: string; account?: { id: string } },

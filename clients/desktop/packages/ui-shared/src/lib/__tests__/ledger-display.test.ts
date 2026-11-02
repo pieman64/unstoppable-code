@@ -150,7 +150,7 @@ describe('ledgerActorName', () => {
       ),
     ).toBe('Chat');
     expect(ledgerActorName({ ...CHAT, kind: 'pipeline_agent' }, {})).toBe(
-      'Pipeline agent',
+      'Workflow agent',
     );
   });
 });
@@ -353,7 +353,7 @@ describe('Ledger writing display', () => {
       },
     };
     expect(ledgerOwnerCandidateDescription(agent)).toBe(
-      `Pipeline run abcdef12, job review, step agent, paused ${formatLedgerTime('2026-09-30T10:42:00.000Z')}`,
+      `Workflow run abcdef12, job review, step agent, paused ${formatLedgerTime('2026-09-30T10:42:00.000Z')}`,
     );
     expect(ledgerOwnerCandidateTitle(agent).split('\n')).toEqual([
       'Review changes · Release checks',

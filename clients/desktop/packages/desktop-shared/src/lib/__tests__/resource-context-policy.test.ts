@@ -2,6 +2,7 @@ import type { ResourceOwner } from '@canopy/protocol/resource-owner';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
   decideResourceContext,
+  isInstallReceipt,
   validateDependencyGraph,
   type InstallReceipt,
   type ResourceDependency,
@@ -36,6 +37,29 @@ const receipt: InstallReceipt = {
   hash: 'hash',
   authorizedAt: '2026-09-23T00:00:00.000Z',
 };
+
+describe('receipt display metadata', () => {
+  it('accepts legacy receipts and optional display names, including blanks', () => {
+    expect(isInstallReceipt(receipt)).toBe(true);
+    expect(
+      isInstallReceipt({
+        ...receipt,
+        sharedByName: ' Lena ',
+        ownerName: 'Acme',
+        teamName: ' ',
+      }),
+    ).toBe(true);
+  });
+
+  it.each(['sharedByName', 'ownerName', 'teamName'])(
+    'rejects non-string %s without treating display metadata as authority',
+    (field) => {
+      for (const value of [null, 42, {}, []]) {
+        expect(isInstallReceipt({ ...receipt, [field]: value })).toBe(false);
+      }
+    },
+  );
+});
 
 describe('portable resource matrix', (): void => {
   const rows = [

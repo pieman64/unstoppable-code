@@ -1,6 +1,8 @@
+const mockCommitRemoval = jest.fn<Promise<void>, []>(() => Promise.resolve());
 const mockInstallIds = jest.fn<Promise<Set<string>>, [string]>(() =>
   Promise.resolve(new Set()),
 );
+let mockPrimaryInstallIds: Set<string> | undefined;
 const mockSkillContextEnabled = jest.fn(() => false);
 const mockAssertStored = jest.fn<Promise<void>, [string]>(() =>
   Promise.resolve(),
@@ -35,8 +37,15 @@ jest.mock('../skills/resource-lanes', () => ({
   assertSkillContextSnapshot: (): Promise<void> => mockAssertSnapshot(),
 }));
 jest.mock('../skills/skill-install-context', () => ({
-  getSharedSkillInstallIds: (id: string): Promise<Set<string>> =>
-    mockInstallIds(id),
+  prepareSkillUninstall: (): Promise<() => Promise<void>> =>
+    Promise.resolve(mockCommitRemoval),
+  getSharedSkillInstallIds: (
+    id: string,
+    primaryOnly = false,
+  ): Promise<Set<string>> =>
+    primaryOnly && mockPrimaryInstallIds
+      ? Promise.resolve(mockPrimaryInstallIds)
+      : mockInstallIds(id),
   assertStoredSkillContext: (id: string): Promise<void> => mockAssertStored(id),
   recordSharedSkillInstall: (
     detail: unknown,
@@ -76,10 +85,16 @@ jest.mock('node:fs/promises', () => {
     },
   };
 });
+import { CanopyCloudClientError } from '../canopy-cloud/client';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
+import type {
+  PublicShareSkillOrigin,
+  WriteRawSkillRequest,
+} from '@canopy/desktop-shared/types/skills';
 
 let tempDir = '';
 
@@ -147,6 +162,7 @@ import { readLockFile } from '../skills/lock-file';
 import {
   readRawSkill,
   removeSkill,
+  removeSkillForContext,
   writeRawSkill,
   writeRawSkillForContext,
   saveCustomSkill,
@@ -168,6 +184,7 @@ describe('shared skill raw-byte helpers', () => {
         jest.requireActual<typeof fsp>('node:fs/promises').rename,
       );
     mockInstallIds.mockReset().mockResolvedValue(new Set());
+    mockPrimaryInstallIds = undefined;
     mockGetPublicShare.mockReset();
     mockGetPublicCollection.mockReset();
     mockGetShared.mockReset();
@@ -298,15 +315,17 @@ describe('shared skill raw-byte helpers', () => {
       rawSkill: '# Trusted remote',
     };
     mockGetShared.mockResolvedValue(detail);
-    mockRecordInstall.mockImplementation((_detail, id): Promise<void> => {
-      expect(id).toBe('custom:app/helper');
-      expect(
-        fs.existsSync(
-          path.join(tempDir, 'skills', 'custom:app', 'helper', 'SKILL.md'),
-        ),
-      ).toBe(false);
-      return Promise.resolve();
-    });
+    mockRecordInstall.mockImplementation(
+      (_detail, id): Promise<(() => Promise<void>) | undefined> => {
+        expect(id).toBe('custom:app/helper');
+        expect(
+          fs.existsSync(
+            path.join(tempDir, 'skills', 'custom:app', 'helper', 'SKILL.md'),
+          ),
+        ).toBe(false);
+        return Promise.resolve(undefined);
+      },
+    );
     const result = await writeRawSkillForContext({
       skillName: 'forged',
       rawSkill: '# Forged',
@@ -352,7 +371,8 @@ describe('shared skill raw-byte helpers', () => {
       }
     },
   );
-  it('reuses the identical same-origin import after skipping a personal collision', async (): Promise<void> => {
+  it('reuses an identical receipted copy instead of requiring review', async (): Promise<void> => {
+    // Collection and App Advisor imports re-import installed members.
     mockSkillContextEnabled.mockReturnValue(true);
     const rawSkill = '# Identical';
     writeRawSkill({ skillName: 'helper', rawSkill });
@@ -369,10 +389,486 @@ describe('shared skill raw-byte helpers', () => {
       sourceRemoteId: 'remote-a',
     });
     expect(result.skillName).toBe('helper-2');
+    expect(
+      fs.existsSync(path.join(tempDir, 'skills', 'custom:app', 'helper-3')),
+    ).toBe(false);
     expect(mockRecordInstall).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'remote-a' }),
       'custom:app/helper-2',
     );
+  });
+
+  it('requires review when the identical receipted copy has an interrupted update', async (): Promise<void> => {
+    mockSkillContextEnabled.mockReturnValue(true);
+    const rawSkill = '# Identical';
+    writeRawSkill({ skillName: 'helper', rawSkill });
+    fs.writeFileSync(
+      path.join(
+        tempDir,
+        'skills',
+        'custom:app',
+        'helper',
+        '.canopy-shared-update.json',
+      ),
+      '{}',
+    );
+    mockInstallIds.mockResolvedValue(new Set(['custom:app/helper']));
+    mockGetShared.mockResolvedValue({
+      id: 'remote-a',
+      name: 'helper',
+      rawSkill,
+    });
+    await expect(
+      writeRawSkillForContext({
+        skillName: 'helper',
+        rawSkill,
+        sourceRemoteId: 'remote-a',
+      }),
+    ).rejects.toThrow('review-required');
+    expect(mockRecordInstall).not.toHaveBeenCalled();
+  });
+
+  function replacementInput(
+    local = '# Old',
+    source = '# New',
+  ): WriteRawSkillRequest & {
+    sourceRemoteId: string;
+    replaceInstalled: NonNullable<WriteRawSkillRequest['replaceInstalled']>;
+  } {
+    const hash = (value: string): string =>
+      createHash('sha256').update(value).digest('hex');
+    return {
+      skillName: 'ignored',
+      rawSkill: '# Untrusted',
+      sourceRemoteId: 'remote-a',
+      replaceInstalled: {
+        skillName: 'helper',
+        expectedLocalContentHash: hash(local),
+        expectedSourceContentHash: hash(source),
+      },
+    };
+  }
+
+  function seedReplacement(local = '# Old', source = '# New'): void {
+    writeRawSkill({ skillName: 'helper', rawSkill: local });
+    mockSkillContextEnabled.mockReturnValue(true);
+    mockInstallIds.mockResolvedValue(new Set(['custom:app/helper']));
+    mockGetShared.mockResolvedValue({
+      id: 'remote-a',
+      name: 'publisher-name',
+      rawSkill: source,
+    });
+  }
+
+  it('replaces a stale receipted alias in place using authorized bytes', async () => {
+    seedReplacement();
+    const result = await writeRawSkillForContext(replacementInput());
+    expect(result).toMatchObject({
+      skillId: 'custom:app/helper',
+      skillName: 'helper',
+    });
+    expect(await readRawSkill(result.skillId)).toBe('# New');
+    expect(
+      fs.existsSync(
+        path.join(tempDir, 'skills', 'custom:app', 'publisher-name'),
+      ),
+    ).toBe(false);
+    expect(mockRecordInstall).toHaveBeenCalledWith(
+      expect.objectContaining({ rawSkill: '# New' }),
+      'custom:app/helper',
+    );
+  });
+
+  it('rejects replacing a packaged dependency even though it shares the primary receipt', async () => {
+    seedReplacement();
+    const dependency = path.join(
+      tempDir,
+      'skills',
+      'custom:app',
+      'a-dependency',
+    );
+    fs.mkdirSync(dependency, { recursive: true });
+    fs.writeFileSync(path.join(dependency, 'SKILL.md'), '# Dependency');
+    mockInstallIds.mockResolvedValue(
+      new Set(['custom:app/helper', 'custom:app/a-dependency']),
+    );
+    mockPrimaryInstallIds = new Set(['custom:app/helper']);
+    const input = replacementInput('# Dependency');
+    input.replaceInstalled.skillName = 'a-dependency';
+    await expect(writeRawSkillForContext(input)).rejects.toThrow(
+      'review-required',
+    );
+    expect(await readRawSkill('custom:app/a-dependency')).toBe('# Dependency');
+    expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+  });
+
+  it('records intentional removal through the production uninstall boundary', async () => {
+    seedReplacement();
+    await expect(
+      removeSkillForContext('custom:app', 'helper'),
+    ).resolves.toMatchObject({ success: true });
+    expect(mockCommitRemoval).toHaveBeenCalledTimes(1);
+    expect(
+      fs.existsSync(path.join(tempDir, 'skills', 'custom:app', 'helper')),
+    ).toBe(false);
+  });
+
+  it('rejects stale ordinary Install without allocating a second alias', async () => {
+    seedReplacement();
+    await expect(
+      writeRawSkillForContext({
+        skillName: 'helper',
+        rawSkill: '# New',
+        sourceRemoteId: 'remote-a',
+      }),
+    ).rejects.toThrow('review-required');
+    expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+    expect(mockRecordInstall).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'local',
+    'source',
+    'package',
+    'missing',
+    'unreceipted',
+    'context',
+    'revoked',
+    'deleted',
+  ])(
+    'rejects %s conflicts without changing the installed file',
+    async (failure) => {
+      seedReplacement();
+      const input = replacementInput();
+      if (failure === 'local')
+        input.replaceInstalled.expectedLocalContentHash = 'a'.repeat(64);
+      if (failure === 'source')
+        input.replaceInstalled.expectedSourceContentHash = 'b'.repeat(64);
+      if (failure === 'package')
+        mockGetShared.mockResolvedValue({
+          id: 'remote-a',
+          name: 'helper',
+          rawSkill: '# New',
+          package: { digest: 'sha256:' + 'c'.repeat(64) },
+        });
+      if (failure === 'missing')
+        fs.rmSync(
+          path.join(tempDir, 'skills', 'custom:app', 'helper', 'SKILL.md'),
+        );
+      if (failure === 'unreceipted')
+        mockInstallIds.mockResolvedValue(new Set());
+      if (failure === 'context')
+        mockAssertSnapshot.mockRejectedValue(new Error('context-mismatch'));
+      if (failure === 'revoked' || failure === 'deleted')
+        mockGetShared.mockRejectedValue(new Error('access-removed'));
+      await expect(writeRawSkillForContext(input)).rejects.toThrow();
+      if (failure !== 'missing')
+        expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+    },
+  );
+
+  it.each(['disabled', 'public', 'source-free', 'empty-hash', 'unsafe-name'])(
+    'fails closed for %s replacement',
+    async (failure) => {
+      seedReplacement();
+      const input: ReturnType<typeof replacementInput> & {
+        publicShare?: PublicShareSkillOrigin;
+      } = replacementInput();
+      if (failure === 'disabled')
+        mockSkillContextEnabled.mockReturnValue(false);
+      if (failure === 'public')
+        input.publicShare = {
+          externalId: PUBLIC_SHARE_ID,
+          contentHash: 'hash',
+        };
+      if (failure === 'source-free') input.sourceRemoteId = '';
+      if (failure === 'empty-hash')
+        input.replaceInstalled.expectedLocalContentHash = '';
+      if (failure === 'unsafe-name')
+        input.replaceInstalled.skillName = '../escape';
+      await expect(writeRawSkillForContext(input)).rejects.toThrow();
+      expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+    },
+  );
+
+  it('serializes concurrent first installs so only one can allocate an alias', async () => {
+    mockSkillContextEnabled.mockReturnValue(true);
+    const aliases = new Set<string>();
+    mockInstallIds.mockImplementation(() => Promise.resolve(new Set(aliases)));
+    mockGetShared.mockResolvedValue({
+      id: 'remote-a',
+      name: 'helper',
+      rawSkill: '# New',
+    });
+    mockRecordInstall.mockImplementation((_detail, id) => {
+      aliases.add(id);
+      return Promise.resolve(mockRollbackInstall);
+    });
+    const input = {
+      skillName: 'helper',
+      rawSkill: '# New',
+      sourceRemoteId: 'remote-a',
+    };
+    const results = await Promise.all([
+      writeRawSkillForContext(input),
+      writeRawSkillForContext(input),
+    ]);
+    // The second import reuses the first's identical receipted copy.
+    expect(results.map((result) => result.skillName)).toEqual([
+      'helper',
+      'helper',
+    ]);
+    expect(aliases).toEqual(new Set(['custom:app/helper']));
+    expect(
+      fs.existsSync(path.join(tempDir, 'skills', 'custom:app', 'helper-2')),
+    ).toBe(false);
+  });
+
+  it('allows only the first concurrent replacement with the reviewed local hash', async () => {
+    seedReplacement();
+    const results = await Promise.allSettled([
+      writeRawSkillForContext(replacementInput()),
+      writeRawSkillForContext(replacementInput()),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expect(await readRawSkill('custom:app/helper')).toBe('# New');
+    expect(mockRecordInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects uninstall during replacement and rechecks edits made during the source read', async () => {
+    seedReplacement();
+    mockGetShared.mockImplementation(() => {
+      const removal = removeSkill('custom:app', 'helper');
+      expect(removal.success).toBe(false);
+      expect(removal.error).toContain('local-conflict');
+      fs.writeFileSync(
+        path.join(tempDir, 'skills', 'custom:app', 'helper', 'SKILL.md'),
+        '# External edit',
+      );
+      return Promise.resolve({
+        id: 'remote-a',
+        name: 'helper',
+        rawSkill: '# New',
+      });
+    });
+    await expect(writeRawSkillForContext(replacementInput())).rejects.toThrow(
+      'local-conflict',
+    );
+    expect(await readRawSkill('custom:app/helper')).toBe('# External edit');
+  });
+
+  it('serializes custom edits after replacement without losing the edit', async () => {
+    seedReplacement();
+    let editing: ReturnType<typeof saveCustomSkill> | undefined;
+    mockGetShared.mockImplementationOnce(() => {
+      editing = saveCustomSkill({
+        name: 'helper',
+        originalName: 'helper',
+        description: 'Edited',
+        body: '# My edit',
+      });
+      return Promise.resolve({
+        id: 'remote-a',
+        name: 'helper',
+        rawSkill: '# New',
+      });
+    });
+    const update = await writeRawSkillForContext(replacementInput());
+    const edit = await editing;
+    expect(update.skillName).toBe('helper');
+    expect(edit?.success).toBe(true);
+    expect(await readRawSkill('custom:app/helper')).toContain('# My edit');
+  });
+
+  it.each(['source', 'package', 'receipt'])(
+    'revalidates %s after asynchronous staging',
+    async (failure) => {
+      seedReplacement();
+      mockGetShared
+        .mockResolvedValueOnce({
+          id: 'remote-a',
+          name: 'helper',
+          rawSkill: '# New',
+        })
+        .mockResolvedValue({
+          id: 'remote-a',
+          name: 'helper',
+          rawSkill: failure === 'source' ? '# Unreviewed' : '# New',
+          ...(failure === 'package'
+            ? { package: { digest: 'pp:v1:' + 'B'.repeat(43) } }
+            : {}),
+        });
+      if (failure === 'receipt')
+        mockInstallIds
+          .mockResolvedValueOnce(new Set(['custom:app/helper']))
+          .mockResolvedValue(new Set());
+      await expect(
+        writeRawSkillForContext(replacementInput()),
+      ).rejects.toThrow();
+      expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+      expect(mockRecordInstall).not.toHaveBeenCalled();
+    },
+  );
+
+  it('checks the reviewed source again after asynchronous target authorization', async () => {
+    seedReplacement();
+    mockAssertStored.mockImplementationOnce(() => {
+      mockGetShared.mockResolvedValue({
+        id: 'remote-a',
+        name: 'helper',
+        rawSkill: '# Unreviewed revision',
+      });
+      return Promise.resolve();
+    });
+    await expect(writeRawSkillForContext(replacementInput())).rejects.toThrow(
+      'source-conflict',
+    );
+    expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+  });
+
+  it.each(['file', 'directory'])(
+    'refuses a symlink at the replacement %s',
+    async (kind) => {
+      seedReplacement();
+      const directory = path.join(tempDir, 'skills', 'custom:app', 'helper');
+      const outside = path.join(tempDir, 'outside');
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, 'SKILL.md'), '# Outside');
+      if (kind === 'file') {
+        fs.rmSync(path.join(directory, 'SKILL.md'));
+        fs.symlinkSync(
+          path.join(outside, 'SKILL.md'),
+          path.join(directory, 'SKILL.md'),
+        );
+      } else {
+        fs.rmSync(directory, { recursive: true });
+        fs.symlinkSync(outside, directory, 'dir');
+      }
+      await expect(writeRawSkillForContext(replacementInput())).rejects.toThrow(
+        'invalid-replacement',
+      );
+      expect(fs.readFileSync(path.join(outside, 'SKILL.md'), 'utf8')).toBe(
+        '# Outside',
+      );
+    },
+  );
+
+  it.each(['rename', 'receipt', 'context-after-receipt'])(
+    'compensates %s failure and cleans staged files',
+    async (failure) => {
+      seedReplacement();
+      if (failure === 'rename') {
+        const realFs = jest.requireActual<typeof fs>('fs');
+        const rename = realFs.renameSync;
+        jest
+          .spyOn(realFs, 'renameSync')
+          .mockImplementation((source, destination) => {
+            if (String(destination).endsWith('SKILL.md'))
+              throw new Error('rename failed');
+            rename(source, destination);
+          });
+      }
+      if (failure === 'receipt')
+        mockRecordInstall.mockRejectedValueOnce(new Error('receipt failed'));
+      if (failure === 'context-after-receipt')
+        mockAssertSnapshot
+          .mockResolvedValueOnce(undefined)
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('context-mismatch'));
+      await expect(
+        writeRawSkillForContext(replacementInput()),
+      ).rejects.toThrow();
+      expect(await readRawSkill('custom:app/helper')).toBe('# Old');
+      expect(
+        fs.readdirSync(path.join(tempDir, 'skills', 'custom:app', 'helper')),
+      ).toEqual(['SKILL.md']);
+      if (failure === 'context-after-receipt')
+        expect(mockRollbackInstall).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps recovery evidence if compensating the receipt fails', async () => {
+    seedReplacement();
+    mockAssertSnapshot
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('context-mismatch'));
+    mockRollbackInstall.mockRejectedValueOnce(
+      new Error('rollback unavailable'),
+    );
+    await expect(writeRawSkillForContext(replacementInput())).rejects.toThrow(
+      'recovery-required',
+    );
+    expect(
+      fs.existsSync(
+        path.join(
+          tempDir,
+          'skills',
+          'custom:app',
+          'helper',
+          '.canopy-shared-update.json',
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it.each(['# Old', '# New'])(
+    'reconciles an interrupted replacement after a fresh review of %s',
+    async (local) => {
+      seedReplacement(local);
+      const directory = path.join(tempDir, 'skills', 'custom:app', 'helper');
+      fs.writeFileSync(
+        path.join(directory, '.canopy-shared-update.json'),
+        JSON.stringify({
+          version: 1,
+          remoteId: 'remote-a',
+          previousHash:
+            replacementInput().replaceInstalled.expectedLocalContentHash,
+          nextHash:
+            replacementInput().replaceInstalled.expectedSourceContentHash,
+        }),
+      );
+      fs.writeFileSync(
+        path.join(directory, '.canopy-shared-update-stage'),
+        '# Interrupted stage',
+      );
+      const result = await writeRawSkillForContext(replacementInput(local));
+      expect(await readRawSkill(result.skillId)).toBe('# New');
+      expect(mockRecordInstall).toHaveBeenCalledTimes(1);
+      expect(fs.readdirSync(directory)).toEqual(['SKILL.md']);
+    },
+  );
+
+  it('preserves permissions and sibling aliases and reports a post-commit subscription failure', async () => {
+    seedReplacement();
+    const directory = path.join(tempDir, 'skills', 'custom:app', 'helper');
+    fs.chmodSync(path.join(directory, 'SKILL.md'), 0o640);
+    const sibling = path.join(tempDir, 'skills', 'custom:app', 'helper-2');
+    fs.mkdirSync(sibling);
+    fs.writeFileSync(path.join(sibling, 'SKILL.md'), '# Sibling');
+    mockInstallIds.mockResolvedValue(
+      new Set(['custom:app/helper', 'custom:app/helper-2']),
+    );
+    mockRecordItemInstall.mockImplementationOnce(() => {
+      throw new Error('ledger unavailable');
+    });
+    const result = await writeRawSkillForContext(replacementInput());
+    expect(result.subscriptionWarning).toBe('subscription-update-failed');
+    expect(await readRawSkill(result.skillId)).toBe('# New');
+    expect(await readRawSkill('custom:app/helper-2')).toBe('# Sibling');
+    expect(fs.statSync(path.join(directory, 'SKILL.md')).mode & 0o777).toBe(
+      0o640,
+    );
+    await expect(
+      writeRawSkillForContext({
+        ...replacementInput('# New'),
+        inCollection: true,
+      }),
+    ).resolves.toEqual({ skillId: 'custom:app/helper', skillName: 'helper' });
+    expect(mockRecordItemInstall).toHaveBeenCalledTimes(1);
   });
   it('does not write an import if recording its origin fails', async () => {
     mockSkillContextEnabled.mockReturnValue(true);
@@ -460,7 +956,9 @@ describe('shared skill raw-byte helpers', () => {
         rawSkill: '# Remote',
       });
       if (failure === 'snapshot') {
-        mockAssertSnapshot.mockRejectedValueOnce(new Error('Context changed'));
+        mockAssertSnapshot
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('Context changed'));
       } else {
         // A file at the destination directory makes the real filesystem write fail.
         const sourceDir = path.join(tempDir, 'skills', 'custom:app');
@@ -533,6 +1031,29 @@ describe('shared skill raw-byte helpers', () => {
     expect(mockGetShared).not.toHaveBeenCalled();
     expect(mockRecordInstall).not.toHaveBeenCalled();
   });
+  it.each([
+    new CanopyCloudClientError('missing-api-key', 'Sign in to continue.'),
+    new CanopyCloudClientError('http-error', 'Session expired.', 401),
+    new CanopyCloudClientError('http-error', 'Access denied.', 403),
+    new CanopyCloudClientError('network-error', 'Connection unavailable.'),
+  ])(
+    'preserves a scoped read failure during public skill installation: %s',
+    async (error) => {
+      mockSkillContextEnabled.mockReturnValue(true);
+      mockGetPublicShare.mockRejectedValue(error);
+      await expect(
+        writeRawSkillForContext({
+          skillName: 'helper',
+          rawSkill: '# Reviewed',
+          publicShare: { externalId: PUBLIC_SHARE_ID, contentHash: 'hash-a' },
+        }),
+      ).rejects.toBe(error);
+      expect(fs.existsSync(path.join(tempDir, 'skills'))).toBe(false);
+      expect(mockRecordInstall).not.toHaveBeenCalled();
+      expect(mockRecordItemInstall).not.toHaveBeenCalled();
+    },
+  );
+
   it('rejects a public share import whose content changed since it was reviewed', async (): Promise<void> => {
     mockSkillContextEnabled.mockReturnValue(true);
     mockGetPublicShare.mockResolvedValue({
@@ -660,11 +1181,23 @@ describe('shared skill raw-byte helpers', () => {
       { externalId: 42, contentHash: 'hash-a' },
       { externalId: PUBLIC_SHARE_ID },
     ]) {
+      const publicShare: { externalId: string; contentHash: string } = {
+        externalId:
+          typeof origin.externalId === 'string' ? origin.externalId : '',
+        contentHash: origin.contentHash ?? 'hash-a',
+      };
+      // Restore the exact malformed fields under test at this typed boundary.
+      if (typeof origin.externalId !== 'string') {
+        Reflect.set(publicShare, 'externalId', origin.externalId);
+      }
+      if (origin.contentHash === undefined) {
+        Reflect.deleteProperty(publicShare, 'contentHash');
+      }
       await expect(
         writeRawSkillForContext({
           skillName: 'helper',
           rawSkill: '# Reviewed',
-          publicShare: origin as { externalId: string; contentHash: string },
+          publicShare,
         }),
       ).rejects.toThrow('share id');
     }
@@ -843,7 +1376,9 @@ describe('shared skill raw-byte helpers', () => {
       dependencies: [],
     });
     mockAssertStored.mockImplementationOnce((): Promise<void> => {
-      writeRawSkill({ skillName: 'helper', rawSkill: '# Someone else' });
+      const directory = path.join(tempDir, 'skills', 'custom:app', 'helper');
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, 'SKILL.md'), '# Someone else');
       return Promise.resolve();
     });
     const result = await writeRawSkillForContext({

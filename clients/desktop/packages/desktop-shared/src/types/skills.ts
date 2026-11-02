@@ -28,6 +28,16 @@ export interface DesktopPublisherSkill extends PublisherSkillSummary {
   installedPackageDigest?: string;
 }
 
+/** Authorized source plus receipt identity, independent of readable inventory rows. */
+export interface DesktopSharedSkillDetail extends SharedSkillDetail {
+  /**
+   * Present under scoped enforcement. Empty means a successful lookup found
+   * no receipt; nonempty IDs may name missing files and require recovery.
+   * Missing means receipt-aware detection is unsupported on this receiver.
+   */
+  installedCopyIds?: string[];
+}
+
 // Re-export the shared-skill wire shapes so renderer modules can import them
 // from `@canopy/desktop-shared/types/skills` rather than reaching directly
 // into the protocol package.
@@ -269,6 +279,33 @@ export interface WriteRawSkillRequest {
    * so the skill registers none of its own.
    */
   inCollection?: boolean;
+  /** Explicit, reviewed replacement of one scoped, receipted custom copy. */
+  replaceInstalled?: {
+    skillName: string;
+    /** Required SHA-256 of the exact local bytes reviewed, including local edits. */
+    expectedLocalContentHash: string;
+    /** Required SHA-256 of the authorized source bytes reviewed. */
+    expectedSourceContentHash: string;
+    /** Exact reviewed package digest. Omission means the source has NO package. */
+    expectedSourcePackageDigest?: string;
+  };
+}
+
+/** Stable reasons carried in rejected IPC error messages as `(reason)`. */
+export type SkillWriteFailureCode =
+  | 'replacement-unsupported'
+  | 'invalid-replacement'
+  | 'review-required'
+  | 'missing-copy'
+  | 'local-conflict'
+  | 'source-conflict'
+  | 'recovery-required';
+
+export interface WriteRawSkillResult {
+  skillId: string;
+  skillName: string;
+  /** Bytes and receipt committed; retry subscription bookkeeping without reinstalling. */
+  subscriptionWarning?: 'subscription-update-failed';
 }
 
 export interface RecordSkillShareOriginRequest {
@@ -321,14 +358,15 @@ export interface SkillsAPI {
   // backend's naming rules) and returns the resulting local id/name. It is
   // the canonical persistence path for shared-skill import; it must not
   // re-serialize or alter the content.
+  // Under scoped enforcement main reloads authorized source bytes. Existing
+  // receipts require explicit `replaceInstalled` review; replacement never
+  // allocates another name. Protocol 8 gates this destructive request remotely.
   //
   // Raw reads support built-ins, `custom:app`, and lock-backed local-filesystem
   // installs. Writes remain confined to `custom:app`.
   // -------------------------------------------------------------------------
   readRawSkill(skillId: string): Promise<string>;
-  writeRawSkill(
-    input: WriteRawSkillRequest,
-  ): Promise<{ skillId: string; skillName: string }>;
+  writeRawSkill(input: WriteRawSkillRequest): Promise<WriteRawSkillResult>;
 
   // -------------------------------------------------------------------------
   // Shared (Canopy Cloud) skill CRUD.
@@ -341,7 +379,7 @@ export interface SkillsAPI {
   listShared(
     request: ListSharedSkillsRequest,
   ): Promise<ListSharedSkillsResponse>;
-  getShared(skillId: string): Promise<SharedSkillDetail>;
+  getShared(skillId: string): Promise<DesktopSharedSkillDetail>;
   createShared(
     request: CreateSharedSkillRequest,
   ): Promise<ShareOperationResult<SharedSkillDetail>>;
@@ -398,6 +436,8 @@ export interface InstallSkillCapabilityPackageRequest {
 }
 
 export interface InstallSkillCapabilityPackageResult {
+  /** False when different recipient supporting files were kept; retry remains available. */
+  supportingFilesComplete?: boolean;
   /** Supporting files copied beside the imported skill's SKILL.md. */
   supportingFileCount: number;
   /**

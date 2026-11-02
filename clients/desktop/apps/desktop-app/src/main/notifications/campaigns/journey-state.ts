@@ -4,7 +4,6 @@ import {
   ACTIVATION_CAMPAIGN_IDS,
   ACTIVATION_SIGNAL_NAMES,
   CAMPAIGN_SUPPRESSION_REASONS,
-  ONBOARDING_CHECKLIST_ITEM_IDS,
 } from '@canopy/desktop-shared/types';
 import type {
   ActivationCampaignId,
@@ -13,8 +12,7 @@ import type {
   ActivationJourneyPersistedState,
   ActivationSignalName,
   CampaignSuppressionReason,
-  GettingStartedSequenceRecord,
-  OnboardingChecklistItemId,
+  LegacyPromotionalSendHistory,
 } from '@canopy/desktop-shared/types';
 import { getActivationJourneyFilePath } from '../../lib/paths';
 
@@ -32,6 +30,12 @@ import { getActivationJourneyFilePath } from '../../lib/paths';
  * tests) fully control time.
  */
 const ACTIVATION_JOURNEY_FILE_VERSION = 1;
+const LEGACY_SEND_IDS = [
+  'start-chat',
+  'connect-accounts',
+  'add-capability',
+  'create-account',
+] as const;
 
 interface ActivationJourneyFile extends ActivationJourneyPersistedState {
   version: number;
@@ -70,26 +74,11 @@ function cloneState(
     holdout: state.holdout,
     campaigns,
     signals: { ...state.signals },
-    gettingStarted: cloneSequenceRecord(state.gettingStarted),
+    gettingStarted: normalizeLegacySendHistory(state.gettingStarted),
+    ...(state.legacyChecklistMigrationVersion === 1
+      ? { legacyChecklistMigrationVersion: 1 }
+      : {}),
   };
-}
-
-function cloneSequenceRecord(
-  record: GettingStartedSequenceRecord | undefined,
-): GettingStartedSequenceRecord {
-  const steps: GettingStartedSequenceRecord['steps'] = {};
-  for (const itemId of ONBOARDING_CHECKLIST_ITEM_IDS) {
-    const step = record?.steps[itemId];
-    if (step !== undefined) steps[itemId] = { ...step };
-  }
-  const clone: GettingStartedSequenceRecord = { steps };
-  if (record?.suppressedAt !== undefined) {
-    clone.suppressedAt = record.suppressedAt;
-  }
-  if (record?.suppressedReason !== undefined) {
-    clone.suppressedReason = record.suppressedReason;
-  }
-  return clone;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -135,27 +124,18 @@ function normalizeCampaignRecord(value: unknown): ActivationCampaignRecord {
   return record;
 }
 
-/**
- * Steps are read by iterating the canonical ids rather than the file's keys,
- * so a step id a previous build wrote and this build's checklist has since
- * dropped is discarded instead of lingering as an unreachable latch.
- */
-function normalizeSequenceRecord(value: unknown): GettingStartedSequenceRecord {
-  const record: GettingStartedSequenceRecord = { steps: {} };
-  if (!isRecord(value)) return record;
-  if (isRecord(value.steps)) {
-    for (const itemId of ONBOARDING_CHECKLIST_ITEM_IDS) {
-      if (itemId in value.steps) {
-        record.steps[itemId] = normalizeCampaignRecord(value.steps[itemId]);
-      }
-    }
-  }
-  if (
-    typeof value.suppressedAt === 'string' &&
-    isSuppressionReason(value.suppressedReason)
-  ) {
-    record.suppressedAt = value.suppressedAt;
-    record.suppressedReason = value.suppressedReason;
+/** Drop all sequence machinery; only valid historic sends affect the daily cap. */
+function normalizeLegacySendHistory(
+  value: unknown,
+): LegacyPromotionalSendHistory {
+  const record: LegacyPromotionalSendHistory = { steps: {} };
+  if (!isRecord(value) || !isRecord(value.steps)) return record;
+  for (const id of LEGACY_SEND_IDS) {
+    const step = value.steps[id];
+    if (!isRecord(step) || typeof step.sentAt !== 'string') continue;
+    const timestamp = Date.parse(step.sentAt);
+    if (Number.isFinite(timestamp))
+      record.steps[id] = { sentAt: new Date(timestamp).toISOString() };
   }
   return record;
 }
@@ -188,7 +168,9 @@ function normalizeState(value: unknown): ActivationJourneyPersistedState {
       }
     }
   }
-  state.gettingStarted = normalizeSequenceRecord(value.gettingStarted);
+  state.gettingStarted = normalizeLegacySendHistory(value.gettingStarted);
+  if (value.legacyChecklistMigrationVersion === 1)
+    state.legacyChecklistMigrationVersion = 1;
   return state;
 }
 
@@ -420,100 +402,6 @@ export function unlatchCampaignDeliveryFailure(
 }
 
 /**
- * Getting Started sequence latches (CAN-3013). They mirror the campaign
- * latches above one-for-one -- same terminal-send rule, same dedupe on an
- * unchanged reason, same guarded unlatch -- keyed by checklist item instead
- * of campaign id.
- */
-function mutateSequenceStep(
-  itemId: OnboardingChecklistItemId,
-  mutate: (
-    record: ActivationCampaignRecord | undefined,
-  ) => ActivationCampaignRecord | null,
-): Promise<ActivationJourneyMutationResult> {
-  return mutateState((state) => {
-    const sequence = state.gettingStarted ?? { steps: {} };
-    const next = mutate(sequence.steps[itemId]);
-    if (next === null) return false;
-    sequence.steps[itemId] = next;
-    state.gettingStarted = sequence;
-    return true;
-  });
-}
-
-export function latchSequenceStepSent(
-  itemId: OnboardingChecklistItemId,
-  now: string,
-): Promise<ActivationJourneyMutationResult> {
-  return mutateState((state) => {
-    const sequence = state.gettingStarted ?? { steps: {} };
-    if (sequence.steps[itemId]?.sentAt !== undefined) return false;
-    sequence.steps[itemId] = { ...sequence.steps[itemId], sentAt: now };
-    // A send ends whatever was blocking the sequence. Clearing the record
-    // lets tomorrow's identical block (focused again, quiet hours again)
-    // count in the funnel instead of being deduped against today's.
-    delete sequence.suppressedAt;
-    delete sequence.suppressedReason;
-    state.gettingStarted = sequence;
-    return true;
-  });
-}
-
-export function latchSequenceStepSuppressed(
-  itemId: OnboardingChecklistItemId,
-  reason: CampaignSuppressionReason,
-  now: string,
-): Promise<ActivationJourneyMutationResult> {
-  return mutateSequenceStep(itemId, (record) => {
-    if (record?.sentAt !== undefined) return null;
-    if (record?.suppressedReason === reason) return null;
-    return { ...record, suppressedAt: now, suppressedReason: reason };
-  });
-}
-
-export function latchSequenceStepClicked(
-  itemId: OnboardingChecklistItemId,
-  now: string,
-): Promise<ActivationJourneyMutationResult> {
-  return mutateSequenceStep(itemId, (record) => {
-    if (record?.clickedAt !== undefined) return null;
-    return { ...record, clickedAt: now };
-  });
-}
-
-export function unlatchSequenceStepDeliveryFailure(
-  itemId: OnboardingChecklistItemId,
-  now: string,
-): Promise<ActivationJourneyMutationResult> {
-  return mutateSequenceStep(itemId, (record) => {
-    if (record?.sentAt === undefined) return null;
-    return {
-      ...record,
-      sentAt: undefined,
-      suppressedAt: now,
-      suppressedReason: 'delivery-failed',
-    };
-  });
-}
-
-/**
- * Forget a sequence-level block once the sequence is no longer blocked --
- * it sent, it is merely waiting, or it finished. Without this a restore that
- * does not immediately send (the daily cap still in force, say) leaves the
- * stale `checklist-dismissed` reason behind, and the next dismissal dedupes
- * against it and emits no funnel event.
- */
-export function clearSequenceSuppressed(): Promise<ActivationJourneyMutationResult> {
-  return mutateState((state) => {
-    const sequence = state.gettingStarted;
-    if (sequence?.suppressedReason === undefined) return false;
-    delete sequence.suppressedAt;
-    delete sequence.suppressedReason;
-    return true;
-  });
-}
-
-/**
  * Release `delivery-failed` holds that are at least `minAgeMs` old so the
  * next evaluation retries them. Called only from the event-driven recompute
  * path: a denied OS does not change on a timer, so the scheduler's own
@@ -550,24 +438,22 @@ export function releaseDeliveryFailures(
       changed = true;
     };
     for (const record of Object.values(state.campaigns)) release(record);
-    for (const record of Object.values(state.gettingStarted?.steps ?? {})) {
-      release(record);
-    }
     return changed;
   });
 }
 
-/** A gate that failed before any step was chosen; dedupes funnel events. */
-export function latchSequenceSuppressed(
-  reason: CampaignSuppressionReason,
-  now: string,
+/** Merge legacy signals and the processing marker in the existing atomic snapshot. */
+export function mergeLegacyChecklistSignals(
+  signals: Partial<Record<ActivationSignalName, string>>,
 ): Promise<ActivationJourneyMutationResult> {
   return mutateState((state) => {
-    const sequence = state.gettingStarted ?? { steps: {} };
-    if (sequence.suppressedReason === reason) return false;
-    sequence.suppressedAt = now;
-    sequence.suppressedReason = reason;
-    state.gettingStarted = sequence;
+    if (state.legacyChecklistMigrationVersion === 1) return false;
+    for (const name of ACTIVATION_SIGNAL_NAMES) {
+      const timestamp = signals[name];
+      if (state.signals[name] === undefined && timestamp !== undefined)
+        state.signals[name] = timestamp;
+    }
+    state.legacyChecklistMigrationVersion = 1;
     return true;
   });
 }

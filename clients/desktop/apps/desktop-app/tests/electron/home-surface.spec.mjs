@@ -1,3 +1,9 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
+import {
+  seedLegacySetupChat,
+  LEGACY_SETUP_PROMPT,
+  LEGACY_SETUP_REPLY,
+} from './seeders/legacySetupAnnotation.mjs';
 import { selectModelOption } from './model-selection-fixture.mjs';
 import { execFileSync } from 'node:child_process';
 import {
@@ -31,6 +37,7 @@ import {
   DEFAULT_MOCK_BASE_URL,
   registerScenario,
   seedWorktreeChat,
+  injectChatEvent,
   writeJson,
 } from './seeders/index.mjs';
 import { INVOCABLE_INVENTORY_CACHE_VERSION } from './seeders/invocableInventoryCache.mjs';
@@ -468,6 +475,7 @@ test.describe('Home surface', () => {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell();
+      await connectMockCloudAccount(window, 'csk_home_surface_attachments_e2e');
 
       await window.getByTestId('sidebar-create-task').click();
       const homePage = window.getByTestId('page-home');
@@ -937,10 +945,15 @@ test.describe('Home surface', () => {
         'home-pipeline-mode-button',
       );
       const pipelineMenu = await openHomeComposerPlusMenu(window, homePage);
-      await expect(
-        pipelineMenu.getByTestId('home-pipeline-mode-button'),
-      ).toHaveAttribute('aria-pressed', 'true');
+      const workflowRow = pipelineMenu.getByTestId('home-pipeline-mode-button');
+      await expect(workflowRow).toHaveAttribute('aria-pressed', 'true');
+      // CAN-4651: the + menu row and the lit + read Workflow, not Pipeline.
+      await expect(workflowRow).toContainText('Workflow');
+      await expect(workflowRow).not.toContainText('Pipeline');
       await window.keyboard.press('Escape');
+      await expect(
+        homePage.getByTestId('home-composer-plus-button'),
+      ).toHaveAttribute('aria-label', 'More actions, Workflow mode active');
 
       // The chat-only controls cluster fully unmounts in pipeline mode (it is
       // not merely disabled) — `HomeComposerControls` only renders
@@ -977,7 +990,7 @@ test.describe('Home surface', () => {
       // sending immediately.
       await expect(window.getByTestId('pipeline-trigger-modal')).toBeVisible();
       await expect(
-        window.getByRole('heading', { name: 'Run task pipeline' }),
+        window.getByRole('heading', { name: 'Run task workflow' }),
       ).toBeVisible();
     } finally {
       await closeCanopy(electronApp, userDataDir);
@@ -986,7 +999,7 @@ test.describe('Home surface', () => {
 
   for (const workspaceKind of ['code', 'cowork']) {
     for (const draftText of ['', '   ']) {
-      test(`blank Chat submission creates an empty ${workspaceKind} work area (${JSON.stringify(draftText)})`, async () => {
+      test(`${workspaceKind === 'code' && draftText ? 'attachment-only Chat submission echoes into its' : 'blank Chat submission creates an empty'} ${workspaceKind} work area (${JSON.stringify(draftText)})`, async () => {
         test.setTimeout(120_000);
         const userDataDir = mkdtempSync(
           path.join(os.tmpdir(), 'canopy-home-empty-'),
@@ -1002,14 +1015,19 @@ test.describe('Home surface', () => {
           const window = await electronApp.firstWindow();
           const app = new CanopyAppDriver(window);
           await app.waitForShell({ timeout: 30_000 });
+          await connectMockCloudAccount(
+            window,
+            'csk_home_surface_attachments_e2e',
+          );
           if (workspaceKind === 'code')
             await delayHomeChatHydration(electronApp);
           await electronApp.evaluate(({ ipcMain }) => {
             globalThis.__blankHomeSendCount = 0;
             ipcMain.removeHandler('chat:send-message');
-            ipcMain.handle('chat:send-message', () => {
+            ipcMain.handle('chat:send-message', (_event, request) => {
               globalThis.__blankHomeSendCount += 1;
-              throw new Error('Blank Home submission must not send a message');
+              globalThis.__blankHomeSendRequest = request;
+              return {};
             });
           });
           await window.getByTestId('sidebar-create-task').click();
@@ -1138,9 +1156,28 @@ test.describe('Home surface', () => {
                 .getByTestId('panel-content-chat'),
             ).toHaveCount(0);
           }
-          expect(
-            await electronApp.evaluate(() => globalThis.__blankHomeSendCount),
-          ).toBe(0);
+          if (workspaceKind === 'code' && draftText) {
+            await expect(
+              draftPanel.getByTestId('turn-starting-status'),
+            ).toHaveCount(1);
+            await expect(
+              draftPanel.getByTestId('chat-onboarding-checklist-host'),
+            ).toHaveCount(0);
+            await expect
+              .poll(() =>
+                electronApp.evaluate(() => globalThis.__blankHomeSendCount),
+              )
+              .toBe(1);
+            const request = await electronApp.evaluate(
+              () => globalThis.__blankHomeSendRequest,
+            );
+            expect(request.userMessageId).toMatch(/\S/);
+            expect(request.attachmentPaths).toHaveLength(1);
+          } else {
+            expect(
+              await electronApp.evaluate(() => globalThis.__blankHomeSendCount),
+            ).toBe(0);
+          }
         } finally {
           await closeCanopy(electronApp, userDataDir);
         }
@@ -1396,8 +1433,8 @@ test.describe('Home surface', () => {
       const rows = window.getByTestId('worktree-row');
       await expect(rows).toHaveCount(1, { timeout: 60_000 });
 
-      // The user's message shows in the transcript (queued beneath the
-      // `pending_setup_info` block while git-pending, or processed once ready).
+      // The user's message shows in the transcript (as a queued bubble while
+      // git-pending, or processed once ready).
       await expect(panel.getByText(taskText).first()).toBeVisible({
         timeout: 30_000,
       });
@@ -1406,7 +1443,11 @@ test.describe('Home surface', () => {
     }
   });
 
-  for (const registrationSetupPhase of ['git-pending', 'git-ready']) {
+  for (const registrationSetupPhase of [
+    'git-pending',
+    'git-ready',
+    'existing-worktree',
+  ]) {
     test(`Chat mode send keeps Home mounted until the ${registrationSetupPhase} worktree panel layout is ready`, async () => {
       test.setTimeout(120_000);
 
@@ -1419,7 +1460,7 @@ test.describe('Home surface', () => {
       seedDemoWorkspaces({
         userDataDir,
         apps: [DEMO_APP_ID],
-        createWorktrees: false,
+        createWorktrees: registrationSetupPhase === 'existing-worktree',
       });
 
       const { electronApp } = await launchCanopy({ userDataDir });
@@ -1443,11 +1484,35 @@ test.describe('Home surface', () => {
             });
           }
 
+          globalThis.__homeOriginalHandlers = new Map(
+            [
+              'chat:model-change',
+              'chat:send-message',
+              'panel-layout:load',
+              'worktree:create',
+            ].map((channel) => [channel, ipcMain._invokeHandlers.get(channel)]),
+          );
+          const modelChange = ipcMain._invokeHandlers.get('chat:model-change');
+          const modelGate = new Promise((resolve) => {
+            globalThis.__releaseHomeFirstModel = resolve;
+          });
+          ipcMain.removeHandler('chat:model-change');
+          ipcMain.handle('chat:model-change', async (event, request) => {
+            globalThis.__homeFirstModelRequested = true;
+            await modelGate;
+            return modelChange(event, request);
+          });
+          ipcMain.removeHandler('chat:send-message');
+          ipcMain.handle('chat:send-message', (_event, request) => {
+            globalThis.__homeFirstSendRequest = request;
+            return {};
+          });
           globalThis.__homePanelLayoutLoadRequested = false;
           globalThis.__resolveHomePanelLayoutLoad = undefined;
           ipcMain.removeHandler('panel-layout:load');
           ipcMain.handle('panel-layout:load', () => {
             globalThis.__homePanelLayoutLoadRequested = true;
+            if (setupPhase === 'existing-worktree') return { layout: null };
             return new Promise((resolve) => {
               globalThis.__resolveHomePanelLayoutLoad = () => {
                 resolve({ layout: null });
@@ -1459,33 +1524,296 @@ test.describe('Home surface', () => {
         await window.getByTestId('sidebar-create-task').click();
         const homePage = window.getByTestId('page-home');
         await expect(homePage).toBeVisible();
-        await homePage
-          .getByTestId('home-composer-editor')
-          .fill('Investigate the failing health-check endpoint.');
+        if (registrationSetupPhase === 'existing-worktree') {
+          await homePage.getByTestId('home-branch-picker-button').click();
+          await window
+            .getByTestId('home-branch-picker-worktree-demo-main')
+            .click();
+        }
+        const prompt = 'Investigate the failing health-check endpoint.';
+        // CAN-4742: sample the destination chat on every animation frame from
+        // the first one that paints it, before waiting for the prompt, so an
+        // empty or onboarding frame before the echo cannot hide behind a later
+        // assertion.
+        await window.evaluate((submitted) => {
+          const frames = [];
+          globalThis.__homeFirstChatFrames = frames;
+          const sample = () => {
+            const panel = document.querySelector(
+              '[data-testid="panel-content-chat"]',
+            );
+            if (globalThis.__stopHomeFirstChatFrames) return;
+            if (panel && panel.getBoundingClientRect().height > 0) {
+              frames.push({
+                hasPrompt: panel.textContent?.includes(submitted) === true,
+                title: Array.from(
+                  document.querySelectorAll(
+                    '[role="tab"][data-panel-kind="chat"]',
+                  ),
+                ).some((tab) =>
+                  tab.textContent?.includes(submitted.slice(0, 40)),
+                ),
+                empty:
+                  panel.textContent?.includes(
+                    'Send a message to start working',
+                  ) === true,
+                checklist:
+                  panel.querySelector(
+                    '[data-testid="chat-onboarding-checklist-host"]',
+                  ) !== null,
+                suggestions:
+                  panel.querySelector(
+                    '[data-testid="suggested-prompt-chips"]',
+                  ) !== null,
+                queued: panel.querySelectorAll(
+                  '[data-testid="queued-message-bubble"], [data-testid="queued-message-row"]',
+                ).length,
+                starting: panel.querySelectorAll(
+                  '[data-testid="turn-starting-status"][role="status"]',
+                ).length,
+              });
+            }
+            requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        }, prompt);
+        await homePage.getByTestId('home-composer-editor').fill(prompt);
         await homePage.getByTestId('home-send-button').click();
 
+        if (registrationSetupPhase !== 'existing-worktree') {
+          await expect
+            .poll(() =>
+              electronApp.evaluate(
+                () => globalThis.__homePanelLayoutLoadRequested === true,
+              ),
+            )
+            .toBe(true);
+
+          await expect(homePage).toBeVisible();
+          await expect(
+            window.getByTestId('panel-content-chat').first(),
+          ).toHaveCount(0);
+
+          await electronApp.evaluate(() => {
+            globalThis.__resolveHomePanelLayoutLoad?.();
+          });
+        }
+        await expect(homePage).toHaveCount(0);
+        await expect(
+          window.getByTestId('panel-content-chat').first(),
+        ).toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(
+          window.getByTestId('panel-content-chat').first().getByText(prompt),
+        ).toBeVisible();
+        const frames = await window.evaluate(
+          () => globalThis.__homeFirstChatFrames,
+        );
+        // CAN-4981: setup preparation can be a queue row before it becomes
+        // a starting turn. Every frame still has exactly one pending
+        // representation, plus the prompt/title and no onboarding.
+        expect(frames[0]).toMatchObject({
+          hasPrompt: true,
+          title: true,
+          empty: false,
+          checklist: false,
+          suggestions: false,
+        });
+        expect(frames[0].starting + frames[0].queued).toBe(1);
+        const panel = window.getByTestId('panel-content-chat').first();
+        const pendingSelector =
+          '[data-testid="turn-starting-status"][role="status"], [data-testid="queued-message-bubble"], [data-testid="queued-message-row"]';
+        if (registrationSetupPhase !== 'existing-worktree') {
+          await expect
+            .poll(() =>
+              electronApp.evaluate(
+                () => globalThis.__homeFirstModelRequested === true,
+              ),
+            )
+            .toBe(true);
+          await expect(panel.locator(pendingSelector)).toHaveCount(1);
+          await expect(panel.getByTestId('chat-stop-generation')).toHaveCount(
+            0,
+          );
+        }
+        await expect(
+          window
+            .locator('[role="tab"][data-panel-kind="chat"]')
+            .filter({ hasText: prompt.slice(0, 40) }),
+        ).toHaveCount(1);
+        await window.evaluate(
+          () =>
+            new Promise((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            ),
+        );
+        const blockedFrames = await window.evaluate(() => {
+          globalThis.__stopHomeFirstChatFrames = true;
+          return globalThis.__homeFirstChatFrames;
+        });
+        expect(blockedFrames.length).toBeGreaterThan(0);
+        expect(
+          blockedFrames.every(
+            (frame) =>
+              frame.hasPrompt &&
+              frame.title &&
+              !frame.empty &&
+              frame.starting + frame.queued === 1 &&
+              !frame.checklist &&
+              !frame.suggestions,
+          ),
+        ).toBe(true);
+        const startingNode = await panel
+          .locator(pendingSelector)
+          .elementHandle();
+        await startingNode.evaluate((node, submitted) => {
+          const host = node.closest('[data-testid="panel-content-chat"]');
+          const initialQueueRows = host.querySelectorAll(
+            '[data-testid="queued-message-bubble"], [data-testid="queued-message-row"]',
+          ).length;
+          globalThis.__homeFirstSendQueueObserved = initialQueueRows > 0;
+          globalThis.__homeFirstSendMaxQueueRows = initialQueueRows;
+          globalThis.__homeFirstSendContinuous = true;
+          globalThis.__homeFirstSendQueueObserver = new MutationObserver(() => {
+            const rows = host.querySelectorAll(
+              '[data-testid="queued-message-bubble"], [data-testid="queued-message-row"]',
+            );
+            globalThis.__homeFirstSendMaxQueueRows = Math.max(
+              globalThis.__homeFirstSendMaxQueueRows,
+              rows.length,
+            );
+            if (rows.length > 0) globalThis.__homeFirstSendQueueObserved = true;
+            if (
+              !host.textContent?.includes(submitted) ||
+              host.querySelector(
+                '[data-testid="chat-onboarding-checklist-host"]',
+              )
+            ) {
+              globalThis.__homeFirstSendContinuous = false;
+            }
+          });
+          globalThis.__homeFirstSendQueueObserver.observe(host, {
+            childList: true,
+            subtree: true,
+          });
+        }, prompt);
+        await electronApp.evaluate(() => globalThis.__releaseHomeFirstModel());
         await expect
           .poll(() =>
-            electronApp.evaluate(
-              () => globalThis.__homePanelLayoutLoadRequested === true,
+            electronApp.evaluate(() =>
+              Boolean(globalThis.__homeFirstSendRequest),
             ),
           )
           .toBe(true);
-
-        await expect(homePage).toBeVisible();
-        await expect(window.getByTestId('panel-content-chat')).toHaveCount(0);
-
-        await electronApp.evaluate(() => {
-          globalThis.__resolveHomePanelLayoutLoad?.();
+        // Acceptance is not output: the same node remains through dispatch.
+        await expect(panel.getByTestId('turn-starting-status')).toHaveCount(1);
+        const startingLifecycle = await panel
+          .getByTestId('turn-starting-status')
+          .evaluate(
+            (node, before) => ({
+              sameNode: node === before,
+              queued: globalThis.__homeFirstSendQueueObserved,
+              maxQueuedRows: globalThis.__homeFirstSendMaxQueueRows,
+              continuous: globalThis.__homeFirstSendContinuous,
+            }),
+            startingNode,
+          );
+        await window.evaluate(() =>
+          globalThis.__homeFirstSendQueueObserver.disconnect(),
+        );
+        expect(startingLifecycle.continuous).toBe(true);
+        expect(startingLifecycle.maxQueuedRows).toBeLessThanOrEqual(1);
+        // A setup queue row deliberately takes over from the provisional
+        // turn. Direct adoption must keep the same live status node.
+        if (!startingLifecycle.queued) {
+          expect(startingLifecycle.sameNode).toBe(true);
+        } else {
+          expect(startingLifecycle.maxQueuedRows).toBe(1);
+        }
+        const adoptedStartingNode = await panel
+          .getByTestId('turn-starting-status')
+          .elementHandle();
+        const request = await electronApp.evaluate(
+          () => globalThis.__homeFirstSendRequest,
+        );
+        const scope = {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          chatId: request.chatId,
+        };
+        const timestamp = Date.now();
+        await injectChatEvent(electronApp, {
+          ...scope,
+          data: {
+            type: 'claude_terminal_transcript_sync',
+            importedEventCount: 2,
+            messages: [
+              {
+                id: request.userMessageId,
+                role: 'user',
+                timestamp,
+                blocks: [{ type: 'text', text: prompt }],
+              },
+              {
+                id: 'canonical-first-timer',
+                role: 'system',
+                timestamp,
+                blocks: [
+                  {
+                    type: 'turn_timer',
+                    startedAt: timestamp,
+                    completedAt: null,
+                  },
+                ],
+              },
+            ],
+          },
         });
-
-        await expect(homePage).toHaveCount(0);
-        await expect(window.getByTestId('panel-content-chat')).toBeVisible({
-          timeout: 30_000,
+        await expect(panel.getByTestId('turn-starting-status')).toHaveCount(1);
+        expect(
+          await panel
+            .getByTestId('turn-starting-status')
+            .evaluate((node, before) => node === before, adoptedStartingNode),
+        ).toBe(true);
+        // This fixture never launches a provider. A canonical read may
+        // settle its synthetic turn; output must use the materialized
+        // transcript boundary, as the acknowledgement above does.
+        await window.evaluate(
+          ({ projectId, worktreeId }) =>
+            window.api.chat.getState({ projectId, worktreeId }),
+          scope,
+        );
+        await injectChatEvent(electronApp, {
+          ...scope,
+          data: {
+            type: 'claude_terminal_transcript_sync',
+            importedEventCount: 1,
+            messages: [
+              {
+                id: 'first-answer',
+                role: 'assistant',
+                timestamp: Date.now(),
+                blocks: [{ type: 'text', text: 'First visible answer.' }],
+              },
+            ],
+          },
         });
+        await expect(
+          panel.getByText('First visible answer.', { exact: false }),
+        ).toBeVisible();
+        await expect(panel.getByTestId('turn-starting-status')).toHaveCount(0);
+        await expect(panel.getByText(prompt, { exact: true })).toHaveCount(1);
+        await expect(panel.getByTestId('turn-timer')).toHaveCount(1);
       } finally {
-        await electronApp.evaluate(() => {
+        await electronApp.evaluate(({ ipcMain }) => {
+          globalThis.__releaseHomeFirstModel?.();
           globalThis.__resolveHomePanelLayoutLoad?.();
+          for (const [channel, handler] of globalThis.__homeOriginalHandlers ??
+            []) {
+            ipcMain.removeHandler(channel);
+            if (handler) ipcMain.handle(channel, handler);
+          }
         });
         await closeCanopy(electronApp, userDataDir);
       }
@@ -1553,10 +1881,9 @@ test.describe('Home surface', () => {
       // queue-for-setup decision LIVE (re-read immediately before dispatch)
       // instead of a post-create snapshot: when this tiny fixture's git setup
       // completes during the post-create awaits, the message correctly
-      // processes immediately and no `pending_setup_info` banner exists; when
-      // setup is still pending at dispatch, the banner is a persisted
-      // transcript entry that survives the setup-complete flush. Both
-      // terminal states are correct by design, so the banner is no longer
+      // processes immediately; when setup is still pending at dispatch, the
+      // message waits as a queued bubble until the setup-complete flush. Both
+      // terminal states are correct by design, so the queued state is not
       // asserted unconditionally here — both live-decision branches are
       // pinned at the unit level (homeSend.test.ts) and the queued-path UI is
       // covered by the H3 exact-repro spec below whenever the harness catches
@@ -3252,4 +3579,451 @@ test.describe('Home first send into Chats', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
+});
+
+// CAN-4981: hydrate the old on-disk format, then reload the actual renderer.
+// Reading canonical history after each load proves presentation does not delete it.
+test('legacy setup annotation stays hidden after hydration and reload without rewriting history', async () => {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can4981-legacy-'));
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedLegacySetupChat(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    for (const reload of [false, true]) {
+      if (reload) await window.reload();
+      await app.waitForShell();
+      await app.openMainPage();
+      await app.selectWorktree('demo-main');
+      const panel = window.getByTestId('panel-content-chat');
+      await expect(
+        panel.getByText(LEGACY_SETUP_PROMPT, { exact: true }).first(),
+      ).toBeVisible();
+      await expect(
+        panel.getByText(LEGACY_SETUP_REPLY, { exact: true }).first(),
+      ).toBeVisible();
+      await expect(
+        panel.getByText('Chat initiated before project setup'),
+      ).toHaveCount(0);
+      const list = panel.getByTestId('chat-message-list-content');
+      await expect(
+        list.locator('[data-chat-sticky-section]').first(),
+      ).toHaveAttribute('data-chat-sticky-section', 'legacy-user');
+      // Check the first display row itself, not only the first named section.
+      expect(
+        await list.evaluate((element) =>
+          element
+            .querySelector(':scope > div.space-y-2')
+            ?.firstElementChild?.getAttribute('data-chat-sticky-section'),
+        ),
+      ).toBe('legacy-user');
+      const persisted = await window.evaluate(() =>
+        window.api.chat.loadTabs({
+          projectId: 'demo-ts-pnpm-vite',
+          worktreeId: 'demo-main',
+        }),
+      );
+      expect(
+        persisted.tabs.find((tab) => tab.id === 'legacy-setup-chat')
+          ?.messages[0],
+      ).toMatchObject({
+        id: 'legacy-setup',
+        role: 'system',
+        blocks: [{ type: 'pending_setup_info' }],
+      });
+    }
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-5021: extend the CAN-4742 frame invariant through refusal and recovery.
+for (const recovery of [
+  'same-model',
+  'replacement',
+  'retained-model',
+  'replacement-prompt',
+  'background',
+  'background-page',
+]) {
+  test(`CAN-5021 preserves a refused first send through ${recovery} recovery`, async () => {
+    test.setTimeout(120_000);
+    const {
+      installHomeModelRefusal,
+      restoreHomeModelRefusal,
+      startHomeFailureSampler,
+      stopHomeFailureSampler,
+    } = await import('./seeders/homeModelRefusal.mjs');
+    const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-can5021-'));
+    seedDemoWorkspaces({
+      userDataDir,
+      apps: [DEMO_APP_ID],
+      createWorktrees: false,
+    });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      await window.getByTestId('sidebar-create-task').click();
+      const home = window.getByTestId('page-home');
+      await waitForHomeWorkspaceSelection(home);
+      await home.getByTestId('chat-model-picker').click();
+      await selectModelOption(window, 'gpt-5.6-luna');
+      await installHomeModelRefusal(electronApp);
+      if (recovery.startsWith('background')) {
+        await electronApp.evaluate(() => {
+          globalThis.__can5021.hold = true;
+        });
+      }
+      const prompt = 'Keep this original prompt through model recovery.';
+      await startHomeFailureSampler(window, prompt);
+      await home.getByTestId('home-composer-editor').fill(prompt);
+      await home.getByTestId('home-send-button').click();
+      await expect(
+        window.getByTestId('panel-content-chat').first(),
+      ).toBeVisible();
+      if (recovery.startsWith('background')) {
+        await expect
+          .poll(() =>
+            electronApp.evaluate(() => typeof globalThis.__can5021.release),
+          )
+          .toBe('function');
+        if (recovery === 'background-page') {
+          await new CanopyAppDriver(window).openPluginsPage();
+          const nav = window.getByTestId('sidebar-nav-plugins');
+          await nav.focus();
+          await electronApp.evaluate(() => globalThis.__can5021.release());
+          await expect(
+            window.getByText('Open draft', { exact: true }),
+          ).toBeVisible();
+          await expect(nav).toBeFocused();
+          await expect(home).toHaveCount(0);
+          return;
+        }
+        await window.getByTestId('sidebar-create-task').click();
+        await home.getByTestId('home-composer-editor').fill('A newer draft');
+        await home.getByTestId('home-composer-editor').focus();
+        await electronApp.evaluate(() => globalThis.__can5021.release());
+        await expect(
+          window.getByText('Open draft', { exact: true }),
+        ).toHaveCount(0);
+        await expect(home.getByTestId('home-composer-error')).toHaveCount(0);
+        await expect(home.getByTestId('home-composer-editor')).toBeFocused();
+        await expect(home.getByTestId('home-composer-editor')).toHaveText(
+          'A newer draft',
+        );
+        return;
+      }
+      const notice = window.getByTestId('first-send-failed-notice');
+      await expect(notice).toBeVisible();
+      // The composer's own notice stack, not the transcript column.
+      await expect(
+        window
+          .getByTestId('chat-input-notices')
+          .getByTestId('first-send-failed-notice'),
+      ).toBeVisible();
+      const retainedModel =
+        recovery === 'retained-model'
+          ? await window.evaluate(
+              async (target) => {
+                const snapshot = await window.api.chat.getState({
+                  projectId: target.projectId,
+                  worktreeId: target.worktreeId,
+                });
+                return snapshot.tabsFile.tabs.find(
+                  (tab) => tab.id === target.chatId,
+                )?.model;
+              },
+              await electronApp.evaluate(
+                () => globalThis.__can5021.applications[0],
+              ),
+            )
+          : null;
+      if (recovery === 'retained-model') {
+        expect(retainedModel).toBeTruthy();
+        expect(retainedModel).not.toBe('gpt-5.6-luna');
+      }
+      await expect(notice).toContainText('GPT 5.6 Luna');
+      await expect(
+        notice.getByTestId('first-send-failed-notice-choose-model'),
+      ).toBeFocused();
+      await expect(window.getByTestId('turn-starting-status')).toHaveCount(0);
+      await expect(window.getByText('Open draft', { exact: true })).toHaveCount(
+        0,
+      );
+      if (recovery === 'replacement-prompt') {
+        const panel = window.getByTestId('panel-content-chat').first();
+        const editor = panel.locator('[data-slate-editor="true"]').last();
+        await editor.fill('Send this deliberate replacement instead.');
+        await editor.press('Enter');
+        await expect
+          .poll(() =>
+            electronApp.evaluate(() => globalThis.__can5021.sends.length),
+          )
+          .toBe(1);
+        await expect(notice).toHaveCount(0);
+        await expect(panel.getByText(prompt, { exact: true })).toHaveCount(0);
+        const request = await electronApp.evaluate(
+          () => globalThis.__can5021.sends[0],
+        );
+        expect(request.text).toBe('Send this deliberate replacement instead.');
+        expect(request).not.toHaveProperty('replaceFailedFirstSend');
+        return;
+      }
+      await notice.getByTestId('first-send-failed-notice-choose-model').click();
+      await expect(window.getByTestId('chat-model-menu')).toBeVisible();
+      await electronApp.evaluate(() => {
+        globalThis.__can5021.refuse = false;
+      });
+      if (recovery === 'replacement' || recovery === 'retained-model') {
+        await selectModelOption(window, retainedModel ?? 'gpt-5.6-sol');
+        await expect
+          .poll(() =>
+            electronApp.evaluate(
+              () => globalThis.__can5021.applications.length,
+            ),
+          )
+          .toBe(2);
+      } else {
+        await window.keyboard.press('Escape');
+      }
+      await expect
+        .poll(() =>
+          electronApp.evaluate(() => globalThis.__can5021.sends.length),
+        )
+        .toBe(0);
+      await electronApp.evaluate(() => {
+        globalThis.__can5021.hold = true;
+      });
+      await notice.getByTestId('first-send-failed-notice-retry').click();
+      await expect
+        .poll(() =>
+          electronApp.evaluate(() => typeof globalThis.__can5021.release),
+        )
+        .toBe('function');
+      // A retry owns model application until it settles; a picker cannot race it.
+      await expect(
+        window.locator('[data-testid="chat-model-picker"]:visible').first(),
+      ).toBeDisabled();
+      await electronApp.evaluate(() => globalThis.__can5021.release());
+      await expect
+        .poll(() =>
+          electronApp.evaluate(() => globalThis.__can5021.sends.length),
+        )
+        .toBe(1);
+      await expect(notice).toHaveCount(0);
+      if (recovery === 'retained-model') {
+        expect(
+          await electronApp.evaluate(
+            () => globalThis.__can5021.applications.at(-1).model,
+          ),
+        ).toBe(retainedModel);
+      }
+      await expect(
+        window
+          .getByTestId('panel-content-chat')
+          .first()
+          .getByText(prompt, { exact: true }),
+      ).toHaveCount(1);
+      expect(
+        await electronApp.evaluate(() => globalThis.__can5021.creations),
+      ).toBe(1);
+      const frames = await stopHomeFailureSampler(window);
+      expect(frames.length).toBeGreaterThan(0);
+      expect(
+        frames.every(
+          (frame) =>
+            frame.prompt && frame.title && !frame.empty && !frame.onboarding,
+        ),
+      ).toBe(true);
+    } finally {
+      await restoreHomeModelRefusal(electronApp);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
+test('CAN-5021 changing the worktree base during preflight preserves the draft', async () => {
+  test.setTimeout(120_000);
+  const { installHomeModelRefusal, restoreHomeModelRefusal } =
+    await import('./seeders/homeModelRefusal.mjs');
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-can5021-base-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: [DEMO_APP_ID] });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+    await window.getByTestId('sidebar-create-task').click();
+    const home = window.getByTestId('page-home');
+    await waitForHomeWorkspaceSelection(home);
+    await home.getByTestId('chat-model-picker').click();
+    await selectModelOption(window, 'gpt-5.6-luna');
+    await installHomeModelRefusal(electronApp);
+    await electronApp.evaluate(({ ipcMain }) => {
+      const state = globalThis.__can5021;
+      const channel = 'settings:load-canopy-cloud-account';
+      const original = ipcMain._invokeHandlers.get(channel);
+      state.originals.set(channel, original);
+      ipcMain.removeHandler(channel);
+      let held = false;
+      ipcMain.handle(channel, async (...args) => {
+        if (!held) {
+          held = true;
+          await new Promise((resolve) => {
+            state.release = resolve;
+          });
+        }
+        return original(...args);
+      });
+    });
+    await home
+      .getByTestId('home-composer-editor')
+      .fill('Keep this draft on the selected base.');
+    await home.getByTestId('home-send-button').click();
+    await expect
+      .poll(() =>
+        electronApp.evaluate(() => typeof globalThis.__can5021.release),
+      )
+      .toBe('function');
+    await home.getByTestId('home-base-branch-picker-button').click();
+    await window
+      .getByTestId('home-base-branch-picker-menu')
+      .getByTestId('home-base-branch-picker-branch-demo-main')
+      .click();
+    await electronApp.evaluate(() => globalThis.__can5021.release());
+    await expect(home.getByTestId('home-send-button')).toBeEnabled();
+    await expect(home.getByTestId('home-composer-editor')).toHaveText(
+      'Keep this draft on the selected base.',
+    );
+    expect(
+      await electronApp.evaluate(() => globalThis.__can5021.creations),
+    ).toBe(0);
+    await expect(
+      home.getByTestId('home-base-branch-picker-button'),
+    ).toContainText('demo-main');
+  } finally {
+    await restoreHomeModelRefusal(electronApp);
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('CAN-5021 guest preflight preserves the full Home draft before resource creation', async () => {
+  test.setTimeout(120_000);
+  const {
+    installHomeModelRefusal,
+    restoreHomeModelRefusal,
+    excludeHomeModelCreditsRoute,
+  } = await import('./seeders/homeModelRefusal.mjs');
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-can5021-guest-'),
+  );
+  seedDemoWorkspaces({
+    userDataDir,
+    apps: [DEMO_APP_ID],
+    createWorktrees: false,
+  });
+  writeJson(path.join(userDataDir, 'preferences.json'), {
+    version: 1,
+    preferences: { lastChatBillingFramework: 'ai-credits' },
+  });
+  const { electronApp } = await launchCanopy({
+    userDataDir,
+    env: {
+      OPENAI_API_KEY: '',
+      CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+        'canopy-guest-mode-enabled': true,
+        'canopy-billing-enabled': true,
+      }),
+    },
+  });
+  try {
+    const window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+    const account = await window.evaluate(() =>
+      window.api.startCanopyGuestSession({
+        acceptedAt: '2026-07-06T00:00:00.000Z',
+        tosVersion: '2026-07-06',
+      }),
+    );
+    expect(account.credentialSource).toBe('guest');
+    await window.evaluate(() =>
+      window.dispatchEvent(new Event('canopy:cloud-account-changed')),
+    );
+    await window.getByTestId('sidebar-create-task').click();
+    const home = window.getByTestId('page-home');
+    await waitForHomeWorkspaceSelection(home);
+    await home.getByTestId('chat-model-picker').click();
+    await selectModelOption(window, 'gpt-5.6-luna');
+    await installHomeModelRefusal(electronApp);
+    await excludeHomeModelCreditsRoute(window, electronApp);
+    const prompt =
+      'Keep my complete draft when this chosen model cannot route.';
+    await home.getByTestId('home-composer-editor').fill(prompt);
+    await home.getByTestId('home-composer-editor').evaluate((element) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(
+        new File(['retained draft context'], 'refusal-context.txt', {
+          type: 'text/plain',
+        }),
+      );
+      element.dispatchEvent(
+        new ClipboardEvent('paste', {
+          clipboardData,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    // CAN-5216: a guest file gesture asks for sign-in instead of staging a
+    // file. Dismissing it must leave the permitted draft inputs intact.
+    await expect(
+      window.getByText('Sign in to add files', { exact: true }),
+    ).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(home.locator('[title="refusal-context.txt"]')).toHaveCount(0);
+    await clickHomeComposerAction(window, home, 'home-plan-mode-button');
+    await expect(
+      home.getByTestId('home-plan-mode-inline-button'),
+    ).toBeVisible();
+    const beforeRows = await window.getByTestId('worktree-row').count();
+    await home.getByTestId('home-send-button').click();
+    const notice = home.getByTestId('home-composer-error');
+    await expect(notice).toContainText(
+      'GPT 5.6 Luna isn’t available on AI Credits',
+    );
+    // The heading's notice slot, above the composer box, as on web.
+    await expect(
+      home.getByTestId('home-composer').getByTestId('home-composer-error'),
+    ).toHaveCount(0);
+    const noticeBox = await notice.boundingBox();
+    const composerBox = await home.getByTestId('home-composer').boundingBox();
+    expect(noticeBox && composerBox).toBeTruthy();
+    expect(noticeBox.y + noticeBox.height).toBeLessThanOrEqual(composerBox.y);
+    await expect(home).toBeVisible();
+    await expect(home.locator('[title="refusal-context.txt"]')).toHaveCount(0);
+    await expect(
+      home.getByTestId('home-plan-mode-inline-button'),
+    ).toBeVisible();
+    await expect(home.getByTestId('home-composer-editor')).toHaveText(prompt);
+    await expect(
+      notice.getByTestId('home-composer-error-choose-model'),
+    ).toBeFocused();
+    expect(
+      await electronApp.evaluate(() => ({
+        creates: globalThis.__can5021.creations,
+        applies: globalThis.__can5021.applications.length,
+        sends: globalThis.__can5021.sends.length,
+      })),
+    ).toEqual({ creates: 0, applies: 0, sends: 0 });
+    await expect(window.getByTestId('worktree-row')).toHaveCount(beforeRows);
+    await expect(window.getByTestId('panel-content-chat')).toHaveCount(0);
+    await notice.getByTestId('home-composer-error-choose-model').click();
+    await expect(window.getByTestId('chat-model-menu')).toBeVisible();
+  } finally {
+    await restoreHomeModelRefusal(electronApp);
+    await closeCanopy(electronApp, userDataDir);
+  }
 });

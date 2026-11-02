@@ -326,7 +326,7 @@ test('keeps corrupt and oversized failures actionable and recovers without hidin
   try {
     const window = await electronApp.firstWindow();
     await openSeededWorkspace(window);
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await window.getByTestId('panel-add-menu-item-new-file').click();
 
     let panel = await openFromPanelTree(window, 'corrupt.pdf');

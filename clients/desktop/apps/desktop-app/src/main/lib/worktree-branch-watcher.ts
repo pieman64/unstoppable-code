@@ -1,15 +1,26 @@
 import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { watch, type FSWatcher } from 'node:fs';
-import { dirname } from 'node:path';
+import {
+  createBranchObserver,
+  type BranchCheckout,
+  type BranchCheckoutListing,
+  type BranchObserver,
+  type BranchObserverPorts,
+  type BranchReadyWorktree,
+  type GitHeadWatchHandle,
+} from '@canopy/core-runtime/node';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { runWithGitRequestContext } from '@canopy/desktop-shared/node/git-request-context';
 import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
-  type SidebarItem,
   type WorktreeBranchChangedEvent,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { getCurrentBranchDisplayName, getGitHeadWatchState } from './git';
 import {
   logMainProcessDebug,
@@ -17,37 +28,21 @@ import {
   logMainProcessWarn,
 } from './main-process-logging';
 import { getWorkspaceWorktreeDir } from './paths';
+import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { invalidateWorktreeStats } from './worktree-service';
 import { observeWorktreeGit } from './worktree-git-observations';
+import { registerWorktreeGitReadyHook } from './worktree-git-ready-hooks';
+import { subscribeWorktreeLifecycleChanges } from './worktree-lifecycle-signals';
 import { WorktreeRecordRefusedError } from './worktree-repair';
 import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
 import { sendToWindow } from './window-send';
-import { detachedWorkCallback } from '@canopy/desktop-shared/node/lib/detached-work';
 
-interface WatchedRepoRef {
-  projectId: string;
-  worktreeId: string;
+// Main's composition of the core-runtime branch observer (CAN-4899): the
+// observer owns watch policy; this module supplies desktop paths, Git reads,
+// the `internal.worktree.git.observe` writer and the renderer push.
+
+interface DesktopBranchCheckout extends BranchCheckout {
   repoPath: string;
-  repoId?: string;
-  /**
-   * The sidebar branch main last recorded for this checkout. Child repos of a
-   * multi-repo worktree have no persisted branch of their own, so it is null.
-   */
-  persistedBranchName: string | null;
-}
-
-interface BranchWatcherEntry extends WatchedRepoRef {
-  watcher: FSWatcher;
-  branchName: string | null;
-  refreshTimer: ReturnType<typeof setTimeout> | null;
-}
-
-/** The worktree a git-ready event names; see `ensureWorktreeBranchWatchers`. */
-export interface WorktreeBranchWatchTarget {
-  projectId: string;
-  worktreeId: string;
-  workspaceKind: 'single-repo' | 'multi-repo';
-  branchName: string;
 }
 
 type BranchRecordOutcome =
@@ -57,11 +52,26 @@ type BranchRecordOutcome =
   | 'refused'
   | 'failed';
 
-const branchWatchers = new Map<string, BranchWatcherEntry>();
-const retiredBranchWatchers = new Set<FSWatcher>();
-const pendingStarts = new Map<string, Promise<boolean>>();
-let syncGeneration = 0;
-let stopEpoch = 0;
+const LIST_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-branch-observer',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.worktree.read'],
+};
+
+const WATCH_CALLER: CanopyCallerDescriptor = {
+  ...LIST_CALLER,
+  grants: ['worker.filesystem.read'],
+};
+
+interface ActiveObserver {
+  observer: BranchObserver;
+  startEnrollment(): void;
+  dispose(): void;
+}
+
+let active: ActiveObserver | null = null;
 
 function runBranchWatcherGit<T>(callback: () => Promise<T>): Promise<T> {
   return runWithGitRequestContext(
@@ -70,115 +80,164 @@ function runBranchWatcherGit<T>(callback: () => Promise<T>): Promise<T> {
   );
 }
 
-function getWatcherKey(
-  ref: Pick<WatchedRepoRef, 'projectId' | 'worktreeId' | 'repoId'>,
-): string {
-  return `${ref.projectId}/${ref.worktreeId}/${ref.repoId ?? 'root'}`;
-}
-
-function getWorktreeKey(projectId: string, worktreeId: string): string {
-  return `${projectId}/${worktreeId}`;
-}
-
-function closeWatcher(entry: BranchWatcherEntry): void {
-  if (entry.refreshTimer) {
-    clearTimeout(entry.refreshTimer);
-    entry.refreshTimer = null;
-  }
-  entry.watcher.close();
-}
-
-function retireWatcher(entry: BranchWatcherEntry): void {
-  if (entry.refreshTimer) {
-    clearTimeout(entry.refreshTimer);
-    entry.refreshTimer = null;
-  }
-  retiredBranchWatchers.add(entry.watcher);
-}
-
-/** Git reports a detached HEAD as the literal `HEAD`, which names no branch. */
-function isBranchName(branchName: string | null): branchName is string {
-  return branchName !== null && branchName !== '' && branchName !== 'HEAD';
-}
-
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function collectWorktreeRepoRefs(
-  projectId: string,
+async function collectWorktreeCheckouts(
+  workspaceId: string,
   workspaceKind: 'single-repo' | 'multi-repo',
   worktree: Pick<WorktreeData, 'id' | 'branchName'>,
-): Promise<WatchedRepoRef[]> {
-  const worktreePath = getWorkspaceWorktreeDir(projectId, worktree.id);
+): Promise<DesktopBranchCheckout[]> {
+  const worktreePath = getWorkspaceWorktreeDir(workspaceId, worktree.id);
   if (workspaceKind === 'single-repo') {
     return [
       {
-        projectId,
+        workspaceId,
         worktreeId: worktree.id,
+        fileRootId: workspaceId,
         repoPath: worktreePath,
         persistedBranchName: worktree.branchName,
       },
     ];
   }
-
   const repoEntries = await listWorkspaceWorktreeRepoEntries(
-    projectId,
+    workspaceId,
     worktreePath,
   ).catch((error: unknown) => {
     logMainProcessWarn('Worktree branch watcher repos unavailable', {
-      key: getWorktreeKey(projectId, worktree.id),
+      key: `${workspaceId}/${worktree.id}`,
       error: describeError(error),
     });
     return [];
   });
+  // Child repos of a multi-repo worktree keep no branch of their own.
   return repoEntries.map((repo) => ({
-    projectId,
+    workspaceId,
     worktreeId: worktree.id,
     repoId: repo.repoId,
+    fileRootId: repo.repoId,
     repoPath: repo.repoPath,
     persistedBranchName:
       repo.repoId === WORKSPACE_ROOT_REPO_ID ? worktree.branchName : null,
   }));
 }
 
-interface CollectedWatchedRepos {
-  refs: WatchedRepoRef[];
-  /** Worktrees whose checkout is still being created; see the sync. */
-  pendingWorktreeKeys: Set<string>;
-}
-
-async function collectWatchedRepos(
-  items: SidebarItem[],
-): Promise<CollectedWatchedRepos> {
-  const refs: WatchedRepoRef[] = [];
-  const pendingWorktreeKeys = new Set<string>();
-
-  for (const item of items) {
-    if (item.type === 'cowork') {
-      continue;
-    }
-
+async function listCheckouts(
+  dispatcher: DesktopCanopyDispatcher,
+): Promise<BranchCheckoutListing<DesktopBranchCheckout>> {
+  const { legacyResult } = await dispatcher.queryWorktreeListForLegacyIpc(
+    {},
+    { caller: LIST_CALLER },
+  );
+  if (Array.isArray(legacyResult))
+    throw new Error('Unscoped worktree projection was not captured.');
+  const checkouts: DesktopBranchCheckout[] = [];
+  const pendingWorktrees: Array<{ workspaceId: string; worktreeId: string }> =
+    [];
+  for (const item of legacyResult.items) {
+    if (item.type === 'cowork' || isRetiredTemporaryWorkspace(item)) continue;
     for (const worktree of item.worktrees) {
-      // A checkout still being created has no HEAD to watch yet. Its git-ready
-      // hook starts the watcher (`ensureWorktreeBranchWatchers`).
+      // A checkout still being created has no HEAD yet; git-ready starts it.
       if (worktree.setupPhase === 'git-pending') {
-        pendingWorktreeKeys.add(getWorktreeKey(item.id, worktree.id));
+        pendingWorktrees.push({
+          workspaceId: item.id,
+          worktreeId: worktree.id,
+        });
         continue;
       }
-      refs.push(
-        ...(await collectWorktreeRepoRefs(item.id, item.type, worktree)),
+      checkouts.push(
+        ...(await collectWorktreeCheckouts(item.id, item.type, worktree)),
       );
     }
   }
+  return {
+    checkouts,
+    pendingWorktrees,
+    preservedWorkspaceIds: new Set(
+      getSidebarItemsPreserveWorkspaceIds(legacyResult),
+    ),
+  };
+}
 
-  return { refs, pendingWorktreeKeys };
+function toOperationError(error: unknown): CanopyOperationError {
+  return error instanceof CanopyOperationError
+    ? error
+    : new CanopyOperationError(
+        {
+          kind: 'internal',
+          message: 'The HEAD watch could not attach.',
+          retry: { kind: 'never' },
+        },
+        error,
+      );
+}
+
+function createDesktopPorts(
+  dispatcher: DesktopCanopyDispatcher,
+  getWindow: () => BrowserWindow | null,
+): BranchObserverPorts<DesktopBranchCheckout> {
+  return {
+    listCheckouts: () => listCheckouts(dispatcher),
+    listReadyWorktreeCheckouts: (target: BranchReadyWorktree) =>
+      collectWorktreeCheckouts(target.workspaceId, target.workspaceKind, {
+        id: target.worktreeId,
+        branchName: target.branchName,
+      }),
+    readStartBranch: async (checkout) =>
+      (await runBranchWatcherGit(() => getGitHeadWatchState(checkout.repoPath)))
+        .branchName,
+    readBranch: (checkout) =>
+      runBranchWatcherGit(() => getCurrentBranchDisplayName(checkout.repoPath)),
+    record: (observation) =>
+      recordWorktreeBranchChange(
+        {
+          projectId: observation.workspaceId,
+          worktreeId: observation.worktreeId,
+          branchName: observation.branchName,
+          ...(observation.repoId ? { repoId: observation.repoId } : {}),
+        },
+        getWindow,
+      ),
+    watchHead: async (checkout, listener): Promise<GitHeadWatchHandle> => {
+      let opened: Awaited<
+        ReturnType<DesktopCanopyDispatcher['openGitHeadWatchForBranchObserver']>
+      >;
+      try {
+        opened = await dispatcher.openGitHeadWatchForBranchObserver(
+          {
+            scope: {
+              workspaceId: checkout.workspaceId,
+              worktreeId: checkout.worktreeId,
+            },
+            fileRootId: checkout.fileRootId,
+          },
+          {
+            caller: WATCH_CALLER,
+            onFrame: (frame): void => {
+              if (frame.kind === 'item') listener.onChange();
+              else listener.onEnd(frame.error);
+            },
+          },
+        );
+        await opened.attached;
+      } catch (error) {
+        throw toOperationError(error);
+      }
+      const { handle } = opened;
+      return { close: () => handle.close() };
+    },
+    log: {
+      debug: logMainProcessDebug,
+      info: logMainProcessInfo,
+      warn: logMainProcessWarn,
+    },
+  };
 }
 
 /**
- * Records the branch through `internal.worktree.git.observe`. The renderer is
- * told about the branch either way, so a failed or refused write is dropped
- * here, as before.
+ * Records `internal.worktree.git.observe`. The renderer is told about the
+ * branch either way, so a failed or refused write is dropped here.
  */
 async function persistBranchChange(
   event: WorktreeBranchChangedEvent,
@@ -197,22 +256,23 @@ async function persistBranchChange(
 }
 
 /**
- * Records a checkout's branch and tells the renderer. The HEAD watcher calls
- * it on a branch change, and the branch namer calls it after its own rename so
- * the sidebar does not depend on a watcher being attached. Both fire within
- * moments of the rename, so recording the same branch twice keeps the name. A
- * live watcher entry already holds it, so its next HEAD event is a no-op. Like
- * any branch observation, the second write still clears a recorded PR status.
+ * Records a checkout's branch and tells the renderer. The observer calls it
+ * on a branch change, and the branch namer calls it after its own rename so
+ * the sidebar does not depend on a watch being attached. Both fire within
+ * moments of the rename, so recording the same branch twice keeps the name.
+ * The observer already holds it, so its next HEAD event is a no-op. Like any
+ * branch observation, the second write still clears a recorded PR status.
  */
 export async function recordWorktreeBranchChange(
   event: WorktreeBranchChangedEvent,
   getWindow: () => BrowserWindow | null,
 ): Promise<void> {
-  const key = getWatcherKey(event);
-  const entry = branchWatchers.get(key);
-  if (entry) {
-    entry.branchName = event.branchName;
-  }
+  active?.observer.noteRecorded({
+    workspaceId: event.projectId,
+    worktreeId: event.worktreeId,
+    branchName: event.branchName,
+    ...(event.repoId ? { repoId: event.repoId } : {}),
+  });
   invalidateWorktreeStats(event.projectId, event.worktreeId);
   const outcome = await persistBranchChange(event);
   // A dropped write leaves the sidebar on the old name until the next start.
@@ -220,7 +280,10 @@ export async function recordWorktreeBranchChange(
     outcome === 'failed' || outcome === 'refused'
       ? logMainProcessWarn
       : logMainProcessDebug;
-  log('Worktree branch recorded', { key, outcome });
+  log('Worktree branch recorded', {
+    key: `${event.projectId}/${event.worktreeId}/${event.repoId ?? 'root'}`,
+    outcome,
+  });
 
   const window = getWindow();
   if (!window) {
@@ -229,261 +292,62 @@ export async function recordWorktreeBranchChange(
   sendToWindow(window, IPC_CHANNELS.worktreeBranchChanged, event);
 }
 
-function scheduleBranchRefresh(
-  entry: BranchWatcherEntry,
-  getWindow: () => BrowserWindow | null,
+export interface WorktreeBranchObserverOptions {
+  dispatcher: DesktopCanopyDispatcher;
+  getWindow: () => BrowserWindow | null;
+}
+
+/**
+ * Starts main's branch observer once the runtime accepts calls. Git-ready
+ * starts a checkout's watch at any time. Membership enrollment starts at the
+ * first `projects:load`, or at `startWorktreeBranchEnrollment()` if that comes
+ * first; lifecycle signals, later loads included, then reread membership on a
+ * debounce.
+ */
+export function startWorktreeBranchObserver(
+  options: WorktreeBranchObserverOptions,
 ): void {
-  if (entry.refreshTimer) {
-    clearTimeout(entry.refreshTimer);
-  }
-
-  entry.refreshTimer = setTimeout(
-    detachedWorkCallback(() => {
-      entry.refreshTimer = null;
-      return refreshBranch(entry, getWindow);
-    }),
-    100,
+  stopWorktreeBranchWatchers();
+  const observer = createBranchObserver(
+    createDesktopPorts(options.dispatcher, options.getWindow),
   );
-}
-
-async function refreshBranch(
-  entry: BranchWatcherEntry,
-  getWindow: () => BrowserWindow | null,
-): Promise<void> {
-  const branchName = await runBranchWatcherGit(() =>
-    getCurrentBranchDisplayName(entry.repoPath),
-  ).catch(() => null);
-  if (!isBranchName(branchName) || branchName === entry.branchName) {
-    logMainProcessDebug('Worktree branch unchanged', {
-      key: getWatcherKey(entry),
-    });
-    return;
-  }
-
-  entry.branchName = branchName;
-  await recordWorktreeBranchChange(
-    {
-      projectId: entry.projectId,
-      worktreeId: entry.worktreeId,
-      branchName,
-      ...(entry.repoId ? { repoId: entry.repoId } : {}),
-    },
-    getWindow,
-  );
-}
-
-/**
- * Starts one watcher and catches up on a branch change it missed: a rename
- * made while nothing watched this checkout is recorded now. Returns whether a
- * watcher was installed.
- */
-async function startWatcher(
-  ref: WatchedRepoRef,
-  getWindow: () => BrowserWindow | null,
-  isStale: () => boolean,
-): Promise<boolean> {
-  const key = getWatcherKey(ref);
-  const { headPath, branchName } = await runBranchWatcherGit(() =>
-    getGitHeadWatchState(ref.repoPath),
-  );
-  if (isStale() || branchWatchers.has(key)) {
-    return false;
-  }
-  const watcher = watch(
-    dirname(headPath),
-    { persistent: false },
-    (_event, filename) => {
-      if (filename && filename.toString() !== 'HEAD') {
-        return;
-      }
-      logMainProcessDebug('Worktree branch watcher HEAD event', {
-        key,
-        filename: filename?.toString() ?? null,
-      });
-      const entry = branchWatchers.get(key);
-      if (entry?.watcher === watcher) {
-        scheduleBranchRefresh(entry, getWindow);
-      }
-    },
-  );
-
-  watcher.on('error', (error: unknown) => {
-    logMainProcessWarn('Worktree branch watcher stopped', {
-      key,
-      error: describeError(error),
-    });
-    const entry = branchWatchers.get(key);
-    if (entry?.watcher === watcher) {
-      if (entry.refreshTimer) clearTimeout(entry.refreshTimer);
-      // The next sync or git-ready start re-creates it and catches up.
-      branchWatchers.delete(key);
-    } else {
-      retiredBranchWatchers.delete(watcher);
-    }
+  let enrolled = false;
+  const startEnrollment = (): void => {
+    if (enrolled) return;
+    enrolled = true;
+    void observer.sync();
+  };
+  const unsubscribe = subscribeWorktreeLifecycleChanges((change) => {
+    if (enrolled) observer.requestSync();
+    else if (change === 'projects-loaded') startEnrollment();
   });
-
-  // Seed with the recorded branch so a checkout that moved while unwatched is
-  // compared with what the sidebar shows, not with what HEAD holds now. Git
-  // reports a detached HEAD as `HEAD`; it and a failed read have no branch to
-  // catch up on, so they seed from live HEAD as before.
-  const onBranch = isBranchName(branchName);
-  const entry: BranchWatcherEntry = {
-    ...ref,
-    watcher,
-    branchName: onBranch ? (ref.persistedBranchName ?? branchName) : branchName,
-    refreshTimer: null,
-  };
-  branchWatchers.set(key, entry);
-
-  // The watcher is registered first, so a HEAD change during this write still
-  // schedules its own refresh. A failed catch-up leaves the watcher running.
-  if (entry.branchName !== branchName) {
-    await refreshBranch(entry, getWindow).catch((error: unknown) => {
-      logMainProcessWarn('Worktree branch catch-up failed', {
-        key,
-        error: describeError(error),
-      });
-    });
-  }
-  return true;
-}
-
-type StartResult = 'started' | 'present' | 'stale';
-
-/** One start per key: a caller that finds a start in flight waits for it. */
-async function startWatcherOnce(
-  ref: WatchedRepoRef,
-  getWindow: () => BrowserWindow | null,
-  isStale: () => boolean,
-): Promise<StartResult> {
-  const key = getWatcherKey(ref);
-  for (;;) {
-    if (branchWatchers.has(key)) {
-      return 'present';
-    }
-    const pending = pendingStarts.get(key);
-    if (!pending) {
-      break;
-    }
-    // A start from a superseded sync may install nothing, so check again.
-    await pending.catch(() => false);
-  }
-  if (isStale()) {
-    return 'stale';
-  }
-
-  const start = startWatcher(ref, getWindow, isStale);
-  pendingStarts.set(key, start);
-  try {
-    return (await start) ? 'started' : 'stale';
-  } finally {
-    if (pendingStarts.get(key) === start) {
-      pendingStarts.delete(key);
-    }
-  }
-}
-
-export async function syncWorktreeBranchWatchers(
-  items: SidebarItem[],
-  getWindow: () => BrowserWindow | null,
-  preserveWorkspaceIds: ReadonlySet<string> = new Set(),
-): Promise<void> {
-  const generation = ++syncGeneration;
-  const isStale = (): boolean => generation !== syncGeneration;
-  const { refs, pendingWorktreeKeys } = await collectWatchedRepos(items);
-  const summary = {
-    refs: refs.length,
-    started: 0,
-    retired: 0,
-    present: 0,
-    failed: 0,
-    superseded: false,
-  };
-  if (isStale()) {
-    summary.superseded = true;
-    logMainProcessInfo('Worktree branch watchers synced', summary);
-    return;
-  }
-
-  const nextKeys = new Set(refs.map(getWatcherKey));
-  for (const [key, entry] of Array.from(branchWatchers.entries())) {
-    if (
-      !nextKeys.has(key) &&
-      !preserveWorkspaceIds.has(entry.projectId) &&
-      // A snapshot taken before git-ready keeps the watcher that the
-      // git-ready hook already started.
-      !pendingWorktreeKeys.has(
-        getWorktreeKey(entry.projectId, entry.worktreeId),
-      )
-    ) {
-      retireWatcher(entry);
-      branchWatchers.delete(key);
-      summary.retired += 1;
-    }
-  }
-
-  for (const ref of refs) {
-    if (isStale()) {
-      summary.superseded = true;
-      break;
-    }
-    try {
-      const result = await startWatcherOnce(ref, getWindow, isStale);
-      if (result === 'started') summary.started += 1;
-      if (result === 'present') summary.present += 1;
-    } catch (error) {
-      summary.failed += 1;
-      logMainProcessInfo('Worktree branch watcher failed to start', {
-        key: getWatcherKey(ref),
-        error: describeError(error),
-      });
-    }
-  }
-  logMainProcessInfo('Worktree branch watchers synced', summary);
-}
-
-/**
- * Starts the watchers of one worktree whose checkout just became ready. Unlike
- * a sync, it neither supersedes a sync in flight nor retires other watchers.
- * The start catches up, so a rename made before git-ready is recorded too.
- */
-export async function ensureWorktreeBranchWatchers(
-  target: WorktreeBranchWatchTarget,
-  getWindow: () => BrowserWindow | null,
-): Promise<void> {
-  const epoch = stopEpoch;
-  const isStale = (): boolean => epoch !== stopEpoch;
-  const refs = await collectWorktreeRepoRefs(
-    target.projectId,
-    target.workspaceKind,
-    { id: target.worktreeId, branchName: target.branchName },
+  const unregisterGitReady = registerWorktreeGitReadyHook((event) =>
+    observer.ensureWorktree({
+      workspaceId: event.projectId,
+      worktreeId: event.worktreeId,
+      workspaceKind: event.workspaceKind,
+      branchName: event.branchName,
+    }),
   );
-  for (const ref of refs) {
-    if (isStale()) {
-      return;
-    }
-    await startWatcherOnce(ref, getWindow, isStale).catch((error: unknown) => {
-      logMainProcessInfo('Worktree branch watcher failed to start', {
-        key: getWatcherKey(ref),
-        error: describeError(error),
-      });
-    });
-  }
+  active = {
+    observer,
+    startEnrollment,
+    dispose(): void {
+      unsubscribe();
+      unregisterGitReady();
+      observer.stop();
+    },
+  };
 }
 
+/** Main's fallback trigger when no `projects:load` arrives after first paint. */
+export function startWorktreeBranchEnrollment(): void {
+  active?.startEnrollment();
+}
+
+/** Closes every HEAD stream; quit runs it before the runtime drains. */
 export function stopWorktreeBranchWatchers(): void {
-  syncGeneration += 1;
-  stopEpoch += 1;
-  for (const entry of Array.from(branchWatchers.values())) {
-    closeWatcher(entry);
-  }
-  branchWatchers.clear();
-  for (const watcher of Array.from(retiredBranchWatchers)) {
-    try {
-      watcher.close();
-    } catch {
-      // The runtime may already have stopped a watcher after its path moved.
-    }
-  }
-  retiredBranchWatchers.clear();
+  const current = active;
+  active = null;
+  current?.dispose();
 }

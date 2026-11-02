@@ -33,7 +33,7 @@ export function DeferredPluginsControl({
           disabled={disabled}
           data-testid="chat-plugins-deferred-tools-toggle"
           data-active={allowed ? 'true' : 'false'}
-          className={`focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition ${
+          className={`focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors ${
             allowed
               ? 'border-fg-info/30 bg-info-subtle fg-info hover:bg-info-subtle/80'
               : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'

@@ -1,5 +1,4 @@
 import {
-  type ChangeEvent,
   type JSX,
   useCallback,
   useEffect,
@@ -9,7 +8,6 @@ import {
 } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeading } from '../shared/PageHeading';
 import type {
   AgentAuditEntry,
   AgentAuditEventType,
@@ -23,11 +21,11 @@ import {
   AGENT_AUDIT_EVENT_TYPES,
   PIPELINE_EDITOR_PROJECT_ID,
   PIPELINE_EDITOR_WORKTREE_ID,
-  parseAgentAuditEventType,
 } from '@canopy/desktop-shared/types';
 import {
   CHAT_LABEL,
   CHAT_UNIT_LABEL,
+  ORCHESTRATOR_LABEL,
   WORKTREE_LABEL,
   WORKTREE_UNIT_LABEL,
 } from '@canopy/protocol';
@@ -37,8 +35,10 @@ import {
   formatRequestedSpeed,
 } from './auditTrailCost';
 import {
+  AUDIT_TRAIL_PROVIDERS,
   auditEntryWorkspaceId,
-  readAuditTrailProviderFilter,
+  auditTrailProviderSelection,
+  type AuditTrailProvider,
 } from '@/lib/auditTrailFilters';
 import { AgentProviderIcon } from '@/lib/providerUi';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
@@ -65,7 +65,17 @@ import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
 import { useContextScopedWorkspaces } from '@/hooks/useContextScopedWorkspaces';
 import { switchContextForWorkspace } from '@/lib/contextScope';
 import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
-import { LoadingIndicator } from '@canopy/ui-shared/components';
+import {
+  Button,
+  LoadingIndicator,
+  PageHeader,
+  PageSearchControls,
+  PageSearchField,
+  PageSearchFilters,
+  PageSearchRow,
+  pageFilter,
+  SegmentedControl,
+} from '@canopy/ui-shared/components';
 import {
   Download as AppCatalogDownload,
   ExternalIcon as AppCatalogExternalIcon,
@@ -75,6 +85,15 @@ function formatMetric(entry: AgentAuditEntry): string {
   const totalTokens = entry.tokens.input + entry.tokens.output;
   return `${totalTokens.toLocaleString()} tokens`;
 }
+
+/** The Status filter's values, in order. */
+const AUDIT_TRAIL_STATUSES: readonly AgentAuditStatus[] = [
+  'running',
+  'success',
+  'failure',
+  'cancelled',
+  'interrupted',
+];
 
 function formatStatus(status: AgentAuditStatus): string {
   switch (status) {
@@ -114,21 +133,11 @@ function displayLabelForEntry(entry: AgentAuditEntry): string {
       return `${CHAT_LABEL} ${CHAT_UNIT_LABEL.toLowerCase()}`;
     case 'chat_summary':
       return `${CHAT_UNIT_LABEL} summary`;
+    // Entries recorded before the rename stored "App Advisor" as their label.
+    case 'app_advisor':
+      return ORCHESTRATOR_LABEL;
     default:
       return entry.label;
-  }
-}
-
-function readStatusFilter(value: string): 'all' | AgentAuditStatus {
-  switch (value) {
-    case 'running':
-    case 'success':
-    case 'failure':
-    case 'cancelled':
-    case 'interrupted':
-      return value;
-    default:
-      return 'all';
   }
 }
 
@@ -192,13 +201,6 @@ async function openWorktreeChatLink(
   }
 }
 
-function readEventTypeFilter(value: string): 'all' | AgentAuditEventType {
-  // Shared key-map parser: a new `AgentAuditEventType` member becomes a compile
-  // error in `types/observability.ts` rather than silently snapping this filter
-  // back to "All events".
-  return parseAgentAuditEventType(value) ?? 'all';
-}
-
 /**
  * Display label for every audit event type. Exhaustive by construction, so a
  * new `AgentAuditEventType` is a compile error here and its filter option is
@@ -210,10 +212,10 @@ function readEventTypeFilter(value: string): 'all' | AgentAuditEventType {
 const EVENT_TYPE_FILTER_LABELS: Record<AgentAuditEventType, string> = {
   worktree_chat: `${WORKTREE_LABEL} ${CHAT_UNIT_LABEL.toLowerCase()}`,
   standalone_chat: `${CHAT_LABEL} ${CHAT_UNIT_LABEL.toLowerCase()}`,
-  app_advisor: 'App Advisor',
-  pipeline_editor: 'Pipeline editor',
-  pipeline_agent_turn: 'Pipeline agent',
-  pipeline_advisor: 'Pipeline Advisor',
+  app_advisor: ORCHESTRATOR_LABEL,
+  pipeline_editor: 'Workflow editor',
+  pipeline_agent_turn: 'Workflow agent',
+  pipeline_advisor: 'Workflow Advisor',
   pr_generation: 'PR generation',
   pr_split_planning: 'PR split planning',
   commit_message_generation: 'Commit message',
@@ -255,7 +257,7 @@ function formatInjectedPromptCondition(
     case 'helper_task_system_prompt':
       return 'Applied as helper task system instructions';
     case 'pipeline_step_system_prompt':
-      return 'Applied as pipeline step system instructions';
+      return 'Applied as workflow step system instructions';
     case 'plan_mode_enabled':
       return 'Applied when Codex plan mode is enabled';
     case 'deferred_tools_reload_continuation':
@@ -673,10 +675,6 @@ export function AuditTrailPage(): JSX.Element {
     }
   };
 
-  const handleSearchChange = (event: ChangeEvent<HTMLInputElement>): void => {
-    setSearch(event.target.value);
-  };
-
   const handleOpenTranscript = useCallback(
     async (entry: AgentAuditEntry): Promise<void> => {
       const requestId = transcriptRequestIdRef.current + 1;
@@ -714,99 +712,107 @@ export function AuditTrailPage(): JSX.Element {
       data-testid="page-audit"
     >
       <PageTitlebar />
-      <PageContent bottomInset="tight" stack className="shrink-0">
-        <PageHeading
+      <PageContent bottomInset="tight" className="shrink-0">
+        <PageHeader
           title="Audit trail"
-          subtitle="Chronological summaries of chat turns, helper tasks, and pipeline agent steps."
+          description="Chronological summaries of chat turns, helper tasks, and workflow agent steps."
           actions={
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               onClick={() => {
                 void handleExport();
               }}
               disabled={exporting}
-              className="focus-ring inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-s fg-primary transition hover:bg-secondary disabled:opacity-50"
             >
-              <AppCatalogDownload width="14" height="14" />
+              <AppCatalogDownload width="14" height="14" aria-hidden="true" />
               {exporting ? 'Exporting…' : 'Export CSV'}
-            </button>
+            </Button>
           }
         />
 
-        <div
-          className={`grid gap-3 ${scopingContext === undefined ? 'md:grid-cols-4' : 'md:grid-cols-5'}`}
-        >
-          {scopingContext !== undefined && (
-            <select
-              data-testid="audit-trail-context-filter"
-              aria-label="Scope"
-              value={contextFilter}
-              onChange={(event) => {
-                setContextFilter(
-                  event.target.value === 'all' ? 'all' : 'context',
-                );
-              }}
-              className="focus-ring rounded-md border bg-base px-3 py-2 text-s fg-primary"
-            >
-              <option value="context">Selected context</option>
-              <option value="all">All contexts</option>
-            </select>
-          )}
-          <input
-            type="search"
+        <PageSearchRow testId="audit-trail-search-row" className="mt-4">
+          <PageSearchField
             value={search}
-            onChange={handleSearchChange}
-            placeholder="Search"
-            className="focus-ring rounded-md border bg-base px-3 py-2 text-s fg-primary"
+            onValueChange={setSearch}
+            placeholder="Search the audit trail"
+            aria-label="Search the audit trail"
+            data-testid="audit-trail-search"
+            clearTestId="audit-trail-search-clear"
           />
-          <select
-            value={provider}
-            onChange={(event) => {
-              setProvider(readAuditTrailProviderFilter(event.target.value));
-            }}
-            className="focus-ring rounded-md border bg-base px-3 py-2 text-s fg-primary"
-          >
-            <option value="all">All providers</option>
-            <option value="claude">
-              {getModelCatalogProviderLabel('claude')}
-            </option>
-            <option value="codex">
-              {getModelCatalogProviderLabel('codex')}
-            </option>
-            <option value="ollama">
-              {getModelCatalogProviderLabel('ollama')}
-            </option>
-          </select>
-          <select
-            value={status}
-            onChange={(event) => {
-              setStatus(readStatusFilter(event.target.value));
-            }}
-            className="focus-ring rounded-md border bg-base px-3 py-2 text-s fg-primary"
-          >
-            <option value="all">All statuses</option>
-            <option value="running">Running</option>
-            <option value="success">Success</option>
-            <option value="failure">Failure</option>
-            <option value="cancelled">Cancelled</option>
-            <option value="interrupted">Interrupted</option>
-          </select>
-          <select
-            data-testid="audit-trail-event-type-filter"
-            value={eventType}
-            onChange={(event) => {
-              setEventType(readEventTypeFilter(event.target.value));
-            }}
-            className="focus-ring rounded-md border bg-base px-3 py-2 text-s fg-primary"
-          >
-            <option value="all">All events</option>
-            {AGENT_AUDIT_EVENT_TYPES.map((eventType) => (
-              <option key={eventType} value={eventType}>
-                {EVENT_TYPE_FILTER_LABELS[eventType]}
-              </option>
-            ))}
-          </select>
-        </div>
+          <PageSearchControls>
+            <PageSearchFilters
+              filters={[
+                ...(scopingContext !== undefined
+                  ? [
+                      pageFilter<'context'>({
+                        key: 'context',
+                        title: 'Scope',
+                        anyLabel: 'All contexts',
+                        options: [
+                          { value: 'context', label: 'Selected context' },
+                        ],
+                        selected:
+                          contextFilter === 'context' ? ['context'] : [],
+                        onToggle: (): void => setContextFilter('context'),
+                        onClear: (): void => setContextFilter('all'),
+                        testId: 'audit-trail-context-filter',
+                      }),
+                    ]
+                  : []),
+                pageFilter<AuditTrailProvider>({
+                  key: 'provider',
+                  title: 'Provider',
+                  anyLabel: 'All providers',
+                  options: AUDIT_TRAIL_PROVIDERS.map((value) => ({
+                    value,
+                    label: getModelCatalogProviderLabel(value),
+                  })),
+                  selected: auditTrailProviderSelection(provider),
+                  onToggle: (value): void =>
+                    setProvider(provider === value ? 'all' : value),
+                  onClear: (): void => setProvider('all'),
+                  testId: 'audit-trail-provider-filter',
+                }),
+                pageFilter<AgentAuditStatus>({
+                  key: 'status',
+                  title: 'Status',
+                  anyLabel: 'All statuses',
+                  options: AUDIT_TRAIL_STATUSES.map((value) => ({
+                    value,
+                    label: formatStatus(value),
+                  })),
+                  selected: status === 'all' ? [] : [status],
+                  onToggle: (value): void =>
+                    setStatus(status === value ? 'all' : value),
+                  onClear: (): void => setStatus('all'),
+                  testId: 'audit-trail-status-filter',
+                }),
+                pageFilter<AgentAuditEventType>({
+                  key: 'event',
+                  title: 'Event',
+                  anyLabel: 'All events',
+                  options: AGENT_AUDIT_EVENT_TYPES.map((value) => ({
+                    value,
+                    label: EVENT_TYPE_FILTER_LABELS[value],
+                  })),
+                  selected: eventType === 'all' ? [] : [eventType],
+                  onToggle: (value): void =>
+                    setEventType(eventType === value ? 'all' : value),
+                  onClear: (): void => setEventType('all'),
+                  testId: 'audit-trail-event-type-filter',
+                }),
+              ]}
+              onClearAll={(): void => {
+                setContextFilter('all');
+                setProvider('all');
+                setStatus('all');
+                setEventType('all');
+              }}
+              testId="audit-trail-filter"
+            />
+          </PageSearchControls>
+        </PageSearchRow>
       </PageContent>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -865,29 +871,27 @@ export function AuditTrailPage(): JSX.Element {
                     </div>
                     <div className="flex items-center gap-3">
                       {entry.hasTranscript && (
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           onClick={() => {
                             void handleOpenTranscript(entry);
                           }}
-                          className="focus-ring inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs fg-secondary transition hover:bg-secondary hover:fg-primary"
                           data-testid={`audit-transcript-button-${entry.id}`}
                         >
                           Transcript
-                        </button>
+                        </Button>
                       )}
                       {entry.linkTarget && (
-                        <button
-                          type="button"
+                        <Button
+                          size="compact"
                           onClick={() => {
                             void openEntry(entry);
                           }}
                           data-testid={`audit-inspect-button-${entry.id}`}
-                          className="focus-ring inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs fg-secondary transition hover:bg-secondary hover:fg-primary"
                         >
                           <AppCatalogExternalIcon width="14" height="14" />
                           Inspect
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -970,36 +974,25 @@ export function AuditTrailPage(): JSX.Element {
                 inputRef={transcriptSearchInputRef}
                 className="ml-auto"
               />
-              <div className="inline-flex items-center gap-1 rounded-md border p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTranscriptViewMode('rich');
-                  }}
-                  className={`rounded px-2 py-1 text-xs ${
-                    transcriptViewMode === 'rich'
-                      ? 'bg-secondary fg-primary'
-                      : 'fg-secondary'
-                  }`}
-                  data-testid="audit-transcript-mode-rich"
-                >
-                  Rich
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTranscriptViewMode('raw');
-                  }}
-                  className={`rounded px-2 py-1 text-xs ${
-                    transcriptViewMode === 'raw'
-                      ? 'bg-secondary fg-primary'
-                      : 'fg-secondary'
-                  }`}
-                  data-testid="audit-transcript-mode-raw"
-                >
-                  Raw
-                </button>
-              </div>
+              <SegmentedControl<'rich' | 'raw'>
+                label="Transcript view"
+                value={transcriptViewMode}
+                width="content"
+                shape="capsule"
+                options={[
+                  {
+                    value: 'rich',
+                    label: 'Rich',
+                    dataTestId: 'audit-transcript-mode-rich',
+                  },
+                  {
+                    value: 'raw',
+                    label: 'Raw',
+                    dataTestId: 'audit-transcript-mode-raw',
+                  },
+                ]}
+                onChange={setTranscriptViewMode}
+              />
             </div>
 
             <div

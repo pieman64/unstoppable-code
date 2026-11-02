@@ -5,7 +5,6 @@ export const COPY_CHAT_ID = 'can-4277-copy';
 export const COPY_PAUSED_CHAT_ID = 'can-4704-paused';
 export const COPY_PROMPT = 'Please **copy** this 🌲';
 export const COPY_REPLY = '# Result\n\nFirst **block**\n\n- second';
-export const COPY_PLAIN = 'Result\n\nFirst block\n\n- second';
 export const COPY_QUESTION_CHAT_ID = 'can-4277-question';
 export const COPY_LINK_CHAT_ID = 'can-2632-link';
 export const COPY_LINK_URL = 'http://canopy-e2e.invalid/p?x=1#frag';
@@ -190,28 +189,9 @@ export function seedCopyChat({ userDataDir, history = false, paused = false }) {
   });
 }
 
-/** Real Chromium input and actual clipboard reads, shared by desktop/Portal. */
-export async function assertCopyActions(
-  page,
-  row,
-  { markdown, plain, readClipboard },
-) {
-  await row.evaluate((element) =>
-    element.ownerDocument.getSelection()?.removeAllRanges(),
-  );
-  await row.click({ button: 'right' });
-  await expect(page.getByTestId('chat-message-context-menu')).toBeVisible();
-  await expect(page.getByTestId('chat-message-copy-selection')).toHaveCount(0);
-  await page.getByTestId('chat-message-copy-markdown').click();
-  await expect.poll(readClipboard).toBe(markdown);
-  await expectMenuCopied(page);
-  await row.click({ button: 'right' });
-  await page.getByTestId('chat-message-copy-plain').click();
-  await expect.poll(readClipboard).toBe(plain);
-  await expectMenuCopied(page);
-
-  // Snapshot survives focus movement and explicit live-selection clearing.
-  const selected = await row.evaluate((element) => {
+/** Selects the row's first paragraph and returns its text and center. */
+export async function selectRowText(row) {
+  return row.evaluate((element) => {
     const text = element.querySelector('p') ?? element;
     const range = element.ownerDocument.createRange();
     range.selectNodeContents(text);
@@ -225,13 +205,46 @@ export async function assertCopyActions(
       y: rect.y + rect.height / 2,
     };
   });
-  expect(selected.text.length).toBeGreaterThan(0);
-  await page.mouse.click(selected.x, selected.y, { button: 'right' });
-  await expect(page.getByTestId('chat-message-copy-selection')).toBeEnabled();
+}
+
+/**
+ * Real Chromium input and actual clipboard reads, shared by desktop/Portal.
+ * CAN-4870: the menu's only message copy is Copy selection, disabled without
+ * a selection; whole-message copies live in the reply footer.
+ */
+export async function assertCopyActions(
+  page,
+  row,
+  { readClipboard, writeClipboard },
+) {
   await row.evaluate((element) =>
     element.ownerDocument.getSelection()?.removeAllRanges(),
   );
-  await page.getByTestId('chat-message-copy-selection').click();
+  await writeClipboard('menu copy sentinel');
+  await row.click({ button: 'right' });
+  const menu = page.getByTestId('chat-message-context-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem')).toHaveText(['Copy selection']);
+  await expect(page.getByTestId('chat-message-copy-plain')).toHaveCount(0);
+  await expect(page.getByTestId('chat-message-copy-markdown')).toHaveCount(0);
+  const copySelection = page.getByTestId('chat-message-copy-selection');
+  await expect(copySelection).toBeDisabled();
+  // A disabled item ignores the press: no write and no `Copied`.
+  await copySelection.click({ force: true });
+  await expect(page.getByTestId('chat-message-copied')).toHaveCount(0);
+  expect(await readClipboard()).toBe('menu copy sentinel');
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+
+  // Snapshot survives focus movement and explicit live-selection clearing.
+  const selected = await selectRowText(row);
+  expect(selected.text.length).toBeGreaterThan(0);
+  await page.mouse.click(selected.x, selected.y, { button: 'right' });
+  await expect(copySelection).toBeEnabled();
+  await row.evaluate((element) =>
+    element.ownerDocument.getSelection()?.removeAllRanges(),
+  );
+  await copySelection.click();
   await expect.poll(readClipboard).toBe(selected.text);
   await expectMenuCopied(page);
 }
@@ -320,8 +333,13 @@ export async function assertVisibleReplyCopy(
 }
 
 /** Keyboard-only approach from an adjacent focus target, no locator.focus(). */
-export async function assertKeyboardAndNestedEditable(page, row) {
+export async function assertKeyboardAndNestedEditable(
+  page,
+  row,
+  { readClipboard },
+) {
   await row.evaluate((element) => {
+    element.ownerDocument.getSelection()?.removeAllRanges();
     const before = element.ownerDocument.createElement('button');
     before.dataset.testid = 'copy-keyboard-start';
     before.textContent = 'Before message';
@@ -330,12 +348,36 @@ export async function assertKeyboardAndNestedEditable(page, row) {
   });
   await page.keyboard.press('Tab');
   await expect(row).toBeFocused();
+  // No selection: the menu opens with nothing enabled and focus stays put.
+  const clipboardBefore = await readClipboard();
   await page.keyboard.press('Shift+F10');
-  await expect(page.getByTestId('chat-message-copy-plain')).toBeFocused();
-  await page.keyboard.press('ArrowDown');
-  await expect(page.getByTestId('chat-message-copy-markdown')).toBeFocused();
-  await page.keyboard.press('Escape');
+  const menu = page.getByTestId('chat-message-context-menu');
+  await expect(menu).toBeVisible();
+  await expect(page.getByTestId('chat-message-copy-selection')).toBeDisabled();
   await expect(row).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(row).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('chat-message-copied')).toHaveCount(0);
+  expect(await readClipboard()).toBe(clipboardBefore);
+  await expect(row).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(row).toBeFocused();
+
+  // Select after focusing, so the focus move cannot clear the selection.
+  const selected = await selectRowText(row);
+  expect(selected.text.length).toBeGreaterThan(0);
+  await expect(row).toBeFocused();
+  await page.keyboard.press('Shift+F10');
+  await expect(page.getByTestId('chat-message-copy-selection')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect.poll(readClipboard).toBe(selected.text);
+  await expectMenuCopied(page);
+  await expect(row).toBeFocused();
+  await row.evaluate((element) =>
+    element.ownerDocument.getSelection()?.removeAllRanges(),
+  );
   await row.evaluate((element) => {
     const input = element.ownerDocument.createElement('input');
     input.dataset.testid = 'copy-nested-editable';

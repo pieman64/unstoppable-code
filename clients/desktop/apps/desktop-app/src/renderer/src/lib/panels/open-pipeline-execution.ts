@@ -129,7 +129,7 @@ export type OpenPipelineExecutionResult =
   | {
       readonly status: 'error';
       readonly code: OpenPipelineExecutionErrorCode;
-      /** User-facing copy (see docs/ux-writing.md "Pipeline run panel"). */
+      /** User-facing copy (see docs/ux-writing.md "Workflow run panel"). */
       readonly message: string;
     };
 

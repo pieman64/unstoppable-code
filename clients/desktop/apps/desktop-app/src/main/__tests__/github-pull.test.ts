@@ -5,10 +5,15 @@ jest.mock('node:fs/promises', () => ({
 
 jest.mock('../lib/validation', () => ({
   validateId: jest.fn(),
+  validateOptionalRepoId: jest.fn(),
 }));
 
 jest.mock('../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: jest.fn(),
+  resolveRegisteredChatWorktree: (
+    projectId: string,
+    worktreeId: string,
+  ): { projectId: string; worktreeId: string } => ({ projectId, worktreeId }),
 }));
 
 jest.mock('../lib/workspace-registry', () => ({
@@ -95,6 +100,10 @@ import {
 import { launchRebaseResolutionChat } from '../lib/rebase-resolution-chat';
 import { readPreferencesFile } from '../ipc/preferences';
 import { registerIpcHandler } from '../ipc/register';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../canopy-runtime/desktop-runtime';
 import { requestGitActionCancellation } from '../ipc/git-action-cancellation';
 import {
   IPC_CHANNELS,
@@ -104,6 +113,8 @@ import type {
   PullResponse,
   WorktreePullRequest,
 } from '@canopy/desktop-shared/types/github';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { canopyPermissionDeniedError } from '@canopy/core-runtime';
 
 const mockedReaddir = jest.mocked(readdir);
 const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
@@ -122,6 +133,8 @@ const mockedLaunchRebaseResolutionChat = jest.mocked(
 );
 const mockedReadPreferencesFile = jest.mocked(readPreferencesFile);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
+// The user flows pass fetchOrigin a signal so failures are not swallowed.
+const ANY_SIGNAL: unknown = expect.any(AbortSignal);
 
 type HandlerFn = (
   event: any,
@@ -138,8 +151,19 @@ function getPullHandler(): HandlerFn {
   return call[1] as unknown as HandlerFn;
 }
 
+const resolveCaller = jest.fn(
+  (): CanopyCallerDescriptor => ({
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'electron-web-contents:1',
+    authorityId: 'local-desktop',
+    interfaceKind: 'desktop',
+    grants: [],
+  }),
+);
+
 describe('githubPull handler', () => {
   let handler: HandlerFn;
+  let runtime: DesktopCanopyDispatcher;
 
   beforeAll(async () => {
     const { getGitHubClient } = await import('../lib/github-client');
@@ -155,8 +179,18 @@ describe('githubPull handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as any);
+    // The mocked checkouts lie outside workspace worktrees, so fetch and pull
+    // take the direct path; github-pull-ipc-golden.test.ts dispatches them.
+    runtime = createDesktopRuntime();
+    registerGitHubHandlers(() => mockWindow as any, {
+      dispatcher: runtime,
+      resolveCaller,
+    });
     handler = getPullHandler();
+  });
+
+  afterAll(async () => {
+    await runtime.shutdown();
   });
 
   beforeEach(() => {
@@ -186,6 +220,7 @@ describe('githubPull handler', () => {
 
     expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo', {
       prune: true,
+      signal: ANY_SIGNAL,
     });
     expect(result.repos).toEqual([
       {
@@ -199,6 +234,22 @@ describe('githubPull handler', () => {
       '/workspace/single-repo',
       'feature-branch',
     );
+    expect(mockedPullBranchRebase).not.toHaveBeenCalled();
+  });
+
+  // CAN-5517 deliberate change, as the branch writes: the caller is resolved
+  // once, so an untracked sender fails the whole pull, not one repository.
+  it('refuses an untracked sender before any repository is fetched or pulled', async () => {
+    resolveCaller.mockImplementationOnce(() => {
+      throw canopyPermissionDeniedError('Untrusted desktop IPC sender.');
+    });
+
+    await expect(
+      handler({} as any, { projectId: 'project-a', worktreeId: 'wt-1' }),
+    ).rejects.toThrow('Untrusted desktop IPC sender.');
+    expect(mockedGetRemoteUrl).not.toHaveBeenCalled();
+    expect(mockedFetchOrigin).not.toHaveBeenCalled();
+    expect(mockedPullBranchFastForward).not.toHaveBeenCalled();
     expect(mockedPullBranchRebase).not.toHaveBeenCalled();
   });
 
@@ -262,6 +313,90 @@ describe('githubPull handler', () => {
     ]);
   });
 
+  // fetchOrigin swallows every error unless the caller passes a signal; a
+  // user pull must see the failure instead of reading stale origin/* refs.
+  it('reports a failed repo when the pre-pull fetch fails instead of a not_behind skip', async () => {
+    mockedFetchOrigin.mockImplementationOnce((_repoPath, options) =>
+      options?.signal === undefined
+        ? Promise.resolve()
+        : Promise.reject(new Error('fatal: unable to access origin')),
+    );
+    // Stale origin/* refs show nothing to pull.
+    mockedHasUnpulledCommits.mockResolvedValue(false);
+
+    const result = await handler({} as any, {
+      projectId: 'project-a',
+      worktreeId: 'wt-1',
+    });
+
+    expect(result.skippedRepos).toEqual([]);
+    expect(result.failedRepos).toEqual([
+      {
+        repoId: SINGLE_REPO_USAGE_REPO_ID,
+        repoName: 'single-repo',
+        error: 'fatal: unable to access origin',
+        status: 'failed',
+      },
+    ]);
+    expect(mockedFetchOrigin).toHaveBeenCalledTimes(1);
+    expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo', {
+      prune: true,
+      signal: ANY_SIGNAL,
+    });
+    const options = mockedFetchOrigin.mock.calls[0]?.[1];
+    expect(options?.signal?.aborted).toBe(false);
+    expect(mockedPullBranchFastForward).not.toHaveBeenCalled();
+    expect(mockedPullBranchRebase).not.toHaveBeenCalled();
+  });
+
+  it('classifies a pre-pull HTTPS fetch authentication failure', async () => {
+    mockedGetRemoteUrl.mockResolvedValue('https://github.com/org/repo.git');
+    mockedFetchOrigin.mockImplementationOnce((_repoPath, options) =>
+      options?.signal === undefined
+        ? Promise.resolve()
+        : Promise.reject(new Error('remote: Authentication failed')),
+    );
+
+    const result = await handler({} as any, {
+      projectId: 'project-a',
+      worktreeId: 'wt-1',
+    });
+
+    expect(result.failedRepos).toEqual([
+      expect.objectContaining({
+        repoName: 'single-repo',
+        failureCode: 'github_not_authenticated',
+      }),
+    ]);
+    expect(mockedPullBranchFastForward).not.toHaveBeenCalled();
+  });
+
+  it('keeps pulling the next repository after one repository fetch fails', async () => {
+    mockedIsMultiRepoWorkspace.mockReturnValue(true);
+    mockedResolveWorktreeCwd.mockReturnValue('/workspace/wt');
+    mockedReaddir.mockResolvedValue([
+      { name: 'repo-a', isDirectory: (): boolean => true },
+      { name: 'repo-b', isDirectory: (): boolean => true },
+    ] as any);
+    mockedFetchOrigin.mockImplementation((repoPath) =>
+      repoPath.endsWith('repo-a')
+        ? Promise.reject(new Error('offline'))
+        : Promise.resolve(),
+    );
+
+    const result = await handler({} as any, {
+      projectId: 'workspace-a',
+      worktreeId: 'wt-1',
+    });
+
+    expect(result.failedRepos).toEqual([
+      expect.objectContaining({ repoName: 'repo-a', error: 'offline' }),
+    ]);
+    expect(result.repos).toEqual([
+      { repoId: 'repo-b', repoName: 'repo-b', status: 'success' },
+    ]);
+  });
+
   it('skips repos without an origin remote before fetching', async () => {
     mockedGetRemoteUrl.mockResolvedValue(null);
 
@@ -289,6 +424,7 @@ describe('githubPull handler', () => {
 
     expect(mockedFetchOrigin).toHaveBeenCalledWith('/workspace/single-repo', {
       prune: true,
+      signal: ANY_SIGNAL,
     });
     expect(mockedPullBranchFastForward).not.toHaveBeenCalled();
     expect(mockedPullBranchRebase).not.toHaveBeenCalled();
@@ -307,7 +443,7 @@ describe('githubPull handler', () => {
     expect(mockedFetchOrigin).toHaveBeenNthCalledWith(
       1,
       '/workspace/single-repo',
-      { prune: true },
+      { prune: true, signal: ANY_SIGNAL },
     );
     expect(mockedFetchOrigin).toHaveBeenNthCalledWith(
       2,

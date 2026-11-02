@@ -18,7 +18,14 @@ export const AUTOMATION_TIMER_PROMPT =
   'Check the timer for this automation turn.';
 export const AUTOMATION_TIMER_REPLY = 'Automation timer fixture completed.';
 
-export function seedAutomationTurnTimerScenario() {
+/**
+ * `nativeSend` seeds the Home composer's deferred scheduled task, the one
+ * worktree prompt that keeps the native send (D4) and with it the
+ * `chat:hook-tab-started` notification. Other worktree prompts create their
+ * chat through the shared port (CAN-5379), which the renderer learns about from
+ * the canonical change stream instead.
+ */
+export function seedAutomationTurnTimerScenario({ nativeSend = false } = {}) {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-automation-turn-timer-'),
   );
@@ -42,6 +49,7 @@ export function seedAutomationTurnTimerScenario() {
           baseWorktreeId: 'demo-main',
           prompt: AUTOMATION_TIMER_PROMPT,
           model: 'gpt-6-sol',
+          ...(nativeSend ? { purpose: 'scheduled_task' } : {}),
         },
         createdAt: '2026-09-24T00:00:00.000Z',
         updatedAt: '2026-09-24T00:00:00.000Z',

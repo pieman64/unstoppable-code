@@ -14,9 +14,13 @@ describe('PluginsAddCustomMenu', () => {
         onCreateCustomSkill={jest.fn()}
       />,
     );
-    const trigger = /<button[^>]*class="([^"]*)"/.exec(html)?.[1] ?? '';
+    // The no-drag region is the trigger's wrapper, which covers the trigger.
+    const wrapper =
+      /<div[^>]*class="([^"]*)"[^>]*>\s*<button[^>]*data-testid="plugins-add-custom-menu"/.exec(
+        html,
+      )?.[1] ?? '';
 
-    expect(trigger.split(/\s+/)).toContain('electron-no-drag');
+    expect(wrapper.split(/\s+/)).toContain('electron-no-drag');
   });
 });
 

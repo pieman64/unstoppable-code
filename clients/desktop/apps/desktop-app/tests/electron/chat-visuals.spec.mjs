@@ -269,6 +269,62 @@ test('reads the owned V2 artifact and renders its visual in a collapsed turn', a
   }
 });
 
+test('keeps a visual readable and rendered after its scope is promoted to format 4 and reopened', async () => {
+  test.setTimeout(240_000);
+  const { userDataDir } = await seedChatVisuals();
+  const manifest = join(
+    userDataDir,
+    'workspaces',
+    VISUAL_SCOPE.projectId,
+    'chat-storage-manifests',
+    `${VISUAL_SCOPE.worktreeId}.json`,
+  );
+  const manifestVersion = () =>
+    existsSync(manifest)
+      ? JSON.parse(readFileSync(manifest, 'utf8')).version
+      : 0;
+  expect(manifestVersion()).toBeLessThan(4);
+  const env = { CANOPY_E2E_CHAT_FORMAT4: '1' };
+  let electronApp;
+  try {
+    // The first launch promotes the seeded scope; the second reopens format 4.
+    for (const launch of ['promote', 'reopen']) {
+      ({ electronApp } = await launchCanopy({ userDataDir, env }));
+      const page = await electronApp.firstWindow();
+      await openSeededChat(page);
+      await expect.poll(manifestVersion, { message: launch }).toBe(4);
+      const read = await page.evaluate(
+        (request) => window.api.chat.readVisual(request),
+        {
+          ...VISUAL_SCOPE,
+          chatId: VISUAL_CHAT_ID,
+          messageId: VISUAL_RESULT_MESSAGE_ID,
+          toolUseId: VISUAL_TOOL_USE_ID,
+          reference: VISUAL_REFERENCE,
+          offset: 0,
+          limit: VISUAL_REFERENCE.byteLength,
+        },
+      );
+      expect(read.sha256, launch).toBe(VISUAL_REFERENCE.sha256);
+      expect(Buffer.from(read.data, 'base64').toString('utf8')).toBe(
+        VISUAL_DOCUMENT,
+      );
+      const block = page
+        .getByTestId('chat-message-list-content')
+        .getByTestId(ids.block);
+      await expect(block).toHaveAttribute('data-variant', 'visual-only');
+      await expect(block.getByTestId(ids.frame)).toBeVisible();
+      await waitForAgentDocument(electronApp);
+      await closeCanopy(electronApp, userDataDir, {
+        keepUserData: launch === 'promote',
+      });
+      electronApp = undefined;
+    }
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('renders in light and dark and changes the live frame theme without reloading it', async () => {
   test.setTimeout(180_000);
   const { userDataDir } = await seedChatVisuals();
@@ -900,12 +956,10 @@ test('keeps HTML file preview rendering and searchable under the frame guard', a
       .filter({ hasText: filename })
       .first()
       .click();
-    await page
-      .getByRole('button', {
-        name: 'View preview; current view: source',
-        exact: true,
-      })
-      .click();
+    // A fresh HTML file opens formatted from the file palette.
+    await expect(
+      page.getByRole('button', { name: 'Formatted', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
     const preview = page.getByTestId('html-file-preview-frame');
     await expect(preview).toBeVisible();
     const body = page

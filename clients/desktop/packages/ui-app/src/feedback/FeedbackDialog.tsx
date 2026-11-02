@@ -1,7 +1,11 @@
 'use client';
 
 import { type JSX, type ReactNode, useState } from 'react';
-import { DialogModal, LoadingSpinner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogModal,
+  LoadingSpinner,
+} from '@canopy/ui-shared/components';
 
 /**
  * The feedback form the desktop app's Feedback modal renders, extracted so the
@@ -125,14 +129,15 @@ export function FeedbackDialog({
             className="flex items-center justify-end border-t px-5 py-3"
             data-testid="feedback-modal-success-footer"
           >
-            <button
+            <Button
               type="button"
+              variant="primary"
+              size="compact"
               onClick={onClose}
               data-testid="feedback-modal-done"
-              className="focus-ring rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis transition hover:bg-accent/90"
             >
               Done
-            </button>
+            </Button>
           </div>
         </>
       ) : (
@@ -162,7 +167,7 @@ export function FeedbackDialog({
                     aria-checked={type === option.value}
                     onClick={(): void => setType(option.value)}
                     data-testid={`feedback-modal-type-${option.value}`}
-                    className={`focus-ring rounded-md px-4 py-1.5 text-s font-medium transition ${
+                    className={`focus-ring rounded-md px-4 py-1.5 text-s font-medium transition-colors ${
                       type === option.value
                         ? 'bg-accent fg-emphasis'
                         : 'fg-secondary hover:fg-primary'
@@ -234,19 +239,20 @@ export function FeedbackDialog({
             className="flex items-center justify-end gap-3 border-t px-5 py-3"
             data-testid="feedback-modal-footer"
           >
-            <button
+            <Button
               type="button"
+              size="compact"
               onClick={onClose}
               data-testid="feedback-modal-cancel"
-              className="focus-ring rounded-lg px-4 py-2 text-s fg-secondary transition hover:bg-secondary hover:fg-primary"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
+              variant="primary"
+              size="compact"
               disabled={!canSubmit}
               data-testid="feedback-modal-submit"
-              className="focus-ring inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? (
                 <>
@@ -256,7 +262,7 @@ export function FeedbackDialog({
               ) : (
                 <span>Submit</span>
               )}
-            </button>
+            </Button>
           </div>
         </form>
       )}

@@ -27,6 +27,10 @@ import {
   rewriteMcpTombstones,
   type McpServerRefMatcher as RefMatcher,
 } from './server-ref-matching';
+import {
+  inMcpRefRewritePhase,
+  recordMcpRefRewriteFailure,
+} from './server-ref-rewrite-outcome';
 
 export const MCP_SERVER_REF_REWRITE_INCOMPLETE =
   "Couldn't point every chat on this device at the moved server. Try again.";
@@ -184,10 +188,13 @@ async function rewriteWorkspaceChats(
   workspaceId: string,
   from: readonly RefMatcher[],
   to: McpServerRef,
-): Promise<{ rewritten: number; failedScopes: number }> {
+): Promise<{ rewritten: number; failedScopes: number; errors: unknown[] }> {
   let rewritten = 0;
   let failedScopes = 0;
-  for (const scopeId of await chatStorageScopeIds(workspaceRoot)) {
+  const errors: unknown[] = [];
+  for (const scopeId of await inMcpRefRewritePhase('scopeEnumeration', () =>
+    chatStorageScopeIds(workspaceRoot),
+  )) {
     const tabIds = await readChatStorageDiscoveryIndex(workspaceRoot, scopeId)
       .then((index): string[] =>
         index.tabs
@@ -197,14 +204,17 @@ async function rewriteWorkspaceChats(
       )
       .catch((): null => null);
     try {
-      rewritten += await rewriteScopeChats(
-        { projectId: workspaceId, worktreeId: scopeId },
-        from,
-        to,
-        tabIds,
+      rewritten += await inMcpRefRewritePhase('chatRewrite', () =>
+        rewriteScopeChats(
+          { projectId: workspaceId, worktreeId: scopeId },
+          from,
+          to,
+          tabIds,
+        ),
       );
     } catch (error) {
       failedScopes += 1;
+      errors.push(error);
       logMainProcessWarn('[mcp-server-ref-rewrite] chat rewrite failed', {
         workspaceId,
         scopeId,
@@ -212,7 +222,7 @@ async function rewriteWorkspaceChats(
       });
     }
   }
-  return { rewritten, failedScopes };
+  return { rewritten, failedScopes, errors };
 }
 
 /**
@@ -231,18 +241,30 @@ export async function rewriteMcpServerRefs(
   );
   if (from.length === 0)
     return { globalDefaults: false, workspaces: 0, chats: 0 };
-  const globalDefaults = await rewriteGlobalDefaults(from, request.to);
+  const globalDefaults = await inMcpRefRewritePhase('globalDefaults', () =>
+    rewriteGlobalDefaults(from, request.to),
+  );
   const root = getWorkspacesRootDir();
   let workspaces = 0;
   let chats = 0;
   let failures = 0;
-  for (const workspaceId of await workspaceIds(root)) {
+  const errors: unknown[] = [];
+  for (const workspaceId of await inMcpRefRewritePhase(
+    'workspaceEnumeration',
+    () => workspaceIds(root),
+  )) {
     // Only real projects: read-only viewer scopes and stray folders have no
     // readable project config.
-    const { authority } = await readWorkspaceConfigDetailed(workspaceId);
+    const { authority } = await inMcpRefRewritePhase('workspaceRead', () =>
+      readWorkspaceConfigDetailed(workspaceId),
+    );
     if (authority !== 'ok') continue;
     try {
-      if (await rewriteWorkspaceDefaults(workspaceId, from, request.to))
+      if (
+        await inMcpRefRewritePhase('workspaceDefaults', () =>
+          rewriteWorkspaceDefaults(workspaceId, from, request.to),
+        )
+      )
         workspaces += 1;
       const result = await rewriteWorkspaceChats(
         join(root, workspaceId),
@@ -252,8 +274,10 @@ export async function rewriteMcpServerRefs(
       );
       chats += result.rewritten;
       failures += result.failedScopes;
+      errors.push(...result.errors);
     } catch (error) {
       failures += 1;
+      errors.push(error);
       logMainProcessWarn('[mcp-server-ref-rewrite] project rewrite failed', {
         workspaceId,
         error,
@@ -262,6 +286,13 @@ export async function rewriteMcpServerRefs(
   }
   // A caller removes the old server once this resolves, so a reference left
   // behind must fail the rewrite rather than dangle.
-  if (failures > 0) throw new Error(MCP_SERVER_REF_REWRITE_INCOMPLETE);
+  if (failures > 0) {
+    throw recordMcpRefRewriteFailure(
+      new Error(MCP_SERVER_REF_REWRITE_INCOMPLETE),
+      'rewrite',
+      'rewriteIncomplete',
+      errors,
+    );
+  }
   return { globalDefaults, workspaces, chats };
 }

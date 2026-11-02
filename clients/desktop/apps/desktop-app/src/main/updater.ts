@@ -59,8 +59,9 @@ import {
 // Accessing electron-updater.autoUpdater constructs a native installer. Linux
 // must never access that getter, including at module load or shutdown.
 function getAutoUpdater(): typeof electronUpdater.autoUpdater {
+  ensureDistributionAllowsUpdates();
   if (hostPlatformOperatingSystem() === 'linux')
-    throw new Error(linuxUpdateCopy(BRAND).manual);
+    throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).manual);
   return electronUpdater.autoUpdater;
 }
 
@@ -71,6 +72,11 @@ const PRIVATE_REPO_AUTH_ERROR = `${BRAND.displayName} updates require GitHub acc
 const STABLE_UPDATE_ERROR = `${BRAND.displayName} updates are temporarily unavailable. Please try again later.`;
 const STABLE_FEED_UNCONFIGURED_ERROR = `${BRAND.displayName} updates are not configured for this build.`;
 const UNPACKAGED_BUILD_ERROR = `App updates are only available in packaged ${BRAND.displayName} builds.`;
+const SOURCE_BUILD_UPDATE_ERROR = `App updates are disabled in source-built ${BRAND.displayName}. Rebuild from source to update.`;
+// The distribution identity is bundled at compile time. A runtime environment
+// variable must never turn a source installation into an official updater client.
+const IS_SOURCE_BUILD =
+  typeof __CANOPY_SOURCE_BUILD__ === 'boolean' && __CANOPY_SOURCE_BUILD__;
 const RELEASE_FLAVOR = getCanopyReleaseFlavor();
 const UPDATE_BASE_URL = __CANOPY_UPDATE_BASE_URL__.replace(/\/+$/, '');
 const CODE_SIGNATURE_VALIDATION_ERROR_PATTERN =
@@ -383,6 +389,8 @@ function isDeferredInstallReady(): boolean {
     updateState.installPending === true &&
     updateState.phase === 'downloaded' &&
     !rendererBusy &&
+    // Main includes live non-ambient provider background work and delegations,
+    // even after the renderer settles the foreground turn.
     !hasActiveChatWork()
   );
 }
@@ -408,6 +416,7 @@ function maybeRunDeferredInstall(): void {
 }
 
 async function runInstallUpdate(): Promise<void> {
+  ensureDistributionAllowsUpdates();
   refuseLinuxInstall();
   if (installInFlight) {
     return installInFlight;
@@ -481,6 +490,11 @@ function handleUpdaterError(
   return error instanceof Error ? error : new Error(message);
 }
 
+function ensureDistributionAllowsUpdates(): void {
+  if (IS_SOURCE_BUILD)
+    throw handleUpdaterError(new Error(SOURCE_BUILD_UPDATE_ERROR));
+}
+
 function ensurePackaged(): void {
   if (!app.isPackaged) {
     throw new Error(UNPACKAGED_BUILD_ERROR);
@@ -490,7 +504,7 @@ function ensurePackaged(): void {
 class UnsupportedLinuxUpdateError extends Error {}
 
 function linuxFailureMessage(error: unknown): string {
-  const copy = linuxUpdateCopy(BRAND);
+  const copy = linuxUpdateCopy(BRAND, RELEASE_FLAVOR);
   if (error instanceof UnsupportedLinuxUpdateError) return copy.unsupported;
   if (
     error instanceof Error &&
@@ -508,18 +522,22 @@ function linuxFailureMessage(error: unknown): string {
  */
 async function ensureLinuxDeb(): Promise<LinuxPackageArchitecture> {
   if (!app.isPackaged || !(await isInstalledLinuxDeb())) {
-    throw new UnsupportedLinuxUpdateError(linuxUpdateCopy(BRAND).unsupported);
+    throw new UnsupportedLinuxUpdateError(
+      linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unsupported,
+    );
   }
   const architecture = await installedLinuxPackageArchitecture();
   if (architecture === null) {
-    throw new UnsupportedLinuxUpdateError(linuxUpdateCopy(BRAND).unsupported);
+    throw new UnsupportedLinuxUpdateError(
+      linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unsupported,
+    );
   }
   return architecture;
 }
 
 function refuseLinuxInstall(): void {
   if (hostPlatformOperatingSystem() === 'linux')
-    throw new Error(linuxUpdateCopy(BRAND).manual);
+    throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).manual);
 }
 
 async function checkLinuxUpdates(
@@ -537,7 +555,8 @@ async function checkLinuxUpdates(
     if (isTargetedUpdateFlavor()) {
       const selected =
         target ?? (await findLatestLinuxTargetRelease(architecture));
-      if (!selected) throw new Error(linuxUpdateCopy(BRAND).unavailable);
+      if (!selected)
+        throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unavailable);
       const response = await fetchGitHubReleaseApi(
         `/repos/unstoppabledomains/canopy/releases/tags/${encodeURIComponent(selected.tag)}`,
       );
@@ -548,7 +567,8 @@ async function checkLinuxUpdates(
       );
       if (release?.version !== selected.version) release = null;
     } else {
-      if (!UPDATE_BASE_URL) throw new Error(linuxUpdateCopy(BRAND).unavailable);
+      if (!UPDATE_BASE_URL)
+        throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unavailable);
       const response = await fetch(
         `${UPDATE_BASE_URL}/desktop/${BRAND.release.artifactPrefix}/${getExpectedGitHubMetadataAssetName(architecture)}`,
         {
@@ -563,12 +583,13 @@ async function checkLinuxUpdates(
       );
     }
     if (generation !== updaterGeneration) return;
-    if (!release) throw new Error(linuxUpdateCopy(BRAND).unavailable);
+    if (!release)
+      throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unavailable);
     if (
       RELEASE_FLAVOR === 'stable' &&
       !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(app.getVersion())
     )
-      throw new Error(linuxUpdateCopy(BRAND).unavailable);
+      throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unavailable);
     const relation =
       RELEASE_FLAVOR === 'stable'
         ? undefined
@@ -587,7 +608,7 @@ async function checkLinuxUpdates(
       version: release.version,
       manualDownload: {
         url: release.url,
-        guidance: linuxUpdateCopy(BRAND).verification,
+        guidance: linuxUpdateCopy(BRAND, RELEASE_FLAVOR).verification,
         checksum: { algorithm: release.algorithm, value: release.checksum },
       },
     };
@@ -721,12 +742,13 @@ async function findLatestLinuxTargetRelease(
     page = result.nextCursor;
   }
   // An incomplete scan cannot establish the highest compatible version.
-  throw new Error(linuxUpdateCopy(BRAND).unavailable);
+  throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unavailable);
 }
 
 export async function listTargetUpdateVersions(
   request?: TargetUpdateVersionListRequest,
 ): Promise<TargetUpdateVersionListResponse> {
+  ensureDistributionAllowsUpdates();
   try {
     return await listTargetUpdateVersionsImpl(request);
   } catch (error) {
@@ -1047,6 +1069,10 @@ export function startUpdater(
   beforeInstall?: BeforeInstallUpdate,
 ): void {
   getWindowRef = getWindow;
+  // Do not even construct electron-updater for source builds: doing so can
+  // register its apply-on-quit hook independently of our manual install path.
+  // Keep only the window reference so manual actions can explain the policy.
+  if (IS_SOURCE_BUILD) return;
   beforeInstallUpdate = beforeInstall ?? null;
   if (
     hostPlatformOperatingSystem() !== 'linux' &&
@@ -1093,6 +1119,7 @@ export function stopUpdater(): void {
 }
 
 export async function checkForUpdates(): Promise<void> {
+  ensureDistributionAllowsUpdates();
   if (checkInFlight) {
     return checkInFlight;
   }
@@ -1128,6 +1155,7 @@ export async function checkForUpdates(): Promise<void> {
 export async function checkForVersion(
   request: TargetUpdateRequest,
 ): Promise<void> {
+  ensureDistributionAllowsUpdates();
   if (checkInFlight) {
     throw new Error('An update check is already in progress.');
   }
@@ -1162,6 +1190,7 @@ export async function checkForVersion(
 }
 
 export async function downloadUpdate(): Promise<void> {
+  ensureDistributionAllowsUpdates();
   refuseLinuxInstall();
   if (updateState.phase === 'downloaded') {
     return;
@@ -1215,6 +1244,7 @@ export async function downloadUpdate(): Promise<void> {
 }
 
 export async function installUpdate(): Promise<void> {
+  ensureDistributionAllowsUpdates();
   refuseLinuxInstall();
   if (updateState.phase !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');
@@ -1224,6 +1254,7 @@ export async function installUpdate(): Promise<void> {
 }
 
 export function scheduleUpdate(): void {
+  ensureDistributionAllowsUpdates();
   refuseLinuxInstall();
   if (updateState.phase !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');

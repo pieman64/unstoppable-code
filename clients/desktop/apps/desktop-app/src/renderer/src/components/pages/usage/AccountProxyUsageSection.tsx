@@ -5,10 +5,12 @@ import {
 } from '@canopy/desktop-shared/lib/account-proxy';
 import { projectAccountProxyUsageAccount } from '@canopy/desktop-shared/lib/account-proxy-usage-projection';
 import {
+  Button,
   getModelCatalogProviderLabel,
   ProviderAccountUsage,
+  UsageRow,
+  UsageRowList,
 } from '@canopy/ui-shared';
-import { ACCOUNT_BUTTON_PRIMARY } from '@/lib/account-button-styles';
 import {
   ACCOUNT_PROXY_SETTINGS_TITLE,
   accountProxyAccountState,
@@ -30,11 +32,9 @@ import { useNavigationStore } from '@/stores/navigationStore';
 export function AccountProxyUsageSection({
   harness,
   nowMs,
-  frameless,
 }: {
   readonly harness: AccountProxyHarness;
   readonly nowMs: number;
-  readonly frameless: boolean;
 }): JSX.Element {
   const status = useAccountProxyStatus();
   const openSettings = useNavigationStore((state) => state.openSettings);
@@ -45,49 +45,49 @@ export function AccountProxyUsageSection({
     status?.accounts ?? [],
     harness,
   );
-  const gap = frameless ? 'mt-2' : 'mt-4';
 
   return (
-    <div data-testid={`usage-provider-${harness}-account-proxy`}>
-      <div
-        className={`flex min-w-0 items-center justify-between gap-3 fg-secondary ${
-          frameless ? 'mt-1 text-xs' : 'mt-4 text-s'
-        }`}
-      >
-        <p className="min-w-0">
-          {`${label} runs through the account proxy on this device.`}
-        </p>
-        <button
-          type="button"
-          onClick={(): void => openSettings('account-proxy')}
-          data-testid={`usage-provider-${harness}-account-proxy-manage`}
-          className={`shrink-0 ${ACCOUNT_BUTTON_PRIMARY}`}
-        >
-          {`Manage ${ACCOUNT_PROXY_SETTINGS_TITLE}`}
-        </button>
-      </div>
-      {notice !== null ? (
-        <p className={`text-s fg-secondary ${gap}`}>{notice}</p>
-      ) : (
-        accounts.map((account) => (
-          <div
-            key={account.authIndex}
-            data-testid="usage-account-proxy-account"
-            className={gap}
-          >
-            <ProviderAccountUsage
-              account={projectAccountProxyUsageAccount(account)}
-              providerLabel={label}
-              nowMs={nowMs}
-              frameless={frameless}
+    <div
+      data-testid={`usage-provider-${harness}-account-proxy`}
+      className="flex flex-col gap-2"
+    >
+      {notice === null
+        ? accounts.map((account) => (
+            <div
+              key={account.authIndex}
+              data-testid="usage-account-proxy-account"
             >
-              <span className="shrink-0 text-xs fg-secondary">
-                {accountProxyAccountState(account)}
-              </span>
-            </ProviderAccountUsage>
-          </div>
-        ))
-      )}
+              <ProviderAccountUsage
+                account={projectAccountProxyUsageAccount(account)}
+                providerLabel={label}
+                nowMs={nowMs}
+              >
+                <span className="shrink-0 text-xs fg-secondary">
+                  {accountProxyAccountState(account)}
+                </span>
+              </ProviderAccountUsage>
+            </div>
+          ))
+        : null}
+      <UsageRowList>
+        <UsageRow
+          title={ACCOUNT_PROXY_SETTINGS_TITLE}
+          detail={
+            notice ?? `${label} runs through the account proxy on this device.`
+          }
+          trailing={
+            <Button
+              variant="secondary"
+              size="compact"
+              onClick={(): void => openSettings('account-proxy')}
+              aria-label={`Manage ${ACCOUNT_PROXY_SETTINGS_TITLE}`}
+              data-testid={`usage-provider-${harness}-account-proxy-manage`}
+            >
+              Manage
+            </Button>
+          }
+        />
+      </UsageRowList>
     </div>
   );
 }

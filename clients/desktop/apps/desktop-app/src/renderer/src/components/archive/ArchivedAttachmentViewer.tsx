@@ -6,6 +6,7 @@ import type {
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
 import { fileViewerKey, useFileViewerStore } from '@canopy/app-state';
 import { FileViewer, type FileViewerProps } from '@canopy/ui-app';
+import { Button } from '@canopy/ui-shared/components';
 import { registerLocalFileRootOverride } from '@/client/ipc-canopy-client';
 import { LoadingPlaceholder } from '@/components/shared';
 
@@ -132,28 +133,27 @@ export function ArchivedAttachmentViewer({
       data-testid="archived-attachment-viewer"
     >
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           onClick={onClose}
-          className="focus-ring rounded px-2 py-1 text-xs fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary"
           data-testid="archived-attachment-viewer-back"
         >
           Back to attachments
-        </button>
+        </Button>
         <span className="min-w-0 flex-1 truncate text-xs font-medium fg-primary">
           {attachment.filename}
         </span>
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={() =>
             void window.api.showInFinder({
               absolutePath: attachment.absolutePath,
             })
           }
-          className="focus-ring rounded-md border bg-fg-primary/[0.04] px-2.5 py-1 text-2xs font-medium fg-primary transition hover:bg-fg-primary/[0.08]"
         >
           Reveal
-        </button>
+        </Button>
       </div>
       {rootReady ? (
         <FileViewer

@@ -1,7 +1,12 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { initCursorModels } from '@canopy/desktop-shared/types';
+import {
+  getExecutionHarnessForModel,
+  initCopilotModels,
+  initCursorModels,
+  resolveModelAlias,
+} from '@canopy/desktop-shared/types';
 import type {
   ResolvedPluginRuntime,
   ResolvePluginsOptions,
@@ -10,6 +15,16 @@ import type { ResolvedActionRuntime } from '../../action-resolver';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type * as redaction from '../../../../lib/redaction';
 import { CursorEventProjection } from '../../../cursor/events';
+import { resolveHostRepositoryPolicy } from '../../../lib/repository-policy';
+import { parsePipelineText } from '../../../../pipelines/parse-pipeline';
+import { normalizePipeline } from '../normalize-pipeline';
+import { loadExecutionState, saveExecutionState } from '../execution-state';
+import {
+  executePipeline,
+  rerunPipelineExecution,
+  resumePipeline,
+  retryPipelineExecution,
+} from '../pipeline-executor';
 import {
   buildAgentRecoveryStepResult,
   resolveActionAiCreditsEnv,
@@ -17,10 +32,12 @@ import {
 } from '../step-runner';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 import type {
+  CopilotPromptRunnerResult,
   CursorPromptRunnerRequest,
   CursorPromptRunnerResult,
   ExecutionRuntime,
   NormalizedStep,
+  ResolvePipelineTargetResult,
 } from '../types';
 
 const resolvePlugins = jest.fn<
@@ -889,6 +906,7 @@ describe('agent recovery for an account proxy step', () => {
           error: 'proxy said no',
           outputs: { agent_failure_metadata_file: metadataFile },
           dynamic_env: {},
+          log_file: path.join(tempDir, 'agent-step.log'),
         },
         step: createStep({ id: 'agent-step', uses: 'builtin/agent-prompt' }),
         tempDir,
@@ -1341,3 +1359,347 @@ describe('Cursor records at the step transcript and live output', () => {
     expect(result.live).toEqual(result.disk);
   });
 });
+
+it.each(['directory', 'worktree', 'global'] as const)(
+  'carries trusted %s execution scope separately from effective step cwd',
+  async (scope) => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'pipeline-policy-scope-'),
+    );
+    const runtime = createRuntime(tempDir);
+    fs.mkdirSync(path.join(tempDir, 'desktop'));
+    try {
+      writeAgentPromptAction(runtime, '');
+      const result = await runStep({
+        executionId: 'policy-scope',
+        jobId: 'job',
+        step: { ...cursorStep(), working_directory: 'desktop' },
+        cwd: tempDir,
+        env: {},
+        runtime,
+        scope,
+        repoPath: path.join(tempDir, 'wrong-source-checkout'),
+        target:
+          scope === 'global'
+            ? { scope: 'global' }
+            : scope === 'directory'
+              ? { scope: 'directory', path: tempDir }
+              : {
+                  scope: 'worktree',
+                  path: tempDir,
+                  workspace_id: 'workspace',
+                  worktree_id: 'worktree',
+                  created: false,
+                },
+        signal: new AbortController().signal,
+      });
+      expect(result.status).toBe('success');
+      expect(runCursorPrompt.mock.calls[0][0]).toMatchObject({
+        cwd: path.join(tempDir, 'desktop'),
+        repositoryPolicyScope:
+          scope === 'global'
+            ? { kind: 'rootless' }
+            : { kind: 'checkout', root: tempDir },
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each([
+  'working_directory',
+  'legacy cwd',
+  'explicit directory',
+  'global',
+  'deeper nesting',
+  'switched worktree',
+  'legacy rerun',
+  'legacy retry',
+  'legacy resume',
+  'trusted legacy resume',
+  'unknown rerun',
+  'unknown retry',
+  'unknown resume',
+] as const)(
+  'keeps selected checkout policy across nested Copilot execution with %s',
+  async (mode) => {
+    const legacyRecovery = mode.includes('legacy') && mode !== 'legacy cwd';
+    const unknownRecovery = mode.startsWith('unknown');
+    const recovery = legacyRecovery || unknownRecovery;
+    const tempDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'nested-policy-')),
+    );
+    const checkout = path.join(tempDir, 'checkout');
+    const desktop = path.join(checkout, 'desktop');
+    fs.mkdirSync(desktop, { recursive: true });
+    fs.writeFileSync(path.join(checkout, 'CLAUDE.md'), 'R');
+    fs.writeFileSync(path.join(desktop, 'AGENTS.md'), 'D');
+    const otherCheckout = path.join(tempDir, 'other-checkout');
+    fs.mkdirSync(otherCheckout);
+    fs.writeFileSync(path.join(otherCheckout, 'CLAUDE.md'), 'OTHER');
+    const selectedCheckout =
+      mode === 'switched worktree' ? otherCheckout : checkout;
+    const runtime = createRuntime(tempDir);
+    runtime.bundledActionsDir = path.resolve(
+      'packages/desktop-shared/resources/actions',
+    );
+    initCopilotModels([
+      {
+        id: 'copilot:test',
+        rawModelId: 'test',
+        label: 'Copilot test',
+        supportsVision: false,
+        supportedThinkingLevels: [],
+      },
+    ]);
+    runtime.resolvePipelineTarget = (): Promise<ResolvePipelineTargetResult> =>
+      Promise.resolve({
+        cwd: selectedCheckout,
+        scope: 'worktree',
+        target: {
+          scope: 'worktree',
+          path: selectedCheckout,
+          workspace_id: 'workspace',
+          worktree_id: 'worktree',
+          created: false,
+        },
+        repoPath: path.join(tempDir, 'source-is-not-execution-root'),
+      });
+    expect(getExecutionHarnessForModel(resolveModelAlias('copilot:test'))).toBe(
+      'copilot',
+    );
+    const childPipelineYaml = [
+      'name: Child',
+      'scope: [worktree, directory, global]',
+      'on: dispatch',
+      'jobs:',
+      '  child:',
+      '    steps:',
+      '      - id: prompt',
+      '        uses: builtin/agent-prompt',
+      '        with:',
+      '          model: copilot:test',
+      '          prompt: Do it',
+    ].join('\n');
+    const nestedPipelineYaml = [
+      'name: Middle',
+      'scope: worktree',
+      'on: dispatch',
+      'jobs:',
+      '  middle:',
+      '    steps:',
+      '      - id: nested',
+      '        uses: builtin/run-pipeline',
+      '        with:',
+      `          pipeline_yaml: ${JSON.stringify(childPipelineYaml)}`,
+    ].join('\n');
+    const child = normalizePipeline(parsePipelineText(childPipelineYaml), {
+      defaultShell: 'bash',
+    });
+    expect(child.jobs.child.steps[0].with?.model).toBe('copilot:test');
+    const output: string[] = [];
+    const prepared: Awaited<ReturnType<typeof resolveHostRepositoryPolicy>>[] =
+      [];
+    runtime.copilotPromptRunner = {
+      runCopilotPrompt: async (request): Promise<CopilotPromptRunnerResult> => {
+        const policy = await resolveHostRepositoryPolicy(
+          request.repositoryPolicyScope,
+          request.cwd,
+        );
+        prepared.push(policy);
+        return policy.status === 'delivered' || policy.status === 'absent'
+          ? {
+              status: 'success',
+              sessionId: 'policy-session',
+              rawText: 'done',
+              transcript: '',
+              usage: { inputTokens: 0, outputTokens: 0 },
+            }
+          : {
+              status: 'failure',
+              transcript: '',
+              failure: {
+                version: 1,
+                provider: 'copilot',
+                had_agent_activity: false,
+                message: policy.message,
+              },
+            };
+      },
+    };
+    try {
+      const result = await runStep({
+        executionId: 'nested-policy',
+        jobId: 'job',
+        step: createStep({
+          id: 'nested',
+          uses: 'builtin/run-pipeline',
+          ...(mode === 'working_directory' ||
+          mode === 'deeper nesting' ||
+          recovery
+            ? { working_directory: 'desktop' }
+            : {}),
+          ...(mode === 'explicit directory'
+            ? { target: { scope: 'directory', path: 'desktop' } }
+            : {}),
+          ...(mode === 'global' ? { target: { scope: 'global' } } : {}),
+          ...(mode === 'switched worktree'
+            ? {
+                target: {
+                  scope: 'worktree',
+                  workspace_id: 'workspace',
+                  worktree: { id: 'other' },
+                },
+              }
+            : {}),
+          with: {
+            ...(mode === 'legacy cwd' ? { cwd: 'desktop' } : {}),
+            pipeline_yaml:
+              mode === 'deeper nesting'
+                ? nestedPipelineYaml
+                : childPipelineYaml,
+          },
+        }),
+        cwd: checkout,
+        env: {},
+        runtime,
+        scope: 'worktree',
+        onStepOutput: (event) => {
+          output.push(event.data);
+        },
+        repoPath: path.join(tempDir, 'source-is-not-execution-root'),
+        target: {
+          scope: 'worktree',
+          path: checkout,
+          workspace_id: 'workspace',
+          worktree_id: 'worktree',
+          created: false,
+        },
+        projectId: 'workspace',
+        worktreeId: 'worktree',
+        signal: new AbortController().signal,
+      });
+      if (result.status !== 'success')
+        throw new Error(JSON.stringify({ result, output }));
+      expect(prepared).toHaveLength(1);
+      if (!result.child_execution_id)
+        throw new Error('Child execution id missing');
+      const childState = await loadExecutionState(
+        result.child_execution_id,
+        runtime.executionsDir,
+      );
+      expect(childState?.execution_checkout_root).toBe(
+        mode === 'global'
+          ? undefined
+          : mode === 'explicit directory'
+            ? desktop
+            : selectedCheckout,
+      );
+      if (mode === 'global') {
+        expect(prepared[0].status).toBe('absent');
+      } else {
+        expect(prepared[0].status).toBe('delivered');
+        const block =
+          prepared[0].status === 'delivered' ? prepared[0].block : '';
+        if (mode === 'switched worktree') {
+          expect(block).toContain('### CLAUDE.md\nOTHER');
+          expect(block).not.toContain('### CLAUDE.md\nR');
+        } else {
+          expect(block).toContain(
+            mode === 'explicit directory'
+              ? '### AGENTS.md\nD'
+              : '### desktop/AGENTS.md\nD',
+          );
+          if (mode === 'explicit directory')
+            expect(block).not.toContain('### CLAUDE.md\nR');
+          else expect(block).toContain('### CLAUDE.md\nR');
+        }
+      }
+      if (mode === 'working_directory' || recovery) {
+        if (!childState) throw new Error('Child state missing');
+        const rootPipeline = parsePipelineText(
+          mode.endsWith('rerun') ? nestedPipelineYaml : childPipelineYaml,
+        );
+        if (recovery) {
+          for (const job of Object.values(rootPipeline.jobs))
+            job.steps[0].working_directory = 'desktop';
+        }
+        const rootRun = await executePipeline(rootPipeline, {
+          pipelineId: 'root-policy-replay',
+          projectId: 'workspace',
+          worktreeId: 'worktree',
+          cwd: recovery ? checkout : childState.cwd,
+          scope: childState.scope,
+          target:
+            recovery && childState.target?.scope === 'worktree'
+              ? { ...childState.target, path: checkout }
+              : childState.target,
+          executionCheckoutRoot: childState.execution_checkout_root,
+          runtime,
+        });
+        const rootState = await rootRun.waitForCompletion();
+        expect(rootState.status).toBe('success');
+        if (recovery) {
+          if (unknownRecovery) rootState.execution_checkout_root = null;
+          else delete rootState.execution_checkout_root;
+          const recovering = !mode.endsWith('rerun');
+          if (recovering) {
+            rootState.status = mode.endsWith('retry') ? 'failure' : 'running';
+            rootState.jobs.child.status = mode.endsWith('retry')
+              ? 'failure'
+              : 'pending';
+            rootState.jobs.child.steps = {};
+          }
+          await saveExecutionState(rootState, runtime.executionsDir);
+          const recover = mode.endsWith('rerun')
+            ? rerunPipelineExecution
+            : mode.endsWith('retry')
+              ? retryPipelineExecution
+              : resumePipeline;
+          const recovered = await recover(rootState.id, {
+            cwd: checkout,
+            runtime,
+            ...(mode === 'trusted legacy resume'
+              ? { executionCheckoutRoot: checkout }
+              : {}),
+          });
+          const recoveredState = await recovered.waitForCompletion();
+          if (!unknownRecovery) {
+            expect(recoveredState.status).toBe('success');
+            expect(prepared[2]).toEqual(prepared[0]);
+          } else {
+            expect(recoveredState.status).toBe('failure');
+            expect(prepared[2].status).toBe('unreadable');
+            if (prepared[2].status !== 'unreadable')
+              throw new Error('Expected unreadable repository policy');
+            expect(prepared[2].message).toContain('checkout is unknown');
+            expect(prepared[2].message).toContain('Start over');
+            if (mode === 'unknown rerun') {
+              const repeated = await rerunPipelineExecution(recoveredState.id, {
+                cwd: checkout,
+                runtime,
+              });
+              const repeatedState = await repeated.waitForCompletion();
+              expect(repeatedState.status).toBe('failure');
+              expect(repeatedState.execution_checkout_root).toBeNull();
+              expect(prepared[3]).toEqual(prepared[2]);
+            }
+          }
+          return;
+        }
+        const replay = await rerunPipelineExecution(rootState.id, {
+          cwd: checkout,
+          runtime,
+        });
+        expect((await replay.waitForCompletion()).status).toBe('success');
+        expect(prepared).toHaveLength(3);
+        expect(prepared[1]).toEqual(prepared[0]);
+        expect(prepared[2]).toEqual(prepared[0]);
+      }
+    } finally {
+      initCopilotModels([]);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  },
+);

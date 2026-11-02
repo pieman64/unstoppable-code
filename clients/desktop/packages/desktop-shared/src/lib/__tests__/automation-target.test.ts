@@ -1,4 +1,7 @@
-import { resolveLocalAutomationTargetRequirement } from '../automation-target';
+import {
+  automationTargetBindingChanged,
+  resolveLocalAutomationTargetRequirement,
+} from '../automation-target';
 import type { AutomationAction } from '../../types';
 
 describe('local automation target adapter', () => {
@@ -38,5 +41,88 @@ describe('local automation target adapter', () => {
         undefined,
       ),
     ).toMatchObject({ status: 'error' });
+  });
+});
+
+describe('pipeline destination bindings', () => {
+  const legacy: AutomationAction = {
+    type: 'worktree_pipeline',
+    workspaceId: 'ws-1',
+    pipelineId: 'p-1',
+  };
+
+  it('treats a retarget as a binding change', () => {
+    for (const target of [
+      { kind: 'new_worktree' as const },
+      { kind: 'project' as const },
+      { kind: 'task' as const, taskId: 'wt-1' },
+      { kind: 'global' as const },
+    ])
+      expect(
+        automationTargetBindingChanged(legacy, { ...legacy, target }),
+      ).toBe(true);
+    expect(
+      automationTargetBindingChanged(
+        { ...legacy, target: { kind: 'task', taskId: 'wt-1' } },
+        { ...legacy, target: { kind: 'task', taskId: 'wt-2' } },
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores the inert workspaceId of a global destination', () => {
+    expect(
+      automationTargetBindingChanged(
+        { ...legacy, target: { kind: 'global' } },
+        { ...legacy, workspaceId: 'ws-2', target: { kind: 'global' } },
+      ),
+    ).toBe(false);
+    const withoutWorkspace: AutomationAction = {
+      type: 'worktree_pipeline',
+      pipelineId: 'p-1',
+      target: { kind: 'global' },
+    };
+    expect(
+      automationTargetBindingChanged(withoutWorkspace, {
+        ...legacy,
+        target: { kind: 'global' },
+      }),
+    ).toBe(false);
+  });
+
+  it('checks a project folder run against directory scopes on a code project', () => {
+    const action: AutomationAction = { ...legacy, target: { kind: 'project' } };
+    expect(
+      resolveLocalAutomationTargetRequirement(
+        action,
+        'single-repo',
+        undefined,
+        {
+          status: 'resolved',
+          scopes: 'worktree',
+        },
+      ),
+    ).toMatchObject({ status: 'error' });
+    expect(
+      resolveLocalAutomationTargetRequirement(
+        action,
+        'single-repo',
+        undefined,
+        {
+          status: 'resolved',
+          scopes: 'directory',
+        },
+      ),
+    ).toEqual({ status: 'resolved', contexts: ['cowork', 'worktree'] });
+  });
+
+  it('resolves a global pipeline with no contexts', () => {
+    expect(
+      resolveLocalAutomationTargetRequirement(
+        { ...legacy, target: { kind: 'global' } },
+        undefined,
+        undefined,
+        { status: 'resolved', scopes: 'global' },
+      ),
+    ).toEqual({ status: 'resolved', contexts: [] });
   });
 });

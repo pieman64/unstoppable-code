@@ -20,6 +20,7 @@ import {
   setCodexSpeedConsumerActive,
   subscribeCodexSpeedCatalog,
 } from '../model-routing/codex-account-models';
+import { registerCodexAccountModelRegistrySync } from '../model-routing/codex-account-model-registry';
 import { sendToAllWindows } from '../lib/window-send';
 import { registerIpcHandler } from './register';
 
@@ -155,6 +156,8 @@ export function registerCodexSpeedHandlers(): void {
   disposeCatalogBroadcast = subscribeCodexSpeedCatalog((catalog): void => {
     sendToAllWindows(IPC_CHANNELS.codexSpeedChanged, catalog);
   });
+  // Account-only Codex models follow the same catalog (CAN-4716).
+  registerCodexAccountModelRegistrySync();
 
   registerIpcHandler<[request: unknown], CodexSpeedRouteFacts>(
     IPC_CHANNELS.codexSpeedReadRoute,

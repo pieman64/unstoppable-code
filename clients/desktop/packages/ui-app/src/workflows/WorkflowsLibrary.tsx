@@ -3,16 +3,28 @@
 import type { ComponentType, JSX, ReactNode, SVGProps } from 'react';
 import {
   Button,
+  PageSearchControls,
+  PageSearchFilters,
+  PageSearchRow,
+  SkeletonBlock,
+  SearchEmptyState,
+  SortDropdown,
   TableActionButton,
   TableActionsCell,
   ToggleSwitch,
   Tooltip,
+  WorkflowLastRunText,
+  pageFilter,
+  type SkeletonBarWidth,
 } from '@canopy/ui-shared/components';
 import {
   AppAdvisorIcon,
   ChatIcon,
   ChevronLeftMediumIcon,
   ChevronRightMediumIcon,
+  GlobeIcon,
+  FolderIcon,
+  CircleCheckIcon,
   CognitionIcon,
   CopyIcon,
   FilterIcon,
@@ -32,10 +44,8 @@ import {
   TrashIcon,
   WarningIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
-  WORKFLOW_LAST_RUN_LABELS,
   WORKFLOW_LIBRARY_ACTION_LABELS,
   WORKFLOW_LIBRARY_SORTS,
   WORKFLOW_LIBRARY_SORT_LABELS,
@@ -46,12 +56,11 @@ import {
   WORKFLOW_NO_PROJECT,
   WORKFLOW_STEP_LABELS,
   WORKFLOW_TRIGGER_LABELS,
+  describeClearLibraryFilters,
   describeNoLibraryMatches,
-  describeTriggerFilter,
   menuWorkflowLibraryActions,
   truncateStepChain,
   workflowLibraryFiltersActive,
-  type WorkflowLastRunState,
   type WorkflowLibraryAction,
   type WorkflowLibraryFacetCounts,
   type WorkflowLibraryFilters,
@@ -59,12 +68,12 @@ import {
   type WorkflowLibraryRow,
   type WorkflowLibrarySort,
   type WorkflowLibrarySource,
+  type WorkflowLibraryStatusFilter,
   type WorkflowStepGlyph,
   type WorkflowTriggerKind,
 } from './workflow-library-model';
 import { formatNextRun } from './workflow-time';
 import {
-  WorkflowsFilterMenu,
   WorkflowsRowMenu,
   type WorkflowsRowMenuItem,
   WorkflowsSearchField,
@@ -186,44 +195,6 @@ export function WorkflowStepChain({
   );
 }
 
-const LAST_RUN_DOTS: Readonly<Record<WorkflowLastRunState, string>> = {
-  success: 'bg-fg-success-strong',
-  failure: 'bg-fg-destructive-strong',
-  running: 'bg-fg-info',
-  skipped: 'bg-fg-secondary',
-  canceled: 'bg-fg-secondary',
-};
-
-function LastRunText({
-  lastRun,
-}: {
-  readonly lastRun: WorkflowLibraryRow['lastRun'];
-}): JSX.Element {
-  if (lastRun === undefined) {
-    return <span className="fg-tertiary">Not run yet</span>;
-  }
-  const at =
-    lastRun.state === 'running'
-      ? 'Now'
-      : lastRun.at === undefined
-        ? undefined
-        : formatRelativeTime(lastRun.at);
-  return (
-    <span className="inline-flex min-w-0 items-center gap-2">
-      <span
-        aria-hidden="true"
-        className={`h-2 w-2 shrink-0 rounded-full ${LAST_RUN_DOTS[lastRun.state]}`}
-      />
-      <span className="truncate">
-        <span className="fg-primary">
-          {WORKFLOW_LAST_RUN_LABELS[lastRun.state]}
-        </span>
-        {at ? <span className="fg-tertiary"> · {at}</span> : null}
-      </span>
-    </span>
-  );
-}
-
 export interface WorkflowsLibraryTableProps {
   /** One page of filtered, sorted rows. */
   readonly rows: readonly WorkflowLibraryRow[];
@@ -268,23 +239,7 @@ export function WorkflowsLibraryTable({
       data-testid="workflows-library-table"
     >
       <table className="w-full table-fixed text-left text-s">
-        <thead className="text-xs fg-tertiary">
-          <tr>
-            <th className="px-4 py-2.5 font-normal">Workflow</th>
-            <th
-              className={`${compact ? 'w-44' : 'w-52'} px-3 py-2.5 font-normal`}
-            >
-              Trigger
-            </th>
-            <th className="w-48 px-3 py-2.5 font-normal">Last run</th>
-            {compact ? null : (
-              <th className="w-44 px-3 py-2.5 font-normal">Next run</th>
-            )}
-            <th className="w-32 px-3 py-2.5 text-right font-normal">
-              <span className="sr-only">On or off, and actions</span>
-            </th>
-          </tr>
-        </thead>
+        <WorkflowsLibraryTableHead compact={compact} />
         <tbody>
           {rows.map((row) => (
             <WorkflowsLibraryTableRow
@@ -298,6 +253,125 @@ export function WorkflowsLibraryTable({
               onOpen={onOpen}
               onAction={onAction}
             />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * The Library table's column heads, shared by the table and its loading
+ * skeleton so the two always line up.
+ */
+function WorkflowsLibraryTableHead({
+  compact,
+}: {
+  readonly compact: boolean;
+}): JSX.Element {
+  return (
+    <thead className="text-xs fg-tertiary">
+      <tr>
+        <th className="px-4 py-2.5 font-normal">Workflow</th>
+        <th className={`${compact ? 'w-44' : 'w-52'} px-3 py-2.5 font-normal`}>
+          Trigger
+        </th>
+        <th className="w-48 px-3 py-2.5 font-normal">Last run</th>
+        {compact ? null : (
+          <th className="w-44 px-3 py-2.5 font-normal">Next run</th>
+        )}
+        <th className="w-32 px-3 py-2.5 text-right font-normal">
+          <span className="sr-only">On or off, and actions</span>
+        </th>
+      </tr>
+    </thead>
+  );
+}
+
+export interface WorkflowsLibraryTableSkeletonProps {
+  /** Body rows. Defaults to five. */
+  readonly rows?: number;
+  /** Match the table's narrow layout, without the Next run column. */
+  readonly compact?: boolean;
+}
+
+/** Each row's bars, varied so the column reads as distinct workflows. */
+const SKELETON_ROWS = [
+  { key: 'first', name: '1/2', summary: '1/4', trigger: '3/5', run: '2/3' },
+  { key: 'second', name: '2/5', summary: '1/5', trigger: '1/2', run: '3/5' },
+  { key: 'third', name: '1/2', summary: '1/3', trigger: '2/3', run: '2/3' },
+  { key: 'fourth', name: '1/3', summary: '1/4', trigger: '1/2', run: '3/4' },
+  { key: 'fifth', name: '2/5', summary: '1/5', trigger: '3/5', run: '1/2' },
+] as const satisfies ReadonlyArray<{
+  readonly key: string;
+  readonly name: SkeletonBarWidth;
+  readonly summary: SkeletonBarWidth;
+  readonly trigger: SkeletonBarWidth;
+  readonly run: SkeletonBarWidth;
+}>;
+
+/**
+ * The Library while its rows load: the real table and column heads, with
+ * rows of the same height in which only the values pulse. The rows replace
+ * it in place. Wrap it in `DelayedLoadingPlaceholder` so a fast load never
+ * flashes it.
+ */
+export function WorkflowsLibraryTableSkeleton({
+  rows = SKELETON_ROWS.length,
+  compact = false,
+}: WorkflowsLibraryTableSkeletonProps): JSX.Element {
+  const shown = SKELETON_ROWS.slice(
+    0,
+    Math.max(1, Math.min(SKELETON_ROWS.length, Math.floor(rows))),
+  );
+  return (
+    <div
+      role="status"
+      className="overflow-hidden rounded-lg border"
+      data-testid="workflows-library-skeleton"
+    >
+      <span className="sr-only">Loading workflows</span>
+      <table aria-hidden="true" className="w-full table-fixed text-left text-s">
+        <WorkflowsLibraryTableHead compact={compact} />
+        <tbody>
+          {shown.map((row) => (
+            <tr key={row.key} className="border-t align-middle">
+              <td className="px-4 py-3">
+                {/* The name and summary lines' own heights, so the row is
+                    as tall as a loaded one. */}
+                <div className="flex min-w-0 flex-col gap-1">
+                  <span className="flex h-5 items-center">
+                    <SkeletonBlock height="text" width={row.name} />
+                  </span>
+                  <span className="flex h-4.5 items-center">
+                    <SkeletonBlock height="meta" width={row.summary} />
+                  </span>
+                </div>
+              </td>
+              <td className="px-3 py-3">
+                <span className="flex h-5 items-center">
+                  <SkeletonBlock height="text" width={row.trigger} />
+                </span>
+              </td>
+              <td className="px-3 py-3">
+                <span className="flex h-5 items-center">
+                  <SkeletonBlock height="text" width={row.run} />
+                </span>
+              </td>
+              {compact ? null : (
+                <td className="px-3 py-3">
+                  <span className="flex h-5 items-center">
+                    <SkeletonBlock height="text" width="1/4" />
+                  </span>
+                </td>
+              )}
+              <td className="px-3 py-3">
+                {/* Where the switch sits; Run and More stay blank. */}
+                <span className="flex h-7 items-center justify-end pr-18">
+                  <SkeletonBlock shape="toggle" />
+                </span>
+              </td>
+            </tr>
           ))}
         </tbody>
       </table>
@@ -423,7 +497,7 @@ export function WorkflowsLibraryTableRow({
         </div>
       </td>
       <td className="px-3 py-3 text-s" data-testid="workflows-library-last-run">
-        <LastRunText lastRun={row.lastRun} />
+        <WorkflowLastRunText lastRun={row.lastRun} />
       </td>
       {compact ? null : (
         <td
@@ -439,7 +513,7 @@ export function WorkflowsLibraryTableRow({
             {row.installable ? (
               <Button
                 variant="secondary"
-                size="control"
+                size="compact"
                 disabled={row.installing === true || busy}
                 aria-busy={row.installing === true}
                 data-testid="workflows-library-add"
@@ -525,8 +599,10 @@ export interface WorkflowsLibraryToolbarProps {
 }
 
 /**
- * Library search, the Trigger / Status / Project / Source capsule filters
- * with counts, the sort, and the result line shown while a filter is active.
+ * Library search. The Trigger / Status / Project / Source filters with
+ * counts sit behind one Filter dropdown after the field (more than fit
+ * inline), then the sort; while there is a query the field shows how many
+ * workflows match.
  */
 export function WorkflowsLibraryToolbar({
   filters,
@@ -540,173 +616,132 @@ export function WorkflowsLibraryToolbar({
   total,
   matched,
 }: WorkflowsLibraryToolbarProps): JSX.Element {
-  const active = workflowLibraryFiltersActive(filters);
-  const projectName =
-    filters.project === null
-      ? 'Any project'
-      : filters.project === WORKFLOW_NO_PROJECT
-        ? 'No project'
-        : (projects.find((project) => project.id === filters.project)?.name ??
-          'Any project');
-  const query = filters.query.trim();
+  const pageFilters = [
+    pageFilter<WorkflowTriggerKind>({
+      key: 'trigger',
+      title: 'Trigger',
+      groupIcon: <PlayIcon />,
+      anyLabel: 'Any trigger',
+      multiple: true,
+      options: triggers.map((trigger) => ({
+        value: trigger,
+        label: WORKFLOW_TRIGGER_LABELS[trigger],
+        count: counts.triggers[trigger],
+        icon: <TriggerGlyph trigger={trigger} />,
+      })),
+      selected: filters.triggers,
+      onToggle: (trigger): void =>
+        onFiltersChange({
+          ...filters,
+          triggers: filters.triggers.includes(trigger)
+            ? filters.triggers.filter((value) => value !== trigger)
+            : [...filters.triggers, trigger],
+        }),
+      onClear: (): void => onFiltersChange({ ...filters, triggers: [] }),
+      testId: 'workflows-library-filter-trigger',
+    }),
+    pageFilter<WorkflowLibraryStatusFilter>({
+      key: 'status',
+      title: 'Status',
+      groupIcon: <CircleCheckIcon />,
+      anyLabel: 'Any status',
+      options: WORKFLOW_LIBRARY_STATUS_FILTERS.map((status) => ({
+        value: status,
+        label: WORKFLOW_LIBRARY_STATUS_LABELS[status],
+        count: counts.statuses[status],
+      })),
+      selected: filters.status === null ? [] : [filters.status],
+      onToggle: (status): void =>
+        onFiltersChange({
+          ...filters,
+          status: filters.status === status ? null : status,
+        }),
+      onClear: (): void => onFiltersChange({ ...filters, status: null }),
+      testId: 'workflows-library-filter-status',
+    }),
+    pageFilter<string>({
+      key: 'project',
+      title: 'Project',
+      groupIcon: <FolderIcon />,
+      anyLabel: 'Any project',
+      options: [
+        ...projects.map((project) => ({
+          value: project.id,
+          label: project.name,
+          count: counts.projects[project.id] ?? 0,
+        })),
+        {
+          value: WORKFLOW_NO_PROJECT,
+          label: 'No project',
+          count: counts.projects[WORKFLOW_NO_PROJECT] ?? 0,
+        },
+      ],
+      selected: filters.project === null ? [] : [filters.project],
+      onToggle: (project): void =>
+        onFiltersChange({
+          ...filters,
+          project: filters.project === project ? null : project,
+        }),
+      onClear: (): void => onFiltersChange({ ...filters, project: null }),
+      testId: 'workflows-library-filter-project',
+    }),
+    pageFilter<WorkflowLibrarySource>({
+      key: 'source',
+      title: 'Source',
+      groupIcon: <GlobeIcon />,
+      anyLabel: 'Any source',
+      options: WORKFLOW_LIBRARY_SOURCES.map((source) => ({
+        value: source,
+        label: WORKFLOW_LIBRARY_SOURCE_LABELS[source],
+        count:
+          source === 'shared' && sharedCountUnknown
+            ? undefined
+            : counts.sources[source],
+      })),
+      selected: filters.source === null ? [] : [filters.source],
+      onToggle: (source): void =>
+        onFiltersChange({
+          ...filters,
+          source: filters.source === source ? null : source,
+        }),
+      onClear: (): void => onFiltersChange({ ...filters, source: null }),
+      testId: 'workflows-library-filter-source',
+    }),
+  ];
   return (
-    <div
-      className="flex flex-col gap-2"
-      data-testid="workflows-library-toolbar"
-    >
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <WorkflowsSearchField
-          value={filters.query}
-          onChange={(next): void =>
-            onFiltersChange({ ...filters, query: next })
+    <PageSearchRow testId="workflows-library-toolbar">
+      <WorkflowsSearchField
+        value={filters.query}
+        onChange={(next): void => onFiltersChange({ ...filters, query: next })}
+        placeholder="Search workflows"
+        testId="workflows-library-search"
+        count={`${String(matched)} of ${String(total)}`}
+      />
+      <PageSearchControls>
+        <PageSearchFilters
+          filters={pageFilters}
+          onClearAll={(): void =>
+            onFiltersChange({
+              ...filters,
+              triggers: [],
+              status: null,
+              project: null,
+              source: null,
+            })
           }
-          placeholder="Search workflows"
-          testId="workflows-library-search"
+          testId="workflows-library-filter"
         />
-        <WorkflowsFilterMenu
-          title="Trigger"
-          label={describeTriggerFilter(filters.triggers)}
-          anyLabel="Any trigger"
-          multiple
-          options={triggers.map((trigger) => ({
-            value: trigger,
-            label: WORKFLOW_TRIGGER_LABELS[trigger],
-            count: counts.triggers[trigger],
-            icon: <TriggerGlyph trigger={trigger} />,
+        <SortDropdown<WorkflowLibrarySort>
+          value={sort}
+          options={WORKFLOW_LIBRARY_SORTS.map((value) => ({
+            value,
+            label: WORKFLOW_LIBRARY_SORT_LABELS[value],
           }))}
-          selected={filters.triggers}
-          onToggle={(trigger): void =>
-            onFiltersChange({
-              ...filters,
-              triggers: filters.triggers.includes(trigger)
-                ? filters.triggers.filter((value) => value !== trigger)
-                : [...filters.triggers, trigger],
-            })
-          }
-          onClear={(): void => onFiltersChange({ ...filters, triggers: [] })}
-          testId="workflows-library-filter-trigger"
+          onChange={onSortChange}
+          testId="workflows-library-sort"
         />
-        <WorkflowsFilterMenu
-          title="Status"
-          label={
-            filters.status === null
-              ? 'Any status'
-              : WORKFLOW_LIBRARY_STATUS_LABELS[filters.status]
-          }
-          anyLabel="Any status"
-          options={WORKFLOW_LIBRARY_STATUS_FILTERS.map((status) => ({
-            value: status,
-            label: WORKFLOW_LIBRARY_STATUS_LABELS[status],
-            count: counts.statuses[status],
-          }))}
-          selected={filters.status === null ? [] : [filters.status]}
-          onToggle={(status): void =>
-            onFiltersChange({
-              ...filters,
-              status: filters.status === status ? null : status,
-            })
-          }
-          onClear={(): void => onFiltersChange({ ...filters, status: null })}
-          testId="workflows-library-filter-status"
-        />
-        <WorkflowsFilterMenu
-          title="Project"
-          label={projectName}
-          anyLabel="Any project"
-          options={[
-            ...projects.map((project) => ({
-              value: project.id,
-              label: project.name,
-              count: counts.projects[project.id] ?? 0,
-            })),
-            {
-              value: WORKFLOW_NO_PROJECT,
-              label: 'No project',
-              count: counts.projects[WORKFLOW_NO_PROJECT] ?? 0,
-            },
-          ]}
-          selected={filters.project === null ? [] : [filters.project]}
-          onToggle={(project): void =>
-            onFiltersChange({
-              ...filters,
-              project: filters.project === project ? null : project,
-            })
-          }
-          onClear={(): void => onFiltersChange({ ...filters, project: null })}
-          testId="workflows-library-filter-project"
-        />
-        <WorkflowsFilterMenu<WorkflowLibrarySource>
-          title="Source"
-          label={
-            filters.source === null
-              ? 'Any source'
-              : WORKFLOW_LIBRARY_SOURCE_LABELS[filters.source]
-          }
-          anyLabel="Any source"
-          options={WORKFLOW_LIBRARY_SOURCES.map((source) => ({
-            value: source,
-            label: WORKFLOW_LIBRARY_SOURCE_LABELS[source],
-            count:
-              source === 'shared' && sharedCountUnknown
-                ? undefined
-                : counts.sources[source],
-          }))}
-          selected={filters.source === null ? [] : [filters.source]}
-          onToggle={(source): void =>
-            onFiltersChange({
-              ...filters,
-              source: filters.source === source ? null : source,
-            })
-          }
-          onClear={(): void => onFiltersChange({ ...filters, source: null })}
-          testId="workflows-library-filter-source"
-        />
-        <span className="ml-auto flex shrink-0">
-          <WorkflowsFilterMenu<WorkflowLibrarySort>
-            title="Sort"
-            label={WORKFLOW_LIBRARY_SORT_LABELS[sort]}
-            anyLabel={WORKFLOW_LIBRARY_SORT_LABELS['recently-run']}
-            options={WORKFLOW_LIBRARY_SORTS.filter(
-              (value) => value !== 'recently-run',
-            ).map((value) => ({
-              value,
-              label: WORKFLOW_LIBRARY_SORT_LABELS[value],
-            }))}
-            selected={sort === 'recently-run' ? [] : [sort]}
-            onToggle={onSortChange}
-            onClear={(): void => onSortChange('recently-run')}
-            testId="workflows-library-sort"
-          />
-        </span>
-      </div>
-      {active ? (
-        <p
-          className="flex flex-wrap items-center gap-2 text-xs fg-tertiary"
-          data-testid="workflows-library-result-line"
-        >
-          <span className="tabular-nums">
-            {matched} of {total} workflows match
-            {query === '' ? '' : ` "${query}"`}
-          </span>
-          <button
-            type="button"
-            className="focus-ring rounded-sm fg-secondary underline-offset-2 hover:fg-primary hover:underline"
-            data-testid="workflows-library-clear-filters"
-            onClick={(): void =>
-              onFiltersChange({
-                query: '',
-                triggers: [],
-                status: null,
-                project: null,
-                source: null,
-              })
-            }
-          >
-            Clear filters
-          </button>
-        </p>
-      ) : null}
-    </div>
+      </PageSearchControls>
+    </PageSearchRow>
   );
 }
 
@@ -785,8 +820,9 @@ export interface WorkflowsLibraryEmptyStateProps {
 }
 
 /**
- * The Library with nothing to show: `No workflows match …` with Clear filters
- * when a filter hides every row, otherwise the first-use state.
+ * The Library with nothing to show: `No workflows match …` with the one
+ * action that clears it when a search or filter hides every row, otherwise
+ * the first-use state.
  */
 export function WorkflowsLibraryEmptyState({
   filters,
@@ -794,38 +830,29 @@ export function WorkflowsLibraryEmptyState({
   newWorkflow,
 }: WorkflowsLibraryEmptyStateProps): JSX.Element {
   const filtered = workflowLibraryFiltersActive(filters);
+  if (filtered) {
+    return (
+      <SearchEmptyState
+        testId="workflows-library-no-matches"
+        title={describeNoLibraryMatches(filters)}
+        actionLabel={describeClearLibraryFilters(filters)}
+        onAction={onClearFilters}
+        actionTestId="workflows-library-empty-clear"
+      />
+    );
+  }
   return (
     <div
       className="flex flex-col items-center gap-2 px-6 py-16 text-center"
-      data-testid={
-        filtered ? 'workflows-library-no-matches' : 'workflows-library-empty'
-      }
+      data-testid="workflows-library-empty"
     >
-      {filtered ? (
-        <p className="text-s fg-secondary">
-          {describeNoLibraryMatches(filters)}
-        </p>
-      ) : (
-        <>
-          <h2 className="text-m font-semibold fg-primary">No workflows yet</h2>
-          <p className="text-s fg-secondary">
-            Pipelines and scheduled workflows you create or add show up here.
-          </p>
-        </>
-      )}
+      <h2 className="text-m font-semibold fg-primary">No workflows yet</h2>
+      <p className="text-s fg-secondary">
+        Workflows you create or add show up here, whether they run on a schedule
+        or when you start them.
+      </p>
       <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-        {filtered ? (
-          <Button
-            variant="secondary"
-            size="md"
-            data-testid="workflows-library-empty-clear"
-            onClick={onClearFilters}
-          >
-            Clear filters
-          </Button>
-        ) : (
-          newWorkflow
-        )}
+        {newWorkflow}
       </div>
     </div>
   );

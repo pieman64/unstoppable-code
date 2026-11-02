@@ -1406,7 +1406,6 @@ export interface InjectedToolNamesForBrand {
     readonly searchLedgerEntries: string;
     readonly updateLedgerEntry: string;
     readonly delegateTask: string;
-    readonly watchDelegates: string;
     readonly getDelegateOutput: string;
     readonly inspectDelegate: string;
     readonly listDelegates: string;
@@ -1457,7 +1456,6 @@ export interface InjectedToolNamesForBrand {
     readonly searchLedgerEntries: string;
     readonly updateLedgerEntry: string;
     readonly delegateTask: string;
-    readonly watchDelegates: string;
     readonly getDelegateOutput: string;
     readonly inspectDelegate: string;
     readonly listDelegates: string;
@@ -1519,7 +1517,6 @@ export function buildInjectedToolNamesForBrand(
       searchLedgerEntries: `mcp__${namespace}__SearchFeedEntries`,
       updateLedgerEntry: `mcp__${namespace}__UpdateFeedEntry`,
       delegateTask: `mcp__${namespace}__DelegateTask`,
-      watchDelegates: `mcp__${namespace}__WatchDelegates`,
       getDelegateOutput: `mcp__${namespace}__GetDelegateOutput`,
       inspectDelegate: `mcp__${namespace}__InspectDelegate`,
       listDelegates: `mcp__${namespace}__ListDelegates`,
@@ -1570,7 +1567,6 @@ export function buildInjectedToolNamesForBrand(
       searchLedgerEntries: `${namespace}_search_feed_entries`,
       updateLedgerEntry: `${namespace}_update_feed_entry`,
       delegateTask: `${namespace}_spawn_delegate`,
-      watchDelegates: `${namespace}_watch_delegates`,
       getDelegateOutput: `${namespace}_get_delegate_output`,
       inspectDelegate: `${namespace}_inspect_delegate`,
       listDelegates: `${namespace}_list_delegates`,

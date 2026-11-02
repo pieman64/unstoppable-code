@@ -243,7 +243,7 @@ it('rejects malformed workspace ownership before resolving a persisted-context t
       'project-a',
       `org:${org.organizationId}`,
     ),
-  ).rejects.toThrow('Pipeline unavailable (unknown-provenance)');
+  ).rejects.toThrow('Workflow unavailable (unknown-provenance)');
   expect(mockWorkspaceConfigRead).toHaveBeenCalledWith('project-a');
   expect(mockResolveWorkspaceTarget).not.toHaveBeenCalled();
 });
@@ -344,7 +344,7 @@ it('denies ambiguous pipeline ownership with the flag on and resource-context-v1
     }),
   ).toEqual({ allow: true });
   await expect(assertPipelineContext({ owner: {} })).rejects.toThrow(
-    'Pipeline unavailable (unknown-provenance)',
+    'Workflow unavailable (unknown-provenance)',
   );
   await expect(pipelineContextAllowed({ owner: {} })).resolves.toBe(false);
 });

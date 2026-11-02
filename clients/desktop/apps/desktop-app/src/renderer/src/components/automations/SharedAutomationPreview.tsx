@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type {
   SharedAutomationAction,
   SharedAutomationDetail,
@@ -61,7 +61,7 @@ function describeTrigger(trigger: SharedAutomationTrigger): string {
 function describeSharedAction(action: SharedAutomationAction): string {
   switch (action.type) {
     case 'app_advisor_prompt':
-      return 'App Advisor prompt';
+      return `${ORCHESTRATOR_LABEL} prompt`;
     case 'standalone_prompt':
       return `${CHAT_LABEL} prompt (recipient picks the project)`;
     case 'worktree_prompt':
@@ -69,17 +69,18 @@ function describeSharedAction(action: SharedAutomationAction): string {
     case 'worktree_pipeline':
       switch (action.pipeline.source) {
         case 'bundled':
-          return `Pipeline · ${action.pipeline.name ?? action.pipeline.pipelineId} (bundled)`;
+          return `Workflow · ${action.pipeline.name ?? action.pipeline.pipelineId} (bundled)`;
         case 'curated':
-          return `Pipeline · ${action.pipeline.name ?? action.pipeline.curatedKey} (curated)`;
+          return `Workflow · ${action.pipeline.name ?? action.pipeline.curatedKey} (curated)`;
         case 'unresolved':
-          return `Pipeline · ${action.pipeline.name ?? 'a pipeline you choose'} (recipient picks the pipeline)`;
+          return `Workflow · ${action.pipeline.name ?? 'a workflow you choose'} (recipient picks the workflow)`;
         // The definition travels with the share, so an absent name must not
         // fall through to the `shared` wording (or render as empty).
         case 'inline':
-          return `Pipeline · ${action.pipeline.name ?? 'included pipeline'} (included in this share)`;
+        case 'packaged':
+          return `Workflow · ${action.pipeline.name ?? 'included workflow'} (included in this share)`;
         default:
-          return `Pipeline · ${action.pipeline.name ?? 'shared pipeline'} (shared)`;
+          return `Workflow · ${action.pipeline.name ?? 'shared workflow'} (shared)`;
       }
   }
 }

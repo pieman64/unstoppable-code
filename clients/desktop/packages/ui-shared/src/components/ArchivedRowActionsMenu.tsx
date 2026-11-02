@@ -94,7 +94,7 @@ export function ArchivedRowActionsMenu({
           event.stopPropagation();
           setOpen((value) => !value);
         }}
-        className={`focus-ring pointer-events-none inline-flex h-6 w-6 items-center justify-center rounded fg-secondary opacity-0 transition hover:bg-fg-primary/[0.08] hover:fg-primary group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:h-11 pointer-coarse:w-11 ${triggerClassName} ${
+        className={`focus-ring pointer-events-none inline-flex h-6 w-6 items-center justify-center rounded fg-secondary opacity-0 transition-opacity hover:bg-fg-primary/[0.08] hover:fg-primary group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:h-11 pointer-coarse:w-11 ${triggerClassName} ${
           open ? 'pointer-events-auto opacity-100' : ''
         }`}
       >

@@ -1,11 +1,55 @@
 import type { JSX, ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
-import type { DeepLinkShareOpenEvent } from '@canopy/desktop-shared/types';
+import type {
+  DeepLinkShareOpenEvent,
+  PublicShareSnapshot,
+} from '@canopy/desktop-shared/types';
+import type { PublicShareLanding } from '../usePublicShareLanding';
 
-const mockUsePublicShareLanding = jest.fn(() => ({
-  snapshot: null,
-  state: { phase: 'loading' },
-}));
+function publicShareLanding(
+  snapshot: PublicShareSnapshot | null = null,
+  installReview: PublicShareLanding['installReview'] = null,
+): PublicShareLanding {
+  return {
+    state:
+      snapshot === null ? { phase: 'loading' } : { phase: 'ready', snapshot },
+    snapshot,
+    detecting: false,
+    installed: null,
+    installing: false,
+    installError: '',
+    verificationError: '',
+    needsRefresh: false,
+    refresh: (): void => undefined,
+    uninstalling: false,
+    installProgress: '',
+    installStatus: '',
+    agentReadiness: null,
+    agentReadinessLoading: false,
+    agentReviewLoading: false,
+    workspaceReadiness: null,
+    workspaceReadinessLoading: false,
+    install: (): ReturnType<PublicShareLanding['install']> =>
+      Promise.resolve(null),
+    insertInChat: (): ReturnType<PublicShareLanding['insertInChat']> =>
+      Promise.resolve('unhandled'),
+    tryNow: (): void => undefined,
+    manage: (): void => undefined,
+    uninstall: (): ReturnType<PublicShareLanding['uninstall']> =>
+      Promise.resolve(false),
+    installReview,
+    openingInstallReview: false,
+    closeInstallReview: (): void => undefined,
+    completeInstallReview: (): void => undefined,
+    retryResolve: (): void => undefined,
+    signIn: (): void => undefined,
+    switchAccount: (): void => undefined,
+  };
+}
+
+const mockUsePublicShareLanding = jest.fn<PublicShareLanding, []>(() =>
+  publicShareLanding(),
+);
 const mockInstallSharedAutomationModal = jest.fn(
   ({ source }: { source?: 'shared' | 'public' | 'curated' }): JSX.Element => (
     <div data-source={source} />
@@ -35,7 +79,9 @@ jest.mock('@canopy/ui-shared/components/ShareInstallDialog', () => ({
   ),
 }));
 jest.mock('../usePublicShareLanding', () => ({
-  usePublicShareLanding: mockUsePublicShareLanding,
+  get usePublicShareLanding(): typeof mockUsePublicShareLanding {
+    return mockUsePublicShareLanding;
+  },
 }));
 jest.mock('@/components/automations/InstallSharedAutomationModal', () => ({
   InstallSharedAutomationModal: (props: {
@@ -76,10 +122,7 @@ import { ShareInstallModal, ShareInstallModalHost } from '../ShareInstallModal';
 
 describe('ShareInstallModal', () => {
   beforeEach(() => {
-    mockUsePublicShareLanding.mockReturnValue({
-      snapshot: null,
-      state: { phase: 'loading' },
-    });
+    mockUsePublicShareLanding.mockReturnValue(publicShareLanding());
   });
 
   it('labels a loading workspace-entity share as a project template', () => {
@@ -120,30 +163,35 @@ describe('ShareInstallModal', () => {
       intent: 'install',
       audience: 'TEAM',
     };
-    mockUsePublicShareLanding.mockReturnValue({
-      snapshot: {
+    const snapshot: PublicShareSnapshot = {
+      entity: 'automation',
+      externalId: link.externalId,
+      contentHash: 'a'.repeat(64),
+      automation: {
+        version: 1,
+        name: 'Team automation',
+        description: '',
+        trigger: {
+          kind: 'cron',
+          expression: '0 2 * * *',
+          timezone: 'local',
+        },
+        action: {
+          type: 'app_advisor_prompt',
+          prompt: 'Check the queue',
+          plugins: [],
+        },
+        hasRunCondition: false,
+      },
+      authorUsername: null,
+      updatedAt: '2026-09-19T00:00:00.000Z',
+    };
+    mockUsePublicShareLanding.mockReturnValue(
+      publicShareLanding(snapshot, {
         entity: 'automation',
         externalId: link.externalId,
-        contentHash: 'a'.repeat(64),
-        automation: {
-          version: 1,
-          name: 'Team automation',
-          description: '',
-          trigger: {
-            kind: 'cron',
-            expression: '0 2 * * *',
-            timezone: 'local',
-          },
-          action: { type: 'app_advisor_prompt', prompt: 'Check the queue' },
-          hasRunCondition: false,
-        },
-        authorUsername: null,
-        updatedAt: '2026-09-19T00:00:00.000Z',
-      },
-      installReview: { entity: 'automation', externalId: link.externalId },
-      closeInstallReview: jest.fn(),
-      completeInstallReview: jest.fn(),
-    } as ReturnType<typeof mockUsePublicShareLanding>);
+      }),
+    );
 
     renderToString(
       <ShareInstallModal link={link} origin="deep-link" onClose={jest.fn()} />,
@@ -161,31 +209,36 @@ describe('ShareInstallModal', () => {
       intent: 'install',
       automationSource: 'curated',
     };
-    mockUsePublicShareLanding.mockReturnValue({
-      snapshot: {
+    const snapshot: PublicShareSnapshot = {
+      entity: 'automation',
+      externalId: link.externalId,
+      contentHash: 'a'.repeat(64),
+      sourceKind: 'curated',
+      automation: {
+        version: 1,
+        name: 'Daily review',
+        description: '',
+        trigger: {
+          kind: 'cron',
+          expression: '0 2 * * *',
+          timezone: 'local',
+        },
+        action: {
+          type: 'app_advisor_prompt',
+          prompt: 'Check the queue',
+          plugins: [],
+        },
+        hasRunCondition: false,
+      },
+      authorUsername: null,
+      updatedAt: '2026-09-19T00:00:00.000Z',
+    };
+    mockUsePublicShareLanding.mockReturnValue(
+      publicShareLanding(snapshot, {
         entity: 'automation',
         externalId: link.externalId,
-        contentHash: 'a'.repeat(64),
-        sourceKind: 'curated',
-        automation: {
-          version: 1,
-          name: 'Daily review',
-          description: '',
-          trigger: {
-            kind: 'cron',
-            expression: '0 2 * * *',
-            timezone: 'local',
-          },
-          action: { type: 'app_advisor_prompt', prompt: 'Check the queue' },
-          hasRunCondition: false,
-        },
-        authorUsername: null,
-        updatedAt: '2026-09-19T00:00:00.000Z',
-      },
-      installReview: { entity: 'automation', externalId: link.externalId },
-      closeInstallReview: jest.fn(),
-      completeInstallReview: jest.fn(),
-    } as ReturnType<typeof mockUsePublicShareLanding>);
+      }),
+    );
 
     renderToString(
       <ShareInstallModal link={link} origin="deep-link" onClose={jest.fn()} />,

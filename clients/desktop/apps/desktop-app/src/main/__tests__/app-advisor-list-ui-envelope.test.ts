@@ -9,6 +9,7 @@ function state(): AppAdvisorUiStateEnvelope {
     digest: 'digest',
     snapshot: {
       activePage: 'main',
+      archivedContainers: { count: 0, viewerOpen: false },
       overlays: {
         commandPaletteOpen: false,
         fileSearchPaletteOpen: false,
@@ -199,10 +200,10 @@ describe('withAppAdvisorListUiEnvelope', () => {
 
   it('returns errors unchanged, even when they contain a result', () => {
     const failure = {
-      ok: false,
+      ok: false as const,
       result: { items: [] },
-      error: { code: 'not_found', message: 'missing' },
-    } as const;
+      error: { code: 'not_found' as const, message: 'missing' },
+    };
     expect(
       withAppAdvisorListUiEnvelope('projects.list', failure, state()),
     ).toBe(failure);

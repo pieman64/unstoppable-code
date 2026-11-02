@@ -3,6 +3,10 @@ import type {
   PluginProvider,
   PluginProviderSupport,
 } from '@canopy/protocol/plugins';
+import type {
+  MarketplaceSourceAddSession,
+  MarketplaceSourceAddContext,
+} from './marketplace-source-add';
 
 /** Presentation permissions for this surface, never a substitute for authorization. */
 export interface MarketplaceSourceActions {
@@ -210,6 +214,9 @@ export type MarketplaceSourceOperations = ReturnType<
  * authorization and provider behavior. Failures reject with display-safe Errors.
  */
 export interface MarketplaceSourcesClient {
+  createAddSession?(
+    context?: MarketplaceSourceAddContext,
+  ): MarketplaceSourceAddSession;
   /** Optional shared ownership with retained host surfaces. */
   readonly operations?: MarketplaceSourceOperations;
   /** Initial rendering only; reconciliation always calls list(). */

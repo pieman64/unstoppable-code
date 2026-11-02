@@ -22,9 +22,13 @@ import {
   type FakeSettingsClient,
   type FakeSettingsHandler,
 } from '../../__tests__/helpers/test-settings-host';
+import {
+  chooseSettingsOption,
+  settingsSelectTrigger,
+} from '../../__tests__/helpers/settings-select';
 import { CreateTeamDialog } from '../create-team-dialog';
 import { TeamMembersSection } from '../team-members-section';
-import { TeamOverviewSection } from '../team-overview-section';
+import { TeamBrandingSettingsSection } from '../team-branding-settings-section';
 import { TeamPanel } from '../team-panel';
 import { TeamSubTeamsSection } from '../team-subteams-section';
 import { failWith } from './helpers/settings-responses';
@@ -168,11 +172,11 @@ describe('Organizations list', () => {
     });
     await render(client, <TeamPanel onCreate={() => undefined} />);
 
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain(SENTINEL);
 
     fail = false;
-    await click(buttonByText('Retry'));
+    await click(buttonByText('Try again'));
 
     expect(container.textContent).not.toContain("Couldn't load this.");
     expect(byTestId('team-panel-org').textContent).toContain(
@@ -236,9 +240,11 @@ describe('Organization rename', () => {
     });
     await render(
       client,
-      <TeamOverviewSection detail={makeDetail()} onDetailChange={jest.fn()} />,
+      <TeamBrandingSettingsSection
+        detail={makeDetail()}
+        onDetailChange={jest.fn()}
+      />,
     );
-    await click(byTestId('team-name-edit'));
     await type('team-name-input', 'Globex');
     await submitFormOf('team-name-input');
 
@@ -298,18 +304,22 @@ describe('Members', () => {
         onAddingChange={jest.fn()}
       />,
     );
-    const select = document.body.querySelector(
-      'select[aria-label="Role for Bob"]',
+    const bobRow = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="team-member-row"]'),
+    ).find((row) => row.textContent?.includes('Bob'));
+    if (!bobRow) throw new Error('Bob row missing');
+    const bobRole = settingsSelectTrigger(
+      bobRow,
+      '[data-testid="team-member-role"]',
     );
-    if (!(select instanceof HTMLSelectElement)) throw new Error('No select');
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(
-        HTMLSelectElement.prototype,
-        'value',
-      )?.set?.call(select, 'MEMBER');
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
+    // Named "Role for Bob" through in-page elements, never a copied label.
+    expect(
+      (bobRole.getAttribute('aria-labelledby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent?.trim())
+        .join(' '),
+    ).toBe('Role for Bob');
+    await chooseSettingsOption(bobRole, 'MEMBER');
     await flush();
 
     expect(container.textContent).toContain(

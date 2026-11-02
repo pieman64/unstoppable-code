@@ -282,18 +282,23 @@ describe('plan diagram scheduler data model artifact lifecycle', () => {
     );
     expect(
       trackedPlanUpdateEvents().some(
-        (event) => event.plan.diagrams !== undefined,
+        (event) => event.plan?.diagrams !== undefined,
       ),
     ).toBe(true);
     expect(
-      trackedPlanUpdateEvents().some((event) => !event.plan.diagrams),
+      trackedPlanUpdateEvents().some(
+        (event) => event.plan !== undefined && !event.plan.diagrams,
+      ),
     ).toBe(false);
     expect(
-      trackedPlanUpdateEvents().some(
-        (event) =>
-          event.plan.diagrams !== undefined &&
-          Object.keys(event.plan.diagrams).length === 0,
-      ),
+      trackedPlanUpdateEvents().some((event) => {
+        const plan = event.plan;
+        return (
+          plan !== undefined &&
+          plan.diagrams !== undefined &&
+          Object.keys(plan.diagrams).length === 0
+        );
+      }),
     ).toBe(true);
   });
 

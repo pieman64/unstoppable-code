@@ -1,3 +1,17 @@
+export {
+  isW5CaptureRequest,
+  isW5CaptureResult,
+  freezeW5Capture,
+  isW5CaptureWorkspaceId,
+  W5_CAPTURE_LIMITS,
+  type W5CaptureFile,
+  type W5CaptureRequest,
+  type W5CaptureResult,
+  type W5ConfinedFileRead,
+  type W5ConfinedFileReader,
+  type W5ConfinedFileReaderSource,
+  type W5FileImage,
+} from './capture-contract';
 import type { W5ApplyResult, W5RecoveryReport } from './apply';
 import type {
   W5BackupPosition,
@@ -20,6 +34,27 @@ export interface W5CommitLogWorkerData {
   dbPath: string;
   /** The W5 data root; every file a commit writes must be inside it. */
   root: string;
+  /**
+   * The Canopy data root holding `root` and the database's folder; the worker
+   * makes every folder up to it durable before `ready`. Absent: `root`, and
+   * the database's folder is not covered.
+   */
+  dataRoot?: string;
+  /**
+   * The realpath of `root`, which the host's first worker resolves before it
+   * is ready and the host passes to every worker after, so a restart never
+   * re-anchors it. Windows capture confines reads to it and refuses without it.
+   */
+  captureRoot?: string;
+}
+
+/**
+ * What `W5CommitLogHost` starts each worker with: the portable data plus the
+ * fields only a host's worker entry reads. The portable body ignores them.
+ */
+export interface W5CommitLogHostWorkerData extends W5CommitLogWorkerData {
+  /** win32: the native addon the entry loads its handle-confined reader from. */
+  readonly confinementAddon?: string;
 }
 
 /**
@@ -28,6 +63,10 @@ export interface W5CommitLogWorkerData {
  * `revision` reads one resource's revision; `lookupReceipt` admits a keyed
  * attempt without effects; `reserve` durably names it before uncertain effects; `snapshot` reads the verified
  * backup position after file recovery.
+ *
+ * `resolveRecovery`, `retryRecoveryRequiredCommit` and
+ * `abandonRecoveryRequiredCommit` are for offline maintenance's cold host
+ * only (RX1); nothing else sends them.
  */
 export type W5CommitLogMethod =
   | 'recoveryReport'
@@ -38,7 +77,11 @@ export type W5CommitLogMethod =
   | 'updateReservationDiagnostics'
   | 'releaseReservation'
   | 'markReservationRecoveryRequired'
-  | 'snapshot';
+  | 'snapshot'
+  | 'capture'
+  | 'resolveRecovery'
+  | 'retryRecoveryRequiredCommit'
+  | 'abandonRecoveryRequiredCommit';
 
 /** What one commit request did. */
 export type W5CommitOutcome =
@@ -56,6 +99,21 @@ export type W5CommitOutcome =
       status: 'recovery-required';
       commitId: number;
       revisions: Record<string, number>;
+      apply: Extract<W5ApplyResult, { status: 'recovery-required' }>;
+    };
+
+/**
+ * What retrying a commit awaiting recovery did, in the same request. Unlike
+ * {@link W5CommitOutcome} it carries no revisions: the log keeps none per
+ * commit, and a retry advances none.
+ */
+export type W5RecoveryRetryOutcome =
+  /** Its files were brought up to date and it now counts as applied. */
+  | { status: 'applied'; commitId: number }
+  /** Its files still match neither side; it waits for recovery again. */
+  | {
+      status: 'recovery-required';
+      commitId: number;
       apply: Extract<W5ApplyResult, { status: 'recovery-required' }>;
     };
 
@@ -90,10 +148,12 @@ export type W5CommitLogResponse =
 
 /**
  * Worker to host, sent once after the worker has opened the log and run
- * launch recovery, before any response.
+ * launch recovery, before any response. `ready` carries the capture root the
+ * worker uses: the one it was started with, or the root's realpath it
+ * resolved, absent if that failed.
  */
 export type W5CommitLogStartupMessage =
-  | { type: 'ready' }
+  | { type: 'ready'; captureRoot?: string }
   | { type: 'openFailed'; error: W5CommitLogWorkerError };
 
 const METHODS: ReadonlySet<string> = new Set<W5CommitLogMethod>([
@@ -106,6 +166,10 @@ const METHODS: ReadonlySet<string> = new Set<W5CommitLogMethod>([
   'releaseReservation',
   'markReservationRecoveryRequired',
   'snapshot',
+  'capture',
+  'resolveRecovery',
+  'retryRecoveryRequiredCommit',
+  'abandonRecoveryRequiredCommit',
 ]);
 
 function isRequestId(value: unknown): value is number {
@@ -141,8 +205,14 @@ export function isW5CommitLogWorkerData(
     typeof value.dbPath === 'string' &&
     value.dbPath.length > 0 &&
     typeof value.root === 'string' &&
-    value.root.length > 0
+    value.root.length > 0 &&
+    isOptionalPath(value.dataRoot) &&
+    isOptionalPath(value.captureRoot)
   );
+}
+
+function isOptionalPath(value: unknown): value is string | undefined {
+  return value === undefined || (typeof value === 'string' && value.length > 0);
 }
 
 export function isW5CommitLogRequest(
@@ -168,7 +238,7 @@ export function isW5CommitLogStartupMessage(
   value: unknown,
 ): value is W5CommitLogStartupMessage {
   if (!isRecord(value)) return false;
-  if (value.type === 'ready') return true;
+  if (value.type === 'ready') return isOptionalPath(value.captureRoot);
   return value.type === 'openFailed' && isWorkerError(value.error);
 }
 
@@ -248,12 +318,34 @@ export function isW5CommitOutcome(value: unknown): value is W5CommitOutcome {
       return isRevisionMap(value.revisions);
     case 'recovery-required':
       return (
-        isRevisionMap(value.revisions) &&
-        isRecord(value.apply) &&
-        value.apply.status === 'recovery-required' &&
-        Array.isArray(value.apply.conflicts) &&
-        Array.isArray(value.apply.written)
+        isRevisionMap(value.revisions) && isRecoveryRequiredApply(value.apply)
       );
+    default:
+      return false;
+  }
+}
+
+function isRecoveryRequiredApply(
+  value: unknown,
+): value is Extract<W5ApplyResult, { status: 'recovery-required' }> {
+  return (
+    isRecord(value) &&
+    value.status === 'recovery-required' &&
+    Array.isArray(value.conflicts) &&
+    Array.isArray(value.written)
+  );
+}
+
+export function isW5RecoveryRetryOutcome(
+  value: unknown,
+): value is W5RecoveryRetryOutcome {
+  if (!isRecord(value) || !isW5Revision(value.commitId) || value.commitId === 0)
+    return false;
+  switch (value.status) {
+    case 'applied':
+      return true;
+    case 'recovery-required':
+      return isRecoveryRequiredApply(value.apply);
     default:
       return false;
   }

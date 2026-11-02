@@ -452,6 +452,7 @@ test('setting README from its context menu marks the tab as the start page', asy
     ) {
       await sidePanelToggle.click();
     }
+    await window.getByTestId('side-panel-empty-item-file-explorer').click();
     const explorerTab = window
       .getByTestId('panel-group-group-extras')
       .locator('[role="tab"][data-panel-kind="file-explorer"]');

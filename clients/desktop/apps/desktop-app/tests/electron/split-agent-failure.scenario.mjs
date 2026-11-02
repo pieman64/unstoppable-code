@@ -81,9 +81,11 @@ export async function runSplitAgentFailure(options = {}) {
     await app.selectWorktree(scope.worktreeId);
     // Fail the initial prompt commit only after the canonical fork is durable.
     // This exercises the real tool/dispatch/state/renderer path without adding
-    // a production test seam or depending on Claude's startup timing.
+    // a production test seam or depending on Claude's startup timing. In both
+    // the same-worktree and branched cases the child's initial prompt commits
+    // by publishing its `.active.json` sidecar, then appending to `.jsonl`.
     await electronApp.evaluate(
-      (_electron, { sourceId, failure, branched }) => {
+      (_electron, { sourceId, failure }) => {
         const fs = process.getBuiltinModule('node:fs/promises');
         const syncFs = process.getBuiltinModule('node:fs');
         const originalRename = fs.rename;
@@ -93,11 +95,9 @@ export async function runSplitAgentFailure(options = {}) {
           if (
             !globalThis.__splitFailureCount &&
             target.includes('/transcripts/') &&
-            target.endsWith(branched ? '.jsonl' : '.active.json') &&
+            target.endsWith('.active.json') &&
             !target.includes(sourceId) &&
-            syncFs
-              .readFileSync(args[0], 'utf8')
-              .includes(branched ? 'Continue' : '"text":"Continue"')
+            syncFs.readFileSync(args[0], 'utf8').includes('"text":"Continue"')
           ) {
             globalThis.__splitFailureCount++;
             throw new Error(failure);
@@ -106,7 +106,7 @@ export async function runSplitAgentFailure(options = {}) {
         };
         process.getBuiltinModule('node:module').syncBuiltinESMExports();
       },
-      { sourceId, failure, branched },
+      { sourceId, failure },
     );
     const panel = window.getByTestId('panel-content-chat');
     await panel

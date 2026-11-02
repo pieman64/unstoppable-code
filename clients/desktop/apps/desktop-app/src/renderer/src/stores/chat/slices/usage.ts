@@ -5,6 +5,10 @@ import { type ChatTab } from '../types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatUsageSlice } from '../state';
 
+// Only in-flight renderer choices live here. A late rejection must not undo a
+// newer billing choice for the same tab.
+const pendingBillingChoices = new Map<string, symbol>();
+
 export const createUsageSlice: StateCreator<
   ChatState,
   [],
@@ -153,6 +157,33 @@ export const createUsageSlice: StateCreator<
     if (!context) return;
     const { activeTab } = context;
     if (!activeTab || activeTab.kind === 'file') return;
+    const choiceKey = `${context.selection.projectId}/${context.selection.worktreeId}/${context.chatId}`;
+    const choiceToken = Symbol();
+    pendingBillingChoices.set(choiceKey, choiceToken);
+    const rollbackSubscription = (): void => {
+      if (pendingBillingChoices.get(choiceKey) !== choiceToken) return;
+      pendingBillingChoices.delete(choiceKey);
+      set((state) =>
+        updateCapturedChatTab(state, context, (tab) => {
+          // Recovery controls or a canonical refresh can supersede this
+          // optimistic subscription without going through the picker action.
+          if (tab.aiCreditsRouting || tab.subscriptionBillingOverride !== true)
+            return tab;
+          const next = { ...tab };
+          if (activeTab.aiCreditsRouting)
+            next.aiCreditsRouting = activeTab.aiCreditsRouting;
+          else delete next.aiCreditsRouting;
+          if (activeTab.subscriptionBillingOverride !== undefined)
+            next.subscriptionBillingOverride =
+              activeTab.subscriptionBillingOverride;
+          else delete next.subscriptionBillingOverride;
+          if (activeTab.billingExplicitlyChosen !== undefined)
+            next.billingExplicitlyChosen = activeTab.billingExplicitlyChosen;
+          else delete next.billingExplicitlyChosen;
+          return next;
+        }),
+      );
+    };
     const activatedAt = Date.now();
     const canonicalPatch: ChatTabSettingsPatch =
       framework === 'ai-credits'
@@ -204,11 +235,26 @@ export const createUsageSlice: StateCreator<
         context.selection.worktreeId,
       )
     ) {
-      void get().dispatchChatCommand(context.selection, {
-        type: 'chat.patch_tab_settings',
-        tabId: context.chatId,
-        patch: canonicalPatch,
-      });
+      void get()
+        .dispatchChatCommand(
+          context.selection,
+          {
+            type: 'chat.patch_tab_settings',
+            tabId: context.chatId,
+            patch: canonicalPatch,
+          },
+          framework === 'subscription'
+            ? { rollback: rollbackSubscription }
+            : undefined,
+        )
+        .then((disposition) => {
+          if (disposition !== 'accepted' && framework === 'subscription')
+            rollbackSubscription();
+          if (pendingBillingChoices.get(choiceKey) === choiceToken)
+            pendingBillingChoices.delete(choiceKey);
+        });
+    } else {
+      pendingBillingChoices.delete(choiceKey);
     }
     get().rememberBillingFramework(framework);
   },

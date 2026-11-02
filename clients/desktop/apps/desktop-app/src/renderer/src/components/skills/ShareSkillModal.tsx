@@ -311,6 +311,8 @@ export function ShareSkillModal({
         input.assertAllowed?.();
         try {
           const publicShare = await window.skills.publishPublicShare(detail.id);
+          // Remove public link right on the success notice revokes this share.
+          detail = { ...detail, publicShare };
           // Fall back to the server-minted relative path when the cloud base
           // URL is not configured so the link is still visible and copyable.
           const link = await skillLinks.resolveLink({
@@ -323,6 +325,7 @@ export function ShareSkillModal({
           publicLinkFailed = true;
         }
       } else {
+        if (revokePublicShare) detail = { ...detail, publicShare: null };
         if (input.scope === 'team' || input.scope === 'organization') {
           const link = await skillLinks.resolveLink({
             kind: 'scoped',
@@ -334,6 +337,7 @@ export function ShareSkillModal({
       }
 
       pendingShared.current = { detail };
+      setRemoteDetail(detail);
       return {
         ...(shareUrl !== undefined ? { shareUrl } : {}),
         ...(publicLinkFailed ? { publicLinkFailed: true } : {}),
@@ -354,6 +358,8 @@ export function ShareSkillModal({
         sharePath: publicShare.sharePath,
       });
       setRemoteLink(link);
+      pending.detail = { ...pending.detail, publicShare };
+      setRemoteDetail(pending.detail);
       return { shareUrl: link.url };
     }, []);
 

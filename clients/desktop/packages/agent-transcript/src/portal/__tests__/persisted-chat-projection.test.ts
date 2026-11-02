@@ -10,10 +10,43 @@ import {
   persistedMessageToPortalMessage,
   persistedParts,
 } from '../persisted-chat-projection';
-import type { PortalChatMessage } from '@canopy/protocol/portal';
+import type {
+  PortalChatMessage,
+  PortalChatTurnGroup,
+} from '@canopy/protocol/portal';
 import type { ChatAgentSentInfo } from '@canopy/protocol/portal';
+import { isTurnFileRecord } from '@canopy/protocol/turn-files';
 
 describe('persisted chat projection limits', () => {
+  it.each(['completed', 'cancelled', 'failed', undefined] as const)(
+    'preserves exact-execution timer outcome %s through Portal export/import',
+    (outcome) => {
+      const message: PersistedChatMessage = {
+        id: 'T:timer',
+        role: 'system',
+        timestamp: 100,
+        blocks: [
+          {
+            type: 'turn_timer',
+            turnId: 'T',
+            userMessageId: 'A',
+            startedAt: 100,
+            completedAt: 200,
+            ...(outcome === undefined ? {} : { outcome }),
+          },
+        ],
+      };
+      const projected = persistedMessageToPortalMessage({
+        scope: 'worktree',
+        chatId: 'c',
+        message,
+      });
+      expect(
+        portalChatMessagesToPersisted([projected]).messages[0].blocks,
+      ).toEqual(message.blocks);
+    },
+  );
+
   it('projects external-agent provenance for both chat scopes', () => {
     const message: PersistedChatMessage = {
       id: 'external-user',
@@ -494,10 +527,24 @@ describe('persisted chat projection limits', () => {
           type: 'tool_use',
           toolUseId: 'tool-1',
           toolName: 'inspect',
-          input: toolInput,
+          input: '{}',
         },
       ],
     };
+    const legacyToolUseBlock = message.blocks.find(
+      (block) => block.type === 'tool_use',
+    );
+    if (legacyToolUseBlock?.type !== 'tool_use') {
+      throw new Error('Expected tool-use block in the legacy fixture');
+    }
+    // Simulate a pre-canonical persisted object input without widening the
+    // current block type or routing the fixture through JSON.parse's `any`.
+    Object.defineProperty(legacyToolUseBlock, 'input', {
+      value: toolInput,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
     const input = {
       scope: 'standalone' as const,
       chatId: 'chat-1',
@@ -515,8 +562,20 @@ describe('persisted chat projection limits', () => {
       arrayMaxItems: Infinity,
     }).parts?.find((part) => part.kind === 'tool_use');
 
-    expect(boundedPart?.data.input).not.toEqual(toolInput);
-    expect(unboundedPart?.data.input).toEqual(toolInput);
+    const projectedInput = (part: typeof boundedPart): unknown => {
+      if (
+        part?.kind !== 'tool_use' ||
+        typeof part.data !== 'object' ||
+        part.data === null ||
+        !('input' in part.data)
+      ) {
+        return undefined;
+      }
+      return part.data.input;
+    };
+
+    expect(projectedInput(boundedPart)).not.toEqual(toolInput);
+    expect(projectedInput(unboundedPart)).toEqual(toolInput);
   });
 });
 
@@ -808,6 +867,7 @@ describe('published portal chat import', () => {
         intermediateMessageIds: ['parts'],
         finalMessageIds: ['after'],
         summary: { readCount: 1 },
+        files: [{ path: 'report.md', state: 'ready', change: 'updated' }],
       },
     ]);
 
@@ -815,6 +875,9 @@ describe('published portal chat import', () => {
       'before',
       'parts',
       'after',
+    ]);
+    expect(result.turnGroups[0]?.files).toEqual([
+      { path: 'report.md', state: 'ready', change: 'updated' },
     ]);
     expect(result.messages[1]?.blocks).toEqual(
       expect.arrayContaining([
@@ -834,6 +897,58 @@ describe('published portal chat import', () => {
     expect(result.turnGroups).toEqual([
       expect.objectContaining({ userMessageId: 'before' }),
     ]);
+  });
+});
+
+describe('turn file evidence transport', () => {
+  const group: PortalChatTurnGroup = {
+    userMessageId: 'prompt',
+    intermediateMessageIds: [],
+    finalMessageIds: ['final'],
+  };
+
+  it('round-trips updated, pending, failed and legacy records through JSON', () => {
+    const files: NonNullable<PortalChatTurnGroup['files']> = [
+      {
+        path: '/ws/report.md',
+        state: 'ready',
+        change: 'updated',
+        target: { projectId: 'project', worktreeId: 'worktree' },
+      },
+      { path: 'pending.md', state: 'creating', change: 'updated' },
+      { path: 'failed.md', state: 'failed', change: 'updated' },
+      { path: 'saved.md', state: 'ready' },
+    ];
+    const transported: unknown = JSON.parse(JSON.stringify(files));
+    if (!Array.isArray(transported) || !transported.every(isTurnFileRecord))
+      throw new Error('Expected transported file evidence');
+    const result = portalChatMessagesToPersisted(
+      [],
+      [{ ...group, files: transported }, group],
+    );
+    expect(result.turnGroups).toEqual([{ ...group, files }, group]);
+    expect(result.turnGroups[0]?.files?.[3]).not.toHaveProperty('change');
+    expect(result.turnGroups[1]).not.toHaveProperty('files');
+  });
+
+  it.each([
+    { files: null },
+    { files: {} },
+    { files: [{ path: 'report.md', state: 'ready', change: 'deleted' }] },
+    { files: [{ path: 'report.md', state: 'ready', change: null }] },
+    { files: [{ path: 'report.md', state: 'updating', change: 'updated' }] },
+    { files: [{ path: 'https://example.com/report.md', state: 'ready' }] },
+    {
+      files: [
+        { path: 'report.md', state: 'ready', target: { projectId: 'project' } },
+      ],
+    },
+  ])('rejects invalid imported file evidence: $files', ({ files }) => {
+    const invalidGroup = { ...group };
+    Object.defineProperty(invalidGroup, 'files', { value: files });
+    expect(
+      portalChatMessagesToPersisted([], [invalidGroup, group]).turnGroups,
+    ).toEqual([group]);
   });
 });
 
@@ -1197,6 +1312,119 @@ describe('persisted chat projection plugin mentions', () => {
   });
 });
 
+describe('canonical turn timer identity', () => {
+  it('carries the execution and anchor through projection and import', () => {
+    const timer: PersistedChatMessage = {
+      id: 'T:timer',
+      role: 'system',
+      timestamp: 10,
+      blocks: [
+        {
+          type: 'turn_timer',
+          turnId: 'T',
+          userMessageId: 'A',
+          startedAt: 10,
+          completedAt: 20,
+        },
+      ],
+    };
+
+    const projected = persistedMessageToPortalMessage({
+      scope: 'worktree',
+      chatId: 'chat-1',
+      message: timer,
+    });
+    expect(projected.parts).toMatchObject([
+      { kind: 'turn_timer', data: { turnId: 'T', userMessageId: 'A' } },
+    ]);
+    expect(portalChatMessagesToPersisted([projected]).messages).toMatchObject([
+      {
+        id: 'T:timer',
+        blocks: [
+          {
+            type: 'turn_timer',
+            turnId: 'T',
+            userMessageId: 'A',
+            completedAt: 20,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("carries a wake's cause through projection and import", () => {
+    const timer: PersistedChatMessage = {
+      id: 'W:timer',
+      role: 'system',
+      timestamp: 10,
+      blocks: [
+        {
+          type: 'turn_timer',
+          turnId: 'W',
+          spawnedBy: { taskId: 'task-1', toolUseId: 'tool-1' },
+          startedAt: 10,
+          completedAt: 20,
+        },
+      ],
+    };
+
+    const projected = persistedMessageToPortalMessage({
+      scope: 'worktree',
+      chatId: 'chat-1',
+      message: timer,
+    });
+    expect(projected.parts).toMatchObject([
+      {
+        kind: 'turn_timer',
+        data: { spawnedBy: { taskId: 'task-1', toolUseId: 'tool-1' } },
+      },
+    ]);
+    expect(portalChatMessagesToPersisted([projected]).messages).toMatchObject([
+      {
+        blocks: [
+          {
+            type: 'turn_timer',
+            spawnedBy: { taskId: 'task-1', toolUseId: 'tool-1' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it.each([
+    ['an event wake', { taskId: 'task-1', toolUseId: 'tool-1', event: true }],
+    ['a cron fire', { toolUseId: 'tool-1', scheduled: true }],
+  ] as const)(
+    "carries %s's cause through projection and import",
+    (_name, spawnedBy) => {
+      const projected = persistedMessageToPortalMessage({
+        scope: 'worktree',
+        chatId: 'chat-1',
+        message: {
+          id: 'W:timer',
+          role: 'system',
+          timestamp: 10,
+          blocks: [
+            {
+              type: 'turn_timer',
+              turnId: 'W',
+              spawnedBy,
+              startedAt: 10,
+              completedAt: 20,
+            },
+          ],
+        },
+      });
+      expect(projected.parts).toMatchObject([
+        { kind: 'turn_timer', data: { spawnedBy } },
+      ]);
+      expect(portalChatMessagesToPersisted([projected]).messages).toMatchObject(
+        [{ blocks: [{ type: 'turn_timer', spawnedBy }] }],
+      );
+    },
+  );
+});
+
 describe('visual references on Portal parts', () => {
   const visualRef = {
     version: 1 as const,
@@ -1336,3 +1564,106 @@ describe('visual references on Portal parts', () => {
     expect(blocks.some((block) => block.type === 'text')).toBe(false);
   });
 });
+
+it('round trips resume provenance and explicit interruption through the Portal relay', () => {
+  const original: PersistedChatMessage = {
+    id: 'resume',
+    role: 'user',
+    timestamp: 500,
+    userMessageSource: 'auto_resume',
+    autoResume: {
+      reason: 'app_shutdown',
+      resumesUserMessageId: 'original',
+      resendsUserMessage: false,
+      providerName: 'Codex',
+    },
+    blocks: [{ type: 'text', text: 'Continue' }],
+  };
+  const projected = persistedMessageToPortalMessage({
+    scope: 'worktree',
+    chatId: 'chat',
+    message: original,
+  });
+  expect(projected).toMatchObject({
+    promptSource: 'automated',
+    autoResume: original.autoResume,
+    createdAtMs: 500,
+  });
+  expect(portalChatMessagesToPersisted([projected]).messages[0]).toMatchObject({
+    autoResume: original.autoResume,
+    userMessageSource: 'auto_resume',
+    timestamp: 500,
+  });
+  delete projected.autoResume;
+  expect(
+    portalChatMessagesToPersisted([projected]).messages[0]?.autoResume,
+  ).toEqual(original.autoResume);
+  const result: PersistedChatMessage = {
+    id: 'result',
+    role: 'system',
+    timestamp: 180,
+    blocks: [
+      {
+        type: 'tool_result',
+        toolUseId: 'edit',
+        toolName: 'Edit',
+        output: 'Interrupted by app restart',
+        isError: true,
+        interruption: { reason: 'app_restart', at: 180 },
+      },
+    ],
+  };
+  const relay = persistedMessageToPortalMessage({
+    scope: 'worktree',
+    chatId: 'chat',
+    message: result,
+  });
+  expect(
+    portalChatMessagesToPersisted([relay]).messages[0]?.blocks,
+  ).toMatchObject([
+    {
+      interruption: { reason: 'app_restart', at: 180 },
+      isError: true,
+      output: 'Interrupted by app restart',
+    },
+  ]);
+});
+
+it('retains content with generic attribution when automatic metadata is incomplete', () => {
+  const message = {
+    id: 'unknown-resume',
+    role: 'user' as const,
+    timestamp: 100,
+    userMessageSource: 'auto_resume' as const,
+    autoResume: { reason: 'future_reason', resendsUserMessage: false },
+    blocks: [{ type: 'text' as const, text: 'Continue' }],
+  };
+  const projected = persistedMessageToPortalMessage({
+    scope: 'worktree',
+    chatId: 'chat',
+    message: { ...message, autoResume: undefined },
+  });
+  expect(projected).toMatchObject({
+    promptSource: 'automated',
+    text: 'Continue',
+  });
+  expect(projected).not.toHaveProperty('autoResume');
+});
+
+it.each(['parentBlockId', 'parentToolUseId'] as const)(
+  'projects a child-directed user row with %s as a continuation of the root turn',
+  (parentField) => {
+    const projected = persistedMessageToPortalMessage({
+      scope: 'worktree',
+      chatId: 'chat',
+      message: {
+        id: 'child-follow-up',
+        role: 'user',
+        timestamp: 200,
+        [parentField]: 'background-agent',
+        blocks: [{ type: 'text', text: 'Check the background work' }],
+      },
+    });
+    expect(projected).toMatchObject({ continuesTurn: true });
+  },
+);

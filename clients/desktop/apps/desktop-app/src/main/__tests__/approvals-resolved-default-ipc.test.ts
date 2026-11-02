@@ -14,11 +14,13 @@ import type { WorkspaceApprovalsManifest } from '../lib/workspace-approvals-mani
 
 const mockHandlers = new Map<string, (...args: unknown[]) => unknown>();
 const mockReadWorkspaceApprovals = jest.fn();
-const mockReadPreferencesFile = jest.fn();
+const mockReadPreferencesFile = jest.fn<Promise<Record<string, unknown>>, []>();
 const mockPeekPreferencesLoadError = jest.fn();
 const mockReadWorkspaceApprovalsManifest = jest.fn();
 const mockResolveApproval = jest.fn();
-const mockPendingApprovalRequests = jest.fn((): unknown[] => []);
+const mockPendingApprovalRequests = jest.fn<unknown[], [owner: unknown]>(
+  (): unknown[] => [],
+);
 const mockAddWorkspaceApprovalRule = jest.fn();
 const mockRemoveWorkspaceApprovalRule = jest.fn();
 const mockUpdatePreferencesFile = jest.fn();
@@ -38,8 +40,8 @@ jest.mock('../ipc/register', () => ({
 jest.mock('../approvals/pending-approvals', () => ({
   resolveApproval: (...args: unknown[]): unknown =>
     mockResolveApproval(...args),
-  pendingApprovalRequests: (...args: unknown[]): unknown[] =>
-    mockPendingApprovalRequests(...args),
+  pendingApprovalRequests: (owner: unknown): unknown[] =>
+    mockPendingApprovalRequests(owner),
 }));
 
 jest.mock('../lib/approvals-persistence', () => ({
@@ -52,8 +54,15 @@ jest.mock('../lib/approvals-persistence', () => ({
 }));
 
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: (...args: unknown[]): unknown =>
-    mockReadPreferencesFile(...args),
+  readPreferencesFileDetailed: async (): Promise<{
+    preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+    authority: 'ok' | 'unreadable';
+  }> => ({
+    preferences: await mockReadPreferencesFile(),
+    authority: mockPeekPreferencesLoadError() != null ? 'unreadable' : 'ok',
+  }),
+  readPreferencesFile: (): Promise<Record<string, unknown>> =>
+    mockReadPreferencesFile(),
   updatePreferencesFile: (...args: unknown[]): unknown =>
     mockUpdatePreferencesFile(...args),
   peekPreferencesLoadError: (...args: unknown[]): unknown =>
@@ -199,8 +208,9 @@ describe('approval:resolved-default IPC handler', () => {
 
   it('does not consume a write that starts after its committed read begins', async () => {
     mockReadWorkspaceApprovals.mockResolvedValue(emptyApprovalsFile());
-    let resolvePreferences: (value: PreferencesData) => void = () => undefined;
-    const preferencesRead = new Promise<PreferencesData>((resolve) => {
+    let resolvePreferences: (value: Record<string, unknown>) => void = () =>
+      undefined;
+    const preferencesRead = new Promise<Record<string, unknown>>((resolve) => {
       resolvePreferences = resolve;
     });
     mockReadPreferencesFile.mockReturnValueOnce(preferencesRead);
@@ -217,7 +227,7 @@ describe('approval:resolved-default IPC handler', () => {
         worktree: 'full-access',
         cowork: 'full-access',
         appAdvisor: 'full-access',
-      }) as PreferencesData,
+      }),
     );
     endFailedWrite();
 

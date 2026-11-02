@@ -155,7 +155,10 @@ import {
   MANAGED_MCP_SERVER_NAME_MAX_LENGTH,
 } from '@canopy/desktop-shared/node/plugins/mcp-server-name';
 import { resolvePlugins as resolveSharedPlugins } from '@canopy/desktop-shared/node/plugins/plugin-resolver';
-import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
+import {
+  mcpHttpAuthTargetKey,
+  setMcpHttpAuthPreference,
+} from '@canopy/desktop-shared/lib/mcp-http-auth';
 import { resetResolvedCanopyDataDirForTests } from '@canopy/desktop-shared/canopy-paths';
 import { probeMcpHttpOAuthRequirement } from '../mcp/oauth-probe';
 import { installPlugin, loadMarketplaces } from '../plugins/plugin-service';
@@ -210,6 +213,8 @@ const getBundledSkillsDirMock = jest.mocked(getBundledSkillsDir);
 const probeMcpHttpOAuthRequirementMock = jest.mocked(
   probeMcpHttpOAuthRequirement,
 );
+// Keep the legacy package input intact; these tests cover plugin fragments.
+const legacyPluginFragmentKind = 'plugin_fragment' as never;
 
 function makeTreeWritable(directory: string): void {
   if (!fs.existsSync(directory)) return;
@@ -655,6 +660,13 @@ describe('plugin-resolver capability projection', () => {
           pluginCount: 2,
           lastCheckedAt: '2026-09-23T00:00:00.000Z',
         },
+        codex: {
+          provider: 'codex',
+          state: 'invalid',
+          accepted: false,
+          pluginCount: 0,
+          lastCheckedAt: '2026-09-23T00:00:00.000Z',
+        },
       },
       plugins: [
         {
@@ -818,11 +830,13 @@ describe('plugin-resolver capability projection', () => {
       serverId: 's',
       configId: 'c',
     };
-    const context = {
+    const context: Parameters<typeof resolveHttpMcpHandler>[0]['context'] = {
+      capabilityIdentities: {},
       selections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
       defaultHandler: 'canopy' as const,
       proxyAvailable: true,
       proxyFallbackWarningEmitted: false,
+      boundServers: new Map(),
     };
     expect(
       resolveHttpMcpHandler({
@@ -919,11 +933,13 @@ describe('plugin-resolver capability projection', () => {
       mcpServerRefs: [],
       mcpHttpAuthPreferences: [],
     };
-    const context = {
+    const context: Parameters<typeof resolveHttpMcpHandler>[0]['context'] = {
+      capabilityIdentities: {},
       selections,
       defaultHandler: 'provider' as const,
       proxyAvailable: true,
       proxyFallbackWarningEmitted: false,
+      boundServers: new Map(),
     };
     const definition: McpServerDefinitionData = {
       id: 'server-1',
@@ -1095,8 +1111,9 @@ describe('plugin-resolver capability projection', () => {
                 resourceId: 'account-plugin',
                 provider: 'claude',
                 rootPath: pluginDir,
-                kind: 'plugin_fragment',
+                kind: legacyPluginFragmentKind,
                 displayName: 'Account plugin',
+                invocationKeys: [],
               },
             ],
           },
@@ -1134,7 +1151,7 @@ describe('plugin-resolver capability projection', () => {
     );
     loadMarketplacesMock.mockResolvedValue({
       success: true,
-      data: { marketplaces: [] },
+      data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
 
     const resolved = await resolvePlugins(
@@ -1157,8 +1174,9 @@ describe('plugin-resolver capability projection', () => {
               resourceId: 'resource-1',
               provider: 'claude',
               rootPath: pluginDir,
-              kind: 'plugin_fragment',
+              kind: legacyPluginFragmentKind,
               displayName: 'Packaged plugin',
+              invocationKeys: [],
             },
           ],
         },
@@ -1230,7 +1248,7 @@ describe('plugin-resolver capability projection', () => {
           },
         }),
       );
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: {
           version: 2,
@@ -1275,6 +1293,7 @@ describe('plugin-resolver capability projection', () => {
                             mode: 'native' as const,
                             name: 'native-plugin',
                             installLocation: claudeDir,
+                            sourcePath: claudeDir,
                           },
                         }
                       : {}),
@@ -1295,7 +1314,10 @@ describe('plugin-resolver capability projection', () => {
 
       const registerStdioMcpRoute: jest.MockedFunction<
         McpStdioBrokerForResolver['registerStdioMcpRoute']
-      > = jest.fn(() =>
+      > = jest.fn<
+        ReturnType<McpStdioBrokerForResolver['registerStdioMcpRoute']>,
+        Parameters<McpStdioBrokerForResolver['registerStdioMcpRoute']>
+      >(() =>
         Promise.resolve({
           routeId:
             '0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -1472,7 +1494,7 @@ describe('plugin-resolver capability projection', () => {
 
   it('degrades temp-directory creation failures into capability warnings', async () => {
     getDataDirMock.mockReturnValue(path.join(tempDir, 'missing', 'data'));
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -1497,7 +1519,7 @@ describe('plugin-resolver capability projection', () => {
   });
 
   it('reports publication failures as publication warnings', async () => {
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -1528,7 +1550,7 @@ describe('plugin-resolver capability projection', () => {
   });
 
   it('keeps capability resolution successful when temp cleanup fails', async () => {
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -1601,7 +1623,7 @@ describe('plugin-resolver capability projection', () => {
             upstreamUrl: `https://cloud.test/api/v1/mcp-proxy/${target.routeId}`,
           });
         });
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: { version: 2, lastRefreshed: '', marketplaces: [] },
       });
@@ -1712,7 +1734,10 @@ describe('plugin-resolver capability projection', () => {
   describe('curated plugin member binding', (): void => {
     const CURATED_MARKETPLACE_ID = 'curated/cloud';
     const LINEAR_URL = 'https://mcp.linear.app/mcp';
-    const linearDefault = {
+    type Connection = NonNullable<
+      Awaited<ReturnType<typeof loadAccountMcpRefConnections>>
+    >[number];
+    const linearDefault: Connection = {
       id: 'conn-default',
       serverKey: 'linear',
       configId: 'default',
@@ -1729,7 +1754,6 @@ describe('plugin-resolver capability projection', () => {
       displayName: 'Linear (Work)',
       routeId: 'route-work',
     };
-    type Connection = typeof linearDefault;
     let proxy: {
       ensureStarted: jest.Mock;
       registerRoute: jest.Mock;
@@ -1784,7 +1808,7 @@ describe('plugin-resolver capability projection', () => {
         path.join(pluginDir, '.mcp.json'),
         JSON.stringify({ mcpServers: { [pluginName]: member } }),
       );
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: {
           version: 2,
@@ -1805,6 +1829,13 @@ describe('plugin-resolver capability projection', () => {
                   state: 'valid',
                   accepted: true,
                   pluginCount: 1,
+                  lastCheckedAt: '2026-10-01T00:00:00.000Z',
+                },
+                codex: {
+                  provider: 'codex',
+                  state: 'invalid',
+                  accepted: false,
+                  pluginCount: 0,
                   lastCheckedAt: '2026-10-01T00:00:00.000Z',
                 },
               },
@@ -1910,13 +1941,99 @@ describe('plugin-resolver capability projection', () => {
       getMcpServerFilePathMock.mockImplementation((serverId: string) =>
         path.join(tempDir, 'mcp', `${serverId}.json`),
       );
-      jest.mocked(getMcpServersIndexFilePath).mockReturnValue(undefined);
+      // These tests intentionally preserve the old missing-index-path case.
+      jest
+        .mocked(getMcpServersIndexFilePath)
+        .mockReturnValue(undefined as never);
       proxy = {
         ensureStarted: jest.fn().mockResolvedValue(undefined),
         registerRoute: jest.fn().mockResolvedValue('route'),
         unregisterRoute: jest.fn(),
         getProxyUrl: jest.fn((): string => 'http://127.0.0.1:37645/route'),
       };
+    });
+
+    it('resolves an unbound non-curated member through a task desktop override under an account default', async (): Promise<void> => {
+      const identity = {
+        marketplaceId: 'third-party',
+        pluginName: 'repo-search',
+        serverName: 'repo-search',
+      };
+      const member = {
+        type: 'http',
+        url: 'https://repo-search.example.test/mcp',
+        oauth: { clientId: 'repo-search' },
+      };
+      writePlugin(identity.marketplaceId, identity.pluginName, member);
+      const original: ChatTabPluginSelections = {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [
+          {
+            marketplaceId: identity.marketplaceId,
+            pluginName: identity.pluginName,
+          },
+        ],
+      };
+      const preferences: Partial<PreferencesData> = {
+        mcpHttpAuthDefaultHandler: 'account',
+      };
+      // A partial fixture: these tests rely on unset preferences staying undefined.
+      const options = {
+        purpose: 'claude-session' as const,
+        preferences: preferences as PreferencesData,
+        enableHttpMcpProxy: true,
+        mcpHttpProxyService: proxy,
+        runtimeDirs: {
+          rootDir: tempDir,
+          claudePluginDir: path.join(tempDir, 'runtime'),
+        },
+      };
+      const before = await resolvePlugins(
+        original,
+        'project',
+        'worktree',
+        'chat',
+        options,
+      );
+      expect(before.mcpServers).toEqual({});
+      expect(proxy.registerRoute).not.toHaveBeenCalled();
+      expect(resolveAccountMcpProxyTarget).toHaveBeenCalledTimes(1);
+      jest.mocked(resolveAccountMcpProxyTarget).mockClear();
+
+      const accepted = setMcpHttpAuthPreference(
+        original,
+        { kind: 'plugin', ...identity },
+        'canopy',
+      );
+      const auth = buildPluginHttpMcpServerForAuth(identity, member, false);
+      if (!auth) throw new Error('Missing HTTP auth fixture');
+      const after = await resolvePlugins(
+        accepted,
+        'project',
+        'worktree',
+        'chat',
+        options,
+      );
+      expect(Object.values(after.mcpServers)).toEqual([
+        {
+          type: 'http',
+          url: 'http://127.0.0.1:37645/route',
+          headers: undefined,
+        },
+      ]);
+      expect(proxy.registerRoute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverId: auth.definition.id,
+          configId: auth.config.id,
+          upstreamUrl: member.url,
+          oauthEnabled: true,
+        }),
+      );
+      expect(resolveAccountMcpProxyTarget).not.toHaveBeenCalled();
+      expect(after.mcpServerBindings).toEqual({});
+      expect(original).not.toHaveProperty('mcpHttpAuthPreferences');
+      expect(preferences).toEqual({ mcpHttpAuthDefaultHandler: 'account' });
     });
 
     it('collapses a plugin member and a standalone ref onto the same account connection', async (): Promise<void> => {
@@ -2093,7 +2210,8 @@ describe('plugin-resolver capability projection', () => {
 
     it('fails closed on a connected account connection the user turned off (CAN-3620)', async (): Promise<void> => {
       writeCuratedLinearPlugin();
-      armConnections([{ ...linearDefault, enabled: false }]);
+      const disabledConnection = { ...linearDefault, enabled: false };
+      armConnections([disabledConnection]);
       writeDeviceLinear('linear-device');
 
       const result = await resolve({});
@@ -2585,7 +2703,7 @@ describe('plugin-resolver capability projection', () => {
         },
       }),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -2675,7 +2793,7 @@ describe('plugin-resolver capability projection', () => {
           },
         }),
       );
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: { version: 2, lastRefreshed: '', marketplaces: [] },
       });
@@ -2768,7 +2886,7 @@ describe('plugin-resolver capability projection', () => {
         },
       }),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -2838,7 +2956,7 @@ describe('plugin-resolver capability projection', () => {
         },
       }),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -2926,7 +3044,7 @@ describe('plugin-resolver capability projection', () => {
         },
       }),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -2974,7 +3092,7 @@ describe('plugin-resolver capability projection', () => {
     getMcpServerFilePathMock.mockReturnValue(
       path.join(tempDir, 'missing-server.json'),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -3011,7 +3129,7 @@ describe('plugin-resolver capability projection', () => {
       type: 'http',
       httpAuthHandler: 'canopy',
     });
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -3141,7 +3259,7 @@ describe('plugin-resolver capability projection', () => {
         type: 'command',
       });
       getMcpServerFilePathMock.mockReturnValue(serverFile);
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: { version: 2, lastRefreshed: '', marketplaces: [] },
       });
@@ -3196,7 +3314,7 @@ describe('plugin-resolver capability projection', () => {
       configName: 'Prod',
       type: 'command',
     });
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
@@ -3263,13 +3381,16 @@ describe('plugin-resolver capability projection', () => {
         },
       }),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: { version: 2, lastRefreshed: '', marketplaces: [] },
     });
     const registerStdioMcpRoute: jest.MockedFunction<
       McpStdioBrokerForResolver['registerStdioMcpRoute']
-    > = jest.fn(() =>
+    > = jest.fn<
+      ReturnType<McpStdioBrokerForResolver['registerStdioMcpRoute']>,
+      Parameters<McpStdioBrokerForResolver['registerStdioMcpRoute']>
+    >(() =>
       Promise.resolve({
         routeId:
           '0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -3402,7 +3523,10 @@ describe('plugin-resolver capability projection', () => {
       const authorizeServerLaunch = jest.fn().mockResolvedValue(false);
       const registerStdioMcpRoute: jest.MockedFunction<
         McpStdioBrokerForResolver['registerStdioMcpRoute']
-      > = jest.fn(() =>
+      > = jest.fn<
+        ReturnType<McpStdioBrokerForResolver['registerStdioMcpRoute']>,
+        Parameters<McpStdioBrokerForResolver['registerStdioMcpRoute']>
+      >(() =>
         Promise.resolve({
           routeId:
             '0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -3540,6 +3664,7 @@ describe('cursor-session resolution purpose', () => {
                 rootPath: path.join(packageAlias, 'review'),
                 kind: 'standalone_skill',
                 displayName: 'Review',
+                invocationKeys: [],
               },
             ],
           },
@@ -3805,6 +3930,7 @@ describe('cursor-session resolution purpose', () => {
               rootPath: packaged,
               kind: 'standalone_skill',
               displayName: 'Commit messages',
+              invocationKeys: [],
             },
           ],
         },
@@ -4609,7 +4735,7 @@ describe('cursor-session resolution purpose', () => {
     );
     fs.mkdirSync(path.join(pluginDir, 'nested'));
     fs.symlinkSync(outside, path.join(pluginDir, 'nested', 'link'));
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: {
         version: 2,
@@ -4701,7 +4827,7 @@ describe('cursor-session resolution purpose', () => {
       path.join(pluginDir, 'commands', 'release.md'),
       '---\ndescription: Cut a release\nallowed-tools: Bash\n---\n\nRelease $ARGUMENTS now.\n',
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: {
         version: 2,
@@ -4850,7 +4976,7 @@ describe('cursor-session resolution purpose', () => {
         },
       }),
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: {
         version: 2,
@@ -4968,7 +5094,7 @@ describe('cursor-session resolution purpose', () => {
           },
         }),
       );
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: {
           version: 2,
@@ -5080,7 +5206,7 @@ describe('cursor-session resolution purpose', () => {
           },
         }),
       );
-      loadMarketplacesMock.mockReturnValue({
+      loadMarketplacesMock.mockResolvedValue({
         success: true,
         data: {
           version: 2,
@@ -5169,7 +5295,7 @@ describe('cursor-session resolution purpose', () => {
       path.join(pluginDir, '.codex-plugin', 'plugin.json'),
       '{"name":"codex-only"}',
     );
-    loadMarketplacesMock.mockReturnValue({
+    loadMarketplacesMock.mockResolvedValue({
       success: true,
       data: {
         version: 2,
@@ -5480,9 +5606,13 @@ describe('Disabled installed items', () => {
     const { resolveEffectivePluginSelectionRefs } =
       await import('../plugins/plugin-resolver');
     const plugin = { marketplaceId: 'market', pluginName: 'Name' };
-    jest.mocked(readPreferencesFile).mockResolvedValueOnce({
+    const preferences: Partial<PreferencesData> = {
       disabledInstalledItems: [installedItemKey({ kind: 'plugin', ...plugin })],
-    });
+    };
+    // A partial fixture: these tests rely on unset preferences staying undefined.
+    jest
+      .mocked(readPreferencesFile)
+      .mockResolvedValueOnce(preferences as PreferencesData);
     const result = await resolveEffectivePluginSelectionRefs({
       collectionIds: [],
       skillRefs: [],
@@ -5505,11 +5635,15 @@ describe('Disabled installed items', () => {
       await import('../collections/collection-store');
     const collectionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     jest.mocked(readCollectionConfig).mockClear();
-    jest.mocked(readPreferencesFile).mockResolvedValueOnce({
+    const preferences: Partial<PreferencesData> = {
       disabledInstalledItems: [
         installedItemKey({ kind: 'collection', collectionId }),
       ],
-    });
+    };
+    // A partial fixture: these tests rely on unset preferences staying undefined.
+    jest
+      .mocked(readPreferencesFile)
+      .mockResolvedValueOnce(preferences as PreferencesData);
     const result = await resolveEffectivePluginSelectionRefs({
       collectionIds: [collectionId],
       skillRefs: [],

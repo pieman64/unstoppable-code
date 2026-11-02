@@ -1,8 +1,8 @@
 import type { JSX } from 'react';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
-import { marketplaceKindToneClass } from '../lib/marketplace-type-tabs';
 import { McpServerLogo } from './McpServerLogo';
+import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
 
 /** One row in a related-items section (CAN-2382). */
 export interface RelatedItemRow {
@@ -112,14 +112,17 @@ export function RelatedItemsSection({
                 <div
                   className={`flex items-center ${list ? 'gap-1.5' : 'gap-2'}`}
                 >
-                  <span className="text-s font-medium fg-primary truncate">
+                  <span className="min-w-0 truncate text-s font-medium fg-primary">
                     {item.title}
                   </span>
-                  {item.badge && (
+                  {item.badge && item.kind && (
+                    <MarketplaceTypeLabel kind={item.kind} label={item.badge} />
+                  )}
+                  {item.badge && !item.kind && (
                     <span
                       className={
                         list
-                          ? `shrink-0 text-xs ${item.kind ? marketplaceKindToneClass(item.kind) : 'fg-secondary'}`
+                          ? 'shrink-0 text-xs fg-secondary'
                           : `shrink-0 px-1.5 py-0.5 text-3xs font-medium rounded ${item.badgeClass ?? 'bg-secondary fg-secondary'}`
                       }
                     >

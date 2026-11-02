@@ -9,8 +9,11 @@ const SENTENCE_CASE_TITLES: ReadonlyMap<string, string> = new Map([
   ['Agent Background Processes', 'Agent background processes'],
   ['MCP Servers', 'MCP servers'],
   ['Agent Tasks', 'Agent tasks'],
-  ['Pipeline Runs', 'Pipeline runs'],
-  ['Dispatch Pipeline', 'Dispatch pipeline'],
+  ['Pipeline Runs', 'Workflow runs'],
+  ['Dispatch Pipeline', 'Dispatch workflow'],
+  // Default titles layouts stored before the CAN-4651 rename.
+  ['Pipeline runs', 'Workflow runs'],
+  ['Pipeline run', 'Workflow run'],
   ['Browse MCP Servers', 'Browse MCP servers'],
 ]);
 

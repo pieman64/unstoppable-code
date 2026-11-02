@@ -37,6 +37,11 @@ export type AgentDelegationTranscriptItem = {
   readonly id: string;
   readonly sequence: number;
   readonly occurredAt: number;
+  /**
+   * Set only on a compatibility projection of a stream row whose content was
+   * shortened or omitted; legacy items never carry it.
+   */
+  readonly truncated?: true;
 } & (
   | {
       readonly type: 'text';
@@ -56,7 +61,10 @@ export type AgentDelegationTranscriptItem = {
 
 /** A delegate's child transcript kept in its parent chat's delegate log. */
 export const DELEGATION_TRANSCRIPT_CHAT_LOG = 'chat-log-v1';
-export type DelegationTranscriptStore = typeof DELEGATION_TRANSCRIPT_CHAT_LOG;
+export const DELEGATION_TRANSCRIPT_CHAT_STREAM = 'chat-stream-v2';
+export type DelegationTranscriptStore =
+  | typeof DELEGATION_TRANSCRIPT_CHAT_LOG
+  | typeof DELEGATION_TRANSCRIPT_CHAT_STREAM;
 
 /** A complete cumulative snapshot. Replaying it has no delivery or execution side effects. */
 export interface AgentDelegationTranscript {
@@ -125,7 +133,8 @@ export function isAgentDelegationTranscriptItem(
     !record(value) ||
     !label(value.id) ||
     !count(value.sequence) ||
-    !count(value.occurredAt)
+    !count(value.occurredAt) ||
+    (value.truncated !== undefined && value.truncated !== true)
   )
     return false;
   const text = (v: unknown): v is string => typeof v === 'string';
@@ -319,7 +328,8 @@ export function isAgentDelegationTranscript(
     return false;
   if (
     value.transcriptStore !== undefined &&
-    value.transcriptStore !== DELEGATION_TRANSCRIPT_CHAT_LOG
+    value.transcriptStore !== DELEGATION_TRANSCRIPT_CHAT_LOG &&
+    value.transcriptStore !== DELEGATION_TRANSCRIPT_CHAT_STREAM
   )
     return false;
   const route = snapshot.routeSnapshot;
@@ -375,13 +385,26 @@ export interface AgentDelegationCardData extends AgentDelegationSnapshot {
   readonly description: string;
   readonly prompt: string;
   readonly executionMode: 'foreground' | 'background';
+  readonly transcriptStore?: DelegationTranscriptStore;
+  /**
+   * Display only: the child stream revision the card was read at, so a mounted
+   * reader can tell that a newer child page exists. Never part of a snapshot
+   * or of durable card state.
+   */
+  readonly streamRevision?: number;
 }
 
-/** Read-only presentation validation; it never authorizes a route or native action. */
+/**
+ * Read-only presentation validation; it never authorizes a route or native action.
+ * It ignores `transcriptStore`: display never reads a child log, so a card from a
+ * newer build still renders.
+ */
 export function isAgentDelegationCardData(
   value: unknown,
 ): value is AgentDelegationCardData {
   if (!record(value) || !label(value.parentHarnessId)) return false;
+  if (value.streamRevision !== undefined && !count(value.streamRevision))
+    return false;
   return isAgentDelegationTranscript({
     delegationId: value.delegationId,
     runGeneration: 1,

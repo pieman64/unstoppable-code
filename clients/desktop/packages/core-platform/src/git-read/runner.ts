@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -14,13 +15,17 @@ import {
   type SupervisionOperations,
 } from '../supervision/shared';
 import {
+  dischargesFsmonitor,
+  executableIdentity,
   GitReadError,
   type GitReadCommand,
   type GitReadEnvironment,
   type GitReadPlan,
   isHostAbsolute,
   planGitReadCommand,
+  readsWorkingTree,
   searchPath,
+  type SelectedGit,
   validateEnvironment,
   windowsChildEnvironment,
   windowsEnvironmentValue,
@@ -63,6 +68,12 @@ export interface GitReadRunnerOptions {
   readonly scratch?: Partial<ScratchOperations>;
   /** Test seam for PATH resolution of a bare command. */
   readonly isExecutable?: ExecutableProbe;
+  /**
+   * Test seam: `executableIdentity` of the file now at `file`, `undefined`
+   * when it cannot be read. Synchronous, so nothing runs between the checks
+   * and the spawn they bracket.
+   */
+  readonly imageIdentity?: (file: string) => string | undefined;
   /** A failed scratch removal; it never replaces the request's result. */
   readonly onScratchCleanupFailure?: (error: unknown) => void;
   /**
@@ -111,13 +122,38 @@ export interface GitCheckIgnoreSelection {
   /**
    * The executable for chunk `chunk` (0-based), awaited before that chunk
    * runs. While it is awaited, a request or host abort, or the cleanup
-   * reserve, aborts its signal and rejects the request.
+   * reserve, aborts its signal and rejects the request. A bare path carries
+   * no version, so its Win32 plan gets no fsmonitor discharge.
    */
   readonly executableForChunk: (
     chunk: number,
     signal: AbortSignal,
     deadlineAt: number,
-  ) => Promise<string>;
+  ) => Promise<string | SelectedGit>;
+  /**
+   * Chunk `chunk`'s `check-ignore` process started with `started`, its
+   * selected executable and version. Not called when the chunk is aborted,
+   * fails planning or fails to spawn before then. A throw is ignored.
+   */
+  readonly onChunkStarted?: (chunk: number, started: SelectedGit) => void;
+}
+
+export interface GitIgnoredListingSelection {
+  readonly cwd: string;
+  readonly environment: GitReadEnvironment;
+  /** Monotonic; set before the selection and shared with the listing. */
+  readonly deadlineAt: number;
+  readonly signal: AbortSignal;
+  /**
+   * The executable, awaited before the listing runs, under the same abort
+   * and cleanup-reserve rules as a `check-ignore` chunk's selection.
+   */
+  readonly selectExecutable: (
+    signal: AbortSignal,
+    deadlineAt: number,
+  ) => Promise<string | SelectedGit>;
+  /** The listing's process started with `started`. A throw is ignored. */
+  readonly onStarted?: (started: SelectedGit) => void;
 }
 
 export interface GitReadRunner {
@@ -127,7 +163,7 @@ export interface GitReadRunner {
    * empty chunk; any other failure rejects and discards earlier chunks.
    */
   checkIgnoredPathsWith(
-    executable: string,
+    executable: string | SelectedGit,
     cwd: string,
     paths: readonly string[],
     environment: GitReadEnvironment,
@@ -138,8 +174,16 @@ export interface GitReadRunner {
     request: GitCheckIgnoreSelection,
   ): Promise<Set<string>>;
   /**
-   * `idle` once no request is in flight and no owned root, continuing kill or
-   * scratch creation or removal remains; `pending` if `signal` aborts first.
+   * Desktop `listIgnoredPathEntries`: one `ls-files` listing; any exit but
+   * 0 rejects, as desktop's execFile did.
+   */
+  listIgnoredPathsSelected(
+    request: GitIgnoredListingSelection,
+  ): Promise<string[]>;
+  /**
+   * `idle` once no request is in flight and no owned root (until its 'close'),
+   * continuing kill or scratch creation or removal remains; `pending` if
+   * `signal` aborts first.
    */
   whenIdle(signal: AbortSignal): Promise<'idle' | 'pending'>;
 }
@@ -241,6 +285,29 @@ class StreamCapture {
 }
 
 /**
+ * Planning validates `executable`; anything but a string version or identity
+ * is none.
+ */
+function versioned(selected: string | SelectedGit): SelectedGit {
+  if (typeof selected !== 'object' || selected === null)
+    return { executable: selected, version: undefined };
+  const { executable, version, identity } = selected;
+  return {
+    executable,
+    version: typeof version === 'string' ? version : undefined,
+    ...(typeof identity === 'string' ? { identity } : {}),
+  };
+}
+
+function nodeImageIdentity(file: string): string | undefined {
+  try {
+    return executableIdentity(statSync(file));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * taskkill's SystemRoot comes from the child's environment, never ambient
  * state, and is the variant the child sees.
  */
@@ -262,6 +329,9 @@ export function createGitReadRunner(
   const timing: GitReadTiming = { ...DEFAULT_TIMING, ...options.timing };
   const scratch: ScratchOperations = { ...NODE_SCRATCH, ...options.scratch };
   const isExecutable = options.isExecutable ?? nodeExecutableProbe(os);
+  const imageIdentity = options.imageIdentity ?? nodeImageIdentity;
+  const imageIs = (file: string, identity: string | undefined): boolean =>
+    identity !== undefined && imageIdentity(file) === identity;
   const childOptions = createChildServices(os).childProcessOptions({
     lifetime: 'owned',
   });
@@ -281,14 +351,18 @@ export function createGitReadRunner(
     );
   }
 
-  /** Settles once; abort reasons are arbitrary values, so failures resolve too. */
+  /**
+   * Settles once; abort reasons are arbitrary values, so failures resolve
+   * too. `identity`: the check-ignore image its version was parsed from.
+   */
   function execute(
     kind: GitReadCommand['kind'],
     plan: GitReadPlan,
     request: GitReadRequest,
+    identity?: string,
+    onSpawned?: () => void,
   ): Promise<Settlement> {
     return new Promise((settle) => {
-      const resolve = (output: GitReadOutput): void => settle({ output });
       const reject = (error: unknown): void => settle({ error });
       const signals = signalsOf(request);
       const preAborted = signals.find((signal) => signal.aborted);
@@ -301,9 +375,18 @@ export function createGitReadRunner(
         plan.timeoutMs !== undefined && startedAt + plan.timeoutMs <= stopBy;
 
       const closure = os === 'win32' ? observeWindowsClosure('git') : undefined;
-      // check-ignore may start an fsmonitor daemon that outlives it (E3);
-      // nothing discharges that yet, so its history is never accepted.
-      if (kind === 'git-check-ignore') closure?.unsafe();
+      // check-ignore may start an fsmonitor daemon that outlives it (E3)
+      // unless its plan carries the discharge, which planning adds only for
+      // an audited Git for Windows version. That version vouches only for
+      // the file validation stat'ed, so the file's identity must hold on both
+      // sides of the spawn. Node cannot hold the image against replacement:
+      // a swap undone between the two checks stays unseen, as does a swap of
+      // an image the file starts (Git for Windows' cmd\git.exe launcher).
+      const discharged =
+        closure !== undefined && readsWorkingTree(kind)
+          ? dischargesFsmonitor(plan.args) && imageIs(plan.file, identity)
+          : undefined;
+      if (discharged === false) closure?.unsafe();
       let child: ChildProcess;
       try {
         child = spawn(plan.file, [...plan.args], {
@@ -317,15 +400,23 @@ export function createGitReadRunner(
         closure?.close();
         return reject(error);
       }
+      if (discharged && !imageIs(plan.file, identity)) closure?.unsafe();
+      // Outstanding until 'close', which follows 'exit' or a spawn 'error', so
+      // idle means its edge closed. An unconfirmed root outlives settlement.
+      const rootEnded = activity.begin();
+      // Node emits 'spawn' only for a process that started; else 'error'.
+      if (onSpawned)
+        child.once('spawn', () => {
+          try {
+            onSpawned();
+          } catch {
+            // A failing observer must not change the request.
+          }
+        });
       child.once('close', (code, signal) => {
         if (signal !== null || code === null || code === 259) closure?.unsafe();
         closure?.close();
-      });
-      // An unconfirmed root stays outstanding after settlement until it exits.
-      const rootEnded = activity.begin();
-      child.once('exit', rootEnded);
-      child.on('error', () => {
-        if (child.pid === undefined) rootEnded();
+        rootEnded();
       });
 
       const ops = supervisionFor(plan.env, options.operations);
@@ -372,33 +463,36 @@ export function createGitReadRunner(
         for (let kill = 0; kill < killsInFlight; kill += 1)
           reportKill('cleanup_unconfirmed');
         timers.forEach(clearTimeout);
-        listeners.forEach(([signal, listener]) =>
-          signal.removeEventListener('abort', listener),
-        );
         const confirmed = exit !== undefined || spawnError !== undefined;
+        if (spawnError !== undefined) cause ??= { error: spawnError };
         // stdin stays open for commands without input, as in desktop.
         child.stdin?.destroy();
         child.stdout?.destroy();
         child.stderr?.destroy();
         // An unconfirmed root must not keep the host alive.
         if (!confirmed) child.unref();
-        if (!confirmed)
-          return reject(
-            new GitReadError('cleanup_unconfirmed', {
-              failure: killFailure ?? cause?.error,
-            }),
+        const failure = killFailure ?? cause?.error;
+        const output: GitReadOutput = Object.freeze({
+          code: exit?.code ?? null,
+          signal: exit?.signal ?? null,
+          stdout: stdout.text(),
+          stderr: stderr.text(),
+          pipes: pipesClosed ? 'closed' : 'abandoned',
+        });
+        // A confirmed root closes once its pipes are destroyed. Settling at
+        // 'close' keeps the runner idle at settlement with every edge closed;
+        // an abort until then still rejects a success.
+        const deliver = (): void => {
+          listeners.forEach(([signal, listener]) =>
+            signal.removeEventListener('abort', listener),
           );
-        if (cause) return reject(cause.error);
-        if (spawnError !== undefined) return reject(spawnError);
-        resolve(
-          Object.freeze({
-            code: exit?.code ?? null,
-            signal: exit?.signal ?? null,
-            stdout: stdout.text(),
-            stderr: stderr.text(),
-            pipes: pipesClosed ? 'closed' : 'abandoned',
-          }),
-        );
+          if (!confirmed)
+            reject(new GitReadError('cleanup_unconfirmed', { failure }));
+          else if (cause) reject(cause.error);
+          else settle({ output });
+        };
+        if (!confirmed || pipesClosed) deliver();
+        else child.once('close', deliver);
       };
 
       // Only from a timer or setImmediate turn: never an exit/close listener
@@ -734,6 +828,7 @@ export function createGitReadRunner(
   async function runUntracked(
     command: GitReadCommand,
     request: GitReadRequest,
+    onSpawned?: () => void,
   ): Promise<GitReadOutput> {
     const environment = validateRequest(request);
     const checked = { ...request, environment };
@@ -743,7 +838,19 @@ export function createGitReadRunner(
       planGitReadCommand(os, command, environment),
       checked,
     );
-    return outputOf(execute(command.kind, plan, checked));
+    return outputOf(
+      execute(
+        command.kind,
+        plan,
+        checked,
+        (command.kind === 'git-check-ignore' ||
+          command.kind === 'git-ls-files-ignored') &&
+          typeof command.identity === 'string'
+          ? command.identity
+          : undefined,
+        onSpawned,
+      ),
+    );
   }
 
   function run(
@@ -754,22 +861,21 @@ export function createGitReadRunner(
   }
 
   /**
-   * The caller's executable for one chunk, awaited until the stop time or an
-   * abort. The selection's signal then aborts; its late result is ignored.
+   * The caller's executable for one chunk or listing, awaited until the stop
+   * time or an abort. The selection's signal then aborts; its late result is
+   * ignored.
    */
   async function selectExecutable(
-    request: GitCheckIgnoreSelection,
-    chunk: number,
+    deadlineAt: number,
+    choose: (signal: AbortSignal) => Promise<string | SelectedGit>,
     signals: readonly AbortSignal[],
-  ): Promise<string> {
+  ): Promise<string | SelectedGit> {
     signals.forEach((signal) => signal.throwIfAborted());
-    const stopBy = request.deadlineAt - timing.cleanupReserveMs;
+    const stopBy = deadlineAt - timing.cleanupReserveMs;
     if (stopBy <= performance.now())
       throw new GitReadError('deadline_exceeded');
     const selection = new AbortController();
-    const selecting = Promise.resolve().then(() =>
-      request.executableForChunk(chunk, selection.signal, request.deadlineAt),
-    );
+    const selecting = Promise.resolve().then(() => choose(selection.signal));
     const selected = await waitWithin(selecting, stopBy, signals);
     if ('value' in selected) return selected.value;
     if ('error' in selected) throw selected.error;
@@ -806,17 +912,26 @@ export function createGitReadRunner(
     // The whole request is checked before the caller's first selection.
     const environment = validateRequest(request);
     if (os === 'win32') windowsChildEnvironment(environment);
+    const { onChunkStarted } = request;
     for (let i = 0; i < paths.length; i += CHECK_IGNORE_CHUNK_SIZE) {
-      const executable = await selectExecutable(
-        request,
-        i / CHECK_IGNORE_CHUNK_SIZE,
-        signals,
+      const index = i / CHECK_IGNORE_CHUNK_SIZE;
+      const selected = versioned(
+        await selectExecutable(
+          deadlineAt,
+          (selectionSignal) =>
+            request.executableForChunk(index, selectionSignal, deadlineAt),
+          signals,
+        ),
       );
+      const { executable, version, identity } = selected;
       const chunk = paths.slice(i, i + CHECK_IGNORE_CHUNK_SIZE);
       const input = Buffer.from(`${chunk.join('\0')}\0`, 'utf8');
       const output = await runUntracked(
-        { kind: 'git-check-ignore', executable, input },
+        { kind: 'git-check-ignore', executable, input, version, identity },
         { cwd, environment, deadlineAt, signal },
+        typeof onChunkStarted === 'function'
+          ? (): void => onChunkStarted(index, Object.freeze(selected))
+          : undefined,
       );
       if (output.code === 0 && output.signal === null)
         output.stdout
@@ -838,9 +953,57 @@ export function createGitReadRunner(
     return tracked(() => checkIgnoredPathsUntracked(request));
   }
 
+  async function listIgnoredPathsUntracked(
+    request: GitIgnoredListingSelection,
+  ): Promise<string[]> {
+    if (
+      typeof request !== 'object' ||
+      request === null ||
+      !(request.signal instanceof AbortSignal) ||
+      typeof request.selectExecutable !== 'function' ||
+      typeof request.deadlineAt !== 'number' ||
+      !Number.isFinite(request.deadlineAt)
+    )
+      throw new GitReadError('invalid_request');
+    const { cwd, deadlineAt, signal, onStarted } = request;
+    const signals = signalsOf(request);
+    signals.forEach((each) => each.throwIfAborted());
+    // The whole request is checked before the caller's selection.
+    const environment = validateRequest(request);
+    if (os === 'win32') windowsChildEnvironment(environment);
+    const selected = versioned(
+      await selectExecutable(
+        deadlineAt,
+        (selectionSignal) =>
+          request.selectExecutable(selectionSignal, deadlineAt),
+        signals,
+      ),
+    );
+    const { executable, version, identity } = selected;
+    const output = await runUntracked(
+      { kind: 'git-ls-files-ignored', executable, version, identity },
+      { cwd, environment, deadlineAt, signal },
+      typeof onStarted === 'function'
+        ? (): void => onStarted(Object.freeze(selected))
+        : undefined,
+    );
+    if (output.code === 0 && output.signal === null)
+      return output.stdout.split('\0').filter(Boolean);
+    throw new GitReadError('exit_status', {
+      exitCode: output.code,
+      signal: output.signal,
+    });
+  }
+
+  function listIgnoredPathsSelected(
+    request: GitIgnoredListingSelection,
+  ): Promise<string[]> {
+    return tracked(() => listIgnoredPathsUntracked(request));
+  }
+
   /** One request deadline across every chunk (desktop git.ts:84). */
   function checkIgnoredPathsWith(
-    executable: string,
+    executable: string | SelectedGit,
     cwd: string,
     paths: readonly string[],
     environment: GitReadEnvironment,
@@ -867,6 +1030,7 @@ export function createGitReadRunner(
     run,
     checkIgnoredPathsWith,
     checkIgnoredPathsSelected,
+    listIgnoredPathsSelected,
     whenIdle,
   });
 }

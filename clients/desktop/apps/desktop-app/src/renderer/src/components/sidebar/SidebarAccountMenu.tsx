@@ -3,6 +3,7 @@ import {
   SidebarMachinePicker,
 } from '@/components/remote-access/SidebarMachinePicker';
 import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
+import { usePersonalModelLibraryAccess } from '@/hooks/useModelLibraryAccess';
 import { useCanopyCloudAccountState } from '@/hooks/useCanopyCloudAccountState';
 import { isGuestAccount } from '@/hooks/useIsGuestCredential';
 import { useSubscriptionStatus } from '@/hooks/useSubscriptionStatus';
@@ -73,7 +74,6 @@ import { resolveCanopyPortalAccountStatus } from './canopy-portal-account-status
 import { CloneProgressPrompt } from './CloneProgressPrompt';
 import { CloudAccountRecoveryPrompt } from './CloudAccountRecoveryPrompt';
 import { ResumeQueuePrompt } from './ResumeQueuePrompt';
-import { SidebarOnboardingChecklist } from './SidebarOnboardingChecklist';
 import { UpdatePrompt } from './UpdatePrompt';
 
 /**
@@ -261,6 +261,11 @@ export function SidebarAccountMenu({
   // a zero here would claim an empty wallet the server never reported. A
   // still-known balance from a failed same-account refresh is kept.
   const aiCreditsBalance = aiCreditsState?.balance?.credits ?? null;
+  // The row's label follows the same personal wallet's access, read only
+  // while the row can show.
+  const aiCreditsLibraryAccess = usePersonalModelLibraryAccess(
+    subscription.aiCreditsVisible && canSignOut,
+  );
 
   const handleItemClick = (action: () => void): void => {
     action();
@@ -364,7 +369,7 @@ export function SidebarAccountMenu({
         footerBanner={
           <>
             <CloudAccountRecoveryPrompt visible={accountReadError} />
-            <SidebarOnboardingChecklist />
+
             <ResumeQueuePrompt />
             <CloneProgressPrompt />
             <UpdatePrompt />
@@ -479,6 +484,7 @@ export function SidebarAccountMenu({
           const aiCreditsRow = subscription.aiCreditsVisible && canSignOut && (
             <SidebarAiCreditsMenuItem
               balanceCredits={aiCreditsBalance}
+              libraryAccess={aiCreditsLibraryAccess}
               onSelect={() =>
                 handleItemClick(() =>
                   subscription.openBillingPath(accountBillingPath()),

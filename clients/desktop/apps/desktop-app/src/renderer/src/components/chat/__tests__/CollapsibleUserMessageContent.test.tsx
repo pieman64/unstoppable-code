@@ -112,11 +112,11 @@ function mount(
 ): void {
   act(() => {
     root.render(
-      createElement(
-        CollapsibleUserMessageContent,
-        { forceExpanded, measurementKey },
-        createElement('p', null, 'message body'),
-      ),
+      createElement(CollapsibleUserMessageContent, {
+        forceExpanded,
+        measurementKey,
+        children: createElement('p', null, 'message body'),
+      }),
     );
   });
   if (deliverInitialResize) act(() => triggerResizeObserver?.());

@@ -35,7 +35,11 @@ import type {
   ArchivedGitChangesSummary,
   ChangedFileInfo,
 } from '@canopy/desktop-shared/types';
-import { DiffViewModeToggle, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DiffViewModeToggle,
+  Notice,
+} from '@canopy/ui-shared/components';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { DiffBadge } from '@/components/worktree/DiffBadge';
 import { DiffFileTree } from '@/components/activity/DiffFileTree';
@@ -365,14 +369,13 @@ export function ArchivedChangesView({
               className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5 text-2xs fg-secondary"
             >
               Changed files couldn’t be loaded for this archive.
-              <button
-                type="button"
+              <Button
+                size="compact"
                 data-testid="archived-changes-page-retry"
                 onClick={retryChanges}
-                className="focus-ring rounded-md border bg-fg-primary/[0.04] px-2 py-0.5 font-medium fg-primary transition hover:bg-fg-primary/[0.08]"
               >
                 Retry
-              </button>
+              </Button>
             </div>
           ) : manualPagingRequired ? (
             <div
@@ -382,14 +385,13 @@ export function ArchivedChangesView({
               Showing {loadedFileCount.toLocaleString('en-US')} of{' '}
               {(knownTotal ?? loadedFileCount).toLocaleString('en-US')} changed
               files.
-              <button
-                type="button"
+              <Button
+                size="compact"
                 data-testid="archived-changes-load-more-button"
                 onClick={loadMoreChanges}
-                className="focus-ring rounded-md border bg-fg-primary/[0.04] px-2 py-0.5 font-medium fg-primary transition hover:bg-fg-primary/[0.08]"
               >
                 Load more
-              </button>
+              </Button>
             </div>
           ) : (
             changes.loadingMore && (
@@ -419,14 +421,13 @@ export function ArchivedChangesView({
           className="flex min-h-30 flex-1 flex-col items-center justify-center gap-2 text-sm fg-secondary"
         >
           Changed files couldn’t be loaded for this archive.
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid="archived-changes-list-retry"
             onClick={retryChanges}
-            className="focus-ring rounded-md border bg-fg-primary/[0.04] px-2.5 py-1 text-2xs font-medium fg-primary transition hover:bg-fg-primary/[0.08]"
           >
             Retry
-          </button>
+          </Button>
         </div>
       ) : changes.files.length === 0 ? (
         <div
@@ -476,14 +477,13 @@ export function ArchivedChangesView({
                 className="flex flex-1 flex-col items-center justify-center gap-2 text-sm fg-secondary"
               >
                 This archived diff couldn’t be loaded.
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   data-testid="archived-changes-diff-retry"
                   onClick={retryDiff}
-                  className="focus-ring rounded-md border bg-fg-primary/[0.04] px-2.5 py-1 text-2xs font-medium fg-primary transition hover:bg-fg-primary/[0.08]"
                 >
                   Retry
-                </button>
+                </Button>
               </div>
             ) : (
               <>

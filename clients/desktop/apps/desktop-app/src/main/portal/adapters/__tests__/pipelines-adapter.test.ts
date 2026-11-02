@@ -9,6 +9,7 @@ import type {
 import {
   handlePortalPipelineCancel,
   handlePortalPipelineChatFollowUpPrepare,
+  handlePortalPipelineContentRead,
   handlePortalPipelineExecutionList,
   handlePortalPipelineGet,
   handlePortalPipelineInstallCurated,
@@ -27,6 +28,7 @@ import {
   listPipelineExecutions,
   listPipelines,
   preparePipelineChatFollowUp,
+  readPipelineContent,
   rerunPipeline,
   resumePipeline,
   retryPipeline,
@@ -52,6 +54,7 @@ jest.mock('../../../services/pipelines-service', () => ({
   listPipelineExecutions: jest.fn(),
   listPipelines: jest.fn(),
   preparePipelineChatFollowUp: jest.fn(),
+  readPipelineContent: jest.fn(),
   rerunPipeline: jest.fn(),
   resumePipeline: jest.fn(),
   retryPipeline: jest.fn(),
@@ -100,6 +103,7 @@ function command<TPayload>(
 
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
   return {
+    getWindow: () => null,
     enqueueEvent: (event) => events.push(event),
     complete: (cmd, result): void => {
       events.push({
@@ -148,7 +152,7 @@ describe('pipelines portal adapter', () => {
       definition: {
         name: 'CI',
         triggerSummary: 'Manual',
-        scopes: ['worktree'] as const,
+        scopes: ['worktree' as const],
         jobs: [
           {
             id: 'build',
@@ -466,9 +470,12 @@ describe('pipelines portal adapter', () => {
           {
             id: 'job',
             name: 'Job',
+            dependencies: [],
             steps: Array.from({ length: 4000 }, (_, index) => ({
               id: `step-${String(index)}`,
               name: 'S'.repeat(200),
+              kind: 'action' as const,
+              usesSummary: '',
             })),
           },
         ],
@@ -936,7 +943,7 @@ describe('pipelines portal adapter', () => {
           type,
           { executionId: 'exec-1' },
           { workspaceLocalId: 'ws-1', worktreeLocalId: 'wt-1' },
-        ) as never,
+        ),
         adapterContext(events),
       );
 
@@ -1041,7 +1048,7 @@ describe('pipelines portal adapter', () => {
           type,
           { executionId: 'exec-1' },
           { workspaceLocalId: 'ws-1', worktreeLocalId: 'wt-1' },
-        ) as never,
+        ),
         adapterContext(events),
       );
       void handlerResult.then(() => {
@@ -1143,7 +1150,8 @@ describe('pipelines portal adapter', () => {
       'portal.command.completed',
     ]);
     expect(
-      (events[0]?.payload as { result?: Record<string, unknown> }).result,
+      (events[0]?.payload as { result?: Record<string, unknown> } | undefined)
+        ?.result,
     ).toEqual({});
   });
 });
@@ -1222,6 +1230,7 @@ describe('pipeline chat follow-up preparation (CAN-3719)', () => {
         activeTabId,
         tabs: tabs.map((tab) => ({
           ...tab,
+          createdAt: '2026-10-24T00:00:00.000Z',
           title: tab.id,
           messages: [],
         })),
@@ -1229,7 +1238,7 @@ describe('pipeline chat follow-up preparation (CAN-3719)', () => {
       archives: [],
       runtimeByChatId: {},
       queue: [],
-    } as Awaited<ReturnType<typeof queryPortalChatState>>;
+    };
   }
 
   function followUpContext(
@@ -1327,8 +1336,9 @@ describe('pipeline chat follow-up preparation (CAN-3719)', () => {
       output: 'report',
     });
     expect(events[0]?.type).toBe('portal.command.completed');
-    const result = (events[0]?.payload as { result?: { chatId?: unknown } })
-      .result;
+    const result = (
+      events[0]?.payload as { result?: { chatId?: unknown } } | undefined
+    )?.result;
     return result?.chatId;
   }
 
@@ -1488,5 +1498,95 @@ describe('pipeline chat follow-up preparation (CAN-3719)', () => {
       }),
     ]);
     expect(mockedQueryChatState).not.toHaveBeenCalled();
+  });
+});
+
+describe('pipeline content reads (CAN-3717)', () => {
+  const mockedRead = jest.mocked(readPipelineContent);
+  const owner = { workspaceLocalId: 'ws-1', worktreeLocalId: 'wt-1' };
+  const page = {
+    format: 'markdown' as const,
+    content: '# Report',
+    offset: 0,
+    nextOffset: 8,
+    length: 8,
+    revision: 'r1',
+  };
+
+  async function read(
+    payload: Record<string, unknown>,
+    target: PortalCommandEnvelope['target'] = owner,
+  ): Promise<PortalEventEnvelope[]> {
+    const events: PortalEventEnvelope[] = [];
+    await handlePortalPipelineContentRead(
+      command('portal.pipeline.content.read', payload, target),
+      adapterContext(events),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    return events;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedRead.mockResolvedValue(page);
+  });
+
+  it('reads a page for the routed run owner', async () => {
+    const events = await read({
+      projectId: 'ws-1',
+      worktreeId: 'wt-1',
+      executionId: 'exec-1',
+      source: { kind: 'step_output', jobId: 'job-1', stepId: 'step-1' },
+      offset: 8,
+      revision: 'r1',
+    });
+
+    expect(mockedRead).toHaveBeenCalledWith({
+      projectId: 'ws-1',
+      worktreeId: 'wt-1',
+      executionId: 'exec-1',
+      source: { kind: 'step_output', jobId: 'job-1', stepId: 'step-1' },
+      offset: 8,
+      revision: 'r1',
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'portal.command.completed',
+        payload: { result: page },
+      }),
+    ]);
+  });
+
+  it.each([
+    ['a client path', { source: { kind: 'report', path: '/etc/hosts' } }],
+    ['an unknown source', { source: { kind: 'plan' } }],
+    ['an unknown key', { source: { kind: 'report' }, file: '/etc/hosts' }],
+    ['a non-numeric offset', { source: { kind: 'report' }, offset: '8' }],
+  ])('rejects %s', async (_name, extra) => {
+    const events = await read({
+      projectId: 'ws-1',
+      worktreeId: 'wt-1',
+      executionId: 'exec-1',
+      ...extra,
+    });
+    expect(mockedRead).not.toHaveBeenCalled();
+    expect(events[0]).toMatchObject({
+      type: 'portal.command.failed',
+      payload: { error: { code: 'invalid_payload' } },
+    });
+  });
+
+  it('rejects a payload scope that disagrees with the routed owner', async () => {
+    const events = await read({
+      projectId: 'ws-1',
+      worktreeId: 'wt-2',
+      executionId: 'exec-1',
+      source: { kind: 'report' },
+    });
+    expect(mockedRead).not.toHaveBeenCalled();
+    expect(events[0]).toMatchObject({
+      type: 'portal.command.failed',
+      payload: { error: { code: 'invalid_target' } },
+    });
   });
 });

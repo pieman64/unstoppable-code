@@ -30,8 +30,8 @@ let overviewPush: Promise<void> | null = null;
 // Arrival mark of the latest push requested while one was in flight; the
 // follow-up may reuse any build that started at or after it.
 let overviewPushDirtySince: number | null = null;
-// Bumped whenever the sink changes, so a build that spans a reconnect never
-// publishes into the next session.
+// Bumped whenever the sink changes or its owner invalidates emissions, so a
+// build that spans a session transition never publishes into the next one.
 let sinkGeneration = 0;
 let diffStatsRefreshTimer: ReturnType<typeof setInterval> | null = null;
 const catalogWorktrees = new Map<
@@ -51,6 +51,10 @@ type PublishedDiffStats = { insertions: number; deletions: number } | 'absent';
 // ordering semantics.
 const lastPublishedDiffStats = new Map<string, PublishedDiffStats>();
 
+export interface PortalEmissionContext {
+  readonly generation: number;
+}
+
 const OVERVIEW_REFRESH_DEBOUNCE_MS = 250;
 const DIFF_STATS_REFRESH_TTL_MS = 60_000;
 
@@ -65,6 +69,21 @@ const DIFF_STATS_REFRESH_TTL_MS = 60_000;
  */
 export function isPortalEventSinkActive(): boolean {
   return active;
+}
+
+/** Capture the currently installed Portal sink generation, if any. */
+export function capturePortalEmissionContext():
+  | PortalEmissionContext
+  | undefined {
+  if (!active || eventSink === null) return undefined;
+  return Object.freeze({ generation: sinkGeneration });
+}
+
+/** Whether this emission still belongs to the current Portal sink lifetime. */
+export function isPortalEmissionContextCurrent(
+  context: PortalEmissionContext,
+): boolean {
+  return active && eventSink !== null && context.generation === sinkGeneration;
 }
 
 export function setCanopyPortalEventSink(
@@ -149,6 +168,11 @@ export function setCanopyPortalEventSink(
           opencodeCatalogWarmup = undefined;
       });
   }
+}
+
+/** Invalidate delayed emissions before the owning Portal session is changed. */
+export function invalidatePortalEmissionContexts(): void {
+  sinkGeneration += 1;
 }
 
 /**
@@ -510,6 +534,16 @@ export function createPortalEvent(
 
 export function enqueuePortalEvent(event: PortalEventEnvelope): void {
   eventSink?.(event);
+}
+
+/** Enqueue an event only while the captured Portal sink generation is current. */
+export function enqueuePortalEventIfCurrent(
+  context: PortalEmissionContext,
+  event: PortalEventEnvelope,
+): boolean {
+  if (!isPortalEmissionContextCurrent(context)) return false;
+  enqueuePortalEvent(event);
+  return true;
 }
 
 /** Push a fresh authoritative overview after persisted sidebar structure changes. */

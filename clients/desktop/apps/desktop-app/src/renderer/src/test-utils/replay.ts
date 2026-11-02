@@ -1,3 +1,4 @@
+import { expect } from '@jest/globals';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
 /**

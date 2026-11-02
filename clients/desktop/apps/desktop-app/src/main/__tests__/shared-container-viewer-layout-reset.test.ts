@@ -174,7 +174,7 @@ describe('shared-container viewer layout reset on open', () => {
     return { chatState, replaceCompatibilityTabs };
   }
 
-  function viewerPanels(): ISerializedPanelEntry[] {
+  function viewerPanels(): readonly ISerializedPanelEntry[] {
     const root = migratePanelLayout(
       panelLayoutPersistenceStore.loadWorktreeLayout(VIEWER, CONTAINER_ID),
     )?.grid.root;

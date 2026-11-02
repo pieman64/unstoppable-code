@@ -94,6 +94,58 @@ describe('WindowsGitRequiredScreen', () => {
     };
   }
 
+  it('offers branded Ubuntu apt instructions and documentation, never an app-run installer on Linux', () => {
+    const prior = Object.getOwnPropertyDescriptor(window, 'platform');
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    const rendered = render({
+      kind: 'required',
+      status: makeStatus({
+        platform: 'linux',
+        error: 'Selected Git executable cannot be used.',
+      }),
+    });
+    try {
+      expect(
+        rendered.container.querySelector(
+          '[data-testid="linux-git-required-screen"]',
+        ),
+      ).not.toBeNull();
+      expect(rendered.container.textContent).toContain('Canopy');
+      expect(rendered.container.textContent).toContain('Ubuntu');
+      expect(rendered.container.textContent).toContain('sudo apt install git');
+      expect(rendered.container.textContent).toContain(
+        'Selected Git executable cannot be used.',
+      );
+      expect(
+        rendered.container.querySelector('[data-testid="git-gate-auto"]'),
+      ).toBeNull();
+      expect(
+        rendered.container.querySelector(
+          '[data-testid="git-gate-winget-hint"]',
+        ),
+      ).toBeNull();
+      const manual = rendered.container.querySelector(
+        '[data-testid="git-gate-manual"]',
+      );
+      if (!(manual instanceof HTMLButtonElement))
+        throw new Error('Missing install instructions');
+      act(() => {
+        manual.click();
+      });
+      expect(openExternal).toHaveBeenCalledWith({
+        url: 'https://git-scm.com/install/linux',
+      });
+      expect(rendered.onAutoInstall).not.toHaveBeenCalled();
+    } finally {
+      rendered.cleanup();
+      if (prior) Object.defineProperty(window, 'platform', prior);
+      else Reflect.deleteProperty(window, 'platform');
+    }
+  });
+
   it('shows the required title and the exact description copy with the Git link', () => {
     const rendered = render({ kind: 'required', status: makeStatus() });
     try {
@@ -294,7 +346,37 @@ describe('WindowsGitRequiredScreen', () => {
     }
   });
 
-  it('shows the detected path and only Continue after a successful recheck', () => {
+  it('allows Linux to recheck a selected executable before continuing', () => {
+    const prior = Object.getOwnPropertyDescriptor(window, 'platform');
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    const rendered = render({
+      kind: 'detected',
+      status: makeStatus({
+        platform: 'linux',
+        ready: true,
+        path: '/test/selected-git',
+        source: 'user-selected',
+      }),
+    });
+    try {
+      const recheck = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid="git-gate-recheck"]',
+      );
+      expect(recheck).not.toBeNull();
+      act(() => recheck?.click());
+      expect(rendered.onRecheck).toHaveBeenCalledTimes(1);
+      expect(rendered.onContinue).not.toHaveBeenCalled();
+    } finally {
+      rendered.cleanup();
+      if (prior) Object.defineProperty(window, 'platform', prior);
+      else Reflect.deleteProperty(window, 'platform');
+    }
+  });
+
+  it('shows the detected path and only Continue after a successful Windows recheck', () => {
     const rendered = render({
       kind: 'detected',
       status: makeStatus({

@@ -3,12 +3,12 @@ import { singleFlight } from '../lib/single-flight';
 describe('singleFlight', () => {
   it('runs one in-flight call and hands the same promise to concurrent callers', async () => {
     let runs = 0;
-    let release: (() => void) | null = null;
+    const release: { current: (() => void) | null } = { current: null };
     const run = singleFlight(
       () =>
         new Promise<void>((resolve) => {
           runs += 1;
-          release = resolve;
+          release.current = resolve;
         }),
     );
 
@@ -17,7 +17,7 @@ describe('singleFlight', () => {
     expect(second).toBe(first);
     expect(runs).toBe(1);
 
-    release?.();
+    release.current?.();
     await first;
 
     // Once settled, the next call starts a fresh run.

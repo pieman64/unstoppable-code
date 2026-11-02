@@ -110,6 +110,9 @@ const TEXT_MATCH_RANGE = `(node, text) => {
  * the corner of the node's bounds, as on screen. That is the `rect` that
  * `DOM.scrollIntoViewIfNeeded` takes, which Chromium then brings into view
  * through every scroller, slot, transform and frame around the node.
+ * Chromium adds the rect to the node's layout box, in layout units (device
+ * pixels times page zoom), so the CSS-pixel measure is scaled by
+ * `devicePixelRatio`; unscaled, it lands short at a ratio of 2.
  */
 const TEXT_MATCH_RECT = `function(text) {
   const range = (${TEXT_MATCH_RANGE})(this, text);
@@ -117,8 +120,9 @@ const TEXT_MATCH_RECT = `function(text) {
   const whole = this.ownerDocument.createRange();
   whole.selectNodeContents(this);
   const words = range.getBoundingClientRect(), node = whole.getBoundingClientRect();
-  return { x: words.left - node.left, y: words.top - node.top,
-    width: words.right - words.left, height: words.bottom - words.top };
+  const z = this.ownerDocument.defaultView.devicePixelRatio || 1;
+  return { x: (words.left - node.left) * z, y: (words.top - node.top) * z,
+    width: (words.right - words.left) * z, height: (words.bottom - words.top) * z };
 }`;
 
 /**

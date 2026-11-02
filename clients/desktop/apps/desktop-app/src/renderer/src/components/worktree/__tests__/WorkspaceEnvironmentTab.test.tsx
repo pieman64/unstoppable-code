@@ -17,6 +17,7 @@ import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-
 
 import { WorkspaceEnvironmentTab } from '../WorkspaceEnvironmentTab';
 import { useEnvironmentsStore } from '@/stores/environmentsStore';
+import { chooseSettingsOptionSync } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 interface TestApi {
   loadEnvironmentConfig: jest.Mock<Promise<LoadEnvironmentConfigResponse>, []>;
@@ -47,6 +48,24 @@ function render(node: ReactNode): { container: HTMLDivElement; root: Root } {
     root.render(node);
   });
   return { container, root };
+}
+
+/**
+ * Chooses `value` in a runtime select: the native select of the panel, or
+ * the shared settings dropdown of a settings page.
+ */
+function chooseRuntime(select: HTMLElement, value: string): void {
+  if (select instanceof HTMLSelectElement) {
+    act(() => {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    return;
+  }
+  if (!(select instanceof HTMLButtonElement)) {
+    throw new Error('Not a runtime select');
+  }
+  chooseSettingsOptionSync(select, value);
 }
 
 async function flushPromises(): Promise<void> {
@@ -101,6 +120,7 @@ describe('WorkspaceEnvironmentTab', () => {
         select.dispatchEvent(new Event('change', { bubbles: true }));
       });
       api.loadEnvironmentConfig.mockResolvedValueOnce({
+        ok: false,
         error: 'Storage failed.',
         secureStorageFailure: {
           version: 1,
@@ -507,6 +527,332 @@ describe('WorkspaceEnvironmentTab', () => {
       payload.workspaceAssignments.find((entry) => entry.workspaceId === 'ws-1')
         ?.runtimes,
     ).toEqual({ agent: 'default-overall' });
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('on a settings page, saves a runtime choice as it is made', async () => {
+    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const api = installApi(initial);
+    const states: string[] = [];
+
+    const { container, root } = render(
+      <WorkspaceEnvironmentTab
+        layout="settings"
+        workspaceId="ws-1"
+        workspaceName="Workspace 1"
+        onManageEnvironments={() => undefined}
+        onSaveStateChange={(state) => states.push(state)}
+      />,
+    );
+    await flushPromises();
+    expect(
+      container.querySelector('[data-testid="workspace-environment-save"]'),
+    ).toBeNull();
+
+    const agentSelect = container.querySelector(
+      '[data-testid="workspace-environment-agent"]',
+    );
+    if (!(agentSelect instanceof HTMLElement))
+      throw new Error('Missing agent runtime select');
+    chooseRuntime(agentSelect, 'default-overall');
+    await flushPromises();
+    await flushPromises();
+
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
+    expect(
+      api.saveEnvironmentConfig.mock.calls[0][0].workspaceAssignments.find(
+        (entry) => entry.workspaceId === 'ws-1',
+      )?.runtimes,
+    ).toEqual({ agent: 'default-overall' });
+    expect(states).toContain('saving');
+    expect(states[states.length - 1]).toBe('saved');
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('on a settings page, writes a choice made during a save after the page moves on', async () => {
+    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const api = installApi(initial);
+    let finishFirst: () => void = () => undefined;
+    api.saveEnvironmentConfig.mockImplementationOnce(
+      (data: EnvironmentConfigData) =>
+        new Promise((resolve) => {
+          finishFirst = (): void =>
+            resolve({ ok: true as const, data, encryptionAvailable: true });
+        }),
+    );
+    const states: string[] = [];
+
+    const { container, root } = render(
+      <WorkspaceEnvironmentTab
+        layout="settings"
+        workspaceId="ws-1"
+        workspaceName="Workspace 1"
+        onManageEnvironments={() => undefined}
+        onSaveStateChange={(state) => states.push(state)}
+      />,
+    );
+    await flushPromises();
+    const choose = (runtime: string): void => {
+      const select = container.querySelector(
+        `[data-testid="workspace-environment-${runtime}"]`,
+      );
+      if (!(select instanceof HTMLElement))
+        throw new Error(`Missing ${runtime} runtime select`);
+      chooseRuntime(select, 'default-overall');
+    };
+    choose('agent');
+    await flushPromises();
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
+    // A second choice while the first save runs, then the page moves on.
+    choose('pipeline');
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+
+    await act(async () => {
+      finishFirst();
+      await Promise.resolve();
+    });
+    await flushPromises();
+    await flushPromises();
+    await flushPromises();
+
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(2);
+    expect(
+      api.saveEnvironmentConfig.mock.calls[1][0].workspaceAssignments.find(
+        (entry) => entry.workspaceId === 'ws-1',
+      )?.runtimes,
+    ).toEqual(expect.objectContaining({ pipeline: 'default-overall' }));
+    expect(states[states.length - 1]).toBe('saved');
+  });
+
+  it('with a Save button, does not write a choice made during a save after leaving', async () => {
+    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const api = installApi(initial);
+    let finishFirst: () => void = () => undefined;
+    api.saveEnvironmentConfig.mockImplementationOnce(
+      (data: EnvironmentConfigData) =>
+        new Promise((resolve) => {
+          finishFirst = (): void =>
+            resolve({ ok: true as const, data, encryptionAvailable: true });
+        }),
+    );
+    const { container, root } = render(
+      <WorkspaceEnvironmentTab
+        workspaceId="ws-1"
+        workspaceName="Workspace 1"
+        onManageEnvironments={() => undefined}
+      />,
+    );
+    await flushPromises();
+    const choose = (runtime: string): void => {
+      const select = container.querySelector(
+        `[data-testid="workspace-environment-${runtime}"]`,
+      );
+      if (!(select instanceof HTMLElement))
+        throw new Error(`Missing ${runtime} runtime select`);
+      chooseRuntime(select, 'default-overall');
+    };
+    choose('agent');
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="workspace-environment-save"]',
+        )
+        ?.click(),
+    );
+    await flushPromises();
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
+    // A second choice while that save runs, then the panel closes without
+    // Save being pressed again.
+    choose('pipeline');
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+
+    await act(async () => {
+      finishFirst();
+      await Promise.resolve();
+    });
+    await flushPromises();
+    await flushPromises();
+    await flushPromises();
+
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a settings page, lets the page wait for a running save and hear that it failed', async () => {
+    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const api = installApi(initial);
+    let failSave: (cause: Error) => void = () => undefined;
+    api.saveEnvironmentConfig.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failSave = reject;
+        }),
+    );
+    const registered: { flush: (() => Promise<boolean>) | null } = {
+      flush: null,
+    };
+
+    const { container, root } = render(
+      <WorkspaceEnvironmentTab
+        layout="settings"
+        workspaceId="ws-1"
+        workspaceName="Workspace 1"
+        onManageEnvironments={() => undefined}
+        onRegisterFlush={(next) => {
+          registered.flush = next;
+        }}
+      />,
+    );
+    await flushPromises();
+    const agentSelect = container.querySelector(
+      '[data-testid="workspace-environment-agent"]',
+    );
+    if (!(agentSelect instanceof HTMLElement))
+      throw new Error('Missing agent runtime select');
+    chooseRuntime(agentSelect, 'default-overall');
+    await flushPromises();
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
+
+    let result: boolean | undefined;
+    const waiting = registered.flush?.().then((saved) => {
+      result = saved;
+    });
+    await flushPromises();
+    expect(result).toBeUndefined();
+    await act(async () => {
+      failSave(new Error('Disk is full'));
+      await waiting;
+    });
+    expect(result).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it('on a settings page, writes a choice made during a save before the page may close', async () => {
+    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const api = installApi(initial);
+    let finishFirst: () => void = () => undefined;
+    api.saveEnvironmentConfig.mockImplementationOnce(
+      (data: EnvironmentConfigData) =>
+        new Promise((resolve) => {
+          finishFirst = (): void =>
+            resolve({ ok: true as const, data, encryptionAvailable: true });
+        }),
+    );
+    const registered: { flush: (() => Promise<boolean>) | null } = {
+      flush: null,
+    };
+
+    const { container, root } = render(
+      <WorkspaceEnvironmentTab
+        layout="settings"
+        workspaceId="ws-1"
+        workspaceName="Workspace 1"
+        onManageEnvironments={() => undefined}
+        onRegisterFlush={(next) => {
+          registered.flush = next;
+        }}
+      />,
+    );
+    await flushPromises();
+    const choose = (runtime: string): void => {
+      const select = container.querySelector(
+        `[data-testid="workspace-environment-${runtime}"]`,
+      );
+      if (!(select instanceof HTMLElement))
+        throw new Error(`Missing ${runtime} runtime select`);
+      chooseRuntime(select, 'default-overall');
+    };
+    choose('agent');
+    await flushPromises();
+    choose('pipeline');
+
+    let result: boolean | undefined;
+    let waiting: Promise<void> | undefined;
+    act(() => {
+      // The page closes as soon as the flush says everything is saved.
+      waiting = registered.flush?.().then((saved) => {
+        result = saved;
+        root.unmount();
+      });
+    });
+    await act(async () => {
+      finishFirst();
+      await waiting;
+    });
+
+    expect(result).toBe(true);
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(2);
+    expect(
+      api.saveEnvironmentConfig.mock.calls[1][0].workspaceAssignments.find(
+        (entry) => entry.workspaceId === 'ws-1',
+      )?.runtimes,
+    ).toEqual(expect.objectContaining({ pipeline: 'default-overall' }));
+
+    container.remove();
+  });
+
+  it('on a settings page, holds a choice while a failed environment save waits for Retry', async () => {
+    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const api = installApi(initial);
+    const unsaved: boolean[] = [];
+
+    const { container, root } = render(
+      <WorkspaceEnvironmentTab
+        layout="settings"
+        workspaceId="ws-1"
+        workspaceName="Workspace 1"
+        onManageEnvironments={() => undefined}
+        onUnsavedChange={(next) => unsaved.push(next)}
+      />,
+    );
+    await flushPromises();
+    act(() => {
+      useEnvironmentsStore.setState({
+        pendingSave: {
+          kind: 'environment',
+          data: initial,
+          dataVersion: 0,
+          preserveLocal: false,
+        },
+      });
+    });
+
+    const agentSelect = container.querySelector(
+      '[data-testid="workspace-environment-agent"]',
+    );
+    if (!(agentSelect instanceof HTMLElement))
+      throw new Error('Missing agent runtime select');
+    chooseRuntime(agentSelect, 'default-overall');
+    await flushPromises();
+    expect(api.saveEnvironmentConfig).not.toHaveBeenCalled();
+    // The page hears that a choice waits, so it can keep itself open.
+    expect(unsaved[unsaved.length - 1]).toBe(true);
+
+    // Once the waiting save settles, the choice is written.
+    act(() => {
+      useEnvironmentsStore.setState({ pendingSave: null });
+    });
+    await flushPromises();
+    await flushPromises();
+    expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
+    expect(unsaved[unsaved.length - 1]).toBe(false);
 
     act(() => {
       root.unmount();

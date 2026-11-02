@@ -13,12 +13,27 @@ import {
   type DefaultLayoutDescriptor,
 } from '../panel-layout-store';
 import {
+  findEditableSafePanelShortcut,
   isPanelCommandAvailable,
+  matchesPanelShortcutBinding,
   PANEL_COMMANDS,
   PANEL_SHORTCUT_BINDINGS,
   runPanelCommand,
+  selectAdjacentPanelTab,
   type PanelCommandId,
+  type PanelShortcutBinding,
 } from '../panel-commands';
+import { registerPanelTabSelectionHandler } from '../panel-tab-selection';
+import type { ShortcutEventLike } from '../../../find/shortcut-target';
+
+let mockIsMac = false;
+
+jest.mock('@canopy/ui-shared/lib/shortcut-platform', () => {
+  const actual: Record<string, unknown> = jest.requireActual(
+    '@canopy/ui-shared/lib/shortcut-platform',
+  );
+  return { ...actual, isMacPlatform: (): boolean => mockIsMac };
+});
 
 let keyCounter = 0;
 
@@ -51,9 +66,40 @@ const ALL_COMMAND_IDS: PanelCommandId[] = PANEL_COMMANDS.map(
   (command) => command.id,
 );
 
+const TAB_CYCLE_IDS: PanelCommandId[] = [
+  'panel-select-next-tab',
+  'panel-select-previous-tab',
+];
+
 const MULTI_GROUP_ONLY_IDS: PanelCommandId[] = ALL_COMMAND_IDS.filter(
-  (id) => id !== 'panel-split-right' && id !== 'panel-split-down',
+  (id) =>
+    id !== 'panel-split-right' &&
+    id !== 'panel-split-down' &&
+    !TAB_CYCLE_IDS.includes(id),
 );
+
+/** One chat group holding chats a, b, c in that order, with a active. */
+function initThreeTabGroup(key: string): void {
+  store().initializeLayout(key, THREE_GROUPS);
+  store().addTab(key, 'group-a', 'chat', {
+    panelId: 'panel-a2',
+    instance: { chatTabId: 'chat-a2' },
+    activate: false,
+  });
+  store().addTab(key, 'group-a', 'chat', {
+    panelId: 'panel-a3',
+    instance: { chatTabId: 'chat-a3' },
+    activate: false,
+  });
+}
+
+function activePanelOf(key: string, groupId: string): string | null {
+  return (
+    store().layouts[key]?.viewModel.groups.find(
+      (group) => group.groupId === groupId,
+    )?.activePanelId ?? null
+  );
+}
 
 function activeGroupId(key: string): string | null {
   return store().layouts[key]?.viewModel.activeGroupId ?? null;
@@ -91,12 +137,34 @@ describe('availability', () => {
     }
   });
 
-  test('multi-group layouts allow every command', () => {
+  test('multi-group layouts allow every group command', () => {
     const key = nextKey();
     store().initializeLayout(key, THREE_GROUPS);
 
     for (const id of ALL_COMMAND_IDS) {
-      expect(isPanelCommandAvailable(id, key)).toBe(true);
+      expect(isPanelCommandAvailable(id, key)).toBe(
+        !TAB_CYCLE_IDS.includes(id),
+      );
+    }
+  });
+
+  test('tab cycling needs an active group with at least two tabs', () => {
+    const key = nextKey();
+    store().initializeLayout(key, ONE_GROUP);
+    for (const id of TAB_CYCLE_IDS) {
+      expect(isPanelCommandAvailable(id, key)).toBe(false);
+    }
+
+    // A command split leaves the new, EMPTY group active.
+    expect(runPanelCommand('panel-split-right', key)).toBe(true);
+    for (const id of TAB_CYCLE_IDS) {
+      expect(isPanelCommandAvailable(id, key)).toBe(false);
+    }
+
+    const multiTabKey = nextKey();
+    initThreeTabGroup(multiTabKey);
+    for (const id of TAB_CYCLE_IDS) {
+      expect(isPanelCommandAvailable(id, multiTabKey)).toBe(true);
     }
   });
 });
@@ -253,11 +321,195 @@ describe('runPanelCommand dispatch', () => {
   });
 });
 
-describe('shortcut bindings', () => {
-  test('every command has exactly one default binding and vice versa', () => {
-    expect(PANEL_SHORTCUT_BINDINGS.map((binding) => binding.id).sort()).toEqual(
-      [...ALL_COMMAND_IDS].sort(),
+describe('tab cycling', () => {
+  test('next and previous cycle the active group in strip order with wrap', () => {
+    const key = nextKey();
+    initThreeTabGroup(key);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a');
+
+    expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a2');
+    expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a3');
+    expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a');
+
+    expect(runPanelCommand('panel-select-previous-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a3');
+    expect(runPanelCommand('panel-select-previous-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a2');
+
+    // Only the active group's selection moves.
+    expect(activeGroupId(key)).toBe('group-a');
+    expect(activePanelOf(key, 'group-b')).toBe('panel-b');
+    expect(activePanelOf(key, 'group-c')).toBe('panel-c');
+  });
+
+  test('the cycle follows the rendered strip, where pinned tabs lead', () => {
+    const key = nextKey();
+    initThreeTabGroup(key);
+    store().setTabPinned(key, 'group-a', 'panel-a3', true);
+
+    // Strip order is now a3 (pinned), a, a2.
+    expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a2');
+    expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a3');
+    expect(runPanelCommand('panel-select-previous-tab', key)).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a2');
+  });
+
+  test('a tab selection handler registered by the surface replaces the bare store select', () => {
+    const key = nextKey();
+    initThreeTabGroup(key);
+    const selections: string[] = [];
+    const unregister = registerPanelTabSelectionHandler(
+      key,
+      (groupId: string, panelId: string): void => {
+        selections.push(`${groupId}/${panelId}`);
+        store().selectTab(key, groupId, panelId);
+      },
     );
+    try {
+      expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+      expect(selections).toEqual(['group-a/panel-a2']);
+    } finally {
+      unregister();
+    }
+
+    // Unregistered: the command falls back to the store.
+    expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+    expect(selections).toEqual(['group-a/panel-a2']);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a3');
+  });
+
+  test('selectAdjacentPanelTab cycles from a given tab of a given group, wrapping', () => {
+    const key = nextKey();
+    initThreeTabGroup(key);
+    // Another group is active, as when focus sits in a native browser page
+    // whose click never reached the layout.
+    store().focusGroup(key, 'group-b');
+
+    expect(
+      selectAdjacentPanelTab(
+        key,
+        { groupId: 'group-a', panelId: 'panel-a3' },
+        'next',
+      ),
+    ).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a');
+    expect(activeGroupId(key)).toBe('group-a');
+
+    expect(
+      selectAdjacentPanelTab(
+        key,
+        { groupId: 'group-a', panelId: 'panel-a' },
+        'previous',
+      ),
+    ).toBe(true);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a3');
+  });
+
+  test('selectAdjacentPanelTab is a no-op for a missing tab or a single-tab group', () => {
+    const key = nextKey();
+    initThreeTabGroup(key);
+
+    expect(
+      selectAdjacentPanelTab(
+        key,
+        { groupId: 'group-a', panelId: 'missing' },
+        'next',
+      ),
+    ).toBe(false);
+    expect(
+      selectAdjacentPanelTab(
+        key,
+        { groupId: 'group-b', panelId: 'panel-b' },
+        'next',
+      ),
+    ).toBe(false);
+    expect(
+      selectAdjacentPanelTab(
+        'project/no-layout',
+        { groupId: 'group-a', panelId: 'panel-a' },
+        'next',
+      ),
+    ).toBe(false);
+    expect(activePanelOf(key, 'group-a')).toBe('panel-a');
+  });
+
+  test('a stale unregister does not remove a newer handler for the same layout', () => {
+    const key = nextKey();
+    initThreeTabGroup(key);
+    const calls: string[] = [];
+    const unregisterFirst = registerPanelTabSelectionHandler(key, (): void => {
+      calls.push('first');
+    });
+    const unregisterSecond = registerPanelTabSelectionHandler(key, (): void => {
+      calls.push('second');
+    });
+    unregisterFirst();
+    try {
+      expect(runPanelCommand('panel-select-next-tab', key)).toBe(true);
+      expect(calls).toEqual(['second']);
+    } finally {
+      unregisterSecond();
+    }
+  });
+});
+
+describe('shortcut bindings', () => {
+  function platformsOf(binding: PanelShortcutBinding): ('mac' | 'other')[] {
+    return binding.platform === undefined
+      ? ['mac', 'other']
+      : [binding.platform];
+  }
+
+  test('every command has a binding on each platform and every binding names a command', () => {
+    for (const id of ALL_COMMAND_IDS) {
+      const bindings = PANEL_SHORTCUT_BINDINGS.filter(
+        (binding) => binding.id === id,
+      );
+      const platforms = new Set(bindings.flatMap(platformsOf));
+      expect({ id, platforms: [...platforms].sort() }).toEqual({
+        id,
+        platforms: ['mac', 'other'],
+      });
+    }
+    for (const binding of PANEL_SHORTCUT_BINDINGS) {
+      expect(ALL_COMMAND_IDS).toContain(binding.id);
+    }
+  });
+
+  test('no two bindings on one platform share a chord but name different commands', () => {
+    const owners = new Map<string, PanelCommandId>();
+    for (const binding of PANEL_SHORTCUT_BINDINGS) {
+      for (const platform of platformsOf(binding)) {
+        const chord = [
+          platform,
+          binding.code ?? binding.key.toLowerCase(),
+          binding.shift === true ? 'shift' : '',
+          binding.alt === true ? 'alt' : '',
+        ].join('|');
+        const owner = owners.get(chord);
+        expect({ chord, id: owner ?? binding.id }).toEqual({
+          chord,
+          id: binding.id,
+        });
+        owners.set(chord, binding.id);
+      }
+    }
+  });
+
+  test('Ctrl+Shift+] and Ctrl+Shift+[ stay unbound outside macOS', () => {
+    for (const binding of PANEL_SHORTCUT_BINDINGS) {
+      if (
+        binding.shift === true &&
+        (binding.code === 'BracketRight' || binding.code === 'BracketLeft')
+      ) {
+        expect(binding.platform).toBe('mac');
+      }
+    }
   });
 
   test('alt is only combined with arrow keys (macOS Option composes characters)', () => {
@@ -266,5 +518,136 @@ describe('shortcut bindings', () => {
         expect(binding.key.startsWith('Arrow')).toBe(true);
       }
     }
+  });
+});
+
+describe('matchesPanelShortcutBinding', () => {
+  function event(overrides: Partial<ShortcutEventLike>): ShortcutEventLike {
+    return {
+      altKey: false,
+      ctrlKey: false,
+      isComposing: false,
+      key: '',
+      metaKey: false,
+      shiftKey: false,
+      ...overrides,
+    };
+  }
+
+  function matchedIds(shortcut: ShortcutEventLike): PanelCommandId[] {
+    return PANEL_SHORTCUT_BINDINGS.filter((binding) =>
+      matchesPanelShortcutBinding(shortcut, binding),
+    ).map((binding) => binding.id);
+  }
+
+  afterEach(() => {
+    mockIsMac = false;
+  });
+
+  test('macOS matches ⌘⇧] and ⌘⇧[ by physical key, whatever the shifted character', () => {
+    mockIsMac = true;
+    expect(
+      matchedIds(
+        event({
+          code: 'BracketRight',
+          key: '}',
+          shiftKey: true,
+          metaKey: true,
+        }),
+      ),
+    ).toEqual(['panel-select-next-tab']);
+    expect(
+      matchedIds(
+        event({ code: 'BracketLeft', key: '{', shiftKey: true, metaKey: true }),
+      ),
+    ).toEqual(['panel-select-previous-tab']);
+    // ⌘] without Shift stays the group chord.
+    expect(
+      matchedIds(event({ code: 'BracketRight', key: ']', metaKey: true })),
+    ).toEqual(['panel-focus-next-group']);
+    // Ctrl+Tab belongs to Windows and Linux only.
+    expect(matchedIds(event({ key: 'Tab', ctrlKey: true }))).toEqual([]);
+  });
+
+  test('Windows and Linux match Ctrl+Tab, Ctrl+Shift+Tab, and Ctrl+PageDown/PageUp', () => {
+    expect(matchedIds(event({ key: 'Tab', ctrlKey: true }))).toEqual([
+      'panel-select-next-tab',
+    ]);
+    expect(
+      matchedIds(event({ key: 'Tab', ctrlKey: true, shiftKey: true })),
+    ).toEqual(['panel-select-previous-tab']);
+    expect(matchedIds(event({ key: 'PageDown', ctrlKey: true }))).toEqual([
+      'panel-select-next-tab',
+    ]);
+    expect(matchedIds(event({ key: 'PageUp', ctrlKey: true }))).toEqual([
+      'panel-select-previous-tab',
+    ]);
+    // The macOS bracket pair is not mapped to Ctrl+Shift+] here.
+    expect(
+      matchedIds(
+        event({
+          code: 'BracketRight',
+          key: '}',
+          shiftKey: true,
+          ctrlKey: true,
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  test('findEditableSafePanelShortcut finds only the tab-cycle chords', () => {
+    expect(
+      findEditableSafePanelShortcut(event({ key: 'Tab', ctrlKey: true }))?.id,
+    ).toBe('panel-select-next-tab');
+    expect(
+      findEditableSafePanelShortcut(event({ key: 'PageUp', ctrlKey: true }))
+        ?.id,
+    ).toBe('panel-select-previous-tab');
+    // Other panel chords and readline chords are not editable-safe.
+    expect(
+      findEditableSafePanelShortcut(event({ key: '\\', ctrlKey: true })),
+    ).toBeUndefined();
+    expect(
+      findEditableSafePanelShortcut(event({ key: 'r', ctrlKey: true })),
+    ).toBeUndefined();
+
+    mockIsMac = true;
+    expect(
+      findEditableSafePanelShortcut(
+        event({ code: 'BracketLeft', key: '{', shiftKey: true, metaKey: true }),
+      )?.id,
+    ).toBe('panel-select-previous-tab');
+    expect(
+      findEditableSafePanelShortcut(event({ key: 'Tab', ctrlKey: true })),
+    ).toBeUndefined();
+  });
+
+  test('composition, Alt, and Ctrl+Meta together never match the tab chords', () => {
+    mockIsMac = true;
+    const mac = event({
+      code: 'BracketRight',
+      key: '}',
+      shiftKey: true,
+      metaKey: true,
+    });
+    expect(matchedIds({ ...mac, isComposing: true })).toEqual([]);
+    expect(matchedIds({ ...mac, altKey: true })).toEqual([]);
+    expect(matchedIds({ ...mac, ctrlKey: true })).toEqual([]);
+
+    mockIsMac = false;
+    const other = event({ key: 'Tab', ctrlKey: true });
+    expect(matchedIds({ ...other, isComposing: true })).toEqual([]);
+    expect(matchedIds({ ...other, altKey: true })).toEqual([]);
+    expect(matchedIds({ ...other, metaKey: true })).toEqual([]);
+  });
+
+  test('bindings without code keep matching by key on every platform', () => {
+    expect(matchedIds(event({ key: '\\', ctrlKey: true }))).toEqual([
+      'panel-split-right',
+    ]);
+    mockIsMac = true;
+    expect(matchedIds(event({ key: '\\', metaKey: true }))).toEqual([
+      'panel-split-right',
+    ]);
   });
 });

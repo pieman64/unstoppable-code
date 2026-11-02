@@ -424,6 +424,36 @@ describe('resolveHomeLink', () => {
     );
   });
 
+  // CAN-4466 golden, kept for CAN-4109: the GitHub broker's authentication
+  // failures, as `github:list-user-repos` rejects across IPC today, offer
+  // Connect GitHub.
+  it.each([
+    'No GitHub token is available. Configure a PAT or sign in with the GitHub CLI.',
+    'GitHub authentication failed after refreshing credentials.',
+  ])(
+    'offers Connect GitHub when listing repositories fails with %s',
+    async (brokerMessage) => {
+      const resolution = await resolveHomeLink(
+        single('https://github.com/acme/new'),
+        context({ projects: [chatsProject()] }),
+        deps({
+          listUserGitHubRepos: jest
+            .fn()
+            .mockRejectedValue(
+              new Error(
+                `Error invoking remote method 'github:list-user-repos': GitHubBrokerError: ${brokerMessage}`,
+              ),
+            ),
+        }),
+      );
+      expect(resolution).toEqual({
+        status: 'blocked',
+        message: 'Connect GitHub to add this repository as a project.',
+        actions: [{ kind: 'sign-in-github' }, { kind: 'retry' }],
+      });
+    },
+  );
+
   describe('Linear issues', () => {
     it('routes a complete, unique PR attachment through the PR', async () => {
       const resolution = await resolveHomeLink(

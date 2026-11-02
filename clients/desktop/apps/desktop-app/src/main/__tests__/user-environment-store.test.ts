@@ -43,7 +43,16 @@ jest.mock('@canopy/core-platform/host-platform', () => ({
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
   safeStorage: {
-    ...safeStorageMock,
+    encryptionAvailable: true,
+    get isEncryptionAvailable(): typeof safeStorageMock.isEncryptionAvailable {
+      return safeStorageMock.isEncryptionAvailable;
+    },
+    get encryptString(): typeof safeStorageMock.encryptString {
+      return safeStorageMock.encryptString;
+    },
+    get decryptString(): typeof safeStorageMock.decryptString {
+      return safeStorageMock.decryptString;
+    },
     getSelectedStorageBackend: (): string => mockBackend,
   },
 }));
@@ -622,13 +631,13 @@ describe('user-environment-store', () => {
       ],
     };
 
-    let releaseFirstWrite: (() => void) | null = null;
+    const firstWriteGate: { release?: () => void } = {};
     const firstWriteStarted = new Promise<void>((resolve) => {
       writeFileMock.mockImplementationOnce(
         (_path: string, content: string | Uint8Array): Promise<void> => {
           resolve();
           return new Promise((release) => {
-            releaseFirstWrite = (): void => {
+            firstWriteGate.release = (): void => {
               environmentPayload =
                 typeof content === 'string'
                   ? content
@@ -646,7 +655,7 @@ describe('user-environment-store', () => {
       uiMode: 'bulk',
       variables: [{ key: 'LEGACY', value: '1' }],
     });
-    releaseFirstWrite?.();
+    firstWriteGate.release?.();
     await v2Save;
     await legacySave;
 

@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { expandTurnFileRecords } from '@canopy/protocol/turn-files';
 import type { TranscriptTurnFile } from '@canopy/agent-transcript/transcript-storage';
 import type { TurnFileLocation } from '@canopy/desktop-shared/lib/turn-files';
-import { resolveTurnFileLocations } from '@/lib/turn-file-locations';
+import {
+  resolveTurnFileLocations,
+  type TurnFileLocationsResolution,
+} from '@/lib/turn-file-locations';
 
 export interface TurnFileLocationsTarget {
   projectId: string;
@@ -15,6 +19,8 @@ export interface TurnFileLocationsResult {
    * does not unmount between a creation finishing and its check resolving.
    */
   pending: TranscriptTurnFile[];
+  /** Transient source-to-summary paths; never retained after settlement. */
+  pendingPathAliases: TurnFileLocationsResolution['pendingPathAliases'];
   /** Files confirmed to exist inside a root of their workspace. */
   located: TurnFileLocation[];
   /**
@@ -26,6 +32,8 @@ export interface TurnFileLocationsResult {
 }
 
 const NONE: TurnFileLocation[] = [];
+const NO_PENDING_ALIASES: TurnFileLocationsResolution['pendingPathAliases'] =
+  [];
 const RETRY_DELAY_MS = 2_000;
 
 function candidateKey(file: TranscriptTurnFile): string {
@@ -37,28 +45,36 @@ function locationKey(file: TurnFileLocation): string {
 }
 
 /**
- * Checks a turn's file outputs against the host before they are presented.
- * While the turn runs only completed creations are checked; once it ends
- * every record that did not fail is, so a creation the transcript never saw
- * finish still shows when the file is there and stays hidden when it is not.
- * A failed write never becomes a chip: the path may exist from before.
+ * Reconciles every lifecycle state by host file identity before presentation.
+ * Only ready files are checked for existence and become actionable. Legacy
+ * unfinished creations may be checked on completion; pending updates never
+ * inherit success merely because the path already exists.
  */
 export function useTurnFileLocations(
   target: TurnFileLocationsTarget | undefined,
   files: readonly TranscriptTurnFile[],
   complete: boolean,
 ): TurnFileLocationsResult {
+  const evidence = useMemo(() => expandTurnFileRecords(files), [files]);
   const candidates = useMemo(
     () =>
-      files.filter((file) =>
-        complete ? file.state !== 'failed' : file.state === 'ready',
+      evidence.map(
+        (file): TranscriptTurnFile =>
+          complete && file.change !== 'updated' && file.state === 'creating'
+            ? { ...file, state: 'ready' }
+            : file,
       ),
-    [complete, files],
+    [complete, evidence],
   );
   const projectId = target?.projectId;
   const worktreeId = target?.worktreeId;
+  // A change of classification re-resolves, so a located chip never keeps a
+  // stale updated or saved marker.
   const key = `${projectId ?? ''}/${worktreeId ?? ''}\u0000${complete}\u0000${candidates
-    .map(candidateKey)
+    .map(
+      (file) =>
+        `${candidateKey(file)}\u0000${file.change ?? ''}\u0000${file.state}\u0000${file.saved ?? ''}\u0000${file.removed ?? ''}\u0000${JSON.stringify(file.movedFrom ?? [])}`,
+    )
     .join('\n')}`;
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
@@ -68,7 +84,14 @@ export function useTurnFileLocations(
   const [result, setResult] = useState<{
     key: string;
     located: TurnFileLocation[];
-  }>({ key: '', located: NONE });
+    pending: TranscriptTurnFile[];
+    pendingPathAliases: TurnFileLocationsResolution['pendingPathAliases'];
+  }>({
+    key: '',
+    located: NONE,
+    pending: [],
+    pendingPathAliases: NO_PENDING_ALIASES,
+  });
 
   useEffect(() => {
     const fresh = complete && !previousCompleteRef.current;
@@ -84,7 +107,12 @@ export function useTurnFileLocations(
         { fresh },
       ).then((resolution) => {
         if (cancelled) return;
-        setResult({ key, located: resolution.located });
+        setResult({
+          key,
+          located: resolution.located,
+          pending: resolution.pending,
+          pendingPathAliases: resolution.pendingPathAliases,
+        });
         // A check that could not complete is not an answer for that file:
         // show what is known now and look once more shortly after.
         if (resolution.failed && attempt === 0)
@@ -101,6 +129,14 @@ export function useTurnFileLocations(
   const located = useMemo(() => {
     if (!projectId || !worktreeId || candidates.length === 0) return NONE;
     if (result.key === key) return result.located;
+    // Until aliases are reconciled, an earlier presentation cannot remain actionable.
+    if (
+      candidates.some(
+        (file) =>
+          file.state !== 'ready' || file.removed || file.movedFrom?.length,
+      )
+    )
+      return NONE;
     // Keep entries that are still candidates while a newer check runs.
     const keys = new Set(candidates.map(candidateKey));
     const kept = result.located.filter((file) =>
@@ -132,8 +168,15 @@ export function useTurnFileLocations(
     // files at all rather than an empty disclosure.
     if (!projectId || !worktreeId) return [];
     if (!complete) {
-      const creating = files.filter((file) => file.state === 'creating');
-      if (answered) return creating;
+      const creating = evidence.filter((file) => file.state === 'creating');
+      if (answered) return result.pending;
+      if (
+        candidates.some(
+          (file) =>
+            file.state !== 'ready' || file.removed || file.movedFrom?.length,
+        )
+      )
+        return creating;
       const known = new Set(located.map(locationKey));
       return [
         ...creating,
@@ -141,15 +184,28 @@ export function useTurnFileLocations(
       ];
     }
     if (answered || mountedCompleteRef.current) return [];
-    const stillCandidates = new Set(candidates.map(candidateKey));
+    const stillCandidates = new Set(
+      candidates.filter((file) => file.state !== 'failed').map(candidateKey),
+    );
     return lastPendingRef.current.filter((file) =>
       stillCandidates.has(candidateKey(file)),
     );
-  }, [answered, candidates, complete, files, located, projectId, worktreeId]);
+  }, [
+    answered,
+    candidates,
+    complete,
+    evidence,
+    located,
+    projectId,
+    worktreeId,
+    result.pending,
+  ]);
   lastPendingRef.current = pending;
+  const pendingPathAliases =
+    answered && !complete ? result.pendingPathAliases : NO_PENDING_ALIASES;
 
   return useMemo(
-    () => ({ pending, located, settled }),
-    [pending, located, settled],
+    () => ({ pending, pendingPathAliases, located, settled }),
+    [pending, pendingPathAliases, located, settled],
   );
 }

@@ -8,6 +8,12 @@
 // stays open even after the turn ends and this button unmounts.
 
 import { useEffect, useMemo, type JSX } from 'react';
+import {
+  Button,
+  CLEAN_ICON_BUTTON_VARIANT,
+  Tooltip,
+  useCleanChatLook,
+} from '@canopy/ui-shared/components';
 import { WatcherEyeIcon } from '@canopy/ui-shared/icons';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
@@ -52,10 +58,46 @@ export function ChatWatcherButton({
   );
 
   const hasWatchers = watchers.length > 0;
+  const clean = useCleanChatLook();
+  if (clean) {
+    // Clean chat look: the turn actions' shared quiet ghost button and
+    // one-line tooltip. An armed watcher keeps its info ink and count, in
+    // the same 28px capsule.
+    return (
+      <Tooltip label="Watch this chat">
+        {hasWatchers ? (
+          <button
+            type="button"
+            onClick={(): void => openModal({ projectId, worktreeId, chatId })}
+            aria-label="Watch this chat"
+            data-testid={`chat-watcher-button-${chatId}`}
+            data-attention=""
+            className="focus-ring canopy-small-icon-stroke inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-xs fg-info transition-colors hover:bg-info-subtle"
+          >
+            <WatcherEyeIcon width={14} height={14} aria-hidden="true" />
+            <span data-testid={`chat-watcher-button-${chatId}-count`}>
+              {watchers.length}
+            </span>
+          </button>
+        ) : (
+          <Button
+            variant={CLEAN_ICON_BUTTON_VARIANT}
+            size="sm"
+            iconOnly
+            onClick={(): void => openModal({ projectId, worktreeId, chatId })}
+            aria-label="Watch this chat"
+            data-testid={`chat-watcher-button-${chatId}`}
+          >
+            <WatcherEyeIcon width={14} height={14} aria-hidden="true" />
+          </Button>
+        )}
+      </Tooltip>
+    );
+  }
   const buttonClasses = [
     hasWatchers
-      ? 'focus-ring inline-flex h-6 items-center justify-center gap-1 rounded-md border border-fg-info/30 bg-info-subtle px-1.5 fg-info transition hover:bg-info-subtle/80'
-      : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition hover:bg-fg-primary/[0.08] hover:fg-primary',
+      ? 'focus-ring inline-flex h-6 items-center justify-center gap-1 rounded-md border border-fg-info/30 bg-info-subtle px-1.5 fg-info transition-colors hover:bg-info-subtle/80'
+      : 'focus-ring flex h-6 w-6 items-center justify-center rounded-md border bg-fg-primary/[0.04] fg-primary/80 transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary',
     className ?? '',
   ]
     .filter(Boolean)

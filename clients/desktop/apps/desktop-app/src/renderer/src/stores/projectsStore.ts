@@ -1,4 +1,5 @@
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
+import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import { create } from 'zustand';
 import { arrayMove } from '@dnd-kit/sortable';
 import {
@@ -123,6 +124,11 @@ import {
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { registerCoworkWorkspaceIds } from '@/lib/cowork-registry';
 import { resolveSidebarSortMode } from '@/lib/sidebar-ordering';
+import { recordWorktreeSetupFromRow } from '@/lib/worktreeSetupDurations';
+import {
+  assertWorktreeRemovalAdmitted,
+  throwIfArchiveRefused,
+} from '@/lib/worktreeRemovalAdmission';
 import {
   computeWorktreeGroups,
   flattenVisibleWorktreeGroupOrder,
@@ -157,13 +163,13 @@ export class TeardownFailedError extends Error {
   readonly repoName?: string;
   readonly output: string;
   readonly timedOut: boolean;
-  /** Per-action branch choice carried across retry/force-delete handling. */
+  /** Per-action branch choice carried across retry/without-teardown handling. */
   deleteBranch?: boolean;
-  /** Confirmed branch identity carried across retry/force-delete handling. */
+  /** Confirmed branch identity carried across retry/without-teardown handling. */
   expectedBranchName?: string;
-  /** Archive retention choice carried across retry/force-delete handling. */
+  /** Archive retention choice carried across retry/without-teardown handling. */
   lockAfterArchive?: boolean;
-  /** Missing-worktree delete choice carried across retry/force-delete handling. */
+  /** Missing-worktree delete choice carried across retry/without-teardown handling. */
   deleteWithoutRetentionIfMissing?: boolean;
 
   constructor(fields: {
@@ -611,9 +617,14 @@ interface ProjectsState {
     worktreeId: string,
     options?: ArchiveWorktreeOptions,
   ) => Promise<void>;
+  /**
+   * Drops a worktree that main already removed, and the temporary project
+   * the removal left empty when main reports one.
+   */
   reconcileArchivedWorktree: (
     projectId: string,
     worktreeId: string,
+    options?: { removedTemporaryWorkspaceId?: string },
   ) => Promise<void>;
   forceArchiveWorktree: (
     projectId: string,
@@ -2221,6 +2232,21 @@ function markWorktreeGitFailed(
   };
 }
 
+function findWorktreeRow(
+  projects: SidebarItem[],
+  projectId: string,
+  worktreeId: string,
+): WorktreeData | undefined {
+  for (const project of projects) {
+    if (project.id !== projectId || project.type === 'cowork') continue;
+    const row = project.worktrees.find(
+      (worktree) => worktree.id === worktreeId,
+    );
+    if (row) return row;
+  }
+  return undefined;
+}
+
 function hasWorktreeRow(
   projects: SidebarItem[],
   projectId: string,
@@ -2277,6 +2303,13 @@ function applyWorktreeGitReadyEvent(
       .flushPendingForWorktree(projectId, worktreeId);
     return false;
   }
+
+  // Sample how long this setup took for the next setup's estimate. Only a
+  // row still `git-pending` counts, so a replayed event records nothing.
+  recordWorktreeSetupFromRow(
+    projectId,
+    findWorktreeRow(get().projects, projectId, worktreeId),
+  );
 
   set({
     projects: get().projects.map((project) => {
@@ -2482,8 +2515,8 @@ function applyWorktreeGitFailedEvent(
  * `repairPendingWorkspaceWorktree` flow repairs the root checkout and creates
  * the child repos).
  *
- * Pending setup state (chat tabs, queued messages, queued pipeline runs, and
- * the `pending_setup_info` banner) is deliberately KEPT: the repair flow reuses
+ * Pending setup state (chat tabs, queued messages, and queued pipeline runs)
+ * is deliberately KEPT: the repair flow reuses
  * the same `worktreeId`, so a successful repair re-adds the row, re-selects it,
  * and flushes the still queued work. Only a cancelled repair
  * (`cancelPendingWorkspaceRepair`) tears the pending setup state down.
@@ -2991,6 +3024,31 @@ async function stopRunningHooks(
       }
     }),
   );
+}
+
+/**
+ * Marks the row busy, then runs main's read-only source admission before any
+ * other removal effect (CAN-5333). A refusal unmarks the row and rejects.
+ */
+async function markArchivingAndAdmitSource(
+  archiveKey: string,
+  projectId: string,
+  worktreeId: string,
+  kind: 'single-repo' | 'multi-repo',
+  get: () => ProjectsState,
+  set: (state: Partial<ProjectsState>) => void,
+): Promise<void> {
+  set({
+    archivingWorktrees: new Set(get().archivingWorktrees).add(archiveKey),
+  });
+  try {
+    await assertWorktreeRemovalAdmitted(projectId, worktreeId, kind);
+  } catch (error) {
+    const archivingWorktrees = new Set(get().archivingWorktrees);
+    archivingWorktrees.delete(archiveKey);
+    set({ archivingWorktrees });
+    throw error;
+  }
 }
 
 function deselectIfSelectedWorktree(
@@ -3527,6 +3585,8 @@ async function performArchive(
                   options.deleteWithoutRetentionIfMissing,
               }
             : {}),
+          // CAN-5336: a discardable refusal resolves with its description.
+          typedRefusal: true,
         })
       : await window.api.archiveWorktree({
           repoPath: item.repoPath,
@@ -3551,7 +3611,10 @@ async function performArchive(
                   options.deleteWithoutRetentionIfMissing,
               }
             : {}),
+          typedRefusal: true,
         });
+  // Before warnings and finalization: the callers' catches roll the row back.
+  throwIfArchiveRefused(archiveResponse);
 
   for (const warning of archiveResponse.warnings) {
     useGitHubStore.getState().addToast(warning, 'warning', undefined, {
@@ -5173,7 +5236,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         });
         await finalizeCreatedWorktree(pending.workspaceId, repaired, get, set);
         // A deferred-creation needs-repair detour keeps the chat state
-        // (queued message + pending_setup_info) for this worktree id alive
+        // (queued message and its setup-wait state) for this worktree id alive
         // through the repair. Completing a retained creation also emits
         // `worktree:git-ready`; a repair without one does not, so kick the
         // setup-queue flushes here too. Both are idempotent once drained.
@@ -5311,11 +5374,15 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       if (!item || item.type === 'cowork') return;
 
       const archiveOperation = (async (): Promise<void> => {
-        const archivingWorktrees = new Set(get().archivingWorktrees);
-        archivingWorktrees.add(archiveKey);
-        set({
-          archivingWorktrees,
-        });
+        // Every route below, files-only and missing-checkout included.
+        await markArchivingAndAdmitSource(
+          archiveKey,
+          projectId,
+          worktreeId,
+          item.type,
+          get,
+          set,
+        );
 
         const targetWorktree = item.worktrees.find(
           (wt) => wt.id === worktreeId,
@@ -5422,6 +5489,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             rollbackArchiveUiRemoval(archiveSnapshot, set);
           }
           archivedContainersStore.clearPendingContainer(projectId, worktreeId);
+          // Every desktop worktree removal funnels here or through
+          // "Delete without teardown" below (CAN-5335).
+          offerLifecycleJournalQuarantine(error);
           throw error;
         } finally {
           const archivingWorktrees = new Set(get().archivingWorktrees);
@@ -5450,7 +5520,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       await trackedArchive;
     },
 
-    reconcileArchivedWorktree: async (projectId, worktreeId) => {
+    reconcileArchivedWorktree: async (projectId, worktreeId, options) => {
       cleanupArchivedWorktreeRendererState(projectId, worktreeId, get);
       const removeDeletedWorktree = (): void => {
         set((state) => ({
@@ -5465,6 +5535,13 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
               : project,
           ),
         }));
+        // Main reports the project without checking Always show, so apply the
+        // sidebar's own retirement policy rather than removing it outright.
+        const emptied = get().projects.find(
+          (project) => project.id === options?.removedTemporaryWorkspaceId,
+        );
+        if (emptied && isRetiredTemporaryWorkspace(emptied))
+          removeTemporaryWorkspaceFromUi(emptied.id, get, set);
       };
       removeDeletedWorktree();
       await get().loadProjects({ silent: true });
@@ -5483,11 +5560,15 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       if (!item || item.type === 'cowork') return;
 
       const archiveOperation = (async (): Promise<void> => {
-        const archivingWorktrees = new Set(get().archivingWorktrees);
-        archivingWorktrees.add(archiveKey);
-        set({
-          archivingWorktrees,
-        });
+        // "Delete without teardown" skips teardown, not source admission.
+        await markArchivingAndAdmitSource(
+          archiveKey,
+          projectId,
+          worktreeId,
+          item.type,
+          get,
+          set,
+        );
 
         const targetWorktree = item.worktrees.find(
           (wt) => wt.id === worktreeId,
@@ -5522,6 +5603,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           if (archiveSnapshot) {
             rollbackArchiveUiRemoval(archiveSnapshot, set);
           }
+          offerLifecycleJournalQuarantine(error);
           throw error;
         } finally {
           const archivingWorktrees = new Set(get().archivingWorktrees);
@@ -6065,9 +6147,31 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           hidden,
         });
       } catch {
-        if (get().projects === nextProjects) {
-          set({ projects: previousProjects });
-        }
+        // Only this row's flag: a selection's Hide runs several at once.
+        set((state) => ({
+          projects: state.projects.map((project) => {
+            if (project.id !== projectId || project.type === 'cowork') {
+              return project;
+            }
+            let rolledBack = false;
+            const worktrees = project.worktrees.map((worktree) => {
+              if (
+                worktree.id !== worktreeId ||
+                (worktree.hidden === true) !== hidden
+              ) {
+                return worktree;
+              }
+              rolledBack = true;
+              if (!hidden) {
+                return { ...worktree, hidden: true };
+              }
+              const next = { ...worktree };
+              delete next.hidden;
+              return next;
+            });
+            return rolledBack ? { ...project, worktrees } : project;
+          }),
+        }));
         useGitHubStore
           .getState()
           .addToast('Failed to update hidden state', 'error', undefined, {

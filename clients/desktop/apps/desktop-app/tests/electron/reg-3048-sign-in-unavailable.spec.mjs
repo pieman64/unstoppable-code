@@ -17,6 +17,13 @@ import { seedMcpServers } from './seeders/seedMcpServers.mjs';
 // client ID setup for such a refusal; it now explains the refusal in the MCP
 // tab's error banner and never asks for an OAuth app.
 //
+// CAN-4267 deleted the Plugins management overlay that hosted that tab. Its
+// Browse and banner live on in Settings > MCP servers > Account connections.
+//
+// The plain-language refusal banner covered here belongs to the MCP servers
+// table, which now lives only in Settings > MCP servers > Account connections.
+// Customize's catalog detail shows the shared connection notice instead.
+//
 // Deterministic and offline: the account cloud is the `accountMcpCloud`
 // fixture answering the start with the body the web `connectionRoute`
 // serializes, and the curated catalog is seeded fresh on disk and answered by
@@ -85,10 +92,9 @@ for (const { desktopSignIn, title, message } of [
       expect(signIn.status.authenticated, JSON.stringify(signIn.status)).toBe(
         true,
       );
-      await app.openPluginsPage();
-      await app.openPluginsTab('mcp');
-      await app.expectPluginsTab('mcp');
-      const panel = window.getByTestId('plugins-management-section-mcp');
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
+      const panel = window.getByTestId('settings-mcp-account-connections');
 
       await panel.getByTestId('mcp-add-menu-trigger').click();
       await window.getByTestId('mcp-add-browse').click();

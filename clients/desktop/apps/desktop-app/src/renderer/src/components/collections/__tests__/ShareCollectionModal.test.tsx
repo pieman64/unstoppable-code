@@ -26,10 +26,14 @@ describe('ShareCollectionModal', () => {
   const getShared = jest.fn();
   const updateShared = jest.fn();
   const deleteCollection = jest.fn(() => Promise.resolve());
-  const analyzeCapabilityPackage = jest.fn(() =>
+  const analyzeCapabilityPackage = jest.fn<
+    ReturnType<typeof window.collections.analyzeCapabilityPackage>,
+    Parameters<typeof window.collections.analyzeCapabilityPackage>
+  >(() =>
     Promise.resolve({
       analysisId: 'analysis-1',
       state: 'ready',
+      pipelineContentHash: 'a'.repeat(64),
       blockers: [],
       manifest: {
         version: 1,
@@ -49,7 +53,10 @@ describe('ShareCollectionModal', () => {
         totalFiles: 0,
         totalBytes: 0,
       },
-    }),
+      expiresAt: '2027-10-02T00:00:00.000Z',
+    } satisfies Awaited<
+      ReturnType<typeof window.collections.analyzeCapabilityPackage>
+    >),
   );
   const commitCapabilityPackage = jest.fn(() =>
     Promise.resolve({
@@ -120,6 +127,8 @@ describe('ShareCollectionModal', () => {
         loadCanopyCloudAccount: jest.fn(() =>
           Promise.resolve({
             hasApiKey: true,
+            authMode: 'api_key',
+            credentialSource: 'manual',
             capabilities: ['collections-crud-v1', 'organizations-v1'],
             storageAvailable: true,
             account: {
@@ -223,6 +232,7 @@ describe('ShareCollectionModal', () => {
               },
             }}
             onClose={() => {}}
+            onOpenAccountSettings={() => {}}
             onShared={onShared}
           />,
         );
@@ -341,12 +351,15 @@ describe('ShareCollectionModal', () => {
     });
 
     expect(deleteCollection).not.toHaveBeenCalled();
-    expect(mockPostShareToast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tone: 'success',
-        link: '/portal/plugins/collections/shared/shared-col',
-      }),
-    );
+    // The dialog stays open on its success notice with the link; no toast.
+    expect(mockPostShareToast).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-testid="share-collection-success"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[data-testid="share-collection-link"]')
+        ?.textContent,
+    ).toBe('/portal/plugins/collections/shared/shared-col');
     expect(onShared).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'shared-col' }),
     );
@@ -360,9 +373,11 @@ describe('ShareCollectionModal', () => {
         {
           code: 'SOURCE_PATH_ESCAPE',
           message: 'A dependency cannot be packaged safely.',
+          occurrences: [],
         },
       ],
-      manifest: null,
+      pipelineContentHash: 'a'.repeat(64),
+      expiresAt: '2027-10-02T00:00:00.000Z',
     });
 
     await act(async () => {
@@ -409,6 +424,8 @@ describe('ShareCollectionModal', () => {
   it('keeps Share available after optional contents or the selected team change', async () => {
     jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
       hasApiKey: true,
+      authMode: 'api_key',
+      credentialSource: 'manual',
       capabilities: ['collections-crud-v1', 'teams-v1'],
       storageAvailable: true,
       account: {
@@ -421,6 +438,7 @@ describe('ShareCollectionModal', () => {
     analyzeCapabilityPackage.mockResolvedValueOnce({
       analysisId: 'analysis-ready',
       state: 'ready',
+      pipelineContentHash: 'a'.repeat(64),
       blockers: [],
       manifest: {
         version: 1,
@@ -452,6 +470,7 @@ describe('ShareCollectionModal', () => {
         totalFiles: 1,
         totalBytes: 4,
       },
+      expiresAt: '2027-10-02T00:00:00.000Z',
     });
     listSharedTeams.mockResolvedValue({
       success: true,
@@ -840,6 +859,7 @@ describe('ShareCollectionModal', () => {
     analyzeCapabilityPackage.mockResolvedValueOnce({
       analysisId: 'analysis-empty',
       state: 'ready',
+      pipelineContentHash: 'a'.repeat(64),
       blockers: [],
       manifest: {
         version: 1,
@@ -850,6 +870,7 @@ describe('ShareCollectionModal', () => {
         totalFiles: 0,
         totalBytes: 0,
       },
+      expiresAt: '2027-10-02T00:00:00.000Z',
     });
 
     await act(async () => {

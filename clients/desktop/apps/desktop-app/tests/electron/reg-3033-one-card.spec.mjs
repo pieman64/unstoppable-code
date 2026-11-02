@@ -10,7 +10,7 @@ import { writeJson } from './seeders/fsHelpers.mjs';
 import { seedCuratedPlugins } from './seeders/seedCuratedPlugins.mjs';
 import { seedMcpServers } from './seeders/seedMcpServers.mjs';
 
-// REG-3033: one card per MCP integration, one Add path, every connection kept.
+// REG-3033: one entry per MCP integration, one Add path, every connection kept.
 //
 // The curated Linear plugin (one MCP key plus skills), the curated Linear MCP
 // entry, and a Linear account connection used to be three rows that each
@@ -242,7 +242,15 @@ test('the marketplace shows one Linear card and Add connects the account and ins
     );
     // CAN-4261: the page has no Back; leave through the breadcrumb.
     await window.getByTestId('plugins-entry-detail-breadcrumb-root').click();
-    await expect(card).toBeVisible();
+    const installed = window.getByTestId('customize-section-installed');
+    const installedRow = installed.getByTestId(
+      'customize-row-mcp-catalog:linear',
+    );
+    await expect(installedRow).toBeVisible();
+    await expect(
+      installed.getByRole('listitem').filter({ hasText: 'Linear' }),
+    ).toHaveCount(1);
+    await expect(card).toHaveCount(0);
     await expect(
       window.getByTestId('plugins-entry-add-mcp-catalog:linear'),
     ).toHaveCount(0);
@@ -252,13 +260,12 @@ test('the marketplace shows one Linear card and Add connects the account and ins
   }
 });
 
-test('Connect on a disconnected account connection reconnects it without a second click', async () => {
+test('Add on a disconnected account connection reconnects it without a second click', async () => {
   // Review follow-up: the card's Add intent on an existing account binding
   // that is not connected used to only open the detail, and the user had to
   // press Connect again before the connection reconnected and the folded
-  // skills installed. The desktop status reads a disconnected account row as
-  // not connected, so the card needs attention and offers Connect from its
-  // menu; it takes the same Add intent as the Add button.
+  // skills installed. A disconnected connection is not installed (CAN-5303),
+  // so its card stays in Browse, and Add reconnects that same connection.
   test.setTimeout(150_000);
   const connectionId = '11111111-2222-4333-8444-555555555555';
   const cloud = await startAccountMcpCloud({
@@ -295,15 +302,17 @@ test('Connect on a disconnected account connection reconnects it without a secon
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('Linear');
 
-    // One Connect from the card starts the reconnect on that same connection,
+    // One Add from the card starts the reconnect on that same connection,
     // with no second press inside the detail.
-    const card = window.getByTestId('plugins-entry-mcp-catalog:linear');
-    await expect(card).toBeVisible();
     await expect(
-      window.getByTestId('plugins-entry-add-mcp-catalog:linear'),
+      window.getByTestId('plugins-entry-mcp-catalog:linear'),
+    ).toBeVisible();
+    await expect(
+      window
+        .getByTestId('customize-section-installed')
+        .getByTestId('customize-row-mcp-catalog:linear'),
     ).toHaveCount(0);
-    await window.getByTestId('plugins-entry-menu-mcp-catalog:linear').click();
-    await window.getByTestId('plugins-menu-connect-mcp-catalog:linear').click();
+    await window.getByTestId('plugins-entry-add-mcp-catalog:linear').click();
     await expect
       .poll(
         () =>
@@ -352,6 +361,146 @@ test('Connect on a disconnected account connection reconnects it without a secon
   }
 });
 
+test('a pending account connection is offered in Browse, not listed as installed (CAN-5303)', async () => {
+  // CAN-5303: the desktop's status list describes every account connection
+  // that is not CONNECTED as needing sign-in, and that description used to
+  // outrank the connection's lifecycle. An abandoned sign-in (PENDING) then
+  // read as an installed server with "Needs attention", and one account
+  // listed 252 of them. The lifecycle now decides whether an account row is
+  // installed; per-configuration auth only refines a connected one.
+  test.setTimeout(150_000);
+  const cloud = await startAccountMcpCloud({
+    includeConnection: false,
+    connections: [
+      {
+        id: '11111111-2222-4333-8444-555555555555',
+        serverKey: 'linear',
+        configId: 'default',
+        displayName: 'Linear',
+        kind: 'CURATED',
+        status: 'PENDING',
+        routeId: 'fixture-linear-default',
+        enabledTools: null,
+      },
+      {
+        id: '22222222-3333-4444-8555-666666666666',
+        serverKey: 'notion',
+        configId: 'default',
+        displayName: 'Notion',
+        kind: 'CURATED',
+        status: 'CONNECTED',
+        routeId: 'fixture-notion-default',
+        enabledTools: null,
+      },
+    ],
+  });
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-can-5303-'));
+  seedDemoWorkspaces({
+    userDataDir,
+    apps: ['ts-pnpm-vite'],
+    checkRuntimes: false,
+  });
+  seedLinearCatalogs(userDataDir);
+  writeJson(path.join(userDataDir, 'mcp-servers', 'curated-catalog.json'), {
+    version: 1,
+    fetchedAt: NOW,
+    servers: [
+      {
+        key: 'linear',
+        name: 'Linear',
+        shortDescription: 'Issues, projects, and cycles.',
+        url: 'https://mcp.linear.example/mcp',
+        transport: 'http',
+        categories: ['productivity'],
+        popular: true,
+        sortOrder: 0,
+        updatedAt: NOW,
+      },
+      {
+        key: 'notion',
+        name: 'Notion',
+        shortDescription: 'Pages and databases.',
+        url: 'https://mcp.notion.example/mcp',
+        transport: 'http',
+        categories: ['productivity'],
+        popular: true,
+        sortOrder: 1,
+        updatedAt: NOW,
+      },
+    ],
+  });
+  // A device server that waits for its own sign-in. Its "1 sign-in pending"
+  // chip comes only from the desktop's status list, so it marks the moment
+  // the page has applied the statuses the old ordering misread.
+  const signalId = 'can5303-signal';
+  seedMcpServers({
+    userDataDir,
+    servers: [
+      {
+        definition: {
+          id: signalId,
+          name: 'Status signal',
+          description: '',
+          type: 'http',
+          url: 'https://mcp.signal.example/mcp',
+          httpAuthHandler: 'canopy',
+          oauth: { clientId: 'fixture' },
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        configs: [
+          {
+            id: 'cfg-signal',
+            name: 'Default',
+            description: '',
+            enabled: true,
+            envVars: {},
+            extraArgs: [],
+            extraHeaders: {},
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    ],
+  });
+  let electronApp;
+  try {
+    const launched = await launchWithAccountCloud(userDataDir, cloud);
+    electronApp = launched.electronApp;
+    const { window, app } = launched;
+    await app.openPluginsPage();
+    await app.openPluginsTab('mcp');
+    await app.expectPluginsTab('mcp');
+
+    const installed = window.getByTestId('customize-section-installed');
+    await expect(
+      installed.getByTestId(`customize-row-sign-in-mcp-local:${signalId}`),
+    ).toHaveText('1 sign-in pending', { timeout: 30_000 });
+
+    // The connected server stays installed and needs nothing.
+    const connected = installed.getByTestId('customize-row-mcp-catalog:notion');
+    await expect(connected).toBeVisible();
+    await expect(connected).not.toContainText('Needs attention');
+
+    // The abandoned sign-in is not installed: Browse offers Add for it.
+    await expect(
+      installed.getByTestId('customize-row-mcp-catalog:linear'),
+    ).toHaveCount(0);
+    await expect(installed).not.toContainText('Needs attention');
+    const browse = window.getByTestId('customize-section-browse');
+    await expect(
+      browse.getByTestId('plugins-entry-mcp-catalog:linear'),
+    ).toBeVisible();
+    await expect(
+      browse.getByTestId('plugins-entry-add-mcp-catalog:linear'),
+    ).toBeVisible();
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+    await cloud.close();
+  }
+});
+
 test('the inventory lists a Personal and a Work connection to one provider as two named rows', async () => {
   test.setTimeout(150_000);
   const cloud = await startAccountMcpCloud({
@@ -391,10 +540,11 @@ test('the inventory lists a Personal and a Work connection to one provider as tw
     const launched = await launchWithAccountCloud(userDataDir, cloud);
     electronApp = launched.electronApp;
     const { window, app } = launched;
-    await app.openPluginsPage();
-    await app.openPluginsTab('mcp');
-    await app.expectPluginsTab('mcp');
-    const panel = window.getByTestId('plugins-management-section-mcp');
+    // CAN-4267: the per-connection inventory is the account connections
+    // table, which Settings keeps under MCP servers.
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
+    const panel = window.getByTestId('settings-mcp-account-connections');
     const rows = panel.getByTestId('mcp-server-row-linear');
     await expect(rows).toHaveCount(2);
     await expect(rows.nth(0)).toHaveAttribute(
@@ -415,15 +565,21 @@ test('the inventory lists a Personal and a Work connection to one provider as tw
     ]);
 
     // The marketplace still shows one Linear card, installed.
-    // The management view stays mounted behind discovery; Back only closes it.
-    await window.getByTestId('plugins-management-back').click();
-    await expect(window.getByTestId('plugins-search')).toBeVisible();
+    await app.closeSettings();
+    await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('Linear');
     await expect(
       window
-        .locator('[data-testid^="plugins-entry-"]')
+        .getByTestId('customize-section-installed')
+        .getByRole('listitem')
         .filter({ hasText: 'Linear' }),
     ).toHaveCount(1);
+    await expect(
+      window.getByTestId('customize-row-mcp-catalog:linear'),
+    ).toBeVisible();
+    await expect(
+      window.getByTestId('plugins-entry-mcp-catalog:linear'),
+    ).toHaveCount(0);
     await expect(
       window.getByTestId('plugins-entry-add-mcp-catalog:linear'),
     ).toHaveCount(0);

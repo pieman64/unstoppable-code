@@ -10,6 +10,7 @@ import type {
   GitHubPermissionsStatus,
   GitHubRepoSummary,
   NavigationMode,
+  RepoSelection,
   SidebarItem,
 } from '@canopy/desktop-shared/types';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -55,6 +56,7 @@ import { invalidateGitHubPermissionsCache } from '@/hooks/useGitHubPermissions';
 import { setNativeInputValue } from '@/test-utils/dom';
 import { brandText } from '@/lib/brand';
 import { saveWorkspacePrivateMemory } from '@/lib/privateMemory';
+import { makeTestPreferences } from '@/test-utils/preferences';
 
 // The dialog's one Private memory write path (CAN-3562); the helper's own
 // IPC and row reload are covered in privateMemory.test.ts.
@@ -273,6 +275,7 @@ function permissions(
     permissions: [],
     canListRepos: false,
     ...overrides,
+    error: overrides.error === undefined ? null : overrides.error,
   };
 }
 
@@ -2162,6 +2165,9 @@ describe('AddRepoModal', () => {
       name: 'Payments',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',
@@ -2416,6 +2422,9 @@ describe('AddRepoModal', () => {
       name: 'Payments',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',
@@ -2605,6 +2614,9 @@ describe('AddRepoModal', () => {
         capabilities: { use: true, administer: false, manageCloud: false },
         instance: null,
         ...overrides,
+        purpose: overrides.purpose ?? 'project',
+        visibility: overrides.visibility ?? 'organization',
+        memberOwned: overrides.memberOwned ?? false,
       };
     }
 
@@ -2616,9 +2628,11 @@ describe('AddRepoModal', () => {
       jest
         .mocked(window.api.loadPreferences)
         .mockResolvedValue(
-          destination === undefined
-            ? {}
-            : { orgProjectDefaultDestinationRoot: destination },
+          makeTestPreferences(
+            destination === undefined
+              ? {}
+              : { orgProjectDefaultDestinationRoot: destination },
+          ),
         );
       Object.assign(mockCatalog, {
         snapshots: {
@@ -3019,6 +3033,9 @@ describe('AddRepoModal', () => {
       name: 'Payments',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',
@@ -3500,7 +3517,6 @@ describe('AddRepoModal', () => {
         name: `Project ${id}`,
         description: null,
         kind: 'CODE',
-        purpose: 'project',
         location: 'LOCAL',
         repository: {
           provider: 'github',
@@ -3521,6 +3537,9 @@ describe('AddRepoModal', () => {
         capabilities: { use: true, administer: false, manageCloud: false },
         instance: null,
         ...overrides,
+        purpose: overrides.purpose ?? 'project',
+        visibility: overrides.visibility ?? 'organization',
+        memberOwned: overrides.memberOwned ?? false,
       };
     }
 
@@ -4499,7 +4518,10 @@ describe('AddRepoModal', () => {
       ]);
       for (const [type, text] of [
         ['single-repo', 'Create a git repository with starter files.'],
-        ['cowork', "For writing, research and other work that isn't code."],
+        [
+          'cowork',
+          "A new folder for your documents, research and other work that isn't code.",
+        ],
         [
           'multi-repo',
           'For changes that touch several repositories at once. Add them after you create it.',
@@ -4571,30 +4593,25 @@ describe('AddRepoModal', () => {
       });
     }
 
-    // Clone is the first tile and opens selected in both modes (CAN-3909).
-    it.each(['code', 'work'] as const)(
-      'opens on the Clone tile, first of the three, in %s mode',
-      async (mode) => {
-        mockNavigationModeState.mode = mode;
-        render();
-        await flush();
-        const tiles = Array.from(
-          container.querySelectorAll('[data-testid^="add-workspace-mode-"]'),
-        ).map((tile) => tile.getAttribute('data-testid'));
-        expect(tiles).toEqual([
-          'add-workspace-mode-remote',
-          'add-workspace-mode-existing',
-          'add-workspace-mode-create',
-        ]);
-        expect(
-          testId('add-workspace-mode-remote')?.getAttribute('aria-pressed'),
-        ).toBe('true');
-        expect(testId('add-workspace-remote-panel')).not.toBeNull();
-        expect(container.textContent).not.toContain(
-          'Clone from GitHub or a URL',
-        );
-      },
-    );
+    // Code mode keeps Clone first and selected (CAN-3909).
+    it('opens on the Clone tile, first of the three, in code mode', async () => {
+      mockNavigationModeState.mode = 'code';
+      render();
+      await flush();
+      const tiles = Array.from(
+        container.querySelectorAll('[data-testid^="add-workspace-mode-"]'),
+      ).map((tile) => tile.getAttribute('data-testid'));
+      expect(tiles).toEqual([
+        'add-workspace-mode-remote',
+        'add-workspace-mode-existing',
+        'add-workspace-mode-create',
+      ]);
+      expect(
+        testId('add-workspace-mode-remote')?.getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(testId('add-workspace-remote-panel')).not.toBeNull();
+      expect(container.textContent).not.toContain('Clone from GitHub or a URL');
+    });
 
     it('reveals the remote flow in Work mode when a repo URL seeds it', async () => {
       mockNavigationModeState.mode = 'work';
@@ -4613,6 +4630,228 @@ describe('AddRepoModal', () => {
       await flush();
       expect(testId('add-workspace-mode-remote')).not.toBeNull();
       expect(testId('add-workspace-remote-panel')).not.toBeNull();
+    });
+  });
+
+  describe('Work-mode defaults (CAN-5041)', () => {
+    function testId(id: string): HTMLElement | null {
+      return container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+    }
+
+    function tileIds(): (string | null)[] {
+      return Array.from(
+        container.querySelectorAll('[data-testid^="add-workspace-mode-"]'),
+        (tile) => tile.getAttribute('data-testid'),
+      );
+    }
+
+    /** Assert each copy string independently, without fixing the card markup. */
+    function expectTileCopy(
+      id: string,
+      title: string,
+      description: string,
+    ): void {
+      const tile = testId(`add-workspace-mode-${id}`);
+      expect(tile).not.toBeNull();
+      const texts = Array.from(
+        tile?.querySelectorAll('*') ?? [],
+        (element) => element.textContent,
+      );
+      expect(texts).toContain(title);
+      expect(texts).toContain(description);
+    }
+
+    function pressed(id: string): string | null | undefined {
+      return testId(id)?.getAttribute('aria-pressed');
+    }
+
+    function nameInput(): HTMLInputElement {
+      const input = testId('add-workspace-name-input');
+      if (!(input instanceof HTMLInputElement))
+        throw new Error('Missing project name input');
+      return input;
+    }
+
+    async function open(
+      props: Partial<Parameters<typeof AddRepoModal>[0]> = {},
+    ): Promise<void> {
+      getGitHubPermissions.mockResolvedValue(
+        permissions({ canListRepos: false }),
+      );
+      act(() => {
+        root.render(<AddRepoModal isOpen onClose={jest.fn()} {...props} />);
+      });
+      await flush();
+    }
+
+    it('opens Work mode on Use a folder, without clone fields', async () => {
+      mockNavigationModeState.mode = 'work';
+      await open();
+      expect(tileIds()).toEqual([
+        'add-workspace-mode-existing',
+        'add-workspace-mode-create',
+        'add-workspace-mode-remote',
+      ]);
+      expect(pressed('add-workspace-mode-existing')).toBe('true');
+      expectTileCopy(
+        'existing',
+        'Use a folder',
+        'Work with files already on this computer',
+      );
+      expectTileCopy('remote', 'Clone repository', 'GitHub or a URL');
+      expectTileCopy('create', 'Create new', 'Start fresh');
+      expect(testId('add-workspace-existing-description')?.textContent).toBe(
+        'Your files stay where they are.',
+      );
+      expect(testId('add-workspace-remote-panel')).toBeNull();
+      expect(testId('add-workspace-remote-url-input')).toBeNull();
+      expect(testId('add-workspace-clone-destination')).toBeNull();
+      // Clone stays reachable.
+      click('add-workspace-mode-remote');
+      expect(testId('add-workspace-remote-url-input')).not.toBeNull();
+    });
+
+    it('keeps the Existing folder copy without reassurance in Code mode', async () => {
+      await open();
+      expectTileCopy('existing', 'Existing folder', 'On this computer');
+      click('add-workspace-mode-existing');
+      expect(testId('add-workspace-existing-panel')).not.toBeNull();
+      expect(testId('add-workspace-existing-description')).toBeNull();
+    });
+
+    it.each([
+      {
+        mode: 'work',
+        type: 'cowork',
+        description:
+          "A new folder for your documents, research and other work that isn't code.",
+        placeholder: 'Thursday design review',
+      },
+      {
+        mode: 'code',
+        type: 'single-repo',
+        description: 'Create a git repository with starter files.',
+        placeholder: 'my-project',
+      },
+    ] as const)(
+      'defaults Create new to $type in $mode mode',
+      async ({ mode, type, description, placeholder }) => {
+        mockNavigationModeState.mode = mode;
+        await open();
+        click('add-workspace-mode-create');
+        expect(pressed(`add-workspace-type-${type}`)).toBe('true');
+        expect(testId('add-workspace-type-description')?.textContent).toBe(
+          description,
+        );
+        expect(nameInput().placeholder).toBe(placeholder);
+      },
+    );
+
+    it('follows the chosen type for the name placeholder without touching the name', async () => {
+      mockNavigationModeState.mode = 'work';
+      await open();
+      click('add-workspace-mode-create');
+      act(() => {
+        setNativeInputValue(nameInput(), 'Field notes');
+      });
+      click('add-workspace-type-single-repo');
+      expect(nameInput().placeholder).toBe('my-project');
+      expect(nameInput().value).toBe('Field notes');
+      click('add-workspace-type-multi-repo');
+      expect(nameInput().placeholder).toBe('Thursday design review');
+      click('add-workspace-type-cowork');
+      expect(nameInput().placeholder).toBe('Thursday design review');
+      expect(nameInput().value).toBe('Field notes');
+    });
+
+    it('keeps manual choices for the open dialog', async () => {
+      mockNavigationModeState.mode = 'work';
+      await open();
+      click('add-workspace-mode-create');
+      click('add-workspace-type-multi-repo');
+      click('add-workspace-mode-existing');
+      click('add-workspace-mode-create');
+      expect(pressed('add-workspace-type-multi-repo')).toBe('true');
+      click('add-workspace-mode-remote');
+      await open();
+      expect(pressed('add-workspace-mode-remote')).toBe('true');
+    });
+
+    it('opens a New repository seed as New repository in Work mode', async () => {
+      mockNavigationModeState.mode = 'work';
+      await open({ initialProjectType: 'single-repo' });
+      expect(pressed('add-workspace-mode-create')).toBe('true');
+      expect(pressed('add-workspace-type-single-repo')).toBe('true');
+      expect(nameInput().placeholder).toBe('my-project');
+    });
+
+    it('lets a repository URL seed win over a project type seed', async () => {
+      mockNavigationModeState.mode = 'work';
+      await open({
+        initialProjectType: 'cowork',
+        initialRepoUrl: 'https://github.com/octo/repo.git',
+      });
+      expect(pressed('add-workspace-mode-remote')).toBe('true');
+      const url = testId('add-workspace-remote-url-input');
+      expect(url instanceof HTMLInputElement ? url.value : null).toBe(
+        'https://github.com/octo/repo.git',
+      );
+    });
+
+    it.each([
+      { from: 'work', to: 'code', tile: 'remote', type: 'single-repo' },
+      { from: 'code', to: 'work', tile: 'existing', type: 'cowork' },
+    ] as const)(
+      'applies $to defaults when reopened after leaving $from mode',
+      async ({ from, to, tile, type }) => {
+        mockNavigationModeState.mode = from;
+        await open();
+        // A choice made in the last open is not carried into the next one.
+        click('add-workspace-mode-create');
+        click('add-workspace-type-multi-repo');
+        await open({ isOpen: false });
+        mockNavigationModeState.mode = to;
+        await open();
+        expect(pressed(`add-workspace-mode-${tile}`)).toBe('true');
+        click('add-workspace-mode-create');
+        expect(pressed(`add-workspace-type-${type}`)).toBe('true');
+      },
+    );
+
+    it('keeps an organization on its catalog, then the Work order', async () => {
+      mockNavigationModeState.mode = 'work';
+      openOrganization();
+      await act(async (): Promise<void> => {
+        await Promise.resolve();
+        root.render(<AddRepoModal isOpen onClose={jest.fn()} />);
+      });
+      await flush();
+      expect(tileIds()).toEqual([
+        'add-workspace-mode-catalog',
+        'add-workspace-mode-existing',
+        'add-workspace-mode-create',
+      ]);
+      expect(pressed('add-workspace-mode-catalog')).toBe('true');
+      expectTileCopy(
+        'existing',
+        'Use a folder',
+        'Work with files already on this computer',
+      );
+      click('add-workspace-mode-existing');
+      // Without the Code capability the organization's own description
+      // stays, once, and Personal's reassurance does not join it.
+      const descriptions = container.querySelectorAll(
+        '[data-testid="add-workspace-existing-description"]',
+      );
+      expect(descriptions).toHaveLength(1);
+      expect(descriptions[0]?.textContent).not.toBe(
+        'Your files stay where they are.',
+      );
+      click('add-workspace-mode-create');
+      expect(testId('add-workspace-type-description')?.textContent).toBe(
+        "A new folder for your documents, research and other work that isn't code.",
+      );
+      expect(nameInput().placeholder).toBe('Thursday design review');
     });
   });
 
@@ -5871,6 +6110,8 @@ describe('AddRepoModal', () => {
       name: 'local-only-name',
       type: 'single-repo',
       repoPath: '/repo',
+      color: '#123456',
+      worktrees: [],
       order: 0,
       collapsed: false,
       owner,
@@ -5894,6 +6135,9 @@ describe('AddRepoModal', () => {
       capabilities: { use: true, administer: false, manageCloud: false },
       instance: { id: 'i', state: 'READY' },
       ...overrides,
+      purpose: overrides.purpose ?? 'project',
+      visibility: overrides.visibility ?? 'organization',
+      memberOwned: overrides.memberOwned ?? false,
     });
     const organizations = [
       { id: 'org-a', name: 'Acme', role: 'MEMBER' as const },
@@ -6519,9 +6763,11 @@ describe('AddRepoModal', () => {
       getOrgCodeEligibility.mockResolvedValue('eligible');
       addRemoteRepoIpc = jest.fn().mockResolvedValue(CLONED);
       Object.assign(window.api, { addRemoteRepo: addRemoteRepoIpc });
-      jest
-        .mocked(window.api.probeCloneDestination)
-        .mockResolvedValue({ reusablePath: null });
+      jest.mocked(window.api.probeCloneDestination).mockResolvedValue({
+        repoName: 'site',
+        candidateExists: false,
+        reusablePath: null,
+      });
     });
 
     async function openCatalog(
@@ -6574,6 +6820,25 @@ describe('AddRepoModal', () => {
         { refresh: true, repositories: true },
       );
     });
+
+    // CAN-5041: a withheld catalog leaves the mode's own order.
+    it.each([
+      { mode: 'work', order: ['existing', 'create', 'remote'] },
+      { mode: 'code', order: ['remote', 'existing', 'create'] },
+    ] as const)(
+      'orders the remaining tiles for $mode mode',
+      async ({ mode, order }): Promise<void> => {
+        mockNavigationModeState.mode = mode;
+        await openCatalog('MEMBER');
+        expect(
+          Array.from(
+            document.querySelectorAll('[data-testid^="add-workspace-mode-"]'),
+            (element) => element.getAttribute('data-testid'),
+          ),
+        ).toEqual(order.map((id) => `add-workspace-mode-${id}`));
+        expect(tile('existing')?.getAttribute('aria-pressed')).toBe('true');
+      },
+    );
 
     it("reads the catalog under the store's own key", async (): Promise<void> => {
       openOrganization();
@@ -6838,7 +7103,7 @@ describe('AddRepoModal', () => {
     it('keeps the dialog open when the page cannot open', async (): Promise<void> => {
       jest
         .mocked(window.api.openAuthenticatedPortalPage)
-        .mockResolvedValue(false);
+        .mockRejectedValueOnce(new Error('failed'));
       await openCatalog('ADMIN');
       await clickAndSettle('add-workspace-org-catalog-choose-projects');
       expect(closeOrgModal).not.toHaveBeenCalled();
@@ -6897,6 +7162,8 @@ describe('AddRepoModal', () => {
 
     it('reuses a matching clone in the organization without cloning', async (): Promise<void> => {
       jest.mocked(window.api.probeCloneDestination).mockResolvedValue({
+        repoName: 'site',
+        candidateExists: true,
         reusablePath: 'C:\\repos\\site\\',
       });
       inspectOrgFolder.mockResolvedValue(NEW_CODE);
@@ -7056,9 +7323,11 @@ describe('AddRepoModal', () => {
     });
 
     it('clones a new copy into the organization instead of reusing the existing clone', async (): Promise<void> => {
-      jest
-        .mocked(window.api.probeCloneDestination)
-        .mockResolvedValue({ reusablePath: 'C:\\repos\\site' });
+      jest.mocked(window.api.probeCloneDestination).mockResolvedValue({
+        repoName: 'site',
+        candidateExists: true,
+        reusablePath: 'C:\\repos\\site',
+      });
       inspectOrgFolder.mockResolvedValue(NEW_CODE);
       mockProjectsState.createOrgMemberCodeProject.mockResolvedValue({
         ok: true,

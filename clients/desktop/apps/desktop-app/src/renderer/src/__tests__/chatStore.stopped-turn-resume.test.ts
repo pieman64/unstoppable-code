@@ -115,7 +115,8 @@ function makeTab(
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { model: 'claude-sonnet-4-5-20250514' },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
     approvalMode: 'ask',
@@ -351,7 +352,6 @@ describe('stopped-turn resume (CAN-3137)', () => {
         stoppedTurnResume: { userMessageId: 'user-1', status: 'available' },
         queuedMessages: [
           {
-            id: 'queued-1',
             text: 'Do something else instead.',
             origin: 'desktop',
             enqueuedAtMs: 2_000,

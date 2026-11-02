@@ -1,0 +1,196 @@
+{
+  "first": {
+    "ok": true,
+    "result": {
+      "filesScanned": 10,
+      "filesParsed": 10,
+      "filesUnchanged": 0,
+      "filesSkipped": 0,
+      "filesRemoved": 0,
+      "parseFailures": 0,
+      "symbolCount": 33,
+      "edgeCount": 56,
+      "durationMs": "<durationMs>",
+      "derived": [
+        {
+          "repoId": "golden",
+          "computed": true,
+          "communityCount": 7,
+          "flowCount": 5,
+          "communitiesSkipped": false,
+          "flowsGlobalCapReached": false,
+          "warnings": []
+        }
+      ],
+      "customLanguages": null,
+      "factsChanged": true,
+      "lastBuildAt": "<lastBuildAt>",
+      "timings": {
+        "prepareMs": "<timings>",
+        "scanMs": "<timings>",
+        "hashMs": "<timings>",
+        "parseMs": "<timings>",
+        "diagnosticsMs": "<timings>",
+        "commitMs": "<timings>",
+        "rowsWritten": "<timings>",
+        "resolveMs": {
+          "resetMs": "<timings>",
+          "importsMs": "<timings>",
+          "configExtendsMs": "<timings>",
+          "docLinksMs": "<timings>",
+          "ipcMs": "<timings>",
+          "workflowActionsMs": "<timings>",
+          "callsMs": "<timings>",
+          "testsMs": "<timings>"
+        },
+        "ftsMs": "<timings>",
+        "derivedMs": "<timings>",
+        "walStartBytes": "<timings>",
+        "peakWalBytes": "<timings>",
+        "peakRssBytes": "<timings>"
+      }
+    },
+    "seedOutcomes": [],
+    "fusionDurationMs": 0
+  },
+  "unchanged": {
+    "ok": true,
+    "result": {
+      "filesScanned": 10,
+      "filesParsed": 0,
+      "filesUnchanged": 10,
+      "filesSkipped": 0,
+      "filesRemoved": 0,
+      "parseFailures": 0,
+      "symbolCount": 33,
+      "edgeCount": 56,
+      "durationMs": "<durationMs>",
+      "derived": [
+        {
+          "repoId": "golden",
+          "computed": false,
+          "communityCount": 7,
+          "flowCount": 5,
+          "communitiesSkipped": false,
+          "flowsGlobalCapReached": false,
+          "warnings": []
+        }
+      ],
+      "customLanguages": null,
+      "factsChanged": false,
+      "lastBuildAt": "<lastBuildAt>",
+      "timings": {
+        "prepareMs": "<timings>",
+        "scanMs": "<timings>",
+        "hashMs": "<timings>",
+        "parseMs": "<timings>",
+        "diagnosticsMs": "<timings>",
+        "commitMs": "<timings>",
+        "rowsWritten": "<timings>",
+        "walStartBytes": "<timings>",
+        "peakWalBytes": "<timings>",
+        "peakRssBytes": "<timings>"
+      }
+    },
+    "seedOutcomes": [],
+    "fusionDurationMs": 0
+  },
+  "verified": {
+    "ok": true,
+    "result": {
+      "filesScanned": 10,
+      "filesParsed": 0,
+      "filesUnchanged": 10,
+      "filesSkipped": 0,
+      "filesRemoved": 0,
+      "parseFailures": 0,
+      "symbolCount": 33,
+      "edgeCount": 56,
+      "durationMs": "<durationMs>",
+      "derived": [
+        {
+          "repoId": "golden",
+          "computed": false,
+          "communityCount": 7,
+          "flowCount": 5,
+          "communitiesSkipped": false,
+          "flowsGlobalCapReached": false,
+          "warnings": []
+        }
+      ],
+      "customLanguages": null,
+      "factsChanged": false,
+      "lastBuildAt": "<lastBuildAt>",
+      "timings": {
+        "prepareMs": "<timings>",
+        "scanMs": "<timings>",
+        "hashMs": "<timings>",
+        "parseMs": "<timings>",
+        "diagnosticsMs": "<timings>",
+        "commitMs": "<timings>",
+        "rowsWritten": "<timings>",
+        "walStartBytes": "<timings>",
+        "peakWalBytes": "<timings>",
+        "peakRssBytes": "<timings>"
+      }
+    },
+    "seedOutcomes": [],
+    "fusionDurationMs": 0
+  },
+  "base": {
+    "ok": true,
+    "result": {
+      "filesScanned": 10,
+      "filesParsed": 10,
+      "filesUnchanged": 0,
+      "filesSkipped": 0,
+      "filesRemoved": 0,
+      "parseFailures": 0,
+      "symbolCount": 33,
+      "edgeCount": 56,
+      "durationMs": "<durationMs>",
+      "derived": [
+        {
+          "repoId": "golden",
+          "computed": true,
+          "communityCount": 7,
+          "flowCount": 5,
+          "communitiesSkipped": false,
+          "flowsGlobalCapReached": false,
+          "warnings": []
+        }
+      ],
+      "customLanguages": null,
+      "factsChanged": true,
+      "lastBuildAt": "<lastBuildAt>",
+      "timings": {
+        "prepareMs": "<timings>",
+        "scanMs": "<timings>",
+        "hashMs": "<timings>",
+        "parseMs": "<timings>",
+        "diagnosticsMs": "<timings>",
+        "commitMs": "<timings>",
+        "rowsWritten": "<timings>",
+        "resolveMs": {
+          "resetMs": "<timings>",
+          "importsMs": "<timings>",
+          "configExtendsMs": "<timings>",
+          "docLinksMs": "<timings>",
+          "ipcMs": "<timings>",
+          "workflowActionsMs": "<timings>",
+          "callsMs": "<timings>",
+          "testsMs": "<timings>"
+        },
+        "ftsMs": "<timings>",
+        "derivedMs": "<timings>",
+        "walStartBytes": "<timings>",
+        "peakWalBytes": "<timings>",
+        "peakRssBytes": "<timings>",
+        "finalizeMs": "<timings>"
+      }
+    },
+    "seedOutcomes": [],
+    "fusionDurationMs": 0,
+    "baseFinalized": true
+  }
+}

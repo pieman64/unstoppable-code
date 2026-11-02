@@ -42,10 +42,15 @@ jest.mock('../lib/project-owner', () => {
 });
 
 const automationService = {
-  list: jest.fn(() => Promise.resolve({ activities: [], recentRuns: [] })),
+  list: jest.fn<Promise<AutomationsListResponse>, []>(() =>
+    Promise.resolve({ activities: [], recentRuns: [] }),
+  ),
   listForContext: jest.fn(),
   listRuns: jest.fn(),
-  create: jest.fn(() => Promise.resolve({ ok: true })),
+  create: jest.fn<
+    ReturnType<AutomationsService['create']>,
+    Parameters<AutomationsService['create']>
+  >(() => Promise.resolve({ ok: true })),
   update: jest.fn(),
   delete: jest.fn(),
   runNow: jest.fn(),
@@ -65,6 +70,7 @@ import type {
   AgentResourceAction,
   AgentResourceActionRuntime,
 } from '../canopy-tools/resource-actions';
+import type { AutomationsService } from '../automations/service';
 import type {
   AutomationsListResponse,
   ScheduledActivity,
@@ -1020,7 +1026,7 @@ describe('agent automation saved-owner boundary', () => {
   it('rechecks owners inside the queue when a target changes owner before create runs', async (): Promise<void> => {
     let queuedAuthorization: boolean | undefined;
     automationService.create.mockImplementation(
-      async (_request: unknown, trusted: unknown) => {
+      async (_request: unknown, trusted: unknown = {}) => {
         const authorize = createAuthorization(trusted);
         if (!authorize)
           throw new Error('Expected a mutation-time authorization guard.');
@@ -1374,7 +1380,7 @@ describe('agent automation saved-owner boundary', () => {
       error: {
         code: 'advisor_access_disabled',
         message:
-          'The project owner could not be confirmed, so App Advisor access is unavailable for agents in this project.',
+          'The project owner could not be confirmed, so Orchestrator access is unavailable for agents in this project.',
       },
     });
     expect(automationService.create).not.toHaveBeenCalled();

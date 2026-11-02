@@ -262,7 +262,7 @@ describe('DigestShareControls', () => {
     });
     const cancel = Array.from(
       queryDialog()?.querySelectorAll('button') ?? [],
-    ).find((element) => element.textContent === 'Cancel');
+    ).find((element) => element.firstChild?.textContent === 'Cancel');
     await act(async () => {
       cancel?.click();
       await Promise.resolve();

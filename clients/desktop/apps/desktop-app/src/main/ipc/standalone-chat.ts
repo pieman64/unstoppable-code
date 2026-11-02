@@ -981,6 +981,20 @@ async function preflightCoworkWorkspaceContents(
       await assertImportTreeHasNoSymlinks(source);
     }
   }
+  // Refuse storage this build cannot open before the import creates anything.
+  const root = sources.transcriptRoot;
+  if (root && (await pathIsDirectory(join(root, 'chat-storage-manifests')))) {
+    const manifests = await readdir(join(root, 'chat-storage-manifests'), {
+      withFileTypes: true,
+    });
+    for (const entry of manifests)
+      if (
+        entry.isFile() &&
+        entry.name.endsWith('.json') &&
+        !entry.name.includes('.backup')
+      )
+        await new ChatStorageV2(root, entry.name.slice(0, -5)).format();
+  }
   if (
     sources.workEntriesSource &&
     (await pathExists(sources.workEntriesSource))

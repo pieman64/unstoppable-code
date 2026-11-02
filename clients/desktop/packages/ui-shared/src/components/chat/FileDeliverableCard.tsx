@@ -1,5 +1,6 @@
 import { memo, useId, type JSX } from 'react';
 import { DownloadIcon, FileIcon } from '../../icons';
+import { Button } from '../Button';
 
 export interface FileDeliverableCardProps {
   readonly filename: string;
@@ -121,15 +122,16 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
         </div>
       )}
       {onDownload && (
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           onClick={onDownload}
           aria-label={`Download ${filename}`}
-          className="focus-ring flex items-center gap-1 rounded-md border px-2 py-1 text-2xs fg-secondary hover:fg-primary"
+          className="mr-3"
         >
-          <DownloadIcon width={11} height={11} aria-hidden="true" />
+          <DownloadIcon width={14} height={14} aria-hidden="true" />
           Download
-        </button>
+        </Button>
       )}
     </div>
   );

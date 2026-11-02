@@ -1,4 +1,4 @@
-import { type JSX, type ReactNode, useMemo } from 'react';
+import { Fragment, type JSX, type ReactNode, useMemo } from 'react';
 import type {
   EnvironmentConfigData,
   EnvironmentRuntime,
@@ -13,7 +13,11 @@ import {
 } from '@canopy/ui-shared/icons';
 import { BrandLogo } from '@/components/BrandLogo';
 import { brandText } from '@/lib/brand';
-import { Tooltip } from '@canopy/ui-shared';
+import { SettingsButtonRow } from '@canopy/ui-shared/components';
+import {
+  SettingsGroup,
+  SettingsRow,
+} from '@/components/settings/SettingsLayout';
 
 export interface EnvironmentUsageWorkspace {
   id: string;
@@ -50,7 +54,7 @@ interface EnvironmentUsageListProps {
 const RUNTIME_LABEL: Record<EnvironmentRuntime, string> = {
   canopy: brandText.shortName,
   agent: 'Agent',
-  pipeline: 'Pipeline',
+  pipeline: 'Workflow',
 };
 
 function RuntimeKindIcon({
@@ -172,14 +176,21 @@ export function EnvironmentUsageList({
 
   if (rows.length === 0) {
     return (
-      <p className="text-s fg-secondary" data-testid="environment-usage-empty">
-        This environment is not assigned to any runtime.
-      </p>
+      <SettingsGroup>
+        <p
+          className="text-s fg-secondary"
+          data-testid="environment-usage-empty"
+        >
+          This environment is not assigned to any runtime.
+        </p>
+      </SettingsGroup>
     );
   }
 
+  // One row per usage in the section's group; a row that leads somewhere
+  // (a project's settings, the global defaults, a child environment) opens it.
   return (
-    <div className="space-y-2">
+    <SettingsGroup dataTestId="environment-usage-list">
       {!hasRuntimeAssignment && (
         <p
           className="text-s fg-secondary"
@@ -188,19 +199,22 @@ export function EnvironmentUsageList({
           This environment is not assigned to any runtime.
         </p>
       )}
-      <ul className="space-y-1.5" data-testid="environment-usage-list">
-        {rows.map((row) => (
-          <li key={row.id}>
-            {renderRow(row, {
-              onSelectEnvironment,
-              onOpenWorkspaceSettings,
-              onOpenGlobalDefaults,
-            })}
-          </li>
-        ))}
-      </ul>
-    </div>
+      {rows.map((row) => (
+        <Fragment key={row.id}>
+          {renderRow(row, {
+            onSelectEnvironment,
+            onOpenWorkspaceSettings,
+            onOpenGlobalDefaults,
+          })}
+        </Fragment>
+      ))}
+    </SettingsGroup>
   );
+}
+
+/** A usage's icons and text, on one line that truncates. */
+function UsageLabel({ children }: { children: ReactNode }): JSX.Element {
+  return <span className="flex min-w-0 items-center gap-2">{children}</span>;
 }
 
 interface RowCallbacks {
@@ -249,30 +263,20 @@ function renderRow(row: UsageRow, callbacks: RowCallbacks): ReactNode {
           : undefined;
     if (handler) {
       return (
-        <Tooltip label={fullLabel} className="w-full">
-          <button
-            type="button"
-            onClick={handler}
-            className="focus-ring flex w-full items-center gap-2 rounded-md border bg-card/40 px-2.5 py-1.5 text-left text-xs fg-primary transition-colors hover:bg-accent-subtle hover:fg-accent"
-            data-testid={
-              row.scopeKind === 'global'
-                ? `environment-usage-global-${row.runtime}`
-                : `environment-usage-workspace-${row.workspaceId ?? ''}-${row.runtime}`
-            }
-          >
-            {inner}
-          </button>
-        </Tooltip>
+        <SettingsButtonRow
+          trailing="open"
+          tooltip={fullLabel}
+          label={<UsageLabel>{inner}</UsageLabel>}
+          onClick={handler}
+          data-testid={
+            row.scopeKind === 'global'
+              ? `environment-usage-global-${row.runtime}`
+              : `environment-usage-workspace-${row.workspaceId ?? ''}-${row.runtime}`
+          }
+        />
       );
     }
-    return (
-      <div
-        title={fullLabel}
-        className="flex items-center gap-2 rounded-md border bg-card/40 px-2.5 py-1.5 text-xs fg-primary"
-      >
-        {inner}
-      </div>
-    );
+    return <SettingsRow label={<UsageLabel>{inner}</UsageLabel>} />;
   }
   const fullLabel = `Parent of ${row.childName}`;
   const inner = (
@@ -283,26 +287,14 @@ function renderRow(row: UsageRow, callbacks: RowCallbacks): ReactNode {
   );
   if (callbacks.onSelectEnvironment) {
     return (
-      <Tooltip label={fullLabel} className="w-full">
-        <button
-          type="button"
-          onClick={() =>
-            callbacks.onSelectEnvironment?.(row.childEnvironmentId)
-          }
-          className="focus-ring flex w-full items-center gap-2 rounded-md border bg-card/40 px-2.5 py-1.5 text-left text-xs fg-primary transition-colors hover:bg-accent-subtle hover:fg-accent"
-          data-testid={`environment-usage-parent-${row.childEnvironmentId}`}
-        >
-          {inner}
-        </button>
-      </Tooltip>
+      <SettingsButtonRow
+        trailing="open"
+        tooltip={fullLabel}
+        label={<UsageLabel>{inner}</UsageLabel>}
+        onClick={() => callbacks.onSelectEnvironment?.(row.childEnvironmentId)}
+        data-testid={`environment-usage-parent-${row.childEnvironmentId}`}
+      />
     );
   }
-  return (
-    <div
-      title={fullLabel}
-      className="flex items-center gap-2 rounded-md border bg-card/40 px-2.5 py-1.5 text-xs fg-primary"
-    >
-      {inner}
-    </div>
-  );
+  return <SettingsRow label={<UsageLabel>{inner}</UsageLabel>} />;
 }

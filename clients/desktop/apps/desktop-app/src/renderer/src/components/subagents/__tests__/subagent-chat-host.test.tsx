@@ -200,7 +200,11 @@ describe('DesktopSubagentChatPanelHost', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
     };
   }
@@ -228,6 +232,7 @@ describe('DesktopSubagentChatPanelHost', () => {
           {
             type: 'tool_result',
             toolUseId: 'workflow-tool-1',
+            toolName: 'Workflow',
             output:
               'Workflow launched in background. Task ID: task-1\nRun ID: wf_1\nTranscript dir: /tmp/workflow',
             isError: false,

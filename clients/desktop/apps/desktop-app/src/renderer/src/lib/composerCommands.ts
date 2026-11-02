@@ -10,7 +10,7 @@ export const COMPOSER_ACTIONS = {
   plan: 'Toggle plan mode',
   fast: 'Cycle the Codex speed',
   schedule: 'Schedule this message',
-  pipeline: 'Prepare a pipeline task',
+  pipeline: 'Prepare a workflow task',
   commands: 'Browse all commands',
   help: 'Browse all commands',
 } as const;
@@ -61,7 +61,7 @@ export function buildComposerCommands(
         ? { disabledReason: 'Choose a workspace before starting a chat.' }
         : {}),
       ...(name === 'pipeline' && !options.home
-        ? { disabledReason: 'Start a pipeline task from New Task.' }
+        ? { disabledReason: 'Start a workflow task from New Task.' }
         : {}),
       ...(name === 'fast' && !options.fast
         ? { disabledReason: 'Speed options are available for Codex models.' }
@@ -75,7 +75,18 @@ export function buildComposerCommands(
         : command.name.includes(':')
           ? command.name.split(':')[0]
           : undefined;
-    return { ...command, namespace, menuGroup: 'Skills and commands' };
+    // Search identity only: a plugin member keeps its source name even when
+    // the harness projected a different invocation name.
+    const memberName =
+      ref?.kind === 'plugin'
+        ? command.inventoryEntry?.sourceName?.trim() || undefined
+        : undefined;
+    return {
+      ...command,
+      namespace,
+      ...(memberName ? { memberName } : {}),
+      menuGroup: 'Skills and commands',
+    };
   });
   return [
     ...actions.filter((action) => action.menuGroup === 'Actions'),

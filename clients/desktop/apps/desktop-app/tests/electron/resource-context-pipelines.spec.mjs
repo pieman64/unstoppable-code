@@ -79,7 +79,7 @@ test('shared pipeline follows only its owning organization context', async () =>
         );
       });
       const landing = window.getByTestId('deep-link-share-landing');
-      await expect(landing).toContainText('This share is no longer available');
+      await expect(landing).toContainText("This share isn't available");
       await expect(landing).not.toContainText('Organization A release');
       await window.keyboard.press('Escape');
     }

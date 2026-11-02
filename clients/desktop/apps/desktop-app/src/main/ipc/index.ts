@@ -31,12 +31,14 @@ import { registerProjectHandlers } from './projects';
 import { registerRepoHandlers } from './repos';
 import { registerCloneJobHandlers } from './clone-jobs';
 import { registerWorktreeHandlers } from './worktrees';
+import { registerWorktreeDiscardHandlers } from './worktree-discard';
 import { registerWorktreeDiscoveryHandlers } from './worktree-discovery';
 import { registerHomeSurfaceHandlers } from './home-surface';
 import { registerFileTreeHandlers } from './file-tree';
 import { registerLedgerHandlers } from './ledger';
 import { registerCostHandlers } from './cost';
 import { registerWorkspaceHandlers } from './workspaces';
+import { registerLifecycleJournalHandlers } from './lifecycle-journal';
 import { registerBundleHandlers } from './bundles';
 import { registerCollectionHandlers } from '../collections/collection-handlers';
 import { registerChatHandlers } from './chat';
@@ -138,9 +140,9 @@ import { registerWorkerHandlers } from './workers';
 import { registerAgentModelHandlers } from './agent-models';
 import { registerUsageLimitedChatsHandlers } from './usage-limited-chats';
 import { registerWorkspaceContextHandlers } from './workspace-context';
+import { registerSharedMultiRepoHandlers } from './org-shared-multi-repo';
 import { registerOrgProjectsHandlers } from './org-projects';
 import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
-import { registerOnboardingChecklistHandlers } from './onboarding-checklist';
 import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
 import { registerLaunchAtLoginHandlers } from './launch-at-login';
 import { registerExternalProjectHandlers } from './external-projects';
@@ -259,7 +261,7 @@ export function registerAllIpcHandlers(
   );
   registerPreferenceHandlers();
   registerUserEnvironmentHandlers();
-  registerActivityPanelHandlers(getMainWindow);
+  registerActivityPanelHandlers(getMainWindow, canopyRuntime);
   registerPlansHandlers(getMainWindow);
   registerRunsHandlers();
   registerSharedContainerHandlers();
@@ -272,10 +274,11 @@ export function registerAllIpcHandlers(
   registerCopilotConnectionHandlers();
   registerOpenCodeConnectionHandlers();
   registerAccountProxyHandlers();
-  registerFileAnnotationsHandlers(() => [
-    accessors.getMainWindow(),
-    accessors.getAppAdvisorWindow(),
-  ]);
+  registerFileAnnotationsHandlers(
+    () => [accessors.getMainWindow(), accessors.getAppAdvisorWindow()],
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   initializeSharedPlanSync({ getWindow: getMainWindow });
   getPlanFileSyncService().configure({ getWindow: getMainWindow });
   addPlanContentChangeListener((plan) =>
@@ -291,11 +294,12 @@ export function registerAllIpcHandlers(
   registerWorktreeSummaryHandlers(getMainWindow);
   registerBundleHandlers();
   registerCollectionHandlers();
-  registerRepoHandlers();
+  registerRepoHandlers(canopyRuntime);
   registerCloneJobHandlers();
-  registerWorktreeHandlers(getMainWindow);
+  registerWorktreeHandlers(getMainWindow, canopyRuntime);
+  registerWorktreeDiscardHandlers();
   registerWorktreeDiscoveryHandlers(getMainWindow);
-  registerHomeSurfaceHandlers();
+  registerHomeSurfaceHandlers(canopyRuntime);
   registerFileTreeHandlers(
     canopyRuntime.dispatcher,
     canopyRuntime.resolveCaller,
@@ -309,9 +313,10 @@ export function registerAllIpcHandlers(
     canopyRuntime.dispatcher,
     canopyRuntime.resolveCaller,
   );
-  registerWorktreeAttachmentHandlers();
-  registerWorkspaceItemHandlers();
+  registerWorktreeAttachmentHandlers(canopyRuntime);
+  registerWorkspaceItemHandlers(canopyRuntime);
   registerWorkspaceHandlers(getMainWindow, canopyRuntime);
+  registerLifecycleJournalHandlers();
   registerChatEventOutputHandlers();
   registerChatHandlers(accessors, canopyRuntime);
   registerChatProjectHandlers();
@@ -335,23 +340,26 @@ export function registerAllIpcHandlers(
   }
   registerPortalComposerCommandHandlers();
   registerSessionTransferHandlers(getMainWindow);
-  registerSettingsHandlers();
+  registerSettingsHandlers(canopyRuntime);
   registerDailyCreditDripHandlers();
   registerReferencePreviewHandlers();
-  registerGitExecutableHandlers(getMainWindow);
+  registerGitExecutableHandlers(getMainWindow, canopyRuntime);
   registerDeepLinkHandlers();
   registerStandaloneChatHandlers();
   registerWorkEntryHandlers();
   registerSidebarItemGroupHandlers();
-  registerGitHubHandlers(getMainWindow);
+  registerGitHubHandlers(getMainWindow, canopyRuntime);
   registerCliHandlers();
   registerObservabilityHandlers(getMainWindow);
   registerTelemetrySyncHandlers(getMainWindow);
   registerMcpServerHandlers(getMainWindow);
-  registerScriptHandlers();
-  registerHookHandlers(getMainWindow);
+  registerScriptHandlers(canopyRuntime);
+  registerHookHandlers(getMainWindow, canopyRuntime);
   registerOpenInHandlers();
-  registerFilePreviewHandlers();
+  registerFilePreviewHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerUpdateHandlers();
   registerModelRegistryHandlers(getMainWindow);
   registerModelHarnessAssignmentHandlers();
@@ -397,7 +405,10 @@ export function registerAllIpcHandlers(
   registerFeedbackHandlers();
   registerTurnFeedbackHandlers();
   registerOrgMemoryHandlers();
-  registerResourceMonitorHandlers();
+  registerResourceMonitorHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerMemoryDiagnosticsHandlers();
   registerSlowActionHandlers(getMainWindow);
   registerWorkerHandlers(accessors);
@@ -414,9 +425,9 @@ export function registerAllIpcHandlers(
   registerManagedDelegationHandlers();
   registerNativeSubagentHandlers();
   registerOrgProjectsHandlers();
+  registerSharedMultiRepoHandlers(canopyRuntime);
   const closeAccountOrganizationSettings =
     registerAccountOrganizationSettingsHandlers();
-  registerOnboardingChecklistHandlers();
   registerSpaceNotificationHandlers();
   registerGlobalFocusShortcutHandlers();
   registerLaunchAtLoginHandlers();

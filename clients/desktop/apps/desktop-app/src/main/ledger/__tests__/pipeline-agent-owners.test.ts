@@ -53,6 +53,34 @@ describe('LedgerPipelineAgentOwners', () => {
     expect(owners.generation('exec-1')).toBe(1);
   });
 
+  it("lists a global Ledger's paused agents only for the incarnation they paused in", () => {
+    const owners = new LedgerPipelineAgentOwners();
+    const personal: LedgerContainer = {
+      kind: 'global',
+      owner: { kind: 'personal' },
+    };
+    // Each account's Personal global Ledger is its own incarnation.
+    owners.notePaused({
+      agentSessionId: 'agent-a',
+      displayName: 'Agent a',
+      executionId: 'exec-1',
+      jobId: 'build',
+      stepId: 'agent',
+      attempt: 1,
+      container: personal,
+      containerCreatedAt: '2026-10-01T00:00:00.000Z',
+      checkpointId: 'checkpoint-a',
+      pausedAt: '2026-09-30T00:00:00.000Z',
+    });
+
+    expect(
+      owners
+        .list(personal, '2026-10-01T00:00:00.000Z')
+        .map((agent) => agent.agentSessionId),
+    ).toEqual(['agent-a']);
+    expect(owners.list(personal, '2026-10-02T00:00:00.000Z')).toEqual([]);
+  });
+
   it('drops an agent once it runs again', () => {
     const owners = new LedgerPipelineAgentOwners();
     pause(owners, 'agent-a', 'exec-1', 'checkpoint-a');

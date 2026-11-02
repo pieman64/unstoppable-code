@@ -472,3 +472,38 @@ describe('an embedded Try it sign-in (CAN-4451)', () => {
     expect(second).toHaveBeenCalledWith({ kind: 'failed', message: null });
   });
 });
+
+it('abandons an obsolete owner’s pending start without disconnecting or reporting its result', async (): Promise<void> => {
+  let finish: (value: {
+    error: { code: 'connect-refused' };
+  }) => void = (): void => undefined;
+  const start = jest.fn(
+    () =>
+      new Promise<{ error: { code: 'connect-refused' } }>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const disconnect = jest.fn();
+  Object.defineProperty(window, 'mcpServers', {
+    configurable: true,
+    value: {
+      startAccountConnection: start,
+      disconnectAccountConnection: disconnect,
+    },
+  });
+  const onOutcome = jest.fn();
+  let pending: Promise<unknown> | undefined;
+  await act(async () => {
+    pending = actions?.connect('spotify', 'default', { onOutcome });
+    await Promise.resolve();
+  });
+  act(() => actions?.stopObserving());
+  await act(async () => {
+    finish({ error: { code: 'connect-refused' } });
+    await pending;
+  });
+  expect(disconnect).not.toHaveBeenCalled();
+  expect(onOutcome).not.toHaveBeenCalled();
+  expect(actions?.error).toBeNull();
+  expect(actions?.pending.size).toBe(0);
+});

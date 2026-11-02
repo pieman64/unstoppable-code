@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const listSkillsMock = jest.fn<unknown, [unknown?]>();
+const listSkillsMock = jest.fn<Promise<unknown>, [unknown?]>();
 const adminRequestMock = jest.fn<unknown, [string, unknown?]>(
   (method, params) => {
     if (method !== 'skills/list') {

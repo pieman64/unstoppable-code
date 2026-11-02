@@ -51,10 +51,16 @@ export async function copilotRuntimeFixture({ models = [] } = {}) {
     'copilot-sdk-agent.mjs',
   );
   const quotaFile = path.join(root, 'quota.json');
-  const source = (await readFile(agentPath, 'utf8')).replace(
-    "const quotaFixtureFile = '';",
-    `const quotaFixtureFile = ${JSON.stringify(quotaFile)};`,
-  );
+  const heldTurnFile = path.join(root, 'held-turn.json');
+  const source = (await readFile(agentPath, 'utf8'))
+    .replace(
+      "const quotaFixtureFile = '';",
+      `const quotaFixtureFile = ${JSON.stringify(quotaFile)};`,
+    )
+    .replace(
+      "const heldTurnFixtureFile = '';",
+      `const heldTurnFixtureFile = ${JSON.stringify(heldTurnFile)};`,
+    );
   const modelSource = source.replace(
     'const presentationModels = [];',
     `const presentationModels = ${JSON.stringify(models)};`,
@@ -90,6 +96,14 @@ export async function copilotRuntimeFixture({ models = [] } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     state,
+    async readHeldTurn() {
+      try {
+        return JSON.parse(await readFile(heldTurnFile, 'utf8'));
+      } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      }
+    },
     async setQuotaSnapshots(quota) {
       await writeFile(quotaFile, JSON.stringify(quota));
     },

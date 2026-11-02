@@ -15,6 +15,8 @@ import type {
   AgentPromptWorkerResult,
   CodexPromptRunnerRequest,
   CodexPromptRunnerResult,
+  CursorPromptRunnerRequest,
+  CursorPromptRunnerResult,
   ExecutionRuntime,
   NormalizedStep,
   SpawnedProcessResult,
@@ -129,10 +131,10 @@ const TRANSCRIPT_LINES = [
 ];
 const UNSTREAMED_LINE = JSON.stringify({ type: 'turn.completed' });
 
-function streamingResult(
-  request: CodexPromptRunnerRequest,
+function streamingResultFor(
+  onTranscriptLine: ((line: string) => void) | undefined,
 ): Promise<CodexPromptRunnerResult> {
-  for (const line of TRANSCRIPT_LINES) request.onTranscriptLine?.(line);
+  for (const line of TRANSCRIPT_LINES) onTranscriptLine?.(line);
   return Promise.resolve({
     status: 'success',
     sessionId: 'thread-1',
@@ -142,6 +144,18 @@ function streamingResult(
     transcript: `${[...TRANSCRIPT_LINES, UNSTREAMED_LINE].join('\n')}\n`,
     usage: {},
   });
+}
+
+function streamingResult(
+  request: CodexPromptRunnerRequest,
+): Promise<CodexPromptRunnerResult> {
+  return streamingResultFor(request.onTranscriptLine);
+}
+
+function cursorStreamingResult(
+  request: CursorPromptRunnerRequest,
+): Promise<CursorPromptRunnerResult> {
+  return streamingResultFor(request.onTranscriptLine);
 }
 
 describe('step log positions', () => {
@@ -170,7 +184,7 @@ describe('step log positions', () => {
 
   function configureHostRunners(model: string): void {
     runtime.codexPromptRunner = { runCodexPrompt: streamingResult };
-    runtime.cursorPromptRunner = { runCursorPrompt: streamingResult };
+    runtime.cursorPromptRunner = { runCursorPrompt: cursorStreamingResult };
     runtime.resolveModelHarnessInvocation = (
       resolved,
     ): ReturnType<
@@ -185,7 +199,7 @@ describe('step log positions', () => {
               aiCreditsRouted: false,
             }
           : {
-              source: 'native',
+              source: 'codex-managed',
               harness: 'codex',
               runtimeModel: resolved ?? '',
               aiCreditsRouted: false,

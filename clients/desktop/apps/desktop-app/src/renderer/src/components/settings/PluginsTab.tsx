@@ -1,5 +1,6 @@
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import { marketplaceManagementDestination } from '@canopy/ui-shared/lib';
 import { countActiveInstalledItems } from '@canopy/protocol/installed-items';
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -12,8 +13,8 @@ import {
 import {
   ActiveItemsSummary,
   type ActiveItemsSummaryState,
+  ErrorState,
   Notice,
-  NoticeButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { SkillSuggestionsSettingsSection } from './SkillSuggestionsSettingsSection';
@@ -95,9 +96,8 @@ export function ActiveItemsSettings(): JSX.Element {
     const navigation = useNavigationStore.getState();
     navigation.closeSettings();
     navigation.openPluginsNavigation({
-      kind: 'management',
-      section: 'installed',
-      statusFilter: 'active',
+      kind: 'marketplace-browse',
+      ...marketplaceManagementDestination('installed', 'active'),
     });
   }, []);
   return (
@@ -167,12 +167,11 @@ export function PluginsTab(): JSX.Element {
   if (loadError) {
     return (
       <SettingsPage title="Plugins" dataTestId="settings-tab-plugins">
-        <Notice
-          intent="destructive"
-          actions={<NoticeButton onClick={loadPreferences}>Retry</NoticeButton>}
-        >
-          Could not load plugin settings.
-        </Notice>
+        <ErrorState
+          message="Couldn't load plugin settings."
+          onRetry={loadPreferences}
+          testId="settings-plugins-load-error"
+        />
       </SettingsPage>
     );
   }

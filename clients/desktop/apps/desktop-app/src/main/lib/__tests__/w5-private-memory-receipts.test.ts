@@ -1,6 +1,9 @@
 // CAN-4391: keyed replay and revisions of core.workspace.privateMemory.update,
 // a one-decision boundary, with the real commit-log worker and filesystem.
-import { createW5BoundaryFixture } from './fixtures/w5-boundary-fixture';
+import {
+  createW5BoundaryFixture,
+  isW5FinalPreflightRead,
+} from './fixtures/w5-boundary-fixture';
 import { W5CommitLog } from '@canopy/desktop-shared/node/w5-commit-log';
 import { withStorageOwnershipChange } from '@canopy/desktop-shared/node/lib/storage-admission';
 import type { WorkspaceOwnerBinding } from '@canopy/desktop-shared/types';
@@ -162,7 +165,7 @@ function armPreflightForeignWrite(): {
     if (
       fired === 0 &&
       path === manifestPath() &&
-      /w5-commit-log-file-store\.ts:182:/.test(new Error().stack ?? '')
+      isW5FinalPreflightRead(new Error().stack ?? '')
     ) {
       fired += 1;
       writeFileSync(

@@ -43,7 +43,7 @@ function signedIn(
     read: 'ok',
     hasApiKey: true,
     authMode: 'oauth',
-    credentialSource: 'oauth',
+    credentialSource: 'oauth_desktop',
     serverApiKeyId: `key-${id}`,
     capabilities: [],
     storageAvailable: true,

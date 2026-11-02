@@ -74,7 +74,7 @@ export const CHANGE_REVIEW_SECTIONS: readonly ChangeReviewSection[] = [
     id: 'sleep-paused-pill',
     title: 'Sleep paused chip',
     summary:
-      'The keep-awake indicator is an independent floating chip in the bottom-right corner of the main shell: a labeled pill on the quaternary surface with the house hairline ring, floating above whatever panel content is there like a quiet persistent toast. It appears while an agent turn or pipeline runs and "Keep system awake" is enabled in Performance settings.',
+      'The keep-awake indicator is an independent floating chip in the bottom-right corner of the main shell: a labeled pill on the quaternary surface with the house hairline ring, floating above whatever panel content is there like a quiet persistent toast. It appears while an agent turn or workflow runs and "Keep system awake" is enabled in Performance settings.',
     reportedBy: 'Reported by Nick Shatilo in #design.',
     before:
       'The bottom status host became a floating overlay in the header redesign while the indicator was still mounted collapsed, so a bare alarm-clock glyph floated under the composer with no label. A first fix labeled it and centered it along the bottom edge, where it visually sat inside the collapsed terminal tab strip and read as one of its controls.',
@@ -90,9 +90,9 @@ export const CHANGE_REVIEW_SECTIONS: readonly ChangeReviewSection[] = [
   },
   {
     id: 'plan-updated-badge',
-    title: 'Pipeline row chips',
+    title: 'Workflow row chips',
     summary:
-      'Every chip in a pipeline run row is one of two shapes. Status badges (execution status, Plan updated, Input required, Advisor ETA) share a 20px pill with a 3xs label, a subtle status tint, matching ink, and a hairline ring; muted completed-row pills keep the geometry and drop to the quiet colour set. Action buttons (Chat, Pipeline, Retry, Start over, Resume, Cancel) share a 24px rounded-md chip with a 2xs label on the same secondary surface as the header Open in pill — quaternary shell, shadow, hairline ring, subtle hover wash — and differ by ink only: neutral, warning, or destructive text on one shell, never a tinted fill. Both come from shared class builders so the row cannot drift again.',
+      'Every chip in a workflow run row is one of two shapes. Status badges (execution status, Plan updated, Input required, Advisor ETA) share a 20px pill with a 3xs label, a subtle status tint, matching ink, and a hairline ring; muted completed-row pills keep the geometry and drop to the quiet colour set. Action buttons (Chat, Pipeline, Retry, Start over, Resume, Cancel) share a 24px rounded-md chip with a 2xs label on the same secondary surface as the header Open in pill — quaternary shell, shadow, hairline ring, subtle hover wash — and differ by ink only: neutral, warning, or destructive text on one shell, never a tinted fill. Both come from shared class builders so the row cannot drift again.',
     reportedBy:
       'Follow-up to Torrey Jones’s light-mode pills report in #design (Jul 31) and the CAN-1911 advisor badge fix; the designer standardized the whole row.',
     before:
@@ -220,11 +220,11 @@ export const USER_BUBBLE_FIXTURES: readonly UserBubbleFixture[] = [
       blocks: [
         {
           type: 'text',
-          text: 'The Deploy pipeline finished. Summarize what shipped and flag anything that needs a follow-up.',
+          text: 'The Deploy workflow finished. Summarize what shipped and flag anything that needs a follow-up.',
         },
       ],
       timestamp: CHANGE_REVIEW_FIXED_NOW,
-      watcherFired: { kind: 'Pipeline completion (Deploy)' },
+      watcherFired: { kind: 'Workflow completion (Deploy)' },
     },
   },
 ];
@@ -241,6 +241,8 @@ export const QUEUED_BUBBLE_FIXTURES: readonly QueuedBubbleFixture[] = [
     title: 'Queued while streaming (shares the sent surface)',
     message: {
       text: 'After that, also update the dark-mode captures.',
+      hostQueueEntryId: 'change-review-queued',
+      turnPhase: 'foreground',
       enqueuedAtMs: CHANGE_REVIEW_FIXED_NOW,
     },
   },
@@ -249,6 +251,8 @@ export const QUEUED_BUBBLE_FIXTURES: readonly QueuedBubbleFixture[] = [
     title: 'Queued watcher message (info tint)',
     message: {
       text: 'CI guard fired on the release branch — triage the failing job.',
+      hostQueueEntryId: 'change-review-queued-info',
+      turnPhase: 'foreground',
       enqueuedAtMs: CHANGE_REVIEW_FIXED_NOW,
       watcherFired: { kind: 'Hook (CI guard)' },
     },
@@ -411,7 +415,7 @@ const TOOLTIP_ROW_UNREAD_PREVIEWS: readonly ChatPreviewRow[] = [
   },
   {
     chatId: 'change-review-unread-tooltip-2',
-    title: 'Investigate flaky pipeline step',
+    title: 'Investigate flaky workflow step',
     providerType: 'codex',
     preview: 'The step races the cache warm-up. I have a fix ready to review.',
   },
@@ -441,7 +445,7 @@ const ANSWERED_BEFORE_UNREAD_PREVIEWS: readonly ChatPreviewRow[] = [
 /** A busy row for the tooltip strip: pipeline badge plus an unread dot. */
 export const TOOLTIP_SIDEBAR_ROW: SidebarRowFixture = {
   id: 'tooltip-row',
-  label: 'Pipeline running',
+  label: 'Workflow running',
   caption:
     'Hover the status badge for its tooltip. Hover or focus the dot to open the unread preview listing the chats, as in the sidebar.',
   props: {

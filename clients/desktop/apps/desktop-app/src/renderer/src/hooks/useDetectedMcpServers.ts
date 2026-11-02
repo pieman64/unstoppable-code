@@ -27,7 +27,12 @@ export interface UseDetectedMcpServersOptions {
    * after a per-server proxy toggle. Hosts pass their `setPluginSelections`
    * here so the toggle persists into the active chat tab.
    */
-  onSelectionsChange?: (next: ChatTabPluginSelections) => void;
+  onSelectionsChange?: (
+    next: ChatTabPluginSelections,
+  ) => void | boolean | Promise<void | boolean>;
+  /** Invalidates observation when the draft or captured chat changes. */
+  ownerKey?: string;
+  isCurrent?: () => Promise<boolean>;
 }
 
 export interface UseDetectedMcpServersResult {
@@ -44,6 +49,15 @@ export interface UseDetectedMcpServersResult {
   proxyUpdatingKey: string | null;
   refresh(this: void): Promise<void>;
   connect(server: DetectedMcpServerInfo): Promise<void>;
+  /** Re-resolves eligibility using selections already accepted by the host writer. */
+  connectOnDevice(
+    key: string,
+    accepted: ChatTabPluginSelections,
+    stillCurrent?: () => boolean,
+  ): Promise<void>;
+  cancelConnect(): void;
+  signInUrl: string | undefined;
+  awaitingAuthorization: boolean;
   setCanopyProxyEnabled(
     server: DetectedMcpServerInfo,
     enabled: boolean,
@@ -51,6 +65,8 @@ export interface UseDetectedMcpServersResult {
 }
 
 interface InternalState {
+  ownerKey: string | null;
+  selectionKey: string | null;
   initialized: boolean;
   servers: DetectedMcpServerInfo[];
   warnings: string[];
@@ -59,18 +75,14 @@ interface InternalState {
 }
 
 const EMPTY_STATE: InternalState = {
+  ownerKey: null,
+  selectionKey: null,
   initialized: false,
   servers: [],
   warnings: [],
   loading: false,
   error: null,
 };
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
 
 function findMatchingServer(
   response: ListDetectedMcpServersResponse,
@@ -111,17 +123,77 @@ export function getOAuthFailureMessage(
   return server.lastError ?? DEFAULT_LOGIN_FAILED_MESSAGE;
 }
 
+interface LocalAttempt {
+  readonly key: string;
+  readonly owner: string;
+  cancelled: boolean;
+  cancelFlow: boolean;
+  flowId?: string;
+  wake?: () => void;
+}
+
 export function useDetectedMcpServers(
   selections: ChatTabPluginSelections | null,
   options: UseDetectedMcpServersOptions = {},
 ): UseDetectedMcpServersResult {
   const [state, setState] = useState<InternalState>(EMPTY_STATE);
   const [connectingKey, setConnectingKey] = useState<string | null>(null);
+  const [signInUrl, setSignInUrl] = useState<string | undefined>();
+  const [awaitingAuthorization, setAwaitingAuthorization] = useState(false);
+  const localAttempt = useRef<LocalAttempt | null>(null);
+  const ownerRef = useRef(options.ownerKey ?? 'default');
+  ownerRef.current = options.ownerKey ?? 'default';
+  const isCurrentRef = useRef(options.isCurrent);
+  isCurrentRef.current = options.isCurrent;
+  const mounted = useRef(true);
+  const validAttempt = useCallback(
+    (attempt: LocalAttempt): boolean =>
+      mounted.current &&
+      !attempt.cancelled &&
+      localAttempt.current === attempt &&
+      ownerRef.current === attempt.owner,
+    [],
+  );
+  const stopAttempt = useCallback((cancelFlow: boolean): void => {
+    const attempt = localAttempt.current;
+    if (!attempt) return;
+    attempt.cancelled = true;
+    attempt.cancelFlow = cancelFlow;
+    attempt.wake?.();
+    if (cancelFlow && attempt.flowId)
+      void window.mcpServers
+        .cancelOAuthLogin(attempt.flowId)
+        .catch(() => undefined);
+    localAttempt.current = null;
+    if (mounted.current) {
+      setConnectingKey(null);
+      setSignInUrl(undefined);
+      setAwaitingAuthorization(false);
+    }
+  }, []);
+  const cancelConnect = useCallback(
+    (): void => stopAttempt(true),
+    [stopAttempt],
+  );
+  useEffect(() => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+      stopAttempt(false);
+      requestSeqRef.current += 1;
+    };
+  }, [stopAttempt]);
+  useEffect(() => {
+    stopAttempt(false);
+    requestSeqRef.current += 1;
+    setState({ ...EMPTY_STATE });
+  }, [options.ownerKey, stopAttempt]);
   const [proxyUpdatingKey, setProxyUpdatingKey] = useState<string | null>(null);
 
   // Stable cancellation token so concurrent refreshes don't clobber each
   // other. The latest call wins.
   const requestSeqRef = useRef<number>(0);
+  const inventoryFailure = useRef<string | null>(null);
   const selectionsRef = useRef<ChatTabPluginSelections | null>(selections);
   selectionsRef.current = selections;
 
@@ -138,10 +210,14 @@ export function useDetectedMcpServers(
         setState({ ...EMPTY_STATE });
         return null;
       }
+      const owner = ownerRef.current;
       const seq = requestSeqRef.current + 1;
       requestSeqRef.current = seq;
+      inventoryFailure.current = null;
       setState((prev) => ({
         initialized: prev.initialized,
+        ownerKey: prev.ownerKey,
+        selectionKey: prev.selectionKey,
         servers: prev.servers,
         warnings: prev.warnings,
         loading: true,
@@ -150,8 +226,15 @@ export function useDetectedMcpServers(
       try {
         const response: ListDetectedMcpServersResponse =
           await window.mcpServers.listDetected({ selections: current });
-        if (seq !== requestSeqRef.current) return null;
+        if (
+          !mounted.current ||
+          ownerRef.current !== owner ||
+          seq !== requestSeqRef.current
+        )
+          return null;
         setState({
+          ownerKey: owner,
+          selectionKey: JSON.stringify(current),
           initialized: true,
           servers: response.servers,
           warnings: response.warnings,
@@ -160,12 +243,20 @@ export function useDetectedMcpServers(
         });
         return response;
       } catch (err: unknown) {
-        if (seq !== requestSeqRef.current) return null;
+        if (
+          !mounted.current ||
+          ownerRef.current !== owner ||
+          seq !== requestSeqRef.current
+        )
+          return null;
         const message =
           err instanceof Error && err.message.length > 0
             ? err.message
             : 'Could not load MCP servers.';
+        inventoryFailure.current = message;
         setState({
+          ownerKey: owner,
+          selectionKey: JSON.stringify(current),
           initialized: true,
           servers: [],
           warnings: [],
@@ -177,31 +268,51 @@ export function useDetectedMcpServers(
     }, []);
 
   const pollUntilOAuthCompletes = useCallback(
-    async (server: DetectedMcpServerInfo): Promise<void> => {
+    async (
+      server: DetectedMcpServerInfo,
+      attempt: LocalAttempt,
+    ): Promise<void> => {
       const startedAt = Date.now();
       const initialErrorRevision =
         server.authStatus === 'error' ? server.authErrorRevision : undefined;
-      while (Date.now() - startedAt < OAUTH_POLL_TIMEOUT_MS) {
-        await wait(OAUTH_POLL_INTERVAL_MS);
+      while (
+        validAttempt(attempt) &&
+        Date.now() - startedAt < OAUTH_POLL_TIMEOUT_MS
+      ) {
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, OAUTH_POLL_INTERVAL_MS);
+          attempt.wake = (): void => {
+            window.clearTimeout(timer);
+            resolve();
+          };
+        });
+        if (!validAttempt(attempt)) return;
+        if (isCurrentRef.current && !(await isCurrentRef.current())) return;
+        if (!validAttempt(attempt)) return;
         const response = await fetchInventory();
+        if (!validAttempt(attempt)) return;
         if (!response) {
+          if (inventoryFailure.current !== null)
+            throw new Error('Couldn’t refresh sign-in status. Try again.');
           continue;
         }
         const matchingServer = findMatchingServer(response, server);
+        if (!matchingServer)
+          throw new Error('This MCP server is no longer available');
         const failureMessage = getOAuthFailureMessage(
           matchingServer,
           initialErrorRevision,
         );
-        if (failureMessage) {
-          throw new Error(failureMessage);
-        }
-        if (!isOAuthStillPending(matchingServer, initialErrorRevision)) {
-          return;
-        }
+        if (failureMessage) throw new Error(failureMessage);
+        if (matchingServer.authStatus === 'connected') return;
+        if (!isOAuthStillPending(matchingServer, initialErrorRevision))
+          throw new Error(
+            'Couldn’t confirm this MCP server’s sign-in. Try again.',
+          );
       }
-      throw new Error(OAUTH_LOGIN_TIMEOUT_MESSAGE);
+      if (validAttempt(attempt)) throw new Error(OAUTH_LOGIN_TIMEOUT_MESSAGE);
     },
-    [fetchInventory],
+    [fetchInventory, validAttempt],
   );
 
   // Refetch whenever selections change. Use a stable JSON snapshot so we
@@ -210,7 +321,7 @@ export function useDetectedMcpServers(
   useEffect((): void => {
     void fetchInventory();
     // selectionsKey intentionally captures the structural identity.
-  }, [fetchInventory, selectionsKey]);
+  }, [fetchInventory, selectionsKey, options.ownerKey]);
 
   useEffect(
     () =>
@@ -261,13 +372,32 @@ export function useDetectedMcpServers(
     return (): void => window.clearTimeout(timer);
   }, [state.servers]);
 
+  useEffect(() => {
+    const attempt = localAttempt.current;
+    if (
+      attempt &&
+      state.initialized &&
+      !state.loading &&
+      state.error === null &&
+      !state.servers.some((server) => server.key === attempt.key)
+    )
+      stopAttempt(false);
+  }, [state, stopAttempt]);
+
+  // Clearing the selections removes every server, but the empty inventory is
+  // never initialized, so the check above can't see it. End the attempt here
+  // so a later selection doesn't inherit its stale wait.
+  useEffect(() => {
+    if (selectionsKey === null) stopAttempt(false);
+  }, [selectionsKey, stopAttempt]);
+
   const refresh = useCallback(async (): Promise<void> => {
     await fetchInventory();
   }, [fetchInventory]);
 
   const connect = useCallback(
     async (server: DetectedMcpServerInfo): Promise<void> => {
-      if (!server.canConnect) {
+      if (!server.canConnect || localAttempt.current !== null) {
         return;
       }
       const standaloneRequest =
@@ -295,31 +425,100 @@ export function useDetectedMcpServers(
         return;
       }
 
+      const attempt: LocalAttempt = {
+        key: server.key,
+        owner: ownerRef.current,
+        cancelled: false,
+        cancelFlow: false,
+      };
+      localAttempt.current = attempt;
       setConnectingKey(server.key);
       setState((prev) => ({ ...prev, error: null }));
       try {
+        if (isCurrentRef.current && !(await isCurrentRef.current())) return;
+        if (!validAttempt(attempt)) return;
         const response = await window.mcpServers.startOAuthLogin({
           ...request,
           force: false,
         });
-        if (response.status === 'completed') {
-          await fetchInventory();
+        attempt.flowId = response.flowId;
+        if (!validAttempt(attempt)) {
+          if (attempt.cancelFlow && response.flowId)
+            await window.mcpServers.cancelOAuthLogin(response.flowId);
           return;
         }
-        await pollUntilOAuthCompletes(server);
+        setSignInUrl(response.authorizationUrl);
+        setAwaitingAuthorization(response.status === 'started');
+        if (response.status === 'completed') {
+          const inventory = await fetchInventory();
+          if (!validAttempt(attempt)) return;
+          if (!inventory && inventoryFailure.current !== null)
+            throw new Error('Couldn’t refresh sign-in status. Try again.');
+          if (
+            inventory &&
+            findMatchingServer(inventory, server)?.authStatus === 'connected'
+          )
+            return;
+        }
+        // A launch/completed acknowledgement is not proof of connection.
+        await pollUntilOAuthCompletes(server, attempt);
       } catch (err: unknown) {
         const message =
           err instanceof Error && err.message.length > 0
             ? err.message
             : DEFAULT_LOGIN_FAILED_MESSAGE;
-        setState((prev) => ({ ...prev, error: message }));
+        if (validAttempt(attempt))
+          setState((prev) => ({ ...prev, error: message }));
       } finally {
-        setConnectingKey((current) =>
-          current === server.key ? null : current,
-        );
+        if (localAttempt.current === attempt) {
+          localAttempt.current = null;
+          if (mounted.current) {
+            setConnectingKey(null);
+            setSignInUrl(undefined);
+            setAwaitingAuthorization(false);
+          }
+        }
       }
     },
-    [fetchInventory, pollUntilOAuthCompletes],
+    [fetchInventory, pollUntilOAuthCompletes, validAttempt],
+  );
+
+  const connectOnDevice = useCallback(
+    async (
+      key: string,
+      accepted: ChatTabPluginSelections,
+      stillCurrent?: () => boolean,
+    ): Promise<void> => {
+      const owner = ownerRef.current;
+      const response = await window.mcpServers.listDetected({
+        selections: accepted,
+      });
+      if (
+        !mounted.current ||
+        ownerRef.current !== owner ||
+        stillCurrent?.() === false
+      )
+        return;
+      const server = response.servers.find((entry) => entry.key === key);
+      if (
+        !server ||
+        server.httpAuthHandler !== 'canopy' ||
+        (!server.canConnect && server.authStatus !== 'connected')
+      )
+        throw new Error('This MCP server cannot sign in on this desktop.');
+      selectionsRef.current = accepted;
+      setState({
+        ownerKey: owner,
+        selectionKey: JSON.stringify(accepted),
+        initialized: true,
+        servers: response.servers,
+        warnings: response.warnings,
+        loading: false,
+        error: null,
+      });
+      if (server.authStatus !== 'connected') await connect(server);
+    },
+    [connect],
   );
 
   const setCanopyProxyEnabled = useCallback(
@@ -340,6 +539,7 @@ export function useDetectedMcpServers(
           pluginRefs: [],
         } satisfies ChatTabPluginSelections);
 
+      const owner = ownerRef.current;
       setProxyUpdatingKey(server.key);
       setState((prev) => ({ ...prev, error: null }));
       try {
@@ -350,7 +550,9 @@ export function useDetectedMcpServers(
         );
         const callback = onSelectionsChangeRef.current;
         if (callback) {
-          callback(next);
+          if ((await callback(next)) === false)
+            throw new Error(DEFAULT_PROXY_TOGGLE_FAILED_MESSAGE);
+          if (!mounted.current || ownerRef.current !== owner) return;
           // Optimistically reflect the change locally so the inventory
           // refresh below sees the override even if the host's
           // `setPluginSelections` has not yet flowed back through props.
@@ -371,21 +573,31 @@ export function useDetectedMcpServers(
     [fetchInventory],
   );
 
-  const initializing = selections !== null && !state.initialized;
+  const hasSelections = selections !== null;
+  const initializing =
+    hasSelections &&
+    (!state.initialized ||
+      state.selectionKey !== selectionsKey ||
+      state.ownerKey !== (options.ownerKey ?? 'default'));
   return useMemo(
     (): UseDetectedMcpServersResult => ({
-      servers: state.servers,
-      warnings: state.warnings,
-      loading: state.loading || initializing,
+      servers: !hasSelections || initializing ? [] : state.servers,
+      warnings: !hasSelections || initializing ? [] : state.warnings,
+      loading: hasSelections && (state.loading || initializing),
       initializing,
-      error: state.error,
+      error: !hasSelections || initializing ? null : state.error,
       connectingKey,
       proxyUpdatingKey,
       refresh,
       connect,
+      connectOnDevice,
+      cancelConnect,
+      signInUrl,
+      awaitingAuthorization,
       setCanopyProxyEnabled,
     }),
     [
+      hasSelections,
       state.servers,
       state.warnings,
       state.loading,
@@ -395,6 +607,10 @@ export function useDetectedMcpServers(
       proxyUpdatingKey,
       refresh,
       connect,
+      connectOnDevice,
+      cancelConnect,
+      signInUrl,
+      awaitingAuthorization,
       setCanopyProxyEnabled,
     ],
   );

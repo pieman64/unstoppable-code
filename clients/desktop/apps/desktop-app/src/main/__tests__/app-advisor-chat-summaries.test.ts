@@ -3,6 +3,7 @@ import type {
   ChatTabsFile,
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
+import type * as CoworkWorkEntries from '../lib/cowork-work-entries';
 
 jest.mock('../portal/portal-event-bus', () => ({
   createPortalEvent: jest.fn((type: string, payload: unknown) => ({
@@ -98,7 +99,9 @@ const listAnsweredQuestionsMock = jest.fn<
 jest.mock('../ipc/app-advisor', () => ({
   getLatestAppAdvisorWindowUiState: jest.fn(() => undefined),
   listPendingAppAdvisorAskUserQuestions: jest.fn(() => []),
-  listAnsweredAppAdvisorAskUserQuestions: listAnsweredQuestionsMock,
+  get listAnsweredAppAdvisorAskUserQuestions(): typeof listAnsweredQuestionsMock {
+    return listAnsweredQuestionsMock;
+  },
 }));
 
 const listWorkEntryIdsMock = jest.fn<Promise<string[]>, [string]>(() =>
@@ -116,13 +119,20 @@ const listWorkEntriesMock = jest.fn(() =>
     },
   ]),
 );
-const resolveWorkEntryForChatMock = jest.fn(() =>
-  Promise.resolve({ entryId: null, archivedInEntryId: null }),
-);
+const resolveWorkEntryForChatMock = jest.fn<
+  ReturnType<typeof CoworkWorkEntries.resolveWorkEntryForChat>,
+  Parameters<typeof CoworkWorkEntries.resolveWorkEntryForChat>
+>(() => Promise.resolve({ entryId: null, archivedInEntryId: null }));
 jest.mock('../lib/cowork-work-entries', () => ({
-  listWorkEntryIds: listWorkEntryIdsMock,
-  listWorkEntries: listWorkEntriesMock,
-  resolveWorkEntryForChat: resolveWorkEntryForChatMock,
+  get listWorkEntryIds(): typeof listWorkEntryIdsMock {
+    return listWorkEntryIdsMock;
+  },
+  get listWorkEntries(): typeof listWorkEntriesMock {
+    return listWorkEntriesMock;
+  },
+  get resolveWorkEntryForChat(): typeof resolveWorkEntryForChatMock {
+    return resolveWorkEntryForChatMock;
+  },
 }));
 
 const watchersListMock = jest.fn<Promise<AppAdvisorWatcherSummary[]>, []>(() =>
@@ -139,6 +149,7 @@ import {
   getAppAdvisorChatTranscriptSeed,
   listAppAdvisorChatSummaries,
   projectAllAppAdvisorChatSummaries,
+  projectAppAdvisorChatSummariesStrict,
   listWorktreeChatSummaries,
 } from '../services/chat-service';
 import { PORTAL_CHAT_SEED_MESSAGE_LIMIT } from '../services/chat-transcript-projector';
@@ -255,6 +266,26 @@ describe('answered ask-user question projection (CAN-2608)', () => {
     expect(byChatId.get('advisor-chat-b')?.pendingQuestions).toEqual([]);
   });
 
+  it('settles the post-commit projection of a deleted Work Entry without retrying', async () => {
+    mockedIsCanopyPortalActive.mockReturnValue(true);
+    try {
+      // Deletion commits the scope's removal before the registry row goes,
+      // so its throttled projection finds no entry; that is not a failure.
+      await expect(
+        projectAppAdvisorChatSummariesStrict('entry-deleted'),
+      ).resolves.toBeUndefined();
+      expect(enqueuePortalEvent).not.toHaveBeenCalled();
+
+      const failure = new Error('registry unreadable');
+      listWorkEntriesMock.mockRejectedValueOnce(failure);
+      await expect(
+        projectAppAdvisorChatSummariesStrict('entry-one'),
+      ).rejects.toBe(failure);
+    } finally {
+      mockedIsCanopyPortalActive.mockReturnValue(false);
+    }
+  });
+
   it('projects Work Entry identity and registry order with every sub-chat', async () => {
     const summaries = await listAppAdvisorChatSummaries('entry-one');
 
@@ -333,23 +364,25 @@ describe('legacy execution harness projection', () => {
     const file: ChatTabsFile = {
       version: 1,
       activeTabId: 'advisor-chat-a',
-      tabs: [
-        {
-          id: 'advisor-chat-a',
-          title: 'Started legacy chat',
-          createdAt: '2026-08-01T00:00:00.000Z',
-          providerType: 'codex',
-          messages: [
-            {
-              id: 'message-1',
-              role: 'user',
-              content: 'Started',
-              timestamp: 1_700_000_000_000,
-            },
-          ],
-        },
-      ],
+      tabs: [],
     };
+    // Keep this content-only message in its legacy persisted shape.
+    Reflect.set(file, 'tabs', [
+      {
+        id: 'advisor-chat-a',
+        title: 'Started legacy chat',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        providerType: 'codex',
+        messages: [
+          {
+            id: 'message-1',
+            role: 'user',
+            content: 'Started',
+            timestamp: 1_700_000_000_000,
+          },
+        ],
+      },
+    ]);
     mockedPortalChatTabsCache.read.mockResolvedValue(file);
 
     const summaries = await listAppAdvisorChatSummaries('entry-one');
@@ -361,22 +394,24 @@ describe('legacy execution harness projection', () => {
     const file: ChatTabsFile = {
       version: 1,
       activeTabId: 'advisor-chat-a',
-      tabs: [
-        {
-          id: 'advisor-chat-a',
-          title: 'Started providerless chat',
-          createdAt: '2026-08-01T00:00:00.000Z',
-          messages: [
-            {
-              id: 'message-1',
-              role: 'user',
-              content: 'Started',
-              timestamp: 1_700_000_000_000,
-            },
-          ],
-        },
-      ],
+      tabs: [],
     };
+    // Keep this content-only message in its legacy persisted shape.
+    Reflect.set(file, 'tabs', [
+      {
+        id: 'advisor-chat-a',
+        title: 'Started providerless chat',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        messages: [
+          {
+            id: 'message-1',
+            role: 'user',
+            content: 'Started',
+            timestamp: 1_700_000_000_000,
+          },
+        ],
+      },
+    ]);
     mockedPortalChatTabsCache.read.mockResolvedValue(file);
 
     const summaries = await listAppAdvisorChatSummaries('entry-one');
@@ -550,50 +585,51 @@ describe('getAppAdvisorChatTranscriptSeed (CAN-2562)', () => {
   it('seeds every entry chat transcript interleaved by time, without routing or hidden context', async () => {
     listWorkEntryIdsMock.mockResolvedValue(['entry-one', 'entry-two']);
     mockedPortalChatTabsCache.read.mockImplementation(
-      (_workspaceId: string, entryId: string) =>
-        Promise.resolve({
-          version: 1,
-          activeTabId: null,
-          tabs: [
-            {
-              id: `${entryId}-chat`,
-              title: entryId,
-              createdAt: '2026-08-01T00:00:00.000Z',
-              messages: [
-                {
-                  id: `${entryId}-m1`,
-                  role: 'user',
-                  timestamp: entryId === 'entry-one' ? 1000 : 2000,
-                  blocks: [{ type: 'text', text: `hello from ${entryId}` }],
-                  hiddenContext: {
-                    kind: 'canopy-watcher-event',
-                    text: 'SEED-HIDDEN-SECRET-2562',
-                  },
+      (_workspaceId: string, entryId: string) => {
+        const file: ChatTabsFile = { version: 1, activeTabId: '', tabs: [] };
+        // Preserve the legacy null active id, hidden context, and terminal tab.
+        Reflect.set(file, 'activeTabId', null);
+        Reflect.set(file, 'tabs', [
+          {
+            id: `${entryId}-chat`,
+            title: entryId,
+            createdAt: '2026-08-01T00:00:00.000Z',
+            messages: [
+              {
+                id: `${entryId}-m1`,
+                role: 'user',
+                timestamp: entryId === 'entry-one' ? 1000 : 2000,
+                blocks: [{ type: 'text', text: `hello from ${entryId}` }],
+                hiddenContext: {
+                  kind: 'canopy-watcher-event',
+                  text: 'SEED-HIDDEN-SECRET-2562',
                 },
-                {
-                  id: `${entryId}-m2`,
-                  role: 'assistant',
-                  timestamp: entryId === 'entry-one' ? 3000 : 1500,
-                  blocks: [{ type: 'text', text: `reply in ${entryId}` }],
-                },
-              ],
-            },
-            {
-              id: `${entryId}-terminal`,
-              title: 'terminal',
-              kind: 'terminal',
-              createdAt: '2026-08-01T00:00:00.000Z',
-              messages: [
-                {
-                  id: `${entryId}-t1`,
-                  role: 'user',
-                  timestamp: 1,
-                  blocks: [{ type: 'text', text: 'terminal tab excluded' }],
-                },
-              ],
-            },
-          ],
-        } satisfies ChatTabsFile),
+              },
+              {
+                id: `${entryId}-m2`,
+                role: 'assistant',
+                timestamp: entryId === 'entry-one' ? 3000 : 1500,
+                blocks: [{ type: 'text', text: `reply in ${entryId}` }],
+              },
+            ],
+          },
+          {
+            id: `${entryId}-terminal`,
+            title: 'terminal',
+            kind: 'terminal',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            messages: [
+              {
+                id: `${entryId}-t1`,
+                role: 'user',
+                timestamp: 1,
+                blocks: [{ type: 'text', text: 'terminal tab excluded' }],
+              },
+            ],
+          },
+        ]);
+        return Promise.resolve(file);
+      },
     );
 
     const seed = await getAppAdvisorChatTranscriptSeed();

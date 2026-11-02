@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import {
   copyFile,
   mkdir,
@@ -84,6 +85,34 @@ async function listMarkdownIds(dir: string): Promise<string[]> {
   }
 }
 
+export const ATTACHMENT_EXTENSION_TOO_LONG_MESSAGE =
+  'Attachment filename extension is too long';
+
+function uniquePathCandidate(
+  dir: string,
+  normalizedBase: string,
+  counter: number,
+  extension: string,
+  maxFilenameBytes?: number,
+): { id: string; absolutePath: string; filename: string } {
+  const suffix = counter === 1 ? '' : `-${counter}`;
+  const baseByteBudget =
+    maxFilenameBytes === undefined
+      ? Number.POSITIVE_INFINITY
+      : maxFilenameBytes -
+        Buffer.byteLength(extension, 'utf8') -
+        Buffer.byteLength(suffix, 'utf8');
+  if (baseByteBudget < 1) {
+    throw new Error(ATTACHMENT_EXTENSION_TOO_LONG_MESSAGE);
+  }
+  const boundedBase = Number.isFinite(baseByteBudget)
+    ? truncateToUtf8Bytes(normalizedBase, baseByteBudget)
+    : normalizedBase;
+  const attempt = `${boundedBase}${suffix}`;
+  const filename = `${attempt}${extension}`;
+  return { id: attempt, absolutePath: join(dir, filename), filename };
+}
+
 export async function resolveUniquePath(
   dir: string,
   baseName: string,
@@ -96,30 +125,66 @@ export async function resolveUniquePath(
   let counter = 1;
 
   while (true) {
-    const suffix = counter === 1 ? '' : `-${counter}`;
-    const baseByteBudget =
-      maxFilenameBytes === undefined
-        ? Number.POSITIVE_INFINITY
-        : maxFilenameBytes -
-          Buffer.byteLength(extension, 'utf8') -
-          Buffer.byteLength(suffix, 'utf8');
-    if (baseByteBudget < 1) {
-      throw new Error('Attachment filename extension is too long');
-    }
-    const boundedBase = Number.isFinite(baseByteBudget)
-      ? truncateToUtf8Bytes(normalizedBase, baseByteBudget)
-      : normalizedBase;
-    const attempt = `${boundedBase}${suffix}`;
-    const filename = `${attempt}${extension}`;
-    const absolutePath = join(dir, filename);
-    if (existingAbsolutePath && absolutePath === existingAbsolutePath) {
-      return { id: attempt, absolutePath, filename };
+    const candidate = uniquePathCandidate(
+      dir,
+      normalizedBase,
+      counter,
+      extension,
+      maxFilenameBytes,
+    );
+    if (
+      existingAbsolutePath &&
+      candidate.absolutePath === existingAbsolutePath
+    ) {
+      return candidate;
     }
     try {
-      await stat(absolutePath);
+      await stat(candidate.absolutePath);
       counter += 1;
     } catch {
-      return { id: attempt, absolutePath, filename };
+      return candidate;
+    }
+  }
+}
+
+function errnoCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null
+    ? Reflect.get(error, 'code')
+    : undefined;
+}
+
+/**
+ * {@link resolveUniquePath} for attachments, creating the file exclusively:
+ * a concurrent import that claims the free name first moves this one to the
+ * next suffix instead of being overwritten (CAN-4105).
+ */
+async function createUniqueAttachment(
+  dir: string,
+  baseName: string,
+  extension: string,
+  create: (absolutePath: string) => Promise<void>,
+): Promise<{ absolutePath: string; filename: string }> {
+  const normalizedBase =
+    normalizeCloudAttachmentFilenameStem(baseName) || 'item';
+  for (let counter = 1; ; counter += 1) {
+    const candidate = uniquePathCandidate(
+      dir,
+      normalizedBase,
+      counter,
+      extension,
+      PORTABLE_FILENAME_MAX_BYTES,
+    );
+    try {
+      await stat(candidate.absolutePath);
+      continue;
+    } catch {
+      // Free as far as the listing shows; the exclusive create decides.
+    }
+    try {
+      await create(candidate.absolutePath);
+      return candidate;
+    } catch (error) {
+      if (errnoCode(error) !== 'EEXIST') throw error;
     }
   }
 }
@@ -139,14 +204,13 @@ export async function copyAttachmentFileToDir(
   const sourceInfo = await stat(sourcePath);
   const sourceName = basename(sourcePath);
   const extension = extname(sourceName);
-  const target = await resolveUniquePath(
+  const target = await createUniqueAttachment(
     dir,
     sourceName.slice(0, sourceName.length - extension.length) || 'attachment',
     extension,
-    undefined,
-    PORTABLE_FILENAME_MAX_BYTES,
+    (absolutePath) =>
+      copyFile(sourcePath, absolutePath, fsConstants.COPYFILE_EXCL),
   );
-  await copyFile(sourcePath, target.absolutePath);
   const info = await stat(target.absolutePath);
   return {
     filename: target.filename,
@@ -165,16 +229,23 @@ export async function writeClipboardAttachmentToDir(
   const stem =
     item.filename.slice(0, item.filename.length - extension.length) ||
     'clipboard';
-  const target = await resolveUniquePath(
+  const target = await createUniqueAttachment(
     dir,
     stem,
     extension,
-    undefined,
-    PORTABLE_FILENAME_MAX_BYTES,
+    async (absolutePath) => {
+      try {
+        await writeFile(absolutePath, item.data, { flag: 'wx' });
+      } catch (error) {
+        // EEXIST means another writer owns the file; never remove it.
+        if (errnoCode(error) !== 'EEXIST')
+          await rm(absolutePath, { force: true }).catch(() => undefined);
+        throw error;
+      }
+    },
   );
   let info;
   try {
-    await writeFile(target.absolutePath, item.data);
     info = await stat(target.absolutePath);
   } catch (error) {
     await rm(target.absolutePath, { force: true }).catch(() => undefined);

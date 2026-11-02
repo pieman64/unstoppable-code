@@ -25,6 +25,10 @@ import {
   assertOpenCodeSystemConfigSafe,
   openCodeNativeDatabase,
 } from './auth-config';
+import {
+  prepareOpenCodeInferenceRoute,
+  type OpenCodeInferenceRoute,
+} from './inference-route';
 
 export interface OpenCodeToolInput {
   sessionId: string;
@@ -47,6 +51,7 @@ export interface OpenCodeRuntimeOptions {
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
   providerConfig?: Record<string, unknown>;
+  inferenceRoute?: OpenCodeInferenceRoute;
   promptTimeoutMs?: number | null;
   forkScope?: OpenCodeForkScope;
   skillDirectories?: readonly string[];
@@ -86,16 +91,25 @@ export async function startOpenCodeRuntime(
   options: OpenCodeRuntimeOptions,
 ): Promise<OwnedOpenCodeRuntime> {
   options.signal.throwIfAborted();
-  await assertOpenCodeAuthConfigSafe(options.env, options.cwd);
-  await assertOpenCodeSystemConfigSafe(options.env);
+  const inference = options.inferenceRoute
+    ? prepareOpenCodeInferenceRoute(options.inferenceRoute)
+    : undefined;
+  const runtimeEnv = inference
+    ? { ...options.env, OPENCODE_AUTH_CONTENT: '{}' }
+    : options.env;
+  await assertOpenCodeAuthConfigSafe(runtimeEnv, options.cwd);
+  await assertOpenCodeSystemConfigSafe(runtimeEnv);
   options.signal.throwIfAborted();
-  const providerConfig = await resolveOpenCodeProviderConfig(
-    options.providerConfig,
-    options.env,
-    options.cwd,
-    options.signal,
-  );
-  const providerSettingsDigest = openCodeCapabilityDigest(providerConfig);
+  const providerConfig = inference
+    ? inference.config
+    : await resolveOpenCodeProviderConfig(
+        options.providerConfig,
+        runtimeEnv,
+        options.cwd,
+        options.signal,
+      );
+  const providerSettingsDigest =
+    inference?.settingsDigest ?? openCodeCapabilityDigest(providerConfig);
   options.signal.throwIfAborted();
   await mkdir(options.profileDir, { recursive: true, mode: 0o700 });
   const privateDir = await mkdtemp(join(options.profileDir, 'turn-'));
@@ -180,7 +194,7 @@ export async function startOpenCodeRuntime(
     // Keep v2 provider credentials and sessions in the canonical native database.
     // A per-turn database would lose credentials saved by native auth login.
     const env: NodeJS.ProcessEnv = {
-      ...options.env,
+      ...runtimeEnv,
       OPENCODE_CONFIG: '',
       OPENCODE_CONFIG_DIR: privateDir,
       OPENCODE_TEST_MANAGED_CONFIG_DIR: privateDir,

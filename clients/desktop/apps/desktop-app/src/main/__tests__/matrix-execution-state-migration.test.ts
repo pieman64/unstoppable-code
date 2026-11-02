@@ -14,7 +14,8 @@ function requireRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Expected record fixture');
   }
-  return value;
+  // Legacy execution-state fixtures are mutable, string-keyed JSON records.
+  return value as Record<string, unknown>;
 }
 
 describe('execution state v7 matrix migration', () => {
@@ -189,7 +190,7 @@ describe('execution state v7 matrix migration', () => {
       status: 'failure',
       legacy_foreach_v7: true,
       error:
-        'Legacy foreach expansion was not materialized before migration. Convert the source pipeline to strategy.matrix and start a new execution.',
+        'Legacy foreach expansion was not materialized before migration. Convert the source workflow to strategy.matrix and start a new execution.',
     });
   });
 

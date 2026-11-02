@@ -1,3 +1,8 @@
+import { captureW5Files } from './capture';
+import {
+  isW5CaptureRequest,
+  type W5ConfinedFileReaderSource,
+} from './capture-contract';
 import { workspaceCreationDiagnosticsSchema } from './reservation-diagnostics';
 import {
   applyW5Commit,
@@ -17,6 +22,7 @@ import type {
   W5CommitLogWorkerData,
   W5CommitLogWorkerError,
   W5CommitOutcome,
+  W5RecoveryRetryOutcome,
 } from './worker-contract';
 
 /*
@@ -53,7 +59,26 @@ export function toW5CommitLogWorkerError(
   if (error instanceof W5CommitLogRequestError) {
     return { kind: 'malformed', message: error.message };
   }
-  return { kind: 'failed', message: UNEXPECTED_FAILURE_MESSAGE };
+  return { kind: 'failed', message: unexpectedFailureMessage(error) };
+}
+
+// Names and errno codes only: an error message could quote a file path.
+const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+function identifierField(error: object, field: string): string | undefined {
+  const value: unknown = Reflect.get(error, field);
+  return typeof value === 'string' && IDENTIFIER.test(value)
+    ? value
+    : undefined;
+}
+
+function unexpectedFailureMessage(error: unknown): string {
+  if (typeof error !== 'object' || error === null)
+    return UNEXPECTED_FAILURE_MESSAGE;
+  const name = identifierField(error, 'name');
+  if (name === undefined) return UNEXPECTED_FAILURE_MESSAGE;
+  const code = identifierField(error, 'code');
+  return `${UNEXPECTED_FAILURE_MESSAGE} (${code === undefined ? name : `${name} ${code}`})`;
 }
 
 function isResource(value: unknown): value is W5Resource {
@@ -95,6 +120,14 @@ function isExpectedRevision(value: unknown): boolean {
   );
 }
 
+function isReservationId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isCommitId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
 function isCommitRequest(value: unknown): value is W5CommitRequest {
   return (
     isRecord(value) &&
@@ -127,6 +160,10 @@ export class W5CommitLogRequestHandler {
     private readonly recovery: W5RecoveryReport,
     /** Supplied by the host that composes the worker. */
     private readonly durability: W5DurabilityPort,
+    /** Trusted host OS, never supplied in a capture request. */
+    private readonly platform: NodeJS.Platform | null,
+    /** The host's Windows handle confinement; without it Windows capture refuses. */
+    private readonly confined?: W5ConfinedFileReaderSource,
   ) {}
 
   async run(request: W5CommitLogRequest): Promise<unknown> {
@@ -139,6 +176,17 @@ export class W5CommitLogRequestHandler {
           ...(reservations.length ? { reservations } : {}),
         };
       }
+      case 'capture':
+        if (request.args.length !== 1 || !isW5CaptureRequest(first))
+          throw malformed();
+        return captureW5Files(
+          this.log,
+          this.data.root,
+          first,
+          this.platform,
+          this.confined,
+          this.data.captureRoot,
+        );
       case 'snapshot':
         return this.log.snapshot();
       case 'revision':
@@ -204,7 +252,59 @@ export class W5CommitLogRequestHandler {
       case 'commit':
         if (!isCommitRequest(first)) throw malformed();
         return this.commit(first);
+      case 'resolveRecovery':
+      case 'retryRecoveryRequiredCommit':
+      case 'abandonRecoveryRequiredCommit':
+        return this.recover(request.method, request.args);
     }
+  }
+
+  /**
+   * Manual recovery, for offline maintenance's cold host only (RX1). Each
+   * takes exactly one ID; a wrong state refuses `invalid-state`.
+   */
+  private async recover(
+    method:
+      | 'resolveRecovery'
+      | 'retryRecoveryRequiredCommit'
+      | 'abandonRecoveryRequiredCommit',
+    args: readonly unknown[],
+  ): Promise<W5RecoveryRetryOutcome | null> {
+    const [id] = args;
+    if (args.length !== 1) throw malformed();
+    if (method === 'resolveRecovery') {
+      if (!isReservationId(id)) throw malformed();
+      this.log.resolveRecovery(id);
+      return null;
+    }
+    if (!isCommitId(id)) throw malformed();
+    if (method === 'retryRecoveryRequiredCommit')
+      return this.retryRecoveryRequiredCommit(id);
+    this.log.abandonRecoveryRequiredCommit(id);
+    return null;
+  }
+
+  /**
+   * Puts a commit awaiting recovery back in the apply flow and applies it
+   * before answering, so the caller learns whether the restored files took it.
+   */
+  private async retryRecoveryRequiredCommit(
+    commitId: number,
+  ): Promise<W5RecoveryRetryOutcome> {
+    // As in `commit`: commits an earlier call left unwritten are written first.
+    await this.finishPendingCommits();
+    this.log.retryRecoveryRequiredCommit(commitId);
+    const pending = this.log
+      .listPendingCommits()
+      .find((commit) => commit.commitId === commitId);
+    if (!pending) throw new Error(UNEXPECTED_FAILURE_MESSAGE);
+    const applied = await applyW5Commit(this.log, pending, {
+      root: this.data.root,
+      durability: this.durability,
+    });
+    return applied.status === 'applied'
+      ? { status: 'applied', commitId }
+      : { status: 'recovery-required', commitId, apply: applied };
   }
 
   private async commit(request: W5CommitRequest): Promise<W5CommitOutcome> {

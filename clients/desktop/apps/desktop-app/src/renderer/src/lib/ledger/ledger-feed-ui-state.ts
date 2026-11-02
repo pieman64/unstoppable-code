@@ -1,5 +1,9 @@
 import type { LedgerFeedState } from '@canopy/app-state';
 import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
+import {
+  isLedgerTaskViewScope,
+  type LedgerViewScope,
+} from '@canopy/protocol/ledger-view';
 import { isLedgerFeedFiltered } from '@canopy/ui-shared/components';
 
 interface FeedComposerUiState {
@@ -20,6 +24,18 @@ function composerUiState(
       ? {}
       : { draftWorktreeId: composer.scope.worktreeId }),
   };
+}
+
+/** The selected scope by its IDs: a task's, or a global Ledger's. */
+function selectedScopeUiState(
+  scope: LedgerViewScope,
+): Readonly<Record<string, string>> {
+  return isLedgerTaskViewScope(scope)
+    ? {
+        selectedProjectId: scope.projectId,
+        selectedWorktreeId: scope.worktreeId,
+      }
+    : { selectedScopeKind: 'global', selectedLedgerId: scope.ledgerId };
 }
 
 /**
@@ -43,10 +59,7 @@ export function ledgerFeedUiState(state: LedgerFeedState): AppAdvisorJson {
       : { selectedEntryId: state.selectedEntryId }),
     ...(state.selectedScope === null
       ? {}
-      : {
-          selectedProjectId: state.selectedScope.projectId,
-          selectedWorktreeId: state.selectedScope.worktreeId,
-        }),
+      : selectedScopeUiState(state.selectedScope)),
     ...(state.composer.shown ? composerUiState(state.composer) : {}),
   };
 }

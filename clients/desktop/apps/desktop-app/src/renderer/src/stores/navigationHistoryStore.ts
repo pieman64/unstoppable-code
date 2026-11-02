@@ -18,9 +18,12 @@ import {
 } from '@/lib/workflows/edit-target';
 import {
   askNavigationGuard,
+  getPluginsPresentationContextGeneration,
   runWithoutNavigationGuard,
   useNavigationStore,
+  type MarketplaceSourceReturnContext,
   type NavigationPage,
+  type PluginsPresentationLocation,
 } from './navigationStore';
 
 /** Archived-container viewer target participating in history. */
@@ -49,6 +52,8 @@ export interface NavigationHistoryLocation {
   pluginsBrowseSectionId?: string;
   /** Restores the type context of a retired Agents location. */
   pluginsAgentTab?: true;
+  pluginsPresentation?: PluginsPresentationLocation;
+  pluginsContextGeneration?: number;
   /**
    * The Library's edit shell (CAN-4072). `key` is the item's identity, so a
    * section change rewrites `target` in place instead of adding a step. The
@@ -90,6 +95,27 @@ function locationsEqual(
   return (
     a.page === b.page &&
     a.pluginsAgentTab === b.pluginsAgentTab &&
+    a.pluginsContextGeneration === b.pluginsContextGeneration &&
+    JSON.stringify(
+      a.pluginsPresentation
+        ? {
+            ...a.pluginsPresentation,
+            scrollTop: undefined,
+            browseScrollTop: undefined,
+            detailReturnScrollTop: undefined,
+          }
+        : undefined,
+    ) ===
+      JSON.stringify(
+        b.pluginsPresentation
+          ? {
+              ...b.pluginsPresentation,
+              scrollTop: undefined,
+              browseScrollTop: undefined,
+              detailReturnScrollTop: undefined,
+            }
+          : undefined,
+      ) &&
     (a.pluginsBrowseSectionId ?? null) === (b.pluginsBrowseSectionId ?? null) &&
     (a.worktree === null) === (b.worktree === null) &&
     (a.worktree === null ||
@@ -105,6 +131,44 @@ function locationsEqual(
     (a.sharedContainer?.organizationId ?? null) ===
       (b.sharedContainer?.organizationId ?? null) &&
     (a.workflowEdit?.key ?? null) === (b.workflowEdit?.key ?? null)
+  );
+}
+
+/**
+ * Customize state with the typed search text cleared. Editing a search box
+ * refines the current step rather than adding one, so Back leaves the page,
+ * category or source instead of replaying each edit (CAN-4267).
+ */
+function withoutSearchText(
+  presentation: PluginsPresentationLocation,
+): PluginsPresentationLocation {
+  const clearSource = (
+    source: MarketplaceSourceReturnContext | undefined,
+  ): MarketplaceSourceReturnContext | undefined =>
+    source && { ...source, filters: { ...source.filters, query: '' } };
+  return {
+    ...presentation,
+    categoryQuery: undefined,
+    browse: {
+      ...presentation.browse,
+      query: '',
+      source: clearSource(presentation.browse.source),
+    },
+    source: clearSource(presentation.source),
+  };
+}
+
+function onlySearchTextChanged(
+  a: NavigationHistoryLocation,
+  b: NavigationHistoryLocation,
+): boolean {
+  return (
+    a.pluginsPresentation !== undefined &&
+    b.pluginsPresentation !== undefined &&
+    locationsEqual(
+      { ...a, pluginsPresentation: withoutSearchText(a.pluginsPresentation) },
+      { ...b, pluginsPresentation: withoutSearchText(b.pluginsPresentation) },
+    )
   );
 }
 
@@ -153,6 +217,12 @@ function captureCurrentLocation(): NavigationHistoryLocation {
       page,
       worktree: null,
       archivedContainer: null,
+      ...(navigation.pluginsPresentation
+        ? {
+            pluginsPresentation: navigation.pluginsPresentation,
+            pluginsContextGeneration: getPluginsPresentationContextGeneration(),
+          }
+        : {}),
       ...(navigation.pluginsBrowseSectionId
         ? { pluginsBrowseSectionId: navigation.pluginsBrowseSectionId }
         : {}),
@@ -193,6 +263,12 @@ function captureCurrentLocation(): NavigationHistoryLocation {
 }
 
 function isLocationNavigable(location: NavigationHistoryLocation): boolean {
+  if (
+    location.pluginsPresentation &&
+    location.pluginsContextGeneration !==
+      getPluginsPresentationContextGeneration()
+  )
+    return false;
   if (
     location.pluginsAgentTab &&
     !useFeatureFlagsStore
@@ -275,7 +351,12 @@ function applyLocation(location: NavigationHistoryLocation): void {
 
 function restoreLocation(location: NavigationHistoryLocation): void {
   const navigation = useNavigationStore.getState();
-  if (location.pluginsAgentTab) {
+  if (location.pluginsPresentation) {
+    navigation.openPluginsNavigation({
+      kind: 'restore',
+      location: location.pluginsPresentation,
+    });
+  } else if (location.pluginsAgentTab) {
     navigation.openPluginsNavigation({
       kind: 'marketplace-browse',
       query: '',
@@ -499,9 +580,17 @@ function commitCurrentLocation(mode: CommitMode): void {
   const current = state.index >= 0 ? state.entries[state.index] : undefined;
   if (current && locationsEqual(current, location)) {
     // Same item in the edit shell: keep its latest section for restore.
-    if (current.workflowEdit?.target !== location.workflowEdit?.target) {
+    if (
+      current.workflowEdit?.target !== location.workflowEdit?.target ||
+      current.pluginsPresentation?.scrollTop !==
+        location.pluginsPresentation?.scrollTop
+    ) {
       rewriteCurrentEntry(location);
     }
+    return;
+  }
+  if (current && !restoring && onlySearchTextChanged(current, location)) {
+    rewriteCurrentEntry(location);
     return;
   }
   if (mode === 'replace' && !restoring && current) {
@@ -581,6 +670,7 @@ export function initNavigationHistoryTracking(): () => void {
   const initialNavigation = useNavigationStore.getState();
   let lastPage = initialNavigation.activePage;
   let lastPluginsBrowseSectionId = initialNavigation.pluginsBrowseSectionId;
+  let lastPluginsPresentation = initialNavigation.pluginsPresentation;
   let lastWorkflowEdit = initialNavigation.workflowEdit;
   let lastReplaceCount = initialNavigation.workflowEditReplaceCount;
   const unsubscribeNavigation = useNavigationStore.subscribe((state) => {
@@ -589,10 +679,12 @@ export function initNavigationHistoryTracking(): () => void {
     if (
       state.activePage !== lastPage ||
       state.pluginsBrowseSectionId !== lastPluginsBrowseSectionId ||
+      state.pluginsPresentation !== lastPluginsPresentation ||
       state.workflowEdit !== lastWorkflowEdit
     ) {
       lastPage = state.activePage;
       lastPluginsBrowseSectionId = state.pluginsBrowseSectionId;
+      lastPluginsPresentation = state.pluginsPresentation;
       lastWorkflowEdit = state.workflowEdit;
       scheduleCommit(replaced ? 'replace' : 'push');
     }

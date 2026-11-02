@@ -2,8 +2,62 @@ import type { Scenario } from '../browser-agent-bench-evaluator';
 
 const SITE = 'https://the-internet.herokuapp.com';
 
-// The CAN-1570 manual prompts that are not the-internet pages.
+// The CAN-4831 report's page: one link per target, both to example.com.
+const LINK_TEST_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Link test</title>
+</head>
+<body>
+  <h1>Link test</h1>
+  <p><a href="https://example.com" target="_self">Open in the same tab</a></p>
+  <p><a href="https://example.com" target="_blank" rel="noopener noreferrer">Open in a new tab</a></p>
+</body>
+</html>
+`;
+
+const heading = "document.querySelector('h1')?.innerText.trim() ?? null";
+// example.com has no heading, only a title.
+const title = 'document.title';
+
+// The CAN-1570 manual prompts that are not the-internet pages, and link
+// targets (CAN-4831).
 export const generalScenarios: Scenario[] = [
+  {
+    id: 'link-target-blank',
+    pack: 'general',
+    title: 'Follow a target="_blank" link into a new tab',
+    prompt:
+      'Open the local file {worktree}/link-test.html in the browser, click "Open in a new tab", and tell me the title of the page that opens.',
+    setup: { workspaceFiles: { 'link-test.html': LINK_TEST_HTML } },
+    expect: {
+      replyContains: ['Example Domain'],
+      page: [
+        // The test page stays in its own tab...
+        { url: 'link-test.html', js: heading, equals: 'Link test', tabs: 1 },
+        // ...and exactly one new tab shows the link's page.
+        { url: 'example.com', js: title, equals: 'Example Domain', tabs: 1 },
+      ],
+    },
+  },
+  {
+    id: 'link-target-self',
+    pack: 'general',
+    title: 'Follow a target="_self" link in the same tab',
+    prompt:
+      'Open the local file {worktree}/link-test.html in the browser, click "Open in the same tab", and tell me the title of the page that opens.',
+    setup: { workspaceFiles: { 'link-test.html': LINK_TEST_HTML } },
+    expect: {
+      replyContains: ['Example Domain'],
+      page: [
+        // The tab navigated away from the test page, and no other tab opened.
+        { url: 'link-test.html', js: 'false', equals: true, passIfNoTab: true },
+        { url: 'example.com', js: title, equals: 'Example Domain', tabs: 1 },
+      ],
+    },
+  },
   {
     id: 'wikipedia-scroll-to-text',
     pack: 'general',

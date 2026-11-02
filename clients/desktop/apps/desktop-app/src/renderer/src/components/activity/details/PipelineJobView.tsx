@@ -26,6 +26,7 @@ import {
   canRetryMatrixJob,
   canRetryMatrixVariant,
 } from '@/lib/execution-actions';
+import { Button } from '@canopy/ui-shared/components';
 
 function isSettledJobStatus(status: string): boolean {
   return ['success', 'failure', 'cancelled', 'skipped'].includes(status);
@@ -159,8 +160,8 @@ function PipelineJobViewComponent({
           {canRetryExpansion || canRetryAll || canRetryFailed ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {canRetryExpansion || canRetryAll ? (
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   disabled={matrixBusy}
                   onClick={() => {
                     setMatrixBusy(true);
@@ -173,18 +174,17 @@ function PipelineJobViewComponent({
                       setMatrixError(result.error ?? null);
                     });
                   }}
-                  className="rounded-md border px-3 py-1.5 text-xs fg-primary disabled:opacity-50"
                 >
                   {matrixBusy
                     ? 'Retrying…'
                     : canRetryExpansion
                       ? 'Retry expansion'
                       : 'Retry all variants'}
-                </button>
+                </Button>
               ) : null}
               {canRetryFailed ? (
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   disabled={matrixBusy}
                   onClick={() => {
                     setMatrixBusy(true);
@@ -197,10 +197,9 @@ function PipelineJobViewComponent({
                       setMatrixError(result.error ?? null);
                     });
                   }}
-                  className="rounded-md border px-3 py-1.5 text-xs fg-primary disabled:opacity-50"
                 >
                   Retry failed variants
-                </button>
+                </Button>
               ) : null}
             </div>
           ) : null}
@@ -231,8 +230,10 @@ function PipelineJobViewComponent({
                   </span>
                 </button>
                 {archived ? null : !isSettledJobStatus(result.status) ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost-destructive"
+                    size="compact"
+                    className="ml-2"
                     disabled={matrixBusy}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -246,17 +247,18 @@ function PipelineJobViewComponent({
                         'Failed to cancel matrix variant',
                       );
                     }}
-                    className="ml-2 text-xs fg-destructive disabled:opacity-50"
                   >
                     Cancel variant
-                  </button>
+                  </Button>
                 ) : canRetryMatrixJob(state.status, group) &&
                   canRetryMatrixVariant({
                     job_id: variantJobId,
                     status: result.status,
                   }) ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    className="ml-2"
                     disabled={matrixBusy}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -271,10 +273,9 @@ function PipelineJobViewComponent({
                         'Failed to retry matrix variant',
                       );
                     }}
-                    className="ml-2 text-xs fg-accent disabled:opacity-50"
                   >
                     Retry variant
-                  </button>
+                  </Button>
                 ) : null}
               </div>
             );

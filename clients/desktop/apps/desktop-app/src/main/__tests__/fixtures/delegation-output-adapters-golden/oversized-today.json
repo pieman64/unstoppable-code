@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "name": "oversized-1mib-answer",
+      "changesIn11c2": "paged",
+      "response": {
+        "success": false,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "Invalid or oversized host tool result."
+          }
+        ]
+      },
+      "serializedResponse": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"Invalid or oversized host tool result.\"}]}"
+    },
+    {
+      "name": "oversized-utf8-under-unit-cap",
+      "changesIn11c2": "paged",
+      "response": {
+        "success": false,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "Host tool result exceeds the output limit."
+          }
+        ]
+      },
+      "serializedResponse": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"Host tool result exceeds the output limit.\"}]}"
+    },
+    {
+      "name": "oversized-empty-final-large-partial",
+      "changesIn11c2": "paged",
+      "response": {
+        "success": false,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "Invalid or oversized host tool result."
+          }
+        ]
+      },
+      "serializedResponse": "{\"success\":false,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"Invalid or oversized host tool result.\"}]}"
+    }
+  ]
+}

@@ -1,10 +1,17 @@
 import { pendingEagerChatCreation } from '../hydration';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { worktreeKey } from '../utils';
+import { splitWorktreeKey, worktreeKey } from '../utils';
+import {
+  observeSetupQueueInputDispatch,
+  forgetSetupQueueInputDispatch,
+} from '../setup-queue-dispatch';
+import {
+  selectChildToolLiveness,
+  useLiveBackgroundTaskStore,
+} from '../../liveBackgroundTaskStore';
 import { getChatToastAttribution } from '../notifications';
 import { recordWorktreeChatTouch } from '../hydration';
 import {
-  getActiveWorktreeChatContext,
   getWorktreeChatContext,
   resolveSendMessageTargetTab,
   updateCapturedChatTab,
@@ -12,9 +19,18 @@ import {
 import {
   type ChatMessage,
   type ChatTab,
+  type SendingLease,
   type SendMessageDispatchOptions,
   type WorktreeChatState,
 } from '../types';
+import {
+  createSendingLease,
+  expireSendingLease,
+  hasPendingSendingLease,
+  withoutSendingLease,
+} from '../canonical-changes';
+import { tagStatusWrite } from '../runtime-divergence';
+import { chatStoreApi } from '../store-ref';
 import type {
   ChatActivePlanContext,
   ChatCancelResult,
@@ -33,9 +49,11 @@ import {
   clearUsageLimitBannerForDispatchedUserMessage,
   createEmptyTab,
   getDefaultPlugins,
+  isClaudeTerminalBackedChatTab,
   resolveTabProviderType,
   firstMessageTitlePatch,
   toQueuedDispatchOptions,
+  WATCHER_TERMINAL_ONLY_MESSAGE,
 } from '../tab-utils';
 import {
   resolveDefaultChatInterfaceMode,
@@ -100,6 +118,7 @@ import {
   clearPendingPlanExitForChat,
   clearPendingSystemInstructionsFromTab,
   consumePendingSystemInstructionsFromTab,
+  retiresSupersededPlanExit,
 } from '../plan-utils';
 import { brandText } from '@/lib/brand';
 import { isCoworkChatTarget } from '@/lib/cowork';
@@ -124,10 +143,22 @@ import { useAppAdvisorWatchersStore } from '../../appAdvisorWatchersStore';
 import { usePipelineRunsStore } from '../../pipelineRunsStore';
 import {
   projectAgentArtifacts,
+  selectPersistableCarryReceipts,
   selectWatchedCarryReceipts,
 } from '@/components/chat/agent-artifact-projection';
 import type { AgentArtifactCarryReceiptV1 } from '@canopy/desktop-shared/types/agent-artifacts';
 import { MAX_PENDING_CLAUDE_TERMINAL_WATCHER_MESSAGES } from '../pendingClaudeTerminalWatchers';
+import {
+  adoptableProvisionalFirstSend,
+  isProvisionalFirstSendAdmissionPending,
+  handOffProvisionalFirstSendToQueue,
+  cancelProvisionalFirstSendQueue,
+  failProvisionalFirstSendOnTab,
+  presentProvisionalFirstSendOnTab,
+  retryFailedProvisionalFirstSendOnTab,
+  withdrawProvisionalFirstSendFromTab,
+  rejectUndispatchedProvisionalFirstSend,
+} from '../provisional-first-send';
 
 const ACCEPTED_AGENT_SENDER_UNREACHABLE_MESSAGE =
   'The agent that sent this message can no longer reach this chat.';
@@ -142,6 +173,63 @@ function nativeSendKey(target: {
   chatId: string;
 }): string {
   return JSON.stringify([target.projectId, target.worktreeId, target.chatId]);
+}
+
+/**
+ * Mark a sending lease expired at its deadline when canonical runtime never
+ * acknowledged it, so the composer stops showing it as starting and local
+ * queue rows offer Retry for the uncertain delivery (CAN-5031).
+ */
+export function scheduleSendingLeaseExpiry(
+  key: string,
+  chatId: string,
+  lease: SendingLease,
+): void {
+  setTimeout(
+    () => {
+      chatStoreApi().setState((state) => {
+        const worktreeChats = expireSendingLease(
+          state.worktreeChats,
+          key,
+          chatId,
+          lease.userMessageId,
+          Date.now(),
+        );
+        return worktreeChats === state.worktreeChats
+          ? state
+          : { worktreeChats };
+      });
+    },
+    Math.max(0, lease.deadline - Date.now()),
+  );
+}
+
+/** Drop a lease once its command reply settles it (accepted or refused). */
+function releaseSendingLease(
+  key: string,
+  chatId: string,
+  userMessageId: string,
+): void {
+  chatStoreApi().setState((state) => {
+    const wc = state.worktreeChats[key];
+    const tab = wc?.tabs.find((candidate) => candidate.id === chatId);
+    if (!wc || tab?.sendingLease?.userMessageId !== userMessageId) {
+      return state;
+    }
+    return {
+      worktreeChats: {
+        ...state.worktreeChats,
+        [key]: {
+          ...wc,
+          tabs: wc.tabs.map((candidate) =>
+            candidate.id === chatId
+              ? withoutSendingLease(candidate, userMessageId)
+              : candidate,
+          ),
+        },
+      },
+    };
+  });
 }
 
 function hasQueuedAcceptedInput(
@@ -159,12 +247,18 @@ function hasQueuedAcceptedInput(
 function qualifyingArtifactCarry(
   tab: ChatTab,
   destination: { projectId: string; worktreeId: string; chatId: string },
-): AgentArtifactCarryReceiptV1[] {
-  return selectWatchedCarryReceipts(
-    projectAgentArtifacts(tab.messages).chatInitiatedPipelineRuns,
-    usePipelineRunsStore.getState().summaries,
-    useAppAdvisorWatchersStore.getState().watchers,
-    destination,
+): readonly AgentArtifactCarryReceiptV1[] {
+  const { chatInitiatedPipelineRuns } = projectAgentArtifacts(tab.messages);
+  // Same rule as the pinned section: runs this chat launched stay with their
+  // launching turn and are never carried into the new one (CAN-4690).
+  return selectPersistableCarryReceipts(
+    selectWatchedCarryReceipts(
+      chatInitiatedPipelineRuns,
+      usePipelineRunsStore.getState().summaries,
+      useAppAdvisorWatchersStore.getState().watchers,
+      destination,
+    ),
+    chatInitiatedPipelineRuns,
   );
 }
 
@@ -241,8 +335,19 @@ function applyAuthDependencyRefusal(
       if (!options.failTab) {
         return { ...tab, messages: [...tab.messages, refusalMessage] };
       }
+      const { projectId, worktreeId } = splitWorktreeKey(key);
+      // A refused send ends no background work from an earlier turn.
       const completedMessages = closeOpenToolUseBlocks(
         completeTurnTimer(tab.messages, refusedAt),
+        {
+          liveness: selectChildToolLiveness(
+            useLiveBackgroundTaskStore.getState(),
+            projectId,
+            worktreeId,
+            chatId,
+          ),
+          codexRootThreadId: tab.sdkSessionId,
+        },
       );
       const refusedTab: ChatTab = {
         ...tab,
@@ -380,6 +485,28 @@ function clearAcceptedQueuedComposerAttachments(
   return next;
 }
 
+/** Applies `updater` to one chat tab; unchanged state when nothing moved. */
+function updateChatTab(
+  state: ChatState,
+  key: string,
+  chatId: string,
+  updater: (tab: ChatTab) => ChatTab,
+): Partial<ChatState> | ChatState {
+  const scope = state.worktreeChats[key];
+  if (!scope) return state;
+  let changed = false;
+  const tabs = scope.tabs.map((tab) => {
+    if (tab.id !== chatId) return tab;
+    const next = updater(tab);
+    changed ||= next !== tab;
+    return next;
+  });
+  if (!changed) return state;
+  return {
+    worktreeChats: { ...state.worktreeChats, [key]: { ...scope, tabs } },
+  };
+}
+
 export const createMessagingSlice: StateCreator<
   ChatState,
   [],
@@ -424,9 +551,40 @@ export const createMessagingSlice: StateCreator<
 
     const eagerKey = worktreeKey(sel);
     const eagerScope = get().worktreeChats[eagerKey];
-    const eagerTab = eagerScope?.tabs.find(
+    let eagerTab = eagerScope?.tabs.find(
       (entry) => entry.id === (target?.chatId ?? eagerScope.activeTabId),
     );
+    const replacement = options?.replaceFailedFirstSend;
+    if (replacement && eagerTab?.provisionalFirstSend?.phase === 'failed') {
+      const replacementChatId = eagerTab.id;
+      set((state) =>
+        updateChatTab(state, eagerKey, replacementChatId, (tab) =>
+          withdrawProvisionalFirstSendFromTab(
+            tab,
+            replacement.userMessageId,
+            replacement.failureId,
+          ),
+        ),
+      );
+      eagerTab = get().worktreeChats[eagerKey]?.tabs.find(
+        (entry) => entry.id === replacementChatId,
+      );
+    }
+    // Keep distinct follow-ups in their composer until the first send is
+    // acknowledged, even when its short presentation lease has expired.
+    if (
+      isProvisionalFirstSendAdmissionPending(eagerTab) &&
+      eagerTab?.provisionalFirstSend?.userMessageId !== options?.userMessageId
+    ) {
+      options?.onPreDispatchRejected?.();
+      return;
+    }
+    if (
+      adoptableProvisionalFirstSend(eagerTab, options?.userMessageId)?.phase ===
+      'dispatched'
+    ) {
+      return;
+    }
     // CAN-3637: keep drafting available, but never dispatch an untouched
     // Advisor seed against provisional account/auth/catalog facts. Synchronize
     // the actual tab before capturing the turn, so picker and request agree.
@@ -474,6 +632,10 @@ export const createMessagingSlice: StateCreator<
     if (eagerTab?.pendingInitialCreation) {
       const userMessageId = options?.userMessageId ?? nextMsgId();
       options = { ...options, userMessageId };
+      // A Home first send already presents this message (CAN-4742); a second
+      // eager echo would render it twice.
+      const alreadyPresented =
+        adoptableProvisionalFirstSend(eagerTab, userMessageId) !== undefined;
       const pendingMessage: ChatMessage = {
         id: userMessageId,
         role: 'user',
@@ -490,7 +652,7 @@ export const createMessagingSlice: StateCreator<
       };
       set((state) => {
         const scope = state.worktreeChats[eagerKey];
-        if (!scope) return state;
+        if (!scope || alreadyPresented) return state;
         return {
           worktreeChats: {
             ...state.worktreeChats,
@@ -667,6 +829,30 @@ export const createMessagingSlice: StateCreator<
       return;
     }
 
+    const presentedSubmission = adoptableProvisionalFirstSend(
+      get().worktreeChats[eagerKey]?.tabs.find(
+        (entry) => entry.id === eagerTab?.id,
+      ),
+      options?.userMessageId,
+    );
+    if (presentedSubmission?.dispatchClaimed) return;
+    if (presentedSubmission?.phase === 'preparing' && eagerTab) {
+      set((state) =>
+        updateChatTab(state, eagerKey, eagerTab.id, (entry) =>
+          entry.provisionalFirstSend &&
+          entry.provisionalFirstSend.userMessageId === options?.userMessageId
+            ? {
+                ...entry,
+                provisionalFirstSend: {
+                  ...entry.provisionalFirstSend,
+                  dispatchClaimed: true,
+                },
+              }
+            : entry,
+        ),
+      );
+    }
+
     // Every App Advisor entry send runs in App Advisor assistant mode,
     // regardless of which surface issued it (the popout's standard chat
     // panels call this without options). Derive it here so the generic send
@@ -808,6 +994,18 @@ export const createMessagingSlice: StateCreator<
       return;
     }
 
+    const isWatcherSend =
+      options?.watcherDeliveryId !== undefined ||
+      options?.watcherFired !== undefined;
+    if (isWatcherSend && !isClaudeTerminalBackedChatTab(tab)) {
+      // Main delivers watcher messages for every other chat.
+      options?.onPreDispatchRejected?.();
+      if (options?.throwOnDispatchFailure === true) {
+        throw new Error(WATCHER_TERMINAL_ONLY_MESSAGE);
+      }
+      return;
+    }
+
     // An early echo belongs to presentation, not conversation history used
     // for first-send routing, terminal handoff, or new-chat notifications.
     const pendingOwnId = options?.userMessageId;
@@ -905,10 +1103,13 @@ export const createMessagingSlice: StateCreator<
     // reducer commits them. Invoke the acceptance callback at that boundary
     // and omit it from the queued copy so a later flush cannot invoke it a
     // second time.
-    const acceptedQueuedDispatchOptions = toQueuedDispatchOptions(
-      options,
-      false,
-    );
+    const acceptedQueuedDispatchOptions = presentedSubmission
+      ? {
+          ...toQueuedDispatchOptions(options, false),
+          userMessageId: presentedSubmission.userMessageId,
+          submittedAt: presentedSubmission.submittedAt,
+        }
+      : toQueuedDispatchOptions(options, false);
 
     // The hook tab is currently a queued placeholder waiting for the real
     // session to start. There is no chat session to send to yet, so locally
@@ -974,11 +1175,10 @@ export const createMessagingSlice: StateCreator<
     // explicitly requested the setup-queue treatment (Create Task → Chat/Plan).
     // The explicit flag makes the behavior deterministic: those flows create
     // the worktree and send in one action, and Phase B `git-ready` can win the
-    // race before this runs, which would otherwise skip the intro block.
+    // race before this runs, which would otherwise skip the queued bubble.
     const shouldQueueForSetup =
       liveSetupPhase === 'git-pending' || options?.queueForSetup === true;
     if (shouldQueueForSetup) {
-      const introTimestamp = Date.now();
       set((state) => {
         const currentWc = state.worktreeChats[key];
         if (!currentWc) return state;
@@ -989,18 +1189,6 @@ export const createMessagingSlice: StateCreator<
           ) {
             return t;
           }
-          const alreadyHasIntro = t.messages.some(
-            (msg) =>
-              msg.role === 'system' &&
-              msg.blocks.length === 1 &&
-              msg.blocks[0].type === 'pending_setup_info',
-          );
-          const introMessage: ChatMessage = {
-            id: nextMsgId(),
-            role: 'system',
-            blocks: [{ type: 'pending_setup_info', timestamp: introTimestamp }],
-            timestamp: introTimestamp,
-          };
           const withQueued = appendQueuedMessageToTab(
             t,
             {
@@ -1009,25 +1197,32 @@ export const createMessagingSlice: StateCreator<
               attachmentPaths,
               ...(attachmentPromptContexts ? { attachmentPromptContexts } : {}),
               ...(options?.agentSent ? { agentSent: options.agentSent } : {}),
-              ...(acceptedQueuedDispatchOptions
-                ? { dispatchOptions: acceptedQueuedDispatchOptions }
-                : {}),
+              ...(adoptableProvisionalFirstSend(t, options?.userMessageId)
+                ? {
+                    dispatchOptions: {
+                      ...acceptedQueuedDispatchOptions,
+                      userMessageId: options?.userMessageId,
+                      submittedAt: t.provisionalFirstSend?.submittedAt,
+                    },
+                  }
+                : acceptedQueuedDispatchOptions
+                  ? { dispatchOptions: acceptedQueuedDispatchOptions }
+                  : {}),
             },
             executionHarnessForMessage,
             options?.composerAttachmentsReserved === true,
           );
-          return {
-            ...withQueued,
-            messages: alreadyHasIntro
-              ? t.messages
-              : [introMessage, ...t.messages],
-            queuedForSetup: true,
-          };
+          // The queued row takes over from a presented Home first send in
+          // this same update, so the chat never shows an empty frame.
+          const handedOff = handOffProvisionalFirstSendToQueue(
+            withQueued,
+            options?.userMessageId,
+          );
+          // The queued bubble explains the wait; no setup annotation is added
+          // to the transcript.
+          return { ...handedOff, queuedForSetup: true };
         });
         const updated = { ...currentWc, tabs: updatedTabs };
-        // Persist the intro block so the "queued during setup" annotation
-        // survives reloads. queuedMessages / queuedForSetup are intentionally
-        // stripped from the persisted shape by toPersistedTabs.
         return {
           worktreeChats: { ...state.worktreeChats, [key]: updated },
         };
@@ -1054,6 +1249,10 @@ export const createMessagingSlice: StateCreator<
       tab.interfaceMode,
     );
     if (isTerminalBackedInterfaceMode(effectiveInterfaceMode)) {
+      // Keep Home's echo and title ownership while terminal preparation waits.
+      // A queue row or the terminal transcript takes over atomically below.
+      const terminalSubmittedAt =
+        presentedSubmission?.submittedAt ?? options?.submittedAt ?? Date.now();
       const isAutoInterfaceMode = effectiveInterfaceMode === 'auto';
       const shouldScheduleAutoBranchNaming =
         isAutoInterfaceMode && !chatTabHasConversationContent(tab);
@@ -1113,8 +1312,11 @@ export const createMessagingSlice: StateCreator<
             : undefined;
       // Mirror the Canopy-native send path's first-message title/status so
       // terminal-backed chats show the same tab/worktree activity indicators
-      // while Claude Code hooks catch up to the submitted prompt.
+      // while Claude Code hooks catch up to the submitted prompt. Terminal
+      // turns are not canonical, so the terminal projection, not a canonical
+      // sending lease, owns this status.
       const applyTerminalSendUiState = (): void => {
+        tagStatusWrite(chatId, 'terminal-send');
         set((state) => {
           const currentWc = state.worktreeChats[key];
           if (!currentWc) return state;
@@ -1124,6 +1326,17 @@ export const createMessagingSlice: StateCreator<
               return entry;
             }
             const nextEntry = { ...entry };
+            if (
+              entry.provisionalFirstSend?.userMessageId ===
+                options?.userMessageId &&
+              entry.provisionalFirstSend?.phase === 'preparing'
+            ) {
+              nextEntry.provisionalFirstSend = {
+                ...entry.provisionalFirstSend,
+                phase: 'dispatched',
+              };
+              changed = true;
+            }
             if (entry.status !== 'streaming') {
               nextEntry.status = 'streaming';
               changed = true;
@@ -1222,25 +1435,28 @@ export const createMessagingSlice: StateCreator<
               const updatedTabs = currentWc.tabs.map((t) =>
                 t.id === chatId &&
                 !hasQueuedAcceptedInput(t, options?.acceptedInputId)
-                  ? appendQueuedMessageToTab(
-                      t,
-                      {
-                        text,
-                        fileReferences,
-                        attachmentPaths,
-                        ...(attachmentPromptContexts
-                          ? { attachmentPromptContexts }
-                          : {}),
-                        ...(options?.agentSent
-                          ? { agentSent: options.agentSent }
-                          : {}),
-                        ...(inputMode ? { inputMode } : {}),
-                        ...(acceptedQueuedDispatchOptions
-                          ? { dispatchOptions: acceptedQueuedDispatchOptions }
-                          : {}),
-                      },
-                      executionHarnessForMessage,
-                      options?.composerAttachmentsReserved === true,
+                  ? handOffProvisionalFirstSendToQueue(
+                      appendQueuedMessageToTab(
+                        t,
+                        {
+                          text,
+                          fileReferences,
+                          attachmentPaths,
+                          ...(attachmentPromptContexts
+                            ? { attachmentPromptContexts }
+                            : {}),
+                          ...(options?.agentSent
+                            ? { agentSent: options.agentSent }
+                            : {}),
+                          ...(inputMode ? { inputMode } : {}),
+                          ...(acceptedQueuedDispatchOptions
+                            ? { dispatchOptions: acceptedQueuedDispatchOptions }
+                            : {}),
+                        },
+                        executionHarnessForMessage,
+                        options?.composerAttachmentsReserved === true,
+                      ),
+                      options?.userMessageId,
                     )
                   : t,
               );
@@ -1276,6 +1492,45 @@ export const createMessagingSlice: StateCreator<
                 options?.onPreDispatchRejected?.();
                 return;
               }
+            }
+            if (presentedSubmission) {
+              set((state) =>
+                updateChatTab(state, key, chatId, (entry) => {
+                  if (
+                    entry.provisionalFirstSend?.userMessageId !==
+                    presentedSubmission.userMessageId
+                  )
+                    return entry;
+                  const replaceEcho = (message: ChatMessage): ChatMessage =>
+                    message.id === presentedSubmission.userMessageId
+                      ? {
+                          ...message,
+                          blocks: [
+                            ...(fileReferences?.length
+                              ? [
+                                  {
+                                    type: 'file_references' as const,
+                                    references: fileReferences,
+                                  },
+                                ]
+                              : []),
+                            { type: 'text', text },
+                          ],
+                          attachmentPaths,
+                        }
+                      : message;
+                  return {
+                    ...entry,
+                    messages: entry.messages.map(replaceEcho),
+                    pendingUserMessages:
+                      entry.pendingUserMessages?.map(replaceEcho),
+                    provisionalFirstSend: {
+                      ...entry.provisionalFirstSend,
+                      terminalPromptText,
+                    },
+                  };
+                }),
+              );
             }
             const promptDispositions = await writeClaudeTerminalPrompt(
               terminalState.terminalId,
@@ -1440,7 +1695,7 @@ export const createMessagingSlice: StateCreator<
                     'Failed to persist consumed terminal initial prompt',
                   );
                 }
-                const submittedAt = Date.now();
+                const submittedAt = terminalSubmittedAt;
                 set((state) => {
                   const wc2 = state.worktreeChats[key];
                   if (!wc2) return state;
@@ -1455,12 +1710,23 @@ export const createMessagingSlice: StateCreator<
                       return entry;
                     }
                     changed = true;
-                    return appendConsumedClaudeTerminalInitialPrompt(
+                    const consumed = appendConsumedClaudeTerminalInitialPrompt(
                       entry,
                       pendingQueuedMessage,
                       submittedAt,
                       watcherTerminalMessageIds,
                     );
+                    return {
+                      ...consumed,
+                      ...(entry.provisionalFirstSend
+                        ? {
+                            provisionalFirstSend: {
+                              ...entry.provisionalFirstSend,
+                              phase: 'dispatched' as const,
+                            },
+                          }
+                        : {}),
+                    };
                   });
                   if (!changed) return state;
                   const updated: WorktreeChatState = { ...wc2, tabs };
@@ -1478,10 +1744,28 @@ export const createMessagingSlice: StateCreator<
             markAutoSurfacePending();
             applyTerminalSendUiState();
             scheduleAutoBranchNaming();
+            options?.onDispatchStarted?.();
             options?.onDispatchAccepted?.();
             return;
           }
         } catch (err) {
+          const current = get().worktreeChats[key]?.tabs.find(
+            (entry) => entry.id === chatId,
+          );
+          const terminalFirstSend = current?.provisionalFirstSend;
+          if (
+            presentedSubmission &&
+            terminalFirstSend?.userMessageId ===
+              presentedSubmission.userMessageId &&
+            terminalFirstSend.terminalUserMessageId &&
+            current?.messages.some(
+              (message) =>
+                message.id === terminalFirstSend.terminalUserMessageId,
+            )
+          ) {
+            options?.onDispatchAccepted?.();
+            return;
+          }
           const errorMessage = extractIpcErrorMessage(err);
           const failedAt = Date.now();
           const acceptedInputId = options?.acceptedInputId;
@@ -1544,9 +1828,11 @@ export const createMessagingSlice: StateCreator<
         ...(attachmentPromptContexts ? { attachmentPromptContexts } : {}),
         ...(options?.agentSent ? { agentSent: options.agentSent } : {}),
         ...(inputMode ? { inputMode } : {}),
-        ...(queuedDispatchOptions
-          ? { dispatchOptions: queuedDispatchOptions }
-          : {}),
+        ...(presentedSubmission
+          ? { dispatchOptions: acceptedQueuedDispatchOptions }
+          : queuedDispatchOptions
+            ? { dispatchOptions: queuedDispatchOptions }
+            : {}),
       };
       set((state) => {
         const currentWc = state.worktreeChats[key];
@@ -1554,11 +1840,14 @@ export const createMessagingSlice: StateCreator<
         const updatedTabs = currentWc.tabs.map((t) =>
           t.id === chatId &&
           !hasQueuedAcceptedInput(t, options?.acceptedInputId)
-            ? appendQueuedMessageToTab(
-                t,
-                queuedMessage,
-                executionHarnessForMessage,
-                options?.composerAttachmentsReserved === true,
+            ? handOffProvisionalFirstSendToQueue(
+                appendQueuedMessageToTab(
+                  t,
+                  queuedMessage,
+                  executionHarnessForMessage,
+                  options?.composerAttachmentsReserved === true,
+                ),
+                options?.userMessageId,
               )
             : t,
         );
@@ -1599,7 +1888,7 @@ export const createMessagingSlice: StateCreator<
             // user bubble disappears as soon as the queued copy is cleared.
             const queuedMessage = refreshedTab?.queuedMessages[0];
             if (queuedMessage?.text === text) {
-              const submittedAt = Date.now();
+              const submittedAt = terminalSubmittedAt;
               const messageIds = watcherTerminalMessageIds ?? {
                 userMessageId: nextMsgId(),
                 turnTimerMessageId: nextMsgId(),
@@ -1671,12 +1960,23 @@ export const createMessagingSlice: StateCreator<
                     return entry;
                   }
                   changed = true;
-                  return appendConsumedClaudeTerminalInitialPrompt(
+                  const consumed = appendConsumedClaudeTerminalInitialPrompt(
                     entry,
                     queuedMessage,
                     submittedAt,
                     messageIds,
                   );
+                  return {
+                    ...consumed,
+                    ...(entry.provisionalFirstSend
+                      ? {
+                          provisionalFirstSend: {
+                            ...entry.provisionalFirstSend,
+                            phase: 'dispatched' as const,
+                          },
+                        }
+                      : {}),
+                  };
                 });
                 if (!changed) return state;
                 const updated: WorktreeChatState = { ...wc2, tabs };
@@ -1733,6 +2033,7 @@ export const createMessagingSlice: StateCreator<
               chatId,
               set,
             );
+            options?.onDispatchStarted?.();
             options?.onDispatchAccepted?.();
             return;
           }
@@ -1810,22 +2111,19 @@ export const createMessagingSlice: StateCreator<
       tab?.inputDelivery?.rows.some((row) =>
         ['sending', 'pending', 'cancelling'].includes(row.state),
       ) === true;
-    // Watchers let the host choose steering versus a full turn from live provider
-    // state; never optimistically create a second root from a stale renderer.
     // Streaming sends and sends made while steering ownership is unresolved
     // also hand off to the host queue. Plan feedback with an empty queue keeps
     // the legacy immediate path below only when no delivery row owns the input
     // window; once older rows are queued, feedback joins the queue to preserve
-    // FIFO order.
+    // FIFO order. A send still awaiting acknowledgement (sending lease) counts
+    // as a running turn, as its optimistic `streaming` status once did.
     if (
-      options?.watcherFired ||
       hasPendingInputDelivery ||
-      (tab?.status === 'streaming' &&
+      ((tab.status === 'streaming' ||
+        hasPendingSendingLease(tab, Date.now())) &&
         (!tab.pendingPlanExit || tab.queuedMessages.length > 0))
     ) {
-      const userMessageId = options?.watcherDeliveryId
-        ? `watcher-${options.watcherDeliveryId}`
-        : (options?.userMessageId ?? nextMsgId());
+      const userMessageId = options?.userMessageId ?? nextMsgId();
       const clearPendingQueuePresentation = (): void => {
         set((state) => {
           const scope = state.worktreeChats[key];
@@ -1839,7 +2137,14 @@ export const createMessagingSlice: StateCreator<
                   entry.id !== chatId
                     ? entry
                     : {
-                        ...entry,
+                        ...(entry.pendingQueueMessages?.some(
+                          (pending) => pending.userMessageId === userMessageId,
+                        )
+                          ? cancelProvisionalFirstSendQueue(
+                              entry,
+                              userMessageId,
+                            )
+                          : entry),
                         pendingQueueMessages:
                           entry.pendingQueueMessages?.filter(
                             (pending) =>
@@ -1853,8 +2158,6 @@ export const createMessagingSlice: StateCreator<
         });
       };
       if (
-        !options?.watcherDeliveryId &&
-        !options?.watcherFired &&
         !isCoworkChatTarget(sel.projectId) &&
         options?.assistantMode === undefined
       )
@@ -1870,7 +2173,10 @@ export const createMessagingSlice: StateCreator<
                   entry.id !== chatId
                     ? entry
                     : {
-                        ...entry,
+                        ...handOffProvisionalFirstSendToQueue(
+                          entry,
+                          userMessageId,
+                        ),
                         pendingQueueMessages: [
                           ...(entry.pendingQueueMessages ?? []),
                           {
@@ -1998,6 +2304,12 @@ export const createMessagingSlice: StateCreator<
       }
       const streamingProviderType = resolveTabProviderType(latestTabForSend);
       let authDependencyRefusalError: Error | undefined;
+      const setupDispatchTarget = { ...sel, chatId };
+      observeSetupQueueInputDispatch(
+        setupDispatchTarget,
+        userMessageId,
+        options?.onDispatchStarted,
+      );
       const hostQueueDispatch = window.api.chat
         .sendMessage({
           ...(options?.assistantMode
@@ -2038,10 +2350,6 @@ export const createMessagingSlice: StateCreator<
           providerType: streamingProviderType,
           executionHarness: executionHarnessForMessage,
           interfaceMode: latestTabForSend.interfaceMode,
-          ...(executionHarnessForMessage === 'codex' &&
-          latestTabForSend.status === 'streaming'
-            ? { recoverInterruptedCodexTurn: true }
-            : {}),
           codexProposalMode: latestTabForSend.proposalMode,
           ...(latestTabForSend.selectedRepoId
             ? { selectedRepoId: latestTabForSend.selectedRepoId }
@@ -2062,12 +2370,6 @@ export const createMessagingSlice: StateCreator<
           ...(options?.packageOverlay
             ? { packageOverlay: options.packageOverlay }
             : {}),
-          ...(options?.watcherFired
-            ? { watcherFired: options.watcherFired }
-            : {}),
-          ...(options?.watcherDeliveryId
-            ? { watcherDeliveryId: options.watcherDeliveryId }
-            : {}),
           ...(tab.aiCreditsRouting?.active
             ? { aiCreditsRouting: tab.aiCreditsRouting }
             : {}),
@@ -2079,6 +2381,13 @@ export const createMessagingSlice: StateCreator<
             : {}),
         })
         .then((sendResult) => {
+          if (
+            sendResult?.watcherDeliveryHeld ||
+            sendResult?.refusedAuthDependencies ||
+            sendResult?.disposition === 'already_accepted'
+          ) {
+            forgetSetupQueueInputDispatch(setupDispatchTarget, userMessageId);
+          }
           // CAN-1814 PR 7. The host refused this follow-up outright rather
           // than queueing it — its required dependency is known-broken. It
           // never entered the queue, so the composer attachments that produced
@@ -2172,6 +2481,25 @@ export const createMessagingSlice: StateCreator<
           options?.onQueuedWithoutDispatch?.('host');
         })
         .catch((error: unknown) => {
+          forgetSetupQueueInputDispatch(setupDispatchTarget, userMessageId);
+          const current = get().worktreeChats[key]?.tabs.find(
+            (entry) => entry.id === chatId,
+          );
+          // A canonical queue/message acknowledgement already consumed our
+          // pending row. A later transport rejection cannot undo acceptance.
+          if (
+            !isCoworkChatTarget(sel.projectId) &&
+            options?.assistantMode === undefined &&
+            adoptableProvisionalFirstSend(current, userMessageId)?.phase ===
+              'queued' &&
+            !current?.pendingQueueMessages?.some(
+              (pending) => pending.userMessageId === userMessageId,
+            )
+          ) {
+            options?.onDispatchAccepted?.();
+            options?.onQueuedWithoutDispatch?.('host');
+            return;
+          }
           clearPendingQueuePresentation();
           restoreReservedSystemInstructions();
           // A host-queue send that never reaches main would otherwise vanish
@@ -2185,8 +2513,6 @@ export const createMessagingSlice: StateCreator<
           );
           // The toast can appear while another chat is in view, so its header
           // names the chat's workspace and worktree and a click opens the chat.
-          // A watcher update isn't something the user typed, so it offers no
-          // retry.
           const { meta, onClick } = getChatToastAttribution({
             projectId: sel.projectId,
             worktreeId: sel.worktreeId,
@@ -2195,9 +2521,7 @@ export const createMessagingSlice: StateCreator<
           useGitHubStore
             .getState()
             .addToast(
-              options?.watcherDeliveryId !== undefined
-                ? "Couldn't deliver a watcher update."
-                : "Couldn't send your message. Try again.",
+              "Couldn't send your message. Try again.",
               'error',
               onClick,
               meta,
@@ -2214,7 +2538,17 @@ export const createMessagingSlice: StateCreator<
       return;
     }
 
-    const now = Date.now();
+    // Adopting a presented Home first send keeps its submission time, so the
+    // turn's elapsed time does not restart at dispatch (CAN-4742).
+    const adoptedFirstSend = adoptableProvisionalFirstSend(
+      get().worktreeChats[key]?.tabs.find((entry) => entry.id === chatId),
+      options?.userMessageId,
+    );
+    const now =
+      options?.submittedAt ??
+      (adoptedFirstSend?.phase === 'preparing'
+        ? adoptedFirstSend.submittedAt
+        : Date.now());
     const initialClaudeTerminalSnapshot = useClaudeTerminalStore
       .getState()
       .getStateForChat(sel.projectId, sel.worktreeId, chatId);
@@ -2247,9 +2581,7 @@ export const createMessagingSlice: StateCreator<
     const newChatStartedWatcherFiredAt = new Date(now).toISOString();
 
     const userMsg: ChatMessage = {
-      id: options?.watcherDeliveryId
-        ? `watcher-${options.watcherDeliveryId}`
-        : (options?.userMessageId ?? nextMsgId()),
+      id: options?.userMessageId ?? nextMsgId(),
       role: 'user',
       blocks: [
         ...(fileReferences && fileReferences.length > 0
@@ -2261,7 +2593,6 @@ export const createMessagingSlice: StateCreator<
       ...(attachmentPaths ? { attachmentPaths } : {}),
       ...(attachmentPromptContexts ? { attachmentPromptContexts } : {}),
       ...(inputMode ? { inputMode } : {}),
-      ...(options?.watcherFired ? { watcherFired: options.watcherFired } : {}),
     };
     const artifactCarry = qualifyingArtifactCarry(tab, {
       projectId: sel.projectId,
@@ -2297,6 +2628,17 @@ export const createMessagingSlice: StateCreator<
       timestamp: now,
     };
 
+    // Where canonical runtime owns status, the send shows as starting through
+    // a lease until main acknowledges the turn; legacy scopes keep the
+    // optimistic status write.
+    const sendingLease = isScopeRevisionedLive(
+      get(),
+      sel.projectId,
+      sel.worktreeId,
+    )
+      ? createSendingLease(userMsg.id, 'send', now)
+      : undefined;
+    if (!sendingLease) tagStatusWrite(chatId, 'send');
     set((state) => {
       const currentWc = state.worktreeChats[key];
       if (!currentWc) return state;
@@ -2314,12 +2656,19 @@ export const createMessagingSlice: StateCreator<
           ? firstMessageTitlePatch(tab, text)
           : null;
 
-        const nextTab = {
+        const nextTab: ChatTab = {
           ...tab,
           ...titlePatch,
-          status: 'streaming' as const,
+          ...(sendingLease ? { sendingLease } : { status: 'streaming' }),
           proposalMode: nextCodexProposalMode ?? tab.proposalMode,
-          pendingPlanExit: undefined,
+          // Main retires the request with the accepted turn; drop it here too
+          // so no fallback can still approve it (CAN-5431).
+          ...(retiresSupersededPlanExit(tab)
+            ? {
+                pendingPlanExit: undefined,
+                pendingPlanExitRequestId: undefined,
+              }
+            : {}),
           pendingAttachments: options?.composerAttachmentsReserved
             ? tab.pendingAttachments
             : undefined,
@@ -2350,6 +2699,30 @@ export const createMessagingSlice: StateCreator<
                   userMsg,
                 ],
               }
+            : adoptedFirstSend
+              ? {
+                  // The real timer is in the transcript now; retire only the
+                  // adopted echo's renderer bridge.
+                  pendingTurn:
+                    tab.pendingTurn?.userMessageId === userMsg.id
+                      ? undefined
+                      : tab.pendingTurn,
+                  pendingUserMessages: tab.pendingUserMessages?.some(
+                    (message) => message.id !== userMsg.id,
+                  )
+                    ? tab.pendingUserMessages.filter(
+                        (message) => message.id !== userMsg.id,
+                      )
+                    : undefined,
+                }
+              : {}),
+          ...(tab.provisionalFirstSend?.userMessageId === userMsg.id
+            ? {
+                provisionalFirstSend: {
+                  ...tab.provisionalFirstSend,
+                  phase: 'dispatched' as const,
+                },
+              }
             : {}),
           lastTurnWasResumeAttempt,
           executionHarness: executionHarnessForMessage,
@@ -2375,15 +2748,18 @@ export const createMessagingSlice: StateCreator<
 
       const updated = { ...currentWc, tabs: updatedTabs };
       return {
-        pendingPlanExits: clearPendingPlanExitForChat(
-          state.pendingPlanExits,
-          sel.projectId,
-          sel.worktreeId,
-          chatId,
-        ),
+        pendingPlanExits: retiresSupersededPlanExit(tab)
+          ? clearPendingPlanExitForChat(
+              state.pendingPlanExits,
+              sel.projectId,
+              sel.worktreeId,
+              chatId,
+            )
+          : state.pendingPlanExits,
         worktreeChats: { ...state.worktreeChats, [key]: updated },
       };
     });
+    if (sendingLease) scheduleSendingLeaseExpiry(key, chatId, sendingLease);
     if (artifactCarry.length > 0) {
       get().recordAgentArtifactCarry(
         { projectId: sel.projectId, worktreeId: sel.worktreeId, chatId },
@@ -2398,7 +2774,63 @@ export const createMessagingSlice: StateCreator<
      * own card and must not also be rendered as a generic error by the catch
      * below.
      */
-    const clearPendingUserPresentation = (): void => {
+    const reconcileRejectedPlanExit = async (): Promise<void> => {
+      if (!retiresSupersededPlanExit(tab)) return;
+      if (isScopeRevisionedLive(get(), sel.projectId, sel.worktreeId)) {
+        // The revision-guarded snapshot path owns ordering and request maps.
+        get().refreshChatScopeRevisioned(sel.projectId, sel.worktreeId);
+        await waitForChatScopeLive(sel.projectId, sel.worktreeId);
+        return;
+      }
+      const file = await window.api.chat.loadTabs(sel).catch(() => undefined);
+      const canonical = file?.tabs.find((entry) => entry.id === chatId);
+      if (
+        !canonical?.pendingPlanExit ||
+        canonical.pendingPlanExitRequestId !== tab.pendingPlanExitRequestId ||
+        canonical.trackedPlanId !== tab.trackedPlanId
+      )
+        return;
+      set((state) => {
+        const current = state.worktreeChats[key];
+        const entry = current?.tabs.find(
+          (candidate) => candidate.id === chatId,
+        );
+        if (
+          !current ||
+          !entry ||
+          entry.messages
+            .slice()
+            .reverse()
+            .find((message) => message.role === 'user')?.id !== userMsg.id ||
+          entry.pendingPlanExit ||
+          entry.pendingPlanExitRequestId ||
+          entry.trackedPlanId !== tab.trackedPlanId ||
+          entry.trackedPlanReviewStatus !== tab.trackedPlanReviewStatus
+        )
+          return state;
+        return {
+          worktreeChats: {
+            ...state.worktreeChats,
+            [key]: {
+              ...current,
+              tabs: current.tabs.map((candidate) =>
+                candidate.id === chatId
+                  ? {
+                      ...candidate,
+                      pendingPlanExit: canonical.pendingPlanExit,
+                      pendingPlanExitRequestId:
+                        canonical.pendingPlanExitRequestId,
+                    }
+                  : candidate,
+              ),
+            },
+          },
+        };
+      });
+    };
+    const clearPendingUserPresentation = (
+      cancelledBeforeDispatch = false,
+    ): void => {
       set((state) => {
         const scope = state.worktreeChats[key];
         if (!scope) return state;
@@ -2411,7 +2843,16 @@ export const createMessagingSlice: StateCreator<
                 entry.id !== chatId
                   ? entry
                   : {
-                      ...entry,
+                      ...withoutSendingLease(
+                        cancelledBeforeDispatch
+                          ? rejectUndispatchedProvisionalFirstSend(
+                              entry,
+                              userMsg.id,
+                              timerMsg.id,
+                            )
+                          : entry,
+                        userMsg.id,
+                      ),
                       pendingTurn:
                         entry.pendingTurn?.userMessageId === userMsg.id
                           ? undefined
@@ -2437,6 +2878,7 @@ export const createMessagingSlice: StateCreator<
     pendingNativeSends.set(preparationKey, preparations);
     let routingStartedAt: number | undefined;
     let cancelledSendNotified = false;
+    let hostDispatchStarted = false;
     const clearRoutingMarker = (): void => {
       if (routingStartedAt === undefined) return;
       set((state) => {
@@ -2460,9 +2902,10 @@ export const createMessagingSlice: StateCreator<
         };
       });
     };
-    const rejectCancelledSend = (): void => {
+    const rejectCancelledSend = async (): Promise<void> => {
       clearRoutingMarker();
-      clearPendingUserPresentation();
+      clearPendingUserPresentation(!hostDispatchStarted);
+      await reconcileRejectedPlanExit();
       if (!cancelledSendNotified) {
         cancelledSendNotified = true;
         options?.onPreDispatchRejected?.();
@@ -2562,7 +3005,7 @@ export const createMessagingSlice: StateCreator<
         (candidate) => candidate.id === chatId,
       );
       if (preparation.cancelled) {
-        rejectCancelledSend();
+        await rejectCancelledSend();
         return;
       }
       approvalModeForSend =
@@ -2623,6 +3066,12 @@ export const createMessagingSlice: StateCreator<
         setAutoRoutingStartedAt(autoRoutingStartedAt);
       }
 
+      hostDispatchStarted = true;
+      observeSetupQueueInputDispatch(
+        { ...sel, chatId },
+        userMsg.id,
+        options?.onDispatchStarted,
+      );
       const sendResult = await window.api.chat.sendMessage({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
@@ -2695,12 +3144,6 @@ export const createMessagingSlice: StateCreator<
         ...(options?.packageOverlay
           ? { packageOverlay: options.packageOverlay }
           : {}),
-        ...(options?.watcherFired
-          ? { watcherFired: options.watcherFired }
-          : {}),
-        ...(options?.watcherDeliveryId
-          ? { watcherDeliveryId: options.watcherDeliveryId }
-          : {}),
         ...(startsNewTrackedChat ? { startsNewTrackedChat: true } : {}),
         ...(currentTab?.aiCreditsRouting?.active
           ? { aiCreditsRouting: currentTab.aiCreditsRouting }
@@ -2726,8 +3169,10 @@ export const createMessagingSlice: StateCreator<
       // blocker: the plural field is the one that survives a multi-blocker
       // refusal, and `readAuthDependencyFailures` reads both.
       if (sendResult?.watcherDeliveryHeld) {
+        forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
         watcherDeliveryHeld = true;
         clearPendingUserPresentation();
+        await reconcileRejectedPlanExit();
         options?.onDispatchRejected?.();
         if (options?.throwOnDispatchFailure === true) {
           throw new Error('Watcher delivery is held.');
@@ -2736,7 +3181,9 @@ export const createMessagingSlice: StateCreator<
       }
       refusedAuthDependencies = sendResult?.refusedAuthDependencies;
       if (refusedAuthDependencies) {
+        forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
         clearPendingUserPresentation();
+        await reconcileRejectedPlanExit();
         applyAuthDependencyRefusal(set, key, chatId, refusedAuthDependencies, {
           failTab: true,
           startsNewTrackedChat,
@@ -2760,7 +3207,10 @@ export const createMessagingSlice: StateCreator<
           .addToast(sendResult.modelRoutingNotice, 'info');
       }
       if (sendResult?.disposition === 'already_accepted') {
+        forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
         clearPendingUserPresentation();
+        // This replay starts no turn. Keep a review published since the original send.
+        await reconcileRejectedPlanExit();
         set((state) => {
           const wc2 = state.worktreeChats[key];
           if (!wc2) return state;
@@ -2770,10 +3220,11 @@ export const createMessagingSlice: StateCreator<
               (message) => message.id !== timerMsg.id,
             );
             if (messages.length === entry.messages.length) return entry;
+            // Canonical runtime already projects status for a lease-backed
+            // send; only the legacy optimistic write needs undoing.
             return {
               ...entry,
-              status: tab.status,
-              error: tab.error,
+              ...(sendingLease ? {} : { status: tab.status, error: tab.error }),
               messages,
             };
           });
@@ -2787,6 +3238,9 @@ export const createMessagingSlice: StateCreator<
         options?.onDispatchAccepted?.();
         return;
       }
+      // Main accepted the send: from here canonical runtime alone decides.
+      if (sendingLease)
+        releaseSendingLease(key, chatId, sendingLease.userMessageId);
       clearUsageLimitBannerForDispatchedUserMessage(
         sel.projectId,
         sel.worktreeId,
@@ -2817,12 +3271,56 @@ export const createMessagingSlice: StateCreator<
       }
       options?.onDispatchAccepted?.();
     } catch (err) {
-      if (preparation.cancelled) {
-        rejectCancelledSend();
+      forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
+      if (
+        preparation.cancelled &&
+        (!adoptedFirstSend || !hostDispatchStarted)
+      ) {
+        await rejectCancelledSend();
         return;
       }
       clearRoutingMarker();
+      if (
+        adoptedFirstSend &&
+        !refusedAuthDependencies &&
+        !watcherDeliveryHeld
+      ) {
+        const current = get().worktreeChats[key]?.tabs.find(
+          (entry) => entry.id === chatId,
+        );
+        const currentUser = current?.messages
+          .slice()
+          .reverse()
+          .find((message) => message.role === 'user');
+        const acknowledged =
+          current?.messages.some((message) => message.id === userMsg.id) &&
+          ((isScopeRevisionedLive(get(), sel.projectId, sel.worktreeId) &&
+            !current.pendingUserMessages?.some(
+              (message) => message.id === userMsg.id,
+            )) ||
+            current.messages
+              .slice(
+                current.messages.findIndex(
+                  (message) => message.id === userMsg.id,
+                ) + 1,
+              )
+              .some(
+                (message) =>
+                  message.role === 'assistant' ||
+                  (message.id !== timerMsg.id &&
+                    message.blocks.some(
+                      (block) => block.type === 'turn_timer',
+                    )),
+              ));
+        // A canonical acknowledgement or a newer turn owns this tab now.
+        // A transport rejection cannot retract it or close its timer.
+        if (acknowledged || (currentUser && currentUser.id !== userMsg.id)) {
+          options?.onDispatchAccepted?.();
+          return;
+        }
+      }
       clearPendingUserPresentation();
+      await reconcileRejectedPlanExit();
       // The refusal path above already rendered the recovery card and only
       // threw to satisfy `throwOnDispatchFailure`. Rethrow untouched: turning
       // it into a second `system` text message would bury the card under a
@@ -2840,13 +3338,24 @@ export const createMessagingSlice: StateCreator<
       }
       const errorMessage = extractIpcErrorMessage(err);
       const failedAt = Date.now();
+      tagStatusWrite(chatId, 'send');
       set((state) => {
         const wc2 = state.worktreeChats[key];
         if (!wc2) return state;
         const tabs = wc2.tabs.map((t) => {
           if (t.id !== chatId) return t;
+          // A failed send ends no background work from an earlier turn.
           const completedMessages = closeOpenToolUseBlocks(
             completeTurnTimer(t.messages, failedAt),
+            {
+              liveness: selectChildToolLiveness(
+                useLiveBackgroundTaskStore.getState(),
+                sel.projectId,
+                sel.worktreeId,
+                chatId,
+              ),
+              codexRootThreadId: t.sdkSessionId,
+            },
           );
           const visibleErrorMessage: ChatMessage = {
             id: nextMsgId(),
@@ -2911,6 +3420,86 @@ export const createMessagingSlice: StateCreator<
         pendingNativeSends.delete(preparationKey);
       }
     }
+  },
+
+  presentProvisionalFirstSend: (target, input): boolean => {
+    const key = worktreeKey(target);
+    const tab = get().worktreeChats[key]?.tabs.find(
+      (entry) => entry.id === target.chatId,
+    );
+    if (!tab) return false;
+    const presented = presentProvisionalFirstSendOnTab(tab, input);
+    if (!presented) return false;
+    if (presented !== tab) {
+      set((state) =>
+        updateChatTab(state, key, target.chatId, (entry) =>
+          entry === tab
+            ? presented
+            : (presentProvisionalFirstSendOnTab(entry, input) ?? entry),
+        ),
+      );
+    }
+    return (
+      get().worktreeChats[key]?.tabs.find((entry) => entry.id === target.chatId)
+        ?.provisionalFirstSend?.userMessageId === input.userMessageId
+    );
+  },
+
+  withdrawProvisionalFirstSend: (target, userMessageId): void => {
+    set((state) =>
+      updateChatTab(state, worktreeKey(target), target.chatId, (tab) =>
+        withdrawProvisionalFirstSendFromTab(tab, userMessageId),
+      ),
+    );
+  },
+
+  failProvisionalFirstSend: (target, input): boolean => {
+    set((state) =>
+      updateChatTab(state, worktreeKey(target), target.chatId, (tab) =>
+        failProvisionalFirstSendOnTab(
+          tab,
+          input.userMessageId,
+          input.attemptId,
+          input.failure,
+        ),
+      ),
+    );
+    const record = get().worktreeChats[worktreeKey(target)]?.tabs.find(
+      (entry) => entry.id === target.chatId,
+    )?.provisionalFirstSend;
+    return (
+      record?.userMessageId === input.userMessageId &&
+      record.failure?.failureId === input.failure.failureId
+    );
+  },
+
+  retryProvisionalFirstSend: (target, input): boolean => {
+    set((state) =>
+      updateChatTab(state, worktreeKey(target), target.chatId, (tab) =>
+        retryFailedProvisionalFirstSendOnTab(
+          tab,
+          input.userMessageId,
+          input.failureId,
+          input.attemptId,
+        ),
+      ),
+    );
+    const record = get().worktreeChats[worktreeKey(target)]?.tabs.find(
+      (entry) => entry.id === target.chatId,
+    )?.provisionalFirstSend;
+    return (
+      record?.userMessageId === input.userMessageId &&
+      record.phase === 'preparing' &&
+      record.attemptId === input.attemptId
+    );
+  },
+
+  handOffProvisionalFirstSend: (target, userMessageId): void => {
+    set((state) =>
+      updateChatTab(state, worktreeKey(target), target.chatId, (tab) =>
+        handOffProvisionalFirstSendToQueue(tab, userMessageId),
+      ),
+    );
   },
 
   setChatInterfaceMode: async (
@@ -3225,12 +3814,24 @@ export const createMessagingSlice: StateCreator<
     const { selection: sel, chatId } = context;
     const requestToken = nextMsgId();
     const previousStatus = tab.status;
+    const resumeKey = worktreeKey(sel);
+    // Where canonical runtime owns status the resume is a lease until main
+    // reports the turn; legacy scopes keep the optimistic status write.
+    const sendingLease = isScopeRevisionedLive(
+      get(),
+      sel.projectId,
+      sel.worktreeId,
+    )
+      ? createSendingLease(offer.userMessageId, 'resume', Date.now())
+      : undefined;
+    if (!sendingLease) tagStatusWrite(chatId, 'resume');
 
     set((state) =>
       updateCapturedChatTab(state, context, (current) => ({
         ...current,
-        status: 'streaming',
-        error: null,
+        ...(sendingLease
+          ? { sendingLease }
+          : { status: 'streaming' as const, error: null }),
         cancelRequestedByUser: undefined,
         lastEventAt: Date.now(),
         stoppedTurnResume: {
@@ -3240,6 +3841,9 @@ export const createMessagingSlice: StateCreator<
         },
       })),
     );
+    if (sendingLease) {
+      scheduleSendingLeaseExpiry(resumeKey, chatId, sendingLease);
+    }
 
     const approvalMode =
       tab.approvalMode ??
@@ -3288,6 +3892,13 @@ export const createMessagingSlice: StateCreator<
       result = { disposition: 'failed', retryable: true };
     }
 
+    // The reply settles the lease either way: an accepted dispatch hands the
+    // turn to canonical runtime, a refusal leaves the chat stopped.
+    if (sendingLease) {
+      releaseSendingLease(resumeKey, chatId, sendingLease.userMessageId);
+    } else {
+      tagStatusWrite(chatId, 'resume');
+    }
     set((state) =>
       updateCapturedChatTab(state, context, (current) => {
         // A later stop (or a new turn) replaced this request's offer; its
@@ -3304,7 +3915,9 @@ export const createMessagingSlice: StateCreator<
         }
         const restored: ChatTab = {
           ...current,
-          ...(current.status === 'streaming' ? { status: previousStatus } : {}),
+          ...(!sendingLease && current.status === 'streaming'
+            ? { status: previousStatus }
+            : {}),
         };
         if (result.disposition === 'stale' || result.retryable === false) {
           return { ...restored, stoppedTurnResume: undefined };
@@ -3384,13 +3997,22 @@ export const createMessagingSlice: StateCreator<
     });
   },
 
-  setSelectedRepoId: (selectedRepoId: string | undefined): void => {
-    const context = getActiveWorktreeChatContext(get());
+  setSelectedRepoId: (selectedRepoId, target): void => {
+    const context = getWorktreeChatContext(get(), target);
     if (!context) return;
     const { selection: sel, chatId, activeTab } = context;
     if (!activeTab || activeTab.kind === 'file' || activeTab.readOnly) return;
     // Locked once the session has started — cwd is bound at session creation.
-    if (activeTab.messages.length > 0) return;
+    const provisionalId =
+      activeTab.provisionalFirstSend?.phase === 'preparing' &&
+      activeTab.pendingUserMessages?.some(
+        (message) =>
+          message.id === activeTab.provisionalFirstSend?.userMessageId,
+      )
+        ? activeTab.provisionalFirstSend.userMessageId
+        : undefined;
+    if (activeTab.messages.some((message) => message.id !== provisionalId))
+      return;
     const normalizedRepoId =
       selectedRepoId === WORKSPACE_ROOT_REPO_ID ? undefined : selectedRepoId;
 

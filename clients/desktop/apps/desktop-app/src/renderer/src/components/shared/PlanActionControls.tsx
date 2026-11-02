@@ -14,19 +14,15 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuSurface,
+  PlanCopyAction,
+  planCopyStateFromMarkdown,
 } from '@canopy/ui-shared';
-import {
-  ChatIcon,
-  CheckIcon,
-  CopyIcon,
-  PipelineIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { ChatIcon, PipelineIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ChevronDownMediumIcon,
   SearchIcon,
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { useClipboardCopy } from '../../hooks/useClipboardCopy';
 import { Tooltip } from '@canopy/ui-shared';
 
 const EXECUTE_MENU_WIDTH = 160;
@@ -49,7 +45,7 @@ export interface PlanActionControlsProps {
   onExplore: () => void;
   onImplement: () => void;
   onPipeline: () => void;
-  /** Plan markdown used for the Copy action. */
+  /** Plan markdown for Copy plan, beside Share (CAN-5354). */
   planContent: string;
   /** Disable Explore when no plan id is available yet. */
   exploreDisabled?: boolean;
@@ -70,6 +66,14 @@ export interface PlanActionControlsProps {
   shareBusy?: boolean;
   /** Disable execution choices after a plan has already been acted on. */
   executeDisabled?: boolean;
+  /** Tooltip for Execute, such as why its choices are disabled. */
+  executeTitle?: string;
+  /**
+   * Execute is the primary action while a plan awaits review and secondary
+   * once it is approved, implementing, implemented, or dismissed. Emphasis
+   * only: eligibility and the disabled rules are unchanged.
+   */
+  executeEmphasis?: 'primary' | 'secondary';
   /** Render the dropdown in document.body for controls inside overflow containers. */
   menuPortal?: boolean;
   implementLabel?: string;
@@ -89,6 +93,8 @@ export function PlanActionControls({
   shareDisabled = false,
   shareBusy = false,
   executeDisabled = false,
+  executeTitle,
+  executeEmphasis = 'primary',
   menuPortal = false,
   implementLabel = 'Implement',
   dataTestIdPrefix,
@@ -99,7 +105,6 @@ export function PlanActionControls({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [compact, setCompact] = useState(false);
-  const { copied, copy } = useClipboardCopy();
 
   // Collapse Explore/Share to icon-only when the available row width narrows.
   // We measure the parent, not the wrapper itself: the wrapper is a shrink-to-fit
@@ -253,10 +258,6 @@ export function PlanActionControls({
     setMenuOpen(false);
   }, [executeDisabled, onImplement]);
 
-  const handleCopy = useCallback((): void => {
-    void copy(planContent);
-  }, [copy, planContent]);
-
   const handleShare = useCallback((): void => {
     if (shareDisabled || shareBusy) {
       return;
@@ -291,7 +292,7 @@ export function PlanActionControls({
           <DropdownMenuItemIcon>
             <PipelineIcon />
           </DropdownMenuItemIcon>
-          Pipeline
+          Workflow
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={handleImplement}
@@ -303,15 +304,6 @@ export function PlanActionControls({
           </DropdownMenuItemIcon>
           {implementLabel}
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={handleCopy}
-          data-testid={`${dataTestIdPrefix}-execute-copy`}
-        >
-          <DropdownMenuItemIcon>
-            {copied ? <CheckIcon /> : <CopyIcon />}
-          </DropdownMenuItemIcon>
-          {copied ? 'Copied' : 'Copy'}
-        </DropdownMenuItem>
       </ActionMenuRowStyle>
     </DropdownMenuSurface>
   );
@@ -321,14 +313,14 @@ export function PlanActionControls({
       ref={wrapperRef}
       className="relative flex flex-wrap items-center gap-2"
     >
-      {/* The app's shared buttons, in the 28px control size: Explore and
+      {/* The app's shared buttons, in the 28px compact size: Explore and
           Share on the secondary surface, Execute as the primary action
-          (secondary while the plan cannot run). */}
+          (secondary while the plan cannot run or no longer awaits review). */}
       {showExplore && (
         <Tooltip label="Explore" suppressed={!compact}>
           {compact ? (
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               iconOnly
               aria-label="Explore"
@@ -340,7 +332,7 @@ export function PlanActionControls({
             </Button>
           ) : (
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               onClick={handleExplore}
               disabled={exploreDisabled}
@@ -360,7 +352,7 @@ export function PlanActionControls({
         >
           {compact ? (
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               iconOnly
               aria-label={shareLabel}
@@ -373,7 +365,7 @@ export function PlanActionControls({
             </Button>
           ) : (
             <Button
-              size="control"
+              size="compact"
               variant="secondary"
               onClick={handleShare}
               disabled={shareDisabled || shareBusy}
@@ -388,22 +380,37 @@ export function PlanActionControls({
         </Tooltip>
       )}
 
-      <Button
-        size="control"
-        variant={executeDisabled ? 'secondary' : 'primary'}
-        onClick={handleToggleMenu}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        data-testid={`${dataTestIdPrefix}-execute`}
-      >
-        Execute
-        <ChevronDownMediumIcon
-          width={16}
-          height={16}
-          aria-hidden
-          className={`shrink-0 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
-        />
-      </Button>
+      {/* Copy plan stays in view beside Share, the same shared action as the
+          web plan card's; the Execute menu no longer repeats it. */}
+      <PlanCopyAction
+        state={planCopyStateFromMarkdown(planContent)}
+        appearance="control"
+        compact={compact}
+        dataTestId={`${dataTestIdPrefix}-copy`}
+      />
+
+      <Tooltip label={executeTitle} suppressed={executeTitle === undefined}>
+        <Button
+          size="compact"
+          variant={
+            executeDisabled || executeEmphasis === 'secondary'
+              ? 'secondary'
+              : 'primary'
+          }
+          onClick={handleToggleMenu}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          data-testid={`${dataTestIdPrefix}-execute`}
+        >
+          Execute
+          <ChevronDownMediumIcon
+            width={16}
+            height={16}
+            aria-hidden
+            className={`shrink-0 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+          />
+        </Button>
+      </Tooltip>
 
       {menuOpen &&
         (menuPortal ? createPortal(executeMenu, document.body) : executeMenu)}

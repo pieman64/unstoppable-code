@@ -2,17 +2,41 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, chmod, open } from 'node:fs/promises';
 import { dirname, basename } from 'node:path';
 import { z } from 'zod';
+import type { CoreWorkspaceRepoRulesErrorCode } from '@canopy/protocol/canopy-core';
 import type { RepoRulesStatus } from '@canopy/protocol/repo-rules';
+import {
+  REPO_RULES_POLICY_MAX_BYTES,
+  type RepoRulesPolicyRead,
+  type RepoRulesPolicyState,
+  type RepoRulesStorePort,
+} from '@canopy/core-runtime/node/workspace/repo-rules';
 import { readBounded, validRelativePath } from './safety';
+
+export {
+  REPO_RULES_POLICY_MAX_BYTES,
+  REVIEWED_HISTORY_LIMIT,
+  policyStatus,
+} from '@canopy/core-runtime/node/workspace/repo-rules';
 
 const POLICY_TOO_LARGE =
   'Workspace rule policy is too large to save. Reduce the selection and scan again.';
 const POLICY_SAVE_FAILED =
   'Unable to save workspace rule policy. Try again; this review remains available.';
-/** Largest serialized policy the store reads or writes. */
-export const REPO_RULES_POLICY_MAX_BYTES = 256 * 1024;
-/** Review records kept across checkouts, including the current scan's rules. */
-export const REVIEWED_HISTORY_LIMIT = 1000;
+const storeErrorCodes = new WeakMap<Error, CoreWorkspaceRepoRulesErrorCode>();
+function storeError(
+  message: string,
+  code: CoreWorkspaceRepoRulesErrorCode,
+): Error {
+  const error = new Error(message);
+  storeErrorCodes.set(error, code);
+  return error;
+}
+/** The typed code of a policy save failure this store raised, if any. */
+export function repoRulesStoreErrorCode(
+  error: unknown,
+): CoreWorkspaceRepoRulesErrorCode | undefined {
+  return error instanceof Error ? storeErrorCodes.get(error) : undefined;
+}
 /** Count limits: array and string maximums, and the record count refinements. */
 function isLimitIssue(issue: z.ZodError['issues'][number]): boolean {
   return (
@@ -23,7 +47,8 @@ function isLimitIssue(issue: z.ZodError['issues'][number]): boolean {
   );
 }
 const relativePath = z.string().refine(validRelativePath);
-const stateSchema = z.strictObject({
+// The persisted form of the core policy state.
+const stateSchema: z.ZodType<RepoRulesPolicyState> = z.strictObject({
   version: z.literal(1),
   enabled: z.boolean(),
   revision: z
@@ -55,10 +80,8 @@ const stateSchema = z.strictObject({
   reviewedAt: z.iso.datetime().optional(),
   lastScanAt: z.iso.datetime().optional(),
 });
-export type RepoRulesState = z.infer<typeof stateSchema>;
-export interface StateRead extends RepoRulesState {
-  diagnostic?: RepoRulesStatus['diagnostic'];
-}
+export type RepoRulesState = RepoRulesPolicyState;
+export type StateRead = RepoRulesPolicyRead;
 function empty(diagnostic: RepoRulesStatus['diagnostic']): StateRead {
   return {
     version: 1,
@@ -70,16 +93,8 @@ function empty(diagnostic: RepoRulesStatus['diagnostic']): StateRead {
     diagnostic,
   };
 }
-export function policyStatus(state: StateRead): RepoRulesStatus {
-  return {
-    enabled: state.enabled,
-    disabledRuleIds: state.disabledRuleIds,
-    revision: state.revision,
-    ...(state.reviewedAt ? { reviewedAt: state.reviewedAt } : {}),
-    ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
-  };
-}
-export class RepoRulesStateStore {
+/** The single writer of `workspace_repo_rules`, behind the core store port. */
+export class RepoRulesStateStore implements RepoRulesStorePort {
   private readonly queues = new Map<string, Promise<void>>();
   constructor(private readonly pathFor: (workspaceId: string) => string) {}
   async read(workspaceId: string): Promise<StateRead> {
@@ -123,15 +138,22 @@ export class RepoRulesStateStore {
         await operation(await this.read(workspaceId)),
       );
       if (!parsed.success)
-        throw new Error(
-          parsed.error.issues.every(isLimitIssue)
-            ? POLICY_TOO_LARGE
-            : POLICY_SAVE_FAILED,
-        );
+        throw parsed.error.issues.every(isLimitIssue)
+          ? storeError(
+              POLICY_TOO_LARGE,
+              'core.workspace.repoRules.policyTooLarge',
+            )
+          : storeError(
+              POLICY_SAVE_FAILED,
+              'core.workspace.repoRules.saveFailed',
+            );
       const next = parsed.data;
       const serialized = JSON.stringify(next);
       if (Buffer.byteLength(serialized) > REPO_RULES_POLICY_MAX_BYTES)
-        throw new Error(POLICY_TOO_LARGE);
+        throw storeError(
+          POLICY_TOO_LARGE,
+          'core.workspace.repoRules.policyTooLarge',
+        );
       const file = this.pathFor(workspaceId);
       const temporary = `${file}.${randomUUID()}.tmp`;
       await mkdir(dirname(file), { recursive: true, mode: 0o700 });
@@ -159,7 +181,10 @@ export class RepoRulesStateStore {
       return await pending;
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'code' in error) {
-        throw new Error(POLICY_SAVE_FAILED);
+        throw storeError(
+          POLICY_SAVE_FAILED,
+          'core.workspace.repoRules.saveFailed',
+        );
       }
       throw error;
     } finally {

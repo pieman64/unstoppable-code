@@ -13,9 +13,10 @@ jest.mock('../pipelines/pipeline-package-service', () => ({
   copyPackageInstall: jest.fn(() => Promise.resolve()),
   updateSharedPipelinePreservingPackage: jest.fn(),
 }));
-const mockGetSharedPipelineSaveImpact = jest.fn(() =>
-  Promise.resolve({ automations: [] }),
-);
+const mockGetSharedPipelineSaveImpact = jest.fn<
+  Promise<{ automations: never[] }>,
+  [string]
+>(() => Promise.resolve({ automations: [] }));
 jest.mock('../pipelines/shared-pipeline-save-impact', () => ({
   getSharedPipelineSaveImpact: (remoteId: string): Promise<unknown> =>
     mockGetSharedPipelineSaveImpact(remoteId),
@@ -105,6 +106,17 @@ jest.mock('../lib/preferences-store', () => ({
   ),
 }));
 
+// CAN-4551: the owner marker a converted automation's pipeline carries.
+const mockReadPipelineLocalMetadata = jest.fn<
+  { ownerAutomationId?: string },
+  [unknown]
+>(() => ({}));
+jest.mock('../pipelines/pipeline-local-metadata-store', () => ({
+  ...jest.requireActual<object>('../pipelines/pipeline-local-metadata-store'),
+  readPipelineLocalMetadata: (ref: unknown): unknown =>
+    mockReadPipelineLocalMetadata(ref),
+}));
+
 const mockListAutomations = jest.fn<Promise<AutomationsListResponse>, []>(() =>
   Promise.resolve({ activities: [], recentRuns: [] }),
 );
@@ -122,6 +134,43 @@ const automationService = {
 };
 jest.mock('../automations/service', () => ({
   getAutomationsService: (): typeof automationService => automationService,
+}));
+// CAN-4551 7c: agent writes go through the conversion save, passed straight
+// to the service here unless a test stands in for it.
+const mockUpdateAutomationForAgent = jest.fn(
+  (
+    request: unknown,
+    writer: {
+      authorize?: unknown;
+      callerContext?: unknown;
+      agentAuthor: unknown;
+    },
+    service: typeof automationService,
+  ): unknown =>
+    service.update(request, writer.authorize, writer.callerContext, {
+      agentAuthor: writer.agentAuthor,
+    }),
+);
+jest.mock('../automations/chat-automation-save', () => ({
+  createAutomationForAgent: (
+    request: unknown,
+    trusted: unknown,
+    service: typeof automationService,
+  ): unknown => service.create(request, trusted),
+  updateAutomationForAgent: (
+    ...args: Parameters<typeof mockUpdateAutomationForAgent>
+  ): unknown => mockUpdateAutomationForAgent(...args),
+}));
+
+// CAN-4551: the chat action a converted automation's owned pipeline stands
+// for; unconverted activities project to themselves.
+const mockProjectOwnedChatAutomation = jest.fn(
+  (activity: ScheduledActivity): ScheduledActivity => activity,
+);
+jest.mock('../automations/owned-chat-projection', () => ({
+  projectOwnedChatAutomation: (
+    activity: ScheduledActivity,
+  ): ScheduledActivity => mockProjectOwnedChatAutomation(activity),
 }));
 
 const mockScopeAutomations = jest.fn(
@@ -196,30 +245,36 @@ jest.mock('../canopy-cloud/client', () => {
 });
 const mockIsClaudeTuiChatsEnabled = jest.fn(() => true);
 jest.mock('../lib/claude-tui-chats', () => ({
-  isClaudeTuiChatsEnabled: mockIsClaudeTuiChatsEnabled,
+  get isClaudeTuiChatsEnabled(): typeof mockIsClaudeTuiChatsEnabled {
+    return mockIsClaudeTuiChatsEnabled;
+  },
 }));
 
 import type {
   AppAdvisorJson,
   AutomationsListResponse,
   ScheduledActivity,
+  ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type * as ProjectOwnerModule from '../lib/project-owner';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import { WORKTREE_SESSION_PROMPT_ACTION_CHANGE_POLICY_ERROR } from '@canopy/desktop-shared/lib/agent-automation-policy';
 import {
   resetAppAdvisorProjectAgentAccessForTests,
   setAppAdvisorProjectAgentAccess,
 } from '../lib/app-advisor-project-agent-access';
 import {
   dispatchAgentResourceAction,
+  loadAgentPipelineById,
   type AgentResourceActionRuntime,
 } from '../canopy-tools/resource-actions';
+import * as pipelineStore from '../pipelines/pipeline-service';
 
 const ADVISOR_ACCESS_DISABLED_MESSAGE =
-  'App Advisor access is turned off for agents in this project. The user controls this in Settings > App Advisor.';
+  'Orchestrator access is turned off for agents in this project. The user controls this in Settings > Orchestrator.';
 const OWNER_UNKNOWN_MESSAGE =
-  'The project owner could not be confirmed, so App Advisor access is unavailable for agents in this project.';
+  'The project owner could not be confirmed, so Orchestrator access is unavailable for agents in this project.';
 const AUTOMATION_OWNER_UNKNOWN_MESSAGE =
   'The project owner could not be confirmed, so automation access is unavailable for agents in this project.';
 
@@ -295,10 +350,306 @@ describe('agent automation App Advisor access', () => {
     automationService.delete.mockResolvedValue({ ok: true });
     automationService.runNow.mockResolvedValue({ ok: true });
     mockScopeAutomations.mockImplementation((list) => Promise.resolve(list));
+    mockProjectOwnedChatAutomation.mockImplementation((activity) => activity);
+    mockReadPipelineLocalMetadata.mockReturnValue({});
   });
 
   afterAll((): void => {
     resetAppAdvisorProjectAgentAccessForTests();
+  });
+
+  describe('converted chat automations (CAN-4551)', () => {
+    const ownedPipelineAction: ScheduledActivity['action'] = {
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      pipelineId: 'owned-1',
+      pipelineSource: 'user',
+    };
+
+    function standsFor(
+      converted: ScheduledActivity,
+      chatAction: ScheduledActivity['action'],
+    ): void {
+      mockProjectOwnedChatAutomation.mockImplementation((candidate) =>
+        candidate.id === converted.id
+          ? { ...candidate, action: chatAction }
+          : candidate,
+      );
+    }
+
+    it('keeps a converted Orchestrator automation behind Orchestrator access', async (): Promise<void> => {
+      setAppAdvisorProjectAgentAccess({
+        mode: 'disabled',
+        selectedOwners: [],
+      });
+      const converted = {
+        ...activity('converted-advisor', ownedPipelineAction),
+        executionContext: 'personal',
+      };
+      standsFor(converted, { type: 'app_advisor_prompt', prompt: 'Review' });
+      const convertedRun = {
+        id: 'converted-run',
+        activityId: converted.id,
+        activityName: converted.name,
+        scheduledFor: '2026-08-05T13:00:00.000Z',
+        manual: false,
+        status: 'success' as const,
+        startedAt: '2026-08-05T13:00:00.000Z',
+        completedAt: '2026-08-05T13:00:01.000Z',
+      };
+      automationService.list.mockResolvedValue({
+        activities: [converted],
+        recentRuns: [convertedRun],
+      });
+
+      const list = await dispatchAgentResourceAction(
+        { type: 'automation.list', includeRuns: true },
+        runtime,
+      );
+      const fetched = await dispatchAgentResourceAction(
+        { type: 'automation.get', id: converted.id },
+        runtime,
+      );
+      const runNow = await dispatchAgentResourceAction(
+        { type: 'automation.run_now', id: converted.id },
+        runtime,
+      );
+      const disabled = await dispatchAgentResourceAction(
+        { type: 'automation.disable', id: converted.id },
+        runtime,
+      );
+      const deleted = await dispatchAgentResourceAction(
+        { type: 'automation.delete', id: converted.id },
+        runtime,
+      );
+
+      expect(resultObject(list.result)).toEqual({
+        activities: [],
+        recentRuns: [],
+      });
+      expect(runNow).toEqual({
+        requestId: '',
+        ok: false,
+        error: {
+          code: 'advisor_access_disabled',
+          message: ADVISOR_ACCESS_DISABLED_MESSAGE,
+          retryable: false,
+        },
+      });
+      for (const response of [fetched, disabled]) {
+        expect(response).toEqual({
+          requestId: '',
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Activity ${converted.id} was not found.`,
+            retryable: false,
+          },
+        });
+      }
+      expect(deleted).toEqual({
+        requestId: '',
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: 'Activity not found.',
+          retryable: false,
+        },
+      });
+      expect(automationService.runNow).not.toHaveBeenCalled();
+      expect(automationService.update).not.toHaveBeenCalled();
+      expect(automationService.delete).not.toHaveBeenCalled();
+    });
+
+    it('keeps a converted Orchestrator automation’s own pipeline behind Orchestrator access', async (): Promise<void> => {
+      const converted = {
+        ...activity('converted-advisor', ownedPipelineAction),
+        executionContext: 'personal',
+      };
+      standsFor(converted, { type: 'app_advisor_prompt', prompt: 'Review' });
+      automationService.list.mockResolvedValue({
+        activities: [converted],
+        recentRuns: [],
+      });
+      mockReadPipelineLocalMetadata.mockReturnValue({
+        ownerAutomationId: converted.id,
+      });
+      const stored = {
+        info: { id: 'owned-1', name: converted.name, source: 'user' },
+        content: { name: converted.name, jobs: {} },
+      };
+      const found = { success: true, data: stored };
+      jest
+        .mocked(pipelineStore.getPipeline)
+        .mockReturnValue(
+          found as unknown as ReturnType<typeof pipelineStore.getPipeline>,
+        );
+
+      setAppAdvisorProjectAgentAccess({ mode: 'disabled', selectedOwners: [] });
+      const hidden = await loadAgentPipelineById('owned-1', runtime);
+      const deleted = await dispatchAgentResourceAction(
+        { type: 'pipeline.delete', pipelineId: 'owned-1' },
+        runtime,
+      );
+      setAppAdvisorProjectAgentAccess({ mode: 'enabled', selectedOwners: [] });
+      const visible = await loadAgentPipelineById('owned-1', runtime);
+
+      expect(hidden).toBeNull();
+      expect(deleted).toMatchObject({
+        ok: false,
+        error: { code: 'not_found' },
+      });
+      expect(visible).toBe(stored);
+    });
+
+    it('keeps a converted Orchestrator automation hidden after its pipeline is edited out of the chat shape', async (): Promise<void> => {
+      // An unrelated pipeline edit: the projection keeps the stored action.
+      const converted = {
+        ...activity('converted-advisor', {
+          ...ownedPipelineAction,
+          inputs: { bot_id: 'app_advisor' },
+        }),
+        executionContext: 'personal',
+      };
+      automationService.list.mockResolvedValue({
+        activities: [converted],
+        recentRuns: [],
+      });
+      mockReadPipelineLocalMetadata.mockReturnValue({
+        ownerAutomationId: converted.id,
+      });
+      const stored = {
+        info: { id: 'owned-1', name: converted.name, source: 'user' },
+        content: { name: converted.name, env: { EXTRA: '1' }, jobs: {} },
+      };
+      const found = { success: true, data: stored };
+      jest
+        .mocked(pipelineStore.getPipeline)
+        .mockReturnValue(
+          found as unknown as ReturnType<typeof pipelineStore.getPipeline>,
+        );
+      setAppAdvisorProjectAgentAccess({ mode: 'disabled', selectedOwners: [] });
+
+      const pipeline = await loadAgentPipelineById('owned-1', runtime);
+      const fetched = await dispatchAgentResourceAction(
+        { type: 'automation.get', id: converted.id },
+        runtime,
+      );
+
+      expect(pipeline).toBeNull();
+      expect(fetched).toMatchObject({
+        ok: false,
+        error: { code: 'not_found' },
+      });
+    });
+
+    it('refuses changing a converted session prompt to another action type', async (): Promise<void> => {
+      const converted = {
+        ...activity('converted-session', ownedPipelineAction),
+        executionContext: 'personal',
+      };
+      standsFor(converted, {
+        type: 'worktree_session_prompt',
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        prompt: 'Continue',
+      });
+      automationService.list.mockResolvedValue({
+        activities: [converted],
+        recentRuns: [],
+      });
+
+      const response = await dispatchAgentResourceAction(
+        {
+          type: 'automation.update',
+          id: converted.id,
+          patch: {
+            action: {
+              type: 'standalone_prompt',
+              chatProjectId: 'cowork-1',
+              prompt: 'Continue elsewhere',
+            },
+          },
+        },
+        runtime,
+      );
+
+      expect(response).toEqual({
+        requestId: '',
+        ok: false,
+        error: {
+          code: 'validation_failed',
+          message: WORKTREE_SESSION_PROMPT_ACTION_CHANGE_POLICY_ERROR,
+          retryable: false,
+        },
+      });
+      expect(mockUpdateAutomationForAgent).not.toHaveBeenCalled();
+    });
+
+    it('rechecks a converted session prompt’s policy in the queued update guard', async (): Promise<void> => {
+      const native = activity('converted-later', {
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: 'Continue',
+      });
+      const converted = {
+        ...native,
+        action: ownedPipelineAction,
+        executionContext: 'personal',
+      };
+      automationService.list.mockResolvedValue({
+        activities: [native],
+        recentRuns: [],
+      });
+      mockResolveAutomationTargetOwner.mockResolvedValue({ kind: 'personal' });
+      // Converted while the update waited in the service queue.
+      automationService.update.mockImplementation(
+        async (
+          _request: unknown,
+          authorize:
+            | ((fresh: ScheduledActivity) => Promise<boolean>)
+            | undefined,
+        ) => {
+          standsFor(converted, {
+            type: 'worktree_session_prompt',
+            workspaceId: 'workspace-1',
+            worktreeId: 'worktree-1',
+            chatId: 'chat-1',
+            prompt: 'Continue',
+          });
+          const allowed = authorize ? await authorize(converted) : true;
+          return allowed
+            ? { ok: true, activity: converted }
+            : { ok: false, error: 'Refused.' };
+        },
+      );
+
+      const response = await dispatchAgentResourceAction(
+        {
+          type: 'automation.update',
+          id: native.id,
+          patch: {
+            action: {
+              type: 'standalone_prompt',
+              chatProjectId: 'cowork-1',
+              prompt: 'Continue elsewhere',
+            },
+          },
+        },
+        runtime,
+      );
+
+      expect(response).toEqual({
+        requestId: '',
+        ok: false,
+        error: {
+          code: 'validation_failed',
+          message: WORKTREE_SESSION_PROMPT_ACTION_CHANGE_POLICY_ERROR,
+          retryable: false,
+        },
+      });
+    });
   });
 
   it('allows Advisor automations when access is enabled', async (): Promise<void> => {
@@ -583,6 +934,59 @@ describe('agent automation App Advisor access', () => {
     expect(automationService.runNow).not.toHaveBeenCalled();
   });
 
+  it('refuses converting an Orchestrator automation back to native without access (CAN-4551 7c)', async (): Promise<void> => {
+    setAppAdvisorProjectAgentAccess({ mode: 'disabled', selectedOwners: [] });
+    const converted = activity('converted-advisor', {
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      pipelineId: 'owned-1',
+      pipelineSource: 'user',
+    });
+    automationService.list.mockResolvedValue({
+      activities: [converted],
+      recentRuns: [],
+    });
+    // The save would convert it back to the Orchestrator prompt it stands for.
+    mockUpdateAutomationForAgent.mockImplementationOnce(
+      async (_request, writer) => {
+        const { authorizeNative } = writer as {
+          authorizeNative?: (action: unknown) => Promise<boolean>;
+        };
+        const allowed = authorizeNative
+          ? await authorizeNative({ type: 'app_advisor_prompt', prompt: 'x' })
+          : true;
+        return allowed
+          ? { ok: true, activity: converted }
+          : { ok: false, error: 'Activity not found.' };
+      },
+    );
+
+    const response = await dispatchAgentResourceAction(
+      {
+        type: 'automation.update',
+        id: converted.id,
+        patch: {
+          schedule: {
+            kind: 'one_time',
+            runAt: '2026-08-05T00:00:00.000Z',
+            timezone: 'local',
+          },
+        },
+      },
+      runtime,
+    );
+
+    expect(response).toEqual({
+      requestId: '',
+      ok: false,
+      error: {
+        code: 'advisor_access_disabled',
+        message: ADVISOR_ACCESS_DISABLED_MESSAGE,
+        retryable: false,
+      },
+    });
+  });
+
   it('rechecks App Advisor access in the serialized update guard', async (): Promise<void> => {
     setAppAdvisorProjectAgentAccess({ mode: 'enabled', selectedOwners: [] });
     const existing = activity('advisor-access-revoked-during-update');
@@ -694,7 +1098,7 @@ describe('agent automation App Advisor access', () => {
     setAppAdvisorProjectAgentAccess({ mode: 'disabled', selectedOwners: [] });
     const advisorActivity = activity('advisor-private');
     const nonAdvisorActivity = activity('ordinary-visible', ordinaryAction());
-    const advisorRun = {
+    const advisorRun: ScheduledActivityRun = {
       id: 'advisor-run',
       activityId: advisorActivity.id,
       activityName: 'Private Advisor activity',

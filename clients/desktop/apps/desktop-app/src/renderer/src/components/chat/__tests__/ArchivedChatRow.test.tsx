@@ -303,4 +303,39 @@ describe('ArchivedChatRow', () => {
     expect(unreadDot?.classList.contains('bg-amber-400')).toBe(true);
     expect(unreadDot?.classList.contains('bg-warning')).toBe(false);
   });
+
+  it('does not open the row when a disabled Restore is clicked while busy', () => {
+    const onOpen = jest.fn();
+    const onRestore = jest.fn();
+    act(() => {
+      root.render(
+        createElement(ArchivedChatRow, {
+          summary: makeSummary(),
+          dataTestId: 'row',
+          onOpen,
+          onRestore,
+          onSummarize: jest.fn(),
+          summarizing: true,
+        }),
+      );
+    });
+
+    const restore = container.querySelector<HTMLButtonElement>(
+      '[data-testid="archived-chat-restore"]',
+    );
+    expect(restore?.disabled).toBe(true);
+    clickTestId('archived-chat-restore');
+    // A disabled control lets the pointer through (pointer-events: none), so
+    // the browser delivers the click to whatever sits beneath the button.
+    const beneath = restore?.parentElement;
+    expect(beneath).toBeTruthy();
+    act(() => {
+      beneath?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onRestore).not.toHaveBeenCalled();
+  });
 });

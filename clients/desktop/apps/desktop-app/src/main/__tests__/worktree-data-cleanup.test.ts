@@ -68,18 +68,32 @@ jest.mock('../lib/paths', () => ({
       `/mock/workspaces/${projectId}/cost/${worktreeId}`,
   ),
 }));
-const mockedListTrackedPlans = jest.fn(
-  (): Promise<Array<{ id: string }>> => Promise.resolve([]),
-);
+const mockedListTrackedPlans = jest.fn<
+  Promise<Array<{ id: string }>>,
+  [string, string]
+>((): Promise<Array<{ id: string }>> => Promise.resolve([]));
 jest.mock('../lib/plan-persistence', () => ({
   deleteTrackedPlansForWorktree: jest.fn(() => Promise.resolve()),
-  listTrackedPlans: (...args: unknown[]): Promise<Array<{ id: string }>> =>
-    mockedListTrackedPlans(...args),
+  listTrackedPlans: (
+    projectId: string,
+    worktreeId: string,
+  ): Promise<Array<{ id: string }>> =>
+    mockedListTrackedPlans(projectId, worktreeId),
 }));
-const mockedRemovePlanExploreChatsForWorktree = jest.fn(
-  (): Promise<string[]> => Promise.resolve([]),
-);
-const mockedReleasePlanFileSyncForWorktree = jest.fn();
+const mockedRemovePlanExploreChatsForWorktree = jest.fn<
+  Promise<string[]>,
+  [string, string, readonly string[]]
+>((): Promise<string[]> => Promise.resolve([]));
+const mockedReleasePlanFileSyncForWorktree = jest.fn<void, [string, string]>();
+const mockedRemoveCodeReviewChatsForWorktree = jest.fn<
+  Promise<string[]>,
+  [string, string]
+>((): Promise<string[]> => Promise.resolve([]));
+jest.mock('../lib/code-review-cleanup', () => ({
+  removeCodeReviewChatsForWorktree: (
+    ...args: [string, string]
+  ): Promise<string[]> => mockedRemoveCodeReviewChatsForWorktree(...args),
+}));
 jest.mock('../lib/plan-explore-cleanup', () => ({
   removePlanExploreChatsForWorktree: (
     ...args: [string, string, readonly string[]]
@@ -103,11 +117,32 @@ jest.mock('../lib/hook-log-store', () => ({
 jest.mock('../plugins/plugin-cleanup', () => ({
   cleanupWorktreeChatPluginDirs: jest.fn(),
 }));
+const mockPurgeLivePersistedWorktreeData = jest.fn(() => Promise.resolve());
+const mockPeekObservabilityService = jest.fn(
+  (): { purgePersistedWorktreeData: jest.Mock } | null => null,
+);
+jest.mock('../observability', () => ({
+  peekObservabilityService: (): unknown => mockPeekObservabilityService(),
+}));
 jest.mock('../observability/worktree-cleanup', () => ({
   purgePersistedWorktreeObservabilityData: jest.fn(() => Promise.resolve()),
 }));
 jest.mock('../browser/browser-service-registry', () => ({
   getBrowserService: jest.fn(() => null),
+}));
+const mockedCancelPendingLayoutWrite = jest.fn();
+jest.mock('../panels/persistence', () => ({
+  panelLayoutPersistenceStore: {
+    cancelPendingWrite: (...args: unknown[]): unknown =>
+      mockedCancelPendingLayoutWrite(...args),
+  },
+}));
+const mockedForgetTerminalWorktree = jest.fn();
+jest.mock('../terminal/persistence', () => ({
+  terminalPersistenceStore: {
+    forgetWorktree: (...args: unknown[]): unknown =>
+      mockedForgetTerminalWorktree(...args),
+  },
 }));
 const mockedCloseWorktree = jest.fn(() => Promise.resolve());
 jest.mock('@canopy/desktop-shared/node/code-graph/service', () => ({
@@ -120,26 +155,31 @@ jest.mock('../lib/code-graph-scheduler', () => ({
   cancelCodeGraphBuilds: (...args: unknown[]): unknown =>
     mockedCancelCodeGraphBuilds(...args),
 }));
-const mockedCancelBuild = jest.fn((): Promise<void> => Promise.resolve());
+const mockedCancelBuild = jest.fn<
+  Promise<void>,
+  Parameters<typeof CodeGraphBuildRunner.cancelBuild>
+>(() => Promise.resolve());
 jest.mock('../code-graph/build-runner', () => ({
-  cancelBuild: (...args: unknown[]): unknown => mockedCancelBuild(...args),
+  cancelBuild: (
+    ...args: Parameters<typeof CodeGraphBuildRunner.cancelBuild>
+  ): Promise<void> => mockedCancelBuild(...args),
 }));
-const mockedCancelCodeGraphReads = jest.fn(
+const mockedCancelCodeGraphReads = jest.fn<Promise<void>, [string]>(
   (): Promise<void> => Promise.resolve(),
 );
 jest.mock('../code-graph/read-runner', () => ({
-  cancelCodeGraphReads: (...args: unknown[]): unknown =>
-    mockedCancelCodeGraphReads(...args),
+  cancelCodeGraphReads: (key: string): Promise<void> =>
+    mockedCancelCodeGraphReads(key),
   // The fence itself is covered against the real runner in
   // worktree-data-cleanup-read-workers.test.ts.
   fenceCodeGraphReads: (): (() => void) => (): void => undefined,
 }));
-const mockedCancelCodeGraphFingerprint = jest.fn(
+const mockedCancelCodeGraphFingerprint = jest.fn<Promise<void>, [string]>(
   (): Promise<void> => Promise.resolve(),
 );
 jest.mock('../code-graph/fingerprint-runner', () => ({
-  cancelCodeGraphFingerprint: (...args: unknown[]): unknown =>
-    mockedCancelCodeGraphFingerprint(...args),
+  cancelCodeGraphFingerprint: (key: string): Promise<void> =>
+    mockedCancelCodeGraphFingerprint(key),
 }));
 const mockedDeleteWorktreeSearchDocs = jest.fn();
 const mockedArchiveWorktreeSearchDocs = jest.fn();
@@ -162,9 +202,10 @@ jest.mock('../services/chat-state-service', () => ({
     runWithScopeDeletion: mockedRunWithScopeDeletion,
   })),
 }));
-const mockedRemovePersistedWorktreeDataDirectory = jest.fn(
-  (): Promise<void> => Promise.resolve(),
-);
+const mockedRemovePersistedWorktreeDataDirectory = jest.fn<
+  Promise<void>,
+  [string, string]
+>((): Promise<void> => Promise.resolve());
 jest.mock('@canopy/desktop-shared/node/lib/worktree-data-cleanup', () => ({
   removePersistedWorktreeDataDirectory: (
     ...args: [string, string]
@@ -172,6 +213,7 @@ jest.mock('@canopy/desktop-shared/node/lib/worktree-data-cleanup', () => ({
 }));
 
 import { rm } from 'node:fs/promises';
+import type * as CodeGraphBuildRunner from '../code-graph/build-runner';
 import { removeTreeWithoutAsar } from '../lib/remove-tree-without-asar';
 import { deleteHookRunLogsForWorktree } from '../lib/hook-log-store';
 import { deleteDetectedPlansForWorktree } from '../lib/detected-plan-persistence';
@@ -225,6 +267,10 @@ describe('worktree-data-cleanup', () => {
 
     expect(mockCancelLocalScope).toHaveBeenCalledWith('project-1', 'wt-1');
     expect(warnings).toEqual([]);
+    expect(mockedRemoveCodeReviewChatsForWorktree).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+    );
     expect(mockRetireCostScope).toHaveBeenCalledWith({
       kind: 'entry',
       projectId: 'project-1',
@@ -248,6 +294,26 @@ describe('worktree-data-cleanup', () => {
     expect(mockedRm).toHaveBeenCalledWith(
       '/mock/workspaces/project-1/summaries/wt-1.json',
       { force: true },
+    );
+    expect(mockedCancelPendingLayoutWrite).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+    );
+    // The pending layout write is cancelled immediately before the tree goes.
+    expect(
+      mockedCancelPendingLayoutWrite.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockedRemovePersistedWorktreeDataDirectory.mock.invocationCallOrder[0],
+    );
+    expect(mockedForgetTerminalWorktree).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+    );
+    // Terminal state is forgotten with the layout, right before the tree goes.
+    expect(
+      mockedForgetTerminalWorktree.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockedRemovePersistedWorktreeDataDirectory.mock.invocationCallOrder[0],
     );
     expect(mockedRm).toHaveBeenCalledWith(
       '/mock/workspaces/project-1/attachments/wt-1',
@@ -297,6 +363,40 @@ describe('worktree-data-cleanup', () => {
       'wt-1',
     );
     expect(mockedCloseWorktree).toHaveBeenCalledWith('project-1', 'wt-1');
+  });
+
+  it('reports unreadable legacy review ownership while continuing unrelated cleanup', async () => {
+    mockedRemoveCodeReviewChatsForWorktree.mockRejectedValueOnce(
+      Object.assign(new Error('registry read denied'), { code: 'EACCES' }),
+    );
+
+    const warnings = await cleanupPersistedWorktreeData('project-1', 'wt-1');
+
+    expect(warnings).toEqual([
+      'Failed to remove legacy review chats for this worktree: permission denied',
+    ]);
+    expect(mockedRemoveCodeReviewChatsForWorktree).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+    );
+    expect(mockedDeleteTrackedPlansForWorktree).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+    );
+    expect(mockedDeleteChatScope).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+    });
+  });
+
+  it('preserves legacy review cleanup warnings returned after a partial sweep', async () => {
+    const warning =
+      'Failed to remove legacy review chat review-a: registry write failed';
+    mockedRemoveCodeReviewChatsForWorktree.mockResolvedValueOnce([warning]);
+
+    await expect(
+      cleanupPersistedWorktreeData('project-1', 'wt-1'),
+    ).resolves.toEqual([warning]);
   });
 
   it('still closes browser views and removes tab state when profile retirement fails', async () => {
@@ -475,6 +575,7 @@ describe('worktree-data-cleanup', () => {
     // The archive's captured plan ids reclaim these chats when it is
     // permanently deleted; a restore brings them back with the worktree.
     expect(mockedRemovePlanExploreChatsForWorktree).not.toHaveBeenCalled();
+    expect(mockedRemoveCodeReviewChatsForWorktree).not.toHaveBeenCalled();
     expect(mockedReleasePlanFileSyncForWorktree).toHaveBeenCalledWith(
       'project-1',
       'wt-1',
@@ -805,6 +906,26 @@ describe('worktree-data-cleanup', () => {
       'project-1',
       'wt-1',
     );
+  });
+
+  it('purges persisted-only observability through a running service', async () => {
+    mockPeekObservabilityService.mockReturnValue({
+      purgePersistedWorktreeData: mockPurgeLivePersistedWorktreeData,
+    });
+    try {
+      const warnings = await cleanupPersistedWorktreeData('project-1', 'wt-1');
+
+      expect(warnings).toEqual([]);
+      expect(mockPurgeLivePersistedWorktreeData).toHaveBeenCalledWith(
+        'project-1',
+        'wt-1',
+      );
+      expect(
+        mockedPurgePersistedWorktreeObservabilityData,
+      ).not.toHaveBeenCalled();
+    } finally {
+      mockPeekObservabilityService.mockReturnValue(null);
+    }
   });
 
   it('requires an explicit observability purge for live-service cleanup', async () => {

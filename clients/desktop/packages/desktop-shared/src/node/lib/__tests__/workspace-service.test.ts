@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { registerW5Host } from '../../w5-host-cohort';
 import {
   createAndPersistNewMultiRepoWorkspace,
   createNewSingleRepoWorkspace,
@@ -37,11 +38,16 @@ describe('desktop-shared node project service', () => {
   const originalCanopyDataDir = process.env.CANOPY_DATA_DIR;
   let tempDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = fs.mkdtempSync(
       path.join(os.tmpdir(), 'canopy-workspace-service-'),
     );
     process.env.CANOPY_DATA_DIR = path.join(tempDir, 'data');
+    // Shared W5 writers run only in registered hosts (CAN-3797).
+    await registerW5Host({
+      dataRoot: process.env.CANOPY_DATA_DIR ?? '',
+      hostKind: 'cli',
+    });
   });
 
   afterEach(() => {
@@ -87,10 +93,11 @@ describe('desktop-shared node project service', () => {
           '--import',
           'tsx',
           '-e',
-          'const { addWorkspaceFromRemote } = require(process.argv[1]); addWorkspaceFromRemote(process.argv[2], process.argv[3]).then(workspace => process.stdout.write(JSON.stringify(workspace))).catch(error => { console.error(error); process.exitCode = 1; });',
+          'const { registerW5Host } = require(process.argv[4]); const { addWorkspaceFromRemote } = require(process.argv[1]); registerW5Host({ dataRoot: process.env.CANOPY_DATA_DIR, hostKind: "cli" }).then(() => addWorkspaceFromRemote(process.argv[2], process.argv[3])).then(workspace => process.stdout.write(JSON.stringify(workspace))).catch(error => { console.error(error); process.exitCode = 1; });',
           path.resolve(__dirname, '../workspace-service.ts'),
           `https://github.com/cursor/plugins/${suffix}`,
           destination,
+          path.resolve(__dirname, '../../w5-host-cohort/index.ts'),
         ],
         {
           encoding: 'utf8',

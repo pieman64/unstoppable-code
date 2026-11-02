@@ -23,8 +23,6 @@ function detectedServer(
   },
 ): DetectedMcpServerInfo {
   return {
-    key: values.key,
-    source: values.source,
     serverName: values.serverName ?? values.key,
     displayName: values.displayName ?? values.key,
     type: values.type ?? 'http',

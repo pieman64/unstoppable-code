@@ -18,6 +18,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
+import { isSharedContainerRevisionPackage } from '@canopy/protocol/shared-containers';
 import type {
   SharedContainerAccess,
   SharedContainerAccessBlockReason,
@@ -311,6 +312,9 @@ function normalizeState(value: unknown): SharedContainerReplicaState | null {
         revisionId: record.revisionId,
         revision: record.revision,
         revisionCreatedAt: record.revisionCreatedAt,
+        ...(isSharedContainerRevisionPackage(record.package)
+          ? { package: record.package }
+          : {}),
         withheldFileCount:
           typeof record.withheldFileCount === 'number' &&
           Number.isSafeInteger(record.withheldFileCount) &&

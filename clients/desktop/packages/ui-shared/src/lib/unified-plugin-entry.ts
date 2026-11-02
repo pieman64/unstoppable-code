@@ -9,6 +9,7 @@ import type {
   PipelineTriggerType,
 } from '@canopy/protocol/pipelines';
 import type { PipelineSourceBadgeKey } from './pipeline-source-badges';
+import type { WorkflowLastRun } from './workflow-last-run';
 
 export type UnifiedEntrySurface = 'cloud' | 'desktop';
 
@@ -16,6 +17,13 @@ export const UNIFIED_ENTRY_SURFACE_LABELS: Record<UnifiedEntrySurface, string> =
   {
     cloud: 'Cloud + desktop',
     desktop: 'Desktop only',
+  };
+
+/** One plain line under the surface label, in the row's surface tooltip. */
+export const UNIFIED_ENTRY_SURFACE_HINTS: Record<UnifiedEntrySurface, string> =
+  {
+    cloud: 'Works in cloud chats and on your desktop',
+    desktop: "It runs on your desktop, so cloud chats can't use it",
   };
 
 /** What the Marketplace Pipelines tab filters on; set on every pipeline entry. */
@@ -85,10 +93,108 @@ export interface UnifiedEntrySharedWith {
   name?: string;
 }
 
+/** Present while a public link exists, including when it serves an older copy. */
+export interface UnifiedEntryPublicShare {
+  /** ISO date the public link was created. */
+  readonly since?: string;
+  /** `false` when the link still serves an older copy of the item. */
+  readonly upToDate?: boolean;
+}
+
 /** The shared status badge's input, derived once for list and detail. */
 export interface UnifiedEntryConnectionStatus {
   status: 'connected' | 'auth_required' | 'unreachable' | 'unknown';
   provider?: boolean;
+}
+
+/** A plugin another entry points at, by entry id and display name. */
+export interface UnifiedEntryPluginLink {
+  readonly entryId: string;
+  readonly name: string;
+}
+
+/** An installed MCP row hidden behind the plugin that bundles its server. */
+export interface UnifiedEntryBundledServerRow {
+  /** The bundled server's name in the plugin manifest. */
+  readonly serverName: string;
+  /**
+   * The bundled server's endpoint (`mcpEndpointKey`), so a page showing one
+   * provider's member links only the member that points at this row.
+   */
+  readonly endpoint: string;
+  /** The installed row's entry id, which opens its own settings. */
+  readonly entryId: string;
+  /** The installed row's MCP server id. */
+  readonly serverId: string;
+}
+
+/** The same app published by another catalog, linked from a plugin page. */
+export interface UnifiedEntryAlternative {
+  readonly entryId: string;
+  /** The other copy's source, worded to follow "Also available from". */
+  readonly label: string;
+  readonly ref: UnifiedEntryRef;
+}
+
+/**
+ * What a Customize Workflows row shows and can do (CAN-4845). Built from host
+ * data; a row without it falls back to the entry's description.
+ */
+export interface UnifiedWorkflowFacets {
+  /** Legacy plain trigger text for hosts that have not projected rich facets. */
+  readonly triggerText?: string;
+  /** One item per pipeline trigger, in the order it should be shown. */
+  readonly triggers?: readonly UnifiedWorkflowTrigger[];
+  /** An automation's compact row label and full tooltip description. */
+  readonly schedule?: UnifiedWorkflowSchedule;
+  /** What an automation does; omitted when unknown. */
+  readonly summary?: string;
+  /** Pipeline step count, shown only in trigger tooltips. */
+  readonly stepCount?: number;
+  /** `Shared by Platform`; omitted otherwise. */
+  readonly sourceText?: string;
+  /** `sourceText` names a person, so session replay masks it. */
+  readonly sourceIsPerson?: boolean;
+  /** `null` means it never ran; `undefined` means unknown, so it is hidden. */
+  readonly lastRun?: WorkflowLastRun | null;
+  /** Automations only: draws the on/off switch. */
+  readonly enabled?: boolean;
+  /** Pipelines only: Run is enabled. */
+  readonly runnable?: boolean;
+  /** The source definition cannot be deleted from the user store. */
+  readonly readonly?: boolean;
+  /** Why Run is disabled when the pipeline cannot be started by hand. */
+  readonly runUnavailableLabel?: string;
+}
+
+export type UnifiedWorkflowTriggerKind =
+  | 'schedule'
+  | 'once'
+  | 'manual'
+  | 'plan-approved'
+  | 'task-ready';
+
+export interface UnifiedWorkflowTrigger {
+  readonly kind: UnifiedWorkflowTriggerKind;
+  /** Short row label: `Manual`, `Plan approval`, `Task ready`. */
+  readonly label: string;
+  /** Plain one-line sentence following `Trigger: `. */
+  readonly explainer: string;
+}
+
+export interface UnifiedWorkflowSchedule {
+  /** Compact row label, for example `Weekdays · 09:00`. */
+  readonly label: string;
+  /** Full schedule shown in the tooltip. */
+  readonly tooltip: string;
+}
+
+/** Trimmed receipt names; a blank name is omitted. */
+export interface UnifiedEntryInstalledFrom {
+  readonly sharedByName?: string;
+  /** Source owner's display name; display evidence, not an ownership grant. */
+  readonly ownerName?: string;
+  readonly teamName?: string;
 }
 
 /** Display projection shared by catalog surfaces; contains no host behavior. */
@@ -126,10 +232,26 @@ export interface UnifiedPluginEntry {
   /** Installed version only; omitted when its provenance is unknown. */
   version?: string;
   latestVersion?: string;
+  /** ISO date the share was created; set only on `origin: 'shared'` rows. */
+  sharedSince?: string;
+  /**
+   * Set only on an `origin: 'shared'` entry whose current share summary has a
+   * public link. Blueprint summaries report none, so blueprints never carry it.
+   */
+  publicShare?: UnifiedEntryPublicShare;
+  /** Configurations or bundled servers still waiting for sign-in; absent when none. */
+  pendingSignIns?: number;
   /** Actual installations, independent of provider support. Cursor is unavailable. */
   installedHarnesses?: { claude?: boolean; codex?: boolean };
   builtIn?: boolean;
   custom?: boolean;
+  /**
+   * Names from the install receipt of a copy installed from a share. Empty
+   * when the receipt names nobody. Display evidence only, never authorization.
+   */
+  installedFrom?: UnifiedEntryInstalledFrom;
+  /** When the viewer last edited a custom item (ISO); drives "Created by you · Edited {date}". */
+  editedAt?: string;
   /** Explicit creator identity match, never inferred from organization ownership. */
   ownedByViewer?: boolean;
   /** Explicit publication state; a private cloud record alone is not a share. */
@@ -144,9 +266,19 @@ export interface UnifiedPluginEntry {
   /** Stable catalog order used only as a browse-ranking fallback. */
   catalogSortOrder?: number;
   pipeline?: UnifiedPipelineFacets;
+  /** Set on a pipeline or automation row the Customize Workflows tab draws. */
+  workflow?: UnifiedWorkflowFacets;
   /** Set on a curated integration card; see {@link UnifiedEntryIntegration}. */
   integration?: UnifiedEntryIntegration;
   /** Set on a plugin that needs several integrations, one chip per key. */
   requirements?: readonly UnifiedEntryRequirement[];
+  /** Set on an installed MCP row that an installed plugin bundles. */
+  bundledBy?: UnifiedEntryPluginLink;
+  /** Set on a catalog MCP card whose endpoint an installed plugin provides. */
+  installedVia?: UnifiedEntryPluginLink;
+  /** Set on a plugin the same app's plugins from other catalogs link to. */
+  alsoAvailableFrom?: readonly UnifiedEntryAlternative[];
+  /** Set on an installed plugin: the installed MCP rows hidden behind it. */
+  bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   ref: UnifiedEntryRef;
 }

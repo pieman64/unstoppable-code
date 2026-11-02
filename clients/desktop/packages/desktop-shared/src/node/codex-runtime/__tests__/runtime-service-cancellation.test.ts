@@ -9,7 +9,9 @@ const spawnMock = jest.fn<
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn(): typeof spawnMock {
+    return spawnMock;
+  },
 }));
 
 // Fake PIDs must never reach the host's process-group signal path.
@@ -31,8 +33,15 @@ jest.mock('../../../pipelines/config-paths', () => ({
 
 import { CodexCapabilityStore } from '../capability-store';
 import { resetCanonicalCodexHomeForTests } from '../canonical-state';
-import { CodexAppServerConnection } from '../connection';
-import { createCodexRuntimeService } from '../runtime-service';
+import {
+  CodexAppServerConnection,
+  type CodexIngestionLagSnapshot,
+} from '../connection';
+import { DEFAULT_OWNER_LANE_HARD_LIMIT_BYTES } from '../owner-admission-lanes';
+import {
+  createCodexRuntimeService,
+  type CodexInteractiveOwner,
+} from '../runtime-service';
 import type { CodexRunTurnRequest } from '../thread-handle';
 import type { CodexRuntimeEvent } from '../thread-handle';
 import type { CodexHostToolPolicy } from '../thread-handle';
@@ -267,6 +276,41 @@ describe('RuntimeThreadHandle cancellation', () => {
 
   afterEach(() => {
     resetCanonicalCodexHomeForTests();
+  });
+
+  it('exposes the attached owner ingestion lag snapshot through the transport', async () => {
+    const snapshot: CodexIngestionLagSnapshot = {
+      lagMs: 5_100,
+      catchingUp: true,
+      source: 'receipt',
+    };
+    const owner: CodexInteractiveOwner = {
+      hasActiveTurn: () => false,
+      getActiveTurnInterruptTarget: () => null,
+      cancelPendingTurnStart: () => {},
+      rejectActiveTurn: () => {},
+      markProcessSuspended: () => {},
+      markProcessFailed: () => {},
+      handleConnectionNotification: () => {},
+      handleRequestUserInput: async () => {},
+      handleDynamicToolCall: async () => {},
+      handleApprovalRequest: async () => {},
+      handleMcpElicitation: async () => {},
+    };
+    const ingestionLag = jest
+      .spyOn(CodexAppServerConnection.prototype, 'ingestionLag')
+      .mockReturnValue(snapshot);
+    const service = createCodexRuntimeService();
+    const transport = service.attachInteractiveClient({ owner });
+
+    try {
+      expect(transport.ingestionLag()).toEqual(snapshot);
+      expect(ingestionLag).toHaveBeenCalledWith(owner);
+    } finally {
+      transport.release();
+      await service.shutdown();
+      ingestionLag.mockRestore();
+    }
   });
 
   for (const beforeResponse of [false, true]) {
@@ -674,6 +718,7 @@ describe('RuntimeThreadHandle cancellation', () => {
   async function startHostToolTurn(
     policy?: CodexHostToolPolicy,
     nativeApprovalPolicy?: CodexRunTurnRequest['nativeApprovalPolicy'],
+    onEvent?: CodexRunTurnRequest['onEvent'],
   ): Promise<{
     service: ReturnType<typeof createCodexRuntimeService>;
     outcome: ReturnType<
@@ -687,6 +732,7 @@ describe('RuntimeThreadHandle cancellation', () => {
       input: [{ type: 'text', text: 'Read a file', text_elements: [] }],
       hostToolPolicy: policy,
       nativeApprovalPolicy,
+      onEvent,
     });
     await flush();
     const start = collectClientMessages(proc).find(
@@ -805,6 +851,188 @@ describe('RuntimeThreadHandle cancellation', () => {
       id: 'late-approval',
       result: { decision: 'accept' },
     });
+  });
+
+  it.each(['resolved', 'terminal', 'fatal-error'])(
+    'aborts a host tool immediately on %s without a late reply',
+    async (control) => {
+      let signal: AbortSignal | undefined;
+      let finish: (value: DynamicToolCallResponse) => void = () => undefined;
+      const { service, handle, outcome } = await startHostToolTurn({
+        allowedTools: [{ namespace: null, tool: 'host_read' }],
+        authorize: () => Promise.resolve(true),
+        execute: (_call, current) => {
+          signal = current;
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        },
+      });
+      let release: () => void = () => undefined;
+      const drain = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let terminal: void | Promise<void> = undefined;
+      try {
+        emitServerMessage(proc, {
+          id: 700,
+          method: 'item/tool/call',
+          params: hostToolCall(),
+        });
+        await flush();
+        // A foreign terminal frame must not abort the root host tool.
+        const owner = handle as unknown as {
+          handleConnectionNotification: (
+            method: string,
+            notification: Record<string, unknown>,
+            drain?: Promise<void>,
+          ) => void | Promise<void>;
+        };
+        void owner.handleConnectionNotification('turn/completed', {
+          params: {
+            threadId: 'child',
+            turn: {
+              id: 'child-turn',
+              status: 'completed',
+              items: [],
+              error: null,
+            },
+          },
+        });
+        expect(signal?.aborted).toBe(false);
+        if (control === 'resolved') {
+          emitServerMessage(proc, {
+            method: 'serverRequest/resolved',
+            params: { threadId: 'thread-1', requestId: 700 },
+          });
+          await flush();
+        } else {
+          terminal = owner.handleConnectionNotification(
+            control === 'terminal' ? 'turn/completed' : 'error',
+            {
+              params: {
+                threadId: 'thread-1',
+                ...(control === 'terminal'
+                  ? {
+                      turn: {
+                        id: 'turn-host-tools',
+                        status: 'completed',
+                        items: [],
+                        error: null,
+                      },
+                    }
+                  : {
+                      turnId: 'turn-host-tools',
+                      willRetry: false,
+                      error: { message: 'failed' },
+                    }),
+              },
+            },
+            drain,
+          );
+        }
+        expect(signal?.aborted).toBe(true);
+        finish({ success: true, contentItems: [] });
+        await flush();
+        const replies = collectClientMessages(proc).filter(
+          (message) => message.id === 700,
+        );
+        if (control === 'resolved') expect(replies).toEqual([]);
+        else expect(replies).toMatchObject([{ result: { success: false } }]);
+      } finally {
+        release();
+        await terminal;
+        finish({ success: true, contentItems: [] });
+        await finishHostToolTurn(service);
+        await outcome;
+      }
+    },
+  );
+
+  it('closes a cancelled open host row at terminal only when no native completion arrived', async () => {
+    const events: CodexRuntimeEvent[] = [];
+    const { service, outcome } = await startHostToolTurn(
+      {
+        allowedTools: [{ namespace: null, tool: 'host_read' }],
+        authorize: () => Promise.resolve(true),
+        execute: () => new Promise(() => undefined),
+      },
+      undefined,
+      (event) => {
+        events.push(event);
+      },
+    );
+    try {
+      const params = hostToolCall();
+      const item = {
+        type: 'dynamicToolCall',
+        id: params.callId,
+        namespace: null,
+        tool: params.tool,
+        arguments: params.arguments,
+        status: 'inProgress',
+        success: null,
+        contentItems: null,
+        durationMs: null,
+      };
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: { threadId: params.threadId, turnId: params.turnId, item },
+      });
+      emitServerMessage(proc, { id: 700, method: 'item/tool/call', params });
+      await flush();
+      emitServerMessage(proc, {
+        method: 'serverRequest/resolved',
+        params: { threadId: 'thread-1', requestId: 700 },
+      });
+      await flush();
+      expect(
+        events.filter((event) => event.method === 'item/completed'),
+      ).toHaveLength(0);
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: params.threadId,
+          turn: {
+            id: params.turnId,
+            status: 'completed',
+            items: [],
+            error: null,
+          },
+        },
+      });
+      await outcome;
+      await flush();
+      expect(
+        events.filter((event) => event.method === 'item/completed'),
+      ).toMatchObject([
+        {
+          params: {
+            item: { id: params.callId, status: 'failed', success: false },
+          },
+        },
+      ]);
+      emitServerMessage(proc, {
+        method: 'item/completed',
+        params: {
+          threadId: params.threadId,
+          turnId: params.turnId,
+          item: {
+            ...item,
+            status: 'completed',
+            success: true,
+            contentItems: [],
+          },
+        },
+      });
+      await flush();
+      expect(
+        events.filter((event) => event.method === 'item/completed'),
+      ).toHaveLength(1);
+    } finally {
+      await finishHostToolTurn(service);
+      await outcome;
+    }
   });
 
   it('executes an explicitly approved host tool with exact call ownership', async () => {
@@ -1750,6 +1978,7 @@ describe('RuntimeThreadHandle cancellation', () => {
         toolName: 'review_evidence',
         normalizedArguments: '{}',
       }),
+      expect.any(AbortSignal),
     );
     expect(collectClientMessages(proc)).toContainEqual({
       id: 'mcp-approval',
@@ -2042,9 +2271,10 @@ describe('RuntimeThreadHandle cancellation', () => {
       if (!interrupt) throw new Error('expected turn/interrupt request');
       emitServerMessage(proc, { id: interrupt.id, result: {} });
       await jest.advanceTimersByTimeAsync(0);
-      // Nine more mebibytes for the held peer pause the shared stdout at the
-      // 8 MiB retained-frame cap.
-      for (let index = 1; index <= 9; index += 1)
+      // Lossless deltas for the held peer, past its hard per-owner
+      // retained-frame limit, pause the shared stdout.
+      const pauseDeltas = DEFAULT_OWNER_LANE_HARD_LIMIT_BYTES / (1024 * 1024);
+      for (let index = 1; index <= pauseDeltas; index += 1)
         emitServerMessage(proc, largeDelta('thread-peer', 'turn-peer', index));
       await jest.advanceTimersByTimeAsync(0);
       // Codex has finished the interrupted turn; its terminal frame waits in

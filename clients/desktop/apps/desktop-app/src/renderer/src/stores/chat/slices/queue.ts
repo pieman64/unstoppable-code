@@ -6,6 +6,10 @@ import { blockedPersistenceKeys } from '../persistence';
 import { isTerminalBackedInterfaceMode } from '@canopy/desktop-shared/types';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
 import { attachmentMetasFromPaths } from '../attachments';
+import {
+  cancelProvisionalFirstSendQueue,
+  resumeQueuedProvisionalFirstSend,
+} from '../provisional-first-send';
 import { type ChatTab, type QueuedChatMessage } from '../types';
 import {
   clearWorktreeHydrationState,
@@ -14,6 +18,7 @@ import {
   scheduleIdleChatUnload,
 } from '../hydration';
 import { clearQueuedForSetupFlag } from '../tab-utils';
+import { emitSetupQueueDispatch } from '../setup-queue-dispatch';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatQueueSlice } from '../state';
 
@@ -113,7 +118,10 @@ export const createQueueSlice: StateCreator<
         const updatedTabs = currentWc.tabs.map((t) =>
           t.id === chatId
             ? {
-                ...t,
+                ...cancelProvisionalFirstSendQueue(
+                  t,
+                  targetMessage?.dispatchOptions?.userMessageId,
+                ),
                 queuedMessages: t.queuedMessages.filter((message, i) =>
                   acceptedInputId
                     ? message.dispatchOptions?.acceptedInputId !==
@@ -148,14 +156,10 @@ export const createQueueSlice: StateCreator<
   },
 
   forceQueuedMessage: (index, target): void => {
-    if (index !== 0) {
-      return;
-    }
-
     const context = getWorktreeChatContext(get(), target);
     if (!context) return;
     const { selection: sel, key, chatId, activeTab } = context;
-    const targetMessage = activeTab?.queuedMessages[0];
+    const targetMessage = activeTab?.queuedMessages[index];
     if (!activeTab || !targetMessage || activeTab.queuedForSetup === true) {
       return;
     }
@@ -181,6 +185,13 @@ export const createQueueSlice: StateCreator<
       return;
     }
 
+    // Host queues above dispatch by entry id. Legacy local queues drain their
+    // head once cancellation settles, so promote only the selected prompt.
+    const promoteTarget = (queued: QueuedChatMessage[]): QueuedChatMessage[] =>
+      queued[index] === targetMessage
+        ? [targetMessage, ...queued.filter((_, i) => i !== index)]
+        : queued;
+
     if (activeTab.status === 'streaming') {
       if (isTerminalBackedInterfaceMode(activeTab.interfaceMode)) {
         const runtime = useClaudeTerminalStore
@@ -195,6 +206,7 @@ export const createQueueSlice: StateCreator<
               tab.id === chatId
                 ? {
                     ...tab,
+                    queuedMessages: promoteTarget(tab.queuedMessages),
                     forceQueuedMessageCancelPending: true,
                   }
                 : tab,
@@ -240,6 +252,7 @@ export const createQueueSlice: StateCreator<
           tab.id === chatId
             ? {
                 ...tab,
+                queuedMessages: promoteTarget(tab.queuedMessages),
                 forceQueuedMessageCancelPending: true,
               }
             : tab,
@@ -270,7 +283,9 @@ export const createQueueSlice: StateCreator<
         tab.id === chatId
           ? {
               ...tab,
-              queuedMessages: tab.queuedMessages.slice(1),
+              queuedMessages: tab.queuedMessages.filter(
+                (message) => message !== targetMessage,
+              ),
               pendingAttachments: restoredAttachments,
             }
           : tab,
@@ -732,7 +747,10 @@ export const createQueueSlice: StateCreator<
           first.attachmentPromptContexts,
         );
         return {
-          ...clearQueuedForSetupFlag(t),
+          ...resumeQueuedProvisionalFirstSend(
+            clearQueuedForSetupFlag(t),
+            first,
+          ),
           queuedMessages: rest,
           pendingAttachments: restoredAttachments,
         };
@@ -755,7 +773,18 @@ export const createQueueSlice: StateCreator<
           chatId: tabId,
         },
         undefined,
-        message.dispatchOptions,
+        {
+          ...message.dispatchOptions,
+          onDispatchStarted: (): void => {
+            emitSetupQueueDispatch({
+              projectId,
+              worktreeId,
+              chatId: tabId,
+              count: 1,
+            });
+            message.dispatchOptions?.onDispatchStarted?.();
+          },
+        },
       );
     }
   },

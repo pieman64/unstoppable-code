@@ -1,4 +1,5 @@
 import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import type {
   ChatMessage,
   ChatTab,
@@ -6,6 +7,7 @@ import type {
 } from '../stores/chatStore';
 import { getTextBlocks } from '../stores/chatStore';
 import type { WorktreePipelineEntry } from '../stores/pipelineRunsStore';
+import type { PipelineRunRowState } from './pipelineRunRowState';
 import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   type SidebarItem,
@@ -102,7 +104,7 @@ function hasPendingTrackedPlanReview(tab: ChatTab): boolean {
   );
 }
 
-function hasPlanReviewSurface(tab: ChatTab): boolean {
+export function hasPlanReviewSurface(tab: ChatTab): boolean {
   return tab.pendingPlanExit !== undefined || hasPendingTrackedPlanReview(tab);
 }
 
@@ -366,7 +368,7 @@ export function selectInProgressPipelineCards(
         projectId: parts.projectId,
         worktreeId: parts.worktreeId,
         executionId,
-        pipelineName: summary?.name ?? 'Pipeline',
+        pipelineName: summary?.name ?? WORKFLOW_ITEM_LABEL,
         status: summary?.status ?? 'running',
         startedAt: summary?.startedAt,
         completedAt: summary?.completedAt,
@@ -384,22 +386,15 @@ export function selectInProgressPipelineCards(
 }
 
 /**
- * Returns all execution IDs that appear in `runningExecutionsByWorktree` but
- * do not yet have a hydrated `ExecutionState` in `statesById`. Used by
- * OverviewPage to fan out `loadExecutionDetails` calls with bounded
- * parallelism on mount.
+ * Returns displayed overview execution IDs that do not yet have a hydrated
+ * row projection. The caller supplies IDs from the same projection the
+ * Overview renders, including running and unread paused/terminal cards.
  */
-export function selectRunningExecutionIdsMissingState(
-  runningExecutionsByWorktree: Record<string, Set<string>>,
-  statesById: Record<string, ExecutionState>,
+export function selectOverviewExecutionIdsMissingRowState(
+  displayedExecutionIds: readonly string[],
+  rowStatesById: Readonly<Record<string, PipelineRunRowState>>,
 ): string[] {
-  const missing: string[] = [];
-  for (const ids of Object.values(runningExecutionsByWorktree)) {
-    for (const id of Array.from(ids)) {
-      if (!statesById[id]) {
-        missing.push(id);
-      }
-    }
-  }
-  return missing;
+  return Array.from(new Set(displayedExecutionIds)).filter(
+    (executionId) => rowStatesById[executionId] === undefined,
+  );
 }

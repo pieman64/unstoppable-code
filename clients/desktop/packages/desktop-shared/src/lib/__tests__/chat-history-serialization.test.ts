@@ -21,6 +21,15 @@ function message(
   };
 }
 
+/**
+ * Model a persisted JSON row that violates its declared shape at the parser
+ * boundary. Keep this cast local to malformed-input coverage; regular rows use
+ * the complete PersistedChatMessage fixture above.
+ */
+function malformedPersistedMessage(value: object): PersistedChatMessage {
+  return value as PersistedChatMessage;
+}
+
 // One fixture for every persisted block discriminant; new variants must be pinned.
 const blockPins = {
   text: { block: { type: 'text', text: '  hello  ' }, text: 'hello' },
@@ -94,6 +103,17 @@ const blockPins = {
       timestamp: 1,
     },
     text: '[ci_check_fix] repo branch',
+  },
+  approval_safety_denied_info: {
+    block: {
+      type: 'approval_safety_denied_info',
+      receiptId: 'receipt-1',
+      timestamp: 1,
+      reason: 'force-push',
+      mode: 'ask',
+      command: 'git push -f origin main',
+    },
+    text: '[blocked by safety rule: force-push] git push -f origin main',
   },
   approval_resolution_info: {
     block: {
@@ -183,6 +203,22 @@ const blockPins = {
       finalText: 'secret final',
       partialText: 'secret partial',
     },
+    text: '',
+  },
+  account_proxy_switch: {
+    block: {
+      type: 'account_proxy_switch',
+      timestamp: 1,
+      account: 'current-account',
+    },
+    text: '',
+  },
+  mcp_activation: {
+    block: { type: 'mcp_activation', record: null },
+    text: '',
+  },
+  wake_boundary: {
+    block: { type: 'wake_boundary', turnId: 'turn-1' },
     text: '',
   },
 } satisfies Record<
@@ -560,15 +596,15 @@ describe('visible read privacy seams', () => {
     const secret = 'hidden-instruction-and-provenance-must-not-escape';
     const agentSent = {
       sender: {
-        kind: 'project',
-        projectType: 'cowork',
+        kind: 'project' as const,
+        projectType: 'cowork' as const,
         projectId: 'sender-project',
         taskId: 'sender-task',
         chatId: 'sender-chat',
       },
       chatTitle: 'Review migration',
       projectLabel: 'Research Space',
-    };
+    } satisfies NonNullable<PersistedChatMessage['agentSent']>;
     const row = {
       ...message([{ type: 'text', text: 'Public message body.' }], {
         role: 'user',
@@ -598,7 +634,7 @@ describe('visible read privacy seams', () => {
   });
 
   it('omits malformed agent-sent metadata and keeps old rows unmarked', () => {
-    const invalid = {
+    const invalid = malformedPersistedMessage({
       ...message([{ type: 'text', text: 'Public message body.' }], {
         role: 'user',
       }),
@@ -613,7 +649,7 @@ describe('visible read privacy seams', () => {
         chatTitle: 'Review migration',
         projectLabel: 'Research Space',
       },
-    };
+    });
     const legacy = message([{ type: 'text', text: 'Earlier message.' }], {
       role: 'user',
     });

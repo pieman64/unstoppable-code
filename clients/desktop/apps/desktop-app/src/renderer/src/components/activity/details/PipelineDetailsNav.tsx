@@ -13,7 +13,7 @@ import type { PipelineEditDeepLink } from '@/stores/navigationStore';
 import { CostIcon } from '@canopy/ui-shared/components/cost';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
 import { getPipelineJobStatusDotClassName } from '../utils';
-import { DetailChevronIcon } from './DetailChevronIcon';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { isPipelineDetailsDefinitionSelection } from './pipelineDetailTypes';
 import { FilterIcon } from '../../shared/icons/FilterIcon';
 import {
@@ -304,9 +304,9 @@ function PipelineNavJob({
             aria-expanded={expanded}
             aria-label={expanded ? 'Collapse variants' : 'Expand variants'}
             data-testid={`pipeline-details-nav-job-toggle-${jobId}`}
-            className="focus-ring focus-ring-inset shrink-0 rounded p-1 pl-3 fg-secondary transition hover:fg-primary"
+            className="focus-ring focus-ring-inset shrink-0 rounded p-1 pl-3 fg-secondary transition-colors hover:fg-primary"
           >
-            <DetailChevronIcon open={expanded} />
+            <ChevronIcon open={expanded} />
           </button>
         )}
         <button

@@ -328,8 +328,17 @@ test('repository contents mock serves pinned workflow files as base64 and record
   }
 });
 
+function boundedFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    signal: options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(5000)])
+      : AbortSignal.timeout(5000),
+  });
+}
+
 async function postForm(base, path, fields) {
-  const response = await fetch(`${base}${path}`, {
+  const response = await boundedFetch(`${base}${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
@@ -381,6 +390,131 @@ test('device flow stays pending until approved, then issues the scenario key as 
     });
     assert.deepEqual(rejected, { error: 'bad_refresh_token' });
   } finally {
+    server.close();
+  }
+});
+
+test('refresh hold rotates once before delivery and rejects the retired grant', async () => {
+  const { server, base } = await startServer();
+  const key = 'ghu_e2e_refresh-held';
+  const control = `${base}/__mock/github/refresh/${key}`;
+  const original = `ghr_e2e_${key}`;
+  const update = (held) =>
+    boundedFetch(control, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ held }),
+    });
+  try {
+    assert.equal((await update(true)).status, 200);
+    const refreshing = postForm(base, '/login/oauth/access_token', {
+      grant_type: 'refresh_token',
+      refresh_token: original,
+    });
+    const observed = await boundedFetch(`${control}?presentations=1`).then(
+      (r) => r.json(),
+    );
+    assert.deepEqual(observed.presentations, [original]);
+    assert.equal(observed.waiting, 1);
+    assert.equal(observed.delivered, 0);
+    await update(false);
+    const successor = await refreshing;
+    assert.equal(successor.access_token, key);
+    assert.notEqual(successor.refresh_token, original);
+    assert.equal(
+      (await boundedFetch(control).then((r) => r.json())).delivered,
+      1,
+    );
+    assert.deepEqual(
+      await postForm(base, '/login/oauth/access_token', {
+        grant_type: 'refresh_token',
+        refresh_token: original,
+      }),
+      { error: 'bad_refresh_token' },
+    );
+    const next = await postForm(base, '/login/oauth/access_token', {
+      grant_type: 'refresh_token',
+      refresh_token: successor.refresh_token,
+    });
+    assert.notEqual(next.refresh_token, successor.refresh_token);
+    // Holds are opt-in and keyed: the existing stateless fixture is unchanged.
+    const other = await postForm(base, '/login/oauth/access_token', {
+      grant_type: 'refresh_token',
+      refresh_token: 'ghr_e2e_other',
+    });
+    assert.equal(other.refresh_token, 'ghr_e2e_other');
+  } finally {
+    await update(false);
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('a lost held refresh response still retires the original grant', async () => {
+  const { server, base } = await startServer();
+  const key = 'ghu_e2e_refresh-lost';
+  const control = `${base}/__mock/github/refresh/${key}`;
+  const original = `ghr_e2e_${key}`;
+  const update = (held) =>
+    boundedFetch(control, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ held }),
+    });
+  const abort = new AbortController();
+  try {
+    assert.equal((await update(true)).status, 200);
+    const refreshing = boundedFetch(`${base}/login/oauth/access_token`, {
+      method: 'POST',
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: original,
+      }),
+      signal: abort.signal,
+    }).catch((error) => error);
+    await boundedFetch(`${control}?presentations=1`);
+    abort.abort();
+    await refreshing;
+    await update(false);
+    assert.deepEqual(
+      await postForm(base, '/login/oauth/access_token', {
+        grant_type: 'refresh_token',
+        refresh_token: original,
+      }),
+      { error: 'bad_refresh_token' },
+    );
+    const observed = await boundedFetch(control).then((r) => r.json());
+    assert.deepEqual(observed.presentations, [original, original]);
+    assert.equal(observed.delivered, 0);
+  } finally {
+    abort.abort();
+    await update(false);
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('a refresh observation with no presentation can be cancelled', async () => {
+  const { server, base } = await startServer();
+  const control = `${base}/__mock/github/refresh/ghu_e2e_refresh-observation`;
+  try {
+    const configured = await boundedFetch(control, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ held: true }),
+    });
+    assert.equal(configured.status, 200);
+    await assert.rejects(
+      boundedFetch(`${control}?presentations=1`, {
+        signal: AbortSignal.timeout(25),
+      }),
+      { name: 'TimeoutError' },
+    );
+    const observed = await boundedFetch(control).then((r) => r.json());
+    assert.deepEqual(observed.presentations, []);
+    assert.equal(observed.waiting, 0);
+  } finally {
+    server.closeAllConnections();
     server.close();
   }
 });

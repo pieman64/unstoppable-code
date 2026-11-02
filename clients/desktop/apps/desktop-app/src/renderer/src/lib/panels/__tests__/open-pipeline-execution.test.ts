@@ -91,7 +91,7 @@ function execution(
     version: 9,
     id,
     pipeline_id: 'pipeline-1',
-    pipeline_snapshot: { name: 'Build', jobs: {} },
+    pipeline_snapshot: { name: 'Build', scope: ['directory'], jobs: {} },
     status: 'running',
     jobs: {},
     job_definitions: {},
@@ -163,7 +163,9 @@ function makeHost(): FakeHost {
   const navigateToOwner = jest.fn(
     (
       owner: PipelineExecutionOwner,
+      ownerKind: 'code' | 'cowork',
     ): Promise<PipelineExecutionNavigationOutcome> => {
+      void ownerKind;
       shown.owner = owner;
       return Promise.resolve('shown');
     },

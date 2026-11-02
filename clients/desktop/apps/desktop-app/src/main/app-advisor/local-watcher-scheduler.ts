@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import type { AppAdvisorWatcher } from '@canopy/desktop-shared/types';
-import type { DelegateWatchEvent } from '@canopy/protocol/delegation';
 import {
   LOCAL_WATCHER_LIMITS,
   type LocalWatcherEvent,
@@ -15,7 +14,7 @@ interface Dependencies {
   ): Promise<AppAdvisorWatcher | undefined>;
   deliver(
     watcher: AppAdvisorWatcher,
-    event: LocalWatcherEvent | DelegateWatchEvent,
+    event: LocalWatcherEvent,
     deliveryId: string,
   ): Promise<void>;
   outputPath(watcher: AppAdvisorWatcher, attempt: number): Promise<string>;
@@ -26,9 +25,6 @@ interface Dependencies {
   discardOutput?: (outputPath: string) => Promise<void>;
   env?: (watcher: AppAdvisorWatcher) => NodeJS.ProcessEnv;
   validateExecutionScope?: (watcher: AppAdvisorWatcher) => Promise<boolean>;
-  evaluateManagedDelegation?: (
-    watcher: AppAdvisorWatcher,
-  ) => Promise<DelegateWatchEvent | undefined>;
 }
 
 export class LocalWatcherAggregateError extends Error {
@@ -48,6 +44,8 @@ export class WatcherRecipientNotReadyError extends Error {
   }
 }
 
+export const WATCHER_DELIVERY_ATTEMPT_LIMIT = 4;
+
 /** One nearest-deadline timer, bounded parallelism, no overlapping attempts per watcher. */
 export class LocalWatcherScheduler {
   private timer?: ReturnType<typeof setTimeout>;
@@ -63,7 +61,7 @@ export class LocalWatcherScheduler {
 
   async start(): Promise<void> {
     this.enabled = true;
-    await this.rescan(true).catch(() => this.schedule(5000));
+    await this.rescan().catch(() => this.schedule(5000));
   }
 
   stop(): void {
@@ -98,7 +96,7 @@ export class LocalWatcherScheduler {
       );
   }
 
-  async rescan(reconcileManagedAfterRestart = false): Promise<void> {
+  async rescan(): Promise<void> {
     if (!this.enabled) return;
     if (this.scanning) {
       this.rescanRequested = true;
@@ -113,19 +111,13 @@ export class LocalWatcherScheduler {
         const state = row.runtimeState;
         if (
           !this.enabled ||
-          (state?.kind !== 'local_watcher' &&
-            state?.kind !== 'managed_delegation') ||
+          state?.kind !== 'local_watcher' ||
           state.cancellationPending !== undefined ||
           (row.status !== 'active' && row.status !== 'firing') ||
           this.inFlight.has(row.id)
         )
           continue;
-        const due =
-          reconcileManagedAfterRestart &&
-          state.kind === 'managed_delegation' &&
-          !state.pendingDelivery
-            ? Date.now()
-            : Date.parse(state.nextAttemptAt);
+        const due = Date.parse(state.nextAttemptAt);
         if (
           due <= Date.now() &&
           this.inFlight.size < LOCAL_WATCHER_LIMITS.concurrency
@@ -172,15 +164,6 @@ export class LocalWatcherScheduler {
     generation: number,
   ): Promise<void> {
     let state = row.runtimeState;
-    if (state?.kind === 'managed_delegation') {
-      const prepared = await this.prepareManagedDelegation(
-        row,
-        signal,
-        generation,
-      );
-      if (prepared) await this.deliverPending(prepared, signal, generation);
-      return;
-    }
     if (state?.kind !== 'local_watcher') return;
     const live = (): boolean =>
       !signal.aborted && this.enabled && generation === this.generation;
@@ -330,64 +313,13 @@ export class LocalWatcherScheduler {
     await this.deliverPending(row, signal, generation);
   }
 
-  private async prepareManagedDelegation(
-    row: AppAdvisorWatcher,
-    signal: AbortSignal,
-    generation: number,
-  ): Promise<AppAdvisorWatcher | undefined> {
-    let state = row.runtimeState;
-    if (state?.kind !== 'managed_delegation') return undefined;
-    const live = (): boolean =>
-      !signal.aborted && this.enabled && generation === this.generation;
-    for (let attempt = 0; !state.pendingDelivery && attempt < 3; attempt++) {
-      const observedTargets = structuredClone(state.targets);
-      const event = await this.deps.evaluateManagedDelegation?.(row);
-      if (!event || !live()) return undefined;
-      const committed = await this.deps.update(row.id, (current) => {
-        if (
-          current.runtimeState?.kind !== 'managed_delegation' ||
-          current.runtimeState.pendingDelivery
-        )
-          return;
-        if (
-          current.runtimeState.targets.length !== observedTargets.length ||
-          current.runtimeState.targets.some((target, index) => {
-            const observed = observedTargets[index];
-            return (
-              !observed ||
-              target.delegationId !== observed.delegationId ||
-              target.runGeneration !== observed.runGeneration ||
-              target.status !== observed.status ||
-              target.resultIndex !== observed.resultIndex ||
-              target.settledAt !== observed.settledAt
-            );
-          })
-        )
-          return;
-        current.status = 'firing';
-        current.runtimeState.nextAttemptAt = new Date().toISOString();
-        current.runtimeState.pendingDelivery = {
-          eventId: randomUUID(),
-          attempts: 0,
-          event,
-        };
-      });
-      if (!committed || committed.runtimeState?.kind !== 'managed_delegation')
-        return undefined;
-      row = committed;
-      state = committed.runtimeState;
-    }
-    return live() && state.pendingDelivery ? row : undefined;
-  }
-
   private async deliverPending(
     row: AppAdvisorWatcher,
     signal: AbortSignal,
     generation: number,
   ): Promise<void> {
     const state = row.runtimeState;
-    if (state?.kind !== 'local_watcher' && state?.kind !== 'managed_delegation')
-      return;
+    if (state?.kind !== 'local_watcher') return;
     const live = (): boolean =>
       !signal.aborted && this.enabled && generation === this.generation;
     if (!live() || !state.pendingDelivery) return;
@@ -396,43 +328,10 @@ export class LocalWatcherScheduler {
     const saved = await this.deps.update(row.id, (current) => {
       const currentState = current.runtimeState;
       if (
-        (currentState?.kind !== 'local_watcher' &&
-          currentState?.kind !== 'managed_delegation') ||
+        currentState?.kind !== 'local_watcher' ||
         !currentState.pendingDelivery
       )
         return;
-      if (
-        currentState.kind === 'managed_delegation' &&
-        current.target.kind === 'managed_delegation' &&
-        currentState.pendingDelivery.event.outcome === 'timeout'
-      ) {
-        const targetDeadline = current.target.deadlineAt;
-        const settled = (
-          target: (typeof currentState.targets)[number],
-        ): boolean =>
-          target.resultIndex !== null &&
-          target.settledAt !== undefined &&
-          target.settledAt <= targetDeadline;
-        const completed =
-          current.target.mode === 'any'
-            ? currentState.targets.some(settled)
-            : currentState.targets.every(settled);
-        if (completed) {
-          current.target.outcome = 'completed';
-          currentState.pendingDelivery.event = {
-            ...currentState.pendingDelivery.event,
-            outcome: 'completed',
-            targets: currentState.targets.map(
-              ({ delegationId, runGeneration, status, resultIndex }) => ({
-                delegationId,
-                runGeneration,
-                status,
-                resultIndex,
-              }),
-            ),
-          };
-        }
-      }
       currentState.pendingDelivery.attempts = deliveryAttempt;
       currentState.nextAttemptAt = new Date(
         Date.now() + [5000, 30_000, 120_000][Math.min(deliveryAttempt - 1, 2)],
@@ -442,8 +341,7 @@ export class LocalWatcherScheduler {
     if (
       !saved ||
       !live() ||
-      (savedState?.kind !== 'local_watcher' &&
-        savedState?.kind !== 'managed_delegation') ||
+      savedState?.kind !== 'local_watcher' ||
       !savedState.pendingDelivery
     )
       return;
@@ -455,6 +353,7 @@ export class LocalWatcherScheduler {
       );
       if (!live()) return;
       await this.deps.update(row.id, (current) => {
+        if (current.runtimeState?.kind !== 'local_watcher') return;
         current.status = 'fired';
         current.firedAt = new Date().toISOString();
         delete current.deliveryError;
@@ -462,13 +361,12 @@ export class LocalWatcherScheduler {
     } catch (error) {
       if (!live()) return;
       if (error instanceof WatcherRecipientNotReadyError) {
-        // A retained delegate recipient (Watch Delegates, or a delegate's
-        // wakeup or command watch) is retried without spending attempts.
+        // A delegate's wakeup or command watch waits for its retained
+        // recipient without spending attempts.
         await this.deps.update(row.id, (current) => {
           const currentState = current.runtimeState;
           if (
-            (currentState?.kind !== 'managed_delegation' &&
-              currentState?.kind !== 'local_watcher') ||
+            currentState?.kind !== 'local_watcher' ||
             currentState.pendingDelivery?.eventId !== pending.eventId
           )
             return;
@@ -481,9 +379,10 @@ export class LocalWatcherScheduler {
         return;
       }
       await this.deps.update(row.id, (current) => {
+        if (current.runtimeState?.kind !== 'local_watcher') return;
         current.deliveryError =
           error instanceof Error ? error.message : String(error);
-        if (deliveryAttempt >= 4) {
+        if (deliveryAttempt >= WATCHER_DELIVERY_ATTEMPT_LIMIT) {
           current.status = 'delivery_failed';
           current.failureKind = 'delivery';
           current.firedAt = new Date().toISOString();

@@ -16,6 +16,8 @@ import {
   subscribePreferencesUpdated,
 } from '@/lib/preferences-events';
 import { makeTestPreferences } from '@/test-utils/preferences';
+import { MemoryReportOverlay } from '@/components/resource-diagnostics/MemoryReportOverlay';
+import { useMemoryReportStore } from '@/stores/memoryReportStore';
 import { PerformanceTab } from '../PerformanceTab';
 
 interface MockWindowApi {
@@ -466,6 +468,18 @@ describe('PerformanceTab memory diagnostics', () => {
     api = installMockWindowApi();
     container = null;
     root = null;
+    useMemoryReportStore.setState({
+      flow: { phase: 'idle' },
+      lastReport: null,
+      checking: false,
+    });
+    // The report starts after the overlay paints.
+    jest
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback): number => {
+        callback(0);
+        return 0;
+      });
   });
 
   afterEach(() => {
@@ -477,6 +491,7 @@ describe('PerformanceTab memory diagnostics', () => {
       root = null;
     }
     container?.remove();
+    jest.restoreAllMocks();
     if (originalApiDescriptor) {
       Object.defineProperty(window, 'api', originalApiDescriptor);
     } else {
@@ -516,7 +531,13 @@ describe('PerformanceTab memory diagnostics', () => {
     root = nextRoot;
     api.loadPreferences.mockResolvedValueOnce(preferences);
     await act(async (): Promise<void> => {
-      nextRoot.render(<PerformanceTab />);
+      // The confirmation and progress overlay mount at the app root.
+      nextRoot.render(
+        <>
+          <PerformanceTab />
+          <MemoryReportOverlay />
+        </>,
+      );
       await flushPromises();
     });
     return nextContainer;
@@ -750,13 +771,15 @@ describe('PerformanceTab memory diagnostics', () => {
         await flushPromises();
       });
 
-      const result = tab.querySelector(
-        '[data-testid="settings-memory-report-result"]',
+      const result = document.body.querySelector(
+        '[data-testid="memory-report-failed"]',
       );
       expect(result?.textContent).toContain(sentence);
       expect(result?.textContent).not.toContain('private backend details');
-      expect(result?.getAttribute('role')).toBeNull();
       expect(result?.querySelector('[role="alert"]')).not.toBeNull();
+      expect(
+        tab.querySelector('[data-testid="settings-memory-report-result"]'),
+      ).toBeNull();
     },
   );
 
@@ -764,15 +787,15 @@ describe('PerformanceTab memory diagnostics', () => {
     api.memoryDiagnostics.createReport.mockRejectedValueOnce(
       new Error('private backend details'),
     );
-    const tab = await renderAndOpenDialog();
+    await renderAndOpenDialog();
 
     await act(async (): Promise<void> => {
       findButton(document, 'settings-memory-report-confirm').click();
       await flushPromises();
     });
 
-    const result = tab.querySelector(
-      '[data-testid="settings-memory-report-result"]',
+    const result = document.body.querySelector(
+      '[data-testid="memory-report-failed"]',
     );
     expect(result?.textContent).toContain(
       "Couldn't create the memory report. Try again.",
@@ -821,11 +844,80 @@ describe('PerformanceTab memory diagnostics', () => {
       ),
     ).toBeNull();
     expect(
-      tab.querySelector('[data-testid="settings-memory-report-result"]')
+      document.body.querySelector('[data-testid="memory-report-failed"]')
         ?.textContent,
     ).toContain(
       "Couldn't start a report because another one is still being saved. Wait for it to finish, then try again.",
     );
+    expect(
+      tab.querySelector('[data-testid="settings-memory-report-result"]'),
+    ).toBeNull();
+  });
+
+  it('shows the progress overlay, then its outcome until dismissed', async () => {
+    const pending = deferred<CreateMemoryReportResult>();
+    api.memoryDiagnostics.createReport.mockReturnValueOnce(pending.promise);
+    await renderAndOpenDialog();
+
+    await act(async (): Promise<void> => {
+      findButton(document, 'settings-memory-report-confirm').click();
+      await flushPromises();
+    });
+
+    expect(api.memoryDiagnostics.createReport).toHaveBeenCalledTimes(1);
+    const overlay = document.body.querySelector(
+      '[data-testid="memory-report-overlay"]',
+    );
+    expect(overlay?.getAttribute('role')).toBe('dialog');
+    expect(overlay?.textContent).toContain('Generating…');
+    expect(overlay?.textContent).toContain(
+      'Canopy will stop responding for about 20 seconds while it saves the report.',
+    );
+    expect(
+      overlay?.querySelector('[data-testid="memory-report-done"]'),
+    ).toBeNull();
+    // A tier above Settings, and an overlay for native Browser views.
+    expect(overlay?.closest('.z-dropdown')).not.toBeNull();
+    expect(
+      overlay
+        ?.closest('[data-canopy-browser-native-overlay]')
+        ?.getAttribute('data-canopy-browser-native-overlay'),
+    ).toBe('true');
+
+    const report = makeMemoryReport();
+    await act(async (): Promise<void> => {
+      pending.resolve({ ok: true, report });
+      await flushPromises();
+    });
+
+    const saved = document.body.querySelector(
+      '[data-testid="memory-report-saved"]',
+    );
+    expect(document.body.textContent).toContain('Memory report saved');
+    expect(saved?.textContent).toContain('3.0 MB');
+    expect(document.activeElement).toBe(
+      findButton(document, 'memory-report-done'),
+    );
+
+    api.memoryDiagnostics.revealReport.mockResolvedValueOnce(false);
+    await act(async (): Promise<void> => {
+      findButton(document, 'memory-report-open-folder').click();
+      await flushPromises();
+    });
+    expect(api.memoryDiagnostics.revealReport).toHaveBeenCalledWith(
+      report.reportId,
+    );
+    expect(saved?.querySelector('[role="alert"]')?.textContent).toContain(
+      "Couldn't open the folder.",
+    );
+
+    await act(async (): Promise<void> => {
+      findButton(document, 'memory-report-done').click();
+      await flushPromises();
+    });
+    expect(
+      document.body.querySelector('[data-testid="memory-report-overlay"]'),
+    ).toBeNull();
   });
 
   it('opens the fallback confirmation when the fresh status read fails', async () => {
@@ -892,8 +984,16 @@ function findButtonByText(
   container: ParentNode,
   text: string,
 ): HTMLButtonElement {
+  // A dialog button can carry its key chip (`esc`) after the label.
+  const label = (element: HTMLButtonElement): string | undefined =>
+    element.textContent
+      ?.replace(
+        element.querySelector('[data-testid="kbd-chip"]')?.textContent ?? '',
+        '',
+      )
+      .trim();
   const button = Array.from(container.querySelectorAll('button')).find(
-    (element) => element.textContent?.trim() === text,
+    (element) => label(element) === text,
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error(`Button ${text} was not rendered`);

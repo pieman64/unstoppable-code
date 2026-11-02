@@ -1,4 +1,3 @@
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import type {
   TelemetrySharingPreferences,
@@ -185,7 +184,6 @@ export function TelemetrySharingControls({
   const ledgerEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key),
   );
-  const settingsButtonSize = useSettingsButtonSize();
   // Persist edits from the stored preference so display-only org locks are
   // never baked into storage; fall back to `value` when no raw value is supplied.
   const persistBase = rawValue ?? value;
@@ -267,7 +265,7 @@ export function TelemetrySharingControls({
           label="Set all to"
           control={orderedScopes.map((scope) => (
             <Button
-              size={settingsButtonSize}
+              size="compact"
               key={scope}
               variant="secondary"
               disabled={disabled}

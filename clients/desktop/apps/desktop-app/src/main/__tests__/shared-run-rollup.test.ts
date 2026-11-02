@@ -30,6 +30,7 @@ function zeroToolCounts(): AgentAuditToolCounts {
     scriptOutput: 0,
     watcher: 0,
     canopy: 0,
+    graph: 0,
     appAdvisor: 0,
     pipelineEditor: 0,
     mcp: 0,

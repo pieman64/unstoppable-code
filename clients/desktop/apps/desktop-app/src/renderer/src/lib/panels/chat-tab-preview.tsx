@@ -1,7 +1,9 @@
 /**
- * Chat tab previews (Labs: `chat-tab-previews`). Resting on a background chat
- * tab opens the shared `ChatTabPreviewCard` under it: the last prompt, the
- * agent's latest reply and the turn's status, live while the card is open.
+ * Standard chat tab previews.
+ * Resting on a background chat tab opens the shared `ChatTabPreviewCard`
+ * under it: the last prompt, the agent's latest reply and the turn's status,
+ * live while the card is open. Browser tabs get theirs from
+ * `browser-tab-preview.tsx`.
  *
  * Cheap by construction: the tab bar asks for a card element per background
  * tab, but its content mounts only while the card is open, so only the

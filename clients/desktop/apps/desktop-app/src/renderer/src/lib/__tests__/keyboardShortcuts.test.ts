@@ -8,6 +8,12 @@ import {
   isShortcutEvent,
   isDictationShortcutEvent,
 } from '../keyboardShortcuts';
+import {
+  formatShortcut as formatRegisteredShortcut,
+  isMacPlatform,
+  SHORTCUTS,
+  type ShortcutId,
+} from '@canopy/ui-shared/lib/shortcuts';
 
 /**
  * A macOS Option+<letter> keydown. `key` carries the COMPOSED character the
@@ -302,5 +308,39 @@ describe('isDictationShortcutEvent', () => {
       false,
     );
     expect(isDictationShortcutEvent({ ...base, code: 'KeyN' })).toBe(false);
+  });
+});
+
+describe('command shortcuts and the shared shortcut registry', () => {
+  function isRegisteredId(id: string): id is ShortcutId {
+    return Object.hasOwn(SHORTCUTS, id);
+  }
+
+  it('reads every command shortcut from the one registry', () => {
+    const withShortcut = COMMAND_DEFINITIONS.filter(
+      (command) => command.shortcut !== undefined,
+    );
+    expect(withShortcut.length).toBeGreaterThan(40);
+    for (const command of withShortcut) {
+      expect(isRegisteredId(command.id)).toBe(true);
+      if (isRegisteredId(command.id)) {
+        expect(command.shortcut).toBe(formatRegisteredShortcut(command.id));
+      }
+    }
+  });
+
+  it('keeps the spelling the shortcuts page showed before the registry', () => {
+    const byId = new Map(
+      COMMAND_DEFINITIONS.map((command) => [command.id, command.shortcut]),
+    );
+    const mac = isMacPlatform();
+    expect(byId.get('open-command-palette')).toBe(mac ? '⌘K' : 'Ctrl K');
+    expect(byId.get('open-shortcuts-settings')).toBe(
+      mac ? '⌘⇧K' : 'Ctrl Shift K',
+    );
+    expect(byId.get('browser-history-back')).toBe(mac ? '⌘←' : 'Alt ←');
+    expect(byId.get('panel-focus-group-up')).toBe(mac ? '⌘⌥↑' : 'Ctrl Alt ↑');
+    expect(byId.get('toggle-dictation')).toBe(mac ? '⌃M' : 'Ctrl M');
+    expect(byId.get('open-terminal')).toBe(mac ? '⌃`' : 'Ctrl `');
   });
 });

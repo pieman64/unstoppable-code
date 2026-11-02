@@ -39,11 +39,36 @@ export function assertValidPipelinePackage(
   }
 }
 
+/**
+ * The package carries this pipeline: it is keyed to its YAML, or (an
+ * automation package) it holds the YAML as an `automation_pipeline` resource.
+ * A dependency pipeline an automation install materialized runs under the
+ * automation's package, whose top-level hash is the automation's own.
+ */
+export function pipelinePackageCarriesPipeline(
+  manifest: PipelinePackageManifestV1,
+  pipelineContentHash: string,
+): boolean {
+  return (
+    manifest.pipelineContentHash === pipelineContentHash ||
+    manifest.resources.some(
+      (resource) =>
+        resource.kind === 'automation_pipeline' &&
+        resource.pipelineContentHash === pipelineContentHash,
+    )
+  );
+}
+
 export function assertPipelinePackageMatchesYaml(
   manifest: PipelinePackageManifestV1,
   rawPipeline: string,
 ): void {
-  if (manifest.pipelineContentHash !== hashPipelinePackageYaml(rawPipeline)) {
+  if (
+    !pipelinePackageCarriesPipeline(
+      manifest,
+      hashPipelinePackageYaml(rawPipeline),
+    )
+  ) {
     throw new Error(
       'Pipeline package content hash does not match the pipeline YAML',
     );

@@ -17,8 +17,7 @@ import {
 } from '@/components/chat/types';
 import { Tooltip } from '@canopy/ui-shared';
 import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
-
-const PIPELINE_EDITOR_CHAT_KEY = `${PIPELINE_EDITOR_PROJECT_ID}/${PIPELINE_EDITOR_WORKTREE_ID}`;
+import { PIPELINE_EDITOR_CHAT_KEY } from './pipelineAssistantDraft';
 
 const PIPELINE_EDITOR_TARGET = {
   projectId: PIPELINE_EDITOR_PROJECT_ID,
@@ -142,7 +141,7 @@ export function PipelineChatPanel({
 
   return (
     <section
-      aria-label="Pipeline assistant"
+      aria-label="Workflow assistant"
       data-testid="pipeline-chat-panel"
       className="flex h-full min-h-0 w-full flex-col border-l bg-card"
     >
@@ -156,13 +155,13 @@ export function PipelineChatPanel({
           The title keeps dragging the window, matching the band beside it. */}
       <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
         <span className="select-none text-s font-semibold fg-primary">
-          Pipeline Assistant
+          Workflow Assistant
         </span>
-        <Tooltip label="Hide pipeline assistant">
+        <Tooltip label="Hide workflow assistant">
           <button
             type="button"
             onClick={onCollapse}
-            aria-label="Hide pipeline assistant"
+            aria-label="Hide workflow assistant"
             data-testid="pipeline-chat-collapse"
             className="electron-no-drag focus-ring inline-flex h-7 w-7 items-center justify-center rounded-md fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
           >
@@ -189,6 +188,8 @@ export function PipelineChatPanel({
       {/* The whole chat takes dropped files (see ChatDropOverlay). */}
       <div
         data-chat-drop-zone
+        // Chat keeps plain line breaks (see canopy-tokens-core.css).
+        data-chat-window
         className="relative flex min-h-0 min-w-0 flex-1 flex-col"
       >
         <ChatContent

@@ -12,7 +12,9 @@ import {
 import { settleGitHubConnectOffer } from '@/lib/githubConnectOffer';
 import {
   hasPendingGitHubConnectOffer,
+  isGitHubActionContinuation,
   useGitHubConnectOfferStore,
+  type GitHubActionContinuation,
 } from '@/stores/githubConnectOfferStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -67,6 +69,15 @@ function prResponse(
     localOnlyCommittedRepos: [],
     ...overrides,
   };
+}
+
+function getActionContinuation(): GitHubActionContinuation {
+  const continuation =
+    useGitHubConnectOfferStore.getState().offer?.continuation;
+  if (!continuation || !isGitHubActionContinuation(continuation)) {
+    throw new Error('Expected a GitHub action continuation');
+  }
+  return continuation;
 }
 
 describe('GitHub connect offer', () => {
@@ -263,6 +274,25 @@ describe('GitHub connect offer', () => {
     },
   );
 
+  it('retains chat source and original target count across a PR subset retry', async () => {
+    createPr.mockResolvedValueOnce(
+      prResponse({ failedRepos: [authFailure()] }),
+    );
+    await useGitHubStore
+      .getState()
+      .createPr('project-a', 'wt-1', undefined, { source: 'chat' });
+    const offered = useGitHubConnectOfferStore.getState().offer?.continuation;
+    settle.mockResolvedValue('connected');
+    createPr.mockResolvedValue(prResponse());
+    await settleGitHubConnectOffer();
+    expect(offered).toMatchObject({ source: 'chat', telemetryRepoCount: 2 });
+    expect(createPr.mock.calls[1]?.[0]).toMatchObject({
+      repoIds: ['repo-1'],
+      source: 'chat',
+      telemetryRepoCount: 2,
+    });
+  });
+
   describe('push', () => {
     it('preserves each known branch when auth-failed repositories use different branches', async () => {
       useProjectsStore.setState({
@@ -366,17 +396,16 @@ describe('GitHub connect offer', () => {
         return Promise.resolve(pushResponse({ failedRepos: [authFailure()] }));
       });
       await useGitHubStore.getState().pushOnly('project-a', 'wt-1');
-      expect(
-        useGitHubConnectOfferStore.getState().offer?.continuation
-          .expectedHeadBranch,
-      ).toBe('feature/login');
+      expect(getActionContinuation().expectedHeadBranch).toBe('feature/login');
       settle.mockResolvedValue('connected');
       await settleGitHubConnectOffer();
       expect(pushOnly).toHaveBeenCalledTimes(1);
     });
     it('does not prompt after a successful push', async () => {
       pushOnly.mockResolvedValue(
-        pushResponse({ repos: [{ repoId: 'repo-1', repoName: 'app' }] }),
+        pushResponse({
+          repos: [{ repoId: 'repo-1', repoName: 'app', status: 'success' }],
+        }),
       );
       await useGitHubStore.getState().pushOnly('project-a', 'wt-1');
       expect(useGitHubConnectOfferStore.getState().offer).toBeNull();
@@ -416,9 +445,7 @@ describe('GitHub connect offer', () => {
         }),
       );
       await useGitHubStore.getState().pushOnly('project-a', 'wt-1');
-      expect(
-        useGitHubConnectOfferStore.getState().offer?.continuation.repoIds,
-      ).toEqual(['repo-1']);
+      expect(getActionContinuation().repoIds).toEqual(['repo-1']);
       expect(errorToasts()).toEqual([
         'Push failed for 1 repo: lib (rejected (non-fast-forward))',
       ]);
@@ -427,7 +454,7 @@ describe('GitHub connect offer', () => {
     it('retries only the auth-failed repositories once after connecting', async () => {
       pushOnly.mockResolvedValueOnce(
         pushResponse({
-          repos: [{ repoId: 'repo-2', repoName: 'lib' }],
+          repos: [{ repoId: 'repo-2', repoName: 'lib', status: 'success' }],
           failedRepos: [authFailure()],
         }),
       );
@@ -435,7 +462,9 @@ describe('GitHub connect offer', () => {
 
       settle.mockResolvedValue('connected');
       pushOnly.mockResolvedValueOnce(
-        pushResponse({ repos: [{ repoId: 'repo-1', repoName: 'app' }] }),
+        pushResponse({
+          repos: [{ repoId: 'repo-1', repoName: 'app', status: 'success' }],
+        }),
       );
       await Promise.all([
         settleGitHubConnectOffer(),
@@ -530,10 +559,7 @@ describe('GitHub connect offer', () => {
         pushResponse({ failedRepos: [authFailure()] }),
       );
       await useGitHubStore.getState().pushOnly('project-a', 'wt-1');
-      expect(
-        useGitHubConnectOfferStore.getState().offer?.continuation
-          .expectedHeadBranch,
-      ).toBeNull();
+      expect(getActionContinuation().expectedHeadBranch).toBeNull();
 
       settle.mockResolvedValue('connected');
       await settleGitHubConnectOffer();
@@ -650,9 +676,10 @@ describe('GitHub connect offer', () => {
             ],
           }),
         );
-        await useGitHubStore
-          .getState()
-          .commitAndPush('project-a', 'wt-1', { pullFirst: true });
+        await useGitHubStore.getState().commitAndPush('project-a', 'wt-1', {
+          pullFirst: true,
+          source: 'chat',
+        });
         generateCommitMessages.mockResolvedValue({
           repos: [
             {
@@ -689,6 +716,8 @@ describe('GitHub connect offer', () => {
             pullFirst: true,
             expectedHeadBranch: 'feature/login',
             requireReviewedMessages: true,
+            source: 'chat',
+            telemetryRepoCount: 2,
           });
         expect(pushOnly).not.toHaveBeenCalled();
         expect(useGitHubConnectOfferStore.getState().offer).toBeNull();
@@ -710,7 +739,9 @@ describe('GitHub connect offer', () => {
 
       settle.mockResolvedValue('connected');
       pushOnly.mockResolvedValue(
-        pushResponse({ repos: [{ repoId: 'repo-1', repoName: 'app' }] }),
+        pushResponse({
+          repos: [{ repoId: 'repo-1', repoName: 'app', status: 'success' }],
+        }),
       );
       await settleGitHubConnectOffer();
 
@@ -774,14 +805,13 @@ describe('GitHub connect offer', () => {
           .getState()
           .commitReviewPending['project-a/wt-1']?.resolve({ approved: true });
         await original;
-        const continuation =
-          useGitHubConnectOfferStore.getState().offer?.continuation;
         if (mixed) {
-          expect(continuation?.repoCommitPrepared).toEqual({
+          const actionContinuation = getActionContinuation();
+          expect(actionContinuation.repoCommitPrepared).toEqual({
             'repo-1': true,
             'repo-2': false,
           });
-          expect(continuation?.pushCompletedRepoIds).toEqual(['repo-1']);
+          expect(actionContinuation.pushCompletedRepoIds).toEqual(['repo-1']);
           return;
         }
         // A second generation would include edits made during sign-in.
@@ -872,7 +902,7 @@ describe('GitHub connect offer', () => {
         createPr.mockResolvedValue(prResponse());
         await useGitHubStore
           .getState()
-          .createPr('project-a', 'wt-1', ['repo-1']);
+          .createPr('project-a', 'wt-1', ['repo-1'], { source: 'chat' });
         settle.mockResolvedValue('connected');
         const retry = settleGitHubConnectOffer();
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -891,6 +921,8 @@ describe('GitHub connect offer', () => {
           expect.objectContaining({
             requireReviewedMessages: true,
             expectedHeadBranch: 'feature/login',
+            source: 'chat',
+            telemetryFlow: 'pull_request',
           }),
         );
         if (retryAuthFails) {
@@ -1163,9 +1195,7 @@ describe('GitHub connect offer', () => {
         }),
       );
       await useGitHubStore.getState().createPr('project-a', 'wt-1');
-      expect(
-        useGitHubConnectOfferStore.getState().offer?.continuation.repoIds,
-      ).toEqual(['repo-1']);
+      expect(getActionContinuation().repoIds).toEqual(['repo-1']);
     });
 
     it('continues only auth-failed repositories after a reviewed commit fails to push', async () => {
@@ -1189,7 +1219,7 @@ describe('GitHub connect offer', () => {
       expect(createPr).not.toHaveBeenCalled();
       const offer = useGitHubConnectOfferStore.getState().offer;
       expect(offer?.continuation.kind).toBe('pr');
-      expect(offer?.continuation.repoIds).toEqual(['repo-1']);
+      expect(getActionContinuation().repoIds).toEqual(['repo-1']);
       expect(errorToasts()).toEqual([]);
     });
 

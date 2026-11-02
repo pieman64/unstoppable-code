@@ -1,4 +1,7 @@
-import type { LedgerContainer } from '@canopy/protocol/canopy-core';
+import {
+  isSameLedgerGlobalOwner,
+  type LedgerContainer,
+} from '@canopy/protocol/canopy-core';
 
 /*
  * Paused pipeline agents as Ledger owner candidates (phase 08). The pipeline
@@ -25,6 +28,12 @@ export interface LedgerPausedPipelineAgent {
   readonly attempt: number;
   /** The Ledger container of the execution's worktree. */
   readonly container: LedgerContainer;
+  /**
+   * The Ledger incarnation the agent paused in. A global (workflow) Ledger
+   * is one per account, so when it is recorded its agents are offered only
+   * in that incarnation.
+   */
+  readonly containerCreatedAt?: string;
   /** The recovery checkpoint the agent resumes from. */
   readonly checkpointId: string;
   /** The execution's lifecycle generation when the agent paused. */
@@ -35,8 +44,11 @@ export interface LedgerPausedPipelineAgent {
 
 /** What the Ledger needs from the paused-agent record. */
 export interface LedgerPipelineAgentSource {
-  /** The container's paused agents. */
-  list(container: LedgerContainer): readonly LedgerPausedPipelineAgent[];
+  /** The container's paused agents, in the incarnation when one is given. */
+  list(
+    container: LedgerContainer,
+    containerCreatedAt?: string,
+  ): readonly LedgerPausedPipelineAgent[];
   /** A paused agent by its agent session, or undefined. */
   find(agentSessionId: string): LedgerPausedPipelineAgent | undefined;
   /** Runs `fn` under the execution's lifecycle admission fence. */
@@ -59,6 +71,11 @@ function sameContainer(left: LedgerContainer, right: LedgerContainer): boolean {
       );
     case 'advisor_entry':
       return right.kind === 'advisor_entry' && left.entryId === right.entryId;
+    case 'global':
+      return (
+        right.kind === 'global' &&
+        isSameLedgerGlobalOwner(left.owner, right.owner)
+      );
   }
 }
 
@@ -124,9 +141,17 @@ export class LedgerPipelineAgentOwners implements LedgerPipelineAgentSource {
     );
   }
 
-  list(container: LedgerContainer): LedgerPausedPipelineAgent[] {
-    return Array.from(this.paused.values()).filter((agent) =>
-      sameContainer(agent.container, container),
+  list(
+    container: LedgerContainer,
+    containerCreatedAt?: string,
+  ): LedgerPausedPipelineAgent[] {
+    return Array.from(this.paused.values()).filter(
+      (agent) =>
+        sameContainer(agent.container, container) &&
+        // Another account's global Ledger shares its owner, not its agents.
+        (container.kind !== 'global' ||
+          agent.containerCreatedAt === undefined ||
+          agent.containerCreatedAt === containerCreatedAt),
     );
   }
 

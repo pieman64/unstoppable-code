@@ -1,8 +1,17 @@
-import type { SharedAutomationDetail } from '@canopy/protocol/automations';
+import type {
+  SharedAutomationDetail,
+  SharedAutomationDocument,
+  SharedAutomationPipelineDependency,
+} from '@canopy/protocol/automations';
+import { validateSharedAutomationDocument } from '@canopy/protocol/automations';
 import type { ScheduledActivity } from '../../types';
 import {
+  AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE,
+  SHARED_AUTOMATION_NEWER_VERSION_MESSAGE,
   buildApplyUpdateRequest,
   buildInstallAutomationRequest,
+  planAutomationPipelineUpdate,
+  rewriteSharedAutomationPromptPipelines,
 } from '../automation-install';
 
 const NOW = '2026-08-20T12:00:00.000Z';
@@ -18,7 +27,12 @@ function detail(
     actionType: 'worktree_pipeline',
     contentHash: 'a'.repeat(64),
     shareScope: 'team',
-    owner: { type: 'team', id: 'team-1', name: 'Platform' },
+    owner: {
+      type: 'team',
+      id: 'team-1',
+      name: 'Platform',
+      organization: { id: 'org-1', name: 'Acme' },
+    },
     createdAt: '2026-08-19T00:00:00.000Z',
     updatedAt: '2026-08-19T00:00:00.000Z',
     createdBy: { id: 'user-1', name: 'Alex', email: 'alex@example.com' },
@@ -327,7 +341,10 @@ describe('buildInstallAutomationRequest', () => {
       NOW,
     );
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain('bundled pipeline');
+    if (!result.ok)
+      expect(result.error).toBe(
+        'Install the bundled workflow definition before installing this automation.',
+      );
   });
 
   it('stamps curated catalog provenance for the existing install path', () => {
@@ -452,7 +469,12 @@ describe('buildInstallAutomationRequest', () => {
         NOW,
       );
       expect(missing.ok).toBe(false);
-      if (!missing.ok) expect(missing.error).toContain('pipeline');
+      if (!missing.ok)
+        expect(missing.error).toBe(
+          pipeline.source === 'curated'
+            ? 'Import or choose the "Review" workflow before installing.'
+            : 'Choose a workflow for this automation before installing.',
+        );
 
       const mapped = buildInstallAutomationRequest(
         pipelineDetail,
@@ -1193,6 +1215,219 @@ describe('buildApplyUpdateRequest', () => {
   });
 });
 
+describe('pipeline destinations', () => {
+  function destinationDetail(kind: string): SharedAutomationDetail {
+    const base = detail();
+    const action = base.automation.action;
+    if (action.type !== 'worktree_pipeline') throw new Error('pipeline');
+    return detail({
+      automation: {
+        ...base.automation,
+        version: 6,
+        hasRunCondition: false,
+        action: {
+          ...action,
+          target:
+            kind === 'workspace'
+              ? { kind: 'workspace' }
+              : kind === 'global'
+                ? { kind: 'global' }
+                : kind === 'task'
+                  ? { kind: 'task' }
+                  : kind === 'project'
+                    ? { kind: 'project' }
+                    : { kind: 'new_worktree' },
+        },
+      },
+    });
+  }
+
+  it('installs a global destination with no project picker', () => {
+    expect(
+      buildInstallAutomationRequest(
+        destinationDetail('global'),
+        { pipelineResolution: { status: 'resolved', scopes: ['global'] } },
+        NOW,
+      ),
+    ).toMatchObject({
+      ok: true,
+      request: {
+        enabled: false,
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineId: 'code-review',
+        },
+      },
+    });
+    const result = buildInstallAutomationRequest(
+      destinationDetail('global'),
+      { pipelineResolution: { status: 'resolved', scopes: ['global'] } },
+      NOW,
+    );
+    if (result.ok)
+      expect(result.request.action).not.toHaveProperty('workspaceId');
+  });
+
+  it('refuses a global destination whose pipeline needs a project', () => {
+    expect(
+      buildInstallAutomationRequest(
+        destinationDetail('global'),
+        { pipelineResolution: { status: 'resolved', scopes: ['directory'] } },
+        NOW,
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('requires a recipient task for a task destination', () => {
+    const bindings = {
+      targetKind: 'single-repo' as const,
+      pipelineResolution: { status: 'resolved' as const, scopes: ['worktree'] },
+      workspaceId: 'workspace-1',
+    };
+    expect(
+      buildInstallAutomationRequest(destinationDetail('task'), bindings, NOW),
+    ).toEqual({ ok: false, error: 'Pick a task to run the workflow in.' });
+    expect(
+      buildInstallAutomationRequest(
+        destinationDetail('task'),
+        { ...bindings, taskId: 'wt-9' },
+        NOW,
+      ),
+    ).toMatchObject({
+      ok: true,
+      request: {
+        action: {
+          workspaceId: 'workspace-1',
+          target: { kind: 'task', taskId: 'wt-9' },
+        },
+      },
+    });
+  });
+
+  it('installs project and new worktree destinations on a recipient project', () => {
+    expect(
+      buildInstallAutomationRequest(
+        destinationDetail('project'),
+        {
+          targetKind: 'single-repo',
+          pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+          workspaceId: 'workspace-1',
+        },
+        NOW,
+      ),
+    ).toMatchObject({
+      ok: true,
+      request: {
+        action: { workspaceId: 'workspace-1', target: { kind: 'project' } },
+      },
+    });
+    expect(
+      buildInstallAutomationRequest(
+        destinationDetail('new_worktree'),
+        {
+          targetKind: 'cowork',
+          pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+          workspaceId: 'cowork-1',
+        },
+        NOW,
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('installs a portable workspace destination as a legacy action', () => {
+    const result = buildInstallAutomationRequest(
+      destinationDetail('workspace'),
+      {
+        targetKind: 'single-repo',
+        pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+        workspaceId: 'workspace-1',
+      },
+      NOW,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      request: { action: { workspaceId: 'workspace-1' } },
+    });
+    if (result.ok) expect(result.request.action).not.toHaveProperty('target');
+  });
+
+  it('keeps a task binding across an update and disables a kind change', () => {
+    const existing: ScheduledActivity = {
+      version: 1,
+      id: 'activity-installed',
+      name: 'Nightly review pipeline',
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'workspace-1',
+        target: { kind: 'task', taskId: 'wt-9' },
+        pipelineId: 'code-review',
+        pipelineSource: 'bundled',
+      },
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      failureCount: 0,
+      installedFrom: {
+        remoteId: detail().id,
+        contentHash: 'old'.padEnd(64, '0'),
+        installedAt: '2026-08-01T00:00:00.000Z',
+      },
+    };
+    const bindings = {
+      targetKind: 'single-repo' as const,
+      pipelineResolution: { status: 'resolved' as const, scopes: ['worktree'] },
+      workspaceId: 'workspace-1',
+    };
+    expect(
+      buildApplyUpdateRequest(
+        destinationDetail('task'),
+        existing,
+        bindings,
+        NOW,
+      ),
+    ).toMatchObject({
+      ok: true,
+      keptEnabled: true,
+      request: { action: { target: { kind: 'task', taskId: 'wt-9' } } },
+    });
+    // A kind change needs the new destination's own compatibility and
+    // leaves the copy off until the recipient turns it on again.
+    expect(
+      buildApplyUpdateRequest(
+        destinationDetail('project'),
+        existing,
+        bindings,
+        NOW,
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      buildApplyUpdateRequest(
+        destinationDetail('project'),
+        existing,
+        {
+          ...bindings,
+          pipelineResolution: { status: 'resolved', scopes: ['directory'] },
+        },
+        NOW,
+      ),
+    ).toMatchObject({
+      ok: true,
+      keptEnabled: false,
+      request: { enabled: false, action: { target: { kind: 'project' } } },
+    });
+    expect(
+      buildApplyUpdateRequest(
+        destinationDetail('new_worktree'),
+        existing,
+        bindings,
+        NOW,
+      ),
+    ).toMatchObject({ ok: true, keptEnabled: false });
+  });
+});
+
 describe('approved run conditions', () => {
   const SHARED_COMMAND = 'test -f ready';
 
@@ -1379,7 +1614,7 @@ describe('approved run conditions', () => {
       'a v3 revision',
       {
         ...gatedDetail(null),
-        automation: { ...gatedDetail(null).automation, version: 3 },
+        automation: { ...gatedDetail(null).automation, version: 3 as const },
       },
     ],
   ])(
@@ -1445,5 +1680,609 @@ describe('approved run conditions', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.request).not.toHaveProperty('ifCommand');
+  });
+});
+
+describe('document versions', () => {
+  it('still installs version 1 through 4 prompt documents', () => {
+    for (const version of [1, 2, 3, 4] as const) {
+      const source = promptDocument({
+        type: 'app_advisor_prompt',
+        prompt: 'Triage the inbox.',
+        plugins: [],
+      });
+      source.automation.version = version;
+      expect(buildInstallAutomationRequest(source, {}, NOW)).toMatchObject({
+        ok: true,
+        request: { action: { prompt: 'Triage the inbox.' } },
+      });
+    }
+  });
+
+  it('asks for a newer app instead of showing validator text for an unknown version', () => {
+    const source = promptDocument({
+      type: 'app_advisor_prompt',
+      prompt: 'Triage the inbox.',
+      plugins: [],
+    });
+    Reflect.set(source.automation, 'version', 7);
+    Reflect.set(source.automation.action, 'futureField', true);
+    expect(buildInstallAutomationRequest(source, {}, NOW)).toEqual({
+      ok: false,
+      error: SHARED_AUTOMATION_NEWER_VERSION_MESSAGE,
+    });
+    const existing: ScheduledActivity = {
+      version: 1,
+      id: 'activity-installed',
+      name: 'Inbox triage',
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action: { type: 'app_advisor_prompt', prompt: 'Triage the inbox.' },
+      createdAt: NOW,
+      updatedAt: NOW,
+      failureCount: 0,
+    };
+    expect(buildApplyUpdateRequest(source, existing, {}, NOW)).toEqual({
+      ok: false,
+      error: SHARED_AUTOMATION_NEWER_VERSION_MESSAGE,
+    });
+    expect(SHARED_AUTOMATION_NEWER_VERSION_MESSAGE).toMatch(
+      /^This share needs a newer version/,
+    );
+  });
+});
+
+describe('packaged pipelines (shared document v5)', () => {
+  const capabilityPackage = {
+    version: 1 as const,
+    digest: `pp:v1:${'A'.repeat(43)}`,
+  };
+  const AUTHOR_ENTRY = 'C9F0F895-FB98-4B91-8C6E-2A5C1D0E4B22';
+  const AUTHOR_WORKER = '8f14e45f-ceea-467a-9575-0b5b4b2b1c11';
+  const ENTRY_KEY = AUTHOR_ENTRY.toLowerCase();
+  const WORKER_KEY = AUTHOR_WORKER;
+  const LOCAL_ENTRY = 'A1B2C3D4-0000-4000-8000-00000000000A';
+  const LOCAL_WORKER = 'b1b2c3d4-0000-4000-8000-00000000000b';
+  const PROMPT = `See notes.md. Run ${AUTHOR_ENTRY} with ${AUTHOR_WORKER}; if ${AUTHOR_ENTRY} fails, retry.`;
+
+  function spansOf(
+    prompt: string,
+    text: string,
+  ): Array<{ textStart: number; text: string }> {
+    const spans: Array<{ textStart: number; text: string }> = [];
+    for (
+      let index = prompt.indexOf(text);
+      index !== -1;
+      index = prompt.indexOf(text, index + text.length)
+    ) {
+      spans.push({ textStart: index, text });
+    }
+    return spans;
+  }
+
+  function dependency(
+    key: string,
+    spanText: string,
+    pipelineContentHash: string,
+    prompt = PROMPT,
+  ): SharedAutomationPipelineDependency {
+    return {
+      key,
+      pipeline: { source: 'packaged', key, pipelineContentHash, name: key },
+      promptSpans: spansOf(prompt, spanText),
+    };
+  }
+
+  function promptShare(
+    dependencies: SharedAutomationPipelineDependency[],
+    prompt = PROMPT,
+  ): SharedAutomationDetail {
+    const automation: SharedAutomationDocument = {
+      version: 5,
+      name: 'Specialists',
+      description: '',
+      trigger: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+      action: {
+        type: 'app_advisor_prompt',
+        prompt,
+        ...(prompt.startsWith('See notes.md')
+          ? {
+              promptReferences: [
+                {
+                  kind: 'file' as const,
+                  textStart: 4,
+                  displayText: 'notes.md',
+                  root: { kind: 'workspace' as const },
+                  relativePath: 'notes.md',
+                },
+              ],
+            }
+          : {}),
+        pipelineDependencies: dependencies,
+        plugins: [],
+      },
+      capabilityPackage,
+      hasRunCondition: false,
+    };
+    expect(validateSharedAutomationDocument(automation)).toMatchObject({
+      ok: true,
+    });
+    return detail({ actionType: 'app_advisor_prompt', automation });
+  }
+
+  function pipelineShare(pipelineContentHash: string): SharedAutomationDetail {
+    const automation: SharedAutomationDocument = {
+      version: 5,
+      name: 'Nightly review pipeline',
+      description: '',
+      trigger: { kind: 'cron', expression: '0 2 * * *', timezone: 'local' },
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'workspace' },
+        pipeline: {
+          source: 'packaged',
+          key: 'action',
+          pipelineContentHash,
+          name: 'Review',
+        },
+        inputKeys: [],
+      },
+      capabilityPackage,
+      hasRunCondition: false,
+    };
+    expect(validateSharedAutomationDocument(automation)).toMatchObject({
+      ok: true,
+    });
+    return detail({ automation });
+  }
+
+  const pipelineBindings = {
+    targetKind: 'single-repo' as const,
+    pipelineResolution: { status: 'resolved' as const, scopes: 'directory' },
+    workspaceId: 'workspace-1',
+  };
+
+  function installedPromptActivity(
+    overrides: Partial<ScheduledActivity> = {},
+  ): ScheduledActivity {
+    const rewrittenPrompt = PROMPT.split(AUTHOR_ENTRY)
+      .join(LOCAL_ENTRY.toLowerCase())
+      .split(AUTHOR_WORKER)
+      .join(LOCAL_WORKER);
+    return {
+      version: 1,
+      id: 'activity-installed',
+      name: 'Specialists',
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+      action: { type: 'app_advisor_prompt', prompt: rewrittenPrompt },
+      createdAt: NOW,
+      updatedAt: NOW,
+      failureCount: 0,
+      installedFrom: {
+        remoteId: detail().id,
+        contentHash: 'old'.padEnd(64, '0'),
+        installedAt: '2026-08-01T00:00:00.000Z',
+        capabilityPackage,
+        pipelineDependencies: [
+          {
+            key: ENTRY_KEY,
+            localPipelineId: LOCAL_ENTRY,
+            pipelineContentHash: '1'.repeat(64),
+          },
+          {
+            key: WORKER_KEY,
+            localPipelineId: LOCAL_WORKER,
+            pipelineContentHash: '2'.repeat(64),
+          },
+        ],
+      },
+      ...overrides,
+    };
+  }
+
+  it('maps a packaged action pipeline like an inline one and records its provenance', () => {
+    const result = buildInstallAutomationRequest(
+      pipelineShare('b'.repeat(64)),
+      {
+        ...pipelineBindings,
+        pipelineDependencies: [
+          {
+            key: 'action',
+            localPipelineId: 'installed-pipeline-1',
+            pipelineContentHash: 'b'.repeat(64),
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.request.action).toEqual({
+      type: 'worktree_pipeline',
+      workspaceId: 'workspace-1',
+      pipelineId: 'installed-pipeline-1',
+      pipelineSource: 'user',
+      pipelineName: 'Review',
+    });
+    expect(result.request.installedFrom).toEqual(
+      expect.objectContaining({
+        bundledPipelineLocalId: 'installed-pipeline-1',
+        bundledPipelineContentHash: 'b'.repeat(64),
+        capabilityPackage,
+      }),
+    );
+    expect(result.request.installedFrom).not.toHaveProperty(
+      'pipelineDependencies',
+    );
+  });
+
+  it('refuses a packaged action pipeline that was not installed or does not match', () => {
+    expect(
+      buildInstallAutomationRequest(
+        pipelineShare('b'.repeat(64)),
+        pipelineBindings,
+        NOW,
+      ),
+    ).toEqual({
+      ok: false,
+      error: 'Install the pipelines this automation uses before installing it.',
+    });
+    expect(
+      buildInstallAutomationRequest(
+        pipelineShare('b'.repeat(64)),
+        {
+          ...pipelineBindings,
+          pipelineDependencies: [
+            {
+              key: 'action',
+              localPipelineId: 'installed-pipeline-1',
+              pipelineContentHash: 'c'.repeat(64),
+            },
+          ],
+        },
+        NOW,
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('rewrites interleaved and repeated prompt mentions to lower-case local IDs', () => {
+    const result = buildInstallAutomationRequest(
+      promptShare([
+        dependency(ENTRY_KEY, AUTHOR_ENTRY, '1'.repeat(64)),
+        dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64)),
+      ]),
+      {
+        pipelineDependencies: [
+          {
+            key: WORKER_KEY,
+            localPipelineId: LOCAL_WORKER,
+            pipelineContentHash: '2'.repeat(64),
+          },
+          {
+            key: ENTRY_KEY,
+            localPipelineId: LOCAL_ENTRY,
+            pipelineContentHash: '1'.repeat(64),
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.request.action.type !== 'app_advisor_prompt')
+      return;
+    const prompt = result.request.action.prompt;
+    expect(prompt).toBe(
+      `See notes.md. Run ${LOCAL_ENTRY.toLowerCase()} with ${LOCAL_WORKER}; if ${LOCAL_ENTRY.toLowerCase()} fails, retry.`,
+    );
+    expect(prompt).toHaveLength(PROMPT.length);
+    // Configured references keep their offsets.
+    expect(result.request.action.promptReferences).toEqual([
+      expect.objectContaining({ textStart: 4, displayText: 'notes.md' }),
+    ]);
+    expect(prompt.slice(4, 12)).toBe('notes.md');
+    expect(result.request.installedFrom?.pipelineDependencies).toEqual([
+      {
+        key: ENTRY_KEY,
+        localPipelineId: LOCAL_ENTRY,
+        pipelineContentHash: '1'.repeat(64),
+      },
+      {
+        key: WORKER_KEY,
+        localPipelineId: LOCAL_WORKER,
+        pipelineContentHash: '2'.repeat(64),
+      },
+    ]);
+  });
+
+  it('refuses a replacement that would change the prompt length', () => {
+    const result = buildInstallAutomationRequest(
+      promptShare([dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64))]),
+      {
+        pipelineDependencies: [
+          {
+            key: WORKER_KEY,
+            localPipelineId: 'installed-pipeline-1',
+            pipelineContentHash: '2'.repeat(64),
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: `The prompt's mention of the "${WORKER_KEY}" pipeline could not be updated to its local ID.`,
+    });
+  });
+
+  it('refuses spans that no longer match or overlap a configured reference', () => {
+    const localIds = new Map([[WORKER_KEY, LOCAL_WORKER]]);
+    expect(
+      rewriteSharedAutomationPromptPipelines(
+        `Use ${AUTHOR_WORKER}.`,
+        [
+          {
+            key: WORKER_KEY,
+            pipeline: {
+              source: 'packaged',
+              key: WORKER_KEY,
+              pipelineContentHash: '2'.repeat(64),
+            },
+            promptSpans: [{ textStart: 0, text: AUTHOR_WORKER }],
+          },
+        ],
+        localIds,
+      ),
+    ).toMatchObject({ ok: false });
+    const prompt = `Open ${AUTHOR_WORKER}.md now.`;
+    expect(
+      rewriteSharedAutomationPromptPipelines(
+        prompt,
+        [dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64), prompt)],
+        localIds,
+        [
+          {
+            kind: 'file',
+            textStart: 5,
+            displayText: `${AUTHOR_WORKER}.md`,
+            root: { kind: 'workspace' },
+            relativePath: `${AUTHOR_WORKER}.md`,
+          },
+        ],
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('refuses to install a prompt whose packaged dependency was not installed', () => {
+    expect(
+      buildInstallAutomationRequest(
+        promptShare([dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64))]),
+        {},
+        NOW,
+      ),
+    ).toEqual({
+      ok: false,
+      error: 'Install the pipelines this automation uses before installing it.',
+    });
+  });
+
+  it('prefills Stage A with the recorded pipelines the update still lists', () => {
+    const existing = installedPromptActivity();
+    const incoming = promptShare([
+      dependency(ENTRY_KEY, AUTHOR_ENTRY, '3'.repeat(64)),
+      dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64)),
+    ]);
+    expect(
+      planAutomationPipelineUpdate(existing.installedFrom, incoming.automation),
+    ).toEqual({
+      ok: true,
+      value: {
+        existingPipelines: [
+          {
+            key: ENTRY_KEY,
+            localPipelineId: LOCAL_ENTRY,
+            expectedContentHash: '1'.repeat(64),
+          },
+          {
+            key: WORKER_KEY,
+            localPipelineId: LOCAL_WORKER,
+            expectedContentHash: '2'.repeat(64),
+          },
+        ],
+        dropped: [],
+      },
+    });
+  });
+
+  it('reuses recorded local IDs on update and rewrites the new prompt', () => {
+    const existing = installedPromptActivity();
+    const nextPrompt = `Now: ${AUTHOR_WORKER} first, then ${AUTHOR_ENTRY}.`;
+    const incoming = promptShare(
+      [
+        dependency(ENTRY_KEY, AUTHOR_ENTRY, '3'.repeat(64), nextPrompt),
+        dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64), nextPrompt),
+      ],
+      nextPrompt,
+    );
+    // The entry pipeline changed upstream, so Stage A re-materialized it under
+    // the same local ID; the unchanged worker reuses its recorded binding.
+    const result = buildApplyUpdateRequest(
+      incoming,
+      existing,
+      {
+        pipelineDependencies: [
+          {
+            key: ENTRY_KEY,
+            localPipelineId: LOCAL_ENTRY,
+            pipelineContentHash: '3'.repeat(64),
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.request.action?.type !== 'app_advisor_prompt')
+      return;
+    expect(result.request.action.prompt).toBe(
+      `Now: ${LOCAL_WORKER} first, then ${LOCAL_ENTRY.toLowerCase()}.`,
+    );
+    expect(result.request.installedFrom?.pipelineDependencies).toEqual([
+      {
+        key: ENTRY_KEY,
+        localPipelineId: LOCAL_ENTRY,
+        pipelineContentHash: '3'.repeat(64),
+      },
+      {
+        key: WORKER_KEY,
+        localPipelineId: LOCAL_WORKER,
+        pipelineContentHash: '2'.repeat(64),
+      },
+    ]);
+    expect(result.droppedPipelineDependencies).toEqual([]);
+  });
+
+  it('needs a Stage A result for a dependency that changed upstream', () => {
+    const result = buildApplyUpdateRequest(
+      promptShare([
+        dependency(ENTRY_KEY, AUTHOR_ENTRY, '3'.repeat(64)),
+        dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64)),
+      ]),
+      installedPromptActivity(),
+      {},
+      NOW,
+    );
+    expect(result).toEqual({
+      ok: false,
+      error: 'Install the pipelines this automation uses before installing it.',
+    });
+  });
+
+  it('reports a dependency the new share no longer lists as dropped', () => {
+    const prompt = `Run ${AUTHOR_WORKER}.`;
+    const result = buildApplyUpdateRequest(
+      promptShare(
+        [dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64), prompt)],
+        prompt,
+      ),
+      installedPromptActivity(),
+      {},
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.droppedPipelineDependencies).toEqual([
+      {
+        key: ENTRY_KEY,
+        localPipelineId: LOCAL_ENTRY,
+        pipelineContentHash: '1'.repeat(64),
+      },
+    ]);
+    expect(result.request.installedFrom?.pipelineDependencies).toEqual([
+      {
+        key: WORKER_KEY,
+        localPipelineId: LOCAL_WORKER,
+        pipelineContentHash: '2'.repeat(64),
+      },
+    ]);
+  });
+
+  it('refuses the whole update when a recorded dependency was edited locally', () => {
+    const incoming = promptShare([
+      dependency(ENTRY_KEY, AUTHOR_ENTRY, '3'.repeat(64)),
+      dependency(WORKER_KEY, AUTHOR_WORKER, '2'.repeat(64)),
+    ]);
+    const localPipelineContentHashes = {
+      [LOCAL_ENTRY]: '1'.repeat(64),
+      [LOCAL_WORKER]: 'f'.repeat(64),
+    };
+    expect(
+      buildApplyUpdateRequest(
+        incoming,
+        installedPromptActivity(),
+        {
+          localPipelineContentHashes,
+          pipelineDependencies: [
+            {
+              key: ENTRY_KEY,
+              localPipelineId: LOCAL_ENTRY,
+              pipelineContentHash: '3'.repeat(64),
+            },
+          ],
+        },
+        NOW,
+      ),
+    ).toEqual({ ok: false, error: AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE });
+    expect(
+      planAutomationPipelineUpdate(
+        installedPromptActivity().installedFrom,
+        incoming.automation,
+        localPipelineContentHashes,
+      ),
+    ).toEqual({ ok: false, error: AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE });
+    // A deleted local copy is left for Stage A to create again.
+    expect(
+      planAutomationPipelineUpdate(
+        installedPromptActivity().installedFrom,
+        incoming.automation,
+        { [LOCAL_ENTRY]: '1'.repeat(64), [LOCAL_WORKER]: null },
+      ),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        existingPipelines: [expect.objectContaining({ key: ENTRY_KEY })],
+      },
+    });
+  });
+
+  it('carries an inline action pipeline over to a packaged update under the same local ID', () => {
+    const existing: ScheduledActivity = {
+      ...installedPromptActivity(),
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'workspace-1',
+        pipelineId: 'installed-pipeline-1',
+        pipelineSource: 'user',
+      },
+      installedFrom: {
+        remoteId: detail().id,
+        contentHash: 'old'.padEnd(64, '0'),
+        installedAt: '2026-08-01T00:00:00.000Z',
+        bundledPipelineLocalId: 'installed-pipeline-1',
+        bundledPipelineContentHash: 'b'.repeat(64),
+      },
+    };
+    const incoming = pipelineShare('b'.repeat(64));
+    expect(
+      planAutomationPipelineUpdate(existing.installedFrom, incoming.automation),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        existingPipelines: [
+          {
+            key: 'action',
+            localPipelineId: 'installed-pipeline-1',
+            expectedContentHash: 'b'.repeat(64),
+          },
+        ],
+        dropped: [],
+      },
+    });
+    const result = buildApplyUpdateRequest(
+      incoming,
+      existing,
+      pipelineBindings,
+      NOW,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.request.action).toMatchObject({
+      pipelineId: 'installed-pipeline-1',
+    });
+    expect(result.request.installedFrom).toEqual(
+      expect.objectContaining({
+        bundledPipelineLocalId: 'installed-pipeline-1',
+        bundledPipelineContentHash: 'b'.repeat(64),
+      }),
+    );
   });
 });

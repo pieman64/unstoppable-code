@@ -7,6 +7,7 @@ import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { GitHubConnectionLink } from './team-projects-create-dialog';
 import type { OrgProjectLocalStatus } from './organization-settings-slots';
+import { SETTINGS_GROUP_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
 
 /** `active` means work is running, never "current". */
 type SetupStepStatus = 'completed' | 'active' | 'pending';
@@ -106,7 +107,8 @@ export function ProjectsSetupChecklist({
         ? {
             action: (
               <Button
-                variant="primary"
+                variant="secondary"
+                size="compact"
                 data-testid="team-projects-create"
                 onClick={onAdd}
               >
@@ -137,14 +139,14 @@ export function ProjectsSetupChecklist({
     });
   }
   return (
-    <ol className="divide-y rounded-lg border">
+    <ol className={SETTINGS_GROUP_CLASS}>
       {steps.map(
         (step): JSX.Element => (
           <li
             key={step.key}
             data-testid={step.testId}
             data-step-status={step.status}
-            className="flex items-center gap-3 px-4 py-3"
+            className="flex items-center gap-3"
           >
             <SetupStepIcon status={step.status} />
             <div className="min-w-0 flex-1">

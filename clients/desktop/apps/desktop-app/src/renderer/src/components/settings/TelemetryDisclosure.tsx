@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Notice } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 
 interface TelemetryDisclosureProps {
@@ -19,14 +20,14 @@ export function TelemetryDisclosure({
 }: TelemetryDisclosureProps): JSX.Element {
   return (
     <div
-      className={`space-y-4 text-s fg-secondary ${className}`}
+      className={`flex flex-col gap-3 ${className}`}
       data-testid="telemetry-disclosure"
     >
       {/*
-        Deliberately stops at what sharing is FOR. Encryption, secret scrubbing,
-        and private-by-default are each stated on their own line in the
-        protection box below, so restating them here made the member read the
-        same three guarantees twice before reaching a single control.
+        Deliberately stops at what sharing is FOR. Encryption and secret
+        scrubbing are stated once, in the notice below, so restating them here
+        made the member read the same guarantees twice before reaching a
+        single control.
       */}
       {/*
         The closing sentence is basic usage analytics, not activity sharing:
@@ -34,7 +35,7 @@ export function TelemetryDisclosure({
         passing aside, so it rides on the intro. It makes no "never your
         prompts" promise, which beside this intro read as a claim about sharing.
       */}
-      <p>
+      <p className="text-xs text-pretty fg-secondary">
         Activity sharing syncs your agent activity to {brandText.appName} Cloud
         so you can revisit and search past runs from anywhere, pick up work
         across machines, and share runs with your team.{' '}
@@ -43,21 +44,17 @@ export function TelemetryDisclosure({
         </span>
       </p>
 
-      {/* Spacing and a sub-heading carry this group; it needs no box. */}
-      <div className="space-y-1" data-testid="telemetry-disclosure-protection">
-        <h3 className="text-s font-medium fg-primary">
-          How your data is protected
-        </h3>
-        <ul className="list-disc space-y-1 pl-5">
-          <li>
-            Secrets like API keys are scrubbed before anything leaves the app.
-          </li>
-          <li>
-            Your uploaded transcripts and plans are encrypted and stored
-            securely on {brandText.appName} Cloud.
-          </li>
-        </ul>
-      </div>
+      {/* The guarantees are one settings notice between the intro and the
+          choices, not a sub-heading and a list. */}
+      <Notice
+        role="none"
+        title="How your data is protected"
+        data-testid="telemetry-disclosure-protection"
+      >
+        Secrets like API keys are scrubbed before anything leaves the app, and
+        your uploaded transcripts and plans are encrypted and stored securely on{' '}
+        {brandText.appName} Cloud.
+      </Notice>
     </div>
   );
 }

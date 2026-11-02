@@ -12,6 +12,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const HANDOFF_MODEL = 'settings-handoff-summary-model';
 const HANDOFF_THINKING = 'settings-handoff-summary-thinking';
@@ -87,10 +88,12 @@ test('App Advisor reads and changes the same handoff model shown in Settings', a
         handoffSummaryThinkingLevel: SAVED_HANDOFF_THINKING,
       },
     });
-    await expect(chatTab.getByTestId(HANDOFF_MODEL)).toHaveValue(
+    await expect(chatTab.getByTestId(HANDOFF_MODEL)).toHaveAttribute(
+      'data-value',
       SAVED_HANDOFF_MODEL,
     );
-    await expect(chatTab.getByTestId(HANDOFF_THINKING)).toHaveValue(
+    await expect(chatTab.getByTestId(HANDOFF_THINKING)).toHaveAttribute(
+      'data-value',
       SAVED_HANDOFF_THINKING,
     );
     const rejected = await advisorRequest(electronApp, {
@@ -148,10 +151,10 @@ async function openChatSettings(electronApp) {
 async function otherSummaryRowValues(chatTab) {
   const values = [];
   for (const title of ['Chat title model', 'Worktree activity summary model']) {
-    const selects = modelRow(chatTab, title).locator('select');
+    const selects = modelRow(chatTab, title).locator('button[role="combobox"]');
     values.push([
-      await selects.nth(0).inputValue(),
-      await selects.nth(1).inputValue(),
+      await selects.nth(0).getAttribute('data-value'),
+      await selects.nth(1).getAttribute('data-value'),
     ]);
   }
   return values;
@@ -166,15 +169,19 @@ test('saves the conversation handoff model independently and keeps it after rela
     ({ electronApp } = await launchCanopy({ userDataDir }));
     let chatTab = await openChatSettings(electronApp);
     const handoffModel = chatTab.getByTestId(HANDOFF_MODEL);
-    await expect(handoffModel).toHaveValue('haiku');
-    await expect(chatTab.getByTestId(HANDOFF_THINKING)).toHaveValue('off');
+    await expect(handoffModel).toHaveAttribute('data-value', 'haiku');
+    await expect(chatTab.getByTestId(HANDOFF_THINKING)).toHaveAttribute(
+      'data-value',
+      'off',
+    );
     const otherRowsBefore = await otherSummaryRowValues(chatTab);
     const persistedBefore = readPersistedPreferences(userDataDir);
 
-    await handoffModel.selectOption(SAVED_HANDOFF_MODEL);
-    await chatTab
-      .getByTestId(HANDOFF_THINKING)
-      .selectOption(SAVED_HANDOFF_THINKING);
+    await chooseSettingsOption(handoffModel, SAVED_HANDOFF_MODEL);
+    await chooseSettingsOption(
+      chatTab.getByTestId(HANDOFF_THINKING),
+      SAVED_HANDOFF_THINKING,
+    );
     await expect
       .poll(() => {
         const saved = readPersistedPreferences(userDataDir);
@@ -197,10 +204,12 @@ test('saves the conversation handoff model independently and keeps it after rela
 
     ({ electronApp } = await launchCanopy({ userDataDir }));
     chatTab = await openChatSettings(electronApp);
-    await expect(chatTab.getByTestId(HANDOFF_MODEL)).toHaveValue(
+    await expect(chatTab.getByTestId(HANDOFF_MODEL)).toHaveAttribute(
+      'data-value',
       SAVED_HANDOFF_MODEL,
     );
-    await expect(chatTab.getByTestId(HANDOFF_THINKING)).toHaveValue(
+    await expect(chatTab.getByTestId(HANDOFF_THINKING)).toHaveAttribute(
+      'data-value',
       SAVED_HANDOFF_THINKING,
     );
     expect(await otherSummaryRowValues(chatTab)).toEqual(otherRowsBefore);

@@ -3,6 +3,7 @@ import { getObservabilityService } from '../observability';
 import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import { logMainProcessError } from './main-process-logging';
 import { sendToAllWindows } from './window-send';
+import type { SessionStopCause } from '../agents/session-manager';
 
 /**
  * Canopy-owned `reason` on a synthetic terminal task notification. The Claude
@@ -31,6 +32,24 @@ export interface SessionEndedBackgroundTask {
   taskId: string;
   toolUseId?: string;
   description?: string;
+  stopCause?: SessionStopCause;
+}
+
+function summaryForStopCause(cause: SessionStopCause): string {
+  switch (cause) {
+    case 'stop':
+      return 'Stopped when the chat was stopped';
+    case 'recycle':
+      return 'Stopped when the provider session was recycled';
+    case 'archive':
+      return 'Stopped when the chat was archived';
+    case 'crash':
+      return 'Stopped when the provider process crashed';
+    case 'external_signal':
+      return 'Stopped when the provider process exited';
+    case 'session_ended':
+      return SESSION_ENDED_TASK_NOTIFICATION_SUMMARY;
+  }
 }
 
 /**
@@ -42,11 +61,9 @@ export interface SessionEndedBackgroundTask {
  */
 export function buildSessionEndedTaskNotification(
   task: SessionEndedBackgroundTask,
-  copy: SyntheticTerminalNotificationCopy = {
-    reason: SESSION_ENDED_TASK_NOTIFICATION_REASON,
-    summary: SESSION_ENDED_TASK_NOTIFICATION_SUMMARY,
-  },
+  copy?: SyntheticTerminalNotificationCopy,
 ): Record<string, unknown> {
+  const stopCause = task.stopCause ?? 'session_ended';
   return {
     type: 'system',
     subtype: 'task_notification',
@@ -54,8 +71,13 @@ export function buildSessionEndedTaskNotification(
     ...(task.toolUseId ? { tool_use_id: task.toolUseId } : {}),
     ...(task.description ? { description: task.description } : {}),
     status: 'stopped',
-    reason: copy.reason,
-    summary: copy.summary,
+    reason: copy?.reason ?? SESSION_ENDED_TASK_NOTIFICATION_REASON,
+    summary:
+      copy?.summary ??
+      (task.stopCause
+        ? summaryForStopCause(task.stopCause)
+        : SESSION_ENDED_TASK_NOTIFICATION_SUMMARY),
+    canopy_stop_cause: stopCause,
     canopy_synthetic: true,
   };
 }

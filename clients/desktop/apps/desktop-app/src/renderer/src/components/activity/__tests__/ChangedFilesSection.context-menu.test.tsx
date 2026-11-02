@@ -3,7 +3,7 @@
  */
 import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useActivityStore } from '@/stores/activityStore';
@@ -14,6 +14,7 @@ jest.mock('@/lib/panels/open-file-diff', () => ({ openFileInDiff: jest.fn() }));
 import { useFileListStore } from '@/stores/fileListStore';
 import {
   ChangedFilesHostSection,
+  type DesktopChangedFilesSectionModel,
   useChangedFilesSectionHostModel,
 } from '../ChangedFilesSection';
 
@@ -36,6 +37,26 @@ function Harness(): JSX.Element {
     worktreeId: WORKTREE_ID,
   });
   return <ChangedFilesHostSection model={model} />;
+}
+
+function ModelHarness({
+  revision,
+  onModel,
+}: {
+  readonly revision: number;
+  readonly onModel: (model: DesktopChangedFilesSectionModel) => void;
+}): JSX.Element {
+  const model = useChangedFilesSectionHostModel({
+    projectId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
+  });
+  onModel(model);
+  return (
+    <>
+      <ChangedFilesHostSection model={model} />
+      <span data-testid="changed-files-model-revision">{revision}</span>
+    </>
+  );
 }
 
 describe('Changed Files file context menu', () => {
@@ -140,6 +161,80 @@ describe('Changed Files file context menu', () => {
       setTestEarlyAccessFeatures({ enabled: true, hydrated: true });
     });
     expect(button?.innerHTML).toContain(connectorsGlyph);
+  });
+
+  it('reuses filtered conversions and sorts when its host model rerenders', () => {
+    useActivityStore.setState({
+      changedFiles: {
+        [WORKTREE_KEY]: {
+          uncommitted: [
+            {
+              path: 'src/z-last.ts',
+              status: 'modified',
+              insertions: 1,
+              deletions: 0,
+            },
+            {
+              path: 'src/a-first.ts',
+              status: 'modified',
+              insertions: 1,
+              deletions: 0,
+            },
+            {
+              path: 'src/m-middle.ts',
+              status: 'modified',
+              insertions: 1,
+              deletions: 0,
+            },
+          ],
+          committed: [
+            {
+              path: 'docs/z-last.md',
+              status: 'modified',
+              insertions: 1,
+              deletions: 0,
+            },
+            {
+              path: 'docs/a-first.md',
+              status: 'modified',
+              insertions: 1,
+              deletions: 0,
+            },
+            {
+              path: 'docs/m-middle.md',
+              status: 'modified',
+              insertions: 1,
+              deletions: 0,
+            },
+          ],
+        },
+      },
+    });
+    const models: DesktopChangedFilesSectionModel[] = [];
+    const localeCompare = jest.spyOn(String.prototype, 'localeCompare');
+
+    try {
+      act(() =>
+        root.render(
+          <ModelHarness revision={0} onModel={(model) => models.push(model)} />,
+        ),
+      );
+      const comparisonsAfterFirstRender = localeCompare.mock.calls.length;
+      expect(comparisonsAfterFirstRender).toBeGreaterThan(0);
+
+      act(() =>
+        root.render(
+          <ModelHarness revision={1} onModel={(model) => models.push(model)} />,
+        ),
+      );
+
+      expect(models[0]?.changedFiles).toBe(models[1]?.changedFiles);
+      expect(models[1]?.workspaceLocalId).toBe(PROJECT_ID);
+      expect(models[1]?.worktreeLocalId).toBe(WORKTREE_ID);
+      expect(localeCompare).toHaveBeenCalledTimes(comparisonsAfterFirstRender);
+    } finally {
+      localeCompare.mockRestore();
+    }
   });
 
   it('opens the limited changed-file menu with the preferred app action', async () => {

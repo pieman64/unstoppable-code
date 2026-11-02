@@ -233,7 +233,7 @@ describe('pipeline-executor', () => {
         runtime,
         executionId: 'missing-shared-cache',
       }),
-    ).rejects.toThrow('shared pipeline snapshot is unavailable');
+    ).rejects.toThrow('shared workflow snapshot is unavailable');
     await expect(
       loadExecutionState('missing-shared-cache', runtime.executionsDir),
     ).resolves.toBeNull();
@@ -252,7 +252,7 @@ describe('pipeline-executor', () => {
         runtime,
         executionId: 'existing-shared-cache',
       }),
-    ).rejects.toThrow('shared pipeline snapshot is unavailable');
+    ).rejects.toThrow('shared workflow snapshot is unavailable');
     expect(
       fs.readFileSync(path.join(existingOutputDir, 'keep.txt'), 'utf8'),
     ).toBe('keep');
@@ -1016,7 +1016,7 @@ describe('pipeline-executor', () => {
         pipelineId: 'missing-input',
         runtime,
       }),
-    ).rejects.toThrow(/Pipeline input "greeting" is required/);
+    ).rejects.toThrow(/Workflow input "greeting" is required/);
   });
 
   it('validates dispatch and plan_ready runs against different input definitions', async () => {
@@ -1107,7 +1107,7 @@ describe('pipeline-executor', () => {
           max_iterations: '4',
         },
       }),
-    ).rejects.toThrow(/Pipeline input "max_iterations" is not declared/);
+    ).rejects.toThrow(/Workflow input "max_iterations" is not declared/);
 
     await expect(
       executePipeline(pipeline, {
@@ -1125,7 +1125,7 @@ describe('pipeline-executor', () => {
           greeting: 'hello',
         },
       }),
-    ).rejects.toThrow(/Pipeline input "greeting" is not declared/);
+    ).rejects.toThrow(/Workflow input "greeting" is not declared/);
   });
 
   it.each([
@@ -2286,7 +2286,7 @@ describe('pipeline-executor', () => {
         },
       }),
     ).rejects.toThrow(
-      /Pipeline input validation failed:[\s\S]*extra[\s\S]*greeting[\s\S]*retries[\s\S]*enabled/,
+      /Workflow input validation failed:[\s\S]*extra[\s\S]*greeting[\s\S]*retries[\s\S]*enabled/,
     );
   });
 

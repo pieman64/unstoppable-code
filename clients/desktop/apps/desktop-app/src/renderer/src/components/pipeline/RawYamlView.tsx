@@ -66,7 +66,7 @@ export function RawYamlView({
         className="flex-1 w-full resize-none bg-base p-4 font-mono text-xs leading-5 fg-primary
           outline-none border-none focus:ring-0 placeholder:fg-secondary
           disabled:opacity-50 disabled:cursor-not-allowed"
-        placeholder="# Pipeline YAML"
+        placeholder="# Workflow YAML"
       />
     </div>
   );

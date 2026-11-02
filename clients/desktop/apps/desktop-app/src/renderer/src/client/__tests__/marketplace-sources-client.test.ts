@@ -1,3 +1,6 @@
+import type { MarketplaceSourceAddSession } from '@canopy/app-core/client';
+import { createMarketplaceSourceOperations } from '@canopy/app-core/client';
+import { createIpcMarketplaceSourceAddSession } from '../marketplace-source-add-session';
 /* eslint-disable @typescript-eslint/require-await -- async fakes mirror the IPC promises they stand in for. */
 import type {
   MarketplaceInfo,
@@ -6,6 +9,7 @@ import type {
   PluginDetails,
   PluginInfo,
   PluginsCache,
+  PluginsAPI,
 } from '@canopy/desktop-shared/types/plugins';
 import { pluginNeedsInstall } from '@/lib/pluginInstallStatus';
 import {
@@ -256,6 +260,17 @@ function pluginsApi(
   };
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 describe('createIpcMarketplaceSourcesClient', () => {
   it('reconciles from the backend even when a renderer snapshot exists', async () => {
     const sync = {
@@ -305,6 +320,99 @@ describe('createIpcMarketplaceSourcesClient', () => {
     expect(sync.upsert).toHaveBeenCalled();
   });
 
+  it('never publishes an old read begun during an update after that update completes', async () => {
+    const update =
+      deferred<Awaited<ReturnType<PluginsAPI['updateMarketplace']>>>();
+    const staleRead =
+      deferred<Awaited<ReturnType<PluginsAPI['loadMarketplaces']>>>();
+    const updated = marketplace({ name: 'Updated source' });
+    const sync = syncSpy();
+    const load = jest
+      .fn<ReturnType<PluginsAPI['loadMarketplaces']>, []>()
+      .mockReturnValueOnce(staleRead.promise)
+      .mockResolvedValue({ success: true, data: cache(updated) });
+    const client = createIpcMarketplaceSourcesClient(
+      pluginsApi({
+        updateMarketplace: () => update.promise,
+        loadMarketplaces: load,
+      }),
+      sync,
+    );
+    const pendingUpdate = client.update('acme');
+    const pendingRead = client.list();
+    update.resolve({ success: true, data: updated });
+    await pendingUpdate;
+    staleRead.resolve({ success: true, data: cache(marketplace()) });
+    expect((await pendingRead).sources[0]?.name).toBe('Updated source');
+    expect(sync.cache).toHaveBeenCalledTimes(1);
+    expect(sync.cache).toHaveBeenCalledWith(cache(updated));
+  });
+
+  it('stops re-reading when cache patches keep racing the read', async () => {
+    let emit: ((patch: (cache: PluginsCache) => PluginsCache) => void) | null =
+      null;
+    const sync = {
+      ...syncSpy(),
+      subscribe: (
+        listener: (patch: (cache: PluginsCache) => PluginsCache) => void,
+      ): (() => void) => {
+        emit = listener;
+        return () => undefined;
+      },
+    };
+    const loadMarketplaces = jest.fn(async () => {
+      // Each read sees a cache patch land before it returns.
+      emit?.((base) => base);
+      return { success: true as const, data: cache() };
+    });
+    const client = createIpcMarketplaceSourcesClient(
+      pluginsApi({ loadMarketplaces }),
+      sync,
+    );
+    client.subscribeSnapshot?.(() => undefined);
+    await expect(client.list()).rejects.toThrow(
+      'Marketplaces changed while loading. Try again.',
+    );
+    expect(loadMarketplaces).toHaveBeenCalledTimes(3);
+    expect(sync.cache).not.toHaveBeenCalled();
+  });
+
+  it('never resurrects a removed source from a read begun while removal was pending', async () => {
+    const removal =
+      deferred<Awaited<ReturnType<PluginsAPI['removeMarketplace']>>>();
+    const staleRead =
+      deferred<Awaited<ReturnType<PluginsAPI['loadMarketplaces']>>>();
+    const sync = syncSpy();
+    const client = createIpcMarketplaceSourcesClient(
+      pluginsApi({
+        removeMarketplace: () => removal.promise,
+        loadMarketplaces: jest
+          .fn<ReturnType<PluginsAPI['loadMarketplaces']>, []>()
+          .mockReturnValueOnce(staleRead.promise)
+          .mockResolvedValue({ success: true, data: cache() }),
+      }),
+      sync,
+    );
+    const pendingRemoval = client.remove('acme');
+    const pendingRead = client.list();
+    removal.resolve({
+      success: true,
+      data: {
+        marketplace: null,
+        removedProviders: ['claude', 'codex'],
+        providerOutcomes: {
+          claude: { removed: true, alreadyAbsent: false },
+          codex: { removed: true, alreadyAbsent: false },
+        },
+      },
+    });
+    await pendingRemoval;
+    staleRead.resolve({ success: true, data: cache(marketplace()) });
+    expect((await pendingRead).sources).toEqual([]);
+    expect(sync.cache).toHaveBeenCalledTimes(1);
+    expect(sync.cache).toHaveBeenCalledWith(cache());
+  });
+
   it('keeps the survivor and a warning on partial removal', async () => {
     const result: MarketplaceRemovalResult = {
       marketplace: marketplace(),
@@ -331,18 +439,19 @@ describe('createIpcMarketplaceSourcesClient', () => {
   });
 
   it('confirms absence on full removal', async () => {
+    const result: MarketplaceRemovalResult = {
+      marketplace: null,
+      removedProviders: ['claude', 'codex'],
+      providerOutcomes: {
+        claude: { removed: true, alreadyAbsent: false },
+        codex: { removed: true, alreadyAbsent: false },
+      },
+    };
     const client = createIpcMarketplaceSourcesClient(
       pluginsApi({
         removeMarketplace: jest.fn(async () => ({
           success: true,
-          data: {
-            marketplace: null,
-            removedProviders: ['claude', 'codex'],
-            providerOutcomes: {
-              claude: { removed: true, alreadyAbsent: false },
-              codex: { removed: true, alreadyAbsent: false },
-            },
-          },
+          data: result,
         })),
       }),
       syncSpy(),
@@ -433,5 +542,252 @@ describe('createIpcMarketplaceSourcesClient', () => {
       'lint',
       expect.objectContaining({ name: 'lint', displayName: 'manifest-lint' }),
     );
+  });
+});
+
+describe('desktop Add session (CAN-4267)', () => {
+  function addFixture(): {
+    add: jest.Mock<
+      ReturnType<PluginsAPI['addMarketplace']>,
+      Parameters<PluginsAPI['addMarketplace']>
+    >;
+    list: jest.Mock<Promise<readonly MarketplaceInfo[]>, []>;
+    upsert: jest.Mock<void, [MarketplaceInfo]>;
+    operations: ReturnType<typeof createMarketplaceSourceOperations>;
+    session: MarketplaceSourceAddSession;
+  } {
+    const add = jest.fn<
+      ReturnType<PluginsAPI['addMarketplace']>,
+      Parameters<PluginsAPI['addMarketplace']>
+    >();
+    const list = jest
+      .fn<Promise<readonly MarketplaceInfo[]>, []>()
+      .mockResolvedValue([]);
+    const upsert = jest.fn<void, [MarketplaceInfo]>();
+    const operations = createMarketplaceSourceOperations();
+    const session = createIpcMarketplaceSourceAddSession({
+      add,
+      list,
+      upsert,
+      operations,
+    });
+    return { add, list, upsert, operations, session };
+  }
+
+  it('constructs without transport calls and validates before registration', async () => {
+    const f = addFixture();
+    expect(f.list).not.toHaveBeenCalled();
+    expect(f.add).not.toHaveBeenCalled();
+    await f.session.submit('not a repository');
+    const state = f.session.getSnapshot();
+    expect(state.phase).toBe('input');
+    expect('error' in state && typeof state.error === 'string').toBe(true);
+    expect(f.add).not.toHaveBeenCalled();
+  });
+
+  it('checks duplicates against authoritative inventory case-insensitively', async () => {
+    const f = addFixture();
+    f.list.mockResolvedValue([marketplace({ sourceUrl: 'Acme/Plugins' })]);
+    await f.session.submit('acme/plugins');
+    expect(f.add).not.toHaveBeenCalled();
+    expect(f.session.getSnapshot()).toMatchObject({
+      phase: 'input',
+      error: 'Marketplace has already been added.',
+    });
+    expect(f.operations.getSnapshot().refreshing).toBe(false);
+  });
+
+  it('completes with a path-free identity and publishes registered invalid sources', async () => {
+    const f = addFixture();
+    const source = marketplace({
+      validProviders: [],
+      providerStatus: {
+        claude: provider('claude', { state: 'invalid' }),
+        codex: provider('codex', { state: 'invalid' }),
+      },
+    });
+    f.add.mockResolvedValue({
+      success: true,
+      data: { marketplace: source, providerOutcomes: source.providerStatus },
+    });
+    await f.session.submit('acme/plugins');
+    expect(f.session.getSnapshot()).toEqual({
+      phase: 'complete',
+      result: { sourceId: source.id },
+    });
+    expect(f.upsert).toHaveBeenCalledWith(source);
+    expect(f.operations.getSnapshot()).toEqual({
+      operations: {},
+      refreshing: false,
+    });
+  });
+
+  it('lets a rejected registration be retried after reopening the dialog', async () => {
+    const f = addFixture();
+    const error =
+      'No Claude or Codex plugins were detected in that repository. Claude: rejected. Codex: rejected.';
+    f.add.mockResolvedValueOnce({ success: false, error });
+    await f.session.submit('acme/plugins');
+    expect(f.session.getSnapshot()).toEqual({ phase: 'input', error });
+    f.session.dispose();
+    const source = marketplace();
+    f.add.mockResolvedValueOnce({
+      success: true,
+      data: { marketplace: source, providerOutcomes: source.providerStatus },
+    });
+    const reopened = createIpcMarketplaceSourceAddSession({
+      add: f.add,
+      list: f.list,
+      upsert: f.upsert,
+      operations: f.operations,
+    });
+    await reopened.submit('acme/plugins');
+    expect(reopened.getSnapshot()).toEqual({
+      phase: 'complete',
+      result: { sourceId: source.id },
+    });
+    expect(f.add).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a rejected registration unverified while the inventory cannot be read', async () => {
+    const f = addFixture();
+    f.add.mockResolvedValueOnce({ success: false, error: 'Rejected.' });
+    f.list
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce([]);
+    await f.session.submit('acme/plugins');
+    expect(f.session.getSnapshot().phase).toBe('uncertain');
+    await f.session.retryReconciliation();
+    expect(f.session.getSnapshot()).toEqual({
+      phase: 'input',
+      error: 'Rejected.',
+    });
+  });
+
+  it('blocks repeated Add and refresh while the registration request settles', async () => {
+    const f = addFixture();
+    let settle: (
+      value: Awaited<ReturnType<PluginsAPI['addMarketplace']>>,
+    ) => void = () => {};
+    f.add.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const pending = f.session.submit('acme/plugins');
+    await Promise.resolve();
+    await f.session.submit('acme/plugins');
+    expect(f.add).toHaveBeenCalledTimes(1);
+    expect(f.operations.acquire(null, 'update')).toBeNull();
+    f.session.dispose();
+    expect(f.operations.getSnapshot().refreshing).toBe(true);
+    const source = marketplace();
+    settle({
+      success: true,
+      data: { marketplace: source, providerOutcomes: source.providerStatus },
+    });
+    await pending;
+    expect(f.upsert).toHaveBeenCalledWith(source);
+    expect(f.session.getSnapshot()).toEqual({ phase: 'closed' });
+    expect(f.operations.getSnapshot().refreshing).toBe(false);
+  });
+
+  it.each(['malformed', 'lost'] as const)(
+    'reconciles %s responses and permits re-add after removal',
+    async (response) => {
+      const f = addFixture();
+      if (response === 'lost')
+        f.add.mockRejectedValue(new Error('response lost'));
+      else f.add.mockResolvedValue({ success: true });
+      await f.session.submit('acme/plugins');
+      expect(f.session.getSnapshot().phase).toBe('uncertain');
+      await f.session.submit('acme/plugins');
+      expect(f.add).toHaveBeenCalledTimes(1);
+      f.list.mockResolvedValue([marketplace()]);
+      await f.session.retryReconciliation();
+      expect(f.session.getSnapshot()).toEqual({
+        phase: 'complete',
+        result: { sourceId: 'acme' },
+      });
+      expect(f.add).toHaveBeenCalledTimes(1);
+      // Authoritative inventory after the user removes the recovered source.
+      f.list.mockResolvedValue([]);
+      const source = marketplace();
+      f.add.mockResolvedValue({
+        success: true,
+        data: { marketplace: source, providerOutcomes: source.providerStatus },
+      });
+      const readd = createIpcMarketplaceSourceAddSession({
+        add: f.add,
+        list: f.list,
+        upsert: f.upsert,
+        operations: f.operations,
+      });
+      await readd.submit('acme/plugins');
+      expect(readd.getSnapshot()).toEqual({
+        phase: 'complete',
+        result: { sourceId: 'acme' },
+      });
+      expect(f.add).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('retains a still-running registration even when another session reconciles a visible source', async () => {
+    const f = addFixture();
+    const writing =
+      deferred<Awaited<ReturnType<PluginsAPI['addMarketplace']>>>();
+    f.add.mockReturnValue(writing.promise);
+    const pending = f.session.submit('acme/plugins');
+    await Promise.resolve();
+    const source = marketplace();
+    try {
+      const sibling = createIpcMarketplaceSourceAddSession({
+        add: f.add,
+        list: f.list,
+        upsert: f.upsert,
+        operations: f.operations,
+      });
+      await sibling.submit('acme/plugins');
+      f.list.mockResolvedValue([source]);
+      await sibling.retryReconciliation();
+      expect(sibling.getSnapshot().phase).toBe('complete');
+      const next = createIpcMarketplaceSourceAddSession({
+        add: f.add,
+        list: f.list,
+        upsert: f.upsert,
+        operations: f.operations,
+      });
+      await next.submit('acme/plugins');
+      expect(next.getSnapshot().phase).toBe('uncertain');
+      expect(f.add).toHaveBeenCalledTimes(1);
+      sibling.dispose();
+      next.dispose();
+    } finally {
+      writing.resolve({
+        success: true,
+        data: { marketplace: source, providerOutcomes: source.providerStatus },
+      });
+      await pending;
+      f.session.dispose();
+    }
+  });
+
+  it('retains unresolved registration identity across dialog reopen', async () => {
+    const f = addFixture();
+    f.add.mockRejectedValue(new Error('response lost'));
+    await f.session.submit('acme/plugins');
+    f.session.dispose();
+    const reopened = createIpcMarketplaceSourceAddSession({
+      add: f.add,
+      list: f.list,
+      upsert: f.upsert,
+      operations: f.operations,
+    });
+    await reopened.submit('ACME/PLUGINS');
+    expect(reopened.getSnapshot().phase).toBe('uncertain');
+    expect(f.add).toHaveBeenCalledTimes(1);
+    reopened.dispose();
   });
 });

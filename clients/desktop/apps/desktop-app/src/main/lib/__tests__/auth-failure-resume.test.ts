@@ -89,7 +89,14 @@ function authEvent(): CanopyAuthFailureEventData {
 function seedTab(messages: PersistedChatMessage[]): void {
   mockedReadTabs.mockResolvedValue({
     version: 1,
-    tabs: [{ id: TARGET.chatId, title: 'Chat', messages }],
+    tabs: [
+      {
+        id: TARGET.chatId,
+        title: 'Chat',
+        messages,
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
     activeTabId: TARGET.chatId,
   });
 }
@@ -107,13 +114,22 @@ const AGENT_ACTIVITY: PersistedChatMessage = {
   blocks: [
     {
       type: 'tool_use',
-      id: 'tu-1',
-      name: 'mcp__prod__list_records',
+      toolUseId: 'tu-1',
+      toolName: 'mcp__prod__list_records',
       input: '{}',
     },
   ],
   timestamp: 2,
 };
+// This fixture intentionally retains the legacy persisted-block keys.
+const legacyToolUse = AGENT_ACTIVITY.blocks[0];
+if (!legacyToolUse || legacyToolUse.type !== 'tool_use') {
+  throw new Error('Expected the agent activity fixture to contain tool use.');
+}
+Reflect.deleteProperty(legacyToolUse, 'toolUseId');
+Reflect.deleteProperty(legacyToolUse, 'toolName');
+Reflect.set(legacyToolUse, 'id', 'tu-1');
+Reflect.set(legacyToolUse, 'name', 'mcp__prod__list_records');
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -420,11 +436,14 @@ describe('GitHub stopped-turn recovery', () => {
 
   it('does not resume a deleted chat', async () => {
     seedTab([]);
-    mockedReadTabs.mockResolvedValue({
-      version: 1,
+    const deletedChatTabs = {
+      version: 1 as const,
       tabs: [],
-      activeTabId: null,
-    });
+      activeTabId: TARGET.chatId,
+    };
+    // A null active tab is a legacy persisted shape this test must preserve.
+    Reflect.set(deletedChatTabs, 'activeTabId', null);
+    mockedReadTabs.mockResolvedValue(deletedChatTabs);
     await stopForGitHub();
     expect(await resumeChatsAfterGitHubLogin({ getWindow })).toEqual([
       'dispatch-failed',

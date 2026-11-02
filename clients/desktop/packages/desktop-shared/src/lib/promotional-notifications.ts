@@ -4,19 +4,18 @@ import type {
 } from '../types';
 
 /**
- * Promotional notification hierarchy (CAN-3013): one master with two
- * children. Pure and browser-safe so main's send gate and the Settings UI
+ * Promotional notification hierarchy (CAN-3013): one master and one
+ * category. Pure and browser-safe so main's send gate and the Settings UI
  * answer "is this category on" with the same function.
  */
 export const DEFAULT_PROMOTIONAL_NOTIFICATIONS: PromotionalNotificationPreferences =
   {
     enabled: true,
-    gettingStarted: true,
     arbitrary: true,
   };
 
 /**
- * The master gates both children without touching them. A child's stored
+ * The master gates its category without touching them. A child's stored
  * value is the user's own choice and survives the master being switched off,
  * so switching it back on restores exactly what they had selected.
  */
@@ -33,8 +32,8 @@ function readBoolean(value: unknown, fallback: boolean): boolean {
 
 /**
  * `legacyActivationCategoryEnabled` is the pre-CAN-3013 OS `activation`
- * category, which gated every promotional send on its own. It seeds both
- * children only while no hierarchy has been saved, so an existing opt-out
+ * category, which gated every promotional send on its own. It seeds the
+ * category only while no hierarchy has been saved, so an existing opt-out
  * carries over and nobody is re-enrolled by the upgrade. Once a value exists
  * the hierarchy is authoritative and the legacy category is never consulted.
  */
@@ -45,7 +44,6 @@ export function normalizePromotionalNotifications(
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return {
       enabled: DEFAULT_PROMOTIONAL_NOTIFICATIONS.enabled,
-      gettingStarted: legacyActivationCategoryEnabled,
       arbitrary: legacyActivationCategoryEnabled,
     };
   }
@@ -54,10 +52,6 @@ export function normalizePromotionalNotifications(
     enabled: readBoolean(
       raw.enabled,
       DEFAULT_PROMOTIONAL_NOTIFICATIONS.enabled,
-    ),
-    gettingStarted: readBoolean(
-      raw.gettingStarted,
-      DEFAULT_PROMOTIONAL_NOTIFICATIONS.gettingStarted,
     ),
     arbitrary: readBoolean(
       raw.arbitrary,

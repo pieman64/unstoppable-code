@@ -11,6 +11,13 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
+import {
+  runStatusGlyphState,
+  type StatusGlyphState,
+} from '../lib/status-glyph';
+import { SpinnerStyleProvider } from './spinner-style';
+import { StatusGlyph } from './StatusGlyph';
+import { CometSpinner } from './CometSpinner';
 
 /**
  * Closed enumeration of DAG job statuses understood by the shared progress
@@ -62,24 +69,12 @@ export interface DagProgressBarProps {
   onJobClick?: (jobId: string) => void;
 }
 
-function getDotColorClass(status: DagJobStatus | undefined): string {
-  switch (status) {
-    case 'running':
-    case 'restarting':
-      return `${OPERATIONAL_STATUS_COLORS.active.background} animate-pulse`;
-    case 'success':
-      return OPERATIONAL_STATUS_COLORS.success.background;
-    case 'failure':
-      return OPERATIONAL_STATUS_COLORS.failed.background;
-    case 'paused':
-      return OPERATIONAL_STATUS_COLORS.paused.background;
-    case 'cancelled':
-      return `${OPERATIONAL_STATUS_COLORS.paused.background} opacity-60`;
-    case 'skipped':
-      return `${OPERATIONAL_STATUS_COLORS.paused.background} opacity-40`;
-    default:
-      return OPERATIONAL_STATUS_COLORS.paused.background;
-  }
+/**
+ * A job's place on the shared status glyph map. A job that has not started
+ * yet is queued; a skipped one ends without an outcome, like a cancelled one.
+ */
+function jobGlyphState(status: DagJobStatus | undefined): StatusGlyphState {
+  return runStatusGlyphState(status) ?? 'queued';
 }
 
 function getPopoverStatusBadge(status: DagJobStatus | undefined): {
@@ -207,7 +202,7 @@ function ScrollArrow({
         strokeWidth="3"
         strokeLinecap="round"
         strokeLinejoin="round"
-        className="fg-primary/30 transition hover:fg-primary/60"
+        className="fg-primary/30 transition-colors hover:fg-primary/60"
       >
         <path d={isLeft ? 'm15 18-6-6 6-6' : 'm9 18 6-6-6-6'} />
       </svg>
@@ -294,9 +289,12 @@ function JobDot({
             e.stopPropagation();
           }
         }}
-        className={`h-2.5 w-2.5 shrink-0 cursor-pointer rounded-full transition-transform hover:scale-140 ${getDotColorClass(job.status)}`}
+        className="inline-flex h-3 w-3 shrink-0 cursor-pointer items-center justify-center rounded-full transition-transform hover:scale-125"
+        data-status-glyph-state={jobGlyphState(job.status)}
         aria-label={`${job.name}: ${job.status ?? 'pending'}`}
-      />
+      >
+        <StatusGlyph state={jobGlyphState(job.status)} size={12} />
+      </button>
       {hoverRect &&
         typeof document !== 'undefined' &&
         createPortal(
@@ -312,9 +310,7 @@ function JobDot({
               }`}
             />
             <div className="mb-1.5 flex items-center gap-1.5 text-2xs font-semibold fg-primary/80">
-              <span
-                className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${getDotColorClass(job.status)}`}
-              />
+              <StatusGlyph state={jobGlyphState(job.status)} size={12} />
               {job.name}
             </div>
             <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
@@ -491,10 +487,10 @@ function DagProgressBarInner({
               )}
               <div
                 data-testid="dag-progress-tier"
-                // The tier chip is 16px tall (10px dots inside 3px of
+                // The tier chip is 18px tall (12px status glyphs inside 3px of
                 // padding), and its corner keeps the 24px `rounded-md`
                 // control's proportion at that height: `--radius-md` less 2px.
-                // The round dots inside carry no corner of their own to nest.
+                // The round glyphs inside carry no corner of their own to nest.
                 className="flex items-center gap-1.25 rounded-[calc(var(--radius-md)-2px)] bg-fg-primary/[0.025] px-1.5 py-0.75"
               >
                 {tier.map((jobId) => {
@@ -520,3 +516,97 @@ function DagProgressBarInner({
 }
 
 export const DagProgressBar = memo(DagProgressBarInner);
+
+/**
+ * The progress bar inline, for the composer's background drawer rows: the
+ * same tiers and glyphs with no tier chips, popovers or clicks, and
+ * a hairline between tiers. Decorative: the row names the run's state, and
+ * its inspector holds the full bar. A strip is a row of circles, so a running
+ * job always draws the round comet, whatever spinner style the host uses.
+ */
+export const DagProgressDots = memo(function DagProgressDots({
+  tiers,
+  jobs,
+  appearance = 'glyphs',
+}: Pick<DagProgressBarProps, 'tiers' | 'jobs'> & {
+  readonly appearance?: 'glyphs' | 'tiny';
+}): JSX.Element | null {
+  if (tiers.length === 0) return null;
+  if (appearance === 'tiny')
+    return (
+      <span
+        className="inline-flex shrink-0 items-center gap-1.5"
+        aria-hidden="true"
+        data-testid="dag-progress-dots"
+      >
+        {tiers.flat().map((jobId) => {
+          const status = jobs[jobId]?.status;
+          const running = status === 'running' || status === 'restarting';
+          const color =
+            status === 'success'
+              ? OPERATIONAL_STATUS_COLORS.success.background
+              : status === 'failure'
+                ? OPERATIONAL_STATUS_COLORS.failed.background
+                : status === 'paused'
+                  ? 'bg-fg-warning-strong'
+                  : 'bg-fg-tertiary/40';
+          return (
+            <span
+              key={jobId}
+              className="inline-flex h-4 items-center justify-center"
+              data-status-glyph-state={jobGlyphState(status)}
+            >
+              <span
+                className={`relative inline-flex shrink-0 items-center justify-center rounded-full ${running ? 'h-3 w-3' : `h-1 w-1 ${color}`}`}
+              >
+                {running && (
+                  <>
+                    <span className="h-1 w-1 rounded-full bg-fg-primary" />
+                    <span className="absolute inset-0 rounded-full border-2 border-current fg-primary/25" />
+                    <span className="absolute inset-0 flex items-center justify-center">
+                      <CometSpinner sizePx={12} tone="primary" />
+                    </span>
+                  </>
+                )}
+              </span>
+            </span>
+          );
+        })}
+      </span>
+    );
+  return (
+    <SpinnerStyleProvider value="comet">
+      <span
+        className="inline-flex shrink-0 items-center gap-1"
+        aria-hidden="true"
+        data-testid="dag-progress-dots"
+      >
+        {tiers.map((tier, tierIndex) => (
+          <span key={tierIndex} className="inline-flex items-center gap-1">
+            {tierIndex > 0 && (
+              <span
+                className="h-px w-1.5 bg-fg-primary/20"
+                data-dag-tier-separator=""
+              />
+            )}
+            {/* 3px between parallel jobs: apart, but still one tier. */}
+            <span className="inline-flex items-center gap-0.75">
+              {tier.map((jobId) => {
+                const state = jobGlyphState(jobs[jobId]?.status);
+                return (
+                  <span
+                    key={jobId}
+                    className="inline-flex"
+                    data-status-glyph-state={state}
+                  >
+                    <StatusGlyph state={state} size={12} />
+                  </span>
+                );
+              })}
+            </span>
+          </span>
+        ))}
+      </span>
+    </SpinnerStyleProvider>
+  );
+});

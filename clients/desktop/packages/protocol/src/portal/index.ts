@@ -1,3 +1,25 @@
+import type {
+  PortalWatcherDeletePayload,
+  PortalWatcherEntity,
+} from './watchers';
+export * from './watchers';
+export * from './shared-multi-repo';
+export * from './lifecycle-journal';
+import type { PortalSharedMultiRepoCommand } from './shared-multi-repo';
+import type { LifecycleJournalQuarantineRequest } from './lifecycle-journal';
+import type { AutoResumeMetadata } from './transcript-metadata';
+import type { ToolInterruption } from './transcript-metadata';
+export * from './transcript-metadata';
+export * from './worktree-discard';
+export * from './project-deletion-discard';
+import type {
+  PortalWorktreeDiscardDescribePayload,
+  PortalWorktreeDiscardPayload,
+} from './worktree-discard';
+import type { PortalProjectDeletionDiscardDescribePayload } from './project-deletion-discard';
+import type { WorkerFilesystemRootsListResult } from '../canopy-core/worker/filesystem';
+import type { TurnFileRecord } from '../turn-files';
+import type { OnboardingTipsUpdate } from '../onboarding-tips';
 import type { ChatPlanReviewApproval } from '../canopy-core/chat-plan-review';
 export { ChatPlanReviewApprovalSchema } from '../canopy-core/chat-plan-review';
 export type { ChatPlanReviewApproval } from '../canopy-core/chat-plan-review';
@@ -64,6 +86,11 @@ import type {
   ChatInputDeliveryView,
   ChatSteeringCapabilities,
 } from './input-delivery';
+import type {
+  ChatTurnPhase,
+  QueuedMessageRetryBlockedReason,
+  QueuedMessageWaitingReason,
+} from './turn-phase';
 import type { OrgProjectPlaceholderState } from '../org-projects';
 /**
  * Shared protocol types for the Canopy Portal feature.
@@ -74,6 +101,12 @@ import type { OrgProjectPlaceholderState } from '../org-projects';
  */
 import type { ModelCatalog } from '../models';
 export type * from './input-delivery';
+export type {
+  ChatTurnPhase,
+  QueuedMessageRetryBlockedReason,
+  QueuedMessageWaitingReason,
+  SettingsHeldChange,
+} from './turn-phase';
 export {
   parseInputDeliveryViews,
   parseChatWatcherFiredInfo,
@@ -103,6 +136,7 @@ import type { InstalledSkillInfo, SkillRiskInfo } from '../skills';
 import type {
   McpHttpAuthHandler,
   McpServerIndexEntry,
+  ProviderConnectorListResult,
   McpServerScope,
   McpServerType,
 } from '../mcp-servers';
@@ -110,6 +144,11 @@ import type { CollectionConfig, CollectionIndexEntry } from '../collections';
 import type { CuratedMcpUrlOption } from '../mcp-catalog';
 import type { CapabilityUnavailable } from '../capability-bundle';
 import type { AgentTaskStopReason } from '../cloud-session/agent-task';
+import type {
+  PortalChatContentReadPayload,
+  PortalChatTranscriptBlocksPagePayload,
+  PortalChatTranscriptPagePayload,
+} from './transcript-reads';
 import type {
   UnifiedEntryKind,
   UnifiedEntryOrigin,
@@ -195,6 +234,7 @@ export type PortalCommandType =
   | 'portal.auth.validate_code'
   | 'portal.session.end'
   | 'portal.state.request'
+  | 'portal.org_projects.shared_multi_repo'
   | 'portal.org_projects.find_repository_owner'
   | 'portal.personal_organization.projects.list'
   | 'portal.personal_organization.projects.convert'
@@ -202,7 +242,9 @@ export type PortalCommandType =
   | 'portal.chat.send'
   | 'portal.chat.cancel'
   | 'portal.chat.cancel_turn'
+  | 'portal.watcher.delete'
   | 'portal.chat.mark_read'
+  | 'portal.chat.set_unread'
   | 'portal.chat.visual.read'
   | 'portal.chat.queue.cancel'
   | 'portal.chat.queue.edit'
@@ -237,6 +279,8 @@ export type PortalCommandType =
   | 'portal.app_advisor.dismiss_question'
   | 'portal.app_advisor.settings.get'
   | 'portal.app_advisor.settings.save'
+  | 'portal.onboarding_tips.get'
+  | 'portal.onboarding_tips.update'
   | 'portal.script_actions.list'
   | 'portal.script_actions.rescan'
   | 'portal.script_actions.review'
@@ -279,6 +323,7 @@ export type PortalCommandType =
   | 'portal.pipeline.rerun'
   | 'portal.pipeline.log_request'
   | 'portal.pipeline.chat_follow_up.prepare'
+  | 'portal.pipeline.content.read'
   | 'portal.diff.read'
   | 'portal.pr.action'
   | 'portal.pr.refresh'
@@ -291,6 +336,9 @@ export type PortalCommandType =
   | 'portal.file.read'
   | 'portal.file.asset.read'
   | 'portal.chat.asset.read'
+  | 'portal.chat.transcript.page'
+  | 'portal.chat.transcript.blocks.page'
+  | 'portal.chat.content.read'
   | 'portal.file.save'
   | 'portal.editor.list_slash_commands'
   | 'portal.editor.list_file_mentions'
@@ -301,10 +349,15 @@ export type PortalCommandType =
   | 'portal.workspace.reorder'
   | 'portal.worktree.create'
   | 'portal.worktree.archive'
+  | 'portal.worktree.discard.describe'
+  | 'portal.worktree.discard'
   | 'portal.worktree.update'
   | 'portal.worktree.reorder'
   | 'portal.workspace.create'
   | 'portal.workspace.delete'
+  | 'portal.workspace.delete.discard.describe'
+  | 'portal.lifecycle_journal.inspect'
+  | 'portal.lifecycle_journal.quarantine'
   | 'portal.workspace.update'
   | 'portal.workspace.claude_md.get'
   | 'portal.workspace.claude_md.save'
@@ -356,6 +409,7 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.auth.validate_code',
   'portal.session.end',
   'portal.state.request',
+  'portal.org_projects.shared_multi_repo',
   'portal.org_projects.find_repository_owner',
   'portal.personal_organization.projects.list',
   'portal.personal_organization.projects.convert',
@@ -363,7 +417,9 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.chat.send',
   'portal.chat.cancel',
   'portal.chat.cancel_turn',
+  'portal.watcher.delete',
   'portal.chat.mark_read',
+  'portal.chat.set_unread',
   'portal.chat.visual.read',
   'portal.chat.queue.cancel',
   'portal.chat.queue.edit',
@@ -398,6 +454,8 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.app_advisor.dismiss_question',
   'portal.app_advisor.settings.get',
   'portal.app_advisor.settings.save',
+  'portal.onboarding_tips.get',
+  'portal.onboarding_tips.update',
   'portal.script_actions.list',
   'portal.script_actions.rescan',
   'portal.script_actions.review',
@@ -440,6 +498,7 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.pipeline.rerun',
   'portal.pipeline.log_request',
   'portal.pipeline.chat_follow_up.prepare',
+  'portal.pipeline.content.read',
   'portal.diff.read',
   'portal.pr.action',
   'portal.pr.refresh',
@@ -452,6 +511,9 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.file.read',
   'portal.file.asset.read',
   'portal.chat.asset.read',
+  'portal.chat.transcript.page',
+  'portal.chat.transcript.blocks.page',
+  'portal.chat.content.read',
   'portal.file.save',
   'portal.editor.list_slash_commands',
   'portal.editor.list_file_mentions',
@@ -462,10 +524,15 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.workspace.reorder',
   'portal.worktree.create',
   'portal.worktree.archive',
+  'portal.worktree.discard.describe',
+  'portal.worktree.discard',
   'portal.worktree.update',
   'portal.worktree.reorder',
   'portal.workspace.create',
   'portal.workspace.delete',
+  'portal.workspace.delete.discard.describe',
+  'portal.lifecycle_journal.inspect',
+  'portal.lifecycle_journal.quarantine',
   'portal.workspace.update',
   'portal.workspace.claude_md.get',
   'portal.workspace.claude_md.save',
@@ -556,6 +623,7 @@ export type PortalCommandEnumParityGuards = [
 export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
   new Set<PortalCommandType>([
     'portal.worktree.archive',
+    'portal.worktree.discard',
     'portal.installed_items.uninstall',
   ]);
 
@@ -575,10 +643,16 @@ export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
  */
 export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
   new Set<PortalCommandType>([
+    'portal.watcher.delete',
+    'portal.lifecycle_journal.inspect',
+    'portal.lifecycle_journal.quarantine',
     'portal.chat.create_tab',
     'portal.standalone_chat.create',
     'portal.chat.asset.read',
     'portal.file.asset.read',
+    'portal.chat.transcript.page',
+    'portal.chat.transcript.blocks.page',
+    'portal.chat.content.read',
     'portal.app_advisor.create_tab',
     'portal.sidebar.item_groups.list',
     'portal.sidebar.item_groups.create',
@@ -591,6 +665,8 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.editor.list_invocables',
     'portal.chat.list_plugin_catalog',
     'portal.app_advisor.settings.get',
+    'portal.onboarding_tips.get',
+    'portal.onboarding_tips.update',
     'portal.workspace.claude_md.get',
     'portal.script_actions.list',
     'portal.script_actions.rescan',
@@ -602,6 +678,7 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.workspace.scripts.get',
     'portal.workspace.update',
     'portal.state.request',
+    'portal.org_projects.shared_multi_repo',
     'portal.org_projects.find_repository_owner',
     'portal.personal_organization.projects.list',
     'portal.personal_organization.projects.status',
@@ -629,7 +706,10 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.pipeline.get',
     'portal.pipeline.execution_list',
     'portal.pipeline.chat_follow_up.prepare',
+    'portal.pipeline.content.read',
     'portal.provider_usage.refresh',
+    'portal.worktree.discard.describe',
+    'portal.workspace.delete.discard.describe',
   ]);
 
 /**
@@ -639,6 +719,14 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
  * below the proven long-poll ceiling.
  */
 export const PORTAL_SMALL_RPC_RESULT_TIMEOUT_MS = 15_000;
+
+/**
+ * `errorCode` of an asset read submit that stopped waiting before the desktop
+ * answered. The desktop can still complete that command and the server keeps
+ * its chunk, so the browser follows the same command through
+ * `GET .../commands/{commandId}` instead of failing or reading again.
+ */
+export const PORTAL_ASSET_READ_PENDING_ERROR_CODE = 'portal_asset_read_pending';
 
 /**
  * Portal command types that behave as LONG synchronous RPCs: the browser
@@ -663,6 +751,7 @@ export const PORTAL_LONG_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.personal_organization.projects.convert',
     'portal.workspace.create',
     'portal.worktree.create',
+    'portal.worktree.discard',
     'portal.plugins.install_builtin',
     'portal.plugins.install_external',
     'portal.plugins.share_plugin',
@@ -751,6 +840,7 @@ export type PortalEntityType =
   | 'hook_descriptor'
   | 'hook_run'
   | 'mcp_server'
+  | 'watcher'
   | 'background_process'
   | 'plan'
   | 'pipeline'
@@ -785,6 +875,7 @@ export const PORTAL_ENTITY_TYPES = [
   'hook_descriptor',
   'hook_run',
   'mcp_server',
+  'watcher',
   'background_process',
   'plan',
   'pipeline',
@@ -1143,6 +1234,8 @@ export interface CreatePortalSessionRequest {
   clientName: string;
   clientVersion?: string;
   clientHostname?: string;
+  /** Operating system of the host; older desktops omit it. */
+  clientPlatform?: PortalClientPlatform;
   /**
    * Optional capability flags announced by local Canopy. Reserved for future
    * gating; the initial server implementation ignores unknown keys.
@@ -1215,16 +1308,24 @@ export interface PostPortalEventsResponse {
 /**
  * `POST /api/v1/desktop-app/portal/sessions/[sessionId]/heartbeat`
  */
+/** Operating systems a desktop reports for its Portal session. */
+export const PORTAL_CLIENT_PLATFORMS = ['windows', 'mac', 'linux'] as const;
+export type PortalClientPlatform = (typeof PORTAL_CLIENT_PLATFORMS)[number];
+
 export interface PortalHeartbeatRequest {
   /** Current packaged build; refreshed on restore instead of key-mint version. */
   clientVersion?: string;
   /** Refreshes capabilities for a session restored by a newer desktop. */
   capabilities?: Record<string, boolean>;
+  /** Refreshes the operating system for a session restored by a newer desktop. */
+  clientPlatform?: PortalClientPlatform;
 }
 
 export interface PortalHeartbeatResponse {
   ok: true;
   status: PortalSessionStatus;
+  /** Host code agents use for this device install; older servers omit it. */
+  hostCode?: string;
 }
 
 /**
@@ -1396,6 +1497,12 @@ export interface PollBrowserPortalEventsResponse {
   connectionStatus: PortalConnectionStatus;
 }
 
+/** A completed targeted snapshot seeded exactly these cached rows, in desktop order. */
+export interface PortalCachedChatTailCoverage {
+  snapshotCursor: number;
+  orderedMessageIds: string[];
+}
+
 /**
  * `GET /api/portal/sessions/[sessionId]/state`
  *
@@ -1408,6 +1515,7 @@ export interface GetBrowserPortalStateResponse<
   TState = PortalSessionShellState,
 > {
   state: TState;
+  chatTailCoverage?: PortalCachedChatTailCoverage;
   scope?: PortalStateScope;
   snapshot?: unknown;
   connectionStatus: PortalConnectionStatus;
@@ -1524,6 +1632,21 @@ export type PortalChatMarkReadPayload = {
   | { scope: 'standalone'; projectLocalId: string }
 );
 
+/** Desktop supports explicit mark unread / mark read from a chat tab (CAN-4378). */
+export const PORTAL_CAPABILITY_CHAT_SET_UNREAD = 'chat_set_unread' as const;
+
+/**
+ * Set a chat's read state at the user's request. Unread marks are recorded as
+ * manual; there is no staleness guard because the user chose the state.
+ */
+export type PortalChatSetUnreadPayload = {
+  chatId: string;
+  unread: boolean;
+} & (
+  | { scope: 'worktree'; projectId: string; worktreeId: string }
+  | { scope: 'standalone'; projectLocalId: string }
+);
+
 /** Capability for the batched, untargeted worktree_actions state scope. */
 export const PORTAL_CAPABILITY_WORKTREE_ACTIONS_SCOPE =
   'worktree_actions_scope' as const;
@@ -1576,6 +1699,16 @@ export const PORTAL_CAPABILITY_PLUGIN_MUTATIONS = 'plugin_mutations' as const;
  * generic {@link PORTAL_CAPABILITY_PLUGIN_MUTATIONS} do not imply it.
  */
 export const PORTAL_CAPABILITY_INSTALLED_ITEMS = 'installed_items_v1' as const;
+/** Desktop serves `portal.worktree.discard.describe` and `.discard` (CAN-5334). */
+export const PORTAL_CAPABILITY_WORKTREE_DISCARD =
+  'worktree_discard_v1' as const;
+/**
+ * Desktop serves `portal.workspace.delete.discard.describe` and honors
+ * `supersedeInterruptedDeletion` on `portal.workspace.delete` (CAN-5337).
+ * {@link PORTAL_CAPABILITY_WORKTREE_DISCARD} does not imply it.
+ */
+export const PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD =
+  'project_deletion_discard_v1' as const;
 /** Cached MCP health and device test/delete operations (CAN-4265). */
 export const PORTAL_CAPABILITY_MCP_MANAGEMENT = 'mcp_management' as const;
 
@@ -1905,6 +2038,14 @@ export const PORTAL_CAPABILITY_PIPELINE_CHAT_FOLLOW_UP =
   'pipeline_chat_follow_up' as const;
 
 /**
+ * Capability for complete pipeline content reads (CAN-3717). Desktops
+ * announce it once `portal.pipeline.content.read` handles a step's readable
+ * output and the run's saved report. Without it clients keep the streamed
+ * step tail and never present it as the complete output.
+ */
+export const PORTAL_CAPABILITY_PIPELINE_CONTENT = 'pipeline_content' as const;
+
+/**
  * Capability for the account-level Claude and Codex plan usage projection
  * (CAN-3635). Desktops announce it once overview snapshots carry the
  * `provider_usage` singleton, usage changes publish it as a delta, and
@@ -1994,6 +2135,7 @@ export const WORKTREE_SCOPE_ENTITY_TYPES = [
   'hook_descriptor',
   'hook_run',
   'mcp_server',
+  'watcher',
   'background_process',
   'plan',
   'pipeline',
@@ -2042,7 +2184,7 @@ export const STANDALONE_CHAT_SCOPE_ENTITY_TYPES = [
  * for the selected target — not the surrounding worktree shell.
  */
 export const PORTAL_FEATURE_SCOPE_ENTITY_TYPES = {
-  chat: ['chat_summary', 'chat_todo'] as const,
+  chat: ['chat_summary', 'chat_todo', 'watcher'] as const,
   terminal: ['terminal_session'] as const,
   scripts: ['script_descriptor', 'script_run'] as const,
   hooks: ['hook_descriptor', 'hook_run'] as const,
@@ -2051,7 +2193,11 @@ export const PORTAL_FEATURE_SCOPE_ENTITY_TYPES = {
   files: ['file_root', 'file_tree', 'file_preview'] as const,
   diff: ['changed_files', 'diff_snapshot'] as const,
   pr: ['pr_status'] as const,
-  app_advisor: ['app_advisor_chat', 'app_advisor_item_groups'] as const,
+  app_advisor: [
+    'app_advisor_chat',
+    'app_advisor_item_groups',
+    'watcher',
+  ] as const,
 } satisfies Record<
   Exclude<
     PortalSnapshotScope,
@@ -2094,6 +2240,12 @@ export interface PortalStateRequestPayload {
    * Omit on older hosts; their untargeted chat scope still seeds all histories.
    */
   selectedChatOnly?: boolean;
+  /** Request the next changed-files page for the explicit diff target. */
+  changedFilesPage?: {
+    group: PortalChangedFilesGroup;
+    cursor: string;
+    limit?: number;
+  };
   scope: PortalStateScope;
   target?: PortalTarget;
   /** When true, force a refresh even if a cached snapshot is still warm. */
@@ -2495,7 +2647,11 @@ export interface PortalChatSetterTarget {
 /** Payload for `portal.chat.set_model`. */
 export type PortalChatSetModelPayload = PortalChatSetterTarget &
   (
-    | { selectionMode?: 'manual'; model: PortalChatModel }
+    | {
+        selectionMode?: 'manual';
+        model: PortalChatModel;
+        executionHarness?: AgentExecutionHarness;
+      }
     | { selectionMode: 'auto'; model?: never }
   );
 
@@ -2776,6 +2932,7 @@ export type PortalAppAdvisorCancelPayload = PortalAppAdvisorChatTarget;
  */
 export interface PortalAppAdvisorSetModelPayload extends PortalAppAdvisorChatTarget {
   model: PortalChatModel;
+  executionHarness?: AgentExecutionHarness;
 }
 
 /**
@@ -3287,6 +3444,8 @@ export interface PortalSharingExistingShare {
   /** Owner scope, independent of the audience of a legacy public link. */
   targetAudience?: 'team' | 'organization';
   publicLinkStale?: boolean;
+  /** The public link's absolute URL, resolved against the desktop's cloud. */
+  publicUrl?: string;
 }
 
 /** Result of `portal.sharing.existing_share`. */
@@ -3407,6 +3566,27 @@ export interface PortalCatalogMarkdownContent {
 }
 
 /**
+ * Browser-safe MCP server a marketplace plugin bundles. Projects a
+ * {@link PluginDetails} `mcpServers` entry without `command`, `args`, or env;
+ * `url` is present only for http servers and is SANITIZED (scheme + host +
+ * port + path). An http server whose URL does not sanitize is omitted.
+ */
+export interface PortalMarketplacePluginMcpServer {
+  name: string;
+  type: 'command' | 'http';
+  url?: string;
+}
+
+/**
+ * Browser-safe skill a marketplace plugin bundles. Projects a
+ * {@link PluginDetails} `skills` entry without its `path`.
+ */
+export interface PortalMarketplacePluginSkill {
+  name: string;
+  description: string;
+}
+
+/**
  * Browser-safe plugin summary row inside a {@link PortalMarketplaceRow}.
  * Projects {@link PluginInfo} without paths, facets, or install locations;
  * `installed` collapses the machine-local cache state into a single flag.
@@ -3444,6 +3624,26 @@ export interface PortalMarketplacePluginRow extends Pick<
    * name that differs from the concrete source in the public reference).
    */
   shareSourceLabel?: string;
+  /**
+   * SANITIZED `externalSource.url` of the plugin's own package (scheme + host
+   * + port + path), so the browser can name its publisher and tell two
+   * same-named plugins apart (CAN-3653). Absent when the plugin has no
+   * external source, the URL does not parse or is not http(s), or the desktop
+   * predates it.
+   */
+  externalSourceUrl?: string;
+  /**
+   * MCP servers the plugin bundles, so the browser can join an installed
+   * server to its plugin (CAN-3653). Absent when the plugin details were not
+   * fetched, it bundles none, or the desktop predates it.
+   */
+  mcpServers?: PortalMarketplacePluginMcpServer[];
+  /**
+   * Skills the plugin bundles, so the browser lists them under the plugin's
+   * status (CAN-4844). Absent when the plugin is not installed, details were
+   * not fetched, it bundles none, or the desktop predates it.
+   */
+  skills?: PortalMarketplacePluginSkill[];
 }
 
 /**
@@ -3520,6 +3720,21 @@ export interface PortalPluginDetailResult {
   /** README markdown, or null when the plugin ships none / it failed to read. */
   readme: { body: string; truncated: boolean } | null;
   /**
+   * Harnesses the desktop offers (its harness gates), so the Portal plugin
+   * page lists the same harness rows. Absent from older desktops; the Portal
+   * then lists only the harnesses every build offers.
+   */
+  harnesses?: AgentExecutionHarness[];
+  /**
+   * Per-provider installation from the desktop's install status, so the
+   * Portal harness rows match the desktop's. Absent when the desktop has no
+   * per-provider status (older desktops too); the Portal then uses
+   * `plugin.installed`.
+   */
+  harnessInstallation?: { claude: boolean; codex: boolean };
+  /** The Claude plugin's Codex compatibility setting is off. */
+  codexCompatDisabled?: boolean;
+  /**
    * True when the README/details had to be dropped to fit
    * {@link PORTAL_CATALOG_RESULT_MAX_BYTES}. Absent means complete.
    */
@@ -3541,6 +3756,7 @@ export type PortalSkillRow = Pick<
   | 'updateAvailable'
   | 'builtIn'
   | 'custom'
+  | 'installedFromShare'
 > & {
   /**
    * True when the paired desktop can share this skill. Computed on the desktop
@@ -3580,6 +3796,16 @@ export type PortalMcpServerRow = McpServerIndexEntry & {
 /** Result of `portal.mcp.list_servers`. */
 export interface PortalMcpListServersResult {
   servers: PortalMcpServerRow[];
+  /** Optional on older desktops. Only credential-free provider link facts. */
+  providerConnectors?: Array<{
+    provider: ProviderConnectorListResult['provider'];
+    connectors: Array<
+      Pick<
+        ProviderConnectorListResult['connectors'][number],
+        'displayName' | 'connected'
+      >
+    >;
+  }>;
   /**
    * True when the server list was prefix-cut to fit
    * {@link PORTAL_CATALOG_RESULT_MAX_BYTES}. Absent means complete.
@@ -3978,6 +4204,8 @@ export interface PortalStandaloneChatSetModelPayload {
   chatId: string;
   /** Registry model id to persist as the chat default. */
   model: PortalChatModel;
+  /** Explicit choice advertised by the paired desktop's model catalog. */
+  executionHarness?: AgentExecutionHarness;
 }
 
 /**
@@ -4098,6 +4326,8 @@ export interface PortalPlanListPayload {
 
 export interface PortalPlanGetPayload extends PortalPlanListPayload {
   planId: string;
+  /** Positive safe integer. Omit for latest; unavailable revisions return null. */
+  revisionNumber?: number;
 }
 
 export interface PortalPlanCreatePayload extends PortalPlanListPayload {
@@ -4108,7 +4338,10 @@ export interface PortalPlanCreatePayload extends PortalPlanListPayload {
   linkedExecutionId?: string;
 }
 
-export interface PortalPlanUpdatePayload extends PortalPlanGetPayload {
+export interface PortalPlanUpdatePayload extends Omit<
+  PortalPlanGetPayload,
+  'revisionNumber'
+> {
   content?: string;
   title?: string;
   source?: string;
@@ -4119,7 +4352,10 @@ export interface PortalPlanUpdatePayload extends PortalPlanGetPayload {
   hidden?: boolean;
 }
 
-export type PortalPlanDeletePayload = PortalPlanGetPayload;
+export type PortalPlanDeletePayload = Omit<
+  PortalPlanGetPayload,
+  'revisionNumber'
+>;
 
 /**
  * Canonical payload for `portal.plan.open`. Identifies a plan by its local id
@@ -4381,6 +4617,59 @@ export interface PortalPipelineLogRequestPayload {
   iteration?: number;
 }
 
+/**
+ * What `portal.pipeline.content.read` reads: one step's current attempt,
+ * named by its physical job id (a matrix variant's own id), or the run's
+ * saved report.
+ */
+export type PortalPipelineContentSource =
+  | { kind: 'step_output'; jobId: string; stepId: string }
+  | { kind: 'report' };
+
+/**
+ * Most UTF-16 code units in one `portal.pipeline.content.read` page. Even
+ * when every unit needs a six-byte JSON escape, a page stays below
+ * {@link PORTAL_CATALOG_RESULT_MAX_BYTES}.
+ */
+export const PORTAL_PIPELINE_CONTENT_PAGE_MAX_CHARS = 96 * 1024;
+
+/**
+ * Payload for `portal.pipeline.content.read` (CAN-3717): one page of a step's
+ * complete readable output or of the run's saved report. Read on demand only;
+ * streamed `pipeline_run` tails stay bounded. The desktop resolves every file
+ * from the execution it owns; the client never names a path.
+ */
+export interface PortalPipelineContentReadPayload {
+  projectId: string;
+  worktreeId: string;
+  executionId: string;
+  source: PortalPipelineContentSource;
+  /** UTF-16 offset of the page in the document. Omitted means 0. */
+  offset?: number;
+  /**
+   * The first page's {@link PortalPipelineContentReadResult.revision}. When
+   * the document changed since, the read fails with `stale` instead of
+   * joining two versions.
+   */
+  revision?: string;
+}
+
+/**
+ * One page of pipeline content. The document is complete when `nextOffset`
+ * equals `length`; an empty document has `length` 0. Agent step output is the
+ * assistant's readable text and the report is the desktop's report view
+ * (text report, then JSON report), both `markdown`; any other step output is
+ * its saved log, `text`.
+ */
+export interface PortalPipelineContentReadResult {
+  format: 'markdown' | 'text';
+  content: string;
+  offset: number;
+  nextOffset: number;
+  length: number;
+  revision: string;
+}
+
 // Diffs
 /**
  * @deprecated Use {@link PortalDiffReadPayload} instead. The legacy
@@ -4434,6 +4723,9 @@ export interface PortalDiffReadPayload {
 // PR actions
 export const PORTAL_CAPABILITY_PR_WORKTREE_ACTIONS =
   'pr_worktree_actions' as const;
+
+/** PR status changes are pushed as pr_status deltas; idle reads are unnecessary. */
+export const PORTAL_CAPABILITY_PR_STATUS_PUSH = 'pr_status_push_v1' as const;
 
 /**
  * Why a repo cannot open a pull request. The desktop owns this vocabulary so
@@ -4832,6 +5124,10 @@ export interface PortalEditorListInvocablesPayload {
  * returns the text to insert.
  */
 export interface PortalEditorInvocableOption extends PortalEditorSlashCommandOption {
+  /** Plugin search identity; independent of the harness invocation text. */
+  pluginName?: string;
+  /** Original member identity, before harness-specific name projection. */
+  memberName?: string;
   section: 'discovered' | 'available';
   /** Opaque inventory row id; present on inventory-backed rows. */
   entryId?: string;
@@ -5002,6 +5298,11 @@ export interface PortalWorktreeArchivePayload {
   mode?: 'archive' | 'delete';
   workspaceId: string;
   worktreeId: string;
+  /**
+   * CAN-5334: complete an ordinary refusal with `{ success: false, refusal }`
+   * and its discard description instead of failing. Older desktops ignore it.
+   */
+  typedRefusal?: boolean;
 }
 
 /** Read-only organization repository ownership advice; never accepts a host path. */
@@ -5081,6 +5382,11 @@ export interface PortalWorkspaceDeletePayload {
   /** Absent means archive; delete requires host retention support. */
   mode?: 'archive' | 'delete';
   workspaceId: string;
+  /**
+   * CAN-5337: the interrupted deletion a person confirmed superseding, from
+   * the project deletion discard description. Older desktops ignore it.
+   */
+  supersedeInterruptedDeletion?: string;
 }
 
 /**
@@ -5162,6 +5468,7 @@ export interface PortalCommandPayloadMap {
   'portal.personal_organization.projects.list': Record<string, never>;
   'portal.personal_organization.projects.convert': PersonalProjectConversionRequest;
   'portal.personal_organization.projects.status': { operationId: string };
+  'portal.org_projects.shared_multi_repo': PortalSharedMultiRepoCommand;
   'portal.org_projects.find_repository_owner': PortalOrgProjectsFindRepositoryOwnerPayload;
   'portal.sidebar.item_groups.list': { scope: SidebarItemGroupScope };
   'portal.sidebar.item_groups.create': SidebarItemGroupCreateRequest;
@@ -5178,7 +5485,9 @@ export interface PortalCommandPayloadMap {
   'portal.chat.send': PortalChatSendPayload;
   'portal.chat.cancel': PortalChatCancelPayload;
   'portal.chat.cancel_turn': PortalChatCancelTurnPayload;
+  'portal.watcher.delete': PortalWatcherDeletePayload;
   'portal.chat.mark_read': PortalChatMarkReadPayload;
+  'portal.chat.set_unread': PortalChatSetUnreadPayload;
   'portal.chat.visual.read': PortalChatVisualReadPayload;
   'portal.chat.queue.cancel': PortalChatQueueEntryPayload;
   'portal.chat.queue.edit': PortalChatQueueEditPayload;
@@ -5213,6 +5522,8 @@ export interface PortalCommandPayloadMap {
   'portal.app_advisor.dismiss_question': PortalAppAdvisorDismissQuestionPayload;
   'portal.app_advisor.settings.get': PortalAppAdvisorSettingsGetPayload;
   'portal.app_advisor.settings.save': PortalAppAdvisorSettingsSavePayload;
+  'portal.onboarding_tips.get': PortalOnboardingTipsGetPayload;
+  'portal.onboarding_tips.update': OnboardingTipsUpdate;
   'portal.script_actions.list': ScriptActionsListRequest;
   'portal.script_actions.rescan': ScriptActionsContext;
   'portal.script_actions.review': ScriptActionsReviewRequest;
@@ -5254,6 +5565,7 @@ export interface PortalCommandPayloadMap {
   'portal.pipeline.retry': PortalPipelineRetryPayload;
   'portal.pipeline.rerun': PortalPipelineRerunPayload;
   'portal.pipeline.log_request': PortalPipelineLogRequestPayload;
+  'portal.pipeline.content.read': PortalPipelineContentReadPayload;
   'portal.pipeline.chat_follow_up.prepare': PortalPipelineChatFollowUpPreparePayload;
   'portal.diff.read': PortalDiffReadPayload;
   'portal.pr.action': PortalPrActionPayload;
@@ -5267,6 +5579,9 @@ export interface PortalCommandPayloadMap {
   'portal.file.read': PortalFileReadPayload;
   'portal.file.asset.read': PortalFileAssetReadPayload;
   'portal.chat.asset.read': PortalChatAssetReadPayload;
+  'portal.chat.transcript.page': PortalChatTranscriptPagePayload;
+  'portal.chat.transcript.blocks.page': PortalChatTranscriptBlocksPagePayload;
+  'portal.chat.content.read': PortalChatContentReadPayload;
   'portal.file.save': PortalFileSavePayload;
   'portal.editor.list_slash_commands': PortalEditorListSlashCommandsPayload;
   'portal.editor.list_file_mentions': PortalEditorListFileMentionsPayload;
@@ -5277,10 +5592,15 @@ export interface PortalCommandPayloadMap {
   'portal.workspace.reorder': PortalWorkspaceReorderPayload;
   'portal.worktree.create': PortalWorktreeCreatePayload;
   'portal.worktree.archive': PortalWorktreeArchivePayload;
+  'portal.worktree.discard.describe': PortalWorktreeDiscardDescribePayload;
+  'portal.worktree.discard': PortalWorktreeDiscardPayload;
   'portal.worktree.update': PortalWorktreeUpdatePayload;
   'portal.worktree.reorder': PortalWorktreeReorderPayload;
   'portal.workspace.create': PortalWorkspaceCreatePayload;
   'portal.workspace.delete': PortalWorkspaceDeletePayload;
+  'portal.workspace.delete.discard.describe': PortalProjectDeletionDiscardDescribePayload;
+  'portal.lifecycle_journal.inspect': Record<string, never>;
+  'portal.lifecycle_journal.quarantine': LifecycleJournalQuarantineRequest;
   'portal.workspace.update': PortalWorkspaceUpdatePayload;
   'portal.workspace.claude_md.get': PortalWorkspaceClaudeMdGetPayload;
   'portal.workspace.claude_md.save': PortalWorkspaceClaudeMdSavePayload;
@@ -5386,6 +5706,8 @@ export interface PortalChatMessagePayload {
  * additional cast at the call site.
  */
 export interface NormalizedPortalChatMessage {
+  /** A user reply within the current turn, rather than a new turn boundary. */
+  continuesTurn?: boolean;
   /** Internal scope discriminator (uppercase to match the Prisma enum). */
   scope: 'WORKTREE' | 'STANDALONE' | 'APP_ADVISOR';
   /** Local id of the owning chat thread. */
@@ -5422,6 +5744,8 @@ export interface NormalizedPortalChatMessage {
 }
 
 export interface PortalChatMessageView {
+  /** A user reply within the current turn, rather than a new turn boundary. */
+  continuesTurn?: boolean;
   scope: PortalChatScope;
   localChatId: string;
   localMessageId: string;
@@ -5671,6 +5995,8 @@ export interface PortalDiffSnapshotPayload {
   patch: string;
   /** Optional human-readable range label (e.g. `"abc123..def456"`). */
   rangeLabel?: string;
+  /** The roster was cut to fit the Portal event budget; absent when complete. */
+  truncated?: boolean;
 }
 
 /**
@@ -5683,6 +6009,8 @@ export interface PortalChangedFilesPayload {
   worktreeLocalId: string;
   uncommitted: PortalChangedFile[];
   committed: PortalChangedFile[];
+  notices?: PortalChangedFilesNotice[];
+  page?: PortalChangedFilesPage;
 }
 
 // ---------------------------------------------------------------------------
@@ -5713,6 +6041,8 @@ export type PortalAdapterFailureCode =
   | 'invalid_payload'
   | 'invalid_target'
   | 'not_found'
+  | 'not_found_or_firing'
+  | 'forbidden'
   | 'execution_failed'
   | 'github_not_connected'
   | 'unsupported_command';
@@ -5726,6 +6056,8 @@ export const PORTAL_ADAPTER_FAILURE_CODES = [
   'invalid_payload',
   'invalid_target',
   'not_found',
+  'not_found_or_firing',
+  'forbidden',
   'execution_failed',
   'github_not_connected',
   'unsupported_command',
@@ -5845,6 +6177,41 @@ export interface PortalChangedFile {
    */
   binary?: boolean;
 }
+
+export type PortalChangedFilesGroup = 'uncommitted' | 'committed';
+
+export interface PortalChangedFilesGroupPage {
+  readonly total: number;
+  readonly nextCursor?: string;
+}
+
+export interface PortalChangedFilesPage {
+  revision: string;
+  uncommitted: PortalChangedFilesGroupPage;
+  committed: PortalChangedFilesGroupPage;
+}
+
+export type PortalChangedFilesPageResult =
+  | {
+      changedFilesPage: {
+        workspaceLocalId: string;
+        worktreeLocalId: string;
+        group: PortalChangedFilesGroup;
+        revision: string;
+        files: PortalChangedFile[];
+        total: number;
+        nextCursor?: string;
+      };
+    }
+  | {
+      changedFilesPage: {
+        workspaceLocalId: string;
+        worktreeLocalId: string;
+        group: PortalChangedFilesGroup;
+        cursor: string;
+        error: 'stale_cursor' | 'invalid_cursor';
+      };
+    };
 
 /**
  * Result of `readDiff` (transport Phase T17). When `filePath` is omitted on
@@ -6395,6 +6762,11 @@ export interface PortalPlanSummary {
   title: string;
   status: string;
   source?: string;
+  /**
+   * Repo-relative path of the file an `imported` plan was copied from. Only
+   * present for `source === 'imported'`; older desktops omit it.
+   */
+  sourceFilePath?: string;
   /** ISO-8601 timestamp; the local service may use mtime or last-edited time. */
   updatedAt?: string;
 }
@@ -6423,9 +6795,9 @@ export interface PortalPlanDetail extends PortalPlanSummary {
    */
   latestRevisionNumber?: number;
   /**
-   * Convenience alias for {@link PortalPlanDetail.latestRevisionNumber} kept
-   * in sync by the local service. Renderers that only want the version
-   * counter can read this without remembering the "latest" prefix.
+   * Revision of `content`. Equals `latestRevisionNumber` on unpinned reads;
+   * a revision-specific read may return an older revision without changing
+   * the current plan projection.
    */
   revisionNumber?: number;
 }
@@ -6630,12 +7002,22 @@ export interface PortalPipelineSummary extends PortalPipelineMetadata {
   worktreeLocalId: string;
   pipelineId: string;
   name: string;
+  /** Declared step count, when the desktop loaded the definition. */
+  stepCount?: number;
+  /** Dispatch has a required input without a default; Portal cannot collect it. */
+  hasRequiredInputs?: boolean;
   /**
    * True when the paired desktop can share this pipeline. Computed on the
    * desktop; absent means "not shareable" (including desktops that predate
    * this field).
    */
   shareable?: boolean;
+  /**
+   * True for a user pipeline a live desktop automation owns (CAN-4551): the
+   * Portal lists it under that automation, not as a pipeline. The desktop
+   * sets it only for an owner that still runs the pipeline.
+   */
+  ownedByAutomation?: true;
 }
 
 export interface PortalPipelineListResult {
@@ -7023,12 +7405,20 @@ export interface PortalStandaloneChatSummary extends PortalStandaloneWorkEntryFi
   archived?: boolean;
   /** True while the chat has an in-flight turn or queued message. */
   hasActiveChat?: boolean;
+  /**
+   * The chat's background tasks (D11), sent whenever the desktop has
+   * canonical turn state, zero included, so a delta clears it (turn-state
+   * phase 41b). Omitted by older desktops.
+   */
+  backgroundTasks?: number;
   /** True when the chat has output the user has not viewed. */
   hasUnread?: boolean;
   /** Provider that owns the chat session. */
   providerType?: AgentExecutionHarness;
   /** Desktop-authoritative harness captured for an existing session. */
   executionHarness?: AgentExecutionHarness;
+  /** Whether persisted context or pending execution prevents changing harness. */
+  modelHarnessLocked?: boolean;
   /**
    * Current model id (registry key), distinct from {@link modelLabel} which is
    * the human-readable display string. Lets the portal's standalone model
@@ -7056,6 +7446,8 @@ export interface PortalStandaloneChatSummary extends PortalStandaloneWorkEntryFi
   deferredToolsAllowed?: boolean;
   queuedMessages?: PortalQueuedMessage[];
   inputDelivery?: ChatInputDeliveryView[];
+  /** Delegations whose request to this chat waits in its queue (ids only). */
+  waitingDelegationIds?: string[];
   steeringCapabilities?: ChatSteeringCapabilities;
   /** True while a turn runs in this chat; absent on older hosts. */
   turnActive?: boolean;
@@ -7077,6 +7469,8 @@ export interface PortalFileRoot {
   worktreeLocalId: string;
   fileRootLocalId: string;
   label: string;
+  /** Stable catalog classification. Absent on older hosts; do not infer it from labels. */
+  rootKind?: WorkerFilesystemRootsListResult['roots'][number]['kind'];
   /** Absolute path on the user's machine; surfaced read-only for context. */
   absolutePath: string;
 }
@@ -7171,6 +7565,8 @@ export interface PortalChatAgentBlockData {
   taskApprovalPending?: boolean;
   /** Who cancelled the task, when it was cancelled. */
   taskStopReason?: AgentTaskStopReason | null;
+  /** The host can stop the task now (cloud: Core's `stoppable`, CAN-5205). */
+  taskStoppable?: boolean;
   /** The task's failure message, when it failed. */
   taskErrorMessage?: string;
   /** Epoch ms the task was created; null when unknown. */
@@ -7210,6 +7606,13 @@ export interface PortalChatAgentBlockData {
   >;
   /** The session's root Codex thread, when known. */
   codexRootThreadId?: string;
+  /** When each receiver thread's own turns ran, in epoch ms. */
+  receiverTimes?: Record<string, { startedAt?: number; settledAt?: number }>;
+  /**
+   * A multi-receiver Codex card's child parts by receiver thread; the card's
+   * `subBlocks` hold every receiver's parts together.
+   */
+  receiverSubBlocks?: Record<string, PortalChatPart[]>;
 }
 
 /**
@@ -7277,10 +7680,13 @@ export interface PortalTurnTimerAutoRoutedModel {
  * Why a turn ended abnormally, carried as the optional `endReason` field on a
  * completed `turn_timer` part's `data` (the row itself stays
  * `status: 'complete'`). Producers omit it for a normal completion, so a
- * consumer that only wants cleanly finished turns must treat a completed
- * timer without `endReason` as the clean case. Older producers never send it.
+ * consumer can render a completed timer without `endReason` normally. Its
+ * absence is not positive execution-success evidence: older producers omit it.
+ * Canonical desktop timers additionally carry optional `outcome` data
+ * (`completed`, `cancelled`, `failed`), keyed by their exact `turnId`. Missing
+ * outcome remains unknown even when the row is complete or has assistant text.
  */
-export type PortalTurnTimerEndReason = 'cancelled' | 'failed';
+export type PortalTurnTimerEndReason = 'cancelled' | 'failed' | 'interrupted';
 
 /**
  * Read the Auto-routing attribution from a `turn_timer` part's free-form
@@ -7309,6 +7715,7 @@ export interface PortalChatToolResultData {
   toolUseId?: string;
   output: string;
   isError: boolean;
+  interruption?: ToolInterruption;
   agentArtifacts?: AgentArtifactReceiptV1[];
 }
 
@@ -7330,12 +7737,124 @@ export interface PortalChatPart {
   /** Free-form per-part data; shape depends on `kind`. */
   data?: unknown;
   /**
+   * For an unfolded `tool_result`, the original zero-based block position in
+   * its persisted message. Omitted for the default folded projection.
+   */
+  blockOrdinal?: number;
+  /**
+   * For an unfolded `tool_result`, points to its stored output body when the
+   * body is externalized or its inline preview is locally truncated. Omitted
+   * for results whose output is already complete in `data`.
+   */
+  outputLocator?: {
+    messageId: string;
+    blockOrdinal: number;
+    field: 'output';
+  };
+  /**
+   * For an ordinary `tool_use` or `tool_result`, the canonical occurrence it
+   * shows: its id stays the same across every later frame (a paired call keeps
+   * it when its result arrives), and merges key the part by it, so a reused
+   * provider tool id never takes another occurrence's locator. Validate with
+   * `readPortalToolOccurrence`; see `tool-part-occurrence.ts`.
+   */
+  occurrence?: {
+    id: string;
+    revision: number;
+  };
+  /**
    * For `kind: 'tool_use'`, the canonical family the tool belongs to. The
    * desktop chat-transcript projector populates this deterministically from
    * the tool name string so the renderer can dispatch the right icon
    * without parsing free-form names.
    */
   toolFamily?: PortalChatToolFamily;
+}
+
+/**
+ * Outcomes per counted logical step. All fields are safe non-negative integers.
+ * Omission of the entire object by a producer means metadata is unavailable.
+ */
+export interface TurnOutcomeCounts {
+  blocked: number;
+  failed: number;
+  interrupted: number;
+}
+
+/** Missing results are evidence only in a settled, fully available turn. */
+export interface TurnOutcomeEvidence {
+  settled: boolean;
+  resultsComplete: boolean;
+}
+
+/** Exclusive classification shared by canonical and Portal transcript readers. */
+export function classifyTurnStepOutcome(
+  result: { isError: boolean; interruption?: ToolInterruption } | undefined,
+  blocked: boolean,
+  evidence?: TurnOutcomeEvidence,
+): keyof TurnOutcomeCounts | undefined {
+  if (blocked) return 'blocked';
+  if (result?.interruption) return 'interrupted';
+  if (result?.isError) return 'failed';
+  if (!result && evidence?.settled && evidence.resultsComplete)
+    return 'interrupted';
+  return undefined;
+}
+
+/** Strict validation for derived caches; older cache versions must rebuild. */
+export function isTurnOutcomeCounts(
+  value: unknown,
+): value is TurnOutcomeCounts {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    'blocked' in value &&
+    'failed' in value &&
+    'interrupted' in value &&
+    [value.blocked, value.failed, value.interrupted].every(
+      (count) =>
+        typeof count === 'number' && Number.isSafeInteger(count) && count >= 0,
+    )
+  );
+}
+
+/** Normalize legacy wire counts only; absence of metadata stays unavailable. */
+export function readTurnOutcomeCounts(
+  value: unknown,
+): TurnOutcomeCounts | undefined {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    !('blocked' in value) ||
+    !('failed' in value)
+  )
+    return undefined;
+  const normalized = {
+    blocked: value.blocked,
+    failed: value.failed,
+    interrupted: 'interrupted' in value ? value.interrupted : 0,
+  };
+  return isTurnOutcomeCounts(normalized) ? normalized : undefined;
+}
+
+/**
+ * One blocked, errored or interrupted step of a turn, as the outcome tooltip
+ * lists it. Hosts derive it from loaded rows only; it is never carried on the
+ * wire or stored in the transcript index.
+ *
+ * `toolName` and `input` are what `getToolDisplayInfo` takes, so a host passes
+ * the step's display call unchanged. `output` is the raw result text; the
+ * shared UI derives the one-line reason from it.
+ */
+export interface TurnOutcomeStepDetail {
+  toolUseId: string;
+  outcome: keyof TurnOutcomeCounts;
+  toolName: string;
+  input: string;
+  output?: string;
+  interruption?: ToolInterruption;
 }
 
 /** How one turn ended, keyed by the user message that opened it. */
@@ -7352,8 +7871,29 @@ export interface PortalChatTurnEnd {
  * final assistant blocks. Mirrors the desktop renderer's `TurnGroup`.
  */
 export interface PortalChatTurnGroup {
-  /** Message id of the user prompt that initiated this turn. */
+  /** Optional untrusted file evidence; host adapters authorize file actions. */
+  files?: TurnFileRecord[];
+  /**
+   * Message id of the user prompt that initiated this turn, or of a wake's
+   * timer for an autonomous turn (see {@link wake}).
+   */
   userMessageId: string;
+  /**
+   * Set on an autonomous (wake) turn, which a boundary row heads instead of a
+   * prompt (turn-state phase 40e). The finished task's label, the prompt whose
+   * turn started it and the tool call that started it, when the transcript
+   * holds them; `event` when the task reported an event and keeps running;
+   * `scheduled` when a scheduled prompt (a cron job) fired; `toolsLoaded`
+   * when the agent continued after Canopy restarted it to load tools.
+   */
+  wake?: {
+    taskLabel?: string;
+    spawningUserMessageId?: string;
+    spawningToolUseId?: string;
+    event?: true;
+    scheduled?: true;
+    toolsLoaded?: true;
+  };
   /** Assistant message ids the renderer collapses behind a summary chip. */
   intermediateMessageIds: string[];
   /** Assistant message ids the renderer always renders inline. */
@@ -7424,6 +7964,7 @@ export interface PortalChatMessage {
   messageId: string;
   /** Host-owned provenance; legacy hosts may omit it. Never infer from text when present. */
   promptSource?: 'human' | 'automated';
+  autoResume?: AutoResumeMetadata;
   /**
    * Host-owned marker for a user message a fired watcher posted. Absent on
    * every other message and from legacy hosts; read it with
@@ -7941,6 +8482,8 @@ export interface PortalPlan {
   title: string;
   status: string;
   source?: string;
+  /** See {@link PortalPlanSummary.sourceFilePath}. */
+  sourceFilePath?: string;
   content?: string;
   reviewStatus?: string;
   approvedAt?: string | null;
@@ -8017,6 +8560,7 @@ export interface PortalChangedFiles {
    * means the producer reports them as complete.
    */
   notices?: PortalChangedFilesNotice[];
+  page?: PortalChangedFilesPage;
 }
 export interface PortalDiffSnapshot {
   localId?: string;
@@ -8091,6 +8635,7 @@ export interface PortalFileRootProjection {
   workspaceLocalId?: string;
   worktreeLocalId: string;
   label: string;
+  rootKind?: PortalFileRoot['rootKind'];
   absolutePath: string;
 }
 export interface PortalFileTreeNode {
@@ -8254,6 +8799,15 @@ export interface PortalProviderUsageCredits {
   total?: number;
 }
 
+/** Billing-period spend and cap in major currency units, not wallet credits. */
+export interface PortalProviderUsageSpend {
+  currency?: string;
+  used?: number;
+  /** Omitted when no reliable cap is reported; null only for a known uncapped cap. */
+  limit?: number | null;
+  isEnabled?: boolean;
+}
+
 /**
  * One plan limit window, normalized on the desktop. `id` stays stable across
  * refreshes and reordering; `label` is display copy such as `5-hour window`,
@@ -8269,6 +8823,8 @@ export interface PortalProviderUsageWindow {
   resetsAt?: string;
   windowDurationMs?: number;
   credits?: PortalProviderUsageCredits;
+  /** Optional for compatibility with older paired clients. */
+  spend?: PortalProviderUsageSpend;
 }
 
 /** Most account-proxy accounts one `provider_usage` entry carries. */
@@ -8445,12 +9001,21 @@ export interface PortalQueuedMessage {
   id: string;
   /** Same provenance as the eventual transcript prompt. */
   promptSource?: 'human' | 'automated';
+  autoResume?: AutoResumeMetadata;
   text: string;
   origin: 'desktop' | 'portal';
   enqueuedAtMs: number;
+  turnPhase?: ChatTurnPhase;
   /** Agent-sender display attribution; never includes hidden instructions. */
   agentSent?: AgentSentInfo;
   lastErrorMessage?: string;
+  /**
+   * This row's local delivery failed or is uncertain, so its force action
+   * retries the send instead of interrupting a running turn.
+   */
+  retryable?: boolean;
+  /** Transient: the host must confirm credits before an explicit retry can send. */
+  retryBlockedReason?: QueuedMessageRetryBlockedReason;
   editLocked?: boolean;
   /** Explicit force-action lock; absent hosts retain the edit-lock behavior. */
   forceLocked?: boolean;
@@ -8467,6 +9032,8 @@ export interface PortalQueuedMessage {
   canSteer?: boolean;
   /** Steer cannot apply this row's capability changes to the active turn. */
   steerBlockedByCapabilityChange?: boolean;
+  /** Transient: why the host is holding this row. Absent on older hosts. */
+  waitingReason?: QueuedMessageWaitingReason;
   /**
    * Host user-message id this accepted queue row stands for (REG-2981).
    *
@@ -8477,6 +9044,12 @@ export interface PortalQueuedMessage {
    * rendering normally, since nothing has superseded it.
    */
   supersedesUserMessageId?: string;
+  /**
+   * The host is delivering this message to an idle agent now (nothing runs or
+   * waits ahead of it), so it renders as sent rather than as queued until the
+   * transcript carries it. Absent on hosts that never set it.
+   */
+  delivering?: boolean;
 }
 
 export interface PortalChatSummaryEntity {
@@ -8490,6 +9063,8 @@ export interface PortalChatSummaryEntity {
   /** Host-authoritative queued messages, in FIFO order. */
   queuedMessages?: PortalQueuedMessage[];
   inputDelivery?: ChatInputDeliveryView[];
+  /** Delegations whose request to this chat waits in its queue (ids only). */
+  waitingDelegationIds?: string[];
   steeringCapabilities?: ChatSteeringCapabilities;
   /** Owning workspace local id (worktree-scoped chats only). */
   workspaceLocalId?: string;
@@ -8527,6 +9102,8 @@ export interface PortalChatSummaryEntity {
   providerType?: string;
   /** Desktop-authoritative harness captured for an existing session. */
   executionHarness?: AgentExecutionHarness;
+  /** Whether persisted context or pending execution prevents changing harness. */
+  modelHarnessLocked?: boolean;
   /** For multi-repo workspaces, the currently selected repo for this chat. */
   selectedRepoId?: string;
   /** True when this is the active chat for its scope (e.g. drives sidebar selection). */
@@ -8554,6 +9131,24 @@ export interface PortalChatSummaryEntity {
    * Omitted when the turn is idle or the desktop predates this field.
    */
   turnElapsedMs?: number;
+  /**
+   * The chat's canonical turn phase (turn-state phase 41a). `background`
+   * means only background work runs: no turn, so the composer is open and
+   * there's no Stop. Omitted when the desktop has no canonical turn state.
+   */
+  turnPhase?: ChatTurnPhase;
+  /**
+   * The chat's background tasks (D11): delegations plus every provider
+   * background task. Sent whenever the desktop has canonical turn state, zero
+   * included, so a delta clears it; omitted by older desktops.
+   */
+  backgroundTasks?: number;
+  /**
+   * The queued and live managed delegations among `backgroundTasks`, for the
+   * Portal background tray's delegates row (turn-state phase 41e). Sent with
+   * `backgroundTasks`.
+   */
+  backgroundDelegations?: number;
   /**
    * Present while this chat's provider quota is exhausted and the desktop is
    * showing its composer usage-limit banner (CAN-2601). The portal renders
@@ -9041,6 +9636,11 @@ export interface PortalSessionShellState {
     splitPrLocked?: boolean;
     /** True when an agent turn is actively streaming for this worktree. */
     isStreaming?: boolean;
+    /**
+     * The worktree's background tasks (D11): its chats' delegations and live
+     * provider tasks. Omitted when none run (turn-state phase 41f).
+     */
+    backgroundTasks?: number;
     /** True when a pipeline run is currently executing in this worktree. */
     isRunningRun?: boolean;
     /** True when desktop is mid-discovery (e.g. SDK probing) for this worktree. */
@@ -9129,6 +9729,8 @@ export interface PortalSessionShellState {
       usage?: PortalChatUsage;
       queuedMessages?: PortalQueuedMessage[];
       inputDelivery?: ChatInputDeliveryView[];
+      /** Delegations whose request to this chat waits in its queue (ids only). */
+      waitingDelegationIds?: string[];
       steeringCapabilities?: ChatSteeringCapabilities;
       localId: string;
       projectLocalId: string;
@@ -9150,6 +9752,11 @@ export interface PortalSessionShellState {
        */
       hasActiveChat?: boolean;
       /**
+       * The chat's background tasks (D11), zero included, for the Chats row's
+       * background spinner (turn-state phase 41b). Undefined until projected.
+       */
+      backgroundTasks?: number;
+      /**
        * Mirrors the desktop cowork entry row's unread indicator, falling back
        * to `CoworkWorkEntryMeta.unreadChats`. Undefined until projected.
        */
@@ -9157,6 +9764,8 @@ export interface PortalSessionShellState {
       /** Provider that owns the chat session. */
       providerType?: AgentExecutionHarness;
       executionHarness?: AgentExecutionHarness;
+      /** Whether persisted context or pending execution prevents changing harness. */
+      modelHarnessLocked?: boolean;
       /**
        * Current model id (registry key), distinct from {@link modelLabel} which
        * is the human-readable display string. Lets the standalone/cowork model
@@ -9220,6 +9829,14 @@ export interface PortalSessionShellState {
   /** App Advisor scope membership, independent of the workspace scopes. */
   appAdvisorItemGroups?: SidebarItemGroup[];
   todoLists?: PortalChatTodoProjection[];
+  /**
+   * Cached `background_process` rows: each worktree chat's background tasks
+   * for the Portal background tray (turn-state phase 41e). Optional and
+   * additive.
+   */
+  backgroundProcesses?: PortalBackgroundProcessEntity[];
+  /** Watchers scoped to their subscribing chat, gated by chat_watchers. */
+  watchers?: PortalWatcherEntity[];
   /**
    * Canonical projection of cached `terminal_session` entity rows
    * (transport plan §1.5). Surfaces the structured terminal metadata
@@ -9307,9 +9924,23 @@ export * from './sync-safe-pipeline-summary';
 export * from './selected-mcp-servers';
 export * from './catalog-entry-availability';
 export * from './pairing-link';
+export * from './transcript-reads';
+export * from './tool-part-occurrence';
 
 /** Review/preferences only; this does not grant interactive terminal access. */
 export const PORTAL_CAPABILITY_SCRIPT_ACTIONS = 'script_actions_v1';
+
+/**
+ * The paired desktop reads and writes onboarding tip dismissals (CAN-4904)
+ * through `portal.onboarding_tips.get` and `portal.onboarding_tips.update`.
+ */
+export const PORTAL_CAPABILITY_ONBOARDING_TIPS = 'onboarding_tips_v1';
+
+/**
+ * `portal.onboarding_tips.get` takes no arguments; both commands complete
+ * with an {@link OnboardingTipsState}.
+ */
+export type PortalOnboardingTipsGetPayload = Record<string, never>;
 export interface PortalInstalledItemResults {
   list_status: InstalledItemSnapshot;
   set_status: InstalledItemMutationResult;
@@ -9319,5 +9950,6 @@ export interface PortalInstalledItemResults {
 export type {
   AgentSentInfo,
   ExternalAgentSender,
+  ManagedDelegateSender,
   ToolMessageSender,
 } from './external-agent-sender';

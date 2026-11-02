@@ -6,8 +6,9 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
-import { act, type ReactElement } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type * as UiApp from '@canopy/ui-app';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { setNativeInputValue } from '@/test-utils/dom';
 
@@ -52,9 +53,7 @@ jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: (): void => {},
 }));
 jest.mock('@canopy/ui-app', () => ({
-  SkillReadDetail: ({ error }: { error: string }): ReactElement => (
-    <div role="alert">{error}</div>
-  ),
+  ...jest.requireActual<typeof UiApp>('@canopy/ui-app'),
   MarkdownFrontmatterContent: (): null => null,
 }));
 
@@ -81,6 +80,74 @@ describe('SkillsTab session replay privacy', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  it('blocks installed receipt names while keeping copy and source navigation recorded', async () => {
+    Object.defineProperty(window, 'skills', {
+      configurable: true,
+      value: {
+        readContent: () =>
+          Promise.resolve({
+            success: true,
+            data: { frontmatter: {}, body: '' },
+          }),
+        listFiles: () =>
+          Promise.resolve({
+            success: true,
+            data: { files: [], truncated: false },
+          }),
+      },
+    });
+    const onSelect = jest.fn();
+    await act(async () => {
+      root.render(
+        <SkillDetailModal
+          presentation="page"
+          skill={{ sourceId: 'custom:app', name: 'review' }}
+          installedSkill={{
+            sourceId: 'custom:app',
+            name: 'review',
+            description: '',
+            source: '',
+            installedAt: '',
+            updatedAt: '',
+            updateAvailable: false,
+            custom: true,
+            installedFromShare: {
+              remoteId: 's1',
+              ownerName: 'Acme',
+              teamName: 'Platform',
+              sharedByName: 'Lena Park',
+            },
+          }}
+          shareProvenance={{ source: { kind: 'action', onSelect } }}
+          onClose={() => {}}
+        />,
+      );
+      await Promise.resolve();
+    });
+    for (const [id, text] of [
+      ['owner', 'Acme'],
+      ['team', 'Platform'],
+      ['sharer', 'Lena Park'],
+    ]) {
+      const fact = document.body.querySelector(
+        `[data-testid="installed-share-${id}"]`,
+      );
+      expect(fact?.querySelector('.ph-no-capture')?.textContent).toBe(text);
+      expect(fact?.closest('.ph-no-capture')).toBeNull();
+    }
+    const copy = document.body.querySelector(
+      '[data-testid="installed-share-copy"]',
+    );
+    expect(copy?.textContent).toBe('One-time copy');
+    expect(copy?.closest('.ph-no-capture')).toBeNull();
+    const source = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="installed-share-source-link"]',
+    );
+    expect(source?.closest('.ph-no-capture')).toBeNull();
+    act(() => source?.click());
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
   it('records the skill edit form and blocks the preview', async () => {

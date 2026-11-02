@@ -1,7 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument */
 import type { BrowserWindow } from 'electron';
-import type { Dirent } from 'node:fs';
+import type * as SharedGit from '@canopy/desktop-shared/lib/git';
+import type { Dirent, PathLike } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+jest.mock('../lib/desktop-telemetry', () => ({
+  recordGitCommitTelemetry: jest.fn(),
+  recordPullRequestOpenedTelemetry: jest.fn(),
+  recordPullRequestMergedTelemetry: jest.fn(),
+}));
+import { recordPullRequestMergedTelemetry } from '../lib/desktop-telemetry';
 jest.mock('node:fs/promises', () => ({
   readdir: jest.fn(),
 }));
@@ -37,7 +47,7 @@ jest.mock('../lib/git', () => ({
   hasUnmergedPaths: jest.fn(),
   hasUncommittedChanges: jest.fn(),
   hasCommitsAhead: jest.fn(),
-  hasBranchBeenPushedToRemote: jest.fn(),
+  readBranchPublication: jest.fn(),
   hasRemoteTrackingBranch: jest.fn(),
   hasUnpulledCommits: jest.fn(),
   hasUnpushedCommits: jest.fn(),
@@ -142,7 +152,10 @@ import {
   releaseSplitLock,
   SplitLockError,
 } from '../services/split-lock-service';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import {
+  IPC_CHANNELS,
+  type PortalPullRequestRepoStatus,
+} from '@canopy/desktop-shared/types';
 import type {
   CancelGitActionRequest,
   CancelGitActionResponse,
@@ -153,7 +166,16 @@ import type {
   RepoPrTrackingData,
 } from '@canopy/desktop-shared/types/github';
 
-const mockedReaddir = jest.mocked(readdir);
+type ReaddirWithFileTypes = (
+  path: PathLike,
+  options: { withFileTypes: true },
+) => Promise<Dirent[]>;
+// The mocked overload defaults to buffer dirents; these tests exercise the
+// default string-name form used by the code under test. Narrow the overloaded
+// fs mock once here because TypeScript cannot directly cast between overloads.
+const mockedReaddir = jest.mocked(
+  readdir,
+) as unknown as jest.MockedFunction<ReaddirWithFileTypes>;
 const mockedResolveWorktreeCwd = jest.mocked(resolveWorktreeCwd);
 const mockedIsMultiRepoWorkspace = jest.mocked(isMultiRepoWorkspace);
 const mockedReadWorkspaceConfig = jest.mocked(readWorkspaceConfig);
@@ -291,7 +313,13 @@ describe('githubMergePr handler', () => {
         mainFrame: { isDestroyed: (): boolean => false, detached: false },
       },
     };
-    registerGitHubHandlers(() => mockWindow as unknown as BrowserWindow);
+    registerGitHubHandlers(() => mockWindow as unknown as BrowserWindow, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
     handler = getMergePrHandler();
     cancelHandler = getCancelGitActionHandler();
   });
@@ -312,12 +340,67 @@ describe('githubMergePr handler', () => {
     } as any);
     mockedIsMultiRepoWorkspace.mockReturnValue(true);
     mockedResolveWorktreeCwd.mockReturnValue('/workspace/wt');
-    mockedReaddir.mockResolvedValue([makeDirent('repo-a')] as any);
+    mockedReaddir.mockResolvedValue([makeDirent('repo-a')]);
     mockedGetCurrentBranch.mockResolvedValue('feature/repo-a');
     mockedGetRemoteUrl.mockResolvedValue('https://github.com/org/repo.git');
     mockedFetchOrigin.mockResolvedValue();
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 0 });
     releaseSplitLock('project-1', 'worktree-1');
+  });
+
+  it('does not count reconciliation of an externally merged PR', async () => {
+    mockedFetchRepoPrTrackingData.mockResolvedValue(
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
+    );
+    mockedMergePrForRepo.mockResolvedValue({
+      outcome: 'merged',
+      newlyMerged: false,
+      mergeMethod: 'squash',
+      mergeCommitSha: 'sha123',
+    });
+    await handler({}, { projectId: 'workspace-a', worktreeId: 'wt-1' });
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
+  });
+
+  it('preserves a completed manual merge when the injected recorder throws', async () => {
+    mockedFetchRepoPrTrackingData.mockResolvedValue(
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
+    );
+    mockedMergePrForRepo.mockResolvedValue({
+      outcome: 'merged',
+      newlyMerged: true,
+      mergeMethod: 'squash',
+      mergeCommitSha: 'sha',
+    });
+    jest.mocked(recordPullRequestMergedTelemetry).mockImplementationOnce(() => {
+      throw new Error('telemetry');
+    });
+    const result = await handler(
+      {},
+      { projectId: 'workspace-a', worktreeId: 'wt-1' },
+    );
+    expect(result.mergedRepos).toHaveLength(1);
+    expect(result.failedRepos).toHaveLength(0);
+    expect(recordPullRequestMergedTelemetry).toHaveBeenCalledWith({
+      projectId: 'workspace-a',
+      source: 'manual',
+      flow: 'merge',
+      repoCount: 1,
+    });
+  });
+
+  it('does not count enqueues as merges', async () => {
+    mockedFetchRepoPrTrackingData.mockResolvedValue(
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
+    );
+    mockedMergePrForRepo.mockResolvedValue({
+      outcome: 'enqueued',
+      mergeMethod: 'squash',
+      mergeCommitSha: '',
+      queuePosition: null,
+    });
+    await handler({}, { projectId: 'workspace-a', worktreeId: 'wt-1' });
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
   });
 
   it('refuses a merge while the worktree is split-locked', async () => {
@@ -343,7 +426,7 @@ describe('githubMergePr handler', () => {
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(true);
     jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(false);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(false);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(false);
     jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     jest.mocked(bases.resolveEffectiveBaseBranchForRepo).mockResolvedValue({
@@ -381,18 +464,23 @@ describe('githubMergePr handler', () => {
 
   it('merges an open mergeable PR with no unresolved comments and refreshes', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }) as any,
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
     );
     mockedMergePrForRepo.mockResolvedValue({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const result = await handler(
+      {},
+      {
+        source: 'chat',
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
 
     expect(result.mergedRepos).toEqual([
       {
@@ -412,6 +500,13 @@ describe('githubMergePr handler', () => {
       7,
       'verified-head-sha',
     );
+    expect(recordPullRequestMergedTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordPullRequestMergedTelemetry).toHaveBeenCalledWith({
+      projectId: 'workspace-a',
+      source: 'chat',
+      flow: 'merge',
+      repoCount: 1,
+    });
     expect(mockedRefreshNow).toHaveBeenCalledWith('workspace-a', 'wt-1');
     expect(mockedEnqueueFastRefresh).toHaveBeenCalledWith(
       'workspace-a',
@@ -450,6 +545,7 @@ describe('githubMergePr handler', () => {
       expect(result.mergedRepos).toEqual([]);
       expect(result.failedRepos).toEqual([]);
       expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+      expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
       expect(mockedRefreshNow).not.toHaveBeenCalled();
       // The click waits on these reads, so none may queue behind polling.
       expect(mockedFetchRepoPrTrackingData.mock.calls.length).toBeGreaterThan(
@@ -492,6 +588,7 @@ describe('githubMergePr handler', () => {
       );
       mockedMergePrForRepo.mockResolvedValue({
         outcome: 'merged',
+        newlyMerged: true,
         mergeMethod: 'squash',
         mergeCommitSha: 'sha123',
       });
@@ -576,6 +673,7 @@ describe('githubMergePr handler', () => {
 
       expect(launchMergeQueueChat).not.toHaveBeenCalled();
       expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+      expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
       expect(result.verifiedRepos).toEqual([
         expect.objectContaining({
           mergeable: false,
@@ -621,6 +719,7 @@ describe('githubMergePr handler', () => {
 
         expect(result.mergeQueueChats).toHaveLength(1);
         expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+        expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
         expect(result.verifiedRepos).toEqual([
           expect.objectContaining({ startsAgentChat: true }),
         ]);
@@ -676,6 +775,7 @@ describe('githubMergePr handler', () => {
         }),
       ]);
       expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+      expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
       expect(launchMergeQueueChat).not.toHaveBeenCalled();
     });
   });
@@ -740,7 +840,7 @@ describe('githubMergePr handler', () => {
 
   it('attempts standard merges first, then launches queue chats in workspace order despite independent failures', async () => {
     mockedReaddir.mockResolvedValue(
-      ['repo-a', 'repo-b', 'repo-c', 'repo-d'].map(makeDirent) as any,
+      ['repo-a', 'repo-b', 'repo-c', 'repo-d'].map(makeDirent),
     );
     const order: string[] = [];
     mockedFetchRepoPrTrackingData.mockImplementation((repoPath) =>
@@ -815,6 +915,7 @@ describe('githubMergePr handler', () => {
       );
     mockedMergePrForRepo.mockResolvedValue({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
@@ -877,9 +978,7 @@ describe('githubMergePr handler', () => {
   });
 
   it('preserves blocked-queue readiness and successful mixed outcomes', async () => {
-    mockedReaddir.mockResolvedValue(
-      ['repo-a', 'repo-b'].map(makeDirent) as any,
-    );
+    mockedReaddir.mockResolvedValue(['repo-a', 'repo-b'].map(makeDirent));
     mockedFetchRepoPrTrackingData.mockImplementation((repoPath) =>
       Promise.resolve(
         makeStatus({
@@ -892,6 +991,7 @@ describe('githubMergePr handler', () => {
     );
     mockedMergePrForRepo.mockResolvedValue({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
@@ -910,9 +1010,7 @@ describe('githubMergePr handler', () => {
   });
 
   it('retains completed handoffs when cancelled and does not start further chats', async () => {
-    mockedReaddir.mockResolvedValue(
-      ['repo-a', 'repo-b'].map(makeDirent) as any,
-    );
+    mockedReaddir.mockResolvedValue(['repo-a', 'repo-b'].map(makeDirent));
     mockedFetchRepoPrTrackingData.mockResolvedValue(
       makeStatus({
         prNumber: 7,
@@ -947,6 +1045,7 @@ describe('githubMergePr handler', () => {
     );
     mockedMergePrForRepo.mockResolvedValue({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
@@ -971,23 +1070,28 @@ describe('githubMergePr handler', () => {
     ]);
     expect(result.failedRepos[0]?.error).toContain('PR state changed');
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
   });
 
   it('returns successful merge results when the post-merge refresh fails', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }) as any,
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
     );
     mockedMergePrForRepo.mockResolvedValue({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
     mockedRefreshNow.mockRejectedValueOnce(new Error('tracking unavailable'));
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
 
     expect(result.mergedRepos).toEqual([
       {
@@ -1014,14 +1118,17 @@ describe('githubMergePr handler', () => {
 
   it('holds back a PR with unresolved comments until confirmed', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 8, unresolvedReviewThreadCount: 2 }) as any,
+      makeStatus({ prNumber: 8, unresolvedReviewThreadCount: 2 }),
     );
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-      confirmUnresolvedComments: false,
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        confirmUnresolvedComments: false,
+      },
+    );
 
     expect(result.mergedRepos).toEqual([]);
     expect(result.requiresUnresolvedConfirmation).toEqual([
@@ -1034,6 +1141,7 @@ describe('githubMergePr handler', () => {
       },
     ]);
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
     expect(mockedRefreshNow).not.toHaveBeenCalled();
   });
 
@@ -1042,14 +1150,17 @@ describe('githubMergePr handler', () => {
       makeStatus({
         prNumber: 8,
         unresolvedReviewThreadCount: undefined,
-      }) as any,
+      }),
     );
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-      confirmUnresolvedComments: false,
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        confirmUnresolvedComments: false,
+      },
+    );
 
     expect(result.mergedRepos).toEqual([]);
     expect(result.requiresUnresolvedConfirmation).toEqual([
@@ -1062,24 +1173,29 @@ describe('githubMergePr handler', () => {
       },
     ]);
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
     expect(mockedRefreshNow).not.toHaveBeenCalled();
   });
 
   it('merges a PR with unresolved comments once confirmed', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 8, unresolvedReviewThreadCount: 2 }) as any,
+      makeStatus({ prNumber: 8, unresolvedReviewThreadCount: 2 }),
     );
     mockedMergePrForRepo.mockResolvedValue({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'merge',
       mergeCommitSha: 'sha999',
     });
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-      confirmUnresolvedComments: true,
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        confirmUnresolvedComments: true,
+      },
+    );
 
     expect(result.mergedRepos).toHaveLength(1);
     expect(result.requiresUnresolvedConfirmation).toEqual([]);
@@ -1096,13 +1212,16 @@ describe('githubMergePr handler', () => {
         prNumber: 13,
         headSha: undefined,
         unresolvedReviewThreadCount: 0,
-      }) as any,
+      }),
     );
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
 
     expect(result.mergedRepos).toEqual([]);
     expect(result.failedRepos).toEqual([
@@ -1116,6 +1235,7 @@ describe('githubMergePr handler', () => {
       },
     ]);
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
   });
 
   it('reports a not-mergeable PR as blocked without merging', async () => {
@@ -1126,13 +1246,16 @@ describe('githubMergePr handler', () => {
           prNumber: 9,
           mergeableState: 'blocked',
           unresolvedReviewThreadCount: 0,
-        }) as any,
+        }),
       );
 
-      const resultPromise = handler({} as any, {
-        projectId: 'workspace-a',
-        worktreeId: 'wt-1',
-      });
+      const resultPromise = handler(
+        {},
+        {
+          projectId: 'workspace-a',
+          worktreeId: 'wt-1',
+        },
+      );
       await jest.advanceTimersByTimeAsync(
         2000 + 4000 + 8000 + 16000 + 32000 + 32000 + 32000 + 32000,
       );
@@ -1161,6 +1284,7 @@ describe('githubMergePr handler', () => {
         }),
       );
       expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+      expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -1171,28 +1295,32 @@ describe('githubMergePr handler', () => {
     try {
       mockedFetchRepoPrTrackingData
         .mockResolvedValueOnce(
-          makeStatus({ prNumber: 9, unresolvedReviewThreadCount: 0 }) as any,
+          makeStatus({ prNumber: 9, unresolvedReviewThreadCount: 0 }),
         )
         .mockResolvedValueOnce(
           makeStatus({
             prNumber: 9,
             mergeableState: 'blocked',
             unresolvedReviewThreadCount: 0,
-          }) as any,
+          }),
         )
         .mockResolvedValueOnce(
-          makeStatus({ prNumber: 9, unresolvedReviewThreadCount: 0 }) as any,
+          makeStatus({ prNumber: 9, unresolvedReviewThreadCount: 0 }),
         );
       mockedMergePrForRepo.mockResolvedValue({
         outcome: 'merged',
+        newlyMerged: true,
         mergeMethod: 'squash',
         mergeCommitSha: 'sha123',
       });
 
-      const resultPromise = handler({} as any, {
-        projectId: 'workspace-a',
-        worktreeId: 'wt-1',
-      });
+      const resultPromise = handler(
+        {},
+        {
+          projectId: 'workspace-a',
+          worktreeId: 'wt-1',
+        },
+      );
       await flushMicrotasks();
       await jest.advanceTimersByTimeAsync(2000);
       const result = await resultPromise;
@@ -1219,7 +1347,7 @@ describe('githubMergePr handler', () => {
             mergeableState: 'blocked',
             unresolvedReviewThreadCount: 0,
             baseRefName: 'main',
-          }) as any,
+          }),
         )
         .mockResolvedValueOnce(
           makeStatus({
@@ -1227,20 +1355,23 @@ describe('githubMergePr handler', () => {
             mergeableState: 'blocked',
             unresolvedReviewThreadCount: 0,
             baseRefName: 'main',
-          }) as any,
+          }),
         )
         .mockResolvedValueOnce(
           makeStatus({
             prNumber: 9,
             unresolvedReviewThreadCount: 0,
             baseRefName: 'develop',
-          }) as any,
+          }),
         );
 
-      const resultPromise = handler({} as any, {
-        projectId: 'workspace-a',
-        worktreeId: 'wt-1',
-      });
+      const resultPromise = handler(
+        {},
+        {
+          projectId: 'workspace-a',
+          worktreeId: 'wt-1',
+        },
+      );
       await flushMicrotasks();
       await jest.advanceTimersByTimeAsync(2000);
       const result = await resultPromise;
@@ -1261,6 +1392,7 @@ describe('githubMergePr handler', () => {
       ]);
       expect(mockedFetchRepoPrTrackingData).toHaveBeenCalledTimes(3);
       expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+      expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -1272,13 +1404,16 @@ describe('githubMergePr handler', () => {
         prNumber: 10,
         hasConflicts: true,
         mergeableState: 'dirty',
-      }) as any,
+      }),
     );
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
 
     expect(result.verifiedRepos[0].blockedReason).toBe('has_conflicts');
     expect(result.mergedRepos).toEqual([]);
@@ -1286,14 +1421,17 @@ describe('githubMergePr handler', () => {
 
   it('dry runs without merging but reports verified state', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 11, unresolvedReviewThreadCount: 1 }) as any,
+      makeStatus({ prNumber: 11, unresolvedReviewThreadCount: 1 }),
     );
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-      dryRun: true,
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        dryRun: true,
+      },
+    );
 
     expect(result.dryRun).toBe(true);
     expect(result.verifiedRepos).toEqual([
@@ -1309,6 +1447,7 @@ describe('githubMergePr handler', () => {
       },
     ]);
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
     expect(mockedRefreshNow).not.toHaveBeenCalled();
   });
 
@@ -1355,6 +1494,7 @@ describe('githubMergePr handler', () => {
       'repo-b',
     ]);
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
   });
 
   it('keeps unresolved confirmation repos ordered during a parallel dry run', async () => {
@@ -1401,30 +1541,37 @@ describe('githubMergePr handler', () => {
       status: null,
     } as any);
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
 
     expect(result.verifiedRepos).toEqual([]);
     expect(result.mergedRepos).toEqual([]);
     expect(result.requiresUnresolvedConfirmation).toEqual([]);
     expect(mockedGetRemoteUrl).not.toHaveBeenCalled();
     expect(mockedMergePrForRepo).not.toHaveBeenCalled();
+    expect(recordPullRequestMergedTelemetry).not.toHaveBeenCalled();
   });
 
   it('surfaces merge API failures as failed repos', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 12, unresolvedReviewThreadCount: 0 }) as any,
+      makeStatus({ prNumber: 12, unresolvedReviewThreadCount: 0 }),
     );
     mockedMergePrForRepo.mockRejectedValue(
       new Error('merge blocked by branch protection'),
     );
 
-    const result = await handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const result = await handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
 
     expect(result.mergedRepos).toEqual([]);
     expect(result.failedRepos).toEqual([
@@ -1441,46 +1588,47 @@ describe('githubMergePr handler', () => {
 
   it('serializes concurrent merge requests for the same GitHub repo', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }) as any,
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
     );
 
-    let resolveFirstMerge: (value: {
-      merged: boolean;
-      mergeMethod: string;
-      mergeCommitSha: string;
-    }) => void = () => {
+    let resolveFirstMerge: (
+      value: Awaited<ReturnType<typeof mergePrForRepo>>,
+    ) => void = () => {
       throw new Error('First merge resolver was not initialized');
     };
-    const firstMerge = new Promise<{
-      merged: boolean;
-      mergeMethod: string;
-      mergeCommitSha: string;
-    }>((resolve) => {
-      resolveFirstMerge = resolve;
+    const firstMerge = new Promise<Awaited<ReturnType<typeof mergePrForRepo>>>(
+      (resolve) => {
+        resolveFirstMerge = resolve;
+      },
+    );
+
+    mockedMergePrForRepo.mockReturnValueOnce(firstMerge).mockResolvedValueOnce({
+      outcome: 'merged',
+      newlyMerged: true,
+      mergeMethod: 'squash',
+      mergeCommitSha: 'sha456',
     });
 
-    mockedMergePrForRepo
-      .mockReturnValueOnce(firstMerge as any)
-      .mockResolvedValueOnce({
-        outcome: 'merged',
-        mergeMethod: 'squash',
-        mergeCommitSha: 'sha456',
-      });
-
-    const firstResult = handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-    });
+    const firstResult = handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+      },
+    );
     await waitForMergePrCalls(1);
     expect(getPrMergeProgress('workspace-a', 'wt-1')).toEqual({
       mergingPr: true,
       mergePrPhase: 'merging',
     });
 
-    const secondResult = handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-2',
-    });
+    const secondResult = handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-2',
+      },
+    );
     await flushPromises();
 
     expect(mockedMergePrForRepo).toHaveBeenCalledTimes(1);
@@ -1503,6 +1651,7 @@ describe('githubMergePr handler', () => {
 
     resolveFirstMerge({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
@@ -1526,37 +1675,39 @@ describe('githubMergePr handler', () => {
 
   it('removes a cancelled merge from the queue before it starts', async () => {
     mockedFetchRepoPrTrackingData.mockResolvedValue(
-      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }) as any,
+      makeStatus({ prNumber: 7, unresolvedReviewThreadCount: 0 }),
     );
 
-    let resolveFirstMerge: (value: {
-      merged: boolean;
-      mergeMethod: string;
-      mergeCommitSha: string;
-    }) => void = () => {
+    let resolveFirstMerge: (
+      value: Awaited<ReturnType<typeof mergePrForRepo>>,
+    ) => void = () => {
       throw new Error('First merge resolver was not initialized');
     };
-    const firstMerge = new Promise<{
-      merged: boolean;
-      mergeMethod: string;
-      mergeCommitSha: string;
-    }>((resolve) => {
-      resolveFirstMerge = resolve;
-    });
-    mockedMergePrForRepo.mockReturnValueOnce(firstMerge as any);
+    const firstMerge = new Promise<Awaited<ReturnType<typeof mergePrForRepo>>>(
+      (resolve) => {
+        resolveFirstMerge = resolve;
+      },
+    );
+    mockedMergePrForRepo.mockReturnValueOnce(firstMerge);
 
-    const firstResult = handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-1',
-      operationId: 'merge-operation-1',
-    });
+    const firstResult = handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-1',
+        operationId: 'merge-operation-1',
+      },
+    );
     await waitForMergePrCalls(1);
 
-    const secondResult = handler({} as any, {
-      projectId: 'workspace-a',
-      worktreeId: 'wt-2',
-      operationId: 'merge-operation-2',
-    });
+    const secondResult = handler(
+      {},
+      {
+        projectId: 'workspace-a',
+        worktreeId: 'wt-2',
+        operationId: 'merge-operation-2',
+      },
+    );
     await flushPromises();
     expect(mockedMergePrForRepo).toHaveBeenCalledTimes(1);
 
@@ -1576,6 +1727,7 @@ describe('githubMergePr handler', () => {
 
     resolveFirstMerge({
       outcome: 'merged',
+      newlyMerged: true,
       mergeMethod: 'squash',
       mergeCommitSha: 'sha123',
     });
@@ -1665,7 +1817,7 @@ describe('githubMergePr handler', () => {
         .mocked(git.hasRemoteTrackingBranch)
         .mockResolvedValue(scenario.state !== 'none');
       jest
-        .mocked(git.hasBranchBeenPushedToRemote)
+        .mocked(git.readBranchPublication)
         .mockResolvedValue(scenario.state !== 'none');
       jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
       mockedGetAheadBehindCounts.mockResolvedValue({
@@ -1731,7 +1883,7 @@ describe('githubMergePr handler', () => {
     mockedGetRemoteUrl.mockResolvedValue('https://github.com/org/repo.git');
     mockedGetCurrentBranch.mockResolvedValue('feature');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(false);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(false);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     jest.mocked(bases.resolveEffectiveBaseBranchForRepo).mockResolvedValue({
       branch: 'main',
@@ -1775,12 +1927,37 @@ describe('githubMergePr handler', () => {
       refresh.mockRestore();
     }
   });
-  it.each([
+  type PrActionAvailabilityScenario = {
+    name: string;
+    origin?: boolean;
+    branch?: string;
+    dirty?: boolean;
+    tracking?: boolean;
+    unpulled?: boolean;
+    ahead?: boolean;
+    state?: PrState;
+    checkStatus?: PortalPullRequestRepoStatus['checkStatus'];
+    reviewStatus?: PortalPullRequestRepoStatus['reviewStatus'];
+    hasConflicts?: boolean;
+    ready?: boolean;
+    probeFails?: boolean;
+    expected: {
+      createBlockedReason?: string;
+      mergeBlockedReason?: string;
+      published?: boolean;
+    };
+  };
+  const prActionScenarios: PrActionAvailabilityScenario[] = [
     {
       name: 'no origin remote',
       origin: false,
       dirty: true,
-      expected: { createBlockedReason: 'no_remote' },
+      expected: { createBlockedReason: 'no_remote', published: false },
+    },
+    {
+      name: 'the remote branch probe fails',
+      probeFails: true,
+      expected: { createBlockedReason: 'no_changes', published: undefined },
     },
     {
       name: 'the worktree sits on the base branch',
@@ -1843,90 +2020,128 @@ describe('githubMergePr handler', () => {
       dirty: true,
       expected: { mergeBlockedReason: 'local_changes' },
     },
-  ])('explains why a PR action is unavailable: $name', async (scenario) => {
-    const git = await import('../lib/git');
-    const bases = await import('../lib/worktree-base-branches');
-    const service = await import('../services/pr-service');
-    const { runWorktreePrAction } =
-      await import('../services/pr-worktree-actions');
-    const state: string = scenario.state ?? 'none';
-    mockedIsMultiRepoWorkspace.mockReturnValue(false);
-    mockedGetCurrentBranch.mockResolvedValue(scenario.branch ?? 'feature');
-    mockedGetRemoteUrl.mockResolvedValue(
-      scenario.origin === false ? '' : 'https://github.com/org/repo.git',
-    );
-    jest
-      .mocked(git.hasUncommittedChanges)
-      .mockResolvedValue(scenario.dirty === true);
-    jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
-    jest
-      .mocked(git.hasRemoteTrackingBranch)
-      .mockResolvedValue(
-        scenario.tracking === true || state === 'open' || state === 'draft',
+  ];
+  it.each(prActionScenarios)(
+    'explains why a PR action is unavailable: $name',
+    async (scenario) => {
+      const git = await import('../lib/git');
+      const bases = await import('../lib/worktree-base-branches');
+      const service = await import('../services/pr-service');
+      const { runWorktreePrAction } =
+        await import('../services/pr-worktree-actions');
+      const state: string = scenario.state ?? 'none';
+      let restoreProbe: (() => void) | undefined;
+      let probeWasAttempted: (() => boolean) | undefined;
+      mockedIsMultiRepoWorkspace.mockReturnValue(false);
+      mockedGetCurrentBranch.mockResolvedValue(scenario.branch ?? 'feature');
+      mockedGetRemoteUrl.mockResolvedValue(
+        scenario.origin === false ? '' : 'https://github.com/org/repo.git',
       );
-    jest
-      .mocked(git.hasBranchBeenPushedToRemote)
-      .mockResolvedValue(
-        scenario.tracking === true || state === 'open' || state === 'draft',
-      );
-    jest
-      .mocked(git.hasUnpulledCommits)
-      .mockResolvedValue(scenario.unpulled === true);
-    mockedGetAheadBehindCounts.mockResolvedValue({
-      ahead: 0,
-      behind: scenario.unpulled === true ? 1 : 0,
-    });
-    jest.mocked(git.hasCommitsAhead).mockResolvedValue(scenario.ahead === true);
-    jest
-      .mocked(git.getDiffStats)
-      .mockResolvedValue({ insertions: 0, deletions: 0 } as any);
-    jest
-      .mocked(bases.resolveEffectiveBaseBranchForRepo)
-      .mockResolvedValue({ branch: 'main', existsInRemote: true } as any);
-    const refresh = jest
-      .spyOn(service, 'refreshPullRequestState')
-      .mockResolvedValue({
-        workspaceLocalId: 'project-1',
-        worktreeLocalId: 'worktree-1',
-        repos: [
-          {
-            repoId: 'repo-a',
-            repoName: 'App',
-            prLookupAvailable: true,
-            status:
-              state === 'none'
-                ? null
-                : {
-                    state,
-                    checkStatus: scenario.checkStatus ?? 'passing',
-                    reviewStatus: scenario.reviewStatus ?? 'approved',
-                    hasConflicts: scenario.hasConflicts === true,
-                    mergeReady: scenario.ready === true,
-                    unresolvedReviewThreadCount: 0,
-                  },
-          },
-        ],
+      jest
+        .mocked(git.hasUncommittedChanges)
+        .mockResolvedValue(scenario.dirty === true);
+      jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
+      jest
+        .mocked(git.hasRemoteTrackingBranch)
+        .mockResolvedValue(
+          scenario.tracking === true || state === 'open' || state === 'draft',
+        );
+      jest
+        .mocked(git.readBranchPublication)
+        .mockResolvedValue(
+          scenario.tracking === true || state === 'open' || state === 'draft',
+        );
+      if (scenario.probeFails) {
+        const shared = jest.requireActual<typeof SharedGit>(
+          '@canopy/desktop-shared/lib/git',
+        );
+        const directory = mkdtempSync(join(tmpdir(), 'can4876-probe-'));
+        mockedResolveWorktreeCwd.mockReturnValue(directory);
+        const resolver = jest.fn(
+          (): Promise<string> =>
+            Promise.resolve(join(directory, 'missing-git')),
+        );
+        shared.setGitExecutableResolver(resolver);
+        probeWasAttempted = (): boolean => resolver.mock.calls.length > 0;
+        restoreProbe = (): void => {
+          shared.setGitExecutableResolver(null);
+          rmSync(directory, { recursive: true, force: true });
+        };
+        jest
+          .mocked(git.readBranchPublication)
+          .mockImplementation(shared.readBranchPublication);
+      }
+      jest
+        .mocked(git.hasUnpulledCommits)
+        .mockResolvedValue(scenario.unpulled === true);
+      mockedGetAheadBehindCounts.mockResolvedValue({
+        ahead: 0,
+        behind: scenario.unpulled === true ? 1 : 0,
       });
-    try {
-      const result = await runWorktreePrAction({
-        action: 'get_actions',
-        workspaceLocalId: 'project-1',
-        worktreeLocalId: 'worktree-1',
+      jest
+        .mocked(git.hasCommitsAhead)
+        .mockResolvedValue(scenario.ahead === true);
+      jest
+        .mocked(git.getDiffStats)
+        .mockResolvedValue({ insertions: 0, deletions: 0 });
+      jest.mocked(bases.resolveEffectiveBaseBranchForRepo).mockResolvedValue({
+        branch: 'main',
+        existsInRemote: true,
+        existsLocally: true,
       });
-      expect(result).toEqual(
-        expect.objectContaining({
+      const refresh = jest
+        .spyOn(service, 'refreshPullRequestState')
+        .mockResolvedValue({
+          workspaceLocalId: 'project-1',
+          worktreeLocalId: 'worktree-1',
           repos: [
-            expect.objectContaining({
-              baseBranch: 'main',
-              ...scenario.expected,
-            }),
+            {
+              repoId: 'repo-a',
+              repoName: 'App',
+              prLookupAvailable: true,
+              status:
+                state === 'none'
+                  ? null
+                  : {
+                      state,
+                      checkStatus: scenario.checkStatus ?? 'passing',
+                      reviewStatus: scenario.reviewStatus ?? 'approved',
+                      hasConflicts: scenario.hasConflicts === true,
+                      mergeReady: scenario.ready === true,
+                      unresolvedReviewThreadCount: 0,
+                    },
+            },
           ],
-        }),
-      );
-    } finally {
-      refresh.mockRestore();
-    }
-  });
+        });
+      try {
+        const result = await runWorktreePrAction({
+          action: 'get_actions',
+          workspaceLocalId: 'project-1',
+          worktreeLocalId: 'worktree-1',
+        });
+        if (probeWasAttempted) expect(probeWasAttempted()).toBe(true);
+        expect(result).toEqual(
+          expect.objectContaining({
+            repos: [
+              expect.objectContaining({
+                baseBranch: 'main',
+                published:
+                  scenario.origin !== false &&
+                  (scenario.tracking === true ||
+                    state === 'open' ||
+                    state === 'draft'),
+                ...scenario.expected,
+              }),
+            ],
+          }),
+        );
+      } finally {
+        refresh.mockRestore();
+        restoreProbe?.();
+      }
+    },
+  );
+
   it('passes each check execution state through get_actions', async () => {
     const git = await import('../lib/git');
     const bases = await import('../lib/worktree-base-branches');
@@ -1939,13 +2154,13 @@ describe('githubMergePr handler', () => {
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
     jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 0 });
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     jest
       .mocked(git.getDiffStats)
-      .mockResolvedValue({ insertions: 0, deletions: 0 } as any);
+      .mockResolvedValue({ insertions: 0, deletions: 0 });
     jest
       .mocked(bases.resolveEffectiveBaseBranchForRepo)
       .mockResolvedValue({ branch: 'main', existsInRemote: true } as any);
@@ -2004,7 +2219,7 @@ describe('githubMergePr handler', () => {
     mockedReaddir.mockResolvedValue([
       makeDirent('repo-a'),
       makeDirent('repo-b'),
-    ] as any);
+    ]);
     mockedGetCurrentBranch.mockResolvedValue('feature');
     // Only repo-b has uncommitted work.
     jest
@@ -2014,7 +2229,7 @@ describe('githubMergePr handler', () => {
       );
     jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     jest
@@ -2027,7 +2242,7 @@ describe('githubMergePr handler', () => {
       hasConflicts: false,
       mergeReady: true,
       unresolvedReviewThreadCount: 0,
-    };
+    } as const;
     const refresh = jest
       .spyOn(service, 'refreshPullRequestState')
       .mockResolvedValue({
@@ -2075,12 +2290,12 @@ describe('githubMergePr handler', () => {
     mockedReaddir.mockResolvedValue([
       makeDirent('repo-a'),
       makeDirent('repo-b'),
-    ] as any);
+    ]);
     mockedGetCurrentBranch.mockResolvedValue('feature');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
     jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     mockedGetAheadBehindCounts.mockImplementation((repoPath: string) =>
@@ -2099,7 +2314,7 @@ describe('githubMergePr handler', () => {
       hasConflicts: false,
       mergeReady: true,
       unresolvedReviewThreadCount: 0,
-    };
+    } as const;
     const refresh = jest
       .spyOn(service, 'refreshPullRequestState')
       .mockResolvedValue({
@@ -2155,7 +2370,7 @@ describe('githubMergePr handler', () => {
     mockedGetCurrentBranch.mockResolvedValue('feature');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
     jest
-      .mocked(git.hasBranchBeenPushedToRemote)
+      .mocked(git.readBranchPublication)
       .mockImplementation((repoPath: string) =>
         Promise.resolve(repoPath.endsWith('/repo-a')),
       );
@@ -2178,7 +2393,7 @@ describe('githubMergePr handler', () => {
       hasConflicts: false,
       mergeReady: true,
       unresolvedReviewThreadCount: 0,
-    };
+    } as const;
     const refresh = jest
       .spyOn(service, 'refreshPullRequestState')
       .mockResolvedValue({
@@ -2225,7 +2440,7 @@ describe('githubMergePr handler', () => {
     mockedIsMultiRepoWorkspace.mockReturnValue(false);
     mockedGetCurrentBranch.mockResolvedValue('feature');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(false);
     jest
       .mocked(git.getDiffStats)
@@ -2264,12 +2479,12 @@ describe('githubMergePr handler', () => {
     mockedReaddir.mockResolvedValue([
       makeDirent('repo-a'),
       makeDirent('repo-b'),
-    ] as any);
+    ]);
     mockedGetCurrentBranch.mockResolvedValue('feature');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
     jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     jest
@@ -2282,7 +2497,7 @@ describe('githubMergePr handler', () => {
       hasConflicts: false,
       mergeReady: true,
       unresolvedReviewThreadCount: 0,
-    };
+    } as const;
     const refresh = jest
       .spyOn(service, 'refreshPullRequestState')
       .mockResolvedValue({
@@ -2328,7 +2543,7 @@ describe('githubMergePr handler', () => {
     mockedGetCurrentBranch.mockResolvedValue('feature');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     jest.mocked(git.hasUnpulledCommits).mockResolvedValue(false);
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 0 });
@@ -2489,7 +2704,7 @@ describe('githubMergePr handler', () => {
     mockedGetRemoteUrl.mockResolvedValue('https://github.com/org/repo.git');
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(true);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
     jest.mocked(bases.resolveEffectiveBaseBranchForRepo).mockResolvedValue({
       branch: 'main',
@@ -2543,7 +2758,7 @@ describe('githubMergePr handler', () => {
     jest.mocked(git.hasUncommittedChanges).mockResolvedValue(false);
     jest.mocked(git.hasUnpushedCommits).mockResolvedValue(false);
     jest.mocked(git.hasRemoteTrackingBranch).mockResolvedValue(true);
-    jest.mocked(git.hasBranchBeenPushedToRemote).mockResolvedValue(true);
+    jest.mocked(git.readBranchPublication).mockResolvedValue(true);
     mockedGetAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 0 });
     jest.mocked(git.hasCommitsAhead).mockResolvedValue(true);
     jest.mocked(bases.resolveEffectiveBaseBranchForRepo).mockResolvedValue({

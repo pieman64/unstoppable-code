@@ -7,7 +7,6 @@ import {
   type PersonalCatalogProject,
 } from '@canopy/protocol/settings/personal-catalog';
 import { Button, Notice } from '@canopy/ui-shared/components';
-import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SETTINGS_CARD_TITLE_CLASS,
   SettingsCard,
@@ -132,7 +131,6 @@ export function PersonalCatalogCard(): JSX.Element | null {
 
   return (
     <SettingsCard
-      icon={<FolderIcon size={18} />}
       title={
         <h2
           ref={headingRef}

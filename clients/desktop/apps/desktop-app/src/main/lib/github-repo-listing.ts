@@ -12,10 +12,43 @@ type ListUserReposResponse =
   RestEndpointMethodTypes['repos']['listForAuthenticatedUser']['response'];
 type RepoListItem = ListUserReposResponse['data'][number];
 
-let cachedRepos: GitHubRepoSummary[] | null = null;
+/** What `core.integration.resource.list` reads beside each legacy row. */
+export interface GitHubRepoAccess {
+  fullName: string;
+  htmlUrl: string;
+  permissions: { pull: boolean; push: boolean; admin: boolean };
+  updatedAt: string | null;
+}
+
+/** One cached listing: the legacy rows and their access, in one order. */
+export interface GitHubRepoSnapshot {
+  /** Changes whenever the listing is re-read. */
+  id: string;
+  repos: GitHubRepoSummary[];
+  access: GitHubRepoAccess[];
+}
+
+/** The 30-second whole-lookup timeout; its message is the legacy one. */
+export class GitHubRepoListTimeoutError extends Error {}
+
+let cachedSnapshot: GitHubRepoSnapshot | null = null;
 let cachedAt = 0;
-let pendingLookup: Promise<GitHubRepoSummary[]> | null = null;
+let pendingLookup: Promise<GitHubRepoSnapshot> | null = null;
 let cacheGeneration = 0;
+let snapshotSequence = 0;
+
+function mapAccess(repo: RepoListItem): GitHubRepoAccess {
+  return {
+    fullName: repo.full_name,
+    htmlUrl: repo.html_url,
+    permissions: {
+      pull: repo.permissions?.pull === true,
+      push: repo.permissions?.push === true,
+      admin: repo.permissions?.admin === true,
+    },
+    updatedAt: repo.updated_at ?? null,
+  };
+}
 
 function mapRepo(repo: RepoListItem): GitHubRepoSummary {
   return {
@@ -41,7 +74,7 @@ function withTimeout<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error(message));
+      reject(new GitHubRepoListTimeoutError(message));
     }, timeoutMs);
 
     promise.then(resolve, reject).finally(() => {
@@ -50,9 +83,9 @@ function withTimeout<T>(
   });
 }
 
-async function fetchUserRepos(): Promise<GitHubRepoSummary[]> {
+async function fetchUserRepos(): Promise<RepoListItem[]> {
   const client = getGitHubClient();
-  const results: GitHubRepoSummary[] = [];
+  const results: RepoListItem[] = [];
 
   for (let page = 1; results.length < MAX_REPOS; page += 1) {
     const response = await client.enqueue(
@@ -80,7 +113,7 @@ async function fetchUserRepos(): Promise<GitHubRepoSummary[]> {
     }
 
     for (const repo of batch) {
-      results.push(mapRepo(repo));
+      results.push(repo);
       if (results.length >= MAX_REPOS) {
         break;
       }
@@ -96,14 +129,19 @@ async function fetchUserRepos(): Promise<GitHubRepoSummary[]> {
 
 export function invalidateGitHubRepoListCache(): void {
   cacheGeneration += 1;
-  cachedRepos = null;
+  cachedSnapshot = null;
   cachedAt = 0;
   pendingLookup = null;
 }
 
-export async function listUserRepos(): Promise<GitHubRepoSummary[]> {
-  if (cachedRepos && Date.now() - cachedAt < CACHE_TTL_MS) {
-    return cachedRepos;
+/**
+ * The listing as one snapshot, cached for 60 seconds; concurrent callers
+ * share one read, and a credential reset discards the snapshot and any read
+ * in flight.
+ */
+export async function listUserRepoSnapshot(): Promise<GitHubRepoSnapshot> {
+  if (cachedSnapshot && Date.now() - cachedAt < CACHE_TTL_MS) {
+    return cachedSnapshot;
   }
 
   if (pendingLookup) {
@@ -119,12 +157,18 @@ export async function listUserRepos(): Promise<GitHubRepoSummary[]> {
     LOOKUP_TIMEOUT_MS,
     'Timed out while loading repositories from GitHub.',
   )
-    .then((repos): GitHubRepoSummary[] => {
+    .then((items): GitHubRepoSnapshot => {
+      snapshotSequence += 1;
+      const snapshot: GitHubRepoSnapshot = {
+        id: `${lookupGeneration}.${snapshotSequence}`,
+        repos: items.map(mapRepo),
+        access: items.map(mapAccess),
+      };
       if (cacheGeneration === lookupGeneration) {
-        cachedRepos = repos;
+        cachedSnapshot = snapshot;
         cachedAt = Date.now();
       }
-      return repos;
+      return snapshot;
     })
     .finally(() => {
       if (cacheGeneration === lookupGeneration) {
@@ -133,4 +177,8 @@ export async function listUserRepos(): Promise<GitHubRepoSummary[]> {
     });
 
   return pendingLookup;
+}
+
+export async function listUserRepos(): Promise<GitHubRepoSummary[]> {
+  return (await listUserRepoSnapshot()).repos;
 }

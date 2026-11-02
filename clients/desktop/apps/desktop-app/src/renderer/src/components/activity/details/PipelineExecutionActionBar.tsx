@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX, ReactNode } from 'react';
 import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
 import type {
@@ -21,6 +22,7 @@ import { WatcherManagementButton } from '@/components/watchers/WatcherManagement
 import { isPipelineExecutionActiveStatus } from '../utils';
 import type { PipelineExecutionActions } from '../usePipelineExecutionActions';
 import type { PipelineDetailDestination } from './pipelineDetailTypes';
+import { Button } from '@canopy/ui-shared/components';
 
 function ReportIcon(): JSX.Element {
   return <AppCatalogFileIcon width="14" height="14" aria-hidden="true" />;
@@ -102,114 +104,108 @@ export function PipelineExecutionActionBar({
         <div className="mr-auto">
           <WatcherManagementButton
             watchers={watchers}
-            modalTitle="Pipeline watchers"
-            modalEmptyMessage="No active watchers for this pipeline."
-            ariaLabel="Manage pipeline watchers"
+            modalTitle="Workflow watchers"
+            modalEmptyMessage="No active watchers for this workflow."
+            ariaLabel="Manage workflow watchers"
             dataTestId={`pipeline-detail-watchers-${executionId}`}
           />
         </div>
       )}
       {canRetry && (
-        <button
-          type="button"
+        <Button
+          variant="warning"
+          size="compact"
           data-testid={`pipeline-detail-retry-${executionId}`}
           onClick={() => void actions.retry(executionId)}
           disabled={isRetrying}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-line-attention/40 bg-warning-subtle px-2.5 py-1.5 text-2xs font-medium fg-warning transition hover:bg-warning-subtle/80 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RetryIcon width={13} height={13} />
           {isRetrying ? 'Retrying…' : 'Retry'}
-        </button>
+        </Button>
       )}
       {canRerun && (
-        <button
-          type="button"
+        <Button
+          size="compact"
           data-testid={`pipeline-detail-rerun-${executionId}`}
           onClick={() => void actions.rerun(executionId)}
           disabled={isRerunning}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.04] px-2.5 py-1.5 text-2xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RerunIcon width={13} height={13} />
           {isRerunning ? 'Starting over…' : 'Start over'}
-        </button>
+        </Button>
       )}
       {debugVisible && (
-        <button
-          type="button"
+        <Button
+          size="compact"
           data-testid={`pipeline-detail-debug-failure-${executionId}`}
-          aria-label="Debug failed pipeline with App Advisor"
+          aria-label={`Debug failed workflow with ${ORCHESTRATOR_LABEL}`}
           onClick={() => {
             onNavigatedAway?.('debug');
             void actions.debugFailure(executionId);
           }}
           disabled={actions.debuggingFailureId !== null}
-          className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.04] px-2.5 py-1.5 text-2xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <ChatIcon width={13} height={13} />
           {actions.debuggingFailureId === executionId ? 'Opening…' : 'Debug'}
-        </button>
+        </Button>
       )}
       {canPlanFollowUp && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-3xs font-medium fg-secondary">Plan</span>
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid={`pipeline-detail-chat-follow-up-${executionId}`}
             disabled={chatFollowUpDisabled}
             onClick={() => {
               onNavigatedAway?.('chat');
               void actions.chatFollowUp(executionId);
             }}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-2xs font-medium fg-primary transition hover:bg-sky-500/18 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <ChatIcon width={13} height={13} />
             Chat
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="compact"
             data-testid={`pipeline-detail-pipeline-follow-up-${executionId}`}
             onClick={() => {
               onNavigatedAway?.('pipeline-follow-up');
               void actions.pipelineFollowUp(executionId);
             }}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-2xs font-medium fg-primary transition hover:bg-sky-500/18"
           >
             <PipelineIcon width={13} height={13} />
-            Pipeline
-          </button>
+            Workflow
+          </Button>
           {canOpenTrackedPlan && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               data-testid={`pipeline-detail-plan-${executionId}`}
               onClick={() => {
                 onNavigatedAway?.('plan');
                 void actions.openPlan(executionId);
               }}
-              className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.04] px-2.5 py-1.5 text-2xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.08]"
             >
               <PlanModeIcon width={13} height={13} />
               View plan
-            </button>
+            </Button>
           )}
         </div>
       )}
       {canReportFollowUp && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-3xs font-medium fg-secondary">Report</span>
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid={`pipeline-detail-report-chat-follow-up-${executionId}`}
             disabled={chatFollowUpDisabled}
             onClick={() => {
               onNavigatedAway?.('report-chat');
               void actions.reportChatFollowUp(executionId);
             }}
-            className="focus-ring rounded-md border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-2xs font-medium fg-primary transition hover:bg-sky-500/18 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Chat
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="compact"
             data-testid={`pipeline-detail-view-report-${executionId}`}
             onClick={() => {
               if (onViewReport !== undefined) {
@@ -219,23 +215,22 @@ export function PipelineExecutionActionBar({
               onNavigatedAway?.('report');
               actions.openReport(executionId);
             }}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.04] px-2.5 py-1.5 text-2xs font-medium fg-primary/80 transition hover:bg-fg-primary/[0.08]"
           >
             <ReportIcon />
             View report
-          </button>
+          </Button>
         </div>
       )}
       {cancelVisible && (
-        <button
-          type="button"
+        <Button
+          variant="ghost-destructive"
+          size="compact"
           data-testid={`pipeline-detail-cancel-${executionId}`}
           onClick={() => void actions.cancel(executionId)}
           disabled={isCancelling}
-          className="focus-ring rounded-md border border-line-destructive px-2.5 py-1.5 text-2xs font-medium fg-destructive transition hover:bg-destructive-subtle disabled:cursor-wait disabled:opacity-60"
         >
           {isCancelling ? 'Cancelling…' : 'Cancel'}
-        </button>
+        </Button>
       )}
     </>
   );

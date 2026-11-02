@@ -11,6 +11,7 @@ import {
   pipelinePackageKindLabel,
   pipelinePackageRequirementKindLabel,
 } from '../lib/pipeline-package-display';
+import { Button } from './Button';
 
 export interface CuratedPipelineCatalogProps {
   cloudDisplayName: string;
@@ -51,13 +52,11 @@ export interface CuratedPipelineLaunchAvailability {
   onChange: (enabled: boolean) => void;
 }
 
-const BUTTON =
-  'focus-ring rounded-md ring-1 ring-inset ring-line-base bg-secondary px-3 py-2 text-sm fg-primary hover:bg-accent-subtle disabled:opacity-50';
 const FIELD =
   'focus-ring min-w-0 rounded-md ring-1 ring-inset ring-line-base bg-base px-3 py-2 text-sm fg-primary';
 
 export function curatedPipelineStaleMessage(cloudDisplayName: string): string {
-  return `Showing saved catalog metadata. Connect to ${cloudDisplayName} to preview or add a pipeline.`;
+  return `Showing saved catalog metadata. Connect to ${cloudDisplayName} to preview or add a workflow.`;
 }
 
 /** Display only: all content loading, authorization and import work belongs to the host. */
@@ -71,26 +70,24 @@ export function CuratedPipelineCatalog(
     <section
       className="min-w-0 space-y-4"
       data-testid="curated-pipeline-catalog"
-      aria-label="Pipeline templates"
+      aria-label="Workflow templates"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold fg-primary">
-            Pipeline templates
+            Workflow templates
           </h2>
           <p className="mt-1 text-sm fg-secondary">
             Ready-made workflows you can add and customize.
           </p>
         </div>
-        <button
-          type="button"
-          className={BUTTON}
+        <Button
           disabled={props.loading}
           onClick={props.onRefresh}
           data-testid="curated-pipeline-refresh"
         >
           Refresh catalog
-        </button>
+        </Button>
       </div>
       {props.stale && (
         <p role="status" className="text-sm fg-secondary">
@@ -107,15 +104,13 @@ export function CuratedPipelineCatalog(
           className="min-w-0 space-y-4 rounded-lg ring-1 ring-inset ring-line-base bg-base p-4"
           data-testid="curated-pipeline-detail"
         >
-          <button type="button" className={BUTTON} onClick={props.onBack}>
-            Back to pipeline templates
-          </button>
+          <Button onClick={props.onBack}>Back to workflow templates</Button>
           {props.launchAvailability && (
             <LaunchAvailabilityControl {...props.launchAvailability} />
           )}
           {props.detailLoading && (
             <p role="status" className="text-sm fg-secondary">
-              Loading pipeline preview…
+              Loading workflow preview…
             </p>
           )}
           {props.detailError && (
@@ -154,14 +149,12 @@ export function CuratedPipelineCatalog(
                 )}
               </div>
               {props.onDownload && (
-                <button
-                  type="button"
-                  className={BUTTON}
+                <Button
                   onClick={() => props.onDownload?.(detail)}
                   data-testid="curated-pipeline-download"
                 >
                   Download YAML
-                </button>
+                </Button>
               )}
               {detail.package && (
                 <details
@@ -213,7 +206,7 @@ export function CuratedPipelineCatalog(
               )}
               <details className="min-w-0">
                 <summary className="cursor-pointer text-sm font-medium fg-primary">
-                  View pipeline YAML
+                  View workflow YAML
                 </summary>
                 <pre
                   className="mt-2 max-h-80 overflow-auto rounded-md ring-1 ring-inset ring-line-base bg-secondary p-3 text-xs fg-primary"
@@ -223,7 +216,7 @@ export function CuratedPipelineCatalog(
                 </pre>
               </details>
               <p className="text-sm fg-secondary">
-                Adds an editable copy to your pipelines. Review its commands and
+                Adds an editable copy to your workflows. Review its commands and
                 required tools before running. Future catalog changes do not
                 replace your copy.
               </p>
@@ -242,28 +235,25 @@ export function CuratedPipelineCatalog(
                   role="status"
                   className="flex flex-wrap items-center gap-3 text-sm fg-success"
                 >
-                  Added to your pipelines.
+                  Added to your workflows.
                   {props.onOpenImported && (
-                    <button
-                      type="button"
-                      className={BUTTON}
+                    <Button
                       onClick={() => props.onOpenImported?.(importedPipelineId)}
                       data-testid="curated-pipeline-open-imported"
                     >
-                      Open pipeline
-                    </button>
+                      Open workflow
+                    </Button>
                   )}
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className={BUTTON}
+                <Button
+                  variant="primary"
                   disabled={props.importing || !!props.importDisabledReason}
                   onClick={() => props.onImport(detail)}
                   data-testid="curated-pipeline-add"
                 >
-                  {props.importing ? 'Adding pipeline…' : 'Add to my pipelines'}
-                </button>
+                  {props.importing ? 'Adding workflow…' : 'Add to my workflows'}
+                </Button>
               )}
             </>
           )}
@@ -274,8 +264,8 @@ export function CuratedPipelineCatalog(
             {!props.hideSearch && (
               <input
                 className={`${FIELD} flex-1`}
-                aria-label="Search pipeline templates"
-                placeholder="Search pipeline templates…"
+                aria-label="Search workflow templates"
+                placeholder="Search workflow templates…"
                 value={query.q ?? ''}
                 onChange={(event) =>
                   filter({ q: event.target.value || undefined })
@@ -285,7 +275,7 @@ export function CuratedPipelineCatalog(
             )}
             <input
               className={FIELD}
-              aria-label="Pipeline template category"
+              aria-label="Workflow template category"
               placeholder="Category"
               value={query.category ?? ''}
               onChange={(event) =>
@@ -294,7 +284,7 @@ export function CuratedPipelineCatalog(
             />
             <select
               className={FIELD}
-              aria-label="Pipeline template trigger"
+              aria-label="Workflow template trigger"
               value={query.triggerType ?? ''}
               onChange={(event) =>
                 filter({
@@ -314,7 +304,7 @@ export function CuratedPipelineCatalog(
             </select>
             <select
               className={FIELD}
-              aria-label="Pipeline template scope"
+              aria-label="Workflow template scope"
               value={query.scope ?? ''}
               onChange={(event) =>
                 filter({
@@ -335,12 +325,12 @@ export function CuratedPipelineCatalog(
           </div>
           {props.loading && (
             <p role="status" className="text-sm fg-secondary">
-              Loading pipeline templates…
+              Loading workflow templates…
             </p>
           )}
           {!props.loading && !props.error && props.rows.length === 0 && (
             <p className="text-sm fg-secondary">
-              No pipeline templates match these filters.
+              No workflow templates match these filters.
             </p>
           )}
           <ul
@@ -362,28 +352,24 @@ export function CuratedPipelineCatalog(
                     {row.scopes.join(', ')}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className={`${BUTTON} shrink-0`}
+                <Button
                   onClick={() => props.onSelect(row)}
                   data-testid={`curated-pipeline-preview-${row.key}`}
                   aria-label={`Preview ${row.name}`}
                 >
                   Preview
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
           {props.nextCursor && (
-            <button
-              type="button"
-              className={BUTTON}
+            <Button
               disabled={props.loading}
               onClick={props.onLoadMore}
               data-testid="curated-pipeline-load-more"
             >
               Load more templates
-            </button>
+            </Button>
           )}
         </>
       )}
@@ -407,18 +393,16 @@ function LaunchAvailabilityControl({
     >
       <p className="text-sm fg-secondary">
         {enabled
-          ? 'Enabled. It appears when you run a pipeline.'
-          : 'Disabled. It is hidden when you run a pipeline.'}
+          ? 'Enabled. It appears when you run a workflow.'
+          : 'Disabled. It is hidden when you run a workflow.'}
       </p>
-      <button
-        type="button"
-        className={BUTTON}
+      <Button
         disabled={pending}
         onClick={() => onChange(!enabled)}
         data-testid="curated-pipeline-toggle-enabled"
       >
-        {enabled ? 'Disable pipeline' : 'Enable pipeline'}
-      </button>
+        {enabled ? 'Disable workflow' : 'Enable workflow'}
+      </Button>
     </div>
   );
 }

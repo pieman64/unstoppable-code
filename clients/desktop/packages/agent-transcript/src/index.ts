@@ -10,7 +10,17 @@
  */
 export * from './types';
 export * from './lib/delegation-transcript';
+export * from './lib/delegation-card-snapshot';
+export * from './lib/delegation-stream-projection';
+export * from './lib/delegation-live-preview';
 export * from './lib/transcript-parser';
+export * from './lib/claude-content-normalizers';
+export { claudeLaunchedAgentId } from './lib/claude-agent-id';
+export {
+  codexNeutralItemBlocks,
+  type CodexNeutralItem,
+  type CodexNeutralItemEventType,
+} from './lib/codex-neutral-item';
 export * from './lib/todo-parser';
 export * from './lib/codex-dynamic-tool-results';
 export * from './lib/codex-mcp-tool-results';
@@ -36,3 +46,4 @@ export {
   portalChatAttachmentIdForPath,
   portalChatMessageAttachmentsFromPaths,
 } from './portal/message-attachments';
+export * from './lib/child-tool-liveness';

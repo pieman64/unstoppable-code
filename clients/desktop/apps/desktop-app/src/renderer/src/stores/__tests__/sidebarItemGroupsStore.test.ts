@@ -1,24 +1,47 @@
 /** @jest-environment jsdom */
 import type { SidebarItemGroup } from '@canopy/protocol/sidebar';
+jest.mock('../workspaceContextStore', () => ({
+  useWorkspaceContextStore: { subscribe: jest.fn() },
+}));
 jest.mock('../projectsStore', () => ({
   useProjectsStore: {
     getState: (): {
-      projects: never[];
+      projects: typeof mockProjects;
       loadProjects: typeof mockLoadProjects;
-    } => ({ projects: [], loadProjects: mockLoadProjects }),
+    } => ({ projects: mockProjects, loadProjects: mockLoadProjects }),
   },
 }));
 jest.mock('../standaloneChatStore', () => ({
+  getWorkEntrySnapshotRevision: (): number => mockEntryRevision,
   useStandaloneChatStore: {
-    getState: (): { refreshWorkEntries: typeof mockRefreshEntries } => ({
+    getState: (): {
+      refreshWorkEntries: typeof mockRefreshEntries;
+      activeChatProjectId: string;
+      workEntries: { id: string }[];
+      sidebarEntriesByProject: Record<string, { id: string }[]>;
+      applyWorkEntriesSnapshot: jest.Mock;
+    } => ({
       refreshWorkEntries: mockRefreshEntries,
+      activeChatProjectId:
+        mockDetachedCowork || mockProjects.length > 0 ? 'ws-one' : 'other',
+      workEntries: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      sidebarEntriesByProject: mockSidebarEntries,
+      applyWorkEntriesSnapshot: mockApplyEntries,
     }),
   },
 }));
 const mockLoadProjects = jest.fn(() => Promise.resolve());
 const mockRefreshEntries = jest.fn(() => Promise.resolve());
+const mockApplyEntries = jest.fn();
+let mockEntryRevision = 0;
+let mockProjects: { id: string; type: 'cowork' }[] = [];
+let mockDetachedCowork = false;
+let mockSidebarEntries: Record<string, { id: string }[]> = {};
 import type { SessionViewModel } from '@canopy/app-core';
-import { buildSidebarItemGroupBlocks } from '@canopy/ui-app/sidebar';
+import {
+  buildSidebarItemGroupBlocks,
+  type SidebarItemGroupView,
+} from '@canopy/ui-app/sidebar';
 import {
   overlaySidebarItemGroups,
   resetSidebarItemGroupPlacementRequestsForTests,
@@ -38,6 +61,9 @@ const update = jest.fn(() => Promise.resolve());
 const createGroup = jest.fn(() => Promise.resolve(group));
 const moveItem = jest.fn(() => Promise.resolve());
 beforeEach(() => {
+  mockProjects = [];
+  mockDetachedCowork = false;
+  mockSidebarEntries = {};
   store.setState({ byScope: {}, errors: {} });
   resetSidebarItemGroupPlacementRequestsForTests();
   list.mockReset().mockResolvedValue([group]);
@@ -46,12 +72,68 @@ beforeEach(() => {
   moveItem.mockReset().mockResolvedValue();
   mockLoadProjects.mockReset().mockResolvedValue();
   mockRefreshEntries.mockReset().mockResolvedValue();
+  mockApplyEntries.mockReset();
+  mockEntryRevision = 0;
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: {
+      workEntries: {
+        list: jest.fn().mockResolvedValue({
+          entries: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+        }),
+      },
       sidebarItemGroups: { list, update, create: createGroup, moveItem },
     },
   });
+});
+
+it('does not reload every project to reconcile a Cowork placement', async () => {
+  mockProjects = [{ id: scope.workspaceLocalId, type: 'cowork' }];
+  await store.getState().hydrate(scope);
+  await store.getState().moveItem({ scope, itemId: 'a', groupId: null });
+  expect(mockLoadProjects).not.toHaveBeenCalled();
+});
+
+it('retries placement reconciliation if another entry snapshot wins while its read is pending', async () => {
+  jest.useFakeTimers();
+  try {
+    mockProjects = [{ id: scope.workspaceLocalId, type: 'cowork' }];
+    await store.getState().hydrate(scope);
+    let release:
+      | ((response: { entries: { id: string }[] }) => void)
+      | undefined;
+    window.api.workEntries.list = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockResolvedValue({ entries: [{ id: 'c' }, { id: 'a' }, { id: 'b' }] });
+    await store
+      .getState()
+      .moveItem({ scope, itemId: 'c', groupId: null, before: 'a' });
+    mockEntryRevision += 1;
+    release?.({ entries: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(mockApplyEntries).not.toHaveBeenCalled();
+    expect(store.getState().orderByScope['workspace:ws-one']).toEqual([
+      'c',
+      'a',
+      'b',
+    ]);
+    await jest.advanceTimersByTimeAsync(250);
+    expect(mockApplyEntries).toHaveBeenCalledWith('ws-one', [
+      { id: 'c' },
+      { id: 'a' },
+      { id: 'b' },
+    ]);
+    expect(window.api.workEntries.list).toHaveBeenCalledTimes(2);
+  } finally {
+    resetSidebarItemGroupPlacementRequestsForTests();
+    jest.useRealTimers();
+  }
 });
 
 /** What the Code sidebar shows while its snapshot still has only `a` in the group. */
@@ -61,6 +143,18 @@ function shownWhileOrderIsStale(): SessionViewModel['workspaces'][number]['itemG
   } as unknown as SessionViewModel;
   return overlaySidebarItemGroups(stale, store.getState().byScope)
     .workspaces?.[0]?.itemGroups;
+}
+
+function isSidebarItemGroupView(
+  group: SidebarItemGroup,
+): group is SidebarItemGroupView {
+  return 'retainedMemberIds' in group;
+}
+
+function shownPendingPlacements(): SidebarItemGroupView['pendingPlacements'] {
+  const group = shownWhileOrderIsStale()?.[0];
+  if (!group || !isSidebarItemGroupView(group)) return undefined;
+  return group.pendingPlacements;
 }
 
 it('creates an optimistic group with a hidden default name unique in the scope', async () => {
@@ -209,7 +303,7 @@ it('keeps a generated default name when its color changes', async () => {
   await Promise.resolve();
   await Promise.resolve();
 
-  const recolored = {
+  const recolored: SidebarItemGroup = {
     ...group,
     name: 'Group 1',
     color: 'categorical-2',
@@ -357,7 +451,7 @@ it.each([
     await store
       .getState()
       .moveItem({ scope, itemId: 'moved', groupId: group.id, ...position });
-    expect(shownWhileOrderIsStale()?.[0]?.pendingPlacements).toEqual([
+    expect(shownPendingPlacements()).toEqual([
       { itemId: 'moved' },
       { itemId: 'moved', ...position },
     ]);
@@ -391,9 +485,7 @@ it.each([
     await Promise.resolve();
     const placement = [{ itemId: 'moved', before: 'a' }];
     try {
-      expect(shownWhileOrderIsStale()?.[0]?.pendingPlacements).toEqual(
-        placement,
-      );
+      expect(shownPendingPlacements()).toEqual(placement);
     } finally {
       finishWrite();
       await editing;
@@ -401,7 +493,7 @@ it.each([
     expect(store.getState().byScope['workspace:ws-one']).toEqual([
       { ...joined, ...patch },
     ]);
-    expect(shownWhileOrderIsStale()?.[0]?.pendingPlacements).toEqual(placement);
+    expect(shownPendingPlacements()).toEqual(placement);
   },
 );
 
@@ -465,7 +557,7 @@ it('a failed move leaves no request behind', async () => {
   ).rejects.toThrow('move failed');
   list.mockResolvedValue([{ ...group, memberIds: ['a', 'moved'] }]);
   await store.getState().hydrate(scope);
-  expect(shownWhileOrderIsStale()?.[0]?.pendingPlacements).toBeUndefined();
+  expect(shownPendingPlacements()).toBeUndefined();
 });
 
 it('rolls back then refetches membership and canonical order after a partial write failure', async () => {
@@ -912,4 +1004,77 @@ it('a rejected final-member move restores the retained group disclosure', async 
     memberIds: ['a'],
     collapsed: false,
   });
+});
+
+it('projects a second Cowork drop before the first save and read finish', async () => {
+  mockProjects = [{ id: scope.workspaceLocalId, type: 'cowork' }];
+  let releaseSave: (() => void) | undefined;
+  const saveBarrier = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  moveItem.mockImplementationOnce(() => saveBarrier);
+  const readBarrier = new Promise<never>(() => undefined);
+  window.api.workEntries.list = jest.fn(() => readBarrier);
+  await store.getState().hydrate(scope);
+  const one = store
+    .getState()
+    .moveItem({ scope, itemId: 'c', groupId: null, before: 'a' });
+  const two = store
+    .getState()
+    .moveItem({ scope, itemId: 'b', groupId: null, before: 'c' });
+  expect(store.getState().orderByScope['workspace:ws-one']).toEqual([
+    'b',
+    'c',
+    'a',
+  ]);
+  expect(moveItem).toHaveBeenCalledTimes(1);
+  releaseSave?.();
+  await one;
+  await two;
+  expect(moveItem).toHaveBeenCalledTimes(2);
+  expect(mockLoadProjects).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  'does not discover all projects for a loaded Cowork list (active=%s)',
+  async (active) => {
+    mockDetachedCowork = active;
+    if (!active) mockSidebarEntries = { 'ws-one': [{ id: 'a' }, { id: 'b' }] };
+    await store.getState().hydrate(scope);
+    await store
+      .getState()
+      .moveItem({ scope, itemId: 'b', groupId: null, before: 'a' });
+    expect(
+      store.getState().orderByScope['workspace:ws-one']?.slice(0, 2),
+    ).toEqual(['b', 'a']);
+    expect(mockLoadProjects).not.toHaveBeenCalled();
+  },
+);
+
+it('does not apply a hydration read started before the first Cowork intent', async () => {
+  mockProjects = [{ id: scope.workspaceLocalId, type: 'cowork' }];
+  let releaseGroups: ((groups: SidebarItemGroup[]) => void) | undefined;
+  const initialGroups = new Promise<SidebarItemGroup[]>((resolve) => {
+    releaseGroups = resolve;
+  });
+  list.mockImplementationOnce(() => initialGroups).mockResolvedValue([]);
+  let releaseSave: (() => void) | undefined;
+  moveItem.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      }),
+  );
+  const hydrating = store.getState().hydrate(scope);
+  const moving = store
+    .getState()
+    .moveItem({ scope, itemId: 'a', groupId: null });
+  releaseGroups?.([group]);
+  await hydrating;
+  try {
+    expect(store.getState().byScope['workspace:ws-one']).toEqual([]);
+  } finally {
+    releaseSave?.();
+    await moving;
+  }
 });

@@ -99,6 +99,9 @@ export function getPaletteCommandUnavailableMessage(
       return 'Select a task to open its Cost panel.';
     case 'open-session-breakdown':
       return 'Select an active chat to open its Session breakdown.';
+    case 'panel-select-next-tab':
+    case 'panel-select-previous-tab':
+      return 'Open a panel group with at least two tabs to switch tabs.';
     default:
       return 'This command is unavailable right now.';
   }

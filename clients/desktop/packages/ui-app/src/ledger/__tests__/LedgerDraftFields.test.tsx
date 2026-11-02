@@ -5,17 +5,17 @@ import type { LedgerFilePicker } from '@canopy/app-core';
 import type { LedgerViewDraft } from '@canopy/app-state';
 import type {
   LedgerViewFileCandidate,
-  LedgerViewScope,
+  LedgerTaskViewScope,
 } from '@canopy/protocol/ledger-view';
 import { LedgerDraftFileSearch } from '../LedgerDraftFields';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
-const PARSER_TASK: LedgerViewScope = {
+const PARSER_TASK: LedgerTaskViewScope = {
   projectId: 'project-1',
   worktreeId: 'wt-1',
 };
-const NOTES_TASK: LedgerViewScope = {
+const NOTES_TASK: LedgerTaskViewScope = {
   projectId: 'project-1',
   worktreeId: 'wt-2',
 };
@@ -75,7 +75,7 @@ describe('LedgerDraftFileSearch', () => {
             }),
     };
     const onChange = jest.fn();
-    const render = (scope: LedgerViewScope): void => {
+    const render = (scope: LedgerTaskViewScope): void => {
       act(() =>
         root.render(
           <LedgerDraftFileSearch

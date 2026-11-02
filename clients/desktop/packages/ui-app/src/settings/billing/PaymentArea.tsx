@@ -22,6 +22,7 @@ import type {
   SettingsPaymentHandoffIntent,
 } from '@canopy/protocol/settings/payment-handoff';
 import type { BillingSummary } from '@canopy/protocol/settings/billing';
+import { Button } from '@canopy/ui-shared/components';
 import {
   useSettingsHost,
   useSettingsNavigation,
@@ -396,13 +397,6 @@ function usePaymentArea(): PaymentAreaState {
 /* CTAs and status                                                            */
 /* -------------------------------------------------------------------------- */
 
-const HANDOFF_CTA_CLASS: Record<'primary' | 'secondary', string> = {
-  primary:
-    'shrink-0 rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50',
-  secondary:
-    'shrink-0 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50',
-};
-
 export interface PaymentAreaCtaProps {
   readonly action: PaymentAreaAction;
   /** The host's inline UI for this CTA (web billing slots), when inline. */
@@ -411,7 +405,6 @@ export interface PaymentAreaCtaProps {
   readonly plan?: PaidBillingPlanKey;
   /** Payment-method CTAs read "Manage payment method" when a card exists. */
   readonly hasCard?: boolean;
-  readonly variant?: 'primary' | 'secondary';
   /**
    * Whether the handoff offers this CTA at all (for example, "Manage billing
    * on web" only while the summary reports something to recover). Inline
@@ -431,7 +424,6 @@ export function PaymentAreaCta({
   inline,
   plan,
   hasCard,
-  variant = 'secondary',
   offered = true,
   testId,
 }: PaymentAreaCtaProps): JSX.Element | null {
@@ -440,21 +432,17 @@ export function PaymentAreaCta({
   if (!area.canManage || !offered) return null;
   const busy = area.pending === action;
   return (
-    <button
-      type="button"
+    <Button
+      size="compact"
       disabled={area.unavailable || area.pending !== null}
       aria-busy={busy}
       onClick={() => area.start(action, paymentAreaHandoffIntent(action, plan))}
       data-testid={testId}
-      className={HANDOFF_CTA_CLASS[variant]}
     >
       {busy ? 'Opening…' : paymentAreaActionLabel(action, { hasCard })}
-    </button>
+    </Button>
   );
 }
-
-const NOTICE_ACTION_CLASS =
-  'shrink-0 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary';
 
 /**
  * The payment area's status line on handoff hosts: "Open on web" while the
@@ -477,26 +465,24 @@ export function PaymentAreaNotice({
   if (area.unavailable) {
     message = PAYMENT_HANDOFF_UNAVAILABLE_COPY;
     action = (
-      <button
-        type="button"
+      <Button
+        size="compact"
         onClick={area.openOnWeb}
         data-testid={`${testId}-open-on-web`}
-        className={NOTICE_ACTION_CLASS}
       >
         Open on web
-      </button>
+      </Button>
     );
   } else if (area.outcome?.kind === 'opened') {
     message = PAYMENT_HANDOFF_OPENED_COPY;
     action = (
-      <button
-        type="button"
+      <Button
+        size="compact"
         onClick={area.checkAgain}
         data-testid={`${testId}-check-again`}
-        className={NOTICE_ACTION_CLASS}
       >
         Check again
-      </button>
+      </Button>
     );
   } else if (area.outcome?.kind === 'failed') {
     message =
@@ -505,15 +491,14 @@ export function PaymentAreaNotice({
         : PAYMENT_HANDOFF_FAILED_COPY;
     tone = 'fg-destructive';
     action = (
-      <button
-        type="button"
+      <Button
+        size="compact"
         onClick={area.retry}
         disabled={area.pending !== null}
         data-testid={`${testId}-try-again`}
-        className={`${NOTICE_ACTION_CLASS} disabled:cursor-not-allowed disabled:opacity-50`}
       >
         Try again
-      </button>
+      </Button>
     );
   } else {
     return null;

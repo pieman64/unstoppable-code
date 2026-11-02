@@ -49,12 +49,12 @@ async function runCommand(
 ): Promise<{ patch: Partial<PreferencesData> | null; committed: number }> {
   const current = preferencesAt(uiScale);
   let patch: Partial<PreferencesData> | null = null;
-  updateMock.mockImplementation((updater) => {
-    patch = updater(current);
-    return Promise.resolve({
+  updateMock.mockImplementation(async (updater) => {
+    patch = await updater(current);
+    return {
       previous: current,
       next: preferencesAt(patch?.uiScale ?? uiScale),
-    });
+    };
   });
   const committed = await applyUiScaleCommand(adjustment);
   return { patch, committed };

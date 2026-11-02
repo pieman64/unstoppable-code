@@ -34,8 +34,6 @@ import {
   type PanelTabStyle,
 } from '@canopy/ui-shared/components/panels';
 import {
-  hasRoomForTab,
-  PANEL_TAB_ROW_FULL_NOTE,
   type PanelContentProps,
   type PanelGroupModel,
   type PanelIntentCallbacks,
@@ -48,6 +46,7 @@ import {
   usePanelLayoutStore,
   usePanelLayoutViewModel,
 } from './panel-layout-store';
+import { registerPanelTabSelectionHandler } from './panel-tab-selection';
 import {
   PanelHostContext,
   PanelWorktreeContext,
@@ -87,6 +86,9 @@ export interface PanelGridSurfaceServices {
   /** Optional host intent callback; shared rendering never fetches. */
   onTabIntent?: PanelTabBarProps['onTabIntent'];
   getTabTitle: (tab: PanelTabModel) => string;
+  renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
+  /** Persistent attention remains visible when a fill tab shrinks to its icon. */
+  renderTabAttention?: (tab: PanelTabModel) => ReactNode;
   renderTabTooltip: (tab: PanelTabModel) => ReactNode | null;
   /**
    * Optional hover card for background tabs (a chat's preview). Omitted, every
@@ -158,11 +160,17 @@ export interface PanelGridSurfaceServices {
   onOpenFileInFileManager?: (absolutePath: string) => void;
   resolveFileTabPath?: (fileTabId: string) => string | undefined;
   openInFileManagerLabel?: string;
+  /** File tab menus lead with reveal; see `PanelTabContextMenu`. */
+  fileActionsFirst?: boolean;
   onShareSession?: (chatTabId: string, ownerDocument?: Document) => void;
   canShareSession?: (chatTabId: string) => boolean;
   onExportSession?: (chatTabId: string, ownerDocument?: Document) => void;
   /** Opens the host's chat rename dialog; omitted where rename is unsupported. */
   onRenameChat?: (chatTabId: string, ownerDocument?: Document) => void;
+  /** Chat read state for the tab menu; see `PanelTabContextMenu`. */
+  getChatReadState?: (chatTabId: string) => 'read' | 'unread' | undefined;
+  /** Marks a chat unread or read; omitted where read state is unsupported. */
+  onSetChatUnread?: (chatTabId: string, unread: boolean) => void;
   renderAddTabMenu: (props: PanelAddTabMenuRenderProps) => ReactNode;
   /**
    * Optional host action for the tab strip's `+` button. When provided it
@@ -189,9 +197,7 @@ export interface PanelGridSurfaceServices {
    */
   addTabOpensMenu?: boolean;
   /**
-   * How every group's tab bar lays out its tabs (classic by default). Hosts
-   * using `fill` also set the panel layout store's `tabRowLimit`, since those
-   * rows cannot scroll.
+   * How every group's tab bar lays out its tabs (classic by default).
    */
   tabStyle?: PanelTabStyle;
   /**
@@ -273,6 +279,8 @@ export function PanelGridSurface({
     renderTabLabel,
     onTabIntent,
     getTabTitle,
+    renderTabAccessibleStatus,
+    renderTabAttention,
     renderTabTooltip,
     renderTabHoverCard,
     renderTabTrailing,
@@ -297,10 +305,13 @@ export function PanelGridSurface({
     onOpenFileInFileManager,
     resolveFileTabPath,
     openInFileManagerLabel,
+    fileActionsFirst,
     onShareSession,
     canShareSession,
     onExportSession,
     onRenameChat,
+    getChatReadState,
+    onSetChatUnread,
     renderAddTabMenu,
     tabStripAccessoryForGroup,
     emptyContentForGroup,
@@ -311,7 +322,6 @@ export function PanelGridSurface({
     addTabOpensMenu = false,
     tabStyle,
   } = services;
-  const tabRowLimit = usePanelLayoutStore((state) => state.tabRowLimit);
 
   // Build (or reuse) the layout for the selected worktree. Runs as an effect
   // so store mutations never happen during render. Phase 5: the bridge first
@@ -483,6 +493,20 @@ export function PanelGridSurface({
     worktreeKey,
   ]);
 
+  // Keyboard tab cycling (`panel-select-next-tab` / `-previous-tab`) selects
+  // through the same intent as a tab click, so browser activation and the
+  // host's terminal focus/spawn run for it too.
+  useEffect(
+    () =>
+      registerPanelTabSelectionHandler(
+        worktreeKey,
+        (groupId: string, panelId: string): void => {
+          callbacks.onSelectTab(groupId, panelId);
+        },
+      ),
+    [callbacks, worktreeKey],
+  );
+
   // Content adoption (no-remount handoff): the main grid's groups adopt the
   // stable per-panel containers owned by PanelContentRoot's registry instead
   // of rendering content inline; content itself renders exactly once in
@@ -640,7 +664,7 @@ export function PanelGridSurface({
     ],
   );
 
-  const addTabForRoomyGroup = useCallback(
+  const addTabForGroup = useCallback(
     (group: PanelGroupModel): PanelTabBarAddTab | undefined => {
       const hasChat = group.tabs.some((tab) => tab.kind === 'chat');
       const activeKind = group.tabs.find(
@@ -766,17 +790,6 @@ export function PanelGridSurface({
     ],
   );
 
-  // A full row keeps its add buttons in place, disabled with the reason.
-  const addTabForGroup = useCallback(
-    (group: PanelGroupModel): PanelTabBarAddTab | undefined => {
-      const addTab = addTabForRoomyGroup(group);
-      return addTab !== undefined && !hasRoomForTab(group, tabRowLimit)
-        ? { ...addTab, fullNote: PANEL_TAB_ROW_FULL_NOTE }
-        : addTab;
-    },
-    [addTabForRoomyGroup, tabRowLimit],
-  );
-
   // Pop-out is capability-gated as a PAIR: both the eligibility check and
   // the action must exist, else neither group chrome nor tab menu offers it.
   const popOut = useMemo(
@@ -807,9 +820,11 @@ export function PanelGridSurface({
               renderTabLabel={renderTabLabel}
               onTabIntent={onTabIntent}
               getTabTitle={getTabTitle}
+              renderTabAccessibleStatus={renderTabAccessibleStatus}
               renderTabTooltip={renderTabTooltip}
               renderTabHoverCard={renderTabHoverCard}
               renderTabTrailing={renderTabTrailing}
+              renderTabAttention={renderTabAttention}
               canCloseTab={canCloseTab}
               tabStyle={tabStyle}
               canPopOutGroup={
@@ -840,10 +855,13 @@ export function PanelGridSurface({
           onOpenFileInFileManager={onOpenFileInFileManager}
           resolveFileTabPath={resolveFileTabPath}
           openInFileManagerLabel={openInFileManagerLabel}
+          fileActionsFirst={fileActionsFirst}
           onShareSession={onShareSession}
           canShareSession={canShareSession}
           onExportSession={onExportSession}
           onRenameChat={onRenameChat}
+          getChatReadState={getChatReadState}
+          onSetChatUnread={onSetChatUnread}
           onNewWindow={popOut !== undefined ? handleNewWindow : undefined}
           canOpenInNewWindow={popOut?.canPopOutPanel}
           onFullScreen={handleFullScreen}

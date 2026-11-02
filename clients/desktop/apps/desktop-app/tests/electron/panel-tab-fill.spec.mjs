@@ -1,11 +1,14 @@
-// Chrome-style panel tabs (the `fill` tab style, shown with early access on;
-// the classic tabs are covered by the worktree-panels specs): the unpinned
-// tabs of a group all take one default width (room for a 28-character title)
-// while they fit, with the add-tab button right after them. Once they do not
-// fit, they split the strip equally and fill it, shrinking as more open
-// instead of scrolling. Closing a tab re-shares the row at once; while the row
-// is crowded the last tab stays at its end, so its close button lands under
-// the pointer.
+// Chrome-style panel tabs (the `fill` tab style; the classic tabs are covered
+// by the worktree-panels specs): the unpinned tabs of a group all take one
+// default width (room for a 28-character title) while they fit, with the
+// add-tab button and the ⌄ all-tabs button right after them. Once they do not
+// fit, they split the strip equally and fill it, shrinking as more open down
+// to a readable 96px; past that the strip scrolls (wheel, or a thin line on
+// the row's hairline that drags like an overlay scrollbar) and keeps the
+// selected tab in view. ⌄ shows only once the tabs no longer fit, with a dot
+// while an unread tab is out of view. Closing a tab re-shares the row at once;
+// while the row is crowded the last tab stays at its end, so its close button
+// lands under the pointer.
 //
 // Run after building the implementation:
 //   pnpm run test:electron:built panel-tab-fill.spec.mjs --reporter=line
@@ -22,6 +25,7 @@ import { seedWorktreeChat } from './seeders/index.mjs';
 // Imported directly: the seeders barrel is part of the pinned perf harness.
 import { seedEarlyAccess } from './seeders/seedEarlyAccess.mjs';
 import { closeCanopy } from './launchCanopy.mjs';
+import { evaluateWithSyntheticIpcEvent } from './syntheticIpcEvent.mjs';
 import {
   collectLeaves,
   DEFAULT_GROUP_IDS,
@@ -126,6 +130,7 @@ function stripGeometry(window) {
       );
       const bar = strip.closest('.canopy-panel-tab-bar');
       const add = bar?.querySelector('.canopy-panel-add-tab-root');
+      const list = bar?.querySelector('.canopy-panel-tab-list-root');
       const barRect = bar?.getBoundingClientRect();
       const addRect = add?.getBoundingClientRect();
       return {
@@ -133,14 +138,15 @@ function stripGeometry(window) {
         right: stripRect.right,
         addLeft: addRect?.left ?? Number.NaN,
         addRight: addRect?.right ?? Number.NaN,
+        // ⌄ shows only once the tabs no longer fit; it ends the row.
+        listShown:
+          list !== null &&
+          list !== undefined &&
+          getComputedStyle(list).display !== 'none',
+        listUnread: list?.hasAttribute('data-unread') ?? false,
+        listLeft: list?.getBoundingClientRect().left ?? Number.NaN,
+        listRight: list?.getBoundingClientRect().right ?? Number.NaN,
         barRight: barRect?.right ?? Number.NaN,
-        // The tiles' floor the tab bar sets once 20px tiles stop fitting.
-        tileFloor:
-          Number.parseFloat(
-            bar instanceof HTMLElement
-              ? bar.style.getPropertyValue('--canopy-panel-tab-floor')
-              : '',
-          ) || 20,
         overflowing: strip.scrollWidth - strip.clientWidth > 1,
         tabs,
       };
@@ -148,6 +154,35 @@ function stripGeometry(window) {
 }
 
 const inactive = (tabs) => tabs.filter((tab) => !tab.active);
+
+// Marks seeded chats as streaming through the chat-state channel the runtime
+// uses, so their tabs show the running spinner (no provider runs).
+async function markStreaming(electronApp, chatIds) {
+  await evaluateWithSyntheticIpcEvent(
+    electronApp,
+    async ({ ipcMain }, { event, args }) => {
+      const snapshot = await ipcMain._invokeHandlers.get('chat:get-state')(
+        event,
+        { projectId: 'demo-ts-pnpm-vite', worktreeId: 'demo-main' },
+      );
+      event.sender.send('chat:state-changed', {
+        projectId: snapshot.projectId,
+        worktreeId: snapshot.worktreeId,
+        schemaVersion: 1,
+        eventId: `crowded-streaming-${args.join('-')}`,
+        occurredAt: new Date().toISOString(),
+        baseRevision: snapshot.revision,
+        revision: snapshot.revision + 1,
+        changes: args.map((chatId) => ({
+          type: 'runtime.patched',
+          chatId,
+          runtime: { status: 'streaming', queuedMessageIds: [] },
+        })),
+      });
+    },
+    chatIds,
+  );
+}
 
 function widthSpread(tabs) {
   const widths = tabs.map((tab) => tab.width);
@@ -157,12 +192,13 @@ function widthSpread(tabs) {
 test('tabs that fit take one default width, with the add button after them', async () => {
   test.setTimeout(120_000);
   // The last title is 28 characters, the length the default width holds.
-  const titles = ['Fix login', 'New chat', 'Fix PR-attributed CI failure'];
+  // Two tabs: the test window's pane holds two at the default width.
+  const titles = ['New chat', 'Fix PR-attributed CI failure'];
   const { electronApp, userDataDir, window } = await launchWithChats(titles);
   try {
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(3);
+      .toBe(2);
     const geometry = await stripGeometry(window);
     expect(geometry.overflowing).toBe(false);
     expect(geometry.tabs.some((tab) => tab.labelClipped)).toBe(false);
@@ -174,48 +210,40 @@ test('tabs that fit take one default width, with the add button after them', asy
     expect(Math.abs(geometry.tabs[0].width - 224)).toBeLessThanOrEqual(1);
     const lastTab = geometry.tabs[geometry.tabs.length - 1];
     expect(geometry.addLeft - lastTab.right).toBeLessThanOrEqual(12);
+    // Every tab fits, so there is no ⌄.
+    expect(geometry.listShown).toBe(false);
     expect(geometry.barRight - geometry.addRight).toBeGreaterThan(100);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('tabs that do not fit share the row equally instead of scrolling', async () => {
+test('tabs that do not fit share the row equally before any scrolling', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await launchWithChats(
-    longTitles(14),
+    longTitles(5),
   );
   try {
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(14);
+      .toBe(5);
     const geometry = await stripGeometry(window);
     expect(geometry.overflowing).toBe(false);
-    // The inactive tabs share the row equally.
-    expect(widthSpread(inactive(geometry.tabs))).toBeLessThanOrEqual(1);
-    // The selected tab stops at its own 96px floor, so a few characters of
-    // its title stay visible.
-    const activeTab = geometry.tabs.find((tab) => tab.active);
-    expect(activeTab).toBeDefined();
-    expect(Math.abs((activeTab?.width ?? 0) - 96)).toBeLessThanOrEqual(1);
-    expect(activeTab?.labelShown).toBe(true);
-    // Inactive tabs this narrow offer no close button. They keep a truncated
-    // label down to a 65px tile (the icon, the insets, and 24px of text) and
-    // show only their icon below that.
-    for (const tab of inactive(geometry.tabs)) {
-      expect(tab.width).toBeLessThan(83);
-      expect(tab.closeShown).toBe(false);
-      if (Math.abs(tab.width - 65) > 0.5) {
-        expect(tab.labelShown).toBe(tab.width > 65);
-      }
-    }
+    // Every tab shares the row equally, above the 96px floor and under the
+    // default width, with its title and × still on its line.
+    expect(widthSpread(geometry.tabs)).toBeLessThanOrEqual(1);
     for (const tab of geometry.tabs) {
+      expect(tab.width).toBeGreaterThan(96);
+      expect(tab.width).toBeLessThan(224);
+      expect(tab.labelShown).toBe(true);
       expect(tab.left).toBeGreaterThanOrEqual(geometry.left - 1);
       expect(tab.right).toBeLessThanOrEqual(geometry.right + 1);
     }
+    // Squeezed, so ⌄ shows and ends the row.
+    expect(geometry.listShown).toBe(true);
     const lastTab = geometry.tabs[geometry.tabs.length - 1];
     expect(geometry.addLeft - lastTab.right).toBeLessThanOrEqual(12);
-    expect(geometry.barRight - geometry.addRight).toBeLessThanOrEqual(1);
+    expect(geometry.barRight - geometry.listRight).toBeLessThanOrEqual(1);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -224,29 +252,29 @@ test('tabs that do not fit share the row equally instead of scrolling', async ()
 test('closing a tab re-shares the row at once, keeping the last tab under the pointer', async () => {
   test.setTimeout(120_000);
   // Enough tabs that, even after one closes, they share the row rather than
-  // sit at their default width.
+  // sit at their default width, and few enough that none reaches the floor.
   const { electronApp, userDataDir, window } = await launchWithChats(
-    longTitles(7),
+    longTitles(6),
   );
   try {
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(7);
+      .toBe(6);
     const before = await stripGeometry(window);
-    expect(before.barRight - before.addRight).toBeLessThanOrEqual(1);
+    expect(before.barRight - before.listRight).toBeLessThanOrEqual(1);
     const last = before.tabs[before.tabs.length - 1];
     const lastPanelId = last.testId.replace(/^panel-tab-/, '');
 
     await window.getByTestId(last.testId).hover();
     await window.getByTestId(`panel-tab-close-${lastPanelId}`).click();
 
-    // No hold: the six left share the row right away, with the pointer still
-    // on the strip, and the new last tab ends where the closed one did.
+    // No hold: the five left share the row right away, with the pointer
+    // still on the strip, and the new last tab ends where the closed one did.
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(6);
+      .toBe(5);
     const after = await stripGeometry(window);
-    expect(after.barRight - after.addRight).toBeLessThanOrEqual(1);
+    expect(after.barRight - after.listRight).toBeLessThanOrEqual(1);
     const newLast = after.tabs[after.tabs.length - 1];
     expect(Math.abs(newLast.right - last.right)).toBeLessThanOrEqual(1);
     expect(inactive(after.tabs)[0].width).toBeGreaterThan(
@@ -257,20 +285,19 @@ test('closing a tab re-shares the row at once, keeping the last tab under the po
   }
 });
 
-test('a full row of 20 tabs disables + and refuses a new chat with a note', async () => {
+test('a row of 30 tabs keeps + enabled and takes a new chat', async () => {
   test.setTimeout(180_000);
   const { electronApp, userDataDir, window } = await launchWithChats(
-    longTitles(20),
+    longTitles(30),
   );
-  const note = 'Tab limit reached (20)';
   try {
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(20);
+      .toBe(30);
     const add = window.getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.chat}`);
-    await expect(add).toBeDisabled();
+    await expect(add).toBeEnabled();
 
-    // Cmd/Ctrl+T into the full row is refused before a chat is created.
+    // Cmd/Ctrl+T opens a 31st chat in the same row: there is no tab limit.
     await window
       .getByTestId(`panel-tab-strip-${DEFAULT_GROUP_IDS.chat}`)
       .locator('[role="tab"][data-active="true"]')
@@ -278,19 +305,25 @@ test('a full row of 20 tabs disables + and refuses a new chat with a note', asyn
     await window.keyboard.press(
       process.platform === 'darwin' ? 'Meta+t' : 'Control+t',
     );
-    await expect(window.getByText(note).first()).toBeVisible();
-    expect((await stripGeometry(window)).tabs).toHaveLength(20);
+    await expect
+      .poll(async () => (await stripGeometry(window)).tabs.length)
+      .toBe(31);
     const layout = await getLayout(window);
     const chatLeaf = collectLeaves(layout.root).find(
       (leaf) => leaf.groupId === DEFAULT_GROUP_IDS.chat,
     );
-    expect(chatLeaf?.panels).toHaveLength(20);
+    expect(chatLeaf?.panels).toHaveLength(31);
+    // The new chat is selected and scrolled into view.
+    const geometry = await stripGeometry(window);
+    const selected = geometry.tabs.find((tab) => tab.active);
+    expect(selected?.right).toBeLessThanOrEqual(geometry.right + 1);
+    expect(selected?.left).toBeGreaterThanOrEqual(geometry.left - 1);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('turning early access off brings back the classic tabs and lifts the limit', async () => {
+test('turning early access off preserves filled tabs', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await launchWithChats(
     longTitles(20),
@@ -298,10 +331,8 @@ test('turning early access off brings back the classic tabs and lifts the limit'
   const bar = window
     .getByTestId(`panel-group-title-${DEFAULT_GROUP_IDS.chat}`)
     .locator('.canopy-panel-tab-bar');
-  const add = window.getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.chat}`);
   try {
     await expect(bar).toHaveAttribute('data-tab-style', 'fill');
-    await expect(add).toBeDisabled();
 
     // The preferences push reaches the tab bar without a reload.
     await window.evaluate(() =>
@@ -310,9 +341,7 @@ test('turning early access off brings back the classic tabs and lifts the limit'
         enabled: false,
       }),
     );
-    await expect(bar).toHaveAttribute('data-tab-style', 'classic');
-    // Classic rows scroll, so a full row of 20 takes more tabs again.
-    await expect(add).toBeEnabled();
+    await expect(bar).toHaveAttribute('data-tab-style', 'fill');
 
     await window.evaluate(() =>
       window.api.experiments.setChoice({
@@ -321,44 +350,232 @@ test('turning early access off brings back the classic tabs and lifts the limit'
       }),
     );
     await expect(bar).toHaveAttribute('data-tab-style', 'fill');
-    await expect(add).toBeDisabled();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('a narrow row shrinks every tab to fit instead of hiding any', async () => {
+test('once every tab is at its 96px floor, the strip scrolls and keeps the selected tab in view', async () => {
   test.setTimeout(180_000);
   const { electronApp, userDataDir, window } = await launchWithChats(
-    longTitles(20),
+    longTitles(40),
+  );
+  const strip = window.getByTestId(`panel-tab-strip-${DEFAULT_GROUP_IDS.chat}`);
+  try {
+    await expect
+      .poll(async () => (await stripGeometry(window)).tabs.length)
+      .toBe(40);
+    let geometry = await stripGeometry(window);
+    expect(geometry.overflowing).toBe(true);
+    // Every tab stops shrinking at a readable 96px, 4px apart.
+    for (const tab of inactive(geometry.tabs)) {
+      expect(Math.abs(tab.width - 96)).toBeLessThanOrEqual(0.5);
+      expect(tab.labelShown).toBe(true);
+    }
+    expect(geometry.listShown).toBe(true);
+    expect(geometry.tabs[1].left - geometry.tabs[0].right).toBeCloseTo(4, 0);
+    expect(
+      Math.abs((geometry.tabs.find((tab) => tab.active)?.width ?? 0) - 96),
+    ).toBeLessThanOrEqual(1);
+    // The + and ⌄ stay put at the end of the row.
+    expect(geometry.barRight - geometry.listRight).toBeLessThanOrEqual(1);
+
+    // The wheel pans the strip.
+    await strip.hover();
+    await window.mouse.wheel(0, 400);
+    await expect
+      .poll(() => strip.evaluate((element) => element.scrollLeft))
+      .toBeGreaterThan(0);
+
+    // Choosing the last tab from the ⌄ list scrolls it into view.
+    await window
+      .getByTestId(`panel-tab-list-${DEFAULT_GROUP_IDS.chat}`)
+      .click();
+    await window
+      .getByTestId('panel-tab-list-row-panel-chat-fill-chat-40')
+      .click();
+    await expect
+      .poll(async () => {
+        geometry = await stripGeometry(window);
+        const selected = geometry.tabs.find((tab) => tab.active);
+        return (
+          selected?.testId === 'panel-tab-panel-chat-fill-chat-40' &&
+          selected.right <= geometry.right + 1 &&
+          selected.left >= geometry.left - 1
+        );
+      })
+      .toBe(true);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('the ⌄ list shows every tab, searches them, and closes one in place', async () => {
+  test.setTimeout(180_000);
+  const titles = longTitles(24);
+  titles[16] = 'Release notes draft';
+  const { electronApp, userDataDir, window } = await launchWithChats(titles);
+  const menu = window.getByTestId(
+    `panel-tab-list-menu-${DEFAULT_GROUP_IDS.chat}`,
   );
   try {
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(20);
-    // Narrow the chat row until 20px tiles no longer fit it. (The headless
-    // test window does not resize, so the bar itself is narrowed; the tab
-    // bar's own observer picks the change up as it would a window resize.)
+      .toBe(24);
     await window
-      .getByTestId(`panel-tab-strip-${DEFAULT_GROUP_IDS.chat}`)
-      .evaluate((strip) => {
-        const bar = strip.closest('.canopy-panel-tab-bar');
-        if (bar instanceof HTMLElement) {
-          bar.style.maxWidth = '420px';
-        }
-      });
-    // The row is narrow enough that 20px tiles no longer fit...
+      .getByTestId(`panel-tab-list-${DEFAULT_GROUP_IDS.chat}`)
+      .click();
+    await expect(menu.locator('[role="option"]')).toHaveCount(24);
+    // Rows show the tab's number and title; the selected tab is marked.
+    await expect(
+      window.getByTestId('panel-tab-list-row-panel-chat-fill-chat-1'),
+    ).toHaveAttribute('aria-selected', 'true');
+    await expect(
+      window.getByTestId('panel-tab-list-row-panel-chat-fill-chat-2'),
+    ).toContainText('2');
+
+    // × in a row closes that tab and leaves the list open.
+    await window
+      .getByTestId('panel-tab-list-row-panel-chat-fill-chat-3')
+      .hover();
+    await window
+      .getByTestId('panel-tab-list-close-panel-chat-fill-chat-3')
+      .click();
+    await expect(menu.locator('[role="option"]')).toHaveCount(23);
     await expect
-      .poll(async () => (await stripGeometry(window)).tileFloor)
-      .toBeLessThan(20);
-    // ...and every tab still sits inside the row.
-    const geometry = await stripGeometry(window);
-    for (const tab of geometry.tabs) {
-      expect(tab.left).toBeGreaterThanOrEqual(geometry.left - 1);
-      expect(tab.right).toBeLessThanOrEqual(geometry.right + 1);
+      .poll(async () => (await stripGeometry(window)).tabs.length)
+      .toBe(23);
+
+    // The search field keeps focus; typing filters, Enter opens the match.
+    await window.keyboard.type('release');
+    await expect(menu.locator('[role="option"]')).toHaveCount(1);
+    await window.keyboard.press('Enter');
+    await expect(menu).toHaveCount(0);
+    await expect(
+      window.getByTestId('panel-tab-panel-chat-fill-chat-17'),
+    ).toHaveAttribute('data-active', 'true');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('a running tab out of view adds nothing to the row; an unread one dots ⌄ after a pause', async () => {
+  test.setTimeout(180_000);
+  const { electronApp, userDataDir, window } = await launchWithChats(
+    longTitles(40),
+  );
+  const strip = window.getByTestId(`panel-tab-strip-${DEFAULT_GROUP_IDS.chat}`);
+  try {
+    await expect
+      .poll(async () => (await stripGeometry(window)).tabs.length)
+      .toBe(40);
+    await markStreaming(electronApp, ['fill-chat-30']);
+    await expect(
+      window
+        .getByTestId('panel-tab-panel-chat-fill-chat-30')
+        .locator('[data-panel-tab-busy]'),
+    ).toHaveCount(1);
+    // No "N running" count in a fill row.
+    await expect(window.locator('.canopy-panel-tab-edge-count')).toHaveCount(0);
+    // Chat 2 is marked unread from its tab menu while it shows: no dot.
+    await window
+      .getByTestId('panel-tab-panel-chat-fill-chat-2')
+      .click({ button: 'right' });
+    await window.getByTestId('panel-tab-context-mark-unread').click();
+    await expect(
+      window.getByTestId('panel-tab-unread-dot-fill-chat-2'),
+    ).toHaveCount(1);
+    await window.waitForTimeout(800);
+    expect((await stripGeometry(window)).listUnread).toBe(false);
+
+    // Scrolled to the end, chat 2 is out of view: ⌄ takes its dot after the
+    // pause.
+    await strip.hover();
+    await window.mouse.wheel(0, 20_000);
+    await expect
+      .poll(async () => (await stripGeometry(window)).listUnread, {
+        timeout: 5_000,
+      })
+      .toBe(true);
+
+    // Back at the start, chat 2 shows and the dot goes.
+    await window.mouse.wheel(0, -20_000);
+    await expect
+      .poll(async () => (await stripGeometry(window)).listUnread, {
+        timeout: 5_000,
+      })
+      .toBe(false);
+
+    // The ⌄ list keeps the running row numbered with its spinner on the
+    // right, and the unread row's dot.
+    await window
+      .getByTestId(`panel-tab-list-${DEFAULT_GROUP_IDS.chat}`)
+      .click();
+    const running = window
+      .getByTestId('panel-tab-list-row-panel-chat-fill-chat-30')
+      .locator('xpath=..');
+    await expect(running.getByTestId('panel-tab-number')).toHaveText('30');
+    await expect(running.locator('.canopy-panel-tab-list-busy')).toHaveCount(1);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('dragging the thin scrollbar keeps the grab point, and the selected tab never pulls it back', async () => {
+  test.setTimeout(180_000);
+  const { electronApp, userDataDir, window } = await launchWithChats(
+    longTitles(40),
+  );
+  const strip = window.getByTestId(`panel-tab-strip-${DEFAULT_GROUP_IDS.chat}`);
+  const track = window.getByTestId(
+    `panel-tab-scroll-track-${DEFAULT_GROUP_IDS.chat}`,
+  );
+  const thumbBox = () =>
+    strip.evaluate((element) => {
+      const thumb = element.parentElement?.querySelector(
+        '.canopy-scroll-thumb',
+      );
+      const rect = thumb?.getBoundingClientRect();
+      return rect
+        ? { left: rect.left, width: rect.width, height: rect.height }
+        : null;
+    });
+  try {
+    await expect
+      .poll(async () => (await stripGeometry(window)).tabs.length)
+      .toBe(40);
+    const box = await track.boundingBox();
+    if (!box) throw new Error('no scroll track');
+    const y = box.y + box.height / 2;
+    // Hovering the line grows it.
+    await window.mouse.move(box.x + 10, y);
+    await expect
+      .poll(async () => (await thumbBox())?.height ?? 0)
+      .toBeCloseTo(6, 0);
+    const start = await thumbBox();
+    if (!start) throw new Error('no thumb');
+    const grab = start.left + 20;
+    await window.mouse.move(grab, y);
+    await window.mouse.down();
+    const offsets = [];
+    for (let step = 1; step <= 10; step += 1) {
+      // Mid-drag the selected tab's chat starts streaming, which re-renders
+      // the row; the drag must not be pulled back to the selected tab.
+      if (step === 5) await markStreaming(electronApp, ['fill-chat-1']);
+      // Leaving the 8px zone keeps the drag.
+      await window.mouse.move(grab + step * 15, y + (step > 6 ? 40 : 0));
+      const now = await thumbBox();
+      offsets.push(grab + step * 15 - (now?.left ?? 0));
     }
-    expect(geometry.overflowing).toBe(false);
-    expect(geometry.addRight).toBeLessThanOrEqual(geometry.barRight + 1);
+    await window.mouse.up();
+    for (const offset of offsets) {
+      expect(Math.abs(offset - 20)).toBeLessThanOrEqual(2);
+    }
+    expect(
+      await strip.evaluate((element) => element.scrollLeft),
+    ).toBeGreaterThan(0);
+    // No page text was selected by the drag.
+    expect(await window.evaluate(() => String(getSelection()))).toBe('');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -482,11 +699,11 @@ test('a pinned tile keeps its 28px square instead of the default tab width', asy
   }
 });
 
-test('a narrow row keeps a selected pinned tile square while the other tabs give way', async () => {
+test('a crowded row keeps a selected pinned tile square while the other tabs scroll', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await launchWithChats([
     'Pinned chat',
-    ...longTitles(11),
+    ...longTitles(39),
   ]);
   const pinnedStrip = window
     .getByTestId(`panel-group-title-${DEFAULT_GROUP_IDS.chat}`)
@@ -494,7 +711,7 @@ test('a narrow row keeps a selected pinned tile square while the other tabs give
   try {
     await expect
       .poll(async () => (await stripGeometry(window)).tabs.length)
-      .toBe(12);
+      .toBe(40);
     // Pin the first (selected) tab.
     const first = (await stripGeometry(window)).tabs[0];
     await window.getByTestId(first.testId).click({ button: 'right' });
@@ -505,38 +722,27 @@ test('a narrow row keeps a selected pinned tile square while the other tabs give
     await expect(
       pinnedStrip.locator('.canopy-panel-tab-pinned[data-active="true"]'),
     ).toHaveCount(1);
-    // Narrow the row until the tabs share it below 20px (see the narrow-row
-    // test above for why the bar itself is narrowed).
-    await pinnedStrip.evaluate((strip) => {
-      const bar = strip.closest('.canopy-panel-tab-bar');
-      if (bar instanceof HTMLElement) {
-        bar.style.maxWidth = '300px';
-      }
-    });
-    await expect
-      .poll(async () => (await stripGeometry(window)).tileFloor)
-      .toBeLessThan(20);
     const tile = await pinnedStrip.evaluate((strip) => {
       const rect = strip
         .querySelector('.canopy-panel-tab-pinned')
         ?.getBoundingClientRect();
       return { width: rect?.width ?? Number.NaN, height: rect?.height ?? 0 };
     });
-    // Still square, as wide as it is tall, rather than squeezed to the floor.
+    // Still square, as wide as it is tall.
     expect(Math.abs(tile.width - 28)).toBeLessThanOrEqual(1);
     expect(Math.abs(tile.width - tile.height)).toBeLessThanOrEqual(1);
-    // The other tabs gave up the room, and all still fit their strip.
+    // The other tabs keep their square floor and scroll instead.
     const geometry = await stripGeometry(window);
+    expect(geometry.overflowing).toBe(true);
     for (const tab of geometry.tabs) {
-      expect(tab.right).toBeLessThanOrEqual(geometry.right + 1);
+      expect(tab.width).toBeGreaterThanOrEqual(27.5);
     }
-    expect(geometry.overflowing).toBe(false);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
-test('the strip edge follows the shown tab, and only with early access on', async () => {
+test('the strip edge follows the shown tab regardless of early access', async () => {
   test.setTimeout(120_000);
   const longReply = Array.from(
     { length: 120 },
@@ -586,7 +792,7 @@ test('the strip edge follows the shown tab, and only with early access on', asyn
         enabled: false,
       }),
     );
-    await expect(group).not.toHaveAttribute('data-title-edge', /.*/);
+    await expect(group).toHaveAttribute('data-title-edge', 'scrolled');
     await window.evaluate(() =>
       window.api.experiments.setChoice({
         experimentId: 'early-access',
@@ -598,3 +804,70 @@ test('the strip edge follows the shown tab, and only with early access on', asyn
     await closeCanopy(electronApp, userDataDir);
   }
 });
+
+// The selected fill tab is marked by its muted fill alone, with no accent
+// underline (CAN-4789 added one; it was taken back out), in states that
+// geometry-only tests do not cover. Drag uses the real live pointer path.
+for (const mode of ['light', 'dark']) {
+  test(`selected fill tab has no underline in pinned, focus and live drag states in ${mode}`, async () => {
+    const { electronApp, userDataDir, window } = await launchWithChats([
+      'Pinned',
+      ...longTitles(10),
+    ]);
+    try {
+      await window.evaluate(
+        (theme) =>
+          document.documentElement.classList.toggle('dark', theme === 'dark'),
+        mode,
+      );
+      const pinned = window.getByTestId('panel-tab-panel-chat-fill-chat-1');
+      await pinned.click({ button: 'right' });
+      await window.getByTestId('panel-tab-context-pin').click();
+      await expect(pinned).toHaveClass(/canopy-panel-tab-pinned/);
+      const noUnderline = async (tab) => {
+        await expect(tab).toHaveAttribute('data-active', 'true');
+        const after = await tab.evaluate(
+          (element) => getComputedStyle(element, '::after').content,
+        );
+        expect(after).toBe('none');
+      };
+      const filled = async (tab) => {
+        const color = await tab.evaluate(
+          (element) => getComputedStyle(element).backgroundColor,
+        );
+        expect(color).not.toBe('rgba(0, 0, 0, 0)');
+      };
+      await noUnderline(pinned);
+      await filled(pinned);
+      await pinned.focus();
+      await window.keyboard.press('Tab');
+      await noUnderline(pinned);
+      const tab = window.getByTestId('panel-tab-panel-chat-fill-chat-2');
+      await tab.click();
+      await noUnderline(tab);
+      await filled(tab);
+      await expect(pinned).toHaveAttribute('data-active', 'false');
+      const from = await tab.boundingBox();
+      const to = await window
+        .getByTestId('panel-tab-panel-chat-fill-chat-4')
+        .boundingBox();
+      await window.mouse.move(
+        from.x + from.width / 2,
+        from.y + from.height / 2,
+      );
+      await window.mouse.down();
+      try {
+        await window.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+          steps: 12,
+        });
+        await expect(tab).toHaveAttribute('data-live-drag', 'strip');
+        await noUnderline(tab);
+      } finally {
+        await window.mouse.up();
+      }
+      await noUnderline(tab);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}

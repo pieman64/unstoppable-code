@@ -25,10 +25,13 @@ describe('model package configuration', () => {
     const config = parseModelPackageConfig(pkg);
 
     expect(config.claudeModels).toHaveLength(11);
-    expect(config.codexModels).toHaveLength(8);
+    expect(config.codexModels).toHaveLength(9);
     const astra = config.codexModels[0];
     const gpt61Sol = config.codexModels.find(
       (entry) => entry.id === 'gpt-6.1-sol',
+    );
+    const gpt61Terra = config.codexModels.find(
+      (entry) => entry.id === 'gpt-6.1-terra',
     );
     const gpt6Sol = config.codexModels.find(
       (entry) => entry.id === 'gpt-6-sol',
@@ -59,16 +62,25 @@ describe('model package configuration', () => {
       showMoreOnly: false,
       cursorModelId: 'gpt-6.1-sol',
     });
+    expect(gpt61Terra).toMatchObject({
+      label: 'GPT 6.1 Terra',
+      sortOrder: 42,
+      description: 'Balanced Codex model for everyday development',
+      contextWindow: 500000,
+      showMoreOnly: false,
+      cursorModelId: 'gpt-6.1-terra',
+    });
+    expect(gpt61Terra?.gatewayId).toBeUndefined();
     expect(gpt6Sol).toMatchObject({
       label: 'GPT 6 Sol',
-      sortOrder: 43,
+      sortOrder: 44,
       description: 'Reliable Codex model for everyday coding work',
       showMoreOnly: true,
       cursorModelId: 'gpt-6-sol',
     });
     expect(gpt6Luna).toMatchObject({
       label: 'GPT 6 Luna',
-      sortOrder: 42,
+      sortOrder: 43,
       description: 'Fast Codex model for focused coding tasks',
       gatewayId: 'openai/gpt-6-luna',
       showMoreOnly: false,
@@ -88,6 +100,9 @@ describe('model package configuration', () => {
     expect(gpt61Sol?.supportedThinkingLevels).toEqual(
       astra?.supportedThinkingLevels,
     );
+    expect(gpt61Terra?.supportedThinkingLevels).toEqual(
+      astra?.supportedThinkingLevels,
+    );
     expect(gpt6Sol?.supportedThinkingLevels).toEqual([
       'off',
       'low',
@@ -101,6 +116,7 @@ describe('model package configuration', () => {
     expect(gpt6Luna?.supportedThinkingLevels).toEqual(gpt56Levels);
     expect(sol?.supportedThinkingLevels).toEqual(gpt56Levels);
     expect(terra?.supportedThinkingLevels).toEqual(gpt56Levels);
+    expect(terra?.showMoreOnly).toBe(true);
     expect(
       config.claudeModels.find(({ id }) => id === 'opus[1m]'),
     ).toMatchObject({
@@ -190,7 +206,7 @@ describe('model package configuration', () => {
         family,
         familyLabel,
       ]),
-    ).toEqual(Array(8).fill(['codex', 'Codex']));
+    ).toEqual(Array(9).fill(['codex', 'Codex']));
     expect(
       config.claudeModels
         .filter(({ showMoreOnly }) => showMoreOnly)
@@ -208,7 +224,7 @@ describe('model package configuration', () => {
       config.codexModels
         .filter(({ showMoreOnly }) => showMoreOnly)
         .map(({ id }) => id),
-    ).toEqual(['gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.6-luna']);
+    ).toEqual(['gpt-6-sol', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
   });
 
   it('applies native-section harness defaults', () => {

@@ -10,7 +10,9 @@ const spawnMock = jest.fn<
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn(): typeof spawnMock {
+    return spawnMock;
+  },
 }));
 
 // Fake PIDs must never reach the host's process-group signal path.
@@ -66,6 +68,7 @@ function ownerStub(
     handleConnectionNotification: jest.fn(),
     handleRequestUserInput: jest.fn(() => Promise.resolve()),
     handleDynamicToolCall: jest.fn(() => Promise.resolve()),
+    handleApprovalRequest: jest.fn(() => Promise.resolve()),
     handleMcpElicitation: jest.fn(() => Promise.resolve()),
     ...overrides,
   };
@@ -97,7 +100,18 @@ describe('quarantine deadline behind a stdout backlog', () => {
     jest.clearAllMocks();
     proc = new MockChildProcess();
     spawnMock.mockReturnValue(proc);
-    connection = new CodexAppServerConnection('profile:backlog-deadline');
+    // Retention is per owner: the peer's 10 MiB of deltas only pause the
+    // shared stdout once they exceed its hard limit.
+    connection = new CodexAppServerConnection(
+      'profile:backlog-deadline',
+      undefined,
+      undefined,
+      {
+        stdoutQueueHighWaterBytes: 4 * 1024 * 1024,
+        stdoutQueueLowWaterBytes: 2 * 1024 * 1024,
+        stdoutOwnerHardLimitBytes: 8 * 1024 * 1024,
+      },
+    );
     // Startup needs an owner; this one stays idle.
     connection.registerOwner(ownerStub(), {});
     const initialization = connection.ensureInitialized();

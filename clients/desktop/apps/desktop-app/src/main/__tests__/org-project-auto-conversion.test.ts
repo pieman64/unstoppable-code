@@ -220,11 +220,17 @@ beforeEach((): void => {
   clock = Date.parse('2026-09-27T00:00:00.000Z');
   events = [];
   failures = [];
-  convert = jest.fn(
+  convert = jest.fn<
+    Promise<OrgProjectConversionResult>,
+    [OrgProjectConvertWorkspaceRequest, OrgProjectConversionOptions]
+  >(
     (request): Promise<OrgProjectConversionResult> =>
       Promise.resolve(converted(request)),
   );
-  convertMultiRepo = jest.fn(
+  convertMultiRepo = jest.fn<
+    Promise<OrgProjectConversionResult>,
+    [OrgProjectConvertMultiRepoWorkspaceRequest, OrgProjectConversionOptions]
+  >(
     (request): Promise<OrgProjectConversionResult> =>
       Promise.resolve(
         converted({ ...request, projectId: MULTI_PROJECT }, 'multi-repo'),

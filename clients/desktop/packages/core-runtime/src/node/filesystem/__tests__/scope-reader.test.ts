@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import * as paths from 'node:path';
 import type * as filesystem from 'node:fs/promises';
+import type { WorkspaceFileRead } from '../../workspace/read-formats';
 import {
   readFilesystemScope,
   type FilesystemScopeDependencies,
@@ -128,6 +129,7 @@ it.each([undefined, 'external'])(
       entries: [{ id: 'task', createdAt: 'now', status: 'future' }],
     });
     const catalog = await readFilesystemScope(scope, dependencies);
+    expect(catalog.roots[0]?.name).toBe('Project');
     expect(catalog.roots.map((root) => root.absolutePath)).toEqual([
       home,
       paths.join(home, '.canopy/notes'),
@@ -135,6 +137,45 @@ it.each([undefined, 'external'])(
     ]);
   },
 );
+it.each([undefined, '', '   ', '  Vendor Spend Q3 / 支出 🌳  '])(
+  'resolves Cowork index name %j with a folder fallback',
+  async (name) => {
+    await seed('cowork', {
+      externalPath: paths.join(dataRoot, 'attached-folder'),
+    });
+    await json('workspaces/index.json', {
+      version: 1,
+      workspaces: [
+        { ...entry, id: 'other', type: 'cowork', name: 'Wrong workspace' },
+        { ...entry, type: 'cowork', name },
+      ],
+    });
+    const catalog = await readFilesystemScope(
+      { workspaceId: 'project', worktreeId: 'home' },
+      dependencies,
+    );
+    expect(catalog.roots[0]).toMatchObject({
+      id: 'workspace',
+      name: name?.trim() || 'attached-folder',
+      kind: 'standalone',
+      absolutePath: paths.join(dataRoot, 'attached-folder'),
+    });
+  },
+);
+it('uses the host root path when its basename is empty', async () => {
+  const home = paths.parse(dataRoot).root;
+  await seed('cowork', { externalPath: home });
+  await json('workspaces/index.json', {
+    version: 1,
+    workspaces: [{ ...entry, type: 'cowork', name: '' }],
+  });
+  const catalog = await readFilesystemScope(
+    { workspaceId: 'project' },
+    { ...dependencies, rootVisibility: () => Promise.resolve(false) },
+  );
+  expect(catalog.roots[0]?.name).toBe(home);
+});
+
 it('rejects absent selected records and distinguishes unreadable selected authority', async () => {
   await expect(
     readFilesystemScope({ ...scope, workspaceId: 'gone' }, dependencies),
@@ -618,4 +659,53 @@ it('keeps root mapping revisions independent of attachment visibility', async ()
     'attachments',
   ]);
   expect(visible.catalogRevision).toBe(empty.catalogRevision);
+});
+
+it.each(['C:\\', '\\\\server\\share\\'])(
+  'uses the injected Windows basename and root fallback for %s',
+  async (home) => {
+    const catalog = await readFilesystemScope(
+      { workspaceId: 'project' },
+      {
+        ...dependencies,
+        dataRoot: 'C:\\data',
+        paths: paths.win32,
+        rootVisibility: () => Promise.resolve(false),
+        readFile: (path) =>
+          Promise.resolve<WorkspaceFileRead>({
+            state: 'present',
+            raw: JSON.stringify(
+              path.endsWith('index.json')
+                ? {
+                    version: 1,
+                    workspaces: [{ ...entry, type: 'cowork', name: '' }],
+                  }
+                : path.endsWith('workspace.json')
+                  ? { version: 1, type: 'cowork', externalPath: home }
+                  : { version: 1, entries: [] },
+            ),
+          }),
+      },
+    );
+    expect(catalog.roots[0]?.name).toBe(paths.win32.basename(home) || home);
+    expect(catalog.roots[0]?.absolutePath).toBe(paths.win32.resolve(home));
+  },
+);
+
+it('preserves typed failures for unavailable index reads on both read operations', async () => {
+  for (const operation of ['roots', 'directory'] as const) {
+    await expect(
+      readFilesystemScope(
+        scope,
+        {
+          ...dependencies,
+          readFile: () =>
+            Promise.resolve<WorkspaceFileRead>({ state: 'unreadable' }),
+        },
+        operation,
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: `worker.filesystem.${operation}.invalidState` },
+    });
+  }
 });

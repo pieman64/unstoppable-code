@@ -383,6 +383,19 @@ async function expectStandardShell(modal, prefix, { noun, offered }) {
   await expect(modal.getByTestId(`${prefix}-confirm`)).toHaveCount(0);
 }
 
+/**
+ * Opens Share from a Customize Installed row's ⋯ menu (CAN-4267: the former
+ * Collections and Skills lists and their row Share icons are gone).
+ */
+async function shareInstalledRow(window, row) {
+  const menuTestId = (await row.getAttribute('data-testid')).replace(
+    /^customize-row-/,
+    'customize-row-menu-',
+  );
+  await window.getByTestId(menuTestId).click();
+  await window.getByTestId(`${menuTestId}-share`).click();
+}
+
 const ALL_AUDIENCES = ['team', 'organization', 'public'];
 const SCOPED_AUDIENCES = ['team', 'organization'];
 
@@ -464,7 +477,7 @@ test('every share dialog picks teams and organizations with the same picker', as
     const pipelineModal = window.getByTestId('share-pipeline-modal');
     await expect(pipelineModal).toBeVisible();
     await expectStandardShell(pipelineModal, 'share-pipeline', {
-      noun: 'pipeline',
+      noun: 'workflow',
       offered: ALL_AUDIENCES,
     });
     await expectStandardPickers(pipelineModal, 'share-pipeline');
@@ -492,20 +505,31 @@ test('every share dialog picks teams and organizations with the same picker', as
     // Collection (formerly a boxed, avatar-less private copy). Collections
     // are created through the UI, as `collections-actions-icons.spec.mjs`
     // does, so the row's Share action opens the real modal.
-    await app.openPluginsPage();
+    // The agent's detail page is still open; the root crumb returns to the
+    // Customize lists, where the Collections destination lands.
+    await window.getByTestId('plugins-entry-detail-breadcrumb-root').click();
+    await app.expectPluginsPage();
     await app.openPluginsTab('collections');
     await app.expectPluginsTab('collections');
-    await window.getByRole('button', { name: 'Add', exact: true }).click();
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-collection').click();
     await expect(window.locator('#collection-modal-title')).toBeVisible();
     await window.getByPlaceholder('My collection').fill(COLLECTION_NAME);
     await window.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(window.locator('#collection-modal-title')).toBeHidden({
       timeout: 5000,
     });
-    await window
-      .getByRole('button', { name: 'Share collection' })
-      .first()
-      .click();
+    // Saving opens the new collection's detail; its row is on the list
+    // behind it.
+    await app.expectCreatedCustomizeDetail(COLLECTION_NAME);
+    await app.closeMarketplaceEntryDetail();
+    await shareInstalledRow(
+      window,
+      window
+        .getByTestId('customize-section-installed')
+        .locator('[data-testid^="customize-row-collection:local:"]')
+        .filter({ hasText: COLLECTION_NAME }),
+    );
     const collectionModal = window.getByTestId('share-collection-modal');
     await expect(collectionModal).toBeVisible();
     await expectStandardShell(collectionModal, 'share-collection', {
@@ -521,10 +545,13 @@ test('every share dialog picks teams and organizations with the same picker', as
     // Skill (the ui-app ShareResourceDialog shared with the web portal).
     await app.openPluginsTab('skills');
     await app.expectPluginsTab('skills');
-    await window
-      .locator('[data-testid^="skill-share-builtin"]')
-      .first()
-      .click();
+    await shareInstalledRow(
+      window,
+      window
+        .getByTestId('customize-section-installed')
+        .locator('[data-testid^="customize-row-skill:builtin:"]')
+        .first(),
+    );
     const skillModal = window.getByTestId('share-skill-modal');
     await expect(skillModal).toBeVisible();
     await expectStandardShell(skillModal, 'share-skill', {
@@ -611,8 +638,9 @@ test('plan and session share dialogs pick teams and organizations with the same 
     await expect(window.getByTestId('panel-content-chat')).toBeVisible({
       timeout: 30_000,
     });
-    const shareControl = window.getByTestId('turn-share-session');
-    await expect(shareControl).toHaveAttribute('data-shared', 'false', {
+    await window.getByTestId('turn-more-actions').click();
+    const shareControl = window.getByTestId('turn-more-share');
+    await expect(shareControl).toHaveText('Share session', {
       timeout: 30_000,
     });
     await shareControl.click();

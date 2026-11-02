@@ -5,9 +5,9 @@ import {
 } from '../claudeUsageLimitResume';
 import type {
   AgentUsageOverview,
-  PipelineStatusReason,
   ProviderRateLimitSnapshot,
 } from '@canopy/desktop-shared/types';
+import type { PipelineStatusReason } from '@canopy/desktop-shared/types/pipeline';
 
 function buildUsage(
   rateLimits: ProviderRateLimitSnapshot[] | undefined,
@@ -23,7 +23,7 @@ function buildUsage(
         ...(rateLimits ? { rateLimits } : {}),
       },
     ],
-  } as unknown as AgentUsageOverview;
+  };
 }
 
 const NOW = new Date('2026-06-05T12:00:00.000Z');

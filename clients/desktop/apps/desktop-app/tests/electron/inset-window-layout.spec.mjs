@@ -1,10 +1,10 @@
-// Early access inset window layout: with "Try new features early" on, the
-// sidebar and the worktree top bar sit on the window material and the panel
-// grid under the top bar is one card, inset 4px from the window's right and
-// bottom edges, with corners concentric with the OS window and a hairline
-// edge. Pages without a top bar of their own (New Task, Automations) keep the
-// top bar row empty and start their card where a worktree's grid does. With
-// early access off the flat layout is unchanged.
+// Inset window layout: the sidebar and the worktree top bar sit on the window
+// material and the panel grid under the top bar is cards, inset 6px (the
+// layout's one gap) from the window's right and bottom edges and from each
+// other, with corners concentric with the OS window and a hairline edge.
+// Pages without a top bar of their own (New Task, Automations) keep the top
+// bar row empty and start their card where a worktree's grid does. The layout
+// graduated from early access, so it applies whether or not the user opted in.
 //
 // Run after building the implementation:
 //   pnpm run test:electron:built inset-window-layout.spec.mjs --reporter=line
@@ -30,6 +30,8 @@ import { seedPanelWorktree, seedVisibleBrowserPanel } from './panelHarness.mjs';
 const APP = 'ts-pnpm-vite';
 const BRANCH = 'demo-main';
 const CAPTURE_DIR = process.env.INSET_LAYOUT_CAPTURE_DIR;
+/** The layout's one gap (`--inset-card-gap`): window edges and between cards. */
+const CARD_GAP = 6;
 
 async function launch({ earlyAccess }) {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-inset-'));
@@ -84,10 +86,10 @@ function readFrame(locator) {
 
 /**
  * The card radius concentric with the OS window corner: the published window
- * radius over the interface zoom, minus the 4px inset, never under 4px.
+ * radius over the interface zoom, minus the gap, never under the 6px floor.
  */
 function expectedCardRadius(window) {
-  return window.evaluate(() => {
+  return window.evaluate((gap) => {
     const style = getComputedStyle(document.documentElement);
     // A square window (Windows 10) publishes 0px; only an unset value falls
     // back to the stylesheet's 16px.
@@ -96,8 +98,8 @@ function expectedCardRadius(window) {
     );
     const windowRadius = Number.isFinite(published) ? published : 16;
     const zoom = Number.parseFloat(style.getPropertyValue('--ui-zoom')) || 1;
-    return `${Math.max(windowRadius / zoom - 4, 4)}px`;
-  });
+    return `${Math.max(windowRadius / zoom - gap, 6)}px`;
+  }, CARD_GAP);
 }
 
 function readBackground(locator) {
@@ -172,7 +174,7 @@ function readPanelCards(window) {
   );
 }
 
-test('early access puts each panel on its own inset card under a window-level top bar', async () => {
+test('puts each panel on its own inset card under a window-level top bar', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await launch({
     earlyAccess: true,
@@ -194,13 +196,16 @@ test('early access puts each panel on its own inset card under a window-level to
       .poll(async () => (await readPanelCards(window)).length)
       .toBeGreaterThanOrEqual(2);
     // The cards ease into place with the sidebar (their left inset animates
-    // for 200ms), so read them once they have stopped 4px from the right edge.
+    // for 200ms), so read them once they have stopped one gap from the right
+    // edge.
     await expect
       .poll(async () => {
         const settling = await readPanelCards(window);
         const innerWidth = await window.evaluate(() => window.innerWidth);
         return Math.abs(
-          innerWidth - Math.max(...settling.map((card) => card.right)) - 4,
+          innerWidth -
+            Math.max(...settling.map((card) => card.right)) -
+            CARD_GAP,
         );
       })
       .toBeLessThan(0.5);
@@ -215,16 +220,17 @@ test('early access puts each panel on its own inset card under a window-level to
       expect(card.boxShadow).toBe(surfaceShadow);
       expect(card.outlineStyle).toBe('none');
     }
-    // A square OS window (0px corners) still keeps 4px card corners.
+    // A square OS window (0px corners) still keeps the 6px floor every
+    // nested pane corner shares.
     const publishedRadius = await window.evaluate(() => {
       const root = document.documentElement;
       const previous = root.style.getPropertyValue('--window-corner-radius');
       root.style.setProperty('--window-corner-radius', '0px');
       return previous;
     });
-    expect(await expectedCardRadius(window)).toBe('4px');
+    expect(await expectedCardRadius(window)).toBe('6px');
     for (const card of await readPanelCards(window)) {
-      expect(card.radius).toBe('4px');
+      expect(card.radius).toBe('6px');
     }
     await window.evaluate((previous) => {
       const root = document.documentElement;
@@ -237,11 +243,27 @@ test('early access puts each panel on its own inset card under a window-level to
     }));
     const rightmost = Math.max(...cards.map((card) => card.right));
     const lowest = Math.max(...cards.map((card) => card.bottom));
-    expect(viewport.width - rightmost).toBeCloseTo(4, 0);
-    expect(viewport.height - lowest).toBeCloseTo(4, 0);
-    // Side by side cards are 4px apart.
+    expect(viewport.width - rightmost).toBeCloseTo(CARD_GAP, 0);
+    expect(viewport.height - lowest).toBeCloseTo(CARD_GAP, 0);
+    // Side by side cards are one gap apart.
     const [chat, side] = [...cards].sort((a, b) => a.left - b.left);
-    expect(side.left - chat.right).toBeCloseTo(4, 0);
+    expect(side.left - chat.right).toBeCloseTo(CARD_GAP, 0);
+    // The left card meets the sidebar with one hairline of room for its edge,
+    // not a gap.
+    const hairline = await window.evaluate(() =>
+      Number.parseFloat(
+        getComputedStyle(
+          document.querySelector('[data-window-layout]') ??
+            document.documentElement,
+        ).getPropertyValue('--border-hairline'),
+      ),
+    );
+    const sidebarRight = await window
+      .getByTestId('app-sidebar')
+      .evaluate((element) => element.getBoundingClientRect().right);
+    expect(chat.left - sidebarRight).toBeLessThan(CARD_GAP / 2);
+    expect(chat.left - sidebarRight).toBeGreaterThanOrEqual(0);
+    expect(hairline).toBeGreaterThan(0);
     // The cards start right under the top bar.
     const topBarBottom = await window
       .getByTestId('worktree-top-bar')
@@ -266,6 +288,42 @@ test('early access puts each panel on its own inset card under a window-level to
     ).toBe('none');
 
     await capture(window, 'worktree-after');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('with the sidebar hidden the cards keep the gap on the left too', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, userDataDir, window } = await launch({
+    earlyAccess: true,
+  });
+  try {
+    await expect
+      .poll(async () => (await readPanelCards(window)).length)
+      .toBeGreaterThanOrEqual(1);
+    await window.getByTestId('sidebar-toggle').click();
+    await expect(window.locator('[data-sidebar-hidden="true"]')).toHaveCount(1);
+    // The left inset eases in over 200ms; read it once it has settled.
+    await expect
+      .poll(async () => {
+        const cards = await readPanelCards(window);
+        return Math.min(...cards.map((card) => card.left));
+      })
+      .toBeCloseTo(CARD_GAP, 0);
+    const cards = await readPanelCards(window);
+    const viewport = await window.evaluate(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }));
+    expect(
+      viewport.width - Math.max(...cards.map((card) => card.right)),
+    ).toBeCloseTo(CARD_GAP, 0);
+    expect(
+      viewport.height - Math.max(...cards.map((card) => card.bottom)),
+    ).toBeCloseTo(CARD_GAP, 0);
+
+    await capture(window, 'worktree-sidebar-hidden-after');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -326,7 +384,7 @@ async function expectEdgeLine(window, handle, { pointerY, cardTop }) {
   expect(line.handleOnTop).toBe(true);
   expect(line.top).toBeCloseTo(cardTop + radius, 0);
   const viewportHeight = await window.evaluate(() => window.innerHeight);
-  expect(viewportHeight - line.bottom).toBeCloseTo(4 + radius, 0);
+  expect(viewportHeight - line.bottom).toBeCloseTo(CARD_GAP + radius, 0);
   expect(pointerY).toBeGreaterThan(line.top);
   expect(pointerY).toBeLessThan(line.bottom);
 }
@@ -422,7 +480,7 @@ test('resizing the sidebar draws a short line on the edge beside it, not the sid
       )
       .toBe(0);
     // The Settings page is one card in the same frame as every other page:
-    // 46px under the window's top row, 4px from the right and bottom edges.
+    // 46px under the window's top row, one gap from the right and bottom edges.
     const settingsCard = await window
       .locator('[data-testid="settings-content"]')
       .evaluate((card) => {
@@ -437,8 +495,8 @@ test('resizing the sidebar draws a short line on the edge beside it, not the sid
         };
       });
     expect(settingsCard.top).toBeCloseTo(46, 0);
-    expect(settingsCard.right).toBeCloseTo(4, 0);
-    expect(settingsCard.bottom).toBeCloseTo(4, 0);
+    expect(settingsCard.right).toBeCloseTo(CARD_GAP, 0);
+    expect(settingsCard.bottom).toBeCloseTo(CARD_GAP, 0);
     expect(settingsCard.radius).toBe(await expectedCardRadius(window));
     expect(settingsCard.boxShadow).toBe(await readCardEdgeShadow(window));
     const settingsPointer = await hoverHandle(window, settingsHandle);
@@ -493,15 +551,17 @@ test('a page without a top bar keeps the top bar row empty above its card', asyn
       .toBe(await expectedCardRadius(window));
     const frame = await readFrame(main);
     expect(frame.marginTop).toBe('46px');
-    expect(frame.right).toBeCloseTo(4, 0);
-    expect(frame.bottom).toBeCloseTo(4, 0);
+    expect(frame.right).toBeCloseTo(CARD_GAP, 0);
+    expect(frame.bottom).toBeCloseTo(CARD_GAP, 0);
     const rect = await main.evaluate((element) => {
       const { left, top } = element.getBoundingClientRect();
       return { left, top };
     });
     expect(rect.top).toBeCloseTo(gridTop, 0);
-    // The empty row still drags the window, as New Task's does.
-    expect(await isWindowDragRegion(window, rect.left + 120, 20)).toBe(true);
+    // Linux uses the native title bar; custom chrome keeps this drag region.
+    expect(await isWindowDragRegion(window, rect.left + 120, 20)).toBe(
+      process.platform !== 'linux',
+    );
 
     await capture(window, 'automations-after');
   } finally {
@@ -536,8 +596,8 @@ test('the chat page without a top bar is one card while a worktree stays selecte
       .toBe(await expectedCardRadius(window));
     const frame = await readFrame(main);
     expect(frame.marginTop).toBe('46px');
-    expect(frame.right).toBeCloseTo(4, 0);
-    expect(frame.bottom).toBeCloseTo(4, 0);
+    expect(frame.right).toBeCloseTo(CARD_GAP, 0);
+    expect(frame.bottom).toBeCloseTo(CARD_GAP, 0);
     expect(
       await main.evaluate((element) => getComputedStyle(element).boxShadow),
     ).toBe(await readCardEdgeShadow(window));
@@ -576,10 +636,14 @@ test('New Task keeps an empty top bar row and starts its card where a worktree d
     const left = await main.evaluate(
       (element) => element.getBoundingClientRect().left,
     );
-    expect(await isWindowDragRegion(window, left + 120, 20)).toBe(true);
+    expect(await isWindowDragRegion(window, left + 120, 20)).toBe(
+      process.platform !== 'linux',
+    );
 
     // The composer sits in the middle of the card: the scrollbar's reserved
-    // strip is matched on the left.
+    // strip is matched on the left. Home mounts through lazy imports after the
+    // frame flips, so wait for it before measuring.
+    await expect(main.getByTestId('home-composer')).toBeVisible();
     const insets = await main.evaluate((element) => {
       const card = element.getBoundingClientRect();
       const composer = element
@@ -651,22 +715,38 @@ test('the Browser page fills its card and rounds only the card corners', async (
   }
 });
 
-test('with early access off the flat layout is unchanged', async () => {
+test('without the early access opt-in the inset layout still applies', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await launch({
     earlyAccess: false,
   });
   try {
-    await expect(window.locator('[data-window-layout]')).toHaveCount(0);
-    const frame = await readFrame(window.getByTestId('panel-grid-root'));
-    expect(frame.radius).toBe('0px');
-    expect(frame.right).toBeCloseTo(0, 0);
-    expect(frame.bottom).toBeCloseTo(0, 0);
+    // The layout graduated: no opt-in, no flag, the same cards for everyone.
+    await expect(window.locator('[data-window-layout="inset"]')).toHaveCount(1);
+    await expect
+      .poll(async () => {
+        const cards = await readPanelCards(window);
+        if (cards.length === 0) return Number.POSITIVE_INFINITY;
+        const innerWidth = await window.evaluate(() => window.innerWidth);
+        return Math.abs(
+          innerWidth - Math.max(...cards.map((card) => card.right)) - CARD_GAP,
+        );
+      })
+      .toBeLessThan(0.5);
+    const radius = await expectedCardRadius(window);
+    const viewportHeight = await window.evaluate(() => window.innerHeight);
+    for (const card of await readPanelCards(window)) {
+      expect(card.radius).toBe(radius);
+    }
     expect(
-      await readBackground(window.getByTestId('worktree-top-bar')),
-    ).not.toBe('rgba(0, 0, 0, 0)');
+      viewportHeight -
+        Math.max(...(await readPanelCards(window)).map((card) => card.bottom)),
+    ).toBeCloseTo(CARD_GAP, 0);
+    expect(await readBackground(window.getByTestId('worktree-top-bar'))).toBe(
+      'rgba(0, 0, 0, 0)',
+    );
 
-    await capture(window, 'worktree-before');
+    await capture(window, 'worktree-without-opt-in');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

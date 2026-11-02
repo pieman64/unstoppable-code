@@ -19,6 +19,9 @@ export const secureFileError = (
 
 export const PRIVATE: PermissionResult = Object.freeze({ state: 'private' });
 
+/** One reason on every OS: daemon hosts retry it across atomic replacement. */
+export const PATH_CHANGED_DURING_CHECK = 'path changed during permission check';
+
 export const fail = (
   state: 'insecure' | 'unverifiable',
   reason: string,

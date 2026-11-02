@@ -4,7 +4,13 @@ import type {
   PlatformServices,
   DaemonStartupClaimPort,
 } from '@canopy/core-runtime';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createCanopyStartupClaimPort } from '@canopy/core-transport/node';
+import {
+  acquireW5MaintenanceExclusion,
+  W5HostCohortRefusedError,
+  type W5MaintenanceExclusion,
+} from '@canopy/desktop-shared/node/w5-host-cohort';
 import { CanopyRuntimeDescriptorSchema } from '@canopy/protocol/canopy-core';
 import {
   restoreW5Backup,
@@ -12,7 +18,20 @@ import {
   type W5ExclusiveMaintenance,
 } from './w5-backup';
 import { isErrnoException } from './type-guards';
+import {
+  readW5MaintenanceDecisions,
+  refuseW5MaintenanceDecisions,
+  runW5MaintenanceDecisions,
+  type W5MaintenanceDecision,
+  type W5MaintenanceDecisionRefusal,
+  type W5MaintenanceDecisionResult,
+} from './w5-maintenance-decisions';
 import type { W5Diagnosis } from './w5-maintenance-diagnosis';
+
+export type {
+  W5MaintenanceDecision,
+  W5MaintenanceDecisionResult,
+} from './w5-maintenance-decisions';
 
 export type W5MaintenanceRefusal =
   | 'invalid-request'
@@ -25,15 +44,45 @@ export type W5MaintenanceRefusal =
   | 'claim-lost'
   | 'release-uncertain'
   | 'writer-exit-unconfirmed'
-  | 'recovery-required';
+  | 'recovery-required'
+  /** A registered legacy W5 host (Electron main, CLI, create-worktree child) is live or unprovable. */
+  | 'host-active'
+  /** An earlier maintenance record or the host list is unprovable. */
+  | 'cohort-ambiguous'
+  /** Windows has no host registration yet (deferred until Windows maintenance qualification). */
+  | 'platform-unsupported'
+  | W5MaintenanceDecisionRefusal;
 
 export class W5MaintenanceRefusedError extends Error {
   constructor(
     readonly reason: W5MaintenanceRefusal,
     readonly operationError?: unknown,
+    /** Index of the refused resolve decision, when one decision is the cause. */
+    readonly decision?: number,
   ) {
     super(`W5 maintenance refused (${reason}).`);
     this.name = 'W5MaintenanceRefusedError';
+  }
+}
+
+/**
+ * A resolve that failed once decisions could run. `results` took effect.
+ * `failure` stopped `decisions[results.length]`, whose own outcome may be
+ * unknown, or followed every decision (writer shutdown or post-diagnosis)
+ * when all have results.
+ */
+export class W5MaintenanceDecisionError extends Error {
+  constructor(
+    readonly results: readonly W5MaintenanceDecisionResult[],
+    readonly failure: unknown,
+    /**
+     * After a stopped decision: taken once the writer exited, still under the
+     * claim and record. Absent when aborted or when it could not be taken.
+     */
+    readonly diagnosis?: W5Diagnosis,
+  ) {
+    super('W5 maintenance stopped while applying resolve decisions.');
+    this.name = 'W5MaintenanceDecisionError';
   }
 }
 
@@ -46,10 +95,20 @@ export type W5MaintenanceRequest = {
       readonly backupPath: string;
       readonly unreadableOverride?: string;
     }
+  | {
+      readonly mode: 'resolve';
+      readonly decisions: readonly W5MaintenanceDecision[];
+    }
 );
 export type W5MaintenanceResult =
   | { readonly mode: 'diagnose'; readonly diagnosis: W5Diagnosis }
-  | { readonly mode: 'restore'; readonly commitId: number };
+  | { readonly mode: 'restore'; readonly commitId: number }
+  | {
+      readonly mode: 'resolve';
+      readonly results: readonly W5MaintenanceDecisionResult[];
+      /** Taken after the writer exited, still under the claim and record. */
+      readonly diagnosis: W5Diagnosis;
+    };
 
 /** Trusted offline host composition only; no IPC/UI/CLI/startup callers. */
 export interface W5MaintenanceContext extends W5BackupContext {
@@ -63,6 +122,7 @@ interface HeldMaintenance {
   readonly claims: DaemonStartupClaimPort;
   readonly handle: object;
   readonly verifyRuntime: () => Promise<void>;
+  readonly exclusion: W5MaintenanceExclusion;
 }
 const held = new WeakMap<W5ExclusiveMaintenance, HeldMaintenance>();
 
@@ -77,21 +137,27 @@ export async function isW5MaintenanceHeld(
     await state.verifyRuntime();
     const identity = await state.claims.identity(state.handle);
     return (
-      held.get(exclusive) === state && identity?.dataRoot === state.dataRoot
+      held.get(exclusive) === state &&
+      identity?.dataRoot === state.dataRoot &&
+      (await state.exclusion.isHeld())
     );
   } catch {
     return false;
   }
 }
 
-function refuse(reason: W5MaintenanceRefusal): never {
-  throw new W5MaintenanceRefusedError(reason);
+function refuse(reason: W5MaintenanceRefusal, decision?: number): never {
+  throw new W5MaintenanceRefusedError(reason, undefined, decision);
 }
 
 /**
- * CAN-3797 preparation. Serializes with Phase 1 launch/publication, not legacy
- * Electron writers: CAN-3729 must gate both hosts before this is exposed.
+ * CAN-3797. Order: startup claim, endpoint and descriptor checks, then the
+ * host cohort (Electron main, the CLI and create-worktree children). Refuses,
+ * never waits, while holding anything. The process hosting this must never
+ * register as a host itself.
  * Runtime must already exist and be private; maintenance never repairs it.
+ * Resolve (RX2) checks every decision against the diagnosis before its cold
+ * writer starts.
  */
 export async function runW5Maintenance(
   context: W5MaintenanceContext,
@@ -100,9 +166,19 @@ export async function runW5Maintenance(
 ): Promise<W5MaintenanceResult> {
   if (
     request.source !== 'offline_maintenance' ||
-    (request.mode !== 'diagnose' && request.mode !== 'restore')
+    (request.mode !== 'diagnose' &&
+      request.mode !== 'restore' &&
+      request.mode !== 'resolve')
   )
     refuse('invalid-request');
+  const decisions =
+    request.mode === 'resolve'
+      ? readW5MaintenanceDecisions(request.decisions)
+      : null;
+  if (request.mode === 'resolve' && !decisions) refuse('invalid-request');
+  // TRANSITIONAL: remove when Windows maintenance qualification adds win32
+  // host registration.
+  if (hostOperatingSystem() === 'win32') refuse('platform-unsupported');
   signal?.throwIfAborted();
   if (context.host.workersStarted !== 0) refuse('writer-active');
   const { dataRoot, platform } = context;
@@ -166,25 +242,40 @@ export async function runW5Maintenance(
   const exclusive: W5ExclusiveMaintenance = Object.freeze({
     kind: 'w5-exclusive-maintenance',
   });
+  let exclusion: W5MaintenanceExclusion | undefined;
+  // The cohort record goes first; hosts never touch the claim.
+  async function releaseExclusion(): Promise<void> {
+    try {
+      await exclusion?.release();
+    } catch {
+      throw new W5MaintenanceRefusedError('release-uncertain', operationError);
+    }
+  }
   async function releaseClaim(): Promise<void> {
     const result = await claims.release(handle, { preserveEndpointBind });
     if (result !== 'released')
       throw new W5MaintenanceRefusedError('release-uncertain', operationError);
   }
+  // Set once an unconfirmed exit has been reported, so it is reported once.
+  let writerExitUnconfirmed = false;
+  async function stopWriter(): Promise<void> {
+    if (context.host.workersStarted === 0) return;
+    await context.host.shutdown();
+    // Shutdown waits a bounded time for workers to exit. A worker still
+    // alive could keep writing, so the claim must stay held.
+    if (context.host.runningWorkerCount > 0) {
+      writerExitUnconfirmed = true;
+      throw new W5MaintenanceRefusedError(
+        'writer-exit-unconfirmed',
+        operationError,
+      );
+    }
+  }
   async function finishMaintenance(): Promise<void> {
     held.delete(exclusive);
     // Preserve departed bind evidence when a refused/uncertain endpoint remains.
     try {
-      if (context.host.workersStarted > 0) {
-        await context.host.shutdown();
-        // Shutdown waits a bounded time for workers to exit. A worker still
-        // alive could keep writing, so the claim must stay held.
-        if (context.host.runningWorkerCount > 0)
-          throw new W5MaintenanceRefusedError(
-            'writer-exit-unconfirmed',
-            operationError,
-          );
-      }
+      if (!writerExitUnconfirmed) await stopWriter();
     } catch (error) {
       if (operationError !== undefined) {
         operationError = Object.assign(
@@ -196,9 +287,12 @@ export async function runW5Maintenance(
       operationError = error;
       throw error;
     } finally {
-      // An unconfirmed worker exit keeps the claim; the contract's departed-
-      // holder recovery frees it once this process has exited.
-      if (context.host.runningWorkerCount === 0) await releaseClaim();
+      // An unconfirmed worker exit keeps the record and the claim; departed-
+      // owner recovery frees both once this process has exited.
+      if (context.host.runningWorkerCount === 0) {
+        await releaseExclusion();
+        await releaseClaim();
+      }
     }
   }
   try {
@@ -264,7 +358,36 @@ export async function runW5Maintenance(
       )
         refuse('identity-unprovable');
     }
-    held.set(exclusive, { dataRoot, claims: claimPort, handle, verifyRuntime });
+    // TRANSITIONAL cohort step: remove when the W5 rows move to `daemon`.
+    try {
+      exclusion = await acquireW5MaintenanceExclusion({
+        dataRoot,
+        owner: { pid: process.pid, startIdentity: self.startIdentity },
+        inspect: async (pid, inspectionSignal) =>
+          platform.supervision.inspectProcess({
+            pid,
+            signal: inspectionSignal,
+          }),
+        secureFiles: platform.secureFiles,
+        signal,
+      });
+    } catch (error) {
+      if (!(error instanceof W5HostCohortRefusedError)) throw error;
+      refuse(
+        error.reason === 'host-active'
+          ? 'host-active'
+          : error.reason === 'platform-unsupported'
+            ? 'platform-unsupported'
+            : 'cohort-ambiguous',
+      );
+    }
+    held.set(exclusive, {
+      dataRoot,
+      claims: claimPort,
+      handle,
+      verifyRuntime,
+      exclusion,
+    });
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     // Local import keeps SQLite and offline scans off the desktop startup graph.
     const { diagnoseW5State } = await import('./w5-maintenance-diagnosis');
@@ -272,6 +395,52 @@ export async function runW5Maintenance(
     signal?.throwIfAborted();
     if (!(await isW5MaintenanceHeld(exclusive, dataRoot))) refuse('claim-lost');
     if (request.mode === 'diagnose') return { mode: 'diagnose', diagnosis };
+    if (request.mode === 'resolve') {
+      if (!decisions) refuse('invalid-request');
+      const refusal = refuseW5MaintenanceDecisions(diagnosis, decisions);
+      if (refusal) refuse(refusal.reason, refusal.decision);
+      const requireHeld = async (): Promise<void> => {
+        signal?.throwIfAborted();
+        if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
+          refuse('claim-lost');
+      };
+      const { results, failure } = await runW5MaintenanceDecisions(
+        context.host,
+        decisions,
+        requireHeld,
+      );
+      const diagnoseAfter = async (): Promise<W5Diagnosis> => {
+        await requireHeld();
+        const after = await diagnoseW5State(dataRoot);
+        await requireHeld();
+        return after;
+      };
+      if (!failure) {
+        try {
+          await stopWriter();
+          return { mode: 'resolve', results, diagnosis: await diagnoseAfter() };
+        } catch (error) {
+          throw new W5MaintenanceDecisionError(results, error);
+        }
+      }
+      try {
+        await stopWriter();
+      } catch (error) {
+        throw new W5MaintenanceDecisionError(
+          results,
+          Object.assign(
+            new Error('W5 maintenance resolve and writer shutdown failed.'),
+            { errors: [failure.error, error] },
+          ),
+        );
+      }
+      // The stopped decision's outcome may be unknown, so diagnose again
+      // unless aborted; only an unconfirmed writer exit must be reported.
+      const after = signal?.aborted
+        ? undefined
+        : await diagnoseAfter().catch(() => undefined);
+      throw new W5MaintenanceDecisionError(results, failure.error, after);
+    }
     // Do not start a recovery-capable writer with unresolved decisions/effects.
     if (
       diagnosis.logIssue ||

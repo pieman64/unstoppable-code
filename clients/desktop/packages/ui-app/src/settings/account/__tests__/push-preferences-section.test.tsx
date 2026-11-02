@@ -65,16 +65,15 @@ function card(): HTMLElement {
 }
 
 describe('PushPreferencesSection', () => {
-  // This section used to hand-roll the card, title, and subtitle classes, so it
-  // rendered correctly but had no icon while the sibling Work Digests card on
-  // the same tab did. It now goes through `SettingsCard`; these assertions are
-  // what keep the two from diverging again.
-  it('renders as a settings card with an icon, title, and subtitle', async () => {
+  // This section goes through `SettingsCard`, like the sibling Work digests
+  // section on the same page; these assertions keep the two from diverging.
+  it('renders as a settings section with a text-only title and subtitle', async () => {
     stubClient(true);
     await render();
 
     expect(card()).not.toBeNull();
-    expect(card().querySelector('svg')).not.toBeNull();
+    expect(card().querySelector('h2')?.textContent).toBe('Push notifications');
+    expect(card().querySelector('.bg-accent-subtle')).toBeNull();
     expect(card().textContent).toContain('Push notifications');
     expect(card().textContent).toContain(
       'Send alerts to devices where you are signed in',
@@ -116,7 +115,7 @@ describe('PushPreferencesSection', () => {
     });
     await render();
 
-    expect(card().textContent).toContain("Couldn't load this. Try again.");
+    expect(card().textContent).toContain("Couldn't load this.");
     expect(card().textContent).not.toContain(SERVER_SENTINEL);
     expect(
       container.querySelector('[data-testid="account-push-toggle"]'),
@@ -124,7 +123,7 @@ describe('PushPreferencesSection', () => {
 
     const retry = Array.from(
       card().querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent === 'Retry');
+    ).find((button) => button.textContent === 'Try again');
     if (retry === undefined) throw new Error('Missing Retry');
     await act(async () => retry.click());
 

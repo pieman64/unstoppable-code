@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -72,7 +71,7 @@ export function resolveMarketplaceSourcesAccess(
 
 export function useMarketplaceSourcesAccess(): MarketplaceSourcesAccess {
   const client = useCanopyClient();
-  return useMemo(() => resolveMarketplaceSourcesAccess(client), [client]);
+  return resolveMarketplaceSourcesAccess(client);
 }
 
 export interface UseMarketplaceSourcesOptions {

@@ -556,6 +556,37 @@ describe('ORGANIZATION_SETTINGS_OPERATIONS', () => {
       return entry(name).result.safeParse(value).success;
     }
 
+    const incomingInvitation = {
+      id: OTHER,
+      organizationName: 'Acme',
+      organizationTeamName: null,
+      role: 'MEMBER',
+      invitedByName: 'Sam',
+      createdAt: '2026-10-16T00:00:00.000Z',
+      expiresAt: '2026-11-16T00:00:00.000Z',
+    };
+
+    it('accepts legacy incoming invitations and preserves external organization ids', () => {
+      const schema = entry('organization.invitations.incoming').result;
+      const legacy = { invitations: [incomingInvitation] };
+      const identified = {
+        invitations: [{ ...incomingInvitation, organizationId: ORG }],
+      };
+      expect(schema.parse(legacy)).toEqual(legacy);
+      expect(schema.parse(identified)).toEqual(identified);
+    });
+
+    it.each([42, null, {}, []])(
+      'rejects an invalid incoming invitation organization id: %p',
+      (organizationId) => {
+        expect(
+          accepts('organization.invitations.incoming', {
+            invitations: [{ ...incomingInvitation, organizationId }],
+          }),
+        ).toBe(false);
+      },
+    );
+
     it('validates organization detail and lists', () => {
       expect(accepts('organization.detail', detail)).toBe(true);
       expect(

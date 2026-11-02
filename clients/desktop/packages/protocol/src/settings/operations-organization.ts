@@ -1853,7 +1853,7 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       ),
   }),
   /**
-   * The AI-credit pool summary, including the automatic top-up SETTINGS
+   * The AI-credit pool summary for OWNER/ADMIN, including automatic top-up SETTINGS
    * (read only; changing them is financial and web-only).
    */
   'organization.billing.credits': defineSettingsRead({

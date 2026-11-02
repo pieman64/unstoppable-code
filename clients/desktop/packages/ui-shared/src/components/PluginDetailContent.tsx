@@ -1,7 +1,16 @@
 import { pluginDisplayName } from '../lib/plugin-display-name';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
-import { type JSX, type ReactNode, useEffect, useMemo, useState } from 'react';
+import {
+  type JSX,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
+import { Button } from './Button';
 import { ClickableName } from './ClickableName';
 import { ComponentSection } from './ComponentSection';
 import { ExternalTextLink } from './ExternalTextLink';
@@ -10,11 +19,19 @@ import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
 import { Tooltip } from './Tooltip';
 import { McpServerLogo } from './McpServerLogo';
+import {
+  PluginHarnessConnections,
+  type PluginHarnessConnectionRow,
+} from './PluginHarnessConnections';
 import { ChevronDownIcon, ChevronLeftMediumIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { mcpEndpointKey } from '../lib/mcp-endpoint-key';
+import type { UnifiedEntryBundledServerRow } from '../lib/unified-plugin-entry';
+import { PLUGIN_DETAIL_MCP_NOT_CONFIGURED } from '../lib/plugin-detail-mcp';
 
 import type {
   PluginDetails,
+  PluginMcpServerInfo,
   PluginProviderFacet,
   PluginProviderSupport,
 } from '@canopy/protocol/plugins';
@@ -44,6 +61,12 @@ function errorMessage(error: unknown): string {
 export type PluginDetailFacetKind = 'claude' | 'codex' | 'codexCompatibility';
 
 /** One renderable facet slot: its kind plus the facet payload. */
+export interface PluginMcpNavigationTarget {
+  readonly serverName: string;
+  readonly provider?: 'claude' | 'codex';
+  readonly requestId: string;
+}
+
 export interface PluginDetailFacetSlot {
   kind: PluginDetailFacetKind;
   facet: PluginProviderFacet;
@@ -131,12 +154,20 @@ export interface PluginDetailContentProps {
    * homepage link (desktop: compat error + codex-compat mode switch).
    */
   metadataFooter?: ReactNode;
+  /** Host-owned notice right under the metadata, such as an available update. */
+  updateNotice?: ReactNode;
+  /** Host-owned Status row, under the metadata and any update notice. */
+  statusContent?: ReactNode;
+  /** Where the plugin runs, one row per harness, after the Status row. */
+  harnessRows?: readonly PluginHarnessConnectionRow[];
   /**
    * Host-owned block rendered between the metadata section and the README
    * (desktop: built-in install panel, external source box, install prompt,
    * installing spinner). Empty on the read-only web page.
    */
   installActions?: ReactNode;
+  /** Host-owned "Shared by you" section, after the install area. */
+  sharedContent?: ReactNode;
   /** Hide the component tables (desktop: while uninstalled/installing). */
   hideComponents?: boolean;
   /** Optional related-item sections appended after the components tables. */
@@ -148,6 +179,21 @@ export interface PluginDetailContentProps {
   titleAs?: 'h1' | 'h2';
   /** Authoritative listing author; null explicitly omits unavailable metadata. */
   authorDisplay?: string | null;
+  /**
+   * Installed MCP rows hidden behind this plugin (CAN-3653). Customize lists
+   * them only here, so each bundled server with a row opens that row's own
+   * settings through `onOpenEntryId`.
+   */
+  bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
+  onOpenEntryId?: (entryId: string) => void;
+  mcpTarget?: PluginMcpNavigationTarget;
+  /**
+   * A bundled MCP server's Status cell (health and Test connection). Absent,
+   * or `undefined` for a server, reads "Not configured yet".
+   */
+  renderMcpServerStatus?: (
+    server: PluginMcpServerInfo,
+  ) => ReactNode | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,13 +496,21 @@ export function PluginDetailContent({
   onReadComponent,
   readme,
   metadataFooter,
+  updateNotice,
+  statusContent,
+  harnessRows,
   installActions,
+  sharedContent,
   hideComponents = false,
   relatedContent,
   headerActions,
   headerIcon,
   titleAs = 'h2',
   authorDisplay,
+  bundledServerRows,
+  onOpenEntryId,
+  mcpTarget,
+  renderMcpServerStatus,
 }: PluginDetailContentProps): JSX.Element {
   const Title = titleAs;
   const [viewingComponent, setViewingComponent] = useState<ComponentRef | null>(
@@ -521,19 +575,62 @@ export function PluginDetailContent({
   const displayDetails: PluginDetails | undefined =
     facetForDisplay?.details ?? plugin.details ?? undefined;
 
-  const hasComponents =
+  const mcpRows = useRef(new Map<string, HTMLTableRowElement>());
+  const consumedMcpTarget = useRef<string | null>(null);
+  const [mcpTargetError, setMcpTargetError] = useState(false);
+  useEffect(() => {
+    if (!mcpTarget) {
+      setMcpTargetError(false);
+      return;
+    }
+    const request = `${plugin.marketplaceId}/${plugin.name}/${mcpTarget.requestId}`;
+    if (consumedMcpTarget.current === request) return;
+    const requestedTab = mcpTarget.provider ?? activeTab;
+    const requestedSlot = slotForTab(slots, requestedTab);
+    if (
+      mcpTarget.provider &&
+      (!requestedSlot ||
+        (requestedSlot.kind === 'codexCompatibility' &&
+          plugin.codexCompatDisabled))
+    ) {
+      consumedMcpTarget.current = request;
+      setMcpTargetError(true);
+      return;
+    }
+    if (activeTab !== requestedTab) {
+      setActiveTab(requestedTab);
+      return;
+    }
+    if (!displayDetails) return;
+    const row = mcpRows.current.get(mcpTarget.serverName);
+    consumedMcpTarget.current = request;
+    setMcpTargetError(!row);
+    if (row) {
+      row.scrollIntoView?.({ block: 'center' });
+      row.focus();
+    }
+  }, [
+    mcpTarget,
+    plugin.marketplaceId,
+    plugin.name,
+    plugin.codexCompatDisabled,
+    activeTab,
+    slots,
+    displayDetails,
+  ]);
+
+  const hasComponents = !!displayDetails && countComponents(displayDetails) > 0;
+  // MCP servers render in their own section, so the components block shows
+  // only for the other tables or the empty state.
+  const hasNonMcpComponents =
     !!displayDetails &&
-    (displayDetails.skills.length > 0 ||
-      displayDetails.agents.length > 0 ||
-      displayDetails.commands.length > 0 ||
-      (displayDetails.apps?.length ?? 0) > 0 ||
-      displayDetails.hooks.length > 0 ||
-      displayDetails.mcpServers.length > 0 ||
-      displayDetails.lspServers.length > 0);
+    countComponents(displayDetails) > displayDetails.mcpServers.length;
   const showComponentsSection =
     !hideComponents &&
     !!displayDetails &&
-    (hasComponents || !displayDetails.hasReadme);
+    (hasNonMcpComponents || (!hasComponents && !displayDetails.hasReadme));
+  const showMcpServers =
+    !hideComponents && (displayDetails?.mcpServers.length ?? 0) > 0;
 
   // Stable token for the roots content reads resolve against (facet kind +
   // facet/plugin paths). Keys the README section remount and the component
@@ -563,77 +660,77 @@ export function PluginDetailContent({
   };
   const showBack = viewingComponent !== null || onBack !== undefined;
 
+  // The Claude/Codex switch changes the facet the sections below read (MCP
+  // servers, README, components), so it sits at the top of them; the chrome
+  // row holds page actions only.
+  const providerToggle = (
+    <div className="inline-flex shrink-0 items-center gap-1.5">
+      <span
+        className="text-xs fg-secondary"
+        aria-hidden="true"
+        data-testid="plugin-detail-provider-toggle-label"
+      >
+        Show:
+      </span>
+      <div
+        className="inline-flex shrink-0 items-center rounded-md border bg-secondary p-0.5 text-xs"
+        role="tablist"
+        aria-label="Show plugin details for Claude or Codex"
+        data-testid="plugin-detail-provider-toggle"
+      >
+        <Tooltip label="Show this plugin's Claude details">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'claude'}
+            onClick={() => setActiveTab('claude')}
+            disabled={!hasClaudeSlot}
+            className={`px-3 py-1.5 rounded transition-colors ${
+              activeTab === 'claude'
+                ? 'bg-base fg-primary'
+                : 'fg-secondary hover:fg-primary'
+            } disabled:opacity-50`}
+            data-testid="plugin-detail-toggle-claude"
+          >
+            Claude
+          </button>
+        </Tooltip>
+        <CodexToggleButton
+          active={activeTab === 'codex'}
+          isCompat={codexSlotIsCompat}
+          disabled={!hasCodexSlot || (compatCapable && codexCompatDisabled)}
+          disabledReason={
+            compatCapable && codexCompatDisabled ? 'compat-off' : undefined
+          }
+          onClick={() => setActiveTab('codex')}
+        />
+      </div>
+    </div>
+  );
+
   const chrome = (
     <div
       className="flex min-w-0 items-center justify-between gap-4"
       data-testid="plugin-detail-chrome"
     >
       {showBack ? (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
+          className="-ml-3"
           onClick={handleChromeBack}
-          className="inline-flex shrink-0 items-center gap-1 text-s fg-secondary hover:fg-primary transition-colors"
           data-testid="plugin-detail-back"
         >
           <ChevronLeftMediumIcon size={14} aria-hidden="true" />
           Back
-        </button>
+        </Button>
       ) : (
         <span />
       )}
 
-      {(headerActions || (!viewingComponent && showToggle)) && (
+      {headerActions && (
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {headerActions}
-
-          {!viewingComponent && showToggle && (
-            <div className="inline-flex shrink-0 items-center gap-1.5">
-              <span
-                className="text-xs fg-secondary"
-                aria-hidden="true"
-                data-testid="plugin-detail-provider-toggle-label"
-              >
-                Show:
-              </span>
-              <div
-                className="inline-flex shrink-0 items-center rounded-md border bg-secondary p-0.5 text-xs"
-                role="tablist"
-                aria-label="Show plugin details for Claude or Codex"
-                data-testid="plugin-detail-provider-toggle"
-              >
-                <Tooltip label="Show this plugin's Claude details">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === 'claude'}
-                    onClick={() => setActiveTab('claude')}
-                    disabled={!hasClaudeSlot}
-                    className={`px-3 py-1.5 rounded transition-colors ${
-                      activeTab === 'claude'
-                        ? 'bg-base fg-primary'
-                        : 'fg-secondary hover:fg-primary'
-                    } disabled:opacity-50`}
-                    data-testid="plugin-detail-toggle-claude"
-                  >
-                    Claude
-                  </button>
-                </Tooltip>
-                <CodexToggleButton
-                  active={activeTab === 'codex'}
-                  isCompat={codexSlotIsCompat}
-                  disabled={
-                    !hasCodexSlot || (compatCapable && codexCompatDisabled)
-                  }
-                  disabledReason={
-                    compatCapable && codexCompatDisabled
-                      ? 'compat-off'
-                      : undefined
-                  }
-                  onClick={() => setActiveTab('codex')}
-                />
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -732,13 +829,48 @@ export function PluginDetailContent({
             <ExternalTextLink href={displayHomepage} label="Website" />
           </div>
         )}
+        {mcpTargetError && (
+          <p
+            role="status"
+            className="text-s fg-warning"
+            data-testid="plugin-mcp-target-unavailable"
+          >
+            This MCP server is no longer available
+          </p>
+        )}
         {metadataFooter}
       </section>
+
+      {/* Host slots render bare, so an empty slot leaves no wrapper. */}
+      {updateNotice}
+      {statusContent}
+      {harnessRows && <PluginHarnessConnections rows={harnessRows} />}
 
       {/* Host-owned install/action area (desktop install panels; empty on web) */}
       {installActions && (
         <div className="flex flex-col gap-6">{installActions}</div>
       )}
+
+      {showToggle && (
+        <div
+          className="flex min-w-0 items-center"
+          data-testid="plugin-detail-provider-toggle-row"
+        >
+          {providerToggle}
+        </div>
+      )}
+
+      {showMcpServers && displayDetails && (
+        <McpServersSection
+          servers={displayDetails.mcpServers}
+          bundledServerRows={bundledServerRows}
+          onOpenEntryId={onOpenEntryId}
+          renderStatus={renderMcpServerStatus}
+          rowRefs={mcpRows}
+        />
+      )}
+
+      {sharedContent}
 
       {/* README */}
       {displayDetails?.hasReadme && (
@@ -755,7 +887,7 @@ export function PluginDetailContent({
       {/* Components */}
       {showComponentsSection && displayDetails && (
         <div className="flex flex-col gap-6">
-          {hasComponents ? (
+          {hasNonMcpComponents ? (
             <>
               {displayDetails.skills.length > 0 && (
                 <ComponentSection title="Skills">
@@ -1001,50 +1133,6 @@ export function PluginDetailContent({
                 </ComponentSection>
               )}
 
-              {displayDetails.mcpServers.length > 0 && (
-                <ComponentSection title="MCP servers" collapsible>
-                  <table className="w-full text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Name
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Type
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Endpoint
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayDetails.mcpServers
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((s) => (
-                          <tr key={s.name} className="border-b last:border-b-0">
-                            <td className="px-4 py-2 fg-primary font-medium whitespace-nowrap">
-                              {s.name}
-                            </td>
-                            <td className="px-4 py-2 fg-secondary whitespace-nowrap">
-                              <span className="text-3xs bg-secondary px-1.5 py-0.5 rounded font-medium">
-                                {s.type}
-                              </span>
-                            </td>
-                            <td
-                              className={`${s.type === 'http' ? '' : REPLAY_BLOCK_CLASS} px-4 py-2 fg-secondary font-mono text-xs`}
-                            >
-                              {s.type === 'http'
-                                ? s.url
-                                : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </ComponentSection>
-              )}
-
               {displayDetails.lspServers.length > 0 && (
                 <ComponentSection title="LSP servers" collapsible>
                   <table className="w-full text-s">
@@ -1098,6 +1186,123 @@ export function PluginDetailContent({
 
       {relatedContent}
     </div>
+  );
+}
+
+function countComponents(details: PluginDetails): number {
+  return (
+    details.skills.length +
+    details.agents.length +
+    details.commands.length +
+    (details.apps?.length ?? 0) +
+    details.hooks.length +
+    details.mcpServers.length +
+    details.lspServers.length
+  );
+}
+
+/**
+ * The plugin's MCP servers, always visible: name with its type and endpoint,
+ * and the host's health and Test connection per row (CAN-4842).
+ */
+function McpServersSection({
+  servers,
+  bundledServerRows,
+  onOpenEntryId,
+  renderStatus,
+  rowRefs,
+}: {
+  servers: readonly PluginMcpServerInfo[];
+  bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
+  onOpenEntryId?: (entryId: string) => void;
+  renderStatus?: (server: PluginMcpServerInfo) => ReactNode | undefined;
+  rowRefs: RefObject<Map<string, HTMLTableRowElement>>;
+}): JSX.Element {
+  return (
+    <ComponentSection title="MCP servers">
+      <table className="w-full table-fixed text-s">
+        <thead>
+          <tr className="bg-secondary/50 border-b">
+            <th className="w-1/3 text-left px-4 py-2 font-medium fg-secondary">
+              Name
+            </th>
+            <th className="text-left px-4 py-2 font-medium fg-secondary">
+              Status
+            </th>
+            <th className="w-0 p-0">
+              <span className="sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {servers
+            .slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((s) => {
+              const row = onOpenEntryId
+                ? bundledServerRows?.find(
+                    (candidate) =>
+                      candidate.serverName === s.name &&
+                      candidate.endpoint === mcpEndpointKey(s),
+                  )
+                : undefined;
+              const status = renderStatus?.(s);
+              return (
+                <tr
+                  key={s.name}
+                  className="border-b last:border-b-0"
+                  tabIndex={-1}
+                  data-mcp-member={s.name}
+                  ref={(node): void => {
+                    if (node) rowRefs.current.set(s.name, node);
+                    else rowRefs.current.delete(s.name);
+                  }}
+                >
+                  <td className="px-4 py-2 align-top">
+                    <div className="fg-primary font-medium break-words">
+                      {row && onOpenEntryId ? (
+                        <span
+                          data-testid={`plugin-detail-mcp-server-settings-${s.name}`}
+                        >
+                          <ClickableName
+                            name={s.name}
+                            description="Open server settings"
+                            onClick={() => onOpenEntryId(row.entryId)}
+                          />
+                        </span>
+                      ) : (
+                        s.name
+                      )}
+                    </div>
+                    <div className="mt-1 flex min-w-0 items-center gap-2 fg-secondary">
+                      <span className="shrink-0 text-3xs bg-secondary px-1.5 py-0.5 rounded font-medium">
+                        {s.type}
+                      </span>
+                      <span
+                        className={`${s.type === 'http' ? '' : REPLAY_BLOCK_CLASS} min-w-0 break-all font-mono text-xs`}
+                      >
+                        {s.type === 'http'
+                          ? s.url
+                          : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`}
+                      </span>
+                    </div>
+                  </td>
+                  <td colSpan={2} className="px-4 py-2 align-top">
+                    {status ?? (
+                      <span
+                        data-testid="plugin-detail-mcp-status-unavailable"
+                        className="text-xs fg-tertiary"
+                      >
+                        {PLUGIN_DETAIL_MCP_NOT_CONFIGURED}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+        </tbody>
+      </table>
+    </ComponentSection>
   );
 }
 

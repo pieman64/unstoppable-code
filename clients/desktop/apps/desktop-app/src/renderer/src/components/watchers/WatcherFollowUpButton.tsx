@@ -159,7 +159,7 @@ export function WatcherFollowUpButton({
           aria-label="Set follow-up instructions"
           data-testid={`${dataTestId}-trigger`}
           data-has-instruction={hasInstruction ? 'true' : 'false'}
-          className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border transition ${
+          className={`focus-ring inline-flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${
             hasInstruction
               ? 'border-line-accent/40 bg-accent-subtle fg-accent hover:bg-accent-subtle/80'
               : 'bg-popover fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
@@ -192,7 +192,7 @@ export function WatcherFollowUpButton({
               onChange={(event): void => onChange(event.target.value)}
               rows={4}
               autoFocus
-              placeholder="Instruction for the notified chat when this pipeline completes…"
+              placeholder="Instruction for the notified chat when this workflow completes…"
               data-testid={`${dataTestId}-textarea`}
               className="focus-ring w-full resize-none rounded-md border bg-base px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
             />

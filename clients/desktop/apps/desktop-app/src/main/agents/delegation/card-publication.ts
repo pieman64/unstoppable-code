@@ -2,14 +2,19 @@ import type {
   AgentDelegationSnapshot,
   AgentDelegationTranscript,
 } from '@canopy/protocol/delegation';
+import { recordDelegationSnapshot } from '@canopy/desktop-shared/node/work-counters';
 
 /**
  * Bound for delegate card updates while the parent chat has no active turn:
- * at most one committed card patch per delegate run per window. A settled
- * parent's card is committed history, so each patch rewrites the parent's
- * transcript; a running delegate emits progress far more often than this.
+ * at most one card update per delegate run per window. A live run the chat
+ * owns stays in its active sidecar until it settles, so an update no longer
+ * rewrites committed history; the interval still bounds how often each run
+ * commits chat state and repaints the parent chat.
  */
 export const DELEGATION_CARD_SETTLED_INTERVAL_MS = 10_000;
+
+/** Bound for active-parent delegate card progress patches per run per window. */
+export const DELEGATION_CARD_ACTIVE_INTERVAL_MS = 2_000;
 
 const TERMINAL_STATUSES: ReadonlySet<AgentDelegationSnapshot['status']> =
   new Set<AgentDelegationSnapshot['status']>([
@@ -30,6 +35,7 @@ interface PublishedCard {
 interface PendingCard {
   transcript: AgentDelegationTranscript;
   timer: ReturnType<typeof setTimeout>;
+  deadlineAt: number;
 }
 
 export interface DelegationCardPublisherOptions {
@@ -38,6 +44,7 @@ export interface DelegationCardPublisherOptions {
   /** Whether the parent chat currently runs a turn (active sidecar writes). */
   parentTurnActive: () => boolean;
   intervalMs?: number;
+  activeIntervalMs?: number;
   now?: () => number;
   setTimer?: (
     callback: () => void,
@@ -79,16 +86,18 @@ function runKey(transcript: AgentDelegationTranscript): string {
 }
 
 /**
- * Coalesces delegate card snapshots for a parent chat whose turn has settled.
+ * Coalesces delegate card snapshots for a parent chat with an active or
+ * settled turn.
  *
  * Live delegation transcripts are full snapshots of one run (card plus every
  * child row), so the newest pending snapshot supersedes older ones without
- * losing content. While the parent turn is active every snapshot publishes
- * immediately, as before. While it is settled, a run's snapshot publishes
- * immediately on first appearance, on a status change (including every
- * terminal status), an approval-pending change, or a control/stop operation
- * change; other progress publishes at most once per interval, carrying the
- * newest snapshot. A pending snapshot that never flushes (crash, shutdown) is
+ * losing content. A run's snapshot publishes immediately on first appearance,
+ * on a status change (including every terminal status), an approval-pending
+ * change, or a control/stop operation change. Other progress publishes at
+ * most once per run per active interval while the parent turn is active, or
+ * settled interval otherwise, carrying the newest snapshot. An active offer
+ * can shorten a pending settled deadline, but never extend a deadline already
+ * scheduled. A pending snapshot that never flushes (crash, shutdown) is
  * reconciled from the durable run record by delegation restart recovery.
  */
 export class DelegationCardPublisher {
@@ -96,6 +105,7 @@ export class DelegationCardPublisher {
   private readonly pending = new Map<string, PendingCard>();
   private readonly latestAcceptedSequence = new Map<string, number>();
   private readonly intervalMs: number;
+  private readonly activeIntervalMs: number;
   private readonly now: () => number;
   private readonly setTimer: NonNullable<
     DelegationCardPublisherOptions['setTimer']
@@ -107,6 +117,8 @@ export class DelegationCardPublisher {
 
   constructor(private readonly options: DelegationCardPublisherOptions) {
     this.intervalMs = options.intervalMs ?? DELEGATION_CARD_SETTLED_INTERVAL_MS;
+    this.activeIntervalMs =
+      options.activeIntervalMs ?? DELEGATION_CARD_ACTIVE_INTERVAL_MS;
     this.now = options.now ?? ((): number => Date.now());
     this.setTimer =
       options.setTimer ??
@@ -129,27 +141,40 @@ export class DelegationCardPublisher {
     if (latestSequence !== undefined && transcript.sequence <= latestSequence)
       return;
     this.latestAcceptedSequence.set(key, transcript.sequence);
+    recordDelegationSnapshot('offered', transcript);
     const waiting = this.pending.get(key);
     const at = this.now();
+    const intervalMs = this.options.parentTurnActive()
+      ? this.activeIntervalMs
+      : this.intervalMs;
     const previous = this.published.get(key);
     if (
-      this.options.parentTurnActive() ||
       previous === undefined ||
       isPromptChange(previous, cardState(transcript, at)) ||
-      at - previous.at >= this.intervalMs
+      at - previous.at >= intervalMs
     ) {
       this.publishNow(key, transcript, at);
       return;
     }
+    const deadlineAt = previous.at + intervalMs;
     if (waiting) {
       waiting.transcript = transcript;
+      if (deadlineAt < waiting.deadlineAt) {
+        this.clearTimer(waiting.timer);
+        waiting.deadlineAt = deadlineAt;
+        waiting.timer = this.setTimer(
+          () => this.flushRun(key),
+          Math.max(0, deadlineAt - at),
+        );
+      }
       return;
     }
     this.pending.set(key, {
       transcript,
+      deadlineAt,
       timer: this.setTimer(
         () => this.flushRun(key),
-        Math.max(0, previous.at + this.intervalMs - at),
+        Math.max(0, deadlineAt - at),
       ),
     });
   }
@@ -188,6 +213,7 @@ export class DelegationCardPublisher {
     if (TERMINAL_STATUSES.has(transcript.snapshot.status))
       this.published.delete(key);
     else this.published.set(key, cardState(transcript, at));
+    recordDelegationSnapshot('published', transcript);
     this.options.publish(transcript);
   }
 }

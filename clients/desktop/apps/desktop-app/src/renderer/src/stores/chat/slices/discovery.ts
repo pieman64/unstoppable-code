@@ -1,6 +1,8 @@
 import {
   chatSurfaceUsesGlobalPluginDefaults,
   hasAnyTombstones,
+  subtractPluginSelections,
+  unionPluginSelections,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   enqueueWorktreeTabDiscoveryRefresh,
@@ -14,6 +16,7 @@ import {
   chatTabHasConversationContent,
   getDefaultPlugins,
 } from '../tab-utils';
+import { queueDesktopTryItSelectionUpdate } from '@/lib/tryItContinuationRunner';
 import { withRequiredPluginSelectionsForTarget } from '../surface';
 import { sanitizePluginSelectionsWithCachedSupport } from '../plugin-provider-support';
 import { worktreeKey } from '../utils';
@@ -649,6 +652,77 @@ export const createDiscoverySlice: StateCreator<
     // command discovery. Sequenced to avoid cleanup racing with
     // freshly rebuilt discovery artifacts.
     void (async (): Promise<void> => {
+      if (
+        !options?.runtimeAlreadyUpdated &&
+        chatSurfaceUsesGlobalPluginDefaults(sel.projectId)
+      ) {
+        // Keep the optimistic return/API, but persist this caller's intent
+        // after any pending staging or authorization write for the same chat.
+        const before = activeTab?.pluginSelections ?? {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        };
+        const removed = subtractPluginSelections(before, effectiveSelections);
+        const added = subtractPluginSelections(effectiveSelections, before);
+        const destination = { ...sel, chatId };
+        await queueDesktopTryItSelectionUpdate(destination, async () => {
+          const live = getWorktreeChatContext(get(), destination);
+          if (
+            !live?.activeTab ||
+            live.activeTab.kind === 'file' ||
+            live.activeTab.readOnly ||
+            live.activeTab.pendingInitialCreation
+          )
+            return;
+          const nextSelections = withRequiredPluginSelectionsForTarget(
+            sel.projectId,
+            sel.worktreeId,
+            unionPluginSelections(
+              subtractPluginSelections(
+                live.activeTab.pluginSelections ?? {
+                  collectionIds: [],
+                  skillRefs: [],
+                  pluginRefs: [],
+                  mcpServerRefs: [],
+                },
+                removed,
+              ),
+              added,
+            ),
+          );
+          if (!nextSelections) return;
+          await window.api.chat.updatePlugins({
+            projectId: sel.projectId,
+            worktreeId: sel.worktreeId,
+            chatId,
+            pluginSelections: nextSelections,
+            ...(options?.disabledGlobalPluginSelections !== undefined
+              ? {
+                  disabledGlobalPluginSelections:
+                    options.disabledGlobalPluginSelections,
+                }
+              : {}),
+            ...(typeof deferredToolsAllowed === 'boolean'
+              ? { deferredToolsAllowed }
+              : {}),
+          });
+          get().setPluginSelections(
+            nextSelections,
+            destination,
+            deferredToolsAllowed,
+            {
+              ...options,
+              runtimeAlreadyUpdated: true,
+            },
+          );
+        });
+        return;
+      }
+
+      // These special surfaces cannot receive Try it drafts. Preserve their
+      // existing copy semantics instead of broadening this staging fix.
       if (!options?.runtimeAlreadyUpdated) {
         await window.api.chat.updatePlugins({
           projectId: sel.projectId,

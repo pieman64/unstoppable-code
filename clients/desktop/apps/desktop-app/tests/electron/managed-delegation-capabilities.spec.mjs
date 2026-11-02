@@ -12,10 +12,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect as baseExpect, test } from '@playwright/test';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 
 // See managed-delegation.spec.mjs: Windows qualification runs x64 Electron
 // and provider binaries under ARM emulation, several times slower than macOS.
-const TIMEOUT_SCALE = process.platform === 'win32' ? 3 : 1;
+const hostPlatform = hostOperatingSystem();
+const TIMEOUT_SCALE = hostPlatform === 'win32' ? 3 : 1;
 const scaled = (ms) => ms * TIMEOUT_SCALE;
 const expect = baseExpect.configure({ timeout: scaled(15_000) });
 
@@ -50,11 +52,6 @@ import {
   seedCapabilityMcpServer,
   startCapabilityMcpFixture,
 } from './fixtures/delegation-capabilities/mcpFixture.mjs';
-
-test.skip(
-  !['darwin', 'win32'].includes(process.platform),
-  'Managed delegation requires the macOS or Windows confined file boundary.',
-);
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';

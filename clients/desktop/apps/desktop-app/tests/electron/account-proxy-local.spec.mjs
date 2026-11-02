@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { accountProxyRuntimeFixture } from './fixtures/account-proxy-runtime.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 /**
  * Account proxy on this device (CAN-4023).
@@ -76,15 +77,15 @@ test('running the proxy on this device and adding an account', async () => {
 
     // Change the account order on the running proxy.
     const strategy = window.getByTestId('account-proxy-strategy-select');
-    await expect(strategy).toHaveValue('round-robin');
-    await strategy.selectOption('fill-first');
+    await expect(strategy).toHaveAttribute('data-value', 'round-robin');
+    await chooseSettingsOption(strategy, 'fill-first');
     await expect
       .poll(
         async () =>
           (await readPreferences(window)).accountProxyLocalRoutingStrategy,
       )
       .toBe('fill-first');
-    await expect(strategy).toHaveValue('fill-first');
+    await expect(strategy).toHaveAttribute('data-value', 'fill-first');
 
     // Stop, start, and restart from Settings.
     await window.getByTestId('account-proxy-local-stop').click();
@@ -102,7 +103,7 @@ test('running the proxy on this device and adding an account', async () => {
     expect(runtime.state.downloads).toBe(1);
     // The config written on each start keeps the chosen order.
     await expect(strategy).toBeEnabled();
-    await expect(strategy).toHaveValue('fill-first');
+    await expect(strategy).toHaveAttribute('data-value', 'fill-first');
 
     // Start with the app is on by default and saves when turned off.
     const startWithApp = window.getByTestId(

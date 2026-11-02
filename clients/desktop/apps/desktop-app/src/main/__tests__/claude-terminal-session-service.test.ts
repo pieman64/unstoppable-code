@@ -18,11 +18,19 @@ import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,
   TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+  type AgentProviderAuthStatus,
+  type ApprovalMode,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
+import type { ClaudeTerminalHookEventName } from '@canopy/desktop-shared/lib/desktop-integration-transport';
+import type { CanopyWorktreeSessionRoute } from '../mcp/http-proxy-service';
 import { getAppAdvisorHomeDir } from '../lib/paths';
 
-type MockTabsFile = { tabs: Array<Record<string, unknown>> };
+type MockTabsFile = {
+  tabs: Array<Record<string, unknown>>;
+  activeTabId?: string;
+  version?: number;
+};
 type MockTranscriptSyncResult = {
   projectId: string;
   worktreeId: string;
@@ -34,16 +42,17 @@ type MockTranscriptSyncResult = {
   compactionAppended: boolean;
   errors?: string[];
   transcriptReadComplete?: boolean;
+  replayedFromStart?: boolean;
 };
 type MockLaunchConfig = {
   executable: string;
   args: string[];
   env: Record<string, string>;
 };
-type MockTerminalEventListener = (
-  channel: string,
-  payload: Record<string, unknown>,
-) => void;
+type MockTerminalEventListener = (event: {
+  type: string;
+  payload: Record<string, unknown>;
+}) => void;
 type RmOptions = { recursive?: boolean; force?: boolean };
 type ShutdownService = { shutdown(): Promise<void> };
 
@@ -120,18 +129,17 @@ const mockEnsureStarted = jest.fn<Promise<void>, [number?]>(() =>
 );
 const mockRegisterCanopyWorktreeSessionRoute = jest.fn<
   Promise<void>,
-  [Record<string, unknown>]
+  [CanopyWorktreeSessionRoute]
 >(() => Promise.resolve());
 const mockUnregisterCanopyWorktreeSessionRoute = jest.fn<void, [string]>();
 const mockUnregisterMcpProxyRoutesForSession = jest.fn<void, [string]>();
-const mockPtyKill = jest.fn<
-  void,
-  [string, { signalOverride?: string | null }?]
->();
+const mockPtyKill = jest.fn<void, [string, { signal?: string | null }?]>();
 const mockPtyWrite = jest.fn<void, [string, string]>();
 const mockRecordInterruptedChats = jest.fn(() => Promise.resolve());
 jest.mock('../lib/usage-limited-chats-registry', () => ({
-  recordInterruptedChats: mockRecordInterruptedChats,
+  get recordInterruptedChats(): typeof mockRecordInterruptedChats {
+    return mockRecordInterruptedChats;
+  },
 }));
 let mockTerminalEventListener: MockTerminalEventListener | undefined;
 const mockAddTerminalEventListener = jest.fn<void, [MockTerminalEventListener]>(
@@ -191,7 +199,13 @@ const mockResolveWorktreeCwd = jest.fn<string, [string, string, string?]>(
   () => '/worktree',
 );
 const mockResolveWorktreeTargetIds = jest.fn(
-  (projectId: string, worktreeId: string) => ({ projectId, worktreeId }),
+  (
+    projectId: string,
+    worktreeId: string,
+  ): { projectId: string; worktreeId: string } | null => ({
+    projectId,
+    worktreeId,
+  }),
 );
 const mockBuildClaudeTerminalLaunchConfig = jest.fn<
   Promise<MockLaunchConfig>,
@@ -210,7 +224,17 @@ const mockEnsureClaudeWorkspaceTrust = jest.fn<
 const mockSpawnManagedTerminal = jest.fn<{ id: string }, [unknown]>(() => ({
   id: 'terminal',
 }));
-const mockGetCachedClaudeAuthStatusObserved = jest.fn(() =>
+const mockGetCachedClaudeAuthStatusObserved = jest.fn<
+  Promise<AgentProviderAuthStatus>,
+  [
+    string,
+    {
+      forceAuthenticatedInvalidation?: boolean;
+      forceRefresh?: boolean;
+      maxAgeMs?: number;
+    }?,
+  ]
+>(() =>
   Promise.resolve({
     authenticated: true,
     accountLabel: 'dev@example.com',
@@ -290,56 +314,90 @@ jest.mock('../lib/app-advisor-workspace', () => ({
   ensureAppAdvisorHomeScaffold: jest.fn(() => Promise.resolve()),
 }));
 
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
-    addEventListener: mockAddTerminalEventListener,
-    kill: mockPtyKill,
-    write: mockPtyWrite,
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    get addEventListener(): typeof mockAddTerminalEventListener {
+      return mockAddTerminalEventListener;
+    },
+    get kill(): typeof mockPtyKill {
+      return mockPtyKill;
+    },
+    get write(): typeof mockPtyWrite {
+      return mockPtyWrite;
+    },
   },
 }));
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    recordSessionDiagnostic: mockRecordSessionDiagnostic,
-    startChatTurn: mockStartChatTurn,
-    observeChatEvent: mockObserveChatEvent,
-    completeChatTurn: mockCompleteChatTurn,
-    recordInjectedPromptForOpenChatTurn:
-      mockRecordInjectedPromptForOpenChatTurn,
+    get recordSessionDiagnostic(): typeof mockRecordSessionDiagnostic {
+      return mockRecordSessionDiagnostic;
+    },
+    get startChatTurn(): typeof mockStartChatTurn {
+      return mockStartChatTurn;
+    },
+    get observeChatEvent(): typeof mockObserveChatEvent {
+      return mockObserveChatEvent;
+    },
+    get completeChatTurn(): typeof mockCompleteChatTurn {
+      return mockCompleteChatTurn;
+    },
+    get recordInjectedPromptForOpenChatTurn(): typeof mockRecordInjectedPromptForOpenChatTurn {
+      return mockRecordInjectedPromptForOpenChatTurn;
+    },
   })),
 }));
 
 jest.mock('../auth/provider-auth-state', () => ({
-  getCachedClaudeAuthStatusObserved: mockGetCachedClaudeAuthStatusObserved,
+  get getCachedClaudeAuthStatusObserved(): typeof mockGetCachedClaudeAuthStatusObserved {
+    return mockGetCachedClaudeAuthStatusObserved;
+  },
 }));
 
 jest.mock('../lib/claude-tui-chats', () => ({
-  isClaudeTuiChatsEnabled: mockIsClaudeTuiChatsEnabled,
+  get isClaudeTuiChatsEnabled(): typeof mockIsClaudeTuiChatsEnabled {
+    return mockIsClaudeTuiChatsEnabled;
+  },
 }));
 
 jest.mock('../lib/turn-diff-capture', () => ({
-  captureTurnStart: mockCaptureTurnStart,
-  captureTurnEndAndDiff: mockCaptureTurnEndAndDiff,
+  get captureTurnStart(): typeof mockCaptureTurnStart {
+    return mockCaptureTurnStart;
+  },
+  get captureTurnEndAndDiff(): typeof mockCaptureTurnEndAndDiff {
+    return mockCaptureTurnEndAndDiff;
+  },
 }));
 
 const mockScheduleCodeGraphBuild = jest.fn();
 jest.mock('../lib/code-graph-scheduler', () => ({
-  scheduleCodeGraphBuild: mockScheduleCodeGraphBuild,
+  get scheduleCodeGraphBuild(): typeof mockScheduleCodeGraphBuild {
+    return mockScheduleCodeGraphBuild;
+  },
 }));
 
 jest.mock('@canopy/desktop-shared/node/code-graph/service', () => ({
   getCodeGraphWorktreeService: (): { hasGraph: jest.Mock } => ({
-    hasGraph: mockHasCodeGraph,
+    get hasGraph(): typeof mockHasCodeGraph {
+      return mockHasCodeGraph;
+    },
   }),
 }));
 
 jest.mock('../integration/desktop-integration-server', () => ({
   getDesktopIntegrationServer: jest.fn(() => ({
-    ensureStarted: mockEnsureStarted,
-    registerCanopyWorktreeSessionRoute: mockRegisterCanopyWorktreeSessionRoute,
-    unregisterCanopyWorktreeSessionRoute:
-      mockUnregisterCanopyWorktreeSessionRoute,
-    unregisterMcpProxyRoutesForSession: mockUnregisterMcpProxyRoutesForSession,
+    get ensureStarted(): typeof mockEnsureStarted {
+      return mockEnsureStarted;
+    },
+    get registerCanopyWorktreeSessionRoute(): typeof mockRegisterCanopyWorktreeSessionRoute {
+      return mockRegisterCanopyWorktreeSessionRoute;
+    },
+    get unregisterCanopyWorktreeSessionRoute(): typeof mockUnregisterCanopyWorktreeSessionRoute {
+      return mockUnregisterCanopyWorktreeSessionRoute;
+    },
+    get unregisterMcpProxyRoutesForSession(): typeof mockUnregisterMcpProxyRoutesForSession {
+      return mockUnregisterMcpProxyRoutesForSession;
+    },
   })),
 }));
 
@@ -350,39 +408,75 @@ jest.mock('../integration/claude-terminal-transcript-sync', () => ({
   ): boolean =>
     transcriptPath === runtimeDir ||
     transcriptPath.startsWith(`${runtimeDir}/`),
-  syncClaudeTerminalTranscript: mockSyncClaudeTerminalTranscript,
+  get syncClaudeTerminalTranscript(): typeof mockSyncClaudeTerminalTranscript {
+    return mockSyncClaudeTerminalTranscript;
+  },
   readTerminalWatcherObservations: (): Promise<unknown[]> =>
     mockReadWatcherObservations(),
-  writeTerminalWatcherObservations: mockWriteWatcherObservations,
+  get writeTerminalWatcherObservations(): typeof mockWriteWatcherObservations {
+    return mockWriteWatcherObservations;
+  },
   terminalWatcherObservationsPath: (runtimeDir: string): string =>
     `${runtimeDir}.watcher-observations.json`,
 }));
 
 jest.mock('../lib/chat-tabs-reader', () => ({
-  readChatTabsFile: mockReadChatTabsFile,
+  get readChatTabsFile(): typeof mockReadChatTabsFile {
+    return mockReadChatTabsFile;
+  },
 }));
 
 jest.mock('../lib/chat-tabs', () => ({
-  writeChatTabsFile: mockWriteChatTabsFile,
+  get writeChatTabsFile(): typeof mockWriteChatTabsFile {
+    return mockWriteChatTabsFile;
+  },
 }));
 
+// Set to the store's product-default projection to simulate unreadable authority.
+let mockUnreadableAuthorityPreferences: Record<string, unknown> | null = null;
 jest.mock('../lib/preferences-store', () => ({
+  readPreferencesFileDetailed: async (options?: {
+    includeServed?: boolean;
+  }): Promise<{
+    preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+    authority: 'ok' | 'unreadable';
+    served?: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+  }> => {
+    const served = await mockReadPreferencesFile();
+    if (!mockUnreadableAuthorityPreferences)
+      return { preferences: served, authority: 'ok' };
+    return {
+      preferences: mockUnreadableAuthorityPreferences,
+      authority: 'unreadable',
+      ...(options?.includeServed === true ? { served } : {}),
+    };
+  },
   // Not degraded: approval resolution fails closed when this is non-null.
   peekPreferencesLoadError: (): null => null,
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
 jest.mock('../lib/approvals-persistence', () => ({
-  readWorkspaceApprovals: mockReadWorkspaceApprovals,
+  get readWorkspaceApprovals(): typeof mockReadWorkspaceApprovals {
+    return mockReadWorkspaceApprovals;
+  },
 }));
 
 jest.mock('../lib/workspace-approvals-manifest', () => ({
-  readWorkspaceApprovalsManifest: mockReadWorkspaceApprovalsManifest,
+  get readWorkspaceApprovalsManifest(): typeof mockReadWorkspaceApprovalsManifest {
+    return mockReadWorkspaceApprovalsManifest;
+  },
 }));
 
 jest.mock('../lib/resolve-worktree', () => ({
-  resolveWorktreeCwd: mockResolveWorktreeCwd,
-  resolveWorktreeTargetIds: mockResolveWorktreeTargetIds,
+  get resolveWorktreeCwd(): typeof mockResolveWorktreeCwd {
+    return mockResolveWorktreeCwd;
+  },
+  get resolveWorktreeTargetIds(): typeof mockResolveWorktreeTargetIds {
+    return mockResolveWorktreeTargetIds;
+  },
 }));
 
 jest.mock('../approvals/approval-service', () => ({
@@ -391,23 +485,37 @@ jest.mock('../approvals/approval-service', () => ({
 }));
 
 jest.mock('../integration/claude-terminal-settings', () => ({
-  buildClaudeTerminalLaunchConfig: mockBuildClaudeTerminalLaunchConfig,
+  get buildClaudeTerminalLaunchConfig(): typeof mockBuildClaudeTerminalLaunchConfig {
+    return mockBuildClaudeTerminalLaunchConfig;
+  },
 }));
 
 jest.mock('../integration/claude-workspace-trust', () => ({
-  ensureClaudeWorkspaceTrust: mockEnsureClaudeWorkspaceTrust,
+  get ensureClaudeWorkspaceTrust(): typeof mockEnsureClaudeWorkspaceTrust {
+    return mockEnsureClaudeWorkspaceTrust;
+  },
 }));
 
 jest.mock('../services/terminal-service', () => ({
-  spawnManagedTerminal: mockSpawnManagedTerminal,
-  hasTerminalWriteReceipt: mockTerminalReceipt,
+  get spawnManagedTerminal(): typeof mockSpawnManagedTerminal {
+    return mockSpawnManagedTerminal;
+  },
+  get hasTerminalWriteReceipt(): typeof mockTerminalReceipt {
+    return mockTerminalReceipt;
+  },
 }));
 
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: jest.fn(() => ({
-    ingestProviderEvent: mockIngestProviderEvent,
-    authorizeRetainedTerminalAgentInputWrite: mockAuthorizeRetainedPaste,
-    getInitialChatTitlePrompt: mockGetInitialChatTitlePrompt,
+    get ingestProviderEvent(): typeof mockIngestProviderEvent {
+      return mockIngestProviderEvent;
+    },
+    get authorizeRetainedTerminalAgentInputWrite(): typeof mockAuthorizeRetainedPaste {
+      return mockAuthorizeRetainedPaste;
+    },
+    get getInitialChatTitlePrompt(): typeof mockGetInitialChatTitlePrompt {
+      return mockGetInitialChatTitlePrompt;
+    },
   })),
 }));
 
@@ -428,7 +536,9 @@ const mockResolvePlanTurnScope = jest.fn<
 >();
 jest.mock('../lib/plan-file-sync', () => ({
   getPlanFileSyncService: (): { beginTurn: typeof mockBeginPlanTurn } => ({
-    beginTurn: mockBeginPlanTurn,
+    get beginTurn(): typeof mockBeginPlanTurn {
+      return mockBeginPlanTurn;
+    },
   }),
   planChatTurnKey: (
     projectId: string,
@@ -444,11 +554,21 @@ jest.mock('../lib/plan-file-sync', () => ({
 
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: jest.fn(() => ({
-    handleChatTerminalEvent: mockHandleChatTerminalEvent,
-    handleCanonicalChatStartedEvent: mockCanonicalStarted,
-    handleCanonicalChatTerminalEvent: mockCanonicalTerminal,
-    handleNewChatStartedEvent: mockHandleNewChatStartedEvent,
-    releaseChatDeliveryAuthority: mockReleaseWatcherAuthority,
+    get handleChatTerminalEvent(): typeof mockHandleChatTerminalEvent {
+      return mockHandleChatTerminalEvent;
+    },
+    get handleCanonicalChatStartedEvent(): typeof mockCanonicalStarted {
+      return mockCanonicalStarted;
+    },
+    get handleCanonicalChatTerminalEvent(): typeof mockCanonicalTerminal {
+      return mockCanonicalTerminal;
+    },
+    get handleNewChatStartedEvent(): typeof mockHandleNewChatStartedEvent {
+      return mockHandleNewChatStartedEvent;
+    },
+    get releaseChatDeliveryAuthority(): typeof mockReleaseWatcherAuthority {
+      return mockReleaseWatcherAuthority;
+    },
   })),
 }));
 
@@ -461,13 +581,17 @@ jest.mock('../lib/main-process-logging', () => ({
 }));
 
 jest.mock('../services/active-chat-input', () => ({
-  resolveCanonicalChatAddress: mockResolveCanonicalChatAddress,
+  get resolveCanonicalChatAddress(): typeof mockResolveCanonicalChatAddress {
+    return mockResolveCanonicalChatAddress;
+  },
   captureChatWatcherEvidence: (): Promise<ChatWatcherEvidence> =>
     Promise.resolve({
       sourceOwner: { kind: 'personal' },
       accountEpoch: 4,
     }),
-  checkWatcherDeliveryIngress: mockWatcherIngress,
+  get checkWatcherDeliveryIngress(): typeof mockWatcherIngress {
+    return mockWatcherIngress;
+  },
   WatcherDeliveryHeldError: class extends Error {
     public readonly outcome = 'held';
     public constructor(public readonly reason: string) {
@@ -481,6 +605,11 @@ import { DefaultClaudeTerminalSessionService } from '../integration/claude-termi
 import { noteWatcherDeliveryAuthorityChange } from '../services/watcher-delivery-authority';
 import { enqueueChatTabMutation } from '../lib/chat-tab-mutation-queue';
 import { CLAUDE_CODE_GRAPH_STEERING_CONTEXT } from '../lib/claude-code-graph-steering';
+import {
+  isClaudeCodeGraphOrientationCurrent,
+  resetClaudeCodeGraphOrientationForTests,
+  setClaudeCodeGraphOrientationReadersForTests,
+} from '../lib/claude-code-graph-orientation';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import { CLAUDE_PLAN_MODE_BOOKKEEPING_CONTEXT } from '../agents/claude-approval-adapter';
@@ -526,11 +655,13 @@ describe('claude-terminal-session-service', () => {
       await shutdownServices(services);
     } finally {
       services.clear();
+      resetClaudeCodeGraphOrientationForTests();
     }
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUnreadableAuthorityPreferences = null;
     mockWatcherObservations = [];
     mockResolveCanonicalChatAddress.mockReset();
     mockResolveCanonicalChatAddress.mockImplementation((target) =>
@@ -611,16 +742,19 @@ describe('claude-terminal-session-service', () => {
     worktreeId = 'w',
     assistantMode: 'default' | 'app-advisor' = 'default',
     recordOverrides: {
-      approvalMode?: 'full-access';
+      approvalMode?: ApprovalMode;
       approvalSession?: { check: jest.Mock; dispose: jest.Mock };
       planMode?: boolean;
+      chatId?: string;
+      codeGraphAvailableThisTurn?: boolean;
     } = {},
   ): DefaultClaudeTerminalSessionService {
     const service = createService();
+    const chatId = recordOverrides.chatId ?? 'chat';
     const record = {
       projectId,
       worktreeId,
-      chatId: 'chat',
+      chatId,
       runtimeDir: '/runtime',
       cwd: '/worktree',
       authToken: 'secret',
@@ -636,7 +770,7 @@ describe('claude-terminal-session-service', () => {
       turnDiffCaptureActive: false,
       codeGraphToolsAdvertised: true,
       codeGraphAvailableThisTurn: true,
-      codeGraphOrientedThisTurn: false,
+      codeGraphOrientationTurn: {},
       codeGraphOrientationBlockedThisTurn: false,
       state: {
         turnState: 'idle',
@@ -650,7 +784,7 @@ describe('claude-terminal-session-service', () => {
       service as unknown as {
         records: Map<string, unknown>;
       }
-    ).records.set(`${projectId}\0${worktreeId}\0chat`, record);
+    ).records.set(`${projectId}\0${worktreeId}\0${chatId}`, record);
     (
       service as unknown as {
         recordsByTerminalId: Map<string, unknown>;
@@ -1238,15 +1372,22 @@ describe('claude-terminal-session-service', () => {
     });
   });
 
-  it('steers broad terminal exploration, resets per user turn, and seeds subagents', async () => {
+  it('keeps terminal graph orientation across turns and seeds subagents', async () => {
     mockHasCodeGraph.mockReturnValue(true);
+    setClaudeCodeGraphOrientationReadersForTests({
+      resolveRepositoryRoots: () => Promise.resolve(['/worktree']),
+      readGraphIdentity: () =>
+        Promise.resolve({ instance: 'graph-db', content: 'graph-v1' }),
+      readHeadIdentity: () => Promise.resolve('head-v1'),
+      readBuildStamp: () => Promise.resolve('1001'),
+    });
     const service = seedService('p', 'w', 'default', {
       approvalMode: 'full-access',
       approvalSession: { check: jest.fn(), dispose: jest.fn() },
     });
 
     const handleHookCallback = (
-      hookEventName: string,
+      hookEventName: ClaudeTerminalHookEventName,
       hookPayload: Record<string, unknown>,
     ): Promise<unknown> =>
       service.handleHookCallback('session', { hookEventName, hookPayload });
@@ -1289,7 +1430,12 @@ describe('claude-terminal-session-service', () => {
     await handleHookCallback('PostToolUse', {
       tool_name: 'mcp__canopy__GetCodeGraphContext',
       tool_input: {},
-      tool_response: {},
+      tool_response: [
+        {
+          type: 'text',
+          text: JSON.stringify({ status: 'ok', lastBuildAt: 1001 }),
+        },
+      ],
       tool_use_id: 'graph-1',
     });
     await expect(
@@ -1312,12 +1458,10 @@ describe('claude-terminal-session-service', () => {
         tool_input: { pattern: 'launch', path: '/worktree/src' },
         tool_use_id: 'grep-2',
       }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: CLAUDE_CODE_GRAPH_STEERING_CONTEXT,
-        additionalContext: CLAUDE_CODE_GRAPH_STEERING_CONTEXT,
+        permissionDecision: 'allow',
       },
     });
     await expect(
@@ -1332,6 +1476,369 @@ describe('claude-terminal-session-service', () => {
       },
     });
     expect(mockHasCodeGraph).toHaveBeenCalledWith('p', 'w');
+  });
+
+  it('steers shell-expanded terminal Bash scopes before graph orientation', async () => {
+    mockHasCodeGraph.mockReturnValue(true);
+    const service = seedService('p', 'w', 'default', {
+      approvalMode: 'full-access',
+      approvalSession: { check: jest.fn(), dispose: jest.fn() },
+    });
+    const runBash = (command: string, id: string): Promise<unknown> =>
+      service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: {
+          tool_name: 'Bash',
+          tool_input: { command },
+          tool_use_id: id,
+        },
+      });
+
+    for (const command of [
+      "rg foo -g '*.log' $FILES",
+      "rg foo -g '*.log' src/**",
+      'rg foo {fixtures,other}.log',
+      // The subshell, failed or skipped `cd` leaves `rg foo src` in the
+      // worktree.
+      '(cd /opt && rg x .); rg foo src',
+      'cd /missing; rg foo src',
+      'true || cd /opt && rg foo src',
+    ]) {
+      await expect(runBash(command, command)).resolves.toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: CLAUDE_CODE_GRAPH_STEERING_CONTEXT,
+          additionalContext: CLAUDE_CODE_GRAPH_STEERING_CONTEXT,
+        },
+      });
+    }
+    await expect(
+      runBash('rg foo .playwright/{run-1,run-2}/report.md', 'bash-artifact'),
+    ).resolves.not.toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    await expect(
+      runBash('cd /opt && rg foo .', 'bash-outside'),
+    ).resolves.not.toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+  });
+
+  it('binds terminal build orientation to the stamp its answer reported', async () => {
+    mockHasCodeGraph.mockReturnValue(true);
+    let graph = 'graph-v1';
+    let stamp = '1001';
+    setClaudeCodeGraphOrientationReadersForTests({
+      resolveRepositoryRoots: () => Promise.resolve(['/worktree']),
+      readGraphIdentity: () =>
+        Promise.resolve({ instance: 'graph-db', content: graph }),
+      readHeadIdentity: () => Promise.resolve('head-v1'),
+      readBuildStamp: () => Promise.resolve(stamp),
+    });
+    const fullAccess = {
+      approvalMode: 'full-access' as const,
+      approvalSession: { check: jest.fn(), dispose: jest.fn() },
+    };
+    const search = (
+      service: DefaultClaudeTerminalSessionService,
+      toolUseId: string,
+    ): Promise<unknown> =>
+      service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: {
+          tool_name: 'Grep',
+          tool_input: { pattern: 'launch', path: '/worktree/src' },
+          tool_use_id: toolUseId,
+        },
+      });
+    const build = async (
+      service: DefaultClaudeTerminalSessionService,
+      toolUseId: string,
+      publish: () => void,
+      lastBuildAt: number,
+    ): Promise<void> => {
+      const tool_name = 'mcp__canopy__BuildOrUpdateCodeGraph';
+      await service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: { tool_name, tool_input: {}, tool_use_id: toolUseId },
+      });
+      publish();
+      // The Claude CLI passes MCP content blocks as the tool response.
+      await service.handleHookCallback('session', {
+        hookEventName: 'PostToolUse',
+        hookPayload: {
+          tool_name,
+          tool_input: {},
+          tool_response: [
+            {
+              type: 'text',
+              text: JSON.stringify({ status: 'ok', lastBuildAt }),
+            },
+          ],
+          tool_use_id: toolUseId,
+        },
+      });
+    };
+
+    const raced = seedService('p', 'w', 'default', fullAccess);
+    await build(
+      raced,
+      'build-raced',
+      () => {
+        graph = 'graph-v3';
+        stamp = '1003';
+      },
+      1002,
+    );
+    await expect(search(raced, 'after-race')).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+
+    await build(
+      raced,
+      'build-own',
+      () => {
+        graph = 'graph-v4';
+        stamp = '1004';
+      },
+      1004,
+    );
+    const nextInvocation = seedService('p', 'w', 'default', fullAccess);
+    await expect(search(nextInvocation, 'after-own-build')).resolves.toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+      },
+    });
+  });
+
+  it('orients later terminal turns on a first build that created the graph', async () => {
+    mockHasCodeGraph.mockReturnValue(true);
+    let graphExists = false;
+    setClaudeCodeGraphOrientationReadersForTests({
+      resolveRepositoryRoots: () => Promise.resolve(['/worktree']),
+      readGraphIdentity: () =>
+        Promise.resolve(
+          graphExists
+            ? { instance: 'graph-db', content: 'graph-v1' }
+            : 'absent',
+        ),
+      readHeadIdentity: () => Promise.resolve('head-v1'),
+      readBuildStamp: () => Promise.resolve(graphExists ? '1001' : null),
+    });
+    const fullAccess = {
+      approvalMode: 'full-access' as const,
+      approvalSession: { check: jest.fn(), dispose: jest.fn() },
+    };
+    const firstBuild = async (
+      chatId: string,
+      toolResponse: unknown,
+    ): Promise<void> => {
+      graphExists = false;
+      // The graph did not exist when this turn started.
+      const service = seedService('p', 'w', 'default', {
+        ...fullAccess,
+        chatId,
+        codeGraphAvailableThisTurn: false,
+      });
+      const tool_name = 'mcp__canopy__BuildOrUpdateCodeGraph';
+      await service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: { tool_name, tool_input: {}, tool_use_id: 'first-build' },
+      });
+      graphExists = true;
+      await service.handleHookCallback('session', {
+        hookEventName: 'PostToolUse',
+        hookPayload: {
+          tool_name,
+          tool_input: {},
+          tool_response: toolResponse,
+          tool_use_id: 'first-build',
+        },
+      });
+    };
+    const searchNextTurn = (chatId: string): Promise<unknown> => {
+      const service = seedService('p', 'w', 'default', {
+        ...fullAccess,
+        chatId,
+      });
+      return service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: {
+          tool_name: 'Grep',
+          tool_input: { pattern: 'launch', path: '/worktree/src' },
+          tool_use_id: 'next-turn-search',
+        },
+      });
+    };
+
+    await firstBuild('first-build-chat', [
+      {
+        type: 'text',
+        text: JSON.stringify({ status: 'ok', lastBuildAt: 1001 }),
+      },
+    ]);
+    await expect(searchNextTurn('first-build-chat')).resolves.toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+      },
+    });
+
+    await firstBuild('failed-build-chat', [
+      {
+        type: 'text',
+        text: JSON.stringify({ status: 'error', summary: 'x' }),
+      },
+    ]);
+    await expect(searchNextTurn('failed-build-chat')).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+  });
+
+  it('keeps terminal orientation per chat and revalidates graph identities', async () => {
+    mockHasCodeGraph.mockReturnValue(true);
+    let graphIdentity = 'graph-v1';
+    let headIdentity = 'head-v1';
+    let repositoryRoots: readonly string[] = ['/worktree'];
+    // A graph rebuild stamps a new build.
+    const buildStamp = (): number =>
+      graphIdentity === 'graph-v1' ? 1001 : 1002;
+    setClaudeCodeGraphOrientationReadersForTests({
+      resolveRepositoryRoots: () => Promise.resolve(repositoryRoots),
+      readGraphIdentity: () =>
+        Promise.resolve({ instance: 'graph-db', content: graphIdentity }),
+      readHeadIdentity: () => Promise.resolve(headIdentity),
+      readBuildStamp: () => Promise.resolve(String(buildStamp())),
+    });
+    const fullAccess = {
+      approvalMode: 'full-access' as const,
+      approvalSession: { check: jest.fn(), dispose: jest.fn() },
+    };
+    const search = (
+      service: DefaultClaudeTerminalSessionService,
+      toolUseId: string,
+    ): Promise<unknown> =>
+      service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: {
+          tool_name: 'Grep',
+          tool_input: { pattern: 'launch', path: '/worktree/src' },
+          tool_use_id: toolUseId,
+        },
+      });
+    const orient = async (
+      service: DefaultClaudeTerminalSessionService,
+      toolUseId: string,
+      toolResponse: unknown = [
+        {
+          type: 'text',
+          text: JSON.stringify({ status: 'ok', lastBuildAt: buildStamp() }),
+        },
+      ],
+    ): Promise<unknown> => {
+      await service.handleHookCallback('session', {
+        hookEventName: 'PreToolUse',
+        hookPayload: {
+          tool_name: 'mcp__canopy__GetCodeGraphContext',
+          tool_input: {},
+          tool_use_id: toolUseId,
+        },
+      });
+      return service.handleHookCallback('session', {
+        hookEventName: 'PostToolUse',
+        hookPayload: {
+          tool_name: 'mcp__canopy__GetCodeGraphContext',
+          tool_input: {},
+          tool_response: toolResponse,
+          tool_use_id: toolUseId,
+        },
+      });
+    };
+    const expectDenied = async (
+      service: DefaultClaudeTerminalSessionService,
+      toolUseId: string,
+    ): Promise<void> => {
+      await expect(search(service, toolUseId)).resolves.toMatchObject({
+        hookSpecificOutput: { permissionDecision: 'deny' },
+      });
+    };
+    const expectAllowed = async (
+      service: DefaultClaudeTerminalSessionService,
+      toolUseId: string,
+    ): Promise<void> => {
+      await expect(search(service, toolUseId)).resolves.toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+        },
+      });
+    };
+
+    const first = seedService('p', 'w', 'default', fullAccess);
+    await expectDenied(first, 'first-search');
+    await orient(first, 'graph-success');
+    const firstRecord = Array.from(
+      (
+        first as unknown as {
+          records: Map<string, { codeGraphOrientationTurn: object }>;
+        }
+      ).records.values(),
+    )[0];
+    await expect(
+      isClaudeCodeGraphOrientationCurrent({
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        cwd: '/worktree',
+        turn: firstRecord.codeGraphOrientationTurn,
+      }),
+    ).resolves.toBe(true);
+    await first.handleHookCallback('session', {
+      hookEventName: 'UserPromptSubmit',
+      hookPayload: {},
+    });
+    await expectAllowed(first, 'same-process-next-turn-search');
+
+    const sameChatInvocation = seedService('p', 'w', 'default', fullAccess);
+    await expectAllowed(sameChatInvocation, 'same-chat-new-invocation-search');
+
+    const otherChat = seedService('p', 'w', 'default', {
+      ...fullAccess,
+      chatId: 'other-chat',
+    });
+    await expectDenied(otherChat, 'other-chat-search');
+
+    headIdentity = 'head-v2';
+    const changedHead = seedService('p', 'w', 'default', fullAccess);
+    await expectDenied(changedHead, 'changed-head-search');
+    await orient(changedHead, 'orient-new-head');
+    const reorientedHead = seedService('p', 'w', 'default', fullAccess);
+    await expectAllowed(reorientedHead, 'reoriented-head-search');
+
+    repositoryRoots = ['/worktree', '/worktree/repos/added'];
+    const addedRepository = seedService('p', 'w', 'default', fullAccess);
+    await expectDenied(addedRepository, 'added-repository-search');
+    await orient(addedRepository, 'orient-added-repository');
+    repositoryRoots = ['/worktree/repos/added', '/worktree'];
+    const reorderedRepositories = seedService('p', 'w', 'default', fullAccess);
+    await expectAllowed(reorderedRepositories, 'reordered-repositories-search');
+
+    graphIdentity = 'graph-v2';
+    const changedGraph = seedService('p', 'w', 'default', fullAccess);
+    await expectDenied(changedGraph, 'changed-graph-search');
+
+    const erroredChat = seedService('p', 'w', 'default', {
+      ...fullAccess,
+      chatId: 'error-chat',
+    });
+    await orient(erroredChat, 'graph-error', { isError: true });
+    const afterError = seedService('p', 'w', 'default', {
+      ...fullAccess,
+      chatId: 'error-chat',
+    });
+    await expectDenied(afterError, 'search-after-error');
   });
 
   it('does not steer terminal exploration toward unavailable graph tools in plan mode', async () => {
@@ -2551,10 +3058,13 @@ describe('claude-terminal-session-service', () => {
       transcriptPath: '/runtime/allowed.jsonl',
       compactionAppended: false,
     });
-    mockTerminalEventListener?.(IPC_CHANNELS.terminalExit, {
-      terminalId: 'terminal',
-      exitCode: 1,
-      signal: null,
+    mockTerminalEventListener?.({
+      type: 'exit',
+      payload: {
+        terminalId: 'terminal',
+        exitCode: 1,
+        signal: null,
+      },
     });
     await flushTerminalEventTasks();
     expect(mockCanonicalTerminal).toHaveBeenCalledWith(
@@ -2591,10 +3101,13 @@ describe('claude-terminal-session-service', () => {
         transcriptPath: '/runtime/allowed.jsonl',
         compactionAppended: false,
       });
-      mockTerminalEventListener?.(IPC_CHANNELS.terminalExit, {
-        terminalId: 'terminal',
-        exitCode: 1,
-        signal: null,
+      mockTerminalEventListener?.({
+        type: 'exit',
+        payload: {
+          terminalId: 'terminal',
+          exitCode: 1,
+          signal: null,
+        },
       });
       await jest.advanceTimersByTimeAsync(0);
       expect(mockCanonicalTerminal).not.toHaveBeenCalled();
@@ -2860,11 +3373,14 @@ describe('claude-terminal-session-service', () => {
       transcriptPath: '/runtime/allowed.jsonl',
       compactionAppended: false,
     });
-    mockTerminalEventListener?.(IPC_CHANNELS.terminalRunningChanged, {
-      terminalId: 'terminal',
-      running: false,
-      interruptedByUser: true,
-      processName: 'claude',
+    mockTerminalEventListener?.({
+      type: 'runningChanged',
+      payload: {
+        terminalId: 'terminal',
+        running: false,
+        interruptedByUser: true,
+        processName: 'claude',
+      },
     });
     await flushTerminalEventTasks();
     expect(mockCanonicalTerminal).toHaveBeenCalledWith(
@@ -3501,12 +4017,15 @@ describe('claude-terminal-session-service', () => {
     expect(service.getState('p', 'w', 'chat')?.turnState).toBe('running');
     mockRecordSessionDiagnostic.mockClear();
 
-    mockTerminalEventListener?.(IPC_CHANNELS.terminalOutput, {
-      projectId: 'p',
-      worktreeId: 'w',
-      terminalId: 'terminal',
-      data: Uint8Array.from(Buffer.from('Interrupted by user')),
-      seq: 1,
+    mockTerminalEventListener?.({
+      type: 'output',
+      payload: {
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: 'terminal',
+        data: Uint8Array.from(Buffer.from('Interrupted by user')),
+        seq: 1,
+      },
     });
     await flushTerminalEventTasks();
 
@@ -3582,14 +4101,17 @@ describe('claude-terminal-session-service', () => {
     });
     expect(service.getState('p', 'w', 'chat')?.turnState).toBe('running');
 
-    mockTerminalEventListener?.(IPC_CHANNELS.terminalRunningChanged, {
-      projectId: 'p',
-      worktreeId: 'w',
-      terminalId: 'terminal',
-      kind: 'claude-code',
-      running: false,
-      processName: null,
-      interruptedByUser: true,
+    mockTerminalEventListener?.({
+      type: 'runningChanged',
+      payload: {
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: 'terminal',
+        kind: 'claude-code',
+        running: false,
+        processName: null,
+        interruptedByUser: true,
+      },
     });
     await flushTerminalEventTasks();
 
@@ -3862,22 +4384,28 @@ describe('claude-terminal-session-service', () => {
     });
     mockSyncClaudeTerminalTranscript.mockClear();
 
-    mockTerminalEventListener?.(IPC_CHANNELS.terminalOutput, {
-      terminalId: 'terminal',
-      seq: 1,
-      data: Buffer.from(
-        'The assistant mentioned interrupted by user in a sentence.',
-      ),
+    mockTerminalEventListener?.({
+      type: 'output',
+      payload: {
+        terminalId: 'terminal',
+        seq: 1,
+        data: Buffer.from(
+          'The assistant mentioned interrupted by user in a sentence.',
+        ),
+      },
     });
     await flushTerminalEventTasks();
 
     expect(mockSyncClaudeTerminalTranscript).not.toHaveBeenCalled();
     expect(service.getState('p', 'w', 'chat')?.turnState).toBe('running');
 
-    mockTerminalEventListener?.(IPC_CHANNELS.terminalOutput, {
-      terminalId: 'terminal',
-      seq: 2,
-      data: Buffer.from('\r\nInterrupted by user\r\n'),
+    mockTerminalEventListener?.({
+      type: 'output',
+      payload: {
+        terminalId: 'terminal',
+        seq: 2,
+        data: Buffer.from('\r\nInterrupted by user\r\n'),
+      },
     });
     await flushTerminalEventTasks();
 
@@ -4287,7 +4815,7 @@ describe('claude-terminal-session-service', () => {
     });
 
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
   });
 
@@ -4314,10 +4842,10 @@ describe('claude-terminal-session-service', () => {
     await service.cleanupWorktree('p', 'w');
 
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(mockPtyKill).toHaveBeenCalledWith('terminal-2', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(mockRm).toHaveBeenCalledWith('/runtime', {
       recursive: true,
@@ -4341,7 +4869,7 @@ describe('claude-terminal-session-service', () => {
     await service.shutdown();
 
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(mockRm).toHaveBeenCalledWith('/runtime/canopy-mcp.json', {
       force: true,
@@ -4423,7 +4951,7 @@ describe('claude-terminal-session-service', () => {
       'sync failed',
     );
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(service.getState('p', 'w', 'chat')).toBeUndefined();
   });
@@ -4452,7 +4980,7 @@ describe('claude-terminal-session-service', () => {
     expect(mockPtyWrite).toHaveBeenCalledWith('terminal', '\u001b');
     expect(mockSyncClaudeTerminalTranscript).toHaveBeenCalled();
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(service.getState('p', 'w', 'chat')).toBeUndefined();
   });
@@ -4474,7 +5002,7 @@ describe('claude-terminal-session-service', () => {
       service.shutdown({ recordInterrupted: true }),
     ).resolves.toBeUndefined();
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
   });
 
@@ -4499,7 +5027,7 @@ describe('claude-terminal-session-service', () => {
 
     expect(mockSpawnManagedTerminal).toHaveBeenCalled();
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(mockUnregisterCanopyWorktreeSessionRoute).toHaveBeenCalled();
     expect(mockUnregisterMcpProxyRoutesForSession).toHaveBeenCalled();
@@ -4519,10 +5047,13 @@ describe('claude-terminal-session-service', () => {
       throw new Error('Expected terminal event listener to be registered.');
     }
 
-    mockTerminalEventListener(IPC_CHANNELS.terminalExit, {
-      terminalId: 'terminal',
-      exitCode: 0,
-      signal: null,
+    mockTerminalEventListener({
+      type: 'exit',
+      payload: {
+        terminalId: 'terminal',
+        exitCode: 0,
+        signal: null,
+      },
     });
     await flushTerminalEventTasks();
 
@@ -4561,12 +5092,15 @@ describe('claude-terminal-session-service', () => {
     }
     expect(service.getState('p', 'w', 'chat')?.firstOutputAt).toBeUndefined();
 
-    mockTerminalEventListener(IPC_CHANNELS.terminalOutput, {
-      projectId: 'p',
-      worktreeId: 'w',
-      terminalId: 'terminal',
-      data: new Uint8Array([104, 105]),
-      seq: 2,
+    mockTerminalEventListener({
+      type: 'output',
+      payload: {
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: 'terminal',
+        data: new Uint8Array([104, 105]),
+        seq: 2,
+      },
     });
     await flushTerminalEventTasks();
 
@@ -4582,12 +5116,15 @@ describe('claude-terminal-session-service', () => {
 
     // Later output chunks do not restamp or re-record.
     mockRecordSessionDiagnostic.mockClear();
-    mockTerminalEventListener(IPC_CHANNELS.terminalOutput, {
-      projectId: 'p',
-      worktreeId: 'w',
-      terminalId: 'terminal',
-      data: new Uint8Array([33]),
-      seq: 3,
+    mockTerminalEventListener({
+      type: 'output',
+      payload: {
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: 'terminal',
+        data: new Uint8Array([33]),
+        seq: 3,
+      },
     });
     await flushTerminalEventTasks();
     expect(service.getState('p', 'w', 'chat')?.firstOutputAt).toBe(
@@ -4828,6 +5365,46 @@ describe('claude-terminal-session-service', () => {
     });
   });
 
+  it('keeps served launch settings but asks when preference authority is unreadable', async () => {
+    mockUnreadableAuthorityPreferences = {
+      approvalDefaults: DEFAULT_APPROVAL_DEFAULTS,
+      mcpProxyPort: 3000,
+      rtkEnabled: true,
+      preventClaudeNativeCaffeinate: true,
+    };
+    mockReadPreferencesFile.mockResolvedValue({
+      approvalDefaults: {
+        worktree: 'full-access',
+        cowork: 'full-access',
+        appAdvisor: 'full-access',
+      },
+      mcpProxyPort: 45_678,
+      rtkEnabled: false,
+      preventClaudeNativeCaffeinate: false,
+    });
+    mockReadChatTabsFile.mockResolvedValue({
+      tabs: [{ id: 'chat', providerType: 'claude', sdkSessionId: 'sdk' }],
+    });
+    const service = createService();
+
+    await service.launch({
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'chat',
+      cols: 80,
+      rows: 24,
+    });
+
+    expect(mockEnsureStarted).toHaveBeenCalledWith(45_678);
+    expect(
+      mockBuildClaudeTerminalLaunchConfig.mock.calls[0]?.[0],
+    ).toMatchObject({
+      approvalMode: 'ask',
+      rtkEnabled: false,
+      preventClaudeNativeCaffeinate: false,
+    });
+  });
+
   it('commits terminal auto-archive requests before broadcasting them', async () => {
     let releaseCommit: (() => void) | undefined;
     mockIngestProviderEvent.mockImplementationOnce(
@@ -4851,8 +5428,9 @@ describe('claude-terminal-session-service', () => {
       rows: 24,
     });
     const route = mockRegisterCanopyWorktreeSessionRoute.mock.calls[0]?.[0];
-    const onSetAutoArchive: ((enabled: boolean) => Promise<void>) | undefined =
-      route?.onSetAutoArchive;
+    const onSetAutoArchive:
+      | ((enabled: boolean) => Promise<void> | void)
+      | undefined = route?.onSetAutoArchive;
     expect(onSetAutoArchive).toBeDefined();
 
     const request = onSetAutoArchive?.(true);
@@ -4940,10 +5518,13 @@ describe('claude-terminal-session-service', () => {
       throw new Error('Expected terminal event listener to be registered.');
     }
 
-    mockTerminalEventListener(IPC_CHANNELS.terminalExit, {
-      terminalId: 'terminal',
-      exitCode: 0,
-      signal: null,
+    mockTerminalEventListener({
+      type: 'exit',
+      payload: {
+        terminalId: 'terminal',
+        exitCode: 0,
+        signal: null,
+      },
     });
     await flushTerminalEventTasks();
 
@@ -4962,10 +5543,13 @@ describe('claude-terminal-session-service', () => {
       throw new Error('Expected terminal event listener to be registered.');
     }
 
-    mockTerminalEventListener(IPC_CHANNELS.terminalExit, {
-      terminalId: 'terminal',
-      exitCode: 0,
-      signal: null,
+    mockTerminalEventListener({
+      type: 'exit',
+      payload: {
+        terminalId: 'terminal',
+        exitCode: 0,
+        signal: null,
+      },
     });
     await flushTerminalEventTasks();
 
@@ -5195,7 +5779,7 @@ describe('claude-terminal-session-service', () => {
       '<app_advisor_context>',
     );
     expect(launchConfigRequest?.systemPromptAppend).toContain(
-      'You are App Advisor',
+      'You are Orchestrator (formerly App Advisor)',
     );
     expect(mockSpawnManagedTerminal).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5284,7 +5868,7 @@ describe('claude-terminal-session-service', () => {
 
     expect(mockSpawnManagedTerminal).toHaveBeenCalledTimes(1);
     expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-      signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
     });
     expect(mockUnregisterCanopyWorktreeSessionRoute).toHaveBeenCalled();
     expect(mockUnregisterMcpProxyRoutesForSession).toHaveBeenCalled();
@@ -5758,7 +6342,7 @@ describe('claude-terminal-session-service', () => {
     const mutationBlocked = new Promise<void>((resolve) => {
       releaseMutation = resolve;
     });
-    let persistedTabs = {
+    let persistedTabs: MockTabsFile = {
       version: 1,
       activeTabId: chatId,
       tabs: [{ id: chatId, providerType: 'claude' as const, title: 'Chat' }],
@@ -6048,7 +6632,7 @@ describe('claude-terminal-session-service', () => {
       await jest.advanceTimersByTimeAsync(10 * 60_000 + 1);
 
       expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
-        signalOverride: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
       });
       expect(service.getState('p', 'w', 'chat')).toBeUndefined();
     } finally {
@@ -6233,7 +6817,7 @@ describe('claude-terminal-session-service', () => {
       });
     }
 
-    function lastRoute(): Record<string, unknown> | undefined {
+    function lastRoute(): CanopyWorktreeSessionRoute | undefined {
       const { calls } = mockRegisterCanopyWorktreeSessionRoute.mock;
       return calls[calls.length - 1]?.[0];
     }
@@ -6360,10 +6944,13 @@ describe('claude-terminal-session-service', () => {
         throw new Error('Expected terminal event listener to be registered.');
       }
 
-      mockTerminalEventListener(IPC_CHANNELS.terminalExit, {
-        terminalId: 'terminal',
-        exitCode: 0,
-        signal: null,
+      mockTerminalEventListener({
+        type: 'exit',
+        payload: {
+          terminalId: 'terminal',
+          exitCode: 0,
+          signal: null,
+        },
       });
       await flushTerminalEventTasks();
 
@@ -6621,7 +7208,9 @@ describe('claude-terminal-session-service', () => {
         await resume(reloadRequest(new AbortController().signal));
         const submitted =
           mockBuildClaudeTerminalLaunchConfig.mock.lastCall?.[0].initialPrompt;
-        if (!submitted) throw new Error('Expected a continuation prompt');
+        if (typeof submitted !== 'string' || !submitted) {
+          throw new Error('Expected a continuation prompt');
+        }
         await markHook(
           service,
           'UserPromptSubmit',
@@ -6737,10 +7326,13 @@ describe('claude-terminal-session-service', () => {
         throw new Error('Expected terminal event listener to be registered.');
       }
 
-      mockTerminalEventListener(IPC_CHANNELS.terminalExit, {
-        terminalId: 'terminal',
-        exitCode: 1,
-        signal: null,
+      mockTerminalEventListener({
+        type: 'exit',
+        payload: {
+          terminalId: 'terminal',
+          exitCode: 1,
+          signal: null,
+        },
       });
       await flushTerminalEventTasks();
 
@@ -6806,10 +7398,13 @@ describe('claude-terminal-session-service', () => {
         throw new Error('Expected terminal event listener to be registered.');
       }
 
-      mockTerminalEventListener(IPC_CHANNELS.terminalExit, {
-        terminalId: 'terminal',
-        exitCode: 1,
-        signal: null,
+      mockTerminalEventListener({
+        type: 'exit',
+        payload: {
+          terminalId: 'terminal',
+          exitCode: 1,
+          signal: null,
+        },
       });
       await flushTerminalEventTasks();
 

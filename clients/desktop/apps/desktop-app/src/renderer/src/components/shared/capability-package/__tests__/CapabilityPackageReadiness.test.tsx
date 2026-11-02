@@ -24,6 +24,33 @@ describe('CapabilityPackageReadiness', () => {
     container.remove();
   });
 
+  it('names the default subject a workflow in the setup and definition-only notes', () => {
+    const readiness: PipelinePackageReadiness = {
+      status: 'invalid',
+      distributionMode: 'definition_only',
+      requirements: [],
+    };
+
+    act(() => {
+      root.render(<CapabilityPackageReadiness readiness={readiness} />);
+    });
+
+    expect(container.textContent).toContain(
+      'This workflow needs the following on this machine before it can run.',
+    );
+    expect(container.textContent).toContain(
+      'This workflow’s packaged dependencies could not be verified.',
+    );
+    expect(
+      container.querySelector(
+        '[data-testid="pipeline-trigger-modal-definition-only-note"]',
+      )?.textContent,
+    ).toBe(
+      'This workflow was installed from a definition-only share, so its required dependencies are not included.',
+    );
+    expect(container.textContent).not.toMatch(/pipeline/i);
+  });
+
   it('shows non-blocking publisher notes even when setup is already ready', () => {
     const readiness: PipelinePackageReadiness = {
       status: 'ready',
@@ -53,7 +80,7 @@ describe('CapabilityPackageReadiness', () => {
     expect(notes?.textContent).toContain('/collect.py');
     expect(notes?.textContent).toContain('review.collect');
     expect(container.textContent).not.toContain(
-      'This pipeline needs the following on this machine before it can run.',
+      'This workflow needs the following on this machine before it can run.',
     );
   });
 });

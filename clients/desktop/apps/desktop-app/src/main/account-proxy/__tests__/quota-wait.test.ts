@@ -64,6 +64,15 @@ function status(ready: boolean): AccountProxyStatus {
     routeCodex: true,
     keepChatOnOneAccount: true,
     refreshedAt: Date.now() + 1,
+    local: {
+      phase: 'not-installed',
+      version: null,
+      install: null,
+      port: null,
+      startWithApp: true,
+      message: null,
+    },
+    signIn: null,
   };
 }
 beforeEach(() => {

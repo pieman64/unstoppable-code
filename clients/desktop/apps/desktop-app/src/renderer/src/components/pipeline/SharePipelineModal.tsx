@@ -60,7 +60,7 @@ const SHARE_SCOPES: readonly ShareResourceScope[] = [
   'public',
 ];
 const SNAPSHOT_NOTE_LABEL =
-  'Sharing publishes a copy of this pipeline under your account.';
+  'Sharing publishes a copy of this workflow under your account.';
 const pipelineLinks = createShareLinkResolver(
   pipelineSharePath,
   resolveSharedPipelineUrl,
@@ -164,9 +164,9 @@ export function SharePipelineModal({
           localPipelineInfo.remote.accountId,
         ))
         ? ({ status: 'ready' } as const)
-        : existingShareLoadFailure('pipeline', result.error);
+        : existingShareLoadFailure('workflow', result.error);
     } catch (error: unknown) {
-      return existingShareLoadFailure('pipeline', error);
+      return existingShareLoadFailure('workflow', error);
     }
   }, [localPipelineInfo.remote?.accountId, localPipelineInfo.remote?.remoteId]);
 
@@ -174,6 +174,7 @@ export function SharePipelineModal({
     (): CapabilityPackageSharePort => ({
       analyze: async ({
         dismissedInvocations,
+        dismissedReferences,
       }): Promise<PipelinePackageAnalysisSummary> => {
         const result = await window.pipelines.analyzePackage({
           rawPipeline,
@@ -182,6 +183,9 @@ export function SharePipelineModal({
           ...(worktree ? { worktree } : {}),
           ...(dismissedInvocations !== undefined
             ? { dismissedInvocations: [...dismissedInvocations] }
+            : {}),
+          ...(dismissedReferences !== undefined
+            ? { dismissedReferences: [...dismissedReferences] }
             : {}),
         });
         if (!result.success || !result.data) {
@@ -255,12 +259,12 @@ export function SharePipelineModal({
     async (input: ShareResourceShareInput): Promise<ShareResourceOutcome> => {
       if (projectSourceUnavailable) {
         throw new Error(
-          'Reopen this pipeline from its project to share it. Its worktree or file location is unavailable.',
+          'Reopen this workflow from its project to share it. Its worktree or file location is unavailable.',
         );
       }
       const selection = input.packageSelection;
       if (!selection)
-        throw new Error('Analyze dependencies before sharing this pipeline.');
+        throw new Error('Analyze dependencies before sharing this workflow.');
       const revokePublicShare =
         input.scope !== 'public' &&
         !input.preservePublicLink &&
@@ -322,9 +326,10 @@ export function SharePipelineModal({
         // the right recovery; older handlers send only the string.
         const failure = classifyShareFailure(result);
         if (failure) throw new ShareFailureError(failure);
-        throw new Error(result.error ?? 'The pipeline could not be shared.');
+        throw new Error(result.error ?? 'The workflow could not be shared.');
       }
 
+      let detail = result.data;
       let shareUrl: string | undefined;
       let publicLinkFailed = false;
       if (input.scope === 'public') {
@@ -333,6 +338,8 @@ export function SharePipelineModal({
           result.data.id,
         );
         if (published.success && published.data) {
+          // Remove public link right on the success notice revokes this share.
+          detail = { ...detail, publicShare: published.data };
           const link = await pipelineLinks.resolveLink({
             kind: 'public',
             sharePath: published.data.sharePath,
@@ -353,8 +360,8 @@ export function SharePipelineModal({
         }
       }
 
-      pendingShared.current = { detail: result.data };
-      setRemoteDetail(result.data);
+      pendingShared.current = { detail };
+      setRemoteDetail(detail);
       return {
         ...(shareUrl ? { shareUrl } : {}),
         ...(publicLinkFailed ? { publicLinkFailed: true } : {}),
@@ -384,6 +391,8 @@ export function SharePipelineModal({
         sharePath: published.data.sharePath,
       });
       setRemoteLink(link);
+      pending.detail = { ...pending.detail, publicShare: published.data };
+      setRemoteDetail(pending.detail);
       return { shareUrl: link.url };
     }, []);
 
@@ -406,7 +415,7 @@ export function SharePipelineModal({
           </p>
           {projectSourceUnavailable && (
             <Notice intent="destructive">
-              Reopen this pipeline from its project to share it. Its worktree or
+              Reopen this workflow from its project to share it. Its worktree or
               file location is unavailable.
             </Notice>
           )}
@@ -434,7 +443,7 @@ export function SharePipelineModal({
 
   return (
     <DesktopShareResourceDialog
-      resourceNoun="pipeline"
+      resourceNoun="workflow"
       testIdPrefix="share-pipeline"
       requiredCapability={PIPELINES_CRUD_CAPABILITY}
       scopes={SHARE_SCOPES}

@@ -15,6 +15,8 @@ import {
 } from '@canopy/protocol/billing';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import {
+  Button,
+  buttonClassName,
   DialogModal,
   MODEL_LIBRARY_UNLOCK_COPY,
 } from '@canopy/ui-shared/components';
@@ -105,10 +107,11 @@ const BREAKDOWN_PLACEHOLDER = '—';
 /** Free / no-plan list price, the fallback when no effective price is known. */
 const FREE_LIST_CREDIT_PRICE_USD = 0.6;
 
-const SECONDARY_BUTTON_CLASS =
-  'rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:opacity-50';
-const PRIMARY_BUTTON_CLASS =
-  'rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50';
+/** The desktop return link keeps an `<a href>` and wears the primary Button. */
+const PRIMARY_LINK_CLASS = buttonClassName({
+  variant: 'primary',
+  size: 'compact',
+});
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -224,6 +227,12 @@ export function TopUpSheet({
   onClose,
 }: TopUpSheetProps): JSX.Element {
   const unlock = intent?.reason === 'unlock_models';
+  // A model id alone on a billing link has no consumer to apply it. Chat
+  // recovery supplies the callback; desktop supplies a correlated return.
+  const canSelectModel =
+    intent?.modelId !== undefined &&
+    (onUnlocked !== undefined ||
+      (intent.source === 'desktop' && intent.requestId !== undefined));
 
   const { checkout, state } = useTopUpCheckout({
     billing,
@@ -334,7 +343,9 @@ export function TopUpSheet({
       title={unlock ? MODEL_LIBRARY_UNLOCK_COPY.title : 'Buy AI credits'}
       subtitle={
         unlock
-          ? MODEL_LIBRARY_UNLOCK_COPY.purchaseBody
+          ? canSelectModel
+            ? MODEL_LIBRARY_UNLOCK_COPY.purchaseBody
+            : MODEL_LIBRARY_UNLOCK_COPY.purchaseBodyWithoutSelection
           : `Enter an amount between $${AI_CREDIT_TOP_UP_MIN_USD} and $${AI_CREDIT_TOP_UP_MAX_USD}.`
       }
       maxWidth={state.status === 'needs_card' ? 'md' : 'sm'}
@@ -375,32 +386,32 @@ export function TopUpSheet({
             {state.status === 'processing' ||
             state.status === 'credits_delayed' ||
             state.status === 'access_delayed' ? (
-              <button
+              <Button
                 type="button"
+                size="compact"
                 onClick={() => checkout.refresh()}
                 data-testid={tid('credits-top-up-recheck')}
-                className={SECONDARY_BUTTON_CLASS}
               >
                 Check again
-              </button>
+              </Button>
             ) : null}
             {desktopReturnHref !== null ? (
               <a
                 href={desktopReturnHref}
                 data-testid={tid('credits-top-up-desktop-return')}
-                className={PRIMARY_BUTTON_CLASS}
+                className={PRIMARY_LINK_CLASS}
               >
                 {`Back to ${appName}`}
               </a>
             ) : null}
-            <button
+            <Button
               type="button"
+              size="compact"
               onClick={close}
               data-testid={tid('credits-top-up-done')}
-              className={SECONDARY_BUTTON_CLASS}
             >
               {state.status === 'complete' ? 'Done' : 'Close'}
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
@@ -516,27 +527,28 @@ export function TopUpSheet({
             </div>
           </dl>
           <div className="flex items-center justify-end gap-2">
-            <button
+            <Button
               type="button"
+              size="compact"
               disabled={working}
               onClick={close}
-              className={SECONDARY_BUTTON_CLASS}
             >
               {unlock ? MODEL_LIBRARY_UNLOCK_COPY.dismissAction : 'Cancel'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="primary"
+              size="compact"
               disabled={working || !valid || state.paid}
               onClick={() => checkout.submit(parsed)}
               data-testid={tid('credits-top-up-confirm')}
-              className={PRIMARY_BUTTON_CLASS}
             >
               {state.status === 'authenticating'
                 ? 'Confirming with your bank…'
                 : working
                   ? 'Processing…'
                   : payLabel}
-            </button>
+            </Button>
           </div>
         </div>
       )}

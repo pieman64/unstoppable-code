@@ -1,7 +1,14 @@
 import { execFile } from 'node:child_process';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { promisify } from 'node:util';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { delegationToolchainReadRoots } from '@canopy/desktop-shared/node/delegation/command-environment';
+import {
+  getCanopyDataDir,
+  getCanopySecureDataDir,
+} from '@canopy/desktop-shared/canopy-paths';
 import { getResolvedGitExecutableForSpawn } from '../../lib/git-executable';
 
 const execute = promisify(execFile);
@@ -34,14 +41,14 @@ async function smallFile(file: string): Promise<string> {
 }
 /** Windows paths compare case-insensitively; POSIX paths compare exactly. */
 function samePath(left: string, right: string): boolean {
-  return process.platform === 'win32'
+  return hostOperatingSystem() === 'win32'
     ? left.toLowerCase() === right.toLowerCase()
     : left === right;
 }
 async function canonicalDirectory(directory: string): Promise<string> {
   const canonical = await realpath(directory);
   const systemPath =
-    process.platform === 'darwin'
+    hostOperatingSystem() === 'darwin'
       ? directory.replace(/^\/(var|tmp|etc)(?=\/|$)/, '/private/$1')
       : directory;
   if (
@@ -238,6 +245,138 @@ export async function windowsGitRuntimeRoots(
   return roots;
 }
 
+/** POSIX roots too broad to grant as a Git runtime read: the filesystem root,
+ * a single top-level directory (`/usr`, `/lib`, `/opt`, `/home`), or a bare
+ * home directory (`/home/<user>`, `/root`). The delegate must receive the
+ * exact git-core helper directory, never an install prefix or a home. */
+function linuxGrantTooBroad(directory: string): boolean {
+  const segments = directory.split('/').filter(Boolean);
+  if (segments.length < 2) return true;
+  if (segments[0] === 'home' && segments.length < 3) return true;
+  return false;
+}
+
+/** Read grants for a resolved Linux `git` binary: the exact binary file, its
+ * command directory (used only for PATH), and the git-core helper directory
+ * reported by a bounded `git --exec-path`. The helper directory must be the
+ * binary's own `<prefix>/{lib,libexec}/git-core`, or the distro's fixed `/usr`
+ * helper directory for `/usr/local/bin/git`, so a repository-controlled
+ * probe cannot expand reads into an arbitrary folder, a private directory, a
+ * metadata root, or an install prefix. Apart from that fixed system layout,
+ * the binary is either in `<prefix>/bin` alongside the helper directory, or
+ * inside the helper directory itself.
+ * Undefined for anything else. */
+export async function linuxGitRuntime(
+  executable: string,
+  execPath: string,
+  kind: (file: string) => Promise<PathKind> = pathKind,
+): Promise<{ runtimeRoots: string[]; commandDirectory: string } | undefined> {
+  const posix = path.posix;
+  if (
+    !posix.isAbsolute(executable) ||
+    !posix.isAbsolute(execPath) ||
+    posix.basename(executable) !== 'git' ||
+    posix.basename(execPath) !== 'git-core' ||
+    linuxGrantTooBroad(execPath)
+  )
+    return undefined;
+  // The helper directory is <prefix>/lib/git-core or <prefix>/libexec/git-core.
+  const helperParent = posix.dirname(execPath);
+  const helperParentName = posix.basename(helperParent);
+  if (helperParentName !== 'lib' && helperParentName !== 'libexec')
+    return undefined;
+  // The binary sits in <prefix>/bin beside that helper directory, or is one of
+  // the helper programs inside it. Either way it shares the install prefix, so
+  // the grant cannot be redirected to an unrelated git-core-named directory.
+  const commandDirectory = posix.dirname(executable);
+  const binaryInsideHelper = commandDirectory === execPath;
+  const binaryBesideHelper =
+    posix.basename(commandDirectory) === 'bin' &&
+    posix.dirname(commandDirectory) === posix.dirname(helperParent);
+  // Hosted Ubuntu runners also install Git in /usr/local/bin while keeping
+  // the distro's fixed /usr helper path. Admit only those exact system paths,
+  // without granting either installation prefix or arbitrary cross-prefixes.
+  const localSystemBinaryWithDistroHelpers =
+    executable === '/usr/local/bin/git' &&
+    (execPath === '/usr/lib/git-core' || execPath === '/usr/libexec/git-core');
+  if (
+    !binaryInsideHelper &&
+    !binaryBesideHelper &&
+    !localSystemBinaryWithDistroHelpers
+  )
+    return undefined;
+  const dataRoots = [getCanopyDataDir(), getCanopySecureDataDir()];
+  const safeRoots = delegationToolchainReadRoots(
+    [
+      commandDirectory,
+      execPath,
+      posix.join(posix.dirname(helperParent), 'bin'),
+    ],
+    {
+      platform: 'linux',
+      home: homedir(),
+      excludedRoots: [
+        ...dataRoots,
+        ...(await Promise.all(
+          dataRoots.map((root) => realpath(root).catch(() => root)),
+        )),
+      ],
+    },
+  );
+  // Reuse the command environment's private-directory and app-data policy as
+  // validation only. The returned grants remain the exact binary and helper.
+  if (
+    ![executable, execPath].every((entry) =>
+      safeRoots.some((root) => {
+        const relative = posix.relative(root, entry);
+        return (
+          relative !== '..' &&
+          !relative.startsWith('../') &&
+          !posix.isAbsolute(relative)
+        );
+      }),
+    )
+  )
+    return undefined;
+  if (
+    (await kind(executable)) !== 'file' ||
+    (await kind(execPath)) !== 'directory'
+  )
+    return undefined;
+  return {
+    runtimeRoots: Array.from(new Set([executable, execPath])),
+    commandDirectory,
+  };
+}
+
+/** Resolve the Linux git runtime, or undefined when it is unsupported. The
+ * `git --exec-path` probe runs under a bounded, clean environment: it inherits
+ * no ambient `GIT_EXEC_PATH`, `GIT_CONFIG*` or repository variables, disables
+ * system and global configuration, and runs outside the repository so it
+ * cannot execute repository-controlled configuration or hooks. */
+async function linuxGitAccess(
+  resolveGit: () => Promise<string>,
+  signal: AbortSignal | undefined,
+): Promise<{ runtimeRoots: string[]; commandDirectory: string } | undefined> {
+  const executable = await realpath(await resolveGit());
+  if ((await pathKind(executable)) !== 'file') return undefined;
+  const { stdout } = await execute(executable, ['--exec-path'], {
+    env: {
+      PATH: '/usr/bin:/bin',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_TERMINAL_PROMPT: '0',
+    },
+    cwd: '/',
+    timeout: 5000,
+    maxBuffer: 4096,
+    killSignal: 'SIGKILL',
+    signal,
+  });
+  const execPath = await realpath(stdout.trim());
+  return linuxGitRuntime(executable, execPath);
+}
+
 async function windowsGitAccess(
   metadata: Pick<DelegationGitAccess, 'metadataRoots' | 'privateMetadataRoots'>,
   resolveGit: () => Promise<string>,
@@ -262,17 +401,32 @@ export async function resolveDelegationGitAccess(
 ): Promise<DelegationGitAccess> {
   const { metadataRoots, privateMetadataRoots } =
     await delegationGitMetadata(cwd);
+  const os = hostOperatingSystem();
   if (
     !metadataRoots.length ||
-    (process.platform !== 'darwin' && process.platform !== 'win32')
+    (os !== 'darwin' && os !== 'win32' && os !== 'linux')
   )
     return NO_GIT_ACCESS;
-  if (process.platform === 'win32') {
+  if (os === 'win32') {
     try {
       return await windowsGitAccess(
         { metadataRoots, privateMetadataRoots },
         resolveGit,
       );
+    } catch {
+      return NO_GIT_ACCESS;
+    }
+  }
+  if (os === 'linux') {
+    try {
+      const runtime = await linuxGitAccess(resolveGit, signal);
+      if (!runtime) return NO_GIT_ACCESS;
+      return {
+        metadataRoots,
+        privateMetadataRoots,
+        runtimeRoots: runtime.runtimeRoots,
+        commandDirectories: [runtime.commandDirectory],
+      };
     } catch {
       return NO_GIT_ACCESS;
     }

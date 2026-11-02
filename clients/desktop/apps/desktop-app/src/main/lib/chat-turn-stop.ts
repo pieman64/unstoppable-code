@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatCancelRequest } from '@canopy/desktop-shared/types';
+import { buildChatSessionKey } from '../agents/session-key';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
-import { cancelChatTurn } from './chat-turn-cancel';
+import { getChatTurnOwnership } from '../services/chat-turn-ownership';
+import {
+  cancelChatTurn,
+  captureChatTurnStop,
+  type ChatTurnStopContext,
+} from './chat-turn-cancel';
 import { cancelTransientRetryForChat } from './transient-error-retry-service';
+import { captureTurnEndAndDiff } from './turn-diff-capture';
 
 const autoRoutingControllers = new Map<string, AbortController>();
 function routingKey(request: ChatCancelRequest): string {
@@ -32,16 +39,90 @@ export function beginChatAutoRouting(request: ChatCancelRequest): {
 }
 
 /** The shared ordinary Stop sequence, committed before any caller broadcasts. */
-export async function stopChatTurn(
+export async function stopChatTurn(request: ChatCancelRequest): Promise<{
+  type: 'result';
+  is_error: false;
+  result: 'Cancelled';
+  canopy_turn_user_message_id?: string;
+}> {
+  const stopContext = captureChatTurnStop(request);
+  // S blocks admission and holds wake from capture until this Stop's release
+  // and settle are durable, so no newer dispatch can start mid-Stop.
+  const scope = {
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    chatId: request.chatId,
+  };
+  const ownership = getChatTurnOwnership();
+  const stopToken = Symbol('chat-turn-stop');
+  const stopOwner = ownership.isBound()
+    ? ownership.registerStopOwner(scope, {
+        token: stopToken,
+        ...(stopContext.fence?.userMessageId
+          ? { userMessageId: stopContext.fence.userMessageId }
+          : {}),
+      })
+    : undefined;
+  try {
+    return await runStopSequence(request, stopContext);
+  } finally {
+    if (stopOwner)
+      ownership.removeStopOwner(scope, stopToken, stopOwner.operationEpoch);
+  }
+}
+
+/**
+ * Claude can start a turn before its prompt's evidence binds it, and a fence
+ * captured then names the turn by its own id. Canonical state learns the user
+ * message later; the queue's gate and dispatch owner were taken under that
+ * message, so Stop settles it. A wake that no message bound keeps its id.
+ */
+function boundUserMessageId(
+  scope: ChatCancelRequest,
+  fence: ChatTurnStopContext['fence'],
+): string | undefined {
+  if (fence?.turnId === undefined || fence.userMessageId !== fence.turnId)
+    return undefined;
+  const ownership = getChatTurnOwnership();
+  if (!ownership.isBound()) return undefined;
+  const snapshot = ownership.getSnapshot({
+    projectId: scope.projectId,
+    worktreeId: scope.worktreeId,
+    chatId: scope.chatId,
+  });
+  for (const view of [snapshot.receipt, snapshot.committed]) {
+    for (const turn of [view?.state.current, view?.state.lastEnded]) {
+      if (turn?.id === fence.turnId && turn.userMessageId !== undefined)
+        return turn.userMessageId;
+    }
+  }
+  return undefined;
+}
+
+async function runStopSequence(
   request: ChatCancelRequest,
-): Promise<{ type: 'result'; is_error: false; result: 'Cancelled' }> {
+  stopContext: ChatTurnStopContext,
+): Promise<{
+  type: 'result';
+  is_error: false;
+  result: 'Cancelled';
+  canopy_turn_user_message_id?: string;
+}> {
   autoRoutingControllers.get(routingKey(request))?.abort();
   cancelTransientRetryForChat(request, 'stop');
   deferredToolsReloadCoordinator.cancelActiveReload(
     request,
     'Deferred-tools reload was cancelled because the user stopped the chat.',
   );
-  await cancelChatTurn(request);
+  const userMessageId = stopContext.fence?.userMessageId;
+  // An idle native session has no turn id to fence a synthetic result. Keep
+  // the IPC return/broadcast shape, but give that no-op event a unique token
+  // so renderer turn matching cannot mistake it for a later send.
+  const unboundNativeStopToken =
+    stopContext.fence !== undefined && userMessageId === undefined
+      ? randomUUID()
+      : undefined;
+  const { outcome } = await cancelChatTurn(request, 'stop', stopContext);
   // Lazy local imports break the queue/state/cancellation initialization cycle.
   const [{ getChatQueueService }, { getChatStateService }] = await Promise.all([
     import('../services/chat-queue-service'),
@@ -49,16 +130,63 @@ export async function stopChatTurn(
   ]);
   // Providers may stop silently. Release the gate and durably settle the turn;
   // duplicate provider terminal events remain idempotent.
-  getChatQueueService().onTurnTerminal(request, 'cancelled');
+  const settledUserMessageId =
+    boundUserMessageId(request, stopContext.fence) ?? userMessageId;
+  const eventTurnUserMessageId = settledUserMessageId ?? unboundNativeStopToken;
   const data = {
     type: 'result',
     is_error: false,
     result: 'Cancelled',
+    ...(eventTurnUserMessageId
+      ? { canopy_turn_user_message_id: eventTurnUserMessageId }
+      : {}),
   } as const;
+  // There is no captured turn to release or persist. In particular, never
+  // send an untagged terminal into a native session after its epoch changed.
+  // cancelChatTurn released the queue's hold on any send it cancelled.
+  if (stopContext.fence !== undefined && userMessageId === undefined) {
+    return data;
+  }
+  getChatQueueService().onTurnTerminal(
+    request,
+    'cancelled',
+    settledUserMessageId,
+  );
   await getChatStateService().ingestProviderEvent({
     ...request,
     data,
+    ...(settledUserMessageId
+      ? { turnUserMessageId: settledUserMessageId }
+      : {}),
     mutationId: `manual-cancellation:${request.chatId}:${randomUUID()}`,
   });
+  // Stop's abort fallback ends the turn with no provider terminal, so the
+  // worktree turn's end capture never runs (turn-state phase 43e). A chat
+  // with no turn baseline, such as a Cowork chat, has no diff to capture.
+  if (outcome === 'fallback-aborted' && settledUserMessageId) {
+    try {
+      const turnDiff = await captureTurnEndAndDiff(
+        buildChatSessionKey(
+          request.projectId,
+          request.worktreeId,
+          request.chatId,
+        ),
+        { userMessageId: settledUserMessageId },
+      );
+      if (turnDiff)
+        await getChatStateService().ingestProviderEvent({
+          ...request,
+          data: {
+            type: 'turn_diff',
+            userMessageId: settledUserMessageId,
+            ...turnDiff,
+          },
+          turnUserMessageId: settledUserMessageId,
+          mutationId: `stop-turn-diff:${request.chatId}:${randomUUID()}`,
+        });
+    } catch {
+      // The diff is best-effort, as on the terminal path; Stop still settles.
+    }
+  }
   return data;
 }

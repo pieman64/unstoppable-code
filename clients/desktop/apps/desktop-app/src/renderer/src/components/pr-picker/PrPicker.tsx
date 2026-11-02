@@ -8,6 +8,11 @@ import {
 } from 'react';
 import type { PrPickerOption } from '@/stores/navigationStore';
 import type { PrState } from '@canopy/desktop-shared/types/github';
+import {
+  KeyHintFooter,
+  PullRequestStateBadge,
+} from '@canopy/ui-shared/components';
+import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
 import { openUrlExternally } from './openUrlExternally';
 import {
   getFilteredPrPickerOptions,
@@ -19,22 +24,8 @@ interface PrPickerProps {
   onClose: () => void;
 }
 
-const PR_STATE_TAG_CLASSES: Record<PrState, string> = {
-  open: 'border-fg-success-strong/30 bg-success-subtle fg-success-strong',
-  merged: 'border-fg-special-strong/30 bg-special-subtle fg-special-strong',
-  closed:
-    'border-fg-destructive-strong/30 bg-destructive-subtle fg-destructive-strong',
-  draft: 'border-fg-secondary/30 bg-fg-secondary/16 fg-secondary',
-};
-
 function StateTag({ state }: { state: PrState }): JSX.Element {
-  return (
-    <span
-      className={`inline-flex rounded-full border px-2 py-0.5 text-3xs font-medium ${PR_STATE_TAG_CLASSES[state]}`}
-    >
-      {state}
-    </span>
-  );
+  return <PullRequestStateBadge state={state} />;
 }
 
 export function PrPicker({ options, onClose }: PrPickerProps): JSX.Element {
@@ -200,11 +191,7 @@ export function PrPicker({ options, onClose }: PrPickerProps): JSX.Element {
             </ul>
           )}
         </div>
-        <div className="flex items-center justify-between border-t px-4 py-3 text-xs fg-secondary">
-          <span>Enter to open</span>
-          <span>Esc to close</span>
-          <span>↑↓ to navigate</span>
-        </div>
+        <KeyHintFooter hints={pickerKeyHints('open')} />
       </div>
     </div>
   );

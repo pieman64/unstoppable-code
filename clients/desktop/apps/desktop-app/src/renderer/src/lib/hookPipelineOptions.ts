@@ -81,7 +81,7 @@ async function loadPipelineData(
           : 'user',
   });
   if (!result.success || !result.data) {
-    throw new Error(result.error ?? 'This pipeline is unavailable.');
+    throw new Error(result.error ?? 'This workflow is unavailable.');
   }
   return result.data;
 }
@@ -174,7 +174,7 @@ export async function resolveHookPipelineOption(
     !pipelineSupportsExecutionScope(data.info, 'worktree')
   ) {
     throw new Error(
-      'This pipeline is unavailable or no longer supports dispatch in a worktree.',
+      'This workflow is unavailable or no longer supports dispatch in a worktree.',
     );
   }
   return { ...option, data };

@@ -11,8 +11,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type * as FileProcessModule from '../agents/delegation/file-process';
 import type * as ProxyModule from '../agents/codex-gateway-proxy-service';
 import type * as ServiceModule from '../agents/delegation/service';
+import type { ChatStateService } from '../services/chat-state-service';
 import type * as LifecycleModule from '../agents/delegation/lifecycle';
 import type * as StorageModule from '@canopy/desktop-shared/node/delegation/storage';
 import type * as LocalRunnerModule from '@canopy/desktop-shared/node/delegation/local-runner';
@@ -38,6 +40,16 @@ import {
   errorFields,
   failure,
 } from './helpers/delegation-cleanup-records';
+
+// These route-lifetime tests use scripted runners and never open native files.
+// Native helper validation and lifecycle have their own boundary/flow suites.
+jest.mock('../agents/delegation/file-process', () => ({
+  ...jest.requireActual<typeof FileProcessModule>(
+    '../agents/delegation/file-process',
+  ),
+  delegationFileBoundaryAvailable: (): Promise<boolean> =>
+    Promise.resolve(true),
+}));
 
 const ROUTE_TTL_MS = 30 * 60_000;
 const IDLE_PAST_TTL_MS = 31 * 60_000;
@@ -330,6 +342,17 @@ jest.mock('@canopy/desktop-shared/node/delegation/storage', () => {
   const actual = jest.requireActual<typeof StorageModule>(
     '@canopy/desktop-shared/node/delegation/storage',
   );
+  // storage and record-v3 import each other, so loading the actual module
+  // re-enters this factory before its exports exist; that nested load only
+  // needs the real schemas. Reading the unfinished class export throws.
+  const loaded = ((): boolean => {
+    try {
+      return typeof actual.FileDelegationStorage === 'function';
+    } catch {
+      return false;
+    }
+  })();
+  if (!loaded) return actual;
   /** Real file storage whose commits a test can hold. */
   class GatedDelegationStorage extends actual.FileDelegationStorage {
     override async commit(record: StoredDelegation): Promise<void> {
@@ -454,8 +477,15 @@ jest.mock('../lib/canopy-cloud-account-store', () => ({
   subscribeCanopyCloudAccountChanges: (): (() => void) => () => undefined,
 }));
 jest.mock('../services/chat-state-service', () => ({
-  getChatStateService: (): { subscribe: () => () => void } => ({
+  getChatStateService: (): Pick<
+    ChatStateService,
+    'subscribe' | 'appendDelegationItems' | 'generationStoreReadiness'
+  > => ({
     subscribe: () => () => undefined,
+    appendDelegationItems: (): Promise<boolean> => Promise.resolve(true),
+    // A format 2 scope keeps new generations in the legacy delegate log.
+    generationStoreReadiness: () =>
+      Promise.resolve({ formatVersion: 2, enableFormat4: false }),
   }),
 }));
 jest.mock('../observability', () => ({
@@ -490,12 +520,12 @@ function installTtlClock(): void {
     ttlTimers.set(handle, () => callback(...args));
     return handle;
   }) as typeof setTimeout);
-  jest.spyOn(global, 'clearTimeout').mockImplementation(((
-    handle?: NodeJS.Timeout | string | number,
-  ): void => {
-    if (typeof handle === 'object') ttlTimers.delete(handle);
-    realClearTimeout(handle);
-  }) as typeof clearTimeout);
+  jest
+    .spyOn(global, 'clearTimeout')
+    .mockImplementation((handle?: NodeJS.Timeout | string | number): void => {
+      if (typeof handle === 'object') ttlTimers.delete(handle);
+      realClearTimeout(handle);
+    });
 }
 /** Fires every pending 30-minute timer; any later wait is a new 30 minutes. */
 function idlePastRouteTtl(): void {

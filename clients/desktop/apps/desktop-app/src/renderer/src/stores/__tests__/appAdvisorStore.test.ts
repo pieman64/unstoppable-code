@@ -34,6 +34,7 @@ function makeEnvelope(): AppAdvisorUiStateEnvelope {
     capturedAt: new Date(0).toISOString(),
     digest: 'digest',
     snapshot: {
+      archivedContainers: { count: 0, viewerOpen: false },
       activePage: 'overview',
       overlays: {
         commandPaletteOpen: false,

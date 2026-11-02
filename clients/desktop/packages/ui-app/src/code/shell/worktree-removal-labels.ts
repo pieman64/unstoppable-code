@@ -1,3 +1,5 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+
 /**
  * Shared copy for worktree removal: action labels, confirmation titles, and
  * retention outcomes for Archive and Delete, plus the branch-choice hint.
@@ -16,10 +18,18 @@ export interface WorktreeDeleteLabels {
    * delete shortcut (both bypass or precede the confirmation dialog).
    */
   standaloneActionLabel: string;
-  /** Confirmation dialog heading. */
+  /** Confirmation dialog heading without a name, for batch and generic copy. */
   dialogTitle: string;
-  /** Confirmation dialog destructive button label. */
+  /**
+   * Confirmation dialog action, a verb and noun. The dialog's title repeats
+   * it as a question naming the worktree: `Delete worktree “owl”?`.
+   */
   dialogConfirmLabel: string;
+  /**
+   * The action takes the destructive role: Delete can end in losing the work
+   * for good, while Archive keeps it until the archive is deleted.
+   */
+  dialogDestructive: boolean;
   /** One-line retention outcome shown in the confirmation dialog. */
   retentionSummary: string;
   /** Full retention explanation behind the dialog's info button. */
@@ -44,16 +54,17 @@ export function getWorktreeDeleteLabels(
       archiveActionLabel: `Archive ${branchName}`,
       standaloneActionLabel: `Archive ${branchName}`,
       dialogTitle: 'Archive worktree?',
-      dialogConfirmLabel: 'Archive',
+      dialogConfirmLabel: 'Archive worktree',
+      dialogDestructive: false,
       retentionSummary: 'Kept until you delete the archive.',
       retentionDetail:
         `Archiving removes the worktree from disk and keeps its chats and ` +
-        `eligible pipeline history until you delete the archive. When a ` +
+        `eligible workflow history until you delete the archive. When a ` +
         `restorable archive can be created, its Git state is kept too, and ` +
         `restoring recreates that state in a new worktree.`,
       localWorkRetentionDetail:
         `Archiving removes the worktree from disk and keeps its chats and ` +
-        `eligible pipeline history until you delete the archive. When a ` +
+        `eligible workflow history until you delete the archive. When a ` +
         `restorable archive can be created, its commits and local changes ` +
         `are kept too, and restoring recreates that state in a new worktree.`,
     };
@@ -65,32 +76,32 @@ export function getWorktreeDeleteLabels(
     archiveActionLabel: `Delete ${branchName}`,
     standaloneActionLabel: `Delete ${branchName}`,
     dialogTitle: 'Delete worktree?',
-    dialogConfirmLabel: 'Delete',
+    dialogConfirmLabel: 'Delete worktree',
+    dialogDestructive: true,
     retentionSummary: `Restorable for ${retentionWindow} when an archive can be created.`,
     retentionDetail:
       `Deleting removes the worktree from disk and its chat from the sidebar. ` +
       `When a restorable archive can be created, its Git state, chats, and ` +
-      `eligible pipeline history are kept for ${retentionWindow}. Otherwise, ` +
+      `eligible workflow history are kept for ${retentionWindow}. Otherwise, ` +
       `deletion is permanent.`,
     localWorkRetentionDetail:
       `Deleting removes the worktree from disk and its chat from the ` +
       `sidebar. When a restorable archive can be created, its commits, local ` +
-      `changes, chats, and eligible pipeline history are kept for ` +
+      `changes, chats, and eligible workflow history are kept for ` +
       `${retentionWindow}. Otherwise, deletion is permanent.`,
   };
 }
 
 /**
- * The removal confirmation's branch-choice hint. An App Advisor request names
- * the branch handling it asked for; the hint names that button, but the user
- * still makes the final choice.
+ * The removal confirmation's note under its Keep the local branch switch. An
+ * App Advisor request presets the switch and names what it asked for; the
+ * user still makes the final choice. Without a request there is no note.
  */
 export function getWorktreeBranchChoiceHint(
   requestedDeleteBranch?: boolean,
-): string {
-  const base = 'Choose whether to keep the local Git branch.';
-  if (requestedDeleteBranch === undefined) return base;
-  return `${base} Advisor suggested ${
-    requestedDeleteBranch ? 'Delete local' : 'Preserve local'
-  }.`;
+): string | null {
+  if (requestedDeleteBranch === undefined) return null;
+  return requestedDeleteBranch
+    ? `${ORCHESTRATOR_LABEL} suggested deleting it.`
+    : `${ORCHESTRATOR_LABEL} suggested keeping it.`;
 }

@@ -6,6 +6,10 @@ import {
 } from '@/lib/githubConnectOffer';
 import { getOrgProjectAddStore } from '@/lib/orgProjectCatalogAdd';
 import { startOrgProjectSetupWithGitHubOffer } from '@/lib/orgProjectConnectOffer';
+import type {
+  HomeLinkPlan,
+  HomeLinkTargetState,
+} from '@/components/home/homeLinkTarget';
 import {
   useGitHubConnectOfferStore,
   type GitHubConnectContinuation,
@@ -39,11 +43,24 @@ jest.mock('@/stores/githubStore', () => {
   };
 });
 jest.mock('@/stores/homeComposerStore', () => {
-  const state = {
-    linkTarget: { status: 'ready', key: 'github.com/acme/new' } as {
-      status: string;
-      key?: string;
+  const linkTarget: HomeLinkTargetState = {
+    status: 'ready',
+    key: 'github.com/acme/new',
+    fingerprint: 'github.com/acme/new',
+    plan: {
+      kind: 'create-project',
+      repository: {
+        owner: 'acme',
+        repo: 'new',
+        repositoryKey: 'acme/new',
+        cloneUrl: 'https://github.com/acme/new.git',
+        isArchived: false,
+      },
+      pending: { kind: 'default-branch' },
     },
+  };
+  const state = {
+    linkTarget,
     isSending: false,
     mode: 'chat',
     text: 'start on https://github.com/acme/new',
@@ -81,13 +98,59 @@ const composer = useHomeComposerStore.getState();
 const setComposer = jest.mocked(useHomeComposerStore.setState);
 const composerTestApi = jest.requireMock<{
   useHomeComposerStore: {
-    setLinkTargetForTest(linkTarget: { status: string; key?: string }): void;
+    setLinkTargetForTest(linkTarget: HomeLinkTargetState): void;
     listenerCountForTest(): number;
   };
 }>('@/stores/homeComposerStore').useHomeComposerStore;
 
 const FAILURE = 'Couldn’t add acme/new: fatal: could not read Username';
 const DRAFT = 'start on https://github.com/acme/new';
+const HOME_LINK_KEY = 'github.com/acme/new';
+const HOME_LINK_FINGERPRINT = 'github.com/acme/new';
+
+function homeLinkPlan(repo: string): HomeLinkPlan {
+  return {
+    kind: 'create-project',
+    repository: {
+      owner: 'acme',
+      repo,
+      repositoryKey: `acme/${repo}`,
+      cloneUrl: `https://github.com/acme/${repo}.git`,
+      isArchived: false,
+    },
+    pending: { kind: 'default-branch' },
+  };
+}
+
+function readyLinkTarget(
+  key: string = HOME_LINK_KEY,
+  repo = 'new',
+): HomeLinkTargetState {
+  return {
+    status: 'ready',
+    key,
+    fingerprint: HOME_LINK_FINGERPRINT,
+    plan: homeLinkPlan(repo),
+  };
+}
+
+function resolvingLinkTarget(): HomeLinkTargetState {
+  return {
+    status: 'resolving',
+    key: HOME_LINK_KEY,
+    fingerprint: HOME_LINK_FINGERPRINT,
+  };
+}
+
+function blockedLinkTarget(): HomeLinkTargetState {
+  return {
+    status: 'blocked',
+    key: HOME_LINK_KEY,
+    fingerprint: HOME_LINK_FINGERPRINT,
+    message: 'GitHub access is required',
+    actions: [],
+  };
+}
 
 function progress(): OrgProjectSetupProgress {
   return {
@@ -104,10 +167,11 @@ function progress(): OrgProjectSetupProgress {
 function orgStore(
   overrides: { accountEpoch?: number; hasProgress?: boolean } = {},
 ): ReturnType<typeof getOrgProjectAddStore> {
+  const setupProgress: Readonly<Record<string, OrgProjectSetupProgress>> =
+    overrides.hasProgress === false ? {} : { 'project-a': progress() };
   const state = {
     accountEpoch: overrides.accountEpoch ?? 3,
-    setupProgress:
-      overrides.hasProgress === false ? {} : { 'project-a': progress() },
+    setupProgress,
     startSetup: jest.fn(),
     setPreference: jest.fn(),
     requestSetup: jest.fn(),
@@ -153,7 +217,7 @@ describe('GitHub connect offer for adding a project', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     useGitHubConnectOfferStore.setState({ offer: null });
-    composer.linkTarget = { status: 'ready', key: 'github.com/acme/new' };
+    composer.linkTarget = readyLinkTarget();
     composer.isSending = false;
     composer.mode = 'chat';
     composer.text = DRAFT;
@@ -224,16 +288,13 @@ describe('GitHub connect offer for adding a project', () => {
     // Connecting re-resolves the link, and the send gate stops a link that is
     // still resolving, so the resend waits for the check to finish.
     it('waits for a re-resolving link before resending once', async () => {
-      composer.linkTarget = { status: 'resolving', key: 'github.com/acme/new' };
+      composer.linkTarget = resolvingLinkTarget();
       const settled = settleWith(homeContinuation('send'), 'connected');
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       expect(composer.requestGitHubConnectResume).not.toHaveBeenCalled();
-      composerTestApi.setLinkTargetForTest({
-        status: 'ready',
-        key: 'github.com/acme/new',
-      });
+      composerTestApi.setLinkTargetForTest(readyLinkTarget());
       await settled;
       expect(composer.requestGitHubConnectResume).toHaveBeenCalledTimes(1);
       expect(setComposer).not.toHaveBeenCalled();
@@ -241,13 +302,10 @@ describe('GitHub connect offer for adding a project', () => {
     });
 
     it('restores the failure when the re-resolved link is blocked', async () => {
-      composer.linkTarget = { status: 'resolving', key: 'github.com/acme/new' };
+      composer.linkTarget = resolvingLinkTarget();
       const settled = settleWith(homeContinuation('send'), 'connected');
       await Promise.resolve();
-      composerTestApi.setLinkTargetForTest({
-        status: 'blocked',
-        key: 'github.com/acme/new',
-      });
+      composerTestApi.setLinkTargetForTest(blockedLinkTarget());
       await settled;
       expect(composer.requestGitHubConnectResume).not.toHaveBeenCalled();
       expect(setComposer).toHaveBeenCalledWith({
@@ -259,10 +317,7 @@ describe('GitHub connect offer for adding a project', () => {
     it('restores the failure when the link never finishes resolving', async () => {
       jest.useFakeTimers();
       try {
-        composer.linkTarget = {
-          status: 'resolving',
-          key: 'github.com/acme/new',
-        };
+        composer.linkTarget = resolvingLinkTarget();
         const settled = settleWith(homeContinuation('send'), 'connected');
         await jest.advanceTimersByTimeAsync(15_000);
         await settled;
@@ -277,18 +332,11 @@ describe('GitHub connect offer for adding a project', () => {
       }
     });
 
-    it.each([
-      [
-        'the link is blocked',
-        { status: 'blocked', key: 'github.com/acme/new' },
-        false,
-      ],
-      [
-        'a send is already running',
-        { status: 'ready', key: 'github.com/acme/new' },
-        true,
-      ],
-    ])(
+    const targetCases: ReadonlyArray<[string, HomeLinkTargetState, boolean]> = [
+      ['the link is blocked', blockedLinkTarget(), false],
+      ['a send is already running', readyLinkTarget(), true],
+    ];
+    it.each(targetCases)(
       'restores the failure instead of resending when %s',
       async (_label, linkTarget, isSending) => {
         composer.linkTarget = linkTarget;
@@ -320,7 +368,7 @@ describe('GitHub connect offer for adding a project', () => {
 
     // The failure belongs to its link; another link's draft keeps its state.
     it('neither resends nor restores when the draft targets another link', async () => {
-      composer.linkTarget = { status: 'ready', key: 'github.com/acme/other' };
+      composer.linkTarget = readyLinkTarget('github.com/acme/other', 'other');
       await settleWith(homeContinuation('send'), 'connected');
       expect(composer.requestGitHubConnectResume).not.toHaveBeenCalled();
       expect(setComposer).not.toHaveBeenCalled();

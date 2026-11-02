@@ -461,7 +461,7 @@ export function SubagentComposer({
                   >
                     <span className="fg-destructive">{queued.error}</span>
                     <Button
-                      size="control"
+                      size="compact"
                       variant="secondary"
                       onClick={(): void => queueActions.retryDraft(queued.id)}
                       data-testid="subagent-queue-retry"
@@ -518,8 +518,9 @@ export function SubagentComposer({
                   shortcut={interruptVisible ? undefined : '↵'}
                 >
                   <span className="inline-flex">
-                    <button
-                      type="button"
+                    <Button
+                      variant="primary"
+                      iconOnly
                       onClick={handleAction}
                       disabled={buttonDisabled}
                       aria-label={
@@ -532,14 +533,13 @@ export function SubagentComposer({
                           ? 'subagent-composer-interrupt'
                           : 'subagent-composer-send'
                       }
-                      className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent fg-emphasis transition enabled:hover:bg-accent/90 enabled:active:scale-97 disabled:cursor-not-allowed disabled:bg-muted disabled:fg-tertiary"
                     >
                       {interruptVisible ? (
                         <StopFilledIcon size={16} aria-hidden />
                       ) : (
                         <ArrowUp size={16} aria-hidden />
                       )}
-                    </button>
+                    </Button>
                   </span>
                 </Tooltip>
               }

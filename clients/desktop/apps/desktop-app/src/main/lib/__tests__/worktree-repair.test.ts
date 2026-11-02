@@ -659,5 +659,7 @@ describe('worktree repair records (real fs)', () => {
 
 /** Internal callers are typed; a test sends an unknown source the same way. */
 function untypedSource(value: string): 'health-check' {
-  return Reflect.apply(String, undefined, [value]);
+  const input: { source: 'health-check' } = { source: 'health-check' };
+  Reflect.set(input, 'source', value);
+  return input.source;
 }

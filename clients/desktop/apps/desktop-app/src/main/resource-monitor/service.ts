@@ -1,10 +1,10 @@
 import { getHeapStatistics } from 'node:v8';
-import * as os from 'node:os';
-import type * as ChildProcessModule from 'node:child_process';
-import type { ProcessMetric } from 'electron';
 import { BRAND } from '@canopy/brand/current';
-import { CHAT_LABEL } from '@canopy/protocol';
-import { loadRequiredNodeModule } from '@canopy/desktop-shared/node/lib/packaged-module-loader';
+import {
+  ExecutionAdmissionError,
+  type ExecutionAccountingSnapshot,
+  type ExecutionRegistrationHandle,
+} from '@canopy/core-runtime';
 import {
   IPC_CHANNELS,
   type ResourceGroupId,
@@ -24,19 +24,27 @@ import {
   succeedDesktopOperation,
 } from '@canopy/desktop-instrumentation/electron/main';
 import { getObservabilityService } from '../observability';
-import { getActivePipelineExecutionCount } from '../pipelines/pipeline-execution-registry';
 import {
-  getPerformanceLimits,
-  getPerformanceLimitsVersion,
-} from '../lib/performance-limits';
+  getExecutionAccounting,
+  resetExecutionAccountingSamples,
+  type DesktopExecutionAccounting,
+} from '../execution-accounting';
+import { getPerformanceLimits } from '../lib/performance-limits';
 import { isRecord } from '../lib/type-guards';
-import {
-  DEFAULT_MEMORY_PRESSURE_CRITICAL_THRESHOLD_BYTES,
-  DEFAULT_MEMORY_PRESSURE_WARNING_THRESHOLD_BYTES,
-} from '@canopy/desktop-shared/constants/preferences';
 import { sendToWebContents } from '../lib/web-contents-send';
 
-const GIB = 1024 * 1024 * 1024;
+/*
+ * The desktop projection of core execution accounting (CAN-4135). Core
+ * `ExecutionAccounting` owns admission, leases, registrations, the process
+ * table and pressure; this service adds what stays desktop or Phase 5's:
+ * chat-turn admission, Codex pool status and idle suspension, managed
+ * process telemetry, pressure diagnostics, the sampling cadence that follows
+ * window focus, and the renderer broadcast. Every client reads the same
+ * accounting through `core.execution.*` (CAN-5080): this projection follows
+ * core's sample events, whoever sampled, and `resource-monitor:get-snapshot`
+ * reads through the dispatcher.
+ */
+
 const DEFAULT_SAMPLE_INTERVAL_MS = 2_000;
 /**
  * Sampling runs at the base interval only while the app window is focused.
@@ -61,6 +69,9 @@ const MAX_TIMEOUT_DELAY_MS = 2 ** 31 - 1;
  * is plenty.
  */
 const CODEX_POOL_SUSPEND_ATTEMPT_MIN_INTERVAL_MS = 60_000;
+/** Same spacing for releasing idle Claude sessions under critical pressure. */
+const CLAUDE_IDLE_RELEASE_ATTEMPT_MIN_INTERVAL_MS =
+  CODEX_POOL_SUSPEND_ATTEMPT_MIN_INTERVAL_MS;
 /**
  * Broadcasts are skipped while consecutive snapshots are materially
  * unchanged, but never suppressed longer than this, so renderer consumers
@@ -70,36 +81,6 @@ const MAX_BROADCAST_SILENCE_MS = 30_000;
 /** RSS quantization for the material-change signature (32 MiB buckets). */
 const RSS_SIGNATURE_BUCKET_BYTES = 32 * 1024 * 1024;
 const MANAGED_PROCESS_OPERATION_NAME = 'canopy.managed_process';
-const DEFAULT_WARNING_FREE_RATIO = 0.12;
-const DEFAULT_CRITICAL_FREE_RATIO = 0.08;
-const PROCESS_TABLE_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
-const WINDOWS_PROCESS_TABLE_TIMEOUT_MS = 15_000;
-const WINDOWS_CPU_TIME_UNITS_PER_SECOND = 10_000_000;
-const WINDOWS_PROCESS_TABLE_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-$processes = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { [int]$_.ProcessId -ne $PID } | ForEach-Object {
-  [pscustomobject]@{
-    ProcessId = [int]$_.ProcessId
-    ParentProcessId = [int]$_.ParentProcessId
-    CpuTime100ns = ([UInt64]$_.KernelModeTime + [UInt64]$_.UserModeTime)
-    WorkingSetSize = [UInt64]$_.WorkingSetSize
-    Name = [string]$_.Name
-    CommandLine = [string]$_.CommandLine
-  }
-}
-@($processes) | ConvertTo-Json -Compress
-`;
-const GROUP_LABELS: Record<ResourceGroupId, string> = {
-  app: BRAND.displayName,
-  browser: 'Browser',
-  codex: 'Codex',
-  claude: 'Claude',
-  chat: CHAT_LABEL,
-  pipelines: 'Pipelines',
-  terminal: 'Terminals',
-  scripts: 'Script',
-  other: 'Other',
-};
 
 interface ResourceMonitorWindow {
   isDestroyed(): boolean;
@@ -115,11 +96,6 @@ const PRESSURE_RANK: Record<ResourcePressureLevel, number> = {
   warning: 2,
   critical: 3,
 };
-const rejectedOverrideWarnings = new Set<string>();
-let cachedThresholds: {
-  version: number;
-  thresholds: ResourceMonitorThresholds;
-} | null = null;
 
 export interface ResourceRegistrationHandle {
   update(update: Partial<ResourceProcessRegistration>): void;
@@ -141,49 +117,7 @@ export interface ResourceProcessRegistration {
   metadata?: ResourceMetadata;
 }
 
-interface ProcessTableRow {
-  pid: number;
-  ppid: number;
-  pgid: number;
-  cpuPercent: number;
-  memoryRssBytes: number;
-  command: string;
-}
-
-interface WindowsProcessCpuSample {
-  cpuTime100ns: number;
-  sampledAtMs: number;
-}
-
-interface WindowsProcessTableParseResult {
-  rows: Map<number, ProcessTableRow>;
-  cpuSamples: Map<number, WindowsProcessCpuSample>;
-}
-
-interface ResourceMonitorThresholds {
-  warningMemoryBytes: number;
-  criticalMemoryBytes: number;
-  warningFreeRatio: number;
-  criticalFreeRatio: number;
-}
-
-interface SamplingData {
-  processRows: Map<number, ProcessTableRow>;
-  appRows: Map<number, ResourceProcessSnapshot>;
-  childrenByParent: Map<number, ProcessTableRow[]>;
-  error?: string;
-  processTableAvailable: boolean;
-}
-
 type ResourceRegistrationType = 'process' | 'work_item';
-
-interface AggregatedProcess {
-  cpuPercent: number;
-  memoryRssBytes: number;
-  processCount: number;
-  children: ResourceProcessSnapshot[];
-  ppid?: number;
-}
 
 interface ChatTurnConcurrencySnapshot {
   activeTurns: number;
@@ -196,11 +130,17 @@ interface CodexPoolResourceSnapshotSummary {
   pid?: number;
 }
 
+interface DesktopOverlay {
+  chatTurns: ChatTurnConcurrencySnapshot;
+  codexPools: ResourceMonitorSnapshot['guards']['codexPools'];
+}
+
 interface ActiveManagedProcessOperation {
   operationKey: string;
   registrationType: ResourceRegistrationType;
   registeredAtMs: number;
   initialRegistration: ResourceProcessRegistration;
+  handle: ExecutionRegistrationHandle<ResourceMetadata>;
 }
 
 function buildManagedProcessTelemetryContext(
@@ -243,16 +183,6 @@ function safelyEmitManagedProcessTelemetry(callback: () => void): void {
   }
 }
 
-interface ElectronAppMetricsProvider {
-  getAppMetrics: () => unknown;
-}
-
-function isElectronAppMetricsProvider(
-  value: unknown,
-): value is ElectronAppMetricsProvider {
-  return isRecord(value) && typeof value.getAppMetrics === 'function';
-}
-
 function isCodexPoolResourceSnapshotSummary(
   value: unknown,
 ): value is CodexPoolResourceSnapshotSummary {
@@ -265,78 +195,6 @@ function isCodexPoolResourceSnapshotSummary(
     typeof activeTurnCount === 'number' &&
     (pid === undefined || typeof pid === 'number')
   );
-}
-
-function isChildProcessModule(
-  value: unknown,
-): value is typeof ChildProcessModule {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'execFile' in value &&
-    typeof value.execFile === 'function'
-  );
-}
-
-async function readMacProcessTable(): Promise<string> {
-  const childProcess = loadRequiredNodeModule<typeof ChildProcessModule>({
-    moduleId: 'node:child_process',
-    requireFrom: __filename,
-    validate: isChildProcessModule,
-  });
-  return new Promise((resolve, reject) => {
-    childProcess.execFile(
-      '/bin/ps',
-      ['-axo', 'pid=,ppid=,pgid=,pcpu=,rss=,command='],
-      {
-        encoding: 'utf8',
-        maxBuffer: PROCESS_TABLE_MAX_BUFFER_BYTES,
-        windowsHide: process.platform === 'win32',
-      },
-      (error, stdout) => {
-        if (error) {
-          reject(error instanceof Error ? error : new Error('execFile failed'));
-          return;
-        }
-        resolve(stdout);
-      },
-    );
-  });
-}
-
-async function readWindowsProcessTable(): Promise<string> {
-  const childProcess = loadRequiredNodeModule<typeof ChildProcessModule>({
-    moduleId: 'node:child_process',
-    requireFrom: __filename,
-    validate: isChildProcessModule,
-  });
-  return new Promise((resolve, reject) => {
-    childProcess.execFile(
-      'powershell.exe',
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        WINDOWS_PROCESS_TABLE_SCRIPT,
-      ],
-      {
-        encoding: 'utf8',
-        maxBuffer: PROCESS_TABLE_MAX_BUFFER_BYTES,
-        timeout: WINDOWS_PROCESS_TABLE_TIMEOUT_MS,
-        windowsHide: true,
-      },
-      (error, stdout) => {
-        if (error) {
-          reject(error instanceof Error ? error : new Error('execFile failed'));
-          return;
-        }
-        resolve(stdout);
-      },
-    );
-  });
 }
 
 export class ResourceGuardError extends Error {
@@ -396,462 +254,23 @@ function readPositiveIntegerEnv(name: string): number | undefined {
   return value;
 }
 
-function readRatioEnv(name: string): number | undefined {
-  const raw = process.env[name];
-  if (typeof raw !== 'string' || raw.trim().length === 0) {
-    return undefined;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0 || value >= 1) {
-    return undefined;
-  }
-  return value;
+function chatGuardMessage(maxConcurrentTurns: number): string {
+  return `${BRAND.displayName} is already running ${String(maxConcurrentTurns)} chat turns. Wait for one to finish before starting another.`;
 }
 
-function sanitizeCommand(command: string): string {
-  const firstToken = command.trim().split(/\s+/)[0] ?? '';
-  const basename =
-    firstToken.split(/[\\/]/).filter(Boolean).pop() ?? firstToken;
-  return basename || 'process';
-}
-
-function getLogicalCpuCount(): number {
-  const count = os.cpus().length;
-  return Number.isInteger(count) && count > 0 ? count : 1;
-}
-
-function clampCpuPercent(percent: number): number {
-  if (!Number.isFinite(percent) || percent <= 0) {
-    return 0;
-  }
-  return Math.min(100, percent);
-}
-
-function normalizeCpuPercent(percentOfSingleCore: number): number {
-  return clampCpuPercent(percentOfSingleCore / getLogicalCpuCount());
-}
-
-function normalizeElectronCpuPercent(percent: number): number {
-  if (percent > 100) {
-    return normalizeCpuPercent(percent);
-  }
-  return clampCpuPercent(percent);
-}
-
-export function parseMacProcessTable(
-  output: string,
-): Map<number, ProcessTableRow> {
-  const rows = new Map<number, ProcessTableRow>();
-  for (const line of output.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    const match = /^(\d+)\s+(\d+)\s+(\d+)\s+([0-9.]+)\s+(\d+)\s*(.*)$/.exec(
-      trimmed,
-    );
-    if (!match) {
-      continue;
-    }
-    const pid = Number(match[1]);
-    const ppid = Number(match[2]);
-    const pgid = Number(match[3]);
-    const cpuPercent = Number(match[4]);
-    const rssKib = Number(match[5]);
-    if (
-      !Number.isFinite(pid) ||
-      !Number.isFinite(ppid) ||
-      !Number.isFinite(pgid) ||
-      !Number.isFinite(cpuPercent) ||
-      !Number.isFinite(rssKib)
-    ) {
-      continue;
-    }
-    rows.set(pid, {
-      pid,
-      ppid,
-      pgid,
-      cpuPercent: normalizeCpuPercent(cpuPercent),
-      memoryRssBytes: rssKib * 1024,
-      command: sanitizeCommand(match[6] ?? ''),
-    });
-  }
-  return rows;
-}
-
-function readNumberField(
-  value: unknown,
-  fieldName: string,
-): number | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const raw = value[fieldName];
-  if (typeof raw === 'number') {
-    return Number.isFinite(raw) ? raw : undefined;
-  }
-  if (typeof raw === 'string' && raw.trim().length > 0) {
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function readStringField(value: unknown, fieldName: string): string {
-  if (!isRecord(value)) {
-    return '';
-  }
-  const raw = value[fieldName];
-  return typeof raw === 'string' ? raw : '';
-}
-
-function parseWindowsProcessJson(output: string): unknown[] {
-  const trimmed = output.trim();
-  if (!trimmed) {
-    throw new Error('Windows process table output was empty');
-  }
-  const parsed: unknown = JSON.parse(trimmed);
-  return Array.isArray(parsed) ? parsed : [parsed];
-}
-
-function computeWindowsCpuPercent(
-  current: WindowsProcessCpuSample,
-  previous: WindowsProcessCpuSample | undefined,
-): number {
-  if (!previous) {
-    return 0;
-  }
-  const elapsedMs = current.sampledAtMs - previous.sampledAtMs;
-  const cpuTimeDelta100ns = current.cpuTime100ns - previous.cpuTime100ns;
-  if (elapsedMs <= 0 || cpuTimeDelta100ns <= 0) {
-    return 0;
-  }
-  const cpuSeconds = cpuTimeDelta100ns / WINDOWS_CPU_TIME_UNITS_PER_SECOND;
-  const elapsedSeconds = elapsedMs / 1_000;
-  return clampCpuPercent(
-    (cpuSeconds / elapsedSeconds / getLogicalCpuCount()) * 100,
-  );
-}
-
-export function parseWindowsProcessTable(
-  output: string,
-  previousCpuSamples: Map<number, WindowsProcessCpuSample>,
-  sampledAtMs: number,
-): WindowsProcessTableParseResult {
-  const rows = new Map<number, ProcessTableRow>();
-  const cpuSamples = new Map<number, WindowsProcessCpuSample>();
-  for (const entry of parseWindowsProcessJson(output)) {
-    const pid = readNumberField(entry, 'ProcessId');
-    const ppid = readNumberField(entry, 'ParentProcessId');
-    const cpuTime100ns = readNumberField(entry, 'CpuTime100ns');
-    const workingSetSize = readNumberField(entry, 'WorkingSetSize');
-    if (
-      pid === undefined ||
-      ppid === undefined ||
-      cpuTime100ns === undefined ||
-      workingSetSize === undefined
-    ) {
-      continue;
-    }
-    const currentCpuSample = { cpuTime100ns, sampledAtMs };
-    cpuSamples.set(pid, currentCpuSample);
-    const name = readStringField(entry, 'Name');
-    const commandLine = readStringField(entry, 'CommandLine');
-    rows.set(pid, {
-      pid,
-      ppid,
-      // Windows does not expose POSIX process groups. Treat the process itself
-      // as the group anchor so registrations can still attach the root PID.
-      pgid: pid,
-      cpuPercent: computeWindowsCpuPercent(
-        currentCpuSample,
-        previousCpuSamples.get(pid),
-      ),
-      memoryRssBytes: Math.max(0, workingSetSize),
-      command: sanitizeCommand(name || commandLine),
-    });
-  }
-  return { rows, cpuSamples };
-}
-
-function buildChildrenByParent(
-  rows: Map<number, ProcessTableRow>,
-): Map<number, ProcessTableRow[]> {
-  const children = new Map<number, ProcessTableRow[]>();
-  for (const row of Array.from(rows.values())) {
-    const siblings = children.get(row.ppid) ?? [];
-    siblings.push(row);
-    children.set(row.ppid, siblings);
-  }
-  return children;
-}
-
-function metricGroupId(metricType: string): ResourceGroupId {
-  return metricType === 'Browser' ? 'app' : 'app';
-}
-
-function metricKind(metricType: string): ResourceProcessKind {
-  if (metricType === 'Browser') {
-    return 'electron-main';
-  }
-  if (metricType === 'GPU') {
-    return 'electron-gpu';
-  }
-  if (metricType === 'Utility') {
-    return 'electron-utility';
-  }
-  return 'electron-renderer';
-}
-
-function metricLabel(metricType: string): string {
-  if (metricType === 'Browser') {
-    return 'Electron main';
-  }
-  if (metricType === 'GPU') {
-    return 'Electron GPU';
-  }
-  if (metricType === 'Utility') {
-    return 'Electron utility';
-  }
-  return 'Electron renderer';
-}
-
-function isProcessMetric(value: unknown): value is ProcessMetric {
-  if (!isRecord(value)) {
-    return false;
-  }
-  const { pid, type, cpu, memory } = value;
-  return (
-    typeof pid === 'number' &&
-    typeof type === 'string' &&
-    isRecord(cpu) &&
-    typeof cpu.percentCPUUsage === 'number' &&
-    isRecord(memory) &&
-    typeof memory.workingSetSize === 'number'
-  );
-}
-
-function getElectronAppMetrics(): ProcessMetric[] {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electronModule: unknown = require('electron');
-    if (!isRecord(electronModule)) {
-      return [];
-    }
-    const { app } = electronModule;
-    if (!isElectronAppMetricsProvider(app)) {
-      return [];
-    }
-    const metrics: unknown = app.getAppMetrics();
-    return Array.isArray(metrics) ? metrics.filter(isProcessMetric) : [];
-  } catch {
-    return [];
-  }
-}
-
-function appMetricToSnapshot(metric: ProcessMetric): ResourceProcessSnapshot {
-  return {
-    id: `electron:${metric.pid}`,
-    kind: metricKind(metric.type),
-    groupId: metricGroupId(metric.type),
-    label: metricLabel(metric.type),
-    pid: metric.pid,
-    cpuPercent: normalizeElectronCpuPercent(metric.cpu.percentCPUUsage),
-    memoryRssBytes: metric.memory.workingSetSize * 1024,
-    processCount: 1,
-    status: 'running',
-  };
-}
-
-function processTableUnavailableError(
-  appRows: Map<number, ResourceProcessSnapshot>,
-): string | undefined {
-  return appRows.size === 0 ? 'process-table sampling unavailable' : undefined;
-}
-
-function processRowClassification(row: ProcessTableRow): {
-  groupId: ResourceGroupId;
-  kind: ResourceProcessKind;
-} {
-  const command = row.command.toLowerCase().replace(/\.exe$/, '');
-  if (command === 'codex') {
-    return {
-      groupId: 'codex',
-      kind: 'chat-provider',
-    };
-  }
-  if (command === 'claude') {
-    return {
-      groupId: 'claude',
-      kind: 'chat-provider',
-    };
-  }
-  return {
-    groupId: 'other',
-    kind: 'other',
-  };
-}
-
-function recordRejectedOverrideWarning(reason: string): void {
-  if (rejectedOverrideWarnings.has(reason)) {
-    return;
-  }
-  rejectedOverrideWarnings.add(reason);
-  getObservabilityService().recordAppDiagnostic({
-    version: 1,
-    timestamp: new Date().toISOString(),
-    kind: 'resource_monitor_config_warning',
-    reason,
-    memoryRssBytes: 0,
-  });
-}
-
-function emptyGroup(id: ResourceGroupId): ResourceGroupSnapshotBuilder {
-  return {
-    id,
-    label: GROUP_LABELS[id],
-    cpuPercent: 0,
-    memoryRssBytes: 0,
-    processCount: 0,
-    items: [],
-  };
-}
-
-interface ResourceGroupSnapshotBuilder {
-  id: ResourceGroupId;
-  label: string;
-  cpuPercent: number;
-  memoryRssBytes: number;
-  processCount: number;
-  items: ResourceProcessSnapshot[];
-}
-
-function shouldCountItemInGroup(item: ResourceProcessSnapshot): boolean {
-  return !(item.groupId === 'pipelines' && item.kind === 'pipeline-execution');
-}
-
-function shouldShowItemInGroup(item: ResourceProcessSnapshot): boolean {
-  return !(
-    item.kind === 'codex-app-server-pool' && typeof item.pid !== 'number'
-  );
-}
-
-function addToGroup(
-  groups: Map<ResourceGroupId, ResourceGroupSnapshotBuilder>,
-  item: ResourceProcessSnapshot,
-): void {
-  if (!shouldShowItemInGroup(item)) {
-    return;
-  }
-  const group = groups.get(item.groupId) ?? emptyGroup(item.groupId);
-  group.items.push(item);
-  if (shouldCountItemInGroup(item)) {
-    group.cpuPercent = clampCpuPercent(group.cpuPercent + item.cpuPercent);
-    group.memoryRssBytes += item.memoryRssBytes;
-    group.processCount += item.processCount;
-  }
-  groups.set(item.groupId, group);
-}
-
-function computeThresholds(): ResourceMonitorThresholds {
-  const totalMemory = os.totalmem();
-  const defaultWarningMemoryBytes = Math.min(
-    2 * GIB,
-    Math.floor(totalMemory * 0.5),
-  );
-  const defaultCriticalMemoryBytes = Math.min(
-    4 * GIB,
-    Math.floor(totalMemory * 0.7),
-  );
-
-  let warningMemoryBytes =
-    getPerformanceLimits().memoryPressureWarningThresholdBytes;
-  let criticalMemoryBytes =
-    getPerformanceLimits().memoryPressureCriticalThresholdBytes;
-
-  if (criticalMemoryBytes <= warningMemoryBytes) {
-    warningMemoryBytes = Math.min(
-      DEFAULT_MEMORY_PRESSURE_WARNING_THRESHOLD_BYTES,
-      defaultWarningMemoryBytes,
-    );
-    criticalMemoryBytes = Math.min(
-      DEFAULT_MEMORY_PRESSURE_CRITICAL_THRESHOLD_BYTES,
-      defaultCriticalMemoryBytes,
-    );
-    recordRejectedOverrideWarning(
-      'Invalid resource monitor memory threshold override',
-    );
-  }
-
-  let warningFreeRatio =
-    readRatioEnv('CANOPY_RESOURCE_WARNING_FREE_RATIO') ??
-    DEFAULT_WARNING_FREE_RATIO;
-  let criticalFreeRatio =
-    readRatioEnv('CANOPY_RESOURCE_CRITICAL_FREE_RATIO') ??
-    DEFAULT_CRITICAL_FREE_RATIO;
-  if (criticalFreeRatio >= warningFreeRatio) {
-    warningFreeRatio = DEFAULT_WARNING_FREE_RATIO;
-    criticalFreeRatio = DEFAULT_CRITICAL_FREE_RATIO;
-    recordRejectedOverrideWarning(
-      'Invalid resource monitor free-memory ratio override',
-    );
-  }
-
-  return {
-    warningMemoryBytes,
-    criticalMemoryBytes,
-    warningFreeRatio,
-    criticalFreeRatio,
-  };
-}
-
-function buildThresholds(): ResourceMonitorThresholds {
-  const version = getPerformanceLimitsVersion();
-  if (cachedThresholds?.version !== version) {
-    cachedThresholds = {
-      version,
-      thresholds: computeThresholds(),
-    };
-  }
-  return cachedThresholds.thresholds;
+function pipelineGuardMessage(error: ExecutionAdmissionError): string {
+  return error.reason === 'limit'
+    ? `${BRAND.displayName} is already running ${String(error.maxActive)} workflow executions. Wait for one to finish before starting another workflow.`
+    : `${BRAND.displayName} is under high memory pressure. Stop an active chat or workflow execution before starting another workflow.`;
 }
 
 function readMaxConcurrentChatTurns(): number | null {
   return getPerformanceLimits().maxActiveChatTurns;
 }
 
-function readMaxConcurrentPipelineExecutions(): number | null {
-  return getPerformanceLimits().maxActivePipelineExecutions;
-}
-
-function isMemoryPressureGuardEnabled(): boolean {
-  return getPerformanceLimits().memoryPressureGuardEnabled;
-}
-
-function isCanopyMemoryCritical(
-  memoryRssBytes: number,
-  criticalMemoryBytes: number,
-): boolean {
-  return memoryRssBytes >= criticalMemoryBytes;
-}
-
-function shouldBlockNewWorkForMemory(
-  snapshot: ResourceMonitorSnapshot,
-): boolean {
-  if (!isMemoryPressureGuardEnabled()) {
-    return false;
-  }
-  return isCanopyMemoryCritical(
-    snapshot.memoryRssBytes,
-    snapshot.pressure.criticalMemoryBytes,
-  );
-}
-
 export class ResourceMonitorService {
-  private readonly registrations = new Map<
-    string,
-    ResourceProcessRegistration
-  >();
+  private readonly accounting: DesktopExecutionAccounting =
+    getExecutionAccounting();
   private readonly activeOperations = new Map<
     string,
     ActiveManagedProcessOperation
@@ -859,18 +278,38 @@ export class ResourceMonitorService {
   private timer: NodeJS.Timeout | null = null;
   private getWindow: (() => ResourceMonitorWindow | null) | null = null;
   private sampling = false;
-  private snapshot: ResourceMonitorSnapshot = this.createEmptySnapshot();
-  private windowsCpuSamples = new Map<number, WindowsProcessCpuSample>();
+  private snapshot: ResourceMonitorSnapshot;
   private lastPersistedPressureLevel: ResourcePressureLevel = 'ok';
   private lastCodexPoolSuspendAttemptAtMs = 0;
+  private lastClaudeIdleReleaseAttemptAtMs = 0;
   private monitoringActive = false;
   private lastBroadcastSignature: string | null = null;
   private lastBroadcastAtMs = 0;
   private pendingChatTurnStartCount = 0;
-  private pendingPipelineExecutionStartCount = 0;
+  private lastAccounted: ExecutionAccountingSnapshot<ResourceMetadata>;
+  private lastOverlay: DesktopOverlay = {
+    chatTurns: { activeTurns: 0, pendingMessages: 0 },
+    codexPools: { activeConnections: 0, liveProcesses: 0, activeTurns: 0 },
+  };
+  /** Projections run one at a time, in sample order. */
+  private projectionChain: Promise<unknown> = Promise.resolve();
+  private readonly projections = new WeakMap<
+    ExecutionAccountingSnapshot<ResourceMetadata>,
+    Promise<ResourceMonitorSnapshot>
+  >();
+  private unsubscribeAccounting: (() => void) | null = null;
+
+  constructor() {
+    this.lastAccounted = this.accounting.getSnapshot();
+    this.snapshot = this.project(this.lastAccounted, this.lastOverlay);
+  }
 
   start(getWindow: () => ResourceMonitorWindow | null): void {
     this.getWindow = getWindow;
+    // Core samples taken for any client reach this projection too.
+    this.unsubscribeAccounting ??= this.accounting.subscribe((accounted) => {
+      void this.applyCoreSample(accounted).catch(() => {});
+    });
     if (process.env.NODE_ENV === 'test') {
       return;
     }
@@ -926,6 +365,8 @@ export class ResourceMonitorService {
 
   dispose(): void {
     this.monitoringActive = false;
+    this.unsubscribeAccounting?.();
+    this.unsubscribeAccounting = null;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -935,8 +376,7 @@ export class ResourceMonitorService {
     this.lastBroadcastAtMs = 0;
     this.activeOperations.forEach(
       (operation: ActiveManagedProcessOperation, id: string) => {
-        const current =
-          this.registrations.get(id) ?? operation.initialRegistration;
+        const current = this.currentRegistration(id, operation);
         const durationMs = Math.max(0, Date.now() - operation.registeredAtMs);
         safelyEmitManagedProcessTelemetry(() => {
           failDesktopOperation(MANAGED_PROCESS_OPERATION_NAME, 'abandoned', {
@@ -952,14 +392,25 @@ export class ResourceMonitorService {
       },
     );
     this.activeOperations.clear();
-    this.registrations.clear();
-    this.windowsCpuSamples.clear();
     this.pendingChatTurnStartCount = 0;
-    this.pendingPipelineExecutionStartCount = 0;
+    resetExecutionAccountingSamples();
   }
 
   getSnapshot(): ResourceMonitorSnapshot {
     return this.snapshot;
+  }
+
+  /**
+   * The resource monitor snapshot for a core sample read through
+   * `core.execution.status.get`: the current projection when it is that
+   * sample's, otherwise that sample with the last desktop guard counts.
+   */
+  snapshotFor(
+    accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
+  ): ResourceMonitorSnapshot {
+    return accounted === this.lastAccounted
+      ? this.snapshot
+      : this.project(accounted, this.lastOverlay);
   }
 
   registerProcess(
@@ -979,9 +430,9 @@ export class ResourceMonitorService {
     reservation.release();
   }
 
+  /** Chat-turn admission stays here until Phase 5 reads core accounting. */
   async reserveChatTurnStart(): Promise<ResourceGuardReservation> {
     const chatTurns = await this.readChatTurnConcurrencySnapshot();
-    const snapshot = this.getSnapshot();
     const maxConcurrentTurns = readMaxConcurrentChatTurns();
     const activeOrQueuedTurns =
       chatTurns.activeTurns +
@@ -992,11 +443,9 @@ export class ResourceMonitorService {
       activeOrQueuedTurns >= maxConcurrentTurns
     ) {
       this.recordGuardBlocked('resource_guard_blocked_chat');
-      throw new ResourceGuardError(
-        `${BRAND.displayName} is already running ${String(maxConcurrentTurns)} chat turns. Wait for one to finish before starting another.`,
-      );
+      throw new ResourceGuardError(chatGuardMessage(maxConcurrentTurns));
     }
-    if (shouldBlockNewWorkForMemory(snapshot)) {
+    if (this.accounting.isMemoryGuardBlocked()) {
       this.recordGuardBlocked('resource_guard_blocked_chat');
       throw new ResourceGuardError(
         `${BRAND.displayName} is under high memory pressure. Wait for active work to finish before starting another chat.`,
@@ -1023,41 +472,17 @@ export class ResourceMonitorService {
     reservation.release();
   }
 
+  /** Core pipeline admission, with the desktop's refusal copy and diagnostic. */
   reservePipelineExecutionStart(): ResourceGuardReservation {
-    const snapshot = this.getSnapshot();
-    const maxConcurrentExecutions = readMaxConcurrentPipelineExecutions();
-    const activeOrPendingExecutions =
-      this.readActivePipelineExecutionCount() +
-      this.pendingPipelineExecutionStartCount;
-    if (
-      maxConcurrentExecutions !== null &&
-      activeOrPendingExecutions >= maxConcurrentExecutions
-    ) {
+    try {
+      return this.accounting.admit('pipeline');
+    } catch (error) {
+      if (!(error instanceof ExecutionAdmissionError)) {
+        throw error;
+      }
       this.recordGuardBlocked('resource_guard_blocked_pipeline');
-      throw new ResourceGuardError(
-        `${BRAND.displayName} is already running ${String(maxConcurrentExecutions)} pipeline executions. Wait for one to finish before starting another pipeline.`,
-      );
+      throw new ResourceGuardError(pipelineGuardMessage(error));
     }
-    if (shouldBlockNewWorkForMemory(snapshot)) {
-      this.recordGuardBlocked('resource_guard_blocked_pipeline');
-      throw new ResourceGuardError(
-        `${BRAND.displayName} is under high memory pressure. Stop an active chat or pipeline execution before starting another pipeline.`,
-      );
-    }
-    this.pendingPipelineExecutionStartCount += 1;
-    let released = false;
-    return {
-      release: (): void => {
-        if (released) {
-          return;
-        }
-        released = true;
-        this.pendingPipelineExecutionStartCount = Math.max(
-          0,
-          this.pendingPipelineExecutionStartCount - 1,
-        );
-      },
-    };
   }
 
   async sampleNow(): Promise<ResourceMonitorSnapshot> {
@@ -1066,15 +491,82 @@ export class ResourceMonitorService {
     }
     this.sampling = true;
     try {
-      const samplingData = await this.collectSamplingData();
-      const snapshot = await this.buildSnapshot(samplingData);
-      this.snapshot = snapshot;
-      this.broadcast(snapshot);
-      await this.handlePressureTransition(snapshot);
-      return snapshot;
+      return await this.applyCoreSample(await this.accounting.sample());
     } finally {
       this.sampling = false;
     }
+  }
+
+  /** Projects one core sample once, after the samples before it. */
+  private applyCoreSample(
+    accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
+  ): Promise<ResourceMonitorSnapshot> {
+    const existing = this.projections.get(accounted);
+    if (existing) return existing;
+    const projected = this.projectionChain
+      .catch(() => {})
+      .then(async (): Promise<ResourceMonitorSnapshot> => {
+        const overlay: DesktopOverlay = {
+          chatTurns: await this.readChatTurnConcurrencySnapshot(),
+          codexPools: await this.readCodexPoolSummary(),
+        };
+        const snapshot = this.project(accounted, overlay);
+        this.lastAccounted = accounted;
+        this.lastOverlay = overlay;
+        this.snapshot = snapshot;
+        this.broadcast(snapshot);
+        await this.handlePressureTransition(snapshot);
+        return snapshot;
+      });
+    this.projections.set(accounted, projected);
+    this.projectionChain = projected;
+    return projected;
+  }
+
+  private project(
+    accounted: ExecutionAccountingSnapshot<ResourceMetadata>,
+    desktop: DesktopOverlay,
+  ): ResourceMonitorSnapshot {
+    const maxConcurrentTurns = readMaxConcurrentChatTurns();
+    const pipelines = accounted.families.pipeline;
+    return {
+      version: 1,
+      sampledAt: accounted.sampledAt,
+      appPid: accounted.rootPid,
+      cpuPercent: accounted.cpuPercent,
+      memoryRssBytes: accounted.memoryRssBytes,
+      processCount: accounted.processCount,
+      pressure: accounted.pressure,
+      groups: accounted.groups,
+      guards: {
+        chatTurns: {
+          activeTurns: desktop.chatTurns.activeTurns,
+          pendingMessages: desktop.chatTurns.pendingMessages,
+          maxConcurrentTurns,
+          blocked:
+            (maxConcurrentTurns !== null &&
+              desktop.chatTurns.activeTurns +
+                desktop.chatTurns.pendingMessages +
+                this.pendingChatTurnStartCount >=
+                maxConcurrentTurns) ||
+            accounted.memoryGuardBlocked,
+        },
+        pipelines: {
+          activeExecutions: pipelines.active,
+          maxConcurrentExecutions: pipelines.maxActive,
+          blocked: pipelines.blocked,
+        },
+        codexPools: desktop.codexPools,
+      },
+      ...(accounted.error ? { error: accounted.error } : {}),
+    };
+  }
+
+  private currentRegistration(
+    id: string,
+    operation: ActiveManagedProcessOperation,
+  ): ResourceProcessRegistration {
+    return this.accounting.getRegistration(id) ?? operation.initialRegistration;
   }
 
   private register(
@@ -1092,12 +584,13 @@ export class ResourceMonitorService {
       startedAt:
         registration.startedAt ?? new Date(registeredAtMs).toISOString(),
     };
-    this.registrations.set(registration.id, initialRegistration);
+    const handle = this.accounting.register(initialRegistration);
     this.activeOperations.set(registration.id, {
       operationKey,
       registrationType,
       registeredAtMs,
       initialRegistration,
+      handle,
     });
     safelyEmitManagedProcessTelemetry(() => {
       startDesktopOperation(MANAGED_PROCESS_OPERATION_NAME, {
@@ -1114,24 +607,14 @@ export class ResourceMonitorService {
         if (!this.activeOperations.has(registration.id)) {
           return;
         }
-        const current = this.registrations.get(registration.id);
-        if (!current) {
-          return;
-        }
-        this.registrations.set(registration.id, {
-          ...current,
-          ...update,
-          id: current.id,
-        });
+        handle.update(update);
       },
       unregister: (): void => {
         const operation = this.activeOperations.get(registration.id);
         if (!operation) {
           return;
         }
-        const current =
-          this.registrations.get(registration.id) ??
-          operation.initialRegistration;
+        const current = this.currentRegistration(registration.id, operation);
         const durationMs = Math.max(0, Date.now() - operation.registeredAtMs);
         safelyEmitManagedProcessTelemetry(() => {
           succeedDesktopOperation(MANAGED_PROCESS_OPERATION_NAME, {
@@ -1145,485 +628,8 @@ export class ResourceMonitorService {
           });
         });
         this.activeOperations.delete(registration.id);
-        this.registrations.delete(registration.id);
+        operation.handle.unregister();
       },
-    };
-  }
-
-  private createEmptySnapshot(): ResourceMonitorSnapshot {
-    const thresholds = buildThresholds();
-    const maxConcurrentTurns = readMaxConcurrentChatTurns();
-    const maxConcurrentExecutions = readMaxConcurrentPipelineExecutions();
-    return {
-      version: 1,
-      sampledAt: new Date().toISOString(),
-      appPid: process.pid,
-      cpuPercent: 0,
-      memoryRssBytes: 0,
-      processCount: 0,
-      pressure: {
-        level: 'unknown',
-        reasons: ['resource monitor has not sampled yet'],
-        warningMemoryBytes: thresholds.warningMemoryBytes,
-        criticalMemoryBytes: thresholds.criticalMemoryBytes,
-      },
-      groups: [],
-      guards: {
-        chatTurns: {
-          activeTurns: 0,
-          pendingMessages: 0,
-          maxConcurrentTurns,
-          blocked: false,
-        },
-        pipelines: {
-          activeExecutions: 0,
-          maxConcurrentExecutions,
-          blocked: false,
-        },
-        codexPools: {
-          activeConnections: 0,
-          liveProcesses: 0,
-          activeTurns: 0,
-        },
-      },
-    };
-  }
-
-  private async collectSamplingData(): Promise<SamplingData> {
-    const appRows = new Map<number, ResourceProcessSnapshot>();
-    for (const metric of getElectronAppMetrics()) {
-      appRows.set(metric.pid, appMetricToSnapshot(metric));
-    }
-
-    if (process.platform === 'win32') {
-      try {
-        const stdout = await readWindowsProcessTable();
-        const { rows: processRows, cpuSamples } = parseWindowsProcessTable(
-          stdout,
-          this.windowsCpuSamples,
-          Date.now(),
-        );
-        this.windowsCpuSamples = cpuSamples;
-        return {
-          processRows,
-          appRows,
-          childrenByParent: buildChildrenByParent(processRows),
-          processTableAvailable: true,
-        };
-      } catch {
-        return {
-          processRows: new Map<number, ProcessTableRow>(),
-          appRows,
-          childrenByParent: new Map<number, ProcessTableRow[]>(),
-          processTableAvailable: false,
-          error: processTableUnavailableError(appRows),
-        };
-      }
-    }
-
-    if (process.platform !== 'darwin') {
-      return {
-        processRows: new Map<number, ProcessTableRow>(),
-        appRows,
-        childrenByParent: new Map<number, ProcessTableRow[]>(),
-        processTableAvailable: false,
-        error: processTableUnavailableError(appRows),
-      };
-    }
-
-    try {
-      const stdout = await readMacProcessTable();
-      const processRows = parseMacProcessTable(stdout);
-      return {
-        processRows,
-        appRows,
-        childrenByParent: buildChildrenByParent(processRows),
-        processTableAvailable: true,
-      };
-    } catch {
-      return {
-        processRows: new Map<number, ProcessTableRow>(),
-        appRows,
-        childrenByParent: new Map<number, ProcessTableRow[]>(),
-        processTableAvailable: false,
-        error: processTableUnavailableError(appRows),
-      };
-    }
-  }
-
-  private async buildSnapshot(
-    samplingData: SamplingData,
-  ): Promise<ResourceMonitorSnapshot> {
-    const groups = new Map<ResourceGroupId, ResourceGroupSnapshotBuilder>();
-    const claimedPids = new Set<number>();
-    const pipelineSteps: ResourceProcessSnapshot[] = [];
-    const pipelineExecutions: ResourceProcessSnapshot[] = [];
-
-    const registeredPids = new Set<number>();
-    for (const registration of Array.from(this.registrations.values())) {
-      if (typeof registration.pid === 'number') {
-        registeredPids.add(registration.pid);
-      }
-    }
-
-    for (const appRow of Array.from(samplingData.appRows.values())) {
-      if (typeof appRow.pid === 'number') {
-        claimedPids.add(appRow.pid);
-      }
-      if (typeof appRow.pid === 'number' && registeredPids.has(appRow.pid)) {
-        continue;
-      }
-      addToGroup(groups, appRow);
-    }
-
-    for (const registration of Array.from(this.registrations.values())) {
-      const item = this.buildRegistrationSnapshot(registration, samplingData);
-      if (typeof registration.pid === 'number') {
-        claimedPids.add(registration.pid);
-        for (const child of item.children ?? []) {
-          if (typeof child.pid === 'number') {
-            claimedPids.add(child.pid);
-          }
-        }
-      }
-      if (item.kind === 'pipeline-step') {
-        pipelineSteps.push(item);
-        continue;
-      }
-      if (item.kind === 'pipeline-execution') {
-        pipelineExecutions.push(item);
-        continue;
-      }
-      addToGroup(groups, item);
-    }
-
-    const pipelineExecutionItems = this.buildPipelineRollups(
-      pipelineExecutions,
-      pipelineSteps,
-    );
-    const rolledUpStepIds = new Set<string>();
-    for (const execution of pipelineExecutionItems) {
-      for (const child of execution.children ?? []) {
-        rolledUpStepIds.add(child.id);
-      }
-      addToGroup(groups, execution);
-    }
-    for (const step of pipelineSteps) {
-      if (!rolledUpStepIds.has(step.id)) {
-        addToGroup(groups, step);
-      } else {
-        const group = groups.get('pipelines') ?? emptyGroup('pipelines');
-        group.cpuPercent = clampCpuPercent(group.cpuPercent + step.cpuPercent);
-        group.memoryRssBytes += step.memoryRssBytes;
-        group.processCount += step.processCount;
-        groups.set('pipelines', group);
-      }
-    }
-
-    if (samplingData.processTableAvailable) {
-      for (const row of this.findUnregisteredDescendants(
-        process.pid,
-        samplingData,
-        claimedPids,
-      )) {
-        const classification = processRowClassification(row);
-        addToGroup(groups, {
-          id: `${classification.groupId}:${row.pid}`,
-          kind: classification.kind,
-          groupId: classification.groupId,
-          label: row.command,
-          pid: row.pid,
-          ppid: row.ppid,
-          processGroupId: row.pgid,
-          cpuPercent: row.cpuPercent,
-          memoryRssBytes: row.memoryRssBytes,
-          processCount: 1,
-          status: 'running',
-          metadata: { type: 'generic' },
-        });
-      }
-    }
-
-    const groupSnapshots = Array.from(groups.values()).map((group) => ({
-      id: group.id,
-      label: group.label,
-      cpuPercent: clampCpuPercent(group.cpuPercent),
-      memoryRssBytes: group.memoryRssBytes,
-      processCount: group.processCount,
-      items: group.items,
-    }));
-    const cpuPercent = clampCpuPercent(
-      groupSnapshots.reduce((total, group) => total + group.cpuPercent, 0),
-    );
-    const memoryRssBytes = groupSnapshots.reduce(
-      (total, group) => total + group.memoryRssBytes,
-      0,
-    );
-    const processCount = groupSnapshots.reduce(
-      (total, group) => total + group.processCount,
-      0,
-    );
-    const pressure = this.computePressure(
-      memoryRssBytes,
-      samplingData.processTableAvailable,
-    );
-    const chatTurns = await this.readChatTurnConcurrencySnapshot();
-    const maxConcurrentTurns = readMaxConcurrentChatTurns();
-    const maxConcurrentPipelineExecutions =
-      readMaxConcurrentPipelineExecutions();
-    const codexPoolSummary = await this.readCodexPoolSummary();
-    const activePipelineExecutionCount =
-      this.readActivePipelineExecutionCount();
-    const memoryGuardBlocked =
-      isMemoryPressureGuardEnabled() &&
-      isCanopyMemoryCritical(memoryRssBytes, pressure.criticalMemoryBytes);
-
-    return {
-      version: 1,
-      sampledAt: new Date().toISOString(),
-      appPid: process.pid,
-      cpuPercent,
-      memoryRssBytes,
-      processCount,
-      pressure,
-      groups: groupSnapshots,
-      guards: {
-        chatTurns: {
-          activeTurns: chatTurns.activeTurns,
-          pendingMessages: chatTurns.pendingMessages,
-          maxConcurrentTurns,
-          blocked:
-            (maxConcurrentTurns !== null &&
-              chatTurns.activeTurns +
-                chatTurns.pendingMessages +
-                this.pendingChatTurnStartCount >=
-                maxConcurrentTurns) ||
-            memoryGuardBlocked,
-        },
-        pipelines: {
-          activeExecutions: activePipelineExecutionCount,
-          maxConcurrentExecutions: maxConcurrentPipelineExecutions,
-          blocked:
-            (maxConcurrentPipelineExecutions !== null &&
-              activePipelineExecutionCount +
-                this.pendingPipelineExecutionStartCount >=
-                maxConcurrentPipelineExecutions) ||
-            memoryGuardBlocked,
-        },
-        codexPools: codexPoolSummary,
-      },
-      ...(samplingData.error ? { error: samplingData.error } : {}),
-    };
-  }
-
-  private buildRegistrationSnapshot(
-    registration: ResourceProcessRegistration,
-    samplingData: SamplingData,
-  ): ResourceProcessSnapshot {
-    if (typeof registration.pid !== 'number') {
-      return {
-        id: registration.id,
-        kind: registration.kind,
-        groupId: registration.groupId,
-        label: registration.label,
-        cpuPercent: 0,
-        memoryRssBytes: 0,
-        processCount: 0,
-        startedAt: registration.startedAt,
-        status: 'idle',
-        metadata: registration.metadata,
-      };
-    }
-
-    const aggregated = this.aggregatePid(
-      registration.pid,
-      samplingData,
-      registration.processGroupId,
-    );
-    return {
-      id: registration.id,
-      kind: registration.kind,
-      groupId: registration.groupId,
-      label: registration.label,
-      pid: registration.pid,
-      processGroupId: registration.processGroupId,
-      ppid: aggregated.ppid,
-      cpuPercent: aggregated.cpuPercent,
-      memoryRssBytes: aggregated.memoryRssBytes,
-      processCount: aggregated.processCount,
-      startedAt: registration.startedAt,
-      status: aggregated.processCount > 0 ? 'running' : 'unknown',
-      metadata: registration.metadata,
-      ...(aggregated.children.length > 0
-        ? { children: aggregated.children }
-        : {}),
-    };
-  }
-
-  private aggregatePid(
-    pid: number,
-    samplingData: SamplingData,
-    processGroupId?: number,
-  ): AggregatedProcess {
-    const rootAppRow = samplingData.appRows.get(pid);
-    const rootPsRow = samplingData.processRows.get(pid);
-    let cpuPercent = rootAppRow?.cpuPercent ?? rootPsRow?.cpuPercent ?? 0;
-    let memoryRssBytes =
-      rootAppRow?.memoryRssBytes ?? rootPsRow?.memoryRssBytes ?? 0;
-    let processCount = rootAppRow || rootPsRow ? 1 : 0;
-    const children: ResourceProcessSnapshot[] = [];
-    const visited = new Set<number>([pid]);
-
-    const addRow = (row: ProcessTableRow): void => {
-      if (visited.has(row.pid)) {
-        return;
-      }
-      visited.add(row.pid);
-      const appRow = samplingData.appRows.get(row.pid);
-      const childCpu = appRow?.cpuPercent ?? row.cpuPercent;
-      const childMemory = appRow?.memoryRssBytes ?? row.memoryRssBytes;
-      const classification = processRowClassification(row);
-      cpuPercent += childCpu;
-      memoryRssBytes += childMemory;
-      processCount += 1;
-      children.push({
-        id: `process:${row.pid}`,
-        kind: classification.kind,
-        groupId: classification.groupId,
-        label: appRow?.label ?? row.command,
-        pid: row.pid,
-        ppid: row.ppid,
-        processGroupId: row.pgid,
-        cpuPercent: childCpu,
-        memoryRssBytes: childMemory,
-        processCount: 1,
-        status: 'running',
-        metadata: { type: 'generic' },
-      });
-      walk(row.pid);
-    };
-
-    const walk = (parentPid: number): void => {
-      for (const row of samplingData.childrenByParent.get(parentPid) ?? []) {
-        addRow(row);
-      }
-    };
-    walk(pid);
-
-    if (typeof processGroupId === 'number') {
-      samplingData.processRows.forEach((row) => {
-        if (row.pgid === processGroupId && row.pid !== pid) {
-          addRow(row);
-        }
-      });
-    }
-
-    return {
-      cpuPercent: clampCpuPercent(cpuPercent),
-      memoryRssBytes,
-      processCount,
-      children,
-      ppid: rootPsRow?.ppid,
-    };
-  }
-
-  private buildPipelineRollups(
-    executions: ResourceProcessSnapshot[],
-    steps: ResourceProcessSnapshot[],
-  ): ResourceProcessSnapshot[] {
-    return executions.map((execution) => {
-      const executionId =
-        execution.metadata?.type === 'pipeline'
-          ? execution.metadata.pipeline.executionId
-          : undefined;
-      const children = steps.filter(
-        (step) =>
-          step.metadata?.type === 'pipeline' &&
-          step.metadata.pipeline.executionId === executionId,
-      );
-      if (children.length === 0) {
-        return {
-          ...execution,
-          cpuPercent: 0,
-          memoryRssBytes: 0,
-          processCount: 0,
-          status: 'idle',
-        };
-      }
-      return {
-        ...execution,
-        cpuPercent: clampCpuPercent(
-          children.reduce((total, item) => total + item.cpuPercent, 0),
-        ),
-        memoryRssBytes: children.reduce(
-          (total, item) => total + item.memoryRssBytes,
-          0,
-        ),
-        processCount: children.reduce(
-          (total, item) => total + item.processCount,
-          0,
-        ),
-        status: 'running',
-        children,
-      };
-    });
-  }
-
-  private findUnregisteredDescendants(
-    rootPid: number,
-    samplingData: SamplingData,
-    claimedPids: Set<number>,
-  ): ProcessTableRow[] {
-    const rows: ProcessTableRow[] = [];
-    const visited = new Set<number>([rootPid]);
-    const walk = (parentPid: number): void => {
-      for (const row of samplingData.childrenByParent.get(parentPid) ?? []) {
-        if (visited.has(row.pid)) {
-          continue;
-        }
-        visited.add(row.pid);
-        if (!claimedPids.has(row.pid)) {
-          rows.push(row);
-        }
-        walk(row.pid);
-      }
-    };
-    walk(rootPid);
-    return rows;
-  }
-
-  private computePressure(
-    memoryRssBytes: number,
-    processTableAvailable: boolean,
-  ): ResourceMonitorSnapshot['pressure'] {
-    const thresholds = buildThresholds();
-    if (!processTableAvailable) {
-      return {
-        level: 'unknown',
-        reasons: ['process-table sampling unavailable'],
-        warningMemoryBytes: thresholds.warningMemoryBytes,
-        criticalMemoryBytes: thresholds.criticalMemoryBytes,
-      };
-    }
-    const reasons: string[] = [];
-    let level: ResourcePressureLevel = 'ok';
-    const canopyCritical = isCanopyMemoryCritical(
-      memoryRssBytes,
-      thresholds.criticalMemoryBytes,
-    );
-    const canopyWarning = memoryRssBytes >= thresholds.warningMemoryBytes;
-    if (canopyCritical) {
-      level = 'critical';
-      reasons.push(`${BRAND.displayName} memory usage critical`);
-    } else if (canopyWarning) {
-      level = 'warning';
-      reasons.push(`${BRAND.displayName} memory usage elevated`);
-    }
-    return {
-      level,
-      reasons,
-      warningMemoryBytes: thresholds.warningMemoryBytes,
-      criticalMemoryBytes: thresholds.criticalMemoryBytes,
     };
   }
 
@@ -1668,10 +674,6 @@ export class ResourceMonitorService {
       // Test mocks and early shutdown paths may omit session-manager helpers.
     }
     return { activeTurns: 0, pendingMessages: 0 };
-  }
-
-  private readActivePipelineExecutionCount(): number {
-    return getActivePipelineExecutionCount();
   }
 
   private broadcast(snapshot: ResourceMonitorSnapshot): void {
@@ -1736,6 +738,25 @@ export class ResourceMonitorService {
         suspendedCodexPoolCount = 0;
       }
     }
+    // Idle Claude-harness sessions have no app-server pool; release their
+    // processes.
+    // Ungated by the Codex bypass preference, whose copy names Codex only.
+    let idleClaudeSessionReleaseCount = 0;
+    if (
+      current === 'critical' &&
+      Date.now() - this.lastClaudeIdleReleaseAttemptAtMs >=
+        CLAUDE_IDLE_RELEASE_ATTEMPT_MIN_INTERVAL_MS
+    ) {
+      this.lastClaudeIdleReleaseAttemptAtMs = Date.now();
+      try {
+        const { releaseIdleClaudeSessionsForMemoryPressure } =
+          await import('../agents/session-manager');
+        idleClaudeSessionReleaseCount =
+          releaseIdleClaudeSessionsForMemoryPressure();
+      } catch {
+        idleClaudeSessionReleaseCount = 0;
+      }
+    }
     if (PRESSURE_RANK[current] <= PRESSURE_RANK[previous]) {
       return;
     }
@@ -1769,6 +790,7 @@ export class ResourceMonitorService {
         pressureLevel: snapshot.pressure.level,
         processCount: snapshot.processCount,
         suspendedCodexPoolCount,
+        idleClaudeSessionReleaseCount,
       });
     }
   }

@@ -24,12 +24,17 @@ import {
   isOllamaServerVersionCompatible,
 } from '@canopy/desktop-shared/types';
 import {
+  AdvancedDisclosure,
   Button,
   Notice,
   NoticeButton,
   NoticeList,
   NoticeListItem,
+  StatusBadge,
+  TextLinkButton,
+  type StatusBadgeVariant,
 } from '@canopy/ui-shared/components';
+import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { brandText } from '@/lib/brand';
 import { OllamaIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { LinearProgress } from '@/components/shared/loading';
@@ -43,7 +48,6 @@ import {
   SettingsSection,
   SettingsTextField,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 /** Exact official Ollama download URL opened through the safe external browser. */
 const OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download';
@@ -88,48 +92,19 @@ function statusLabel(status: OllamaServerStatus): string {
   }
 }
 
-function statusBadgeClass(status: OllamaServerStatus): string {
+function statusBadgeVariant(status: OllamaServerStatus): StatusBadgeVariant {
   switch (status) {
     case 'stopped':
-      return 'bg-muted fg-secondary';
+      return 'muted';
     case 'starting':
-      return 'bg-warning-subtle fg-warning';
+      return 'warning';
     case 'running-managed':
-      return 'bg-success-subtle fg-success-strong';
+      return 'success';
     case 'running-external':
-      return 'bg-info-subtle fg-info';
+      return 'active';
     case 'error':
-      return 'bg-destructive-subtle fg-destructive-strong';
+      return 'destructive';
   }
-}
-
-function formatBytes(value?: number): string | null {
-  if (!value || value <= 0) {
-    return null;
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let size = value;
-  let unitIndex = 0;
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
-}
-
-function formatTimestamp(value?: string): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleString();
 }
 
 function truncateMiddle(value?: string, keep: number = 10): string | null {
@@ -196,33 +171,26 @@ export function OllamaModelCard({
   disabled = false,
   onDelete,
 }: OllamaModelCardProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const supported = isSupportedOllamaModelEntry(model);
   const missingCapabilities = getMissingCapabilities(model);
   const capabilities = model.show?.capabilities ?? [];
   const displayName = getModelDisplayName(model.id);
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex min-h-7 items-center justify-between gap-6">
-        <div className="flex min-w-0 flex-1 items-start gap-2.5">
-          <OllamaIcon
-            size={14}
-            className="mt-0.5 shrink-0 fg-secondary"
-            aria-hidden
-          />
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div className="truncate text-s font-medium fg-primary">
-              {displayName}
-            </div>
-            <div className="truncate text-xs fg-secondary">
-              {model.rawModelId}
-            </div>
-          </div>
-        </div>
+    <SettingsRow
+      label={
+        <span className="flex min-w-0 items-center gap-2.5">
+          <OllamaIcon size={14} className="shrink-0 fg-secondary" aria-hidden />
+          <span className="truncate">{displayName}</span>
+        </span>
+      }
+      description={
+        <span className="block truncate pl-6">{model.rawModelId}</span>
+      }
+      control={
         <Button
-          size={settingsButtonSize}
-          variant="ghost"
+          size="compact"
+          variant="secondary"
           className="shrink-0"
           onClick={() => onDelete(model.rawModelId)}
           disabled={deleting || disabled}
@@ -231,8 +199,8 @@ export function OllamaModelCard({
         >
           {deleting ? 'Deleting…' : 'Delete'}
         </Button>
-      </div>
-
+      }
+    >
       {!supported && (
         <Notice
           intent="attention"
@@ -244,11 +212,11 @@ export function OllamaModelCard({
         </Notice>
       )}
 
-      <details className="text-xs">
-        <summary className="cursor-pointer font-medium fg-secondary hover:fg-primary">
-          Details
-        </summary>
-        <div className="mt-2 space-y-3">
+      <AdvancedDisclosure
+        label="Details"
+        dataTestId={`ollama-model-details-${model.rawModelId}`}
+      >
+        <div className="space-y-3 text-xs">
           <div className="grid gap-x-4 gap-y-1 wrap-anywhere fg-secondary md:grid-cols-2">
             {capabilities.length > 0 && (
               <div className="md:col-span-2">
@@ -263,17 +231,23 @@ export function OllamaModelCard({
               <div>Quantization: {model.details.quantizationLevel}</div>
             )}
             {model.details?.format && <div>Format: {model.details.format}</div>}
-            {formatBytes(model.sizeBytes) && (
-              <div>Size: {formatBytes(model.sizeBytes)}</div>
+            {model.sizeBytes !== undefined && model.sizeBytes > 0 && (
+              <div>
+                Size:{' '}
+                {formatByteSize(model.sizeBytes, { precision: 'adaptive' })}
+              </div>
             )}
-            {formatBytes(model.sizeVramBytes) && (
-              <div>VRAM: {formatBytes(model.sizeVramBytes)}</div>
+            {model.sizeVramBytes !== undefined && model.sizeVramBytes > 0 && (
+              <div>
+                VRAM:{' '}
+                {formatByteSize(model.sizeVramBytes, { precision: 'adaptive' })}
+              </div>
             )}
-            {formatTimestamp(model.modifiedAt) && (
-              <div>Modified: {formatTimestamp(model.modifiedAt)}</div>
+            {model.modifiedAt && (
+              <div>Modified: {formatDateTime(model.modifiedAt)}</div>
             )}
-            {formatTimestamp(model.expiresAt) && (
-              <div>Expires: {formatTimestamp(model.expiresAt)}</div>
+            {model.expiresAt && (
+              <div>Expires: {formatDateTime(model.expiresAt)}</div>
             )}
             {truncateMiddle(model.digest) && (
               <div>Digest: {truncateMiddle(model.digest)}</div>
@@ -348,13 +322,12 @@ export function OllamaModelCard({
             </ModelMetadataBlock>
           )}
         </div>
-      </details>
-    </div>
+      </AdvancedDisclosure>
+    </SettingsRow>
   );
 }
 
 export function OllamaTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [ollamaState, setOllamaState] = useState<OllamaState | null>(null);
   const [portInput, setPortInput] = useState('');
   const [pullInput, setPullInput] = useState('');
@@ -813,7 +786,7 @@ export function OllamaTab(): JSX.Element {
   const installationActions = (
     <>
       <Button
-        size={settingsButtonSize}
+        size="compact"
         variant="secondary"
         onClick={() => {
           void handleBrowse();
@@ -824,7 +797,7 @@ export function OllamaTab(): JSX.Element {
         Browse…
       </Button>
       <Button
-        size={settingsButtonSize}
+        size="compact"
         variant="secondary"
         onClick={() => {
           void handleRedetect();
@@ -999,7 +972,7 @@ export function OllamaTab(): JSX.Element {
               dataTestId="ollama-managed-setup"
               control={
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="primary"
                   onClick={() => {
                     void handleInstall();
@@ -1051,7 +1024,7 @@ export function OllamaTab(): JSX.Element {
               dataTestId="ollama-manual-instructions"
               control={
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   onClick={handleDownload}
                   data-testid="ollama-download"
@@ -1084,11 +1057,11 @@ export function OllamaTab(): JSX.Element {
                 : undefined
             }
             control={
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusBadgeClass(ollamaState.status)}`}
-              >
-                {statusLabel(ollamaState.status)}
-              </span>
+              <StatusBadge
+                variant={statusBadgeVariant(ollamaState.status)}
+                label={statusLabel(ollamaState.status)}
+                dataTestId="ollama-status"
+              />
             }
           />
         </SettingsGroup>
@@ -1128,7 +1101,7 @@ export function OllamaTab(): JSX.Element {
                   aria-describedby={portError ? 'ollama-port-error' : undefined}
                 />
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   onClick={() => {
                     void handleSave();
@@ -1139,7 +1112,7 @@ export function OllamaTab(): JSX.Element {
                   {busyAction === 'save' ? 'Saving…' : 'Save'}
                 </Button>
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   onClick={() => {
                     void handleTestConnection();
@@ -1210,7 +1183,7 @@ export function OllamaTab(): JSX.Element {
             description={installedModelsHint}
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 onClick={() => {
                   void handleRefresh();
@@ -1223,7 +1196,10 @@ export function OllamaTab(): JSX.Element {
             }
           />
           {ollamaState.models.length === 0 ? (
-            <p className="text-s fg-secondary" data-testid="ollama-model-empty">
+            <p
+              className="flex min-h-10 items-center text-s fg-secondary"
+              data-testid="ollama-model-empty"
+            >
               {emptyStateMessage}
             </p>
           ) : (
@@ -1250,18 +1226,16 @@ export function OllamaTab(): JSX.Element {
             description={
               <>
                 Find a model in the{' '}
-                <button
-                  type="button"
+                <TextLinkButton
                   data-testid="ollama-model-list-link"
                   onClick={(): void => {
                     void window.api.browser.openExternal({
                       url: OLLAMA_MODEL_LIST_URL,
                     });
                   }}
-                  className="focus-ring rounded font-medium fg-accent hover:underline"
                 >
                   Ollama model list
-                </button>
+                </TextLinkButton>
                 , then enter its exact name.
               </>
             }
@@ -1283,7 +1257,7 @@ export function OllamaTab(): JSX.Element {
                   data-testid="ollama-pull-input"
                 />
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   onClick={() => {
                     void handlePull();

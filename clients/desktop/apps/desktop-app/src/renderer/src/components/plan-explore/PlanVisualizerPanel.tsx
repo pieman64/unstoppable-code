@@ -17,6 +17,7 @@ import { PlanDataModelDiffDiagram } from './diagram/PlanDataModelDiffDiagram';
 import { usePlanDiagramViews } from './diagram/usePlanDiagramViews';
 import type { DiagramSearchHandle } from '@canopy/ui-app/find';
 import type { AddNodeCommentInput } from './usePlanComments';
+import { Button, SegmentedControl } from '@canopy/ui-shared/components';
 
 type VisualizerTab = 'sequence' | 'logicDiff' | 'dataModelDiff';
 
@@ -257,52 +258,37 @@ export const PlanVisualizerPanel = forwardRef<
     >
       {/* Wraps in a narrow plan panel so Refresh stays reachable. */}
       <div className="flex shrink-0 flex-wrap items-center gap-1 border-b px-2 py-1.5">
-        <button
-          type="button"
-          onClick={(): void => setActiveTab('sequence')}
-          className={`rounded-md px-2 py-1 text-xs transition ${
-            resolvedTab === 'sequence'
-              ? 'bg-fg-primary/[0.08] fg-primary'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          Sequence
-        </button>
-        <button
-          type="button"
-          onClick={(): void => setActiveTab('logicDiff')}
-          className={`rounded-md px-2 py-1 text-xs transition ${
-            resolvedTab === 'logicDiff'
-              ? 'bg-fg-primary/[0.08] fg-primary'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          Current/Planned/Diff
-        </button>
-        {showDataModelTab && (
-          <button
-            type="button"
-            data-testid="plan-visualizer-data-model-tab"
-            onClick={(): void => setActiveTab('dataModelDiff')}
-            className={`rounded-md px-2 py-1 text-xs transition ${
-              resolvedTab === 'dataModelDiff'
-                ? 'bg-fg-primary/[0.08] fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            Data model
-          </button>
-        )}
-        <button
-          type="button"
+        <SegmentedControl
+          label="Diagram type"
+          semantics="tabs"
+          shape="capsule"
+          width="content"
+          value={resolvedTab}
+          onChange={setActiveTab}
+          options={[
+            { value: 'sequence', label: 'Sequence' },
+            { value: 'logicDiff', label: 'Current/Planned/Diff' },
+            ...(showDataModelTab
+              ? [
+                  {
+                    value: 'dataModelDiff' as const,
+                    label: 'Data model',
+                    dataTestId: 'plan-visualizer-data-model-tab',
+                  },
+                ]
+              : []),
+          ]}
+        />
+        <Button
+          size="compact"
+          className="ml-auto"
           data-testid="plan-visualizer-generate"
           onClick={handleGenerate}
           disabled={requested}
-          className="focus-ring ml-auto inline-flex items-center gap-1.5 rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary transition hover:bg-fg-primary/[0.08] disabled:cursor-default disabled:opacity-60"
         >
           <RefreshSpinner spinning={isGenerating} size={13} />
           {generateLabel}
-        </button>
+        </Button>
       </div>
 
       {/* The plan diagrams: blocked from session replay. The diagram tabs

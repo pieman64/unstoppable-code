@@ -20,7 +20,7 @@ const BROWSER_PROJECT_FIELD: AgentActionField = {
   type: 'string',
   required: false,
   description:
-    "Optional target project/workspace id. Omit both project ids for App Advisor's own Work Entry browser.",
+    "Optional target project/workspace id. Omit both project ids for Orchestrator's own Work Entry browser.",
 };
 
 const BROWSER_WORKTREE_FIELD: AgentActionField = {
@@ -28,7 +28,7 @@ const BROWSER_WORKTREE_FIELD: AgentActionField = {
   type: 'string',
   required: false,
   description:
-    "Optional target worktree id. Omit both project ids for App Advisor's own Work Entry browser.",
+    "Optional target worktree id. Omit both project ids for Orchestrator's own Work Entry browser.",
 };
 
 export const BROWSER_ACTION_CATALOG: readonly AgentActionCatalogEntry<

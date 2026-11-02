@@ -1,5 +1,6 @@
 import { withW5RepositoryLock } from './w5-repository-locks';
 import { withW5Commit, type W5CommitOptions } from './w5-commit-log-file-store';
+import { deferUntilW5ReadViewCloses } from './w5-read-view';
 import { afterW5Apply, afterW5Commit, onW5Abort } from './w5-commit-scope';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import {
@@ -51,7 +52,9 @@ import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { getWorkspaceConfigPath, getWorkspaceWorktreesFilePath } from './paths';
 import { normalizeLegacyScriptFields } from './script-config';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { publishWorktreeListWrite } from './worktree-lifecycle-signals';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
+import type { PersistedFileAuthority } from './w5-file-store';
 import {
   diffWorktreePipelineResultsSeen,
   markWorktreePipelineResultsSeen,
@@ -85,12 +88,18 @@ import {
   type ProjectPluginDefaults,
 } from '../plugins/project-plugin-defaults-cache';
 import { logMainProcessWarn } from './main-process-logging';
+import { runW5PreEffectUnit } from './w5-pre-effect-retry';
 import { addOrganizationSourceHookBindings } from './source-hook-context-bindings';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
+import {
+  inMcpRefRewritePhase,
+  recordMcpRefRewriteFailure,
+} from '../mcp/server-ref-rewrite-outcome';
 
 export { WorkspaceConfigUnreadableError } from './workspace-manifest-repository';
 export { WorktreeRegistryUnreadableError } from './worktree-list-repository';
+export type { PersistedFileAuthority } from './w5-file-store';
 
 interface RawWorkspaceRepoData {
   id?: unknown;
@@ -506,16 +515,6 @@ async function withWorktreeFileLock<T>(
 }
 
 /**
- * Whether a persisted-file read can prove absence: `ok` and `absent` (no
- * file) are authoritative states; `unreadable` (I/O error other than
- * ENOENT, invalid JSON, unexpected shape or version) is not. The plain
- * readers fall back to empty defaults in every case so the app keeps
- * working; callers that turn absence into a destructive action must use
- * the `*Detailed` readers and respect the authority they report.
- */
-export type PersistedFileAuthority = 'ok' | 'absent' | 'unreadable';
-
-/**
  * Authority of a worktree list read: `partial` when the list was readable but
  * rows this version cannot read were left out, so an id missing from it is
  * not proof that the worktree is gone (CAN-3803).
@@ -637,6 +636,10 @@ async function writeAdmittedWorktreesFile(
       throw error;
     } finally {
       schedulePortalStructuralSync();
+      publishWorktreeListWrite(
+        previous.authority === 'ok' ? previous.worktrees : [],
+        worktrees,
+      );
     }
   });
   // Return the identity that this write actually recorded, including initial
@@ -706,11 +709,21 @@ const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfigFile = {
   alwaysShow: true,
 };
 
+/**
+ * The `core.workspace.update` manifest fields as stored, before the read
+ * replaces a missing or malformed value with its default.
+ */
+export type StoredWorkspaceManifestFields = Readonly<
+  Partial<Record<'itemSortMode' | 'alwaysShow' | 'startPage', unknown>>
+>;
+
 interface WorkspaceConfigDetail {
   config: WorkspaceConfigFile;
   authority: PersistedFileAuthority;
   ownerMalformed: boolean;
   memoryMalformed: boolean;
+  /** Present only when `authority` is `ok`. */
+  storedFields?: StoredWorkspaceManifestFields;
 }
 
 /** {@link readWorkspaceConfig} plus read authority and owner validity. */
@@ -895,6 +908,11 @@ async function normalizeWorkspaceConfig(
             parsed.privateMemoryManagedBy !== 'organization') ||
           (parsed.privateMemoryManagedBy === 'organization' &&
             typeof parsed.privateMemory !== 'boolean'),
+        storedFields: {
+          itemSortMode: parsed.itemSortMode,
+          alwaysShow: parsed.alwaysShow,
+          startPage: parsed.startPage,
+        },
       };
     }
   } catch {
@@ -1037,9 +1055,16 @@ export async function ensureOrganizationSourceHookBindings(args: {
       config.owner.organizationId,
     );
     if (bound === scope.hooks) return;
+    result = { hooks: bound, owner: config.owner };
+    // A query's read view refuses writes; the binding is written as it closes.
+    if (
+      deferUntilW5ReadViewCloses(() =>
+        ensureOrganizationSourceHookBindings(args),
+      )
+    )
+      return;
     scope.hooks = bound;
     await writeWorkspaceConfigSerialized(args.workspaceId, config, 'preserve');
-    result = { hooks: bound, owner: config.owner };
   });
   return result;
 }
@@ -1399,17 +1424,22 @@ async function writeAdmittedWorkspaceConfig(
   );
   if (defaultsChanged) {
     try {
-      await beforeProjectPluginDefaultsChange?.(
-        workspaceId,
-        previous.config.defaultPluginSelections,
-        previous.config.disabledGlobalPluginSelections,
+      await inMcpRefRewritePhase('normalization', async () =>
+        beforeProjectPluginDefaultsChange?.(
+          workspaceId,
+          previous.config.defaultPluginSelections,
+          previous.config.disabledGlobalPluginSelections,
+        ),
       );
     } catch (error) {
       logMainProcessWarn(
         '[workspace-persistence] project default normalization failed',
         { workspaceId, error },
       );
-      throw new Error(PROJECT_PLUGIN_DEFAULTS_NORMALIZATION_FAILED);
+      throw recordMcpRefRewriteFailure(
+        new Error(PROJECT_PLUGIN_DEFAULTS_NORMALIZATION_FAILED),
+        'normalization',
+      );
     }
   }
   const layerChanged =
@@ -1419,6 +1449,8 @@ async function writeAdmittedWorkspaceConfig(
     // expose a truncated file: a reader would fall back to a default config
     // with no repositories, and a later save would persist it (CAN-3563).
     await workspaceManifestRepository.replace(workspaceId, payload, manifest);
+  } catch (error) {
+    throw recordMcpRefRewriteFailure(error, 'manifestCommit');
   } finally {
     await afterW5Commit(() =>
       projectPluginDefaultsWritten({
@@ -1495,8 +1527,28 @@ export async function readWorkspaceWorktreesDetailed(
     /** Durable admission includes tombstoned rows and never persists cleanup. */
     includeRecentlyRemoved?: true;
   },
-): Promise<{ worktrees: WorktreeData[]; authority: WorktreeListAuthority }> {
+): Promise<{
+  worktrees: WorktreeData[];
+  /** Unchanged by removal filtering, which these ids record instead. */
+  authority: WorktreeListAuthority;
+  /** Rows this process removed that the read left out, when any. */
+  recentlyRemovedWorktreeIds?: string[];
+}> {
   const filePath = getWorkspaceWorktreesFilePath(workspaceId);
+  // A21′: read-repair is effect-free, so a conflicting routed write reruns
+  // the locked read (W6g). The commit label stays `w5.worktree_list.write`.
+  return runW5PreEffectUnit('internal.repository.write', () =>
+    readRepairingWorktrees(workspaceId, filePath, options),
+  );
+}
+
+function readRepairingWorktrees(
+  workspaceId: string,
+  filePath: string,
+  options:
+    | { persistRemovalCleanup?: false; includeRecentlyRemoved?: true }
+    | undefined,
+): ReturnType<typeof readWorkspaceWorktreesDetailed> {
   return withWorktreeFileLock(filePath, async () => {
     const { worktrees, authority, read } =
       await readWorkspaceWorktreesFileDetailed(workspaceId);
@@ -1505,10 +1557,8 @@ export async function readWorkspaceWorktreesDetailed(
       workspaceId,
       worktrees,
     );
-    if (
-      filteredWorktrees !== worktrees &&
-      options?.persistRemovalCleanup !== false
-    ) {
+    if (filteredWorktrees === worktrees) return { worktrees, authority };
+    if (options?.persistRemovalCleanup !== false) {
       await writeWorkspaceWorktreesFile(
         workspaceId,
         filteredWorktrees,
@@ -1516,8 +1566,30 @@ export async function readWorkspaceWorktreesDetailed(
         read,
       );
     }
-    return { worktrees: filteredWorktrees, authority };
+    const kept = new Set(filteredWorktrees);
+    return {
+      worktrees: filteredWorktrees,
+      authority,
+      recentlyRemovedWorktreeIds: worktrees
+        .filter((worktree) => !kept.has(worktree))
+        .map((worktree) => worktree.id),
+    };
   });
+}
+
+/**
+ * One read of the list that takes no lock, filters no tombstones and never
+ * writes. For backend readers that may run inside another task's lock
+ * context (the Ledger lifecycle, CAN-5478). There the locked read waits on a
+ * held list, refuses the lock order, or throws once an inherited commit scope
+ * has finished.
+ */
+export async function readWorkspaceWorktreesUnlocked(
+  workspaceId: string,
+): Promise<{ worktrees: WorktreeData[]; authority: WorktreeListAuthority }> {
+  const { worktrees, authority } =
+    await readWorkspaceWorktreesFileDetailed(workspaceId);
+  return { worktrees, authority };
 }
 
 export async function isWorkspaceWorktreeCurrent(

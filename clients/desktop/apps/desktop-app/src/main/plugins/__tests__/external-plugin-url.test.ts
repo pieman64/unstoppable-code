@@ -16,12 +16,22 @@ import {
 
 const mockedLookup = jest.mocked(lookup);
 
+type LookupResult = Awaited<ReturnType<typeof lookup>>;
+
+function lookupAddresses(addresses: LookupResult[]): LookupResult {
+  const firstAddress = addresses[0];
+  if (!firstAddress) throw new Error('Expected at least one DNS result');
+  // Return the all-addresses array the runtime needs, with the address fields
+  // required by the single-result overload exposed through ReturnType.
+  return Object.assign(addresses, firstAddress);
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   // Default: any resolved host is public. Overridden per-test as needed.
-  mockedLookup.mockResolvedValue([
-    { address: '140.82.113.3', family: 4 },
-  ] as Awaited<ReturnType<typeof lookup>>);
+  mockedLookup.mockResolvedValue(
+    lookupAddresses([{ address: '140.82.113.3', family: 4 }]),
+  );
 });
 
 describe('assertSafeExternalPluginCloneUrl — refusals', () => {
@@ -57,9 +67,9 @@ describe('assertSafeExternalPluginCloneUrl — refusals', () => {
   });
 
   it('rejects a public hostname that resolves to a private address (static DNS SSRF)', async () => {
-    mockedLookup.mockResolvedValue([
-      { address: '10.1.2.3', family: 4 },
-    ] as Awaited<ReturnType<typeof lookup>>);
+    mockedLookup.mockResolvedValue(
+      lookupAddresses([{ address: '10.1.2.3', family: 4 }]),
+    );
     await expect(
       assertSafeExternalPluginCloneUrl(
         'https://sneaky.example.com/acme/repo.git',
@@ -68,10 +78,12 @@ describe('assertSafeExternalPluginCloneUrl — refusals', () => {
   });
 
   it('rejects when any resolved address is private, even if one is public', async () => {
-    mockedLookup.mockResolvedValue([
-      { address: '140.82.113.3', family: 4 },
-      { address: '127.0.0.1', family: 4 },
-    ] as Awaited<ReturnType<typeof lookup>>);
+    mockedLookup.mockResolvedValue(
+      lookupAddresses([
+        { address: '140.82.113.3', family: 4 },
+        { address: '127.0.0.1', family: 4 },
+      ]),
+    );
     await expect(
       assertSafeExternalPluginCloneUrl(
         'https://mixed.example.com/acme/repo.git',

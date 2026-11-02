@@ -45,7 +45,7 @@ const STORAGE_BRIDGE_HTML =
 export interface RendererSchemeFileSystem {
   realpath(path: string): Promise<string>;
   stat(path: string): Promise<{ isFile(): boolean }>;
-  readFile(path: string): Promise<Uint8Array>;
+  readFile(path: string): Promise<Uint8Array<ArrayBuffer>>;
 }
 
 export interface RendererSchemeRequest {
@@ -237,7 +237,7 @@ export function createRendererSchemeHandler(
       return notFound();
     }
 
-    let body: Uint8Array;
+    let body: Uint8Array<ArrayBuffer>;
     try {
       body = await fileSystem.readFile(target);
     } catch (error) {

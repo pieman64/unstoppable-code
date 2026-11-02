@@ -8,7 +8,6 @@ import { PORTAL_CHAT_TEXT_MAX_CHARS } from '@canopy/desktop-shared/portal/persis
 import type { PortalChatMessage } from '@canopy/protocol/portal';
 import {
   createCursorAssistantPatchProjector,
-  createPortalTurnTimer,
   isTerminalRuntimeChatEvent,
   persistedMessageToPortalMessage,
   projectPersistedChatTranscript,
@@ -529,7 +528,11 @@ describe('runtimeChatEventToPortalMessage', () => {
       messages: applyCodexTranscriptEvent(
         createEmptyTranscriptReducerState(),
         event,
-        { now: 1000, createMessageId: () => 'generated' },
+        {
+          now: 1000,
+          createMessageId: () => 'generated',
+          childToolLiveness: { kind: 'unknown' },
+        },
       ).messages,
     });
     expect(history[0]?.messageId).toBe(message?.messageId);
@@ -629,7 +632,11 @@ describe('runtimeChatEventToPortalMessage', () => {
         const state = applyCodexTranscriptEvent(
           createEmptyTranscriptReducerState(),
           event,
-          { now: 1000, createMessageId: () => 'generated' },
+          {
+            now: 1000,
+            createMessageId: () => 'generated',
+            childToolLiveness: { kind: 'unknown' },
+          },
         );
         const history = projectPersistedChatTranscript({
           scope: 'worktree',
@@ -645,6 +652,100 @@ describe('runtimeChatEventToPortalMessage', () => {
         expect(history[0].parts?.[0].data).toMatchObject({
           result: { output: 'Found caller', isError: false },
         });
+      },
+    );
+    it.each(['dynamic_tool_call', 'mcp_tool_call'])(
+      'reduces a prepared final %s body without normalizing it again',
+      (type) => {
+        let bodyReads = 0;
+        const counted = <T>(value: T): T => {
+          bodyReads += 1;
+          return value;
+        };
+        const body = 'b'.repeat(70_000);
+        const item =
+          type === 'mcp_tool_call'
+            ? {
+                id: 'prepared-1',
+                type,
+                server: 'fixture',
+                tool: 'query',
+                arguments: {},
+                status: 'completed',
+                result: {
+                  get structuredContent(): unknown {
+                    return counted({ body });
+                  },
+                },
+                error: null,
+              }
+            : {
+                id: 'prepared-1',
+                type,
+                tool: 'canopy_query_code_graph',
+                arguments: {},
+                status: 'completed',
+                success: true,
+                get content_items(): unknown {
+                  return counted([{ type: 'inputText', text: body }]);
+                },
+              };
+        const fullOutputRef = {
+          version: 1 as const,
+          artifactId: `sha256-v1-${'c'.repeat(64)}`,
+          byteLength: 70_020,
+          sha256: 'c'.repeat(64),
+          encoding: 'utf-8' as const,
+          mediaType: 'text/plain' as const,
+        };
+        const reduce = (
+          prepared: boolean,
+        ): ReturnType<typeof applyCodexTranscriptEvent> =>
+          applyCodexTranscriptEvent(
+            createEmptyTranscriptReducerState(),
+            { type: 'item.completed', item },
+            {
+              now: 1000,
+              createMessageId: () => 'generated',
+              transcriptStorageFormat: 4,
+              childToolLiveness: { kind: 'unknown' },
+              ...(prepared
+                ? {
+                    preparedCodexItem: {
+                      itemId: 'prepared-1',
+                      output: {
+                        field: 'output' as const,
+                        output: 'prepared preview',
+                        fullOutputRef,
+                      },
+                    },
+                  }
+                : {}),
+            },
+          );
+        const state = reduce(true);
+        // Dynamic items still read `content_items` once, for their images.
+        const preparedReads = bodyReads;
+        expect(preparedReads).toBe(type === 'mcp_tool_call' ? 0 : 1);
+        const result = state.messages[0].blocks.find(
+          (block) => block.type === 'tool_result',
+        );
+        expect(result).toMatchObject({
+          output: 'prepared preview',
+          outputTruncated: true,
+          fullOutputRef,
+        });
+        const history = projectPersistedChatTranscript({
+          scope: 'worktree',
+          chatId: 'chat-1',
+          messages: state.messages,
+        });
+        expect(history[0].parts?.[0].data).toMatchObject({
+          result: { output: 'prepared preview' },
+        });
+        expect(bodyReads).toBe(preparedReads);
+        reduce(false);
+        expect(bodyReads).toBeGreaterThan(preparedReads);
       },
     );
     it.each(['dynamic_tool_call', 'mcp_tool_call'])(
@@ -1270,6 +1371,27 @@ describe('projectPersistedChatTranscript', () => {
     // `msg_x:2` (tool_use). The wire projector upserts both live events onto
     // ONE row, so the seed must converge too or the browser renders the
     // message twice.
+    const legacyQuestionToolUse = {
+      type: 'tool_use' as const,
+      toolUseId: 'tool-1',
+      toolName: 'mcp__unstoppable-code_ui__AskUserQuestion',
+      input: '',
+    };
+    // Keep the legacy identifier keys and their order in the runtime fixture.
+    Reflect.deleteProperty(legacyQuestionToolUse, 'toolUseId');
+    Reflect.deleteProperty(legacyQuestionToolUse, 'toolName');
+    Reflect.deleteProperty(legacyQuestionToolUse, 'input');
+    Reflect.set(legacyQuestionToolUse, 'id', 'tool-1');
+    Reflect.set(
+      legacyQuestionToolUse,
+      'name',
+      'mcp__unstoppable-code_ui__AskUserQuestion',
+    );
+    Reflect.set(legacyQuestionToolUse, 'input', '');
+    // This legacy fixture deliberately retains its object-valued question input.
+    Reflect.set(legacyQuestionToolUse, 'input', {
+      questions: [{ question: 'Which?', options: [] }],
+    });
     const projected = projectPersistedChatTranscript({
       scope: 'app_advisor',
       chatId: 'chat-1',
@@ -1285,14 +1407,7 @@ describe('projectPersistedChatTranscript', () => {
           id: 'msg_x:2',
           role: 'assistant',
           timestamp: 1_002,
-          blocks: [
-            {
-              type: 'tool_use',
-              id: 'tool-1',
-              name: 'mcp__unstoppable-code_ui__AskUserQuestion',
-              input: { questions: [{ question: 'Which?', options: [] }] },
-            },
-          ],
+          blocks: [legacyQuestionToolUse],
         },
       ],
     });
@@ -1361,8 +1476,8 @@ describe('projectPersistedChatTranscript', () => {
 
   it('re-keys each turn’s persisted timer row onto the wire timer id', () => {
     // The renderer persists the timer under its own minted id (`msg-…`); the
-    // live wire emits the same logical timer as `${userMessageId}:turn-timer`
-    // (createPortalTurnTimer). The transcript projection must converge on the
+    // legacy live wire emitted the same logical timer as
+    // `${userMessageId}:turn-timer`. The transcript projection must converge on the
     // wire id so a history re-push supersedes the browser's cached live row
     // instead of duplicating it.
     const projected = projectPersistedChatTranscript({
@@ -1438,335 +1553,6 @@ describe('projectPersistedChatTranscript', () => {
       'msg-1-1',
       'user-1:turn-timer',
     ]);
-  });
-});
-
-describe('createPortalTurnTimer', () => {
-  it('starts as a streaming system row with an open timer part', () => {
-    const timer = createPortalTurnTimer({
-      chatId: 'chat-1',
-      userMessageId: 'user-1',
-    });
-    expect(timer.startMessage).toMatchObject({
-      messageId: 'user-1:turn-timer',
-      chatId: 'chat-1',
-      role: 'system',
-      status: 'streaming',
-      text: '',
-      parts: [{ kind: 'turn_timer', data: { completedAt: null } }],
-    });
-  });
-
-  it('completes once on the terminal event and is idempotent afterwards', () => {
-    const timer = createPortalTurnTimer({
-      chatId: 'chat-1',
-      userMessageId: 'user-1',
-    });
-    expect(timer.completeForEvent({ type: 'assistant', message: {} })).toBe(
-      null,
-    );
-    const completed = timer.completeForEvent({ type: 'result', result: 'ok' });
-    expect(completed).toMatchObject({
-      messageId: 'user-1:turn-timer',
-      role: 'system',
-      status: 'complete',
-    });
-    const completedParts = completed?.parts ?? [];
-    expect(completedParts).toHaveLength(1);
-    expect(completedParts[0]).toMatchObject({ kind: 'turn_timer' });
-    const partData = completedParts[0]?.data;
-    expect(
-      partData !== null &&
-        typeof partData === 'object' &&
-        'completedAt' in partData &&
-        typeof partData.completedAt === 'number',
-    ).toBe(true);
-    // finalize() after completion is a no-op; non-terminal events stay inert.
-    expect(timer.finalize()).toBeNull();
-    expect(timer.completeForEvent({ type: 'assistant', message: {} })).toBe(
-      null,
-    );
-  });
-
-  describe('endReason on the completed timer', () => {
-    const endReasonOf = (message: PortalChatMessage | null): unknown => {
-      const data: unknown = message?.parts?.[0]?.data;
-      if (typeof data !== 'object' || data === null) return undefined;
-      const record: Record<string, unknown> = { ...data };
-      return record.endReason;
-    };
-    const complete = (event: unknown): PortalChatMessage | null =>
-      createPortalTurnTimer({
-        chatId: 'chat-1',
-        userMessageId: 'user-1',
-      }).completeForEvent(event);
-
-    // Each shape below is what a provider really emits when the user stops a
-    // turn (claude-session, codex app-server client + codex-session,
-    // cursor-session).
-    it.each([
-      [
-        'Claude aborted streaming',
-        {
-          type: 'result',
-          is_error: true,
-          terminal_reason: 'aborted_streaming',
-        },
-      ],
-      [
-        'Claude aborted tools',
-        { type: 'result', is_error: true, terminal_reason: 'aborted_tools' },
-      ],
-      [
-        'Claude Session aborted',
-        { type: 'result', is_error: false, result: 'Session aborted' },
-      ],
-      [
-        'Codex interrupted turn.completed wrapper',
-        {
-          type: 'codex',
-          event: { type: 'turn.completed', status: 'interrupted' },
-        },
-      ],
-      [
-        'Codex Turn cancelled result',
-        { type: 'result', is_error: false, result: 'Turn cancelled' },
-      ],
-      [
-        'Cursor cancelled subtype',
-        {
-          type: 'result',
-          is_error: false,
-          result: 'Turn cancelled',
-          subtype: 'cancelled',
-        },
-      ],
-      [
-        'Cursor cancelled subtype flagged as an error',
-        { type: 'result', is_error: true, subtype: 'cancelled' },
-      ],
-    ])('marks a user stop as cancelled: %s', (_name, event) => {
-      const completed = complete(event);
-      expect(completed).toMatchObject({ status: 'complete' });
-      expect(endReasonOf(completed)).toBe('cancelled');
-    });
-
-    it.each([
-      ['an error result', { type: 'result', is_error: true, result: 'boom' }],
-      ['an error event', { type: 'error', error: 'boom' }],
-      [
-        'a failed Codex turn',
-        { type: 'codex', event: { type: 'turn.failed', error: {} } },
-      ],
-    ])('marks %s as failed', (_name, event) => {
-      const completed = complete(event);
-      expect(completed).toMatchObject({ status: 'complete' });
-      expect(endReasonOf(completed)).toBe('failed');
-    });
-
-    it.each([
-      ['a normal result', { type: 'result', result: 'ok', is_error: false }],
-      [
-        'a completed Codex turn',
-        {
-          type: 'codex',
-          event: { type: 'turn.completed', status: 'completed' },
-        },
-      ],
-      [
-        'a Codex turn.completed without a status',
-        { type: 'codex', event: { type: 'turn.completed' } },
-      ],
-      ['a Turn completed result', { type: 'result', result: 'Turn completed' }],
-    ])('omits endReason for %s', (_name, event) => {
-      const completed = complete(event);
-      expect(completed).toMatchObject({ status: 'complete' });
-      expect(endReasonOf(completed)).toBeUndefined();
-    });
-
-    it('omits endReason for finalize()', () => {
-      const timer = createPortalTurnTimer({
-        chatId: 'chat-1',
-        userMessageId: 'user-1',
-      });
-      expect(endReasonOf(timer.finalize())).toBeUndefined();
-    });
-  });
-
-  it('re-completes with a later completedAt when a loop continuation ends the same turn again', () => {
-    // A loop wakeup continues the turn without a new user row, so the same
-    // timer gets a second terminal event. The desktop extends its timer; the
-    // portal must receive the extended completion instead of keeping the
-    // first, shorter duration.
-    const timer = createPortalTurnTimer({
-      chatId: 'chat-1',
-      userMessageId: 'user-1',
-    });
-    const nowSpy = jest.spyOn(Date, 'now');
-    nowSpy.mockReturnValue(10_000);
-    const first = timer.completeForEvent({ type: 'result', result: 'ok' });
-    nowSpy.mockReturnValue(20_000);
-    const second = timer.completeForEvent({ type: 'result', result: 'ok' });
-    nowSpy.mockRestore();
-    const completedAtOf = (message: PortalChatMessage | null): unknown => {
-      const part = message?.parts?.[0];
-      const data: unknown = part?.data;
-      if (typeof data !== 'object' || data === null) return undefined;
-      const record: Record<string, unknown> = { ...data };
-      return record.completedAt;
-    };
-    expect(completedAtOf(first)).toBe(10_000);
-    expect(second).toMatchObject({
-      messageId: 'user-1:turn-timer',
-      status: 'complete',
-    });
-    expect(completedAtOf(second)).toBe(20_000);
-    expect(timer.finalize()).toBeNull();
-  });
-
-  it('finalize() force-closes a timer whose turn died without a terminal event', () => {
-    const timer = createPortalTurnTimer({
-      chatId: 'chat-1',
-      userMessageId: 'user-1',
-    });
-    const completed = timer.finalize();
-    expect(completed).toMatchObject({ status: 'complete' });
-    expect(timer.finalize()).toBeNull();
-  });
-
-  it('pauses and resumes around an ask-user tool lifecycle', () => {
-    const now = jest
-      .spyOn(Date, 'now')
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(2_000)
-      .mockReturnValueOnce(5_000);
-    try {
-      const timer = createPortalTurnTimer({
-        chatId: 'chat-1',
-        userMessageId: 'user-1',
-      });
-      const paused = timer.updateForMessage({
-        messageId: 'tool-use-1',
-        chatId: 'chat-1',
-        role: 'assistant',
-        status: 'complete',
-        text: '',
-        parts: [
-          {
-            kind: 'tool_use',
-            data: {
-              toolUseId: 'ask-1',
-              toolName: 'canopy_ask_user_question',
-            },
-          },
-        ],
-        createdAtMs: 2_000,
-      });
-      expect(paused?.parts?.[0]?.data).toMatchObject({
-        startedAt: 1_000,
-        pausedAt: 2_000,
-        resumedAt: null,
-        completedAt: null,
-      });
-
-      const resumed = timer.updateForMessage({
-        messageId: 'tool-result-1',
-        chatId: 'chat-1',
-        role: 'assistant',
-        status: 'complete',
-        text: '',
-        parts: [
-          {
-            kind: 'tool_result',
-            data: { toolUseId: 'unrelated-1', output: 'Done' },
-          },
-          {
-            kind: 'tool_result',
-            data: { toolUseId: 'ask-1', output: 'Continue' },
-          },
-        ],
-        createdAtMs: 5_000,
-      });
-      expect(resumed?.parts?.[0]?.data).toMatchObject({
-        pausedAt: 2_000,
-        resumedAt: 5_000,
-        accumulatedPausedDurationMs: 3_000,
-        completedAt: null,
-      });
-    } finally {
-      now.mockRestore();
-    }
-  });
-
-  it('does not leave Codex questions paused when raw events and projected messages both arrive', () => {
-    const timer = createPortalTurnTimer({
-      chatId: 'chat-1',
-      userMessageId: 'user-1',
-    });
-    for (const type of ['item.started', 'item.completed']) {
-      const data = {
-        type: 'codex',
-        event: {
-          type,
-          item: {
-            type: 'dynamic_tool_call',
-            id: 'ask',
-            tool: 'request_user_input',
-            success: true,
-          },
-        },
-      };
-      timer.updateForEvent(data);
-      const message = runtimeChatEventToPortalMessage({
-        scope: 'worktree',
-        chatId: 'chat-1',
-        data,
-      });
-      expect(message).not.toBeNull();
-      if (message) timer.updateForMessage(message);
-    }
-    const final = timer.finalize();
-    const timerData = final?.parts?.[0]?.data;
-    expectRecord(timerData);
-    expect(typeof timerData.resumedAt).toBe('number');
-  });
-
-  it('pauses and resumes around Codex built-in request_user_input events', () => {
-    const now = jest
-      .spyOn(Date, 'now')
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(2_000)
-      .mockReturnValueOnce(5_000);
-    try {
-      const timer = createPortalTurnTimer({
-        chatId: 'chat-1',
-        userMessageId: 'user-1',
-      });
-      const item = {
-        type: 'dynamic_tool_call',
-        id: 'request-1',
-        tool: 'request_user_input',
-      };
-
-      expect(
-        timer.updateForEvent({
-          type: 'codex',
-          event: { type: 'item.started', item },
-        })?.parts?.[0]?.data,
-      ).toMatchObject({ pausedAt: 2_000, resumedAt: null });
-      expect(
-        timer.updateForEvent({
-          type: 'codex',
-          event: { type: 'item.completed', item },
-        })?.parts?.[0]?.data,
-      ).toMatchObject({
-        pausedAt: 2_000,
-        resumedAt: 5_000,
-        accumulatedPausedDurationMs: 3_000,
-      });
-    } finally {
-      now.mockRestore();
-    }
   });
 });
 

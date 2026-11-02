@@ -94,6 +94,14 @@ jest.mock('../account-proxy/routing', () => ({
   }): Promise<boolean> => mockAccountProxyReady(options.harness),
 }));
 
+const mockPeekCodexAccountModels = jest.fn<ReadonlySet<string> | null, []>();
+const mockReadCodexSpeedCatalog = jest.fn<Promise<unknown>, []>();
+jest.mock('../model-routing/codex-account-models', () => ({
+  peekCodexAccountModelIds: (): ReadonlySet<string> | null =>
+    mockPeekCodexAccountModels(),
+  readCodexSpeedCatalog: (): Promise<unknown> => mockReadCodexSpeedCatalog(),
+}));
+
 const mockDestinationDefault = jest.fn<Promise<string>, [string | undefined]>();
 jest.mock('../agents/agent-default-model', () => ({
   resolveAgentDestinationDefaultModel: (
@@ -156,6 +164,8 @@ describe('main default-model lane resolver', () => {
     mockLaneWorkOwner.mockResolvedValue(undefined);
     mockLoadAccount.mockResolvedValue(null);
     mockAccountProxyReady.mockResolvedValue(false);
+    mockPeekCodexAccountModels.mockReturnValue(null);
+    mockReadCodexSpeedCatalog.mockResolvedValue({ status: 'unknown' });
   });
 
   afterEach(() => {
@@ -163,19 +173,27 @@ describe('main default-model lane resolver', () => {
     jest.useRealTimers();
   });
 
+  function modelEntry(
+    id: string,
+    label: string,
+    recommendedHarness: 'claude' | 'codex' = 'codex',
+  ): Parameters<typeof initAiGatewayModels>[0][number] {
+    return {
+      id,
+      label,
+      recommendedHarness,
+      contextWindow: 200_000,
+      supportsPromptCaching: false,
+      supportedThinkingLevels: ['high'],
+      toolSchemaProfile: 'standard',
+    };
+  }
+
   function seedOrgGatewayCatalog(): void {
     initAiGatewayModels(
       [
-        {
-          id: 'deepseek-v4-pro',
-          label: 'DeepSeek',
-          supportedThinkingLevels: ['high'],
-        },
-        {
-          id: 'org-claude-sonnet',
-          label: 'Organization Sonnet',
-          supportedThinkingLevels: ['high'],
-        },
+        modelEntry('deepseek-v4-pro', 'DeepSeek'),
+        modelEntry('org-claude-sonnet', 'Organization Sonnet', 'claude'),
       ],
       [
         {
@@ -397,16 +415,8 @@ describe('main default-model lane resolver', () => {
     // A guest must land on an allowlisted model instead.
     initAiGatewayModels(
       [
-        {
-          id: 'sonnet',
-          label: 'Sonnet',
-          supportedThinkingLevels: ['high'],
-        },
-        {
-          id: 'gpt-5.6-luna',
-          label: 'GPT 5.6 Luna',
-          supportedThinkingLevels: ['high'],
-        },
+        modelEntry('sonnet', 'Sonnet', 'claude'),
+        modelEntry('gpt-5.6-luna', 'GPT 5.6 Luna'),
       ],
       [
         gatewayEntry('sonnet', 'anthropic/claude-sonnet-5'),
@@ -475,16 +485,8 @@ describe('main default-model lane resolver', () => {
     // GPT 5.6 Luna even though both route.
     initAiGatewayModels(
       [
-        {
-          id: 'gpt-5.6-luna',
-          label: 'GPT 5.6 Luna',
-          supportedThinkingLevels: ['high'],
-        },
-        {
-          id: 'gpt-6-luna',
-          label: 'GPT 6 Luna',
-          supportedThinkingLevels: ['high'],
-        },
+        modelEntry('gpt-5.6-luna', 'GPT 5.6 Luna'),
+        modelEntry('gpt-6-luna', 'GPT 6 Luna'),
       ],
       [
         gatewayEntry('gpt-5.6-luna', 'openai/gpt-5.6-luna'),
@@ -787,6 +789,109 @@ describe('main default-model lane resolver', () => {
           ollamaPinned: false,
         }),
       ).resolves.toMatchObject({ outcome: 'no-dispatchable-model' });
+    });
+  });
+
+  describe('Codex account eligibility (CAN-4716)', () => {
+    const codexOnly = {
+      defaults,
+      preferredProvider: 'codex' as const,
+      lastResolvedLane: undefined,
+      ollamaPinned: false,
+    };
+
+    beforeEach(() => {
+      mockRoutingAuth.mockResolvedValue(true);
+      mockPeekAuth.mockReturnValue({
+        claude: false,
+        codex: true,
+        ollama: true,
+      });
+    });
+
+    it('repairs a Codex default the account cannot run to the first model it can', async () => {
+      mockPeekCodexAccountModels.mockReturnValue(new Set(['gpt-6-luna']));
+
+      await expect(
+        resolveDefaultModelLaneForPreferences({
+          ...codexOnly,
+          persistScope: 'chat',
+        }),
+      ).resolves.toMatchObject({
+        outcome: 'resolved',
+        lane: 'codex-native',
+        selection: { model: 'gpt-6-luna' },
+      });
+      expect(mockReadCodexSpeedCatalog).not.toHaveBeenCalled();
+      // Persistence records only the lane; the stored default stays as saved.
+      await jest.advanceTimersByTimeAsync(500);
+      expect(mockUpdatePreferences).toHaveBeenCalledTimes(1);
+      const updater = mockUpdatePreferences.mock.calls[0]?.[0];
+      expect(updater?.({} as PreferencesData)).toEqual({
+        lastResolvedDefaultLaneByScope: { chat: 'codex-native' },
+        lastResolvedDefaultLane: 'codex-native',
+      });
+      expect(defaults.codex.model).toBe(DEFAULT_CODEX_MODEL);
+    });
+
+    it('keeps the configured default while the account list is unknown', async () => {
+      await expect(
+        resolveDefaultModelLaneForPreferences(codexOnly),
+      ).resolves.toMatchObject({
+        outcome: 'resolved',
+        lane: 'codex-native',
+        selection: { model: DEFAULT_CODEX_MODEL },
+      });
+    });
+
+    it('warms the account list without awaiting it once the Codex lane is confirmed', async () => {
+      let settle: (() => void) | undefined;
+      mockReadCodexSpeedCatalog.mockReturnValue(
+        new Promise<unknown>((resolve) => {
+          settle = (): void => resolve({ status: 'unknown' });
+        }),
+      );
+
+      // Resolves even though the warm-up read never settles.
+      await expect(
+        resolveDefaultModelLaneForPreferences(codexOnly),
+      ).resolves.toMatchObject({ outcome: 'resolved' });
+      expect(mockReadCodexSpeedCatalog).toHaveBeenCalledTimes(1);
+      settle?.();
+    });
+
+    it('skips the warm-up when the account list is already cached', async () => {
+      mockPeekCodexAccountModels.mockReturnValue(
+        new Set([DEFAULT_CODEX_MODEL]),
+      );
+
+      await resolveDefaultModelLaneForPreferences(codexOnly);
+
+      expect(mockReadCodexSpeedCatalog).not.toHaveBeenCalled();
+    });
+
+    it('never warms the Codex list when the Claude lane already won', async () => {
+      mockPeekAuth.mockReturnValue({ claude: true, codex: true, ollama: true });
+
+      await resolveDefaultModelLaneForPreferences({
+        ...codexOnly,
+        preferredProvider: 'claude',
+      });
+
+      expect(mockReadCodexSpeedCatalog).not.toHaveBeenCalled();
+    });
+
+    it('never warms the Codex list while the Codex lane is unconfirmed', async () => {
+      mockRoutingAuth.mockResolvedValue(false);
+      mockPeekAuth.mockReturnValue({
+        claude: false,
+        codex: false,
+        ollama: true,
+      });
+
+      await resolveDefaultModelLaneForPreferences(codexOnly);
+
+      expect(mockReadCodexSpeedCatalog).not.toHaveBeenCalled();
     });
   });
 
@@ -1315,6 +1420,12 @@ describe('main default-model lane resolver', () => {
             createdAt: '2026-10-13T00:00:00.000Z',
             updatedAt: '2026-10-13T00:00:00.000Z',
             available: true,
+            pluginSelections: {
+              collectionIds: [],
+              skillRefs: [],
+              pluginRefs: [],
+              mcpServerRefs: [],
+            },
           },
         ]);
         // Claude confirmed logged out, Codex signed in, no credits.

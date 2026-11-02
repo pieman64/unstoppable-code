@@ -29,6 +29,7 @@ import {
   withW5Commit,
 } from '../w5-commit-log-file-store';
 import { nodeW5FileStore } from '../w5-file-store';
+import { schedulePortalStructuralSync } from '../../portal/portal-structural-sync';
 import { getWorkspaceWorktreesFilePath } from '../paths';
 import { __resetSidebarItemsStateForTests } from '../sidebar-items';
 import {
@@ -117,6 +118,27 @@ it('counts a staged list write as a self-write until its scope applies', async (
 
   expect(whileStaged).toBe(true);
   expect(observed()).toEqual([true]);
+  expect(wasRecentWorktreesSelfWrite('a')).toBe(true);
+});
+
+it('commits a staged list write once when its post-commit notification fails', async () => {
+  const observed = observeDuringCommit();
+  jest.mocked(schedulePortalStructuralSync).mockImplementationOnce(() => {
+    throw new Error('notification failed');
+  });
+
+  await expect(
+    withW5Commit(
+      {
+        operation: 'test.self-write-notification',
+        locks: [{ kind: 'list', path: getWorkspaceWorktreesFilePath('a') }],
+      },
+      () => rename('canopy/mock-branch'),
+    ),
+  ).rejects.toThrow('notification failed');
+
+  expect(observed()).toEqual([true]);
+  expect(listImage()).toContain('canopy/mock-branch');
   expect(wasRecentWorktreesSelfWrite('a')).toBe(true);
 });
 

@@ -1983,7 +1983,10 @@ describe('runSelectOption ARIA controls', () => {
 
       await jest.advanceTimersByTimeAsync(0);
       await jest.advanceTimersByTimeAsync(50);
-      expect((await pending).error).toBeDefined();
+      const settled = await pending;
+      if (!('error' in settled))
+        throw new Error('Expected option retrieval to fail before dispatch.');
+      expect(settled.error).toBeDefined();
       expect(h.runtimeTimes).toHaveLength(2);
     } finally {
       jest.useRealTimers();

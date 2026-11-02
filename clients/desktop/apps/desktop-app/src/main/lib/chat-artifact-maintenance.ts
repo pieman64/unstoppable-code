@@ -1,5 +1,7 @@
 import type { Dir } from 'node:fs';
+import type { PersistedToolOutputReference } from '@canopy/agent-transcript/types';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
+import { transcriptBodyReferences } from '@canopy/agent-transcript/transcript-storage';
 import {
   artifactIdsOf,
   storedArtifactLocations,
@@ -8,6 +10,7 @@ import {
 import type { ChatTranscriptWrite } from './chat-storage-transactions';
 import type { ChatStorageTransactions } from './chat-storage-transactions';
 import type { TranscriptDescriptor } from './chat-transcript-log';
+import type { ChatTranscriptArtifacts } from './chat-transcript-artifacts';
 
 interface ReferenceScan {
   offset: number;
@@ -19,6 +22,13 @@ interface ReferenceScan {
   identity: string;
   committedIdentity?: string;
   filter: CountingArtifactReferenceFilter;
+  /** Then each registered child stream: committed log, then open sidecar. */
+  primaryComplete: boolean;
+  childIndex: number;
+  childCommittedComplete: boolean;
+  childOffset: number;
+  registryReferences?: AsyncIterator<PersistedToolOutputReference | null>;
+  registryComplete: boolean;
 }
 
 interface ArtifactCandidate {
@@ -36,6 +46,7 @@ interface ArtifactState {
   candidates: Map<string, ArtifactCandidate>;
   filter?: CountingArtifactReferenceFilter;
   identity?: string;
+  childIdentity?: string;
   scan?: ReferenceScan;
   directory?: Dir;
   directoryFamilyIndex: number;
@@ -113,26 +124,42 @@ export class CountingArtifactReferenceFilter {
 }
 
 async function visitReferences(
+  artifacts: ChatTranscriptArtifacts,
+  chatId: string,
   messages: readonly PersistedChatMessage[],
   visit: (artifactId: string, family: StoredArtifactFamily) => void,
 ): Promise<void> {
   let blocks = 0;
-  for (const message of messages)
-    for (const block of message.blocks) {
-      for (const { family } of ARTIFACT_LOCATIONS)
-        for (const artifactId of artifactIdsOf(block, family))
-          visit(artifactId, family);
+  for (const message of messages) {
+    // Only a paged row's references need its pages read.
+    const logical = message.blocksRef
+      ? await artifacts.expandBlocks(chatId, message)
+      : message;
+    if (message.blocksRef)
+      for await (const reference of artifacts.referenceClosure(chatId, message))
+        visit(reference.artifactId, 'tool-output');
+    else
+      for (const { reference } of transcriptBodyReferences(message))
+        visit(reference.artifactId, 'tool-output');
+    for (const block of logical.blocks) {
+      for (const artifactId of artifactIdsOf(block, 'visual'))
+        visit(artifactId, 'visual');
       if (++blocks % 256 === 0)
         await new Promise<void>((resolve) => setImmediate(resolve));
     }
+  }
 }
 
 async function updateReferences(
+  artifacts: ChatTranscriptArtifacts,
+  chatId: string,
   filter: CountingArtifactReferenceFilter,
   messages: readonly PersistedChatMessage[],
   operation: 'add' | 'remove',
 ): Promise<void> {
-  await visitReferences(messages, (id) => filter[operation](id));
+  await visitReferences(artifacts, chatId, messages, (id) =>
+    filter[operation](id),
+  );
 }
 
 async function addArtifactIds(
@@ -144,6 +171,12 @@ async function addArtifactIds(
     if ((index + 1) % 256 === 0)
       await new Promise<void>((resolve) => setImmediate(resolve));
   }
+}
+
+async function clearReferenceScan(state: ArtifactState): Promise<void> {
+  const scan = state.scan;
+  state.scan = undefined;
+  await scan?.registryReferences?.return?.();
 }
 
 async function closeDirectory(state: ArtifactState): Promise<void> {
@@ -235,6 +268,7 @@ export class ChatArtifactMaintenance {
    * orphan, never remove a referenced output.
    */
   private readonly clean = new Map<string, string>();
+  private readonly childClean = new Map<string, string>();
   public constructor(
     private readonly storage: ChatStorageTransactions,
     private readonly root: string,
@@ -273,11 +307,11 @@ export class ChatArtifactMaintenance {
       states.delete(evictable[0]);
       evictable[1].filter = undefined;
       evictable[1].identity = undefined;
-      evictable[1].scan = undefined;
-      evictable[1].candidates.clear();
-      evictable[1].discoveryComplete = false;
       admissions += 1;
       try {
+        await clearReferenceScan(evictable[1]);
+        evictable[1].candidates.clear();
+        evictable[1].discoveryComplete = false;
         await closeDirectory(evictable[1]);
         evictable[1].directoryFamilyIndex = 0;
       } catch (error) {
@@ -434,7 +468,7 @@ export class ChatArtifactMaintenance {
   private async resetCandidateDiscovery(state: ArtifactState): Promise<void> {
     state.filter = undefined;
     state.identity = undefined;
-    state.scan = undefined;
+    await clearReferenceScan(state);
     state.discoveryComplete = false;
     await closeDirectory(state);
     state.directoryFamilyIndex = 0;
@@ -444,7 +478,12 @@ export class ChatArtifactMaintenance {
     const state = await this.state(chatId);
     if (!state) return undefined;
     if (!state.filter || !state.identity) return undefined;
-    return this.storage.transcripts.artifactReferenceIdentity(chatId);
+    const child = await this.storage.childArtifactSnapshot(chatId);
+    return this.storage.transcripts.artifactReferenceIdentity(
+      chatId,
+      undefined,
+      child.identityInputs,
+    );
   }
 
   /** Called only after the canonical commit returned with an empty WAL. */
@@ -464,6 +503,7 @@ export class ChatArtifactMaintenance {
         state.discoveryComplete = false;
       }
       if (write.kind === 'delete') {
+        await clearReferenceScan(state);
         await closeDirectory(state);
         state.reserved = false;
         states.delete(this.key(chatId));
@@ -473,7 +513,7 @@ export class ChatArtifactMaintenance {
         state.reserved = false;
         state.filter = undefined;
         state.identity = undefined;
-        state.scan = undefined;
+        await clearReferenceScan(state);
         state.discoveryComplete = false;
         await closeDirectory(state);
         state.directoryFamilyIndex = 0;
@@ -486,7 +526,8 @@ export class ChatArtifactMaintenance {
       // The canonical scan verifies reachability. It is safe to submit every
       // previous active reference as a possible orphan; no duplicate maps of
       // a potentially huge active tail are needed for this hint.
-      await visitReferences(oldActive, (id, family) =>
+      const artifacts = this.storage.transcripts.artifacts;
+      await visitReferences(artifacts, chatId, oldActive, (id, family) =>
         this.candidate(state, family, id),
       );
 
@@ -497,20 +538,44 @@ export class ChatArtifactMaintenance {
       ) {
         state.filter = undefined;
         state.identity = undefined;
-        state.scan = undefined;
+        await clearReferenceScan(state);
         return;
       }
       try {
-        await updateReferences(state.filter, oldActive, 'remove');
+        await updateReferences(
+          artifacts,
+          chatId,
+          state.filter,
+          oldActive,
+          'remove',
+        );
         if (write.kind === 'append')
-          await updateReferences(state.filter, write.messages, 'add');
-        else await updateReferences(state.filter, nextActive, 'add');
+          await updateReferences(
+            artifacts,
+            chatId,
+            state.filter,
+            write.messages,
+            'add',
+          );
+        else
+          await updateReferences(
+            artifacts,
+            chatId,
+            state.filter,
+            nextActive,
+            'add',
+          );
+        const child = await this.storage.childArtifactSnapshot(chatId);
         state.identity =
-          await this.storage.transcripts.artifactReferenceIdentity(chatId);
+          await this.storage.transcripts.artifactReferenceIdentity(
+            chatId,
+            undefined,
+            child.identityInputs,
+          );
       } catch {
         state.filter = undefined;
         state.identity = undefined;
-        state.scan = undefined;
+        await clearReferenceScan(state);
       }
     } finally {
       this.release(state);
@@ -529,9 +594,14 @@ export class ChatArtifactMaintenance {
     const cleanIdentity = this.clean.get(chatId);
     if (cleanIdentity === undefined) return true;
     try {
+      const child = await this.storage.childArtifactSnapshot(chatId);
+      if (child.identity !== this.childClean.get(chatId)) return true;
       return (
-        (await this.storage.transcripts.artifactReferenceIdentity(chatId)) !==
-        cleanIdentity
+        (await this.storage.transcripts.artifactReferenceIdentity(
+          chatId,
+          undefined,
+          child.identityInputs,
+        )) !== cleanIdentity
       );
     } catch {
       return true;
@@ -540,6 +610,7 @@ export class ChatArtifactMaintenance {
 
   public async invalidate(chatId: string): Promise<void> {
     this.clean.delete(chatId);
+    this.childClean.delete(chatId);
     const state = await this.state(chatId, true);
     if (!state) return;
     try {
@@ -559,7 +630,7 @@ export class ChatArtifactMaintenance {
     state.inFlight += 1;
     try {
       state.reserved = false;
-      state.scan = undefined;
+      await clearReferenceScan(state);
       state.candidates.clear();
       state.discoveryComplete = false;
       await closeDirectory(state);
@@ -574,8 +645,13 @@ export class ChatArtifactMaintenance {
     maxBytes: number,
     expected?: TranscriptDescriptor | (() => Promise<TranscriptDescriptor>),
   ): Promise<ArtifactMaintenanceProgress> {
+    const child = await this.storage.childArtifactSnapshot(chatId);
     const cleanIdentity = this.clean.get(chatId);
     if (cleanIdentity !== undefined && !states.has(this.key(chatId))) {
+      if (!(await this.storage.journalIsClear()))
+        throw new Error(
+          'Artifact maintenance deferred while replay is pending',
+        );
       // Re-queued after eviction with nothing changed: no slot, no rescan.
       const canonical =
         typeof expected === 'function' ? await expected() : expected;
@@ -583,7 +659,9 @@ export class ChatArtifactMaintenance {
         (await this.storage.transcripts.artifactReferenceIdentity(
           chatId,
           canonical,
-        )) === cleanIdentity
+          child.identityInputs,
+        )) === cleanIdentity &&
+        this.childClean.get(chatId) === child.identity
       )
         return { complete: true, scannedBytes: 0, removed: 0 };
       this.clean.delete(chatId);
@@ -602,9 +680,13 @@ export class ChatArtifactMaintenance {
         result.complete &&
         identity !== undefined &&
         state.candidates.size === 0
-      )
+      ) {
         this.clean.set(chatId, identity);
-      else this.clean.delete(chatId);
+        this.childClean.set(chatId, child.identity);
+      } else {
+        this.clean.delete(chatId);
+        this.childClean.delete(chatId);
+      }
       return result;
     };
     try {
@@ -615,6 +697,12 @@ export class ChatArtifactMaintenance {
       const canonical =
         typeof expected === 'function' ? await expected() : expected;
       const transcript = this.storage.transcripts;
+      if (state.childIdentity !== child.identity) {
+        state.filter = undefined;
+        state.identity = undefined;
+        await clearReferenceScan(state);
+        state.childIdentity = child.identity;
+      }
       if (
         !state.candidates.size &&
         !state.scan &&
@@ -624,11 +712,16 @@ export class ChatArtifactMaintenance {
       )
         return progress(
           { complete: true, scannedBytes: 0, removed: 0 },
-          await transcript.artifactReferenceIdentity(chatId, canonical),
+          await transcript.artifactReferenceIdentity(
+            chatId,
+            canonical,
+            child.identityInputs,
+          ),
         );
       const actualIdentity = await transcript.artifactReferenceIdentity(
         chatId,
         canonical,
+        child.identityInputs,
       );
       if (state.filter && state.identity !== actualIdentity) {
         await this.resetCandidateDiscovery(state);
@@ -661,63 +754,126 @@ export class ChatArtifactMaintenance {
           activeFinalizingRows: 0,
           identity: actualIdentity,
           filter: new CountingArtifactReferenceFilter(),
+          primaryComplete: false,
+          childIndex: 0,
+          childCommittedComplete: false,
+          childOffset: 0,
+          registryComplete: false,
         });
         if (scan.identity !== actualIdentity) {
           await this.resetCandidateDiscovery(state);
           return progress({ complete: false, scannedBytes: 0, removed: 0 });
         }
-        const slice = scan.committedComplete
-          ? await transcript.artifactActiveReferenceSlice(
-              chatId,
-              scan.activeOffset,
-              maxBytes,
-            )
-          : await transcript.artifactReferenceSlice(
-              chatId,
-              scan.offset,
-              maxBytes,
-              canonical,
-            );
-        const previousIdentity = scan.committedComplete
-          ? scan.activeIdentity
-          : scan.committedIdentity;
-        if (
-          previousIdentity !== undefined &&
-          previousIdentity !== slice.identity
-        ) {
-          await this.resetCandidateDiscovery(state);
-          return progress({
-            complete: false,
-            scannedBytes: slice.scannedBytes,
-            removed: 0,
-          });
-        }
-        if (scan.committedComplete) {
-          scan.activeIdentity = slice.identity;
-          scan.activeOffset = slice.nextOffset;
-          if (slice.activeHeaderFinalizing !== undefined)
-            scan.activeHeaderFinalizing = slice.activeHeaderFinalizing;
-          scan.activeFinalizingRows += slice.activeFinalizingRows ?? 0;
-        } else {
-          scan.committedIdentity = slice.identity;
-          scan.offset = slice.nextOffset;
-        }
-        scannedBytes = slice.scannedBytes;
-        await addArtifactIds(scan.filter, slice.artifactIds);
-        if (!slice.complete)
+        if (!scan.primaryComplete) {
+          const slice = scan.committedComplete
+            ? await transcript.artifactActiveReferenceSlice(
+                chatId,
+                scan.activeOffset,
+                maxBytes,
+              )
+            : await transcript.artifactReferenceSlice(
+                chatId,
+                scan.offset,
+                maxBytes,
+                canonical,
+              );
+          const previousIdentity = scan.committedComplete
+            ? scan.activeIdentity
+            : scan.committedIdentity;
+          if (
+            previousIdentity !== undefined &&
+            previousIdentity !== slice.identity
+          ) {
+            await this.resetCandidateDiscovery(state);
+            return progress({
+              complete: false,
+              scannedBytes: slice.scannedBytes,
+              removed: 0,
+            });
+          }
+          if (scan.committedComplete) {
+            scan.activeIdentity = slice.identity;
+            scan.activeOffset = slice.nextOffset;
+            if (slice.activeHeaderFinalizing !== undefined)
+              scan.activeHeaderFinalizing = slice.activeHeaderFinalizing;
+            scan.activeFinalizingRows += slice.activeFinalizingRows ?? 0;
+          } else {
+            scan.committedIdentity = slice.identity;
+            scan.offset = slice.nextOffset;
+          }
+          scannedBytes = slice.scannedBytes;
+          await addArtifactIds(scan.filter, slice.artifactIds);
+          if (!slice.complete)
+            return progress({ complete: false, scannedBytes, removed: 0 });
+          if (!scan.committedComplete) {
+            scan.committedComplete = true;
+            return progress({ complete: false, scannedBytes, removed: 0 });
+          }
+          if (
+            scan.activeHeaderFinalizing !== undefined &&
+            scan.activeFinalizingRows > 0 !== scan.activeHeaderFinalizing
+          )
+            throw new Error('Invalid active transcript finalization state');
+          scan.primaryComplete = true;
+          if (child.streams.length > 0)
+            return progress({ complete: false, scannedBytes, removed: 0 });
+        } else if (scan.childIndex < child.streams.length) {
+          // Child streams share the parent's artifact owner; scan them in
+          // the same bounded slices instead of one unbudgeted pass.
+          const stream = child.streams[scan.childIndex];
+          const store = this.storage.childArtifactStore(stream.target);
+          const slice = scan.childCommittedComplete
+            ? await store.artifactActiveReferenceSlice(
+                stream.streamKey,
+                scan.childOffset,
+                maxBytes,
+              )
+            : stream.committedByteLength === 0
+              ? undefined
+              : await store.childArtifactReferenceSlice(
+                  stream.streamKey,
+                  scan.childOffset,
+                  maxBytes,
+                  stream.committedByteLength,
+                );
+          if (slice) {
+            scannedBytes = slice.scannedBytes;
+            await addArtifactIds(scan.filter, slice.artifactIds);
+          }
+          if (slice && !slice.complete) scan.childOffset = slice.nextOffset;
+          else if (!scan.childCommittedComplete) {
+            scan.childCommittedComplete = true;
+            scan.childOffset = 0;
+          } else {
+            scan.childIndex += 1;
+            scan.childCommittedComplete = false;
+            scan.childOffset = 0;
+          }
           return progress({ complete: false, scannedBytes, removed: 0 });
-        if (!scan.committedComplete) {
-          scan.committedComplete = true;
-          return progress({ complete: false, scannedBytes, removed: 0 });
         }
-        if (
-          scan.activeHeaderFinalizing !== undefined &&
-          scan.activeFinalizingRows > 0 !== scan.activeHeaderFinalizing
-        )
-          throw new Error('Invalid active transcript finalization state');
+        if (!scan.registryComplete) {
+          scan.registryReferences ??= this.storage
+            .registryAnswerReferences(chatId)
+            [Symbol.asyncIterator]();
+          // Registry records are bounded metadata. Charge every record, with
+          // or without an answer, and yield without a registry-sized array.
+          const budget = Math.max(1, Math.floor(maxBytes / 512));
+          for (let index = 0; index < budget; index++) {
+            const next = await scan.registryReferences.next();
+            if (next.done) {
+              scan.registryComplete = true;
+              break;
+            }
+            if (next.value) scan.filter.add(next.value.artifactId);
+            scannedBytes += 512;
+          }
+          if (!scan.registryComplete)
+            return progress({ complete: false, scannedBytes, removed: 0 });
+        }
         const finishedIdentity = await transcript.artifactReferenceIdentity(
           chatId,
           canonical,
+          child.identityInputs,
         );
         if (
           !finishedIdentity.startsWith(`${scan.committedIdentity}:`) ||
@@ -728,15 +884,27 @@ export class ChatArtifactMaintenance {
         }
         state.filter = scan.filter;
         state.identity = finishedIdentity;
-        state.scan = undefined;
+        await clearReferenceScan(state);
       }
       if (!(await this.storage.journalIsClear()))
         throw new Error(
           'Artifact maintenance deferred while replay is pending',
         );
       if (
-        (await transcript.artifactReferenceIdentity(chatId, canonical)) !==
-        state.identity
+        (await this.storage.childArtifactSnapshot(chatId)).identity !==
+        child.identity
+      ) {
+        state.filter = undefined;
+        state.identity = undefined;
+        await clearReferenceScan(state);
+        return progress({ complete: false, scannedBytes, removed: 0 });
+      }
+      if (
+        (await transcript.artifactReferenceIdentity(
+          chatId,
+          canonical,
+          child.identityInputs,
+        )) !== state.identity
       ) {
         await this.resetCandidateDiscovery(state);
         return progress({ complete: false, scannedBytes, removed: 0 });
@@ -771,6 +939,13 @@ export class ChatArtifactMaintenance {
     } catch (error) {
       state.reserved = false;
       this.clean.delete(chatId);
+      // An async generator that threw is exhausted on its next call. Never
+      // interpret that exhaustion as a complete reachability proof on retry.
+      if (state.scan) {
+        await clearReferenceScan(state);
+        state.filter = undefined;
+        state.identity = undefined;
+      }
       throw error;
     } finally {
       this.release(state);
@@ -798,10 +973,11 @@ export class ChatArtifactMaintenance {
                 state.reserved = false;
                 state.filter = undefined;
                 state.identity = undefined;
-                state.scan = undefined;
                 state.candidates.clear();
                 state.discoveryComplete = false;
+                // The close starts in this tick: a held close pins the path.
                 await closeDirectory(state);
+                await clearReferenceScan(state);
                 state.directoryFamilyIndex = 0;
                 if (states.get(key) === state) states.delete(key);
               } finally {

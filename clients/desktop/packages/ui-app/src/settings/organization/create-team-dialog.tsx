@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type FormEvent, type JSX } from 'react';
-import { DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
 import type { OrganizationDetail } from '@canopy/protocol/settings';
 import { useSettingsClient } from '../host';
 import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
@@ -90,14 +90,15 @@ export function CreateTeamDialog({
         </label>
         {/* No Cancel: the dialog closes from its X, Escape, or the backdrop. */}
         <div className="flex items-center justify-end gap-2">
-          <button
+          <Button
             type="submit"
+            variant="primary"
+            size="compact"
             disabled={submitting || !name.trim()}
             data-testid="create-team-submit"
-            className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? 'Creating…' : 'Create organization'}
-          </button>
+          </Button>
         </div>
       </form>
     </DialogModal>

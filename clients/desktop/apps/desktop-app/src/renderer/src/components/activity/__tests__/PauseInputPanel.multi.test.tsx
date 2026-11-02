@@ -65,7 +65,16 @@ function pausedState(): ExecutionState {
     timeout_minutes: 60,
     max_retries: 0,
     continue_on_error: false,
-    steps: [{ id: 'approval', name: 'Approval', shell: 'bash' as const }],
+    steps: [
+      {
+        id: 'approval',
+        name: 'Approval',
+        shell: 'bash' as const,
+        continue_on_error: false,
+        timeout_minutes: 30,
+        skip_on_missing_action: false,
+      },
+    ],
   });
   const result = (structured: boolean): ExecutionState['jobs'][string] => ({
     status: 'paused' as const,
@@ -100,6 +109,7 @@ function pausedState(): ExecutionState {
     pipeline_id: 'parallel-pauses',
     pipeline_snapshot: {
       name: 'Parallel pauses',
+      scope: ['directory'],
       jobs: {
         first: definition('first'),
         second: definition('second'),

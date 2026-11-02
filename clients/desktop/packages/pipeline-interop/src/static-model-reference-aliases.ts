@@ -16,5 +16,5 @@ export const STATIC_MODEL_REFERENCE_ALIASES: Readonly<Record<string, string>> =
     $opus: 'opus[1m]',
     $fable: 'claude-fable-5-1',
     $astra: 'gpt-6-astra',
-    $terra: 'gpt-5.6-terra',
+    $terra: 'gpt-6.1-terra',
   };

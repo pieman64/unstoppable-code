@@ -57,6 +57,7 @@ describe('MarketplaceDetailPageShell', () => {
             {
               id: 'unshare',
               label: 'Unshare',
+              icon: <span aria-hidden="true">×</span>,
               testId: 'marketplace-unshare',
               onSelect: (): undefined => undefined,
               destructive: true,

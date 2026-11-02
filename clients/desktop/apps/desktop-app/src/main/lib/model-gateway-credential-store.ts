@@ -23,6 +23,8 @@ interface StoredGatewayCredentialRecord {
   baseUrlAtSave: string;
   updatedAt: string;
   lastValidatedAt?: string;
+  /** A successful validation, independent of routing rejection state. */
+  validated?: boolean;
   lastError?: string;
 }
 
@@ -39,6 +41,8 @@ export interface ModelGatewayCredentialRecord {
   baseUrlAtSave: string;
   updatedAt: string;
   lastValidatedAt?: string;
+  /** A successful validation, independent of routing rejection state. */
+  validated?: boolean;
   lastError?: string;
 }
 
@@ -84,6 +88,7 @@ function isStoredRecord(
     typeof value.updatedAt === 'string' &&
     (value.lastValidatedAt === undefined ||
       typeof value.lastValidatedAt === 'string') &&
+    (value.validated === undefined || typeof value.validated === 'boolean') &&
     (value.lastError === undefined || typeof value.lastError === 'string')
   );
 }
@@ -120,6 +125,7 @@ function decrypt(
     baseUrlAtSave: record.baseUrlAtSave,
     updatedAt: record.updatedAt,
     lastValidatedAt: record.lastValidatedAt,
+    validated: record.validated,
     lastError: record.lastError,
   };
 }
@@ -297,6 +303,8 @@ export async function saveModelGatewayCredential(input: {
   apiKey: string;
   baseUrlAtSave: string;
   lastValidatedAt?: string;
+  /** A successful validation, independent of routing rejection state. */
+  validated?: boolean;
   lastError?: string;
 }): Promise<void> {
   const storage = availableStorage();
@@ -321,6 +329,7 @@ export async function saveModelGatewayCredential(input: {
         baseUrlAtSave: input.baseUrlAtSave,
         updatedAt: new Date().toISOString(),
         lastValidatedAt: input.lastValidatedAt,
+        validated: input.validated,
         lastError: input.lastError,
       };
     },
@@ -333,15 +342,21 @@ export async function markModelGatewayCredentialRejected(
   organizationId: string,
   lastError: string,
   expectedUpdatedAt?: string,
+  expectedAccountId?: string,
 ): Promise<boolean> {
   const owner = await resolveCredentialOwner(organizationId);
-  if (!owner) return false;
+  if (
+    !owner ||
+    (expectedAccountId !== undefined && owner.accountId !== expectedAccountId)
+  )
+    return false;
   let updated = false;
   await queueMutation((file) => {
     const record = file.records[owner.key];
     if (!record) return;
     if (expectedUpdatedAt && record.updatedAt !== expectedUpdatedAt) return;
     record.lastError = lastError;
+    record.validated = false;
     record.lastValidatedAt = new Date().toISOString();
     updated = true;
   });

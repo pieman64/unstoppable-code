@@ -16,6 +16,7 @@ import type {
   ApprovalRule,
   ApprovalRuleOrigin,
   ApprovalRuleTarget,
+  SafetyDenyReason,
 } from '../types/approvals';
 
 /**
@@ -1582,18 +1583,18 @@ export function recursiveForcedRemoveOperations(
   return operations;
 }
 
-function isDangerousGitForcePush(segment: string): boolean {
+function dangerousGitPushReason(segment: string): SafetyDenyReason | undefined {
   const tokens = unwrapSafetyCommandTokens(
     tokenize(segment).map(normalizeSafetyToken),
   );
   if (gitCommandBasename(tokens[0] ?? '') !== 'git') {
-    return false;
+    return undefined;
   }
   const pushIndex = tokens.findIndex(
     (token, index) => index > 0 && token.toLowerCase() === 'push',
   );
   if (pushIndex < 0) {
-    return false;
+    return undefined;
   }
   const pushTokens = tokens
     .slice(pushIndex + 1)
@@ -1681,14 +1682,12 @@ function isDangerousGitForcePush(segment: string): boolean {
         const normalized = refspec.toLowerCase();
         return normalized === 'head' || normalized === 'refs/heads/head';
       }));
-  return (
-    mirrorFlag ||
-    forcedProtectedRefspec ||
-    deletedProtectedRefspec ||
-    (deleteFlag && protectedBranch) ||
-    (forceFlag && protectedBranch) ||
-    hasImplicitDestination
-  );
+  if (mirrorFlag || forcedProtectedRefspec) return 'force-push';
+  if (deletedProtectedRefspec || (deleteFlag && protectedBranch))
+    return 'destructive-delete';
+  if ((forceFlag && protectedBranch) || hasImplicitDestination)
+    return 'force-push';
+  return undefined;
 }
 
 function isDangerousMkfs(segment: string): boolean {
@@ -1838,24 +1837,78 @@ function fileGrantMayContainTarget(
     return true;
   }
 
-  const literalScope = (value: string): string => {
-    const wildcard = value.search(/[*?]/);
-    const literal = wildcard < 0 ? value : value.slice(0, wildcard);
-    const slash = literal.lastIndexOf('/');
-    return wildcard < 0 ? literal : literal.slice(0, slash + 1);
-  };
-  const grantScope = literalScope(grant).replace(/[\\/]$/, '');
-  const targetScope = literalScope(target).replace(/[\\/]$/, '');
-  const isWithin = (candidate: string, parent: string): boolean =>
-    parent === '' ||
-    parent === '/' ||
-    candidate === parent ||
-    candidate.startsWith(`${parent}/`);
+  const grantScope = literalPathScope(grant);
+  const targetScope = literalPathScope(target);
 
   // Permission paths represent roots/globs rather than concrete writes.
   // Conservatively treat overlapping literal scopes as intersecting so a
   // broad grant can never leapfrog a narrower deny.
-  return isWithin(targetScope, grantScope) || isWithin(grantScope, targetScope);
+  return (
+    isPathWithinScope(targetScope, grantScope) ||
+    isPathWithinScope(grantScope, targetScope)
+  );
+}
+
+/** The wildcard-free folder (or path) a normalized file pattern starts with. */
+function literalPathScope(value: string): string {
+  const wildcard = value.search(/[*?]/);
+  const literal = wildcard < 0 ? value : value.slice(0, wildcard);
+  const slash = literal.lastIndexOf('/');
+  return (wildcard < 0 ? literal : literal.slice(0, slash + 1)).replace(
+    /[\\/]$/,
+    '',
+  );
+}
+
+function isPathWithinScope(candidate: string, parent: string): boolean {
+  return (
+    parent === '' ||
+    parent === '/' ||
+    candidate === parent ||
+    candidate.startsWith(`${parent}/`)
+  );
+}
+
+/**
+ * Whether a write grant may reach a protected file. A protected file-name
+ * glob only names files directly in its folder, so unlike a deny pattern it
+ * stays clear of a grant scoped below that folder.
+ */
+function fileGrantMayContainProtectedFile(
+  grantPath: string,
+  protectedPath: string,
+  workspaceRoot: string | undefined,
+  pathCaseInsensitive: boolean,
+): boolean {
+  const protectedFile = normalizedFileRulePath(
+    protectedPath,
+    workspaceRoot,
+    pathCaseInsensitive,
+  );
+  const slash = protectedFile.lastIndexOf('/');
+  const folder = protectedFile.slice(0, slash);
+  if (
+    slash < 0 ||
+    !protectedFile.slice(slash + 1).includes('*') ||
+    /[*?]/.test(folder)
+  ) {
+    return fileGrantMayContainTarget(
+      grantPath,
+      protectedPath,
+      workspaceRoot,
+      pathCaseInsensitive,
+    );
+  }
+  const grant = normalizedFileRulePath(
+    grantPath,
+    workspaceRoot,
+    pathCaseInsensitive,
+  );
+  return (
+    filePatternMatches(protectedFile, grant) ||
+    filePatternMatches(grant, protectedFile) ||
+    isPathWithinScope(folder, literalPathScope(grant))
+  );
 }
 
 /**
@@ -2278,10 +2331,10 @@ function containsEnvCwdMutation(command: string): boolean {
   });
 }
 
-function isSafetyDeniedCommand(
+function safetyDeniedCommandReason(
   command: string,
   shellPlatform: 'posix' | 'windows' = 'posix',
-): boolean {
+): SafetyDenyReason | undefined {
   // PowerShell and cmd.exe do not use backslash to escape command
   // separators. Fail closed if POSIX parsing would hide a Windows boundary.
   if (
@@ -2289,7 +2342,7 @@ function isSafetyDeniedCommand(
     splitCommandChain(command, 'windows').length !==
       splitCommandChain(command, 'posix').length
   ) {
-    return true;
+    return 'unverifiable-command';
   }
   if (
     containsNestedShellExecution(command, shellPlatform) ||
@@ -2301,12 +2354,12 @@ function isSafetyDeniedCommand(
     containsUnsupportedShellControlSyntax(command, shellPlatform) ||
     containsScriptExecutor(command) ||
     hasIncompleteSafetyWrapperUnwrap(command) ||
-    containsEnvCwdMutation(command) ||
-    containsFindDelete(command)
+    containsEnvCwdMutation(command)
   ) {
-    return true;
+    return 'unverifiable-command';
   }
-  return splitCommandChain(command).some((segment) => {
+  if (containsFindDelete(command)) return 'destructive-delete';
+  for (const segment of splitCommandChain(command)) {
     const normalizedTokens = tokenize(segment).map(normalizeSafetyToken);
     const effectiveSegment = unwrapMulticallAppletTokens(
       unwrapSafetyCommandTokens(normalizedTokens),
@@ -2314,18 +2367,25 @@ function isSafetyDeniedCommand(
     const sudoMulticallRemove =
       normalizedTokens.some((token) => commandBasename(token) === 'sudo') &&
       commandBasename(tokenize(effectiveSegment)[0] ?? '') === 'rm';
-    return (
-      isDangerousGitForcePush(segment) ||
-      isDangerousMkfs(segment) ||
-      isDangerousDdWrite(segment) ||
-      sudoMulticallRemove ||
-      SAFETY_DENY_COMMAND_PATTERNS.some(
-        (pattern) =>
-          safetySegmentMatches(pattern, segment) ||
-          safetySegmentMatches(pattern, effectiveSegment),
-      )
-    );
-  });
+    const gitPushReason = dangerousGitPushReason(segment);
+    if (gitPushReason) return gitPushReason;
+    if (isDangerousMkfs(segment) || isDangerousDdWrite(segment))
+      return 'disk-write';
+    if (sudoMulticallRemove) return 'destructive-delete';
+    for (const pattern of SAFETY_DENY_COMMAND_PATTERNS) {
+      if (
+        safetySegmentMatches(pattern, segment) ||
+        safetySegmentMatches(pattern, effectiveSegment)
+      ) {
+        // Preserve the original pattern iteration order and prefix matching.
+        if (pattern.startsWith('git ')) return 'force-push';
+        if (pattern.startsWith('mkfs ') || pattern.startsWith('dd '))
+          return 'disk-write';
+        return 'destructive-delete';
+      }
+    }
+  }
+  return undefined;
 }
 
 function commandRequiresExplicitPrompt(
@@ -2394,36 +2454,48 @@ function commandTargetsProtectedFile(
   return (
     check.resolvedPaths?.some((resolvedPath) =>
       ctx.protectedFileWritePaths?.some((protectedPath) => {
-        const resolved = normalizeAbsolutePath(
+        const relation = protectedFileRelation(
           resolvedPath,
-          ctx.pathCaseInsensitive,
-        );
-        const protectedFile = normalizeAbsolutePath(
           protectedPath,
           ctx.pathCaseInsensitive,
         );
-        if (
-          !resolved ||
-          !protectedFile ||
-          resolved.root !== protectedFile.root
-        ) {
-          return false;
-        }
-        const exact =
-          resolved.segments.length === protectedFile.segments.length &&
-          resolved.segments.every(
-            (segment, index) => protectedFile.segments[index] === segment,
-          );
-        const ancestor =
-          recursiveForcedRemoval &&
-          resolved.segments.length < protectedFile.segments.length &&
-          resolved.segments.every(
-            (segment, index) => protectedFile.segments[index] === segment,
-          );
-        return exact || ancestor;
+        return (
+          relation === 'exact' ||
+          (recursiveForcedRemoval && relation === 'ancestor')
+        );
       }),
     ) === true
   );
+}
+
+/**
+ * Whether the absolute `path` is a file the protected entry names, or a
+ * folder above one. Entry segments match as `*` wildcards.
+ */
+function protectedFileRelation(
+  path: string,
+  protectedPath: string,
+  pathCaseInsensitive = false,
+): 'exact' | 'ancestor' | undefined {
+  const candidate = normalizeAbsolutePath(path, pathCaseInsensitive);
+  const protectedFile = normalizeAbsolutePath(
+    protectedPath,
+    pathCaseInsensitive,
+  );
+  if (
+    !candidate ||
+    !protectedFile ||
+    candidate.root !== protectedFile.root ||
+    candidate.segments.length > protectedFile.segments.length ||
+    !candidate.segments.every((segment, index) =>
+      tokenWildcardMatches(protectedFile.segments[index], segment, false),
+    )
+  ) {
+    return undefined;
+  }
+  return candidate.segments.length === protectedFile.segments.length
+    ? 'exact'
+    : 'ancestor';
 }
 
 interface NormalizedAbsolutePath {
@@ -2535,13 +2607,15 @@ export function evaluateApproval(
   if (check.kind === 'browser-file-request') {
     return { outcome: 'prompt' };
   }
-  if (
-    ctx.mode !== 'full-access' &&
-    check.kind === 'command' &&
-    (isSafetyDeniedCommand(check.command, check.shellPlatform) ||
-      hasResolvedDeletionSafetyRisk(check))
-  ) {
-    return { outcome: 'deny', safety: true };
+  if (ctx.mode !== 'full-access' && check.kind === 'command') {
+    const safetyReason =
+      safetyDeniedCommandReason(check.command, check.shellPlatform) ??
+      (hasResolvedDeletionSafetyRisk(check)
+        ? check.pathResolutionFailed
+          ? 'unverifiable-command'
+          : 'destructive-delete'
+        : undefined);
+    if (safetyReason) return { outcome: 'deny', safety: true, safetyReason };
   }
 
   const allRules: ApprovalRule[] = [
@@ -2565,17 +2639,17 @@ export function evaluateApproval(
     ((check.kind === 'file-write' &&
       ctx.protectedFileWritePaths?.some((path) =>
         check.isGrant
-          ? fileGrantMayContainTarget(
+          ? fileGrantMayContainProtectedFile(
               check.resolvedPath ?? check.path,
               path,
               ctx.workspaceRoot,
               ctx.pathCaseInsensitive ?? false,
             )
-          : normalizedAbsolutePathForMatching(path, ctx.pathCaseInsensitive) ===
-            normalizedAbsolutePathForMatching(
+          : protectedFileRelation(
               check.resolvedPath ?? check.path,
+              path,
               ctx.pathCaseInsensitive,
-            ),
+            ) === 'exact',
       )) ||
       (check.kind === 'command' && commandTargetsProtectedFile(check, ctx)))
   ) {

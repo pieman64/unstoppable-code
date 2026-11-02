@@ -1,10 +1,24 @@
+import {
+  readAutoResumeMetadata,
+  readChatAutoResume,
+  readToolInterruption,
+  type AutoResumeMetadata,
+  type ToolInterruption,
+} from '@canopy/protocol/portal';
+import { settledToolInterruption } from '../settlement';
 import { readMcpActivationRecord } from '@canopy/protocol/mcp-servers';
+import { isTurnFileRecord } from '@canopy/protocol/turn-files';
 import {
   serializeAgentArtifactReceipts,
   type AgentArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
 import { isDelegatedAgentCallBlock } from '../lib/delegation-transcript';
+import { admittedResultCall } from '../lib/admitted-result-call';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
+import {
+  isCodexAccountModelAccessFailure,
+  readCodexAccountModelAccessFailure,
+} from '@canopy/protocol/auth-recovery';
 import { isHumanAuthoredUserMessage } from '../transcript-storage';
 import {
   isVisiblePersistedChatMessage,
@@ -15,6 +29,8 @@ import {
   parseChatAgentSentInfo,
   parseChatWatcherFiredInfo,
   portalChatAssetId,
+  pairToolResultOccurrences,
+  portalToolOccurrenceId,
   type ChatAgentSentInfo,
   type ChatWatcherFiredInfo,
   type PortalChatMessage,
@@ -23,7 +39,7 @@ import {
   type PortalChatTurnGroup,
 } from '@canopy/protocol/portal';
 import { stripMemoryCitationTags } from '../lib/memory-citation';
-import { isUserTurnBoundary } from '../lib/turn-boundary';
+import { isRootUserTurnBoundary } from '../lib/turn-boundary';
 import { parseAgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
 import { portalChatMessageAttachmentsFromPaths } from './message-attachments';
 
@@ -85,6 +101,13 @@ export interface PortalChatProjectionLimits {
    */
   includeLocalImageSources?: boolean;
   includeAssetReferences?: boolean;
+  /**
+   * Emit tool results separately, with their original block ordinals. Off by
+   * default.
+   */
+  unfoldToolResults?: boolean;
+  /** Live/synthetic adapters must opt out: their row identity is not durable. */
+  outputLocators?: boolean;
   /**
    * Also project the account proxy's switch lines (CAN-4021), which name the
    * chat owner's proxy accounts, often by email. An EXPLICIT opt-in like the
@@ -368,12 +391,34 @@ export function limitPortalChatTranscript(
   return messages.length <= limit ? messages : messages.slice(-limit);
 }
 
+/** The chronological pairing rule now lives with the occurrence contract. */
+export { pairToolResultOccurrences };
+
 /** Agent-sent attribution as flat fields; wire compaction stringifies nested objects. */
 function agentSentWireFields(
   info: ChatAgentSentInfo | undefined,
 ): Record<string, string> {
   if (!info) return {};
   const { sender } = info;
+  if (sender.kind === 'pipeline') {
+    return {
+      agentSentSenderKind: sender.kind,
+      ...(sender.executionId !== undefined
+        ? { agentSentExecutionId: sender.executionId }
+        : {}),
+      ...(sender.pipelineId !== undefined
+        ? { agentSentPipelineId: sender.pipelineId }
+        : {}),
+      ...(sender.stepId !== undefined
+        ? { agentSentStepId: sender.stepId }
+        : {}),
+      ...(sender.automationId !== undefined
+        ? { agentSentAutomationId: sender.automationId }
+        : {}),
+      agentSentChatTitle: info.chatTitle,
+      agentSentProjectLabel: info.projectLabel,
+    };
+  }
   return {
     agentSentSenderKind: sender.kind,
     ...(sender.kind === 'project'
@@ -403,8 +448,10 @@ export function persistedParts(
     objectMaxKeys: limits.objectMaxKeys ?? PORTAL_CHAT_OBJECT_MAX_KEYS,
     arrayMaxItems: limits.arrayMaxItems ?? PORTAL_CHAT_ARRAY_MAX_ITEMS,
   };
-  // Fold each tool_result into its paired tool_use (the renderer expects the
-  // result inline) when BOTH blocks live in this message.
+  const unfoldToolResults = limits.unfoldToolResults === true;
+  // The default projection folds each tool_result into its paired tool_use
+  // (the renderer expects the result inline) when BOTH blocks live in this
+  // message. The unfolded opt-in skips this map and emits every result below.
   //
   // They usually do not: an agent emits the tool_use in one message and the
   // tool_result in the NEXT one, so only same-message pairs can fold here. A
@@ -413,6 +460,48 @@ export function persistedParts(
   // and the consumer folds it across messages (`foldToolResultsIntoToolUses`).
   // Dropping those blocks instead stranded every cross-message tool call on a
   // perpetual pending spinner and discarded its output entirely (CAN-2523).
+  const pairs = unfoldToolResults
+    ? new Map<number, number>()
+    : pairToolResultOccurrences(message.blocks, (block) =>
+        block.type === 'tool_use' || block.type === 'tool_result'
+          ? { kind: block.type, toolUseId: block.toolUseId }
+          : undefined,
+      );
+  const matchedResults = new Set(pairs.values());
+  // Resolve against canonical rows, before visible ids converge. The exact
+  // same turn/lane pairing rule is used at durable provider admission.
+  const rowIndex = relatedMessages.findIndex((row) => row.id === message.id);
+  const previous =
+    rowIndex < 0 ? relatedMessages : relatedMessages.slice(0, rowIndex);
+  const revision =
+    'revision' in message &&
+    typeof message.revision === 'number' &&
+    Number.isSafeInteger(message.revision) &&
+    message.revision >= 0
+      ? message.revision
+      : 0;
+  const occurrenceAt = (
+    ordinal: number,
+  ): Pick<PortalChatPart, 'occurrence'> => {
+    // Occurrences only protect read locators.
+    if (limits.outputLocators === false) return {};
+    const block = message.blocks[ordinal];
+    const pairing =
+      block.type === 'tool_result'
+        ? admittedResultCall(message, ordinal, previous, block.toolUseId)
+        : {
+            authoritative: true,
+            call: { rowId: message.id, blockOrdinal: ordinal },
+          };
+    // A projection may see only part of the transcript, so a result whose call
+    // it cannot find stays unkeyed rather than claiming its own address.
+    if (!pairing.authoritative || !pairing.call) return {};
+    const id = portalToolOccurrenceId(
+      pairing.call.rowId,
+      pairing.call.blockOrdinal,
+    );
+    return id === undefined ? {} : { occurrence: { id, revision } };
+  };
   let metadataBytes = 0;
   const receiptMetadata = (
     output: string,
@@ -430,27 +519,37 @@ export function persistedParts(
     metadataBytes += size;
     return { agentArtifacts: receipts };
   };
-  const resultByToolUseId = new Map<
-    string,
-    {
-      output: string;
-      isError: boolean;
-      agentArtifacts?: AgentArtifactReceiptV1[];
-    }
-  >();
-  const toolUseIdsInMessage = new Set<string>();
-  for (const block of message.blocks) {
-    if (block.type === 'tool_use') {
-      toolUseIdsInMessage.add(block.toolUseId);
-    }
-    if (block.type === 'tool_result') {
-      resultByToolUseId.set(block.toolUseId, {
-        output: truncateText(block.output, partTextMaxChars),
-        isError: block.isError,
-        ...receiptMetadata(block.output, block.isError, block.agentArtifacts),
-      });
-    }
-  }
+  const resultData = (
+    block: Extract<
+      PersistedChatMessage['blocks'][number],
+      { type: 'tool_result' }
+    >,
+    blockOrdinal: number,
+  ): {
+    output: string;
+    isError: boolean;
+    interruption?: ToolInterruption;
+    agentArtifacts?: AgentArtifactReceiptV1[];
+    outputLocator?: PortalChatPart['outputLocator'];
+  } => ({
+    output: truncateText(block.output, partTextMaxChars),
+    isError: block.isError,
+    ...(settledToolInterruption(message, block)
+      ? { interruption: settledToolInterruption(message, block) }
+      : {}),
+    ...receiptMetadata(block.output, block.isError, block.agentArtifacts),
+    ...(limits.outputLocators !== false &&
+    (block.fullOutputRef !== undefined ||
+      block.output.length > partTextMaxChars)
+      ? {
+          outputLocator: {
+            messageId: message.id,
+            blockOrdinal,
+            field: 'output',
+          },
+        }
+      : {}),
+  });
 
   return message.blocks.flatMap((block, blockIndex): PortalChatPart[] => {
     if (block.type === 'delegated_agent_call') {
@@ -496,8 +595,12 @@ export function persistedParts(
     if (
       block.type === 'text' &&
       (limits.includeText ||
-        isClaudeAiCreditsFallbackErrorCode(block.errorCode))
+        isClaudeAiCreditsFallbackErrorCode(block.errorCode) ||
+        isCodexAccountModelAccessFailure(block.modelAccessFailure))
     ) {
+      const modelAccessFailure = readCodexAccountModelAccessFailure(
+        block.modelAccessFailure,
+      );
       return [
         {
           kind: 'text',
@@ -505,6 +608,7 @@ export function persistedParts(
             ...(isClaudeAiCreditsFallbackErrorCode(block.errorCode)
               ? { errorCode: block.errorCode }
               : {}),
+            ...(modelAccessFailure ? { modelAccessFailure } : {}),
             text: truncateText(
               stripMemoryCitationTags(block.text),
               partTextMaxChars,
@@ -529,7 +633,13 @@ export function persistedParts(
       ];
     }
     if (block.type === 'tool_use') {
-      const paired = resultByToolUseId.get(block.toolUseId);
+      const resultIndex = pairs.get(blockIndex);
+      const result =
+        resultIndex !== undefined ? message.blocks[resultIndex] : undefined;
+      const paired =
+        result?.type === 'tool_result' && resultIndex !== undefined
+          ? resultData(result, resultIndex)
+          : undefined;
       const display = block.display ?? block;
       // Older transcripts persisted object inputs despite the string type.
       const rawInput: unknown = display.input;
@@ -537,6 +647,7 @@ export function persistedParts(
       return [
         {
           kind: 'tool_use',
+          ...occurrenceAt(blockIndex),
           ...(toolFamily ? { toolFamily } : {}),
           data: {
             toolUseId: block.toolUseId,
@@ -558,8 +669,10 @@ export function persistedParts(
         ? { messageId: message.id, visual: block.visualRef }
         : undefined;
       // Paired tool_use is in THIS message: already folded inline above, so
-      // only a visual still needs its own part.
-      if (toolUseIdsInMessage.has(block.toolUseId)) {
+      // only a visual still needs its own part. It carries no occurrence,
+      // which would mark it as a result already folded into its call.
+      // In unfolded mode there are no matched results: keep every result.
+      if (matchedResults.has(blockIndex)) {
         return visual
           ? [
               {
@@ -571,14 +684,16 @@ export function persistedParts(
       }
       // Otherwise carry the result on the wire so the consumer can pair it
       // with the tool_use it projected from an earlier message.
+      const { outputLocator, ...data } = resultData(block, blockIndex);
       return [
         {
           kind: 'tool_result',
+          ...occurrenceAt(blockIndex),
+          ...(unfoldToolResults ? { blockOrdinal: blockIndex } : {}),
+          ...(outputLocator ? { outputLocator } : {}),
           data: {
             toolUseId: block.toolUseId,
-            ...resultByToolUseId.get(block.toolUseId),
-            output: truncateText(block.output, partTextMaxChars),
-            isError: block.isError,
+            ...data,
             ...visual,
           },
         },
@@ -685,11 +800,21 @@ export function persistedParts(
           {
             kind: 'turn_timer',
             data: {
+              ...(block.turnId === undefined ? {} : { turnId: block.turnId }),
+              ...(block.userMessageId === undefined
+                ? {}
+                : { userMessageId: block.userMessageId }),
+              ...(block.spawnedBy === undefined
+                ? {}
+                : { spawnedBy: block.spawnedBy }),
               startedAt: block.startedAt,
               pausedAt: block.pausedAt,
               resumedAt: block.resumedAt,
               accumulatedPausedDurationMs: block.accumulatedPausedDurationMs,
               completedAt: block.completedAt,
+              ...(block.outcome === undefined
+                ? {}
+                : { outcome: block.outcome }),
             },
           },
         ];
@@ -720,6 +845,7 @@ export function persistedParts(
  */
 export interface PortalPromptProvenance {
   promptSource: 'human' | 'automated';
+  autoResume?: AutoResumeMetadata;
   watcherFired?: ChatWatcherFiredInfo;
   parts: [PortalChatPart];
 }
@@ -731,21 +857,27 @@ export interface PortalPromptProvenance {
 export function portalPromptProvenance(
   message: Pick<
     PersistedChatMessage,
-    'role' | 'watcherFired' | 'userMessageSource'
+    'role' | 'watcherFired' | 'userMessageSource' | 'autoResume'
   >,
 ): PortalPromptProvenance {
   const promptSource = isHumanAuthoredUserMessage(message)
     ? 'human'
     : 'automated';
+  const autoResume =
+    message.userMessageSource === 'auto_resume'
+      ? readAutoResumeMetadata(message.autoResume)
+      : undefined;
   const watcherFired = parseChatWatcherFiredInfo(message.watcherFired);
   return {
     promptSource,
+    ...(autoResume ? { autoResume } : {}),
     ...(watcherFired ? { watcherFired } : {}),
     parts: [
       {
         kind: 'prompt_source',
         data: {
           source: promptSource,
+          ...(autoResume ? { autoResume } : {}),
           ...(watcherFired ? { watcherFired } : {}),
         },
       },
@@ -771,7 +903,8 @@ export function persistedMessageToPortalMessage(
   const joinedText = input.message.blocks
     .flatMap((block) =>
       block.type === 'text' &&
-      !isClaudeAiCreditsFallbackErrorCode(block.errorCode)
+      !isClaudeAiCreditsFallbackErrorCode(block.errorCode) &&
+      !isCodexAccountModelAccessFailure(block.modelAccessFailure)
         ? [
             block.verbatim
               ? renderVerbatimAsMarkdownLiteral(block.text)
@@ -837,12 +970,15 @@ export function persistedMessageToPortalMessage(
     ...(provenance
       ? {
           promptSource: provenance.promptSource,
+          ...(provenance.autoResume
+            ? { autoResume: provenance.autoResume }
+            : {}),
           ...(provenance.watcherFired
             ? { watcherFired: provenance.watcherFired }
             : {}),
         }
       : {}),
-    ...(input.message.role === 'user' && !isUserTurnBoundary(input.message)
+    ...(input.message.role === 'user' && !isRootUserTurnBoundary(input.message)
       ? { continuesTurn: true }
       : {}),
     status: hasInFlightTimer ? 'streaming' : 'complete',
@@ -934,6 +1070,24 @@ function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function importSpawnedBy(value: Record<string, unknown>): {
+  taskId?: string;
+  toolUseId?: string;
+  event?: true;
+  scheduled?: true;
+  toolsLoaded?: true;
+} {
+  return {
+    ...(typeof value.taskId === 'string' ? { taskId: value.taskId } : {}),
+    ...(typeof value.toolUseId === 'string'
+      ? { toolUseId: value.toolUseId }
+      : {}),
+    ...(value.event === true ? { event: value.event } : {}),
+    ...(value.scheduled === true ? { scheduled: value.scheduled } : {}),
+    ...(value.toolsLoaded === true ? { toolsLoaded: true } : {}),
+  };
+}
+
 function delegationSubBlockKind(
   value: unknown,
 ): value is 'text' | 'thinking' | 'tool_use' {
@@ -965,7 +1119,10 @@ function portalPartToPersistedBlocks(
         ? [{ type: 'mcp_activation', record }]
         : [placeholderBlock('mcp_activation')];
     }
-    case 'text':
+    case 'text': {
+      const modelAccessFailure = readCodexAccountModelAccessFailure(
+        data?.modelAccessFailure,
+      );
       return typeof data?.text === 'string'
         ? [
             {
@@ -974,9 +1131,11 @@ function portalPartToPersistedBlocks(
               ...(isClaudeAiCreditsFallbackErrorCode(data.errorCode)
                 ? { errorCode: data.errorCode }
                 : {}),
+              ...(modelAccessFailure ? { modelAccessFailure } : {}),
             },
           ]
         : [placeholderBlock('text')];
+    }
     case 'thinking':
       return typeof data?.text === 'string'
         ? [{ type: 'thinking', text: data.text }]
@@ -1012,6 +1171,9 @@ function portalPartToPersistedBlocks(
             toolName: data.toolName,
             output: data.result.output,
             isError: data.result.isError,
+            ...(readToolInterruption(data.result.interruption)
+              ? { interruption: readToolInterruption(data.result.interruption) }
+              : {}),
           });
         } else {
           blocks.push(placeholderBlock('tool_use result'));
@@ -1040,6 +1202,9 @@ function portalPartToPersistedBlocks(
                 typeof data.toolName === 'string' ? data.toolName : 'Tool',
               output: data.output,
               isError: data.isError,
+              ...(readToolInterruption(data.interruption)
+                ? { interruption: readToolInterruption(data.interruption) }
+                : {}),
             },
           ]
         : [placeholderBlock('tool_result')];
@@ -1085,6 +1250,15 @@ function portalPartToPersistedBlocks(
         ? [
             {
               type: 'turn_timer',
+              ...(typeof data.turnId === 'string'
+                ? { turnId: data.turnId }
+                : {}),
+              ...(typeof data.userMessageId === 'string'
+                ? { userMessageId: data.userMessageId }
+                : {}),
+              ...(isRecord(data.spawnedBy)
+                ? { spawnedBy: importSpawnedBy(data.spawnedBy) }
+                : {}),
               ...(finiteNumber(data.startedAt)
                 ? { startedAt: data.startedAt }
                 : {}),
@@ -1101,6 +1275,11 @@ function portalPartToPersistedBlocks(
                   }
                 : {}),
               completedAt: data.completedAt,
+              ...(data.outcome === 'completed' ||
+              data.outcome === 'cancelled' ||
+              data.outcome === 'failed'
+                ? { outcome: data.outcome }
+                : {}),
             },
           ]
         : [placeholderBlock('turn_timer')];
@@ -1151,6 +1330,8 @@ function validTurnGroup(value: PortalChatTurnGroup): boolean {
     !value.intermediateMessageIds.every((id) => typeof id === 'string') ||
     !Array.isArray(value.finalMessageIds) ||
     !value.finalMessageIds.every((id) => typeof id === 'string') ||
+    (value.files !== undefined &&
+      (!Array.isArray(value.files) || !value.files.every(isTurnFileRecord))) ||
     (value.expandedMessageIds !== undefined &&
       (!Array.isArray(value.expandedMessageIds) ||
         !value.expandedMessageIds.every((id) => typeof id === 'string'))) ||
@@ -1243,6 +1424,14 @@ export function portalChatMessagesToPersisted(
           id: message.messageId,
           role: message.role,
           timestamp: message.createdAtMs,
+          ...(readChatAutoResume(message)
+            ? {
+                userMessageSource: 'auto_resume' as const,
+                autoResume: readChatAutoResume(message),
+              }
+            : message.promptSource === 'automated'
+              ? { userMessageSource: 'hook' as const }
+              : {}),
           blocks,
         },
         ...Array.from(children.values()),
@@ -1252,6 +1441,9 @@ export function portalChatMessagesToPersisted(
       ...group,
       intermediateMessageIds: [...group.intermediateMessageIds],
       finalMessageIds: [...group.finalMessageIds],
+      ...(group.files
+        ? { files: group.files.map((file) => ({ ...file })) }
+        : {}),
       ...(group.expandedMessageIds
         ? { expandedMessageIds: [...group.expandedMessageIds] }
         : {}),

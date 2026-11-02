@@ -392,6 +392,171 @@ describe('SidebarContextRow', () => {
     ).toBe('Personal, has updates');
     expect(query('sidebar-context-activity-personal')).not.toBeNull();
   });
+
+  describe('pending shares (CAN-4783)', () => {
+    function attentionDot(): Element | null {
+      return container.querySelector(
+        '[data-testid="sidebar-context-attention-dot"]',
+      );
+    }
+    function rowDot(key: string): Element | null {
+      return document.querySelector(
+        `[data-testid="sidebar-context-activity-${key}"]`,
+      );
+    }
+    function optionLabel(key: string): string | null {
+      return query(`sidebar-context-option-${key}`).getAttribute('aria-label');
+    }
+
+    it('marks a context with pending shares alone, with the count only in its name', () => {
+      render({ pendingSharesByContext: new Map([[ZEN, 1]]) });
+      const trigger = query<HTMLButtonElement>('sidebar-context-row');
+      expect(attentionDot()?.getAttribute('class')).toContain('bg-fg-info');
+      expect(trigger.getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, 1 pending share in Zen',
+      );
+      expect(trigger.textContent).toBe('Personal');
+
+      openMenu();
+      expect(rowDot(ZEN)?.getAttribute('class')).toContain('bg-fg-info');
+      expect(rowDot(ACME)).toBeNull();
+      expect(optionLabel(ZEN)).toBe('Zen, 1 pending share');
+      expect(optionLabel(ACME)).toBeNull();
+      expect(query(`sidebar-context-option-${ZEN}`).textContent).toBe('Zen');
+    });
+
+    it('orders updates before shares and paints one dot per surface', () => {
+      render({
+        contextsWithUpdates: new Set([ACME, ZEN]),
+        pendingSharesByContext: new Map([
+          [ZEN, 2],
+          [ACME, 1],
+        ]),
+      });
+      expect(
+        container.querySelectorAll(
+          '[data-testid="sidebar-context-attention-dot"]',
+        ),
+      ).toHaveLength(1);
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, updates in Acme, Zen, 1 pending share in Acme, 2 pending shares in Zen',
+      );
+
+      openMenu();
+      expect(
+        document.querySelectorAll(
+          `[data-testid="sidebar-context-activity-${ZEN}"]`,
+        ),
+      ).toHaveLength(1);
+      expect(optionLabel(ZEN)).toBe('Zen, has updates, 2 pending shares');
+      expect(optionLabel(ACME)).toBe('Acme, has updates, 1 pending share');
+    });
+
+    it('combines updates in one context with shares in another', () => {
+      render({
+        contextsWithUpdates: new Set([ACME]),
+        pendingSharesByContext: new Map([[ZEN, 2]]),
+      });
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, updates in Acme, 2 pending shares in Zen',
+      );
+      openMenu();
+      expect(optionLabel(ACME)).toBe('Acme, has updates');
+      expect(optionLabel(ZEN)).toBe('Zen, 2 pending shares');
+    });
+
+    it('ignores the current context, unknown organizations and zero counts', () => {
+      render({
+        context: { kind: 'organization', organizationId: ZEN },
+        pendingSharesByContext: new Map([
+          [ZEN, 3],
+          ['44444444-4444-4444-8444-444444444444', 2],
+          [ACME, 0],
+        ]),
+      });
+      expect(attentionDot()).toBeNull();
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Zen',
+      );
+      openMenu();
+      expect(rowDot(ZEN)).toBeNull();
+      expect(rowDot(ACME)).toBeNull();
+      expect(rowDot('personal')).toBeNull();
+      expect(optionLabel(ZEN)).toBeNull();
+      expect(optionLabel(ACME)).toBeNull();
+    });
+
+    it('marks Personal direct shares while an organization is selected', () => {
+      render({
+        context: { kind: 'organization', organizationId: ACME },
+        pendingSharesByContext: new Map([['personal', 1]]),
+      });
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Acme, 1 pending share in Personal',
+      );
+      openMenu();
+      expect(rowDot('personal')).not.toBeNull();
+      expect(optionLabel('personal')).toBe('Personal, 1 pending share');
+    });
+
+    it('keeps same-named organizations distinct', () => {
+      render({
+        organizations: [
+          { id: ACME, name: 'Acme', role: 'OWNER' },
+          { id: ACME_TWIN, name: 'Acme', role: 'MEMBER' },
+        ],
+        pendingSharesByContext: new Map([[ACME_TWIN, 1]]),
+      });
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, 1 pending share in Acme 222222',
+      );
+      openMenu();
+      expect(rowDot(ACME)).toBeNull();
+      expect(rowDot(ACME_TWIN)).not.toBeNull();
+      expect(optionLabel(ACME)).toBe('Acme 111111');
+      expect(optionLabel(ACME_TWIN)).toBe('Acme 222222, 1 pending share');
+    });
+
+    it('drops only the share cue as counts fall, keeping updates', () => {
+      render({
+        contextsWithUpdates: new Set([ACME]),
+        pendingSharesByContext: new Map([
+          [ACME, 1],
+          [ZEN, 2],
+        ]),
+      });
+      render({
+        contextsWithUpdates: new Set([ACME]),
+        pendingSharesByContext: new Map([[ZEN, 1]]),
+      });
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, updates in Acme, 1 pending share in Zen',
+      );
+      render({
+        contextsWithUpdates: new Set([ACME]),
+        pendingSharesByContext: new Map(),
+      });
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Personal, updates in Acme',
+      );
+      expect(attentionDot()).not.toBeNull();
+      openMenu();
+      expect(rowDot(ACME)).not.toBeNull();
+      expect(rowDot(ZEN)).toBeNull();
+      expect(optionLabel(ACME)).toBe('Acme, has updates');
+      expect(optionLabel(ZEN)).toBeNull();
+    });
+
+    it('clears the trigger dot once the last share resolves', () => {
+      render({ pendingSharesByContext: new Map([[ZEN, 1]]) });
+      expect(attentionDot()).not.toBeNull();
+      render({ pendingSharesByContext: new Map() });
+      expect(attentionDot()).toBeNull();
+      expect(query('sidebar-context-row').getAttribute('aria-label')).toBe(
+        'Workspace context: Personal',
+      );
+    });
+  });
 });
 
 describe('SidebarContextMenuItems', () => {

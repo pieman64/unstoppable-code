@@ -82,7 +82,10 @@ beforeEach(() => {
   manifestRepos = [];
   items = [];
   projects = [];
-  assertImportable = jest.fn((): Promise<void> => Promise.resolve());
+  assertImportable = jest.fn<
+    ReturnType<OrgMemberFolderInspectorDeps['sidebar']['assertImportable']>,
+    Parameters<OrgMemberFolderInspectorDeps['sidebar']['assertImportable']>
+  >((): Promise<void> => Promise.resolve());
   deps = {
     realpath: (path): Promise<string> => Promise.resolve(path),
     git: {

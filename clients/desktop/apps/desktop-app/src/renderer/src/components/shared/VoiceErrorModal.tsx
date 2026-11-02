@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { DialogModal } from './DialogModal';
+import { Button } from './Button';
 import type { VoiceErrorGuidance } from '../../lib/voice/voice-error';
 
 interface VoiceErrorModalProps {
@@ -36,24 +37,24 @@ export function VoiceErrorModal({
           ))}
         </ol>
         <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="compact"
             onClick={onClose}
             data-testid="voice-error-modal-close"
-            className="focus-ring rounded-md px-3 py-1.5 text-s font-medium fg-secondary hover:bg-secondary hover:fg-primary"
           >
             Close
-          </button>
+          </Button>
           {guidance.settingsUrl && guidance.settingsLabel && onOpenSettings && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={onOpenSettings}
               data-testid="voice-error-modal-settings"
-              className="focus-ring rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis hover:bg-accent/90"
               autoFocus
             >
               {guidance.settingsLabel}
-            </button>
+            </Button>
           )}
         </div>
       </div>

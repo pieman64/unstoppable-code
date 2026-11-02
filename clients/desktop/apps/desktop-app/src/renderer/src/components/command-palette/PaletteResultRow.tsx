@@ -188,7 +188,7 @@ function PaletteResultRowInner({
           {item.shortcut && (
             <span
               data-testid="command-palette-shortcut"
-              className="text-xs fg-tertiary"
+              className="text-xs whitespace-nowrap tabular-nums fg-quaternary"
             >
               {item.shortcut}
             </span>

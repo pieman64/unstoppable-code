@@ -1,8 +1,25 @@
+import { isPlanFileWrite } from '@canopy/protocol/plan-tool-input';
+import { latchFirstTaskSubmitted } from '../notifications/campaigns/activation-signals';
+import {
+  readAutoResumeMetadata,
+  type AutoResumeMetadata,
+} from '@canopy/protocol/portal';
+import { hasChatContinuationSession } from '@canopy/desktop-shared/lib/chat-model-selection';
+import { collectTurnFiles } from '@canopy/desktop-shared/lib/turn-files';
+import {
+  mergeToolResults,
+  reorderMessagesForDisplay,
+} from '@canopy/desktop-shared/lib/message-transforms';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
 import {
+  AgentSenderContextError,
   revalidateAgentSenderRequest,
   withAgentSenderAuthority,
 } from '../agent-messaging/sender-context';
+import {
+  getApprovalSettingsRevision,
+  getChatApprovalStateRevision,
+} from '../approvals/rule-revisions';
 import {
   stageTerminalPresentationTurn,
   resolvePresentationSource,
@@ -15,6 +32,7 @@ import type { ChatQueueDispatchOptions } from './chat-queue-service';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
 import { closeRejectedSplitAgentStartup } from './split-agent-startup';
 import { inputDeliveryViews } from '@canopy/desktop-shared/chat-input-delivery';
+import { isInternalChatRequest } from '@canopy/desktop-shared/lib/internal-chat-row';
 import { getSession as getInputSession } from '../agents/session-manager';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
@@ -33,7 +51,6 @@ import type {
   ChatTabPluginSelections,
   ClaudeTerminalScheduledPromptEvent,
   CoworkWorkEntryMeta,
-  PersistedChatBlock,
   PersistedChatMessage,
   PersistedPendingQuestion,
   PersistedChatTab,
@@ -89,10 +106,23 @@ import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
+import {
+  backgroundTaskCount,
+  summaryTurnActive,
+} from '@canopy/desktop-shared/lib/background-work';
+import {
+  narrowApprovalMode,
+  narrowSessionApprovalRules,
+} from '@canopy/desktop-shared/lib/send-approval-narrowing';
 import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import { assertTurnAuthDependencies } from '../lib/auth-preflight';
+import { TurnDispatchTiming } from '../lib/turn-dispatch-timing';
+import {
+  captureChatTurnStop,
+  type ChatTurnStopContext,
+} from '../lib/chat-turn-cancel';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { parseChatActivePlanContext } from '../lib/active-plan-instruction';
 import {
@@ -114,8 +144,12 @@ import {
 } from '../lib/chat-usage-limit-cleanup';
 import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
 import {
+  capturePortalEmissionContext,
   createPortalEvent,
   enqueuePortalEvent,
+  enqueuePortalEventIfCurrent,
+  isPortalEmissionContextCurrent,
+  type PortalEmissionContext,
   isCanopyPortalActive,
 } from '../portal/portal-event-bus';
 import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
@@ -126,14 +160,11 @@ import {
   limitPortalChatTranscriptForSeedWithMetadata,
   type PortalChatTranscriptSeed,
   PORTAL_CHAT_SEED_MESSAGE_LIMIT,
-  createPortalTurnTimer,
   PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
   portalChatMessageAttachmentsFromPaths,
   projectPersistedChatTranscript,
   createCursorAssistantPatchProjector,
   runtimeChatEventToPortalMessage,
-  turnTimerAutoRoutedModelData,
-  turnTimerEndReason,
 } from './chat-transcript-projector';
 import { buildAutomationInfoMessage } from './automation-info-message';
 import { portalChatTabsCache } from './portal-chat-tabs-cache';
@@ -148,6 +179,7 @@ import {
 } from '../lib/claude-tui-chats';
 import { cancelTransientRetryForChat } from '../lib/transient-error-retry-service';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { isGeneratedInputRequest } from './chat-input-request-kind';
 import {
   listWorkEntryIds,
   listWorkEntries,
@@ -163,20 +195,34 @@ import { projectPortalQuestionStates } from '../lib/portal-question-states';
 import { projectPortalLastTurnEnd } from '../lib/portal-turn-end';
 import { assertNotSplitLocked } from './split-lock-service';
 import {
+  applyLiveSessionSettings,
+  decideTurnSessionReuse,
+  holdsForBackgroundWork,
+  TurnHeldForBackgroundWorkError,
+} from '../lib/turn-session-reuse';
+import {
   resolveWorktreeCwd,
   resolveWorktreeTargetIds,
 } from '../lib/resolve-worktree';
 import { resolvePersistedApprovalMode } from '../lib/approval-mode-resolution';
 import { clampToLiveApprovalMode } from '../approvals/live-approval-modes';
 import {
+  chatHasNativeBackgroundWork,
   getActiveChatIds,
   getActiveSessionInfos,
+  getSessionTurnSettings,
 } from '../agents/session-manager';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getChatStateService } from './chat-state-service';
+import {
+  normalizeProviderEventIngestResult,
+  type ProviderEventIngestResult,
+} from './provider-event-admission';
+import { createPortalPrimaryToolCorrelation } from '../lib/portal-primary-tool-correlation';
+import type { DispatchWorktreeChatTurnOptions } from '../lib/worktree-chat-turn';
+import type { AuthorizedChatDispatch } from './chat-dispatch-authorization';
 import { delegationChildMessages } from '@canopy/agent-transcript';
 import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
-import { notifyOnboardingChecklistChatStarted } from '../ipc/onboarding-checklist';
 import { getStoppedTurnResumeService } from './stopped-turn-resume-service';
 import { assertChatScopeAcceptsTurns } from '../lib/retired-chat-scope-guard';
 import { isDelegationDeliveryActive } from '../agents/delegation/lifecycle';
@@ -185,7 +231,107 @@ import {
   effectiveTabAiCreditsRouting,
 } from '../agents/effective-ai-credits-routing';
 
+type WorktreePortalEventCommit = ProviderEventIngestResult & {
+  readonly portalEmissionContext?: PortalEmissionContext;
+  readonly acceptedTurnUserMessageId?: string;
+  readonly sequenceNamespace: string;
+  readonly primaryToolEpoch: number;
+};
+
+/** Active dispatch owners, not an event/receipt cache. Settlement removes the entry. */
+const worktreePortalPrimaryTurns = new Map<string, WorktreePortalPrimaryTurn>();
+
+interface WorktreePortalPrimaryTurn {
+  readonly tools: ReturnType<typeof createPortalPrimaryToolCorrelation>;
+  capture(
+    namespace: string,
+    turn: string | undefined,
+    context: PortalEmissionContext | undefined,
+  ): number;
+  isCurrent(epoch: number | undefined): boolean;
+  settle(): void;
+  retire(): void;
+}
+
+function worktreePortalPrimaryTurnKey(target: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): string {
+  return JSON.stringify([target.projectId, target.worktreeId, target.chatId]);
+}
+
+function retireWorktreePortalPrimaryTurn(target: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): void {
+  worktreePortalPrimaryTurns
+    .get(worktreePortalPrimaryTurnKey(target))
+    ?.retire();
+}
+
+function createWorktreePortalPrimaryTurn(target: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): WorktreePortalPrimaryTurn {
+  const key = worktreePortalPrimaryTurnKey(target);
+  worktreePortalPrimaryTurns.get(key)?.retire();
+  const tools = createPortalPrimaryToolCorrelation((reason) =>
+    logMainProcessWarn('[chat-service] Primary tool correlation limit', {
+      reason,
+    }),
+  );
+  let epoch = 0;
+  let stream: string | undefined;
+  let retired = false;
+  const clear = (): void => {
+    epoch++;
+    stream = undefined;
+    tools.clear();
+  };
+  const release = (): void => {
+    if (worktreePortalPrimaryTurns.get(key) === state)
+      worktreePortalPrimaryTurns.delete(key);
+  };
+  const state: WorktreePortalPrimaryTurn = {
+    tools,
+    capture(namespace, turn, context): number {
+      if (retired) return epoch;
+      const owner = worktreePortalPrimaryTurns.get(key);
+      if (owner && owner !== state) {
+        state.retire();
+        return epoch;
+      }
+      worktreePortalPrimaryTurns.set(key, state);
+      const nextStream = JSON.stringify([namespace, turn, context?.generation]);
+      if (stream !== nextStream) {
+        clear();
+        stream = nextStream;
+      }
+      return epoch;
+    },
+    isCurrent(candidate): boolean {
+      return !retired && candidate === epoch;
+    },
+    settle(): void {
+      clear();
+      release();
+    },
+    retire(): void {
+      retired = true;
+      clear();
+      release();
+    },
+  };
+  worktreePortalPrimaryTurns.set(key, state);
+  return state;
+}
+
 export interface ChatServiceOptions {
+  /** Host-only funded Retry attempt; preserves prompt identity with fresh event receipts. */
+  creditRetryAttemptId?: string;
   /** Trusted cancellation until provider acceptance; never a DTO or persisted. */
   admissionSignal?: AbortSignal;
   /** Trusted quota continuation: refuse any other billing connection. */
@@ -205,6 +351,11 @@ export interface ChatServiceOptions {
    * for background sends that must not move the user's visible selection.
    */
   preserveActiveTab?: boolean;
+  /**
+   * Host-only: the queue already admitted this send, with its dispatch
+   * capability when one was issued. Never part of a request or DTO.
+   */
+  queueDispatch?: { authorization?: AuthorizedChatDispatch };
 }
 
 interface LocalChatDispatchOptions extends ChatServiceOptions {
@@ -276,7 +427,10 @@ function portalUserAttachments(
 
 let getWorktreeChatWindow: () => BrowserWindow | null = getNullWindow;
 let specialNativeChatDispatcher:
-  | ((request: ChatSendMessageRequest) => Promise<void>)
+  | ((
+      request: ChatSendMessageRequest,
+      authorization?: AuthorizedChatDispatch,
+    ) => Promise<void>)
   | undefined;
 let autoModelRoutingDispatcher:
   | ((
@@ -292,7 +446,10 @@ let queuedAppAdvisorSurfaces: ChatServiceOptions['appAdvisorSurfaces'];
 
 /** Reuse the native entry-point policy and tool context when a host row drains. */
 export function setSpecialNativeChatDispatcher(
-  dispatch: (request: ChatSendMessageRequest) => Promise<void>,
+  dispatch: (
+    request: ChatSendMessageRequest,
+    authorization?: AuthorizedChatDispatch,
+  ) => Promise<void>,
   appAdvisorSurfaces: NonNullable<ChatServiceOptions['appAdvisorSurfaces']>,
 ): void {
   specialNativeChatDispatcher = dispatch;
@@ -545,6 +702,7 @@ export async function resumeStoppedWorktreeChatTurn(
     worktreeId: request.worktreeId,
     chatId: request.chatId,
   };
+  retireWorktreePortalPrimaryTurn(request);
   const queue = getChatQueueService();
   queue.confirmTurnRevived(target, request.userMessageId);
   try {
@@ -570,11 +728,16 @@ async function dispatchLocalWorktreeChatMessageNow(
   request: ChatSendMessageRequest,
   options: LocalChatDispatchOptions = {},
 ): Promise<void> {
+  const turnDispatchTiming = new TurnDispatchTiming();
   // Before the chat or its prompt become durable: covers stopped-turn resume
   // and drains of queue rows written before plan chats were retired.
   assertChatScopeAcceptsTurns(request.projectId);
+  retireWorktreePortalPrimaryTurn(request);
   const getWindow = options.getWindow ?? getNullWindow;
   const hiddenContinuation = options.hiddenContinuation;
+  const shouldEmitUserPrompt =
+    options.emitUserPrompt === true ||
+    request.hiddenContext?.kind === 'canopy-watcher-event';
   if (!hiddenContinuation) {
     // Register non-persisted root-turn context before any await can expose the
     // canonical active turn to Stop. The worktree dispatch records it again at
@@ -595,20 +758,24 @@ async function dispatchLocalWorktreeChatMessageNow(
   // It runs on every drain, not only on the immediate send, so a message queued
   // behind a long turn is judged against the auth state at the moment it
   // actually dispatches rather than when it was typed.
-  await assertTurnAuthDependencies({
-    target: {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      chatId: request.chatId,
-    },
-    ...(request.pluginSelections
-      ? { pluginSelections: request.pluginSelections }
-      : {}),
-    ...(request.providerType ? { providerType: request.providerType } : {}),
-  });
+  await turnDispatchTiming.measure('auth_preflight', () =>
+    assertTurnAuthDependencies({
+      target: {
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId: request.chatId,
+      },
+      ...(request.pluginSelections
+        ? { pluginSelections: request.pluginSelections }
+        : {}),
+      ...(request.providerType ? { providerType: request.providerType } : {}),
+    }),
+  );
   if (request.watcherFired && request.watcherDeliveryId)
     await assertWatcherDeliveryIngress(request);
   await getChatStateService().ensureChatForTrustedSend(request);
+  // A delegate's message reaches the Portal only once its provider accepts it.
+  let enqueueAcceptedPromptForPortal: (() => void) | undefined;
   if (!hiddenContinuation) {
     const persistedUserMessage = buildPersistedUserMessage(
       request,
@@ -617,7 +784,6 @@ async function dispatchLocalWorktreeChatMessageNow(
     );
     const userPromptEvent = {
       type: 'canopy_user_prompt',
-      ...(request.managedDelegationDeliveryId ? { canopy_hidden: true } : {}),
       original_text: request.text,
       canopy_turn_user_message_id: request.userMessageId,
       ...(request.resumesInterruptedTurn
@@ -626,23 +792,38 @@ async function dispatchLocalWorktreeChatMessageNow(
       provider:
         request.providerType ??
         (request.model ? getProviderForModel(request.model) : undefined),
+      // The durable queue already retains this identity. The prompt reducer
+      // recovers structured answers from the retained answered question.
+      ...(request.asyncQuestionId
+        ? { canopy_async_question_id: request.asyncQuestionId }
+        : {}),
+      ...(request.autoResume?.resumesUserMessageId
+        ? {
+            canopy_resumes_user_message_id:
+              request.autoResume.resumesUserMessageId,
+          }
+        : {}),
       canopy_persisted_messages: [persistedUserMessage],
     };
-    const committed = await getChatStateService().ingestProviderEvent({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      chatId: request.chatId,
-      mutationId: `${request.chatId}:${request.userMessageId}:user-prompt`,
-      data: userPromptEvent,
-      ...(request.providerType ? { providerType: request.providerType } : {}),
-      turnUserMessageId: request.userMessageId,
-    });
+    const committed = await turnDispatchTiming.measure('prompt_commit', () =>
+      getChatStateService().ingestProviderEvent({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId: request.chatId,
+        mutationId: `${request.chatId}:${request.userMessageId}:user-prompt`,
+        data: userPromptEvent,
+        ...(request.providerType ? { providerType: request.providerType } : {}),
+        turnUserMessageId: request.userMessageId,
+      }),
+    );
     if (!committed) {
       const accepted = await getChatStateService().hasMutation(
         { projectId: request.projectId, worktreeId: request.worktreeId },
         `${request.chatId}:${request.userMessageId}:accepted`,
       );
-      if (accepted) {
+      // A funded queue Retry deliberately reuses the refused prompt's identity.
+      // Its prior acceptance records handoff, not successful provider execution.
+      if (accepted && options.creditRetryAttemptId === undefined) {
         getChatQueueService().onTurnTerminal(
           request,
           'complete',
@@ -662,12 +843,7 @@ async function dispatchLocalWorktreeChatMessageNow(
         data: userPromptEvent,
       });
     };
-    if (
-      committed &&
-      options.emitUserPrompt === true &&
-      !request.managedDelegationDeliveryId
-    )
-      announceUserPrompt();
+    if (committed && shouldEmitUserPrompt) announceUserPrompt();
     const enqueueUserPromptForPortal = (): void =>
       enqueuePortalEvent(
         createPortalEvent('portal.chat.event', {
@@ -691,21 +867,25 @@ async function dispatchLocalWorktreeChatMessageNow(
           },
         }),
       );
-    if (!request.managedDelegationDeliveryId) enqueueUserPromptForPortal();
+    if (isInternalChatRequest(request))
+      enqueueAcceptedPromptForPortal = enqueueUserPromptForPortal;
+    else enqueueUserPromptForPortal();
   }
   const { dispatchWorktreeChatTurn: dispatchTurn } =
     await import('../lib/worktree-chat-turn');
   const dispatchWorktreeChatTurn = (
-    ...args: Parameters<typeof dispatchTurn>
-  ): ReturnType<typeof dispatchTurn> =>
+    turn: DispatchWorktreeChatTurnOptions<WorktreePortalEventCommit>,
+  ): Promise<void> =>
     request.agentSenderProvenance
       ? withAgentSenderAuthority(
           request,
-          () => dispatchTurn(...args),
+          () => dispatchTurn(turn),
           revalidateAgentSenderRequest,
         )
-      : dispatchTurn(...args);
+      : dispatchTurn(turn);
   const acceptanceTasks: Promise<void>[] = [];
+  const primaryTurn = createWorktreePortalPrimaryTurn(request);
+  const primaryTools = primaryTurn.tools;
   // Cursor streams patches against one assistant message; fold them per turn
   // so the portal sees the growing text under the persisted message id.
   const cursorPatches = createCursorAssistantPatchProjector({
@@ -717,6 +897,9 @@ async function dispatchLocalWorktreeChatMessageNow(
   try {
     await dispatchWorktreeChatTurn({
       ...request,
+      ...(options.queueDispatch?.authorization
+        ? { authorization: options.queueDispatch.authorization }
+        : {}),
       requiredAccountProxyConnectionId:
         options.requiredAccountProxyConnectionId,
       countsTowardSkillUsage:
@@ -730,15 +913,18 @@ async function dispatchLocalWorktreeChatMessageNow(
       planMode: request.planMode ?? false,
       initiationSource: resolvePresentationSource(request, 'user'),
       getWindow,
+      turnDispatchTiming,
+      providerEventSequenceNamespace:
+        hiddenContinuation?.attemptId ?? options.creditRetryAttemptId,
       ...(hiddenContinuation
         ? {
             hiddenDeferredContinuation: true,
             hiddenContinuationKind: 'stopped_turn_resume' as const,
-            providerEventSequenceNamespace: hiddenContinuation.attemptId,
           }
         : {
             onTurnAccepted: (): void => {
               options.onTurnAccepted?.();
+              enqueueAcceptedPromptForPortal?.();
               const consumedInstructionIds =
                 request.pendingSystemInstructions?.map(
                   (instruction) => instruction.id,
@@ -752,7 +938,7 @@ async function dispatchLocalWorktreeChatMessageNow(
                 for (const userMessageId of constituentUserMessageIds) {
                   await commitAcceptedUserPrompt({ ...request, userMessageId });
                 }
-                if (options.emitUserPrompt === true) {
+                if (shouldEmitUserPrompt) {
                   await emitAcceptedUserPrompt(
                     getWindow,
                     request,
@@ -774,10 +960,17 @@ async function dispatchLocalWorktreeChatMessageNow(
             },
           }),
       onBeforeChatEvent: async (event) => {
+        const portalEmissionContext = capturePortalEmissionContext();
+        const acceptedTurnUserMessageId = event.turnUserMessageId;
+        const primaryToolEpoch = primaryTurn.capture(
+          event.sequenceNamespace,
+          acceptedTurnUserMessageId,
+          portalEmissionContext,
+        );
         // The provider that ran wins: lane selection may substitute one.
         const providerType = event.providerType ?? request.providerType;
         const outcome =
-          await getChatStateService().ingestProviderEventWithOutcome({
+          await getChatStateService().ingestProviderEventWithResult({
             projectId: event.projectId,
             worktreeId: event.worktreeId,
             chatId: event.chatId,
@@ -791,12 +984,31 @@ async function dispatchLocalWorktreeChatMessageNow(
               ? { onCommitQueued: event.onCommitQueued }
               : {}),
           });
-        // Activity-only events carry no durable change but are live.
-        return outcome !== 'not-applied';
+        return {
+          ...normalizeProviderEventIngestResult(outcome),
+          portalEmissionContext,
+          acceptedTurnUserMessageId,
+          sequenceNamespace: event.sequenceNamespace,
+          primaryToolEpoch,
+        };
       },
       onChatEvent: (event) => {
-        const message =
-          cursorPatches.apply(event.data) ??
+        const completion = event.beforeChatEventResult;
+        const emissionContext = completion?.portalEmissionContext;
+        const emissionCurrent =
+          emissionContext !== undefined &&
+          isPortalEmissionContextCurrent(emissionContext);
+        const admissionCurrent =
+          emissionCurrent &&
+          primaryTurn.isCurrent(completion?.primaryToolEpoch);
+        if (
+          !emissionCurrent &&
+          primaryTurn.isCurrent(completion?.primaryToolEpoch)
+        )
+          primaryTurn.settle();
+        const cursorMessage = cursorPatches.apply(event.data);
+        let message =
+          cursorMessage ??
           runtimeChatEventToPortalMessage({
             scope: 'worktree',
             workspaceLocalId: event.projectId,
@@ -805,8 +1017,32 @@ async function dispatchLocalWorktreeChatMessageNow(
             data: event.data,
             fallbackMessageId: `${request.userMessageId}:assistant`,
           });
-        if (message) {
-          enqueuePortalEvent(
+        if (
+          admissionCurrent &&
+          !cursorMessage &&
+          message &&
+          isRecord(event.data) &&
+          (event.data.type === 'codex' ||
+            event.data.type === 'user' ||
+            event.data.type === 'assistant')
+        ) {
+          if (completion?.outcome === 'applied' && completion.admission)
+            primaryTools.retain(message.messageId, completion.admission);
+          const admittedMessage = runtimeChatEventToPortalMessage({
+            scope: 'worktree',
+            workspaceLocalId: event.projectId,
+            worktreeLocalId: event.worktreeId,
+            chatId: event.chatId,
+            data: event.data,
+            fallbackMessageId: `${request.userMessageId}:assistant`,
+            admission: primaryTools.forMessage(message.messageId),
+          });
+          if (admittedMessage)
+            message = { ...message, parts: admittedMessage.parts };
+        }
+        if (message && emissionContext) {
+          enqueuePortalEventIfCurrent(
+            emissionContext,
             createPortalEvent('portal.chat.event', {
               scope: 'worktree',
               workspaceLocalId: event.projectId,
@@ -816,23 +1052,15 @@ async function dispatchLocalWorktreeChatMessageNow(
             }),
           );
         }
-        if (event.isTerminalEvent) {
-          void emitPersistedTurnTimerCompletion({
-            projectId: event.projectId,
-            worktreeId: event.worktreeId,
-            chatId: event.chatId,
-            userMessageId: request.userMessageId,
-            terminalEventData: event.data,
-          }).catch((error: unknown) => {
-            logMainProcessWarn(
-              '[chat-service] Failed to push the turn timer to the portal',
-              error,
-            );
-          });
-        }
+        if (
+          event.isTerminalEvent &&
+          primaryTurn.isCurrent(completion?.primaryToolEpoch)
+        )
+          primaryTurn.settle();
       },
     });
   } catch (error) {
+    primaryTurn.retire();
     if (request.managedDelegationDeliveryId) {
       await getChatStateService().removeUnacceptedUserPrompt({
         projectId: request.projectId,
@@ -846,112 +1074,6 @@ async function dispatchLocalWorktreeChatMessageNow(
   await Promise.all(acceptanceTasks);
 }
 
-type PersistedTurnTimerBlock = Extract<
-  PersistedChatBlock,
-  { type: 'turn_timer' }
->;
-
-/**
- * Live-emit (never persist) the turn's timer as a completed portal row keyed
- * `${userMessageId}:turn-timer` — the same id `projectPersistedChatTranscript`
- * re-keys the renderer's persisted timer row onto, so a later snapshot
- * re-push converges on this row instead of duplicating it. Pause bookkeeping
- * (approval waits) comes from the persisted block; `completedAt` is now,
- * because the renderer's own completion lands after this terminal event.
- * `terminalEventData` is that terminal event: a stopped or failed turn is
- * marked with `endReason`, exactly as the live timer of a phone-started turn.
- */
-async function emitPersistedTurnTimerCompletion(input: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-  userMessageId: string;
-  terminalEventData: unknown;
-}): Promise<void> {
-  const completedAt = Date.now();
-  const endReason = turnTimerEndReason(input.terminalEventData);
-  const tabsFile = await portalChatTabsCache.read(
-    input.projectId,
-    input.worktreeId,
-    { chatIds: [input.chatId] },
-  );
-  const tab = tabsFile.tabs.find((candidate) => candidate.id === input.chatId);
-  const messages = tab?.messages ?? [];
-  let userIndex = messages.findIndex(
-    (message) => message.id === input.userMessageId,
-  );
-  // Hidden delegated completions belong to the preceding visible user turn.
-  // Use its stable portal row id and retained pause accounting.
-  if (messages[userIndex]?.hidden === true) {
-    for (let index = userIndex - 1; index >= 0; index -= 1) {
-      if (messages[index].role === 'user' && !messages[index].hidden) {
-        userIndex = index;
-        break;
-      }
-    }
-  }
-  const timerUserMessageId = messages[userIndex]?.id ?? input.userMessageId;
-  let timer: PersistedTurnTimerBlock | undefined;
-  for (let index = userIndex + 1; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (message.role === 'user' && !message.hidden) break;
-    const block = message.blocks.find(
-      (candidate): candidate is PersistedTurnTimerBlock =>
-        candidate.type === 'turn_timer',
-    );
-    if (block) {
-      timer = block;
-      break;
-    }
-  }
-  const userTimestamp = messages[userIndex]?.timestamp;
-  const startedAt =
-    timer?.startedAt ??
-    (typeof userTimestamp === 'number' ? userTimestamp : completedAt);
-  const message: PortalChatMessage = {
-    messageId: `${timerUserMessageId}:turn-timer`,
-    chatId: input.chatId,
-    role: 'system',
-    status: 'complete',
-    text: '',
-    parts: [
-      {
-        kind: 'turn_timer',
-        data: {
-          startedAt,
-          pausedAt: timer?.pausedAt ?? null,
-          resumedAt: timer?.resumedAt ?? null,
-          accumulatedPausedDurationMs: timer?.accumulatedPausedDurationMs ?? 0,
-          completedAt,
-          ...(endReason === undefined ? {} : { endReason }),
-          ...turnTimerAutoRoutedModelData(
-            tab?.autoRoutedModels,
-            timerUserMessageId,
-          ),
-        },
-      },
-    ],
-    // Stamped at COMPLETION, not at `startedAt`: the shared store sorts by
-    // `createdAtMs`, and its turn partitioner drops any message that precedes
-    // the turn's user row. Main emits that user row a beat after the renderer
-    // minted it, so a start-stamped timer sorted ahead of its own anchor and
-    // never joined a turn group. The elapsed duration comes from the part's
-    // `startedAt`/`completedAt`, so this only affects ordering.
-    createdAtMs: completedAt,
-    updatedAtMs: completedAt,
-  };
-  enqueuePortalEvent(
-    createPortalEvent('portal.chat.event', {
-      scope: 'worktree',
-      workspaceLocalId: input.projectId,
-      worktreeLocalId: input.worktreeId,
-      chatId: input.chatId,
-      message,
-    }),
-  );
-}
-
-const authorizedPortalDispatches = new Set<string>();
 // Live caller surfaces belong to this request, not the serializable queue
 // payload. Restored/edited rows use the application's registered surfaces.
 // Billing constraints are persisted separately on the main-owned queue row.
@@ -960,19 +1082,11 @@ const portalQueueOptions = new WeakMap<
   ChatServiceOptions
 >();
 
-function portalDispatchKey(
-  request: Pick<
-    ChatSendMessageRequest,
-    'projectId' | 'worktreeId' | 'chatId' | 'userMessageId'
-  >,
-): string {
-  return `${request.projectId}/${request.worktreeId}/${request.chatId}/${request.userMessageId}`;
-}
-
 export async function dispatchHostQueuedWorktreeChatMessage(
   request: ChatSendMessageRequest,
   origin: 'desktop' | 'portal',
   fromQueue: boolean,
+  authorization?: AuthorizedChatDispatch,
   queueOptions: ChatQueueDispatchOptions = {},
 ): Promise<void> {
   let turnAccepted = false;
@@ -989,9 +1103,14 @@ export async function dispatchHostQueuedWorktreeChatMessage(
           origin,
           fromQueue,
           onTurnAccepted,
+          authorization,
           queueOptions,
         );
       } catch (error) {
+        // A held send remains queue-owned user intent. In particular, do not
+        // settle an independent-branch startup as rejected: no prompt was
+        // committed and the queue will retry after native work ends.
+        if (error instanceof TurnHeldForBackgroundWorkError) throw error;
         // Setup-queued split starts outlive the tool executor. Confirm the
         // one-shot marker with main-owned state, never a stale renderer copy.
         let pendingStartup = false;
@@ -1037,18 +1156,29 @@ export async function dispatchHostQueuedWorktreeChatMessage(
 }
 
 /**
- * A root agent's queued message to a project chat runs with that chat's
- * current approval settings, the ones its dispatch-time admission checks,
- * never the copy captured when it was queued.
+ * A root agent's queued message to a project chat, or an agent-originated
+ * pipeline run's, runs with that chat's current approval settings, the ones
+ * its dispatch-time admission checks, never the copy captured when it was
+ * queued. They are also its admitted approval, so the turn never runs with
+ * authority gained after this read.
  */
 async function withCurrentTargetApprovalSettings(
   request: ChatSendMessageRequest,
 ): Promise<ChatSendMessageRequest> {
-  if (
-    request.agentSenderProvenance?.sender.kind !== 'project' ||
-    request.projectId === APP_ADVISOR_PROJECT_ID
-  )
+  const provenance = request.agentSenderProvenance;
+  if (!provenance || request.projectId === APP_ADVISOR_PROJECT_ID)
     return request;
+  // A pipeline run a user started keeps the approval override it was
+  // admitted with (D2); one an agent started runs as that agent's (D11).
+  const agentOriginated =
+    provenance.sender.kind === 'project' ||
+    ('agentOrigin' in provenance && provenance.agentOrigin !== undefined);
+  if (!agentOriginated) return request;
+  if (request.turnOverride?.approvalMode !== undefined)
+    throw new AgentSenderContextError(
+      'authorization_conflict',
+      'An agent-originated message cannot change the target chat’s approvals.',
+    );
   const { selectedRepoId: _carriedRepo, ...rest } = request;
   void _carriedRepo;
   const policy = await resolveWorktreeChatApprovalPolicy(request);
@@ -1056,8 +1186,72 @@ async function withCurrentTargetApprovalSettings(
     ...rest,
     approvalMode: policy.mode,
     sessionApprovalRules: policy.sessionRules,
+    admittedApproval: {
+      approvalMode: policy.mode,
+      sessionApprovalRules: policy.sessionRules,
+    },
     ...(policy.selectedRepoId ? { selectedRepoId: policy.selectedRepoId } : {}),
   };
+}
+
+/**
+ * Revalidates a queued send's sender and, for a project agent's send, reads
+ * the target's current approval settings and admits them again. Those settings
+ * become the turn's admitted limit only if nothing approval-related changed
+ * between the read and the admission; otherwise both run again, up to three
+ * times, then the send is refused.
+ */
+async function withReadmittedQueuedSendApproval(
+  request: ChatSendMessageRequest,
+): Promise<ChatSendMessageRequest> {
+  const hasAgentMetadata =
+    request.agentSent !== undefined ||
+    request.agentSenderProvenance !== undefined ||
+    request.hiddenContext?.kind === 'agent-sender-context';
+  const target = {
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    chatId: request.chatId,
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const chatRevision = getChatApprovalStateRevision(target);
+    const settingsRevision = getApprovalSettingsRevision();
+    const readmitted = await withCurrentTargetApprovalSettings(request);
+    if (hasAgentMetadata) await revalidateAgentSenderRequest(readmitted);
+    if (
+      readmitted === request ||
+      (getChatApprovalStateRevision(target) === chatRevision &&
+        getApprovalSettingsRevision() === settingsRevision)
+    )
+      return readmitted;
+  }
+  throw new AgentSenderContextError(
+    'authorization_conflict',
+    "The target chat's tool approvals kept changing while this message was checked.",
+  );
+}
+
+/**
+ * An automation's own send (CAN-4549) records its bound context on the target
+ * tab before the turn, as its native path did, from the admitted request so a
+ * queued row restored after a restart keeps its lineage.
+ */
+async function applyAutomationExecutionContext(
+  request: ChatSendMessageRequest,
+): Promise<string | undefined> {
+  const executionContext = request.automationDispatch?.executionContext;
+  if (executionContext === undefined) return undefined;
+  await getChatStateService().updateCompatibilityTab(
+    { projectId: request.projectId, worktreeId: request.worktreeId },
+    request.chatId,
+    (tab) =>
+      tab.executionContext === executionContext
+        ? null
+        : { ...tab, executionContext },
+    undefined,
+    { metadataOnly: true },
+  );
+  return executionContext;
 }
 
 async function dispatchHostQueuedWorktreeChatMessageNow(
@@ -1065,6 +1259,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
   origin: 'desktop' | 'portal',
   fromQueue: boolean,
   onTurnAccepted: () => void,
+  authorization: AuthorizedChatDispatch | undefined,
   queueOptions: ChatQueueDispatchOptions,
 ): Promise<void> {
   if (
@@ -1095,13 +1290,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
       return;
     }
   }
-  request = await withCurrentTargetApprovalSettings(request);
-  if (
-    request.agentSent ||
-    request.agentSenderProvenance ||
-    request.hiddenContext?.kind === 'agent-sender-context'
-  )
-    await revalidateAgentSenderRequest(request);
+  request = await withReadmittedQueuedSendApproval(request);
   // Every send pins its Agent before it is queued. One that still names a bare
   // Agent on the default model was switched to it while queued; running it
   // would re-read Settings, so it is refused before the turn starts.
@@ -1114,8 +1303,23 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
       `${getModelDisplayName(request.model)} now uses the default model. Choose it again, then send.`,
     );
   }
-  let dispatchRequest =
-    request.modelSelectionMode === 'auto' && autoModelRoutingDispatcher
+  const automationExecutionContext =
+    await applyAutomationExecutionContext(request);
+  // Run now on a held row and generated deliveries run with the live
+  // session's settings; dispatch applies them, so the request (and the tab
+  // settings saved from it) keeps the user's choice for a later turn. They
+  // skip Auto routing, which would pick a model the session does not run.
+  const usesLiveSessionSettings =
+    (request.useLiveSessionSettings === true ||
+      isGeneratedInputRequest(request)) &&
+    getSessionTurnSettings(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+    ) !== undefined;
+  let dispatchRequest: ChatSendMessageRequest = usesLiveSessionSettings
+    ? { ...request, useLiveSessionSettings: true }
+    : request.modelSelectionMode === 'auto' && autoModelRoutingDispatcher
       ? await autoModelRoutingDispatcher(request, origin, fromQueue)
       : request;
   if (
@@ -1159,25 +1363,75 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
     );
     return;
   }
-  if (
+
+  const specialNativeTarget =
     origin === 'desktop' &&
     (isCoworkWorkspace(dispatchRequest.projectId) ||
       dispatchRequest.projectId === APP_ADVISOR_PROJECT_ID ||
-      dispatchRequest.projectId === PIPELINE_EDITOR_PROJECT_ID)
+      dispatchRequest.projectId === PIPELINE_EDITOR_PROJECT_ID);
+  if (
+    !specialNativeTarget &&
+    (usesLiveSessionSettings || !isGeneratedInputRequest(dispatchRequest))
   ) {
+    const target = {
+      projectId: dispatchRequest.projectId,
+      worktreeId: dispatchRequest.worktreeId,
+      chatId: dispatchRequest.chatId,
+    };
+    if (
+      chatHasNativeBackgroundWork(
+        target.projectId,
+        target.worktreeId,
+        target.chatId,
+      )
+    ) {
+      let decision:
+        | Awaited<ReturnType<typeof decideTurnSessionReuse>>
+        | undefined;
+      try {
+        // A live-settings send can still need a restart (an account, owner
+        // or routing change); recreate markers wait for a later turn.
+        decision = usesLiveSessionSettings
+          ? await decideTurnSessionReuse(
+              applyLiveSessionSettings(dispatchRequest),
+              { deferRecreateMarkers: true },
+            )
+          : await decideTurnSessionReuse(dispatchRequest);
+      } catch (error) {
+        logMainProcessWarn(
+          '[chat] Session reuse decision failed before dispatch:',
+          error,
+        );
+      }
+      if (decision !== undefined && holdsForBackgroundWork(target, decision)) {
+        throw new TurnHeldForBackgroundWorkError();
+      }
+    }
+  }
+
+  if (specialNativeTarget) {
     if (!specialNativeChatDispatcher)
       throw new Error('Native chat dispatch is unavailable');
     await withAgentSenderAuthority(
       dispatchRequest,
-      () => specialNativeChatDispatcher?.(dispatchRequest),
+      () => specialNativeChatDispatcher?.(dispatchRequest, authorization),
       revalidateAgentSenderRequest,
     );
     return;
   }
+  // A pipeline override's model holds over a change made while it was queued.
+  await getChatStateService().commitTurnOverrideModelFor(dispatchRequest);
+  // The queue admitted this send: its dispatchers must not submit it again.
+  const queueDispatch = authorization ? { authorization } : {};
   if (origin === 'desktop') {
     await dispatchLocalWorktreeChatMessageNow(dispatchRequest, {
       getWindow,
       onTurnAccepted,
+      queueDispatch,
+      ...(automationExecutionContext !== undefined
+        ? { executionContext: automationExecutionContext }
+        : {}),
+      creditRetryAttemptId: queueOptions.creditRetryAttemptId,
       requiredAccountProxyConnectionId:
         queueOptions.requiredAccountProxyConnectionId,
       // Watchers defer the root/steering decision to the host and therefore
@@ -1190,11 +1444,15 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
     });
     return;
   }
-  authorizedPortalDispatches.add(portalDispatchKey(dispatchRequest));
   await sendWorktreeChatMessage(dispatchRequest, {
     getWindow,
+    creditRetryAttemptId: queueOptions.creditRetryAttemptId,
     appAdvisorSurfaces: queuedAppAdvisorSurfaces,
     ...portalOptions,
+    ...(automationExecutionContext !== undefined
+      ? { executionContext: automationExecutionContext }
+      : {}),
+    queueDispatch,
     ...(queueOptions.requiredAccountProxyConnectionId !== undefined
       ? {
           requiredAccountProxyConnectionId:
@@ -1243,6 +1501,71 @@ async function resolveClaudeForkResumeAnchor(
     await readChatTranscript(projectId, worktreeId, chatId),
     atMessageId,
   );
+}
+
+const TERMINAL_CHAT_SETTING_FIELDS = [
+  'model',
+  'modelConfig',
+  'providerType',
+  'executionHarness',
+  'planMode',
+  'approvalMode',
+  'pluginSelections',
+  'interfaceMode',
+] as const;
+
+export const TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE =
+  'Scheduled terminal chat settings differ from the live chat. Apply the settings in the chat before scheduling this prompt.';
+
+/** A Claude chat whose turns run in its managed terminal. */
+function isTerminalBackedClaudeTab(tab: PersistedChatTab): boolean {
+  const source = tab.model
+    ? getModelSource(tab.model)
+    : tab.providerType === 'claude' || tab.providerType === undefined
+      ? 'claude-managed'
+      : undefined;
+  return (
+    source === 'claude-managed' &&
+    isTerminalBackedInterfaceMode(
+      getEffectiveClaudeChatInterfaceMode(tab.interfaceMode),
+    )
+  );
+}
+
+/** Whether a request names a setting the live terminal chat would not apply. */
+function terminalChatSettingsDiffer(
+  tab: Pick<PersistedChatTab, (typeof TERMINAL_CHAT_SETTING_FIELDS)[number]>,
+  request: object,
+): boolean {
+  return TERMINAL_CHAT_SETTING_FIELDS.some((field) => {
+    const requested: unknown = Reflect.get(request, field);
+    if (requested === undefined) return false;
+    if (field === 'planMode') return requested !== (tab.planMode ?? false);
+    if (field === 'approvalMode') return requested !== tab.approvalMode;
+    return JSON.stringify(requested) !== JSON.stringify(tab[field]);
+  });
+}
+
+/**
+ * The terminal settings check of a scheduled send, run before an
+ * automation's own send is dispatched (CAN-4549): the shared port commits the
+ * send before delivery, so the refusal must come first to keep its text.
+ */
+export async function assertTerminalChatAcceptsSettings(
+  target: { projectId: string; worktreeId: string; chatId: string },
+  settings: Partial<
+    Pick<ChatSendMessageRequest, (typeof TERMINAL_CHAT_SETTING_FIELDS)[number]>
+  >,
+): Promise<void> {
+  const tab = (
+    await readChatTabsFile(target.projectId, target.worktreeId)
+  ).tabs.find((candidate) => candidate.id === target.chatId);
+  if (
+    tab &&
+    isTerminalBackedClaudeTab(tab) &&
+    terminalChatSettingsDiffer(tab, settings)
+  )
+    throw new Error(TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE);
 }
 
 export async function buildExistingTabDispatchOptions(
@@ -1420,6 +1743,7 @@ type WorktreeChatSendRequest =
 /** Main-owned provenance can only be attached after trusted command intake. */
 type TrustedWorktreeChatSendRequest = WorktreeChatSendRequest & {
   agentSent?: AgentSentInfo;
+  autoResume?: AutoResumeMetadata;
 };
 
 function normalizePortalChatModelConfig(
@@ -1469,12 +1793,17 @@ function buildPersistedUserMessage(
   timestamp: number,
 ): PersistedChatMessage {
   const attachmentPromptContexts = getAttachmentPromptContexts(request);
+  const autoResume = readAutoResumeMetadata(
+    'autoResume' in request ? request.autoResume : undefined,
+  );
   return {
     id: userMessageId,
     role: 'user',
     // A message an external MCP agent sent stays the person's own.
-    userMessageSource:
-      'agentSent' in request && chatAgentSent(request.agentSent)
+    ...(autoResume ? { autoResume } : {}),
+    userMessageSource: autoResume
+      ? 'auto_resume'
+      : 'agentSent' in request && chatAgentSent(request.agentSent)
         ? 'agent'
         : 'watcherFired' in request && request.watcherFired
           ? 'watcher'
@@ -1483,10 +1812,6 @@ function buildPersistedUserMessage(
             : 'human',
     ...('agentSent' in request && request.agentSent
       ? { agentSent: request.agentSent }
-      : {}),
-    ...('managedDelegationDeliveryId' in request &&
-    request.managedDelegationDeliveryId
-      ? { hidden: true }
       : {}),
     timestamp,
     blocks: [
@@ -1502,7 +1827,9 @@ function buildPersistedUserMessage(
     ],
     attachmentPaths: request.attachmentPaths,
     ...(attachmentPromptContexts?.length ? { attachmentPromptContexts } : {}),
-    inputMode: request.inputMode ?? 'typed',
+    ...(autoResume && !autoResume.resendsUserMessage
+      ? {}
+      : { inputMode: request.inputMode ?? 'typed' }),
     ...('watcherFired' in request && request.watcherFired
       ? { watcherFired: request.watcherFired }
       : {}),
@@ -1562,6 +1889,7 @@ function deriveChatTurnGroupsFromWindow(
   const groups: PortalChatTurnGroup[] = [];
   let pendingUserMessageId: string | null = null;
   let pendingAssistantIds: string[] = [];
+  let pendingMessages: PersistedChatMessage[] = [];
 
   const counts: Required<
     Omit<
@@ -1643,10 +1971,14 @@ function deriveChatTurnGroupsFromWindow(
       userMessageId: pendingUserMessageId,
       intermediateMessageIds,
       finalMessageIds,
+      files: collectTurnFiles(
+        mergeToolResults(reorderMessagesForDisplay(pendingMessages)),
+      ),
       ...(Object.keys(summary).length > 0 ? { summary } : {}),
     });
     pendingUserMessageId = null;
     pendingAssistantIds = [];
+    pendingMessages = [];
     resetCounts();
   };
 
@@ -1657,6 +1989,7 @@ function deriveChatTurnGroupsFromWindow(
       continue;
     }
     if (!pendingUserMessageId) continue;
+    pendingMessages.push(message);
     pendingAssistantIds.push(message.id);
     for (const block of message.blocks) {
       if (block.type !== 'tool_use') continue;
@@ -1672,7 +2005,9 @@ function deriveChatTurnGroupsFromWindow(
           counts.editCount += 1;
           break;
         case 'write':
-          counts.writeCount += 1;
+          if (!isPlanFileWrite(block.toolName, block.input)) {
+            counts.writeCount += 1;
+          }
           break;
         case 'plan':
           counts.planCount += 1;
@@ -1805,30 +2140,41 @@ function chatSummaryEntity(input: {
     input.tab.id,
   );
   const steeringCapabilities = inputSession?.getSteeringCapabilities?.();
+  const queueSnapshot = getChatQueueService()
+    .getWorktreeSnapshots(input.workspaceId, input.worktreeId)
+    .find((snapshot) => snapshot.chatId === input.tab.id);
   const queuedMessages =
-    getChatQueueService()
-      .getWorktreeSnapshots(input.workspaceId, input.worktreeId)
-      .find((snapshot) => snapshot.chatId === input.tab.id)
-      ?.queue.map((message) => ({
-        id: message.id,
-        text: message.text,
-        origin: message.origin,
-        promptSource: message.promptSource,
-        supersedesUserMessageId: message.supersedesUserMessageId,
-        enqueuedAtMs: message.enqueuedAtMs,
-        attachmentEditsPreservePayload: true,
-        ...(message.editLocked === true ? { editLocked: true } : {}),
-        ...(message.canSteer === true ? { canSteer: true } : {}),
-        ...(message.agentSent ? { agentSent: message.agentSent } : {}),
-        ...(message.steerBlockedByCapabilityChange === true
-          ? { steerBlockedByCapabilityChange: true }
-          : {}),
-        ...(message.fileReferences?.length ||
-        message.attachmentPaths?.length ||
-        message.attachmentPromptContexts?.length
-          ? { hasAttachments: true }
-          : {}),
-      })) ?? [];
+    queueSnapshot?.queue.map((message) => ({
+      id: message.id,
+      text: message.text,
+      origin: message.origin,
+      promptSource: message.promptSource,
+      ...(message.autoResume ? { autoResume: message.autoResume } : {}),
+      supersedesUserMessageId: message.supersedesUserMessageId,
+      enqueuedAtMs: message.enqueuedAtMs,
+      attachmentEditsPreservePayload: true,
+      ...(message.turnPhase !== undefined
+        ? { turnPhase: message.turnPhase }
+        : {}),
+      ...(message.retryable === true ? { retryable: true } : {}),
+      ...(message.retryBlockedReason
+        ? { retryBlockedReason: message.retryBlockedReason }
+        : {}),
+      ...(message.editLocked === true ? { editLocked: true } : {}),
+      ...(message.canSteer === true ? { canSteer: true } : {}),
+      ...(message.agentSent ? { agentSent: message.agentSent } : {}),
+      ...(message.steerBlockedByCapabilityChange === true
+        ? { steerBlockedByCapabilityChange: true }
+        : {}),
+      ...(message.waitingReason !== undefined
+        ? { waitingReason: message.waitingReason }
+        : {}),
+      ...(message.fileReferences?.length ||
+      message.attachmentPaths?.length ||
+      message.attachmentPromptContexts?.length
+        ? { hasAttachments: true }
+        : {}),
+    })) ?? [];
   // Live turn state for this chat, read straight from the session manager
   // (a cheap in-memory map lookup; no probe). Projecting it is what lets a
   // portal that attaches MID-TURN show the working indicator at all -- the
@@ -1838,13 +2184,36 @@ function chatSummaryEntity(input: {
     input.workspaceId,
     input.worktreeId,
   ).find((session) => session.chatId === input.tab.id && session.turnActive);
-  const turnActive = activeTurnSession !== undefined;
-  const turnStartedAt = activeTurnSession?.turnStartedAt;
-  const turnElapsedMs =
-    activeTurnSession?.turnElapsedMs ??
-    (turnStartedAt !== undefined
-      ? Math.max(0, Date.now() - turnStartedAt)
+  // The canonical turn decides (turn-state phase 41a): background work is
+  // not a running turn, and a wake is one with no dispatched session turn.
+  const chatState = getChatStateService();
+  const canonicalTurn = chatState.getTurnState({
+    projectId: input.workspaceId,
+    worktreeId: input.worktreeId,
+    chatId: input.tab.id,
+  });
+  const turnActive = summaryTurnActive(
+    activeTurnSession !== undefined,
+    canonicalTurn?.phase,
+  );
+  const turnStartedAt =
+    activeTurnSession?.turnStartedAt ??
+    (canonicalTurn?.phase === 'foreground'
+      ? canonicalTurn.current?.startedAtMs
       : undefined);
+  const turnElapsedMs = !turnActive
+    ? undefined
+    : (activeTurnSession?.turnElapsedMs ??
+      (turnStartedAt !== undefined
+        ? Math.max(0, Date.now() - turnStartedAt)
+        : undefined));
+  // Sent whenever canonical state exists, zero included, so a delta clears it.
+  const backgroundTasks = canonicalTurn
+    ? backgroundTaskCount(
+        canonicalTurn.background.managed,
+        canonicalTurn.background.native,
+      )
+    : undefined;
   const lastMessageAt = input.tab.transcript
     ? input.tab.transcript.lastMessageAt
     : input.tab.messages[input.tab.messages.length - 1]?.timestamp;
@@ -1886,6 +2255,9 @@ function chatSummaryEntity(input: {
     scope: 'worktree',
     hasUnread: input.tab.unread === true,
     queuedMessages,
+    ...(queueSnapshot?.waitingDelegationIds === undefined
+      ? {}
+      : { waitingDelegationIds: queueSnapshot.waitingDelegationIds }),
     steeringCapabilities,
     inputDelivery: inputDeliveryViews(
       input.tab.inputDelivery,
@@ -1900,6 +2272,16 @@ function chatSummaryEntity(input: {
     description: input.tab.description,
     turnActive,
     ...(turnElapsedMs !== undefined ? { turnElapsedMs } : {}),
+    ...(canonicalTurn ? { turnPhase: canonicalTurn.phase } : {}),
+    ...(backgroundTasks !== undefined ? { backgroundTasks } : {}),
+    // The Portal tray's delegates row (turn-state phase 41e).
+    ...(canonicalTurn
+      ? {
+          backgroundDelegations:
+            canonicalTurn.background.managed.live +
+            canonicalTurn.background.managed.queued,
+        }
+      : {}),
     ...(usageLimit ? { usageLimit } : {}),
     ...(input.tab.providerType === 'opencode' ||
     input.tab.model?.startsWith('opencode:')
@@ -1933,6 +2315,14 @@ function chatSummaryEntity(input: {
       : undefined,
     providerType: input.tab.providerType,
     executionHarness: input.tab.executionHarness,
+    modelHarnessLocked:
+      hasChatContinuationSession(input.tab) ||
+      (input.tab.transcript?.messageCount ??
+        input.tab.transcript?.committedMessageCount ??
+        input.tab.messages.length) > 0 ||
+      queuedMessages.length > 0 ||
+      turnActive,
+
     selectedRepoId: input.tab.selectedRepoId,
     active: input.active,
     // Projected composer state (CAN-1217) so the portal chips seed from and
@@ -2071,7 +2461,6 @@ function emitChatTodo(projection: PortalChatTodoProjection): void {
   if (lastEmittedTodoFingerprints.get(key) === fingerprint) {
     return;
   }
-  lastEmittedTodoFingerprints.set(key, fingerprint);
   enqueuePortalEvent(
     createPortalEvent('portal.state.delta', {
       scope: 'chat',
@@ -2094,6 +2483,8 @@ function emitChatTodo(projection: PortalChatTodoProjection): void {
       generatedAt: new Date().toISOString(),
     }),
   );
+  // Recorded only once enqueued, so a retried failed emit is not deduped away.
+  lastEmittedTodoFingerprints.set(key, fingerprint);
 }
 
 export async function listWorktreeTodoEntities(input: {
@@ -2132,19 +2523,30 @@ export async function projectWorktreeChatTodos(input: {
   workspaceId: string;
   worktreeId: string;
 }): Promise<void> {
+  try {
+    await projectWorktreeChatTodosStrict(input);
+  } catch {
+    // Projection is a best-effort mirror; the persisted tab write is durable.
+  }
+}
+
+/**
+ * {@link projectWorktreeChatTodos} that rejects on failure, for the
+ * post-commit projection, which retries failed runs.
+ */
+export async function projectWorktreeChatTodosStrict(input: {
+  workspaceId: string;
+  worktreeId: string;
+}): Promise<void> {
   if (!isCanopyPortalActive() || isCoworkWorkspace(input.workspaceId)) {
     return;
   }
   // The summary projection currently reaches this cache path without the
   // equivalent cowork guard. TODOs deliberately match the live projection
   // path and exclude cowork workspaces in both entry points.
-  try {
-    const projections = await listWorktreeTodoEntities(input);
-    for (const projection of projections) {
-      emitChatTodo(projection);
-    }
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
+  const projections = await listWorktreeTodoEntities(input);
+  for (const projection of projections) {
+    emitChatTodo(projection);
   }
 }
 
@@ -2255,7 +2657,7 @@ async function emitTargetChatSummary(input: {
   );
 }
 
-async function emitLatestTargetChatSummary(input: {
+export async function emitLatestTargetChatSummary(input: {
   workspaceId: string;
   worktreeId: string;
   chatId: string;
@@ -2543,6 +2945,7 @@ async function sendWorktreeChatMessageNow(
   request: TrustedWorktreeChatSendRequest,
   options: ChatServiceOptions,
 ): Promise<{ ok: true; chatId: string }> {
+  const turnDispatchTiming = new TurnDispatchTiming();
   if (
     'watcherFired' in request &&
     request.watcherFired &&
@@ -2552,6 +2955,8 @@ async function sendWorktreeChatMessageNow(
     await assertWatcherDeliveryIngress(request);
   options.admissionSignal?.throwIfAborted();
   const resumeCleanupBefore = Date.now();
+  if (request.chatId)
+    retireWorktreePortalPrimaryTurn({ ...request, chatId: request.chatId });
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   if (request.chatId) validateId(request.chatId, 'chatId');
@@ -2565,17 +2970,7 @@ async function sendWorktreeChatMessageNow(
     request.worktreeId,
   );
 
-  const authorizedPortalDispatch =
-    request.chatId && request.userMessageId
-      ? authorizedPortalDispatches.delete(
-          portalDispatchKey({
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-            chatId: request.chatId,
-            userMessageId: request.userMessageId,
-          }),
-        )
-      : false;
+  const authorizedPortalDispatch = options.queueDispatch !== undefined;
   if (
     !authorizedPortalDispatch &&
     !options.preserveTransientRetry &&
@@ -2883,53 +3278,27 @@ async function sendWorktreeChatMessageNow(
   // cached-only and issues no network, subprocess, or browser call — see
   // `lib/auth-preflight.ts` (CAN-399/CAN-492) — so a dependency whose cached
   // state is merely unknown falls through and gets dispatch's own error.
-  await assertTurnAuthDependencies({
-    target: {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      chatId,
-    },
-    ...(request.pluginSelections
-      ? { pluginSelections: request.pluginSelections }
-      : {}),
-    ...(request.providerType ? { providerType: request.providerType } : {}),
-  });
+  await turnDispatchTiming.measure('auth_preflight', () =>
+    assertTurnAuthDependencies({
+      target: {
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId,
+      },
+      ...(request.pluginSelections
+        ? { pluginSelections: request.pluginSelections }
+        : {}),
+      ...(request.providerType ? { providerType: request.providerType } : {}),
+    }),
+  );
 
-  // Onboarding checklist "Start a chat" (CAN-2663). This is the OTHER send
-  // funnel: the `chatSendMessage` IPC handler has its own inline
-  // implementation and latches there, while Portal / mobile Remote Control,
-  // automations, transient-error retry, and usage-limit resume all arrive
-  // here instead. Without this, a user whose first-ever message comes in over
-  // Remote Control keeps seeing "Start a chat" for the rest of the session —
-  // the backfill scan memoizes its `false` answer per process, so nothing
-  // re-derives it until the next launch.
-  //
-  // Placed AFTER validation and the org-policy gate above, so a send that is
-  // refused never counts as the user having started a chat. NOTE this is
-  // deliberately stricter than the IPC funnel, which latches before its own
-  // validation (alongside `latchFirstTaskSubmitted`, whose placement predates
-  // this) — so an org-blocked send from the desktop UI still completes the
-  // step while the same send over Portal does not. Only the EXCLUSION SET is
-  // shared between the two funnels; the refusal ordering is not.
-  //
-  // That exclusion set mirrors the IPC path's (`ipc/chat.ts`): both App Advisor and
-  // Pipeline Editor are Canopy-owned assistant surfaces, not the user starting
-  // a chat of their own. The Pipeline-Editor half is enforced here rather than
-  // assumed: most callers do divert those targets upstream
-  // (`transient-error-retry-service.ts` routes them to
-  // `dispatchPipelineEditorChatMessage`, usage-limit resume filters through
-  // `isRealWorkspaceTarget`), but `handlePortalChatSend`'s chat-id-less
-  // "mint a new chat" fallthrough reaches `sendWorktreeChatMessage` directly
-  // with only `validateId` in between — and `'pipeline-editor'` is a valid id.
-  // App Advisor survives that path only incidentally, because
-  // `appAdvisorSurfaces` is absent and the check above throws first.
-  //
-  // Latching is idempotent and fully swallowed, so it cannot affect this send.
+  // Track real user work independently of the retired checklist. Refused sends
+  // and Canopy-owned assistant surfaces do not count as activation.
   const isPipelineEditorTarget =
     request.projectId === PIPELINE_EDITOR_PROJECT_ID &&
     request.worktreeId === PIPELINE_EDITOR_WORKTREE_ID;
   if (!isAppAdvisorTarget && !isPipelineEditorTarget) {
-    notifyOnboardingChecklistChatStarted();
+    void latchFirstTaskSubmitted(new Date().toISOString());
   }
 
   const userMessageId = request.userMessageId ?? randomUUID();
@@ -2955,41 +3324,8 @@ async function sendWorktreeChatMessageNow(
     // automation while the terminal executes with its old model, permissions,
     // or plugins. Refuse it before delivery; a trusted user can apply the
     // settings in the chat and then schedule the prompt again.
-    const terminalSettingFields = [
-      'model',
-      'modelConfig',
-      'providerType',
-      'executionHarness',
-      'planMode',
-      'approvalMode',
-      'pluginSelections',
-      'interfaceMode',
-    ] as const;
-    if (
-      terminalSettingFields.some((field) => {
-        if (field === 'approvalMode') {
-          return (
-            requestApprovalMode !== undefined &&
-            requestApprovalMode !== existingTab.approvalMode
-          );
-        }
-        const requested: unknown = Reflect.get(request, field);
-        if (field === 'planMode') {
-          return (
-            requested !== undefined &&
-            requested !== (existingTab.planMode ?? false)
-          );
-        }
-        return (
-          requested !== undefined &&
-          JSON.stringify(requested) !== JSON.stringify(existingTab[field])
-        );
-      })
-    ) {
-      throw new Error(
-        'Scheduled terminal chat settings differ from the live chat. Apply the settings in the chat before scheduling this prompt.',
-      );
-    }
+    if (terminalChatSettingsDiffer(existingTab, request))
+      throw new Error(TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE);
     if (trustedAgentRequest) {
       await getChatStateService().retainTrustedTerminalInput(
         trustedAgentRequest,
@@ -3001,6 +3337,9 @@ async function sendWorktreeChatMessageNow(
       worktreeId: request.worktreeId,
       chatId,
       userMessageId,
+      ...('autoResume' in request && request.autoResume
+        ? { autoResume: request.autoResume }
+        : {}),
       ...(trustedAgentRequest?.agentSenderProvenance &&
       trustedAgentRequest.hiddenContext?.kind === 'agent-sender-context'
         ? {
@@ -3061,6 +3400,28 @@ async function sendWorktreeChatMessageNow(
         `Cannot deliver a scheduled prompt to a Claude Code terminal chat without a ${BRAND.displayName} window.`,
       );
     }
+    if ('autoResume' in request && request.autoResume) {
+      // Keep attribution in the main-owned transcript even if terminal replay
+      // later supplies only provider text. The marker describes the accepted
+      // application prompt, not a successful provider reply.
+      await getChatStateService().ingestProviderEvent({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId,
+        data: {
+          type: 'canopy_user_prompt',
+          original_text: request.text,
+          canopy_turn_user_message_id: userMessageId,
+          canopy_resumes_interrupted_turn: true,
+          canopy_resumes_user_message_id:
+            request.autoResume.resumesUserMessageId,
+          canopy_persisted_messages: [
+            buildPersistedUserMessage(request, userMessageId, Date.now()),
+          ],
+        },
+        turnUserMessageId: userMessageId,
+      });
+    }
     if (!options.preserveUsageLimitRegistry)
       await clearUsageLimitedChat(
         {
@@ -3073,15 +3434,26 @@ async function sendWorktreeChatMessageNow(
     return { ok: true, chatId };
   }
 
-  const approvalMode = await resolvePersistedApprovalMode(
+  // An existing chat's saved mode is the send's authority and the request
+  // can only narrow it; a new chat starts at the mode it is created with.
+  // The turn re-reads the saved tab when it starts (CAN-4469).
+  const savedApprovalMode = await resolvePersistedApprovalMode(
     splitLockTarget.projectId,
     splitLockTarget.worktreeId,
     clampToLiveApprovalMode(
       request.projectId,
       request.worktreeId,
       chatId,
-      requestApprovalMode ?? existingTab?.approvalMode,
+      existingTab ? existingTab.approvalMode : requestApprovalMode,
     ),
+  );
+  const approvalMode = narrowApprovalMode(
+    savedApprovalMode,
+    requestApprovalMode,
+  );
+  const sessionApprovalRules = narrowSessionApprovalRules(
+    existingTab?.sessionApprovalRules ?? [],
+    requestSessionApprovalRules,
   );
   const now = Date.now();
   const createdAt = new Date(now).toISOString();
@@ -3227,7 +3599,6 @@ async function sendWorktreeChatMessageNow(
           ? { interfaceMode: undefined, claudeTerminal: undefined }
           : {}),
         ...(request.planMode == null ? {} : { planMode: request.planMode }),
-        approvalMode,
         ...(request.thinkingLevel == null
           ? {}
           : { thinkingLevel: request.thinkingLevel }),
@@ -3340,25 +3711,27 @@ async function sendWorktreeChatMessageNow(
   const preserveActiveTab =
     options.preserveActiveTab === true ||
     ('preserveActiveTab' in request && request.preserveActiveTab === true);
+  // Holds no copy of the chat's approval settings: a queued send reads them
+  // again when it dispatches.
   const queuedRequest: ChatSendMessageRequest = {
     ...request,
     ...(preserveActiveTab ? { preserveActiveTab: true } : {}),
     chatId,
     userMessageId,
-    approvalMode,
-    sessionApprovalRules:
-      requestSessionApprovalRules ?? existingTab?.sessionApprovalRules ?? [],
     ...(executionHarness ? { executionHarness } : {}),
   };
   if (queuedRequest.agentSenderProvenance && !existingTab) {
-    await getChatStateService().ensureChatForTrustedSend(queuedRequest);
+    await getChatStateService().ensureChatForTrustedSend({
+      ...queuedRequest,
+      approvalMode,
+    });
   }
   if (!authorizedPortalDispatch) {
     const { getChatQueueService } = await import('./chat-queue-service');
     portalQueueOptions.set(queuedRequest, options);
     const queue = getChatQueueService();
     if (options.requiredAccountProxyConnectionId !== undefined) {
-      await queue.submit(queuedRequest, 'portal', {
+      await queue.submit(queuedRequest, 'portal', undefined, {
         requiredAccountProxyConnectionId:
           options.requiredAccountProxyConnectionId,
       });
@@ -3378,33 +3751,42 @@ async function sendWorktreeChatMessageNow(
     nextTabs.some((tab) => tab.id === tabsFile.activeTabId)
       ? tabsFile.activeTabId
       : chatId;
-  await getChatStateService().replaceCompatibilityTabs(
-    { projectId: request.projectId, worktreeId: request.worktreeId },
-    {
-      ...tabsFile,
-      tabs: nextTabs,
-      activeTabId,
-    },
-  );
+  await turnDispatchTiming.measure('prompt_commit', async () => {
+    await getChatStateService().replaceCompatibilityTabs(
+      { projectId: request.projectId, worktreeId: request.worktreeId },
+      {
+        ...tabsFile,
+        tabs: nextTabs,
+        activeTabId,
+      },
+    );
 
-  await getChatStateService().ingestProviderEvent({
-    projectId: request.projectId,
-    worktreeId: request.worktreeId,
-    chatId,
-    data: {
-      type: 'canopy_user_prompt',
-      original_text: request.text,
-      canopy_turn_user_message_id: userMessageId,
-      ...('resumesInterruptedTurn' in request && request.resumesInterruptedTurn
-        ? { canopy_resumes_interrupted_turn: true }
-        : {}),
-      provider:
-        request.providerType ??
-        (request.model ? getProviderForModel(request.model) : undefined),
-      canopy_persisted_messages: [userMessage],
-    },
-    ...(request.providerType ? { providerType: request.providerType } : {}),
-    turnUserMessageId: userMessageId,
+    await getChatStateService().ingestProviderEvent({
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+      chatId,
+      data: {
+        type: 'canopy_user_prompt',
+        original_text: request.text,
+        canopy_turn_user_message_id: userMessageId,
+        ...('resumesInterruptedTurn' in request &&
+        request.resumesInterruptedTurn
+          ? { canopy_resumes_interrupted_turn: true }
+          : {}),
+        provider:
+          request.providerType ??
+          (request.model ? getProviderForModel(request.model) : undefined),
+        ...('autoResume' in request && request.autoResume?.resumesUserMessageId
+          ? {
+              canopy_resumes_user_message_id:
+                request.autoResume.resumesUserMessageId,
+            }
+          : {}),
+        canopy_persisted_messages: [userMessage],
+      },
+      ...(request.providerType ? { providerType: request.providerType } : {}),
+      turnUserMessageId: userMessageId,
+    });
   });
 
   await emitTargetChatSummary({
@@ -3474,8 +3856,7 @@ async function sendWorktreeChatMessageNow(
         userMessageId,
         assistantMode: 'app-advisor',
         approvalMode,
-        sessionApprovalRules:
-          requestSessionApprovalRules ?? existingTab?.sessionApprovalRules,
+        sessionApprovalRules,
       },
       {
         getMainWindow: appAdvisorSurfaces.getMainWindow,
@@ -3483,6 +3864,9 @@ async function sendWorktreeChatMessageNow(
         toolSurfaces: appAdvisorSurfaces,
         admissionSignal: options.admissionSignal,
         onTurnAccepted: options.onTurnAccepted,
+        ...(options.queueDispatch?.authorization
+          ? { authorization: options.queueDispatch.authorization }
+          : {}),
       },
     );
     const acceptedTarget = {
@@ -3535,15 +3919,15 @@ async function sendWorktreeChatMessageNow(
   const { dispatchWorktreeChatTurn: dispatchTurn } =
     await import('../lib/worktree-chat-turn');
   const dispatchWorktreeChatTurn = (
-    ...args: Parameters<typeof dispatchTurn>
-  ): ReturnType<typeof dispatchTurn> =>
+    turn: DispatchWorktreeChatTurnOptions<WorktreePortalEventCommit>,
+  ): Promise<void> =>
     trustedAgentRequest
       ? withAgentSenderAuthority(
           trustedAgentRequest,
-          () => dispatchTurn(...args),
+          () => dispatchTurn(turn),
           revalidateAgentSenderRequest,
         )
-      : dispatchTurn(...args);
+      : dispatchTurn(turn);
   const getWindow = options.getWindow ?? getNullWindow;
   if (!existingTab) {
     // A portal-minted chat exists only in the tabs file at this point. The
@@ -3586,27 +3970,11 @@ async function sendWorktreeChatMessageNow(
     ...portalPromptProvenance(userMessage),
     createdAtMs: now,
   });
-  // Portal-initiated turns have no desktop renderer driving them, so this
-  // path owns the turn timer the renderer would normally create: a streaming
-  // timer row at turn start (also the browser's "agent is working" signal)
-  // finalized — and persisted — on the terminal event. Desktop-initiated
-  // turns must NOT get this streaming row; their renderer persists its own
-  // timer and a synthetic start row would duplicate it. They instead push the
-  // COMPLETED row under the same wire id at each terminal event — see
-  // `emitPersistedTurnTimerCompletion`.
-  // Auto routing ran before this send and recorded its pick on the tab, so
-  // the live timer carries the same per-turn model chip as the desktop.
-  const turnTimer = createPortalTurnTimer({
-    chatId,
-    userMessageId,
-    autoRoutedModel: turnTimerAutoRoutedModelData(
-      existingTab?.autoRoutedModels,
-      userMessageId,
-    ),
-  });
-  emitMessage(turnTimer.startMessage);
+  // Canonical turn state publishes committed timer rows to the portal.
   // Cursor streams patches against one assistant message; fold them per turn
   // so the browser sees the growing text under the persisted message id.
+  const primaryTurn = createWorktreePortalPrimaryTurn({ ...request, chatId });
+  const primaryTools = primaryTurn.tools;
   const cursorPatches = createCursorAssistantPatchProjector({
     ...portalScope,
     chatId,
@@ -3657,6 +4025,9 @@ async function sendWorktreeChatMessageNow(
   try {
     await dispatchWorktreeChatTurn({
       ...turnRequest,
+      ...(options.queueDispatch?.authorization
+        ? { authorization: options.queueDispatch.authorization }
+        : {}),
       admissionSignal: options.admissionSignal,
       requiredAccountProxyConnectionId:
         options.requiredAccountProxyConnectionId,
@@ -3674,15 +4045,23 @@ async function sendWorktreeChatMessageNow(
       userMessageId,
       planMode: request.planMode ?? false,
       approvalMode,
-      sessionApprovalRules:
-        requestSessionApprovalRules ?? existingTab?.sessionApprovalRules,
+      sessionApprovalRules,
       initiationSource: getRequestInitiationSource(request) ?? 'portal',
       getWindow,
+      turnDispatchTiming,
+      providerEventSequenceNamespace: options.creditRetryAttemptId,
       onBeforeChatEvent: async (event) => {
+        const portalEmissionContext = capturePortalEmissionContext();
+        const acceptedTurnUserMessageId = event.turnUserMessageId;
+        const primaryToolEpoch = primaryTurn.capture(
+          event.sequenceNamespace,
+          acceptedTurnUserMessageId,
+          portalEmissionContext,
+        );
         // The provider that ran wins: lane selection may substitute one.
         const providerType = event.providerType ?? request.providerType;
         const outcome =
-          await getChatStateService().ingestProviderEventWithOutcome({
+          await getChatStateService().ingestProviderEventWithResult({
             projectId: event.projectId,
             worktreeId: event.worktreeId,
             chatId: event.chatId,
@@ -3696,8 +4075,13 @@ async function sendWorktreeChatMessageNow(
               ? { onCommitQueued: event.onCommitQueued }
               : {}),
           });
-        // Activity-only events carry no durable change but are live.
-        return outcome !== 'not-applied';
+        return {
+          ...normalizeProviderEventIngestResult(outcome),
+          portalEmissionContext,
+          acceptedTurnUserMessageId,
+          sequenceNamespace: event.sequenceNamespace,
+          primaryToolEpoch,
+        };
       },
       onTurnAccepted: () => {
         options.onTurnAccepted?.();
@@ -3769,11 +4153,31 @@ async function sendWorktreeChatMessageNow(
         }
       },
       onChatEvent: (event) => {
+        const completion = event.beforeChatEventResult;
+        const emissionContext = completion?.portalEmissionContext;
+        const emissionCurrent =
+          emissionContext !== undefined &&
+          isPortalEmissionContextCurrent(emissionContext);
+        const admissionCurrent =
+          emissionCurrent &&
+          primaryTurn.isCurrent(completion?.primaryToolEpoch);
+        if (
+          !emissionCurrent &&
+          primaryTurn.isCurrent(completion?.primaryToolEpoch)
+        )
+          primaryTurn.settle();
+        const emitCurrentMessage = (message: PortalChatMessage): void => {
+          if (!emissionContext) return;
+          enqueuePortalEventIfCurrent(
+            emissionContext,
+            createPortalEvent('portal.chat.event', {
+              ...portalScope,
+              chatId,
+              message,
+            }),
+          );
+        };
         const terminal = event.isTerminalEvent;
-        const eventTimerUpdate = turnTimer.updateForEvent(event.data);
-        if (eventTimerUpdate) {
-          emitMessage(eventTimerUpdate);
-        }
         const forkSessionId = claudeForkSessionIdFromInit(event.data);
         if (forkSessionId) {
           const persistenceTask = consumeClaudeForkSessionMarkerWithOrder({
@@ -3797,33 +4201,47 @@ async function sendWorktreeChatMessageNow(
           void persistenceTask.catch(() => undefined);
           forkSessionPersistenceTasks.push(persistenceTask);
         }
-        const message =
-          cursorPatches.apply(event.data) ??
+        const cursorMessage = cursorPatches.apply(event.data);
+        let message =
+          cursorMessage ??
           runtimeChatEventToPortalMessage({
             ...portalScope,
             chatId: event.chatId,
             data: event.data,
             fallbackMessageId: `${userMessageId}:assistant`,
           });
+        if (
+          admissionCurrent &&
+          !cursorMessage &&
+          message &&
+          isRecord(event.data) &&
+          (event.data.type === 'codex' ||
+            event.data.type === 'user' ||
+            event.data.type === 'assistant')
+        ) {
+          if (completion?.outcome === 'applied' && completion.admission)
+            primaryTools.retain(message.messageId, completion.admission);
+          const admittedMessage = runtimeChatEventToPortalMessage({
+            scope: 'worktree',
+            workspaceLocalId: event.projectId,
+            worktreeLocalId: event.worktreeId,
+            chatId: event.chatId,
+            data: event.data,
+            fallbackMessageId: `${userMessageId}:assistant`,
+            admission: primaryTools.forMessage(message.messageId),
+          });
+          if (admittedMessage)
+            message = { ...message, parts: admittedMessage.parts };
+        }
         if (message) {
           // The canonical onBeforeChatEvent ingestion owns persistence and
           // summary/TODO projections. This display projection is lossy (tool
           // output is truncated) and must never overwrite the durable transcript
           // or race a completed timer with an older compatibility snapshot.
-          emitMessage(message);
-          const timerUpdate = turnTimer.updateForMessage(message);
-          if (timerUpdate) {
-            emitMessage(timerUpdate);
-          }
+          emitCurrentMessage(message);
         }
-        // The canonical provider reducer persists the timer. This synthetic
-        // timer is only a live wire signal; persisting it would duplicate rows.
-        const completedTimer = terminal
-          ? turnTimer.completeForEvent(event.data)
-          : null;
-        if (completedTimer) {
-          emitMessage(completedTimer);
-        }
+        if (terminal && primaryTurn.isCurrent(completion?.primaryToolEpoch))
+          primaryTurn.settle();
         if (terminal && isCoworkWorkspace(request.projectId)) {
           const pendingPersistenceTasks = [
             ...forkSessionPersistenceTasks,
@@ -3843,15 +4261,7 @@ async function sendWorktreeChatMessageNow(
         }
       },
     }).catch((error: unknown) => {
-      // Dispatch resolves once the provider accepts the send, before the turn
-      // ends. Only a rejected dispatch proves that no terminal event will
-      // arrive; completing on every resolution lowers the portal timer while
-      // the accepted turn is still running. Live-emit only — a rejected turn
-      // should not mint a persisted timer artifact.
-      const fallbackTimer = turnTimer.finalize();
-      if (fallbackTimer) {
-        emitMessage(fallbackTimer);
-      }
+      primaryTurn.retire();
       throw error;
     });
     await Promise.all(acceptanceCleanupTasks);
@@ -3885,22 +4295,35 @@ async function sendWorktreeChatMessageNow(
 
 export async function cancelWorktreeChat(
   request: ChatCancelRequest,
+  captured?: ChatTurnStopContext,
 ): Promise<{ ok: true }> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   validateId(request.chatId, 'chatId');
+  retireWorktreePortalPrimaryTurn(request);
+  const stopContext = captured ?? captureChatTurnStop(request);
   cancelTransientRetryForChat(request, 'stop');
-  const { getSession } = await import('../agents/session-manager');
-  const session = getSession(
-    request.projectId,
-    request.worktreeId,
-    request.chatId,
+  const { cancelChatTurn } = await import('../lib/chat-turn-cancel');
+  const { preparationsCancelled } = await cancelChatTurn(
+    request,
+    'stop',
+    stopContext,
   );
-  await session?.cancel().catch(() => undefined);
+  // Without a native fence, a still-current Stop cancels the chat's preparing
+  // sends. As the composer and standalone Stops do, release the queue's Stop
+  // hold on them with an untagged terminal; a stale Stop leaves a newer send's
+  // ownership alone. cancelChatTurn releases an idle native fence's own.
+  if (stopContext.fence === undefined && preparationsCancelled) {
+    const { getChatQueueService } = await import('./chat-queue-service');
+    getChatQueueService().onTurnTerminal(request, 'cancelled');
+  }
   return { ok: true };
 }
 
-/** Cancel only the active provider turn identified by its user-message id. */
+/**
+ * Cancel only the turn identified by its user-message id: the provider turn
+ * canonical turn state names (D14), or a queued turn not yet started.
+ */
 export async function cancelWorktreeChatTurn(
   request: ChatCancelRequest & { turnId: string },
 ): Promise<{ ok: true; outcome: 'stop_requested' | 'turn_not_active' }> {
@@ -4047,6 +4470,7 @@ export async function getWorktreeChatTranscriptSeed(input?: {
       autoRoutedModels: loaded.autoRoutedModels,
       turnEnds: loaded.turnEnds,
       unacceptedTurnEnds: loaded.unacceptedTurnEnds,
+      interruptedTurns: loaded.interruptedTurns,
     });
     const bounded = limitPortalChatTranscriptForSeedWithMetadata(
       [...result.messages, ...projected].sort(
@@ -4122,16 +4546,27 @@ export async function projectWorktreeChatSummaries(input: {
   workspaceId: string;
   worktreeId: string;
 }): Promise<void> {
+  try {
+    await projectWorktreeChatSummariesStrict(input);
+  } catch {
+    // Projection is a best-effort mirror; the persisted tab write is durable.
+  }
+}
+
+/**
+ * {@link projectWorktreeChatSummaries} that rejects on failure, for the
+ * post-commit projection, which retries failed runs.
+ */
+export async function projectWorktreeChatSummariesStrict(input: {
+  workspaceId: string;
+  worktreeId: string;
+}): Promise<void> {
   if (!isCanopyPortalActive()) {
     return;
   }
-  try {
-    const summaries = await listWorktreeChatSummaries(input);
-    for (const summary of summaries) {
-      emitChatSummary(summary);
-    }
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
+  const summaries = await listWorktreeChatSummaries(input);
+  for (const summary of summaries) {
+    emitChatSummary(summary);
   }
 }
 
@@ -4285,6 +4720,7 @@ export async function getAppAdvisorChatTranscriptSeed(input?: {
         messages: bounded.messages,
         turnEnds: loaded.turnEnds,
         unacceptedTurnEnds: loaded.unacceptedTurnEnds,
+        interruptedTurns: loaded.interruptedTurns,
       });
       const limited = limitPortalChatTranscriptForSeedWithMetadata(
         [...messages, ...projected].sort(
@@ -4378,16 +4814,24 @@ export interface AppAdvisorWorkEntryProjectionContext {
   order: number;
 }
 
+async function findAppAdvisorWorkEntryProjectionContext(
+  entryId: string,
+  options?: { strictRead?: boolean },
+): Promise<AppAdvisorWorkEntryProjectionContext | undefined> {
+  const entries = await listWorkEntries(APP_ADVISOR_PROJECT_ID, options);
+  const order = entries.findIndex((entry) => entry.id === entryId);
+  const entry = entries[order];
+  return entry ? { entry, order } : undefined;
+}
+
 async function resolveAppAdvisorWorkEntryProjectionContext(
   entryId: string,
 ): Promise<AppAdvisorWorkEntryProjectionContext> {
-  const entries = await listWorkEntries(APP_ADVISOR_PROJECT_ID);
-  const order = entries.findIndex((entry) => entry.id === entryId);
-  const entry = entries[order];
-  if (!entry) {
+  const context = await findAppAdvisorWorkEntryProjectionContext(entryId);
+  if (!context) {
     throw new Error(`Unknown App Advisor Work Entry ${entryId}`);
   }
-  return { entry, order };
+  return context;
 }
 
 export async function listAppAdvisorChatSummaries(
@@ -4503,33 +4947,50 @@ export async function listAppAdvisorChatSummaries(
 export async function projectAppAdvisorChatSummaries(
   entryId: string,
 ): Promise<void> {
+  try {
+    await projectAppAdvisorChatSummariesStrict(entryId);
+  } catch {
+    // Projection is a best-effort mirror; the persisted tab write is durable.
+  }
+}
+
+/**
+ * {@link projectAppAdvisorChatSummaries} that rejects on failure, for the
+ * post-commit projection, which retries failed runs.
+ */
+export async function projectAppAdvisorChatSummariesStrict(
+  entryId: string,
+): Promise<void> {
   if (!isCanopyPortalActive()) {
     return;
   }
-  try {
-    const projectionContext =
-      await resolveAppAdvisorWorkEntryProjectionContext(entryId);
-    const summaries = await listAppAdvisorChatSummaries(
-      entryId,
-      projectionContext,
+  // An unreadable registry rejects so the projection retries; only a missing
+  // registry or a deleted entry reads as nothing to project.
+  const projectionContext = await findAppAdvisorWorkEntryProjectionContext(
+    entryId,
+    { strictRead: true },
+  );
+  // A deleted entry has nothing left to project, as for cowork entries; a
+  // rejection would retry its scope's final commit forever.
+  if (!projectionContext) return;
+  const summaries = await listAppAdvisorChatSummaries(
+    entryId,
+    projectionContext,
+  );
+  for (const summary of summaries) {
+    enqueuePortalEvent(
+      createPortalEvent('portal.state.delta', {
+        scope: 'app_advisor',
+        entities: [
+          {
+            entityType: 'app_advisor_chat',
+            localId: summary.chatId,
+            payload: summary,
+          },
+        ],
+        generatedAt: new Date().toISOString(),
+      }),
     );
-    for (const summary of summaries) {
-      enqueuePortalEvent(
-        createPortalEvent('portal.state.delta', {
-          scope: 'app_advisor',
-          entities: [
-            {
-              entityType: 'app_advisor_chat',
-              localId: summary.chatId,
-              payload: summary,
-            },
-          ],
-          generatedAt: new Date().toISOString(),
-        }),
-      );
-    }
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
   }
 }
 

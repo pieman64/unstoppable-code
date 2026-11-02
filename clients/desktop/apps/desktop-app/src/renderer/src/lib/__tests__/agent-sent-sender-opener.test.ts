@@ -1,6 +1,10 @@
 import type { AgentSentSender } from '@canopy/ui-shared';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
-import { openSender } from '../agent-sent-sender-opener';
+import {
+  appAdvisorWindowSenderOpener,
+  mainWindowSenderOpener,
+  openSender,
+} from '../agent-sent-sender-opener';
 
 const mockIsArchivedChat = jest.fn<
   Promise<boolean>,
@@ -71,5 +75,20 @@ describe('agent-sent sender opener', () => {
       worktreeId: 'entry-1',
       chatId: 'advisor-chat',
     });
+  });
+
+  it('never opens a pipeline sender from either window', async () => {
+    const pipelineSender: AgentSentSender = {
+      kind: 'pipeline',
+      executionId: 'exec-1',
+      pipelineId: 'pipeline-1',
+      stepId: 'notify',
+      automationId: 'automation-1',
+    };
+    expect(mainWindowSenderOpener.canOpen(pipelineSender)).toBe(false);
+    expect(appAdvisorWindowSenderOpener.canOpen(pipelineSender)).toBe(false);
+    await openSender(pipelineSender);
+    expect(mockIsArchivedChat).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });

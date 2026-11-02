@@ -5,33 +5,44 @@ import {
 } from './AgentSentTitle';
 import { useAgentSentReceivingContext } from './AgentSentReceivingContext';
 import { memo, type JSX, type ReactNode } from 'react';
-import { SteerIcon, TrashIcon } from '../../icons';
-import { StopIcon } from '../../icons/AppIcons';
+import type {
+  ChatTurnPhase,
+  QueuedMessageRetryBlockedReason,
+  QueuedMessageWaitingReason,
+} from '@canopy/protocol/portal';
+import { QueuedMessageActions } from './QueuedMessageActions';
 import {
-  BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS,
-  BUBBLE_PILL_ACTION_CLASS,
-} from '../bubble-badge';
-import { ActionTooltip } from '../ActionTooltip';
+  QUEUED_MESSAGE_LABEL_CLASS,
+  QueuedMessageReason,
+  QueuedMessageSetupQuote,
+} from './QueuedMessageReason';
+import type { QueuedMessageSetupWait } from './QueuedMessageSetupClock';
 import { hostMessagePresentation } from './SteeringRequestTitle';
 import {
-  MessageEditBadge,
   MessageEditSurface,
   type MessageEditHandler,
 } from './MessageEditEntry';
 
-export const QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP =
-  'This message changes agent capabilities. Interrupt the active turn to send it immediately, or wait for the turn to finish.';
-export const QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE =
-  'Steering unavailable';
+export {
+  QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP,
+  QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE,
+  QUEUED_MESSAGE_RETRY_BLOCKED_TOOLTIPS,
+} from './QueuedMessageActions';
 
 export interface QueuedMessageBubbleMessage {
   readonly agentSent?: AgentSentInfo;
   readonly id: string;
   readonly text: string;
+  readonly reason?: string;
+  readonly waitingReason?: QueuedMessageWaitingReason;
+  /** The message waits for this chat's copy of the project to be set up. */
+  readonly setup?: QueuedMessageSetupWait;
   readonly editLocked?: boolean;
   /** The host cannot hold the row while editing, so double-click stays off. */
   readonly editLockAdvisory?: boolean;
   readonly forceLocked?: boolean;
+  /** The host holds this row: Retry renders disabled with the reason. */
+  readonly retryBlockedReason?: QueuedMessageRetryBlockedReason;
   readonly steerBlockedByCapabilityChange?: boolean;
 }
 
@@ -43,9 +54,21 @@ export interface QueuedMessageBubbleProps {
   readonly onCancel?: () => void;
   /** Opens the editor from the Edit badge or a double-click on the bubble. */
   readonly onEdit?: MessageEditHandler;
+  /** Interrupt: stops the running turn so this message sends now. */
   readonly onForce?: () => void;
   readonly onSteer?: () => void;
+  /** Retry a send whose delivery failed or is uncertain. */
+  readonly onRetry?: () => void;
+  /** Start a message that waits on something other than a running turn. */
+  readonly onRunNow?: () => void;
   readonly steeringSupported?: boolean;
+  /**
+   * The host-reported phase of the chat's turn. Steer and Interrupt render
+   * only in `foreground`; `undefined` (an older host) keeps the earlier rule.
+   */
+  readonly turnPhase?: ChatTurnPhase;
+  /** Fixed setup-clock reading for fixtures and captures; never ticks. */
+  readonly clockNowMs?: number;
 }
 
 export const QueuedMessageBubble = memo(function QueuedMessageBubble({
@@ -56,16 +79,35 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   onEdit,
   onForce,
   onSteer,
+  onRetry,
+  onRunNow,
   steeringSupported = false,
+  turnPhase,
+  clockNowMs,
 }: QueuedMessageBubbleProps): JSX.Element {
   const receivingContext = useAgentSentReceivingContext(explicitContext);
   // A delegate's steering request or a fired watcher arrives as a hidden
   // instruction block; show its readable part under its title instead.
   const steeringRequest = hostMessagePresentation(message.text);
   const paragraphs = (steeringRequest?.text ?? message.text).split(/\n{2,}/);
-  const showDisabledSteer =
-    steeringSupported && message.steerBlockedByCapabilityChange === true;
   const editHandler = message.editLocked ? undefined : onEdit;
+  // Free text wins over setup; the setup reason and its quoted body render
+  // together or not at all.
+  const showSetupReason = !message.reason && message.setup !== undefined;
+  const body = (
+    <div className="break-words">
+      {paragraphs.map((paragraph, index) => (
+        <p
+          key={`${message.id}-${index}`}
+          className={
+            index === 0 ? 'whitespace-pre-wrap' : 'mt-2 whitespace-pre-wrap'
+          }
+        >
+          {paragraph}
+        </p>
+      ))}
+    </div>
+  );
   return (
     <div className="flex justify-end" data-testid="queued-message-bubble">
       {/*
@@ -87,29 +129,15 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
           variant="draft"
           tone={steeringRequest?.variant === 'info' ? 'info' : 'default'}
         >
-          {onEdit || onCancel ? (
-            <div className="absolute -right-2 -top-2 z-10 flex gap-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
-              {editHandler ? (
-                <MessageEditBadge
-                  testId="queued-message-edit"
-                  label="Edit queued message"
-                  onEdit={editHandler}
-                />
-              ) : null}
-              {onCancel ? (
-                <button
-                  type="button"
-                  data-testid="queued-message-cancel"
-                  onClick={onCancel}
-                  className={BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS}
-                  aria-label="Clear queued message"
-                >
-                  <TrashIcon width={14} height={14} aria-hidden="true" />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          <div className="mb-1 text-3xs fg-secondary">Queued</div>
+          <QueuedMessageActions
+            placement="corner"
+            variant="badge"
+            onEdit={onEdit}
+            onCancel={onCancel}
+            editLocked={message.editLocked}
+            editLabel="Edit queued message"
+          />
+          <div className={QUEUED_MESSAGE_LABEL_CLASS}>Queued</div>
           {message.agentSent && (
             <AgentSentTitle
               agentSent={message.agentSent}
@@ -117,68 +145,34 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
             />
           )}
           {steeringRequest?.title}
-          <div className="break-words">
-            {paragraphs.map((paragraph, index) => (
-              <p
-                key={`${message.id}-${index}`}
-                className={
-                  index === 0
-                    ? 'whitespace-pre-wrap'
-                    : 'mt-2 whitespace-pre-wrap'
-                }
-              >
-                {paragraph}
-              </p>
-            ))}
-          </div>
+          {message.reason ? (
+            <QueuedMessageReason reason={message.reason} />
+          ) : showSetupReason ? (
+            <QueuedMessageReason setup={message.setup} nowMs={clockNowMs} />
+          ) : message.waitingReason !== undefined ? (
+            <QueuedMessageReason waitingReason={message.waitingReason} />
+          ) : null}
+          {showSetupReason ? (
+            <QueuedMessageSetupQuote>{body}</QueuedMessageSetupQuote>
+          ) : (
+            body
+          )}
         </MessageEditSurface>
-        {((onSteer || showDisabledSteer) && !message.editLocked) ||
-        (onForce && !(message.forceLocked ?? message.editLocked)) ? (
-          <div className="mt-1 flex justify-end gap-2">
-            {(onSteer || showDisabledSteer) && !message.editLocked && (
-              <ActionTooltip
-                title={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE}
-                description={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP}
-                disabled={!showDisabledSteer}
-              >
-                <button
-                  type="button"
-                  onClick={onSteer}
-                  disabled={showDisabledSteer}
-                  aria-description={
-                    showDisabledSteer
-                      ? QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP
-                      : undefined
-                  }
-                  data-testid="queued-message-steer"
-                  className={BUBBLE_PILL_ACTION_CLASS}
-                >
-                  <SteerIcon
-                    data-testid="queued-message-steer-icon"
-                    className="-my-1"
-                  />
-                  Steer
-                </button>
-              </ActionTooltip>
-            )}
-            {onForce && !(message.forceLocked ?? message.editLocked) && (
-              <button
-                type="button"
-                data-testid="queued-message-interrupt"
-                onClick={onForce}
-                className={BUBBLE_PILL_ACTION_CLASS}
-              >
-                <StopIcon
-                  data-testid="queued-message-interrupt-icon"
-                  width={16}
-                  height={16}
-                  className="-my-1"
-                />
-                Interrupt
-              </button>
-            )}
-          </div>
-        ) : null}
+        <QueuedMessageActions
+          placement="footer"
+          turnPhase={turnPhase}
+          onSteer={onSteer}
+          onInterrupt={onForce}
+          onRetry={onRetry}
+          onRunNow={onRunNow}
+          retryBlockedReason={message.retryBlockedReason}
+          steeringSupported={steeringSupported}
+          steerBlockedByCapabilityChange={
+            message.steerBlockedByCapabilityChange
+          }
+          editLocked={message.editLocked}
+          forceLocked={message.forceLocked}
+        />
       </div>
     </div>
   );

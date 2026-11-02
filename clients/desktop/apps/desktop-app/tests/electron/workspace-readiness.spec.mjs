@@ -118,7 +118,7 @@ test('New Task presents project readiness fixes and keeps them while composing',
     await window.getByTestId('sidebar-create-task').click();
     const fix = window
       .getByTestId('page-home')
-      .locator('[data-testid^="home-onboarding-readiness-"]')
+      .locator('[data-testid^="home-readiness-fix-"]')
       .first();
     await expect(fix).toBeVisible();
     await expect(fix).toContainText('· ts-pnpm-vite');
@@ -344,7 +344,7 @@ test('recovery evidence stays visible without Fix actions or onboarding steps', 
     const home = window.getByTestId('page-home');
     await expect(
       home
-        .locator('[data-testid^="home-onboarding-readiness-"]')
+        .locator('[data-testid^="home-readiness-fix-"]')
         .filter({ hasText: 'Add repository hooks' }),
     ).toBeVisible();
     await expect(

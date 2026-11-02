@@ -3,6 +3,7 @@ import {
   type ChatStateSnapshot,
   type CoworkWorkEntriesFile,
   type SidebarItem,
+  type WorkspaceIndexEntry,
   type WorktreeData,
   type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
@@ -11,6 +12,8 @@ import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
+import { getWorkspaceIndexRepository } from '../lib/sidebar-items';
+import { noteProjectInventoryCall } from '../observability/chat-wait-diagnostics';
 import { DiscoveryError } from './errors';
 
 export type LegacyReadAuthority = 'ok' | 'absent' | 'unreadable' | 'partial';
@@ -32,6 +35,11 @@ export interface ProjectInventorySnapshot {
 
 export interface ProjectConfigSnapshot {
   config: WorkspaceConfigFile;
+  authority: LegacyReadAuthority;
+}
+
+export interface ProjectIndexSnapshot {
+  entry: WorkspaceIndexEntry | null;
   authority: LegacyReadAuthority;
 }
 
@@ -83,8 +91,27 @@ function sourceReadFailed(message: string): DiscoveryError {
   return new DiscoveryError('execution_failed', message);
 }
 
+/** The W5 index repository is authoritative without projecting sidebar rows. */
+export async function readProjectIndexSnapshot(
+  projectId: string,
+): Promise<ProjectIndexSnapshot> {
+  const index = await getWorkspaceIndexRepository().read();
+  if (index.authority === 'unreadable' || index.authority === 'partial') {
+    throw sourceReadFailed('Project inventory could not be read.');
+  }
+  const workspaceId = resolveCoworkWorkspaceId(projectId);
+  return {
+    entry:
+      index.authority === 'absent'
+        ? null
+        : (index.entries.find((entry) => entry.id === workspaceId) ?? null),
+    authority: index.authority,
+  };
+}
+
 /** Read the compatibility workspace inventory through the authorized dispatcher. */
 export async function readProjectInventory(): Promise<ProjectInventorySnapshot> {
+  noteProjectInventoryCall();
   const response =
     await getActiveDesktopRuntime().queryWorkspaceListForLegacyIpc(
       {},
@@ -194,4 +221,17 @@ export async function readTaskSnapshot(
     );
   }
   return snapshot;
+}
+
+/** Read committed parent and tab evidence without starting runtime recovery. */
+export async function readCommittedTaskSnapshot(
+  projectId: string,
+  taskId: string,
+): Promise<ChatStateSnapshot> {
+  const { getChatStateService } =
+    await import('../services/chat-state-service');
+  return getChatStateService().getCommittedWatcherSnapshot({
+    projectId: resolveCoworkWorkspaceId(projectId),
+    worktreeId: taskId,
+  });
 }

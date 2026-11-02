@@ -451,6 +451,7 @@ describe('resolvePipelineModelInputs', () => {
         {
           modelId: BASE_MODEL,
           gatewayId: 'provider/claude-pipeline-agent-test',
+          family: 'anthropic',
           recommendedHarness: 'claude',
           gatewayOnly: false,
           contextWindow: 100_000,
@@ -492,7 +493,7 @@ describe('resolvePipelineModelInputs', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Agent model IDs are not supported directly in pipeline steps. Define a model_aliases entry with defaults.agent_id: agent_model_pipeline_reviewer and use the alias id in with.model.',
+      'Agent model IDs are not supported directly in workflow steps. Define a model_aliases entry with defaults.agent_id: agent_model_pipeline_reviewer and use the alias id in with.model.',
     );
     fs.rmSync(runtime.executionsDir, { recursive: true, force: true });
   });
@@ -605,7 +606,7 @@ describe('resolvePipelineModelInputs', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Agent model IDs are not supported directly in pipeline steps. Define a model_aliases entry with defaults.agent_id: agent_model_pipeline_reviewer and use the alias id in with.model.',
+      'Agent model IDs are not supported directly in workflow steps. Define a model_aliases entry with defaults.agent_id: agent_model_pipeline_reviewer and use the alias id in with.model.',
     );
     fs.rmSync(runtime.executionsDir, { recursive: true, force: true });
   });
@@ -622,7 +623,7 @@ describe('resolvePipelineModelInputs', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Pipeline model alias "required_model" requires a model configuration',
+      'Workflow model alias "required_model" requires a model configuration',
     );
 
     const resolved = await resolvePipelineModelInputs({
@@ -775,7 +776,7 @@ describe('resolvePipelineModelInputs', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Pipeline model alias "reviewer" references Agent "agent_model_runtime_reviewer", but Agent resolution is unavailable in this runtime.',
+      'Workflow model alias "reviewer" references Agent "agent_model_runtime_reviewer", but Agent resolution is unavailable in this runtime.',
     );
     fs.rmSync(runtime.executionsDir, { recursive: true, force: true });
   });
@@ -802,7 +803,7 @@ describe('resolvePipelineModelInputs', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Pipeline model alias "reviewer" references Agent "agent_model_missing_reviewer", but that Agent is not available locally.',
+      'Workflow model alias "reviewer" references Agent "agent_model_missing_reviewer", but that Agent is not available locally.',
     );
     fs.rmSync(runtime.executionsDir, { recursive: true, force: true });
   });
@@ -839,7 +840,7 @@ describe('resolvePipelineModelInputs', () => {
         runtime,
       }),
     ).rejects.toThrow(
-      'Pipeline model alias "reviewer" references Agent "agent_model_runtime_reviewer", but Agent "Runtime Reviewer" uses unavailable base model "missing-base-model". Edit the Agent or choose another model.',
+      'Workflow model alias "reviewer" references Agent "agent_model_runtime_reviewer", but Agent "Runtime Reviewer" uses unavailable base model "missing-base-model". Edit the Agent or choose another model.',
     );
     fs.rmSync(runtime.executionsDir, { recursive: true, force: true });
   });
@@ -1175,7 +1176,7 @@ describe('resolvePipelineModelInputs', () => {
       enforcingAccount([
         'provider/claude-pipeline-agent-test',
         DEFAULT_CLAUDE_MODEL,
-        {},
+        BASE_MODEL,
       ]),
     );
     runtime.recordModelPolicyRefusal = jest.fn();
@@ -2141,6 +2142,7 @@ describe('resolvePipelineModelInputs', () => {
       (): Promise<CodexPromptRunnerResult> =>
         Promise.resolve({
           status: 'success',
+          sessionId: 'codex-thread',
           rawText: 'ok',
           transcript: '',
           finalText: 'ok',
@@ -2642,6 +2644,7 @@ describe('resolvePipelineModelInputs', () => {
           onStepOutput,
         });
 
+        if (!result.log_file) throw new Error('Expected a persisted step log');
         const persistedTranscript = fs.readFileSync(result.log_file, 'utf8');
         expect(resolveAiCreditsRouting).toHaveBeenCalledWith(
           BASE_MODEL,
@@ -3604,8 +3607,11 @@ describe('resolvePipelineModelInputs', () => {
       runCodexPrompt: (): Promise<CodexPromptRunnerResult> =>
         Promise.resolve({
           status: 'success' as const,
+          sessionId: 'codex-thread',
+          rawText: 'ok',
           transcript: '',
           finalText: 'ok',
+          usage: {},
         }),
     };
 
@@ -3656,8 +3662,11 @@ describe('resolvePipelineModelInputs', () => {
       runCodexPrompt: (): Promise<CodexPromptRunnerResult> =>
         Promise.resolve({
           status: 'success',
+          sessionId: 'codex-thread',
+          rawText: 'ok',
           transcript: '',
           finalText: 'ok',
+          usage: {},
         }),
     };
 
@@ -3689,7 +3698,10 @@ describe('resolvePipelineModelInputs', () => {
     );
     const runtime = createRuntime(tempDir);
     writeAgentPromptAction(runtime, '');
-    const runCodexPrompt = jest.fn(
+    const runCodexPrompt = jest.fn<
+      Promise<CodexPromptRunnerResult>,
+      [CodexPromptRunnerRequest]
+    >(
       (): Promise<CodexPromptRunnerResult> =>
         Promise.resolve({
           status: 'success',
@@ -3801,7 +3813,7 @@ describe('resolvePipelineModelInputs', () => {
 
       expect(result.status).toBe('failure');
       expect(result.error).toContain(
-        'Pipelines do not support Ultra fast. Set fast_mode on this step, or run the pipeline with Regular or Fast.',
+        'Workflows do not support Ultra fast. Set fast_mode on this step, or run the workflow with Regular or Fast.',
       );
       expect(runCodexPrompt).not.toHaveBeenCalled();
     });
@@ -3832,7 +3844,10 @@ describe('resolvePipelineModelInputs', () => {
     );
     const runtime = createRuntime(tempDir);
     writeAgentPromptAction(runtime, '');
-    const runCodexPrompt = jest.fn(
+    const runCodexPrompt = jest.fn<
+      Promise<CodexPromptRunnerResult>,
+      [CodexPromptRunnerRequest]
+    >(
       (): Promise<CodexPromptRunnerResult> =>
         Promise.resolve({
           status: 'success',
@@ -4248,7 +4263,10 @@ describe('resolvePipelineModelInputs', () => {
     // agent-resume ships the same `default: none` and is served by the same
     // guard, so it needs its own coverage (CAN-2436 review finding).
     writeAgentResumeAction(runtime, '');
-    const runCodexPrompt = jest.fn(
+    const runCodexPrompt = jest.fn<
+      Promise<CodexPromptRunnerResult>,
+      [CodexPromptRunnerRequest]
+    >(
       (): Promise<CodexPromptRunnerResult> =>
         Promise.resolve({
           status: 'success',
@@ -4521,8 +4539,11 @@ describe('resolvePipelineModelInputs', () => {
         (): Promise<CodexPromptRunnerResult> =>
           Promise.resolve({
             status: 'success',
+            sessionId: 'codex-thread',
+            rawText: 'ok',
             transcript: '',
             finalText: 'ok',
+            usage: {},
           }),
       );
       runtime.codexPromptRunner = { runCodexPrompt };
@@ -4814,6 +4835,7 @@ describe('resolvePipelineModelInputs', () => {
       expect(capturedEnvironment).toMatchObject({
         PIPELINE_SECRET: 'pipeline-secret-value',
       });
+      if (!result.log_file) throw new Error('Expected a persisted step log');
       expect(fs.readFileSync(result.log_file, 'utf8')).toBe(
         'before *** after\n',
       );

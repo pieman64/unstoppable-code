@@ -1,62 +1,32 @@
 import {
   IPC_CHANNELS,
-  type AttachmentMeta,
-  type ClipboardAttachmentData,
   type WorktreeImportAttachmentsRequest,
   type WorktreeImportAttachmentsResponse,
 } from '@canopy/desktop-shared/types';
-import { getWorktreeAttachmentsDir } from '../lib/paths';
-import {
-  copyAttachmentFileToDir,
-  writeClipboardAttachmentToDir,
-} from '../lib/standalone-workspace-files';
+import { importAttachmentsForIpc } from '../canopy-runtime/workspace-item-attachments-dispatch';
 import { chooseFilesForEvent } from '../lib/dialog-window';
+import { assertWritableScope } from '../lib/read-only-scope';
 import { validateId } from '../lib/validation';
-import { isMultiRepoWorkspace } from '../lib/workspace-registry';
-import { getWorkspaceWorktreeAttachmentsDir } from '../lib/paths';
+import type { WorkspaceItemsIpcRuntime } from './workspace-items';
 import { registerIpcHandler } from './register';
 
-function resolveAttachmentsDir(projectId: string, worktreeId: string): string {
-  if (isMultiRepoWorkspace(projectId)) {
-    return getWorkspaceWorktreeAttachmentsDir(projectId, worktreeId);
-  }
-  return getWorktreeAttachmentsDir(projectId, worktreeId);
-}
-
-async function importSingleAttachment(
-  dir: string,
-  sourcePath: string,
-): Promise<AttachmentMeta> {
-  const copied = await copyAttachmentFileToDir(dir, sourcePath);
-  return {
-    filename: copied.filename,
-    absolutePath: copied.absolutePath,
-    sizeBytes: copied.sizeBytes,
-  };
-}
-
-async function importClipboardAttachment(
-  dir: string,
-  item: ClipboardAttachmentData,
-): Promise<AttachmentMeta> {
-  const copied = await writeClipboardAttachmentToDir(dir, item);
-  return {
-    filename: copied.filename,
-    absolutePath: copied.absolutePath,
-    sizeBytes: copied.sizeBytes,
-  };
-}
-
-export function registerWorktreeAttachmentHandlers(): void {
+export function registerWorktreeAttachmentHandlers(
+  runtime: WorkspaceItemsIpcRuntime,
+): void {
+  // core.workspace.item.import into the worktree's own attachments folder.
   registerIpcHandler<
     [WorktreeImportAttachmentsRequest],
     WorktreeImportAttachmentsResponse
   >(IPC_CHANNELS.worktreeImportAttachments, async (event, req) => {
     validateId(req.projectId, 'projectId');
     validateId(req.worktreeId, 'worktreeId');
+    // CAN-4105: the read-only viewer is refused, as on workspace-items.
+    assertWritableScope(req.projectId);
+    const caller = runtime.resolveCaller(event);
 
     const hasClipboardItems =
       req.clipboardItems && req.clipboardItems.length > 0;
+    // The native chooser stays in this host handler; only its picks travel.
     const selectedFilePaths =
       req.filePaths.length > 0 || hasClipboardItems
         ? req.filePaths
@@ -66,17 +36,17 @@ export function registerWorktreeAttachmentHandlers(): void {
       return { attachments: [] };
     }
 
-    const dir = resolveAttachmentsDir(req.projectId, req.worktreeId);
-    const fileAttachments = await Promise.all(
-      selectedFilePaths.map((filePath) =>
-        importSingleAttachment(dir, filePath),
-      ),
-    );
-    const clipboardAttachments = await Promise.all(
-      (req.clipboardItems ?? []).map((item) =>
-        importClipboardAttachment(dir, item),
-      ),
-    );
-    return { attachments: [...fileAttachments, ...clipboardAttachments] };
+    const imported = await importAttachmentsForIpc(runtime.dispatcher, caller, {
+      scope: { workspaceId: req.projectId, worktreeId: req.worktreeId },
+      filePaths: selectedFilePaths,
+      clipboardItems: req.clipboardItems ?? [],
+    });
+    return {
+      attachments: imported.map(({ filename, absolutePath, sizeBytes }) => ({
+        filename,
+        absolutePath,
+        sizeBytes,
+      })),
+    };
   });
 }

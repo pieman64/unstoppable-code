@@ -33,8 +33,12 @@ import {
 } from '../mcp/account-routing';
 import { spawn } from 'child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, unlink, readFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, writeFile, unlink, readFile, readdir } from 'node:fs/promises';
+import { McpConfigRepository } from '../mcp/config-repository';
+import {
+  McpConfigNotFoundError,
+  McpConfigStateError,
+} from '../mcp/config-repository-format';
 import type { BrowserWindow } from 'electron';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import { MCP_SERVER_CHANNELS } from '@canopy/desktop-shared/constants/mcp-server-channels';
@@ -70,7 +74,6 @@ import {
   AccountMcpConnectionError,
   normalizeCuratedMetadata,
   normalizeHttpAuthHandler,
-  normalizeMcpServerFile,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
 import { getMcpServersIndexFilePath, getMcpServerFilePath } from '../lib/paths';
@@ -109,12 +112,15 @@ import {
 import { openExternalGuarded } from '../lib/open-external';
 import {
   PROVIDER_CONNECTOR_MANAGE_URLS,
-  listClaudeProviderConnectors,
-  listCodexProviderConnectors,
+  listAdvertisedProviderConnectors,
 } from '../mcp/provider-connectors';
 import { registerIpcHandler } from './register';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
-import { validateId, validateMcpServerRefId } from '../lib/validation';
+import {
+  IdentifierValidationError,
+  validateId,
+  validateMcpServerRefId,
+} from '../lib/validation';
 import {
   listCuratedMcpServers,
   refreshCuratedMcpServers,
@@ -140,6 +146,13 @@ import {
 } from '../mcp/connection-status';
 import { refreshCodexSessionsAfterMcpOAuth } from '../agents/session-manager';
 import { MCP_ACCOUNT_RECONNECT_DETAIL } from '../mcp/account-copy';
+import {
+  captureMcpRefRewriteOutcome,
+  recordMcpRefRewriteFailure,
+  inMcpRefRewritePhase,
+  unwrapMcpRefRewriteOutcome,
+  type McpRefRewriteOutcome,
+} from '../mcp/server-ref-rewrite-outcome';
 
 const SAFE_ID_RE = /^[a-f0-9-]+$/;
 
@@ -212,65 +225,87 @@ function parseRewriteRefsRequest(raw: unknown): RewriteMcpServerRefsRequest {
   if (request.retire) {
     validateId(request.retire.serverId, 'MCP server id');
     if (!SAFE_ID_RE.test(request.retire.serverId)) {
-      throw new Error(`Invalid MCP server id: ${request.retire.serverId}`);
+      throw recordMcpRefRewriteFailure(
+        new Error(`Invalid MCP server id: ${request.retire.serverId}`),
+        'validation',
+        'invalidRef',
+      );
     }
     if (
       !request.from.some((ref) => ref.serverId === request.retire?.serverId)
     ) {
-      throw new Error('A retired MCP server must be one of the rewritten refs');
+      throw recordMcpRefRewriteFailure(
+        new Error('A retired MCP server must be one of the rewritten refs'),
+        'validation',
+        'retireNotRewritten',
+      );
     }
   }
   return request;
 }
 
-const serverWrites = new Map<string, Promise<unknown>>();
-
-/** Runs writes to one device server file one after another. */
-function withServerWrite<T>(id: string, write: () => Promise<T>): Promise<T> {
-  const previous = serverWrites.get(id) ?? Promise.resolve();
-  const next = previous.then(write, write);
-  const settled = next.catch((): void => undefined);
-  serverWrites.set(id, settled);
-  void settled.then((): void => {
-    if (serverWrites.get(id) === settled) serverWrites.delete(id);
+export async function rewriteMcpServerRefsOutcome(
+  raw: unknown,
+): Promise<McpRefRewriteOutcome> {
+  return captureMcpRefRewriteOutcome(async () => {
+    let request: RewriteMcpServerRefsRequest;
+    try {
+      request = parseRewriteRefsRequest(raw);
+    } catch (error) {
+      recordMcpRefRewriteFailure(
+        error,
+        'validation',
+        error instanceof z.ZodError ||
+          error instanceof IdentifierValidationError
+          ? 'invalidRef'
+          : undefined,
+      );
+      throw error;
+    }
+    return request.retire
+      ? removeServerAndOAuthTokensAfterMovingRefs(request, request.retire)
+      : rewriteMcpServerRefs(request);
   });
-  return next;
 }
+
+const configRepository = new McpConfigRepository(
+  { index: getMcpServersIndexFilePath, server: getMcpServerFilePath },
+  { mkdir, writeFile, unlink, readFile, readdir },
+);
 
 /** Serialized device deletion; cloud connections retain their own credentials. */
 export async function deleteMcpServer(id: string): Promise<void> {
   if (!id || !SAFE_ID_RE.test(id)) throw new Error('Invalid MCP server id.');
-  await withServerWrite(id, () => deleteMcpServerAndOAuthTokens(id));
+  await configRepository.withServerMutation(id, () =>
+    deleteMcpServerAndOAuthTokens(id),
+  );
 }
 
 async function deleteMcpServerAndOAuthTokens(id: string): Promise<void> {
-  const configIds = await readServer(id)
-    .then(({ server }): string[] =>
-      server.configs.map((config): string => config.id),
-    )
-    .catch(
-      async (): Promise<string[]> =>
-        (await readIndex()).servers
-          .find((server) => server.id === id)
-          ?.configs.map((config) => config.id) ?? [],
-    );
+  const configIds = await inMcpRefRewritePhase('retirementRead', () =>
+    readServer(id)
+      .then(({ server }): string[] =>
+        server.configs.map((config): string => config.id),
+      )
+      .catch(
+        async (): Promise<string[]> =>
+          (await readIndex()).servers
+            .find((server) => server.id === id)
+            ?.configs.map((config) => config.id) ?? [],
+      ),
+  );
   // Sign-ins belong to the device server; a bound cloud connection keeps
   // its own and stays in the cloud account.
-  await Promise.all(
-    configIds.map((configId) => clearMcpOAuthToken(id, configId)),
-  );
-  // Keep the file (and config identities) available for retries if credential cleanup fails.
-  try {
-    await unlink(getMcpServerFilePath(id));
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
-      throw error;
-  }
-
-  // Remove from index
-  const index = await readIndex();
-  const filtered = index.servers.filter((s) => s.id !== id);
-  await writeIndex(filtered);
+  await inMcpRefRewritePhase('tokenClear', async () => {
+    const cleanup = await Promise.allSettled(
+      configIds.map((configId) => clearMcpOAuthToken(id, configId)),
+    );
+    const failed = cleanup.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+  });
+  // Cleanup failure retains config identities for retries.
+  await configRepository.remove(id, inMcpRefRewritePhase);
+  await notifyConfigIndexChanged();
   await refreshProjectedPortalMcpServers().catch((error: unknown) => {
     logMainProcessError('Portal MCP projection refresh failed', error);
   });
@@ -284,13 +319,15 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
   request: RewriteMcpServerRefsRequest,
   retire: NonNullable<RewriteMcpServerRefsRequest['retire']>,
 ): Promise<RewriteMcpServerRefsResponse> {
-  return withServerWrite(retire.serverId, async () => {
-    const current = await readServer(retire.serverId).then(
-      async ({ server }) =>
-        (await resolveStandaloneHttpHandler(server.definition)) === 'canopy'
-          ? stableStringify(server)
-          : undefined,
-      (): undefined => undefined,
+  return configRepository.withServerMutation(retire.serverId, async () => {
+    const current = await inMcpRefRewritePhase('retirementGuard', () =>
+      readServer(retire.serverId).then(
+        async ({ server }) =>
+          (await resolveStandaloneHttpHandler(server.definition)) === 'canopy'
+            ? stableStringify(server)
+            : undefined,
+        (): undefined => undefined,
+      ),
     );
     if (current !== retire.fingerprint) {
       return {
@@ -304,9 +341,11 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
       from: request.from,
       to: request.to,
     });
-    const stillCurrent = await readServer(retire.serverId).then(
-      ({ server }) => stableStringify(server) === retire.fingerprint,
-      (): boolean => false,
+    const stillCurrent = await inMcpRefRewritePhase('retirementGuard', () =>
+      readServer(retire.serverId).then(
+        ({ server }) => stableStringify(server) === retire.fingerprint,
+        (): boolean => false,
+      ),
     );
     if (!stillCurrent) return { ...result, retired: 'changed' };
     await deleteMcpServerAndOAuthTokens(retire.serverId);
@@ -384,29 +423,20 @@ export function areArgsSafe(args: string[] | undefined): boolean {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async function readIndex(): Promise<McpServersIndexFile> {
-  try {
-    const raw = await readFile(getMcpServersIndexFilePath(), 'utf8');
-    const parsed = JSON.parse(raw) as McpServersIndexFile;
-    if (parsed.version !== 1 || !Array.isArray(parsed.servers)) {
-      return { version: 1, servers: [] };
-    }
-    return parsed;
-  } catch {
-    return { version: 1, servers: [] };
-  }
+function readIndex(): Promise<McpServersIndexFile> {
+  return configRepository.readIndex();
 }
 
-async function writeIndex(servers: McpServerIndexEntry[]): Promise<void> {
-  const filePath = getMcpServersIndexFilePath();
-  await mkdir(dirname(filePath), { recursive: true });
-  const payload: McpServersIndexFile = { version: 1, servers };
-  await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
-  // The index is what the portal (and the cloud inventory sync) projects.
-  notifyDesktopInventoryChanged(['mcp_servers']);
-  const { notifyInstalledItemsChanged } =
-    await import('../installed-items/installed-item-events');
-  notifyInstalledItemsChanged();
+async function notifyConfigIndexChanged(): Promise<void> {
+  // Publication already succeeded; notification errors must not invite a replay.
+  try {
+    notifyDesktopInventoryChanged(['mcp_servers']);
+    const { notifyInstalledItemsChanged } =
+      await import('../installed-items/installed-item-events');
+    notifyInstalledItemsChanged();
+  } catch (error) {
+    logMainProcessError('MCP inventory notification failed', error);
+  }
 }
 
 /**
@@ -419,19 +449,8 @@ async function writeIndex(servers: McpServerIndexEntry[]): Promise<void> {
  * across a remote boundary. `getMcpServerFilePath` validates the id, so a
  * hostile id cannot escape the mcp-servers directory.
  */
-export async function readServer(id: string): Promise<McpServerFile> {
-  const filePath = getMcpServerFilePath(id);
-  const raw = await readFile(filePath, 'utf8');
-  const parsed: unknown = JSON.parse(raw);
-  return normalizeMcpServerFile(parsed, id);
-}
-
-async function writeServer(server: McpServerData): Promise<McpServerFile> {
-  const filePath = getMcpServerFilePath(server.definition.id);
-  await mkdir(dirname(filePath), { recursive: true });
-  const payload: McpServerFile = { version: 1, server };
-  await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
-  return payload;
+export function readServer(id: string): Promise<McpServerFile> {
+  return configRepository.readServer(id);
 }
 
 function validatePluginOAuthTarget(target: StartMcpOAuthPluginTarget): void {
@@ -555,38 +574,23 @@ function lacksUrlIndexFields(entry: McpServerIndexEntry): boolean {
  * index costs nothing beyond the scan.
  */
 async function readIndexWithUrlBackfill(): Promise<McpServersIndexFile> {
-  const index = await readIndex();
-  const stale = index.servers.filter(lacksUrlIndexFields);
-  if (stale.length === 0) return index;
-  const backfilled = new Map<
-    string,
-    { urlHost?: string; urlScheme?: string }
-  >();
-  await Promise.all(
-    stale.map(async (entry): Promise<void> => {
-      try {
-        const { server } = await readServer(entry.id);
-        if (server.definition.type !== 'http') return;
-        const fields = urlIndexFields(server.definition.url);
-        if (fields.urlHost !== undefined) backfilled.set(entry.id, fields);
-      } catch {
-        // Missing or unreadable definition: leave the row as it is.
-      }
-    }),
-  );
-  if (backfilled.size === 0) return index;
-  // Re-read so a save that landed while definitions were loading survives.
-  const latest = await readIndex();
-  let changed = false;
-  const servers = latest.servers.map((entry): McpServerIndexEntry => {
-    const fields = backfilled.get(entry.id);
-    if (!fields || !lacksUrlIndexFields(entry)) return entry;
-    changed = true;
-    return { ...entry, ...fields };
-  });
-  if (!changed) return latest;
-  await writeIndex(servers);
-  return { ...latest, servers };
+  let backfilled;
+  try {
+    backfilled = await configRepository.backfill(
+      lacksUrlIndexFields,
+      (server) =>
+        server.definition.type === 'http'
+          ? urlIndexFields(server.definition.url)
+          : {},
+    );
+  } catch (error) {
+    if (!(error instanceof McpConfigStateError)) throw error;
+    // Display fallback only: the refused index is never rewritten from it.
+    logMainProcessWarn('MCP index backfill refused', error.detail);
+    return readIndex();
+  }
+  if (backfilled.changed) await notifyConfigIndexChanged();
+  return backfilled.index;
 }
 
 export function toIndexEntry(
@@ -1225,7 +1229,7 @@ async function testCommandConnection(
       windowsHide: true,
     });
 
-    let stdoutBuffer = Buffer.alloc(0);
+    let stdoutBuffer: Buffer = Buffer.alloc(0);
     let stderr = '';
     let resolved = false;
 
@@ -1401,24 +1405,37 @@ function healthFromConnectionTest(
  * Saves a device server. Every caller (IPC, Portal, catalog) shares the
  * per-server write queue, so a save never interleaves with a retirement.
  */
-export function saveMcpServer(
+export async function saveMcpServer(
   server: SaveMcpServerRequest,
 ): Promise<McpServerFile> {
-  return server.definition.id
-    ? withServerWrite(server.definition.id, () => writeMcpServer(server))
-    : writeMcpServer(server);
+  const id = server.definition.id || randomUUID();
+  if (!SAFE_ID_RE.test(id)) throw new Error(`Invalid MCP server id: ${id}`);
+  const definition = {
+    ...server.definition,
+    id,
+    createdAt: server.definition.id
+      ? server.definition.createdAt
+      : new Date().toISOString(),
+  };
+  return configRepository.withServerMutation(id, () =>
+    writeMcpServer({ ...server, definition }),
+  );
 }
 
+/** Decides the no-op from strict state read inside the server lease. */
 export function setInstalledMcpConfigEnabled(
   serverId: string,
   configId: string,
   enabled: boolean,
 ): Promise<McpServerFile> {
   if (!SAFE_ID_RE.test(serverId)) throw new Error('Invalid MCP server id.');
-  return withServerWrite(serverId, async () => {
-    const { server } = await readServer(serverId);
-    if (!server.configs.some((config) => config.id === configId))
-      throw new Error('MCP configuration was not found.');
+  return configRepository.withServerMutation(serverId, async () => {
+    const current = await configRepository.readServerForMutation(serverId);
+    if (!current) throw new McpConfigNotFoundError('server');
+    const { server } = current;
+    const target = server.configs.find((config) => config.id === configId);
+    if (!target) throw new McpConfigNotFoundError('config');
+    if (target.enabled === enabled) return current;
     return writeMcpServer({
       definition: server.definition,
       configs: server.configs.map((config) =>
@@ -1433,7 +1450,9 @@ export async function uninstallInstalledDeviceMcpServer(
 ): Promise<void> {
   if (!id || !SAFE_ID_RE.test(id))
     throw new Error(`Invalid MCP server id: ${id}`);
-  await withServerWrite(id, () => deleteMcpServerAndOAuthTokens(id));
+  await configRepository.withServerMutation(id, () =>
+    deleteMcpServerAndOAuthTokens(id),
+  );
 }
 
 async function writeMcpServer(
@@ -1446,11 +1465,6 @@ async function writeMcpServer(
     throw new Error('Account connection id must be a UUID');
   }
   const now = new Date().toISOString();
-  const index = await readIndex();
-  const isCreate =
-    !server.definition.id ||
-    !index.servers.some((entry) => entry.id === server.definition.id);
-
   const resolvedDefinition: McpServerDefinitionData = {
     ...server.definition,
     id: server.definition.id || randomUUID(),
@@ -1489,83 +1503,86 @@ async function writeMcpServer(
   ) {
     throw new Error('This curated MCP server requires provider-managed OAuth.');
   }
-  const httpAuthHandler =
-    requestedHttpAuthHandler ??
-    (isCreate && resolvedDefinition.curated ? 'canopy' : undefined);
-  if (resolvedDefinition.type !== 'http' && httpAuthHandler !== undefined) {
-    throw new Error('HTTP auth handler is only supported for HTTP servers.');
-  }
-  resolvedDefinition.httpAuthHandler = httpAuthHandler;
-
-  if (!SAFE_ID_RE.test(resolvedDefinition.id)) {
-    throw new Error(`Invalid MCP server id: ${resolvedDefinition.id}`);
-  }
-  if (!resolvedDefinition.name || !resolvedDefinition.name.trim()) {
-    throw new Error('Server name is required');
-  }
-  if (!resolvedDefinition.type) {
-    throw new Error('Server type is required');
-  }
-
-  // Validate configs
-  if (!Array.isArray(server.configs)) {
-    throw new Error('Invalid server: configs must be an array');
-  }
-  for (const c of server.configs) {
-    if (!c.id || !c.name) {
-      throw new Error('Each config must have an id and name');
-    }
-  }
-  if (resolvedDefinition.type === 'command') {
-    validateCommandDefinition(resolvedDefinition, server.configs);
-  } else if (resolvedDefinition.type === 'http') {
-    validateHttpDefinition(resolvedDefinition);
-  }
-  validateOAuthDefinition(resolvedDefinition);
-
-  const resolvedServer: McpServerData = {
-    definition: resolvedDefinition,
-    configs: server.configs,
-  };
-
-  // Write server file
-  const serverFile = await writeServer(resolvedServer);
-
-  // Update index
-  const existing = index.servers.findIndex(
-    (s) => s.id === resolvedDefinition.id,
-  );
-  const previousEntry =
-    server.accountRouting === 'clear' ? undefined : index.servers[existing];
   const preferences = await readPreferencesFile();
-  const effectiveHttpAuthHandler = getMcpHttpAuthDefault(
-    resolvedDefinition,
-    previousEntry,
-    preferences.mcpHttpAuthDefaultHandler ?? DEFAULT_MCP_HTTP_AUTH_HANDLER,
-  );
-  const accountConnectionId =
-    server.accountConnectionId ?? previousEntry?.accountConnectionId;
-  const entry: McpServerIndexEntry = {
-    ...(previousEntry
-      ? {
-          scope: previousEntry.scope,
-          authHandler: previousEntry.authHandler,
-          accountConnectionId: previousEntry.accountConnectionId,
+  const serverFile = await configRepository.save(
+    resolvedDefinition.id,
+    (index) => {
+      const isCreate = !index.servers.some(
+        (entry) => entry.id === resolvedDefinition.id,
+      );
+      const httpAuthHandler =
+        requestedHttpAuthHandler ??
+        (isCreate && resolvedDefinition.curated ? 'canopy' : undefined);
+      if (resolvedDefinition.type !== 'http' && httpAuthHandler !== undefined) {
+        throw new Error(
+          'HTTP auth handler is only supported for HTTP servers.',
+        );
+      }
+      resolvedDefinition.httpAuthHandler = httpAuthHandler;
+
+      if (!SAFE_ID_RE.test(resolvedDefinition.id)) {
+        throw new Error(`Invalid MCP server id: ${resolvedDefinition.id}`);
+      }
+      if (!resolvedDefinition.name || !resolvedDefinition.name.trim()) {
+        throw new Error('Server name is required');
+      }
+      if (!resolvedDefinition.type) {
+        throw new Error('Server type is required');
+      }
+
+      // Validate configs
+      if (!Array.isArray(server.configs)) {
+        throw new Error('Invalid server: configs must be an array');
+      }
+      for (const c of server.configs) {
+        if (!c.id || !c.name) {
+          throw new Error('Each config must have an id and name');
         }
-      : {}),
-    ...toIndexEntry(resolvedServer, effectiveHttpAuthHandler),
-    ...(resolvedDefinition.type === 'http' &&
-    effectiveHttpAuthHandler === 'account' &&
-    accountConnectionId !== undefined
-      ? { accountConnectionId }
-      : {}),
-  };
-  if (existing >= 0) {
-    index.servers[existing] = entry;
-  } else {
-    index.servers.push(entry);
-  }
-  await writeIndex(index.servers);
+      }
+      if (resolvedDefinition.type === 'command') {
+        validateCommandDefinition(resolvedDefinition, server.configs);
+      } else if (resolvedDefinition.type === 'http') {
+        validateHttpDefinition(resolvedDefinition);
+      }
+      validateOAuthDefinition(resolvedDefinition);
+
+      const resolvedServer: McpServerData = {
+        definition: resolvedDefinition,
+        configs: server.configs,
+      };
+
+      // Update index
+      const existing = index.servers.findIndex(
+        (s) => s.id === resolvedDefinition.id,
+      );
+      const previousEntry =
+        server.accountRouting === 'clear' ? undefined : index.servers[existing];
+      const effectiveHttpAuthHandler = getMcpHttpAuthDefault(
+        resolvedDefinition,
+        previousEntry,
+        preferences.mcpHttpAuthDefaultHandler ?? DEFAULT_MCP_HTTP_AUTH_HANDLER,
+      );
+      const accountConnectionId =
+        server.accountConnectionId ?? previousEntry?.accountConnectionId;
+      const entry: McpServerIndexEntry = {
+        ...(previousEntry
+          ? {
+              scope: previousEntry.scope,
+              authHandler: previousEntry.authHandler,
+              accountConnectionId: previousEntry.accountConnectionId,
+            }
+          : {}),
+        ...toIndexEntry(resolvedServer, effectiveHttpAuthHandler),
+        ...(resolvedDefinition.type === 'http' &&
+        effectiveHttpAuthHandler === 'account' &&
+        accountConnectionId !== undefined
+          ? { accountConnectionId }
+          : {}),
+      };
+      return { server: resolvedServer, entry };
+    },
+  );
+  await notifyConfigIndexChanged();
   await refreshProjectedPortalMcpServers().catch((error: unknown) => {
     logMainProcessError('Portal MCP projection refresh failed', error);
   });
@@ -2011,10 +2028,7 @@ export function registerMcpServerHandlers(
   registerIpcHandler(
     MCP_SERVER_CHANNELS.REWRITE_REFS,
     async (_event, raw: unknown): Promise<RewriteMcpServerRefsResponse> => {
-      const request = parseRewriteRefsRequest(raw);
-      return request.retire
-        ? removeServerAndOAuthTokensAfterMovingRefs(request, request.retire)
-        : rewriteMcpServerRefs(request);
+      return unwrapMcpRefRewriteOutcome(await rewriteMcpServerRefsOutcome(raw));
     },
   );
   registerIpcHandler(
@@ -2086,40 +2100,7 @@ export function registerMcpServerHandlers(
   );
 
   registerIpcHandler(MCP_SERVER_CHANNELS.LIST_PROVIDER_CONNECTORS, async () => {
-    // The served catalog is the only source of what is advertised. Claude needs
-    // no such filter — its list is already only the account's connectors — but
-    // Codex reports a directory of thousands and has to be narrowed.
-    const catalog = await listCuratedMcpServers();
-    // Reading Claude costs a CLI spawn that health-checks every configured MCP
-    // server over the network, and this handler runs on Plugins-page mount and
-    // on every window focus. Scoped per provider rather than "does anything
-    // advertise a connector": a Codex-only catalog would otherwise still pay
-    // the Claude cost for a guaranteed-empty answer.
-    const claudeAdvertised = catalog.servers.some((entry) =>
-      entry.providerConnector?.providers.includes('claude'),
-    );
-    // Scoped to Codex: a Claude-only connector has no business being looked up
-    // in Codex's directory. The row builder re-filters by the same list, so
-    // this is currently only wasted work — but the two filters living in
-    // different files is precisely how the last drift bug started.
-    const codexAdvertised = catalog.servers
-      .filter((entry) => entry.providerConnector?.providers.includes('codex'))
-      .map((entry) => ({
-        displayName: entry.name,
-        ...(entry.providerConnector?.codexConnectorId
-          ? { codexConnectorId: entry.providerConnector.codexConnectorId }
-          : {}),
-      }));
-    // Read both providers together: one provider being signed out must not hide
-    // the other's connectors.
-    return Promise.all([
-      claudeAdvertised
-        ? listClaudeProviderConnectors()
-        : Promise.resolve({ provider: 'claude' as const, connectors: [] }),
-      codexAdvertised.length > 0
-        ? listCodexProviderConnectors(codexAdvertised)
-        : Promise.resolve({ provider: 'codex' as const, connectors: [] }),
-    ]);
+    return listAdvertisedProviderConnectors();
   });
 
   registerIpcHandler<
@@ -2232,7 +2213,9 @@ export function registerMcpServerHandlers(
       if (!id || !SAFE_ID_RE.test(id)) {
         throw new Error(`Invalid MCP server id: ${id}`);
       }
-      await withServerWrite(id, () => deleteMcpServerAndOAuthTokens(id));
+      await configRepository.withServerMutation(id, () =>
+        deleteMcpServerAndOAuthTokens(id),
+      );
     },
   );
 

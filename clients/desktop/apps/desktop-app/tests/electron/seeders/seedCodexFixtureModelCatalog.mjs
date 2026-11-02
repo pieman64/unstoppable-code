@@ -48,13 +48,17 @@ export function seedCodexFixtureModelCatalog(
       timeout: 15_000,
     }),
   );
-  if (catalog.models.some((model) => model.slug === slug)) return;
+  // A bundled entry is kept only when it already drives inline tools: Codex
+  // 0.164 ships gpt-6.x itself as code-mode-only.
+  const bundled = catalog.models.find((model) => model.slug === slug);
+  if (bundled && bundled.tool_mode !== 'code_mode_only') return;
   const template = catalog.models.find((model) => model.slug === profile);
   if (!template || template.tool_mode === 'code_mode_only') {
     throw new Error(
       `Bundled Codex catalog has no inline-tool "${profile}" profile to copy for ${slug}`,
     );
   }
+  catalog.models = catalog.models.filter((model) => model.slug !== slug);
   catalog.models.push({ ...template, slug, display_name: displayName });
   const catalogPath = path.join(codexHome, 'fixture-models.json');
   writeFileSync(catalogPath, JSON.stringify(catalog));

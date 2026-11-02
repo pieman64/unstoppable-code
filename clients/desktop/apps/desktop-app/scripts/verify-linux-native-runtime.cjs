@@ -142,7 +142,7 @@ async function probe(appDir, outputDir) {
         '/bin/sh',
         [
           '-c',
-          `[ -t 0 ] || exit 31; printf 'CAN3208_READY\\n'; IFS= read -r line; [ "$line" = 'can3208-input' ] || exit 32; printf '${marker}\\n'`,
+          `[ -t 0 ] || exit 31; printf 'CAN3208_READY\\n'; IFS= read -r line; [ "$line" = 'can3208-input' ] || exit 32; printf '${marker}\\n'; IFS= read -r ack || exit 33; [ "$ack" = 'can3208-ack' ] || exit 33`,
         ],
         {
           name: 'xterm',
@@ -153,6 +153,7 @@ async function probe(appDir, outputDir) {
         },
       );
       let written = false;
+      let acknowledged = false;
       terminal.onData((data) => {
         output += data;
         if (output.length > 65536) {
@@ -164,12 +165,24 @@ async function probe(appDir, outputDir) {
           written = true;
           terminal.write('can3208-input\r');
         }
+        // Keep the slave open until the parent has actually received the marker.
+        // Waiting for node-pty's exit/socket close cannot recover output lost at
+        // Linux PTY hangup when the shell prints and immediately exits.
+        if (written && !acknowledged && output.includes(marker)) {
+          acknowledged = true;
+          terminal.write('can3208-ack\r');
+        }
       });
       terminal.onExit(({ exitCode, signal }) => {
         const value = {
           passed:
-            written && output.includes(marker) && exitCode === 0 && !signal,
+            written &&
+            acknowledged &&
+            output.includes(marker) &&
+            exitCode === 0 &&
+            !signal,
           inputWritten: written,
+          acknowledgmentWritten: acknowledged,
           marker,
           output,
           exitCode,

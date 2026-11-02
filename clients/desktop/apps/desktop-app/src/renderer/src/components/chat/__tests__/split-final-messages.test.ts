@@ -1,16 +1,16 @@
 import { splitFinalMessages } from '@canopy/desktop-shared/lib/turn-utils';
-import type { DisplayMessage } from '../types';
+import type { DisplayBlock, DisplayMessage } from '../types';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 let nextId = 1;
-function makeMsg(blocks: Array<Record<string, unknown>>): DisplayMessage {
+function makeMsg(blocks: DisplayBlock[]): DisplayMessage {
   return {
     id: `msg-${nextId++}`,
     role: 'assistant',
-    blocks: blocks as DisplayMessage['blocks'],
+    blocks,
     timestamp: Date.now(),
   };
 }

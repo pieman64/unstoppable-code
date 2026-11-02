@@ -1,19 +1,9 @@
-// Regression: on worktree navigation, each panel group's active (selected) tab
-// must be scrolled into view within its horizontal tab strip.
+// A persisted layout restores its active tab even when that tab is last in
+// the saved order. Filled tabs compress to fit the strip after Labs graduation,
+// so the restored rightmost tab must remain visible without horizontal scroll.
 //
-// The default layout build moves the active chat tab to the FRONT of the strip,
-// so it is trivially in view there. The bug only manifests with a PERSISTED
-// layout whose active tab is elsewhere (e.g. the rightmost, off-screen tab):
-// the panel grid sizes each group's tab strip in the grid host's own layout
-// effect, which React runs AFTER the portaled tab bar's layout effect, so a
-// synchronous reveal measured a 0-width strip and no-oped, and never re-ran
-// once the strip had a real width. See PanelTabBar's post-paint reveal fallback.
-//
-// This reproduces a real persisted layout by:
-//   Launch 1 — build the default layout, select the last-positioned tab so it
-//              becomes active-but-rightmost, and let it persist to disk.
-//   Launch 2 — restore that layout with a single navigation and assert the
-//              active (rightmost) tab is scrolled into view.
+// Launch 1 selects and durably saves the last-positioned tab. Launch 2 restores
+// that layout with one navigation and checks selection, order, and geometry.
 
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -30,7 +20,8 @@ import {
   DEFAULT_GROUP_IDS,
 } from './panelHarness.mjs';
 
-const TAB_COUNT = 16;
+// Few enough to share the row above the tabs' 96px floor, without scrolling.
+const TAB_COUNT = 5;
 const BRANCH = 'demo-main';
 const APP = 'ts-pnpm-vite';
 const WORKSPACE_ID = `demo-${APP}`;
@@ -105,7 +96,7 @@ async function waitForChatPanels(window) {
     .toBe(TAB_COUNT);
 }
 
-// Geometry of the chat group's active tab relative to its (overflowing) strip.
+// Geometry of the chat group's active tab relative to its filled strip.
 function activeTabGeometry(window) {
   return window.evaluate(
     ([groupId]) => {
@@ -148,7 +139,7 @@ function activeTabGeometry(window) {
   );
 }
 
-test('reveals the active (rightmost) tab into view when navigating to a worktree', async () => {
+test('keeps the restored rightmost tab visible in the filled strip', async () => {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-tab-reveal-'));
   seedDemoWorkspaces({ userDataDir, apps: [APP] });
   seedWorktreeChat({
@@ -176,7 +167,7 @@ test('reveals the active (rightmost) tab into view when navigating to a worktree
     await app.selectWorktree(BRANCH);
     await waitForChatPanels(window);
     // Hydration may preserve a different tab order. Select the actual last
-    // panel so the test proves overflow reveal rather than a default ordering.
+    // panel so the test proves persisted selection rather than a default ordering.
     const layout = await getLayout(window);
     const chatLeaf = collectLeaves(layout.root).find(
       (leaf) => leaf.groupId === DEFAULT_GROUP_IDS.chat,
@@ -241,13 +232,14 @@ test('reveals the active (rightmost) tab into view when navigating to a worktree
     await app.selectWorktree(BRANCH);
     await waitForChatPanels(window);
 
-    // Precondition: the restored active tab really is the off-screen rightmost
-    // tab in an overflowing strip (otherwise the test would pass vacuously).
+    // The saved active tab must remain last; hydration must not silently move
+    // it to the front and make the visibility assertion pass vacuously.
     const initial = await activeTabGeometry(window);
+    expect(initial?.activePanelId).toBe(rightmostPanel);
     expect(initial?.activeIsLastInOrder).toBe(true);
-    expect(initial?.overflowing).toBe(true);
+    expect(initial?.overflowing).toBe(false);
 
-    // The reveal runs post-paint; poll until the active tab is scrolled in.
+    // Layout settles post-paint; poll until the restored active tab is visible.
     await expect
       .poll(async () => (await activeTabGeometry(window))?.inView, {
         timeout: 5_000,
@@ -255,7 +247,7 @@ test('reveals the active (rightmost) tab into view when navigating to a worktree
       .toBe(true);
 
     const settled = await activeTabGeometry(window);
-    expect(settled?.scrollLeft).toBeGreaterThan(0);
+    expect(settled?.scrollLeft).toBe(0);
 
     await window.evaluate(() => {
       document.documentElement.dataset.scrollbarBehavior = 'hover';
@@ -265,9 +257,7 @@ test('reveals the active (rightmost) tab into view when navigating to a worktree
     );
     const thumb = strip.locator('..').locator('.canopy-scroll-thumb');
     await strip.hover();
-    await expect(thumb).toHaveAttribute('data-revealed', 'true');
-    await thumb.hover();
-    await expect(thumb).toHaveAttribute('data-revealed', 'true');
+    await expect(thumb).toBeHidden();
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }

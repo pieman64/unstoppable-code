@@ -18,6 +18,7 @@ function buildState(overrides: Partial<CanopyPortalState>): CanopyPortalState {
     pairingCode: null,
     pairingCodeExpiresAt: null,
     machineName: null,
+    hostCode: null,
     activatedAt: null,
     lastSeenAt: null,
     lastErrorAt: null,

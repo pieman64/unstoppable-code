@@ -29,6 +29,11 @@ export interface UsageLimitBannerInfo {
   resetsAt?: number;
   /** Stable identity for the reached window, used for dismissal. */
   dismissKey: string;
+  /**
+   * Set when a switch back to the subscription restored the limit rather than
+   * a turn reaching it, so no interrupted turn waits to continue (CAN-4756).
+   */
+  restoredBySwitch?: true;
 }
 
 function usageLimitDismissKey(
@@ -65,6 +70,16 @@ interface AiCreditsBannerStore {
   setRoutingActive: (target: ChatBannerTarget, active: boolean) => void;
   /** Record a reached usage limit from the main process. */
   setUsageLimit: (
+    target: ChatBannerTarget,
+    info: { provider: AgentProviderType; resetsAt?: number },
+  ) => void;
+  /**
+   * Show a known usage limit again after the user leaves AI Credits for a
+   * still-limited subscription (CAN-4759). Unlike `setUsageLimit`, it clears a
+   * prior dismissal, because the user just chose to bill the limited provider.
+   * A newer limit already recorded for the same provider is kept.
+   */
+  restoreUsageLimit: (
     target: ChatBannerTarget,
     info: { provider: AgentProviderType; resetsAt?: number },
   ) => void;
@@ -116,6 +131,35 @@ export const useAiCreditsBannerStore = create<AiCreditsBannerStore>((set) => ({
             dismissKey,
           },
         },
+      };
+    });
+  },
+  restoreUsageLimit: (target, info): void => {
+    const key = chatBannerKey(target);
+    const dismissKey = usageLimitDismissKey(info.provider, info.resetsAt);
+    set((state) => {
+      const existing = state.usageLimitByChat[key];
+      // Never roll a later reset for the same provider back to the captured one.
+      const keepExisting =
+        existing?.dismissKey === dismissKey ||
+        (existing?.provider === info.provider &&
+          typeof existing.resetsAt === 'number' &&
+          (info.resetsAt === undefined || existing.resetsAt > info.resetsAt));
+      const nextDismissed = { ...state.dismissedUsageLimitKeyByChat };
+      delete nextDismissed[key];
+      return {
+        usageLimitByChat: keepExisting
+          ? state.usageLimitByChat
+          : {
+              ...state.usageLimitByChat,
+              [key]: {
+                provider: info.provider,
+                resetsAt: info.resetsAt,
+                dismissKey,
+                restoredBySwitch: true,
+              },
+            },
+        dismissedUsageLimitKeyByChat: nextDismissed,
       };
     });
   },

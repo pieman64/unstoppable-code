@@ -23,7 +23,7 @@ function partText(part: PortalChatPart): string | undefined {
 
 /**
  * Rebuild the public agent-sender attribution from its compact, string-safe
- * wire fields (see `agentSentWireFields`). Malformed or mixed project/bot
+ * wire fields (see `agentSentWireFields`). Malformed or mixed project/bot/pipeline
  * fields yield no attribution.
  */
 function partAgentSent(part: PortalChatPart): ChatAgentSentInfo | undefined {
@@ -62,8 +62,32 @@ function partAgentSent(part: PortalChatPart): ChatAgentSentInfo | undefined {
       projectLabel: data['agentSentProjectLabel'],
     });
   }
+  if (senderKind === 'pipeline') {
+    // Every present key is copied so the parser refuses mixed variants.
+    const sender: Record<string, unknown> = { kind: 'pipeline' };
+    for (const [wireKey, key] of PIPELINE_WIRE_KEYS) {
+      if (wireKey in data) sender[key] = data[wireKey];
+    }
+    return parseChatAgentSentInfo({
+      sender,
+      chatTitle: data['agentSentChatTitle'],
+      projectLabel: data['agentSentProjectLabel'],
+    });
+  }
   return undefined;
 }
+
+const PIPELINE_WIRE_KEYS = [
+  ['agentSentExecutionId', 'executionId'],
+  ['agentSentPipelineId', 'pipelineId'],
+  ['agentSentStepId', 'stepId'],
+  ['agentSentAutomationId', 'automationId'],
+  ['agentSentProjectType', 'projectType'],
+  ['agentSentProjectId', 'projectId'],
+  ['agentSentBotId', 'botId'],
+  ['agentSentTaskId', 'taskId'],
+  ['agentSentChatId', 'chatId'],
+] as const;
 
 /** Who wrote an authored child message, from its flat wire fields. */
 function partAuthor(

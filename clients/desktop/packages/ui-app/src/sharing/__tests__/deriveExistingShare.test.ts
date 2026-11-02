@@ -91,6 +91,36 @@ describe('deriveExistingShare', () => {
     });
   });
 
+  it('drops a public link the host still holds once its public share is removed', () => {
+    // A host may clear `publicShare` on removal without clearing its link, and
+    // the dialog stays open, so the revoked URL must not be offered or copied.
+    expect(
+      deriveExistingShare({
+        shareScope: 'team',
+        owner: teamOwner,
+        publicShare: null,
+        link: { url: 'https://example.test/s/skill-1', kind: 'public' },
+      }),
+    ).toEqual({
+      audience: 'team',
+      target: {
+        id: 'team-1',
+        name: 'Growth',
+        organizationId: 'org-1',
+        secondaryLabel: 'Acme',
+      },
+      targetAudience: 'team',
+    });
+    expect(
+      deriveExistingShare({
+        shareScope: 'team',
+        owner: teamOwner,
+        publicShare: null,
+        link: { url: 'https://example.test/team/skill-1', kind: 'scoped' },
+      })?.link,
+    ).toEqual({ url: 'https://example.test/team/skill-1', kind: 'scoped' });
+  });
+
   it('flags a public link that no longer matches the cloud copy', () => {
     expect(
       deriveExistingShare({

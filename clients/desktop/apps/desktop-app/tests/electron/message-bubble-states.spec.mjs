@@ -71,6 +71,8 @@ function seedLongTranscript(userDataDir) {
     },
     // Two tool calls per turn, so each section renders the collapsed
     // indicator strip whose expand-and-scroll behavior is asserted below.
+    // Each call has its result: a settled turn counts a resultless call as
+    // interrupted (CAN-5178).
     ...[1, 2].map((step) => ({
       id: `tool-${index}-${step}`,
       role: 'assistant',
@@ -81,6 +83,13 @@ function seedLongTranscript(userDataDir) {
           toolUseId: `tool-use-${index}-${step}`,
           toolName: 'Bash',
           input: '{"command":"ls"}',
+        },
+        {
+          type: 'tool_result',
+          toolUseId: `tool-use-${index}-${step}`,
+          toolName: 'Bash',
+          output: 'README.md',
+          isError: false,
         },
       ],
     })),
@@ -329,6 +338,24 @@ test('message bubble gallery clamps long content behind a hover-revealed toggle'
     await expect(
       window.getByTestId('bubble-gallery-row-queued-default'),
     ).toBeVisible();
+    await expect(
+      window
+        .getByTestId('bubble-gallery-row-queued-default')
+        .getByTestId('queued-message-setup-quote'),
+    ).toHaveCount(0);
+    await expect(
+      window
+        .getByTestId('bubble-gallery-row-queued-setup')
+        .getByTestId('queued-message-setup-quote'),
+    ).toBeVisible();
+    // Setup gallery clocks are fixed through the desktop wrapper, so the
+    // examples stay deterministic while the live queue clocks elsewhere tick.
+    await expect(
+      window.getByTestId('bubble-gallery-row-queued-setup'),
+    ).toContainText('0:12 elapsed');
+    await expect(
+      window.getByTestId('bubble-gallery-row-queued-setup-estimate'),
+    ).toContainText('about 0:15 left');
     const scheduledRow = window.getByTestId('bubble-gallery-row-scheduled');
     await expect(scheduledRow).toBeVisible();
     // One-time sends keep the bubble with a single "Sends …" row.
@@ -476,7 +503,7 @@ test("expanding a turn's indicator strip brings its prompt back to the top", asy
   }
 });
 
-test("hovering a prompt reveals its answer's turn footer", async () => {
+test('a Clean turn footer stays visible while its prompt is hovered', async () => {
   const { electronApp, userDataDir } = await getSharedLongTranscriptHarness();
 
   try {
@@ -497,15 +524,12 @@ test("hovering a prompt reveals its answer's turn footer", async () => {
       el.scrollTop = 0;
     });
 
-    // The stamp belongs to the answer. Hovering the prompt must reveal it —
-    // the prompt is hoisted into the sticky header and so is NOT a descendant
-    // of its own turn wrapper, which is exactly how this regressed.
-    // CAN-4278: the timestamp itself always shows; the "Completed in" label
-    // is the hover-revealed part of the footer.
+    // Clean chat keeps the timestamp visible even when its hoisted prompt
+    // is outside the turn wrapper. Hovering must not hide it.
     const stampOpacity = () =>
       window.evaluate(() => {
         const el = document.querySelector(
-          '[data-testid="turn-timer"][data-state="completed"] [data-testid="turn-timer-label"]',
+          '[data-testid="turn-timer"][data-state="completed"] [data-testid="turn-timer-relative"]',
         );
         return el ? window.getComputedStyle(el).opacity : null;
       });
@@ -527,7 +551,7 @@ test("hovering a prompt reveals its answer's turn footer", async () => {
         );
       }, outsidePoint),
     ).toBe(false);
-    await expect.poll(stampOpacity).toBe('0');
+    await expect.poll(stampOpacity).toBe('1');
 
     await window
       .locator('[data-testid="sticky-user-message"] [data-role="user"]')
@@ -536,7 +560,7 @@ test("hovering a prompt reveals its answer's turn footer", async () => {
     await expect.poll(stampOpacity).toBe('1');
 
     await window.mouse.move(5, 5);
-    await expect.poll(stampOpacity).toBe('0');
+    await expect.poll(stampOpacity).toBe('1');
   } finally {
     await closeBubbleFixture(electronApp, userDataDir);
   }
@@ -557,7 +581,7 @@ test('hovering a navigable prompt keeps its surface and clicking it jumps to the
       .locator('[data-role="user"]', { hasText: /Follow-up prompt 1(?!\d)/ })
       .first();
     const surface = row.getByTestId('portal-chat-message-content');
-    const copy = row.getByRole('button', { name: 'Copy to clipboard' });
+    const copy = row.getByRole('button', { name: 'Copy your message' });
     await expect(surface).toBeVisible({ timeout: 20_000 });
     await surface.scrollIntoViewIfNeeded();
 
@@ -623,6 +647,11 @@ test('hovering a navigable prompt keeps its surface and clicking it jumps to the
       await parkOutside();
       await expect.poll(copyOpacity).toBe(0);
       expect(await readSurface(), theme).toEqual(rest);
+      await copy.focus();
+      await expect(copy).toBeFocused();
+      await expect.poll(copyOpacity).toBe(1);
+      await copy.evaluate((element) => element.blur());
+      await expect.poll(copyOpacity).toBe(0);
     }
 
     // Offset of the turn's section from the scrollport's resting inset —
@@ -699,7 +728,7 @@ test('hovering a navigable prompt keeps its surface and clicking it jumps to the
   }
 });
 
-test('hovering a prompt reveals only its own turn, not the section', async () => {
+test('Clean turn footers stay visible across prompt hover and keyboard focus', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-bubble-scope-e2e-'),
   );
@@ -785,7 +814,7 @@ test('hovering a prompt reveals only its own turn, not the section', async () =>
       window.evaluate(() => {
         const footers = Array.from(
           document.querySelectorAll(
-            '[data-testid="turn-timer"][data-state="completed"] [data-testid="turn-timer-label"]',
+            '[data-testid="turn-timer"][data-state="completed"] [data-testid="turn-timer-relative"]',
           ),
         );
         return footers.filter(
@@ -793,8 +822,7 @@ test('hovering a prompt reveals only its own turn, not the section', async () =>
         ).length;
       });
 
-    // Both turns share one sticky section, and there is more than one
-    // hover-revealed control in it — otherwise this proves nothing.
+    // Both turns share one sticky section; both footers must remain visible.
     expect(
       await window.evaluate(
         () => document.querySelectorAll('[data-chat-sticky-section]').length,
@@ -810,24 +838,24 @@ test('hovering a prompt reveals only its own turn, not the section', async () =>
     ).toBeGreaterThan(1);
 
     await window.mouse.move(5, 5);
-    await expect.poll(revealed).toBe(0);
+    await expect.poll(revealed).toBe(2);
 
     await window
       .locator('[data-testid="sticky-user-message"] [data-role="user"]')
       .first()
       .hover();
-    // Exactly one: the hovered turn's own footer.
-    await expect.poll(revealed).toBe(1);
+    // Hovering one prompt must leave both Clean footers visible.
+    await expect.poll(revealed).toBe(2);
     await window
       .getByTestId('turn-timer')
       .first()
-      .getByTestId('turn-feedback-up')
+      .getByTestId('turn-copy-message')
       .focus();
     await window.mouse.move(5, 5);
-    // Mirrored hover clears, while keyboard focus independently retains reveal.
-    await expect.poll(revealed).toBe(1);
+    // Keyboard focus and clearing mirrored hover also preserve both footers.
+    await expect.poll(revealed).toBe(2);
     await window.getByTestId('app-sidebar').getByRole('button').first().focus();
-    await expect.poll(revealed).toBe(0);
+    await expect.poll(revealed).toBe(2);
   } finally {
     await closeBubbleFixture(electronApp, userDataDir);
   }
@@ -1107,10 +1135,33 @@ function readSummarySurface(locator) {
   });
 }
 
+/** Clean chat draws the keyboard ring on the step-row button itself. */
+function readSummaryFocusRing(locator) {
+  return locator.evaluate((element) => {
+    const ring = window.getComputedStyle(element);
+    return {
+      isStepRow: element.hasAttribute('data-step-row'),
+      outlineStyle: ring.outlineStyle,
+      outlineWidth: ring.outlineWidth,
+      outlineColor: ring.outlineColor,
+      outlineOffset: ring.outlineOffset,
+    };
+  });
+}
+
+function expectRowFocusRing(ring) {
+  const detail = JSON.stringify(ring);
+  expect(ring.isStepRow, detail).toBe(true);
+  expect(ring.outlineStyle, detail).toBe('solid');
+  expect(ring.outlineWidth, detail).toBe('2px');
+  expect(ring.outlineOffset, detail).toBe('2px');
+  expect(ring.outlineColor, detail).not.toBe('rgba(0, 0, 0, 0)');
+}
+
 function expectFlatSummary(surface) {
   expect(surface.backgroundColor).toBe('rgba(0, 0, 0, 0)');
   expect(surface.borderWidths).toEqual(['0px', '0px', '0px', '0px']);
-  expect(surface.radii).toEqual(['0px', '0px', '0px', '0px']);
+  expect(surface.radii).toEqual(['4px', '4px', '4px', '4px']);
   expect(surface.boxShadow).toBe('none');
 }
 
@@ -1134,7 +1185,7 @@ test('the agent step summary row is flat in flow and while pinned', async () => 
     const summary = wrapper.locator('button[aria-label^="Agent steps"]');
     await expect(summary).toBeVisible({ timeout: 20_000 });
     const ariaLabel = await summary.getAttribute('aria-label');
-    expect(ariaLabel).toBe('Agent steps: 2 bash');
+    expect(ariaLabel).toBe('Agent steps: Ran 2 commands');
 
     for (const mode of ['light', 'dark']) {
       await setDesktopColourMode(electronApp, window, mode);
@@ -1213,9 +1264,7 @@ test('the agent step summary row is flat in flow and while pinned', async () => 
       if (!reached) {
         throw new Error('Keyboard navigation never reached the summary row');
       }
-      const focused = await readSummarySurface(summary);
-      expect(focused.outlineStyle).not.toBe('none');
-      expect(focused.outlineWidth).toBe('2px');
+      expectRowFocusRing(await readSummaryFocusRing(summary));
 
       // Keyboard expands, pointer collapses; counts never change.
       const collapsedHeight = (await turn.boundingBox()).height;

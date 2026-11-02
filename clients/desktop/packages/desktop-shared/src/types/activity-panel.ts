@@ -279,6 +279,20 @@ export interface ActivityLiveBgTask {
   taskId: string;
   toolUseId?: string;
   description?: string;
+  taskType?: string;
+  workflowName?: string;
+  spawnDepth?: number;
+  isBackgrounded?: boolean;
+  status?: 'pending' | 'running' | 'paused';
+  phase?: string;
+  summary?: string;
+  usage?: {
+    totalTokens?: number;
+    toolUses?: number;
+    durationMs?: number;
+  };
+  /** False when Canopy cannot stop the task through its provider (Codex). */
+  stoppable?: false;
 }
 
 export interface ActivityLiveBgTasksChatState {
@@ -288,6 +302,18 @@ export interface ActivityLiveBgTasksChatState {
 
 export interface ActivityLiveBgTasksResponse {
   chats: Record<string, ActivityLiveBgTasksChatState>;
+}
+
+/**
+ * Pushed by main whenever one chat's live task set changes. Absolute state:
+ * it replaces whatever the renderer knew for the chat, so replaying it is
+ * safe. `sessionActive: false` (with no tasks) means the chat has no live
+ * provider session.
+ */
+export interface ActivityLiveBgTasksChangedEvent extends ActivityLiveBgTasksChatState {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
 }
 
 export interface ActivityReadFullOutputRequest {
@@ -390,6 +416,9 @@ export interface ActivityPanelApi {
   listLiveBgTasks(
     request: ActivityLiveBgTasksRequest,
   ): Promise<ActivityLiveBgTasksResponse>;
+  onLiveBgTasksChanged(
+    cb: (event: ActivityLiveBgTasksChangedEvent) => void,
+  ): () => void;
   readWorkflowRun(
     request: ActivityReadWorkflowRunRequest,
   ): Promise<WorkflowRunState | null>;

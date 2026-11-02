@@ -4,6 +4,7 @@ export * from './OpenCodeAccountCard';
 // window.api, Zustand stores, Next router/server actions, Prisma, Electron,
 // and Node-only imports.
 export * from './StatusBlocks';
+export * from './useRetry';
 export * from './AgentDefinitionSummary';
 export * from './ShareScopeControls';
 export * from './ShareAudienceLabel';
@@ -11,23 +12,31 @@ export * from './ShareActionButton';
 export * from './DetailActionBar';
 export * from './EmailRecipientInput';
 export * from './AnsiOutput';
+export * from './Badge';
 export * from './StatusPill';
 export * from './AutoRoutedModelPill';
 export * from './CapabilityPill';
 export * from './CapabilityTile';
 export * from './capability-tile-model';
 export * from './CanopyProxyErrorSummary';
+export * from './AiCreditsStopLine';
 export * from './ClaudeAiCreditsFallbackErrorNotice';
+export * from './CodexAccountModelNotice';
+export * from './AiCreditsCheckFeedback';
+export * from './aiCreditsPurchaseCopy';
+export * from './usageLimitModelSwitchCopy';
 export * from './BillingHistoryTable';
 export * from './BillingStatusPill';
 export * from './CreditLedgerTable';
 export * from './InvoicesTable';
 export * from './InvoiceDetailView';
 export * from './DialogModal';
+export * from './DialogFormField';
 export * from './ConfirmDialog';
 export * from './InstalledShareMenu';
 export * from './UninstallConfirmDialog';
 export * from './InstalledItemStatusPicker';
+export * from './InstalledStatusFilterDropdown';
 export * from './InstalledItemStatusRow';
 export * from './ActiveItemsSummary';
 export * from './ShareInstallDialog';
@@ -41,9 +50,11 @@ export * from './SidebarItemGroup';
 export * from './sidebar-item-group-menu';
 export * from './WorktreeDialogs';
 export * from './WorktreeRemovalDialog';
-export * from './WorktreeBatchRemovalDialog';
+export * from './SidebarBatchRemovalDialog';
+export * from './SidebarBatchRemovalNotice';
 export * from './worktree-count-label';
 export * from './LinearProgress';
+export * from './ResizeRailIndicator';
 export * from './CircularProgress';
 export * from './UsageIndicator';
 export * from './PageHeader';
@@ -59,6 +70,8 @@ export * from './DataSharingFeaturePills';
 export * from './DataSharingOptInCta';
 export * from './OrgEnforcedConsentList';
 export * from './Button';
+export * from './ListRow';
+export * from './IconToggleButton';
 export * from './ScrollToBottomButton';
 export * from './Choice';
 export * from './Field';
@@ -66,6 +79,7 @@ export * from './chat/InputDeliveryList';
 export * from './chat/SteeringTitle';
 export * from './chat/SteeringRequestTitle';
 export * from './SuggestionRow';
+export * from './InterruptedSessionRow';
 export * from './HeaderActionButton';
 export * from './MobileTopBarButton';
 export * from './SidebarNavRow';
@@ -77,11 +91,22 @@ export * from './RailIconButton';
 export * from './TitlebarIconButton';
 export * from './ToggleSwitch';
 export * from './SegmentedControl';
+export * from './SettingsSaveStatus';
+export * from './settings/SettingsRows';
+export * from './settings/SettingsButtonRow';
+export * from './settings/SettingsSaveBar';
+export * from './ChoiceList';
+export * from './ProviderRowLabel';
 export * from './ProjectChoiceCard';
 export * from './ControlSelect';
 export * from './OverlayScrollArea';
 export * from './DropdownMenu';
 export * from './SidebarAiCreditsMenuItem';
+export {
+  FREE_AI_CREDITS_LABEL,
+  aiCreditsLabel,
+  isFreeOnlyAiCredits,
+} from './aiCreditsLabel';
 export * from './ExternalTextLink';
 export * from './PluginHarnessConnections';
 export * from './PluginAccountConnection';
@@ -96,20 +121,29 @@ export * from './SpaceNotificationMenu';
 export * from './ActionMenuItems';
 export * from './WorktreeActionsMenu';
 export * from './bubble-badge';
+export * from './BubbleCopyBadge';
 export * from './CopyButton';
 export * from './CopyLinkButton';
 export * from './copy-to-clipboard';
+export * from './copy-feedback';
+export * from './markdown-mermaid-export-context';
+export * from './markdown-mermaid-export-names';
 export * from './ForkChatButton';
-export * from './ShortcutKeys';
+export * from './Kbd';
+export * from './KbdChip';
+export * from './KeyHintFooter';
 export * from './PanelSection';
 export * from './ActivityActionCardButton';
 export * from './ActivityPingDot';
 export * from './RailTabBar';
 export * from './FileTreeRow';
+export * from './FileRootGroupRow';
 export * from './TurnFeedbackControl';
 export * from './TurnFeedbackDialog';
 export * from './TurnTimer';
 export * from './ThinkingSpinner';
+export * from './StatusGlyph';
+export * from './WorkflowLastRunText';
 export * from './ChatToolStepGroup';
 export * from './Tooltip';
 export * from './RichHoverTooltip';
@@ -123,7 +157,6 @@ export * from './LoadingSpinner';
 export * from './CancelableActionButton';
 export type { SpinnerTone } from './spinner-tone';
 export * from './ProgressChecklist';
-export * from './GettingStartedChecklist';
 export * from './RunSpinner';
 export * from './ChatTab';
 export * from './UserBubble';
@@ -139,6 +172,7 @@ export * from './FilesTreeRefreshButton';
 export * from './RelatedItemsSection';
 export * from './PluginDetailSectionHeading';
 export * from './PluginConnectionRouteSection';
+export * from './DiffLineCounts';
 export * from './FileChangeMetadata';
 export * from './FileRevertButton';
 export * from './SourceInfoButton';
@@ -157,9 +191,11 @@ export * from './LabsExperimentsSection';
 export * from './SettingsTabBar';
 export * from './CompletedRunsDisclosure';
 export * from './PlanActionButtonRow';
+export * from './PlanReviewStatusBadge';
 export * from './PlanReviewThread';
 export * from './DagProgressBar';
 export * from './PlanSourceMark';
+export * from './PlanProvenance';
 export * from './HighlightedSegments';
 export * from './Markdown';
 export * from './SkillFilePreview';
@@ -172,14 +208,26 @@ export * from './MobileAppPromo';
 export * from './MobileAppQrPromo';
 export * from './CtaBanner';
 export * from './Notice';
+export * from './UsageLimitNotice';
+export * from './StuckAgentNotice';
+export * from './CatchingUpNotice';
+export * from './OnboardingTip';
+export * from './DirectoryPickerOptionRow';
 export * from './chat/ForkContextNotice';
+export * from './chat/ApprovalSafetyDeniedNotice';
 export * from './DiffStates';
 export * from './RepositoryCloneError';
 export * from './NoticeList';
 export * from './NotificationDetailsDialog';
 export * from './NotificationOfferNotice';
 export * from './AutomationOfferNotice';
+export * from './AutomationPipelineTargetFields';
 export * from './ToastStack';
+export {
+  attachToastSwipe,
+  type ToastSwipe,
+  type ToastSwipeGesture,
+} from './toast-swipe';
 export * from './InlineMention';
 // Phase 2B — rail row visuals.
 export * from './WorkspaceSectionHeader';
@@ -192,6 +240,7 @@ export * from './ProjectAvatarBadge';
 export * from './SidebarFadePresence';
 export * from './SharedWithTeammatesBadge';
 export * from './WorktreeRow';
+export * from './PipelineDispatchedTime';
 export * from './PipelineStatusPopover';
 export * from './TerminalStatusPopover';
 export * from './RunBadgePopover';
@@ -201,20 +250,35 @@ export * from './StandaloneChatRow';
 export * from './SidebarPinMenuItem';
 export * from './SidebarPinnedBadge';
 export * from './WorkEntryRow';
+export * from './AgentStateGlyph';
+export * from './WakeTurnBoundary';
+export * from './WakeParkedNotice';
 export * from './SidebarMoreRow';
 export * from './SidebarRowAge';
 export * from './CometSpinner';
 export * from './spinner-style';
 export * from './chat-look';
+export * from './ChatDetailControl';
 export * from './pr-hover-cards';
+export * from './streaming-text';
 export * from './icon-style';
 export * from './LoadingIndicatorStyle';
 export * from './BusyLabel';
+export * from './ComposerSelectionReason';
 export * from './context-menu-placement';
-export * from './tooltip-exclusivity';
+export * from './tooltip-handoff';
 export * from './ModelProviderIcon';
 export * from './ModelPickerMenu';
 export * from './modelLibraryLock';
+export * from './modelPickerRowCue';
+export * from './ModelUnlockConfirmedNotice';
+export * from './aiCreditsArrival';
+export * from './AiCreditsArrivedNotice';
+export * from './ModelUnlockPendingNotice';
+export * from './dailyFreeCredits';
+export * from './DailyFreeCreditsOffer';
+export * from './guestModelGate';
+export * from './GuestModelGateContent';
 export * from './ThinkingLevelControl';
 // Phase 3 (part B) — diff viewer chrome.
 export * from './diff';
@@ -227,8 +291,11 @@ export * from './composer-plan-chip';
 export * from './FoldReveal';
 export * from './AudioWaveform';
 export * from './ChatComposerShell';
+export * from './ComposerTray';
+export * from './ComposerSendButton';
 // Terminal mode (`!` drafts): shell edge, mode label and run button.
 export * from './TerminalComposerMode';
+
 // Mobile composer compaction (CAN-1229) — overflow (⋯) menu for plan/fast/thinking.
 export * from './ChatComposerOverflowMenu';
 // Slash-command surface primitives shared by the rich-editor menu and host
@@ -265,6 +332,8 @@ export * from './MarketplacePluginInstall';
 export * from './McpServerLogo';
 export * from './McpConnectionStatusBadge';
 export * from './McpSignInPending';
+export * from './EntrySourceLabel';
+export * from './EntrySurfaceIcon';
 export * from './PluginsDiscoveryList';
 export * from './PluginsDiscoveryListLoading';
 export * from './CustomizeBreadcrumbs';
@@ -277,9 +346,12 @@ export * from './UpdateMarker';
 export * from './PluginsPipelineFilters';
 export * from './WorkflowsTabBar';
 export * from './MarketplaceSearchField';
+export * from './SearchField';
+export * from './PageSearchRow';
 export * from './MarketplaceTypeTabs';
+export * from './MarketplaceTypeLabel';
 export * from './PluginsAddCustomMenu';
-export * from './SectionHeading';
+export * from './page-header-copy';
 
 export {
   ChecklistDismiss,
@@ -301,12 +373,15 @@ export * from './activity-item-density';
 export {
   ComposerActionList,
   type ComposerActionRow,
+  type ComposerShowAllControl,
 } from './ComposerActionList';
 export {
   CuratedPipelineCatalog,
   curatedPipelineStaleMessage,
   type CuratedPipelineCatalogProps,
 } from './CuratedPipelineCatalog';
+export * from './CuratedCatalogNotice';
+export * from './CuratedPipelinePreviewDialog';
 export * from './PipelineTemplatesSection';
 export * from './ArchivedChatsCard';
 export * from './ArchivedOverviewRow';
@@ -321,15 +396,10 @@ export * from './EmptyTrashDialog';
 export * from './sidebar-item-classes';
 
 export * from './RetryCountdown';
-export * from './RunningSubagentsButton';
 
 export * from './WorkspaceLayoutPicker';
 
 export * from './AnchorHighlightRing';
-export * from './OnboardingCategoryPicker';
-export * from './OnboardingChoiceTile';
-export * from './OnboardingNavigationControls';
-export * from './GettingStartedSidebarTile';
 export * from './GitHubRepositoryPicker';
 export * from './LinkTargetChip';
 export * from './ComposerHeroFrame';
@@ -343,10 +413,11 @@ export * from './SkeletonBlock';
 export * from './SettingsSkeletons';
 export * from './CenteredLoadingSpinner';
 export * from './DelayedLoadingPlaceholder';
+export * from './SlowLoadNote';
 
-export * from './LimitSubCardView';
-export * from './UsageCardHeader';
+export * from './UsageGroup';
 export * from './UsageResetIcon';
+export * from './UsageLimitedSessionsControl';
 export {
   DeferredPluginsControl,
   type DeferredPluginsControlProps,
@@ -362,7 +433,25 @@ export * from './SidebarStylePicker';
 
 export * from './AppearanceSelect';
 
-export {
-  SettingsControlSelect,
-  type SettingsControlSelectProps,
-} from './SettingsControlSelect';
+export * from './SettingsSelect';
+export * from './settings/SettingsBackButton';
+
+export * from './ComposerLayout';
+export * from './ComposerDrawer';
+export * from './ComposerIconButton';
+export * from './ComposerPlusMenuPresentation';
+export * from './ComposerAccessPicker';
+export * from './ModelPickerTriggerControl';
+export * from './McpServerCardRow';
+
+export * from './GroupedDiffStats';
+export * from './composer-tip-arbiter';
+
+export { StandardPresentationProvider } from './StandardPresentationProvider';
+export * from './RemoteControlMobileAppPromo';
+
+export * from './HomeSection';
+export * from './StartChatSummary';
+
+export * from './DrawerWatcherControl';
+export * from './DrawerInspectorAction';

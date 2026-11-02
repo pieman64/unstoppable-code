@@ -1166,9 +1166,10 @@ export function rankHookTriggers(
  * Brief human-readable description of a fired watcher for the chat
  * transcript's "<kind> watcher has fired" title line: the trigger kind plus
  * basic target info (chat title, pipeline name, hook name, repository).
- * Shared by the main-process watcher scheduler (which stamps it onto the
- * `send_watcher_message` window command) and tests so every surface derives
- * the same copy.
+ * Shared by the main-process watcher scheduler (which stamps it onto every
+ * delivered watcher message as `watcherFired`, whether main queues it itself
+ * or hands a terminal-backed chat's message to the window) and tests so every
+ * surface derives the same copy.
  */
 export function describeWatcherFiredKind(watcher: {
   trigger: AppAdvisorWatcherTriggerType;
@@ -1192,7 +1193,7 @@ export function describeWatcherFiredKind(watcher: {
     case 'standalone_chat_project':
       return withDetail('New chat', target.projectName);
     case 'worktree_pipeline':
-      return withDetail('Pipeline completion', target.pipelineName);
+      return withDetail('Workflow completion', target.pipelineName);
     case 'worktree_hook':
       return withDetail(
         'Hook',
@@ -1200,10 +1201,6 @@ export function describeWatcherFiredKind(watcher: {
       );
     case 'automation':
       return withDetail('Automation run', target.automationName);
-    case 'managed_delegation':
-      return target.outcome === 'timeout'
-        ? 'Delegate watch timed out'
-        : 'Delegate watch completed';
     case 'github_pull_requests': {
       const [first] = target.items;
       return withDetail(

@@ -16,7 +16,9 @@ import {
   InlineTextSkeleton,
   Notice,
   NoticeButton,
+  SettingsSelect,
   ToggleSwitch,
+  type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import {
@@ -24,10 +26,8 @@ import {
   SettingsGroup,
   SettingsRow,
   SettingsSection,
-  SettingsSelect,
   SettingsSubRow,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 /**
  * Only the boolean cadence toggles. This deliberately no longer reads
@@ -44,6 +44,18 @@ const MONTHLY_ANCHOR_OPTIONS: readonly number[] = Array.from(
   { length: 31 },
   (_, index) => index + 1,
 );
+
+const WEEKLY_ANCHOR_SELECT_OPTIONS: readonly SettingsSelectOption[] =
+  WEEKLY_ANCHOR_OPTIONS.map((day) => ({
+    value: String(day),
+    label: DIGEST_WEEKDAY_LABELS[day - 1],
+  }));
+
+const MONTHLY_ANCHOR_SELECT_OPTIONS: readonly SettingsSelectOption[] =
+  MONTHLY_ANCHOR_OPTIONS.map((day) => ({
+    value: String(day),
+    label: digestOrdinalDay(day),
+  }));
 
 const CADENCES: ReadonlyArray<{
   field: CadenceField;
@@ -92,7 +104,6 @@ const CADENCES: ReadonlyArray<{
  * flag keeps one source of truth.
  */
 export function CloudDigestSettings(): JSX.Element | null {
-  const settingsButtonSize = useSettingsButtonSize();
   const [state, setState] = useState<CloudDigestPreferencesState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -334,33 +345,26 @@ export function CloudDigestSettings(): JSX.Element | null {
                   control={
                     <SettingsSelect
                       id={anchorId}
-                      value={
+                      options={
+                        anchorField === 'weeklyAnchorDay'
+                          ? WEEKLY_ANCHOR_SELECT_OPTIONS
+                          : MONTHLY_ANCHOR_SELECT_OPTIONS
+                      }
+                      value={String(
                         unresolved
                           ? DEFAULT_DIGEST_PREFERENCES[anchorField]
-                          : state.preferences[anchorField]
-                      }
+                          : state.preferences[anchorField],
+                      )}
                       disabled={
                         saving ||
                         unresolved ||
                         !state.preferences[cadence.field]
                       }
                       data-testid={`cloud-digest-anchor-${cadence.field}`}
-                      onChange={(event) => {
-                        handleAnchorChange(anchorField, event.target.value);
+                      onValueChange={(next) => {
+                        handleAnchorChange(anchorField, next);
                       }}
-                    >
-                      {anchorField === 'weeklyAnchorDay'
-                        ? WEEKLY_ANCHOR_OPTIONS.map((day) => (
-                            <option key={day} value={day}>
-                              {DIGEST_WEEKDAY_LABELS[day - 1]}
-                            </option>
-                          ))
-                        : MONTHLY_ANCHOR_OPTIONS.map((day) => (
-                            <option key={day} value={day}>
-                              {digestOrdinalDay(day)}
-                            </option>
-                          ))}
-                    </SettingsSelect>
+                    />
                   }
                 />
               ) : null}
@@ -374,7 +378,7 @@ export function CloudDigestSettings(): JSX.Element | null {
           description="Read the digests you've received."
           control={
             <Button
-              size={settingsButtonSize}
+              size="compact"
               variant="secondary"
               onClick={handleOpenDigests}
               data-testid="cloud-digests-view-link"

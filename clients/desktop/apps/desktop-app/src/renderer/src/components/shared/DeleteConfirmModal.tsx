@@ -1,6 +1,5 @@
 import { type JSX, type ReactNode } from 'react';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
+import { ConfirmDialog } from '@canopy/ui-shared/components';
 
 interface DeleteConfirmModalProps {
   title: string;
@@ -26,6 +25,10 @@ interface DeleteConfirmModalProps {
   onCancel: () => void;
 }
 
+/**
+ * Desktop's delete/remove confirmation props, rendered by the shared
+ * `ConfirmDialog` so desktop and web draw one confirmation.
+ */
 export function DeleteConfirmModal({
   title,
   message,
@@ -40,43 +43,18 @@ export function DeleteConfirmModal({
   onCancel,
 }: DeleteConfirmModalProps): JSX.Element {
   return (
-    <DialogModal
-      onClose={pending ? (): void => {} : onCancel}
+    <ConfirmDialog
       title={title}
-      maxWidth="md"
-      headerBorder={false}
-      closeOnBackdrop={!pending}
+      message={message}
+      confirmLabel={confirmLabel}
+      busyLabel={pendingLabel}
+      busy={pending}
+      errorMessage={error}
+      destructive={confirmTone === 'destructive'}
       dataTestId={dataTestId}
-    >
-      <div className="flex flex-col gap-4 px-5 pb-5">
-        {typeof message === 'string' ? (
-          <p className="text-s fg-secondary">{message}</p>
-        ) : (
-          message
-        )}
-
-        {error && <p className="text-xs fg-destructive">{error}</p>}
-
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            size="lg"
-            onClick={onCancel}
-            disabled={pending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant={confirmTone}
-            size="lg"
-            data-testid={confirmTestId}
-            onClick={onConfirm}
-            disabled={pending}
-          >
-            {pending ? pendingLabel : confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </DialogModal>
+      confirmTestId={confirmTestId}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
   );
 }

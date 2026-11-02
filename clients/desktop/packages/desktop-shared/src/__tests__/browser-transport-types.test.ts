@@ -46,22 +46,22 @@ const clearBrowser: SetActiveRequest = {
   browserId: null,
 };
 
-// @ts-expect-error Normalized writers cannot emit legacy group layout data.
 const groupState: WorktreeBrowserLayoutState = {
   browserOrder: [],
   activeBrowserId: null,
+  // @ts-expect-error Normalized writers cannot emit legacy group layout data.
   groups: [],
 };
-// @ts-expect-error Normalized writers cannot emit legacy split layout data.
 const splitState: WorktreeBrowserLayoutState = {
   browserOrder: [],
   activeBrowserId: null,
+  // @ts-expect-error Normalized writers cannot emit legacy split layout data.
   splitSizes: [],
 };
-// @ts-expect-error Normalized writers cannot emit legacy custom-name data.
 const customNameState: WorktreeBrowserLayoutState = {
   browserOrder: [],
   activeBrowserId: null,
+  // @ts-expect-error Normalized writers cannot emit legacy custom-name data.
   browserCustomNames: {},
 };
 // @ts-expect-error The explicit browserId field is required, including for clear.

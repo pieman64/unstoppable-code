@@ -203,6 +203,7 @@ describe('PipelineTriggerSection', () => {
           pipelines={PIPELINES}
           automations={automationsApi({ activities })}
           returnTo={RETURN_TO}
+          triggerTypes={REVIEW.triggerTypes}
         />,
       );
     });
@@ -230,7 +231,7 @@ describe('PipelineTriggerSection', () => {
     renderTrigger([release, chat]);
 
     expect(byTestId('pipeline-trigger-automations-empty')?.textContent).toBe(
-      'No automations run this pipeline.',
+      'No automations run this workflow.',
     );
     expect(byTestId('pipeline-trigger-automation')).toBeNull();
   });

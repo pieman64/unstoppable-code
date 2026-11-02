@@ -11,11 +11,15 @@ import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
  * resolve that to the registry definition's friendly title instead of
  * leaking 'terminal' / 'browser' / 'file-explorer' into the tab strip.
  */
+import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { act, isValidElement, type JSX, type ReactNode } from 'react';
 import type * as ReactNamespace from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { PANEL_KINDS, type PanelKind } from '@canopy/protocol';
-import type { PanelTabModel } from '@canopy/ui-shared/panels';
+import type {
+  PanelIntentCallbacks,
+  PanelTabModel,
+} from '@canopy/ui-shared/panels';
 import {
   BarChart4BarsIcon,
   PipelineIcon,
@@ -49,6 +53,10 @@ import {
   resetDelegationActivityStoreForTests,
   useDelegationActivityStore,
 } from '@/stores/delegationActivityStore';
+import {
+  resetLiveBackgroundTaskStoreForTests,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
 import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeaturesStore';
 import { PanelWorktreeContext } from '../panel-worktree-context';
 import {
@@ -58,6 +66,7 @@ import {
   renderPanelTabLabel,
   renderPanelTabTooltip,
   renderPanelTabTrailing,
+  renderPanelTabAttention,
 } from '../tab-display';
 
 // Isolate the registry import graph from the heavy real components (Slate,
@@ -111,6 +120,12 @@ jest.mock('@/components/activity/activity-sections', () => {
     {
       id: 'changed-files',
       title: 'Changed Files',
+      icon: react.createElement('svg'),
+      render: jest.fn((): unknown => null),
+    },
+    {
+      id: 'pipeline-runs',
+      title: 'Workflow runs',
       icon: react.createElement('svg'),
       render: jest.fn((): unknown => null),
     },
@@ -171,7 +186,7 @@ const KIND_TITLES: Record<PanelKind, string> = {
   'activity-card': 'Activity card',
   usage: 'Usage',
   automations: 'Automations',
-  'pipeline-execution': 'Pipeline run',
+  'pipeline-execution': 'Workflow run',
   plan: 'Plan',
   'plan-diagram': 'Plan diagram',
   'chat-visuals': 'Chat visuals',
@@ -203,7 +218,6 @@ function boundChatPanelTab(chatTabId: string): PanelTabModel {
 /** Minimal chat tab, mirroring the store's ChatTab shape (no casts). */
 function makeChatTab(overrides: Partial<ChatTab> & { id: string }): ChatTab {
   return {
-    id: overrides.id,
     title: 'Chat',
     messages: [],
     status: 'idle',
@@ -213,11 +227,22 @@ function makeChatTab(overrides: Partial<ChatTab> & { id: string }): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     ...overrides,
+    id: overrides.id,
   };
 }
+
+const NOOP_PANEL_INTENT_CALLBACKS: PanelIntentCallbacks = {
+  onSelectTab: jest.fn(),
+  onCloseTab: jest.fn(),
+  onCloseGroup: jest.fn(),
+  onSplitGroup: jest.fn(),
+  onMaximizeGroup: jest.fn(),
+  onFocusGroup: jest.fn(),
+  onMovePanel: jest.fn(),
+};
 
 describe('panelTabDisplayTitle', () => {
   it.each([...PANEL_KINDS])(
@@ -395,7 +420,7 @@ describe('Cost panel tab display', () => {
           edge="right"
           isActiveGroup={false}
           hasMultipleGroups
-          callbacks={{}}
+          callbacks={NOOP_PANEL_INTENT_CALLBACKS}
           getTabTitle={panelTabDisplayTitle}
           renderTabIcon={renderPanelTabIcon}
           renderTabTooltip={renderPanelTabTooltip}
@@ -446,6 +471,26 @@ describe('early-access sentence-case names', () => {
     expect(renderPanelTabLabel(storedChangeDiagram)).toBe('Change diagram');
     expect(panelTabDisplayTitle(changedFilesCard)).toBe('Changed files');
     expect(renderPanelTabLabel(changedFilesCard)).toBe('Changed files');
+  });
+
+  it('shows a stored former default name under its new name (CAN-4651)', () => {
+    // Layouts saved before the rename persist the old default titles.
+    expect(
+      panelTabDisplayTitle({
+        panelId: 'panel-pipeline-run-1',
+        kind: 'pipeline-execution',
+        title: 'Pipeline run',
+        instance: { executionId: 'run-1' },
+      }),
+    ).toBe('Workflow run');
+    expect(
+      panelTabDisplayTitle({
+        panelId: 'panel-card',
+        kind: 'activity-card',
+        title: 'Pipeline runs',
+        instance: { sectionId: 'pipeline-runs' },
+      }),
+    ).toBe('Workflow runs');
   });
 
   it('leaves own titles untouched with early access on', () => {
@@ -617,7 +662,7 @@ describe('pipeline-execution run tabs', () => {
   const runTab: PanelTabModel = {
     panelId: 'panel-pipeline-run-1',
     kind: 'pipeline-execution',
-    title: 'Pipeline run',
+    title: 'Workflow run',
     instance: { executionId: 'run-1' },
   };
 
@@ -646,9 +691,9 @@ describe('pipeline-execution run tabs', () => {
   }
 
   it('labels a run tab with its instance title, else the registry title', () => {
-    expect(renderLabel(runTab)).toBe('Pipeline run');
+    expect(renderLabel(runTab)).toBe('Workflow run');
     expect(panelTabDisplayTitle(untitledTab('pipeline-execution'))).toBe(
-      'Pipeline run',
+      'Workflow run',
     );
     expect(renderLabel({ ...runTab, title: 'Nightly build' })).toBe(
       'Nightly build',
@@ -656,7 +701,7 @@ describe('pipeline-execution run tabs', () => {
   });
 
   it("shows the run's name live once its panel learned it", () => {
-    expect(renderLabel(runTab)).toBe('Pipeline run');
+    expect(renderLabel(runTab)).toBe('Workflow run');
     act(() => {
       patchPipelinePanelUi(
         'project-1/worktree-1::panel-pipeline-run-1',
@@ -671,7 +716,7 @@ describe('pipeline-execution run tabs', () => {
     // The same deterministic panel id bound to another run never borrows it.
     expect(
       panelTabDisplayTitle({ ...runTab, instance: { executionId: 'run-2' } }),
-    ).toBe('Pipeline run');
+    ).toBe('Workflow run');
   });
 
   it('uses the app pipeline icon the Pipeline runs section uses', () => {
@@ -1396,6 +1441,192 @@ describe('panel chat tab unread indicator', () => {
   });
 });
 
+describe('panel chat tab question marker', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    useChatStore.setState({
+      worktreeChats: {},
+      pendingQuestions: {},
+      pendingApprovals: {},
+    });
+  });
+
+  function bindChatTab(tab: ChatTab): void {
+    useChatStore.setState({
+      worktreeChats: {
+        'project-1/worktree-1': { activeTabId: tab.id, tabs: [tab] },
+      },
+    });
+  }
+
+  function setQuestions(
+    entries: { requestId: string; chatId?: string; answeredAt?: number }[],
+  ): void {
+    act(() => {
+      useChatStore.setState({
+        pendingQuestions: Object.fromEntries(
+          entries.map(({ requestId, chatId = 'chat-1', answeredAt }) => [
+            requestId,
+            {
+              requestId,
+              projectId: 'project-1',
+              worktreeId: 'worktree-1',
+              chatId,
+              questions: [],
+              ...(answeredAt === undefined ? {} : { answeredAt }),
+            },
+          ]),
+        ),
+      });
+    });
+  }
+
+  function marker(): Element | null {
+    return container.querySelector('[data-testid="panel-tab-question-chat-1"]');
+  }
+
+  function renderClassic(): void {
+    act(() => {
+      root.render(
+        <>
+          {renderPanelTabIcon(boundChatPanelTab('chat-1'))}
+          {renderPanelTabTrailing(boundChatPanelTab('chat-1'))}
+        </>,
+      );
+    });
+  }
+
+  function renderFill(): void {
+    act(() => {
+      root.render(
+        <PanelTabStyleProvider value="fill">
+          {renderPanelTabIcon(boundChatPanelTab('chat-1'))}
+          {renderPanelTabTrailing(boundChatPanelTab('chat-1'))}
+          {renderPanelTabAttention(boundChatPanelTab('chat-1'))}
+        </PanelTabStyleProvider>,
+      );
+    });
+  }
+
+  it("shows the marker in a classic tab's leading slot, over the working spinner", () => {
+    bindChatTab(makeChatTab({ id: 'chat-1', status: 'streaming' }));
+    setQuestions([{ requestId: 'q1' }]);
+    renderClassic();
+    expect(marker()?.getAttribute('role')).toBe('img');
+    expect(marker()?.getAttribute('aria-label')).toBe('Question waiting');
+    expect(container.querySelector(`[${PANEL_TAB_BUSY_ATTRIBUTE}]`)).toBeNull();
+    // The classic leading slot is hidden from assistive technology, so the
+    // trailing seam names the question once.
+    expect(
+      container.querySelector('[data-testid="panel-tab-question-label-chat-1"]')
+        ?.textContent,
+    ).toBe('Question waiting');
+    expect(container.querySelectorAll('[role="img"]')).toHaveLength(1);
+  });
+
+  it('outranks a tool approval and a plan review in a classic tab', () => {
+    bindChatTab(makeChatTab({ id: 'chat-1', pendingPlanExit: {} }));
+    act(() => {
+      useChatStore.setState({
+        pendingApprovals: {
+          r1: {
+            requestId: 'r1',
+            projectId: 'project-1',
+            worktreeId: 'worktree-1',
+            chatId: 'chat-1',
+            provider: 'claude',
+            title: 'Run tests',
+            details: { kind: 'command', command: 'npm test' },
+          },
+        },
+      });
+    });
+    setQuestions([{ requestId: 'q1' }]);
+    renderClassic();
+    expect(marker()).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="panel-tab-tool-approval-chat-1"]'),
+    ).toBeNull();
+  });
+
+  it("shows one marker on a fill tab's right in place of the needs-input dots", () => {
+    bindChatTab(
+      makeChatTab({
+        id: 'chat-1',
+        status: 'streaming',
+        pendingPlanExit: {},
+        unread: true,
+      }),
+    );
+    setQuestions([{ requestId: 'q1' }]);
+    renderFill();
+    expect(
+      container.querySelectorAll('[data-testid^="panel-tab-question-chat-1"]'),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector('[data-testid="panel-tab-plan-review-chat-1"]'),
+    ).toBeNull();
+    // Unread stays its own indicator; no busy spinner while the question waits.
+    expect(
+      container.querySelector('[data-testid="panel-tab-unread-dot-chat-1"]'),
+    ).not.toBeNull();
+    expect(container.querySelector(`[${PANEL_TAB_BUSY_ATTRIBUTE}]`)).toBeNull();
+  });
+
+  it('keeps the marker until the last question is answered', () => {
+    bindChatTab(makeChatTab({ id: 'chat-1', pendingPlanExit: {} }));
+    setQuestions([{ requestId: 'q1' }, { requestId: 'q2' }]);
+    renderFill();
+    expect(marker()).not.toBeNull();
+
+    setQuestions([{ requestId: 'q1', answeredAt: 1 }, { requestId: 'q2' }]);
+    expect(marker()).not.toBeNull();
+
+    setQuestions([
+      { requestId: 'q1', answeredAt: 1 },
+      { requestId: 'q2', answeredAt: 2 },
+    ]);
+    expect(marker()).toBeNull();
+    // The next applicable state returns.
+    expect(
+      container.querySelector('[data-testid="panel-tab-plan-review-chat-1"]'),
+    ).not.toBeNull();
+  });
+
+  it('ignores questions from other chats or worktrees', () => {
+    bindChatTab(makeChatTab({ id: 'chat-1' }));
+    setQuestions([{ requestId: 'q1', chatId: 'chat-2' }]);
+    act(() => {
+      useChatStore.setState((state) => ({
+        pendingQuestions: {
+          ...state.pendingQuestions,
+          q3: {
+            requestId: 'q3',
+            projectId: 'project-1',
+            worktreeId: 'worktree-2',
+            chatId: 'chat-1',
+            questions: [],
+          },
+        },
+      }));
+    });
+    renderClassic();
+    expect(marker()).toBeNull();
+  });
+});
+
 describe('panel chat tab busy marker', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -1460,7 +1691,7 @@ describe('panel chat tab busy marker', () => {
     expect(busyMarker()).toBeNull();
   });
 
-  it('shows the busy spinner for an idle chat with live delegates', () => {
+  it('shows the background spinner for an idle chat with live delegates', () => {
     bindChatTab(makeChatTab({ id: 'chat-1', status: 'idle' }));
     try {
       act(() => {
@@ -1475,8 +1706,18 @@ describe('panel chat tab busy marker', () => {
       act(() => {
         root.render(<>{renderPanelTabIcon(boundChatPanelTab('chat-1'))}</>);
       });
+      // Delegates block close, so the busy marker still withholds it.
       expect(busyMarker()).not.toBeNull();
-      expect(container.querySelector('[aria-label="Thinking"]')).not.toBeNull();
+      // The only spinner is the quiet background glyph.
+      const glyph = container.querySelector(
+        '[role="img"][aria-label="1 background task running"]',
+      );
+      expect(glyph?.querySelector('[aria-label="Thinking"]')).toBeInstanceOf(
+        HTMLElement,
+      );
+      expect(
+        container.querySelectorAll('[aria-label="Thinking"]'),
+      ).toHaveLength(1);
 
       // Back to the idle icon once the delegates finish.
       act(() => {
@@ -1491,6 +1732,58 @@ describe('panel chat tab busy marker', () => {
       expect(busyMarker()).toBeNull();
     } finally {
       resetDelegationActivityStoreForTests();
+    }
+  });
+
+  it("keeps an unread chat's unread ink on its background spinner", () => {
+    bindChatTab(makeChatTab({ id: 'chat-1', status: 'idle', unread: true }));
+    try {
+      act(() => {
+        useLiveBackgroundTaskStore.getState().applyPush({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          sessionActive: true,
+          liveTasks: [{ taskId: 'dev-server', taskType: 'local_bash' }],
+        });
+      });
+      act(() => {
+        root.render(<>{renderPanelTabIcon(boundChatPanelTab('chat-1'))}</>);
+      });
+      const spinner = container
+        .querySelector('[role="img"][aria-label="1 background task running"]')
+        ?.querySelector('[aria-label="Thinking"]');
+      expect(spinner).toBeInstanceOf(HTMLElement);
+      expect(spinner?.className).toContain(
+        OPERATIONAL_STATUS_COLORS.unread.foreground,
+      );
+    } finally {
+      resetLiveBackgroundTaskStoreForTests();
+    }
+  });
+
+  it('shows a shell-only chat as background work without withholding close', () => {
+    bindChatTab(makeChatTab({ id: 'chat-1', status: 'idle' }));
+    try {
+      act(() => {
+        useLiveBackgroundTaskStore.getState().applyPush({
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          sessionActive: true,
+          liveTasks: [{ taskId: 'dev-server', taskType: 'local_bash' }],
+        });
+      });
+      act(() => {
+        root.render(<>{renderPanelTabIcon(boundChatPanelTab('chat-1'))}</>);
+      });
+      expect(
+        container.querySelector('[aria-label="1 background task running"]'),
+      ).not.toBeNull();
+      // Shells don't block close (D8).
+      expect(busyMarker()).toBeNull();
+    } finally {
+      resetLiveBackgroundTaskStoreForTests();
     }
   });
 

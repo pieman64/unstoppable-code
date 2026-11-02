@@ -151,8 +151,8 @@ describe('canopy-json script timeoutSeconds', () => {
       'shell.windows must be "cmd", "powershell", or "bash"',
     ],
     [{ mac: 'powershell' }, 'shell.mac must be "zsh" or "bash"'],
-    [{ linux: 'bash' }, 'shell contains unsupported key "linux"'],
-    [{}, 'shell must configure windows or mac'],
+    [{ solaris: 'bash' }, 'shell contains unsupported key "solaris"'],
+    [{}, 'shell must configure windows, mac, or linux'],
     ['zsh', 'shell must be an object'],
   ])('rejects invalid script shell value %#', (shell, message) => {
     expect(() =>
@@ -672,8 +672,8 @@ describe('canopy-json command hook shell', () => {
       'shell.windows must be "cmd", "powershell", or "bash"',
     ],
     [{ mac: 'powershell' }, 'shell.mac must be "zsh" or "bash"'],
-    [{ linux: 'bash' }, 'shell contains unsupported key "linux"'],
-    [{}, 'shell must configure windows or mac'],
+    [{ solaris: 'bash' }, 'shell contains unsupported key "solaris"'],
+    [{}, 'shell must configure windows, mac, or linux'],
     ['zsh', 'shell must be an object'],
   ])('rejects invalid command hook shell value %#', (shell, message) => {
     expect(() =>

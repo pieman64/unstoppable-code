@@ -2,6 +2,11 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ChatStorageV2 } from './chat-storage-v2';
 import { summarizeDeltaJournal } from './chat-delta-journal/reader';
+import {
+  assertNoNewerChatStorageManifest,
+  selectJournal,
+  parseChatStorageManifest,
+} from './chat-delta-journal/format';
 import { isErrnoException, isRecord } from './type-guards';
 
 /** Lightweight discovery only; the repository validates/replays full storage. */
@@ -50,6 +55,7 @@ function parseLiveIndex(
 export async function readChatStorageDiscoveryIndex(
   root: string,
   scopeId: string,
+  options: { maxManifestVersion?: 3 | 4 } = {},
 ): Promise<ChatStorageDiscoveryIndex> {
   if (!/^[a-zA-Z0-9_-]+$/.test(scopeId))
     throw new Error('Invalid chat storage scope');
@@ -59,17 +65,27 @@ export async function readChatStorageDiscoveryIndex(
       'utf8',
     ),
   );
+  assertNoNewerChatStorageManifest(
+    manifest,
+    scopeId,
+    options.maxManifestVersion,
+  );
   if (
     !isRecord(manifest) ||
-    (manifest.version !== 2 && manifest.version !== 3) ||
+    (manifest.version !== 2 &&
+      manifest.version !== 3 &&
+      manifest.version !== 4) ||
     manifest.scopeId !== scopeId
   )
     throw new Error('Invalid chat storage authority manifest');
-  if (manifest.version === 3) {
-    const store = new ChatStorageV2(root, scopeId);
+  if (manifest.version === 3 || manifest.version === 4)
+    parseChatStorageManifest(manifest);
+  if (selectJournal(manifest)) {
+    const store = new ChatStorageV2(root, scopeId, undefined, options);
     const summary = await summarizeDeltaJournal({
       directory: store.directory,
       scopeId,
+      maxManifestVersion: options.maxManifestVersion,
     });
     const indexes = await store.indexes();
     // A plain-data copy, validated like the version 2 file.
@@ -78,6 +94,12 @@ export async function readChatStorageDiscoveryIndex(
       ...parseLiveIndex(live),
       pendingJournal: summary.recordCount > 0 || summary.tornTail !== undefined,
     };
+  }
+  if (manifest.version === 4) {
+    const store = new ChatStorageV2(root, scopeId, undefined, options);
+    const indexes = await store.indexes();
+    const live: unknown = JSON.parse(JSON.stringify(indexes.live));
+    return { ...parseLiveIndex(live), pendingJournal: false };
   }
   const index: unknown = JSON.parse(
     await readFile(

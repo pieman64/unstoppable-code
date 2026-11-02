@@ -1,22 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   HookDescriptor,
   HookRunResponse,
 } from '@canopy/desktop-shared/types';
+import { logMainProcessWarn } from './main-process-logging';
 import { getHookInvocationDir, getHookInvocationsDir } from './paths';
 import {
   appendRunLogLines,
   completeRunLogFiles,
   createRunLogCoordinator,
-  MAX_RUN_LOG_LINES,
-  parseLogLines,
+  readRunLogTailLines,
   startRunLogFiles,
+  writeRunLogMeta,
 } from './run-log-store';
 import { isRecord } from './type-guards';
 
 const runLogs = createRunLogCoordinator();
+const liveRunIds = new Set<string>();
+
+/** Finished runs kept per hook key; older ones are pruned when a run starts. */
+export const MAX_RETAINED_HOOK_RUNS_PER_HOOK = 20;
 
 export interface PersistedHookRunFile {
   version: 1;
@@ -122,7 +127,31 @@ async function readMeta(
   }
 }
 
+/**
+ * A run persisted as running that no hook run in this process owns was
+ * interrupted (for example by a crash); report it as cancelled. Liveness is
+ * checked before the metadata is read: completion writes its final status
+ * before the run stops being live, so a run seen as not live already has its
+ * final status on disk.
+ */
+async function readResolvedRunMeta(
+  metaPath: string,
+  runId: string,
+): Promise<PersistedHookRunFile | null> {
+  const live = liveRunIds.has(runId);
+  const meta = await readMeta(metaPath);
+  if (!meta || meta.status !== 'running' || live) {
+    return meta;
+  }
+  return {
+    ...meta,
+    status: 'cancelled',
+    completedAt: meta.completedAt ?? meta.updatedAt,
+  };
+}
+
 interface HookRunLogEntry {
+  dirName: string;
   meta: PersistedHookRunFile;
   logPath: string;
 }
@@ -146,11 +175,46 @@ async function listHookRunLogEntries(args: {
           entry.name,
         );
         const meta = await readMeta(metaPath);
-        return meta ? { meta, logPath } : null;
+        return meta ? { dirName: entry.name, meta, logPath } : null;
       }),
   );
 
   return runs.flatMap((run) => (run ? [run] : []));
+}
+
+async function pruneFinishedHookRuns(args: {
+  projectId: string;
+  worktreeId: string;
+  hookKey: string;
+}): Promise<void> {
+  const entries = await listHookRunLogEntries(args);
+  const finished = entries
+    .filter(
+      (entry) =>
+        entry.meta.hook.hookKey === args.hookKey &&
+        entry.meta.status !== 'running' &&
+        !liveRunIds.has(entry.meta.runId),
+    )
+    .sort(
+      (left, right) =>
+        right.meta.startedAt.localeCompare(left.meta.startedAt) ||
+        right.dirName.localeCompare(left.dirName),
+    );
+  const invocationsDir = getHookInvocationsDir(args.projectId, args.worktreeId);
+  await Promise.all(
+    finished.slice(MAX_RETAINED_HOOK_RUNS_PER_HOOK).map(async (entry) => {
+      try {
+        await rm(join(invocationsDir, entry.dirName), {
+          recursive: true,
+          force: true,
+        });
+      } catch (error) {
+        logMainProcessWarn('[hook-log-store] Failed to prune a hook run', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }),
+  );
 }
 
 async function readHookRunLogEntryTail(args: {
@@ -168,11 +232,16 @@ async function readHookRunLogEntryTail(args: {
     args.entry.meta.hook.hookKey,
   );
 
-  const raw = await readFile(args.entry.logPath, 'utf8').catch(() => '');
-  const allLines = args.maxLines === 0 ? [] : parseLogLines(raw);
-  const lines =
-    allLines.length > args.maxLines ? allLines.slice(-args.maxLines) : allLines;
-  return { meta: args.entry.meta, lines };
+  const lines = await readRunLogTailLines(args.entry.logPath, args.maxLines);
+  const { metaPath } = getHookRunPaths(
+    args.projectId,
+    args.worktreeId,
+    args.entry.dirName,
+  );
+  const meta =
+    (await readResolvedRunMeta(metaPath, args.entry.meta.runId)) ??
+    args.entry.meta;
+  return { meta, lines };
 }
 
 export async function startHookRunLog(args: {
@@ -201,15 +270,27 @@ export async function startHookRunLog(args: {
     durationMs: 0,
   };
 
-  await startRunLogFiles({
-    coordinator: runLogs,
-    projectId: args.projectId,
-    worktreeId: args.worktreeId,
-    runKey: args.hook.hookKey,
-    runId,
-    paths: { dirPath, metaPath, logPath },
-    meta: payload,
-  });
+  liveRunIds.add(runId);
+  try {
+    await startRunLogFiles({
+      coordinator: runLogs,
+      projectId: args.projectId,
+      worktreeId: args.worktreeId,
+      runKey: args.hook.hookKey,
+      runId,
+      paths: { dirPath, metaPath, logPath },
+      meta: payload,
+      beforeStart: () =>
+        pruneFinishedHookRuns({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          hookKey: args.hook.hookKey,
+        }),
+    });
+  } catch (error) {
+    liveRunIds.delete(runId);
+    throw error;
+  }
 
   return {
     projectId: args.projectId,
@@ -261,19 +342,11 @@ export async function appendHookRunLogLines(args: {
     if (!meta || meta.runId !== args.ref.runId) {
       return;
     }
-    await writeFile(
-      metaPath,
-      JSON.stringify(
-        {
-          ...meta,
-          activeActionIndex: args.activeActionIndex,
-          updatedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-      'utf8',
-    );
+    await writeRunLogMeta(metaPath, {
+      ...meta,
+      activeActionIndex: args.activeActionIndex,
+      updatedAt: new Date().toISOString(),
+    });
   });
 }
 
@@ -286,28 +359,33 @@ export async function completeHookRunLog(args: {
     args.ref.worktreeId,
     args.ref.runId,
   );
-  await completeRunLogFiles({
-    coordinator: runLogs,
-    projectId: args.ref.projectId,
-    worktreeId: args.ref.worktreeId,
-    runKey: args.ref.hook.hookKey,
-    runId: args.ref.runId,
-    paths: { metaPath, logPath },
-    readMeta: () => readMeta(metaPath),
-    buildNextMeta: (meta, now): PersistedHookRunFile => ({
-      ...meta,
-      status: args.response.success
-        ? 'success'
-        : args.response.stopped || args.response.exitCode === null
-          ? 'cancelled'
-          : 'failed',
-      updatedAt: now,
-      completedAt: now,
-      exitCode: args.response.exitCode,
-      timedOut: args.response.timedOut,
-      durationMs: args.response.durationMs,
-    }),
-  });
+  try {
+    await completeRunLogFiles({
+      coordinator: runLogs,
+      projectId: args.ref.projectId,
+      worktreeId: args.ref.worktreeId,
+      runKey: args.ref.hook.hookKey,
+      runId: args.ref.runId,
+      paths: { metaPath, logPath },
+      readMeta: () => readMeta(metaPath),
+      buildNextMeta: (meta, now): PersistedHookRunFile => ({
+        ...meta,
+        status: args.response.success
+          ? 'success'
+          : args.response.stopped ||
+              (args.response.exitCode === null && !args.response.timedOut)
+            ? 'cancelled'
+            : 'failed',
+        updatedAt: now,
+        completedAt: now,
+        exitCode: args.response.exitCode,
+        timedOut: args.response.timedOut,
+        durationMs: args.response.durationMs,
+      }),
+    });
+  } finally {
+    liveRunIds.delete(args.ref.runId);
+  }
 }
 
 export async function readHookRunLogTail(args: {
@@ -324,17 +402,10 @@ export async function readHookRunLogTail(args: {
     args.worktreeId,
     args.runId,
   );
-  const meta = await readMeta(metaPath);
-  if (!meta) return { meta: null, lines: [] };
+  if (!(await readMeta(metaPath))) return { meta: null, lines: [] };
 
-  const safeMaxLines = Math.max(0, Math.min(args.maxLines, MAX_RUN_LOG_LINES));
-  if (safeMaxLines === 0) return { meta, lines: [] };
-
-  const raw = await readFile(logPath, 'utf8').catch(() => '');
-  const allLines = parseLogLines(raw);
-  const lines =
-    allLines.length > safeMaxLines ? allLines.slice(-safeMaxLines) : allLines;
-  return { meta, lines };
+  const lines = await readRunLogTailLines(logPath, args.maxLines);
+  return { meta: await readResolvedRunMeta(metaPath, args.runId), lines };
 }
 
 export async function listHookRunLogTails(args: {
@@ -347,24 +418,21 @@ export async function listHookRunLogTails(args: {
     lines: string[];
   }>
 > {
-  const safeMaxLines = Math.max(0, Math.min(args.maxLines, MAX_RUN_LOG_LINES));
   const entries = await listHookRunLogEntries({
     projectId: args.projectId,
     worktreeId: args.worktreeId,
   });
 
-  const runs = await Promise.all(
+  return Promise.all(
     entries.map((entry) =>
       readHookRunLogEntryTail({
         projectId: args.projectId,
         worktreeId: args.worktreeId,
         entry,
-        maxLines: safeMaxLines,
+        maxLines: args.maxLines,
       }),
     ),
   );
-
-  return runs;
 }
 
 export async function listLatestHookRunLogTails(args: {
@@ -377,7 +445,6 @@ export async function listLatestHookRunLogTails(args: {
     lines: string[];
   }>
 > {
-  const safeMaxLines = Math.max(0, Math.min(args.maxLines, MAX_RUN_LOG_LINES));
   const entries = await listHookRunLogEntries({
     projectId: args.projectId,
     worktreeId: args.worktreeId,
@@ -397,7 +464,7 @@ export async function listLatestHookRunLogTails(args: {
         projectId: args.projectId,
         worktreeId: args.worktreeId,
         entry,
-        maxLines: safeMaxLines,
+        maxLines: args.maxLines,
       }),
     ),
   );

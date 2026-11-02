@@ -501,6 +501,19 @@ describe('SubagentChatPanel', () => {
     act((): void => root.unmount());
   });
 
+  it('marks the panel as a chat window', () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    act((): void => root.render(<SubagentChatPanel {...props()} />));
+    // The shared stylesheet keeps plain line breaks inside it.
+    expect(
+      container
+        .querySelector('[data-testid="subagent-chat-panel"]')
+        ?.hasAttribute('data-chat-window'),
+    ).toBe(true);
+    act((): void => root.unmount());
+  });
+
   it('keeps tree loading and missing-node states quiet', () => {
     const container = document.createElement('div');
     const root = createRoot(container);

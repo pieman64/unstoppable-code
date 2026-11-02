@@ -11,6 +11,10 @@ function createHandleStub(injectItems: jest.Mock): {
     capabilitySnapshotId: 'snapshot-new',
     runTurn: () =>
       Promise.reject(new Error('runTurn is not exercised by this spec')),
+    submitSteeringInput: () =>
+      Promise.reject(
+        new Error('submitSteeringInput is not exercised by this spec'),
+      ),
     injectItems,
     interrupt: () => Promise.resolve(),
     unsubscribe: () => Promise.resolve(),

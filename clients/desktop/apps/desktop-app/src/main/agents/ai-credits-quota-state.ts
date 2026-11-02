@@ -150,6 +150,31 @@ export function clearProviderQuotaReached(provider: AgentProviderType): void {
   quotaByProvider.delete(provider);
 }
 
+/**
+ * A successful usage read only disproves a rejection that predates the read.
+ * A provider failure observed while the HTTP request was in flight wins even
+ * if the HTTP response is published afterward. Equality fails closed for
+ * same-millisecond observations.
+ */
+export function canReconcileProviderQuotaReached(
+  provider: AgentProviderType,
+  fetchStartedAt: number,
+): boolean {
+  if (!Number.isFinite(fetchStartedAt) || fetchStartedAt <= 0) return false;
+  const state = quotaByProvider.get(provider);
+  return state === undefined || state.reachedAt < fetchStartedAt;
+}
+
+/** Clear only an older automatic quota latch, never a newer live rejection. */
+export function reconcileProviderQuotaReached(
+  provider: AgentProviderType,
+  fetchStartedAt: number,
+): boolean {
+  if (!canReconcileProviderQuotaReached(provider, fetchStartedAt)) return false;
+  quotaByProvider.delete(provider);
+  return true;
+}
+
 /** Reset all quota-reached state (test seam). */
 export function clearAllProviderQuotaReached(): void {
   quotaByProvider.clear();

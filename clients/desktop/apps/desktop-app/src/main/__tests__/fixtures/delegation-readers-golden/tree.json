@@ -1,0 +1,128 @@
+[
+  {
+    "snapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000010",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 1,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "completed",
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "Final result 00000000-0000-4000-8000-000000000010",
+      "outputTruncated": false,
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default"
+      }
+    },
+    "description": "Review",
+    "prompt": "Inspect retained evidence",
+    "executionMode": "background",
+    "runGeneration": 1,
+    "sequence": 2,
+    "createdAt": 100,
+    "runSettledAt": 120,
+    "parentHarnessId": "codex"
+  },
+  {
+    "snapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000011",
+      "status": "completed",
+      "outputTruncated": false,
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "earlier result"
+    },
+    "description": "Review",
+    "prompt": "Inspect retained evidence",
+    "executionMode": "background",
+    "runGeneration": 1,
+    "sequence": 4,
+    "createdAt": 104,
+    "parentHarnessId": "codex"
+  },
+  {
+    "snapshot": {
+      "delegationId": "00000000-0000-4000-8000-000000000011",
+      "depth": 1,
+      "nestedDelegation": "not_enabled",
+      "runGeneration": 2,
+      "permissions": {
+        "writePaths": []
+      },
+      "status": "completed",
+      "routeSnapshot": {
+        "selectedModelId": "logical-review-model",
+        "runtimeModelId": "native-model",
+        "harnessId": "third-harness",
+        "runtimeKind": "local-sdk",
+        "runnerRegistrationId": "third-local",
+        "runtimeVersion": "1.0",
+        "adapterVersion": "1",
+        "modelSource": "test",
+        "providerType": "test-inference",
+        "assignmentRevision": "assignment-1",
+        "billingAuthority": "native",
+        "aiCreditsRouted": false,
+        "capabilities": ["read", "progress"],
+        "supportedThinkingLevels": ["low", "high"],
+        "capabilitySnapshotHash": "capability-1",
+        "capabilityGeneration": 1,
+        "policyRevision": "read-only-1"
+      },
+      "finalText": "Final result 00000000-0000-4000-8000-000000000011",
+      "outputTruncated": false,
+      "phase": "idle",
+      "queue": {
+        "id": "default",
+        "name": "Default"
+      }
+    },
+    "description": "Review",
+    "prompt": "Inspect retained evidence",
+    "executionMode": "background",
+    "runGeneration": 2,
+    "sequence": 9,
+    "createdAt": 104,
+    "runSettledAt": 240,
+    "parentHarnessId": "codex"
+  }
+]

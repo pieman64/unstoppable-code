@@ -1,6 +1,27 @@
+import type * as WorkspacePersistenceModule from '../lib/workspace-persistence';
 // CAN-3824: a code fork into a new project records the published start page
 // through the `core.sharedContainer.fork` metadata command, and a refused
 // record fails the fork, whose rollback removes the project it created.
+jest.mock('../lib/workspace-persistence', () => {
+  const actual = jest.requireActual<typeof WorkspacePersistenceModule>(
+    '../lib/workspace-persistence',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readWorkspaceOwnership: {
+        value: jest.fn(() =>
+          Promise.resolve({
+            authority: 'ok',
+            type: 'single-repo',
+          }),
+        ),
+        enumerable: true,
+      },
+    },
+  );
+});
 jest.mock('../lib/git', () => ({
   classifySharedContainerSymlinkTarget: jest.fn(),
   decodeUtf8SymlinkTarget: jest.fn(),
@@ -40,7 +61,12 @@ jest.mock('../lib/worktree-service', () => ({
     Promise.resolve({ id: 'fork-tree', branchName: 'fork-branch' }),
   ),
 }));
+jest.mock('../lib/org-cowork-binding-deps', () => ({
+  isOrgCoworkOperationEligible: jest.fn(() => Promise.resolve(false)),
+  isOrgMemberCodeOperationEligible: jest.fn(() => Promise.resolve(false)),
+}));
 jest.mock('../shared-containers/fork/finalize', () => ({
+  assertNoPublishedPlans: jest.fn(() => Promise.resolve()),
   copyForkAttachments: jest.fn(() => Promise.resolve({})),
   rehydrateForkChats: jest.fn(() => Promise.resolve([])),
   resolveSafeForkDestination: jest.fn(),
@@ -53,7 +79,7 @@ jest.mock('../shared-containers/fork/fork-metadata', () => ({
   recordSharedContainerForkStartPage: jest.fn(),
 }));
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SharedContainerRevisionLayoutV4 } from '@canopy/protocol/shared-containers';
@@ -61,6 +87,8 @@ import { deleteWorkspaceById } from '../lib/workspace-deletion';
 import { findOrCreateSingleRepoWorkspaceForRepo } from '../lib/workspace-service';
 import { createSingleRepoWorktree } from '../lib/worktree-service';
 import { forkSharedCodeContainer } from '../shared-containers/fork/code';
+import { forkSharedCoworkContainer } from '../shared-containers/fork/cowork';
+import { copySharedContainerTree } from '../shared-containers/fork/copy-tree';
 import type * as ForkMetadataModule from '../shared-containers/fork/fork-metadata';
 import {
   hideSharedContainerForkWorkspace,
@@ -107,12 +135,17 @@ describe('code fork start page', () => {
 
   function fork(): ReturnType<typeof forkSharedCodeContainer> {
     return forkSharedCodeContainer({
+      owner: { kind: 'personal' },
       request: {
         containerId: 'container-1',
         revisionId: 'revision-1',
         organizationId: 'organization-1',
         sourceOwnerDisplayName: 'Ada',
-        destination: { kind: 'new-workspace', parentDirectory: tempPath },
+        destination: {
+          kind: 'new-workspace',
+          owner: { kind: 'personal' },
+          parentDirectory: tempPath,
+        },
       },
       provenance: {
         sourceContainerId: 'container-1',
@@ -148,6 +181,85 @@ describe('code fork start page', () => {
   afterEach(async () => {
     await rm(tempPath, { recursive: true, force: true });
   });
+
+  it.each([
+    ['single-repo', 'organization-creation-unavailable'],
+    ['snapshot', 'organization-creation-unavailable'],
+    ['multi-repo', 'organization-shape-unsupported'],
+    ['cowork', 'organization-creation-unavailable'],
+  ] as const)(
+    'refuses a new organization %s destination it cannot create before creating any artifacts',
+    async (shape, code) => {
+      await writeFile(join(tempPath, 'pre-existing'), 'keep me');
+      const owner = {
+        kind: 'organization',
+        organizationId: '11111111-1111-4111-8111-111111111111',
+      } as const;
+      const repository = LAYOUT.repositories[0];
+      if (!repository) throw new Error('Missing fixture repository');
+      const layout: SharedContainerRevisionLayoutV4 = {
+        ...LAYOUT,
+        containerType:
+          shape === 'cowork' ? 'COWORK_WORK_ENTRY' : 'CODE_WORKTREE',
+        repositories:
+          shape === 'cowork'
+            ? []
+            : shape === 'multi-repo'
+              ? [repository, { ...repository, repoId: 'second-repo' }]
+              : shape === 'snapshot'
+                ? [
+                    {
+                      repoId: 'snapshot',
+                      repoName: 'Snapshot',
+                      source: 'snapshot',
+                      baseCommitSha: 'a'.repeat(40),
+                      files: [],
+                      snapshot: {
+                        bundleArtifactIds: ['bundle'],
+                        treeFileCount: 0,
+                        treeBytes: '0',
+                      },
+                    },
+                  ]
+                : [repository],
+      };
+      const run =
+        shape === 'cowork'
+          ? forkSharedCoworkContainer
+          : forkSharedCodeContainer;
+      await expect(
+        run({
+          owner,
+          request: {
+            containerId: 'container',
+            revisionId: 'revision',
+            sourceOwnerDisplayName: 'Ada',
+            destination: {
+              kind: 'new-workspace',
+              owner,
+              parentDirectory: join(tempPath, 'promoted'),
+            },
+          },
+          provenance: {
+            sourceContainerId: 'container',
+            sourceRevisionId: 'revision',
+            sourceOwnerDisplayName: 'Ada',
+            forkedAt: '2026-10-23T00:00:00.000Z',
+          },
+          revisionRoot: join(tempPath, 'revision'),
+          layout,
+          store: new SharedContainerReplicaStore(join(tempPath, 'replicas')),
+        }),
+      ).rejects.toMatchObject({ code });
+      expect(await readdir(tempPath)).toEqual(['pre-existing']);
+      expect(await readFile(join(tempPath, 'pre-existing'), 'utf8')).toBe(
+        'keep me',
+      );
+      expect(copySharedContainerTree).not.toHaveBeenCalled();
+      expect(findOrCreateSingleRepoWorkspaceForRepo).not.toHaveBeenCalled();
+      expect(createSingleRepoWorktree).not.toHaveBeenCalled();
+    },
+  );
 
   it('records the mapped start page on the project it created', async () => {
     jest.mocked(recordSharedContainerForkStartPage).mockResolvedValue({

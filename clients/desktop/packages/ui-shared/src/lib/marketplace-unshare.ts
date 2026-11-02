@@ -32,6 +32,19 @@ export function isMarketplaceUnshareKind(
 export const MARKETPLACE_UNSHARE_LABEL = 'Unshare';
 export const MARKETPLACE_UNSHARE_BUSY_LABEL = 'Unsharing…';
 
+/** ⋯ menu label when the item is shared with more than one audience. */
+export const MARKETPLACE_UNSHARE_ALL_LABEL = 'Unshare all';
+
+/**
+ * The ⋯ Unshare item removes every audience at once, so it reads "Unshare
+ * all" when the Shared by you section lists two audience rows.
+ */
+export function marketplaceUnshareMenuLabel(audienceCount: number): string {
+  return audienceCount >= 2
+    ? MARKETPLACE_UNSHARE_ALL_LABEL
+    : MARKETPLACE_UNSHARE_LABEL;
+}
+
 /**
  * Why a delete was refused. `forbidden` and `not-found` mean the page is out
  * of date, `in-use` is a skill that shared collections still reference.

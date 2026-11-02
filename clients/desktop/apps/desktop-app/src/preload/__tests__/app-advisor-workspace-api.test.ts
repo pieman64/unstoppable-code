@@ -181,6 +181,65 @@ describe('preload App Advisor workspace API', () => {
     );
   });
 
+  it("keeps the nav's batch removal dialog to mode, count, and phase", async () => {
+    const api = loadAppAdvisorApi();
+    const base = {
+      activeWorkEntryId: 'entry-1',
+      activeChatId: null,
+      navCollapsed: false,
+      settingsModalOpen: false,
+      archivedOverviewOpen: false,
+      archivedOverviewWorkspaceId: null,
+      emptyTrashConfirmationOpen: false,
+      emptyTrashRunning: false,
+      lastArchivedOverviewRequestId: null,
+      lastArchivedOverviewConfirmationOpened: null,
+    };
+    const dialog = {
+      open: true,
+      mode: 'archive' as const,
+      count: 3,
+      phase: 'confirm' as const,
+      label: 'private',
+    } as const;
+
+    await api.reportWindowUiState({ ...base, batchRemovalDialog: dialog });
+    expect(mockInvoke).toHaveBeenLastCalledWith(
+      IPC_CHANNELS.appAdvisorReportWindowUiState,
+      {
+        ...base,
+        batchRemovalDialog: {
+          open: true,
+          mode: 'archive',
+          count: 3,
+          phase: 'confirm',
+        },
+      },
+    );
+
+    await api.reportWindowUiState({ ...base, batchRemovalDialog: null });
+    expect(mockInvoke).toHaveBeenLastCalledWith(
+      IPC_CHANNELS.appAdvisorReportWindowUiState,
+      { ...base, batchRemovalDialog: null },
+    );
+
+    const callback = jest.fn();
+    api.onWindowUiStateChanged(callback);
+    const handler = mockOn.mock.calls.find(
+      ([channel]) => channel === IPC_CHANNELS.appAdvisorWindowUiStateChanged,
+    )?.[1];
+    if (!handler) {
+      throw new Error('window UI-state listener was not registered');
+    }
+    expect(() =>
+      handler(
+        {},
+        { ...base, batchRemovalDialog: { ...dialog, phase: 'later' } },
+      ),
+    ).toThrow('Invalid App Advisor window UI state');
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   it('subscribes to forwarded popout UI state and removes the exact listener', () => {
     const api = loadAppAdvisorApi();
     const callback = jest.fn();
@@ -269,6 +328,9 @@ describe('preload App Advisor workspace API', () => {
   it('forwards only valid App Advisor tool cancellation payloads', () => {
     const api = loadAppAdvisorApi();
     const callback = jest.fn();
+    if (!api.onToolRequestCancelled) {
+      throw new Error('tool cancellation listener is not available');
+    }
     api.onToolRequestCancelled(callback);
     const handler = mockOn.mock.calls.find(
       ([channel]) => channel === IPC_CHANNELS.appAdvisorToolRequestCancelled,

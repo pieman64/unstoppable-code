@@ -1,6 +1,10 @@
 jest.mock('../../canopy-cloud/model-library-access', () => ({
   probeEntitlementsWithModelLibrary: jest.fn(),
 }));
+jest.mock('../adapters/watchers-adapter', () => ({
+  listPortalWatchersForSnapshot: jest.fn(() => Promise.resolve([])),
+}));
+import { listPortalWatchersForSnapshot } from '../adapters/watchers-adapter';
 import { probeEntitlementsWithModelLibrary } from '../../canopy-cloud/model-library-access';
 import { resolveAiCreditsScopeOwner } from '../../agents/work-owner';
 jest.mock('../../services/sidebar-item-groups-service', () => ({
@@ -54,6 +58,10 @@ jest.mock('../../lib/cowork-work-entries', () => ({
 }));
 jest.mock('../../ipc/app-advisor', () => ({
   getLatestAppAdvisorWindowUiState: jest.fn(),
+}));
+jest.mock('../portal-performance-diagnostics', () => ({
+  elapsedMilliseconds: jest.fn(() => 0),
+  recordPortalSnapshotTiming: jest.fn(),
 }));
 import type * as StandaloneChatService from '../../services/standalone-chat-service';
 
@@ -161,11 +169,22 @@ import { isWorktreeSummaryGenerating } from '../../lib/worktree-summary-schedule
 import type {
   AgentUsageOverview,
   CoworkWorkEntryMeta,
+  PortalEntityEnvelope,
+  PortalEventEnvelope,
   PortalPipelineSummary,
   PortalScriptSummary,
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import type {
+  PortalChangedFile,
+  PortalChangedFilesPayload,
+} from '@canopy/protocol/portal';
+import { PORTAL_EVENT_BATCH_MAX_BYTES } from '@canopy/protocol/portal';
 import { buildPortalSnapshot } from '../portal-snapshot-builders';
+import {
+  portalEventMaxRoutedByteLength,
+  splitOversizedPortalSnapshotEvent,
+} from '../portal-outbox';
 import { readPortalStateStore } from '../portal-state-store';
 import { buildProjectedModelCatalog } from '../model-catalog-projection';
 import {
@@ -234,6 +253,30 @@ const mockedPeekProviderNativeAuthAvailability = jest.mocked(
 const mockedPeekPortalProviderAvailability = jest.mocked(
   peekPortalProviderAvailability,
 );
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function oversizedWorktreeSiblingEntities(): PortalEntityEnvelope[] {
+  return [
+    {
+      entityType: 'workspace',
+      localId: 'workspace-sibling-1',
+      payload: { details: 'a'.repeat(600_000) },
+    },
+    {
+      entityType: 'workspace',
+      localId: 'workspace-sibling-2',
+      payload: { details: 'b'.repeat(600_000) },
+    },
+  ];
+}
+
 const mockedListPortalMcpServerEntitiesForWorktree = jest.mocked(
   listPortalMcpServerEntitiesForWorktree,
 );
@@ -275,6 +318,12 @@ describe('Portal snapshot builders standalone chat routing', () => {
       activeChatId: null,
       navCollapsed: false,
       settingsModalOpen: false,
+      archivedOverviewOpen: false,
+      archivedOverviewWorkspaceId: null,
+      emptyTrashConfirmationOpen: false,
+      emptyTrashRunning: false,
+      lastArchivedOverviewRequestId: null,
+      lastArchivedOverviewConfirmationOpened: null,
     });
     mockedGetAppAdvisorChatTranscriptSeed.mockResolvedValue({
       messages: [],
@@ -319,6 +368,217 @@ describe('Portal snapshot builders standalone chat routing', () => {
     mockedPeekPortalProviderAvailability.mockReturnValue({ claude: true });
     mockedListPortalMcpServerEntitiesForWorktree.mockResolvedValue([]);
     mockedListPortalBackgroundProcessEntitiesForWorktree.mockReturnValue([]);
+  });
+
+  it('caps an oversized changed-files entity to the actual routed outbox budget', async () => {
+    const changedFiles: PortalChangedFile[] = Array.from(
+      { length: 14_000 },
+      (_, index) => ({
+        filePath: `generated/component-library/src/widgets/file-${String(index).padStart(5, '0')}.tsx`,
+        status: 'added',
+        staged: true,
+        insertions: 0,
+        deletions: 0,
+        repoId: 'repo-a',
+      }),
+    );
+    const fullPayload: PortalChangedFilesPayload = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'snake',
+      uncommitted: changedFiles,
+      committed: [],
+    };
+    mockedListChangedFileSets.mockResolvedValue(fullPayload);
+
+    const built = await buildPortalSnapshot(
+      {
+        scope: 'diff',
+        target: {
+          workspaceLocalId: 'workspace-1',
+          worktreeLocalId: 'snake',
+        },
+      },
+      { commandId: 'cmd-1' },
+    );
+    const event: PortalEventEnvelope = {
+      type: 'portal.state.snapshot',
+      commandId: 'cmd-1',
+      eventId: '00000000-0000-4000-8000-000000000000',
+      clientEventId: '00000000-0000-4000-8000-000000000000',
+      occurredAt: built.snapshot.generatedAt,
+      payload: built.snapshot,
+    };
+    const changedFilesEntity = built.snapshot.entities.find(
+      (entity) => entity.entityType === 'changed_files',
+    );
+
+    const changedFilesPayload = recordOf(changedFilesEntity?.payload);
+    const page = recordOf(changedFilesPayload?.page);
+    const uncommittedPage = recordOf(page?.uncommitted);
+    const committedPage = recordOf(page?.committed);
+    expect(changedFilesPayload?.notices).toEqual([{ kind: 'truncated' }]);
+    expect(uncommittedPage?.total).toBe(changedFiles.length);
+    expect(typeof uncommittedPage?.nextCursor).toBe('string');
+    expect(committedPage?.total).toBe(0);
+    const routedBatchBudget = PORTAL_EVENT_BATCH_MAX_BYTES - 4096;
+    expect(portalEventMaxRoutedByteLength(event)).toBeLessThanOrEqual(
+      routedBatchBudget,
+    );
+    expect(
+      splitOversizedPortalSnapshotEvent(event, routedBatchBudget),
+    ).toMatchObject({ events: [event], droppedEntityCount: 0 });
+  });
+
+  it('keeps small worktree changed-files complete when sibling entities exceed 1 MiB', async () => {
+    const changedFiles: PortalChangedFile[] = [
+      { filePath: 'src/app.ts', status: 'modified', repoId: 'repo-a' },
+      { filePath: 'src/index.ts', status: 'added', repoId: 'repo-a' },
+      { filePath: 'README.md', status: 'deleted', repoId: 'repo-a' },
+    ];
+    const fullPayload: PortalChangedFilesPayload = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'snake',
+      uncommitted: changedFiles,
+      committed: [],
+    };
+    mockedListWorkspacePortalEntities.mockResolvedValue(
+      oversizedWorktreeSiblingEntities(),
+    );
+    mockedListChangedFileSets.mockResolvedValue(fullPayload);
+
+    const built = await buildPortalSnapshot({
+      scope: 'worktree',
+      target: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'snake',
+      },
+    });
+    const event: PortalEventEnvelope = {
+      type: 'portal.state.snapshot',
+      eventId: '00000000-0000-4000-8000-000000000000',
+      clientEventId: '00000000-0000-4000-8000-000000000000',
+      occurredAt: built.snapshot.generatedAt,
+      payload: built.snapshot,
+    };
+    const changedFilesEntity = built.snapshot.entities.find(
+      (entity) => entity.entityType === 'changed_files',
+    );
+    const changedFilesPayload = recordOf(changedFilesEntity?.payload);
+
+    expect(portalEventMaxRoutedByteLength(event)).toBeGreaterThan(1_048_576);
+    expect(changedFilesPayload?.uncommitted).toEqual(changedFiles);
+    expect(changedFilesPayload?.committed).toEqual([]);
+    expect(changedFilesPayload).not.toHaveProperty('notices');
+    expect(changedFilesPayload).not.toHaveProperty('page');
+  });
+
+  it('caps worktree changed-files against a head frame containing only that entity', async () => {
+    const changedFiles: PortalChangedFile[] = Array.from(
+      { length: 14_000 },
+      (_, index) => ({
+        filePath: `generated/component-library/src/widgets/file-${String(index).padStart(5, '0')}.tsx`,
+        status: 'added',
+        staged: true,
+        insertions: 0,
+        deletions: 0,
+        repoId: 'repo-a',
+      }),
+    );
+    mockedListWorkspacePortalEntities.mockResolvedValue(
+      oversizedWorktreeSiblingEntities(),
+    );
+    mockedListChangedFileSets.mockResolvedValue({
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'snake',
+      uncommitted: changedFiles,
+      committed: [],
+    });
+
+    const built = await buildPortalSnapshot({
+      scope: 'worktree',
+      target: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'snake',
+      },
+    });
+    const event: PortalEventEnvelope = {
+      type: 'portal.state.snapshot',
+      eventId: '00000000-0000-4000-8000-000000000000',
+      clientEventId: '00000000-0000-4000-8000-000000000000',
+      occurredAt: built.snapshot.generatedAt,
+      payload: built.snapshot,
+    };
+    const changedFilesEntity = built.snapshot.entities.find(
+      (entity) => entity.entityType === 'changed_files',
+    );
+    if (!changedFilesEntity) throw new Error('Missing changed-files entity');
+
+    const changedFilesPayload = recordOf(changedFilesEntity.payload);
+    const page = recordOf(changedFilesPayload?.page);
+    const uncommittedPage = recordOf(page?.uncommitted);
+    expect(changedFilesPayload?.notices).toEqual([{ kind: 'truncated' }]);
+    expect(uncommittedPage?.total).toBe(changedFiles.length);
+    expect(typeof uncommittedPage?.nextCursor).toBe('string');
+    expect(changedFilesPayload?.uncommitted).not.toHaveLength(
+      changedFiles.length,
+    );
+
+    const routedBatchBudget = PORTAL_EVENT_BATCH_MAX_BYTES - 4096;
+    const headFramedEvent: PortalEventEnvelope = {
+      ...event,
+      payload: {
+        ...built.snapshot,
+        entities: [changedFilesEntity],
+      },
+    };
+    expect(portalEventMaxRoutedByteLength(headFramedEvent)).toBeLessThanOrEqual(
+      routedBatchBudget,
+    );
+  });
+
+  it('keeps the Phase 05 short-path changed-files fixture complete', async () => {
+    const changedFiles: PortalChangedFile[] = Array.from(
+      { length: 10_200 },
+      (_, index) => ({
+        filePath: `src/generated/foo/file-${String(index).padStart(5, '0')}.tsx`,
+        status: 'added',
+        repoId: 'repo-a',
+      }),
+    );
+    const fullPayload: PortalChangedFilesPayload = {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'snake',
+      uncommitted: changedFiles,
+      committed: [],
+    };
+    mockedListChangedFileSets.mockResolvedValue(fullPayload);
+    const fullPayloadBytes = Buffer.byteLength(
+      JSON.stringify(fullPayload),
+      'utf8',
+    );
+    expect(fullPayloadBytes).toBeGreaterThan(800_000);
+    expect(fullPayloadBytes).toBeLessThan(900_000);
+
+    const built = await buildPortalSnapshot({
+      scope: 'diff',
+      target: {
+        workspaceLocalId: 'workspace-1',
+        worktreeLocalId: 'snake',
+      },
+    });
+    const changedFilesEntity = built.snapshot.entities.find(
+      (entity) => entity.entityType === 'changed_files',
+    );
+
+    expect(changedFilesEntity?.payload).toMatchObject({
+      uncommitted: changedFiles,
+      committed: [],
+    });
+    expect(JSON.stringify(changedFilesEntity?.payload)).toBe(
+      JSON.stringify(fullPayload),
+    );
+    expect(changedFilesEntity?.payload).not.toHaveProperty('notices');
+    expect(changedFilesEntity?.payload).not.toHaveProperty('page');
   });
 
   it('filters strict overview Cowork chats by visible parent, archive and valid scope identities', async () => {
@@ -521,6 +781,10 @@ describe('Portal snapshot builders standalone chat routing', () => {
       ...request.target,
       chatLocalId: 'active',
     });
+    expect(listPortalWatchersForSnapshot).toHaveBeenCalledWith(
+      { ...request, target: built.snapshot.target },
+      expect.any(Array),
+    );
     expect(
       built.snapshot.entities.filter(
         (entity) => entity.entityType === 'chat_summary',
@@ -943,6 +1207,12 @@ describe('Portal snapshot builders standalone chat routing', () => {
       activeChatId: 'current-entry-chat',
       navCollapsed: false,
       settingsModalOpen: false,
+      archivedOverviewOpen: false,
+      archivedOverviewWorkspaceId: null,
+      emptyTrashConfirmationOpen: false,
+      emptyTrashRunning: false,
+      lastArchivedOverviewRequestId: null,
+      lastArchivedOverviewConfirmationOpened: null,
     });
     mockedListAppAdvisorChatSummaries.mockImplementation((entryId) =>
       Promise.resolve([
@@ -1074,7 +1344,7 @@ describe('Portal snapshot builders standalone chat routing', () => {
         target: { chatLocalId: 'chat-not-yet-persisted' },
       }),
     ).rejects.toThrow(
-      'App Advisor chat is not resolvable: chat-not-yet-persisted',
+      'Orchestrator chat is not resolvable: chat-not-yet-persisted',
     );
     expect(mockedListAppAdvisorChatSummaries).not.toHaveBeenCalled();
     expect(mockedGetAppAdvisorChatTranscriptSeed).not.toHaveBeenCalled();
@@ -1188,10 +1458,12 @@ describe('Portal snapshot builders standalone chat routing', () => {
       options?.onWorktree?.({
         localId: 'tree-1',
         workspaceLocalId: 'workspace-1',
+        branch: 'main',
       });
       options?.onWorktree?.({
         localId: 'tree-2',
         workspaceLocalId: 'workspace-1',
+        branch: 'main',
       });
       return Promise.resolve([]);
     });
@@ -1211,11 +1483,13 @@ describe('Portal snapshot builders standalone chat routing', () => {
       options?.onWorktree?.({
         localId: 'tree-1',
         workspaceLocalId: 'workspace-1',
+        branch: 'main',
         hidden: true,
       });
       options?.onWorktree?.({
         localId: 'tree-2',
         workspaceLocalId: 'workspace-1',
+        branch: 'main',
       });
       return Promise.resolve([]);
     });

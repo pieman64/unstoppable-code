@@ -34,6 +34,7 @@ it.each([
     {
       ...storage,
       choicesPath,
+      pendingSyncPath: join(directory, 'pending-sync.json'),
       availabilityPath: join(directory, 'availability.json'),
       availability: (): LabsAvailabilityState => ({
         snapshot: getDefaultFeatureFlagSnapshot('not_configured'),
@@ -56,6 +57,7 @@ it('durably writes nested canonical-format choices and restores them after resta
   const dependencies = {
     ...storage,
     choicesPath,
+    pendingSyncPath: join(directory, 'pending-sync.json'),
     availabilityPath: join(directory, 'availability.json'),
     availability: (): LabsAvailabilityState => ({
       snapshot: getDefaultFeatureFlagSnapshot('not_configured'),

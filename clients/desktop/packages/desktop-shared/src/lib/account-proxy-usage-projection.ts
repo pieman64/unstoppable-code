@@ -109,6 +109,7 @@ export function projectProviderUsageWindows(
           ? {}
           : { windowDurationMs }),
         ...(credits ? { credits } : {}),
+        ...(window.spend ? { spend: window.spend } : {}),
       };
     },
   );

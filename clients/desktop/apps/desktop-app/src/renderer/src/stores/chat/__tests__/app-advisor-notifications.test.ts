@@ -56,6 +56,13 @@ jest.mock('@/stores/codeReviewStore', () => ({
   useCodeReviewStore: { getState: (): Record<string, unknown> => ({}) },
 }));
 
+// Toast copy reads the chat's tab label from the chat store.
+jest.mock('@/stores/chat/store-ref', () => ({
+  chatStoreApi: (): { getState: () => { worktreeChats: object } } => ({
+    getState: () => ({ worktreeChats: {} }),
+  }),
+}));
+
 const openWindowMock = jest.fn().mockResolvedValue({
   open: true,
   focused: true,
@@ -102,9 +109,9 @@ describe('App Advisor notification routing', () => {
       () => void,
       Record<string, unknown>,
     ];
-    expect(message).toContain('App Advisor');
+    expect(message).toContain('Orchestrator');
     expect(tone).toBe('info');
-    expect(meta).toEqual({ category: 'Chat', workspaceName: 'App Advisor' });
+    expect(meta).toEqual({ category: 'Chat', workspaceName: 'Orchestrator' });
 
     // Clicking opens the POPOUT window (never main-window chat navigation).
     onClick();
@@ -129,7 +136,7 @@ describe('App Advisor notification routing', () => {
         { title: string; onClick: () => void },
       ]
     )[0];
-    expect(payload.title).toBe('App Advisor');
+    expect(payload.title).toBe('Orchestrator');
     payload.onClick();
     expect(openWindowMock).toHaveBeenCalledWith({
       chatId: 'chat-2',

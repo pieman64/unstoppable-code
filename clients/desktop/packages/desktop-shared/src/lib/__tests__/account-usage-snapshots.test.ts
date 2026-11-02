@@ -151,6 +151,65 @@ describe('pruneRetainedAccountSnapshots', () => {
 });
 
 describe('normalizeRetainedAccountSnapshot', () => {
+  it('round trips Claude spend and applicability through persisted JSON', () => {
+    const limit: ProviderRateLimitSnapshot = {
+      limitId: 'extra_usage',
+      spend: { currency: 'USD', used: 61, limit: 50, isEnabled: true },
+      scope: { model: { id: 'sonnet', displayName: 'Sonnet' }, surface: null },
+    };
+    const stored: unknown = JSON.parse(
+      JSON.stringify(snapshot({ rateLimits: [limit] })),
+    );
+    const restored = normalizeRetainedAccountSnapshot(stored);
+    expect(restored?.rateLimits?.[0]?.spend).toEqual(limit.spend);
+    expect(restored?.rateLimits?.[0]?.scope).toEqual(limit.scope);
+  });
+
+  it('discards ambiguous legacy Claude extra-usage credits only', () => {
+    const rateLimits = [
+      { limitId: 'extra_usage', credits: { usedUsd: 6100, totalUsd: 5000 } },
+    ];
+    expect(
+      normalizeRetainedAccountSnapshot(snapshot({ rateLimits }))
+        ?.rateLimits?.[0]?.credits,
+    ).toBeUndefined();
+    expect(
+      normalizeRetainedAccountSnapshot(
+        snapshot({ provider: 'codex', rateLimits }),
+      )?.rateLimits?.[0]?.credits,
+    ).toMatchObject({ usedUsd: 6100, totalUsd: 5000 });
+  });
+
+  it('keeps explicit zero, uncapped and disabled spend states', () => {
+    const spend = { currency: 'JPY', used: 0, limit: null, isEnabled: false };
+    expect(
+      normalizeRetainedAccountSnapshot(
+        snapshot({ rateLimits: [{ limitId: 'extra_usage', spend }] }),
+      )?.rateLimits?.[0]?.spend,
+    ).toEqual(spend);
+  });
+
+  it('rejects malformed saved spend and applicability fields', () => {
+    const restored = normalizeRetainedAccountSnapshot({
+      ...snapshot({}),
+      rateLimits: [
+        {
+          limitId: 'extra_usage',
+          spend: {
+            currency: 'invalid',
+            used: -1,
+            limit: Infinity,
+            isEnabled: 'true',
+          },
+          scope: { model: { id: 7, displayName: false }, surface: 42 },
+        },
+      ],
+    });
+    expect(restored?.rateLimits?.[0]?.spend).toEqual({});
+    expect(restored?.rateLimits?.[0]?.scope?.surface).toBeUndefined();
+    expect(restored?.rateLimits?.[0]?.scope?.model?.id).not.toBe(7);
+  });
+
   it('retains Cursor on-demand spend without inventing an unlimited balance', () => {
     const parsed = normalizeRetainedAccountSnapshot({
       provider: 'cursor',

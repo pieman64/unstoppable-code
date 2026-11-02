@@ -1,7 +1,10 @@
+import { ENVIRONMENT_ACTION_TYPES } from '@canopy/agent-actions';
+import { APP_ADVISOR_ACTION_CATALOG } from '@canopy/desktop-shared/lib/app-advisor-actions';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { setDelegationActivity } from '../agents/delegation/activity';
 import { registerManagedDelegationHandlers } from '../ipc/managed-delegation';
 import { registerIpcHandler } from '../ipc/register';
+import { managedDelegationLifetimeStatus } from '../agents/delegation/lifetime-status';
 import { sendToAllWindows } from '../lib/window-send';
 import { scheduleDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
 
@@ -15,8 +18,12 @@ const mockTree = jest.fn();
 const mockTranscript = jest.fn();
 const mockRoots = jest.fn();
 const mockSummary = jest.fn();
+const mockExtend = jest.fn();
+const mockLifetimeStatus = jest.fn();
 
 jest.mock('../agents/delegation/service', () => ({
+  getManagedDelegationLifetimeStatus: (...args: unknown[]): unknown =>
+    mockLifetimeStatus(...args),
   messageManagedDelegationForUser: (...args: unknown[]): unknown =>
     mockMessage(...args),
   readManagedDelegationTreeForUser: (...args: unknown[]): unknown =>
@@ -27,6 +34,8 @@ jest.mock('../agents/delegation/service', () => ({
     mockRoots(...args),
   readManagedDelegationWorktreeSummaryForUser: (...args: unknown[]): unknown =>
     mockSummary(...args),
+  extendManagedDelegationLifetimeLimit: (...args: unknown[]): unknown =>
+    mockExtend(...args),
   stopManagedDelegationForUser: (...args: unknown[]): unknown =>
     mockStop(...args),
   stopAllManagedDelegationsForUser: (...args: unknown[]): unknown =>
@@ -359,6 +368,87 @@ describe('managed delegation viewer IPC', () => {
         worktreeId: 'wt',
       }),
     ).rejects.toThrow("Couldn't read chats with delegations.");
+  });
+  it('extends the lifetime limit for a validated worktree scope', async () => {
+    const scope = { projectId: 'project-a', worktreeId: 'wt-a' };
+    mockExtend.mockResolvedValueOnce({
+      ok: true,
+      baseline: 512,
+      effectiveLimit: 1024,
+      retained: 512,
+    });
+    expect(
+      await handler(IPC_CHANNELS.managedDelegationExtendLifetimeLimit)(
+        undefined,
+        scope,
+      ),
+    ).toEqual({ ok: true, baseline: 512, effectiveLimit: 1024, retained: 512 });
+    expect(mockExtend).toHaveBeenCalledWith(scope);
+    mockExtend.mockResolvedValueOnce({ ok: false, reason: 'at_cap' });
+    expect(
+      await handler(IPC_CHANNELS.managedDelegationExtendLifetimeLimit)(
+        undefined,
+        scope,
+      ),
+    ).toEqual({ ok: false, reason: 'at_cap' });
+  });
+
+  it('reads authoritative lifetime status with validated ids and broadcasts only scoped coalesced changes', async () => {
+    const scope = { projectId: 'project', worktreeId: 'worktree' };
+    mockLifetimeStatus.mockResolvedValue({
+      kind: 'unavailable',
+      reason: 'uncertain',
+    });
+    expect(
+      await handler(IPC_CHANNELS.managedDelegationLifetimeStatus)({}, scope),
+    ).toEqual({ kind: 'unavailable', reason: 'uncertain' });
+    expect(mockLifetimeStatus).toHaveBeenCalledWith(scope);
+    expect(
+      await handler(IPC_CHANNELS.managedDelegationLifetimeStatus)(
+        {},
+        { ...scope, projectId: '../bad' },
+      ),
+    ).toEqual({ kind: 'error', reason: 'invalid_request' });
+    expect(mockLifetimeStatus).toHaveBeenCalledTimes(1);
+    managedDelegationLifetimeStatus.changed(scope);
+    managedDelegationLifetimeStatus.changed(scope);
+    await Promise.resolve();
+    expect(
+      jest
+        .mocked(sendToAllWindows)
+        .mock.calls.filter(
+          ([channel]) =>
+            channel === IPC_CHANNELS.managedDelegationLifetimeChanged,
+        ),
+    ).toEqual([[IPC_CHANNELS.managedDelegationLifetimeChanged, scope]]);
+  });
+  it('exposes the lifetime limit to no agent action catalog', () => {
+    // Raising the limit grants agents capacity, so only the user can do it.
+    const lifetime = /lifetime/i;
+    expect(
+      APP_ADVISOR_ACTION_CATALOG.filter(
+        (entry) => lifetime.test(entry.type) || lifetime.test(entry.summary),
+      ),
+    ).toEqual([]);
+    expect(
+      ENVIRONMENT_ACTION_TYPES.filter((type) => lifetime.test(type)),
+    ).toEqual([]);
+  });
+  it('refuses an invalid lifetime-limit scope without reaching the service', async () => {
+    for (const raw of [
+      { projectId: '../project', worktreeId: 'wt-a' },
+      { projectId: 'project-a', worktreeId: 'wt/../a' },
+      { projectId: 'project-a' },
+      'project-a',
+      undefined,
+    ])
+      expect(
+        await handler(IPC_CHANNELS.managedDelegationExtendLifetimeLimit)(
+          undefined,
+          raw,
+        ),
+      ).toEqual({ ok: false, reason: 'invalid_request' });
+    expect(mockExtend).not.toHaveBeenCalled();
   });
   it('reads transcript pages and keeps wrong-chat not_found', async () => {
     const request = {

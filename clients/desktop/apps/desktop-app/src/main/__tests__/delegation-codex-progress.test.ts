@@ -8,9 +8,10 @@ import {
   DelegationParent,
   type DelegationParentBroker,
 } from '@canopy/desktop-shared/node/delegation/parent';
-import type {
-  CodexRuntimeService,
-  CodexThreadHandle,
+import {
+  flattenCodexThreadConfig,
+  type CodexRuntimeService,
+  type CodexThreadHandle,
 } from '@canopy/desktop-shared/node/codex-runtime';
 import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
@@ -18,6 +19,25 @@ import type { ChildLedgerTools } from '../agents/delegation/ledger-tools';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { tools as makeDelegationTools } from './helpers/delegation-runner-fixtures/codex';
+
+function runnerTools(
+  overrides: Partial<Record<string, unknown>>,
+): ReturnType<typeof makeDelegationTools> {
+  const fixture = makeDelegationTools(overrides);
+  // Preserve these older, deliberately partial runner doubles exactly.
+  Reflect.deleteProperty(fixture, 'codexSandboxWritesRevoked');
+  Reflect.deleteProperty(fixture, 'policyContextKey');
+  Reflect.deleteProperty(fixture, 'observeCodex');
+  Reflect.deleteProperty(fixture, 'approveCodex');
+  Reflect.deleteProperty(fixture, 'authorizeMcp');
+  return fixture;
+}
+
+function codexRuntimeFixture(runtime: object): () => CodexRuntimeService {
+  // These tests exercise a narrow runtime subset, as in the shared runner fixture.
+  return (): CodexRuntimeService => runtime as never;
+}
 
 function delegationParent(enableDelegationTools = true): DelegationParent {
   const snapshot: AgentDelegationSnapshot = {
@@ -27,18 +47,8 @@ function delegationParent(enableDelegationTools = true): DelegationParent {
   };
   const broker: DelegationParentBroker = {
     spawn: () => Promise.resolve({ ok: true, value: snapshot }),
-    watch: () =>
-      Promise.resolve({
-        ok: true,
-        value: {
-          watcherId: 'watcher',
-          mode: 'any',
-          deadlineAt: 1,
-          targets: [],
-        },
-      }),
     getOutput: () =>
-      ({
+      Promise.resolve({
         ok: true,
         value: {
           delegationId: 'grandchild',
@@ -47,7 +57,7 @@ function delegationParent(enableDelegationTools = true): DelegationParent {
           latestResultIndex: null,
           result: null,
         },
-      }) as const,
+      } as const),
     inspect: () => undefined,
     list: () => [],
     stop: () => ({ ok: true, value: snapshot }),
@@ -73,7 +83,6 @@ function delegationParent(enableDelegationTools = true): DelegationParent {
       spawn: 'delegate_task',
       inspect: 'inspect_delegate',
       list: 'list_delegates',
-      watch: 'watch_delegates',
       output: 'get_delegate_output',
       stop: 'stop_delegate',
       manageWorktree: 'manage_delegate_worktree',
@@ -442,6 +451,44 @@ describe('delegated native Codex route confinement', () => {
     expect(params.config).not.toHaveProperty('features.memory_tool');
   });
 
+  it.each([
+    {
+      agents: { enabled: true },
+      'agents.enabled': true,
+      features: { multi_agent: true },
+      'features.multi_agent': true,
+      'features.code_mode_host': true,
+      'features.apps': true,
+    },
+    {
+      'agents.enabled': true,
+      agents: { enabled: true },
+      'features.multi_agent': true,
+      'features.code_mode_host': true,
+      'features.apps': true,
+      features: { multi_agent: true },
+    },
+  ])('pins native agent recursion off for inherited key order %#', (config) => {
+    const params = buildCodexDelegationThreadParams({
+      cwd: '/worktree',
+      model: 'gpt-6-sol',
+      config,
+      instructions: 'Read source',
+      ambientMcp: {},
+    });
+    expect(flattenCodexThreadConfig(params.config)).toMatchObject({
+      'agents.enabled': false,
+      'features.multi_agent': false,
+      'features.multi_agent_v2': false,
+      'features.code_mode_host': false,
+      'features.apps': false,
+    });
+    expect(params.config?.features).toMatchObject({
+      multi_agent: false,
+      multi_agent_v2: false,
+    });
+  });
+
   it('leaves settings-configured hooks to the user Codex config, as in a parent chat', () => {
     const params = buildCodexDelegationThreadParams({
       cwd: '/worktree',
@@ -558,7 +605,7 @@ describe('native command rules are honored on delegated start and resume', () =>
                 enabled: true,
               },
             },
-            tools: {
+            tools: runnerTools({
               cwd: root,
               instructions: (): string => 'Retained Agent instructions',
               readRoots: [],
@@ -574,11 +621,11 @@ describe('native command rules are honored on delegated start and resume', () =>
               prepareCodexSandboxWrites: (): Promise<string[]> =>
                 Promise.resolve([]),
               setCodexTurnWrites: (): void => undefined,
-            },
+            }),
           }),
         loadResumeItems: () =>
           Promise.resolve([{ type: 'message', role: 'user', content: [] }]),
-        runtime: () => ({
+        runtime: codexRuntimeFixture({
           resumeThread,
           materializeThread,
           admin: (): object => ({
@@ -715,7 +762,7 @@ describe('native command rules are honored on delegated start and resume', () =>
                 environmentPolicy: 'restricted',
                 includeCanopySecrets: false,
               },
-              tools: {
+              tools: runnerTools({
                 cwd: root,
                 instructions: (): string => 'Test',
                 readRoots: [],
@@ -731,9 +778,9 @@ describe('native command rules are honored on delegated start and resume', () =>
                 prepareCodexSandboxWrites: (): Promise<string[]> =>
                   Promise.resolve([]),
                 setCodexTurnWrites: (): void => undefined,
-              },
+              }),
             }),
-          runtime: () => ({
+          runtime: codexRuntimeFixture({
             startThread,
             resumeThread,
             admin: (): object => ({
@@ -830,7 +877,14 @@ describe('native command rules are honored on delegated start and resume', () =>
             usage: { inputTokens: 1, outputTokens: 1 },
           }),
         );
-        const handle = (threadId: string): CodexThreadHandle => ({
+        const handle = (
+          threadId: string,
+        ): {
+          threadId: string;
+          runTurn: typeof runTurn;
+          unsubscribe: jest.Mock;
+          interrupt: jest.Mock<Promise<void>, []>;
+        } => ({
           threadId,
           runTurn,
           unsubscribe: jest.fn(),
@@ -861,7 +915,7 @@ describe('native command rules are honored on delegated start and resume', () =>
                 environmentPolicy: 'restricted',
                 includeCanopySecrets: false,
               },
-              tools: {
+              tools: runnerTools({
                 cwd: root,
                 instructions: (): string => 'Test',
                 readRoots: [],
@@ -876,12 +930,12 @@ describe('native command rules are honored on delegated start and resume', () =>
                 prepareCodexSandboxWrites: (): Promise<string[]> =>
                   Promise.resolve([]),
                 setCodexTurnWrites: (): void => undefined,
-              },
+              }),
             }),
           delegation: () => delegation,
           loadResumeItems: () =>
             Promise.resolve([{ type: 'message', role: 'user', content: [] }]),
-          runtime: () => ({
+          runtime: codexRuntimeFixture({
             startThread,
             resumeThread,
             materializeThread,
@@ -944,8 +998,12 @@ describe('native command rules are honored on delegated start and resume', () =>
         const startedIds: string[] = [];
         const terminal = await new Promise<unknown>((resolve) => {
           void runner.start(request, (event) => {
-            if (event.event.type === 'started')
-              startedIds.push(event.event.nativeSessionId);
+            if (event.event.type === 'started') {
+              const nativeSessionId = event.event.nativeSessionId;
+              if (nativeSessionId === undefined)
+                throw new Error('Started event omitted nativeSessionId');
+              startedIds.push(nativeSessionId);
+            }
             if (event.event.type === 'terminal') resolve(event.event);
             return Promise.resolve();
           });
@@ -1013,7 +1071,7 @@ describe('Agent Ledger tools for a delegated Codex run', () => {
               environmentPolicy: 'restricted',
               includeCanopySecrets: false,
             },
-            tools: {
+            tools: runnerTools({
               cwd: root,
               instructions: (): string => 'Delegated instructions',
               readRoots: [],
@@ -1029,9 +1087,9 @@ describe('Agent Ledger tools for a delegated Codex run', () => {
               prepareCodexSandboxWrites: (): Promise<string[]> =>
                 Promise.resolve([]),
               setCodexTurnWrites: (): void => undefined,
-            },
+            }),
           }),
-        runtime: () => ({
+        runtime: codexRuntimeFixture({
           startThread,
           admin: (): object => ({
             request: (): Promise<object> =>
@@ -1169,6 +1227,31 @@ describe('Agent Ledger tools for a delegated Codex run', () => {
 });
 
 describe('delegated native Codex progress', () => {
+  it('caches assembled text until an accepted item update invalidates it', () => {
+    const progress = new CodexDelegationProgress();
+    progress.receive({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'first', delta: 'one' },
+    });
+    const from = jest.spyOn(Array, 'from');
+    try {
+      expect(progress.text).toBe('one');
+      expect(progress.text).toBe('one');
+      expect(from).toHaveBeenCalledTimes(1);
+
+      progress.receive({
+        method: 'item/agentMessage/delta',
+        params: { itemId: 'first', delta: ' two' },
+      });
+      from.mockClear();
+      expect(progress.text).toBe('one two');
+      expect(progress.text).toBe('one two');
+      expect(from).toHaveBeenCalledTimes(1);
+    } finally {
+      from.mockRestore();
+    }
+  });
+
   it('replaces streamed text with completed text and ignores duplicate completion and late deltas', () => {
     const progress = new CodexDelegationProgress();
     progress.receive({

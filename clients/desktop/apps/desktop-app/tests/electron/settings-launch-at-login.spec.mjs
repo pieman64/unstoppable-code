@@ -390,52 +390,6 @@ test.describe('Launch at sign-in (CAN-3449)', () => {
     }
   });
 
-  test('the Getting started checklist asks for it and Turn on completes it', async () => {
-    const state = createStateFile({
-      platform: 'darwin',
-      openAtLogin: false,
-      status: 'not-registered',
-    });
-    const userDataDir = seedWelcomeChecklist({
-      pendingEntry: 'launch-at-login',
-    });
-    const { electronApp } = await launchCanopy({
-      userDataDir,
-      env: { CANOPY_E2E_LAUNCH_AT_LOGIN_STATE: state.file },
-    });
-    try {
-      const window = await electronApp.firstWindow();
-      const app = new CanopyAppDriver(window);
-      await app.waitForShell();
-
-      const row = window.getByTestId(
-        'home-onboarding-suggestion-launch-at-login',
-      );
-      await expect(row).toBeVisible({ timeout: 30_000 });
-      await expect(row).toHaveAttribute('data-step', 'enable-launch-at-login');
-      await expect(row.getByRole('heading')).toHaveText(
-        new RegExp(`^Open ${APP_NAME} when you sign in$`),
-      );
-      // Home is active, so the sidebar card is not mounted; the Home card's
-      // first row is the queue's current entry.
-      await expect
-        .poll(() => app.currentHomeChecklistEntry())
-        .toBe('launch-at-login');
-
-      await window
-        .getByTestId('home-onboarding-suggestion-cta-enable-launch-at-login')
-        .click();
-
-      await expect(row).toHaveCount(0);
-      await expect
-        .poll(() => readState(state.file))
-        .toMatchObject({ openAtLogin: true, status: 'enabled' });
-    } finally {
-      await closeCanopy(electronApp, userDataDir);
-      rmSync(state.dir, { recursive: true, force: true });
-    }
-  });
-
   test('is unavailable in a build that is not installed', async () => {
     // Launch at sign-in is the only step left, so a finished checklist
     // proves the unsupported entry was skipped rather than shown.

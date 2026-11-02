@@ -173,10 +173,11 @@ describe('worktree creation selection', () => {
   });
 
   it('refuses per-repository bases for a single-repository project', () => {
-    for (const fields of [
+    const fieldsList: WorktreeSelectionFields[] = [
       { baseBranchesByRepo: { api: 'main' } },
       { baseBranchesByRepo: {} },
-    ]) {
+    ];
+    for (const fields of fieldsList) {
       const refusal = refusalOf(() =>
         resolveWorktreeCreationSelection(fields, 'single-repo'),
       );

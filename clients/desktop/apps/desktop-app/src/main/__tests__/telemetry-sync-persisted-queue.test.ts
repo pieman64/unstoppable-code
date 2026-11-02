@@ -31,11 +31,21 @@ const recordAppDiagnosticMock = jest.fn<void, [RecordedAppDiagnostic]>();
 const recordSessionDiagnosticMock = jest.fn();
 jest.mock('../observability', () => ({
   getObservabilityService: (): unknown => ({
-    subscribe: subscribeMock,
-    loadTranscript: loadTranscriptMock,
-    loadHistory: loadHistoryMock,
-    recordAppDiagnostic: recordAppDiagnosticMock,
-    recordSessionDiagnostic: recordSessionDiagnosticMock,
+    get subscribe(): typeof subscribeMock {
+      return subscribeMock;
+    },
+    get loadTranscript(): typeof loadTranscriptMock {
+      return loadTranscriptMock;
+    },
+    get loadHistory(): typeof loadHistoryMock {
+      return loadHistoryMock;
+    },
+    get recordAppDiagnostic(): typeof recordAppDiagnosticMock {
+      return recordAppDiagnosticMock;
+    },
+    get recordSessionDiagnostic(): typeof recordSessionDiagnosticMock {
+      return recordSessionDiagnosticMock;
+    },
   }),
 }));
 
@@ -62,13 +72,19 @@ class MockCanopyCloudClientError extends Error {
   }
 }
 jest.mock('../canopy-cloud/client', () => ({
-  requestCanopyCloudJson: requestCanopyCloudJsonMock,
-  CanopyCloudClientError: MockCanopyCloudClientError,
+  get requestCanopyCloudJson(): typeof requestCanopyCloudJsonMock {
+    return requestCanopyCloudJsonMock;
+  },
+  get CanopyCloudClientError(): typeof MockCanopyCloudClientError {
+    return MockCanopyCloudClientError;
+  },
 }));
 
 const getCanopyCloudCredentialsMock = jest.fn();
 jest.mock('../lib/canopy-cloud-account-store', () => ({
-  getCanopyCloudCredentials: getCanopyCloudCredentialsMock,
+  get getCanopyCloudCredentials(): typeof getCanopyCloudCredentialsMock {
+    return getCanopyCloudCredentialsMock;
+  },
 }));
 
 const getWorkspaceContextStateMock = jest.fn<
@@ -104,8 +120,12 @@ const updatePreferencesFileMock = jest.fn<
 >();
 const peekPreferencesLoadErrorMock = jest.fn<object | null, []>(() => null);
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: readPreferencesFileMock,
-  updatePreferencesFile: updatePreferencesFileMock,
+  get readPreferencesFile(): typeof readPreferencesFileMock {
+    return readPreferencesFileMock;
+  },
+  get updatePreferencesFile(): typeof updatePreferencesFileMock {
+    return updatePreferencesFileMock;
+  },
   peekPreferencesLoadError: (): object | null => peekPreferencesLoadErrorMock(),
 }));
 
@@ -137,7 +157,9 @@ jest.mock('../ipc/settings', () => ({
 
 const readWorkspaceIndexEntryMock = jest.fn();
 jest.mock('../lib/sidebar-items', () => ({
-  readWorkspaceIndexEntry: readWorkspaceIndexEntryMock,
+  get readWorkspaceIndexEntry(): typeof readWorkspaceIndexEntryMock {
+    return readWorkspaceIndexEntryMock;
+  },
 }));
 
 const readWorkspaceWorktreesMock = jest.fn();
@@ -155,8 +177,12 @@ const readWorkspaceConfigDetailedMock = jest.fn<
   [string]
 >();
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceWorktrees: readWorkspaceWorktreesMock,
-  readWorkspaceConfigDetailed: readWorkspaceConfigDetailedMock,
+  get readWorkspaceWorktrees(): typeof readWorkspaceWorktreesMock {
+    return readWorkspaceWorktreesMock;
+  },
+  get readWorkspaceConfigDetailed(): typeof readWorkspaceConfigDetailedMock {
+    return readWorkspaceConfigDetailedMock;
+  },
 }));
 
 jest.mock('../lib/plan-persistence', () => ({

@@ -25,13 +25,31 @@ import {
   resolve,
 } from 'node:path';
 import { promisify } from 'node:util';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import type {
-  BranchEntry,
   ChangedFileInfo,
   ChangedFileStatus,
   FileDiffImagePreview,
   ListBranchesResponse,
 } from '@canopy/desktop-shared/types';
+import {
+  appendBranchSuffix,
+  checkoutGitBranch,
+  createGitBranch,
+  deleteGitBranch,
+  GIT_BRANCH_LIST_REF_ARGS,
+  gitChangeSetReadArgs,
+  hasGitBranchRefConflict,
+  listGitBranches,
+  parentBranchNames,
+  parseGitCheckedOutBranches,
+  parseGitWorktreeListPorcelain,
+  selectAvailableGitBranchName,
+  type GitBranchDeletePort,
+  type GitBranchNameReads,
+  type GitBranchWritePort,
+  type GitChangeSetReader,
+} from '@canopy/core-runtime/node/git';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import {
   isGitCloneProgressLine,
@@ -156,6 +174,7 @@ export {
   getUncommittedDiff,
   getCanopyJsonHash,
   hasBranchBeenPushedToRemote,
+  readBranchPublication,
   hasRemoteTrackingBranch,
   hasUncommittedChanges,
   hasUnpulledCommits,
@@ -1154,14 +1173,7 @@ export async function cleanupPersistedTurnDiffTreeRefs(
   );
 }
 
-export function appendBranchSuffix(
-  branchName: string,
-  suffixNumber: number,
-): string {
-  const suffix = `-${suffixNumber}`;
-  const maxBaseLength = Math.max(1, 100 - suffix.length);
-  return `${branchName.slice(0, maxBaseLength)}${suffix}`;
-}
+export { appendBranchSuffix };
 
 export async function doesLocalBranchExist(
   repoPath: string,
@@ -1195,32 +1207,26 @@ export async function doesRemoteBranchExist(
 
 /**
  * Fetch one origin branch into its tracking ref, for a branch that was pushed
- * after the last fetch (a just-opened pull request's head). Returns whether
- * the tracking ref exists afterwards; a missing branch or a failed fetch both
- * read as false.
+ * after the last fetch (a just-opened pull request's head). Rejects when the
+ * fetch fails; the checkout policy reads that as a missing branch.
  */
-async function fetchOriginBranch(
+async function fetchOriginBranchRef(
   repoPath: string,
   branchName: string,
-): Promise<boolean> {
-  try {
-    await runGit(
-      [
-        'fetch',
-        '--no-tags',
-        'origin',
-        `refs/heads/${branchName}:refs/remotes/origin/${branchName}`,
-      ],
-      repoPath,
-      {
-        signal: AbortSignal.timeout(SHARED_CONTAINER_GIT_REMOTE_TIMEOUT_MS),
-        nonInteractive: true,
-      },
-    );
-  } catch {
-    return false;
-  }
-  return doesRemoteBranchExist(repoPath, branchName);
+): Promise<void> {
+  await runGit(
+    [
+      'fetch',
+      '--no-tags',
+      'origin',
+      `refs/heads/${branchName}:refs/remotes/origin/${branchName}`,
+    ],
+    repoPath,
+    {
+      signal: AbortSignal.timeout(SHARED_CONTAINER_GIT_REMOTE_TIMEOUT_MS),
+      nonInteractive: true,
+    },
+  );
 }
 
 /**
@@ -1264,19 +1270,6 @@ export async function getLiveOriginBranchSha(
   return null;
 }
 
-function getParentBranchNames(branchName: string): string[] {
-  const branchSegments = branchName.split('/').filter(Boolean);
-  const parentBranchNames: string[] = [];
-  let prefix = '';
-
-  for (const segment of branchSegments.slice(0, -1)) {
-    prefix = prefix.length > 0 ? `${prefix}/${segment}` : segment;
-    parentBranchNames.push(prefix);
-  }
-
-  return parentBranchNames;
-}
-
 async function listOriginBranchNames(
   repoPath: string,
   patterns: string[],
@@ -1317,20 +1310,20 @@ export async function doesOriginBranchExist(
     return false;
   }
 
-  const parentBranchNames = getParentBranchNames(branchName);
+  const parents = parentBranchNames(branchName);
   const descendantPattern = `${branchName}/*`;
   const descendantPrefix = `${branchName}/`;
   const originBranchNames = await listOriginBranchNames(repoPath, [
     branchName,
     descendantPattern,
-    ...parentBranchNames,
+    ...parents,
   ]);
 
   return originBranchNames.some(
     (originBranchName) =>
       originBranchName === branchName ||
       originBranchName.startsWith(descendantPrefix) ||
-      parentBranchNames.includes(originBranchName),
+      parents.includes(originBranchName),
   );
 }
 
@@ -2683,35 +2676,29 @@ async function removeOriginRemote(repoPath: string): Promise<void> {
   }
 }
 
+/** The local-branch reads that decide whether a new name is free. */
+function gitBranchNameReads(repoPath: string): GitBranchNameReads {
+  return {
+    localBranchExists: (branch) => doesLocalBranchExist(repoPath, branch),
+    listLocalBranchesUnder: (name) =>
+      runGit(
+        ['for-each-ref', '--format=%(refname)', `refs/heads/${name}/`],
+        repoPath,
+      ),
+  };
+}
+
 /**
  * Check whether creating a branch with the given name would conflict with
  * existing refs in the hierarchy (e.g. "robin" conflicts when
  * "robin/api-382/logger-test" already exists, because git stores refs as
  * files/directories and a name can't be both).
  */
-async function hasRefConflict(
+function hasRefConflict(
   repoPath: string,
   branchName: string,
 ): Promise<boolean> {
-  try {
-    const refs = await runGit(
-      ['for-each-ref', '--format=%(refname)', `refs/heads/${branchName}/`],
-      repoPath,
-    );
-    if (refs.length > 0) {
-      return true;
-    }
-  } catch {
-    // Best effort. Fall through to parent-ref checks.
-  }
-
-  for (const parentBranchName of getParentBranchNames(branchName)) {
-    if (await doesLocalBranchExist(repoPath, parentBranchName)) {
-      return true;
-    }
-  }
-
-  return false;
+  return hasGitBranchRefConflict(gitBranchNameReads(repoPath), branchName);
 }
 
 export async function validateBranchName(
@@ -2774,26 +2761,8 @@ export async function resolveSharedAvailableBranchName(
  * with an existing ref hierarchy, appends `-2`, `-3`, … until a free name is
  * found.
  */
-async function safeBranchName(
-  repoPath: string,
-  branchName: string,
-): Promise<string> {
-  if (
-    !(await doesLocalBranchExist(repoPath, branchName)) &&
-    !(await hasRefConflict(repoPath, branchName))
-  ) {
-    return branchName;
-  }
-
-  for (let i = 2; i <= 100; i++) {
-    const candidate = appendBranchSuffix(branchName, i);
-    // Ensure the candidate neither exists nor has its own hierarchy conflict
-    if (await doesLocalBranchExist(repoPath, candidate)) continue;
-    if (await hasRefConflict(repoPath, candidate)) continue;
-    return candidate;
-  }
-
-  return branchName; // unlikely fallback
+function safeBranchName(repoPath: string, branchName: string): Promise<string> {
+  return selectAvailableGitBranchName(gitBranchNameReads(repoPath), branchName);
 }
 
 export async function listRegisteredWorktreePaths(
@@ -2838,113 +2807,34 @@ export async function isRegisteredWorktreePath(
   return false;
 }
 
-function extractLocalBranchName(refName: string): string | null {
-  const localPrefix = 'refs/heads/';
-  if (!refName.startsWith(localPrefix)) {
-    return null;
-  }
-  const branchName = refName.slice(localPrefix.length);
-  return branchName.length > 0 ? branchName : null;
-}
-
-interface ParsedWorktreeListEntry {
-  worktreePath: string;
-  branchName: string | null;
-}
-
-function parseWorktreeListPorcelainToArray(
-  output: string,
-): ParsedWorktreeListEntry[] {
-  const entries: ParsedWorktreeListEntry[] = [];
-  let currentWorktreePath: string | null = null;
-  let currentBranchName: string | null = null;
-
-  function commitCurrentEntry(): void {
-    if (!currentWorktreePath) {
-      return;
-    }
-
-    entries.push({
-      worktreePath: currentWorktreePath,
-      branchName: currentBranchName,
-    });
-    currentWorktreePath = null;
-    currentBranchName = null;
-  }
-
-  for (const rawLine of output.split('\n')) {
-    const line = rawLine.trim();
-    if (!line) {
-      commitCurrentEntry();
-      continue;
-    }
-
-    if (line.startsWith('worktree ')) {
-      commitCurrentEntry();
-      currentWorktreePath = line.slice('worktree '.length).trim();
-      continue;
-    }
-
-    if (line.startsWith('branch ')) {
-      currentBranchName = extractLocalBranchName(
-        line.slice('branch '.length).trim(),
-      );
-    }
-  }
-
-  commitCurrentEntry();
-  return entries;
-}
-
 async function findExistingWorktreePathForBranch(
   repoRoot: string,
   branchName: string,
 ): Promise<string | null> {
   const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot);
-  const worktreeEntry = parseWorktreeListPorcelainToArray(output).find(
+  const worktreeEntry = parseGitWorktreeListPorcelain(output).find(
     (entry) => entry.branchName === branchName,
   );
   return worktreeEntry?.worktreePath ?? null;
 }
 
-async function getOccupiedWorktreeBranches(
+async function readBranchListWorktrees(
   worktreePath: string,
-): Promise<Set<string>> {
-  try {
-    const repoRoot = await getRepoRootFromWorktree(worktreePath);
-    const occupiedBranches = new Set<string>();
-    const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot);
-
-    for (const entry of parseWorktreeListPorcelainToArray(output)) {
-      if (entry.worktreePath === worktreePath || !entry.branchName) {
-        continue;
-      }
-
-      occupiedBranches.add(entry.branchName);
-    }
-
-    return occupiedBranches;
-  } catch {
-    return new Set<string>();
-  }
+): Promise<{ output: string; checkoutPath: string }> {
+  const repoRoot = await getRepoRootFromWorktree(worktreePath);
+  const output = await runGit(['worktree', 'list', '--porcelain'], repoRoot);
+  return { output, checkoutPath: worktreePath };
 }
 
-function sortBranchEntries(
-  left: BranchEntry,
-  right: BranchEntry,
-  defaultBranch: string | null,
-): number {
-  if (left.isCurrent !== right.isCurrent) {
-    return left.isCurrent ? -1 : 1;
-  }
-
-  const leftIsDefault = defaultBranch !== null && left.name === defaultBranch;
-  const rightIsDefault = defaultBranch !== null && right.name === defaultBranch;
-  if (leftIsDefault !== rightIsDefault) {
-    return leftIsDefault ? -1 : 1;
-  }
-
-  return left.name.localeCompare(right.name);
+/** The Git reads `worker.git.branch.list` runs in one checkout. */
+export function gitBranchListReads(worktreePath: string): {
+  readBranchRefs(): Promise<string>;
+  readWorktreeList(): Promise<{ output: string; checkoutPath: string }>;
+} {
+  return {
+    readBranchRefs: () => runGit([...GIT_BRANCH_LIST_REF_ARGS], worktreePath),
+    readWorktreeList: () => readBranchListWorktrees(worktreePath),
+  };
 }
 
 export async function listBranches(
@@ -2953,124 +2843,77 @@ export async function listBranches(
     resolveDefaultBranch?: (repoPath: string) => Promise<string | null>;
   } = {},
 ): Promise<ListBranchesResponse> {
-  const [output, occupiedBranches, defaultBranch] = await Promise.all([
-    runGit(
-      [
-        'for-each-ref',
-        '--format=%(refname:short)%(HEAD)',
-        'refs/heads/',
-        'refs/remotes/origin/',
-      ],
-      worktreePath,
-    ),
-    getOccupiedWorktreeBranches(worktreePath),
-    options.resolveDefaultBranch
-      ? options.resolveDefaultBranch(worktreePath)
-      : getRemoteDefaultBranch(worktreePath),
-  ]);
-
-  const branchesByName = new Map<string, BranchEntry>();
-
-  for (const rawLine of output.split('\n')) {
-    if (!rawLine.trim()) {
-      continue;
-    }
-
-    const isCurrent = rawLine.endsWith('*');
-    const shortRefName = isCurrent
-      ? rawLine.slice(0, -1).trim()
-      : rawLine.trim();
-    if (!shortRefName || shortRefName === 'origin/HEAD') {
-      continue;
-    }
-
-    const isRemote = shortRefName.startsWith('origin/');
-    const branchName = isRemote
-      ? shortRefName.slice('origin/'.length)
-      : shortRefName;
-    if (!branchName) {
-      continue;
-    }
-
-    const existingEntry = branchesByName.get(branchName);
-    const nextEntry: BranchEntry = {
-      name: branchName,
-      isRemote: false,
-      isCurrent:
-        (existingEntry?.isCurrent ?? false) || (!isRemote && isCurrent),
-      isUsedByWorktree: occupiedBranches.has(branchName),
-      hasLocalRef: (existingEntry?.hasLocalRef ?? false) || !isRemote,
-      hasRemoteRef: (existingEntry?.hasRemoteRef ?? false) || isRemote,
-    };
-    nextEntry.isRemote = nextEntry.hasRemoteRef && !nextEntry.hasLocalRef;
-    branchesByName.set(branchName, nextEntry);
-  }
-
-  const branches = Array.from(branchesByName.values()).sort((left, right) =>
-    sortBranchEntries(left, right, defaultBranch),
-  );
-
-  return { branches, defaultBranch };
-}
-
-function createOccupiedBranchError(branchName: string): Error {
-  return new Error(
-    `Branch "${branchName}" is already checked out in another worktree`,
+  return listGitBranches(
+    {
+      ...gitBranchListReads(worktreePath),
+      resolveDefaultBranch: () =>
+        options.resolveDefaultBranch
+          ? options.resolveDefaultBranch(worktreePath)
+          : getRemoteDefaultBranch(worktreePath),
+    },
+    (defaultBranch) => defaultBranch,
   );
 }
 
-export async function checkoutBranch(
+/**
+ * The desktop's port for `worker.git.checkout` and `worker.git.branch.create`
+ * in one checkout: today's runners and environments. Status and the current
+ * branch use the desktop-shared runner (with the user's Canopy environment);
+ * the rest use this module's runner, and only the single-branch fetch is
+ * non-interactive. No effect takes a signal.
+ */
+export function gitBranchWritePort(worktreePath: string): GitBranchWritePort {
+  return {
+    hasUncommittedChanges: () => hasUncommittedChanges(worktreePath),
+    readWorktreeList: () => readBranchListWorktrees(worktreePath),
+    remoteBranchExists: (branch) => doesRemoteBranchExist(worktreePath, branch),
+    fetchRemoteBranch: (branch) => fetchOriginBranchRef(worktreePath, branch),
+    isValidBranchName: (name) => validateBranchName(worktreePath, name),
+    ...gitBranchNameReads(worktreePath),
+    currentBranch: () => getCurrentBranch(worktreePath),
+    checkout: async (branch) => {
+      await runGit(['checkout', branch], worktreePath);
+    },
+    checkoutNewBranch: async (name, startPoint) => {
+      await runGit(['checkout', '-b', name, startPoint], worktreePath);
+    },
+    renameCurrentBranch: (name) => renameBranch(worktreePath, name),
+  };
+}
+
+/**
+ * The `worker.git.branch.delete` port over one repository: today's
+ * main-process runner for the listing and both effects.
+ */
+export function gitBranchDeletePort(repoPath: string): GitBranchDeletePort {
+  return {
+    listCheckedOutBranches: () => listCheckedOutBranches(repoPath),
+    deleteBranch: async (branch, force) => {
+      await runGit(['branch', force ? '-D' : '-d', branch], repoPath);
+    },
+    deleteBranchRef: async (branch, tip) => {
+      await runGit(['update-ref', '-d', `refs/heads/${branch}`, tip], repoPath);
+    },
+  };
+}
+
+export function checkoutBranch(
   worktreePath: string,
   branchName: string,
 ): Promise<void> {
-  if (await hasUncommittedChanges(worktreePath)) {
-    throw new Error('Cannot switch branches with uncommitted changes');
-  }
-
-  const occupiedBranches = await getOccupiedWorktreeBranches(worktreePath);
-  if (occupiedBranches.has(branchName)) {
-    throw createOccupiedBranchError(branchName);
-  }
-
-  const localBranchExists = await doesLocalBranchExist(
-    worktreePath,
-    branchName,
-  );
-  if (localBranchExists) {
-    await runGit(['checkout', branchName], worktreePath);
-    return;
-  }
-
-  const remoteBranchExists =
-    (await doesRemoteBranchExist(worktreePath, branchName)) ||
-    (await fetchOriginBranch(worktreePath, branchName));
-  if (remoteBranchExists) {
-    await runGit(
-      ['checkout', '-b', branchName, `origin/${branchName}`],
-      worktreePath,
-    );
-    return;
-  }
-
-  throw new Error(`Branch "${branchName}" was not found`);
+  return checkoutGitBranch(gitBranchWritePort(worktreePath), branchName);
 }
 
-export async function createBranchAndCheckout(
+export function createBranchAndCheckout(
   worktreePath: string,
   newBranchName: string,
   startPoint: string,
 ): Promise<string> {
-  if (await hasUncommittedChanges(worktreePath)) {
-    throw new Error('Cannot create a branch with uncommitted changes');
-  }
-
-  if (!(await validateBranchName(worktreePath, newBranchName))) {
-    throw new Error(`Invalid branch name: "${newBranchName}"`);
-  }
-
-  const resolvedName = await safeBranchName(worktreePath, newBranchName);
-  await runGit(['checkout', '-b', resolvedName, startPoint], worktreePath);
-  return resolvedName;
+  return createGitBranch(
+    gitBranchWritePort(worktreePath),
+    newBranchName,
+    startPoint,
+  );
 }
 
 export async function createWorktree(
@@ -3197,18 +3040,7 @@ export async function createWorktreeFromStartPoint(
 export function parseWorktreeListPorcelain(
   output: string,
 ): Map<string, string> {
-  const result = new Map<string, string>();
-  let currentPath: string | null = null;
-  for (const line of output.split('\n')) {
-    if (line.startsWith('worktree ')) {
-      currentPath = line.slice('worktree '.length).trim();
-      continue;
-    }
-    if (line.startsWith('branch refs/heads/') && currentPath) {
-      result.set(line.slice('branch refs/heads/'.length).trim(), currentPath);
-    }
-  }
-  return result;
+  return parseGitCheckedOutBranches(output);
 }
 
 export async function listCheckedOutBranches(
@@ -3400,37 +3232,35 @@ export function bestEffortPruneWorktrees(
   });
 }
 
-export async function deleteBranch(
+// The `worker.git.branch.delete` policy in process, for the lifecycle
+// callers CAN-4098 moves onto the instruction.
+export function deleteBranch(
   repoPath: string,
   branchName: string,
 ): Promise<void> {
-  await runGit(['branch', '-d', branchName], repoPath);
+  return deleteGitBranch(gitBranchDeletePort(repoPath), branchName, {
+    kind: 'merged',
+  });
 }
 
-export async function forceDeleteBranch(
+export function forceDeleteBranch(
   repoPath: string,
   branchName: string,
 ): Promise<void> {
-  await runGit(['branch', '-D', branchName], repoPath);
+  return deleteGitBranch(gitBranchDeletePort(repoPath), branchName, {
+    kind: 'force',
+  });
 }
 
-export async function deleteBranchIfMatches(
+export function deleteBranchIfMatches(
   repoPath: string,
   branchName: string,
   expectedTip: string,
 ): Promise<void> {
-  const checkedOutPath = (await listCheckedOutBranches(repoPath)).get(
-    branchName,
-  );
-  if (checkedOutPath) {
-    throw new Error(
-      `Cannot delete branch "${branchName}" because it is checked out at ${checkedOutPath}`,
-    );
-  }
-  await runGit(
-    ['update-ref', '-d', `refs/heads/${branchName}`, expectedTip],
-    repoPath,
-  );
+  return deleteGitBranch(gitBranchDeletePort(repoPath), branchName, {
+    kind: 'tip',
+    tip: expectedTip,
+  });
 }
 
 export async function renameBranch(
@@ -3444,35 +3274,84 @@ export async function getDiffStats(
   worktreePath: string,
   baseBranch?: string,
 ): Promise<{ insertions: number; deletions: number }> {
-  // When baseBranch is provided, diff the working tree against the merge-base
-  // of the remote ref and HEAD when origin/{baseBranch} exists. If the remote
-  // ref is missing, fall back to the local branch. This shows all changes since
-  // the branch diverged (committed + uncommitted) without including upstream
-  // changes.
-  let diffRef = 'HEAD';
-  if (baseBranch) {
-    const mergeBase = await getMergeBaseForBranch(worktreePath, baseBranch);
-    if (mergeBase) {
-      diffRef = mergeBase;
-    }
-  }
+  return getDiffStatsAgainst(
+    worktreePath,
+    await resolveDiffStatsBase(worktreePath, baseBranch),
+  );
+}
 
+/**
+ * The revision diff stats compare the working tree with: with a base branch,
+ * the merge base of `origin/<base>` (or the local branch when the remote ref
+ * is missing) and HEAD, so the stats cover everything since the branch
+ * diverged without upstream changes; otherwise, or without a merge base,
+ * `HEAD`.
+ */
+export async function resolveDiffStatsBase(
+  worktreePath: string,
+  baseBranch?: string,
+): Promise<string> {
+  if (!baseBranch) return 'HEAD';
+  return (await getMergeBaseForBranch(worktreePath, baseBranch)) ?? 'HEAD';
+}
+
+/** `git diff <diffRef> --shortstat`, as diff stats read it. */
+export function readDiffShortstat(
+  worktreePath: string,
+  diffRef: string,
+): Promise<string> {
+  return runGit(['diff', diffRef, '--shortstat'], worktreePath);
+}
+
+/** The insertion and deletion totals of a `--shortstat` line. */
+export function parseDiffShortstat(shortstat: string): {
+  insertions: number;
+  deletions: number;
+} {
+  const insertionsMatch = shortstat.match(/(\d+)\sinsertions?\(\+\)/);
+  const deletionsMatch = shortstat.match(/(\d+)\sdeletions?\(-\)/);
+  return {
+    insertions: insertionsMatch ? Number.parseInt(insertionsMatch[1], 10) : 0,
+    deletions: deletionsMatch ? Number.parseInt(deletionsMatch[1], 10) : 0,
+  };
+}
+
+/**
+ * The `core.quotePath` Git applies to a listing: `true` when unset, Git's
+ * default, and `null` when Git refuses the configuration, which fails every
+ * listing.
+ */
+export async function readGitQuotePath(
+  worktreePath: string,
+): Promise<boolean | null> {
+  try {
+    return (
+      (await runGit(
+        ['config', '--type=bool', '--get', 'core.quotePath'],
+        worktreePath,
+      )) !== 'false'
+    );
+  } catch (error) {
+    // `git config --get` exits 1, and only 1, for an unset key.
+    return Reflect.get(Object(error), 'code') === 1 ? true : null;
+  }
+}
+
+/** {@link getDiffStats} against an already selected revision. */
+export async function getDiffStatsAgainst(
+  worktreePath: string,
+  diffRef: string,
+): Promise<{ insertions: number; deletions: number }> {
   const [shortstat, untrackedOutput] = await Promise.all([
-    runGit(['diff', diffRef, '--shortstat'], worktreePath),
+    readDiffShortstat(worktreePath, diffRef),
     runGit(['ls-files', '--others', '--exclude-standard'], worktreePath).catch(
       () => '',
     ),
   ]);
 
-  let insertions = 0;
-  let deletions = 0;
-
-  if (shortstat) {
-    const insertionsMatch = shortstat.match(/(\d+)\sinsertions?\(\+\)/);
-    const deletionsMatch = shortstat.match(/(\d+)\sdeletions?\(-\)/);
-    insertions = insertionsMatch ? Number.parseInt(insertionsMatch[1], 10) : 0;
-    deletions = deletionsMatch ? Number.parseInt(deletionsMatch[1], 10) : 0;
-  }
+  const totals = parseDiffShortstat(shortstat);
+  let { insertions } = totals;
+  const { deletions } = totals;
 
   if (untrackedOutput) {
     const files = untrackedOutput
@@ -3494,62 +3373,116 @@ import { parseDiffOutput } from './git-diff-parser';
 export async function getChangedFilesList(
   worktreePath: string,
 ): Promise<ChangedFileInfo[]> {
-  // `core.quotePath=false` on all three, for the same reason as
+  // `core.quotePath=false` on all four commands for the same reason as
   // `getCommittedFilesList` below: git's default C-quotes and octal-escapes
-  // non-ASCII paths, and `ls-files` does it too.
+  // non-ASCII paths, and `ls-files` does it too. The unmerged listing omits
+  // `-z` so paths containing backslashes, quotes, or control characters use
+  // the same C-quoted keys as `diff`; quoted tabs and newlines stay on one line.
   //
   // This helper feeds display surfaces — the activity panel and the
   // shared-container share preview — which rendered `"caf\303\251.md"`
   // verbatim. It is *not* the publish path: the manifest's uncommitted half
   // goes through `listWorkingTreeDiffAgainstHead` and `listUntrackedFilesStrict`,
   // which are already `-z` and unaffected (CAN-2551).
-  const [statusOutput, numstatOutput, untrackedOutput] = await Promise.all([
-    runGit(
-      [
-        '-c',
-        'core.quotePath=false',
-        'diff',
-        'HEAD',
-        '--name-status',
-        '--find-renames',
-        '--find-copies',
-      ],
-      worktreePath,
-    ).catch(() => ''),
-    runGit(
-      [
-        '-c',
-        'core.quotePath=false',
-        'diff',
-        'HEAD',
-        '--numstat',
-        '--find-renames',
-        '--find-copies',
-      ],
-      worktreePath,
-    ).catch(() => ''),
-    runGit(
-      [
-        '-c',
-        'core.quotePath=false',
-        'ls-files',
-        '--others',
-        '--exclude-standard',
-      ],
-      worktreePath,
-    ).catch(() => ''),
-  ]);
+  // `diff HEAD` can omit unmerged index paths (merge, rebase, cherry-pick, or
+  // revert).
+  const [statusOutput, numstatOutput, untrackedOutput, unmergedOutput] =
+    await Promise.all([
+      runGit(
+        [
+          '-c',
+          'core.quotePath=false',
+          'diff',
+          'HEAD',
+          '--name-status',
+          '--find-renames',
+          '--find-copies',
+        ],
+        worktreePath,
+      ).catch(() => ''),
+      runGit(
+        [
+          '-c',
+          'core.quotePath=false',
+          'diff',
+          'HEAD',
+          '--numstat',
+          '--find-renames',
+          '--find-copies',
+        ],
+        worktreePath,
+      ).catch(() => ''),
+      runGit(
+        [
+          '-c',
+          'core.quotePath=false',
+          'ls-files',
+          '--others',
+          '--exclude-standard',
+        ],
+        worktreePath,
+      ).catch(() => ''),
+      runGit(
+        ['-c', 'core.quotePath=false', 'ls-files', '--unmerged'],
+        worktreePath,
+      ).catch(() => ''),
+    ]);
 
+  return buildChangedFilesList(worktreePath, {
+    statusOutput,
+    numstatOutput,
+    untrackedOutput,
+    unmergedOutput,
+  });
+}
+
+/** The four outputs `getChangedFilesList` reads, trimmed; `''` on failure. */
+export interface ChangedFilesListOutputs {
+  readonly statusOutput: string;
+  readonly numstatOutput: string;
+  readonly untrackedOutput: string;
+  readonly unmergedOutput: string;
+}
+
+/**
+ * The changed-files list of `getChangedFilesList`'s outputs. The
+ * `activity:changed-files` projection rebuilds these outputs from the
+ * canonical engine's reads (CAN-4103).
+ */
+export async function buildChangedFilesList(
+  worktreePath: string,
+  {
+    statusOutput,
+    numstatOutput,
+    untrackedOutput,
+    unmergedOutput,
+  }: ChangedFilesListOutputs,
+  estimate: typeof estimateUntrackedChanges = estimateUntrackedChanges,
+): Promise<ChangedFileInfo[]> {
   const changedFiles = parseDiffOutput(statusOutput, numstatOutput);
+
+  const unmergedPaths = new Set<string>();
+  for (const entry of unmergedOutput.split('\n').filter(Boolean)) {
+    const pathStart = entry.indexOf('\t');
+    if (pathStart === -1) continue;
+    unmergedPaths.add(entry.slice(pathStart + 1));
+  }
+
+  unmergedPaths.forEach((path: string) => {
+    const existing = changedFiles.get(path);
+    changedFiles.set(
+      path,
+      existing
+        ? { ...existing, status: 'unmerged' }
+        : { path, status: 'unmerged', insertions: 0, deletions: 0 },
+    );
+  });
 
   const untrackedFiles = untrackedOutput
     .split('\n')
     .filter(Boolean)
     .slice(0, MAX_UNTRACKED_FILES);
-  const untrackedChanges = await estimateUntrackedChanges(
-    worktreePath,
-    untrackedFiles,
-  );
+  const untrackedChanges = await estimate(worktreePath, untrackedFiles);
 
   untrackedFiles.forEach((path, index) => {
     if (changedFiles.has(path)) return;
@@ -3619,17 +3552,46 @@ export async function getCommittedFilesBetween(
     ).catch(() => ''),
   ]);
 
+  return buildCommittedFilesList(statusOutput, numstatOutput);
+}
+
+/** The committed-files list of `getCommittedFilesBetween`'s two outputs. */
+export function buildCommittedFilesList(
+  statusOutput: string,
+  numstatOutput: string,
+): ChangedFileInfo[] {
   const files = parseDiffOutput(statusOutput, numstatOutput);
   return Array.from(files.values()).sort((left, right) =>
     left.path.localeCompare(right.path),
   );
 }
 
+/**
+ * Host reads for the `worker.git.diff.get` change-set engine, with the
+ * environment and executable every desktop Git command uses (D8). Output is
+ * untrimmed; the legacy listing's 8 MiB limit is applied when its outputs are
+ * rebuilt, so these reads allow more.
+ */
+export function gitChangeSetReads(repoPath: string): GitChangeSetReader {
+  return {
+    read: (read) =>
+      runGit(gitChangeSetReadArgs(read), repoPath, {
+        preserveWhitespace: true,
+        maxBuffer: 32 * 1024 * 1024,
+      }),
+    estimateUntracked: (paths) => estimateUntrackedChanges(repoPath, paths),
+  };
+}
+
 export async function initGitRepo(dir: string): Promise<void> {
   await runGit(['init'], dir);
 }
 
-export async function initLocalRepo(dir: string, name: string): Promise<void> {
+export async function initLocalRepo(
+  dir: string,
+  name: string,
+  manifest: Parameters<typeof writeCanopyJson>[1] = { version: 1 },
+): Promise<void> {
   await initGitRepo(dir);
   await writeFile(join(dir, 'README.md'), `# ${name}\n`, 'utf-8');
   await writeFile(
@@ -3637,7 +3599,7 @@ export async function initLocalRepo(dir: string, name: string): Promise<void> {
     `# ${BRAND.displayName} multi-repo child repositories\nrepos/\n`,
     'utf-8',
   );
-  await writeCanopyJson(dir, { version: 1 });
+  await writeCanopyJson(dir, manifest);
   await runGit(
     ['add', 'README.md', '.gitignore', basename(getCanopyJsonPath(dir))],
     dir,
@@ -3970,23 +3932,39 @@ async function getFileAtRefBuffer(
   }
 }
 
-async function readGitBlobPrefix(
+function readGitBlobPrefix(
   worktreePath: string,
   objectSpec: string,
   maximumBytes: number,
 ): Promise<Buffer> {
+  return readGitStdoutPrefix(
+    worktreePath,
+    ['cat-file', 'blob', objectSpec],
+    maximumBytes,
+  );
+}
+
+/**
+ * The first `maximumBytes` of `git <args>` stdout in `cwd`; Git is stopped
+ * once they are read. Rejects when Git fails before that.
+ */
+export async function readGitStdoutPrefix(
+  cwd: string,
+  args: string[],
+  maximumBytes: number,
+): Promise<Buffer> {
   const launch = prepareBackgroundProcessLaunch(
     await getResolvedGitExecutableForSpawn(),
-    ['cat-file', 'blob', objectSpec],
+    args,
     false,
   );
   return new Promise<Buffer>((resolvePrefix, rejectPrefix) => {
     const child = spawn(launch.command, launch.args, {
-      cwd: worktreePath,
+      cwd,
       env: withGitRequestContextEnv(
         getEnhancedEnv({ includeCanopySecrets: false, environment: false }),
       ),
-      windowsHide: process.platform === 'win32',
+      windowsHide: hostPlatformOperatingSystem() === 'win32',
     });
     if (launch.lowerPriorityAfterSpawn && typeof child.pid === 'number') {
       lowerSpawnedProcessPriority(child.pid);
@@ -4002,7 +3980,7 @@ async function readGitBlobPrefix(
         child.kill();
         if (!settled) {
           settled = true;
-          rejectPrefix(new Error('Git returned invalid blob data'));
+          rejectPrefix(new Error('Git returned invalid output'));
         }
         return;
       }
@@ -4033,7 +4011,7 @@ async function readGitBlobPrefix(
         resolvePrefix(Buffer.concat(chunks, bytesRead));
         return;
       }
-      rejectPrefix(new Error(stderr.trim() || 'Unable to read Git blob'));
+      rejectPrefix(new Error(stderr.trim() || 'Git command failed'));
     });
   });
 }

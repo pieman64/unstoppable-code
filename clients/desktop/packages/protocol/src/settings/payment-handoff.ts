@@ -11,6 +11,9 @@ import {
 import {
   BILLING_TOP_UP_MAX_USD,
   BILLING_TOP_UP_MIN_USD,
+  MODEL_LIBRARY_UNLOCK_SOURCES,
+  isBillingIntentIdentifier,
+  isBillingRequestId,
 } from '../billing/top-up-intent';
 import { settingsRouteIdSchema } from './routes';
 
@@ -35,6 +38,9 @@ export const settingsPaymentHandoffIntentSchema = z
     z.strictObject({
       kind: z.literal('top-up'),
       reason: z.enum(['credits', 'unlock_models']),
+      source: z.enum(MODEL_LIBRARY_UNLOCK_SOURCES).optional(),
+      modelId: z.string().refine(isBillingIntentIdentifier).optional(),
+      chatId: z.string().refine(isBillingIntentIdentifier).optional(),
       amountUsd: z
         .number()
         .min(BILLING_TOP_UP_MIN_USD)
@@ -98,7 +104,10 @@ export type SettingsPaymentHandoffFailure =
   (typeof SETTINGS_PAYMENT_HANDOFF_FAILURES)[number];
 
 export const settingsPaymentHandoffResultSchema = z.union([
-  z.strictObject({ ok: z.literal(true) }),
+  z.strictObject({
+    ok: z.literal(true),
+    requestId: z.string().refine(isBillingRequestId).optional(),
+  }),
   z.strictObject({
     ok: z.literal(false),
     reason: z.enum(SETTINGS_PAYMENT_HANDOFF_FAILURES),

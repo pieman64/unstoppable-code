@@ -36,3 +36,12 @@ export function formatDateOrEmpty(value: string | undefined): string {
   if (value === undefined || value === '') return '';
   return Number.isNaN(new Date(value).getTime()) ? '' : formatDate(value);
 }
+
+/**
+ * Locale date and wall-clock time for an ISO timestamp (receipts, exports,
+ * key activity). Unparseable input is returned unchanged.
+ */
+export function formatDateTime(isoString: string): string {
+  const parsed = new Date(isoString);
+  return Number.isNaN(parsed.getTime()) ? isoString : parsed.toLocaleString();
+}

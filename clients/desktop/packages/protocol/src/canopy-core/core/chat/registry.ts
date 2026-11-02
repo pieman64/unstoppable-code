@@ -49,6 +49,14 @@ import {
   CoreChatToolOutputReadResultSchema,
 } from './tool-output';
 import {
+  CoreChatContentReadErrorSchema,
+  CoreChatContentReadParamsSchema,
+  CoreChatContentReadResultSchema,
+  CoreChatTranscriptBlocksPageErrorSchema,
+  CoreChatTranscriptBlocksPageParamsSchema,
+  CoreChatTranscriptBlocksPageResultSchema,
+} from './content';
+import {
   CoreChatVisualReadErrorSchema,
   CoreChatVisualReadParamsSchema,
   CoreChatVisualReadResultSchema,
@@ -183,6 +191,28 @@ export const CORE_CHAT_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
     params: CoreChatToolOutputReadParamsSchema,
     result: CoreChatToolOutputReadResultSchema,
     error: CoreChatToolOutputReadErrorSchema,
+  }),
+  'core.chat.content.read': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatContentReadParamsSchema,
+    result: CoreChatContentReadResultSchema,
+    error: CoreChatContentReadErrorSchema,
+  }),
+  'core.chat.transcript.blocks.page': defineCanopyQuery({
+    plane: 'core',
+    domain: 'chat',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.chat.read'],
+    params: CoreChatTranscriptBlocksPageParamsSchema,
+    result: CoreChatTranscriptBlocksPageResultSchema,
+    error: CoreChatTranscriptBlocksPageErrorSchema,
   }),
   'core.chat.visual.read': defineCanopyQuery({
     plane: 'core',

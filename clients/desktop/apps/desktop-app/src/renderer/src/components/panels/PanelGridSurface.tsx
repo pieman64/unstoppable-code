@@ -1,3 +1,4 @@
+import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { ActivityCardToggle } from '@/components/activity/ActivityCardControl';
 import { useChatTabRename } from '@/components/chat/ChatTabRenameDialog';
 import { ChatGroupArchivedChatsAccessory } from '@/components/panels/ChatGroupArchivedChatsAccessory';
@@ -19,13 +20,13 @@ import {
 import { initBrowserPanelSync } from '@/lib/panels/browser-panel-sync';
 import { isBusyChatPanel, useBusyChatIds } from '@/lib/panels/busy-chat-panels';
 import { initChatPanelReveal } from '@/lib/panels/chat-panel-activation';
+import { chatReadStateServices } from '@/lib/panels/chat-read-state';
 import {
   closePanelGroup,
   closePanelTab,
   closePanelTabs,
   registerChatPanelSyncOwner,
 } from '@/lib/panels/chat-panel-sync';
-import { ensureEarlyAccessMinimalSync } from '@/lib/panels/early-access-minimal-sync';
 import { ensureEarlyAccessPanelRulesSync } from '@/lib/panels/early-access-panel-rules';
 import { isLastTabOfFixedGroup } from '@/lib/panels/fixed-group-close';
 import {
@@ -47,13 +48,14 @@ import { getPanelDefinition, renderPanelContent } from '@/lib/panels/registry';
 import { isSharedContainerViewerLayout } from '@/lib/panels/shared-container-viewer-layout';
 import {
   panelTabDisplayTitle,
+  renderPanelTabAccessibleStatus,
+  renderPanelTabAttention,
   renderPanelCollapsedTabIcon,
   renderPanelTabIcon,
   renderPanelTabLabel,
   renderPanelTabTooltip,
   renderPanelTabTrailing,
 } from '@/lib/panels/tab-display';
-import { ensureTabRowLimitSync } from '@/lib/panels/tab-row-limit';
 import {
   requestRevealedTerminalPanelSpawn,
   requestSelectedTerminalPanelFocus,
@@ -82,8 +84,10 @@ import {
   type ChatPrefetchTarget,
 } from '@/stores/chat/chat-prefetch';
 import { useChatStore } from '@/stores/chatStore';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
+import { useNavigationMode } from '@/stores/navigationModeStore';
+import { isLocalFileActionAvailable } from '@/lib/file-reveal';
 import { createChatTabHoverCardRenderer } from '@/lib/panels/chat-tab-preview';
+import { renderBrowserTabHoverCard } from '@/lib/panels/browser-tab-preview';
 import {
   makeWorktreePanelKey,
   setFixedSidePanelTabsClosable,
@@ -221,6 +225,19 @@ function minimalChromeForGroup(
   return undefined;
 }
 
+/**
+ * Tab previews (Labs): a card for background chat and browser tabs; every
+ * other kind keeps its tooltip.
+ */
+function createTabHoverCardRenderer(
+  projectId: string,
+  worktreeId: string,
+): (tab: PanelTabModel) => ReactNode | null {
+  const renderChat = createChatTabHoverCardRenderer(projectId, worktreeId);
+  return (tab): ReactNode | null =>
+    renderBrowserTabHoverCard(tab) ?? renderChat(tab);
+}
+
 export function PanelGridSurface({
   projectId,
   worktreeId,
@@ -234,6 +251,8 @@ export function PanelGridSurface({
   const access = useWorkspaceAccess();
   const readOnly = access.mode === 'read-only';
   const readOnlyRunAllowed = access.mode === 'read-only' && access.runAllowed;
+  const fileActionsFirst = useNavigationMode() === 'work';
+  const canRevealFile = isLocalFileActionAvailable('showInFinder');
   const startPageEnabled = useCanopyDesktopStartPageEnabled();
   const projectType = useProjectsStore(
     (state) => state.projects.find((project) => project.id === projectId)?.type,
@@ -288,15 +307,10 @@ export function PanelGridSurface({
     },
     [projectId, projectType, startPageRoots, worktreeId, worktreeKey],
   );
-  // Early access gives Activity its own card, so no menu offers it as a
-  // panel (early-access-panel-rules closes existing Activity tabs). A
-  // shared-container viewer has no card and keeps it.
-  const earlyAccess = useLabsExperimentEnabled('activity-card');
-  // Labs: resting on a background chat tab previews it. Off, chat tabs keep
-  // their native title tooltip exactly as before.
-  const chatTabPreviews = useLabsExperimentEnabled('chat-tab-previews');
+  // Shared-container viewers retain Activity panels because they have no card.
   const activityIsCard =
-    earlyAccess && !isSharedContainerViewerLayout(worktreeKey);
+    useLabsExperimentEnabled('activity-card') &&
+    !isSharedContainerViewerLayout(worktreeKey);
   const effectiveAddMenuExcludeKinds = useMemo(():
     | readonly PanelKind[]
     | undefined => {
@@ -315,8 +329,6 @@ export function PanelGridSurface({
   const modeHydrated =
     modeEntry?.status === 'ready' || modeEntry?.status === 'error';
   const minimal = modeHydrated && modeEntry.mode === 'minimal';
-  // Early access shows the Chrome-style `fill` tabs, whose rows do not
-  // scroll and so hold at most `MAX_TABS_PER_GROUP` tabs.
 
   // Early access: the Side Panel can be emptied (it then lists what to
   // open), so its Activity and File explorer tabs close like any other.
@@ -359,8 +371,6 @@ export function PanelGridSurface({
       });
   }, [sidePanelEmpty, worktreeKey]);
   useEffect(() => {
-    ensureEarlyAccessMinimalSync();
-    ensureTabRowLimitSync();
     ensureEarlyAccessPanelRulesSync();
     void useWorkspaceLayoutModeStore.getState().load(worktreeKey);
     return (): void => disposeWorktreePanelHydration(worktreeKey);
@@ -471,6 +481,11 @@ export function PanelGridSurface({
     [openChatTabRename, projectId, worktreeId],
   );
 
+  const chatReadState = useMemo(
+    () => chatReadStateServices(projectId, worktreeId),
+    [projectId, worktreeId],
+  );
+
   // Worktrees keep their primary archive control in PrStatusBar. Header-less
   // scopes retain their existing scoped archive accessory.
   const archiveInTabStrip = archivedChatsAccessory && !readOnly;
@@ -559,10 +574,10 @@ export function PanelGridSurface({
         else endChatIntent(target);
       },
       getTabTitle: panelTabDisplayTitle,
+      renderTabAccessibleStatus: renderPanelTabAccessibleStatus,
+      renderTabAttention: renderPanelTabAttention,
       renderTabTooltip: renderPanelTabTooltip,
-      renderTabHoverCard: chatTabPreviews
-        ? createChatTabHoverCardRenderer(projectId, worktreeId)
-        : undefined,
+      renderTabHoverCard: createTabHoverCardRenderer(projectId, worktreeId),
       renderTabTrailing: (tab): ReactNode => {
         const trailing = renderPanelTabTrailing(tab);
         const candidate = startPageForTab(tab);
@@ -688,9 +703,11 @@ export function PanelGridSurface({
       onCloseTabs: closePanelTabs,
       onCopyFilePath: copyFilePath,
       onCopyRelativeFilePath: copyRelativeFilePath,
-      onOpenFileInFileManager: readOnly ? undefined : openFileInFileManager,
+      onOpenFileInFileManager:
+        readOnly || !canRevealFile ? undefined : openFileInFileManager,
       resolveFileTabPath,
       openInFileManagerLabel: pt(uiText.fileManager.openItem),
+      fileActionsFirst,
       onShareSession:
         !readOnly && canTransferChatSession(projectId)
           ? handleShareSession
@@ -701,6 +718,9 @@ export function PanelGridSurface({
           ? handleExportSession
           : undefined,
       onRenameChat: readOnly ? undefined : handleRenameChat,
+      // Not gated on read-only: viewers may mark chats read and unread.
+      getChatReadState: chatReadState?.getChatReadState,
+      onSetChatUnread: chatReadState?.onSetChatUnread,
       renderAddTabMenu,
       // Read-only scopes cannot start a chat, so `+` opens the add-panel menu
       // (filtered to the read-safe kinds) instead of creating one.
@@ -755,7 +775,6 @@ export function PanelGridSurface({
       activityIsCard,
       archiveInTabStrip,
       canCloseMinimalTab,
-      chatTabPreviews,
       effectiveAddMenuExcludeKinds,
       busyChatIds,
       readOnly,
@@ -764,11 +783,14 @@ export function PanelGridSurface({
       handleAddChatTab,
       handleExportSession,
       handleRenameChat,
+      chatReadState,
       handleShareSession,
       canShareSession,
       copyFilePath,
       copyRelativeFilePath,
+      fileActionsFirst,
       openFileInFileManager,
+      canRevealFile,
       projectId,
       resolvedStartPage,
       renderTabStripAccessory,

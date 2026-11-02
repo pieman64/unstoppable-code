@@ -13,6 +13,8 @@ interface OrganizationLogoProps {
   size?: number;
   /** Extra classes for the rendered element. */
   className?: string;
+  /** Letters in the initials placeholder; 1 for logos too small for two. */
+  maxInitials?: 1 | 2;
 }
 
 /**
@@ -27,6 +29,7 @@ export function OrganizationLogo({
   logoUrl,
   size = 40,
   className = '',
+  maxInitials = 2,
 }: OrganizationLogoProps): JSX.Element {
   // Track which URL failed so the initials fallback engages on a load error but
   // auto-clears if the caller later passes a different logo (React does not
@@ -74,7 +77,7 @@ export function OrganizationLogo({
         blockClassName,
       )}
     >
-      {initialsOf(name)}
+      {initialsOf(name, maxInitials)}
     </span>
   );
 }

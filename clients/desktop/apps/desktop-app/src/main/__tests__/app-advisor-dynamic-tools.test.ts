@@ -1,3 +1,7 @@
+const mockMcpTools = new Map<
+  string,
+  { schema: object; handler: (args: unknown) => Promise<unknown> }
+>();
 const mockGetGitHubPullRequestStatus = jest.fn();
 jest.mock('../lib/github-pr-read-model', () => ({
   getGitHubPullRequestStatus: (...args: unknown[]): unknown =>
@@ -39,17 +43,15 @@ jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
       name: string,
       description: string,
       inputSchema: z.ZodRawShape,
-      handler: unknown,
-    ) => ({
-      name,
-      description,
-      inputSchema,
-      handler,
-    }),
+      handler: (args: unknown) => Promise<unknown>,
+    ) => {
+      mockMcpTools.set(name, { schema: inputSchema, handler });
+      return { name, description, inputSchema, handler };
+    },
   ),
   createSdkMcpServer: jest.fn((options: unknown): unknown => options),
 }));
-import Ajv from 'ajv';
+import Ajv, { type AnySchema } from 'ajv';
 import {
   watchGitHubItemsJsonSchema as worktreeWatchGitHubItemsJsonSchema,
   watchGitHubItemsSchema as worktreeWatchGitHubItemsSchema,
@@ -63,6 +65,15 @@ import {
 } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
 import { readWatcherOutputPreview } from '../app-advisor/local-watcher-output';
+
+function compileJsonSchema(schema: unknown): ReturnType<Ajv['compile']> {
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new Error('Expected a JSON Schema object.');
+  }
+
+  // Generated schemas are object-shaped JSON values, while Ajv accepts AnySchema.
+  return new Ajv({ strict: false }).compile(schema as AnySchema);
+}
 
 jest.mock('../app-advisor/local-watcher-output', () => ({
   readWatcherOutputPreview: jest.fn(),
@@ -143,19 +154,23 @@ describe('App Advisor Codex dynamic tools', () => {
 
   it('advertises canonical Codex search and open dispatch schemas', () => {
     const specs = buildAppAdvisorDynamicToolSpecs();
+    const searchActionsTool = specs.find(
+      (spec) =>
+        spec.name === getAppAdvisorProviderToolName('search_actions', 'codex'),
+    );
+    const dispatchActionTool = specs.find(
+      (spec) =>
+        spec.name === getAppAdvisorProviderToolName('dispatch_action', 'codex'),
+    );
     expect(
-      specs.find(
-        (spec) =>
-          spec.name ===
-          getAppAdvisorProviderToolName('search_actions', 'codex'),
-      )?.inputSchema,
+      searchActionsTool?.type === 'namespace'
+        ? undefined
+        : searchActionsTool?.inputSchema,
     ).toEqual(searchActionsJsonSchema);
     expect(
-      specs.find(
-        (spec) =>
-          spec.name ===
-          getAppAdvisorProviderToolName('dispatch_action', 'codex'),
-      )?.inputSchema,
+      dispatchActionTool?.type === 'namespace'
+        ? undefined
+        : dispatchActionTool?.inputSchema,
     ).toEqual(dispatchActionJsonSchema);
     const schema = z.toJSONSchema(dispatchActionToolSchema);
     expect(schema.properties?.action).toMatchObject({
@@ -165,9 +180,7 @@ describe('App Advisor Codex dynamic tools', () => {
     expect(dispatchActionJsonSchema).toMatchObject({
       properties: { action: { properties: { type: { type: 'string' } } } },
     });
-    const validateJson = new Ajv({ strict: false }).compile(
-      dispatchActionJsonSchema,
-    );
+    const validateJson = compileJsonSchema(dispatchActionJsonSchema);
     expect(
       validateJson({
         action: { type: 'future.action', arbitrary: { nested: true } },
@@ -182,9 +195,7 @@ describe('App Advisor Codex dynamic tools', () => {
     const runtime = createRuntime({ dispatchRendererAction });
     const entries = APP_ADVISOR_ACTION_CATALOG.filter((entry) => entry.hidden);
     expect(entries).toHaveLength(20);
-    const validateJson = new Ajv({ strict: false }).compile(
-      dispatchActionJsonSchema,
-    );
+    const validateJson = compileJsonSchema(dispatchActionJsonSchema);
     for (const entry of entries) {
       const input = { action: entry.example };
       expect(validateJson(input)).toBe(true);
@@ -599,8 +610,11 @@ describe('App Advisor Codex dynamic tools', () => {
       (tool) => tool.name === 'canopy_app_advisor_set_auto_archive',
     );
     expect(spec).toBeDefined();
-    expect(JSON.stringify(spec?.inputSchema)).toContain('enabled');
-    expect(JSON.stringify(spec?.inputSchema)).not.toContain('chatId');
+    if (spec?.type !== 'function') throw new Error('Expected function tool');
+    expect(JSON.stringify(spec.inputSchema)).toContain('enabled');
+    expect(
+      JSON.stringify(spec?.type === 'function' ? spec.inputSchema : undefined),
+    ).not.toContain('chatId');
   });
 
   it.each([true, false])(
@@ -630,7 +644,9 @@ describe('App Advisor Codex dynamic tools', () => {
       (tool) => tool.name === 'canopy_app_advisor_start_forked_agent',
     );
     expect(spec).toBeDefined();
-    const schema = JSON.stringify(spec?.inputSchema);
+    const schema = JSON.stringify(
+      spec?.type === 'function' ? spec.inputSchema : undefined,
+    );
     expect(schema).toContain('followUpInstruction');
     expect(schema).not.toContain('projectId');
     expect(schema).not.toContain('worktreeId');
@@ -704,7 +720,9 @@ describe('App Advisor Codex dynamic tools', () => {
       (tool) =>
         tool.name === getAppAdvisorProviderToolName('setup_watchers', 'codex'),
     );
-    const setupSchema = JSON.stringify(setupSpec?.inputSchema);
+    const setupSchema = JSON.stringify(
+      setupSpec?.type === 'function' ? setupSpec.inputSchema : undefined,
+    );
 
     expect(setupSchema).not.toContain('workspaceName');
     expect(setupSchema).not.toContain('chatTitle');
@@ -837,7 +855,8 @@ describe('App Advisor Codex dynamic tools', () => {
 
   it('keeps provider schemas free of top-level composition keywords', () => {
     for (const tool of buildAppAdvisorDynamicToolSpecs()) {
-      const schema = tool.inputSchema as Record<string, unknown>;
+      if (tool.type !== 'function') throw new Error('Expected function tool');
+      const schema = tool.inputSchema;
       expect(schema).not.toHaveProperty('oneOf');
       expect(schema).not.toHaveProperty('anyOf');
       expect(schema).not.toHaveProperty('allOf');
@@ -1228,7 +1247,9 @@ describe('App Advisor Codex dynamic tools', () => {
     expect(requestUiState).toHaveBeenCalled();
     expect(response.success).toBe(true);
     expect(response.contentItems[0]?.type).toBe('inputText');
-    expect(response.contentItems[0]?.text).toContain('"revision": 1');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('"revision": 1');
   });
 
   it('routes search_actions calls through the App Advisor action catalog', async () => {
@@ -1245,8 +1266,12 @@ describe('App Advisor Codex dynamic tools', () => {
     );
 
     expect(response.success).toBe(true);
-    expect(response.contentItems[0]?.text).toContain('pipeline.debug_run');
-    expect(response.contentItems[0]?.text).toContain('executionId');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('pipeline.debug_run');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('executionId');
   });
 
   it('refreshes renderer page availability on every action search', async () => {
@@ -1431,12 +1456,12 @@ describe('App Advisor Codex dynamic tools', () => {
     snapshotSpy.mockRestore();
 
     expect(response.success).toBe(true);
-    expect(response.contentItems[0]?.text).not.toContain(
-      'shared-containers.open_invite',
-    );
-    expect(response.contentItems[0]?.text).toContain(
-      'shared-containers.revoke_recipient',
-    );
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).not.toContain('shared-containers.open_invite');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('shared-containers.revoke_recipient');
   });
 
   it('routes read_pipeline_yaml calls through the App Advisor runtime', async () => {
@@ -1470,7 +1495,9 @@ describe('App Advisor Codex dynamic tools', () => {
       fixedString: true,
     });
     expect(response.success).toBe(true);
-    expect(response.contentItems[0]?.text).toContain('Pipeline YAML');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('Pipeline YAML');
   });
 
   it('routes ShowFiles calls with an optional target project', async () => {
@@ -1499,7 +1526,9 @@ describe('App Advisor Codex dynamic tools', () => {
       { projectId: 'project-1', worktreeId: 'worktree-1' },
     );
     expect(response.success).toBe(true);
-    expect(response.contentItems[0]?.text).toContain('"opened": 1');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('"opened": 1');
   });
 
   it('reads and responds to file comments in an explicit project', async () => {
@@ -1576,7 +1605,9 @@ describe('App Advisor Codex dynamic tools', () => {
       (tool) =>
         tool.name === getAppAdvisorProviderToolName('search_watchers', 'codex'),
     );
-    expect(spec?.inputSchema).toEqual(searchWatchersJsonSchema);
+    expect(spec?.type === 'namespace' ? undefined : spec?.inputSchema).toEqual(
+      searchWatchersJsonSchema,
+    );
     const searchWatchers = jest.fn().mockResolvedValue({
       catalog: [],
       activeWatchers: [],
@@ -2067,10 +2098,118 @@ describe('App Advisor Codex dynamic tools', () => {
     );
 
     expect(response.success).toBe(false);
-    expect(response.contentItems[0]?.text).toContain('Unsupported App Advisor');
+    expect(
+      response.contentItems.find((item) => item.type === 'inputText')?.text,
+    ).toContain('Unsupported Orchestrator');
   });
 });
 
+describe('App Advisor transcript reads through both providers', () => {
+  const target = {
+    kind: 'delegation',
+    chatId: 'owner',
+    delegationId: 'child',
+    runGeneration: 1,
+  };
+  const actions = [
+    { type: 'chat.transcript.page', target },
+    {
+      type: 'chat.content.read',
+      target,
+      messageId: 'row',
+      blockOrdinal: 0,
+      field: 'text',
+      offset: 0,
+    },
+    { type: 'chat.transcript.blocks.page', target, messageId: 'row' },
+  ];
+  it.each(actions)(
+    'discovers $type by exact type without a renderer',
+    async (action) => {
+      const runtime = createRuntime({
+        requestUiState: jest.fn().mockRejectedValue(new Error('disconnected')),
+      });
+      const response = await executeAppAdvisorTool(
+        'search_actions',
+        { actionType: action.type, category: 'chat', limit: 1 },
+        runtime,
+      );
+      expect(JSON.parse(response.text)).toMatchObject({
+        totalMatches: 1,
+        returned: 1,
+        actions: [{ type: action.type, category: 'chat' }],
+      });
+    },
+  );
+  it('uses one combined ranking and one final limit', async () => {
+    const result = await executeAppAdvisorTool(
+      'search_actions',
+      { query: 'transcript', limit: 2 },
+      createRuntime(),
+    );
+    expect(JSON.parse(result.text)).toMatchObject({ returned: 2 });
+    const parsed: unknown = JSON.parse(result.text);
+    expect(parsed).toMatchObject({
+      actions: [
+        { type: 'delegation.transcript' },
+        { type: 'chat.transcript.page' },
+      ],
+    });
+  });
+  it.each(actions)(
+    'dispatches $type through Codex dynamic tools',
+    async (action) => {
+      const dispatchRendererAction = jest.fn().mockResolvedValue({
+        requestId: 'provider',
+        ok: true,
+        result: { marker: 'shared' },
+      });
+      const response = await handleAppAdvisorDynamicToolCall(
+        {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          callId: 'transcript-call',
+          namespace: null,
+          tool: getAppAdvisorProviderToolName('dispatch_action', 'codex'),
+          arguments: { action },
+        },
+        createRuntime({ dispatchRendererAction }),
+      );
+      expect(response.success).toBe(true);
+      expect(dispatchRendererAction).toHaveBeenCalledWith(
+        expect.objectContaining(action),
+        undefined,
+        expect.any(String),
+      );
+    },
+  );
+  it.each(actions)(
+    'dispatches $type through Claude MCP registered tools',
+    async (action) => {
+      const dispatchRendererAction = jest
+        .fn()
+        .mockResolvedValue({ requestId: 'provider', ok: true });
+      createAppAdvisorMcpServer(createRuntime({ dispatchRendererAction }));
+      const tool = mockMcpTools.get('DispatchAction');
+      expect(tool).toBeDefined();
+      const response = await tool?.handler({ action });
+      expect(response).toMatchObject({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ requestId: 'provider', ok: true }, null, 2),
+          },
+        ],
+      });
+      // MCP supplies no transport id here; the main runtime owns its default.
+      expect(dispatchRendererAction).toHaveBeenCalledWith(
+        expect.objectContaining(action),
+        undefined,
+        undefined,
+      );
+    },
+  );
+});
 it('passes request cancellation through an Advisor independent fork', async () => {
   const fork = jest.fn().mockResolvedValue({ ok: true });
   const signal = new AbortController().signal;

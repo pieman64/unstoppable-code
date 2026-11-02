@@ -1,3 +1,8 @@
+import type { SharedMultiRepoClient } from './shared-multi-repo-client';
+import type {
+  OnboardingTipsCommandMap,
+  OnboardingTipsQueryMap,
+} from '@canopy/protocol/onboarding-tips';
 import type {
   RepoRulesScanRequest,
   RepoRulesScanResponse,
@@ -20,6 +25,25 @@ import type {
   PortalChatInputDeliveryPayload,
   PortalProviderUsageRefreshPayload,
 } from '@canopy/protocol/portal';
+import type {
+  LifecycleJournalInspection,
+  LifecycleJournalQuarantineRequest,
+  LifecycleJournalQuarantineResult,
+} from '@canopy/protocol/portal/lifecycle-journal';
+import type {
+  PortalProjectDeletionDiscardDescribePayload,
+  ProjectDeletionDiscardDescription,
+} from '@canopy/protocol/portal/project-deletion-discard';
+import type {
+  PortalWorktreeDiscardDescribePayload,
+  PortalWorktreeDiscardPayload,
+  WorktreeDiscardDescription,
+  WorktreeDiscardResult,
+} from '@canopy/protocol/portal/worktree-discard';
+import type {
+  ManagedDelegationExtendLifetimeLimitResult,
+  ManagedDelegationLifetimeStatus,
+} from '@canopy/protocol/delegation';
 import type {
   LoadWorktreeTerminalStateRequest,
   LoadWorktreeTerminalStateResponse,
@@ -137,6 +161,7 @@ import type {
 import type { SessionViewModel } from '../view-model';
 import type { CanopyCapabilities } from './capabilities';
 import type { BillingClient } from './billing-client';
+import type { TranscriptReadClient } from '../transcripts';
 import type { ExternalAgentsClient } from './external-agents-client';
 import type { MarketplaceSourcesClient } from './marketplace-sources-client';
 import type { AccountOrganizationSettingsClient } from '../settings/settings-client';
@@ -169,7 +194,13 @@ export type TerminalShellSpawnArgs = Omit<
  * (`ipcRenderer.invoke` on desktop, `fetch` on web). Seeded with the session
  * snapshot; feature slices extend this map here.
  */
-export interface QueryMap extends ScriptActionsQueryMap {
+export interface QueryMap
+  extends ScriptActionsQueryMap, OnboardingTipsQueryMap {
+  /** Read the authoritative managed-delegation allowance for one worktree. */
+  'delegation.lifetimeStatus': {
+    args: { readonly projectId: string; readonly worktreeId: string };
+    result: ManagedDelegationLifetimeStatus;
+  };
   'repoRules.scan': {
     args: RepoRulesScanRequest;
     result: RepoRulesScanResponse;
@@ -385,7 +416,31 @@ export type WorktreeCreateResult =
  * (send message, stop turn, persist tabs, end session). Seeded with session
  * end; feature slices extend this map here.
  */
-export interface CommandMap extends ScriptActionsCommandMap {
+/** One native background task of a chat, addressed by its provider task id. */
+export interface BackgroundTaskStopRequest {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly chatId: string;
+  readonly taskId: string;
+}
+
+/**
+ * `stopped`: the provider accepted the stop, and the task ends with its own
+ * notification. `already-finished` / `session-ended`: it had already ended,
+ * and the host reports that end itself.
+ */
+export type BackgroundTaskStopOutcome =
+  | 'stopped'
+  | 'already-finished'
+  | 'session-ended';
+
+export interface CommandMap
+  extends ScriptActionsCommandMap, OnboardingTipsCommandMap {
+  /** User-authorized extension of one worktree's managed-delegation allowance. */
+  'delegation.extendLifetimeLimit': {
+    args: { readonly projectId: string; readonly worktreeId: string };
+    result: ManagedDelegationExtendLifetimeLimitResult;
+  };
   /** Refresh the current provider account on the explicitly selected host. */
   'providerUsage.refresh': {
     args: PortalProviderUsageRefreshPayload & {
@@ -482,12 +537,19 @@ export interface CommandMap extends ScriptActionsCommandMap {
    * Write a file's contents. Gated on `capabilities.fileSystemAccess ===
    * 'read-write'` by the caller; returns the re-read `PortalFilePreview` so the
    * store can refresh its version/mtime conflict cookie.
+   * Rejects with `FileSaveConflictError` when the supplied version is stale.
+   * Other permission, missing-file and execution failures remain distinct.
    */
   'file.save': { args: PortalFileSavePayload; result: PortalFilePreview };
   /** Persist a workspace's activity-section order. */
   'activity.setSectionOrder': {
     args: PortalSetSectionOrderPayload;
     result: void;
+  };
+  /** Stop one native background task; gated by `backgroundTaskStop`. */
+  'activity.stopBackgroundTask': {
+    args: BackgroundTaskStopRequest;
+    result: BackgroundTaskStopOutcome;
   };
   'workspace.create': {
     args: PortalWorkspaceCreatePayload;
@@ -500,6 +562,43 @@ export interface CommandMap extends ScriptActionsCommandMap {
   'workspace.delete': {
     args: PortalWorkspaceDeletePayload;
     result: void;
+  };
+  /**
+   * CAN-5335: the unreadable destructive lifecycle journal entries that make
+   * deletion and archive refuse for every project. Gated by
+   * `lifecycleJournalQuarantine`; a command because it writes the birth-order
+   * probes that prove each entry's identity.
+   */
+  'lifecycleJournal.inspect': {
+    args: Record<string, never>;
+    result: LifecycleJournalInspection;
+  };
+  /** CAN-5335: user-only move of one confirmed entry to quarantine. */
+  'lifecycleJournal.quarantine': {
+    args: LifecycleJournalQuarantineRequest;
+    result: LifecycleJournalQuarantineResult;
+  };
+  /**
+   * CAN-5336: what a permanent discard of a worktree whose removal can't
+   * finish would delete. Read-only; gated by `worktreeDiscard`.
+   */
+  'worktree.discard.describe': {
+    args: PortalWorktreeDiscardDescribePayload;
+    result: WorktreeDiscardDescription;
+  };
+  /** CAN-5336: user-only and permanent; binds to a description's token. */
+  'worktree.discard': {
+    args: PortalWorktreeDiscardPayload;
+    result: WorktreeDiscardResult;
+  };
+  /**
+   * CAN-5337: what keeps a project's deletion from finishing that a person
+   * can discard, item by item through `worktree.discard`. Read-only; gated
+   * by `projectDeletionDiscard`.
+   */
+  'workspace.delete.discard.describe': {
+    args: PortalProjectDeletionDiscardDescribePayload;
+    result: ProjectDeletionDiscardDescription;
   };
   'workspace.reorder': {
     args: PortalWorkspaceReorderPayload;
@@ -693,10 +792,18 @@ export type CommandName = keyof CommandMap;
  * `as` casts so the public contract stays honest.
  */
 export interface CanopyClient {
+  /** Open a web URL outside the app through the host's browser. */
+  openExternalUrl?(url: string): void;
+  readonly sharedMultiRepo?: SharedMultiRepoClient;
   /** Optional until the host wires source management and advertises its capability. */
   readonly marketplaceSources?: MarketplaceSourcesClient;
   /** Absent on hosts without inline checkout; all operations stay host-bound. */
   readonly billing?: BillingClient;
+  /**
+   * Child stream pages and stored field bodies. Present only where the host
+   * reads them, together with the `delegationTranscriptReads` capability.
+   */
+  readonly transcripts?: TranscriptReadClient;
   /**
    * The External agents (MCP) pages' operations. Absent on hosts that do not
    * offer those pages; shared UI renders nothing for them when absent.
@@ -709,6 +816,13 @@ export interface CanopyClient {
   readonly settings?: AccountOrganizationSettingsClient;
   /** Fixed capability set describing what this host can do. */
   readonly capabilities: CanopyCapabilities;
+
+  /**
+   * Notify synchronously after the host holding tip dismissals is replaced or
+   * detached. Stable hosts omit this. Consumers invalidate pending replies
+   * and reload through this client; no transport identity crosses the boundary.
+   */
+  subscribeOnboardingTipsSourceChange?(listener: () => void): Unsubscribe;
 
   /**
    * Capabilities for one workspace or worktree, addressed by any local id. A

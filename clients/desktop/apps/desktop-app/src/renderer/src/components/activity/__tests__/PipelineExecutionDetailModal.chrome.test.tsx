@@ -92,6 +92,7 @@ function executionState(
     pipeline_id: 'pipeline-1',
     pipeline_snapshot: {
       name: 'Build pipeline',
+      scope: ['directory'],
       jobs: {
         build: {
           name: 'Build',
@@ -121,7 +122,7 @@ function executionState(
     cwd: '/repo',
     env: {},
     inputs: {},
-    event_name: 'manual',
+    event_name: 'dispatch',
     project_id: 'project',
     worktree_id: 'worktree',
     ...overrides,

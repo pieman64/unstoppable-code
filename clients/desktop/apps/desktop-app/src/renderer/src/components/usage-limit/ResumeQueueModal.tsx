@@ -1,5 +1,13 @@
-import { useEffect, useState, type JSX } from 'react';
-import { DialogModal, getModelCatalogProviderLabel } from '@canopy/ui-shared';
+import { useEffect, useRef, useState, type JSX } from 'react';
+import {
+  Button,
+  DialogModal,
+  getModelCatalogProviderLabel,
+  InterruptedSessionRow,
+} from '@canopy/ui-shared';
+import { StatusGlyph } from '@canopy/ui-shared/components';
+import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useShallow } from 'zustand/shallow';
 import type {
   ResumeQueueControl,
@@ -7,11 +15,19 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   useResumeQueueStore,
+  resumeQueueEntryGlyphState,
   resumeQueueProgress,
+  resumeQueueStatusGlyphState,
+  resumeQueueStatusLabel,
 } from '@/stores/resumeQueueStore';
 import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { LinearProgress } from '@/components/shared/loading';
+import {
+  openResumeQueueEntry,
+  resumeQueueEntryDestinationLabel,
+  soleResumedChatEntry,
+} from '@/lib/usage-limit/open-resumed-session';
 
 const labels: Record<ResumeQueueEntry['status'], string> = {
   waiting: 'Waiting',
@@ -22,19 +38,53 @@ const labels: Record<ResumeQueueEntry['status'], string> = {
   stopped: 'Stopped',
 };
 
+type PendingAction = 'control' | 'navigation' | null;
+
+// A lone entry gets a sentence about its own handoff instead of batch counts.
+// The queue records handoffs, not live turns, so a resumed entry has started,
+// not finished.
+function singleEntrySentence(
+  entry: ResumeQueueEntry,
+  held: boolean,
+): string | null {
+  const noun = entry.target.kind === 'pipeline' ? 'workflow' : 'chat';
+  if (entry.status === 'resumed')
+    return `Your ${noun} has started again. Open it to follow along.`;
+  if (held) return null;
+  if (entry.status === 'waiting') return `Your ${noun} is waiting to start.`;
+  if (entry.status === 'resuming') return `Starting your ${noun} now.`;
+  return null;
+}
+
 export function ResumeQueueModal(): JSX.Element | null {
-  const { snapshot, isOpen, close, apply, connectionError } =
-    useResumeQueueStore(
-      useShallow((state) => ({
-        snapshot: state.snapshot,
-        isOpen: state.isOpen,
-        close: state.close,
-        apply: state.apply,
-        connectionError: state.connectionError,
-      })),
-    );
+  const {
+    snapshot,
+    isOpen,
+    close,
+    apply,
+    dismiss,
+    connectionError,
+    navigationError,
+    openWithNavigationError,
+    clearNavigationError,
+  } = useResumeQueueStore(
+    useShallow((state) => ({
+      snapshot: state.snapshot,
+      isOpen: state.isOpen,
+      close: state.close,
+      apply: state.apply,
+      dismiss: state.dismiss,
+      connectionError: state.connectionError,
+      navigationError: state.navigationError,
+      openWithNavigationError: state.openWithNavigationError,
+      clearNavigationError: state.clearNavigationError,
+    })),
+  );
   const selecting = useUsageLimitResumePromptStore((state) => state.isOpen);
-  const [pending, setPending] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const pending = pendingAction !== null;
+  const pendingRef = useRef<PendingAction>(null);
+  const mountedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const progress = snapshot ? resumeQueueProgress(snapshot) : null;
   useCurrentUiStateReporter('usage.resumeQueueModal', {
@@ -44,9 +94,12 @@ export function ResumeQueueModal(): JSX.Element | null {
     processed: progress?.processed ?? 0,
     total: progress?.total ?? 0,
     active: progress?.active ?? false,
-    errorVisible: Boolean(error || snapshot?.error || connectionError),
+    errorVisible: Boolean(
+      error || navigationError || snapshot?.error || connectionError,
+    ),
   });
   useEffect(() => {
+    mountedRef.current = true;
     let disposed = false;
     const unsubscribe = window.api.onResumeQueueChanged(apply);
     void window.api
@@ -61,6 +114,7 @@ export function ResumeQueueModal(): JSX.Element | null {
           });
       });
     return (): void => {
+      mountedRef.current = false;
       disposed = true;
       unsubscribe();
     };
@@ -68,146 +122,256 @@ export function ResumeQueueModal(): JSX.Element | null {
 
   if (!isOpen || selecting) return null;
   const control = async (action: ResumeQueueControl): Promise<void> => {
-    setPending(true);
+    if (pendingRef.current) return;
+    pendingRef.current = 'control';
+    setPendingAction('control');
     setError(null);
     try {
-      apply(await window.api.controlResumeQueue(action));
-      if (action === 'dismiss') close();
+      if (action === 'dismiss') {
+        await dismiss();
+        close();
+      } else {
+        apply(await window.api.controlResumeQueue(action));
+      }
     } catch {
-      setError('Could not update the queue. Try again.');
+      if (mountedRef.current)
+        setError('Could not update the queue. Try again.');
     } finally {
-      setPending(false);
+      pendingRef.current = null;
+      if (mountedRef.current) setPendingAction(null);
     }
   };
-  const status = snapshot?.error
-    ? 'Paused'
-    : progress?.active
-      ? snapshot?.paused
-        ? 'Paused'
-        : 'In progress'
-      : 'Finished';
+  // Opening a session leaves the queue running; the dialog stays as the
+  // retry route until the destination opens.
+  const openEntry = async (entry: ResumeQueueEntry): Promise<void> => {
+    if (pendingRef.current) return;
+    pendingRef.current = 'navigation';
+    setPendingAction('navigation');
+    setError(null);
+    clearNavigationError();
+    try {
+      const opened = await openResumeQueueEntry(entry);
+      if (opened.ok) close();
+      else openWithNavigationError(opened.error);
+    } finally {
+      pendingRef.current = null;
+      if (mountedRef.current) setPendingAction(null);
+    }
+  };
+  // Done opens the only resumed chat before dismissing, so an unavailable
+  // chat leaves its queue entry in place to retry.
+  const done = async (): Promise<void> => {
+    if (pendingRef.current) return;
+    const entry = snapshot ? soleResumedChatEntry(snapshot) : null;
+    if (!entry) {
+      clearNavigationError();
+      await control('dismiss');
+      return;
+    }
+    pendingRef.current = 'navigation';
+    setPendingAction('navigation');
+    setError(null);
+    clearNavigationError();
+    try {
+      const opened = await openResumeQueueEntry(entry);
+      if (!opened.ok) {
+        openWithNavigationError(opened.error);
+        return;
+      }
+      await dismiss();
+      close();
+    } catch {
+      if (mountedRef.current)
+        setError('Could not update the queue. Try again.');
+    } finally {
+      pendingRef.current = null;
+      if (mountedRef.current) setPendingAction(null);
+    }
+  };
+  const visibleError =
+    error || navigationError || snapshot?.error || connectionError;
+  const status = snapshot ? resumeQueueStatusLabel(snapshot) : null;
+  const active = progress?.active ?? false;
+  const total = progress?.total ?? 0;
+  // Paused or errored queues make no promise that starts are continuing.
+  const held = Boolean(snapshot?.paused || snapshot?.error);
+  const [soleEntry] = total === 1 ? (snapshot?.entries ?? []) : [];
+  const sentence = soleEntry ? singleEntrySentence(soleEntry, held) : null;
+  const statusGlyph = status ? resumeQueueStatusGlyphState(status) : null;
+  // The bar shows how far an active batch has come; a terminal batch would
+  // always read full, so it drops the bar.
+  const showProgress = progress !== null && total > 1 && active;
+  const footer = (
+    // A terminal queue has one footer action; ✕ and Escape still close it
+    // through the guarded onClose path.
+    <div
+      data-testid="resume-queue-footer"
+      className="flex flex-1 items-center gap-2"
+    >
+      {active && (
+        <span className="mr-auto text-xs fg-tertiary">Saved automatically</span>
+      )}
+      {active ? (
+        <>
+          <Button
+            size="compact"
+            className="ml-auto"
+            disabled={pending || !!snapshot?.error}
+            onClick={() => {
+              void control('stop');
+            }}
+          >
+            Stop remaining
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
+            disabled={pending || !!snapshot?.error}
+            onClick={() => {
+              void control(snapshot?.paused ? 'resume' : 'pause');
+            }}
+          >
+            {snapshot?.paused ? 'Resume queue' : 'Pause queue'}
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant="primary"
+          size="compact"
+          className="ml-auto"
+          data-testid="resume-queue-done"
+          disabled={pending || !snapshot || !!snapshot.error}
+          onClick={() => {
+            void done();
+          }}
+        >
+          Done
+        </Button>
+      )}
+    </div>
+  );
   return (
     <DialogModal
       title="Resume queue"
-      onClose={close}
+      onClose={() => {
+        if (pendingRef.current !== 'navigation') close();
+      }}
       maxWidth="lg"
-      subtitle="You can close this window. Your queue is saved automatically."
+      footer={footer}
+      // On the card, so the footer actions sit inside the queue's test scope.
+      dataTestId="resume-queue-modal"
     >
-      <div data-testid="resume-queue-modal" className="flex flex-col">
-        <div className="space-y-3 px-5 py-4" role="status" aria-live="polite">
-          <div className="flex items-center justify-between text-s">
-            <span className="font-medium">{status}</span>
-            <span className="fg-secondary">
-              {progress?.processed ?? 0} of {progress?.total ?? 0} processed
-            </span>
-          </div>
-          <LinearProgress
-            percentage={progress?.percentage ?? 0}
-            label="Resume progress"
-          />
-          <p className="text-xs fg-secondary">
-            {progress?.resumed ?? 0} resumed
-            {progress?.active ? ` · ${progress.waiting} waiting` : ''}
-          </p>
-          {progress?.active && (
-            <p className="text-xs fg-secondary">
-              {snapshot?.paused
-                ? 'Waiting sessions will stay paused after restarting the app. Sessions already started keep running.'
-                : 'Sessions resume one at a time, with a 10-second delay between starts. Sessions already started keep running.'}
+      <div className="flex flex-col">
+        <div
+          className="space-y-2.5 px-5 pb-3.5 pt-3"
+          role="status"
+          aria-live="polite"
+        >
+          {status && (
+            <div className="flex items-center justify-between gap-3 text-s">
+              <span className="flex items-center gap-2">
+                {statusGlyph && <StatusGlyph state={statusGlyph} />}
+                <span data-testid="resume-queue-status" className="font-medium">
+                  {status}
+                </span>
+              </span>
+              {progress && total > 1 && (
+                <span className="text-xs tabular-nums fg-tertiary">
+                  {progress.resumed} of {total} started
+                </span>
+              )}
+            </div>
+          )}
+          {showProgress && (
+            // The bar tracks how much of the queue has been handled, not how
+            // many entries started.
+            <LinearProgress
+              percentage={progress.percentage}
+              label="Resume progress"
+              valueText={`${progress.processed} of ${total} handled`}
+            />
+          )}
+          {sentence && <p className="text-s fg-secondary">{sentence}</p>}
+          {active && snapshot?.paused && (
+            <p className="text-xs fg-tertiary">
+              Waiting sessions stay paused, even after a restart. Started
+              sessions keep running.
             </p>
           )}
-          {(error || snapshot?.error || connectionError) && (
+          {active && total > 1 && !held && (
+            <p className="text-xs fg-tertiary">
+              One session starts every 10 seconds. Started sessions keep
+              running.
+            </p>
+          )}
+          {visibleError && (
             <p role="alert" className="text-s fg-destructive">
-              {error || snapshot?.error || connectionError}
+              {visibleError}
             </p>
           )}
         </div>
         <ol
-          className="relative max-h-[45vh] overflow-y-auto px-5 py-2 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-[var(--border-hairline)] before:bg-[var(--line-base)] before:content-[''] after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[var(--border-hairline)] after:bg-[var(--line-base)] after:content-['']"
+          className="mx-3 max-h-[45vh] overflow-y-auto rounded-xl bg-subtle px-3 [&>li+li]:border-t [&>li+li]:border-[var(--line-base)]"
           aria-label="Sessions to resume"
         >
           {snapshot?.entries.map((entry) => (
-            <li
+            <InterruptedSessionRow
+              as="li"
               key={entry.id}
               data-testid={`resume-queue-entry-${entry.id}`}
-              className="flex items-start justify-between gap-4 py-3"
+              layout="queue"
+              leading={
+                <StatusGlyph
+                  state={resumeQueueEntryGlyphState(entry.status)}
+                  className="mt-0.75"
+                />
+              }
+              title={entry.title}
+              titleId={`resume-queue-entry-title-${entry.id}`}
+              replayMaskTitle
+              context={
+                <span data-testid="resume-queue-entry-identity">
+                  <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                    {entry.workspaceName}
+                  </span>
+                  {` · ${entry.target.kind === 'pipeline' ? 'Workflow · ' : ''}${
+                    entry.providers?.length
+                      ? entry.providers
+                          .map(getModelCatalogProviderLabel)
+                          .join(', ')
+                      : 'Provider unavailable'
+                  }`}
+                </span>
+              }
+              trailing={
+                <div className="flex shrink-0 items-center gap-2 self-center">
+                  <span
+                    className={`text-xs ${entry.status === 'failed' ? 'fg-destructive' : 'fg-tertiary'}`}
+                  >
+                    {labels[entry.status]}
+                  </span>
+                  <Button
+                    variant="ghost-quiet"
+                    size="compact"
+                    data-testid={`resume-queue-entry-open-${entry.id}`}
+                    aria-describedby={`resume-queue-entry-title-${entry.id}`}
+                    disabled={pending}
+                    onClick={() => {
+                      void openEntry(entry);
+                    }}
+                  >
+                    {resumeQueueEntryDestinationLabel(entry)}
+                    <ChevronRightIcon size={12} aria-hidden />
+                  </Button>
+                </div>
+              }
             >
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-s fg-primary" title={entry.title}>
-                  {entry.title}
-                </p>
-                <p className="truncate text-xs fg-secondary">
-                  {entry.workspaceName}
-                </p>
-                <p
-                  className="text-xs fg-secondary"
-                  data-testid="resume-queue-entry-identity"
-                >
-                  {entry.target.kind === 'pipeline' ? 'Pipeline · ' : ''}
-                  {entry.providers?.length
-                    ? entry.providers
-                        .map(getModelCatalogProviderLabel)
-                        .join(', ')
-                    : 'Provider unavailable'}
-                </p>
-                {entry.error && (
-                  <p className="mt-1 text-xs fg-destructive">{entry.error}</p>
-                )}
-              </div>
-              <span
-                className={`shrink-0 text-xs ${entry.status === 'failed' ? 'fg-destructive' : 'fg-secondary'}`}
-              >
-                {labels[entry.status]}
-              </span>
-            </li>
+              {entry.error && (
+                <p className="mt-1 text-xs fg-destructive">{entry.error}</p>
+              )}
+            </InterruptedSessionRow>
           ))}
         </ol>
-        <div className="flex items-center justify-between gap-2 px-5 py-4">
-          <button
-            type="button"
-            onClick={close}
-            className="focus-ring rounded-md px-3 py-1.5 text-s fg-secondary hover:fg-primary"
-          >
-            Close
-          </button>
-          <div className="flex gap-2">
-            {progress?.active ? (
-              <>
-                <button
-                  type="button"
-                  disabled={pending || !!snapshot?.error}
-                  onClick={() => {
-                    void control('stop');
-                  }}
-                  className="focus-ring rounded-md px-3 py-1.5 text-s fg-secondary disabled:opacity-50"
-                >
-                  Stop remaining
-                </button>
-                <button
-                  type="button"
-                  disabled={pending || !!snapshot?.error}
-                  onClick={() => {
-                    void control(snapshot?.paused ? 'resume' : 'pause');
-                  }}
-                  className="focus-ring rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis disabled:opacity-50"
-                >
-                  {snapshot?.paused ? 'Resume queue' : 'Pause queue'}
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                disabled={pending || !!snapshot?.error}
-                onClick={() => {
-                  void control('dismiss');
-                }}
-                className="focus-ring rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis disabled:opacity-50"
-              >
-                Done
-              </button>
-            )}
-          </div>
-        </div>
       </div>
     </DialogModal>
   );

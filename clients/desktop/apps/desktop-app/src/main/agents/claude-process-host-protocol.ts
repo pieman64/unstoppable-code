@@ -54,8 +54,22 @@ export const CLAUDE_PROCESS_HOST_STDOUT_WINDOW_BYTES = 64 * 1024;
 export const CLAUDE_STDOUT_IN_FLIGHT_LIMIT_BYTES =
   4 * CLAUDE_PROCESS_HOST_STDOUT_WINDOW_BYTES;
 
+/**
+ * What a root session may read ahead of a pending admission, so delivery and
+ * turn signals take effect when read. Past it, credit is withheld until the
+ * pending admissions settle.
+ */
+export const CLAUDE_RECEIPT_READ_AHEAD_BYTES =
+  16 * CLAUDE_PROCESS_HOST_STDOUT_WINDOW_BYTES;
+
 export type ClaudeProcessHostResponse =
-  | { type: 'started'; requestId: string; pid: number }
+  | {
+      type: 'started';
+      requestId: string;
+      pid: number;
+      /** Wall-clock time taken immediately before the spawn: PID identity. */
+      startedAtMs: number;
+    }
   | { type: 'stdout'; requestId: string; dataBase64: string }
   | { type: 'stderr'; requestId: string; dataBase64: string }
   | {
@@ -64,5 +78,14 @@ export type ClaudeProcessHostResponse =
       code: number | null;
       signal: NodeJS.Signals | null;
     }
-  | { type: 'error'; requestId: string; message: string }
+  | {
+      type: 'error';
+      requestId: string;
+      message: string;
+      /**
+       * The child was spawned and is still tracked: an `exit` follows once it
+       * actually exits. Absent when it never spawned.
+       */
+      exitPending?: true;
+    }
   | { type: 'shutdown-complete' };

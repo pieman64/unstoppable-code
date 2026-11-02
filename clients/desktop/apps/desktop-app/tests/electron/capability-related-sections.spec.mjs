@@ -291,7 +291,7 @@ test('skill, plugin, and pipeline details expose related entries and empty state
 
     await window.getByTestId('plugins-search').fill(PLUGIN_NAME);
     await window
-      .getByTestId(`plugins-entry-mkt:demo/market/${PLUGIN_NAME}`)
+      .getByTestId(`customize-row-mkt:demo/market/${PLUGIN_NAME}`)
       .click();
     const pluginDetail = window.getByTestId('plugins-entry-detail');
     await expect(
@@ -455,7 +455,7 @@ test('saved relationships refresh and dirty edits survive recommendation navigat
     ).toHaveCount(0);
 
     await window
-      .getByPlaceholder('Describe what this pipeline does…')
+      .getByPlaceholder('Describe what this workflow does…')
       .fill('Edited immediately before navigation');
     await window
       .getByTestId(`similar-pipelines-section-item-user:${SIBLING_ID}`)
@@ -463,7 +463,7 @@ test('saved relationships refresh and dirty edits survive recommendation navigat
     // The sibling opens as its own item in the edit shell (CAN-4072), so its
     // settings start closed.
     await expect(window.getByTestId('pipeline-editor-back')).toHaveText(
-      'Pipeline',
+      'Workflow',
     );
     await window.getByTestId('pipeline-editor-settings-toggle').click();
     await expect(
@@ -478,7 +478,7 @@ test('saved relationships refresh and dirty edits survive recommendation navigat
     );
     await window.getByTestId('pipeline-editor-settings-toggle').click();
     await expect(
-      window.getByPlaceholder('Describe what this pipeline does…'),
+      window.getByPlaceholder('Describe what this workflow does…'),
     ).toHaveValue('Edited immediately before navigation');
     await expect(window.getByTestId('workflow-edit-shell')).toHaveAttribute(
       'data-dirty',
@@ -512,17 +512,17 @@ test('a related recommendation opened from a new draft returns to the saved draf
     // by hand" row (CAN-3981).
     await app.startNewWorkflow('build');
     await window.getByTestId('pipeline-editor-settings-toggle').click();
-    await window.getByPlaceholder('Pipeline name').fill('Review Draft');
+    await window.getByPlaceholder('Workflow name').fill('Review Draft');
     await window
       .getByTestId(`similar-pipelines-section-item-user:${SIBLING_ID}`)
       .click();
-    await expect(window.getByPlaceholder('Pipeline name')).toHaveCount(0);
+    await expect(window.getByPlaceholder('Workflow name')).toHaveCount(0);
     await expect(window.getByTestId('pipeline-editor-back')).toHaveText(
-      'Pipeline',
+      'Workflow',
     );
     await window.getByTestId('pipeline-editor-back').click();
     await window.getByTestId('pipeline-editor-settings-toggle').click();
-    await expect(window.getByPlaceholder('Pipeline name')).toHaveValue(
+    await expect(window.getByPlaceholder('Workflow name')).toHaveValue(
       'Review Draft',
     );
   } finally {
@@ -619,7 +619,7 @@ test('switching saved pipelines cannot retain another pipeline raw YAML buffer',
     // The sibling opens as its own item in the edit shell (CAN-4072), with
     // its settings closed.
     await expect(window.getByTestId('pipeline-editor-back')).toHaveText(
-      'Pipeline',
+      'Workflow',
     );
     await window.getByTestId('pipeline-editor-settings-toggle').click();
     await expect(

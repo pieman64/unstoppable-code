@@ -5,6 +5,7 @@ import type {
   UsageMetricId,
 } from '@canopy/desktop-shared/types';
 import { useObservabilityStore } from '@/stores/observabilityStore';
+import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
 import { ChartErrorBoundary } from '@/components/shared/ChartErrorBoundary';
 import type { PickerOption, TabSpec } from './tab-specs';
@@ -40,6 +41,7 @@ export function MetricsChart({
   spec,
   retentionDays,
 }: MetricsChartProps): JSX.Element {
+  const title = useEarlyAccessTitle(spec.title);
   const hasDistribution = spec.chartDistributionMetrics.length > 0;
   const [mode, setMode] = useState<ViewMode>('counts');
   const [range, setRange] = useState<RangePreset>('7d');
@@ -300,7 +302,7 @@ export function MetricsChart({
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-s font-semibold fg-primary">{spec.title}</h2>
+          <h2 className="text-s font-semibold fg-primary">{title}</h2>
           <p className="text-xs fg-secondary">
             {mode === 'counts'
               ? countView.description
@@ -316,6 +318,7 @@ export function MetricsChart({
           <GranularityPicker value={granularity} onChange={setGranularity} />
           {mode === 'counts' && countViews.length > 1 && (
             <SegmentedPicker
+              label="Count view"
               value={countView.key}
               testIdPrefix={`usage-chart-count-view-${spec.id}`}
               options={countViews.map((view) => ({
@@ -327,6 +330,7 @@ export function MetricsChart({
           )}
           {hasDistribution && (
             <SegmentedPicker
+              label="Chart mode"
               value={mode}
               testIdPrefix={`usage-chart-mode-${spec.id}`}
               options={[
@@ -357,7 +361,7 @@ export function MetricsChart({
         </div>
       ) : mode === 'counts' ? (
         <ChartErrorBoundary
-          label={`${spec.title} counts chart`}
+          label={`${title} counts chart`}
           minHeight={CHART_HEIGHT_PX}
         >
           <MetricsCountsChart
@@ -370,7 +374,7 @@ export function MetricsChart({
         </ChartErrorBoundary>
       ) : (
         <ChartErrorBoundary
-          label={`${spec.title} distribution chart`}
+          label={`${title} distribution chart`}
           minHeight={CHART_HEIGHT_PX}
         >
           <MetricsDistributionChart

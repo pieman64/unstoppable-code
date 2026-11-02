@@ -111,6 +111,9 @@ export interface PanelGroupProps {
   onTabIntent?: PanelTabBarProps['onTabIntent'];
   /** Plain-string title resolver for tooltips + close-button accessible names. */
   getTabTitle?: (tab: PanelTabModel) => string;
+  renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
+  /** Persistent attention remains visible when a fill tab shrinks to its icon. */
+  renderTabAttention?: (tab: PanelTabModel) => ReactNode;
   /**
    * Optional per-tab RICH tooltip renderer, forwarded to the tab bar AND the
    * collapsed icon bar. A non-null result replaces the plain/native tooltip
@@ -324,6 +327,8 @@ function PanelGroupComponent({
   renderTabLabel,
   onTabIntent,
   getTabTitle,
+  renderTabAccessibleStatus,
+  renderTabAttention,
   renderTabTooltip,
   renderTabHoverCard,
   renderTabTrailing,
@@ -669,9 +674,11 @@ function PanelGroupComponent({
             renderTabLabel={renderTabLabel}
             onTabIntent={onTabIntent}
             getTabTitle={getTabTitle}
+            renderTabAccessibleStatus={renderTabAccessibleStatus}
             renderTabTooltip={renderTabTooltip}
             renderTabHoverCard={renderTabHoverCard}
             renderTabTrailing={renderTabTrailing}
+            renderTabAttention={renderTabAttention}
             canCloseTab={canCloseTab}
             addTab={addTab}
             tabStyle={tabStyle}
@@ -681,9 +688,6 @@ function PanelGroupComponent({
             <PanelAddPanelButton
               groupId={group.groupId}
               addPanel={addTab.addPanel}
-              {...(addTab.fullNote !== undefined
-                ? { fullNote: addTab.fullNote }
-                : {})}
             />
           ) : null}
           {tabStripAccessory}
@@ -825,6 +829,7 @@ function PanelGroupComponent({
           addTab={addTab}
           renderTabIcon={renderCollapsedTabIcon ?? renderTabIcon}
           getTabTitle={getTabTitle}
+          renderTabAccessibleStatus={renderTabAccessibleStatus}
           renderTabTooltip={renderTabTooltip}
           tabStripAccessory={tabStripAccessory}
         />

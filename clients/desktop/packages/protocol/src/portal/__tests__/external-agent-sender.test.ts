@@ -1,6 +1,8 @@
 import {
   externalAgentSenderSchema,
   hasOriginKey,
+  managedDelegateSenderSchema,
+  parseAgentSentInfo,
   parseExternalAgentSender,
 } from '../external-agent-sender';
 
@@ -28,6 +30,34 @@ describe('externalAgentSenderSchema', () => {
   ])('rejects %s', (_label, value) => {
     expect(parseExternalAgentSender(value)).toBeNull();
     expect(externalAgentSenderSchema.safeParse(value).success).toBe(false);
+  });
+});
+
+const delegate = {
+  kind: 'managed_delegate',
+  delegationId: '5f0e1d2c-3b4a-4968-8776-655443322110',
+  title: 'Independent error handling review',
+} as const;
+
+describe('managedDelegateSenderSchema', () => {
+  it('accepts the host-issued delegate shape as a message sender', () => {
+    expect(parseAgentSentInfo(delegate)).toEqual(delegate);
+    expect(parseAgentSentInfo(sender)).toEqual(sender);
+  });
+
+  it('is never an external agent origin', () => {
+    expect(parseExternalAgentSender(delegate)).toBeNull();
+  });
+
+  it.each([
+    ['an unknown key', { ...delegate, verified: true }],
+    ['an empty title', { ...delegate, title: '' }],
+    ['a long title', { ...delegate, title: 'x'.repeat(201) }],
+    ['an empty delegation id', { ...delegate, delegationId: '' }],
+    ['a missing title', { kind: delegate.kind, delegationId: 'd' }],
+  ])('rejects %s', (_label, value) => {
+    expect(parseAgentSentInfo(value)).toBeNull();
+    expect(managedDelegateSenderSchema.safeParse(value).success).toBe(false);
   });
 });
 

@@ -12,6 +12,11 @@ import {
   type JSX,
 } from 'react';
 import type { MarkdownMathProps } from './MarkdownMath';
+import {
+  PANEL_CONTENT_ADOPTED_EVENT,
+  PANEL_CONTENT_HOST_ATTRIBUTE,
+} from '../panels/panel-content-adoption';
+import { ensureMathCopyListener } from './markdown-math-copy';
 import type { MarkdownMathExpression } from './markdown-math';
 
 interface MarkdownMathModule {
@@ -156,16 +161,32 @@ function mathFallback(expression: MarkdownMathExpression): JSX.Element {
 
 export interface DeferredMarkdownMathProps extends HTMLAttributes<HTMLSpanElement> {
   readonly expression: MarkdownMathExpression;
+  readonly source: string;
 }
 
 function DeferredMarkdownMathComponent({
   expression,
+  source,
   className,
   style,
   ...containerProps
 }: DeferredMarkdownMathProps): JSX.Element {
   const containerRef = useRef<HTMLSpanElement>(null);
   const [shouldRender, setShouldRender] = useState(false);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    ensureMathCopyListener(element.ownerDocument);
+    // Pulled-out panels move mounted content into another document without
+    // remounting; install the copy listener there too.
+    const host = element.closest(`[${PANEL_CONTENT_HOST_ATTRIBUTE}]`);
+    if (!host) return;
+    const onAdopted = (): void => ensureMathCopyListener(element.ownerDocument);
+    host.addEventListener(PANEL_CONTENT_ADOPTED_EVENT, onAdopted);
+    return (): void =>
+      host.removeEventListener(PANEL_CONTENT_ADOPTED_EVENT, onAdopted);
+  }, []);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -183,6 +204,7 @@ function DeferredMarkdownMathComponent({
   return (
     <span
       {...containerProps}
+      data-math-source={source}
       ref={containerRef}
       className={
         className

@@ -1,11 +1,18 @@
 'use client';
 
+import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_TITLE_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
+  SETTINGS_CARD_ROW_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 import { useEffect, useState, type JSX } from 'react';
-import { CognitionIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsFormSkeleton,
+  ToggleSwitch,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import type { OrganizationRole } from '@canopy/protocol/settings/organization';
@@ -140,89 +147,67 @@ function MemorySettingsCard({
 
   return (
     <section
-      className="rounded-xl bg-card p-5 shadow-sm"
+      className={SETTINGS_CARD_CLASS}
       data-testid="team-memory-settings-section"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <CognitionIcon size={18} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-m font-semibold fg-primary">
-            Memory participation
-          </h2>
-          <p className="mt-1 text-s fg-secondary">
-            Choose whose organization conversations can be used to build shared
-            memory.
-          </p>
-          <p className="mt-2 text-xs fg-secondary">
-            Disabling a member expires facts sourced solely from that member.
-            Re-enabling them does not restore expired facts.
-          </p>
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 className={SETTINGS_CARD_TITLE_CLASS}>Memory participation</h2>
+        <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
+          Choose whose organization conversations can be used to build shared
+          memory.
+        </p>
+      </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <p className="mt-2 text-xs fg-secondary">
+          Disabling a member expires facts sourced solely from that member.
+          Re-enabling them does not restore expired facts.
+        </p>
 
-          <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
-          <ErrorBanner className="mt-3" error={error} />
+        <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
+        <ErrorBanner className="mt-3" error={error} />
 
-          {loading ? (
-            <div className="mt-4">
-              <DelayedLoadingPlaceholder>
-                <SettingsFormSkeleton />
-              </DelayedLoadingPlaceholder>
-            </div>
-          ) : (
-            <ul className="mt-4 divide-y overflow-hidden rounded-lg border">
-              {members.map((member) => {
-                const busy = savingMemberId !== null;
-                return (
-                  <li
-                    key={member.userId}
-                    className="flex items-center justify-between gap-4 px-4 py-3"
-                    data-testid={`memory-participation-row-${member.userId}`}
-                  >
-                    <div className={joinClassNames('min-w-0', blockClassName)}>
-                      <p className="truncate text-s font-medium fg-primary">
-                        {member.name ?? member.email}
-                      </p>
-                      <p className="truncate text-xs fg-secondary">
-                        {member.email} · {roleLabel(member.role)}
-                      </p>
-                      {!member.contributingRecently && (
-                        <QuietParticipationLabel
-                          userId={member.userId}
-                          orgName={orgName}
-                        />
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={member.memoryEnabled}
-                      aria-label={`Include ${member.name ?? member.email} in organization memory`}
-                      disabled={busy}
-                      data-testid={`memory-participation-toggle-${member.userId}`}
-                      onClick={() =>
-                        void handleToggle(member.userId, !member.memoryEnabled)
-                      }
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                        member.memoryEnabled
-                          ? 'bg-accent hover:bg-accent/90'
-                          : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-                          member.memoryEnabled
-                            ? 'translate-x-6'
-                            : 'translate-x-1'
-                        }`}
+        {loading ? (
+          <div className="mt-4">
+            <DelayedLoadingPlaceholder>
+              <SettingsFormSkeleton />
+            </DelayedLoadingPlaceholder>
+          </div>
+        ) : (
+          <ul className="flex flex-col">
+            {members.map((member) => {
+              const busy = savingMemberId !== null;
+              return (
+                <li
+                  key={member.userId}
+                  className={SETTINGS_CARD_ROW_CLASS}
+                  data-testid={`memory-participation-row-${member.userId}`}
+                >
+                  <div className={joinClassNames('min-w-0', blockClassName)}>
+                    <p className="truncate text-s font-medium fg-primary">
+                      {member.name ?? member.email}
+                    </p>
+                    <p className="truncate text-xs fg-secondary">
+                      {member.email} · {roleLabel(member.role)}
+                    </p>
+                    {!member.contributingRecently && (
+                      <QuietParticipationLabel
+                        userId={member.userId}
+                        orgName={orgName}
                       />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+                    )}
+                  </div>
+                  <ToggleSwitch
+                    checked={member.memoryEnabled}
+                    label={`Include ${member.name ?? member.email} in organization memory`}
+                    disabled={busy}
+                    dataTestId={`memory-participation-toggle-${member.userId}`}
+                    onChange={(next) => void handleToggle(member.userId, next)}
+                  />
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </section>
   );
@@ -251,6 +236,7 @@ function QuietParticipationLabel({
     >
       <button
         type="button"
+        data-settings-control="disclosure"
         data-testid={`memory-participation-quiet-${userId}`}
         className="cursor-default text-left text-xs fg-secondary"
       >

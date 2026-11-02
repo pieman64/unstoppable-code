@@ -22,6 +22,7 @@ import {
   getPipelinePluginDefaultKey,
   getPipelinePluginDefaultRef,
 } from './plugin-defaults';
+import { normalizePipelineAssets, normalizePipelineLocalState } from './assets';
 import { normalizePipelineScopes } from './scope';
 import { normalizePipelineRunTarget } from './target';
 import {
@@ -1559,6 +1560,8 @@ export function normalizePipeline(
     pluginCollections,
     modelAliases,
   );
+  const assets = normalizePipelineAssets(pipeline.assets);
+  const localState = normalizePipelineLocalState(pipeline.local_state);
 
   return {
     name: pipeline.name,
@@ -1573,5 +1576,7 @@ export function normalizePipeline(
     ...(pluginCollections ? { plugin_collections: pluginCollections } : {}),
     ...(modelAliases ? { model_aliases: modelAliases } : {}),
     ...(dependencies ? { dependencies } : {}),
+    ...(assets ? { assets } : {}),
+    ...(localState ? { local_state: localState } : {}),
   };
 }

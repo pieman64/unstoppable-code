@@ -6,24 +6,33 @@ import { isArtifactDispatchTool } from '@canopy/desktop-shared/lib/agent-artifac
 import { isRecord } from './type-guards';
 import { isPersistedChatMessage } from './persisted-chat-message-validation';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
-import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
+import { isRootUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import {
   groupIntoTurns,
   splitFinalMessages,
   computeTurnSummary,
+  getTurnOutcomeStepStates,
+  getTurnSafetyDeniedToolUseIds,
+  type TurnOutcomeStep,
 } from '@canopy/desktop-shared/lib/turn-utils';
 import {
   mergeToolResults,
   reorderMessagesForDisplay,
 } from '@canopy/desktop-shared/lib/message-transforms';
-import type { TranscriptTurnSummary } from '@canopy/agent-transcript/transcript-storage';
-import {
-  collectTurnFiles,
-  turnFilePath,
-  turnFileTarget,
-} from '@canopy/desktop-shared/lib/turn-files';
+import type {
+  TranscriptTurnContinuation,
+  TranscriptTurnSummary,
+} from '@canopy/agent-transcript/transcript-storage';
+import type { TurnOutcomeCounts } from '@canopy/protocol/portal';
+import { isTurnOutcomeCounts } from '@canopy/protocol/portal';
+import { collectTurnFiles } from '@canopy/desktop-shared/lib/turn-files';
+import { isTurnFileRecord } from '@canopy/protocol/turn-files';
 
 export interface IndexedTurn extends Omit<TranscriptTurnSummary, 'before'> {
+  /** Required in persisted version-10 projections, including all-zero turns. */
+  outcomes: TurnOutcomeCounts;
+  /** Internal receipt correlation, including calls still in the active overlay. */
+  deniedToolUseIds: string[];
   /** Raw ordinals, including source rows of merged tool results. */
   retained: number[];
   frame: number[];
@@ -31,7 +40,7 @@ export interface IndexedTurn extends Omit<TranscriptTurnSummary, 'before'> {
 }
 
 export interface TranscriptTurnIndex {
-  version: 5;
+  version: 10;
   committedByteLength: number;
   committedMessageCount: number;
   /** Ended-turn projections use exactly the same display helpers as the UI. */
@@ -43,6 +52,23 @@ export function indexTurn(
   start: number,
   followedByTurn = false,
 ): IndexedTurn {
+  return projectTurn(rows, start, followedByTurn).turn;
+}
+
+function projectTurn(
+  rows: PersistedChatMessage[],
+  start: number,
+  followedByTurn = false,
+  inheritedDenials: ReadonlySet<string> = new Set(),
+): {
+  turn: IndexedTurn;
+  steps: Map<string, TurnOutcomeStep['outcome'] | undefined>;
+  /** Each tools-loaded continuation's steps, for a late receipt. */
+  continuationSteps: Map<
+    string,
+    Map<string, TurnOutcomeStep['outcome'] | undefined>
+  >;
+} {
   const hasTimer = rows.some((row) =>
     row.blocks.some((block) => block.type === 'turn_timer'),
   );
@@ -122,6 +148,49 @@ export function indexTurn(
         )
       )
         retainedIds.add(row.id);
+  // A tools-loaded continuation shows as its own turn in this span; keep its
+  // own projection, and its answer, for when its rows are compacted.
+  const continuations: Record<string, TranscriptTurnContinuation> = {};
+  const continuationSteps = new Map<
+    string,
+    Map<string, TurnOutcomeStep['outcome'] | undefined>
+  >();
+  for (const item of rendered) {
+    const head = item.kind === 'turn-group' ? item.userMessage.blocks[0] : null;
+    if (
+      item.kind !== 'turn-group' ||
+      head?.type !== 'wake_boundary' ||
+      head.toolsLoaded !== true
+    )
+      continue;
+    const split = splitFinalMessages(item.assistantMessages);
+    const counted = [
+      ...split.intermediateMessages,
+      ...split.trailingToolMessages,
+    ];
+    const denied = new Set([
+      ...Array.from(inheritedDenials),
+      ...getTurnSafetyDeniedToolUseIds(item.assistantMessages, rows[0].id),
+    ]);
+    const counts: TurnOutcomeCounts = { blocked: 0, failed: 0, interrupted: 0 };
+    const ownSteps = getTurnOutcomeStepStates(counted, denied, {
+      settled: item.isComplete,
+      resultsComplete: true,
+    });
+    ownSteps.forEach((outcome): void => {
+      if (outcome !== undefined) counts[outcome] += 1;
+    });
+    continuationSteps.set(item.userMessage.id, ownSteps);
+    continuations[item.userMessage.id] = {
+      complete: item.isComplete,
+      summary: computeTurnSummary(counted),
+      outcomes: counts,
+      finalMessageIds: split.finalMessages.map((message) => message.id),
+      files: collectTurnFiles(item.assistantMessages),
+    };
+    if (item.isComplete)
+      for (const message of split.finalMessages) retainedIds.add(message.id);
+  }
   const frame = rows.flatMap((row, index) =>
     index === 0 || row.blocks.some((block) => block.type === 'turn_timer')
       ? [start + index]
@@ -130,47 +199,148 @@ export function indexTurn(
   const retained = rows.flatMap((row, index) =>
     retainedIds.has(row.id) || index >= rows.length - 16 ? [start + index] : [],
   );
-  return {
-    id: rows[0].id,
-    start,
-    end: start + rows.length,
-    complete: group?.kind === 'turn-group' && group.isComplete,
-    summary: computeTurnSummary([
-      ...intermediateMessages,
-      ...trailingToolMessages,
+  const countedMessages = [...intermediateMessages, ...trailingToolMessages];
+  const deniedToolUseIds = Array.from(
+    new Set([
+      ...Array.from(inheritedDenials),
+      ...getTurnSafetyDeniedToolUseIds(assistantMessages, rows[0].id),
     ]),
-    finalMessageIds: finalMessages.map((message) => message.id),
-    files: collectTurnFiles(assistantMessages),
-    frame,
-    ...(frameTimer ? { frameTimer } : {}),
-    retained,
+  );
+  const steps = getTurnOutcomeStepStates(
+    countedMessages,
+    new Set(deniedToolUseIds),
+    {
+      settled: group?.kind === 'turn-group' && group.isComplete,
+      resultsComplete: true,
+    },
+  );
+  const outcomes: TurnOutcomeCounts = { blocked: 0, failed: 0, interrupted: 0 };
+  steps.forEach((outcome): void => {
+    if (outcome !== undefined) outcomes[outcome] += 1;
+  });
+  return {
+    steps,
+    continuationSteps,
+    turn: {
+      id: rows[0].id,
+      start,
+      end: start + rows.length,
+      complete: group?.kind === 'turn-group' && group.isComplete,
+      summary: computeTurnSummary(countedMessages),
+      outcomes,
+      deniedToolUseIds,
+      finalMessageIds: finalMessages.map((message) => message.id),
+      files: collectTurnFiles(assistantMessages),
+      frame,
+      ...(frameTimer ? { frameTimer } : {}),
+      retained,
+      ...(Object.keys(continuations).length > 0 ? { continuations } : {}),
+    },
   };
 }
 
 /**
  * Stream the raw source one turn at a time; never hydrate the whole chat.
- * Turn splits depend only on each row, so a turn that ends before an
- * unchanged boundary row is identical in any log sharing that prefix.
+ * Retain only compact eligible-step states after each turn so a later receipt
+ * can update its explicit owner without retaining the owner's messages.
  */
 export async function buildTurnIndex(
   source: AsyncIterable<PersistedChatMessage> | Iterable<PersistedChatMessage>,
   start = 0,
+  receiptTurns: readonly Pick<IndexedTurn, 'id' | 'deniedToolUseIds'>[] = [],
+  expandBlocks?: (
+    message: PersistedChatMessage,
+  ) => Promise<PersistedChatMessage>,
 ): Promise<IndexedTurn[]> {
   const turns: IndexedTurn[] = [];
+  const denials = new Map(
+    receiptTurns.map((turn) => [turn.id, new Set(turn.deniedToolUseIds)]),
+  );
+  const projected = new Map<string, ReturnType<typeof projectTurn>>();
   let rows: PersistedChatMessage[] = [];
   let ordinal = start;
-  for await (const message of source) {
-    if (rows.length > 0 && isUserTurnBoundary(message)) {
-      turns.push(indexTurn(rows, ordinal, true));
+  const finish = (followedByTurn = false): void => {
+    const value = projectTurn(
+      rows,
+      ordinal,
+      followedByTurn,
+      denials.get(rows[0].id),
+    );
+    turns.push(value.turn);
+    projected.set(value.turn.id, value);
+    denials.set(value.turn.id, new Set(value.turn.deniedToolUseIds));
+  };
+  for await (const storedMessage of source) {
+    const message =
+      expandBlocks && storedMessage.blocksRef
+        ? await expandBlocks(storedMessage)
+        : storedMessage;
+    if (rows.length > 0 && isRootUserTurnBoundary(message)) {
+      finish(true);
       ordinal += rows.length;
       rows = [];
       // Let IPC and cancellation callbacks run between completed turns.
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
+    for (const block of message.blocks) {
+      if (
+        block.type !== 'approval_safety_denied_info' ||
+        !block.toolUseId ||
+        block.subagentId ||
+        block.turnUserMessageId === undefined
+      )
+        continue;
+      const owner = block.turnUserMessageId;
+      const ids = denials.get(owner) ?? new Set<string>();
+      ids.add(block.toolUseId);
+      denials.set(owner, ids);
+      const value = projected.get(owner);
+      if (!value) continue;
+      value.turn.deniedToolUseIds = Array.from(ids);
+      // The step is the prompt's own, or one of its continuations'.
+      const toolUseId = block.toolUseId;
+      const continuation = Array.from(value.continuationSteps).find(
+        ([, steps]) => steps.has(toolUseId),
+      );
+      const target = value.steps.has(toolUseId)
+        ? { steps: value.steps, outcomes: value.turn.outcomes }
+        : continuation && value.turn.continuations?.[continuation[0]]?.outcomes
+          ? {
+              steps: continuation[1],
+              outcomes: value.turn.continuations[continuation[0]].outcomes,
+            }
+          : undefined;
+      if (!target?.outcomes) continue;
+      const previous = target.steps.get(toolUseId);
+      if (previous === 'blocked') continue;
+      if (previous !== undefined) target.outcomes[previous] -= 1;
+      target.outcomes.blocked += 1;
+      target.steps.set(toolUseId, 'blocked');
+    }
     rows.push(message);
   }
-  if (rows.length > 0) turns.push(indexTurn(rows, ordinal));
+  if (rows.length > 0) finish();
   return turns;
+}
+
+function isTurnContinuations(
+  value: unknown,
+): value is Record<string, TranscriptTurnContinuation> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.complete === 'boolean' &&
+        isRecord(entry.summary) &&
+        Array.isArray(entry.finalMessageIds) &&
+        entry.finalMessageIds.every((id: unknown) => typeof id === 'string') &&
+        isTurnOutcomeCounts(entry.outcomes) &&
+        (entry.files === undefined ||
+          (Array.isArray(entry.files) &&
+            entry.files.every((file: unknown) => isTurnFileRecord(file)))),
+    )
+  );
 }
 
 export function isTranscriptTurnIndex(
@@ -178,7 +348,7 @@ export function isTranscriptTurnIndex(
 ): value is TranscriptTurnIndex {
   if (
     !isRecord(value) ||
-    value.version !== 5 ||
+    value.version !== 10 ||
     !Number.isSafeInteger(value.committedByteLength) ||
     !Number.isSafeInteger(value.committedMessageCount) ||
     !Array.isArray(value.turns)
@@ -199,8 +369,14 @@ export function isTranscriptTurnIndex(
       !Array.isArray(turn.finalMessageIds) ||
       !turn.finalMessageIds.every((id: unknown) => typeof id === 'string') ||
       !isRecord(turn.summary) ||
+      !isTurnOutcomeCounts(turn.outcomes) ||
+      !Array.isArray(turn.deniedToolUseIds) ||
+      !turn.deniedToolUseIds.every(
+        (id: unknown) => typeof id === 'string' && id.length > 0,
+      ) ||
+      new Set(turn.deniedToolUseIds).size !== turn.deniedToolUseIds.length ||
       !Array.isArray(turn.files) ||
-      !turn.files.every((file: unknown) => recordFile(file))
+      !turn.files.every((file: unknown) => isTurnFileRecord(file))
     )
       return false;
     const counts = turn.summary;
@@ -234,21 +410,13 @@ export function isTranscriptTurnIndex(
       !isPersistedChatMessage(turn.frameTimer)
     )
       return false;
+    if (
+      turn.continuations !== undefined &&
+      !isTurnContinuations(turn.continuations)
+    )
+      return false;
     end = nextEnd;
     return true;
   });
   return valid && end === value.committedMessageCount;
-}
-
-function recordFile(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    turnFilePath(value.path) === value.path &&
-    typeof value.path === 'string' &&
-    (value.target === undefined ||
-      turnFileTarget(value.target) !== undefined) &&
-    (value.state === 'creating' ||
-      value.state === 'ready' ||
-      value.state === 'failed')
-  );
 }

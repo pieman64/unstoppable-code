@@ -31,7 +31,8 @@ describe('local memory pipeline isolation', () => {
     );
     expect(serviceSource).toContain('await dispatchWorktreeChatTurn({');
     expect(serviceSource).toContain('projectId: workspaceId');
-    expect(funnelSource).toContain('await prepareLocalMemory({');
+    // Awaited through the dispatch timing wrapper (`turnDispatchTiming.measure`).
+    expect(funnelSource).toContain('prepareLocalMemory({');
   });
 
   it('keeps pipelines, builtin actions, and desktop CLI outside local-memory injection', async () => {

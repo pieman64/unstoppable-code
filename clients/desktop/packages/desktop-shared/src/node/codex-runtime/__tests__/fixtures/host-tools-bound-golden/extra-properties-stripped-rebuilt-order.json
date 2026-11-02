@@ -1,0 +1,12 @@
+{
+  "response": {
+    "success": true,
+    "contentItems": [
+      {
+        "type": "inputText",
+        "text": "okay"
+      }
+    ]
+  },
+  "serializedResponse": "{\"success\":true,\"contentItems\":[{\"type\":\"inputText\",\"text\":\"okay\"}]}"
+}

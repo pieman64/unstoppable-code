@@ -4,19 +4,15 @@ jest.mock('../../lib/file-browser-roots', () => ({
 
 import { getFileBrowserRoots } from '../../lib/file-browser-roots';
 import {
+  listFileRoots,
   readPortalFilePreview,
   resolvePortalFileLink,
   resolvePortalChatAssetFileTarget,
-  saveFile,
 } from '../files-service';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-jest.mock('../../lib/workspace-activity', () => ({
-  touchWorkspaceTarget: jest.fn().mockResolvedValue(undefined),
-}));
-import { touchWorkspaceTarget } from '../../lib/workspace-activity';
 
 const mockedGetFileBrowserRoots = jest.mocked(getFileBrowserRoots);
 
@@ -36,6 +32,44 @@ describe('Portal files service', () => {
       rootMap: new Map([[root.repoId, root]]),
     });
   });
+
+  it.each([
+    ['workspace', 'standalone'],
+    ['notes', 'standalone'],
+    ['prompts', 'standalone'],
+    ['attachments', 'attachments'],
+    ['workspace', 'git-repo'],
+    ['__workspace_root__', 'workspace-root'],
+    ['unknown', 'standalone'],
+  ] as const)(
+    'projects Portal root %s with kind %s independently of its display label',
+    async (repoId, rootKind) => {
+      const root = {
+        repoId,
+        repoName: 'Same title / 支出',
+        absolutePath: '/repo',
+        rootKind,
+        gitAware: rootKind === 'git-repo',
+        excludedDescendantRoots: [],
+      };
+      mockedGetFileBrowserRoots.mockResolvedValue({
+        roots: [root],
+        rootMap: new Map([[repoId, root]]),
+      });
+      expect(
+        await listFileRoots({ projectId: 'project', worktreeId: 'task' }),
+      ).toEqual([
+        {
+          workspaceLocalId: 'project',
+          worktreeLocalId: 'task',
+          fileRootLocalId: repoId,
+          label: root.repoName,
+          absolutePath: '/repo',
+          rootKind,
+        },
+      ]);
+    },
+  );
 
   it('uses the explicit authorized descendant instead of an excluded parent for canonical assets', async () => {
     const parent = {
@@ -97,39 +131,6 @@ describe('Portal files service', () => {
         path: '/workspace/repos/repo/chart.png',
       }),
     ).toBeNull();
-  });
-
-  it('records successful Portal editor saves as worktree activity', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'file-activity-'));
-    try {
-      const absolutePath = join(directory, 'note.txt');
-      await writeFile(absolutePath, 'old');
-      mockedGetFileBrowserRoots.mockResolvedValue({
-        roots: [
-          {
-            repoId: 'repo-1',
-            repoName: 'Repo',
-            absolutePath: directory,
-            rootKind: 'git-repo',
-            gitAware: true,
-            excludedDescendantRoots: [],
-          },
-        ],
-        rootMap: new Map(),
-      });
-      await saveFile({
-        projectId: 'workspace-1',
-        worktreeId: 'worktree-1',
-        absolutePath,
-        content: 'updated',
-      });
-      expect(touchWorkspaceTarget).toHaveBeenCalledWith(
-        'workspace-1',
-        'worktree-1',
-      );
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
   });
 
   it('rejects Windows absolute file paths instead of treating them as repo-relative', async () => {

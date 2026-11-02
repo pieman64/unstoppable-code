@@ -1,10 +1,10 @@
 import { ChildProcess, spawn } from 'node:child_process';
 import type * as NodeEvents from 'node:events';
+import type { TerminalCreateRequest } from '@canopy/core-runtime/node/terminal';
 import { existsSync, readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { MAX_SCRIPT_TIMEOUT_SECONDS } from '@canopy/desktop-shared/scripts';
 import {
-  IPC_CHANNELS,
   TERMINAL_USER_CLOSE_SIGNAL,
   type TerminalExitEvent,
   type TerminalOutputEvent,
@@ -36,10 +36,13 @@ type MockPtyEventPayload =
   | TerminalOutputEvent
   | TerminalExitEvent
   | TerminalRunningChangedEvent;
-type MockPtyListener = (channel: string, payload: MockPtyEventPayload) => void;
+type MockPtyListener = (event: {
+  type: string;
+  payload: MockPtyEventPayload;
+}) => void;
 
 const mockPtyListeners = new Set<MockPtyListener>();
-const mockPtySpawn = jest.fn(() => ({
+const mockPtySpawn = jest.fn<TerminalSession, [TerminalCreateRequest]>(() => ({
   id: 'interactive-terminal-1',
   projectId: 'project-1',
   worktreeId: 'wt-1',
@@ -47,41 +50,36 @@ const mockPtySpawn = jest.fn(() => ({
   shellBasename: 'zsh',
   cwd: '/tmp',
   createdAt: 1,
-  kind: 'script' as const,
+  kind: 'script',
   title: 'Wizard',
 }));
-const mockPtySpawnWithEnvironment = jest.fn(() => ({
-  id: 'interactive-terminal-1',
-  projectId: 'project-1',
-  worktreeId: 'wt-1',
-  shell: '/bin/zsh',
-  shellBasename: 'zsh',
-  cwd: '/tmp',
-  createdAt: 1,
-  kind: 'script' as const,
-  title: 'Wizard',
-}));
+
 const mockPtyKill = jest.fn();
 const mockPtyLowerPriority = jest.fn();
 
-function emitMockPtyEvent(channel: string, payload: MockPtyEventPayload): void {
+function emitMockPtyEvent(type: string, payload: MockPtyEventPayload): void {
   mockPtyListeners.forEach((listener: MockPtyListener) => {
-    listener(channel, payload);
+    listener({ type, payload });
   });
 }
 
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
     addEventListener: jest.fn((listener: MockPtyListener) => {
       mockPtyListeners.add(listener);
       return (): void => {
         mockPtyListeners.delete(listener);
       };
     }),
-    spawn: mockPtySpawn,
-    spawnWithEnvironment: mockPtySpawnWithEnvironment,
-    kill: mockPtyKill,
-    lowerPriority: mockPtyLowerPriority,
+    get create(): typeof mockPtySpawn {
+      return mockPtySpawn;
+    },
+    get kill(): typeof mockPtyKill {
+      return mockPtyKill;
+    },
+    get lowerPriority(): typeof mockPtyLowerPriority {
+      return mockPtyLowerPriority;
+    },
   },
 }));
 
@@ -103,7 +101,9 @@ jest.mock('node:os', () => {
   const actual = jest.requireActual<Record<string, unknown>>('node:os');
   return {
     ...actual,
-    setPriority: mockSetPriority,
+    get setPriority(): typeof mockSetPriority {
+      return mockSetPriority;
+    },
   };
 });
 
@@ -197,6 +197,76 @@ describe('script-runner', () => {
     mockedFindExecutableOnPath.mockReturnValue(null);
     mockedResolveWindowsGitBash.mockReturnValue(null);
     killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+  });
+
+  it.each([undefined, {}, { mac: 'zsh', windows: 'powershell' }] as const)(
+    'defaults Linux scripts to bash regardless of SHELL and other platform settings (%j)',
+    (shell) => {
+      restoreDefaultPlatform?.();
+      restoreDefaultPlatform = setPlatform('linux');
+      const originalShell = process.env.SHELL;
+      process.env.SHELL = '/bin/fish';
+      try {
+        expect(buildShellScriptCommand('echo hello', shell)).toEqual({
+          command: '/bin/bash',
+          args: ['-li', '-c', 'echo hello'],
+        });
+      } finally {
+        if (originalShell === undefined) delete process.env.SHELL;
+        else process.env.SHELL = originalShell;
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'resolves configured Linux zsh from PATH (interactive: %s)',
+    (interactive) => {
+      restoreDefaultPlatform?.();
+      restoreDefaultPlatform = setPlatform('linux');
+      mockedFindExecutableOnPath.mockImplementation((name) =>
+        name === 'zsh' ? '/opt/bin/zsh' : null,
+      );
+
+      expect(
+        buildShellScriptCommand(
+          'echo hello',
+          { linux: 'zsh' },
+          { interactive },
+        ),
+      ).toEqual({
+        command: '/opt/bin/zsh',
+        args: [interactive ? '-li' : '-l', '-c', 'echo hello'],
+      });
+      expect(mockedFindExecutableOnPath).toHaveBeenCalledWith('zsh');
+    },
+  );
+
+  it('resolves configured Linux bash from PATH independently of other platforms', () => {
+    restoreDefaultPlatform?.();
+    restoreDefaultPlatform = setPlatform('linux');
+    mockedFindExecutableOnPath.mockImplementation((name) =>
+      name === 'bash' ? '/usr/local/bin/bash' : null,
+    );
+
+    expect(
+      buildShellScriptCommand('echo hello', {
+        linux: 'bash',
+        mac: 'zsh',
+        windows: 'powershell',
+      }),
+    ).toEqual({
+      command: '/usr/local/bin/bash',
+      args: ['-li', '-c', 'echo hello'],
+    });
+  });
+
+  it('fails missing configured Linux zsh with install or shell.linux change guidance', () => {
+    restoreDefaultPlatform?.();
+    restoreDefaultPlatform = setPlatform('linux');
+
+    expect(() =>
+      buildShellScriptCommand('echo hello', { linux: 'zsh' }),
+    ).toThrow(/zsh.*shell\.linux.*[Ii]nstall.*zsh.*change.*shell\.linux.*bash/);
   });
 
   it('builds explicit mac shell commands with the selected runtime', () => {
@@ -300,7 +370,6 @@ describe('script-runner', () => {
     restoreDefaultPlatform = undefined;
     mockPtyListeners.clear();
     mockPtySpawn.mockClear();
-    mockPtySpawnWithEnvironment.mockClear();
     mockPtyKill.mockClear();
   });
 
@@ -330,27 +399,22 @@ describe('script-runner', () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    expect(mockPtySpawn).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-      80,
-      24,
-      undefined,
-      expect.objectContaining({
-        kind: 'script',
-        title: 'Wizard',
-        focusOnSpawn: true,
-      }),
-      '/tmp',
-    );
-    emitMockPtyEvent(IPC_CHANNELS.terminalOutput, {
+    expect(mockPtySpawn.mock.calls[0]?.[0]).toMatchObject({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+      managedCommand: { kind: 'script', title: 'Wizard', focusOnSpawn: true },
+      cwd: '/tmp',
+    });
+    emitMockPtyEvent('output', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
       data: new TextEncoder().encode('Answer: yes\n'),
       seq: 12,
     });
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -412,19 +476,19 @@ describe('script-runner', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(mockPtySpawnWithEnvironment).toHaveBeenCalledWith(
-      { PATH: '/login/bin', DATABASE_URL: 'recipient-value' },
-      'shared-container-viewer',
-      'container-1',
-      80,
-      24,
-      undefined,
-      expect.objectContaining({ kind: 'script' }),
-      '/tmp/run-copy',
-    );
-    expect(mockPtySpawn).not.toHaveBeenCalled();
+    expect(mockPtySpawn.mock.calls[0]?.[0]).toMatchObject({
+      projectId: 'shared-container-viewer',
+      worktreeId: 'container-1',
+      cols: 80,
+      rows: 24,
+      managedCommand: { kind: 'script' },
+      cwd: '/tmp/run-copy',
+      environment: { PATH: '/login/bin', DATABASE_URL: 'recipient-value' },
+    });
 
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
+      projectId: 'shared-container-viewer',
+      worktreeId: 'container-1',
       terminalId: 'interactive-terminal-1',
       exitCode: 0,
       signal: null,
@@ -451,14 +515,14 @@ describe('script-runner', () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    emitMockPtyEvent(IPC_CHANNELS.terminalOutput, {
+    emitMockPtyEvent('output', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
       data: new TextEncoder().encode('x'.repeat(maxOutputBytes + 1024)),
       seq: 13,
     });
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -507,12 +571,12 @@ describe('script-runner', () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    const managedCommand = mockPtySpawn.mock.calls[0]?.[5];
+    const managedCommand = mockPtySpawn.mock.calls[0]?.[0].managedCommand;
     expect(managedCommand?.executable).toBe('/usr/sbin/taskpolicy');
     expect(managedCommand?.args).toEqual(
       expect.arrayContaining(['-c', 'utility']),
     );
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -541,7 +605,7 @@ describe('script-runner', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(mockPtyLowerPriority).toHaveBeenCalledWith('interactive-terminal-1');
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -566,7 +630,7 @@ describe('script-runner', () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -599,7 +663,7 @@ describe('script-runner', () => {
     await Promise.resolve();
     const stoppedPending = stopTrackedShellScript(tracking);
     expect(mockPtyKill).toHaveBeenCalledWith('interactive-terminal-1');
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -633,7 +697,7 @@ describe('script-runner', () => {
 
     await Promise.resolve();
     await Promise.resolve();
-    emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+    emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       terminalId: 'interactive-terminal-1',
@@ -704,7 +768,7 @@ describe('script-runner', () => {
       expect(mockPtyKill).toHaveBeenCalledTimes(1);
       expect(mockPtyKill).toHaveBeenCalledWith('script-terminal');
     } finally {
-      emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+      emitMockPtyEvent('exit', {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         terminalId: 'script-terminal',
@@ -712,7 +776,7 @@ describe('script-runner', () => {
         exitCode: 0,
         signal: 'SIGTERM',
       });
-      emitMockPtyEvent(IPC_CHANNELS.terminalExit, {
+      emitMockPtyEvent('exit', {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         terminalId: 'hook-terminal',

@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as ArchivedContainerContracts from '@canopy/desktop-shared/lib/archived-container-contracts';
 import type * as CostLifecycle from '../cost-index/lifecycle';
+import type { PlanExploreTargetRef } from '../lib/plan-explore-registry';
 import { ChatStateV2Repository } from '../services/chat-state-v2-repository';
 import { type ChatStorageV2 } from '../lib/chat-storage-v2';
 import * as legacyMigration from '../lib/legacy-chat-migration';
@@ -24,26 +25,37 @@ import type {
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 
-const mockRemoveLegacyReviewChats = jest.fn(
-  (): Promise<string[]> => Promise.resolve([]),
-);
+const mockRemoveLegacyReviewChats = jest.fn<
+  Promise<string[]>,
+  [projectId: string, worktreeId: string]
+>(() => Promise.resolve([]));
 jest.mock('../lib/code-review-cleanup', () => ({
-  removeCodeReviewChatsForWorktree: (...args: unknown[]): Promise<string[]> =>
-    mockRemoveLegacyReviewChats(...args),
+  removeCodeReviewChatsForWorktree: (
+    projectId: string,
+    worktreeId: string,
+  ): Promise<string[]> => mockRemoveLegacyReviewChats(projectId, worktreeId),
 }));
-const mockRemoveLegacyPlanChats = jest.fn(
-  (): Promise<string[]> => Promise.resolve([]),
-);
+const mockRemoveLegacyPlanChats = jest.fn<
+  Promise<string[]>,
+  [projectId: string, worktreeId: string, knownPlanIds: readonly string[]]
+>(() => Promise.resolve([]));
 jest.mock('../lib/plan-explore-cleanup', () => ({
-  removePlanExploreChatsForWorktree: (...args: unknown[]): Promise<string[]> =>
-    mockRemoveLegacyPlanChats(...args),
+  removePlanExploreChatsForWorktree: (
+    projectId: string,
+    worktreeId: string,
+    knownPlanIds: readonly string[],
+  ): Promise<string[]> =>
+    mockRemoveLegacyPlanChats(projectId, worktreeId, knownPlanIds),
 }));
-const mockTransferLegacyPlanChats = jest.fn(
-  (): Promise<string[]> => Promise.resolve([]),
-);
+const mockTransferLegacyPlanChats = jest.fn<
+  Promise<string[]>,
+  [from: PlanExploreTargetRef, to: PlanExploreTargetRef]
+>(() => Promise.resolve([]));
 jest.mock('../lib/plan-explore-registry', () => ({
-  transferPlanExploreTargets: (...args: unknown[]): Promise<string[]> =>
-    mockTransferLegacyPlanChats(...args),
+  transferPlanExploreTargets: (
+    from: PlanExploreTargetRef,
+    to: PlanExploreTargetRef,
+  ): Promise<string[]> => mockTransferLegacyPlanChats(from, to),
 }));
 
 jest.mock('../lib/paths', () => ({
@@ -99,10 +111,13 @@ jest.mock('../lib/archived-container-retention', () => ({
   purgeExpiredArchivedContainersForWorkspace: jest.fn(),
 }));
 const captureChatScopeMock = jest.fn();
-const runArchiveIoRequestMock = jest.fn<Promise<unknown>, [unknown]>();
+const runArchiveIoRequestMock = jest.fn<
+  Promise<unknown>,
+  [request: ArchiveIoOperationRequest]
+>();
 jest.mock('../archive/archive-io-runner', () => ({
-  runArchiveIoRequest: (...args: [unknown]): Promise<unknown> =>
-    runArchiveIoRequestMock(...args),
+  runArchiveIoRequest: (request: ArchiveIoOperationRequest): Promise<unknown> =>
+    runArchiveIoRequestMock(request),
 }));
 jest.mock('../lib/archived-container-disk-usage', () => ({
   scheduleArchivedContainerDiskUsage: jest.fn(),
@@ -225,7 +240,10 @@ import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 const PROJECT_ID = 'workspace-1';
 const CONTAINER_ID = 'worktree-1';
 let rootDir: string;
-let archivedContainerUpdated: jest.Mock;
+let archivedContainerUpdated: jest.SpyInstance<
+  void,
+  [projectId: string, containerId: string]
+>;
 
 function archiveRoot(projectId: string): string {
   return join(rootDir, 'workspaces', projectId, 'archived-containers');
@@ -239,13 +257,17 @@ function liveRoot(projectId: string): string {
   return join(rootDir, 'live', projectId);
 }
 
+type WorktreeManifestV1 = Omit<
+  Extract<ArchivedContainerManifest, { version: 1 }>,
+  'kind' | 'originalEntry'
+> & { kind: 'worktree'; originalEntry?: never };
+
 function manifest(
-  overrides: Partial<ArchivedContainerManifest> = {},
-): ArchivedContainerManifest {
+  overrides: Partial<Omit<WorktreeManifestV1, 'kind' | 'originalEntry'>> = {},
+): WorktreeManifestV1 {
   return {
     version: 1,
     id: CONTAINER_ID,
-    kind: 'worktree',
     projectId: PROJECT_ID,
     name: 'Feature branch',
     createdAt: '2026-07-20T00:00:00.000Z',
@@ -256,6 +278,7 @@ function manifest(
     archivedChatCount: 1,
     executionCount: 0,
     ...overrides,
+    kind: 'worktree',
   };
 }
 
@@ -280,7 +303,7 @@ function version2Manifest(): Extract<
   ArchivedContainerManifest,
   { version: 2 }
 > {
-  const version2: ArchivedContainerManifest = {
+  const version2: Extract<ArchivedContainerManifest, { version: 2 }> = {
     ...manifest(),
     version: 2,
     kind: 'worktree',
@@ -512,7 +535,7 @@ describe('archived container store', () => {
     );
     runArchiveIoRequestMock.mockImplementation((request) => {
       const copiesCost =
-        (request as ArchiveIoOperationRequest).type === 'copy-payload' &&
+        request.type === 'copy-payload' &&
         JSON.stringify(request).includes(costDestination);
       return copiesCost
         ? Promise.reject(new Error('EACCES: cost directory unreadable'))
@@ -1644,6 +1667,7 @@ describe('archived container store', () => {
       .spyOn(searchService, 'worktreeContainerPurged')
       .mockImplementation(() => {
         existedWhenSearchWasPurged = existsSync(committedDir);
+        return Promise.resolve();
       });
     jest.mocked(getChatSearchService).mockReturnValue(searchService);
 
@@ -1896,7 +1920,7 @@ describe('archived container store', () => {
       .mockImplementationOnce(async (...args) => {
         migrationEntered();
         await gate;
-        await migrate(...args);
+        return migrate(...args);
       });
     const read = getArchivedContainerChatStorage(PROJECT_ID, CONTAINER_ID);
     await entered;

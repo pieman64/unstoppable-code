@@ -6,15 +6,13 @@ import {
   CuratedPipelineCatalog,
   type CuratedPipelineCatalogProps,
 } from './CuratedPipelineCatalog';
+import { Button } from './Button';
 import { DialogModal } from './DialogModal';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
 
 export interface PipelineTemplatesSectionProps {
   catalog: CuratedPipelineCatalogProps;
 }
-
-const LINK_BUTTON =
-  'focus-ring rounded-md px-2 py-1 text-xs fg-secondary hover:fg-primary disabled:opacity-50';
 
 function CatalogStatus({
   catalog,
@@ -26,19 +24,19 @@ function CatalogStatus({
       <p role="alert" className="break-words text-sm fg-destructive">
         {catalog.error}
       </p>
-      <button
-        type="button"
-        className={LINK_BUTTON}
+      <Button
+        variant="ghost"
+        size="compact"
         disabled={catalog.loading}
         onClick={catalog.onRefresh}
         data-testid="pipeline-templates-retry"
       >
         Try again
-      </button>
+      </Button>
     </div>
   ) : (
     <p role="status" className="text-sm fg-secondary">
-      Loading pipeline templates…
+      Loading workflow templates…
     </p>
   );
 }
@@ -88,27 +86,27 @@ export function PipelineTemplatesSection({
       {unfilteredStatus && (
         <section
           className="mt-10 min-w-0 space-y-3"
-          aria-label="Pipeline templates"
+          aria-label="Workflow templates"
           data-testid="pipeline-templates-section-status"
         >
-          <h2 className="text-sm font-medium fg-primary">Pipeline templates</h2>
+          <h2 className="text-sm font-medium fg-primary">Workflow templates</h2>
           <CatalogStatus catalog={catalog} />
         </section>
       )}
       {hasCards && (
         <section
           className="mt-10 min-w-0 space-y-3"
-          aria-label="Pipeline templates"
+          aria-label="Workflow templates"
           data-testid="pipeline-templates-section"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-medium fg-primary">
-              Pipeline templates
+              Workflow templates
             </h2>
-            <button
+            <Button
               ref={viewAllRef}
-              type="button"
-              className={LINK_BUTTON}
+              variant="ghost"
+              size="compact"
               onClick={() => {
                 setOpenedCards(cards);
                 setCatalogOpen(true);
@@ -116,7 +114,7 @@ export function PipelineTemplatesSection({
               data-testid="pipeline-templates-view-all"
             >
               View all templates
-            </button>
+            </Button>
           </div>
           {/* The kept cards stand in while the catalog reloads after a reset;
               a failed reload says so here, with a retry. */}
@@ -144,15 +142,15 @@ export function PipelineTemplatesSection({
                     {row.shortDescription}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className="focus-ring self-start rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium fg-primary hover:bg-accent-subtle"
+                <Button
+                  size="compact"
+                  className="self-start"
                   onClick={() => catalog.onSelect(row)}
                   data-testid={`pipeline-template-use-${row.key}`}
                   aria-label={`Use template: ${row.name}`}
                 >
                   Use template
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -161,7 +159,7 @@ export function PipelineTemplatesSection({
       {dialogOpen && (
         <DialogModal
           title={
-            catalog.selectedKey ? 'Preview pipeline' : 'Pipeline templates'
+            catalog.selectedKey ? 'Preview workflow' : 'Workflow templates'
           }
           onClose={close}
           maxWidth="3xl"
@@ -171,7 +169,9 @@ export function PipelineTemplatesSection({
           restoreFocusRef={viewAllRef}
           dataTestId="pipeline-templates-dialog"
         >
-          <CuratedPipelineCatalog {...catalog} />
+          <div className="px-5 pb-5">
+            <CuratedPipelineCatalog {...catalog} />
+          </div>
         </DialogModal>
       )}
     </>

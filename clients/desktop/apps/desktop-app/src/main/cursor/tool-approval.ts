@@ -1,3 +1,4 @@
+import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { PIPELINE_EDITOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { resolve } from 'node:path';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
@@ -206,6 +207,12 @@ export async function authorizeCursorMcpTool(
   const mode = context.mode ?? 'default';
   const providerLabel = context.providerLabel ?? 'Cursor';
   const names = cursorCanopyMcpServerNames(mode);
+  if (
+    mode === 'default' &&
+    call.server === names.main &&
+    isWatchDelegatesCompatibilityName(call.tool, 'cursor')
+  )
+    return { decision: 'allow' };
   const args = isRecord(call.args) ? call.args : {};
   let requirements: ReturnType<typeof approvalCheckForClaudeTool>[];
   if (
@@ -214,7 +221,6 @@ export async function authorizeCursorMcpTool(
     context.managedToolNames?.includes(call.tool)
   ) {
     const readOnly = [
-      'WatchDelegates',
       'GetDelegateOutput',
       'InspectDelegate',
       'ListDelegates',

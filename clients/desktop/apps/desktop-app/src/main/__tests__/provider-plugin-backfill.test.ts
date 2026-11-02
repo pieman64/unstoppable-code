@@ -5,9 +5,18 @@ import type {
   PluginProvider,
   PluginsCache,
 } from '@canopy/desktop-shared/types/plugins';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type * as FsModule from 'fs';
+import type * as AtomicFileModule from '@canopy/desktop-shared/node/lib/atomic-file';
 
 jest.mock('../lib/main-process-logging', () => ({
   logMainProcessInfo: jest.fn(),
@@ -17,6 +26,40 @@ let mockE2eBuild = false;
 jest.mock('../lib/e2e-gate', () => ({
   isE2eBuild: (): boolean => mockE2eBuild,
 }));
+let mockFailCopy = false;
+jest.mock('fs', () => {
+  const actual = jest.requireActual<typeof FsModule>('fs');
+  return {
+    ...actual,
+    copyFileSync: (...args: Parameters<typeof actual.copyFileSync>): void => {
+      if (mockFailCopy) throw new Error('EACCES');
+      actual.copyFileSync(...args);
+    },
+  };
+});
+let mockFailAtomicWrite = false;
+let mockFailAfterAtomicInstall = false;
+// Runs where a process ending mid-write would stop: before the install.
+let mockBeforeAtomicWrite: (() => void) | null = null;
+let mockAtomicWrites = 0;
+jest.mock('@canopy/desktop-shared/node/lib/atomic-file', () => {
+  const actual = jest.requireActual<typeof AtomicFileModule>(
+    '@canopy/desktop-shared/node/lib/atomic-file',
+  );
+  return {
+    ...actual,
+    writeFileAtomicallySync: (
+      ...args: Parameters<typeof actual.writeFileAtomicallySync>
+    ): void => {
+      mockAtomicWrites += 1;
+      mockBeforeAtomicWrite?.();
+      if (mockFailAtomicWrite) throw new Error('disk full');
+      actual.writeFileAtomicallySync(...args);
+      // The rename landed but the directory fsync after it failed.
+      if (mockFailAfterAtomicInstall) throw new Error('EIO');
+    },
+  };
+});
 
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
@@ -286,8 +329,8 @@ function dependencies(
       }),
     ),
     readState: jest.fn(() => ({
-      version: state.version,
-      providers: { ...state.providers },
+      status: 'ok' as const,
+      state: { version: state.version, providers: { ...state.providers } },
     })),
     writeState: jest.fn((next) => {
       state.version = next.version;
@@ -729,15 +772,260 @@ describe('runProviderPluginBackfill', () => {
     expect(deps.state.providers.claude?.[0]?.fingerprint).toBe('auth:claude:a');
     expect(deps.state.providers.codex?.[0]?.fingerprint).toBe('auth:codex:a');
   });
+
+  it('keeps the record the other provider wrote while this run was planning', async () => {
+    let releaseCodexCache!: () => void;
+    const codexCacheGate = new Promise<void>((resolve) => {
+      releaseCodexCache = resolve;
+    });
+    const deps = dependencies();
+    deps.loadCache = jest
+      .fn<Promise<PluginsCache | null>, []>()
+      .mockImplementationOnce(async () => {
+        await codexCacheGate;
+        return codexBackfillCache(['slack']);
+      })
+      .mockImplementation(() => Promise.resolve(codexBackfillCache([])));
+    const codex = runProviderPluginBackfill('codex', 'auth:codex:a', deps);
+    await runProviderPluginBackfill('claude', 'auth:claude:a', deps);
+    expect(deps.state.providers.claude?.[0]?.fingerprint).toBe('auth:claude:a');
+    releaseCodexCache();
+    expect((await codex).status).toBe('completed');
+    expect(deps.state.providers.claude?.[0]?.fingerprint).toBe('auth:claude:a');
+    expect(deps.state.providers.codex?.[0]?.fingerprint).toBe('auth:codex:a');
+  });
+
+  it('installs nothing while the state cannot be written, so a removed plugin does not return on every start', async () => {
+    const deps = dependencies({
+      writeState: jest.fn(() => {
+        throw new Error('read-only volume');
+      }),
+    });
+    const report = await runProviderPluginBackfill(
+      'codex',
+      'auth:codex:a',
+      deps,
+    );
+    expect(report).toEqual({
+      provider: 'codex',
+      status: 'deferred',
+      deferred: 'state-unwritable',
+      installed: [],
+      failed: [],
+    });
+    expect(deps.installPlugin).not.toHaveBeenCalled();
+    expect(deps.refreshInventory).not.toHaveBeenCalled();
+  });
+
+  it.each(['newer', 'unreadable'] as const)(
+    'installs nothing while the state file reads as %s',
+    async (stateStatus) => {
+      const deps = dependencies({
+        readState: jest.fn(() => ({
+          status: stateStatus,
+          state: { version: 1 as const, providers: {} },
+        })),
+      });
+      const report = await runProviderPluginBackfill(
+        'codex',
+        'auth:codex:a',
+        deps,
+      );
+      expect(report.deferred).toBe('state-unreadable');
+      expect(deps.loadCache).not.toHaveBeenCalled();
+      expect(deps.installPlugin).not.toHaveBeenCalled();
+      expect(deps.writeState).not.toHaveBeenCalled();
+    },
+  );
+
+  it('checks the state is writable before the first install', async () => {
+    const events: string[] = [];
+    const deps = dependencies();
+    const write = deps.writeState;
+    deps.writeState = jest.fn((next: ProviderPluginBackfillState) => {
+      events.push('write');
+      write(next);
+    });
+    const install = deps.installPlugin;
+    deps.installPlugin = jest.fn((request) => {
+      events.push('install');
+      return install(request);
+    });
+    await runProviderPluginBackfill('codex', 'auth:codex:a', deps);
+    expect(events).toEqual(['write', 'install', 'write']);
+  });
+
+  it('refreshes the inventory and rejects, leaving the account unrecorded, when the final write fails before installing the state', async () => {
+    const deps = dependencies();
+    const write = deps.writeState;
+    let writes = 0;
+    deps.writeState = jest.fn((next: ProviderPluginBackfillState) => {
+      writes += 1;
+      if (writes > 1) throw new Error('disk full');
+      write(next);
+    });
+    await expect(
+      runProviderPluginBackfill('codex', 'auth:codex:a', deps),
+    ).rejects.toThrow('disk full');
+    expect(deps.installPlugin).toHaveBeenCalledTimes(1);
+    expect(deps.refreshInventory).toHaveBeenCalledWith(
+      'provider-plugin-backfill:codex',
+    );
+    expect(deps.state.providers.codex).toBeUndefined();
+  });
+});
+
+describe('runProviderPluginBackfill with the state file', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'provider-plugin-backfill-run-'));
+    mockFailAfterAtomicInstall = false;
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    mockFailAfterAtomicInstall = false;
+  });
+
+  it('refreshes the inventory and reports the error when the final write fails after installing the state', async () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    const deps = dependencies({
+      readState: () => readProviderPluginBackfillState(file),
+      writeState: (next) => writeProviderPluginBackfillState(next, file),
+    });
+    const install = deps.installPlugin;
+    deps.installPlugin = jest.fn((request) => {
+      // The probe before this install succeeded; the final write's directory
+      // sync fails after its rename.
+      mockFailAfterAtomicInstall = true;
+      return install(request);
+    });
+    const report = await runProviderPluginBackfill(
+      'codex',
+      'auth:codex:a',
+      deps,
+    );
+    expect(report).toEqual({
+      provider: 'codex',
+      status: 'completed',
+      installed: [{ marketplaceId: 'canopy-curated', pluginName: 'slack' }],
+      failed: [],
+      stateWriteError: 'EIO',
+    });
+    expect(deps.refreshInventory).toHaveBeenCalledWith(
+      'provider-plugin-backfill:codex',
+    );
+    mockFailAfterAtomicInstall = false;
+    expect(
+      (await runProviderPluginBackfill('codex', 'auth:codex:a', deps)).status,
+    ).toBe('skipped');
+    expect(deps.installPlugin).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('provider plugin backfill state file', () => {
   let dir: string;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'provider-plugin-backfill-'));
+    mockFailCopy = false;
+    mockFailAtomicWrite = false;
+    mockFailAfterAtomicInstall = false;
+    mockBeforeAtomicWrite = null;
+    mockAtomicWrites = 0;
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  function asideFiles(): string[] {
+    return readdirSync(dir).filter((name) =>
+      /^provider-plugin-backfill\.json\.damaged-\d+$/.test(name),
+    );
+  }
+
+  // A valid record beside an invalid one: the file reads as damaged but keeps
+  // the account it already backfilled.
+  const damagedText = JSON.stringify({
+    version: 1,
+    providers: { codex: [record('auth:codex:kept'), { fingerprint: 7 }] },
+  });
+  const damagedRead = {
+    status: 'damaged',
+    state: { version: 1, providers: { codex: [record('auth:codex:kept')] } },
+  };
+  const nextState: ProviderPluginBackfillState = {
+    version: 1,
+    providers: { codex: [record('auth:codex:kept'), record('auth:codex:b')] },
+  };
+
+  it('keeps a damaged file readable while its evidence copy is taken', () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    writeFileSync(file, damagedText, 'utf8');
+    // What a process ending after the copy but before the install leaves.
+    let onDisk: {
+      text: string | null;
+      read: unknown;
+      aside: string[];
+    } | null = null;
+    mockBeforeAtomicWrite = (): void => {
+      onDisk = {
+        text: existsSync(file) ? readFileSync(file, 'utf8') : null,
+        read: readProviderPluginBackfillState(file),
+        aside: asideFiles(),
+      };
+    };
+
+    writeProviderPluginBackfillState(nextState, file);
+
+    expect(onDisk).toEqual({
+      text: damagedText,
+      read: damagedRead,
+      aside: [expect.stringMatching(/\.damaged-\d+$/)],
+    });
+  });
+
+  it('leaves a damaged file in place when the rewrite fails', () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    writeFileSync(file, damagedText, 'utf8');
+    mockFailAtomicWrite = true;
+
+    expect(() => writeProviderPluginBackfillState(nextState, file)).toThrow(
+      'disk full',
+    );
+
+    expect(readFileSync(file, 'utf8')).toBe(damagedText);
+    expect(readProviderPluginBackfillState(file)).toEqual(damagedRead);
+    const aside = asideFiles();
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, aside[0] ?? ''), 'utf8')).toBe(damagedText);
+  });
+
+  it('does not rewrite a damaged file it could not copy aside', () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    writeFileSync(file, damagedText, 'utf8');
+    mockFailCopy = true;
+
+    expect(() => writeProviderPluginBackfillState(nextState, file)).toThrow(
+      'EACCES',
+    );
+
+    expect(mockAtomicWrites).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe(damagedText);
+    expect(asideFiles()).toEqual([]);
+  });
+
+  it('keeps an installed state when the write fails after the rename', () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    writeFileSync(file, '{"version": 1, "prov', 'utf8');
+    const state: ProviderPluginBackfillState = {
+      version: 1,
+      providers: { codex: [record('auth:codex:a')] },
+    };
+    mockFailAfterAtomicInstall = true;
+    expect(() => writeProviderPluginBackfillState(state, file)).toThrow('EIO');
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'ok',
+      state,
+    });
   });
 
   it('round-trips the state through its file, creating the folder on first write', () => {
@@ -761,30 +1049,78 @@ describe('provider plugin backfill state file', () => {
       },
     };
     writeProviderPluginBackfillState(state, file);
-    expect(readProviderPluginBackfillState(file)).toEqual(state);
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'ok',
+      state,
+    });
   });
 
-  it('reads a missing, unreadable, malformed, or differently versioned file as nothing backfilled yet', () => {
+  it('tells a missing file from a damaged, newer, or unreadable one', () => {
     const file = join(dir, 'provider-plugin-backfill.json');
     const empty: ProviderPluginBackfillState = { version: 1, providers: {} };
-    expect(readProviderPluginBackfillState(file)).toEqual(empty);
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'missing',
+      state: empty,
+    });
     writeFileSync(file, '{"version": 1, "providers": {"codex": "no"', 'utf8');
-    expect(readProviderPluginBackfillState(file)).toEqual(empty);
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'damaged',
+      state: empty,
+    });
     writeFileSync(
       file,
       JSON.stringify({
         version: 1,
-        providers: { codex: [{ fingerprint: 7 }] },
+        providers: { claude: [record('kept')], codex: [{ fingerprint: 7 }] },
       }),
       'utf8',
     );
-    expect(readProviderPluginBackfillState(file)).toEqual(empty);
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'damaged',
+      state: { version: 1, providers: { claude: [record('kept')], codex: [] } },
+    });
     writeFileSync(
       file,
       JSON.stringify({ version: 2, providers: { codex: [record('x')] } }),
       'utf8',
     );
-    expect(readProviderPluginBackfillState(file)).toEqual(empty);
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'newer',
+      state: empty,
+    });
+    expect(readProviderPluginBackfillState(dir).status).toBe('unreadable');
+  });
+
+  it('copies a damaged file aside before writing over it', () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    writeFileSync(file, '{"version": 1, "prov', 'utf8');
+    const state: ProviderPluginBackfillState = {
+      version: 1,
+      providers: { codex: [record('auth:codex:a')] },
+    };
+    writeProviderPluginBackfillState(state, file);
+    const aside = readdirSync(dir).filter((name) =>
+      /^provider-plugin-backfill\.json\.damaged-\d+$/.test(name),
+    );
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, aside[0] ?? ''), 'utf8')).toBe(
+      '{"version": 1, "prov',
+    );
+    expect(readProviderPluginBackfillState(file)).toEqual({
+      status: 'ok',
+      state,
+    });
+  });
+
+  it('never writes over a file from a newer version', () => {
+    const file = join(dir, 'provider-plugin-backfill.json');
+    const newer = JSON.stringify({ version: 2, providers: {} });
+    writeFileSync(file, newer, 'utf8');
+    expect(() =>
+      writeProviderPluginBackfillState({ version: 1, providers: {} }, file),
+    ).toThrow(/newer/);
+    expect(readFileSync(file, 'utf8')).toBe(newer);
+    expect(readdirSync(dir)).toEqual(['provider-plugin-backfill.json']);
   });
 });
 
@@ -861,6 +1197,30 @@ describe('startProviderPluginBackfill', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(logMainProcessWarn).toHaveBeenCalledWith(
       expect.stringContaining('install state could not be read'),
+    );
+  });
+
+  it('logs a recorded run whose state write reported an error', async () => {
+    let listener: ((next: typeof event) => void) | undefined;
+    const subscribe = jest.fn((next: (next: typeof event) => void) => {
+      listener = next;
+      return jest.fn();
+    });
+    const run = jest.fn(() =>
+      Promise.resolve({
+        provider: 'codex' as const,
+        status: 'completed' as const,
+        installed: [{ marketplaceId: 'canopy-curated', pluginName: 'slack' }],
+        failed: [],
+        stateWriteError: 'EIO',
+      }),
+    );
+    startProviderPluginBackfill({ subscribe, run });
+    listener?.(event);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(logMainProcessWarn).toHaveBeenCalledWith(
+      expect.stringContaining('state write reported an error'),
+      'EIO',
     );
   });
 

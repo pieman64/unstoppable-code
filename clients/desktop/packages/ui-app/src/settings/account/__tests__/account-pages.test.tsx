@@ -91,7 +91,9 @@ describe('account page modules', () => {
     );
 
     expect(
-      container.querySelector('[data-testid="profile-name"]')?.textContent,
+      container
+        .querySelector('[data-testid="profile-name-input"]')
+        ?.getAttribute('value'),
     ).toBe('Ada Lovelace');
     expect(
       container.querySelector('[data-testid="account-email"]')?.textContent,
@@ -203,7 +205,7 @@ describe('account page modules', () => {
     const body = container.querySelector(
       '[data-testid="account-settings-body"]',
     );
-    expect(body?.className).toContain('max-w-3xl');
+    expect(body?.className).not.toContain('max-w-3xl');
     expect(
       Array.from(body?.children ?? []).map(
         (child) => child.getAttribute('data-testid') ?? child.tagName,

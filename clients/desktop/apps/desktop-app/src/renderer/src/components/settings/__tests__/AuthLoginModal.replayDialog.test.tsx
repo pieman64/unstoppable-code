@@ -65,17 +65,20 @@ jest.mock('@xterm/addon-fit', () => ({
   },
 }));
 jest.mock('@canopy/ui-app/terminal', () => ({
+  ...jest.requireActual<typeof TerminalModule>('@canopy/ui-app/terminal'),
   installTerminalLinks: (): (() => void) => (): void => undefined,
 }));
 jest.mock('@/hooks/useCurrentUiStateReporter', () => ({
   useCurrentUiStateReporter: jest.fn(),
 }));
 
+import type * as TerminalModule from '@canopy/ui-app/terminal';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   AuthTerminalOutputEvent,
   CodexLoginState,
+  GitHubCliStatus,
 } from '@canopy/desktop-shared/types';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { AuthLoginModal } from '../AuthLoginModal';
@@ -115,12 +118,17 @@ describe('AuthLoginModal session replay', () => {
     Object.defineProperty(window, 'api', {
       configurable: true,
       value: {
-        getGitHubCliStatus: jest.fn().mockResolvedValue({
-          installed: true,
-          authenticated: false,
-          username: null,
-          error: null,
-        }),
+        getGitHubCliStatus: jest
+          .fn<Promise<GitHubCliStatus>, []>()
+          .mockResolvedValue({
+            authenticated: false,
+            username: null,
+            error: null,
+            tokenSource: null,
+            envOverride: false,
+            envOverrideName: null,
+            hasCredentialStoreLogin: false,
+          }),
         browser: { openExternal: jest.fn().mockResolvedValue(undefined) },
         authTerminal: {
           start: jest.fn().mockResolvedValue({ sessionId: 'session-1' }),
@@ -201,10 +209,13 @@ describe('AuthLoginModal session replay', () => {
 
   it('blocks only the signed-in account label inside the recorded DialogModal card', async () => {
     jest.mocked(window.api.getGitHubCliStatus).mockResolvedValue({
-      installed: true,
       authenticated: true,
       username: 'octo-ada',
       error: null,
+      tokenSource: 'keyring',
+      envOverride: false,
+      envOverrideName: null,
+      hasCredentialStoreLogin: true,
     });
     await act(async () => {
       root.render(

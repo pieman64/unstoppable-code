@@ -17,6 +17,7 @@ import {
   ANNOTATION_KIND_TEXT_CLASS,
   annotationKindIcon,
 } from './code-review-icons';
+import { Button } from '@canopy/ui-shared/components';
 
 function toReviewAuthor(author: ReviewCommentAuthor): PlanReviewAuthor {
   if (author === 'agent') {
@@ -59,23 +60,22 @@ export function ReviewAnnotationCard({
       </div>
       <div className="flex items-center justify-end gap-1.5">
         {onClear ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
             data-testid="review-annotation-clear"
             onClick={onClear}
-            className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:bg-accent-subtle hover:fg-primary"
           >
             Clear highlight
-          </button>
+          </Button>
         ) : null}
-        <button
-          type="button"
+        <Button
+          size="compact"
           data-testid="review-annotation-discuss"
           onClick={onDiscuss}
-          className="focus-ring rounded-md border px-2 py-1 text-2xs fg-secondary hover:bg-accent-subtle hover:fg-primary"
         >
           {discussLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -207,21 +207,17 @@ export function ReviewThreadCard({
                 className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="mt-1 flex items-center justify-end gap-1.5">
-                <button
-                  type="button"
-                  onClick={cancelEditingComment}
-                  className="focus-ring rounded-md px-2 py-1 text-2xs fg-secondary hover:fg-primary"
-                >
+                <Button size="compact" onClick={cancelEditingComment}>
                   Cancel
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="primary"
+                  size="compact"
                   onClick={saveEditingComment}
                   disabled={editingBody.trim().length === 0}
-                  className="focus-ring rounded-md bg-accent px-2 py-1 text-2xs font-medium fg-emphasis disabled:opacity-50"
                 >
                   Save
-                </button>
+                </Button>
               </div>
             </PlanReviewComment>
           );

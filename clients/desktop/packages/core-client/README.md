@@ -169,6 +169,39 @@ suite are simulated typed closes. Real authentication failure is covered by
 root), and version negotiation by `handshake.test.ts`. The client has no
 mid-session re-authentication.
 
+## Delivery policy
+
+`deliverCanopy(run, options)` is the one retry loop for calls to a core, and
+`CANOPY_CONNECTION_DEFAULTS` holds the bounded defaults: a 10 s connect
+deadline, a 30 s delivery deadline, and backoff from 1 s doubling to 8 s.
+
+- A failure is retried only when its directive is the delivery's `replay`
+  kind: `same_request` resends the exact arguments, and `same_idempotency_key`
+  also keeps the original key, so a lost reply returns the core's recorded
+  outcome instead of repeating the effect. `never` and `after_refresh` end the
+  delivery with the failure as it arrived. The client already maps a lost
+  reply by idempotency: `keyed` becomes `same_idempotency_key`, `none` becomes
+  `never`, so an unkeyed call with an unknown outcome is never replayed.
+- `cancelled`, `unauthenticated` and `permission_denied` are never retried.
+- A directive's `delayMs` is a floor under the backoff. Every attempt and
+  wait shares one deadline; a wait that would pass it fails at once with
+  `deadline_exceeded`, which keeps the last replay directive because that
+  attempt's outcome is still unknown.
+- The caller's signal aborts waits and the attempt's own signal. Each attempt
+  gets `remainingMs()`, so a nested connect uses the time left instead of a
+  fresh deadline.
+- `current()` is checked before each send and before a result is accepted. A
+  changed authority, account, or connection fails closed as
+  `failed_precondition` (`after_refresh`, resource `destination`), with no
+  failover. Stale or late results go to `release`, never to the caller.
+- `accept` adopts a result in the same turn as that last check. Code after
+  `await` runs later, so state adopted there may already be stale.
+
+`run` must send the same operation and arguments to the same destination on
+every attempt. Transport bindings send once: `connectCanopyClient` runs on a
+`CanopyDeliveryScope` with no retry of its own, and the caller's delivery owns
+any retry. Durable admission and restart recovery stay with the core (CAN-4130).
+
 ## Node connector (`@canopy/core-client/node`)
 
 The browser root never imports `./node`. `connectCanopyFramedConnection` stops
@@ -178,8 +211,9 @@ auth, and optional `maxFrameBytes`; either on the other platform is
 `capability_unavailable`. An `inMemory` endpoint carries an authenticated
 connection. Existing codecs are reused; the connector has no wire cancel.
 
-One deadline covers connect, auth, and initialize: default 10 s, else an
-integer 1..2147483647 ms or `invalid_argument`. Abort rejects `cancelled`, the
+One deadline covers connect, auth, and initialize: default
+`connectTimeoutMs` (10 s), else an integer 1..2147483647 ms or
+`invalid_argument`. Setup sends once and never retries. Abort rejects `cancelled`, the
 deadline `deadline_exceeded`. Failed setup, including pre-aborted `inMemory`,
 closes owned connections and removes its timer and listeners. After success a
 framed connection ignores aborts; a client closes. Real socket conformance
@@ -213,10 +247,14 @@ a watchdog every quarter `renewAfterMs` renew at once after a wall-clock jump.
   registrations. A new id, `notifyEvicted` for the current lease, or a renew
   `notFound`/`invalidState` replays them; evictions omit `previousLeaseId`.
   One `revisionConflict` renews again; a second re-acquires.
-- Only fitting directives replay, after `delayMs` (default 1 s): acquire on
-  `same_idempotency_key` with its key, renew (exact arguments) and attach on
-  `same_request`. Any other directive (`after_refresh` has no refresh
-  operation) or a throwing `presence` fails the owner with the original error.
+- Acquire, renew and reconnect each run as one delivery under the shared
+  policy, bounded by `deliveryTimeoutMs` (default 30 s). Only fitting
+  directives replay: acquire on `same_idempotency_key` with its key, renew
+  (exact arguments) and attach on `same_request`. Any other directive
+  (`after_refresh` has no refresh operation), an exhausted deadline, or a
+  throwing `presence` fails the owner. `attach` receives the attempt's signal
+  and remaining time; a replacement that closed before use is closed and
+  retried. A drop, eviction or release aborts the epoch's waits and attach.
 - `register` issues serially, in order, once per connection and lease. Success
   is per lease id; failures and post-drop results retry on the next connection
   or lease, never looping. A stalled one blocks later ones until reconnect.

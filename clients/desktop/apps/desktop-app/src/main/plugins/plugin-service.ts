@@ -43,10 +43,8 @@ import {
   getDataDir,
   getPipelinePluginPreferencesFilePath,
   getPluginCacheDir,
-  getPreferencesFilePath,
   getWorkspaceChatHistoryMetaFilePath,
   getWorkspaceChatHistoryRootDir,
-  getWorkspaceConfigPath,
 } from '../lib/paths';
 import {
   cloneRepo,
@@ -56,18 +54,13 @@ import {
 import { isE2eBuild } from '../lib/e2e-gate';
 import {
   projectPreferencesForRuntime,
-  invalidateRendererPreferencesCache,
   readPreferencesFile,
   peekPreferencesLoadError,
   updatePreferencesFile,
 } from '../lib/preferences-store';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
-import {
-  pluginSelectionsEqual,
-  unionPluginSelections,
-} from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
+import { unionPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { safeReadJson } from '../lib/fs-utils';
 import {
   claudeInstalledPluginsMap,
@@ -98,12 +91,9 @@ import { codexMarketplaceRootFromPath } from './codex-marketplace-paths';
 import { scanPluginDetails } from './plugin-scanner';
 import { materializeCodexPluginsOffMain } from './codex-plugin-materialization-runner';
 import type { MaterializedCodexPlugin } from './codex-plugin-materialization-protocol';
-import {
-  inheritedPluginLayersOf,
-  pruneMarketplacePluginRefsFromValue,
-} from './marketplace-plugin-ref-prune';
+import { pruneMarketplacePluginRefsFromValue } from './marketplace-plugin-ref-prune';
 import { updateWorkspacePlugins } from '../lib/workspace-plugin-defaults';
-import { bumpGlobalPluginDefaultsRevision } from './plugin-defaults-revision';
+import { pruneMarketplaceRefsFromPreferences } from './marketplace-preferences-prune';
 import {
   getCuratedPluginMarketplaceName,
   syncCuratedPlugins,
@@ -117,6 +107,13 @@ import {
 } from './curated-plugin-marketplace';
 import { runClaudeCliProcessOffMain } from '../agents/claude-process-host-runner';
 import { withMarketplaceRefreshLock } from './marketplace-refresh-lock';
+import {
+  hasManagedMarketplaceReceipt,
+  reconcileManagedMarketplaceReceipts,
+  recordManagedMarketplaceReceipt,
+  type ManagedMarketplaceObservation,
+  type ManagedMarketplaceReceiptWrite,
+} from './managed-marketplace-ledger';
 import {
   BUILTIN_PLUGIN_MARKETPLACE_ID,
   CURATED_PLUGIN_MARKETPLACE_ID,
@@ -412,10 +409,6 @@ export async function removeInstalledPluginCache(
   });
 }
 
-function getBuiltInProviderMarketplaceLedgerPath(): string {
-  return path.join(getDataDir(), 'built-in-plugin-marketplaces.json');
-}
-
 function getBuiltInProviderMarketplaceName(): string {
   return `${BRAND.internalName}-plugins`;
 }
@@ -500,19 +493,6 @@ interface PluginCacheIndex {
   entries: Record<string, PluginCacheEntry>;
 }
 
-interface BuiltInProviderMarketplaceLedgerEntry {
-  provider: PluginProvider;
-  marketplaceName: string;
-  sourceRoot: string;
-  brandId: string;
-  recordedAt: string;
-}
-
-interface BuiltInProviderMarketplaceLedger {
-  version: 1;
-  entries: BuiltInProviderMarketplaceLedgerEntry[];
-}
-
 interface CodexDiscoveredMarketplaceSource {
   id: string;
   sourceUrl: string;
@@ -554,56 +534,11 @@ function writeCacheIndex(index: PluginCacheIndex): void {
   fs.writeFileSync(filePath, JSON.stringify(index, null, 2), 'utf-8');
 }
 
-function readBuiltInProviderMarketplaceLedger(): BuiltInProviderMarketplaceLedger {
-  const data = safeReadJson<BuiltInProviderMarketplaceLedger>(
-    getBuiltInProviderMarketplaceLedgerPath(),
-  );
-  if (data?.version !== 1 || !Array.isArray(data.entries)) {
-    return { version: 1, entries: [] };
-  }
-  return {
-    version: 1,
-    entries: data.entries.filter(
-      (entry) =>
-        (entry.provider === 'claude' || entry.provider === 'codex') &&
-        typeof entry.marketplaceName === 'string' &&
-        typeof entry.sourceRoot === 'string' &&
-        path.isAbsolute(entry.sourceRoot),
-    ),
-  };
-}
-
-function writeBuiltInProviderMarketplaceLedger(
-  ledger: BuiltInProviderMarketplaceLedger,
-): void {
-  const filePath = getBuiltInProviderMarketplaceLedgerPath();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(ledger, null, 2), 'utf-8');
-}
-
 function normalizeLocalMarketplaceRoot(sourceRoot: string): string | null {
   if (!path.isAbsolute(sourceRoot)) {
     return null;
   }
   return path.resolve(sourceRoot);
-}
-
-function isRecordedBuiltInProviderMarketplaceSource(
-  provider: PluginProvider,
-  marketplaceName: string,
-  sourceRoot: string,
-): boolean {
-  const normalizedSource = normalizeLocalMarketplaceRoot(sourceRoot);
-  if (!normalizedSource) {
-    return false;
-  }
-  const normalizedMarketplaceName = marketplaceName.toLowerCase();
-  return readBuiltInProviderMarketplaceLedger().entries.some(
-    (entry) =>
-      entry.provider === provider &&
-      entry.marketplaceName.toLowerCase() === normalizedMarketplaceName &&
-      path.resolve(entry.sourceRoot) === normalizedSource,
-  );
 }
 
 /**
@@ -651,40 +586,111 @@ function isManagedProviderMarketplaceSource(
   if (fs.existsSync(normalizedSource)) {
     return false;
   }
-  return isRecordedBuiltInProviderMarketplaceSource(
-    provider,
-    marketplaceName,
-    normalizedSource,
-  );
-}
-
-function recordBuiltInProviderMarketplaceSource(
-  provider: PluginProvider,
-  marketplaceName: string,
-  sourceRoot: string,
-): void {
-  const normalizedSource = normalizeLocalMarketplaceRoot(sourceRoot);
-  if (!normalizedSource) {
-    return;
-  }
-  const ledger = readBuiltInProviderMarketplaceLedger();
-  const normalizedMarketplaceName = marketplaceName.toLowerCase();
-  const entries = ledger.entries.filter(
-    (entry) =>
-      !(
-        entry.provider === provider &&
-        entry.marketplaceName.toLowerCase() === normalizedMarketplaceName &&
-        path.resolve(entry.sourceRoot) === normalizedSource
-      ),
-  );
-  entries.push({
+  return hasManagedMarketplaceReceipt({
     provider,
     marketplaceName,
     sourceRoot: normalizedSource,
-    brandId: BRAND.id,
-    recordedAt: nowIso(),
   });
-  writeBuiltInProviderMarketplaceLedger({ version: 1, entries });
+}
+
+interface ManagedMarketplaceTarget {
+  marketplaceName: string;
+  root: string;
+}
+
+/** Both locally managed marketplaces: provider-facing name and local root. */
+function managedMarketplaceTargets(): ManagedMarketplaceTarget[] {
+  return [
+    {
+      marketplaceName: getBuiltInProviderMarketplaceName(),
+      root: path.resolve(getBundledPluginsDir()),
+    },
+    {
+      marketplaceName: getCuratedPluginMarketplaceName(),
+      root: path.resolve(getCuratedPluginsMarketplaceDir()),
+    },
+  ];
+}
+
+/** The local root Claude currently has registered under `marketplaceName`. */
+function claudeRegisteredMarketplaceRoot(
+  known: KnownMarketplacesFile,
+  marketplaceName: string,
+): string | null {
+  const entry: unknown = known[marketplaceName];
+  return isRecord(entry) && typeof entry.installLocation === 'string'
+    ? normalizeLocalMarketplaceRoot(entry.installLocation)
+    : null;
+}
+
+function claudeManagedMarketplaceObservations(
+  known: KnownMarketplacesFile,
+): ManagedMarketplaceObservation[] {
+  return managedMarketplaceTargets().map(({ marketplaceName, root }) => ({
+    provider: 'claude',
+    marketplaceName,
+    managedRoot: root,
+    registeredRoot: claudeRegisteredMarketplaceRoot(known, marketplaceName),
+  }));
+}
+
+function codexManagedMarketplaceObservations(
+  entries: readonly PluginMarketplaceEntry[],
+): ManagedMarketplaceObservation[] {
+  return managedMarketplaceTargets().flatMap(({ marketplaceName, root }) =>
+    entries
+      .filter((entry) => entry.name === marketplaceName)
+      .map((entry) => ({
+        provider: 'codex',
+        marketplaceName,
+        managedRoot: root,
+        registeredRoot: normalizeLocalMarketplaceRoot(
+          codexMarketplaceRootFromPath(entry.path) ?? '',
+        ),
+      })),
+  );
+}
+
+function logFailedReceiptWrite(
+  outcome: ManagedMarketplaceReceiptWrite,
+  subject: string,
+): void {
+  if (outcome.status === 'failed') {
+    process.stderr.write(
+      `[plugins] Failed to record ${subject}: ${outcome.error}\n`,
+    );
+  }
+}
+
+/**
+ * Records that this app registered `root` under `marketplaceName`. The
+ * registration already happened, so a failed write is logged, not raised: the
+ * receipt only matters if the root later moves.
+ */
+function recordManagedMarketplaceRegistration(
+  provider: PluginProvider,
+  marketplaceName: string,
+  root: string,
+): void {
+  logFailedReceiptWrite(
+    recordManagedMarketplaceReceipt({
+      provider,
+      marketplaceName,
+      sourceRoot: root,
+    }),
+    `the ${provider} receipt for the "${marketplaceName}" marketplace`,
+  );
+}
+
+/**
+ * Startup receipt reconciliation. It reads Claude's `known_marketplaces.json`
+ * only, so it starts no provider process and can run on every platform; Codex
+ * receipts are reconciled from the plugin list each refresh already reads.
+ */
+export function reconcileManagedMarketplaceReceiptsAtStartup(): ManagedMarketplaceReceiptWrite {
+  return reconcileManagedMarketplaceReceipts(
+    claudeManagedMarketplaceObservations(readKnownMarketplaces()),
+  );
 }
 
 function cacheKey(marketplaceId: string, pluginName: string): string {
@@ -2451,13 +2457,12 @@ async function buildMarketplaces(
   // user-added external marketplace could legitimately reuse a managed name
   // while pointing somewhere else entirely; only skip when the entry's
   // location also actually resolves to the managed root.
-  const managedMarketplaceRootsByName = new Map<string, string>([
-    [getBuiltInProviderMarketplaceName(), path.resolve(getBundledPluginsDir())],
-    [
-      getCuratedPluginMarketplaceName(),
-      path.resolve(getCuratedPluginsMarketplaceDir()),
-    ],
-  ]);
+  const managedMarketplaceRootsByName = new Map<string, string>(
+    managedMarketplaceTargets().map((target) => [
+      target.marketplaceName,
+      target.root,
+    ]),
+  );
   for (const [id, entry] of Object.entries(known)) {
     const managedRoot = managedMarketplaceRootsByName.get(id);
     if (
@@ -2522,8 +2527,14 @@ async function buildMarketplaces(
     });
   }
 
+  // Provider state this refresh read anyway; a provider that could not be
+  // read contributes no observations, so its receipts are left for later.
+  const receiptObservations = claudeManagedMarketplaceObservations(known);
   try {
     const codexList = await listCodexPlugins();
+    receiptObservations.push(
+      ...codexManagedMarketplaceObservations(codexList.marketplaces),
+    );
     for (const entry of codexList.marketplaces) {
       if (entry.name === LEGACY_CODEX_CHAT_PLUGIN_MARKETPLACE_NAME) {
         continue;
@@ -2558,6 +2569,10 @@ async function buildMarketplaces(
     // Known marketplace scans surface Codex errors separately. Direct-only
     // Codex marketplaces cannot be seeded if Codex cannot list them.
   }
+  logFailedReceiptWrite(
+    reconcileManagedMarketplaceReceipts(receiptObservations),
+    'managed marketplace receipts',
+  );
 
   const marketplaces = await mapWithConcurrency(
     Array.from(sources.values()),
@@ -2858,11 +2873,11 @@ function shouldRunProviderUpdates(
 
 /**
  * Best-effort provider nudge for one locally managed marketplace (the
- * bundled built-in tree or the curated tree). Only providers that have
- * actually registered that marketplace (per the managed-marketplace ledger)
- * are nudged, so a nudge never registers anything on its own. Failures are
- * logged and ignored: the on-disk tree is already the source of truth, and
- * the next install re-registers anyway.
+ * bundled built-in tree or the curated tree). Claude is nudged only while its
+ * registration under that name points at the managed root, so a nudge never
+ * registers anything and never updates a same-named foreign marketplace.
+ * Failures are logged and ignored: the on-disk tree is already the source of
+ * truth, and the next install re-registers anyway.
  *
  * There is no `win32` suppression here on purpose: `refreshMarketplaces`
  * already shells out to the provider CLIs on every platform. Windows keeps
@@ -2873,15 +2888,16 @@ async function nudgeManagedProviderMarketplace(
   marketplaceName: string,
   label: string,
 ): Promise<void> {
-  const normalizedName = marketplaceName.toLowerCase();
-  const providers = new Set(
-    readBuiltInProviderMarketplaceLedger()
-      .entries.filter(
-        (entry) => entry.marketplaceName.toLowerCase() === normalizedName,
-      )
-      .map((entry) => entry.provider),
-  );
-  if (providers.has('claude')) {
+  const managedRoot = managedMarketplaceTargets().find(
+    (target) => target.marketplaceName === marketplaceName,
+  )?.root;
+  if (
+    managedRoot !== undefined &&
+    claudeRegisteredMarketplaceRoot(
+      readKnownMarketplaces(),
+      marketplaceName,
+    ) === managedRoot
+  ) {
     const updated = await updateClaudeMarketplace(marketplaceName);
     if (!updated.accepted) {
       process.stderr.write(
@@ -3681,7 +3697,7 @@ async function safeReadDir(target: string): Promise<fs.Dirent<string>[]> {
 }
 
 async function addWorkspaceChatHistoryMetaTargets(
-  targets: Set<string>,
+  targets: Set<SelectionPruneTarget>,
   workspaceId: string,
 ): Promise<void> {
   const chatHistoryEntries = await safeReadDir(
@@ -3700,16 +3716,17 @@ interface CanonicalChatScopePruneTarget {
   worktreeId: string;
 }
 
+/** A legacy file path, or one workspace's `workspace.json` by its id. */
+type SelectionPruneTarget = string | { readonly workspaceId: string };
+
 interface SelectionPruneTargets {
-  files: string[];
-  /** The workspace id of each `workspace.json` among `files`. */
-  workspaceConfigs: Map<string, string>;
+  /** In discovery order; each workspace manifest routes through its id. */
+  files: SelectionPruneTarget[];
   chatScopes: CanonicalChatScopePruneTarget[];
 }
 
 async function addWorkspaceSelectionPruneTargets(
-  targets: Set<string>,
-  workspaceConfigs: Map<string, string>,
+  targets: Set<SelectionPruneTarget>,
   chatScopes: CanonicalChatScopePruneTarget[],
 ): Promise<void> {
   const workspacesRoot = path.join(getDataDir(), 'workspaces');
@@ -3719,9 +3736,7 @@ async function addWorkspaceSelectionPruneTargets(
       .filter((entry) => entry.isDirectory())
       .map(async (entry) => {
         const workspaceId = entry.name;
-        const configPath = getWorkspaceConfigPath(workspaceId);
-        targets.add(configPath);
-        workspaceConfigs.set(configPath, workspaceId);
+        targets.add({ workspaceId });
         // Chat scopes that migrated to canonical v2 storage keep their tab
         // metadata in `chat-storage-v2/{scope}/live-index.json`; those are
         // pruned through the chat state service below. Any `chats/{scope}.json`
@@ -3789,7 +3804,7 @@ async function discoverStandaloneProjectIds(): Promise<Set<string>> {
 }
 
 async function addStandaloneSelectionPruneTargets(
-  targets: Set<string>,
+  targets: Set<SelectionPruneTarget>,
 ): Promise<void> {
   targets.add(getChatProjectsFilePath());
   const projectIds = await discoverStandaloneProjectIds();
@@ -3811,17 +3826,17 @@ async function addStandaloneSelectionPruneTargets(
 }
 
 async function collectSelectionPruneTargets(): Promise<SelectionPruneTargets> {
-  const targets = new Set<string>([
-    getPreferencesFilePath(),
+  // Callers prune preferences through the preferences store; the generic
+  // file loops must never receive its path (admitted writers, CAN-5152).
+  const targets = new Set<SelectionPruneTarget>([
     getPipelinePluginPreferencesFilePath(),
   ]);
-  const workspaceConfigs = new Map<string, string>();
   const chatScopes: CanonicalChatScopePruneTarget[] = [];
   await settleAll([
-    addWorkspaceSelectionPruneTargets(targets, workspaceConfigs, chatScopes),
+    addWorkspaceSelectionPruneTargets(targets, chatScopes),
     addStandaloneSelectionPruneTargets(targets),
   ]);
-  return { files: Array.from(targets), workspaceConfigs, chatScopes };
+  return { files: Array.from(targets), chatScopes };
 }
 
 /**
@@ -3849,42 +3864,30 @@ async function pruneSelectionRefsInWorkspaceConfig(
 }
 
 async function pruneSelectionRefsInFile(
-  filePath: string,
+  target: SelectionPruneTarget,
   marketplaceId: string,
-  workspaceId: string | undefined,
   fanOutRequestId: string | undefined,
 ): Promise<void> {
-  if (workspaceId !== undefined) {
+  if (typeof target !== 'string') {
     await pruneSelectionRefsInWorkspaceConfig(
-      workspaceId,
+      target.workspaceId,
       marketplaceId,
       fanOutRequestId,
     );
     return;
   }
+  const filePath = target;
   try {
     const raw = await fs.promises.readFile(filePath, 'utf8');
     const parsed: unknown = JSON.parse(raw);
-    const before = inheritedPluginLayersOf(parsed);
     if (!pruneMarketplacePluginRefsFromValue(parsed, marketplaceId)) {
       return;
     }
-    const after = inheritedPluginLayersOf(parsed);
     await fs.promises.writeFile(
       filePath,
       `${JSON.stringify(parsed, null, 2)}\n`,
       'utf8',
     );
-    if (filePath === getPreferencesFilePath()) {
-      invalidateRendererPreferencesCache();
-      if (
-        !pluginSelectionsEqual(
-          normalizePluginSelections(before.globalPluginSelections),
-          normalizePluginSelections(after.globalPluginSelections),
-        )
-      )
-        bumpGlobalPluginDefaultsRevision();
-    }
   } catch {
     // Best-effort cleanup should not block or fail marketplace removal.
   }
@@ -3952,13 +3955,13 @@ async function pruneSelectionRefsForMarketplace(
   fanOutRequestId: string | undefined,
 ): Promise<void> {
   const targets = await collectSelectionPruneTargets();
+  try {
+    await pruneMarketplaceRefsFromPreferences(marketplaceId);
+  } catch {
+    // Best-effort cleanup should not block or fail marketplace removal.
+  }
   for (const target of targets.files) {
-    await pruneSelectionRefsInFile(
-      target,
-      marketplaceId,
-      targets.workspaceConfigs.get(target),
-      fanOutRequestId,
-    );
+    await pruneSelectionRefsInFile(target, marketplaceId, fanOutRequestId);
   }
   for (const scope of targets.chatScopes) {
     await pruneSelectionRefsInChatScope(scope, marketplaceId);
@@ -3971,11 +3974,9 @@ export async function pruneSelectionRefsForInstalledItem(
 ): Promise<void> {
   const targets = await collectSelectionPruneTargets();
   for (const file of targets.files) {
-    if (file === getPreferencesFilePath()) continue;
-    const workspaceId = targets.workspaceConfigs.get(file);
-    if (workspaceId) {
+    if (typeof file !== 'string') {
       await updateWorkspacePlugins({
-        workspaceId,
+        workspaceId: file.workspaceId,
         change: { kind: 'pruneInstalledItem', ref },
         source: 'marketplace_removal',
       });
@@ -4642,7 +4643,7 @@ async function evaluateClaudeBuiltInMarketplaceConflict(
   }
 
   if (existingLocation === bundledRoot) {
-    recordBuiltInProviderMarketplaceSource(
+    recordManagedMarketplaceRegistration(
       'claude',
       marketplaceName,
       bundledRoot,
@@ -4658,11 +4659,11 @@ async function evaluateClaudeBuiltInMarketplaceConflict(
   }
 
   if (
-    !isRecordedBuiltInProviderMarketplaceSource(
-      'claude',
+    !hasManagedMarketplaceReceipt({
+      provider: 'claude',
       marketplaceName,
-      existingLocation,
-    )
+      sourceRoot: existingLocation,
+    })
   ) {
     return {
       accepted: false,
@@ -4680,7 +4681,7 @@ async function evaluateClaudeBuiltInMarketplaceConflict(
 /**
  * Registers a locally managed marketplace (built-in or curated) with Claude.
  * `marketplaceName`/`root` identify which one; everything else — conflict
- * evaluation, ledger recording, and the one repair retry — is shared.
+ * evaluation, receipt recording, and the one repair retry — is shared.
  */
 async function ensureClaudeLocalManagedMarketplaceRegistered(
   target: { marketplaceName: string; root: string },
@@ -4712,11 +4713,7 @@ async function ensureClaudeLocalManagedMarketplaceRegistered(
       ['plugin', 'marketplace', 'add', sourceRoot, '--scope', 'user'],
       getEnhancedEnv(),
     );
-    recordBuiltInProviderMarketplaceSource(
-      'claude',
-      marketplaceName,
-      sourceRoot,
-    );
+    recordManagedMarketplaceRegistration('claude', marketplaceName, sourceRoot);
     return { accepted: true };
   } catch (error) {
     const message = errorMessage(error);
@@ -4812,11 +4809,11 @@ async function installCodexLocalManagedPlugin(input: {
     repairEquivalentSourceConflict: true,
     repairMissingLocalSourceConflict: (conflict) =>
       conflict.marketplaceName === marketplaceName &&
-      isRecordedBuiltInProviderMarketplaceSource(
-        'codex',
+      hasManagedMarketplaceReceipt({
+        provider: 'codex',
         marketplaceName,
-        conflict.existingSource,
-      ),
+        sourceRoot: conflict.existingSource,
+      }),
   });
   if (!added.accepted) {
     return {
@@ -4826,7 +4823,7 @@ async function installCodexLocalManagedPlugin(input: {
         `Codex marketplace "${marketplaceName}" could not be registered.`,
     };
   }
-  recordBuiltInProviderMarketplaceSource(
+  recordManagedMarketplaceRegistration(
     'codex',
     added.marketplaceName ?? marketplaceName,
     sourceRoot,
@@ -4996,6 +4993,8 @@ async function installBuiltInPluginUnlocked(
       data: { plugin: refreshedPlugin, providerOutcomes },
     };
   } catch (error) {
+    // Provider state may have changed before the throw; the next load rescans.
+    if (marketplaceId) invalidateManagedMarketplaceScanCache(marketplaceId);
     reportMarketplaceProgress(progress, 'install-built-in-plugin', {
       status: 'error',
       ...(marketplaceId ? { marketplaceId } : {}),

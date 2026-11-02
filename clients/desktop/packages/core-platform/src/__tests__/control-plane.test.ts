@@ -24,8 +24,10 @@ import type {
 } from '@canopy/core-transport/types';
 import {
   CANOPY_RUNTIME_QUERY_DEFINITIONS,
+  CanopyOperationError,
   createCanopyDispatcher,
   createCanopyRuntime,
+  type CanopyHandlerContext,
   type CanopyDispatcher,
   type CanopyRuntime,
   type CanopyRuntimeQueries,
@@ -35,20 +37,38 @@ import {
 } from '@canopy/core-runtime';
 import {
   acceptCanopyFramedConnections,
+  serveCanopyControlStream,
   serveCanopyDaemonControlPlane,
+  type CanopyControlStreamOptions,
+  type CanopyControlStreamSession,
   type CanopyDaemonClock,
   type CanopyDaemonControlPlaneOptions,
 } from '@canopy/core-runtime/node';
 import {
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
+  CORE_VAULT_INSTRUCTION_DEFINITIONS,
+  CORE_VAULT_QUERY_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
   CanopyErrorPayloadSchema,
+  CanopyQueryRequestMetadataSchema,
+  CanopyRequestMetadataSchema,
   CanopyStreamCursorSchema,
+  CanopyStreamEndSchema,
+  CoreClientLeaseSchema,
+  CoreEventsSubscribeOpenResultSchema,
+  type CanopyOperationName,
   composeCanopyOperationEnvelopes,
   decodeCanopyError,
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
+  defineCanopyQuery,
+  defineCanopyQueryRegistry,
+  defineCanopyStream,
+  defineCanopyStreamRegistry,
+  vaultError,
+  type CanopyCallerDescriptor,
+  type CanopyErrorPayload,
   type CanopyJsonRpcId,
   type CoreClientLease,
   type CoreClientCapabilitiesRegisterResult,
@@ -60,6 +80,12 @@ import {
   type FixtureRelease,
 } from './fixtures/pipe-test-cleanup';
 import { manualClock, echo, HOLD } from './fixtures/control-plane-conformance';
+
+function isWorkerOperationName(
+  name: string,
+): name is `worker.${string}.${string}` {
+  return /^worker\.[^.]+\..+$/.test(name);
+}
 
 const posix = process.platform === 'win32' ? describe.skip : describe;
 const AUTH = { secret: 'socket-secret', dataRootHash: '0'.repeat(64) };
@@ -287,7 +313,7 @@ const ACQUIRE = {
   interactive: false,
   foreground: true,
   renewalIntervalMs: 15_000,
-};
+} as const;
 
 posix('lease-owned registrations', () => {
   const declaration = {
@@ -334,7 +360,7 @@ posix('lease-owned registrations', () => {
     client: Client,
     key: string,
     previousLeaseId?: string,
-    clientInstanceId = ACQUIRE.clientInstanceId,
+    clientInstanceId: string = ACQUIRE.clientInstanceId,
   ): Promise<CoreClientLease> =>
     client.instruction('core.client.lease.acquire', {
       ...ACQUIRE,
@@ -1056,6 +1082,10 @@ posix('daemon control plane over a Unix socket', () => {
         const message = await client.receive();
         if (!('id' in message) || 'method' in message || message.id !== 3)
           continue;
+        if (!('error' in message))
+          throw new Error(
+            'Expected an error response for the over-limit request.',
+          );
         expect(decodeCanopyError(message.error).kind).toBe(
           'resource_exhausted',
         );
@@ -1220,7 +1250,7 @@ posix('daemon control plane over a Unix socket', () => {
   });
 
   it('judges each channel open on the caller grants current at the open', async () => {
-    const grants = [
+    const grants: CanopyCallerDescriptor['grants'] = [
       'core.runtime.read',
       'core.client.manage',
       'core.events.read',
@@ -1344,11 +1374,14 @@ type LeasedKernel = {
   runtime: CanopyRuntime<CanopyDispatcher>;
   shutdown: FixtureRelease;
   hold(): { entered: Promise<void>; release(): void };
+  /** The params and context each `worker.git.branch.list` handler call saw. */
+  branchCalls: { params: unknown; context: CanopyHandlerContext }[];
 };
 
 /** A kernel whose next query can be held open by the test. */
 async function leasedKernel(): Promise<LeasedKernel> {
   const scope = cleanup.fork([files]);
+  const branchCalls: LeasedKernel['branchCalls'] = [];
   let gate: { entered(): void; released: Promise<void> } | null = null;
   const roots = async (): Promise<{ roots: [] }> => {
     const held = gate;
@@ -1388,6 +1421,35 @@ async function leasedKernel(): Promise<LeasedKernel> {
             ...input.runtimeHandlers.queries,
             'worker.filesystem.roots.list': roots,
             'worker.filesystem.directory.list': () => ({ entries: [] }),
+            'worker.filesystem.file.read': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.filesystem.search': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.filesystem.link.resolve': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.git.branch.list': (params, context) => {
+              branchCalls.push({ params, context });
+              return {
+                branches: [],
+                defaultBranch: null,
+                defaultBranchSource: null,
+              };
+            },
+            'worker.git.executable.get': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.git.remote.get': () => ({
+              origin: { state: 'absent' as const },
+            }),
+            'worker.git.worktree.health.get': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.git.diff.get': (): never => {
+              throw new Error('Not exercised.');
+            },
           },
         },
       }),
@@ -1401,6 +1463,7 @@ async function leasedKernel(): Promise<LeasedKernel> {
   return {
     runtime,
     shutdown,
+    branchCalls,
     hold: (): { entered: Promise<void>; release(): void } => {
       let entered = (): void => undefined;
       let release = (): void => undefined;
@@ -1415,7 +1478,10 @@ async function leasedKernel(): Promise<LeasedKernel> {
 type RpcReply = { result?: unknown; error?: unknown };
 type RpcPeer = {
   readonly client: CanopyFramedConnection;
-  request(method: string, params?: Record<string, unknown>): Promise<RpcReply>;
+  request(
+    method: CanopyOperationName,
+    params?: Record<string, unknown>,
+  ): Promise<RpcReply>;
 };
 
 /** A raw framed peer that matches replies by id and skips notifications. */
@@ -1426,7 +1492,7 @@ function rpcPeer(client: CanopyFramedConnection): RpcPeer {
     for (;;) {
       const message = await client.receive().catch(() => null);
       if (!message) return;
-      if ('id' in message && !('method' in message)) {
+      if ('id' in message && message.id !== null && !('method' in message)) {
         waiting.get(message.id)?.(message);
         waiting.delete(message.id);
       }
@@ -1434,7 +1500,7 @@ function rpcPeer(client: CanopyFramedConnection): RpcPeer {
   })();
   return {
     client,
-    request: (method, params = {}): Promise<RpcReply> => {
+    request: (method: CanopyOperationName, params = {}): Promise<RpcReply> => {
       const id = (nextId += 1);
       const reply = new Promise<RpcReply>((resolve) =>
         waiting.set(id, resolve),
@@ -1452,7 +1518,7 @@ posix('lease-bound operations', () => {
     label: 'Desktop',
     interfaceKind: 'desktop',
   };
-  const grants = [
+  const grants: CanopyCallerDescriptor['grants'] = [
     'core.runtime.read',
     'core.client.manage',
     'worker.filesystem.read',
@@ -1460,11 +1526,12 @@ posix('lease-bound operations', () => {
   async function leasedPlane(
     options: {
       readonly clock?: CanopyDaemonClock;
-      readonly grants?: readonly string[];
+      readonly grants?: readonly CanopyCallerDescriptor['grants'][number][];
     } = {},
   ): Promise<
     Awaited<ReturnType<typeof controlPlane>> & {
       hold: LeasedKernel['hold'];
+      branchCalls: LeasedKernel['branchCalls'];
       open(): Promise<RpcPeer>;
     }
   > {
@@ -1487,6 +1554,7 @@ posix('lease-bound operations', () => {
     return {
       ...daemon,
       hold: (): ReturnType<LeasedKernel['hold']> => kernel.hold(),
+      branchCalls: kernel.branchCalls,
       open: async (): Promise<RpcPeer> => {
         const { client } = await connect(daemon.path);
         peers.push(client);
@@ -1546,6 +1614,49 @@ posix('lease-bound operations', () => {
     retry: { kind: 'never' },
   };
 
+  // CAN-5496: the peer's `_execution` reaches the handler as call input for
+  // an accepting operation, never as params, and is refused elsewhere.
+  it('splits _execution into the call only for operations that accept it', async () => {
+    const daemon = await leasedPlane({
+      grants: [...grants, 'worker.git.read'],
+    });
+    try {
+      const peer = await daemon.open();
+      await acquire(peer, 'execution');
+      const execution = { childEnvironment: { PATH: '/forwarded/bin' } };
+      const branchParams = {
+        scope: { workspaceId: 'v', worktreeId: 'w' },
+        repository: { kind: 'checkout' },
+      };
+      const served = await peer.request('worker.git.branch.list', {
+        ...branchParams,
+        _meta: { traceparent: 'trace' },
+        _execution: execution,
+      });
+      expect(served.error).toBeUndefined();
+      expect(daemon.branchCalls).toHaveLength(1);
+      expect(daemon.branchCalls[0]?.params).toEqual(branchParams);
+      expect(daemon.branchCalls[0]?.context.execution).toEqual(execution);
+      expect(daemon.branchCalls[0]?.context.metadata).toEqual({
+        traceparent: 'trace',
+      });
+      for (const reply of [
+        await peer.request('worker.git.branch.list', {
+          ...branchParams,
+          _execution: { childEnvironment: { 'A=B': 'x' } },
+        }),
+        await read(peer, { _execution: execution }),
+      ])
+        expect(refusal(reply)).toMatchObject({ kind: 'invalid_argument' });
+      expect(daemon.branchCalls).toHaveLength(1);
+      // Without one the handler sees none: the CLI keeps the daemon's own.
+      await peer.request('worker.git.branch.list', branchParams);
+      expect(daemon.branchCalls[1]?.context).not.toHaveProperty('execution');
+    } finally {
+      await daemon.close();
+    }
+  });
+
   it('advertises the read at initialize and admits it only on a leased connection', async () => {
     const daemon = await leasedPlane();
     try {
@@ -1556,7 +1667,10 @@ posix('lease-bound operations', () => {
             'core.runtime.health.get',
             'core.runtime.manifest.get',
             'worker.filesystem.directory.list',
+            'worker.filesystem.file.read',
+            'worker.filesystem.link.resolve',
             'worker.filesystem.roots.list',
+            'worker.filesystem.search',
             'core.client.lease.acquire',
             'core.client.lease.renew',
             'core.client.lease.release',
@@ -1592,6 +1706,39 @@ posix('lease-bound operations', () => {
       expect((await read(peer)).result).toEqual({ roots: [] });
     } finally {
       await daemon.close();
+    }
+  });
+
+  // CAN-5037: search is served to leased same-user peers under the existing
+  // read grant; a leased peer without it is refused before the handler.
+  it('refuses worker.filesystem.search to a leased peer without worker.filesystem.read', async () => {
+    const search = (peer: RpcPeer): Promise<RpcReply> =>
+      peer.request('worker.filesystem.search', {
+        scope: { workspaceId: 'v', worktreeId: 't' },
+        fileRootId: 'root',
+        query: '',
+        mode: 'name',
+      });
+    const ungranted = await leasedPlane({ grants: grants.slice(0, 2) });
+    try {
+      const peer = await ungranted.open();
+      await acquire(peer, 'search-ungranted');
+      expect((await read(peer)).error).toBeDefined();
+      expect(refusal(await search(peer))).toMatchObject({
+        kind: 'permission_denied',
+      });
+    } finally {
+      await ungranted.close();
+    }
+    const granted = await leasedPlane();
+    try {
+      const peer = await granted.open();
+      expect(refusal(await search(peer))).toEqual(REQUIRED);
+      await acquire(peer, 'search-granted');
+      // Admitted: the stub handler's failure proves the call reached it.
+      expect(refusal(await search(peer))).toMatchObject({ kind: 'internal' });
+    } finally {
+      await granted.close();
     }
   });
 
@@ -1791,6 +1938,62 @@ posix('lease-bound operations', () => {
     }
   });
 
+  it('refuses every worker filesystem query to a leased peer without worker.filesystem.read', async () => {
+    const daemon = await leasedPlane({ grants: grants.slice(0, 2) });
+    try {
+      const peer = await daemon.open();
+      await acquire(peer, 'ungranted');
+      const params: Record<string, Record<string, unknown>> = {
+        'worker.filesystem.roots.list': {},
+        'worker.filesystem.directory.list': {
+          fileRootId: 'root',
+          relativePath: '',
+        },
+        'worker.filesystem.file.read': {
+          fileRootId: 'root',
+          relativePath: 'a.md',
+          maxBytes: 1,
+        },
+        'worker.filesystem.search': {
+          fileRootId: 'root',
+          query: '',
+          mode: 'name',
+        },
+        'worker.filesystem.link.resolve': {
+          mode: 'transcript',
+          href: 'a.md',
+        },
+      };
+      // Any worker query that requires worker.filesystem.read, in any
+      // registry group, must be added here and proved grant-bound.
+      expect(Object.keys(params).sort()).toEqual(
+        Object.entries(WORKER_QUERY_DEFINITIONS)
+          .filter(([, definition]) =>
+            definition.requiredGrants.some(
+              (grant) => grant === 'worker.filesystem.read',
+            ),
+          )
+          .map(([name]) => name)
+          .sort(),
+      );
+      for (const [method, fields] of Object.entries(params)) {
+        if (!isWorkerOperationName(method))
+          throw new Error(`not a worker query: ${method}`);
+        // Refused before the handler: the stand-ins would fail as internal.
+        expect(
+          refusal(
+            await peer.request(method, {
+              scope: { workspaceId: 'v', worktreeId: 'w' },
+              ...fields,
+            }),
+          ),
+        ).toMatchObject({ kind: 'permission_denied' });
+      }
+    } finally {
+      await daemon.close();
+    }
+  });
+
   it.each([
     ['granted', grants, REQUIRED.kind],
     ['ungranted', grants.slice(0, 2), 'permission_denied'],
@@ -1845,4 +2048,948 @@ posix('lease-bound operations', () => {
       }
     },
   );
+});
+
+/** A per-launch secret, distinct from the published endpoint's token. */
+const SESSION_AUTH = {
+  secret: 'launch-secret',
+  dataRootHash: AUTH.dataRootHash,
+};
+const ADMITTED: CanopyCallerDescriptor = {
+  principalId: 'admitted',
+  clientInstanceId: 'admitted-session',
+  authorityId: 'local',
+  interfaceKind: 'test',
+  grants: ['core.runtime.read', 'core.client.manage'],
+};
+
+/** Serves the first stream a fresh listener accepts, as a host hands one over. */
+async function admitted(
+  daemon: Awaited<ReturnType<typeof controlPlane>>,
+  overrides: Partial<CanopyControlStreamOptions> = {},
+): Promise<{ path: string; session: Promise<CanopyControlStreamSession> }> {
+  const scope = cleanup.fork([files]);
+  const { listener, release: listenerRelease } = await bindListener(scope);
+  const session = listener
+    .connections()
+    [Symbol.asyncIterator]()
+    .next()
+    .then((next) => {
+      if (next.done) throw new Error('The listener closed.');
+      const served = serveCanopyControlStream({
+        stream: next.value,
+        auth: SESSION_AUTH,
+        caller: ADMITTED,
+        obligations: daemon.plane.obligations,
+        dispatcher: daemon.runtime.dispatcher,
+        operations: daemon.runtime.operations,
+        buildVersion: '0.0.0-test',
+        clock: daemon.clock,
+        ...overrides,
+      });
+      listenerRelease.dependsOn(scope.own(() => served.close()));
+      return served;
+    });
+  return { path: listener.address.path, session };
+}
+
+function rawWire(path: string): {
+  wire: ReturnType<typeof createConnection>;
+  closed: Promise<void>;
+} {
+  // Flowing, so it reads to the server's close past an unanswered challenge.
+  const wire = createConnection(path).resume();
+  const closed = new Promise<void>((resolve) =>
+    wire.once('close', () => resolve()),
+  );
+  cleanup.own(async () => {
+    wire.destroy();
+    await closed;
+  });
+  return { wire, closed };
+}
+
+posix('one admitted control stream', () => {
+  const session = { clientSecret: SESSION_AUTH.secret };
+
+  it('serves every request as the admitted caller, apart from the daemon plane', async () => {
+    const callerFor = jest.fn<
+      ReturnType<CanopyDaemonControlPlaneOptions['callerFor']>,
+      Parameters<CanopyDaemonControlPlaneOptions['callerFor']>
+    >();
+    const daemon = await controlPlane({ callerFor });
+    const query = jest.spyOn(daemon.runtime.dispatcher, 'query');
+    const seen: CanopyCallerDescriptor[] = [];
+    const { path } = await admitted(daemon, {
+      channels: {
+        kinds: {
+          'session.hold': {
+            accept: (_channel, { caller }) => seen.push(caller),
+          },
+        },
+      },
+    });
+    try {
+      const { client } = await connect(path, session);
+      const { result } = await call(client, initialize(1));
+      // Reachability follows the admitted grants: no core.events.read here.
+      expect(result).toMatchObject({
+        capabilities: {
+          operations: [
+            'core.runtime.health.get',
+            'core.runtime.manifest.get',
+            'core.client.lease.acquire',
+            'core.client.lease.renew',
+            'core.client.lease.release',
+            'core.client.capabilities.register',
+          ],
+          channels: ['session.hold'],
+        },
+      });
+      const acquired = await call(client, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'core.client.lease.acquire',
+        params: {
+          ...ACQUIRE,
+          clientInstanceId: 'declared',
+          _meta: { idempotencyKey: 'session' },
+        },
+      });
+      const leaseId = CoreClientLeaseSchema.parse(acquired.result).leaseId;
+      // A declared lease identity never replaces the admitted caller.
+      await client.openChannel({ kind: 'session.hold', leaseId, caps: CAPS });
+      const health = await call(client, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'core.runtime.health.get',
+        params: {},
+      });
+      expect(health.result).toMatchObject({ runtime: { state: 'ready' } });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBe(ADMITTED);
+      // Initialize's two reads run as a copy that holds runtime-read; the
+      // client's own read runs as the admitted caller itself.
+      expect(
+        query.mock.calls.map(([name, , { caller }]) => [name, caller]),
+      ).toEqual([
+        ['core.runtime.health.get', ADMITTED],
+        ['core.runtime.manifest.get', ADMITTED],
+        ['core.runtime.health.get', ADMITTED],
+      ]);
+      expect(query.mock.calls[2]?.[2].caller).toBe(ADMITTED);
+      // The session's lease lives in its own plane state.
+      expect(daemon.plane.leases.size).toBe(0);
+      expect(callerFor).not.toHaveBeenCalled();
+      client.close();
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('holds a daemon plane obligation from admission until the stream closes', async () => {
+    const onIdle = jest.fn();
+    const daemon = await controlPlane({ onIdle });
+    const admission = await admitted(daemon);
+    try {
+      const { client } = await connect(admission.path, session);
+      const served = await admission.session;
+      expect(daemon.plane.obligations.size).toBe(1);
+      await call(client, initialize(1));
+      await daemon.clock.advance(GRACE_MS * 2);
+      expect(onIdle).not.toHaveBeenCalled();
+      client.close();
+      await served.done;
+      expect(daemon.plane.obligations.size).toBe(0);
+      await daemon.clock.advance(GRACE_MS - 1);
+      expect(onIdle).not.toHaveBeenCalled();
+      await daemon.clock.advance(1);
+      expect(onIdle).toHaveBeenCalledTimes(1);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('admits lease-bound operations only on the session lease', async () => {
+    const daemon = await controlPlane();
+    const admission = await admitted(daemon, {
+      leaseBoundOperations: ['core.runtime.health.get'],
+    });
+    try {
+      const { client: published } = await connect(daemon.path);
+      await call(published, initialize(1));
+      await call(published, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'core.client.lease.acquire',
+        params: { ...ACQUIRE, _meta: { idempotencyKey: 'published' } },
+      });
+      expect(daemon.plane.leases.size).toBe(1);
+      const { client } = await connect(admission.path, session);
+      await call(client, initialize(1));
+      const health = {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'core.runtime.health.get',
+        params: {},
+      } as const;
+      expect(decodeCanopyError((await call(client, health)).error).kind).toBe(
+        'not_found',
+      );
+      await call(client, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'core.client.lease.acquire',
+        params: { ...ACQUIRE, _meta: { idempotencyKey: 'session' } },
+      });
+      expect(daemon.plane.leases.size).toBe(1);
+      expect((await call(client, { ...health, id: 4 })).result).toMatchObject({
+        runtime: { state: 'ready' },
+      });
+      client.close();
+      published.close();
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('ends the session and its obligation when the handshake fails', async () => {
+    const daemon = await controlPlane();
+    const admission = await admitted(daemon);
+    try {
+      // The published endpoint's token does not open the session.
+      await expect(connect(admission.path)).rejects.toThrow();
+      await (
+        await admission.session
+      ).done;
+      expect(daemon.plane.obligations.size).toBe(0);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('closes the stream and releases only its own obligation, once', async () => {
+    const daemon = await controlPlane();
+    const admission = await admitted(daemon);
+    try {
+      const { client } = await connect(admission.path, session);
+      const served = await admission.session;
+      await call(client, initialize(1));
+      const other = daemon.plane.obligations.hold('other');
+      expect(daemon.plane.obligations.size).toBe(2);
+      const aborted = new Promise((resolve) =>
+        client.signal.addEventListener('abort', resolve, { once: true }),
+      );
+      await served.close();
+      await aborted;
+      expect(daemon.plane.obligations.size).toBe(1);
+      await served.close();
+      expect(daemon.plane.obligations.size).toBe(1);
+      other();
+      expect(daemon.plane.obligations.size).toBe(0);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('closes a stream that is still in its handshake', async () => {
+    const daemon = await controlPlane();
+    const admission = await admitted(daemon);
+    try {
+      const { closed } = rawWire(admission.path);
+      const served = await admission.session;
+      expect(daemon.plane.obligations.size).toBe(1);
+      await served.close();
+      expect(daemon.plane.obligations.size).toBe(0);
+      await closed;
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('rejects invalid serving options before holding an obligation', async () => {
+    const daemon = await controlPlane();
+    const admission = await admitted(daemon, { maxActiveRequests: 0 });
+    try {
+      rawWire(admission.path);
+      await expect(admission.session).rejects.toThrow(RangeError);
+      expect(daemon.plane.obligations.size).toBe(0);
+    } finally {
+      await daemon.close();
+    }
+  });
+});
+
+// The vault definitions are inactive contracts; this test-only kernel serves
+// them over a real socket so their `_meta` and error rules hold where a
+// framed host splits `_meta` off and a client validates the error it gets.
+posix('vault contracts over the framed control plane', () => {
+  const PUT = 'core.vault.entry.put';
+  const DELETE = 'core.vault.entry.delete';
+  const VAULT_GRANTS: CanopyCallerDescriptor['grants'] = [
+    'core.runtime.read',
+    'core.vault.read',
+    'core.vault.write',
+  ];
+  const ref = { vaultId: 'vault-1', entryId: 'entry-1' };
+  const entry = {
+    ref,
+    family: 'copilot.account',
+    label: 'GitHub Copilot',
+    revision: 2,
+    state: 'available' as const,
+    expiresAt: null,
+    createdAt: '2026-10-23T00:00:00.000Z',
+    updatedAt: '2026-10-23T00:00:00.000Z',
+  };
+  const create = {
+    entryId: null,
+    expectedRevision: null,
+    family: 'copilot.account',
+    label: 'GitHub Copilot',
+    secret: 'sk-vault-framed-sentinel',
+    expiresAt: null,
+  };
+  const replace = {
+    ref,
+    expectedRevision: 2,
+    label: 'GitHub Copilot',
+    secret: 'sk-vault-framed-sentinel',
+    expiresAt: null,
+  };
+  const remove = { ref, expectedRevision: 2 };
+  const vaultOperations = [
+    ...Object.entries(CORE_VAULT_QUERY_DEFINITIONS),
+    ...Object.entries(CORE_VAULT_INSTRUCTION_DEFINITIONS),
+  ].map(([name, definition]) => ({
+    name,
+    kind: definition.kind,
+    version: definition.version,
+    placement: definition.placement,
+    requiredGrants: [...definition.requiredGrants],
+  }));
+  const vaultErrorSchemas = [
+    ...Object.values(CORE_VAULT_QUERY_DEFINITIONS),
+    ...Object.values(CORE_VAULT_INSTRUCTION_DEFINITIONS),
+  ].map((definition) => definition.error);
+
+  async function vaultPlane(
+    options: {
+      readonly fail?: CanopyErrorPayload;
+      readonly grants?: readonly CanopyCallerDescriptor['grants'][number][];
+      readonly maxActiveRequests?: number;
+    } = {},
+  ): Promise<{
+    seen: { method: string; params: unknown; key: unknown }[];
+    hold(): { entered: Promise<void>; release(): void };
+    path: string;
+    open(): Promise<RpcPeer>;
+    close(): Promise<void>;
+  }> {
+    const scope = cleanup.fork([files]);
+    const seen: { method: string; params: unknown; key: unknown }[] = [];
+    let gate: { entered(): void; released: Promise<void> } | null = null;
+    const recordWrite = (
+      method: string,
+      params: unknown,
+      context: CanopyHandlerContext,
+    ): void => {
+      seen.push({ method, params, key: context.metadata.idempotencyKey });
+      if (options.fail) throw new CanopyOperationError(options.fail);
+    };
+    const runtime = createCanopyRuntime({
+      profile: 'core',
+      identity: { runtimeId: 'runtime', hostId: 'host', authorityId: 'local' },
+      definitions: {
+        queries: CORE_VAULT_QUERY_DEFINITIONS,
+        instructions: CORE_VAULT_INSTRUCTION_DEFINITIONS,
+        streams: {},
+      },
+      owners: [
+        {
+          name: 'core.vault',
+          operations: [
+            ...Object.keys(CORE_VAULT_QUERY_DEFINITIONS),
+            ...Object.keys(CORE_VAULT_INSTRUCTION_DEFINITIONS),
+          ],
+        },
+      ],
+      services: [],
+      principalFor: () => 'interface',
+      phaseDeadlineMs: 1_000,
+      createDispatcher: (input) =>
+        createCanopyDispatcher<
+          typeof input.definitions.queries,
+          typeof input.definitions.instructions,
+          typeof input.definitions.streams
+        >({
+          profile: input.profile,
+          definitions: input.definitions,
+          handlers: {
+            ...input.runtimeHandlers,
+            queries: {
+              ...input.runtimeHandlers.queries,
+              // Test host policy: the runtime profile installs no inactive
+              // vault operation, so this manifest advertises them itself.
+              'core.runtime.manifest.get': async (params, context) => {
+                const manifest = await input.runtimeHandlers.queries[
+                  'core.runtime.manifest.get'
+                ](params, context);
+                return {
+                  ...manifest,
+                  operations: [
+                    ...manifest.operations,
+                    ...vaultOperations.map((operation) => ({
+                      ...operation,
+                      available: operation.requiredGrants.every((grant) =>
+                        context.caller.grants.includes(grant),
+                      ),
+                    })),
+                  ],
+                };
+              },
+              'core.vault.status.get': () => ({
+                protection: { state: 'unknown', backend: null },
+                observedAt: null,
+              }),
+              'core.vault.entry.list': () => ({ items: [], nextCursor: null }),
+              'core.vault.entry.get': async () => {
+                const held = gate;
+                gate = null;
+                if (held) {
+                  held.entered();
+                  await held.released;
+                }
+                if (options.fail) throw new CanopyOperationError(options.fail);
+                return entry;
+              },
+            },
+            instructions: {
+              [PUT]: (params, context) => {
+                recordWrite(PUT, params, context);
+                return entry;
+              },
+              [DELETE]: (params, context) => {
+                recordWrite(DELETE, params, context);
+                return { ref, tombstoneRevision: 3, revokedGrantCount: 0 };
+              },
+            },
+          },
+        }),
+    });
+    const started = runtime.start();
+    const shutdown = scope.own(async () => {
+      await started.catch(() => undefined);
+      await requireCompletedPhases(runtime.shutdown('test'));
+    });
+    await scope.initialize(() => started);
+    const daemon = await controlPlane({
+      dispatcher: runtime.dispatcher,
+      operations: runtime.operations,
+      callerFor: ({ connectionId }) => ({
+        principalId: 'local-user',
+        clientInstanceId: connectionId,
+        authorityId: 'local',
+        interfaceKind: 'test',
+        grants: [...(options.grants ?? VAULT_GRANTS)],
+      }),
+      ...(options.maxActiveRequests
+        ? { maxActiveRequests: options.maxActiveRequests }
+        : {}),
+    });
+    shutdown.dependsOn(cleanup.own(() => daemon.close()));
+    const peers: CanopyFramedConnection[] = [];
+    return {
+      seen,
+      hold: (): { entered: Promise<void>; release(): void } => {
+        let entered = (): void => undefined;
+        let release = (): void => undefined;
+        const enteredPromise = new Promise<void>((done) => (entered = done));
+        const released = new Promise<void>((done) => (release = done));
+        gate = { entered, released };
+        return { entered: enteredPromise, release };
+      },
+      path: daemon.path,
+      open: async (): Promise<RpcPeer> => {
+        const { client } = await connect(daemon.path);
+        peers.push(client);
+        return rpcPeer(client);
+      },
+      close: async (): Promise<void> => {
+        peers.forEach((client) => client.close());
+        await daemon.close();
+        await shutdown.release();
+      },
+    };
+  }
+  const initialized = async (peer: RpcPeer): Promise<RpcPeer> => {
+    await peer.request('core.runtime.initialize', {
+      client: {
+        name: 'test',
+        version: '0',
+        protocolVersions: [1],
+        capabilities: [],
+      },
+    });
+    return peer;
+  };
+  const acceptedByEveryVaultSchema = (payload: unknown): boolean =>
+    vaultErrorSchemas.every((schema) => schema.safeParse(payload).success);
+
+  it('serves put and delete with the idempotency key split off the params', async () => {
+    const daemon = await vaultPlane();
+    const client = await connectCanopyClient({
+      endpoint: { kind: 'socket', path: daemon.path, auth: AUTH },
+      clientName: 'vault',
+      clientVersion: '0',
+      definitions: {
+        queries: CORE_VAULT_QUERY_DEFINITIONS,
+        instructions: CORE_VAULT_INSTRUCTION_DEFINITIONS,
+        streams: {},
+      },
+    });
+    try {
+      await expect(
+        client.instruction(PUT, create, {
+          metadata: { idempotencyKey: 'create-1' },
+        }),
+      ).resolves.toEqual(entry);
+      await expect(
+        client.instruction(PUT, replace, {
+          metadata: { idempotencyKey: 'replace-1' },
+        }),
+      ).resolves.toEqual(entry);
+      await expect(
+        client.instruction(DELETE, remove, {
+          metadata: { idempotencyKey: 'delete-1' },
+        }),
+      ).resolves.toMatchObject({ tombstoneRevision: 3 });
+      // The client refuses a keyless write before it reaches the wire.
+      await expect(client.instruction(PUT, create, {})).rejects.toMatchObject({
+        payload: { kind: 'invalid_argument' },
+      });
+      expect(daemon.seen).toEqual([
+        { method: PUT, params: create, key: 'create-1' },
+        { method: PUT, params: replace, key: 'replace-1' },
+        { method: DELETE, params: remove, key: 'delete-1' },
+      ]);
+      // A raw keyless frame is refused by the daemon with a listed message.
+      const peer = await initialized(await daemon.open());
+      const keyless = decodeCanopyError(
+        (await peer.request(PUT, create)).error,
+      );
+      expect(keyless).toMatchObject({ kind: 'invalid_argument' });
+      expect(acceptedByEveryVaultSchema(keyless)).toBe(true);
+      expect(daemon.seen).toHaveLength(3);
+    } finally {
+      await client.close();
+      await daemon.close();
+    }
+  });
+
+  it('redacts an uncoded handler error with arbitrary text before it leaves the daemon', async () => {
+    const daemon = await vaultPlane({
+      fail: {
+        kind: 'unavailable',
+        message: 'TOP_SECRET',
+        retry: { kind: 'same_request' },
+      },
+    });
+    const client = await connectCanopyClient({
+      endpoint: { kind: 'socket', path: daemon.path, auth: AUTH },
+      clientName: 'vault',
+      clientVersion: '0',
+      definitions: {
+        queries: CORE_VAULT_QUERY_DEFINITIONS,
+        instructions: CORE_VAULT_INSTRUCTION_DEFINITIONS,
+        streams: {},
+      },
+    });
+    try {
+      const peer = await initialized(await daemon.open());
+      for (const reply of [
+        await peer.request('core.vault.entry.get', { ref }),
+        await peer.request(PUT, {
+          ...replace,
+          _meta: { idempotencyKey: 'leak-1' },
+        }),
+      ]) {
+        expect(JSON.stringify(reply)).not.toContain('TOP_SECRET');
+        expect(decodeCanopyError(reply.error)).toEqual({
+          kind: 'internal',
+          message: 'The operation returned an invalid error.',
+          retry: { kind: 'never' },
+        });
+      }
+      await expect(
+        client.instruction(DELETE, remove, {
+          metadata: { idempotencyKey: 'leak-2' },
+        }),
+      ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+    } finally {
+      await client.close();
+      await daemon.close();
+    }
+  });
+
+  // Guards VAULT_UNCODED_ERROR_MESSAGES against drift in the control plane.
+  it("sends the control plane's own refusals with messages the vault schemas accept", async () => {
+    const daemon = await vaultPlane({ maxActiveRequests: 1 });
+    const denied = await vaultPlane({ grants: ['core.runtime.read'] });
+    try {
+      const early = await daemon.open();
+      const uninitialized = decodeCanopyError(
+        (await early.request('core.vault.status.get')).error,
+      );
+      expect(uninitialized).toMatchObject({ kind: 'failed_precondition' });
+      expect(acceptedByEveryVaultSchema(uninitialized)).toBe(true);
+
+      const ungranted = await initialized(await denied.open());
+      const refused = decodeCanopyError(
+        (await ungranted.request('core.vault.status.get')).error,
+      );
+      expect(refused).toMatchObject({ kind: 'permission_denied' });
+      expect(acceptedByEveryVaultSchema(refused)).toBe(true);
+
+      const busy = await initialized(await daemon.open());
+      const held = daemon.hold();
+      const first = busy.request('core.vault.entry.get', { ref });
+      await held.entered;
+      const exhausted = decodeCanopyError(
+        (await busy.request('core.vault.entry.get', { ref })).error,
+      );
+      held.release();
+      expect((await first).result).toEqual(entry);
+      expect(exhausted).toMatchObject({
+        kind: 'resource_exhausted',
+        retry: { kind: 'same_request' },
+      });
+      // Sent before the method is read, so keyed writes get it unrewritten.
+      expect(acceptedByEveryVaultSchema(exhausted)).toBe(true);
+    } finally {
+      await daemon.close();
+      await denied.close();
+    }
+  });
+
+  const vaultClient = (path: string): ReturnType<typeof connectCanopyClient> =>
+    connectCanopyClient({
+      endpoint: { kind: 'socket', path, auth: AUTH },
+      clientName: 'vault',
+      clientVersion: '0',
+      definitions: {
+        queries: CORE_VAULT_QUERY_DEFINITIONS,
+        instructions: CORE_VAULT_INSTRUCTION_DEFINITIONS,
+        streams: {},
+      },
+    });
+
+  it('delivers an idempotency-key reuse refusal from put and delete to the client unchanged', async () => {
+    const reused = vaultError('core.vault.entry.idempotencyKeyReused', { ref });
+    const daemon = await vaultPlane({ fail: reused });
+    const client = await vaultClient(daemon.path);
+    try {
+      await expect(
+        client.instruction(PUT, replace, {
+          metadata: { idempotencyKey: 'reused-1' },
+        }),
+      ).rejects.toMatchObject({ payload: reused });
+      await expect(
+        client.instruction(DELETE, remove, {
+          metadata: { idempotencyKey: 'reused-2' },
+        }),
+      ).rejects.toMatchObject({ payload: reused });
+      expect(daemon.seen.map(({ key }) => key)).toEqual([
+        'reused-1',
+        'reused-2',
+      ]);
+    } finally {
+      await client.close();
+      await daemon.close();
+    }
+  });
+
+  it('delivers the overload refusal of a keyed write to the client with its retry', async () => {
+    const daemon = await vaultPlane({ maxActiveRequests: 1 });
+    const client = await vaultClient(daemon.path);
+    const held = daemon.hold();
+    const first = client.query('core.vault.entry.get', { ref });
+    // Rejected by close() if an assertion below fails first.
+    void first.catch(() => undefined);
+    try {
+      await held.entered;
+      const overload = {
+        kind: 'resource_exhausted',
+        message: 'Too many requests in flight on this connection.',
+        retry: { kind: 'same_request', delayMs: 100 },
+      };
+      await expect(
+        client.instruction(PUT, replace, {
+          metadata: { idempotencyKey: 'busy-1' },
+        }),
+      ).rejects.toMatchObject({ payload: overload });
+      await expect(
+        client.instruction(DELETE, remove, {
+          metadata: { idempotencyKey: 'busy-2' },
+        }),
+      ).rejects.toMatchObject({ payload: overload });
+      held.release();
+      await expect(first).resolves.toEqual(entry);
+      // Refused before dispatch: no write ran, so the replay is safe.
+      expect(daemon.seen).toEqual([]);
+    } finally {
+      held.release();
+      await client.close();
+      await daemon.close();
+    }
+  });
+});
+
+// CAN-4802: a params schema that declares `_meta` receives it from the framed
+// host, as it does in process; any other schema still gets it split off.
+posix('request metadata a params schema declares', () => {
+  const cursor = { daemonEpoch: 'epoch', sequence: 1 };
+  const keyed = { idempotencyKey: 'key-1' };
+  const traced = { traceparent: 'trace-1' };
+  const example = {
+    plane: 'core',
+    domain: 'example',
+    version: 1,
+    placement: 'core-only',
+    requiredGrants: [],
+    error: CanopyErrorPayloadSchema,
+  } as const;
+  const QUERIES = defineCanopyQueryRegistry('core', {
+    'core.example.read': defineCanopyQuery({
+      ...example,
+      idempotency: 'inherent',
+      params: CanopyStreamCursorSchema.extend({
+        _meta: CanopyQueryRequestMetadataSchema.optional(),
+      }),
+      result: CanopyStreamCursorSchema,
+    }),
+  });
+  const DECLARING_INSTRUCTIONS = defineCanopyInstructionRegistry('core', {
+    'core.example.keyed': defineCanopyInstruction({
+      ...example,
+      idempotency: 'keyed',
+      params: CanopyStreamCursorSchema.extend({
+        _meta: CanopyRequestMetadataSchema.required({ idempotencyKey: true }),
+      }),
+      result: CanopyStreamCursorSchema,
+    }),
+    'core.example.write': defineCanopyInstruction({
+      ...example,
+      idempotency: 'keyed',
+      params: CanopyStreamCursorSchema,
+      result: CanopyStreamCursorSchema,
+    }),
+  });
+  const STREAMS = defineCanopyStreamRegistry('core', {
+    'core.example.watch': defineCanopyStream({
+      ...example,
+      idempotency: 'inherent',
+      params: CanopyStreamCursorSchema.pick({ daemonEpoch: true }).extend({
+        cursor: CanopyStreamCursorSchema.nullable().optional(),
+        _meta: CanopyQueryRequestMetadataSchema.optional(),
+      }),
+      item: CanopyStreamCursorSchema.pick({ daemonEpoch: true }),
+      end: CanopyStreamEndSchema,
+      openResult: CoreEventsSubscribeOpenResultSchema,
+    }),
+  });
+  const definitions = [
+    ...Object.entries(QUERIES),
+    ...Object.entries(DECLARING_INSTRUCTIONS),
+    ...Object.entries(STREAMS),
+  ];
+  type Seen = { method: string; params: unknown; metadata: unknown };
+
+  async function declaringPlane(): Promise<{
+    seen: Seen[];
+    peer: RpcPeer;
+    close(): Promise<void>;
+  }> {
+    const scope = cleanup.fork([files]);
+    const seen: Seen[] = [];
+    const record = (
+      method: string,
+      params: unknown,
+      context: CanopyHandlerContext,
+    ): void => {
+      seen.push({ method, params, metadata: context.metadata });
+    };
+    const runtime = createCanopyRuntime({
+      profile: 'core',
+      identity: { runtimeId: 'runtime', hostId: 'host', authorityId: 'local' },
+      definitions: {
+        queries: QUERIES,
+        instructions: DECLARING_INSTRUCTIONS,
+        streams: STREAMS,
+      },
+      owners: [
+        {
+          name: 'core.example',
+          operations: definitions.map(([name]) => name),
+        },
+      ],
+      services: [],
+      principalFor: () => 'interface',
+      phaseDeadlineMs: 1_000,
+      createDispatcher: (input) =>
+        createCanopyDispatcher<
+          typeof input.definitions.queries,
+          typeof input.definitions.instructions,
+          typeof input.definitions.streams
+        >({
+          profile: input.profile,
+          definitions: input.definitions,
+          handlers: {
+            ...input.runtimeHandlers,
+            queries: {
+              ...input.runtimeHandlers.queries,
+              // Test host policy: no profile row installs the test-only
+              // operations, so this manifest advertises them itself.
+              'core.runtime.manifest.get': async (params, context) => {
+                const manifest = await input.runtimeHandlers.queries[
+                  'core.runtime.manifest.get'
+                ](params, context);
+                return {
+                  ...manifest,
+                  operations: [
+                    ...manifest.operations,
+                    ...definitions.map(([name, definition]) => ({
+                      name,
+                      kind: definition.kind,
+                      version: definition.version,
+                      placement: definition.placement,
+                      requiredGrants: [...definition.requiredGrants],
+                      available: true,
+                    })),
+                  ],
+                };
+              },
+              'core.example.read': (params, context) => {
+                record('core.example.read', params, context);
+                return cursor;
+              },
+            },
+            instructions: {
+              'core.example.keyed': (params, context) => {
+                record('core.example.keyed', params, context);
+                return cursor;
+              },
+              'core.example.write': (params, context) => {
+                record('core.example.write', params, context);
+                return cursor;
+              },
+            },
+            streams: {
+              ...input.runtimeHandlers.streams,
+              'core.example.watch': (params, context) => {
+                record('core.example.watch', params, context);
+                return Promise.resolve();
+              },
+            },
+          },
+        }),
+    });
+    const started = runtime.start();
+    const shutdown = scope.own(async () => {
+      await started.catch(() => undefined);
+      await requireCompletedPhases(runtime.shutdown('test'));
+    });
+    await scope.initialize(() => started);
+    const daemon = await controlPlane({
+      dispatcher: runtime.dispatcher,
+      operations: runtime.operations,
+    });
+    shutdown.dependsOn(cleanup.own(() => daemon.close()));
+    const { client } = await connect(daemon.path);
+    const peer = rpcPeer(client);
+    await peer.request('core.runtime.initialize', {
+      client: {
+        name: 'test',
+        version: '0',
+        protocolVersions: [1],
+        capabilities: [],
+      },
+    });
+    return {
+      seen,
+      peer,
+      close: async (): Promise<void> => {
+        client.close();
+        await daemon.close();
+        await shutdown.release();
+      },
+    };
+  }
+
+  it('hands a keyed instruction its declared _meta in params and metadata', async () => {
+    const daemon = await declaringPlane();
+    try {
+      const params = { ...cursor, _meta: keyed };
+      const reply = await daemon.peer.request('core.example.keyed', params);
+      expect(reply.error).toBeUndefined();
+      expect(reply.result).toEqual(cursor);
+      expect(daemon.seen).toEqual([
+        { method: 'core.example.keyed', params, metadata: keyed },
+      ]);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('keeps a declared _meta for queries and streams too', async () => {
+    const daemon = await declaringPlane();
+    try {
+      const read = { ...cursor, _meta: traced };
+      expect(
+        (await daemon.peer.request('core.example.read', read)).result,
+      ).toEqual(cursor);
+      // Stream registrations are lease-owned.
+      await daemon.peer.request('core.client.lease.acquire', {
+        ...ACQUIRE,
+        _meta: { idempotencyKey: 'watch' },
+      });
+      const watch = { daemonEpoch: 'epoch', cursor: null, _meta: traced };
+      const opened = await daemon.peer.request('core.example.watch', watch);
+      expect(opened.error).toBeUndefined();
+      CoreEventsSubscribeOpenResultSchema.parse(opened.result);
+      expect(daemon.seen).toEqual([
+        { method: 'core.example.read', params: read, metadata: traced },
+        { method: 'core.example.watch', params: watch, metadata: traced },
+      ]);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('still splits _meta off a schema that does not declare it', async () => {
+    const daemon = await declaringPlane();
+    try {
+      const reply = await daemon.peer.request('core.example.write', {
+        ...cursor,
+        _meta: keyed,
+      });
+      expect(reply.result).toEqual(cursor);
+      expect(daemon.seen).toEqual([
+        { method: 'core.example.write', params: cursor, metadata: keyed },
+      ]);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('refuses a declared keyed schema whose _meta lacks the key', async () => {
+    const daemon = await declaringPlane();
+    try {
+      const reply = await daemon.peer.request('core.example.keyed', cursor);
+      expect(decodeCanopyError(reply.error).kind).toBe('invalid_argument');
+      expect(daemon.seen).toEqual([]);
+    } finally {
+      await daemon.close();
+    }
+  });
 });

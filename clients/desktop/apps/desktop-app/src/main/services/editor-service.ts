@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import {
   getExecutionHarnessForModel,
   getProviderForModel,
@@ -21,7 +20,6 @@ import {
   type PortalEditorSlashCommandOption,
   type SlashCommandData,
   type WorktreeData,
-  type WorktreesFile,
 } from '@canopy/desktop-shared/types';
 import {
   chatInheritsProjectDefaults,
@@ -37,7 +35,7 @@ import {
   selectDiscoverySlashCommands,
   type CollectionEnabledRefs,
 } from '@canopy/desktop-shared/lib/slash-invocable-inventory';
-import { getWorkspaceWorktreesFilePath } from '../lib/paths';
+import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { mergePluginSelections } from '../lib/plugin-selection-utils';
 import { validateId } from '../lib/validation';
@@ -50,6 +48,7 @@ import {
 } from '../plugins/invocable-inventory-service';
 import { prepareCodexCompatibilityPlugin } from '../plugins/plugin-service';
 import { fitListResult } from '../portal/adapters/result-budget';
+import { createPortalCaller } from '../portal/portal-caller';
 import { PortalServiceError } from './portal-service-error';
 import { buildFileIndexes } from './files-service';
 import { selectPortalFileReference } from '../portal/portal-file-reference-selection';
@@ -58,18 +57,19 @@ import type { PortalFileReferenceScope } from '../portal/portal-file-references'
 const MENTION_DEFAULT_LIMIT = 50;
 const MENTION_MAX_LIMIT = 200;
 
+/** The worktree row through `core.worktree.get`; null when it can't be read. */
 async function readWorktree(
   projectId: string,
   worktreeId: string,
+  session: { sessionId: string },
 ): Promise<WorktreeData | null> {
-  const filePath = getWorkspaceWorktreesFilePath(projectId);
   try {
-    const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as WorktreesFile;
-    if (parsed.version !== 1 || !Array.isArray(parsed.worktrees)) {
-      return null;
-    }
-    return parsed.worktrees.find((wt) => wt.id === worktreeId) ?? null;
+    const { legacyResult } =
+      await getDesktopCanopyRuntime().queryWorktreeGetForLegacyIpc(
+        { worktreeId, scope: { workspaceId: projectId } },
+        { caller: createPortalCaller(session, ['core.worktree.read']) },
+      );
+    return legacyResult;
   } catch {
     return null;
   }
@@ -84,11 +84,16 @@ async function readWorktree(
  */
 export async function listEditorSlashCommands(
   payload: PortalEditorListSlashCommandsPayload,
+  session: { sessionId: string },
 ): Promise<PortalEditorSlashCommandOption[]> {
   validateId(payload.projectId, 'projectId');
   validateId(payload.worktreeId, 'worktreeId');
 
-  const worktree = await readWorktree(payload.projectId, payload.worktreeId);
+  const worktree = await readWorktree(
+    payload.projectId,
+    payload.worktreeId,
+    session,
+  );
   if (!worktree?.discovery) {
     return [];
   }
@@ -336,8 +341,18 @@ function toInvocableOption(
 ): PortalEditorInvocableOption {
   const entry = command.inventoryEntry;
   const category = portableCategory(command.category);
+  const pluginName =
+    entry?.enableRef.kind === 'plugin'
+      ? entry.enableRef.pluginName.trim()
+      : undefined;
+  const memberName = pluginName
+    ? entry?.sourceName?.trim() ||
+      command.name.slice(command.name.indexOf(':') + 1).trim()
+    : undefined;
   return {
     name: command.name,
+    ...(pluginName ? { pluginName } : {}),
+    ...(memberName ? { memberName } : {}),
     ...(command.displayName !== undefined
       ? { displayName: command.displayName }
       : {}),
@@ -366,6 +381,8 @@ export async function listChatInvocables(input: {
   scope: InvocableChatScope;
   tab: PersistedChatTab;
   providerType?: InvocableInventoryProvider;
+  /** The Portal session the worktree read is attributed to. */
+  session: { sessionId: string };
 }): Promise<PortalEditorListInvocablesResult> {
   const { scope, tab } = input;
   const context = await resolveChatInvocableContext(
@@ -378,7 +395,7 @@ export async function listChatInvocables(input: {
     collectionRefsFor(context.effective.collectionIds),
     scope.standalone
       ? Promise.resolve(null)
-      : readWorktree(scope.projectId, scope.worktreeId),
+      : readWorktree(scope.projectId, scope.worktreeId, input.session),
   ]);
   const discovered = [
     ...selectDiscoverySlashCommands({

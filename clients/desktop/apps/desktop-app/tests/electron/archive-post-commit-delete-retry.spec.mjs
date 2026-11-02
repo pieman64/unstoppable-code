@@ -35,8 +35,9 @@ async function removeThroughSidebar(window, action) {
   await row.hover();
   await row.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId(`worktree-actions-menu-${action}`).click();
+  // The title names the worktree: `Delete worktree “owl”?`.
   const dialog = window.getByRole('dialog', {
-    name: `${action === 'delete' ? 'Delete' : 'Archive'} worktree?`,
+    name: action === 'delete' ? /^Delete worktree/ : /^Archive worktree/,
   });
   // A clean Delete can bypass confirmation with a cached diff. Archive always
   // confirms. Both paths exercise the same real sidebar command.

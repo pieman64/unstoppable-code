@@ -1,7 +1,14 @@
 /**
  * @jest-environment jsdom
  */
+import type * as UiSharedComponents from '@canopy/ui-shared/components';
 jest.mock('@canopy/ui-shared/components', () => ({
+  Button: jest.requireActual<typeof UiSharedComponents>(
+    '@canopy/ui-shared/components',
+  ).Button,
+  SegmentedControl: jest.requireActual<typeof UiSharedComponents>(
+    '@canopy/ui-shared/components',
+  ).SegmentedControl,
   ActionTooltip: ({
     children,
   }: {
@@ -37,6 +44,7 @@ jest.mock('@canopy/ui-shared/icons', () => ({
   WatcherEyeIcon: (): JSX.Element => <span data-testid="watcher-eye-icon" />,
   AppAdvisorIcon: (): JSX.Element => <span data-testid="app-advisor-icon" />,
   ChatIcon: (): JSX.Element => <span data-testid="chat-icon" />,
+  ChevronIcon: (): JSX.Element => <span data-testid="chevron-icon" />,
   AssignmentIcon: (): JSX.Element => <span data-testid="assignment-icon" />,
   AssignmentAddIcon: (): JSX.Element => (
     <span data-testid="assignment-add-icon" />
@@ -136,6 +144,7 @@ import { act, type ComponentProps, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   PipelineData,
+  PipelineExecutionScope,
   PipelineInfo,
   ResolvePluginCollectionsResponse,
 } from '@canopy/desktop-shared/types/pipeline';
@@ -460,7 +469,9 @@ describe('PipelineTriggerModal', () => {
       .fn()
       .mockResolvedValue({ success: true, data: [local.info, curated.info] });
     window.pipelines.get = jest.fn((lookup) =>
-      typeof lookup === 'object' && lookup.source === 'curated'
+      typeof lookup === 'object' &&
+      'source' in lookup &&
+      lookup.source === 'curated'
         ? new Promise((resolve) => {
             finish = resolve;
           })
@@ -767,6 +778,32 @@ describe('PipelineTriggerModal', () => {
     rendered.cleanup();
   });
 
+  it('reports the initial and changed working directory', async () => {
+    const onRepoChange = jest.fn();
+    const rendered = renderModalWithProps({
+      repoChoices: [
+        { repoId: 'app', repoName: 'App' },
+        { repoId: 'api', repoName: 'API' },
+      ],
+      onRepoChange,
+    });
+
+    await flushAsync();
+    expect(onRepoChange).toHaveBeenLastCalledWith('app');
+
+    const select = rendered.container.querySelector<HTMLSelectElement>(
+      '#pipeline-trigger-modal-repo',
+    );
+    if (!select) throw new Error('No working directory select');
+    act(() => {
+      select.value = 'api';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(onRepoChange).toHaveBeenLastCalledWith('api');
+
+    rendered.cleanup();
+  });
+
   it('enables Continue when plugin collection preferences finish loading', async () => {
     const deferred = createDeferred<{
       success: true;
@@ -1019,10 +1056,10 @@ describe('PipelineTriggerModal', () => {
     await click(getButtonByText(rendered.container, 'Shared'));
 
     expect(rendered.container.textContent).toContain(
-      'No pipelines available for this context.',
+      'No workflows available for this context.',
     );
     expect(rendered.container.textContent).not.toContain(
-      'No shared pipelines found.',
+      'No shared workflows found.',
     );
     rendered.cleanup();
   });
@@ -1053,10 +1090,10 @@ describe('PipelineTriggerModal', () => {
     await flushAsync();
 
     expect(rendered.container.textContent).toContain(
-      'Loading shared pipelines…',
+      'Loading shared workflows…',
     );
     expect(rendered.container.textContent).not.toContain(
-      'No pipelines available for this context.',
+      'No workflows available for this context.',
     );
     rendered.cleanup();
   });
@@ -1094,10 +1131,10 @@ describe('PipelineTriggerModal', () => {
 
     expect(loadMoreShared).toHaveBeenCalledTimes(1);
     expect(rendered.container.textContent).toContain(
-      'Loading shared pipelines…',
+      'Loading shared workflows…',
     );
     expect(rendered.container.textContent).not.toContain(
-      'No pipelines available for this context.',
+      'No workflows available for this context.',
     );
     rendered.cleanup();
   });
@@ -1435,5 +1472,288 @@ describe('PipelineTriggerModal — model aliases', () => {
       reviewer: { mode: 'reset' },
     });
     rendered.cleanup();
+  });
+});
+
+function plainPipeline(
+  id: string,
+  scopes: PipelineInfo['scopes'],
+  extra: Partial<PipelineData> = {},
+): PipelineData {
+  const info: PipelineInfo = {
+    ...pipelineInfo(id),
+    name: `Pipeline ${id}`,
+    scopes,
+  };
+  return {
+    info,
+    content: {
+      name: info.name,
+      on: 'dispatch',
+      jobs: { main: { steps: [{ run: 'echo run' }] } },
+    },
+    ...extra,
+  };
+}
+
+const DIRECTORY_SCOPES: readonly PipelineExecutionScope[] = [
+  'global',
+  'directory',
+];
+const WORKTREE_SCOPES: readonly PipelineExecutionScope[] = [
+  'global',
+  'worktree',
+];
+
+describe('PipelineTriggerModal — run context (CAN-4542)', () => {
+  function serve(pipelines: PipelineData[]): {
+    list: jest.Mock;
+    discoverProject: jest.Mock;
+  } {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { loadPreferences: jest.fn().mockResolvedValue({}) },
+    });
+    const list = jest.fn().mockResolvedValue({
+      success: true,
+      data: pipelines.map((pipeline) => pipeline.info),
+    });
+    const discoverProject = jest
+      .fn()
+      .mockResolvedValue({ success: true, data: [] });
+    Object.defineProperty(window, 'pipelines', {
+      configurable: true,
+      value: {
+        list,
+        discoverProject,
+        get: jest.fn((id: string) =>
+          Promise.resolve({
+            success: true,
+            data: pipelines.find((pipeline) => pipeline.info.id === id),
+          }),
+        ),
+        resolvePluginCollections: jest.fn(),
+        savePluginCollectionPreferences: jest.fn(),
+      },
+    });
+    return { list, discoverProject };
+  }
+
+  function rowNames(container: HTMLElement): string[] {
+    return Array.from(
+      container.querySelectorAll(
+        '[data-testid="pipeline-trigger-modal-selector"] button',
+      ),
+    ).map((row) => row.querySelector('.truncate')?.textContent ?? '');
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Object.assign(mockSharedListState, { rows: [], loaded: false });
+  });
+
+  it("loads the list once, after the task's folder resolves", async () => {
+    const api = serve([plainPipeline('global-only', ['global'])]);
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const render = (props: {
+      cwd?: string;
+      contextPending: boolean;
+      scopes: readonly PipelineExecutionScope[];
+    }): void => {
+      act(() => {
+        root.render(
+          <PipelineTriggerModal
+            triggerType="dispatch"
+            labels={{
+              title: 'Run pipeline',
+              selectSubtitle: 'Select a pipeline',
+              emptyMessage: 'No pipelines',
+            }}
+            onClose={jest.fn()}
+            onRun={jest.fn()}
+            {...(props.cwd !== undefined ? { cwd: props.cwd } : {})}
+            contextPending={props.contextPending}
+            executionScopes={props.scopes}
+          />,
+        );
+      });
+    };
+    try {
+      render({ contextPending: true, scopes: DIRECTORY_SCOPES });
+      await flushAsync();
+      expect(api.list).not.toHaveBeenCalled();
+
+      render({ cwd: '/w', contextPending: false, scopes: WORKTREE_SCOPES });
+      await flushAsync();
+      expect(api.list).toHaveBeenCalledTimes(1);
+      expect(api.discoverProject).toHaveBeenCalledWith('/w');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('lists what runs with no project, plus what the current task can run', async () => {
+    serve([
+      plainPipeline('global-only', ['global']),
+      plainPipeline('task-only', ['directory']),
+    ]);
+    const noTask = renderModalWithProps({ executionScopes: ['global'] });
+    try {
+      await flushAsync();
+      expect(rowNames(noTask.container)).toEqual(['Pipeline global-only']);
+    } finally {
+      noTask.cleanup();
+    }
+
+    const withTask = renderModalWithProps({
+      executionScopes: ['global', 'worktree'],
+    });
+    try {
+      await flushAsync();
+      expect(rowNames(withTask.container).sort()).toEqual([
+        'Pipeline global-only',
+        'Pipeline task-only',
+      ]);
+    } finally {
+      withTask.cleanup();
+    }
+  });
+
+  it("doesn't list a project file through the no-project scope", async () => {
+    const projectGlobal = plainPipeline('project-global', ['global']);
+    projectGlobal.info = { ...projectGlobal.info, source: 'project' };
+    serve([projectGlobal, plainPipeline('global-only', ['global'])]);
+    const withTask = renderModalWithProps({
+      executionScopes: ['global', 'worktree'],
+    });
+    try {
+      await flushAsync();
+      // A project file only runs in its checkout, never with no project.
+      expect(rowNames(withTask.container)).toEqual(['Pipeline global-only']);
+    } finally {
+      withTask.cleanup();
+    }
+  });
+
+  it('opens the owner choice for an input-less pipeline instead of running it', async () => {
+    serve([plainPipeline('global-only', ['global'])]);
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    const { container, cleanup } = renderModalWithProps({
+      executionScopes: ['global'],
+      onRun,
+      runContextReview: () => ({
+        fields: <div data-testid="owner-choice">Owner</div>,
+        needsReview: true,
+        runBlocked: true,
+        targeted: false,
+      }),
+    });
+    try {
+      await flushAsync();
+      await click(getPipelineRowButton(container));
+      expect(getRunButton(container).textContent).toBe('Continue');
+      await click(getRunButton(container));
+      await flushAsync();
+
+      expect(onRun).not.toHaveBeenCalled();
+      expect(
+        container.querySelector('[data-testid="owner-choice"]'),
+      ).not.toBeNull();
+      // No owner is chosen yet, so Run stays off.
+      expect(getRunButton(container).disabled).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('shows a saved owner before running an input-less pipeline', async () => {
+    serve([
+      plainPipeline('owned', ['global'], {
+        localRunOwner: 'org:11111111-1111-4111-8111-111111111111',
+      }),
+    ]);
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    const { container, cleanup } = renderModalWithProps({
+      executionScopes: ['global'],
+      onRun,
+      runContextReview: (pipeline) => ({
+        fields: <p data-testid="owner-fixed">{pipeline.localRunOwner ?? ''}</p>,
+        needsReview: true,
+        runBlocked: false,
+        targeted: false,
+      }),
+    });
+    try {
+      await flushAsync();
+      await click(getPipelineRowButton(container));
+      await click(getRunButton(container));
+      await flushAsync();
+      expect(onRun).not.toHaveBeenCalled();
+      expect(
+        container.querySelector('[data-testid="owner-fixed"]')?.textContent,
+      ).toBe('org:11111111-1111-4111-8111-111111111111');
+
+      await click(getRunButton(container));
+      await flushAsync();
+      expect(onRun).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('turns off the immediate Run and says why when the pipeline cannot run here', async () => {
+    serve([plainPipeline('task-only', ['worktree'])]);
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    const { container, cleanup } = renderModalWithProps({
+      initialPipelineId: 'task-only',
+      onRun,
+      runContextReview: () => ({
+        fields: null,
+        needsReview: false,
+        runBlocked: true,
+        blockedReason: 'Open a compatible task to run this pipeline there.',
+        targeted: true,
+      }),
+    });
+    try {
+      await flushAsync();
+      const run = getRunButton(container);
+      expect(run.textContent).toBe('Run');
+      expect(run.disabled).toBe(true);
+      expect(
+        container.querySelector(
+          '[data-testid="pipeline-trigger-modal-run-blocked"]',
+        )?.textContent,
+      ).toBe('Open a compatible task to run this pipeline there.');
+      await click(run);
+      await flushAsync();
+      expect(onRun).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('keeps the immediate Run of an input-less pipeline opened from a task', async () => {
+    serve([plainPipeline('task-only', ['directory'])]);
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    const { container, cleanup } = renderModalWithProps({
+      executionScope: 'worktree',
+      onRun,
+    });
+    try {
+      await flushAsync();
+      await click(getPipelineRowButton(container));
+      expect(getRunButton(container).textContent).toBe('Run');
+      await click(getRunButton(container));
+      await flushAsync();
+      expect(onRun).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
   });
 });

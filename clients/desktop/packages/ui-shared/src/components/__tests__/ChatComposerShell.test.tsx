@@ -8,7 +8,7 @@ import {
 describe('ChatComposerShell', () => {
   it('draws the desktop composer box: raised tertiary surface, 16px radius, shadow, no border', () => {
     expect(CHAT_COMPOSER_SHELL_CLASS).toBe(
-      'relative rounded-2xl bg-[var(--bg-composer,var(--bg-tertiary))] shadow-lg transition',
+      'relative rounded-2xl bg-[var(--bg-composer,var(--bg-tertiary))] shadow-lg transition-colors',
     );
     const html = renderToString(
       <ChatComposerShell dataTestId="composer-box">body</ChatComposerShell>,

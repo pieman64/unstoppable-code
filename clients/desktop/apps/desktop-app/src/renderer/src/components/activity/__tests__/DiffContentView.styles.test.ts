@@ -9,9 +9,7 @@ describe('DIFF_STYLES', () => {
   it.each(['line', 'gutter', 'codeFold', 'contentText', 'lineNumber'] as const)(
     'reads the shared mono token for %s',
     (key) => {
-      const styles: Record<string, { fontFamily?: string } | undefined> =
-        DIFF_STYLES;
-      expect(styles[key]?.fontFamily).toBe('var(--font-mono)');
+      expect(DIFF_STYLES[key]?.fontFamily).toBe('var(--font-mono)');
     },
   );
 });

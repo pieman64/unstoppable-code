@@ -17,7 +17,9 @@ jest.mock('../../lib/model-policy-state', () => ({
   isModelBlockedByStoredPolicy: (): Promise<boolean> => Promise.resolve(false),
 }));
 jest.mock('../client', () => ({
-  resolveDesktopAutoModel: mockResolveDesktopAutoModel,
+  get resolveDesktopAutoModel(): typeof mockResolveDesktopAutoModel {
+    return mockResolveDesktopAutoModel;
+  },
 }));
 jest.mock('../codex-account-models', () => ({
   readCodexAccountModelIds: (): Promise<null> => Promise.resolve(null),

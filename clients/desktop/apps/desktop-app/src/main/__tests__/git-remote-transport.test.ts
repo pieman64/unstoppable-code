@@ -17,6 +17,16 @@ jest.mock('../lib/git-executable', () => ({
  */
 const execFileMock = jest.fn<unknown, unknown[]>();
 
+type ExecCallback = (
+  error: Error | null,
+  stdout: string,
+  stderr: string,
+) => void;
+
+function isExecCallback(value: unknown): value is ExecCallback {
+  return typeof value === 'function';
+}
+
 jest.mock('node:child_process', () => ({
   execFile: (...args: unknown[]): unknown => execFileMock(...args),
   spawn: jest.fn(),
@@ -27,21 +37,12 @@ import { getRemoteHeadCommitSha } from '../lib/git';
 describe('getRemoteHeadCommitSha remote transport allowlist', () => {
   beforeEach(() => {
     execFileMock.mockReset();
-    execFileMock.mockImplementation(
-      (
-        _command: string,
-        _args: string[],
-        _options: unknown,
-        callback?: (
-          error: Error | null,
-          stdout: string,
-          stderr: string,
-        ) => void,
-      ) => {
-        callback?.(null, `${'a'.repeat(40)}\tHEAD\n`, '');
-        return undefined;
-      },
-    );
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const callback = args[3];
+      if (isExecCallback(callback))
+        callback(null, `${'a'.repeat(40)}\tHEAD\n`, '');
+      return undefined;
+    });
   });
 
   it.each([

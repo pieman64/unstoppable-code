@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type * as DirectoryFlush from '@canopy/core-platform/directory-flush';
 import type {
   ApprovalCheck,
   ApprovalMode,
@@ -12,6 +13,7 @@ import {
   getWorkspaceApprovalsFilePath,
   writeWorkspaceApprovals,
 } from '../../lib/approvals-persistence';
+import { getPreferencesFilePath } from '../../lib/paths';
 import { updatePreferencesFile } from '../../lib/preferences-store';
 import { markGlobalApprovalRulesChanged } from '../rule-revisions';
 import { createApprovalSession } from '../approval-service';
@@ -20,6 +22,21 @@ import {
   effectiveApprovalPolicy,
   type ApprovalPolicySource,
 } from '../effective-approval-policy';
+
+const mockFlushDirectory = jest.fn<Promise<'flushed'>, [string]>();
+jest.mock('@canopy/core-platform/directory-flush', () => {
+  const actual = jest.requireActual<typeof DirectoryFlush>(
+    '@canopy/core-platform/directory-flush',
+  );
+  return {
+    ...actual,
+    flushDirectory: (folder: string): Promise<'flushed'> =>
+      mockFlushDirectory(folder),
+  };
+});
+const { flushDirectory: realFlushDirectory } = jest.requireActual<
+  typeof DirectoryFlush
+>('@canopy/core-platform/directory-flush');
 
 const WORKSPACE = 'ws-effective';
 let base: string;
@@ -80,6 +97,7 @@ const write = (file: string): ApprovalCheck => ({
 });
 
 beforeEach(async () => {
+  mockFlushDirectory.mockReset().mockImplementation(realFlushDirectory);
   await writeWorkspaceApprovals(WORKSPACE, { version: 1, rules: [] });
   base = realpathSync(mkdtempSync(path.join(tmpdir(), 'effective-policy-')));
   repoA = path.join(base, 'wt-1', 'repo-a');
@@ -167,6 +185,25 @@ describe('effective approval policy', () => {
     ]);
   });
 
+  it('lists every policy file the session asks about, absolute in its volume case', async () => {
+    mkdirSync(path.dirname(getPreferencesFilePath()), { recursive: true });
+    const dataDir = realpathSync(path.dirname(getPreferencesFilePath()));
+    const policy = await effectiveApprovalPolicy(chat(repoA));
+    const fold = (file: string): string =>
+      policy?.pathCaseInsensitive ? file.toLowerCase() : file;
+    expect(policy?.protectedFileWritePaths).toEqual(
+      expect.arrayContaining(
+        [
+          'preferences.json',
+          'preferences.last-good.json',
+          'preferences.generation.json',
+          'preferences.backup-*.json',
+          'migrations.json',
+        ].map((name) => fold(path.join(dataDir, name))),
+      ),
+    );
+  });
+
   it('refuses a caller deny the target does not hold at the same absolute path', async () => {
     await addWorkspaceApprovalRule(
       WORKSPACE,
@@ -200,6 +237,33 @@ describe('effective approval policy', () => {
     ]);
     expect(isApprovalPolicyWithin(inside, caller)).toBe(true);
     expect(isApprovalPolicyWithin(sibling, caller)).toBe(false);
+  });
+
+  // CAN-5153: an unconfirmed save asks, but no deny either version holds softens.
+  it('keeps denying what a project deny covers while a later save is unconfirmed', async () => {
+    const deployDeny = rule('deny', { kind: 'file-write', path: 'deploy/**' });
+    const docsAllow = rule('allow', { kind: 'file-write', path: 'docs/**' });
+    await addWorkspaceApprovalRule(WORKSPACE, deployDeny);
+    const folder = path.dirname(getWorkspaceApprovalsFilePath(WORKSPACE));
+    mockFlushDirectory.mockImplementation(async (flushed) => {
+      if (flushed === folder) {
+        mockFlushDirectory.mockImplementation(realFlushDirectory);
+        throw Object.assign(new Error('flush failed'), { code: 'EIO' });
+      }
+      return realFlushDirectory(flushed);
+    });
+    await expect(
+      addWorkspaceApprovalRule(WORKSPACE, docsAllow),
+    ).rejects.toThrow('Failed to persist project approval rule');
+
+    for (const mode of ['ask', 'auto'] as const) {
+      await expect(
+        decides(chat(repoA, mode), write(path.join(repoA, 'deploy', 'x.ts'))),
+      ).resolves.toBe('deny');
+      await expect(
+        decides(chat(repoA, mode), write(path.join(repoA, 'docs', 'x.md'))),
+      ).resolves.toBe('prompt');
+    }
   });
 
   it('cannot resolve a chat without a root or with an unreadable rule tier', async () => {

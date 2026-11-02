@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import {
   type ChatSearchCatalogEntry,
+  type ChatSearchChildLocator,
   type ChatSearchDocumentKind,
   type ChatSearchMatchRange,
   type ChatSearchQueryRequest,
@@ -31,6 +32,7 @@ const PLAN_REVIEW_STATUSES: readonly TrackedPlanReviewStatus[] = [
 
 const DOCUMENT_KINDS: readonly ChatSearchDocumentKind[] = [
   'chat',
+  'chat-child',
   'plan',
   'archived-container',
 ];
@@ -93,13 +95,42 @@ export function mapChatSearchCatalogRow(
   ) {
     throw new Error('Invalid chat search catalog row');
   }
+  const documentKind = asDocumentKind(row.document_kind, source);
+  let childLocator: ChatSearchChildLocator | undefined;
+  if (documentKind === 'chat-child') {
+    const parentDocId = row.parent_doc_id;
+    const delegationId = row.delegation_id;
+    const runGeneration = asFiniteNumber(row.run_generation);
+    const expectedParentDocId = `${projectId}/${worktreeId}/${chatId}/${source}`;
+    if (
+      parentDocId !== expectedParentDocId ||
+      typeof delegationId !== 'string' ||
+      delegationId.length === 0 ||
+      runGeneration === null ||
+      !Number.isSafeInteger(runGeneration) ||
+      runGeneration < 0 ||
+      docId !==
+        `chat-child:${JSON.stringify([
+          projectId,
+          worktreeId,
+          chatId,
+          source,
+          delegationId,
+          runGeneration,
+        ])}`
+    ) {
+      throw new Error('Invalid child chat search catalog row');
+    }
+    childLocator = { delegationId, runGeneration };
+  }
   return {
     docId,
     projectId,
     worktreeId,
     chatId,
     source,
-    documentKind: asDocumentKind(row.document_kind, source),
+    documentKind,
+    ...(childLocator === undefined ? {} : { childLocator }),
     title,
     description: asNullableString(row.description),
     providerType: asNullableString(row.provider_type),
@@ -161,18 +192,7 @@ export function normalizeQueryRequest(request: ChatSearchQueryRequest): {
   return limit === 0 ? null : { ftsQuery, limit };
 }
 
-/**
- * A chat's committed text and in-flight text are separate FTS rows under one
- * doc id, so the top `offset + limit` chats always appear within the top
- * 2 × (offset + limit) ranked rows. Ranking rows and taking that window keeps
- * snippet() to the rows SQLite returns; grouping every match first built a
- * snippet per match (277 ms on Electron main for 10,000 matching chats). The
- * window doubles if a doc ever has more rows than that.
- */
-function rankedRowWindow(offset: number, limit: number): number {
-  return 2 * (offset + limit);
-}
-
+/** Rank all matching transcript rows, collapse to one parent, then paginate. */
 export function queryChatSearchDatabase(
   db: DatabaseSync,
   request: ChatSearchQueryRequest,
@@ -182,45 +202,57 @@ export function queryChatSearchDatabase(
   const normalized = normalizeQueryRequest(request);
   if (!normalized) return [];
   const start = Math.max(0, Math.trunc(offset));
-  const needed = start + normalized.limit;
   const statement = db.prepare(
-    `SELECT d.doc_id, d.project_id, d.worktree_id, d.chat_id, d.source,
-            d.document_kind, d.title, d.description, d.provider_type, d.updated_at,
-            d.archived_at, d.expires_at, d.message_count, d.review_status,
+    `WITH matching AS MATERIALIZED (
+       SELECT d.doc_id, d.project_id, d.worktree_id, d.chat_id, d.source,
+              d.document_kind, d.title, d.description, d.provider_type,
+              d.updated_at, d.archived_at, d.expires_at, d.message_count,
+              d.review_status, d.parent_doc_id, d.delegation_id,
+              d.run_generation, chat_fts.rowid AS fts_rowid,
+              bm25(chat_fts) AS match_rank
+       FROM chat_fts
+       JOIN chat_docs d ON d.doc_id = chat_fts.doc_id
+       WHERE body MATCH ?
+         AND (d.expires_at IS NULL OR d.expires_at > ?)
+     ), ranked AS (
+       SELECT *, ROW_NUMBER() OVER (
+         PARTITION BY project_id, worktree_id, chat_id
+         ORDER BY match_rank, doc_id, fts_rowid
+       ) AS parent_rank
+       FROM matching
+     ), page AS MATERIALIZED (
+       SELECT * FROM ranked
+       WHERE parent_rank = 1
+       ORDER BY match_rank, doc_id, fts_rowid
+       LIMIT ? OFFSET ?
+     )
+     SELECT page.doc_id, page.project_id, page.worktree_id, page.chat_id,
+            page.source, page.document_kind, page.title, page.description,
+            page.provider_type, page.updated_at, page.archived_at,
+            page.expires_at, page.message_count, page.review_status,
+            page.parent_doc_id, page.delegation_id, page.run_generation,
             snippet(chat_fts, 2, ?, ?, ?, 24) AS marked_snippet
-     FROM chat_fts
-     JOIN chat_docs d ON d.doc_id = chat_fts.doc_id
-     WHERE body MATCH ?
-       AND (d.expires_at IS NULL OR d.expires_at > ?)
-     ORDER BY bm25(chat_fts)
-     LIMIT ?`,
+     FROM page JOIN chat_fts ON chat_fts.rowid = page.fts_rowid
+     WHERE chat_fts MATCH ?
+     ORDER BY page.match_rank, page.doc_id, page.fts_rowid`,
   );
-  for (let window = rankedRowWindow(start, normalized.limit); ; window *= 2) {
-    const rows: unknown[] = statement.all(
-      MATCH_START,
-      MATCH_END,
-      SNIPPET_ELLIPSIS,
-      normalized.ftsQuery,
-      now,
-      window,
-    );
-    // Rows arrive best first, so each doc's first row is its best match.
-    const seen = new Set<unknown>();
-    const docs: Record<string, unknown>[] = [];
-    for (const result of rows) {
-      const row = requireSqliteRow(result);
-      if (seen.has(row.doc_id)) continue;
-      seen.add(row.doc_id);
-      docs.push(row);
-    }
-    if (docs.length < needed && rows.length === window) continue;
-    return docs.slice(start, needed).map((row) => {
-      const catalogEntry = mapChatSearchCatalogRow(row);
-      const markedSnippet =
-        typeof row.marked_snippet === 'string' ? row.marked_snippet : '';
-      return { ...catalogEntry, ...parseChatSearchSnippet(markedSnippet) };
-    });
-  }
+  const rows: unknown[] = statement.all(
+    normalized.ftsQuery,
+    now,
+    normalized.limit,
+    start,
+    MATCH_START,
+    MATCH_END,
+    SNIPPET_ELLIPSIS,
+    normalized.ftsQuery,
+  );
+  return rows.map((result) => {
+    const row = requireSqliteRow(result);
+    const catalogEntry = mapChatSearchCatalogRow(row);
+    const markedSnippet =
+      typeof row.marked_snippet === 'string' ? row.marked_snippet : '';
+    return { ...catalogEntry, ...parseChatSearchSnippet(markedSnippet) };
+  });
 }
 
 /**
@@ -240,15 +272,28 @@ export function chatSearchQueryExceedsBodyThreshold(
   if (!normalized) return false;
   const rows: unknown[] = db
     .prepare(
-      `SELECT length(CAST(chat_fts.body AS BLOB)) AS body_bytes
-       FROM chat_fts
-       JOIN chat_docs d ON d.doc_id = chat_fts.doc_id
-       WHERE body MATCH ?
-         AND (d.expires_at IS NULL OR d.expires_at > ?)
-       ORDER BY bm25(chat_fts)
+      `WITH matching AS MATERIALIZED (
+       SELECT d.doc_id, d.parent_doc_id, chat_fts.rowid AS fts_rowid,
+                d.project_id, d.worktree_id, d.chat_id,
+                bm25(chat_fts) AS match_rank
+         FROM chat_fts
+         JOIN chat_docs d ON d.doc_id = chat_fts.doc_id
+         WHERE body MATCH ?
+           AND (d.expires_at IS NULL OR d.expires_at > ?)
+       ), ranked AS (
+         SELECT *, ROW_NUMBER() OVER (
+           PARTITION BY project_id, worktree_id, chat_id
+           ORDER BY match_rank, doc_id, fts_rowid
+         ) AS parent_rank
+         FROM matching
+       )
+       SELECT length(CAST(chat_fts.body AS BLOB)) AS body_bytes
+       FROM ranked JOIN chat_fts ON chat_fts.rowid = ranked.fts_rowid
+       WHERE parent_rank = 1
+       ORDER BY ranked.match_rank, ranked.doc_id, ranked.fts_rowid
        LIMIT ?`,
     )
-    .all(normalized.ftsQuery, now, rankedRowWindow(0, normalized.limit));
+    .all(normalized.ftsQuery, now, normalized.limit);
   let projectedBytes = 0;
   for (const value of rows) {
     const bytes = requireSqliteRow(value).body_bytes;

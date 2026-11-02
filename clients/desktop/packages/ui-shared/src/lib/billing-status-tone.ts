@@ -1,3 +1,5 @@
+import { BADGE_TONE_CLASS, type BadgeTone } from './badge';
+
 // ---------------------------------------------------------------------------
 // Shared status-pill tones for the two billing surfaces that sit stacked in the
 // same card: the invoice list (`InvoicesTable`) and the charge list
@@ -23,13 +25,27 @@ export type BillingStatusTone =
   | 'danger'
   | 'info';
 
-/** Tailwind classes per tone. Background + foreground only; the pill component owns shape. */
+/**
+ * Billing tone to shared badge tone. `accent` is kept for its name only and
+ * paints info: badges never use the accent.
+ */
+export const BILLING_STATUS_BADGE_TONE: Readonly<
+  Record<BillingStatusTone, BadgeTone>
+> = {
+  neutral: 'neutral',
+  accent: 'info',
+  warning: 'warning',
+  danger: 'danger',
+  info: 'info',
+};
+
+/** Fill and ink per tone, from the shared badge. The badge owns the shape. */
 export const BILLING_STATUS_TONE_CLASSES: Readonly<
   Record<BillingStatusTone, string>
 > = {
-  neutral: 'bg-muted fg-secondary',
-  accent: 'bg-accent fg-emphasis',
-  warning: 'bg-warning-subtle fg-warning',
-  danger: 'bg-destructive-subtle fg-destructive',
-  info: 'bg-info-subtle fg-info',
+  neutral: BADGE_TONE_CLASS.neutral,
+  accent: BADGE_TONE_CLASS.info,
+  warning: BADGE_TONE_CLASS.warning,
+  danger: BADGE_TONE_CLASS.danger,
+  info: BADGE_TONE_CLASS.info,
 };

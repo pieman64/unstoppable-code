@@ -93,20 +93,19 @@ for (const variant of ['all', 'cursor', 'active-chat']) {
       await picker.click();
       await selectModelOption(window, 'cursor-default');
       await expect(picker).toContainText('Cursor');
-      await window.getByTestId('panel-add-panel-group-chat').click();
+      await window.getByTestId('panel-add-tab-group-chat').click();
       await window.getByTestId('panel-add-menu-usage-submenu').click();
       await window.getByTestId(`panel-add-menu-item-usage-${variant}`).click();
       const panel = window.getByTestId('panel-content-usage');
       await expect(panel).toBeVisible();
       const cursor = panel.getByTestId('usage-provider-card-cursor');
       await expect(cursor).toContainText('fixture@example.test');
-      await expect(cursor).toContainText('25.0%');
-      await cursor
-        .getByRole('button', { name: 'Refresh Cursor usage' })
-        .click();
-      await expect(
-        cursor.getByRole('button', { name: 'Refresh Cursor usage' }),
-      ).toBeEnabled();
+      await expect(cursor).toContainText('25%');
+      // The panel has one refresh control, in its Updated line above the
+      // provider groups.
+      const refreshUsage = panel.getByTestId('usage-refresh');
+      await refreshUsage.click();
+      await expect(refreshUsage).toBeEnabled();
     } finally {
       await closeCanopy(electronApp, userDataDir);
       await managed.close();
@@ -294,7 +293,7 @@ test('Cursor rollout hides cached usage cards and sidebar warnings together', as
     await app.openUsagePage();
     await expect(
       window.getByTestId('usage-provider-card-cursor'),
-    ).toContainText('95.0%');
+    ).toContainText('95%');
     await window.getByTestId('sidebar-account-row').click();
     await expect(
       window.getByTestId('sidebar-account-usage-alert-dot'),
@@ -352,12 +351,16 @@ test('Cursor account usage appears and refreshes on the Usage page', async () =>
     await connectCursor(app, window);
     await app.openUsagePage();
     const card = window.getByTestId('usage-provider-card-cursor');
+    // The Usage page has one refresh control, in its heading.
+    const refreshUsage = window
+      .getByTestId('page-usage')
+      .getByTestId('usage-refresh');
     await expect(card).toBeVisible();
     await expect(card).toContainText('cursor@example.com');
     await expect(card).toContainText('Pro');
-    await expect(card).toContainText('75.0%');
+    await expect(card).toContainText('75%');
     await expect(card).toContainText('$5.00');
-    await expect(card).toContainText('Spent: $12.50');
+    await expect(card).toContainText('$12.50 spent');
     await expect(card).toContainText('$37.50');
     await registerScenario(DEFAULT_MOCK_BASE_URL, USAGE_KEY, {
       authUsage: {
@@ -370,18 +373,18 @@ test('Cursor account usage appears and refreshes on the Usage page', async () =>
         },
       },
     });
-    await card.getByRole('button', { name: 'Refresh Cursor usage' }).click();
-    await expect(card).toContainText('80.0%');
+    await refreshUsage.click();
+    await expect(card).toContainText('80%');
     // A failed refresh clears live counters and offers a real retry.
     await registerScenario(DEFAULT_MOCK_BASE_URL, USAGE_KEY, {
       authUsage: { cursor: { ...cursor, usageHttpStatus: 503 } },
     });
-    await card.getByRole('button', { name: 'Refresh Cursor usage' }).click();
+    await refreshUsage.click();
     await expect(card).toContainText('Usage unavailable.');
     await expect(card).toContainText(
       'Cursor is not answering right now, so try again in a moment.',
     );
-    await expect(card).not.toContainText('80.0%');
+    await expect(card).not.toContainText('80%');
     await registerScenario(DEFAULT_MOCK_BASE_URL, USAGE_KEY, {
       authUsage: {
         cursor: {
@@ -392,14 +395,14 @@ test('Cursor account usage appears and refreshes on the Usage page', async () =>
     });
     await card.getByRole('button', { name: 'Try again' }).click();
     await expect(card).toContainText('second@example.com');
-    await expect(card).toContainText('75.0%');
+    await expect(card).toContainText('75%');
     // A sign-out cannot leave another account's usage presented as current.
     await registerScenario(DEFAULT_MOCK_BASE_URL, USAGE_KEY, {
       authUsage: { cursor: { account: null } },
     });
-    await card.getByRole('button', { name: 'Refresh Cursor usage' }).click();
+    await refreshUsage.click();
     await expect(card).toContainText('Sign in to Cursor again');
-    await expect(card).not.toContainText('75.0%');
+    await expect(card).not.toContainText('75%');
     await card.getByTestId('usage-provider-cursor-manage').click();
     await expect(window.getByTestId('cursor-connection')).toBeVisible();
   } finally {
@@ -444,8 +447,8 @@ test('Cursor account usage uses the billing reset supplied by the plan', async (
     await connectCursor(app, window);
     await app.openUsagePage();
     const card = window.getByTestId('usage-provider-card-cursor');
-    await expect(card).toContainText('75.0%');
-    await expect(card).toContainText('Resets:');
+    await expect(card).toContainText('75%');
+    await expect(card).toContainText('Resets ');
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await managed.close();
@@ -488,7 +491,7 @@ test('Cursor account usage resumes after a rollout-disabled restart', async () =
     );
     await setCursorRollout(electronApp, window, true);
     const card = window.getByTestId('usage-provider-card-cursor');
-    await expect(card).toContainText('25.0%');
+    await expect(card).toContainText('25%');
     await setCursorRollout(electronApp, window, false);
     await expect(card).toHaveCount(0);
     await registerScenario(DEFAULT_MOCK_BASE_URL, USAGE_KEY, {
@@ -500,7 +503,7 @@ test('Cursor account usage resumes after a rollout-disabled restart', async () =
       },
     });
     await setCursorRollout(electronApp, window, true);
-    await expect(card).toContainText('40.0%');
+    await expect(card).toContainText('40%');
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await managed.close();
@@ -533,10 +536,10 @@ test('Cursor retained account usage survives shutdown with the rollout disabled'
     await app.openUsagePage();
     await expect(
       window.getByTestId('usage-provider-card-cursor'),
-    ).toContainText('25.0%');
+    ).toContainText('25%');
     await expect(
       window.getByTestId('usage-provider-card-cursor'),
-    ).toContainText('Resets:');
+    ).toContainText('Resets ');
     await closeCanopy(electronApp, userDataDir, { keepUserData: true });
     ({ electronApp } = await launchCanopy({
       userDataDir,
@@ -602,7 +605,7 @@ test('Cursor retained account usage survives shutdown with the rollout disabled'
     await app.openUsagePage();
     const card = window.getByTestId('usage-provider-card-cursor');
     await expect(card).toContainText('current@example.com');
-    await expect(card).toContainText('40.0%');
+    await expect(card).toContainText('40%');
     const retainedToggle = card.getByTestId(
       'other-account-snapshots-toggle-cursor',
     );
@@ -611,7 +614,7 @@ test('Cursor retained account usage survives shutdown with the rollout disabled'
     await expect(card.getByTestId('other-account-single-cursor')).toContainText(
       'retained@example.com',
     );
-    await expect(card).toContainText('25.0%');
+    await expect(card).toContainText('25%');
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await managed.close();
@@ -665,26 +668,29 @@ test('Cursor Usage App Advisor action obeys the live rollout', async () => {
 //   Claude five_hour utilization 92 / seven_day 78, extra_usage enabled.
 //   Codex primary usedPercent 88 (5-hour window), secondary 70 (7-day window),
 //   credits balance 12.5. All resets are future (`+2h` / `+5d`).
-const NEAR_LIMIT_CODEX_PRIMARY_USED = '88.0%';
-const NEAR_LIMIT_CODEX_SECONDARY_USED = '70.0%';
+const NEAR_LIMIT_CODEX_PRIMARY_USED = '88%';
+const NEAR_LIMIT_CODEX_SECONDARY_USED = '70%';
 // Codex counts its balance in credits, not dollars.
 const NEAR_LIMIT_CODEX_CREDITS = '12.5';
-const NEAR_LIMIT_CLAUDE_FIVE_HOUR_USED = '92.0%';
+const NEAR_LIMIT_CLAUDE_FIVE_HOUR_USED = '92%';
 
 // authed-low-usage:
 //   Codex primary usedPercent 10, secondary 6, credits balance 25.0.
-const LOW_USAGE_CODEX_PRIMARY_USED = '10.0%';
+const LOW_USAGE_CODEX_PRIMARY_USED = '10%';
 const LOW_USAGE_CODEX_CREDITS = '25';
 
 /**
- * Resolve the provider usage card `<article>` by its provider heading text
- * (`Codex` / `Claude`). `ProviderUsageCards.tsx` renders one `<article>` per
- * provider with an `<h2>` carrying the provider label.
+ * Resolve a provider's usage group (`codex` / `claude`). `ProviderUsageCards.tsx`
+ * renders one `<section data-testid="usage-provider-card-<provider>">` per
+ * provider, headed by its name and plan.
  */
-function providerCard(window, providerLabel) {
-  return window
-    .locator('article')
-    .filter({ has: window.getByRole('heading', { name: providerLabel }) });
+function providerCard(window, provider) {
+  return window.getByTestId(`usage-provider-card-${provider}`);
+}
+
+/** The Usage page's one refresh control, in its heading. */
+function pageRefreshButton(window) {
+  return window.getByTestId('page-usage').getByTestId('usage-refresh');
 }
 
 test.describe('provider usage cards (auth/usage mock surface)', () => {
@@ -705,16 +711,14 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
 
       await app.openUsagePage();
 
-      const codexCard = providerCard(window, 'Codex');
+      const codexCard = providerCard(window, 'codex');
       await expect(codexCard).toBeVisible({ timeout: 30_000 });
 
-      // Trigger an explicit on-demand refresh of Codex usage. The button label
-      // is `Refresh <Provider> usage` (aria-label in ProviderUsageCards.tsx).
-      const refreshCodex = codexCard.getByRole('button', {
-        name: 'Refresh Codex usage',
-      });
-      await expect(refreshCodex).toBeVisible();
-      await refreshCodex.click();
+      // Trigger an explicit on-demand refresh. The Usage page has one refresh
+      // control (`Refresh usage`, in its heading) that reads every provider.
+      const refreshUsage = pageRefreshButton(window);
+      await expect(refreshUsage).toBeVisible();
+      await refreshUsage.click();
 
       // The seeded high-usage values land asynchronously (IPC refresh round-trip
       // to the mock). Poll the rendered card text until the seeded primary window
@@ -723,44 +727,42 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
         .poll(async () => (await codexCard.innerText()).replace(/\s+/g, ' '), {
           timeout: 30_000,
         })
-        .toContain(`Usage: ${NEAR_LIMIT_CODEX_PRIMARY_USED}`);
+        .toContain(NEAR_LIMIT_CODEX_PRIMARY_USED);
 
       // Secondary window + remaining credits also reflect the scenario.
       const codexText = (await codexCard.innerText()).replace(/\s+/g, ' ');
-      expect(codexText).toContain(`Usage: ${NEAR_LIMIT_CODEX_SECONDARY_USED}`);
-      expect(codexText).toContain(
-        `Remaining credits: ${NEAR_LIMIT_CODEX_CREDITS}`,
-      );
+      expect(codexText).toContain(NEAR_LIMIT_CODEX_SECONDARY_USED);
+      expect(codexText).toContain(`${NEAR_LIMIT_CODEX_CREDITS} credits left`);
       // The usage snapshot still carries the seeded chatgpt/plus subscription.
       // The raw `plus` plan token is run through the shared subscription-plan
       // catalog (normalizePlanKey + labelForPlanKey), so the card renders the
       // friendly full tier label "ChatGPT Plus" (codex:plus) instead of the bare
-      // token. This label comes from the mocked usage refresh, not live auth.
+      // token, shown beside the provider name in the group heading. This label
+      // comes from the mocked usage refresh, not live auth.
       // The account-control row itself is driven by live Codex auth state, so it
       // can differ between local signed-in runs and isolated CI data dirs — do
       // not assert the seeded account email here.
       expect(codexText).toContain('ChatGPT Plus');
 
       // A future reset time is rendered (resets_at `+2h` resolved to an absolute,
-      // future ISO and formatted with toLocaleString → "Resets: …").
-      expect(codexText).toContain('Resets:');
+      // future ISO and phrased in words → "Resets today at …").
+      expect(codexText).toContain('Resets ');
 
       // ── Claude card: authenticated live probe ────────────────────────────
-      const claudeCard = providerCard(window, 'Claude');
+      const claudeCard = providerCard(window, 'claude');
+      const claudeAccount = claudeCard.getByTestId(
+        'usage-provider-claude-account',
+      );
       await expect(claudeCard).toBeVisible();
-      await expect
-        .poll(async () => (await claudeCard.innerText()).replace(/\s+/g, ' '), {
-          timeout: 20_000,
-        })
-        .toContain('Account: tester@example.com');
+      await expect(claudeAccount).toContainText('tester@example.com', {
+        timeout: 20_000,
+      });
 
       const changeClaudeAccount = window.getByTestId(
         'usage-provider-claude-connect',
       );
       await expect(changeClaudeAccount).toHaveText('Change account');
-      await expect(claudeCard).toContainText(
-        `Usage: ${NEAR_LIMIT_CLAUDE_FIVE_HOUR_USED}`,
-      );
+      await expect(claudeCard).toContainText(NEAR_LIMIT_CLAUDE_FIVE_HOUR_USED);
 
       // Delay an authenticated re-probe long enough to assert the loading
       // branch. While that fresher probe is in flight, the card must retain the
@@ -794,7 +796,7 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
         .click();
       await expect(loginModal).toBeHidden();
 
-      await expect(claudeCard).toContainText('Account: tester@example.com');
+      await expect(claudeAccount).toContainText('tester@example.com');
       await expect(changeClaudeAccount).toBeEnabled();
       await expect(changeClaudeAccount).toHaveText('Change account');
 
@@ -816,7 +818,7 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
 
       // The fresh negative must override the older authenticated snapshot and
       // expose the signed-out action.
-      await expect(claudeCard).toContainText('Account: Sign in to see usage', {
+      await expect(claudeAccount).toContainText('Sign in to see usage', {
         timeout: 15_000,
       });
       await expect(changeClaudeAccount).toHaveText('Sign in');
@@ -848,12 +850,10 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
 
       await app.openUsagePage();
 
-      const codexCard = providerCard(window, 'Codex');
+      const codexCard = providerCard(window, 'codex');
       await expect(codexCard).toBeVisible({ timeout: 30_000 });
 
-      await codexCard
-        .getByRole('button', { name: 'Refresh Codex usage' })
-        .click();
+      await pageRefreshButton(window).click();
 
       // The low-usage primary percentage confirms the card reflects the
       // scenario (and is distinct from the near-limit case above).
@@ -861,16 +861,12 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
         .poll(async () => (await codexCard.innerText()).replace(/\s+/g, ' '), {
           timeout: 30_000,
         })
-        .toContain(`Usage: ${LOW_USAGE_CODEX_PRIMARY_USED}`);
+        .toContain(LOW_USAGE_CODEX_PRIMARY_USED);
 
       const codexText = (await codexCard.innerText()).replace(/\s+/g, ' ');
-      expect(codexText).toContain(
-        `Remaining credits: ${LOW_USAGE_CODEX_CREDITS}`,
-      );
+      expect(codexText).toContain(`${LOW_USAGE_CODEX_CREDITS} credits left`);
       // The near-limit primary value must NOT be present under low-usage.
-      expect(codexText).not.toContain(
-        `Usage: ${NEAR_LIMIT_CODEX_PRIMARY_USED}`,
-      );
+      expect(codexText).not.toContain(NEAR_LIMIT_CODEX_PRIMARY_USED);
 
       await window.screenshot({
         path: testInfo.outputPath('provider-usage-low-usage.png'),
@@ -882,4 +878,50 @@ test.describe('provider usage cards (auth/usage mock surface)', () => {
       );
     }
   });
+});
+
+test('Claude Extra usage shows monthly spend and cap in currency units', async () => {
+  test.setTimeout(120_000);
+  const key = 'can-4272-extra-usage';
+  await registerScenario(DEFAULT_MOCK_BASE_URL, key, {
+    authUsage: {
+      claude: {
+        auth: {
+          loggedIn: true,
+          email: 'tester@example.com',
+          authMethod: 'oauth',
+          subscriptionType: 'max',
+        },
+        usage: {
+          five_hour: { utilization: 0, resets_at: '+2h' },
+          seven_day: { utilization: 0, resets_at: '+5d' },
+          extra_usage: {
+            is_enabled: true,
+            monthly_limit: 5000,
+            used_credits: 6100,
+            utilization: 122,
+            currency: 'USD',
+            decimal_places: 2,
+          },
+        },
+      },
+    },
+  });
+  const { electronApp, userDataDir } = await launchCanopy({
+    env: { CANOPY_MOCK_API_KEY: key },
+  });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openUsagePage();
+    const card = window.getByTestId('usage-provider-card-claude');
+    await expect(card).toContainText('Extra usage');
+    await expect(card).toContainText('Monthly spend: $61.00');
+    await expect(card).toContainText('Monthly spending cap: $50.00');
+    await expect(card).not.toContainText('Remaining credits');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, key);
+  }
 });

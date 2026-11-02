@@ -1,5 +1,10 @@
 import { DATA_SHARING_OPT_IN_FEATURES } from '@canopy/protocol/canopy-server';
 import {
+  mergePlanModeHintRecords,
+  migrateLegacyPlanModeHintRecord,
+  normalizePlanModeHintRecord,
+} from '@canopy/protocol/onboarding';
+import {
   excludeDisabledInstalledItems,
   normalizeDisabledInstalledItems,
   parseInstalledItemKey,
@@ -16,17 +21,37 @@ import {
   normalizeClaudeMaxTurns,
 } from '@canopy/desktop-shared/constants/preferences';
 import {
+  defaultManagedDelegationLifetimeLimit,
   normalizeManagedDelegationMode,
   normalizeManagedDelegationMaxConcurrent,
   normalizeManagedDelegationMaxDepth,
+  normalizeManagedDelegationLifetimeLimit,
 } from '@canopy/protocol/delegation/discovery';
 import { normalizeCodexMaxConcurrentSubagents } from '@canopy/desktop-shared/lib/codex-multi-agent';
 import { normalizeAppAdvisorProjectAgentAccess } from '@canopy/desktop-shared/lib/app-advisor-project-agent-access';
 import { isSyntacticallyValidModelId } from '@canopy/desktop-shared/lib/model-id';
-import { renameWithRetry } from './atomic-file';
+import {
+  createDirectoryDurably,
+  writeFileAtomically,
+  type AdmittedWriterTarget,
+} from './atomic-file';
+import {
+  markGlobalApprovalRulesChanged,
+  markPreferencesAuthorityConfirmed,
+  markPreferencesAuthorityUnconfirmed,
+  narrowsFileWriteRules,
+  trackPreferencesAuthoritySave,
+} from '../approvals/rule-revisions';
+import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import { resolveAvailableModel } from './model-availability';
-import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import {
+  DEFAULT_CHAT_DETAIL,
+  isChatDetail,
+  type ChatDetail,
+} from '@canopy/protocol/chat-detail';
+import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import { isTerminalPresetImageDataUrl } from '@canopy/desktop-shared/lib/terminal-preset-images';
 import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
@@ -72,6 +97,7 @@ import {
   DEFAULT_MCP_PROXY_PORT,
   DEFAULT_OLLAMA_SERVER_PORT,
   DEFAULT_HIDE_ANTHROPIC_NAV,
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
   DEFAULT_TERMINAL_DRAWER_ACTIVE_TAB_ID,
   DEFAULT_TERMINAL_DRAWER_COLLAPSED,
@@ -94,11 +120,6 @@ import {
   createEmptyGlobalInstructionsConfig,
   getExecutionHarnessForModel,
   getModelSource,
-  HOME_ONBOARDING_PLUGIN_SUGGESTION_PREFIX,
-  HOME_ONBOARDING_ADVANCED_SUGGESTION_PREFIX,
-  HOME_ONBOARDING_BLUEPRINT_SUGGESTION_PREFIX,
-  HOME_ONBOARDING_SUGGESTION_ENTRY_IDS,
-  RETIRED_HOME_ONBOARDING_SUGGESTION_ENTRY_IDS,
   isNavigationMode,
   isWorkspaceLayoutMode,
   normalizeAgentModelConfig,
@@ -133,8 +154,7 @@ import {
   type OsNotificationCategorySound,
   type OsNotificationPreferences,
   type OsNotificationTopLevelSound,
-  type HomeOnboardingSuggestionEntryPreferences,
-  type HomeOnboardingSuggestionsPreferences,
+  type LegacyPlanModeChecklistInput,
   type NativeProviderAccountRecord,
   type PreferencesData,
   type PreferencesFile,
@@ -183,8 +203,19 @@ import { normalizeFileIndexingPreferences } from '@canopy/core-runtime/node';
 import { BUILTIN_PLAN_DETECTION_RULE_IDS } from '@canopy/desktop-shared/plan-detection';
 import { normalizeGlobalInstructionsConfig } from '@canopy/desktop-shared/lib/global-instructions';
 import { getPreferencesFilePath } from '../lib/paths';
+import {
+  createPreferencesBackupPath,
+  createPreferencesGenerationPath,
+  createPreferencesLastGoodPath,
+} from './preferences-file-paths';
 import { getResolvedCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
 import { normalizeStringArray } from './string-utils';
+
+/** Preferences sit in the data root itself (`getPreferencesFilePath`). */
+function createPreferencesFolderDurably(filePath: string): Promise<void> {
+  const dataRoot = dirname(filePath);
+  return createDirectoryDurably(dataRoot, { dataRoot });
+}
 
 const VALID_PREFIX_MODES = new Set<string>(['github', 'custom', 'none']);
 
@@ -575,6 +606,7 @@ import {
 } from '@canopy/desktop-shared/lib/promotional-notifications';
 import type { ActivationQuietHours } from '@canopy/desktop-shared/types';
 import { DEFAULT_GLOBAL_FOCUS_SHORTCUT_ENABLED } from '@canopy/desktop-shared/constants/preferences';
+import { normalizeOnboardingTipDismissals } from '@canopy/protocol/onboarding-tips';
 import {
   GLOBAL_FOCUS_SHORTCUT_DEFAULT_ACCELERATOR,
   toShortcutPlatform,
@@ -664,28 +696,30 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   // migration separately re-arms it for an upgrading profile whose persisted
   // posture it overwrites (CAN-3055).
   approvalsUpgradeNoticeDismissed: false,
+  // Every onboarding tip shows once on a fresh profile (CAN-4904).
+  onboardingTipsDismissed: {},
   summaryModel: DEFAULT_SUMMARY_MODEL,
   summaryModelSetByUser: false,
-  summaryThinkingLevel: 'off' as ThinkingLevel,
+  summaryThinkingLevel: 'off',
   handoffSummaryModel: DEFAULT_HANDOFF_SUMMARY_MODEL,
   handoffSummaryThinkingLevel: 'off',
   worktreeSummaryEnabled: true,
   worktreeSummaryModel: 'haiku',
-  worktreeSummaryThinkingLevel: 'off' as ThinkingLevel,
+  worktreeSummaryThinkingLevel: 'off',
   planDiagramModel: 'haiku',
-  planDiagramThinkingLevel: 'off' as ThinkingLevel,
+  planDiagramThinkingLevel: 'off',
   codeReviewModel: 'haiku',
-  codeReviewThinkingLevel: 'off' as ThinkingLevel,
+  codeReviewThinkingLevel: 'off',
   prGenerationModel: DEFAULT_PR_GENERATION_MODEL,
-  prGenerationThinkingLevel: 'high' as ThinkingLevel,
+  prGenerationThinkingLevel: 'high',
   prInstructions: '',
   prInstructionMode: 'append',
   commitGenerationModel: DEFAULT_COMMIT_GENERATION_MODEL,
-  commitGenerationThinkingLevel: 'high' as ThinkingLevel,
+  commitGenerationThinkingLevel: 'high',
   commitInstructions: '',
-  commitInstructionMode: 'append' as PrInstructionMode,
+  commitInstructionMode: 'append',
   branchNamingModel: DEFAULT_BRANCH_NAMING_MODEL,
-  branchNamingThinkingLevel: 'off' as ThinkingLevel,
+  branchNamingThinkingLevel: 'off',
   branchNamingInstructions: '',
   globalInstructions: createEmptyGlobalInstructionsConfig(),
   pipelineAdvisorEnabled: true,
@@ -698,18 +732,18 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   localMemoryModelSetByUser: false,
   localMemoryThinkingLevel: 'high',
   pipelineAdvisorModel: DEFAULT_PIPELINE_ADVISOR_MODEL,
-  pipelineAdvisorThinkingLevel: 'high' as ThinkingLevel,
+  pipelineAdvisorThinkingLevel: 'high',
   disabledPipelineIds: [],
   appAdvisorModel: DEFAULT_APP_ADVISOR_MODEL,
-  appAdvisorThinkingLevel: 'high' as ThinkingLevel,
+  appAdvisorThinkingLevel: 'high',
   cronGenerationModel: DEFAULT_CRON_GENERATION_MODEL,
-  cronGenerationThinkingLevel: 'medium' as ThinkingLevel,
+  cronGenerationThinkingLevel: 'medium',
   ifCommandGenerationModel: DEFAULT_IF_COMMAND_GENERATION_MODEL,
-  ifCommandGenerationThinkingLevel: 'medium' as ThinkingLevel,
+  ifCommandGenerationThinkingLevel: 'medium',
   splitPrThresholdLines: 500,
   splitPrEnabled: true,
   splitPrPlannerModel: DEFAULT_CODEX_MODEL,
-  splitPrPlannerThinkingLevel: 'high' as ThinkingLevel,
+  splitPrPlannerThinkingLevel: 'high',
   disabledInstalledItems: [],
   parkedCodexPlugins: [],
   pendingInstalledItemUninstalls: [],
@@ -740,6 +774,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   scriptTimeoutMinutes: 5,
   codexAppServerIdleTimeoutMinutes:
     DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
+  claudeSessionIdleTimeoutMinutes: DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
   defaultChatInterfaceMode: 'canopy',
   defaultStandaloneChatInterfaceMode: 'canopy',
   defaultAppAdvisorInterfaceMode: 'canopy',
@@ -761,6 +796,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   keepSystemAwakeWhileAgentsActive: true,
   managedDelegationMaxConcurrent: 5,
   managedDelegationMaxDepth: 1,
+  managedDelegationLifetimeLimit: defaultManagedDelegationLifetimeLimit(),
   codexMultiAgentWorktreeChatsEnabled: false,
   codexMultiAgentStandaloneChatsEnabled: false,
   codexMaxConcurrentSubagents: null,
@@ -785,6 +821,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   sidebarAppearance: 'translucent',
   worktreeDiffStatsStyle: 'short',
   scrollbarBehavior: 'system',
+  singleDollarMath: true,
   linearChatEnrichmentMode: DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE,
   githubChatEnrichmentMode: DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
   uiScale: UI_SCALE_DEFAULT,
@@ -795,8 +832,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   // "Suggest skills for repeated requests" (CAN-385) is on by default.
   skillSuggestionsEnabled: true,
   rendererCodeCacheSchemeEnabled: false,
-  chatLiveStepWindowEnabled: false,
-  chatGroupToolCallsEnabled: false,
+  chatDetail: DEFAULT_CHAT_DETAIL,
   remoteControlEnabled: true,
   windowBounds: null,
   windowMaximized: false,
@@ -880,6 +916,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   releaseHighlightsLastSeenVersion: null,
   guestSessionCount: 0,
   guestUpgradeNudgeLastShownSessionCount: 0,
+  planModeHint: { version: 1, generation: 0 },
   telemetrySharing: {
     transcripts: 'off',
     plans: 'off',
@@ -903,14 +940,65 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   },
 };
 
-const EMPTY_PREFERENCES_FILE: PreferencesFile = {
-  version: 1,
-  preferences: DEFAULT_PREFERENCES,
-};
+/**
+ * Main and last-good carry the generation of the save that wrote them.
+ * Files without one (written before CAN-5154) are generation 0.
+ */
+interface PreferencesDocument extends PreferencesFile {
+  generation: number;
+}
 
-interface LastGoodPreferences {
-  path: string;
+/**
+ * Preferences as read for a save, with the generation they were stored at;
+ * null when main's `generation` is not a valid one.
+ */
+interface StoredPreferences {
   preferences: PreferencesData;
+  generation: number | null;
+}
+
+interface LastGoodPreferences extends StoredPreferences {
+  status: 'ok';
+  path: string;
+  generation: number;
+}
+
+type LastGoodPreferencesRead =
+  | LastGoodPreferences
+  | { status: 'absent' }
+  | { status: 'unreadable'; code?: string };
+
+type PreferencesGenerationRead =
+  | { status: 'ok'; generation: number }
+  | { status: 'absent' }
+  | { status: 'unreadable' };
+
+class PreferencesRecoveryRequiredError extends Error {
+  readonly code = 'PREFERENCES_RECOVERY_REQUIRED';
+
+  constructor(readonly details: PreferencesLoadErrorDetails) {
+    super('Preferences could not be read. Changes were not saved.');
+  }
+}
+
+class PreferencesGenerationExhaustedError extends Error {
+  readonly code = 'PREFERENCES_GENERATION_EXHAUSTED';
+
+  constructor() {
+    super(
+      'Preferences are damaged and cannot record another save. Changes were not saved.',
+    );
+  }
+}
+
+class PreferencesGenerationUnknownError extends Error {
+  readonly code = 'PREFERENCES_GENERATION_UNKNOWN';
+
+  constructor() {
+    super(
+      'Preferences could not confirm their latest saved version. Changes were not saved.',
+    );
+  }
 }
 
 type PreferencesUpdater = (
@@ -919,6 +1007,18 @@ type PreferencesUpdater = (
 type PreferencesCommitObserver = (committed: PreferencesData) => void;
 
 let writePreferencesQueue: Promise<void> = Promise.resolve();
+
+function enqueuePreferencesOperation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const result = writePreferencesQueue.then(operation);
+  writePreferencesQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 // Setup rollback owns a committed enablement value, not a runtime generation.
 // Track only durable changes to this field so unrelated preference saves do
 // not prevent rollback and a newer disable/re-enable cannot be overwritten.
@@ -927,8 +1027,28 @@ export function getOpenCodeEnabledRevision(): number {
   return openCodeEnabledRevision;
 }
 
+// Notification acknowledgement does not restore authority after recovery failed.
+const failedPreferencesRecoveries = new Map<
+  string,
+  { details: PreferencesLoadErrorDetails; fallback: PreferencesData }
+>();
 let lastPreferencesLoadError: PreferencesLoadErrorDetails | null = null;
-let preferencesRecoveryOperation: Promise<PreferencesData> | null = null;
+
+function recordFailedPreferencesRecovery(
+  details: PreferencesLoadErrorDetails,
+  fallback: PreferencesData = DEFAULT_PREFERENCES,
+): void {
+  failedPreferencesRecoveries.set(details.filePath, { details, fallback });
+  lastPreferencesLoadError = details;
+  markGlobalApprovalRulesChanged();
+  invalidateRendererPreferencesCache();
+}
+
+function assertPreferencesWritable(filePath: string): void {
+  const failure = failedPreferencesRecoveries.get(filePath);
+  if (failure) throw new PreferencesRecoveryRequiredError(failure.details);
+}
+
 let preferencesRendererLoadOperation: Promise<PreferencesLoadResult> | null =
   null;
 let rendererPreferencesCache: PreferencesData | null = null;
@@ -939,7 +1059,6 @@ let rendererRuntimeProjection: {
   source: PreferencesData;
   result: PreferencesData;
 } | null = null;
-let atomicWriteCounter = 0;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1065,18 +1184,6 @@ function normalizeCodexCompatDisabledPlugins(value: unknown): string[] {
   return result;
 }
 
-function createPreferencesBackupPath(
-  filePath: string,
-  timestamp: string,
-): string {
-  const safeTimestamp = timestamp.replace(/[:.]/g, '-');
-  return join(dirname(filePath), `preferences.backup-${safeTimestamp}.json`);
-}
-
-function createPreferencesLastGoodPath(filePath: string): string {
-  return join(dirname(filePath), 'preferences.last-good.json');
-}
-
 function createPreferencesRecoveryError(
   filePath: string,
   reason: PreferencesLoadErrorReason,
@@ -1085,7 +1192,10 @@ function createPreferencesRecoveryError(
   code?: string,
 ): PreferencesLoadErrorDetails {
   const timestamp = new Date().toISOString();
-  const backupPath = createPreferencesBackupPath(filePath, timestamp);
+  const backupPath = createPreferencesBackupPath(
+    filePath,
+    `${timestamp}-${randomUUID()}`,
+  );
   return {
     timestamp,
     reason,
@@ -1129,63 +1239,205 @@ function createPreferencesBackupPayload(
   };
 }
 
-function createAtomicWriteTempPath(filePath: string): string {
-  atomicWriteCounter =
-    atomicWriteCounter >= Number.MAX_SAFE_INTEGER ? 1 : atomicWriteCounter + 1;
-  return join(
-    dirname(filePath),
-    `.${basename(filePath)}.${process.pid}.${Date.now()}-${atomicWriteCounter}.tmp`,
-  );
-}
+const PREFERENCES_WRITER: AdmittedWriterTarget = {
+  namespace: 'preferences',
+  writer: 'electron_main',
+  module: 'main/lib/preferences-store',
+};
 
+/**
+ * Main, last-good, backups and the generation record: resolves once the file
+ * and its folder are flushed. An installed write whose folder flush failed
+ * rejects with `StorageOutcomeUnknownError`; no caller proceeds past one.
+ */
 async function writeTextFileAtomically(
   filePath: string,
   content: string,
 ): Promise<void> {
-  const tempPath = createAtomicWriteTempPath(filePath);
   const existingMode = await stat(filePath)
-    .then((stats) => stats.mode)
+    .then((stats) => stats.mode & 0o7777)
     .catch((error: unknown) => {
       if (isMissingFileError(error)) {
         return undefined;
       }
       throw error;
     });
-  let shouldCleanupTemp = true;
+  await writeFileAtomically(filePath, content, {
+    encoding: 'utf8',
+    mode: existingMode,
+    durable: true,
+    admittedWriter: PREFERENCES_WRITER,
+  });
+}
 
+function serializePreferencesFile(
+  preferences: PreferencesData,
+  generation: number,
+): string {
+  const payload: PreferencesDocument = { version: 1, generation, preferences };
+  return JSON.stringify(payload, null, 2);
+}
+
+function isGeneration(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * 0 without a `generation` (before CAN-5154). Null when one is present but
+ * invalid or unsafe: it may hide a newer generation, so it never counts as 0.
+ */
+function documentGeneration(parsed: Record<string, unknown>): number | null {
+  if (parsed.generation === undefined) return 0;
+  return isGeneration(parsed.generation) ? parsed.generation : null;
+}
+
+/** Only `ENOENT` is absent: any other failure may hide a newer generation. */
+async function readPreferencesGeneration(
+  filePath: string,
+): Promise<PreferencesGenerationRead> {
+  let raw: string;
   try {
-    await writeFile(tempPath, content, {
-      encoding: 'utf8',
-      mode: existingMode,
-    });
-    await renameWithRetry(tempPath, filePath);
-    shouldCleanupTemp = false;
-  } finally {
-    if (shouldCleanupTemp) {
-      await unlink(tempPath).catch(() => undefined);
-    }
+    raw = await readFile(createPreferencesGenerationPath(filePath), 'utf8');
+  } catch (error) {
+    return isMissingFileError(error)
+      ? { status: 'absent' }
+      : { status: 'unreadable' };
   }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      isRecord(parsed) &&
+      parsed.version === 1 &&
+      isGeneration(parsed.generation)
+    )
+      return { status: 'ok', generation: parsed.generation };
+  } catch {
+    // A torn record proves nothing about last-good.
+  }
+  return { status: 'unreadable' };
 }
 
-async function writePreferencesDataFile(
+/**
+ * Records `generation` durably before main is replaced. Main never holds a
+ * generation the record lacks, so a last-good behind the record is stale.
+ */
+async function writePreferencesGeneration(
   filePath: string,
-  preferences: PreferencesData,
+  generation: number,
 ): Promise<void> {
-  const payload: PreferencesFile = {
-    ...EMPTY_PREFERENCES_FILE,
-    preferences,
-  };
-  await writeTextFileAtomically(filePath, JSON.stringify(payload, null, 2));
-}
-
-async function writeLastGoodPreferencesFile(
-  filePath: string,
-  preferences: PreferencesData,
-): Promise<void> {
-  await writePreferencesDataFile(
-    createPreferencesLastGoodPath(filePath),
-    preferences,
+  await writeTextFileAtomically(
+    createPreferencesGenerationPath(filePath),
+    JSON.stringify({ version: 1, generation }),
   );
+}
+
+/**
+ * The floor last-good sets for a save: its generation, or 0 when it is
+ * missing or is not a JSON object (no reader can restore those bytes, and
+ * only a later write replaces them). Null, refusing the save, when a read
+ * fails other than `ENOENT` or its generation is invalid: either may hide a
+ * newer generation.
+ */
+async function readLastGoodFloor(filePath: string): Promise<number | null> {
+  await waitForLastGoodRefresh(filePath);
+  let raw: string;
+  try {
+    raw = await readFile(createPreferencesLastGoodPath(filePath), 'utf8');
+  } catch (error) {
+    return isMissingFileError(error) ? 0 : null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 0;
+  }
+  return isRecord(parsed) ? documentGeneration(parsed) : 0;
+}
+
+/**
+ * Above main's and the record's: after a downgrade, main may lag the record.
+ * Without a readable record, last-good may be ahead of main too, and a record
+ * below it would make it look current. A generation that cannot be known
+ * refuses the save.
+ */
+async function nextPreferencesGeneration(
+  filePath: string,
+  mainGeneration: number | null,
+): Promise<number> {
+  if (mainGeneration === null) throw new PreferencesGenerationUnknownError();
+  const recorded = await readPreferencesGeneration(filePath);
+  const floor =
+    recorded.status === 'ok'
+      ? recorded.generation
+      : await readLastGoodFloor(filePath);
+  if (floor === null) throw new PreferencesGenerationUnknownError();
+  const next = Math.max(mainGeneration, floor) + 1;
+  // Reads reject an unsafe generation, so writing one would lose the record.
+  if (!Number.isSafeInteger(next))
+    throw new PreferencesGenerationExhaustedError();
+  return next;
+}
+
+interface LastGoodRefresh {
+  /** The newest bytes main confirmed durable that are not written yet. */
+  pending: string | null;
+  running: Promise<void>;
+}
+
+/** Per primary file: at most one refresh running. */
+const lastGoodRefreshes = new Map<string, LastGoodRefresh>();
+
+/**
+ * Refreshes last-good outside the write queue, so a save's acknowledgement
+ * waits only for main. Call only with bytes main has confirmed durable, in
+ * commit order: one write per file at a time, each of the newest pending
+ * bytes, so an older state never lands after a newer one. Bytes, not the
+ * state object: readers share that object. Best-effort: a failure is logged,
+ * and a lost refresh leaves the previous confirmed copy. Never waits on the
+ * queue: recovery inside it waits for this refresh.
+ */
+function scheduleLastGoodRefresh(filePath: string, confirmed: string): void {
+  const existing = lastGoodRefreshes.get(filePath);
+  if (existing) {
+    existing.pending = confirmed;
+    return;
+  }
+  const refresh: LastGoodRefresh = {
+    pending: confirmed,
+    running: Promise.resolve(),
+  };
+  lastGoodRefreshes.set(filePath, refresh);
+  refresh.running = (async (): Promise<void> => {
+    for (;;) {
+      const next = refresh.pending;
+      if (next === null) break;
+      refresh.pending = null;
+      try {
+        await writeTextFileAtomically(
+          createPreferencesLastGoodPath(filePath),
+          next,
+        );
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error(
+          'Failed to refresh the last-good preferences backup:',
+          error,
+        );
+      }
+    }
+    lastGoodRefreshes.delete(filePath);
+  })();
+}
+
+/**
+ * Readers of last-good wait for its pending refresh, so recovery in this
+ * process never restores a state older than the newest one main confirmed,
+ * such as rules a confirmed save revoked. A crash before the refresh lands
+ * leaves the older copy behind the generation record, so recovery refuses it.
+ */
+async function waitForLastGoodRefresh(filePath: string): Promise<void> {
+  await lastGoodRefreshes.get(filePath)?.running;
 }
 
 function normalizeParsedPreferencesFile(
@@ -1204,24 +1456,98 @@ function normalizeParsedPreferencesFile(
 
 async function readLastGoodPreferencesFile(
   filePath: string,
-): Promise<LastGoodPreferences | null> {
+): Promise<LastGoodPreferencesRead> {
+  await waitForLastGoodRefresh(filePath);
   const lastGoodPath = createPreferencesLastGoodPath(filePath);
-
+  let raw: string;
   try {
-    const raw = await readFile(lastGoodPath, 'utf8');
+    raw = await readFile(lastGoodPath, 'utf8');
+  } catch (error) {
+    return isMissingFileError(error)
+      ? { status: 'absent' }
+      : { status: 'unreadable', code: getErrorCode(error) };
+  }
+  try {
     const parsed: unknown = JSON.parse(raw);
     const preferences = normalizeParsedPreferencesFile(parsed);
-    if (!preferences) {
-      return null;
+    // Unknown generation: it could look current, or legacy, when it is not.
+    const generation = isRecord(parsed) ? documentGeneration(parsed) : null;
+    if (!preferences || generation === null) {
+      return { status: 'unreadable' };
     }
 
-    return {
-      path: lastGoodPath,
-      preferences,
-    };
+    return { status: 'ok', path: lastGoodPath, preferences, generation };
   } catch {
-    return null;
+    return { status: 'unreadable' };
   }
+}
+
+/**
+ * Restores a supported last-good file, or latches failed recovery for this
+ * process. A supported last-good remains the in-memory display fallback either
+ * way, named by `restoredFromPath`; it never becomes authority. Unusable
+ * last-good falls back to defaults and is not named.
+ */
+async function recoverOrServeFallback(
+  filePath: string,
+  error: PreferencesLoadErrorDetails,
+  rawContent: string | null,
+  parsedContent: unknown,
+  knownLastGood?: LastGoodPreferencesRead,
+): Promise<StoredPreferences> {
+  const lastGood =
+    knownLastGood ?? (await readLastGoodPreferencesFile(filePath));
+  try {
+    return await recoverPreferencesFile(
+      filePath,
+      error,
+      rawContent,
+      parsedContent,
+      lastGood,
+    );
+  } catch (failure) {
+    const details =
+      failure instanceof PreferencesRecoveryRequiredError
+        ? failure.details
+        : { ...error, backupPath: undefined };
+    // Latched, so this generation never reaches a save.
+    if (lastGood.status !== 'ok') {
+      recordFailedPreferencesRecovery(details);
+      return { preferences: DEFAULT_PREFERENCES, generation: 0 };
+    }
+    recordFailedPreferencesRecovery(
+      { ...details, restoredFromPath: lastGood.path },
+      lastGood.preferences,
+    );
+    return { preferences: lastGood.preferences, generation: 0 };
+  }
+}
+
+/**
+ * Last-good is current only when the generation record proves it: a save
+ * whose refresh failed or was lost leaves last-good behind the record, and
+ * restoring it would undo that save (Mike, CAN-4469 O5 and Q3). An unreadable
+ * record proves nothing, so recovery is refused.
+ *
+ * With no record file, a profile whose last-good and main carry no generation
+ * was saved only by builds before CAN-5154, and its last-good stays the
+ * starting point until a save writes the record (Mike, 2026-10-31). Saves
+ * write generation 1 or more, so a generation means a record was written and
+ * lost: refused. So is an invalid one, which may hide a generation.
+ */
+async function isLastGoodCurrent(
+  filePath: string,
+  lastGood: LastGoodPreferences,
+  parsedMain: unknown,
+): Promise<boolean> {
+  const recorded = await readPreferencesGeneration(filePath);
+  if (recorded.status === 'ok')
+    return lastGood.generation >= recorded.generation;
+  return (
+    recorded.status === 'absent' &&
+    lastGood.generation === 0 &&
+    !(isRecord(parsedMain) && documentGeneration(parsedMain) !== 0)
+  );
 }
 
 async function recoverPreferencesFile(
@@ -1229,47 +1555,62 @@ async function recoverPreferencesFile(
   error: PreferencesLoadErrorDetails,
   rawContent: string | null,
   parsedContent: unknown,
-  knownLastGood?: LastGoodPreferences | null,
-): Promise<PreferencesData> {
-  if (preferencesRecoveryOperation) {
-    return preferencesRecoveryOperation;
+  lastGood: LastGoodPreferencesRead,
+): Promise<StoredPreferences> {
+  // Unreadable bytes and newer formats are not evidence we may replace.
+  if (
+    lastGood.status !== 'ok' ||
+    error.reason === 'version' ||
+    (error.reason === 'read' && error.code !== 'ENOENT')
+  ) {
+    throw new PreferencesRecoveryRequiredError({
+      ...error,
+      backupPath: undefined,
+    });
   }
-
-  const recoveryOperation = (async (): Promise<PreferencesData> => {
-    await mkdir(dirname(filePath), { recursive: true });
-    const lastGood =
-      knownLastGood === undefined
-        ? await readLastGoodPreferencesFile(filePath)
-        : knownLastGood;
-    const restoredPreferences = lastGood?.preferences ?? DEFAULT_PREFERENCES;
-    const recoveryError = lastGood
-      ? { ...error, restoredFromPath: lastGood.path }
-      : error;
-    const backupPayload = createPreferencesBackupPayload(
-      recoveryError,
-      rawContent,
-      parsedContent,
-    );
-    const backupPath = recoveryError.backupPath;
-    if (!backupPath) {
-      throw new Error('Preferences recovery backup path is missing.');
-    }
+  if (!(await isLastGoodCurrent(filePath, lastGood, parsedContent))) {
+    throw new PreferencesRecoveryRequiredError({
+      ...error,
+      backupPath: undefined,
+      message: `${error.message} The last known good preferences may be older than the latest save, so they were not restored.`,
+    });
+  }
+  const recoveryError = { ...error, restoredFromPath: lastGood.path };
+  const backupPath = recoveryError.backupPath;
+  if (!backupPath)
+    throw new Error('Preferences recovery backup path is missing.');
+  let backupWritten = false;
+  try {
+    await createPreferencesFolderDurably(filePath);
     await writeTextFileAtomically(
       backupPath,
-      JSON.stringify(backupPayload, null, 2),
+      JSON.stringify(
+        createPreferencesBackupPayload(
+          recoveryError,
+          rawContent,
+          parsedContent,
+        ),
+        null,
+        2,
+      ),
     );
-    await writePreferencesDataFile(filePath, restoredPreferences);
-    await writeLastGoodPreferencesFile(filePath, restoredPreferences);
-    lastPreferencesLoadError = recoveryError;
-    return restoredPreferences;
-  })();
-
-  preferencesRecoveryOperation = recoveryOperation;
-  try {
-    return await recoveryOperation;
-  } finally {
-    preferencesRecoveryOperation = null;
+    backupWritten = true;
+    await writeTextFileAtomically(
+      filePath,
+      serializePreferencesFile(lastGood.preferences, lastGood.generation),
+    );
+  } catch (failure) {
+    throw new PreferencesRecoveryRequiredError({
+      ...recoveryError,
+      backupPath: backupWritten ? backupPath : undefined,
+      message: `Automatic preferences recovery failed: ${getErrorMessage(failure)}`,
+    });
   }
+  // The source is already good. Rewriting it adds a destructive failure stage.
+  markGlobalApprovalRulesChanged();
+  rendererPreferencesCache = lastGood.preferences;
+  lastPreferencesLoadError = recoveryError;
+  return { preferences: lastGood.preferences, generation: lastGood.generation };
 }
 
 function normalizeThinkingLevel(
@@ -2043,6 +2384,7 @@ interface NormalizedRuntimeLimits {
   auditRetentionDays: number;
   automationRunRetentionDays: number;
   codexAppServerIdleTimeoutMinutes: number;
+  claudeSessionIdleTimeoutMinutes: number;
   maxActiveChatTurns: number | null;
   maxActivePipelineExecutions: number | null;
   memoryPressureGuardEnabled: boolean;
@@ -2287,6 +2629,7 @@ function normalizeRuntimeLimits(
   const auditRetentionRaw = data?.auditRetentionDays;
   const automationRunRetentionRaw = data?.automationRunRetentionDays;
   const codexIdleTimeoutRaw = data?.codexAppServerIdleTimeoutMinutes;
+  const claudeIdleTimeoutRaw = data?.claudeSessionIdleTimeoutMinutes;
   const maxMemoryThresholdBytes = 1024 * 1024 * 1024 * 1024;
   let memoryPressureWarningThresholdBytes = normalizePositiveInteger(
     data?.memoryPressureWarningThresholdBytes,
@@ -2327,6 +2670,11 @@ function normalizeRuntimeLimits(
       Number.isFinite(codexIdleTimeoutRaw)
         ? clampNumber(Math.round(codexIdleTimeoutRaw), 1, 120)
         : DEFAULT_PREFERENCES.codexAppServerIdleTimeoutMinutes,
+    claudeSessionIdleTimeoutMinutes:
+      typeof claudeIdleTimeoutRaw === 'number' &&
+      Number.isFinite(claudeIdleTimeoutRaw)
+        ? clampNumber(Math.round(claudeIdleTimeoutRaw), 1, 120)
+        : DEFAULT_PREFERENCES.claudeSessionIdleTimeoutMinutes,
     maxActiveChatTurns: normalizeNullablePositiveInteger(
       data?.maxActiveChatTurns,
       DEFAULT_PREFERENCES.maxActiveChatTurns,
@@ -2361,11 +2709,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Corruption guard with room for years of completed/dismissed suggestions. */
-const MAX_HOME_ONBOARDING_SUGGESTION_ENTRIES = 10_000;
-/** Per-entry latched-step bound; the state machine defines only one today. */
-const MAX_HOME_ONBOARDING_LATCHED_STEPS = 10;
-
 function normalizeNativeProviderAccountRecord(
   value: unknown,
 ): NativeProviderAccountRecord | undefined {
@@ -2374,11 +2717,20 @@ function normalizeNativeProviderAccountRecord(
     typeof value.accountKey === 'string' ? value.accountKey.trim() : '';
   if (!accountKey) return undefined;
   const changedAt = value.changedAt;
-  return typeof changedAt === 'number' &&
+  const subscriptionRestoredAt = value.subscriptionRestoredAt;
+  return {
+    accountKey,
+    ...(typeof changedAt === 'number' &&
     Number.isFinite(changedAt) &&
     changedAt > 0
-    ? { accountKey, changedAt }
-    : { accountKey };
+      ? { changedAt }
+      : {}),
+    ...(typeof subscriptionRestoredAt === 'number' &&
+    Number.isFinite(subscriptionRestoredAt) &&
+    subscriptionRestoredAt > 0
+      ? { subscriptionRestoredAt }
+      : {}),
+  };
 }
 
 function normalizeNativeProviderAccounts(
@@ -2432,69 +2784,36 @@ function normalizeDataSharingOptInHistory(
 }
 
 /**
- * Normalizes the persisted Home onboarding suggestions module state. A state
- * without a `startedAt` cohort latch is meaningless and discarded; unknown
- * entry ids and malformed fields are filtered so renderer derivation only
- * ever sees the shapes it understands.
+ * #5222 is not on this base. Retain only its exact compatibility input until
+ * its raw-input conversion is integrated; all live checklist state is dropped.
  */
-function normalizeHomeOnboardingSuggestions(
+function preserveLegacyPlanModeInput(
   value: unknown,
-): HomeOnboardingSuggestionsPreferences | undefined {
-  if (!isPlainRecord(value)) {
-    return undefined;
-  }
-  const startedAt = normalizeIsoTimestamp(value.startedAt);
-  if (startedAt === undefined) {
-    return undefined;
-  }
-  const retiredAt = normalizeIsoTimestamp(value.retiredAt);
-  const entries: HomeOnboardingSuggestionsPreferences['entries'] = {};
-  const rawEntries: Record<string, unknown> = isPlainRecord(value.entries)
-    ? value.entries
-    : {};
-  const curatedIds: readonly string[] = HOME_ONBOARDING_SUGGESTION_ENTRY_IDS;
-  const retiredIds: readonly string[] =
-    RETIRED_HOME_ONBOARDING_SUGGESTION_ENTRY_IDS;
-  const knownEntryIds = Object.keys(rawEntries)
-    .filter(
-      (entryId) =>
-        curatedIds.includes(entryId) ||
-        retiredIds.includes(entryId) ||
-        entryId.startsWith(HOME_ONBOARDING_PLUGIN_SUGGESTION_PREFIX) ||
-        entryId.startsWith(HOME_ONBOARDING_ADVANCED_SUGGESTION_PREFIX) ||
-        entryId.startsWith(HOME_ONBOARDING_BLUEPRINT_SUGGESTION_PREFIX),
-    )
-    // Keep long-lived history while bounding malformed preference files.
-    .slice(0, MAX_HOME_ONBOARDING_SUGGESTION_ENTRIES);
-  for (const entryId of knownEntryIds) {
-    const entryRecord = rawEntries[entryId];
-    if (!isPlainRecord(entryRecord)) {
-      continue;
-    }
-    const entry: HomeOnboardingSuggestionEntryPreferences = {};
-    const dismissedAt = normalizeIsoTimestamp(entryRecord.dismissedAt);
-    if (dismissedAt !== undefined) entry.dismissedAt = dismissedAt;
-    const completedAt = normalizeIsoTimestamp(entryRecord.completedAt);
-    if (completedAt !== undefined) entry.completedAt = completedAt;
-    if (Array.isArray(entryRecord.latchedSteps)) {
-      const latchedSteps = Array.from(
-        new Set(
-          entryRecord.latchedSteps.filter(
-            (step: unknown): step is string => typeof step === 'string',
-          ),
-        ),
-      ).slice(0, MAX_HOME_ONBOARDING_LATCHED_STEPS);
-      if (latchedSteps.length > 0) entry.latchedSteps = latchedSteps;
-    }
-    if (Object.keys(entry).length > 0) {
-      entries[entryId] = entry;
-    }
-  }
+): LegacyPlanModeChecklistInput | undefined {
+  if (!isPlainRecord(value) || !isPlainRecord(value.entries)) return undefined;
+  const entry = value.entries['plan-mode'];
+  if (!isPlainRecord(entry)) return undefined;
+  const completedAt = normalizeIsoTimestamp(entry.completedAt);
+  const dismissedAt = normalizeIsoTimestamp(entry.dismissedAt);
+  if (completedAt === undefined && dismissedAt === undefined) return undefined;
   return {
-    startedAt,
-    ...(retiredAt !== undefined ? { retiredAt } : {}),
-    entries,
+    startedAt:
+      normalizeIsoTimestamp(value.startedAt) ?? '1970-01-01T00:00:00.000Z',
+    entries: {
+      'plan-mode': {
+        ...(completedAt !== undefined ? { completedAt } : {}),
+        ...(dismissedAt !== undefined ? { dismissedAt } : {}),
+      },
+    },
   };
+}
+
+function legacyNotificationAnswer(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isPlainRecord(value) || !isPlainRecord(value.entries)) return undefined;
+  const answer = value.entries.notifications;
+  return isPlainRecord(answer) ? answer : undefined;
 }
 
 const ACCOUNT_PROXY_CONNECTION_KINDS: ReadonlySet<string> = new Set([
@@ -2593,6 +2912,31 @@ function normalizeParkedCodexPlugins(
   return records;
 }
 
+/**
+ * The saved chat detail level. Preferences from before the setting existed
+ * move over once from the two switches it replaced: "Show only recent steps"
+ * on reads as `recent` (it already folded every run), else "Group tool calls"
+ * on as `compact`, else the default. The next save writes `chatDetail` and
+ * drops the old keys.
+ */
+function normalizeChatDetailPreference(
+  data: Partial<PreferencesData> | Record<string, unknown> | undefined,
+): ChatDetail {
+  if (data === undefined) return DEFAULT_CHAT_DETAIL;
+  if (isChatDetail(data.chatDetail)) return data.chatDetail;
+  if (
+    'chatLiveStepWindowEnabled' in data &&
+    data.chatLiveStepWindowEnabled === true
+  )
+    return 'recent';
+  if (
+    'chatGroupToolCallsEnabled' in data &&
+    data.chatGroupToolCallsEnabled === true
+  )
+    return 'compact';
+  return DEFAULT_CHAT_DETAIL;
+}
+
 export function normalizePreferences(
   data: Partial<PreferencesData> | Record<string, unknown> | undefined,
   modelSelectionValidation: ModelSelectionValidation = 'runtime',
@@ -2608,17 +2952,24 @@ export function normalizePreferences(
   );
   const runtimeLimits = normalizeRuntimeLimits(data);
   const onboardingCompleted = normalizeStringArray(data?.onboardingCompleted);
-  const homeOnboardingSuggestions = normalizeHomeOnboardingSuggestions(
+  // Migrate the raw compatibility entry before checklist normalization can
+  // discard it. A persisted marker, including a reset, always wins.
+  const planModeHint =
+    data?.planModeHint === undefined
+      ? migrateLegacyPlanModeHintRecord(data?.homeOnboardingSuggestions)
+      : normalizePlanModeHintRecord(data.planModeHint);
+  const homeOnboardingSuggestions = preserveLegacyPlanModeInput(
     data?.homeOnboardingSuggestions,
   );
   const nativeProviderAccounts = normalizeNativeProviderAccounts(
     data?.nativeProviderAccounts,
   );
-  const legacyNotificationAnswer =
-    homeOnboardingSuggestions?.entries.notifications;
+  const notificationAnswer = legacyNotificationAnswer(
+    data?.homeOnboardingSuggestions,
+  );
   const legacyNotificationAnswerTimestamps = [
-    normalizeOptInTimestamp(legacyNotificationAnswer?.completedAt),
-    normalizeOptInTimestamp(legacyNotificationAnswer?.dismissedAt),
+    normalizeOptInTimestamp(notificationAnswer?.completedAt),
+    normalizeOptInTimestamp(notificationAnswer?.dismissedAt),
   ].filter((value): value is string => value !== undefined);
   legacyNotificationAnswerTimestamps.sort(
     (a, b) => Date.parse(a) - Date.parse(b),
@@ -2803,6 +3154,9 @@ export function normalizePreferences(
       typeof data?.approvalsUpgradeNoticeDismissed === 'boolean'
         ? data.approvalsUpgradeNoticeDismissed
         : DEFAULT_PREFERENCES.approvalsUpgradeNoticeDismissed,
+    onboardingTipsDismissed: normalizeOnboardingTipDismissals(
+      data?.onboardingTipsDismissed,
+    ),
     ...(isBillingLane(data?.lastResolvedDefaultLane)
       ? { lastResolvedDefaultLane: data.lastResolvedDefaultLane }
       : {}),
@@ -3075,6 +3429,8 @@ export function normalizePreferences(
     scriptTimeoutMinutes: runtimeLimits.scriptTimeoutMinutes,
     codexAppServerIdleTimeoutMinutes:
       runtimeLimits.codexAppServerIdleTimeoutMinutes,
+    claudeSessionIdleTimeoutMinutes:
+      runtimeLimits.claudeSessionIdleTimeoutMinutes,
     defaultChatInterfaceMode: isChatInterfaceMode(
       data?.defaultChatInterfaceMode,
     )
@@ -3130,6 +3486,9 @@ export function normalizePreferences(
     ),
     managedDelegationMaxConcurrent: normalizeManagedDelegationMaxConcurrent(
       data?.managedDelegationMaxConcurrent,
+    ),
+    managedDelegationLifetimeLimit: normalizeManagedDelegationLifetimeLimit(
+      data?.managedDelegationLifetimeLimit,
     ),
     ...(data?.managedDelegationMode === undefined
       ? {}
@@ -3220,6 +3579,10 @@ export function normalizePreferences(
     scrollbarBehavior: isScrollbarBehavior(data?.scrollbarBehavior)
       ? data.scrollbarBehavior
       : DEFAULT_PREFERENCES.scrollbarBehavior,
+    singleDollarMath:
+      typeof data?.singleDollarMath === 'boolean'
+        ? data.singleDollarMath
+        : DEFAULT_PREFERENCES.singleDollarMath,
     linearChatEnrichmentMode: isChatEnrichmentMode(
       data?.linearChatEnrichmentMode,
     )
@@ -3255,10 +3618,7 @@ export function normalizePreferences(
     // Off unless explicitly on; the next launch moves storage to match.
     rendererCodeCacheSchemeEnabled:
       data?.rendererCodeCacheSchemeEnabled === true,
-    // Off unless explicitly on.
-    chatLiveStepWindowEnabled: data?.chatLiveStepWindowEnabled === true,
-    // Off unless explicitly on: every tool call shows as its own row.
-    chatGroupToolCallsEnabled: data?.chatGroupToolCallsEnabled === true,
+    chatDetail: normalizeChatDetailPreference(data),
     // On unless the user turned it off.
     remoteControlEnabled: data?.remoteControlEnabled !== false,
     windowBounds: normalizeWindowBounds(data?.windowBounds),
@@ -3447,13 +3807,10 @@ export function normalizePreferences(
     data.mobileInstallCueSnoozedUntil.trim().length > 0
       ? { mobileInstallCueSnoozedUntil: data.mobileInstallCueSnoozedUntil }
       : {}),
-    ...(typeof data?.homeOnboardingDismissedAt === 'string' &&
-    data.homeOnboardingDismissedAt.trim().length > 0
-      ? { homeOnboardingDismissedAt: data.homeOnboardingDismissedAt }
-      : {}),
     ...(homeOnboardingSuggestions !== undefined
       ? { homeOnboardingSuggestions }
       : {}),
+    ...(planModeHint !== undefined ? { planModeHint } : {}),
     ...buildOnboardingProfileFields(data),
     ...(typeof data?.guestConsentAcceptedAt === 'string' &&
     data.guestConsentAcceptedAt.trim().length > 0
@@ -3508,22 +3865,78 @@ export function normalizePreferences(
 
 /** Execution projection only. Mutations must use the stored view in updatePreferencesFile. */
 export async function readPreferencesFile(): Promise<PreferencesData> {
-  return readPreferencesData('runtime');
+  return enqueuePreferencesOperation(() => readPreferencesData('runtime'));
 }
 
-/** Read authority without recovery writes, for decisions that can delete persisted state. */
-export async function readPreferencesFileDetailed(): Promise<{
+export interface PreferencesAuthorityRead {
   preferences: PreferencesData;
   authority: 'ok' | 'absent' | 'unreadable';
-}> {
+  /**
+   * Set only when requested and authority is unreadable: the values
+   * `readPreferencesFile()` serves, for settings that are not authority.
+   */
+  served?: PreferencesData;
+}
+
+/**
+ * The supported last-good (or latched) fallback `readPreferencesFile()` serves,
+ * read without recovery or writes. Never authority.
+ */
+async function readServedPreferencesFallback(
+  filePath: string,
+): Promise<PreferencesData> {
+  const latched = failedPreferencesRecoveries.get(filePath);
+  if (latched) return normalizePreferences(latched.fallback);
+  const lastGood = await readLastGoodPreferencesFile(filePath);
+  const latchedDuringRead = failedPreferencesRecoveries.get(filePath);
+  if (latchedDuringRead)
+    return normalizePreferences(latchedDuringRead.fallback);
+  return normalizePreferences(
+    lastGood.status === 'ok' ? lastGood.preferences : DEFAULT_PREFERENCES,
+  );
+}
+
+/**
+ * Read authority without recovery writes, for decisions that can delete
+ * persisted state. `preferences` is defaults unless authority is `ok`;
+ * `includeServed` adds the served fallback for non-authority settings.
+ */
+export async function readPreferencesFileDetailed(
+  options: { includeServed?: boolean } = {},
+): Promise<PreferencesAuthorityRead> {
+  // Main's durability only; last-good is awaited only where it is read.
+  await writePreferencesQueue;
+  const filePath = getPreferencesFilePath();
+  const unreadable = async (): Promise<PreferencesAuthorityRead> => ({
+    preferences: DEFAULT_PREFERENCES,
+    authority: 'unreadable',
+    ...(options.includeServed === true
+      ? { served: await readServedPreferencesFallback(filePath) }
+      : {}),
+  });
+  if (failedPreferencesRecoveries.has(filePath)) {
+    return unreadable();
+  }
   let raw: string;
   try {
-    raw = await readFile(getPreferencesFilePath(), 'utf8');
+    raw = await readFile(filePath, 'utf8');
   } catch (error) {
-    return {
-      preferences: DEFAULT_PREFERENCES,
-      authority: isMissingFileError(error) ? 'absent' : 'unreadable',
-    };
+    await waitForLastGoodRefresh(filePath);
+    const absent =
+      isMissingFileError(error) &&
+      (await stat(createPreferencesLastGoodPath(filePath)).then(
+        () => false,
+        (lastGoodError: unknown) => isMissingFileError(lastGoodError),
+      ));
+    // T1: the generation record cannot turn absent into degraded; see
+    // readStoredPreferences.
+    return absent && !failedPreferencesRecoveries.has(filePath)
+      ? { preferences: DEFAULT_PREFERENCES, authority: 'absent' }
+      : unreadable();
+  }
+  // Recovery may have failed while this non-mutating read was in flight.
+  if (failedPreferencesRecoveries.has(filePath)) {
+    return unreadable();
   }
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -3540,19 +3953,40 @@ export async function readPreferencesFileDetailed(): Promise<{
   } catch {
     // Corrupt preferences cannot authorize destructive cleanup.
   }
-  return { preferences: DEFAULT_PREFERENCES, authority: 'unreadable' };
+  return unreadable();
 }
 
 async function readPersistedPreferencesFile(): Promise<PreferencesData> {
-  return readPreferencesData('persisted');
+  return enqueuePreferencesOperation(() => readPreferencesData('persisted'));
 }
 
 async function readPreferencesData(
   validation: ModelSelectionValidation,
 ): Promise<PreferencesData> {
-  const projectRecovery = (preferences: PreferencesData): PreferencesData =>
-    validation === 'runtime' ? normalizePreferences(preferences) : preferences;
+  return (await readStoredPreferences(validation)).preferences;
+}
+
+async function readStoredPreferences(
+  validation: ModelSelectionValidation,
+): Promise<StoredPreferences> {
+  const projectRecovery = ({
+    preferences,
+    generation,
+  }: StoredPreferences): StoredPreferences => ({
+    preferences:
+      validation === 'runtime'
+        ? normalizePreferences(preferences)
+        : preferences,
+    generation,
+  });
+  const fresh: StoredPreferences = {
+    preferences: DEFAULT_PREFERENCES,
+    generation: 0,
+  };
   const filePath = getPreferencesFilePath();
+  const failure = failedPreferencesRecoveries.get(filePath);
+  if (failure)
+    return projectRecovery({ preferences: failure.fallback, generation: 0 });
   let raw: string;
 
   try {
@@ -3560,137 +3994,124 @@ async function readPreferencesData(
   } catch (error) {
     if (isMissingFileError(error)) {
       const lastGood = await readLastGoodPreferencesFile(filePath);
-      if (lastGood) {
-        const recoveryError = createPreferencesRecoveryError(
-          filePath,
-          'read',
-          'Preferences file is missing.',
-          undefined,
-          'ENOENT',
-        );
-        try {
-          return projectRecovery(
-            await recoverPreferencesFile(
+      if (lastGood.status === 'ok') {
+        return projectRecovery(
+          await recoverOrServeFallback(
+            filePath,
+            createPreferencesRecoveryError(
               filePath,
-              recoveryError,
-              null,
+              'read',
+              'Preferences file is missing.',
               undefined,
-              lastGood,
+              'ENOENT',
             ),
-          );
-        } catch {
-          lastPreferencesLoadError = {
-            ...recoveryError,
-            backupPath: undefined,
-            restoredFromPath: lastGood.path,
-            message:
-              'Preferences file is missing and automatic recovery failed. Restored the last known good preferences without creating a recovered preferences file.',
-          };
-          return projectRecovery(lastGood.preferences);
-        }
+            null,
+            undefined,
+            lastGood,
+          ),
+        );
       }
 
-      const lastGoodPath = createPreferencesLastGoodPath(filePath);
-      try {
-        await stat(lastGoodPath);
-        lastPreferencesLoadError = {
+      if (lastGood.status === 'unreadable') {
+        recordFailedPreferencesRecovery({
           ...createPreferencesRecoveryError(
             filePath,
             'read',
             'Preferences file is missing and the last known good preferences could not be read.',
+            undefined,
+            lastGood.code,
           ),
           backupPath: undefined,
-          restoredFromPath: lastGoodPath,
-        };
-      } catch (lastGoodError) {
-        if (!isMissingFileError(lastGoodError)) {
-          lastPreferencesLoadError = {
-            ...createPreferencesRecoveryError(
-              filePath,
-              'read',
-              'Preferences file is missing and the last known good preferences could not be inspected.',
-              undefined,
-              getErrorCode(lastGoodError),
-            ),
-            backupPath: undefined,
-            restoredFromPath: lastGoodPath,
-          };
-        }
+        });
       }
-      return projectRecovery(DEFAULT_PREFERENCES);
+      // Both missing: fresh install (Full Access, no global rules) whatever the
+      // generation record says; it is not existence proof (CAN-4469 T1, Mike).
+      return projectRecovery(fresh);
     }
 
-    const recoveryError = createPreferencesRecoveryError(
-      filePath,
-      'read',
-      getErrorMessage(error),
-      undefined,
-      getErrorCode(error),
+    return projectRecovery(
+      await recoverOrServeFallback(
+        filePath,
+        createPreferencesRecoveryError(
+          filePath,
+          'read',
+          getErrorMessage(error),
+          undefined,
+          getErrorCode(error),
+        ),
+        null,
+        undefined,
+      ),
     );
-    try {
-      return projectRecovery(
-        await recoverPreferencesFile(filePath, recoveryError, null, undefined),
-      );
-    } catch {
-      lastPreferencesLoadError = recoveryError;
-      return projectRecovery(DEFAULT_PREFERENCES);
-    }
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    const recoveryError = createPreferencesRecoveryError(
-      filePath,
-      'parse',
-      getErrorMessage(error),
+    return projectRecovery(
+      await recoverOrServeFallback(
+        filePath,
+        createPreferencesRecoveryError(
+          filePath,
+          'parse',
+          getErrorMessage(error),
+        ),
+        raw,
+        null,
+      ),
     );
-    try {
-      return projectRecovery(
-        await recoverPreferencesFile(filePath, recoveryError, raw, null),
-      );
-    } catch {
-      lastPreferencesLoadError = recoveryError;
-      return projectRecovery(DEFAULT_PREFERENCES);
-    }
   }
 
   if (!isRecord(parsed) || parsed.version !== 1) {
-    const actualVersion = isRecord(parsed) ? parsed.version : undefined;
-    const recoveryError = createPreferencesRecoveryError(
-      filePath,
-      'version',
-      'Unsupported preferences file version.',
-      actualVersion,
+    return projectRecovery(
+      await recoverOrServeFallback(
+        filePath,
+        createPreferencesRecoveryError(
+          filePath,
+          'version',
+          'Unsupported preferences file version.',
+          isRecord(parsed) ? parsed.version : undefined,
+        ),
+        raw,
+        parsed,
+      ),
     );
-    try {
-      return projectRecovery(
-        await recoverPreferencesFile(filePath, recoveryError, raw, parsed),
-      );
-    } catch {
-      lastPreferencesLoadError = recoveryError;
-      return projectRecovery(DEFAULT_PREFERENCES);
-    }
   }
 
   if (!isRecord(parsed.preferences)) {
-    const recoveryError = createPreferencesRecoveryError(
-      filePath,
-      'parse',
-      'Preferences payload does not contain a valid preferences object.',
+    return projectRecovery(
+      await recoverOrServeFallback(
+        filePath,
+        createPreferencesRecoveryError(
+          filePath,
+          'parse',
+          'Preferences payload does not contain a valid preferences object.',
+        ),
+        raw,
+        parsed,
+      ),
     );
-    try {
-      return projectRecovery(
-        await recoverPreferencesFile(filePath, recoveryError, raw, parsed),
-      );
-    } catch {
-      lastPreferencesLoadError = recoveryError;
-      return projectRecovery(DEFAULT_PREFERENCES);
-    }
   }
 
-  return normalizePreferences(parsed.preferences, validation);
+  if (
+    parsed.preferences.planModeHint !== undefined &&
+    normalizePlanModeHintRecord(parsed.preferences.planModeHint) === undefined
+  ) {
+    // Leave the original file intact. The renderer's existing __error gate
+    // hides the lesson, and hint updates must refuse this degraded snapshot.
+    lastPreferencesLoadError = {
+      timestamp: new Date().toISOString(),
+      filePath,
+      reason: 'parse',
+      message:
+        'Plan mode hint preferences contain an invalid or unsupported record.',
+    };
+  }
+  return {
+    preferences: normalizePreferences(parsed.preferences, validation),
+    generation: documentGeneration(parsed),
+  };
 }
 
 /**
@@ -3777,6 +4198,7 @@ async function readPersistedPreferencesForRenderer(): Promise<PreferencesLoadRes
     let preferences = await readPersistedPreferencesFile();
     if (
       lastPreferencesLoadError === null &&
+      !failedPreferencesRecoveries.has(getPreferencesFilePath()) &&
       preferences.osNotifications.enabled &&
       preferences.osNotificationOfferAnsweredAt === undefined
     ) {
@@ -3870,7 +4292,34 @@ function normalizePreferenceUpdate(
   existing: PreferencesData,
   patch: Partial<PreferencesData>,
 ): PreferencesData {
+  // A present-but-corrupt hint has no normalized record. Refuse even an
+  // unrelated save rather than dropping the original record and remigrating
+  // it on reload. Genuine missing preferences normalize to the initial marker.
+  if (existing.planModeHint === undefined) {
+    throw new Error(
+      'Plan mode hint preferences could not be read; preferences were not changed.',
+    );
+  }
   const merged = { ...existing, ...patch };
+  if ('planModeHint' in patch) {
+    // This runs after the authoritative re-read, inside the main-owned queue.
+    // A renderer-local queue cannot protect another window's stale snapshot.
+    if (peekPreferencesLoadError() !== null) {
+      throw new Error(
+        'Preferences could not be read; the plan mode hint was not changed.',
+      );
+    }
+    const incoming = normalizePlanModeHintRecord(patch.planModeHint);
+    if (incoming === undefined) {
+      throw new Error('Invalid plan mode hint preferences.');
+    }
+    merged.planModeHint = mergePlanModeHintRecords(
+      existing.planModeHint,
+      incoming,
+    );
+  }
+  // No new checklist writes. Preserve legacy input for hint migration.
+  merged.homeOnboardingSuggestions = existing.homeOnboardingSuggestions;
   // Preserve a read-derived legacy answer before a checklist reset can erase
   // its source, and the first durable answer when Settings and the offer race.
   const answer =
@@ -3979,18 +4428,64 @@ export async function updatePreferencesFileWithPrevious(
   updater: PreferencesUpdater,
   onCommitted?: PreferencesCommitObserver,
 ): Promise<{ previous: PreferencesData; next: PreferencesData }> {
-  const writeOperation = writePreferencesQueue.then(async () => {
+  const writeOperation = enqueuePreferencesOperation(async () => {
     const filePath = getPreferencesFilePath();
-    await mkdir(dirname(filePath), { recursive: true });
-
-    const existing = await readPersistedPreferencesFile();
+    assertPreferencesWritable(filePath);
+    const { preferences: existing, generation: storedGeneration } =
+      await readStoredPreferences('persisted');
+    assertPreferencesWritable(filePath);
     const preferences = await updater(existing);
     if (preferences === null) {
       return { previous: existing, next: existing };
     }
     const normalized = normalizePreferenceUpdate(existing, preferences);
 
-    await writePreferencesDataFile(filePath, normalized);
+    const globalRulesChanged =
+      JSON.stringify(existing.globalApprovalRules) !==
+      JSON.stringify(normalized.globalApprovalRules);
+    const authorityChanged =
+      globalRulesChanged ||
+      JSON.stringify(existing.approvalDefaults) !==
+        JSON.stringify(normalized.approvalDefaults);
+    await createPreferencesFolderDurably(filePath);
+    const generation = await nextPreferencesGeneration(
+      filePath,
+      storedGeneration,
+    );
+    const content = serializePreferencesFile(normalized, generation);
+    // Tracked from the record's write: the barrier covers the whole save.
+    const save = (async (): Promise<void> => {
+      // Main is untouched if this fails, even with an unknown outcome, so
+      // the authority marks stay as they are.
+      await writePreferencesGeneration(filePath, generation);
+      try {
+        await writeTextFileAtomically(filePath, content);
+      } catch (error) {
+        // The new primary may be what the next read sees; drop what caches
+        // hold. The record already holds this generation, so recovery will
+        // not restore an older last-good over it.
+        if (isStorageOutcomeUnknownError(error)) {
+          // An unchanged authority is still the confirmed one.
+          if (authorityChanged)
+            markPreferencesAuthorityUnconfirmed({
+              globalApprovalRules: existing.globalApprovalRules,
+              approvalDefaults: existing.approvalDefaults,
+            });
+          invalidateRendererPreferencesCache();
+        }
+        throw error;
+      }
+      if (globalRulesChanged) markGlobalApprovalRulesChanged();
+      markPreferencesAuthorityConfirmed();
+    })();
+    await (authorityChanged
+      ? trackPreferencesAuthoritySave(save, {
+          narrowsFileWrites: narrowsFileWriteRules(
+            existing.globalApprovalRules,
+            normalized.globalApprovalRules,
+          ),
+        })
+      : save);
     if (existing.opencodeEnabled !== normalized.opencodeEnabled) {
       openCodeEnabledRevision++;
     }
@@ -4005,18 +4500,8 @@ export async function updatePreferencesFileWithPrevious(
         await import('../installed-items/installed-item-events');
       notifyInstalledItemsChanged();
     }
-    try {
-      await writeLastGoodPreferencesFile(filePath, normalized);
-    } catch (error) {
-      // The authoritative file is already atomically committed. Treat the
-      // recovery copy as best-effort so callers still publish the committed
-      // state instead of leaving renderer caches stale.
-      // eslint-disable-next-line no-console
-      console.error(
-        'Failed to refresh the last-good preferences backup:',
-        error,
-      );
-    }
+    // Main is durable here, so its bytes may become last-good.
+    scheduleLastGoodRefresh(filePath, content);
     // Run commit observers before releasing the serialized write queue. This
     // lets ordering metadata become visible atomically with the durable value,
     // so the next queued updater cannot mistake a committed write for a still
@@ -4025,16 +4510,158 @@ export async function updatePreferencesFileWithPrevious(
     return { previous: existing, next: normalized };
   });
 
-  writePreferencesQueue = writeOperation.then(
-    () => undefined,
-    () => undefined,
-  );
-
   return writeOperation;
 }
 
+/**
+ * Waits for queued saves and the last-good refreshes they started, again for
+ * saves queued meanwhile. Bounded, so a steady writer cannot hold quit open.
+ */
 export async function flushPreferencesWrites(): Promise<void> {
-  await writePreferencesQueue;
+  for (let round = 0; round < 5; round += 1) {
+    const queue = writePreferencesQueue;
+    await queue;
+    const refreshes = Array.from(
+      lastGoodRefreshes.values(),
+      (refresh) => refresh.running,
+    );
+    if (refreshes.length === 0 && queue === writePreferencesQueue) return;
+    await Promise.all(refreshes);
+  }
+}
+
+export type PreferencesGenerationStamp =
+  | 'stamped'
+  | 'present'
+  | 'fresh'
+  | 'degraded'
+  | 'failed'
+  | 'stopped';
+
+/**
+ * A save landed under the record: main carries the recorded generation. A
+ * record whose save failed before main, or that an older build left behind
+ * main, does not count.
+ */
+async function isPreferencesSaveRecorded(filePath: string): Promise<boolean> {
+  const recorded = await readPreferencesGeneration(filePath);
+  if (recorded.status !== 'ok') return false;
+  try {
+    const parsed: unknown = JSON.parse(await readFile(filePath, 'utf8'));
+    const generation = isRecord(parsed) ? documentGeneration(parsed) : null;
+    return generation !== null && generation >= recorded.generation;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One save of the stored preferences, unless a save already landed under the
+ * record. For a profile without a record, that save writes it and retires the
+ * legacy last-good as a starting point. Queued like any save; rechecked inside
+ * the queue, so a user save that got there first ends it. A latched recovery
+ * refuses it until restart. `isStopped` is checked with no await before the
+ * save is queued; a queued save completes like any save.
+ */
+export async function stampPreferencesGeneration(
+  isStopped: () => boolean = (): boolean => false,
+): Promise<PreferencesGenerationStamp> {
+  const filePath = getPreferencesFilePath();
+  if (failedPreferencesRecoveries.has(filePath)) return 'degraded';
+  let outcome: PreferencesGenerationStamp = 'present';
+  try {
+    if (await isPreferencesSaveRecorded(filePath)) return 'present';
+    // Without main or last-good there is no legacy copy; any save records.
+    if (!(await hasPersistedPreferencesFile())) return 'fresh';
+    if (isStopped()) return 'stopped';
+    // Queued synchronously: from here quit's flush waits for this save.
+    await updatePreferencesFileWithPrevious(async () => {
+      if (await isPreferencesSaveRecorded(filePath)) return null;
+      outcome = 'stamped';
+      return {};
+    });
+  } catch (error) {
+    return error instanceof PreferencesRecoveryRequiredError
+      ? 'degraded'
+      : 'failed';
+  }
+  return outcome;
+}
+
+/** Waits before each attempt; the last delay repeats. */
+const PREFERENCES_GENERATION_STAMP_DELAYS_MS = [
+  30_000, 30_000, 60_000, 120_000, 300_000,
+] as const;
+
+type StampWait = (delayMs: number) => Promise<boolean>;
+
+let preferencesGenerationStamp: {
+  run: Promise<PreferencesGenerationStamp>;
+  stop: () => void;
+} | null = null;
+
+/**
+ * Starts the background save that records the generation (Mike, 2026-10-31:
+ * the save must be guaranteed). Off the startup path: it waits first, then
+ * retries until a save lands under the record. Each launch starts it again,
+ * so a quit only defers it. `wait` resolves false once stopped; tests
+ * replace it.
+ */
+export function startPreferencesGenerationStamp(
+  wait?: StampWait,
+): Promise<PreferencesGenerationStamp> {
+  if (preferencesGenerationStamp) return preferencesGenerationStamp.run;
+  let stopped = false;
+  const isStopped = (): boolean => stopped;
+  let cancelTimer = (): void => undefined;
+  const waitForTimer: StampWait = (delayMs) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(true), delayMs);
+      timer.unref();
+      cancelTimer = (): void => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+    });
+  const waitBeforeAttempt = wait ?? waitForTimer;
+  const run = (async (): Promise<PreferencesGenerationStamp> => {
+    for (let attempt = 0; ; attempt += 1) {
+      const delayMs =
+        PREFERENCES_GENERATION_STAMP_DELAYS_MS[
+          Math.min(attempt, PREFERENCES_GENERATION_STAMP_DELAYS_MS.length - 1)
+        ];
+      if (stopped || !(await waitBeforeAttempt(delayMs)) || stopped)
+        return 'stopped';
+      const outcome = await stampPreferencesGeneration(isStopped);
+      if (outcome !== 'failed') return outcome;
+      // eslint-disable-next-line no-console
+      console.error(
+        'Failed to record the preferences generation; retrying in the background.',
+      );
+    }
+  })();
+  const stamp = {
+    run,
+    stop: (): void => {
+      stopped = true;
+      cancelTimer();
+      release();
+    },
+  };
+  function release(): void {
+    if (preferencesGenerationStamp === stamp) preferencesGenerationStamp = null;
+  }
+  preferencesGenerationStamp = stamp;
+  void run.then(release, release);
+  return run;
+}
+
+/**
+ * Quit stops future attempts. An attempt already queued completes, and quit's
+ * flush waits for it, as for any save.
+ */
+export function stopPreferencesGenerationStamp(): void {
+  preferencesGenerationStamp?.stop();
 }
 
 export async function readLatestPreferencesFile(): Promise<PreferencesData> {
@@ -4070,10 +4697,11 @@ export function acknowledgePreferencesLoadError(): void {
 }
 
 export function resetPreferencesLoadErrorForTests(): void {
+  stopPreferencesGenerationStamp();
+  failedPreferencesRecoveries.clear();
   lastPreferencesLoadError = null;
-  preferencesRecoveryOperation = null;
   preferencesRendererLoadOperation = null;
   osNotificationOfferMigrationTimestamps.clear();
+  markPreferencesAuthorityConfirmed();
   invalidateRendererPreferencesCache();
-  atomicWriteCounter = 0;
 }

@@ -123,7 +123,18 @@ async function initialCollapse(window, groupId) {
 }
 
 async function addPanel(window, groupId, kind) {
-  await window.getByTestId(`panel-add-panel-${groupId}`).click();
+  await window.getByTestId(`panel-add-tab-${groupId}`).click();
+  const picker = window
+    .getByTestId(`panel-group-${groupId}`)
+    .locator('[data-testid="new-tab-picker"]:visible');
+  const menu = window.getByTestId('panel-add-menu');
+  await expect(menu.or(picker)).toBeVisible();
+  if (await picker.isVisible()) {
+    const pickerKind = kind === 'new-file' ? 'file' : kind;
+    await picker.getByTestId(`side-panel-empty-item-${pickerKind}`).click();
+    await expect(picker).toBeHidden();
+    return;
+  }
   if (kind === 'terminal') {
     const submenu = window.getByTestId('panel-add-menu-terminal-submenu');
     await expect(submenu).toBeVisible();
@@ -139,7 +150,7 @@ async function addPanel(window, groupId, kind) {
 
 async function ensureBottomDrawerVisible(window) {
   const toggle = window.getByTestId('workspace-layout-terminal-toggle');
-  if ((await toggle.getAttribute('aria-label')) !== 'Collapse bottom drawer') {
+  if (!(await window.getByTestId(`panel-group-${GROUPS.bottom}`).isVisible())) {
     await toggle.click();
   }
   await expect(
@@ -149,7 +160,7 @@ async function ensureBottomDrawerVisible(window) {
 
 async function ensureSidePanelVisible(window) {
   const toggle = window.getByTestId('workspace-layout-side-panel-toggle');
-  if ((await toggle.getAttribute('aria-label')) !== 'Collapse side panel') {
+  if (!(await window.getByTestId(`panel-group-${GROUPS.side}`).isVisible())) {
     await toggle.click();
   }
   await expect(window.getByTestId(`panel-group-${GROUPS.side}`)).toBeVisible();
@@ -160,6 +171,8 @@ async function switchMode(window, mode) {
     await window.getByTestId('worktree-top-save-layout-default').click();
   }
   await window.getByRole('menuitemradio', { name: mode }).click();
+  await window.keyboard.press('Escape');
+  await expect(window.getByTestId('save-layout-default-menu')).toBeHidden();
 }
 
 async function setDefaultLayoutMode(app, window, userDataDir, mode) {
@@ -205,6 +218,8 @@ test('repeated layout mode switches preserve Side Panel width and Bottom Drawer 
         window.getByTestId('workspace-layout-side-panel-toggle'),
       ).toBeVisible();
       await window.keyboard.press('Escape');
+      await ensureSidePanelVisible(window);
+      await ensureBottomDrawerVisible(window);
       await expect
         .poll(async () =>
           Math.abs((await side.boundingBox()).width - initialSide),
@@ -221,30 +236,27 @@ test('repeated layout mode switches preserve Side Panel width and Bottom Drawer 
   }
 });
 
-test('Advanced only shows New Chat on bars that already contain a Chat tab', async () => {
-  test.setTimeout(120_000);
+test('Advanced exposes the Add menu on every group', async () => {
   const { electronApp, userDataDir, window } = await openWorkspace('advanced', {
     advancedDefault: true,
   });
   try {
-    await expect(
-      window.getByTestId(`panel-add-tab-${GROUPS.chat}`),
-    ).toBeVisible();
-    await expect(
-      window.getByTestId(`panel-add-tab-${GROUPS.chat}`),
-    ).not.toHaveAttribute('aria-haspopup');
-    await expect(
-      window.getByTestId(`panel-add-tab-${GROUPS.chat}`),
-    ).not.toHaveAttribute('aria-expanded');
-    await expect(
-      window.getByTestId(`panel-add-tab-${GROUPS.advancedActivity}`),
-    ).toHaveCount(0);
-    await expect(
-      window.getByTestId(`panel-add-tab-${GROUPS.bottom}`),
-    ).toHaveCount(0);
-    await expect(
-      window.getByTestId(`panel-add-panel-${GROUPS.advancedActivity}`),
-    ).toBeVisible();
+    for (const groupId of [
+      GROUPS.chat,
+      GROUPS.advancedActivity,
+      GROUPS.bottom,
+    ]) {
+      const add = window.getByTestId(`panel-add-tab-${groupId}`);
+      await expect(add).toBeVisible();
+      await add.click();
+      const menu = window.getByTestId('panel-add-menu');
+      await expect(menu).toBeVisible();
+      await expect(
+        menu.getByTestId('panel-add-menu-item-new-chat'),
+      ).toBeVisible();
+      await window.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+    }
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -282,7 +294,7 @@ test('Minimal renders Chat, Side Panel, and a full-width Bottom Drawer with loca
       .poll(async () => (await leafByGroup(window, GROUPS.side))?.collapsed)
       .toBeNull();
     await expect(
-      window.getByTestId(`panel-add-panel-${GROUPS.side}`),
+      window.getByTestId(`panel-add-tab-${GROUPS.side}`),
     ).toBeVisible();
 
     const [initialChat, initialSide] = await Promise.all([
@@ -344,24 +356,18 @@ test('Minimal renders Chat, Side Panel, and a full-width Bottom Drawer with loca
     );
 
     const sideLeaf = await leafByGroup(window, GROUPS.side);
-    expect(sideLeaf.panels.slice(0, 2).map((panel) => panel.kind)).toEqual([
-      'activity-section',
-      'file-explorer',
-    ]);
-    for (const panel of sideLeaf.panels.slice(0, 2)) {
-      await expect(
-        window.getByTestId(`panel-tab-close-${panel.panelId}`),
-      ).toHaveCount(0);
-    }
+    expect(sideLeaf.panels.map((panel) => panel.kind)).toEqual(['new-tab']);
+    await expect(
+      window
+        .getByTestId(`panel-group-${GROUPS.side}`)
+        .getByTestId('new-tab-picker'),
+    ).toBeVisible();
 
     const terminalToggle = window.getByTestId(
       'workspace-layout-terminal-toggle',
     );
     await expect(terminalToggle).toBeEnabled();
-    if (
-      (await terminalToggle.getAttribute('aria-label')) ===
-      'Collapse bottom drawer'
-    ) {
+    if (await window.getByTestId(`panel-group-${GROUPS.bottom}`).isVisible()) {
       await terminalToggle.click();
       await expect
         .poll(async () => (await leafByGroup(window, GROUPS.bottom))?.collapsed)
@@ -369,14 +375,14 @@ test('Minimal renders Chat, Side Panel, and a full-width Bottom Drawer with loca
     }
     await expect(terminalToggle).toHaveAttribute(
       'aria-label',
-      'Expand Bottom Drawer',
+      'Toggle bottom drawer',
     );
     await terminalToggle.click();
     await expect
       .poll(async () => (await leafByGroup(window, GROUPS.bottom))?.collapsed)
       .toBeNull();
     await expect(
-      window.getByTestId(`panel-add-panel-${GROUPS.bottom}`),
+      window.getByTestId(`panel-add-tab-${GROUPS.bottom}`),
     ).toBeVisible();
 
     const [chat, side, bottom] = await Promise.all([
@@ -389,7 +395,7 @@ test('Minimal renders Chat, Side Panel, and a full-width Bottom Drawer with loca
     expect(bottom).not.toBeNull();
     expect(Math.abs(bottom.x - chat.x)).toBeLessThanOrEqual(1);
     expect(
-      Math.abs(bottom.width - (chat.width + side.width)),
+      Math.abs(bottom.x + bottom.width - (side.x + side.width)),
     ).toBeLessThanOrEqual(2);
     expect(bottom.y).toBeGreaterThanOrEqual(chat.y + chat.height - 1);
     expect(bottom.y).toBeGreaterThanOrEqual(side.y + side.height - 1);
@@ -397,27 +403,36 @@ test('Minimal renders Chat, Side Panel, and a full-width Bottom Drawer with loca
       expect.objectContaining({ kind: 'terminal' }),
     );
 
-    for (const groupId of [GROUPS.side, GROUPS.bottom]) {
-      await window.getByTestId(`panel-add-panel-${groupId}`).click();
-      const menu = window.getByTestId('panel-add-menu');
-      await expect(menu).toBeVisible();
-      await expect(
-        menu.getByTestId('panel-add-menu-item-new-chat'),
-      ).toBeVisible();
-      await expect(
-        menu.getByTestId('panel-add-menu-item-browser'),
-      ).toBeVisible();
-      await expect(
-        menu.getByTestId('panel-add-menu-terminal-submenu'),
-      ).toBeVisible();
-      await expect(
-        menu.getByTestId('panel-add-menu-usage-submenu'),
-      ).toBeVisible();
-      await expect(
-        menu.getByTestId('panel-add-menu-activity-group'),
-      ).toBeVisible();
-      await window.keyboard.press('Escape');
+    for (const groupId of [GROUPS.side]) {
+      await window.getByTestId(`panel-add-tab-${groupId}`).click();
+      const picker = window
+        .getByTestId(`panel-group-${groupId}`)
+        .locator('[data-testid="new-tab-picker"]:visible');
+      await expect(picker).toBeVisible();
+      for (const kind of ['browser', 'terminal', 'usage']) {
+        await expect(
+          picker.getByTestId(`side-panel-empty-item-${kind}`),
+        ).toBeVisible();
+      }
+      const addedTab = (await leafByGroup(window, groupId)).activePanelId;
+      await closePanelTab(window, addedTab);
     }
+
+    await window.getByTestId(`panel-add-tab-${GROUPS.bottom}`).click();
+    await expect
+      .poll(
+        async () => (await leafByGroup(window, GROUPS.bottom)).panels.length,
+      )
+      .toBe(2);
+    expect(
+      (await leafByGroup(window, GROUPS.bottom)).panels.every(
+        (panel) => panel.kind === 'terminal',
+      ),
+    ).toBe(true);
+    await closePanelTab(
+      window,
+      (await leafByGroup(window, GROUPS.bottom)).activePanelId,
+    );
 
     await expect(
       window.getByTestId(`panel-group-hide-${GROUPS.bottom}`),
@@ -622,7 +637,7 @@ test('a Home-composer-created worktree inherits Minimal and starts with optional
     // than racing a CAN-2836 reopen once the chat starts running.
     await expect
       .poll(async () => initialCollapse(window, GROUPS.side))
-      .toEqual({ collapsed: 'right', auto: true });
+      .toEqual({ collapsed: 'right', auto: false });
     await expect
       .poll(async () => (await leafByGroup(window, GROUPS.bottom))?.collapsed)
       .toBe('bottom');
@@ -665,7 +680,7 @@ test('a Home-composer-created cowork Work Entry inherits Minimal and starts with
     // assertion once that rule is settled for Home-composer sends.
     await expect
       .poll(async () => initialCollapse(window, GROUPS.side))
-      .toEqual({ collapsed: 'right', auto: true });
+      .toEqual({ collapsed: 'right', auto: false });
     await expect
       .poll(async () => (await leafByGroup(window, GROUPS.bottom))?.collapsed)
       .toBe('bottom');
@@ -677,10 +692,15 @@ test('a Home-composer-created cowork Work Entry inherits Minimal and starts with
   }
 });
 
-test('Minimal local Add panel keeps user-selected tabs in Side Panel or Bottom Drawer', async () => {
+test('Minimal preserves an Advanced Bottom Drawer browser and adds terminals locally', async () => {
   test.setTimeout(120_000);
-  const { electronApp, userDataDir, window } = await openWorkspace();
+  const { electronApp, userDataDir, window } = await openWorkspace('advanced', {
+    advancedDefault: true,
+  });
   try {
+    // Create the non-terminal tab before converting the Advanced topology.
+    await addPanel(window, GROUPS.bottom, 'browser');
+    await switchMode(window, 'minimal');
     await ensureSidePanelVisible(window);
     await addPanel(window, GROUPS.side, 'browser');
     await expect
@@ -694,7 +714,6 @@ test('Minimal local Add panel keeps user-selected tabs in Side Panel or Bottom D
       .toBe(1);
 
     await ensureBottomDrawerVisible(window);
-    await addPanel(window, GROUPS.bottom, 'browser');
     await expect
       .poll(
         async () =>
@@ -712,7 +731,7 @@ test('Minimal local Add panel keeps user-selected tabs in Side Panel or Bottom D
     ]);
     expect(Math.abs(bottom.x - chat.x)).toBeLessThanOrEqual(1);
     expect(
-      Math.abs(bottom.width - (chat.width + side.width)),
+      Math.abs(bottom.x + bottom.width - (side.x + side.width)),
     ).toBeLessThanOrEqual(2);
 
     const bottomBeforeToggle = await leafByGroup(window, GROUPS.bottom);
@@ -754,14 +773,12 @@ test('Minimal local Add panel keeps user-selected tabs in Side Panel or Bottom D
       (panel) => panel.kind === 'browser',
     );
     await window.getByTestId(`panel-tab-${bottomBrowser.panelId}`).click();
-    const quickAdd = window.getByTestId(`panel-quick-add-${GROUPS.bottom}`);
-    await expect(quickAdd).toHaveAttribute('aria-label', 'Add another browser');
-    await quickAdd.click();
+    await window.getByTestId(`panel-add-tab-${GROUPS.bottom}`).click();
     await expect
       .poll(
         async () =>
           (await leafByGroup(window, GROUPS.bottom)).panels.filter(
-            (panel) => panel.kind === 'browser',
+            (panel) => panel.kind === 'terminal',
           ).length,
       )
       .toBe(2);
@@ -775,6 +792,7 @@ test('Minimal external file and terminal flows default to Side Panel and Bottom 
   const { electronApp, userDataDir, window } = await openWorkspace();
   try {
     await ensureSidePanelVisible(window);
+    await window.getByTestId('side-panel-empty-item-file-explorer').click();
     const sideLeaf = await leafByGroup(window, GROUPS.side);
     const explorer = sideLeaf.panels.find(
       (panel) => panel.kind === 'file-explorer',
@@ -829,9 +847,10 @@ test('Minimal external file and terminal flows default to Side Panel and Bottom 
       }),
     ]);
     await closePanelTab(window, terminalLeaf.panels[0].panelId);
-    await expect(
-      window.getByTestId(`panel-group-${GROUPS.bottom}`),
-    ).toHaveCount(0);
+    // Filled tabs retain the empty group after its final tab closes.
+    await expect
+      .poll(async () => (await leafByGroup(window, GROUPS.bottom)).panels)
+      .toEqual([]);
 
     // The Bottom Drawer toggle reasserts its canonical group and a fresh
     // terminal; the terminal already open in Side Panel is not reused.
@@ -929,11 +948,12 @@ test('Minimal preserves a Side Panel terminal placement across relaunch', async 
 
 test('Minimal preserves a Bottom Drawer file whose path was assigned after creation', async () => {
   test.setTimeout(180_000);
-  const first = await openWorkspace();
+  const first = await openWorkspace('advanced', { advancedDefault: true });
   const { userDataDir } = first;
   let fileTabId;
   try {
-    await ensureBottomDrawerVisible(first.window);
+    // Assign the path to an existing Advanced file tab, then verify that
+    // Minimal conversion and relaunch preserve its drawer placement.
     await addPanel(first.window, GROUPS.bottom, 'new-file');
     const bottomBody = first.window.getByTestId(
       `panel-group-body-${GROUPS.bottom}`,
@@ -952,6 +972,9 @@ test('Minimal preserves a Bottom Drawer file whose path was assigned after creat
     fileTabId = filePanel?.instance?.fileTabId;
     expect(fileTabId).toEqual(expect.any(String));
     expect(filePanel?.instance?.filePath ?? '').toBe('');
+    await switchMode(first.window, 'minimal');
+    await ensureBottomDrawerVisible(first.window);
+    await expect(bottomBody).toBeVisible();
     await first.window.waitForTimeout(1500);
   } finally {
     await closeCanopy(first.electronApp, userDataDir, { keepUserData: true });
@@ -991,7 +1014,7 @@ test('Advanced to Minimal preserves every tab and sends the Advanced lower row t
     advancedDefault: true,
   });
   try {
-    await window.getByTestId(`panel-add-panel-${GROUPS.bottom}`).click();
+    await window.getByTestId(`panel-add-tab-${GROUPS.bottom}`).click();
     await window.getByTestId('panel-add-menu-item-browser').click();
     await expect(window.getByTestId('panel-add-menu')).toBeHidden({
       timeout: 20_000,
@@ -1062,7 +1085,7 @@ test('Advanced to Minimal preserves every tab and sends the Advanced lower row t
     await switchMode(window, 'advanced');
     await expect.poll(() => getLayout(window)).toEqual(minimalRoot);
     await expect(
-      window.getByTestId(`panel-add-panel-${GROUPS.chat}`),
+      window.getByTestId(`panel-add-tab-${GROUPS.chat}`),
     ).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
@@ -1075,7 +1098,7 @@ test('Advanced to Minimal adopts auxiliary tabs without confirmation', async () 
     advancedDefault: true,
   });
   try {
-    await window.getByTestId(`panel-add-panel-${GROUPS.bottom}`).click();
+    await window.getByTestId(`panel-add-tab-${GROUPS.bottom}`).click();
     await window.getByTestId('panel-add-menu-usage-submenu').click();
     await window.getByTestId('panel-add-menu-item-usage-all').click();
     await expect
@@ -1139,9 +1162,32 @@ test('failed Advanced conversion restores the layout and retains Advanced mode',
     await expect(
       window.getByText("Couldn't switch layout mode", { exact: true }),
     ).toBeVisible();
-    await expect.poll(() => getLayout(window)).toEqual(before);
+    // Restoring the grid may round dimensions by one pixel. Keep every
+    // topology and state field exact, and bound each geometry field separately.
+    const expectRestored = (actual, expected, key = '') => {
+      if (
+        ['size', 'width', 'height'].includes(key) &&
+        typeof actual === 'number' &&
+        typeof expected === 'number'
+      ) {
+        expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1);
+      } else if (actual && expected && typeof expected === 'object') {
+        expect(Array.isArray(actual)).toBe(Array.isArray(expected));
+        expect(Object.keys(actual).sort()).toEqual(
+          Object.keys(expected).sort(),
+        );
+        for (const childKey of Object.keys(expected)) {
+          expectRestored(actual[childKey], expected[childKey], childKey);
+        }
+      } else {
+        expect(actual).toEqual(expected);
+      }
+    };
+    await expect(async () => {
+      expectRestored(await getLayout(window), before);
+    }).toPass({ timeout: 15_000 });
     await expect(
-      window.getByTestId(`panel-add-panel-${GROUPS.chat}`),
+      window.getByTestId(`panel-add-tab-${GROUPS.chat}`),
     ).toBeVisible();
 
     const persistedMode = JSON.parse(

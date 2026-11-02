@@ -33,7 +33,7 @@ const DEFAULT_LIMITS: EventPressureLimits = {
 };
 
 /**
- * While chat storage group-commits (the delta-journal experiment), several
+ * Chat storage group-commits through the delta journal, so several
  * commits of one chat are in flight together and share a journal sync, so
  * the bound is on bytes, not on one event at a time: 256 KiB in flight per
  * chat, a quarter of a group-commit batch, resuming at half. An event the
@@ -48,6 +48,7 @@ export const GROUP_COMMIT_EVENT_PRESSURE_LIMITS: EventPressureLimits = {
   measureExactly: true,
   preserveHandOffOrder: true,
 };
+
 const ESTIMATE_NODE_LIMIT = 64;
 const ESTIMATE_DEPTH_LIMIT = 4;
 
@@ -69,15 +70,22 @@ export interface EventPressureAdmission {
 }
 
 interface WaitingAdmission {
+  sequence: number;
   charge: Charge;
   queuedAt: number;
   resolve: (release: () => void) => void;
 }
 
 interface ActiveAdmission {
+  sequence: number;
   admittedAt: number;
   previous?: ActiveAdmission;
   next?: ActiveAdmission;
+}
+
+interface DrainWaiter {
+  position: number;
+  resolve: () => void;
 }
 
 /**
@@ -166,8 +174,11 @@ function measureCharge(value: unknown, estimate: Charge): Charge {
  * One route owns one charge per provider event, across arbitration and its
  * canonical persistence queue. An oversized/uncertain event has an exclusive
  * slot. The producer must await an admission promise before sending more.
+ * `drain()` is a finite barrier over admissions made before its call; later
+ * provider events do not extend it.
  */
 export class EventPressureGate {
+  private admissions = 0;
   private chargedBytes = 0;
   private activeCount = 0;
   private activeUncertainCount = 0;
@@ -183,15 +194,17 @@ export class EventPressureGate {
   private uncertainWaitingCount = 0;
   private oldestActive?: ActiveAdmission;
   private newestActive?: ActiveAdmission;
-  private readonly drainWaiters = new Set<() => void>();
+  private readonly drainWaiters: Array<DrainWaiter | undefined> = [];
+  private drainWaitersHead = 0;
 
   /**
    * `limits` is read at every admission and release, so a change of the
    * experiment applies to the next event. Undefined: the default limits.
    */
   constructor(
-    private readonly limits: () => EventPressureLimits | undefined = () =>
-      undefined,
+    private readonly limits: () => EventPressureLimits | undefined = ():
+      | EventPressureLimits
+      | undefined => undefined,
   ) {}
 
   private current(): EventPressureLimits {
@@ -202,6 +215,7 @@ export class EventPressureGate {
     value: unknown,
     admission: EventPressureAdmission = {},
   ): (() => void) | Promise<() => void> {
+    const sequence = ++this.admissions;
     const estimate = estimateCharge(value);
     const limits = this.current();
     const measured =
@@ -213,26 +227,30 @@ export class EventPressureGate {
     if (this.waiting.length === this.waitingHead && this.canAdmit(charge)) {
       // The default limits: granted synchronously, as before group commit.
       if (!limits.preserveHandOffOrder || this.handoffs === 0)
-        return this.grant(charge);
+        return this.grant(charge, sequence);
       // A grant handed to an earlier waiter has not reached it yet (its
       // continuation is a queued microtask). Granting this event
       // synchronously would let it overtake that waiter, so it is granted
       // through a promise whose continuation is queued behind it.
-      return this.handOff(this.grant(charge));
+      return this.handOff(this.grant(charge, sequence));
     }
     this.paused = true;
     return new Promise<() => void>((resolve) => {
-      this.waiting.push({ charge, queuedAt: Date.now(), resolve });
+      this.waiting.push({ sequence, charge, queuedAt: Date.now(), resolve });
       if (charge.uncertain) this.uncertainWaitingCount += 1;
       this.pump();
     });
   }
 
+  /** Waits for every admission made before this call, but not later events. */
   drain(): Promise<void> {
-    if (this.activeCount === 0 && this.waiting.length === this.waitingHead) {
+    const position = this.admissions;
+    if (position < this.lowestUnreleasedSequence()) {
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => this.drainWaiters.add(resolve));
+    return new Promise<void>((resolve) =>
+      this.drainWaiters.push({ position, resolve }),
+    );
   }
 
   snapshot(): {
@@ -300,8 +318,9 @@ export class EventPressureGate {
     return this.chargedBytes + charge.bytes <= highWaterBytes;
   }
 
-  private grant(charge: Charge): () => void {
+  private grant(charge: Charge, sequence: number): () => void {
     const admission: ActiveAdmission = {
+      sequence,
       admittedAt: Date.now(),
       previous: this.newestActive,
     };
@@ -337,11 +356,47 @@ export class EventPressureGate {
       if (this.chargedBytes <= this.current().lowWaterBytes)
         this.paused = false;
       this.pump();
-      if (this.activeCount === 0 && this.waiting.length === this.waitingHead) {
-        for (const resolve of Array.from(this.drainWaiters)) resolve();
-        this.drainWaiters.clear();
-      }
+      this.resolveDrains();
     };
+  }
+
+  /**
+   * Grants preserve admission order: immediate grants happen only with no
+   * waiting admissions, `pump()` grants FIFO from `waitingHead`, and the
+   * hand-off path grants synchronously. Therefore every active sequence is
+   * lower than every waiting sequence, and the active list remains in
+   * sequence order even when releases remove nodes out of order.
+   */
+  private lowestUnreleasedSequence(): number {
+    return (
+      this.oldestActive?.sequence ??
+      this.waiting[this.waitingHead]?.sequence ??
+      Infinity
+    );
+  }
+
+  private resolveDrains(): void {
+    if (this.drainWaitersHead === this.drainWaiters.length) return;
+
+    const lowestUnreleased = this.lowestUnreleasedSequence();
+    while (this.drainWaitersHead < this.drainWaiters.length) {
+      const waiter = this.drainWaiters[this.drainWaitersHead];
+      if (!waiter || waiter.position >= lowestUnreleased) break;
+      this.drainWaiters[this.drainWaitersHead] = undefined;
+      this.drainWaitersHead += 1;
+      waiter.resolve();
+    }
+
+    if (this.drainWaitersHead === this.drainWaiters.length) {
+      this.drainWaiters.length = 0;
+      this.drainWaitersHead = 0;
+    } else if (
+      this.drainWaitersHead > 1024 &&
+      this.drainWaitersHead * 2 >= this.drainWaiters.length
+    ) {
+      this.drainWaiters.splice(0, this.drainWaitersHead);
+      this.drainWaitersHead = 0;
+    }
   }
 
   private pump(): void {
@@ -351,7 +406,7 @@ export class EventPressureGate {
       this.waiting[this.waitingHead] = undefined;
       this.waitingHead += 1;
       if (next.charge.uncertain) this.uncertainWaitingCount -= 1;
-      next.resolve(this.grant(next.charge));
+      next.resolve(this.grant(next.charge, next.sequence));
       if (this.current().preserveHandOffOrder) this.noteHandoff();
     }
     if (this.waitingHead === this.waiting.length) {

@@ -224,11 +224,21 @@ export function calendarEventToneClasses(event: CalendarEvent): string {
         return 'bg-fg-primary/[0.06] fg-secondary';
     }
   }
-  const disabled =
-    event.activity !== null && !event.activity.enabled
-      ? ' border-dashed opacity-50'
-      : '';
+  const disabled = isPausedOccurrence(event) ? ' border-dashed opacity-50' : '';
   return `border-fg-info/40 bg-info-subtle fg-info${disabled}`;
+}
+
+/**
+ * A predicted fire of a paused automation. It rests at `opacity-50`
+ * (`calendarEventToneClasses`), so its hover dim starts from there
+ * (`calendarEventInteractionClasses`).
+ */
+function isPausedOccurrence(event: CalendarEvent): boolean {
+  return (
+    event.kind === 'occurrence' &&
+    event.activity !== null &&
+    !event.activity.enabled
+  );
 }
 
 /** Selection treatment matching the Triggered table's selected-row affordance. */
@@ -236,6 +246,20 @@ export function calendarEventSelectedClasses(selected: boolean): string {
   return selected
     ? 'ring-2 ring-line-selected ring-offset-1 ring-offset-base'
     : '';
+}
+
+/**
+ * Cursor and hover classes for a grid chip. Hover dims one step below the
+ * chip's resting opacity, instantly, and never brightens: 100% to 90%, and a
+ * paused occurrence 50% to 40% rather than up to 90%.
+ */
+export function calendarEventInteractionClasses(event: CalendarEvent): string {
+  if (!isCalendarEventClickable(event)) {
+    return 'cursor-default';
+  }
+  return isPausedOccurrence(event)
+    ? 'cursor-pointer hover:opacity-40'
+    : 'cursor-pointer hover:opacity-90';
 }
 
 /** Short local time label, e.g. "9:00 AM". */

@@ -96,11 +96,17 @@ function tile(role: string): Element | null {
   );
 }
 
-function option(role: string): HTMLButtonElement {
-  return button(`[data-testid="settings-profile-role-option-${role}"]`);
+function option(role: string): HTMLInputElement {
+  const found = document.querySelector(
+    `[data-testid="settings-profile-role-option-${role}"]`,
+  );
+  if (!(found instanceof HTMLInputElement)) {
+    throw new Error(`Expected role checkbox: ${role}`);
+  }
+  return found;
 }
 
-function click(target: HTMLButtonElement): void {
+function click(target: HTMLElement): void {
   act(() => target.click());
 }
 
@@ -134,7 +140,7 @@ describe('ProfileRoleSection', () => {
     }
   });
 
-  it('saves an empty answer and reopens only the tools step that asks for roles', async () => {
+  it('clears roles with a narrow patch without rewriting legacy progress', async () => {
     setPreferences({
       profileRole: 'other',
       profileRoles: ['other'],
@@ -142,9 +148,7 @@ describe('ProfileRoleSection', () => {
       homeOnboardingSuggestions: {
         startedAt: '2026-09-01T00:00:00.000Z',
         entries: {
-          'add-repo': { completedAt: 'done' },
-          github: { completedAt: 'done', dismissedAt: 'skipped' },
-          notifications: { completedAt: 'done' },
+          'plan-mode': { completedAt: '2026-09-01T00:00:00.000Z' },
         },
       },
     });
@@ -160,13 +164,6 @@ describe('ProfileRoleSection', () => {
         profileRole: undefined,
         profileRoles: [],
         profileRoleDetail: '',
-        homeOnboardingSuggestions: {
-          startedAt: '2026-09-01T00:00:00.000Z',
-          entries: {
-            'add-repo': { completedAt: 'done' },
-            notifications: { completedAt: 'done' },
-          },
-        },
       });
       expect(container.textContent).not.toContain('Not set');
       expect(tile('other')).toBeNull();
@@ -217,8 +214,8 @@ describe('ProfileRoleSection', () => {
       expect(tile('sales')?.textContent).toBe('Sales');
       expect(tile('marketing-sales')).toBeNull();
       openEditor();
-      expect(option('marketing').getAttribute('aria-pressed')).toBe('true');
-      expect(option('sales').getAttribute('aria-pressed')).toBe('true');
+      expect(option('marketing').checked).toBe(true);
+      expect(option('sales').checked).toBe(true);
       expect(
         document.querySelector(
           '[data-testid="settings-profile-role-option-marketing-sales"]',
@@ -250,8 +247,8 @@ describe('ProfileRoleSection', () => {
       expect(tile('support')?.textContent).toBe('Support');
       expect(tile('operations-support')).toBeNull();
       openEditor();
-      expect(option('operations').getAttribute('aria-pressed')).toBe('true');
-      expect(option('support').getAttribute('aria-pressed')).toBe('true');
+      expect(option('operations').checked).toBe(true);
+      expect(option('support').checked).toBe(true);
       expect(
         document.querySelector(
           '[data-testid="settings-profile-role-option-operations-support"]',
@@ -296,11 +293,9 @@ describe('ProfileRoleSection', () => {
             Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       openEditor();
-      expect(option('software-engineer').getAttribute('aria-pressed')).toBe(
-        'true',
-      );
-      expect(option('designer').getAttribute('aria-pressed')).toBe('true');
-      expect(option('founder').getAttribute('aria-pressed')).toBe('false');
+      expect(option('software-engineer').checked).toBe(true);
+      expect(option('designer').checked).toBe(true);
+      expect(option('founder').checked).toBe(false);
       expect(
         document.querySelectorAll(
           '[data-testid^="settings-profile-role-option-"]',
@@ -333,7 +328,7 @@ describe('ProfileRoleSection', () => {
         button('[data-testid="settings-profile-role-edit"]'),
       ).not.toBeNull();
       openEditor();
-      expect(option('designer').getAttribute('aria-pressed')).toBe('false');
+      expect(option('designer').checked).toBe(false);
       expect(
         button('[data-testid="settings-profile-role-save"]').disabled,
       ).toBe(false);
@@ -454,7 +449,7 @@ describe('ProfileRoleSection', () => {
       click(option('founder'));
       broadcastSynced({ profileRole: 'student', profileRoles: ['student'] });
       expect(tile('student')).not.toBeNull();
-      expect(option('founder').getAttribute('aria-pressed')).toBe('true');
+      expect(option('founder').checked).toBe(true);
       click(button('[data-testid="settings-profile-role-cancel"]'));
       expect(tile('designer')).toBeNull();
       expect(tile('student')).not.toBeNull();

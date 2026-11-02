@@ -21,6 +21,8 @@ export type OwningWorktreeChatSendOptions = Pick<
    * tab, before the send is dispatched or settles (for example to show it).
    */
   readonly onChatChosen?: (chatId: string) => void;
+  /** Observes accepted admission without waiting for the send to settle. */
+  readonly onDispatchAccepted?: (chatId: string) => void;
 };
 
 /** Shown when the owning worktree has no chat that can take the message. */
@@ -83,7 +85,11 @@ export async function resolveOwningWorktreeChatId(
 export async function sendToOwningWorktreeChat(
   scope: OwningWorktreeScope,
   text: string,
-  { onChatChosen, ...dispatchOptions }: OwningWorktreeChatSendOptions = {},
+  {
+    onChatChosen,
+    onDispatchAccepted,
+    ...dispatchOptions
+  }: OwningWorktreeChatSendOptions = {},
 ): Promise<string> {
   const chatId = await resolveOwningWorktreeChatId(scope);
   if (!chatId) {
@@ -109,6 +115,9 @@ export async function sendToOwningWorktreeChat(
   await store.sendMessage(text, undefined, target, undefined, {
     ...dispatchOptions,
     throwOnDispatchFailure: true,
+    ...(onDispatchAccepted
+      ? { onDispatchAccepted: (): void => onDispatchAccepted(chatId) }
+      : {}),
     onPreDispatchRejected: () => {
       dispatch.rejectedBeforeDispatch = true;
     },

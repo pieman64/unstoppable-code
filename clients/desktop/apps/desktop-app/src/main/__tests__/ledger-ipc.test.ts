@@ -3,6 +3,7 @@ import type {
   LedgerCommandReceipt,
 } from '@canopy/protocol/canopy-core';
 import type {
+  LedgerTaskViewScope,
   LedgerViewChangedEvent,
   LedgerViewScope,
   LedgerViewSource,
@@ -39,7 +40,7 @@ const filesystemServices = {
 };
 
 // The harness binds TEST_CONTAINER: worktree-1 of workspace-1.
-const SCOPE: LedgerViewScope = {
+const SCOPE: LedgerTaskViewScope = {
   projectId: 'workspace-1',
   worktreeId: 'worktree-1',
 };
@@ -90,6 +91,7 @@ describe('Ledger panel IPC', () => {
           harness.bindings.revoke(bindingId),
       }),
       container: (scope) =>
+        !('kind' in scope) &&
         scope.projectId === SCOPE.projectId &&
         scope.worktreeId === SCOPE.worktreeId
           ? TEST_CONTAINER
@@ -100,6 +102,20 @@ describe('Ledger panel IPC', () => {
         Promise.resolve(null),
       resolveSource: (): Promise<LedgerViewSource> =>
         Promise.resolve(CHAT_SOURCE),
+      globalScope: async (
+        ledgerId,
+      ): ReturnType<LedgerIpcHost['globalScope']> => {
+        const scope = await harness.store.client.getScope(ledgerId);
+        return scope === null
+          ? null
+          : {
+              container: scope.scope.container,
+              containerCreatedAt: scope.containerCreatedAt,
+              accountId: scope.accountId,
+            };
+      },
+      accountId: (): Promise<string | null> =>
+        Promise.resolve(harness.accountId),
       ...overrides,
     };
   }
@@ -168,6 +184,189 @@ describe('Ledger panel IPC', () => {
     expect(bindingIds.map((id) => harness.bindings.resolve(id))).toEqual([
       undefined,
     ]);
+  });
+
+  describe('a global (workflow) Ledger', () => {
+    async function recordGlobalEntry(): Promise<{
+      readonly ledgerId: string;
+      readonly entryId: string;
+    }> {
+      const scope = await harness.service.scopes.resolveGlobal({
+        kind: 'personal',
+      });
+      const agent = harness.register({
+        container: scope.container,
+        containerCreatedAt: scope.containerCreatedAt,
+        role: 'pipeline_agent',
+        actor: {
+          kind: 'pipeline_agent',
+          originKey: 'session-global',
+          displayName: 'Triage · Nightly',
+        },
+        origin: {
+          kind: 'pipeline_agent',
+          executionId: 'execution-global',
+          physicalJobId: 'triage',
+          logicalJobId: 'triage',
+          stepId: 'triage',
+          attempt: 1,
+          iteration: 1,
+          agentSessionId: 'session-global',
+        },
+      });
+      const { entry } = await harness.service.addEntry(
+        {
+          type: 'TASK',
+          title: 'Nightly triage',
+          content: 'Three flaky specs.',
+          _meta: { idempotencyKey: 'global-add' },
+        },
+        harness.context(agent, 'global-add'),
+      );
+      return { ledgerId: scope.ledgerId, entryId: entry.entryId };
+    }
+
+    it('reads and updates it by its ledger, as the local user', async () => {
+      const { ledgerId, entryId } = await recordGlobalEntry();
+      const scope: LedgerViewScope = {
+        kind: 'global',
+        owner: { kind: 'personal' },
+        ledgerId,
+      };
+
+      const read = await searchLedgerEntriesForView(
+        dispatcher,
+        IPC_CALLER,
+        { scope, params: {} },
+        host(),
+      );
+      const updated = await updateLedgerEntryForView(
+        dispatcher,
+        IPC_CALLER,
+        {
+          scope,
+          requestKey: 'global-update',
+          params: { entryId, expectedRevision: 1, status: 'NEEDS_REVIEW' },
+        },
+        host(),
+      );
+
+      expect(read).toMatchObject({
+        status: 'ok',
+        value: { entries: [{ entryId }] },
+      });
+      expect(updated).toMatchObject({
+        status: 'ok',
+        value: { changed: true, entry: { entryId, revision: 2 } },
+      });
+    });
+
+    it('only corrects, never adds a top-level entry', async () => {
+      const { ledgerId, entryId } = await recordGlobalEntry();
+      const scope: LedgerViewScope = {
+        kind: 'global',
+        owner: { kind: 'personal' },
+        ledgerId,
+      };
+      const add = (
+        requestKey: string,
+        supersedesEntryId?: string,
+      ): ReturnType<typeof addLedgerEntryForView> =>
+        addLedgerEntryForView(
+          dispatcher,
+          IPC_CALLER,
+          {
+            scope,
+            requestKey,
+            params: {
+              type: 'OBSERVATION',
+              title: 'Nightly triage',
+              content: 'Two flaky specs.',
+              ...(supersedesEntryId === undefined ? {} : { supersedesEntryId }),
+            },
+          },
+          host(),
+        );
+      const countsBefore = harness.store.repository.getStorageCounts();
+
+      await expect(add('global-top-level')).resolves.toMatchObject({
+        status: 'error',
+        reason: 'INVALID_INPUT',
+      });
+      expect(harness.store.repository.getStorageCounts().entries).toBe(
+        countsBefore.entries,
+      );
+      await expect(add('global-correction', entryId)).resolves.toMatchObject({
+        status: 'ok',
+      });
+    });
+
+    it('answers no scope while the account cannot be read', async () => {
+      const { ledgerId } = await recordGlobalEntry();
+
+      await expect(
+        searchLedgerEntriesForView(
+          dispatcher,
+          IPC_CALLER,
+          {
+            scope: { kind: 'global', owner: { kind: 'personal' }, ledgerId },
+            params: {},
+          },
+          host({
+            accountId: (): Promise<string | null> =>
+              Promise.reject(new Error('The account could not be read')),
+          }),
+        ),
+      ).resolves.toEqual({ status: 'unavailable', reason: 'no_scope' });
+    });
+
+    it("never answers for another owner's, another account's or an unknown ledger", async () => {
+      const { ledgerId } = await recordGlobalEntry();
+      const read = (scope: unknown): Promise<unknown> =>
+        searchLedgerEntriesForView(
+          dispatcher,
+          IPC_CALLER,
+          { scope, params: {} },
+          host(),
+        );
+      const noScope = { status: 'unavailable', reason: 'no_scope' };
+
+      await expect(
+        read({
+          kind: 'global',
+          owner: {
+            kind: 'organization',
+            organizationId: '0b4f8a52-7c1d-4e8a-9f3b-2d6c1e5a7b90',
+          },
+          ledgerId,
+        }),
+      ).resolves.toEqual(noScope);
+      await expect(
+        read({
+          kind: 'global',
+          owner: { kind: 'personal' },
+          ledgerId: '11111111-2222-4333-8444-555555555555',
+        }),
+      ).resolves.toEqual(noScope);
+      // A task's ledger is never a global one.
+      const taskLedgerId = (await addTask('task-add', 'A task')).entry.scope
+        .ledgerId;
+      await expect(
+        read({
+          kind: 'global',
+          owner: { kind: 'personal' },
+          ledgerId: taskLedgerId,
+        }),
+      ).resolves.toEqual(noScope);
+      harness.accountId = 'account-2';
+      await expect(
+        read({ kind: 'global', owner: { kind: 'personal' }, ledgerId }),
+      ).resolves.toEqual(noScope);
+      // Malformed addresses are refused before any lookup.
+      await expect(
+        read({ kind: 'global', owner: { kind: 'personal' }, ledgerId: 'x' }),
+      ).resolves.toMatchObject({ status: 'error', reason: 'INVALID_INPUT' });
+    });
   });
 
   it('reads nothing while the Ledger is off', async () => {
@@ -319,6 +518,20 @@ describe('Ledger panel IPC writes', () => {
       container: () => TEST_CONTAINER,
       containerCreatedAt: (): Promise<string | null> =>
         Promise.resolve(TEST_CONTAINER_CREATED_AT),
+      globalScope: async (
+        ledgerId,
+      ): ReturnType<LedgerIpcHost['globalScope']> => {
+        const scope = await harness.store.client.getScope(ledgerId);
+        return scope === null
+          ? null
+          : {
+              container: scope.scope.container,
+              containerCreatedAt: scope.containerCreatedAt,
+              accountId: scope.accountId,
+            };
+      },
+      accountId: (): Promise<string | null> =>
+        Promise.resolve(harness.accountId),
       archivedContainerCreatedAt: (): Promise<string | null> =>
         Promise.resolve(null),
       resolveSource: (): Promise<LedgerViewSource> =>
@@ -672,6 +885,7 @@ describe('Ledger Feed IPC', () => {
           harness.bindings.revoke(bindingId),
       }),
       container: (scope) =>
+        !('kind' in scope) &&
         scope.projectId === SCOPE.projectId &&
         scope.worktreeId === SCOPE.worktreeId
           ? TEST_CONTAINER
@@ -682,6 +896,20 @@ describe('Ledger Feed IPC', () => {
         Promise.resolve(null),
       resolveSource: (): Promise<LedgerViewSource> =>
         Promise.resolve(CHAT_SOURCE),
+      globalScope: async (
+        ledgerId,
+      ): ReturnType<LedgerIpcHost['globalScope']> => {
+        const scope = await harness.store.client.getScope(ledgerId);
+        return scope === null
+          ? null
+          : {
+              container: scope.scope.container,
+              containerCreatedAt: scope.containerCreatedAt,
+              accountId: scope.accountId,
+            };
+      },
+      accountId: (): Promise<string | null> =>
+        Promise.resolve(harness.accountId),
     };
   }
 

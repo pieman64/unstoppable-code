@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { type JSX, useEffect, useState } from 'react';
 import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
@@ -95,14 +96,15 @@ export function HookChatPluginSelectorModal(
             <h2 className="text-m font-semibold fg-primary">{title}</h2>
             <p className="mt-1 text-xs fg-secondary">{helperText}</p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-lg fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
             aria-label="Close"
           >
             <AppCatalogCloseIcon width="14" height="14" />
-          </button>
+          </Button>
         </div>
 
         {fullMode ? (
@@ -138,15 +140,12 @@ export function HookChatPluginSelectorModal(
               : `${selectionCount} selected`}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg px-3 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
-            >
+            <Button size="compact" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
+              size="compact"
               onClick={() => {
                 if (props.mode === 'full') {
                   props.onSave(normalizePluginSelections(fullSelections));
@@ -154,10 +153,9 @@ export function HookChatPluginSelectorModal(
                   props.onSave(portableSelections);
                 }
               }}
-              className="rounded-lg bg-fg-primary/10 px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-fg-primary/15"
             >
               Save
-            </button>
+            </Button>
           </div>
         </div>
       </div>

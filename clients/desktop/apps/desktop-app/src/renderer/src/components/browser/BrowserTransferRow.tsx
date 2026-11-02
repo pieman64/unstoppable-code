@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState, type JSX } from 'react';
 import type { BrowserTransfer } from '@canopy/desktop-shared/types';
-import { LinearProgress } from '@canopy/ui-shared';
+import { Button, LinearProgress } from '@canopy/ui-shared';
 import { isActiveTransfer, useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserDownload } from '@/lib/browserChatStaging';
 import {
@@ -193,15 +193,15 @@ function RowButton({
 }: RowButtonProps): JSX.Element {
   // The accessible name is the visible label; the file name describes it.
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost-quiet"
+      size="compact"
       data-testid={testId}
       aria-describedby={describedBy}
       disabled={disabled}
       onClick={onClick}
-      className="inline-flex shrink-0 items-center rounded border bg-base/50 px-1.5 py-0.5 text-2xs fg-primary/80 transition hover:bg-base disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
-    </button>
+    </Button>
   );
 }

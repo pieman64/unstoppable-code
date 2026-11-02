@@ -1,11 +1,13 @@
 /** @jest-environment jsdom */
 import { act, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CuratedPipelineCatalogProps } from '@canopy/ui-shared';
 import type { CuratedPipelineDetail } from '@canopy/protocol/pipeline-catalog';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
-let mockProps: CuratedPipelineCatalogProps;
-import { useCuratedPipelines } from '../useCuratedPipelines';
+let mockProps: CuratedPipelinesController;
+import {
+  useCuratedPipelines,
+  type CuratedPipelinesController,
+} from '../useCuratedPipelines';
 let options: Parameters<typeof useCuratedPipelines>[0] = {};
 function Harness(): null {
   mockProps = useCuratedPipelines(options);

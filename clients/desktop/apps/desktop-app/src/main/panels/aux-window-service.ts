@@ -38,6 +38,7 @@ import type { BrowserWindow, HandlerDetails } from 'electron';
 import { isPanelAuxWindowFrameName } from '@canopy/protocol';
 import { BRAND } from '@canopy/brand/current';
 import { validateWindowBounds } from '../lib/window-state';
+import { getWindowTitleBarOptions } from '../lib/window-title-bar';
 import { openExternalGuarded } from '../lib/open-external';
 import { shouldShowUiAutomationWindow } from '../lib/ui-automation-window';
 import { registerUiZoomMinimumSize, scaledMinimumSize } from '../lib/ui-zoom';
@@ -141,15 +142,10 @@ export function decidePanelAuxWindowOpen(
       // release-like automation, windows render but are never shown.
       show: shouldShowUiAutomationWindow(),
       title: BRAND.displayName,
-      // Compact chrome (main-window convention: hidden title bar + explicit
-      // traffic-light placement): the aux window renders its own single-row
-      // top bar (`AuxPanelWindow`'s drag-region header) instead of the OS
-      // title bar, so the row right of the macOS traffic lights carries the
-      // source indicator + merge-back control with no wasted second row.
-      // Chrome-only change — the security surface (contextIsolation, no
-      // preload, sandbox profile, nodeIntegration) is untouched.
-      titleBarStyle: 'hidden',
-      trafficLightPosition: { x: 15, y: 12 },
+      ...getWindowTitleBarOptions({
+        titleBarStyle: 'hidden',
+        trafficLightPosition: { x: 15, y: 12 },
+      }),
       autoHideMenuBar: true,
       webPreferences: {
         // NO preload: the child document runs no app code of its own (all

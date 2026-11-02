@@ -58,7 +58,9 @@ const readPreferencesFileMock = jest.fn<
 >();
 
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: readPreferencesFileMock,
+  get readPreferencesFile(): typeof readPreferencesFileMock {
+    return readPreferencesFileMock;
+  },
   // Local memory is opt-in (CAN-1969); default off in tests.
   readLocalMemoryEnabledPreference: jest.fn(() => Promise.resolve(false)),
 }));
@@ -74,8 +76,12 @@ const startObservedHelperTaskMock = jest.fn<
 const finalizeObservedHelperTaskMock = jest.fn();
 
 jest.mock('../lib/helper-observed-task', () => ({
-  startObservedHelperTask: startObservedHelperTaskMock,
-  finalizeObservedHelperTask: finalizeObservedHelperTaskMock,
+  get startObservedHelperTask(): typeof startObservedHelperTaskMock {
+    return startObservedHelperTaskMock;
+  },
+  get finalizeObservedHelperTask(): typeof finalizeObservedHelperTaskMock {
+    return finalizeObservedHelperTaskMock;
+  },
 }));
 
 const transcriptSeedMock = jest.fn();
@@ -83,8 +89,12 @@ const transcriptAppendEventMock = jest.fn();
 
 jest.mock('../lib/helper-transcript-observer', () => ({
   createHelperTranscriptObserver: jest.fn(() => ({
-    seed: transcriptSeedMock,
-    appendEvent: transcriptAppendEventMock,
+    get seed(): typeof transcriptSeedMock {
+      return transcriptSeedMock;
+    },
+    get appendEvent(): typeof transcriptAppendEventMock {
+      return transcriptAppendEventMock;
+    },
   })),
 }));
 
@@ -420,24 +430,28 @@ beforeEach(() => {
     value: makeValidPlan(),
     usage: { ...USAGE_FIXTURE },
   });
-  resolveHelperInvocationMock.mockImplementation((model: string) =>
-    Promise.resolve(
-      model.startsWith('gpt-')
-        ? {
-            providerType: 'codex',
-            source: 'codex-managed',
-            harness: 'codex',
-            sdkModel: model,
-            aiCreditsRouted: false,
-          }
-        : {
-            providerType: 'claude',
-            source: 'claude-managed',
-            harness: 'claude',
-            sdkModel: model,
-            aiCreditsRouted: false,
-          },
-    ),
+  resolveHelperInvocationMock.mockImplementation(
+    (...args: unknown[]): Promise<Record<string, unknown>> => {
+      const model = args[0];
+      if (typeof model !== 'string') throw new TypeError('Expected model ID');
+      return Promise.resolve(
+        model.startsWith('gpt-')
+          ? {
+              providerType: 'codex',
+              source: 'codex-managed',
+              harness: 'codex',
+              sdkModel: model,
+              aiCreditsRouted: false,
+            }
+          : {
+              providerType: 'claude',
+              source: 'claude-managed',
+              harness: 'claude',
+              sdkModel: model,
+              aiCreditsRouted: false,
+            },
+      );
+    },
   );
   // Matches github-pr-generator.test.ts: the reader is module-mocked, so a
   // partial preferences object is sufficient for the fields the planner reads.

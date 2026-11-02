@@ -72,6 +72,8 @@ export interface TerminalRunButtonProps {
   readonly disabled: boolean;
   /** The last command could not be sent: red rather than warning. */
   readonly failed?: boolean;
+  readonly dataTestId?: string;
+  readonly tapTarget?: 'compact' | 'touch';
 }
 
 /**
@@ -83,6 +85,8 @@ export function TerminalRunButton({
   onRun,
   disabled,
   failed = false,
+  dataTestId,
+  tapTarget = 'compact',
 }: TerminalRunButtonProps): JSX.Element {
   return (
     <Tooltip label="Run terminal command">
@@ -90,7 +94,8 @@ export function TerminalRunButton({
         type="button"
         onClick={onRun}
         disabled={disabled}
-        className={`focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full fg-emphasis transition enabled:active:scale-97 disabled:cursor-not-allowed disabled:bg-muted disabled:fg-tertiary disabled:opacity-100 ${
+        data-testid={dataTestId}
+        className={`focus-ring inline-flex ${tapTarget === 'touch' ? 'h-11 w-11 lg:h-8 lg:w-8' : 'h-8 w-8'} items-center justify-center rounded-full fg-emphasis transition-transform enabled:active:scale-97 disabled:cursor-not-allowed disabled:bg-muted disabled:fg-tertiary disabled:opacity-100 ${
           failed
             ? 'bg-destructive enabled:hover:bg-destructive-hover'
             : 'bg-warning enabled:hover:bg-warning/90'

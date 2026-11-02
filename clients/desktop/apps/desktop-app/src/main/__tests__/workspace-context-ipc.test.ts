@@ -24,7 +24,9 @@ const mockSubscribe = jest.fn<() => void, [Listener]>();
 const mockGetAllWindows = jest.fn<MockBrowserWindow[], []>();
 
 jest.mock('../ipc/register', () => ({
-  registerIpcHandler: mockRegisterIpcHandler,
+  get registerIpcHandler(): typeof mockRegisterIpcHandler {
+    return mockRegisterIpcHandler;
+  },
 }));
 jest.mock('../lib/workspace-context-service', () => ({
   getWorkspaceContextService: (): {
@@ -32,13 +34,23 @@ jest.mock('../lib/workspace-context-service', () => ({
     setContext: typeof mockSetContext;
     subscribe: typeof mockSubscribe;
   } => ({
-    getState: mockGetState,
-    setContext: mockSetContext,
-    subscribe: mockSubscribe,
+    get getState(): typeof mockGetState {
+      return mockGetState;
+    },
+    get setContext(): typeof mockSetContext {
+      return mockSetContext;
+    },
+    get subscribe(): typeof mockSubscribe {
+      return mockSubscribe;
+    },
   }),
 }));
 jest.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: mockGetAllWindows },
+  BrowserWindow: {
+    get getAllWindows(): typeof mockGetAllWindows {
+      return mockGetAllWindows;
+    },
+  },
 }));
 
 import { registerWorkspaceContextHandlers } from '../ipc/workspace-context';

@@ -91,7 +91,13 @@ describe('GitHub handler registration', () => {
     const { getGitHubClient } = await import('../lib/github-client');
     jest.mocked(getGitHubClient).mockReturnValue({ enqueue: jest.fn() });
     const { registerGitHubHandlers } = await import('../ipc/github');
-    registerGitHubHandlers(() => null);
+    registerGitHubHandlers(() => null, {
+      // These tests reach no projected pull request read.
+      dispatcher: {} as never,
+      resolveCaller: () => {
+        throw new Error('No projected pull request read in this test.');
+      },
+    });
   });
 
   it('projects desktop-polled PR status changes to the portal', () => {
@@ -111,6 +117,7 @@ describe('GitHub handler registration', () => {
             reviewers: [],
             hasConflicts: false,
             commentCount: 0,
+            updatedAt: '2026-10-01T20:00:00.000Z',
           },
         },
       ],
@@ -172,6 +179,7 @@ describe('GitHub handler registration', () => {
             reviewers: [],
             hasConflicts: false,
             commentCount: 0,
+            updatedAt: '2026-10-01T20:00:00.000Z',
           },
         },
       ],
@@ -208,4 +216,72 @@ describe('GitHub handler registration', () => {
       },
     });
   });
+  // CAN-4876: remote clients stop polling for PR state, so each kind of
+  // change the poller observes must reach them on its own.
+  it.each([
+    {
+      change: 'checks',
+      before: { checkStatus: 'pending' },
+      after: { checkStatus: 'passing' },
+      projected: { checkStatus: 'passing' },
+    },
+    {
+      change: 'review',
+      before: { reviewStatus: 'pending' },
+      after: { reviewStatus: 'approved' },
+      projected: { reviewStatus: 'approved' },
+    },
+    {
+      change: 'merge state',
+      before: { state: 'open' },
+      after: { state: 'merged' },
+      projected: { state: 'merged' },
+    },
+  ] as const)(
+    'projects a $change-only change with the new value',
+    ({ before, after, projected }) => {
+      const status = (
+        fields: object,
+      ): Parameters<typeof emitWorktreePrStatusChange>[2] => ({
+        repos: [
+          {
+            repoId: 'repo',
+            repoName: 'repo',
+            prLookupAvailable: true,
+            status: {
+              prNumber: 12,
+              prUrl: 'https://github.com/acme/repo/pull/12',
+              state: 'open' as const,
+              title: 'Open PR',
+              checkStatus: 'pending' as const,
+              checkDetails: [],
+              reviewStatus: 'pending' as const,
+              reviewers: [],
+              hasConflicts: false,
+              commentCount: 0,
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              ...fields,
+            },
+          },
+        ],
+        lastCheckedAt: '2026-10-01T20:00:00.000Z',
+      });
+      emitWorktreePrStatusChange('project-a', 'wt-1', status(before));
+      emitWorktreePrStatusChange('project-a', 'wt-1', status(after));
+
+      expect(mockedEnqueuePortalEvent).toHaveBeenCalledTimes(2);
+      expect(mockedEnqueuePortalEvent.mock.calls[1]?.[0]).toMatchObject({
+        type: 'portal.state.delta',
+        payload: {
+          scope: 'pr',
+          entities: [
+            {
+              entityType: 'pr_status',
+              payload: { repos: [{ repoId: 'repo', status: projected }] },
+            },
+          ],
+        },
+      });
+    },
+  );
 });

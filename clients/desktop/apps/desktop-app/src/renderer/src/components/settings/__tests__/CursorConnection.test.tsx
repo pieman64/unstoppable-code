@@ -29,9 +29,13 @@ jest.mock('@/stores/observabilityStore', () => {
     get usage(): AgentUsageOverview {
       return usageOverview();
     },
-    refreshingProviders: mockRefreshingProviders,
+    get refreshingProviders(): Set<string> {
+      return mockRefreshingProviders;
+    },
     initialize: (): Promise<void> => Promise.resolve(),
-    refreshProviderUsageDetails: mockRefreshUsage,
+    get refreshProviderUsageDetails(): typeof mockRefreshUsage {
+      return mockRefreshUsage;
+    },
   };
   return {
     useObservabilityStore: (selector: (s: typeof state) => unknown): unknown =>

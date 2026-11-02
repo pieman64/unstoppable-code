@@ -18,6 +18,8 @@
  * a worktree is deleted.
  */
 import { lazy, Suspense, useMemo, type JSX } from 'react';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import type { WorktreeViewMode } from '@/lib/worktree-layout-prefs';
 import type { PanelHostState } from '@/lib/panels/panel-host-context';
 import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
@@ -27,6 +29,12 @@ import { PanelContentRoot } from '@/components/panels/PanelContentRoot';
 import { PanelGridSurface } from '@/components/panels/PanelGridSurface';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
 import { useWorktreeScriptActions } from '@/components/panels/useWorktreeScriptActions';
+
+/** Where a forked worktree's focus request lands (CAN-4782). */
+const WORKTREE_FORK_FOCUS_TARGET = {
+  page: 'main',
+  headerTestId: 'worktree-top-bar',
+} as const;
 
 const HomeSurface = lazy(async () => {
   const mod = await import('@/components/home/HomeSurface');
@@ -92,7 +100,9 @@ export function WorktreePart({
         data-testid="worktree-part"
         className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden"
       >
-        <div className="electron-drag absolute inset-x-0 top-0 h-10" />
+        {!usesNativeWindowFrame(localPlatform()) && (
+          <div className="electron-drag absolute inset-x-0 top-0 h-10" />
+        )}
         <Suspense fallback={null}>
           <HomeSurface variant="embedded" />
         </Suspense>
@@ -118,7 +128,11 @@ export function WorktreePart({
         viewModeReady={viewModeReady}
         pinnedActions={pinnedActions}
       />
-      <ForkedContainerNotice projectId={projectId} worktreeId={worktreeId} />
+      <ForkedContainerNotice
+        projectId={projectId}
+        worktreeId={worktreeId}
+        focusTarget={WORKTREE_FORK_FOCUS_TARGET}
+      />
       <PanelGridSurface
         projectId={projectId}
         worktreeId={worktreeId}

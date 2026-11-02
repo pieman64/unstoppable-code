@@ -722,3 +722,20 @@ describe('Codex authentication recovery grants', () => {
     expect(JSON.parse(clearedWrite[1])).toEqual({ version: 1, claims: [] });
   });
 });
+
+it('round trips the trusted interrupted-turn anchor while accepting legacy entries', async () => {
+  jest.mocked(readFile).mockResolvedValue(
+    JSON.stringify({
+      version: 1,
+      entries: [
+        entry({ interruptedUserMessageId: 'original' }),
+        entry({ chatId: 'legacy' }),
+      ],
+    }),
+  );
+  const { readUsageLimitedChats } =
+    await import('../lib/usage-limited-chats-registry');
+  const rows = await readUsageLimitedChats();
+  expect(rows[0]?.interruptedUserMessageId).toBe('original');
+  expect(rows[1]).not.toHaveProperty('interruptedUserMessageId');
+});

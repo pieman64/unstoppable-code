@@ -126,6 +126,72 @@ describe('SidebarAiCreditsMenuItem', () => {
     expect(item().getAttribute('aria-label')).toBe(AI_CREDITS_LABEL);
   });
 
+  it.each([
+    ['needs_purchase', 'Free AI Credits'],
+    ['needs_sign_in_then_purchase', 'Free AI Credits'],
+    ['unlocked', 'AI Credits'],
+    [undefined, 'AI Credits'],
+  ] as const)(
+    'labels the row for %s access in its text and name',
+    (libraryAccess, label) => {
+      act(() =>
+        root.render(
+          <SidebarAiCreditsMenuItem
+            balanceCredits={0}
+            libraryAccess={libraryAccess}
+            onSelect={jest.fn()}
+          />,
+        ),
+      );
+
+      expect(item().querySelector('.truncate')?.textContent).toBe(label);
+      expect(item().getAttribute('aria-label')).toBe(`${label}, 0 available`);
+      expect(pill()?.textContent).toBe('0');
+      expect(pill()?.dataset.tone).toBe('critical');
+    },
+  );
+
+  it('names the free label without a number while the balance is unknown', () => {
+    act(() =>
+      root.render(
+        <SidebarAiCreditsMenuItem
+          balanceCredits={null}
+          libraryAccess="needs_purchase"
+          onSelect={jest.fn()}
+        />,
+      ),
+    );
+
+    expect(pill()).toBeNull();
+    expect(item().getAttribute('aria-label')).toBe('Free AI Credits');
+  });
+
+  it('drops the free label when access unlocks on rerender', () => {
+    const render = (
+      libraryAccess: 'needs_purchase' | 'unlocked' | undefined,
+    ): void =>
+      act(() =>
+        root.render(
+          <SidebarAiCreditsMenuItem
+            balanceCredits={12.4}
+            libraryAccess={libraryAccess}
+            onSelect={jest.fn()}
+          />,
+        ),
+      );
+
+    render(undefined);
+    expect(item().getAttribute('aria-label')).toBe('AI Credits, 12 available');
+    render('needs_purchase');
+    expect(item().getAttribute('aria-label')).toBe(
+      'Free AI Credits, 12 available',
+    );
+    render('unlocked');
+    expect(item().getAttribute('aria-label')).toBe('AI Credits, 12 available');
+    expect(item().querySelector('.truncate')?.textContent).toBe('AI Credits');
+    expect(pill()?.textContent).toBe('12');
+  });
+
   it('shows a zero balance as critical', () => {
     act(() =>
       root.render(

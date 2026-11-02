@@ -21,27 +21,50 @@ import {
   NoticeButton,
   Radio,
   StatusPill,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
   ChevronLeftMediumIcon,
   ChevronRightIcon,
+  ClaudeIcon,
+  CodexIcon,
+  CursorIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+// Imported directly, not through AppIcons, so they load only on this page.
+import {
+  HermesLogo,
+  MuseLogo,
+  OpenClawLogo,
+  OpenCodeLogo,
+} from '@canopy/ui-shared/icons';
 import { formatRelativeTime } from '@canopy/ui-shared/lib/format-relative-time';
 import {
   accessSummaryLine,
   activityTargetsLine,
   connectionStatusLabel,
+  claudeCodeAddCommand,
+  codexAddCommand,
   cursorMcpSnippet,
+  hermesAddCommand,
+  openClawAddCommand,
+  openCodeAuthCommand,
+  openCodeConfigSnippet,
   EXTERNAL_AGENT_SERVER_COPY,
+  TEXT_CONTENT_COMPATIBILITY_COPY,
   waitingTimingLine,
 } from './display';
 import {
+  accessHostsMissing,
   desktopAccessRows,
-  desktopsWriteAccess,
+  devicesWriteAccess,
+  HOSTS_REQUIRED_MESSAGE,
+  MANAGED_HOST_ID,
   MAX_ACCESS_DESKTOPS,
   organizationChoiceUnavailable,
-  showsAccessDesktops,
+  showsAccessDevices,
+  showsAccessHosts,
   showsAccessOrganizations,
+  type AccessDeviceChoice,
   type AccessFormState,
   type AccessModelSource,
 } from './access-model';
@@ -175,8 +198,8 @@ export function WaitingRows({
             pendingActionId={request.pendingActionId}
             control={
               <Button
-                variant="primary"
-                size="control"
+                variant="secondary"
+                size="compact"
                 aria-label={`Review: ${request.action}`}
                 onClick={(): void =>
                   onOpenPath(
@@ -229,7 +252,7 @@ export function ChoiceRow({
   disabled = false,
 }: {
   readonly id: string;
-  readonly label: string;
+  readonly label: ReactNode;
   readonly description: string;
   readonly checked: boolean;
   readonly onChange: () => void;
@@ -338,7 +361,7 @@ export function NoticeList({
             dismissTestId="external-agents-notice-dismiss"
             actions={
               <NoticeButton
-                variant="primary"
+                variant="secondary"
                 onClick={(): void =>
                   onOpenPath(externalAgentPath(notice.connectionId))
                 }
@@ -371,49 +394,54 @@ export function AgentRow({
       ? 'Not used yet'
       : `Used ${formatRelativeTime(connection.lastUsedAt)}`;
 
+  // The divider draws on this wrapper (it curved on the rounded button); the
+  // button's -my-3 py-3 reclaims the group's row padding so the whole row clicks.
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="focus-ring flex w-full min-w-0 items-center gap-3 rounded-md text-left"
-      data-testid="external-agent-row"
-      data-connection-id={connection.id}
-    >
-      <McpServerLogo
-        name={connection.clientName}
-        size={32}
-        fallback="monogram"
-      />
-      <span className="min-w-0 flex-1 space-y-0.5">
-        <span className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="min-w-0 text-s font-medium fg-primary">
-            {connection.clientName}
+    <div>
+      <button
+        type="button"
+        data-settings-control="row"
+        onClick={onOpen}
+        className="focus-ring -my-3 flex w-full min-w-0 items-center gap-3 rounded-md py-3 text-left"
+        data-testid="external-agent-row"
+        data-connection-id={connection.id}
+      >
+        <McpServerLogo
+          name={connection.clientName}
+          size={32}
+          fallback="monogram"
+        />
+        <span className="min-w-0 flex-1 space-y-0.5">
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="min-w-0 text-s font-medium fg-primary">
+              {connection.clientName}
+            </span>
+            {status ? (
+              <StatusPill
+                tone="secondary"
+                data-testid="external-agent-row-status"
+              >
+                {status}
+              </StatusPill>
+            ) : null}
+            {!connection.verified ? (
+              <StatusPill tone="warning">Unverified</StatusPill>
+            ) : null}
           </span>
-          {status ? (
-            <StatusPill
-              tone="secondary"
-              data-testid="external-agent-row-status"
-            >
-              {status}
-            </StatusPill>
-          ) : null}
-          {!connection.verified ? (
-            <StatusPill tone="warning">Unverified</StatusPill>
-          ) : null}
+          <span className="block text-xs text-pretty fg-secondary">
+            {`${serverTitle} · ${lastUsed}`}
+          </span>
+          <span className="block text-xs text-pretty fg-secondary">
+            {accessSummaryLine(connection.access)}
+          </span>
         </span>
-        <span className="block text-xs text-pretty fg-secondary">
-          {`${serverTitle} · ${lastUsed}`}
-        </span>
-        <span className="block text-xs text-pretty fg-secondary">
-          {accessSummaryLine(connection.access)}
-        </span>
-      </span>
-      <ChevronRightIcon
-        size={16}
-        aria-hidden
-        className="shrink-0 fg-tertiary"
-      />
-    </button>
+        <ChevronRightIcon
+          size={16}
+          aria-hidden
+          className="shrink-0 fg-tertiary"
+        />
+      </button>
+    </div>
   );
 }
 
@@ -425,77 +453,318 @@ export function ConnectSection({
   readonly cursorClientId: string;
 }): JSX.Element {
   return (
-    <SettingsSection
-      title="Connect an agent"
-      description="Any agent that supports MCP can connect to your account."
-      testId="external-agents-connect"
-    >
-      <SettingsGroup>
-        {servers.map((server) => {
-          const copy = EXTERNAL_AGENT_SERVER_COPY[server.server];
-          return (
-            <div
-              key={server.server}
-              data-testid={`external-agents-server-${server.server}`}
-            >
-              <SettingsRow
-                label={copy.title}
-                description={
-                  <span className="min-w-0 space-y-0.5">
-                    <span className="block">{copy.line}</span>
-                    <span className="block wrap-anywhere font-mono fg-secondary">
-                      {server.url}
+    <>
+      <SettingsSection
+        title="Connect an agent"
+        description="Any agent that supports MCP can connect to your account."
+        testId="external-agents-connect"
+      >
+        <SettingsGroup>
+          {servers.map((server) => {
+            const copy = EXTERNAL_AGENT_SERVER_COPY[server.server];
+            return (
+              <div
+                key={server.server}
+                data-testid={`external-agents-server-${server.server}`}
+              >
+                <SettingsRow
+                  label={copy.title}
+                  description={
+                    <span className="min-w-0 space-y-0.5">
+                      <span className="block">{copy.line}</span>
+                      <span className="block wrap-anywhere font-mono fg-secondary">
+                        {server.url}
+                      </span>
                     </span>
-                  </span>
-                }
-                control={
-                  <CopyButton
-                    value={server.url}
-                    ariaLabel="Copy"
-                    label="Copy"
-                    copiedLabel="Copied"
-                    variant="secondary"
-                    size="control"
-                  />
-                }
-              />
-            </div>
-          );
-        })}
-        <ol className="flex list-decimal flex-col gap-1 pl-5 text-s fg-secondary">
-          <li>
-            In your agent, add an MCP server and paste one of these addresses.
-          </li>
-          <li>
-            The agent sends you to this site to sign in and choose what it can
-            do.
-          </li>
-          <li>The agent then appears on this page.</li>
-        </ol>
-        <SettingsRow
-          label="Using Cursor?"
-          description="Cursor can’t register itself here. Copy these entries into Cursor’s mcp.json instead."
-          control={
-            <CopyButton
-              value={cursorMcpSnippet(servers, cursorClientId)}
-              ariaLabel="Copy entries"
-              label="Copy entries"
-              copiedLabel="Copied"
-              variant="secondary"
-              size="control"
-              dataTestId="external-agents-cursor-copy"
-            />
-          }
-        >
-          <pre
-            data-testid="external-agents-cursor-snippet"
-            className="max-w-full overflow-x-auto whitespace-pre rounded-md bg-base p-3 font-mono text-xs fg-secondary"
+                  }
+                  control={
+                    <CopyButton
+                      value={server.url}
+                      ariaLabel="Copy"
+                      label="Copy"
+                      copiedLabel="Copied"
+                      variant="secondary"
+                      size="compact"
+                    />
+                  }
+                />
+              </div>
+            );
+          })}
+          <ol className="flex list-decimal flex-col gap-1 pl-5 text-s fg-secondary">
+            <li>
+              In your agent, add an MCP server and paste one of these addresses.
+            </li>
+            <li>
+              The agent sends you to this site to sign in and choose what it can
+              do.
+            </li>
+            <li>The agent then appears on this page.</li>
+          </ol>
+        </SettingsGroup>
+      </SettingsSection>
+      <SettingsSection
+        title="Set up your preferred agent"
+        description="Click to see your agent’s specific setup steps."
+        testId="external-agents-setup"
+      >
+        <SettingsGroup>
+          <AgentSetup
+            testId="external-agents-claude-code"
+            logo={<ClaudeIcon size={16} />}
+            name="Claude Code"
+            description={
+              <>
+                Run these in your terminal, then run{' '}
+                <InlineCode>/mcp</InlineCode> in Claude Code and choose each
+                server to sign in.
+              </>
+            }
           >
-            {cursorMcpSnippet(servers, cursorClientId)}
-          </pre>
-        </SettingsRow>
-      </SettingsGroup>
-    </SettingsSection>
+            <ServerCommands
+              agent="claude-code"
+              servers={servers}
+              command={claudeCodeAddCommand}
+            />
+          </AgentSetup>
+          <AgentSetup
+            testId="external-agents-codex"
+            logo={<CodexIcon size={16} />}
+            name="Codex"
+            description={
+              <>
+                Run these in your terminal. Codex opens the sign-in page for
+                each server; if it doesn’t, run{' '}
+                <InlineCode>codex mcp login</InlineCode> with the server name.
+              </>
+            }
+          >
+            <ServerCommands
+              agent="codex"
+              servers={servers}
+              command={codexAddCommand}
+            />
+          </AgentSetup>
+          <AgentSetup
+            testId="external-agents-cursor"
+            logo={<CursorIcon size={16} />}
+            name="Cursor"
+            description="Cursor can’t register itself here. Copy these entries into Cursor’s mcp.json instead."
+            control={
+              <CopyButton
+                value={cursorMcpSnippet(servers, cursorClientId)}
+                ariaLabel="Copy entries"
+                label="Copy entries"
+                copiedLabel="Copied"
+                variant="secondary"
+                size="compact"
+                dataTestId="external-agents-cursor-copy"
+              />
+            }
+          >
+            <pre
+              data-testid="external-agents-cursor-snippet"
+              className="max-w-full overflow-x-auto whitespace-pre rounded-md bg-base p-3 font-mono text-xs fg-secondary"
+            >
+              {cursorMcpSnippet(servers, cursorClientId)}
+            </pre>
+          </AgentSetup>
+          <AgentSetup
+            testId="external-agents-opencode"
+            logo={<OpenCodeLogo aria-hidden />}
+            name="OpenCode"
+            description={
+              <>
+                Add these entries to <InlineCode>opencode.json</InlineCode>,
+                then run each sign-in command in your terminal.
+              </>
+            }
+          >
+            <CommandBlock
+              value={openCodeConfigSnippet(servers)}
+              testId="external-agents-opencode-config"
+            />
+            <ServerCommands
+              agent="opencode"
+              servers={servers}
+              command={openCodeAuthCommand}
+            />
+          </AgentSetup>
+          <AgentSetup
+            testId="external-agents-hermes"
+            logo={<HermesLogo aria-hidden />}
+            name="Hermes"
+            description="Run these in your terminal. Each adds the server, then opens its sign-in page."
+          >
+            <ServerCommands
+              agent="hermes"
+              servers={servers}
+              command={hermesAddCommand}
+            />
+          </AgentSetup>
+          <AgentSetup
+            testId="external-agents-openclaw"
+            logo={<OpenClawLogo aria-hidden />}
+            name="OpenClaw"
+            description="OpenClaw can’t sign in here yet: it doesn’t publish the client ID document this site requires. These commands add the servers so sign-in works once it does. Stop the OpenClaw Gateway before running them."
+          >
+            <ServerCommands
+              agent="openclaw"
+              servers={servers}
+              command={openClawAddCommand}
+            />
+          </AgentSetup>
+          <AgentSetup
+            testId="external-agents-muse"
+            logo={<MuseLogo aria-hidden />}
+            name="Meta Muse"
+            description={
+              <>
+                Ask Muse to set up a custom connector and give it one of the
+                addresses above. When Muse asks for a client ID, enter{' '}
+                <InlineCode>{MUSE_CLIENT_ID}</InlineCode>.
+              </>
+            }
+            control={
+              <CopyButton
+                value={MUSE_CLIENT_ID}
+                ariaLabel="Copy client ID"
+                label="Copy client ID"
+                copiedLabel="Copied"
+                variant="secondary"
+                size="compact"
+                dataTestId="external-agents-muse-copy"
+              />
+            }
+          />
+        </SettingsGroup>
+      </SettingsSection>
+    </>
+  );
+}
+
+// Matches Muse's pre-registered OAuth client in apps/web oauth-server.
+const MUSE_CLIENT_ID = 'meta-muse';
+
+/**
+ * One agent's setup steps, collapsed to its logo and name. The chevron shows
+ * on hover or keyboard focus, and stays while the steps are open.
+ */
+function AgentSetup({
+  logo,
+  name,
+  description,
+  control,
+  children,
+  testId,
+}: {
+  readonly logo: ReactNode;
+  readonly name: string;
+  readonly description: ReactNode;
+  readonly control?: ReactNode;
+  readonly children?: ReactNode;
+  readonly testId: string;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="flex min-w-0 flex-col gap-3" data-testid={testId}>
+      <button
+        type="button"
+        data-settings-control="disclosure"
+        aria-expanded={expanded}
+        data-testid={`${testId}-toggle`}
+        className="group focus-ring flex w-fit items-center gap-2 rounded-md text-s font-medium fg-primary"
+        onClick={() => setExpanded((current) => !current)}
+      >
+        {logo}
+        {name}
+        <ChevronRightIcon
+          size={14}
+          aria-hidden
+          className={`shrink-0 fg-tertiary transition-[opacity,rotate] ${
+            expanded
+              ? 'rotate-90 opacity-100'
+              : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100'
+          }`}
+        />
+      </button>
+      {expanded ? (
+        <>
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 sm:gap-6">
+            <div className="min-w-0 flex-1 text-xs text-pretty fg-secondary">
+              {description}
+            </div>
+            {control ? (
+              <div className="flex shrink-0 items-center gap-2">{control}</div>
+            ) : null}
+          </div>
+          {children}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function InlineCode({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  return <span className="font-mono fg-primary">{children}</span>;
+}
+
+/** A copyable command or config block. */
+function CommandBlock({
+  value,
+  caption,
+  testId,
+}: {
+  readonly value: string;
+  readonly caption?: string;
+  readonly testId: string;
+}): JSX.Element {
+  return (
+    <div className="flex min-w-0 flex-col gap-1" data-testid={testId}>
+      {caption ? <span className="text-xs fg-tertiary">{caption}</span> : null}
+      <div className="flex min-w-0 items-start gap-2 rounded-md bg-base p-3">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere font-mono text-xs fg-secondary">
+          {value}
+        </pre>
+        <CopyButton
+          value={value}
+          ariaLabel={caption ? `Copy ${caption} command` : 'Copy'}
+          label="Copy"
+          copiedLabel="Copied"
+          variant="secondary"
+          size="compact"
+          dataTestId={`${testId}-copy`}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** One copyable command per MCP server, captioned with the server's name. */
+function ServerCommands({
+  agent,
+  servers,
+  command,
+}: {
+  readonly agent: string;
+  readonly servers: readonly ExternalAgentServerAddress[];
+  readonly command: (server: ExternalAgentServerAddress) => string;
+}): JSX.Element {
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      {servers.map((server) => (
+        <CommandBlock
+          key={server.server}
+          caption={EXTERNAL_AGENT_SERVER_COPY[server.server].title}
+          value={command(server)}
+          testId={`external-agents-${agent}-${server.server}`}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -590,8 +859,8 @@ export function BackRow({
   return (
     <div className="flex w-full flex-wrap items-center justify-between gap-3 sm:gap-6">
       <Button
-        variant="ghost"
-        size="control"
+        variant="secondary"
+        size="compact"
         onClick={onBack}
         data-testid="external-agent-back"
       >
@@ -603,7 +872,7 @@ export function BackRow({
   );
 }
 
-/** Where the person's paired desktops are, as the desktop selector shows them. */
+/** Where the person's paired devices are, as the device selector shows them. */
 export type DesktopListState =
   | { readonly status: 'loading' }
   | {
@@ -612,7 +881,7 @@ export type DesktopListState =
     }
   | { readonly status: 'problem' };
 
-/** A quiet connection hint for one desktop row. */
+/** A quiet connection hint for one device row. */
 export function desktopConnectionHint(desktop: ExternalAgentDesktop): string {
   if (desktop.connection === 'active') return 'Connected';
   if (desktop.connection === 'reconnecting') return 'Reconnecting';
@@ -628,30 +897,57 @@ function desktopDescription(desktop: ExternalAgentDesktop): string {
     : `${desktop.hostname} · ${hint}`;
 }
 
+/** A host's name, then its host ID in monospace: "Work laptop · 7k3q9x2m4p". */
+function HostLabel({
+  name,
+  hostId,
+  testId,
+}: {
+  readonly name: string;
+  readonly hostId: string;
+  readonly testId?: string;
+}): JSX.Element {
+  return (
+    <>
+      {name}
+      <span aria-hidden className="fg-tertiary">
+        {' · '}
+      </span>
+      <span className="font-mono font-normal fg-secondary" data-testid={testId}>
+        {hostId}
+      </span>
+    </>
+  );
+}
+
+export const HOST_IDS_NOTE =
+  'Host IDs stay the same unless the app is reinstalled.';
+
 /**
- * Which desktops a Tasks connection may reach: "All my desktops" or the
- * checked ones. Shared by the consent page and the agent page; each host
- * supplies the list and owns the draft. A checked desktop that is not paired
- * anymore stays checked (and in the policy) until the person removes it.
+ * Which devices a Tasks connection may reach: all of them, the checked ones,
+ * or none. Shared by the consent page and the agent page through
+ * {@link HostAccessChoices}; each host supplies the list and owns the draft.
+ * A checked device that is not paired anymore stays checked (and in the
+ * policy) until the person removes it.
  */
-export function DesktopAccessChoices({
+export function DeviceAccessChoices({
   idPrefix,
-  mode,
+  choice,
   remoteIds,
   desktops,
   disabled = false,
-  onModeChange,
-  onDesktopChange,
+  onChoiceChange,
+  onDeviceChange,
   onRetry,
 }: {
   /** Prefixes every control id and test id, e.g. `consent` or `external-agent`. */
   readonly idPrefix: string;
-  readonly mode: 'all' | 'selected';
+  readonly choice: AccessDeviceChoice;
   readonly remoteIds: readonly string[];
   readonly desktops: DesktopListState;
   readonly disabled?: boolean;
-  readonly onModeChange: (mode: 'all' | 'selected') => void;
-  readonly onDesktopChange: (remoteId: string, selected: boolean) => void;
+  readonly onChoiceChange: (choice: AccessDeviceChoice) => void;
+  readonly onDeviceChange: (remoteId: string, selected: boolean) => void;
   /** Loads the list again after a failure; without it the row says to reload. */
   readonly onRetry?: () => void;
 }): JSX.Element {
@@ -660,61 +956,72 @@ export function DesktopAccessChoices({
     remoteIds,
   );
   const selectionFull = new Set(remoteIds).size >= MAX_ACCESS_DESKTOPS;
-  const radioName = `${idPrefix}-desktop-scope`;
+  const radioName = `${idPrefix}-device-scope`;
+  const selected = choice === 'selected';
 
   return (
     <fieldset
       className="min-w-0"
       disabled={disabled}
-      data-testid={`${idPrefix}-desktop-choices`}
+      data-testid={`${idPrefix}-device-choices`}
     >
-      <legend className="sr-only">Desktops this agent can reach</legend>
+      <legend className="sr-only">Devices this agent can reach</legend>
       <SettingsGroup disabled={disabled}>
         <ChoiceRow
-          id={`${idPrefix}-desktops-all`}
-          label="All my desktops, including ones added later"
-          description="New desktops are included when you pair them."
-          checked={mode === 'all'}
-          onChange={(): void => onModeChange('all')}
+          id={`${idPrefix}-devices-all`}
+          label="All devices, including ones you add later"
+          description="New devices are included when you pair them."
+          checked={choice === 'all'}
+          onChange={(): void => onChoiceChange('all')}
           kind="radio"
           name={radioName}
           disabled={disabled}
         />
         <ChoiceRow
-          id={`${idPrefix}-desktops-selected`}
-          label="Selected desktops"
-          description="Choose which desktops this agent can reach."
-          checked={mode === 'selected'}
-          onChange={(): void => onModeChange('selected')}
+          id={`${idPrefix}-devices-selected`}
+          label="Selected devices"
+          description="Choose which devices this agent can reach."
+          checked={selected}
+          onChange={(): void => onChoiceChange('selected')}
           kind="radio"
           name={radioName}
           disabled={disabled}
         />
-        {mode === 'selected' && desktops.status === 'loading' ? (
+        <ChoiceRow
+          id={`${idPrefix}-devices-none`}
+          label="No devices"
+          description="The agent can’t reach any of your devices."
+          checked={choice === 'none'}
+          onChange={(): void => onChoiceChange('none')}
+          kind="radio"
+          name={radioName}
+          disabled={disabled}
+        />
+        {selected && desktops.status === 'loading' ? (
           <div
             role="status"
-            data-testid={`${idPrefix}-desktops-loading`}
+            data-testid={`${idPrefix}-devices-loading`}
             className="text-xs fg-secondary"
           >
-            Loading your desktops…
+            Loading your devices…
           </div>
         ) : null}
-        {mode === 'selected' && desktops.status === 'problem' ? (
+        {selected && desktops.status === 'problem' ? (
           <SettingsRow
-            label="Couldn’t load your desktops."
+            label="Couldn’t load your devices."
             description={
               onRetry === undefined
-                ? 'Reload the page to try again. Desktops you already chose stay chosen.'
-                : 'Desktops you already chose stay chosen.'
+                ? 'Reload the page to try again. Devices you already chose stay chosen.'
+                : 'Devices you already chose stay chosen.'
             }
-            testId={`${idPrefix}-desktops-error`}
+            testId={`${idPrefix}-devices-error`}
             control={
               onRetry === undefined ? undefined : (
                 <Button
                   variant="secondary"
-                  size="control"
+                  size="compact"
                   disabled={disabled}
-                  data-testid={`${idPrefix}-desktops-retry`}
+                  data-testid={`${idPrefix}-devices-retry`}
                   onClick={onRetry}
                 >
                   Try again
@@ -723,53 +1030,59 @@ export function DesktopAccessChoices({
             }
           />
         ) : null}
-        {mode === 'selected' &&
+        {selected &&
         desktops.status === 'ready' &&
         rows.available.length === 0 &&
         rows.unavailableIds.length === 0 ? (
           <div
-            data-testid={`${idPrefix}-desktops-empty`}
+            data-testid={`${idPrefix}-devices-empty`}
             className="text-xs text-pretty fg-secondary"
           >
-            You haven’t paired a desktop yet. Pair one from the desktop app,
-            then choose it here.
+            You haven’t paired a device yet. Pair one from the desktop app, then
+            choose it here.
           </div>
         ) : null}
-        {mode === 'selected'
-          ? rows.available.map(({ desktop, selected }) => (
+        {selected
+          ? rows.available.map(({ desktop, selected: checked }) => (
               <ChoiceRow
                 key={desktop.remoteId}
-                id={`${idPrefix}-desktop-${desktop.remoteId}`}
-                label={desktop.name}
+                id={`${idPrefix}-device-${desktop.remoteId}`}
+                label={
+                  <HostLabel
+                    name={desktop.name}
+                    hostId={desktop.hostCode}
+                    testId={`${idPrefix}-device-host-id-${desktop.remoteId}`}
+                  />
+                }
                 description={desktopDescription(desktop)}
-                checked={selected}
+                checked={checked}
                 onChange={(): void =>
-                  onDesktopChange(desktop.remoteId, !selected)
+                  onDeviceChange(desktop.remoteId, !checked)
                 }
                 kind="checkbox"
-                disabled={disabled || (selectionFull && !selected)}
+                disabled={disabled || (selectionFull && !checked)}
               />
             ))
           : null}
-        {mode === 'selected'
+        {selected
           ? rows.unavailableIds.map((remoteId, index) => (
               <SettingsRow
                 key={remoteId}
-                label="Unavailable desktop"
-                description="This desktop isn’t paired anymore, so the agent can’t reach it."
-                testId={`${idPrefix}-desktop-unavailable-${remoteId}`}
+                label="Unavailable device"
+                description="This device isn’t paired anymore, so the agent can’t reach it."
+                testId={`${idPrefix}-device-unavailable-${remoteId}`}
                 control={
                   <Button
                     variant="secondary"
-                    size="control"
+                    size="compact"
                     disabled={disabled}
                     aria-label={
                       rows.unavailableIds.length > 1
-                        ? `Remove unavailable desktop ${String(index + 1)}`
-                        : 'Remove unavailable desktop'
+                        ? `Remove unavailable device ${String(index + 1)}`
+                        : 'Remove unavailable device'
                     }
-                    data-testid={`${idPrefix}-desktop-remove-${remoteId}`}
-                    onClick={(): void => onDesktopChange(remoteId, false)}
+                    data-testid={`${idPrefix}-device-remove-${remoteId}`}
+                    onClick={(): void => onDeviceChange(remoteId, false)}
                   >
                     Remove
                   </Button>
@@ -777,8 +1090,159 @@ export function DesktopAccessChoices({
               />
             ))
           : null}
+        {selected && rows.available.length > 0 ? (
+          <div
+            data-testid={`${idPrefix}-host-ids-note`}
+            className="text-xs text-pretty fg-secondary"
+          >
+            {HOST_IDS_NOTE}
+          </div>
+        ) : null}
       </SettingsGroup>
     </fieldset>
+  );
+}
+
+/**
+ * The Hosts section of a Tasks connection: the Cloud agents switch for the
+ * managed host and the device choice. The one implementation for the consent
+ * page and the agent page; each wraps it in its own section and owns the
+ * draft. Remote Control off keeps devices unavailable.
+ */
+export function HostAccessChoices({
+  idPrefix,
+  source,
+  draft,
+  remoteControlEnabled,
+  cloudName,
+  desktops,
+  disabled = false,
+  keepUnusedScope = false,
+  onManagedChange,
+  onDeviceChoiceChange,
+  onDeviceChange,
+  onRetryDevices,
+}: {
+  /** Prefixes every control id and test id, e.g. `consent` or `external-agent`. */
+  readonly idPrefix: string;
+  readonly source: AccessModelSource;
+  readonly draft: AccessFormState;
+  readonly remoteControlEnabled: boolean;
+  /** The brand's cloud product name from the host's brand helpers. */
+  readonly cloudName: string;
+  readonly desktops: DesktopListState;
+  readonly disabled?: boolean;
+  /** Matches the `buildAccess` option the host saves with. */
+  readonly keepUnusedScope?: boolean;
+  readonly onManagedChange: (managed: boolean) => void;
+  readonly onDeviceChoiceChange: (choice: AccessDeviceChoice) => void;
+  readonly onDeviceChange: (remoteId: string, selected: boolean) => void;
+  readonly onRetryDevices?: () => void;
+}): JSX.Element {
+  const managedSwitchId = `${idPrefix}-hosts-managed`;
+  const managedNoteId = `${idPrefix}-hosts-managed-note`;
+  const devicesAvailable = showsAccessDevices(source, remoteControlEnabled);
+  const missing = accessHostsMissing(source, draft, { keepUnusedScope });
+
+  return (
+    <div
+      className="flex min-w-0 flex-col gap-3"
+      data-testid={`${idPrefix}-host-choices`}
+    >
+      {devicesWriteAccess(source, draft, remoteControlEnabled) ? (
+        <Notice intent="attention" title="This reaches your computer.">
+          With write access, this agent can direct agents on the devices you
+          choose. They run commands and edit files under each device’s approval
+          settings.
+        </Notice>
+      ) : null}
+      <SettingsGroup disabled={disabled}>
+        <SettingsRow
+          label={<HostLabel name={cloudName} hostId={MANAGED_HOST_ID} />}
+          description={<span id={managedNoteId}>Managed cloud host</span>}
+          testId={`${idPrefix}-hosts-managed-row`}
+          control={
+            <ToggleSwitch
+              id={managedSwitchId}
+              label={cloudName}
+              checked={draft.hosts.managed}
+              disabled={disabled}
+              describedBy={managedNoteId}
+              dataTestId={managedSwitchId}
+              onChange={onManagedChange}
+            />
+          }
+        />
+      </SettingsGroup>
+      <div className="flex min-w-0 flex-col gap-2">
+        <div className="text-s font-medium fg-primary">Devices</div>
+        {devicesAvailable ? (
+          <DeviceAccessChoices
+            idPrefix={idPrefix}
+            choice={draft.hosts.devices}
+            remoteIds={draft.hosts.remoteIds}
+            desktops={desktops}
+            disabled={disabled}
+            onChoiceChange={onDeviceChoiceChange}
+            onDeviceChange={onDeviceChange}
+            onRetry={onRetryDevices}
+          />
+        ) : (
+          <SettingsGroup disabled>
+            <div
+              data-testid={`${idPrefix}-devices-unavailable`}
+              className="text-xs text-pretty fg-secondary"
+            >
+              Devices aren’t available yet.
+            </div>
+          </SettingsGroup>
+        )}
+      </div>
+      {missing ? (
+        <div role="alert" data-testid={`${idPrefix}-hosts-required`}>
+          <Notice intent="attention">{HOSTS_REQUIRED_MESSAGE}</Notice>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The text compatibility switch, shared by consent and an agent's page. */
+export function TextContentCompatibilityChoice({
+  idPrefix,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  /** Prefixes the control id and test ids, e.g. `consent` or `external-agent`. */
+  readonly idPrefix: string;
+  readonly checked: boolean;
+  readonly disabled?: boolean;
+  readonly onChange: (checked: boolean) => void;
+}): JSX.Element {
+  const switchId = `${idPrefix}-text-content-compatibility`;
+  const noteId = `${switchId}-note`;
+  return (
+    <SettingsGroup disabled={disabled}>
+      <SettingsRow
+        label={TEXT_CONTENT_COMPATIBILITY_COPY.label}
+        description={
+          <span id={noteId}>{TEXT_CONTENT_COMPATIBILITY_COPY.description}</span>
+        }
+        testId={`${switchId}-row`}
+        control={
+          <ToggleSwitch
+            id={switchId}
+            label={TEXT_CONTENT_COMPATIBILITY_COPY.label}
+            checked={checked}
+            disabled={disabled}
+            describedBy={noteId}
+            dataTestId={switchId}
+            onChange={onChange}
+          />
+        }
+      />
+    </SettingsGroup>
   );
 }
 
@@ -788,12 +1252,14 @@ export function AccessEditorSections({
   organizations,
   initialOrganizationIds,
   remoteControlEnabled,
+  cloudName,
   disabled,
   setOrganizationMode,
   setOrganizationEnabled,
   desktops,
-  setDesktopMode,
-  setDesktopSelected,
+  setManagedHost,
+  setDeviceChoice,
+  setDeviceSelected,
   onRetryDesktops,
   renderEditor,
 }: {
@@ -802,13 +1268,16 @@ export function AccessEditorSections({
   readonly organizations: readonly ExternalAgentOrganization[];
   readonly initialOrganizationIds: readonly string[];
   readonly remoteControlEnabled: boolean;
+  /** The brand's cloud product name, which labels the Cloud agents switch. */
+  readonly cloudName: string;
   readonly disabled: boolean;
   readonly setOrganizationMode: (mode: 'all' | 'selected') => void;
   readonly setOrganizationEnabled: (id: string, enabled: boolean) => void;
-  /** The person's paired desktops for the desktop selector. */
+  /** The person's paired devices for the device selector. */
   readonly desktops: DesktopListState;
-  readonly setDesktopMode: (mode: 'all' | 'selected') => void;
-  readonly setDesktopSelected: (remoteId: string, selected: boolean) => void;
+  readonly setManagedHost: (managed: boolean) => void;
+  readonly setDeviceChoice: (choice: AccessDeviceChoice) => void;
+  readonly setDeviceSelected: (remoteId: string, selected: boolean) => void;
   readonly onRetryDesktops?: () => void;
   readonly renderEditor: () => ReactNode;
 }): JSX.Element {
@@ -884,31 +1353,26 @@ export function AccessEditorSections({
           </SettingsGroup>
         </SettingsSection>
       ) : null}
-      {showsAccessDesktops(source, draft, remoteControlEnabled) ? (
+      {showsAccessHosts(source, draft, { keepUnusedScope: true }) ? (
         <SettingsSection
-          title="Desktops"
-          description="The agent can reach only the desktops you choose."
-          testId="external-agent-desktops"
+          title="Hosts"
+          description="The agent can reach only the hosts you choose."
+          testId="external-agent-hosts"
         >
-          <div className="flex min-w-0 flex-col gap-3">
-            {desktopsWriteAccess(source, draft, remoteControlEnabled) ? (
-              <Notice intent="attention" title="This reaches your computer.">
-                With write access, this agent can direct agents on the desktops
-                you choose. They run commands and edit files under each
-                desktop’s approval settings.
-              </Notice>
-            ) : null}
-            <DesktopAccessChoices
-              idPrefix="external-agent"
-              mode={draft.remotes.mode}
-              remoteIds={draft.remotes.remoteIds}
-              desktops={desktops}
-              disabled={disabled}
-              onModeChange={setDesktopMode}
-              onDesktopChange={setDesktopSelected}
-              onRetry={onRetryDesktops}
-            />
-          </div>
+          <HostAccessChoices
+            idPrefix="external-agent"
+            source={source}
+            draft={draft}
+            remoteControlEnabled={remoteControlEnabled}
+            cloudName={cloudName}
+            desktops={desktops}
+            disabled={disabled}
+            keepUnusedScope
+            onManagedChange={setManagedHost}
+            onDeviceChoiceChange={setDeviceChoice}
+            onDeviceChange={setDeviceSelected}
+            onRetryDevices={onRetryDesktops}
+          />
         </SettingsSection>
       ) : null}
     </>

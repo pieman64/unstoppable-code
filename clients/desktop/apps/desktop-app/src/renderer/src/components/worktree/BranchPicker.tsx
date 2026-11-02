@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -334,17 +335,18 @@ export function BranchPicker({
       {view === 'create' && (
         <div className="p-3">
           <div className="mb-2 flex items-center gap-1.5">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={() => {
                 setView('list');
                 setCreateError(null);
               }}
-              className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
               aria-label="Back to branch list"
             >
               <AppCatalogChevronLeftMediumIcon width="14" height="14" />
-            </button>
+            </Button>
             <span className="text-xs font-semibold fg-primary">
               Create new branch
             </span>
@@ -445,25 +447,24 @@ export function BranchPicker({
             )}
 
             <div className="flex justify-end gap-1.5">
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => {
                   setView('list');
                   setCreateError(null);
                 }}
                 disabled={creating}
-                className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary hover:bg-secondary hover:fg-primary disabled:opacity-60"
               >
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="primary"
+                size="compact"
                 disabled={creating || !newBranchName.trim()}
                 onClick={() => void handleCreate()}
-                className="focus-ring shrink-0 rounded-md bg-accent px-2 py-1 text-xs font-medium fg-emphasis hover:bg-accent/90 disabled:opacity-60"
               >
                 {creating ? 'Creating…' : 'Create'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

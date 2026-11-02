@@ -116,9 +116,11 @@ test('a Codex chat completes while another chat on the shared app-server is held
     await expect(
       peer.panel.getByText(PEER_REPLY, { exact: false }).first(),
     ).toBeVisible({ timeout: 45_000 });
+    // The turn has settled once Stop is gone. An empty composer shows the
+    // voice button rather than Send.
     await expect(
-      peer.composerRoot.getByRole('button', { name: 'Send message' }),
-    ).toBeVisible({ timeout: 30_000 });
+      peer.composerRoot.getByTestId('chat-stop-generation'),
+    ).toHaveCount(0, { timeout: 30_000 });
 
     // A is still held: its write gate is closed and its burst is not durable.
     expect((await barrier.read())?.reached).toBe(true);
@@ -151,8 +153,8 @@ test('a Codex chat completes while another chat on the shared app-server is held
       heldAgain.panel.getByText(LAST_MARKER, { exact: false }).first(),
     ).toBeVisible({ timeout: 90_000 });
     await expect(
-      heldAgain.composerRoot.getByRole('button', { name: 'Send message' }),
-    ).toBeVisible({ timeout: 30_000 });
+      heldAgain.composerRoot.getByTestId('chat-stop-generation'),
+    ).toHaveCount(0, { timeout: 30_000 });
     const heldMessages = readChatStorageMessages(
       path.join(userDataDir, 'workspaces', HELD_PROJECT),
       WORKTREE_ID,

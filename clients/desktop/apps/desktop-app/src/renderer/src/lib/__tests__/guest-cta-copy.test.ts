@@ -6,7 +6,6 @@ import { brandText } from '../brand';
 import {
   GUEST_SIGN_IN_CTA_LABEL,
   GUEST_UPGRADE_NUDGE_BODY,
-  guestModelGateBody,
   guestModelGateTitle,
 } from '../guest-cta-copy';
 
@@ -81,17 +80,14 @@ describe('brand text is read lazily, not captured at module load', () => {
   const originalAppName = brandText.appName;
 
   afterEach(() => {
-    brandText.appName = originalAppName;
+    Reflect.set(brandText, 'appName', originalAppName);
   });
 
   it('reflects a brand swapped AFTER this module was imported', () => {
     expect(guestModelGateTitle()).toBe(`Sign in to ${originalAppName} Cloud`);
 
-    brandText.appName = 'Swapped Brand';
+    Reflect.set(brandText, 'appName', 'Swapped Brand');
 
     expect(guestModelGateTitle()).toBe('Sign in to Swapped Brand Cloud');
-    expect(guestModelGateBody('GPT 5.6 Luna')).toContain(
-      'hosted by Swapped Brand',
-    );
   });
 });

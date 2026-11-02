@@ -1173,6 +1173,12 @@ describe('readAllSidebarItemsSnapshot index authority', () => {
       // cannot prove that its worktrees are gone.
       expect(snapshot.file.items.map((item) => item.id)).toEqual(['ws-1']);
       expect(snapshot.authority).toBe('unreadable');
+      // The aggregate folds it in; the workspace's own reads keep it apart.
+      expect(snapshot.indexAuthority).toBe('ok');
+      expect(snapshot.workspaceReads.get('ws-1')).toEqual({
+        manifest: 'ok',
+        worktrees: 'unreadable',
+      });
     } finally {
       mockedWorktreesAuthority.value = 'ok';
     }
@@ -1185,16 +1191,20 @@ describe('sidebar-items fan-outs settle every sibling before failing', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     __resetSidebarItemsStateForTests();
-    for (const resolver of [
-      mockedResolveProjectScripts,
-      mockedResolveProjectHooks,
-      mockedResolveWorkspaceRootScripts,
-      mockedResolveWorkspaceRootHooks,
-      mockedResolveWorkspaceRepoDataHooks,
-    ]) {
-      resolver.mockReset();
-      resolver.mockResolvedValue({});
-    }
+    mockedResolveProjectScripts.mockReset();
+    mockedResolveProjectScripts.mockResolvedValue({});
+    mockedResolveProjectHooks.mockReset();
+    mockedResolveProjectHooks.mockResolvedValue({});
+    mockedResolveWorkspaceRootScripts.mockReset();
+    mockedResolveWorkspaceRootScripts.mockResolvedValue({});
+    mockedResolveWorkspaceRootHooks.mockReset();
+    mockedResolveWorkspaceRootHooks.mockResolvedValue({});
+    mockedResolveWorkspaceRepoDataHooks.mockReset();
+    mockedResolveWorkspaceRepoDataHooks.mockResolvedValue({
+      id: 'repo',
+      name: 'Repo',
+      repoPath: '/repos/repo',
+    });
     mockedReadWorkspaceWorktreesDetailed.mockReset();
     mockedReadWorkspaceWorktreesDetailed.mockResolvedValue({
       worktrees: [],
@@ -1319,7 +1329,11 @@ describe('sidebar-items fan-outs settle every sibling before failing', () => {
         repoPath: `/repos/${id}`,
       })),
     });
-    const repoB = holdSibling({});
+    const repoB = holdSibling({
+      id: 'repo-b',
+      name: 'Repo B',
+      repoPath: '/repos/repo-b',
+    });
     mockedResolveWorkspaceRepoDataHooks
       .mockRejectedValueOnce(failure)
       .mockReturnValueOnce(repoB.promise);

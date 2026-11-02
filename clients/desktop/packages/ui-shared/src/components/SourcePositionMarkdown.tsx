@@ -18,6 +18,7 @@ import {
 } from './Markdown';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
 import { MarkdownMermaid } from './MarkdownMermaid';
+import { useSingleDollarMathEnabled } from './use-single-dollar-math';
 
 export interface SourcePositionMarkdownProps {
   readonly children: string;
@@ -107,6 +108,8 @@ export function SourcePositionMarkdown({
   children,
   options,
 }: SourcePositionMarkdownProps): JSX.Element {
+  // Subscribes so a change to the `$...$` setting re-renders the plan.
+  useSingleDollarMathEnabled();
   const positions = sourcePositions(children);
   const prepared = prepareMarkdownRender(children, options);
   const rendered = compiler(prepared.markdown, {

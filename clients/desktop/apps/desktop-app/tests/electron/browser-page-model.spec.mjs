@@ -568,18 +568,29 @@ test('frames: coverage, scoped locators through inspect, and seeded secrets', as
       'browser-lab-frames-nested-counter-button',
       'browser-lab-frames-late-button',
     ];
-    await expect
-      .poll(
-        async () => {
-          const { rows } = await modelRows(context);
-          const elementIds = await rowElementIds(context, rows);
-          return expectedIds.every((id) =>
-            rows.some((row) => elementIds.get(row.ref)?.has(id)),
-          );
-        },
-        { timeout: 30_000 },
-      )
-      .toBe(true);
+    // Names the elements still missing, so a CI-only failure says which
+    // frame the page model did not reach. CI reports only the cross-site
+    // frame missing (run 40077333477), so the failure also carries the page
+    // model's own coverage, which says whether it omitted a frame and why.
+    let lastFrames = [];
+    try {
+      await expect
+        .poll(
+          async () => {
+            const { rows, frames } = await modelRows(context);
+            lastFrames = frames;
+            const elementIds = await rowElementIds(context, rows);
+            return expectedIds.filter(
+              (id) => !rows.some((row) => elementIds.get(row.ref)?.has(id)),
+            );
+          },
+          { timeout: 30_000 },
+        )
+        .toEqual([]);
+    } catch (error) {
+      error.message += `\nFrame coverage: ${JSON.stringify(lastFrames)}`;
+      throw error;
+    }
     const { rows, frames } = await modelRows(context);
     const elementIds = await rowElementIds(context, rows);
     expect(frames).toEqual(expect.any(Array));

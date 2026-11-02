@@ -1,3 +1,4 @@
+import type { PersistedChatMessage } from '@canopy/agent-transcript';
 import type {
   TranscriptPage,
   TranscriptTurnSummary,
@@ -117,24 +118,43 @@ export async function getLastAgentResponse<TContext extends ChatReadContext>(
   throw scanBudgetExceeded();
 }
 
+/** The turn's final visible assistant row, as the turn view selected it. */
+export function finalAssistantMessageInTurn(
+  page: TranscriptPage,
+  turn: TranscriptTurnSummary,
+): PersistedChatMessage | undefined {
+  // A completed tools-loaded continuation answers the prompt; its projection
+  // keeps the answer, and the latest one comes last in transcript order.
+  const answered = Object.values(turn.continuations ?? {})
+    .filter((continuation) => continuation.complete)
+    .pop();
+  const finalMessageIds = answered?.finalMessageIds.length
+    ? answered.finalMessageIds
+    : turn.finalMessageIds;
+  for (const id of finalMessageIds) {
+    if (!page.messages.some((message) => message.id === id)) throw readFailed();
+  }
+  for (let index = page.messages.length - 1; index >= 0; index -= 1) {
+    const message = page.messages[index];
+    if (!message || !finalMessageIds.includes(message.id)) continue;
+    if (serializeVisibleReadMessage(message, turn.id)?.role === 'assistant')
+      return message;
+  }
+  return undefined;
+}
+
 /** Shared visible-output policy for latest-response and turn-correlated reads. */
 export function finalVisibleAssistantMessage(
   page: TranscriptPage,
   turn: TranscriptTurnSummary,
 ): VisibleMessage | undefined {
-  for (const id of turn.finalMessageIds) {
-    if (!page.messages.some((message) => message.id === id)) throw readFailed();
-  }
-  for (let index = page.messages.length - 1; index >= 0; index -= 1) {
-    const message = page.messages[index];
-    if (!message || !turn.finalMessageIds.includes(message.id)) continue;
-    const visible = serializeVisibleReadMessage(message, turn.id);
-    if (visible?.role === 'assistant') return visible;
-  }
-  return undefined;
+  const message = finalAssistantMessageInTurn(page, turn);
+  return message
+    ? (serializeVisibleReadMessage(message, turn.id) ?? undefined)
+    : undefined;
 }
 
-function nextBefore(
+export function nextBefore(
   page: TranscriptPage,
   currentBefore: number | undefined,
   currentEnd: number,
@@ -197,7 +217,7 @@ function readFailed(): DiscoveryError {
   );
 }
 
-function scanBudgetExceeded(): DiscoveryError {
+export function scanBudgetExceeded(): DiscoveryError {
   return new DiscoveryError(
     'scan_budget_exceeded',
     'Chat transcript scan reached its bounded page limit.',

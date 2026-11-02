@@ -121,6 +121,61 @@ describe('filterMarketplaceEntries', () => {
 });
 
 describe('buildMarketplaceBrowseGroups', () => {
+  it('excludes a partial removal from standalone Browse using the same host snapshot as Installed (CAN-5272)', () => {
+    const partial = entry({ id: 'partial', categories: ['productivity'] });
+    const groups = buildMarketplaceBrowseGroups(
+      searchUnifiedEntries([partial], '', null),
+      {
+        installedStatusStates: {
+          partial: {
+            kind: 'ready',
+            item: {
+              target: { kind: 'plugin', marketplaceId: 'm', pluginName: 'p' },
+              status: null,
+              removable: true,
+              notices: [
+                { code: 'partial_removal', message: 'Retry.', retryable: true },
+              ],
+            },
+            configurations: [],
+          },
+        },
+      },
+    );
+    expect(groups.flatMap((group) => group.entries)).toEqual([]);
+  });
+
+  it('excludes installed and needs-auth entries from standalone category pages (CAN-5272)', () => {
+    const rows = [
+      entry({
+        id: 'installed',
+        state: 'installed',
+        categories: ['productivity'],
+      }),
+      entry({
+        id: 'needs-auth',
+        state: 'needs-auth',
+        categories: ['productivity'],
+      }),
+      entry({ id: 'available', categories: ['productivity'] }),
+      entry({
+        id: 'alias',
+        installedEntryId: 'installed',
+        categories: ['productivity'],
+      }),
+    ];
+    const groups = buildMarketplaceBrowseGroups(
+      searchUnifiedEntries(rows, '', null),
+    );
+    const category = groups.find(
+      (group) => group.id === 'category-productivity',
+    );
+    expect(category?.entries.map((row) => row.id)).toEqual(['available']);
+    expect(
+      category && marketplaceCategoryPageEntries(category, 'installed'),
+    ).toEqual([]);
+  });
+
   it('falls back to the featured picks when the host has no role suggestions', () => {
     const results = searchUnifiedEntries([plugin], '', null);
     expect(buildMarketplaceBrowseGroups(results)[0]).toMatchObject({
@@ -135,6 +190,32 @@ describe('buildMarketplaceBrowseGroups', () => {
       suggestedNames: [],
     });
     expect(suggested.entries).toEqual([]);
+  });
+
+  // The category pages build from these groups without the section model,
+  // so they must list a bundled server as its plugin too (CAN-3653).
+  it('keeps installed bundled servers out of Browse even when they need attention', () => {
+    const bundled = entry({
+      id: 'mcp-local:team-chat',
+      name: 'Team chat server',
+      kind: 'app',
+      origin: 'installed-standalone',
+      state: 'installed',
+      ref: { type: 'local-mcp', serverId: 'team-chat' },
+      bundledBy: { entryId: 'mkt:acme/team-chat', name: 'Team chat' },
+    });
+    const unreachable = {
+      ...bundled,
+      id: 'mcp-local:team-chat-2',
+      name: 'Team chat backup',
+      connection: { status: 'unreachable' as const },
+    };
+    const listed = buildMarketplaceBrowseGroups(
+      searchUnifiedEntries([bundled, unreachable], '', null),
+      { suggestedNames: [] },
+    ).flatMap((group) => group.entries.map((row) => row.id));
+    expect(listed).not.toContain(bundled.id);
+    expect(listed).not.toContain(unreachable.id);
   });
 });
 

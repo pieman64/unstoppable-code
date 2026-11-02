@@ -1,5 +1,6 @@
 import type {
   CodexSpeed,
+  PersistedChatMessage,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
 import {
@@ -12,6 +13,7 @@ import {
   hydratePersistedChatTab,
   clonePersistedChatTabForResume,
 } from '../chatTabPersistence';
+import { toPersistedMessage } from '../../stores/chat/persisted-tabs';
 
 // ---------------------------------------------------------------------------
 // Seed model registries so ALL_MODELS validation works
@@ -53,10 +55,126 @@ const makePersistedTab = (
   ...overrides,
 });
 
+describe('reference-only row preservation (phase 14 R)', () => {
+  const row: PersistedChatMessage & {
+    futureBodyRef: { version: number; key: string };
+  } = {
+    id: 'referenced-row',
+    role: 'assistant',
+    timestamp: 1234,
+    blocks: [],
+    blocksRef: {
+      version: 1,
+      blockCount: 1,
+      manifest: {
+        version: 1,
+        artifactId: `sha256-v1-${'a'.repeat(64)}`,
+        sha256: 'a'.repeat(64),
+        byteLength: 256,
+        encoding: 'utf-8',
+        mediaType: 'text/plain',
+      },
+    },
+    futureBodyRef: { version: 2, key: 'opaque-reference' },
+  };
+
+  it('keeps a reference-only assistant row during hydrate', () => {
+    const hydrated = hydratePersistedChatTab(
+      makePersistedTab({ messages: [row] }),
+    );
+    expect(hydrated.messages).toEqual([row]);
+    expect(hydrated.messages.map(toPersistedMessage)).toEqual([row]);
+  });
+
+  it('keeps references on hydrate then persist independently of empty-assistant filtering', () => {
+    const userRow: typeof row = { ...row, role: 'user' };
+    const hydrated = hydratePersistedChatTab(
+      makePersistedTab({ messages: [userRow] }),
+    );
+    expect(hydrated.messages.map(toPersistedMessage)).toEqual([userRow]);
+  });
+
+  it('keeps delegation child metadata and the stream card marker without renderer state', () => {
+    const child = {
+      id: 'child',
+      role: 'assistant' as const,
+      timestamp: 4,
+      blocks: [{ type: 'text' as const, text: 'child text' }],
+      parentBlockId: 'delegated-agent-child',
+      delegationSequence: 2,
+      delegationSegment: 'segment',
+      delegationDelivery: 'steer' as const,
+      delegationAuthor: { kind: 'user' as const },
+      truncated: true as const,
+      itemRevision: 3,
+      final: true,
+      futureBodyRef: { key: 'opaque-child' },
+    };
+    const card = {
+      id: 'card',
+      role: 'assistant' as const,
+      timestamp: 3,
+      blocks: [
+        {
+          type: 'delegated_agent_call' as const,
+          agentBlockId: 'delegated-agent-child',
+          delegationId: 'child',
+          runGeneration: 1,
+          sequence: 1,
+          status: 'running' as const,
+          outputTruncated: false,
+          selectedModelId: '',
+          runtimeModelId: '',
+          targetHarnessId: '',
+          description: 'Task',
+          prompt: 'Prompt',
+          executionMode: 'background' as const,
+          parentHarnessId: 'claude',
+          parentTurnId: 'turn',
+          parentToolCallId: 'tool',
+          createdAt: 3,
+          transcriptStore: 'chat-stream-v2' as const,
+        },
+      ],
+      futureBodyRef: { key: 'opaque-card' },
+    };
+    const hydrated = hydratePersistedChatTab(
+      makePersistedTab({ messages: [card, child] }),
+    );
+    expect(hydrated.messages.map(toPersistedMessage)).toEqual([card, child]);
+    const runtime = {
+      ...card,
+      isStreaming: true,
+      selected: true,
+      error: 'transient',
+      pending: {},
+    };
+    expect(toPersistedMessage(runtime)).toEqual(card);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // hydratePersistedChatTab
 // ---------------------------------------------------------------------------
 describe('hydratePersistedChatTab', () => {
+  it('retains an explicit OpenCode choice when an empty chat reloads', () => {
+    const tab = hydratePersistedChatTab(
+      makePersistedTab({
+        messages: [],
+        model: 'claude-sonnet-4-6',
+        providerType: 'opencode',
+        executionHarness: 'opencode',
+        executionHarnessExplicitlyChosen: true,
+      }),
+    );
+    expect(tab).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      providerType: 'opencode',
+      executionHarness: 'opencode',
+      executionHarnessExplicitlyChosen: true,
+    });
+  });
+
   it('retains hidden delivery messages through the alternate tab hydrator', () => {
     const tab = hydratePersistedChatTab(
       makePersistedTab({

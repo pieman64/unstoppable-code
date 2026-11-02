@@ -292,6 +292,71 @@ describe('W5 script and hook settings commands (real fs)', () => {
       expect((await readManifest()).scripts).toEqual(MANIFEST.scripts);
     });
 
+    it('sets one definition, keeping every other script (CAN-4153)', async () => {
+      await scripts({
+        kind: 'definition',
+        name: ' lint ',
+        value: { command: ' eslint . ', timeoutSeconds: 30 },
+      });
+      await scripts({ kind: 'definition', name: 'teardown', value: null });
+
+      expect((await readManifest()).scripts).toEqual({
+        setup: { command: 'npm ci', timeoutSeconds: 60 },
+        teardown: null,
+        lint: { command: 'eslint .', timeoutSeconds: 30 },
+      });
+    });
+
+    it('removes one setting of a repository so the inherited one applies', async () => {
+      await scripts({
+        kind: 'definition',
+        repoId: 'api',
+        name: 'setup',
+        value: 'go mod download',
+      });
+      await scripts({
+        kind: 'definition',
+        repoId: 'api',
+        name: 'test',
+        value: 'go test',
+      });
+      await scripts({
+        kind: 'remove-definition',
+        repoId: 'api',
+        name: 'setup',
+      });
+
+      expect(await repoField('api', 'scripts')).toEqual({ test: 'go test' });
+      expect((await readManifest()).scripts).toEqual(MANIFEST.scripts);
+    });
+
+    it('refuses a definition for an unknown repository or an empty value', async () => {
+      const before = await readFile(getWorkspaceConfigPath('multi-a'), 'utf8');
+      await expectRefusal(
+        scripts({
+          kind: 'definition',
+          repoId: 'gone',
+          name: 'setup',
+          value: 'x',
+        }),
+        'not-found',
+        /Repo gone not found/,
+      );
+      await expectRefusal(
+        scripts({ kind: 'definition', name: 'setup', value: '   ' }),
+        'invalid-request',
+        /Invalid script/,
+      );
+      await expectRefusal(
+        scripts({ kind: 'remove-definition', name: '  ' }),
+        'invalid-request',
+        /Invalid script name/,
+      );
+      expect(await readFile(getWorkspaceConfigPath('multi-a'), 'utf8')).toBe(
+        before,
+      );
+    });
+
     it('refuses non-string commands before writing', async () => {
       const before = await inode(getWorkspaceConfigPath('multi-a'));
       const commands: Record<string, string> = {};

@@ -1,3 +1,22 @@
+import type { AppAdvisorWatcherSurfaces } from '../app-advisor/watchers';
+import { emitPortalWatcherProjection } from '../portal/adapters/watchers-adapter';
+
+jest.mock('../portal/adapters/watchers-adapter', () => ({
+  emitPortalWatcherProjection: jest.fn(),
+}));
+jest.mock('../lib/main-process-logging', () => ({
+  logMainProcessError: jest.fn(),
+}));
+
+const mockDeliverWatcherMessage = jest.fn<Promise<string>, unknown[]>(() =>
+  Promise.resolve('submitted'),
+);
+// Not virtual: the module exists, and a virtual mock can miss its resolved path.
+jest.mock('../services/watcher-chat-delivery', () => ({
+  deliverWatcherMessageToChat: (...args: unknown[]): Promise<string> =>
+    mockDeliverWatcherMessage(...args),
+}));
+
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
 }));
@@ -6,7 +25,7 @@ const mockSetup = jest.fn();
 const mockUpdateWatcherFollowUp = jest.fn();
 const mockHoldChatFiring = jest.fn();
 const mockReleaseChatFiring = jest.fn();
-const mockConfigure = jest.fn();
+const mockConfigure = jest.fn<void, [AppAdvisorWatcherSurfaces]>();
 const mockListCompleted = jest.fn();
 
 jest.mock('../app-advisor/watchers', () => ({
@@ -45,6 +64,15 @@ function getHandler(
 }
 
 describe('app advisor watcher IPC handlers', () => {
+  it('keeps desktop notifications working when the Portal projection fails', () => {
+    jest.mocked(emitPortalWatcherProjection).mockImplementationOnce(() => {
+      throw new Error('Sink unavailable');
+    });
+    const surfaces = mockConfigure.mock.calls[0]?.[0];
+    expect(surfaces?.onChange).toBeDefined();
+    expect(() => surfaces?.onChange?.([])).not.toThrow();
+    expect(emitPortalWatcherProjection).toHaveBeenCalledWith([]);
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     registerAppAdvisorWatcherHandlers({
@@ -58,7 +86,27 @@ describe('app advisor watcher IPC handlers', () => {
       markAppAdvisorWindowRendererReady: jest.fn(),
       sendAppAdvisorWindowCommand: jest.fn(),
       sendChatWindowCommand: jest.fn(() => true),
+      setAppAdvisorFloatingSize: jest.fn(),
+      notifyStartupUnlocked: jest.fn(),
     });
+  });
+
+  it('configures main-owned watcher delivery even when no windows are registered', async () => {
+    const surfaces = mockConfigure.mock.calls[0]?.[0];
+    expect(typeof surfaces?.deliverWatcherMessage).toBe('function');
+    if (!surfaces) throw new Error('Expected watcher surfaces');
+    const delivery = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      watcherId: 'watcher-1',
+      deliveryId: 'delivery-1',
+      text: 'Watcher fired',
+    };
+    await expect(surfaces.deliverWatcherMessage(delivery)).resolves.toBe(
+      'submitted',
+    );
+    expect(mockDeliverWatcherMessage).toHaveBeenCalledWith(delivery);
   });
 
   it('returns a structured error for malformed create destinations', async () => {

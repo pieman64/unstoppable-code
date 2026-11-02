@@ -140,7 +140,7 @@ async function json(file: string): Promise<Record<string, unknown>> {
   const value: unknown = JSON.parse(await readFile(file, 'utf8'));
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     throw new Error('Expected object');
-  return value;
+  return Object.fromEntries(Object.entries(value));
 }
 async function concurrentEdit(workspaceId: string): Promise<void> {
   await updateWorkspaceWorktrees(workspaceId, (rows) => [

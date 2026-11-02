@@ -390,7 +390,10 @@ describe('AI Gateway model catalog cache', () => {
 
   it('returns busy while another refresh owns the live lock', async () => {
     let finishFetch: ((response: Response) => void) | undefined;
-    const fetchFn: jest.MockedFunction<typeof fetch> = jest.fn(
+    const fetchFn: typeof fetch = jest.fn<
+      Promise<Response>,
+      [input: URL | RequestInfo, init?: RequestInit]
+    >(
       () =>
         new Promise<Response>((resolveFetch) => {
           finishFetch = resolveFetch;
@@ -470,7 +473,7 @@ describe('AI Gateway model catalog cache', () => {
     expect(await readFile(cacheFilePath, 'utf8')).toBe(before);
   });
 
-  it.each<Array<[string, () => Response]>>([
+  it.each<[string, () => Response]>([
     [
       'malformed JSON',
       (): Response => new Response('{"version":1,', { status: 200 }),
@@ -684,8 +687,10 @@ describe('AI Gateway model catalog cache', () => {
       const deadline = setTimeout(() => child.kill('SIGKILL'), 10_000);
       child.once('close', () => clearTimeout(deadline));
       let stdout = '';
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => {
+      const output = child.stdout;
+      if (!output) throw new Error('Expected child stdout pipe');
+      output.setEncoding('utf8');
+      output.on('data', (chunk: string) => {
         stdout += chunk;
       });
       return {

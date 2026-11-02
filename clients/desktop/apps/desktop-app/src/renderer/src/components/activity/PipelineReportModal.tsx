@@ -57,7 +57,7 @@ export function PipelineReportModal({
   return (
     <DialogModal
       onClose={onClose}
-      title="Pipeline report"
+      title="Workflow report"
       subtitle={pipelineName}
       maxWidth="3xl"
       dataTestId={`pipeline-report-modal-${executionId}`}

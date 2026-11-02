@@ -4,6 +4,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { buttonClassName } from '@canopy/ui-shared/components';
 import { PlanActionControls } from '../PlanActionControls';
 
 function controls(executeDisabled = false): HTMLElement {
@@ -29,11 +30,17 @@ function classesOf(host: HTMLElement, testId: string): DOMTokenList {
 }
 
 describe('PlanActionControls buttons', () => {
-  it('uses the shared 28px control buttons: Explore and Share secondary, Execute primary', () => {
+  it('uses the shared compact buttons: Explore and Share secondary, Execute primary', () => {
     const host = controls();
-    for (const testId of ['plan-explore', 'plan-share', 'plan-execute']) {
+    for (const [testId, variant] of [
+      ['plan-explore', 'secondary'],
+      ['plan-share', 'secondary'],
+      ['plan-execute', 'primary'],
+    ] as const) {
       const classes = classesOf(host, testId);
-      for (const cls of ['h-7', 'rounded-md', 'text-xs']) {
+      for (const cls of buttonClassName({ variant, size: 'compact' })
+        .split(' ')
+        .filter(Boolean)) {
         expect(classes.contains(cls)).toBe(true);
       }
     }
@@ -79,10 +86,18 @@ describe('PlanActionControls buttons', () => {
           .querySelector<HTMLButtonElement>('[data-testid="plan-execute"]')
           ?.click(),
       );
+      // Copy plan moved beside Share (CAN-5354); the menu no longer has it.
+      expect(container.querySelector('[data-testid="plan-execute-copy"]')).toBe(
+        null,
+      );
+      expect(
+        container
+          .querySelector('[data-testid="plan-copy"]')
+          ?.getAttribute('aria-label'),
+      ).toBe('Copy plan');
       for (const testId of [
         'plan-execute-pipeline',
         'plan-execute-implement',
-        'plan-execute-copy',
       ]) {
         const row = container.querySelector(`[data-testid="${testId}"]`);
         expect(row?.classList.contains('text-xs')).toBe(true);

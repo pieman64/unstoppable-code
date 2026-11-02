@@ -374,6 +374,16 @@ export function buildScenarioMetrics(scenario) {
       'Usable shell to the first startup composer key dispatch',
     ),
   );
+  // A `timed-out` quit keeps its deadline time, a lower bound.
+  addMetric(
+    metrics,
+    `${prefix}.quit.exit_ms`,
+    metric(
+      scenario.quit?.exitMs,
+      'ms',
+      'App quit request to Electron main process exit',
+    ),
+  );
   taskMetrics(scenario, metrics);
   workMetrics(scenario, metrics);
   Object.assign(metrics, scalingRatioMetrics(scenario));

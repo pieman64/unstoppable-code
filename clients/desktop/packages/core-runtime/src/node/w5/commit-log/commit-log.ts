@@ -1,5 +1,16 @@
+import {
+  W5_CAPTURE_LIMITS,
+  type W5CaptureEvidence,
+  type W5CaptureFile,
+  type W5FileChainEvidence,
+  type W5FileLogEvidence,
+} from './capture-contract';
 import type { DatabaseSync } from 'node:sqlite';
 
+import {
+  KEYED_RECEIPT_RETRY_WINDOW_MS,
+  type KeyedReceiptKey,
+} from '../../../kernel/keyed-receipt';
 import { openW5CommitLogDatabase } from './database';
 import { W5CommitLogError, W5CommitRefusedError } from './errors';
 import { fingerprintW5File } from './fingerprint';
@@ -43,12 +54,7 @@ export interface W5BackupPosition {
 }
 
 /** Who asked for a keyed change, and the request's identity. */
-export interface W5ReceiptKey {
-  /** The authenticated caller; keys are scoped to it. */
-  caller: string;
-  operation: string;
-  idempotencyKey: string;
-}
+export type W5ReceiptKey = KeyedReceiptKey;
 
 export interface W5FileChange {
   path: string;
@@ -123,7 +129,7 @@ export interface W5Reservation {
 }
 
 /** Full outcomes survive for 30 days after completion (CAN-4029). */
-export const W5_RECEIPT_RETRY_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+export const W5_RECEIPT_RETRY_WINDOW_MS = KEYED_RECEIPT_RETRY_WINDOW_MS;
 export const W5_COMPACTION_BATCH_SIZE = 100;
 export const W5_COMPACTION_INTERVAL = 100;
 
@@ -245,6 +251,185 @@ export class W5CommitLog {
         { commitId: asInteger(pending.commit_id) },
       );
     return { commitId, schemaVersion, revisions };
+  }
+
+  /** Bounded retained evidence, not a claim of canonical revision eligibility. */
+  captureEvidence(
+    files: readonly { file: W5CaptureFile; path: string }[],
+  ): W5CaptureEvidence {
+    const limit = (): never => {
+      throw new W5CommitRefusedError(
+        'invalid-state',
+        'The W5 capture exceeds its limits.',
+        { capture: 'limit-exceeded' },
+      );
+    };
+    if (files.length > W5_CAPTURE_LIMITS.files) limit();
+    const revisions: Record<string, number> = {};
+    Object.setPrototypeOf(revisions, null);
+    let count = 0;
+    const keys = new Set<string>();
+    const prefixes = new Set<string>();
+    for (const { file } of files) {
+      switch (file.kind) {
+        case 'index':
+        case 'index-backup':
+          keys.add('workspaces');
+          break;
+        case 'manifest':
+          keys.add(`workspace:${file.workspaceId}`);
+          break;
+        case 'worktrees':
+          keys.add(`worktrees:${file.workspaceId}`);
+          prefixes.add(`worktree:${file.workspaceId}/`);
+          break;
+      }
+    }
+    const predicates = Array.from(keys, () => 'resource = ?');
+    const parameters = Array.from(keys);
+    prefixes.forEach((prefix): void => {
+      // Binary ranges, not LIKE: IDs can contain underscores, and keys can contain NUL.
+      predicates.push('(resource >= ? AND resource < ?)');
+      parameters.push(prefix, `${prefix.slice(0, -1)}0`);
+    });
+    const revisionRows = this.db
+      .prepare(
+        `SELECT hex(substr(CAST(resource AS BLOB), 1, 2049)) AS resource, revision
+         FROM w5_revisions WHERE ${predicates.join(' OR ') || '0'} ORDER BY resource`,
+      )
+      .iterate(...parameters);
+    try {
+      for (
+        let next = revisionRows.next();
+        !next.done;
+        next = revisionRows.next()
+      ) {
+        const row = next.value;
+        if (++count > W5_CAPTURE_LIMITS.evidenceRows) limit();
+        // node:sqlite truncates TEXT results at NUL; bounded hex preserves the key.
+        const key = Buffer.from(asText(row.resource), 'hex').toString('utf8');
+        if (key.length > 512) limit();
+        revisions[key] = asInteger(row.revision);
+      }
+    } finally {
+      revisionRows.return?.();
+    }
+    const evidence: W5FileLogEvidence[] = [];
+    const query = this.db.prepare(`SELECT c.commit_id, c.state,
+      CASE WHEN f.previous_fingerprint IS NULL THEN NULL ELSE hex(substr(CAST(f.previous_fingerprint AS BLOB), 1, 65)) END AS previous_fingerprint,
+      CASE WHEN f.new_fingerprint IS NULL THEN NULL ELSE hex(substr(CAST(f.new_fingerprint AS BLOB), 1, 65)) END AS new_fingerprint
+      FROM w5_commit_files f JOIN w5_commits c USING (commit_id)
+      WHERE f.path = ? AND (c.state != 'applied' OR c.commit_id = (
+        SELECT latest.commit_id FROM w5_commit_files latest
+        JOIN w5_commits decision USING (commit_id)
+        WHERE latest.path = f.path AND decision.state = 'applied'
+        ORDER BY latest.commit_id DESC LIMIT 1
+      )) ORDER BY c.commit_id`);
+    for (const { file, path } of files) {
+      const rows = query.iterate(path);
+      try {
+        for (let next = rows.next(); !next.done; next = rows.next()) {
+          const row = next.value;
+          if (++count > W5_CAPTURE_LIMITS.evidenceRows) limit();
+          const state = asText(row.state);
+          if (
+            state !== 'committed' &&
+            state !== 'applied' &&
+            state !== 'recovery-required'
+          )
+            throw new W5CommitLogError(
+              'STORAGE_UNAVAILABLE',
+              'Unexpected commit state.',
+            );
+          const previousFingerprint =
+            row.previous_fingerprint === null
+              ? null
+              : Buffer.from(asText(row.previous_fingerprint), 'hex').toString(
+                  'utf8',
+                );
+          const newFingerprint =
+            row.new_fingerprint === null
+              ? null
+              : Buffer.from(asText(row.new_fingerprint), 'hex').toString(
+                  'utf8',
+                );
+          if (
+            [previousFingerprint, newFingerprint].some(
+              (value) => value !== null && !/^[a-f0-9]{64}$/.test(value),
+            )
+          )
+            throw new W5CommitLogError(
+              'STORAGE_UNAVAILABLE',
+              'Unexpected fingerprint.',
+            );
+          evidence.push({
+            file,
+            commitId: asInteger(row.commit_id),
+            state,
+            previousFingerprint,
+            newFingerprint,
+          });
+        }
+      } finally {
+        rows.return?.();
+      }
+    }
+    const commits = this.db
+      .prepare(
+        `SELECT COUNT(*) AS retained,
+          (SELECT COUNT(*) FROM w5_commits WHERE state != 'applied') AS unresolved
+         FROM w5_commits`,
+      )
+      .get();
+    return {
+      commitId: asInteger(
+        this.db
+          .prepare(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'w5_commits'), 0) AS id",
+          )
+          .get()?.id,
+      ),
+      retainedCommits: asInteger(commits?.retained),
+      unresolvedCommits: asInteger(commits?.unresolved),
+      schemaVersion: Number(
+        asText(
+          this.db
+            .prepare("SELECT value FROM w5_meta WHERE key = 'schema_version'")
+            .get()?.value,
+        ),
+      ),
+      revisions,
+      files: evidence,
+      chains: this.chainEvidence(files),
+      resourceRevisionEligibility: 'unproven',
+    };
+  }
+
+  /** One aggregate row per path, so long-lived history never meets the row limit. */
+  private chainEvidence(
+    files: readonly { file: W5CaptureFile; path: string }[],
+  ): W5FileChainEvidence[] {
+    const malformed = (column: string): string =>
+      `(${column} IS NOT NULL AND (length(CAST(${column} AS BLOB)) != 64 OR ltrim(${column}, '0123456789abcdef') != ''))`;
+    const query = this.db.prepare(`SELECT COUNT(*) AS decisions,
+      COALESCE(MAX(position = 1 AND previous IS NULL), 0) AS starts_absent,
+      COALESCE(SUM(CASE
+        WHEN ${malformed('previous')} OR ${malformed('image')} THEN 1
+        WHEN position = 1 THEN 0
+        ELSE previous IS NOT before END), 0) AS discontinuities
+      FROM (SELECT previous_fingerprint AS previous, new_fingerprint AS image,
+        LAG(new_fingerprint) OVER (ORDER BY commit_id) AS before,
+        ROW_NUMBER() OVER (ORDER BY commit_id) AS position
+        FROM w5_commit_files WHERE path = ?)`);
+    return files.map(({ file, path }) => {
+      const row = query.get(path);
+      return {
+        file,
+        decisions: asInteger(row?.decisions),
+        startsAbsent: asInteger(row?.starts_absent) === 1,
+        discontinuities: asInteger(row?.discontinuities),
+      };
+    });
   }
 
   /**

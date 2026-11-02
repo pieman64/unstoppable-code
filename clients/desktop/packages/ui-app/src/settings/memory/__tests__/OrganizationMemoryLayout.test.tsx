@@ -22,6 +22,10 @@ import {
   type FakeSettingsHandler,
   type TestSettingsHostOptions,
 } from '../../__tests__/helpers/test-settings-host';
+import {
+  chooseSettingsOption,
+  settingsSelectTrigger,
+} from '../../__tests__/helpers/settings-select';
 import { teamNavItem } from '../../navigation/organization-nav-items';
 import { buildOrganizationDetail } from '../../organization/__tests__/helpers/members-section-harness';
 import { OrganizationMemoryFactPage } from '../OrganizationMemoryFactPage';
@@ -161,10 +165,10 @@ describe('OrganizationMemoryLayout', () => {
     const { host } = setup();
     await render(host, factsPage([FACT], team()));
 
-    // The organization block names the org; the page header is its h2.
-    expect(query('team-overview-section')).not.toBeNull();
+    // The settings rail names the organization; the page header is its h1.
+    expect(query('team-overview-section')).toBeNull();
     const title = query('page-header-title');
-    expect(title?.tagName).toBe('H2');
+    expect(title?.tagName).toBe('H1');
     expect(title?.textContent).toBe(teamNavItem('memory').label);
     expect(query('page-header-description')?.textContent).toBe(
       teamNavItem('memory').description,
@@ -327,7 +331,7 @@ describe('OrganizationMemoryLayout', () => {
       />,
     );
 
-    expect(query('team-overview-section')).not.toBeNull();
+    expect(query('page-header-title')?.tagName).toBe('H1');
     expect(query('memory-not-enabled')).not.toBeNull();
     expect(query('memory-views-tabs')).toBeNull();
   });
@@ -400,7 +404,7 @@ describe('Facts empty state', () => {
 
     expect(query('memory-facts-empty')).toBeNull();
     expect(
-      container.querySelector('select[aria-label="Fact liveness"]'),
+      container.querySelector('[role="combobox"][aria-label="Fact liveness"]'),
     ).not.toBeNull();
   });
 
@@ -459,7 +463,7 @@ describe('Facts empty state', () => {
 
     expect(query('memory-facts-empty')).toBeNull();
     expect(
-      container.querySelector('select[aria-label="Fact liveness"]'),
+      container.querySelector('[role="combobox"][aria-label="Fact liveness"]'),
     ).not.toBeNull();
   });
 
@@ -469,15 +473,10 @@ describe('Facts empty state', () => {
     });
     await render(host, factsPage([FACT], team()));
 
-    const select = container.querySelector(
-      'select[aria-label="Fact liveness"]',
+    await chooseSettingsOption(
+      settingsSelectTrigger(container, '[aria-label="Fact liveness"]'),
+      'superseded',
     );
-    if (!(select instanceof HTMLSelectElement)) throw new Error('no select');
-    await act(async () => {
-      select.value = 'superseded';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
     await act(async () => {
       await Promise.resolve();
     });
@@ -485,7 +484,7 @@ describe('Facts empty state', () => {
     expect(query('memory-facts-empty')).toBeNull();
     expect(container.textContent).toContain('No matching memory facts.');
     expect(
-      container.querySelector('select[aria-label="Fact liveness"]'),
+      container.querySelector('[role="combobox"][aria-label="Fact liveness"]'),
     ).not.toBeNull();
     expect(
       container.querySelector('[aria-label="Facts tab mode"]'),

@@ -17,8 +17,10 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 // Testids exercised:
 //   - `workflows-library-table`           -> the table wrapper
 //   - `workflows-library-search`          -> search input
-//   - `workflows-library-filter-trigger`  -> Trigger capsule; its menu rows are
-//                                            `-option-<trigger>` and `-any`
+//   - `workflows-library-filter`          -> Filter button nested in the
+//                                            search field; its Trigger rows are
+//                                            `-trigger-option-<trigger>` and
+//                                            `-trigger-any`
 
 const ZEPHYR = {
   id: 'zephyr-deploy',
@@ -108,10 +110,7 @@ test('pipelines table supports fuzzy search and trigger filtering', async ({}, t
 
     // (c) Trigger filter: Quokka is `plan_ready`, Zephyr is `dispatch`, so
     // filtering to Plan approved hides Zephyr.
-    await window.getByTestId('workflows-library-filter-trigger').click();
-    await window
-      .getByTestId('workflows-library-filter-trigger-option-plan-approved')
-      .click();
+    await app.chooseWorkflowsLibraryFilter('trigger', 'plan-approved');
     await expect(quokkaText).toBeVisible();
     await expect(zephyrText).toHaveCount(0);
 
@@ -119,9 +118,8 @@ test('pipelines table supports fuzzy search and trigger filtering', async ({}, t
       path: testInfo.outputPath('pipelines-table-trigger-filter.png'),
     });
 
-    // Reset the trigger filter; both rows return. The Trigger menu takes
-    // several values, so it is still open.
-    await window.getByTestId('workflows-library-filter-trigger-any').click();
+    // Reset the trigger filter; both rows return.
+    await app.chooseWorkflowsLibraryFilter('trigger', 'any');
     await expect(zephyrText).toBeVisible();
     await expect(quokkaText).toBeVisible();
   } finally {

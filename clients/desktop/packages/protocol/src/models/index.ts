@@ -86,15 +86,26 @@ export const MODEL_CATALOG_PROVIDERS: readonly ModelCatalogProvider[] = [
 export type ModelCatalogOptionKind = 'model' | 'agent';
 
 /**
- * A UI-selectable thinking effort. Mirrors the desktop `ThinkingUiLevel`
- * (canonical `low` is internal-only and never projected); kept as its own local
- * union so this module stays free of desktop/portal cross-imports.
+ * Legacy UI-projected effort for older hosts' thinkingLevels field. Canonical
+ * supportedThinkingLevels uses ThinkingLevel and can include Low. Retain this
+ * narrower alias for provider-only UI helpers and version-skewed catalogs.
  */
 export type ModelCatalogThinkingLevel = ThinkingUiLevel;
 
 /** Ascending order of {@link ModelCatalogThinkingLevel}, weakest effort first. */
 export const MODEL_CATALOG_THINKING_LEVELS: readonly ModelCatalogThinkingLevel[] =
   THINKING_UI_LEVELS;
+
+/** Capabilities of one explicit per-chat runtime choice; source identity is unchanged. */
+export interface ModelCatalogHarnessChoice {
+  harness: AgentExecutionHarness;
+  provider: ModelCatalogProvider;
+  supportedThinkingLevels?: readonly ThinkingLevel[];
+  contextWindow?: number;
+  supportsImages?: boolean;
+  supportsFastMode?: boolean;
+  funding?: 'ai-credits' | 'org-gateway';
+}
 
 /**
  * One selectable row in the projected model catalog. The catalog is a flat
@@ -127,6 +138,11 @@ export interface ModelCatalogOption {
   source?: ModelCatalogSource;
   /** Effective execution harness, primarily for AI Gateway rows. */
   harness?: AgentExecutionHarness;
+  /** Omitted on older peers; never infer additional runtimes from a model name. */
+  harnessChoices?: readonly ModelCatalogHarnessChoice[];
+  /** Capabilities after resolving a per-chat choice. */
+  supportsImages?: boolean;
+  funding?: 'ai-credits' | 'org-gateway';
   /** True when this exact model has a host-declared Fast-mode route. */
   supportsFastMode?: boolean;
   /** `'model'` for a plain provider model, `'agent'` for a custom Agent. */
@@ -210,6 +226,35 @@ export interface ModelCatalogOption {
  */
 export type ModelCatalog = ModelCatalogOption[];
 
+/** Resolve capabilities for the explicitly chosen runtime without changing source identity. */
+export function resolveModelCatalogHarnessChoice(
+  option: ModelCatalogOption,
+  harness: string | undefined,
+): ModelCatalogOption {
+  const choice = harness
+    ? option.harnessChoices?.find((item) => item.harness === harness)
+    : undefined;
+  if (!choice) return option;
+  return {
+    ...option,
+    provider: choice.provider,
+    harness: choice.harness,
+    ...(choice.funding ? { funding: choice.funding } : {}),
+    ...(choice.supportedThinkingLevels !== undefined
+      ? { supportedThinkingLevels: choice.supportedThinkingLevels }
+      : {}),
+    ...(choice.contextWindow !== undefined
+      ? { contextWindow: choice.contextWindow }
+      : {}),
+    ...(choice.supportsImages !== undefined
+      ? { supportsImages: choice.supportsImages }
+      : {}),
+    ...(choice.supportsFastMode !== undefined
+      ? { supportsFastMode: choice.supportsFastMode }
+      : {}),
+  };
+}
+
 /**
  * Look up the thinking efforts the desktop projected for `modelId`.
  *
@@ -256,7 +301,10 @@ export function resolveModelCatalogThinkingLevels(
     (modelId === undefined
       ? catalog?.find((option) => option.isDefault === true)
       : undefined);
-  const declared = selected?.supportedThinkingLevels;
+  const declared = selected
+    ? resolveModelCatalogHarnessChoice(selected, providerHint)
+        .supportedThinkingLevels
+    : undefined;
   if (declared !== undefined) return declared;
   // When the default row stood in for an absent `modelId`, resolve the legacy
   // field against that row's id so it is not skipped for undefined.

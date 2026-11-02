@@ -56,7 +56,11 @@ jest.mock('../integration/structured-helper-dispatch', () => {
   );
   return {
     ...actual,
-    codexStructuredHelperRunner: { run: mockCodexStructuredHelperRun },
+    codexStructuredHelperRunner: {
+      get run(): typeof mockCodexStructuredHelperRun {
+        return mockCodexStructuredHelperRun;
+      },
+    },
   };
 });
 
@@ -66,7 +70,8 @@ jest.mock('../lib/preferences-store', () => ({
   readLocalMemoryEnabledPreference: jest.fn(() => Promise.resolve(false)),
 }));
 
-jest.mock('../ipc/settings', () => ({
+jest.mock('../lib/github-auth', () => ({
+  ...jest.requireActual<object>('../lib/github-auth'),
   checkGitHubCliStatus: jest.fn(),
 }));
 
@@ -145,6 +150,7 @@ jest.mock('@canopy/desktop-shared/lib/codex-model-config', () => {
 
 import { readdir } from 'node:fs/promises';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import { emptyCursorCapabilityProjection } from '@canopy/desktop-shared/lib/cursor-capabilities';
 import {
   DEFAULT_HIDE_ANTHROPIC_NAV,
   initClaudeModels,
@@ -155,7 +161,7 @@ import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { BrowserWindow } from 'electron';
 import { readPreferencesFile } from '../lib/preferences-store';
-import { checkGitHubCliStatus } from '../ipc/settings';
+import { checkGitHubCliStatus } from '../lib/github-auth';
 import {
   doesOriginBranchExist,
   getCurrentBranch,
@@ -207,10 +213,27 @@ const mockedRecordWorktreeBranchChange = jest.mocked(
 const mockedResolvePlugins = jest.mocked(resolvePlugins);
 const mockedCleanupChatSkillPluginDir = jest.mocked(cleanupChatSkillPluginDir);
 
+function makeResolvedPlugins(
+  overrides: Partial<Awaited<ReturnType<typeof resolvePlugins>>> = {},
+): Awaited<ReturnType<typeof resolvePlugins>> {
+  return {
+    sdkPlugins: [],
+    skillPluginDir: null,
+    selectedCapabilityRoots: [],
+    codexMcpServers: {},
+    mcpServers: {},
+    mcpServerBindings: {},
+    warnings: [],
+    cursorNotices: [],
+    cursorCapabilities: emptyCursorCapabilityProjection(),
+    ...overrides,
+  };
+}
+
 function makePreferences(
   overrides: Partial<PreferencesData> = {},
 ): PreferencesData {
-  return {
+  const preferences: Partial<PreferencesData> = {
     worktreePanelPercent: 32,
     activityPanelExpanded: false,
     activityPanelWidthPercent: 25,
@@ -312,48 +335,9 @@ function makePreferences(
     hideAnthropicNav: DEFAULT_HIDE_ANTHROPIC_NAV,
     lastActiveContext: null,
     fileAutoSave: false,
-    inAppNotifications: {
-      enabled: true,
-      placement: 'bottom-right',
-      categories: {
-        chat: true,
-        script: true,
-        hook: true,
-        gitCommit: true,
-        gitPush: true,
-        prCreate: true,
-        pipeline: true,
-        terminal: true,
-      },
-    },
     terminalDrawerCollapsed: true,
     terminalDrawerHeight: 300,
     terminalDrawerActiveTabId: 'terminal',
-    osNotifications: {
-      enabled: false,
-      skipWhenFocused: true,
-      defaultSound: 'System',
-      categories: {
-        chat: true,
-        script: true,
-        hook: true,
-        gitCommit: true,
-        gitPush: true,
-        prCreate: true,
-        pipeline: true,
-        terminal: true,
-      },
-      categorySounds: {
-        chat: 'Default',
-        script: 'Default',
-        hook: 'Default',
-        gitCommit: 'Default',
-        gitPush: 'Default',
-        prCreate: 'Default',
-        pipeline: 'Default',
-        terminal: 'Default',
-      },
-    },
     voiceDictationEnabled: true,
     mcpHttpAuthDefaultHandler: 'canopy',
     fileIndexing: {
@@ -364,6 +348,47 @@ function makePreferences(
     ...overrides,
     showDiagnosticsPill: overrides.showDiagnosticsPill ?? true,
   };
+  Reflect.set(preferences, 'inAppNotifications', {
+    enabled: true,
+    placement: 'bottom-right',
+    categories: {
+      chat: true,
+      script: true,
+      hook: true,
+      gitCommit: true,
+      gitPush: true,
+      prCreate: true,
+      pipeline: true,
+      terminal: true,
+    },
+  });
+  Reflect.set(preferences, 'osNotifications', {
+    enabled: false,
+    skipWhenFocused: true,
+    defaultSound: 'System',
+    categories: {
+      chat: true,
+      script: true,
+      hook: true,
+      gitCommit: true,
+      gitPush: true,
+      prCreate: true,
+      pipeline: true,
+      terminal: true,
+    },
+    categorySounds: {
+      chat: 'Default',
+      script: 'Default',
+      hook: 'Default',
+      gitCommit: 'Default',
+      gitPush: 'Default',
+      prCreate: 'Default',
+      pipeline: 'Default',
+      terminal: 'Default',
+    },
+  });
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesData;
 }
 
 function makeAsyncGenerator(
@@ -380,8 +405,7 @@ function makeAsyncGenerator(
 }
 
 function makeQuery(values: unknown[]): Query {
-  return {
-    ...makeAsyncGenerator(values),
+  return Object.assign(makeAsyncGenerator(values), {
     interrupt: jest.fn().mockResolvedValue(undefined),
     setPermissionMode: jest.fn().mockResolvedValue(undefined),
     setModel: jest.fn().mockResolvedValue(undefined),
@@ -395,7 +419,7 @@ function makeQuery(values: unknown[]): Query {
     rewindFiles: jest.fn(),
     reconnectMcpServer: jest.fn(),
     toggleMcpServer: jest.fn(),
-  } as unknown as Query;
+  }) as unknown as Query;
 }
 
 function setupCodexBranchNamingFailures(message: string): jest.Mock {
@@ -424,6 +448,10 @@ describe('branch-namer', () => {
       authenticated: false,
       username: null,
       error: null,
+      tokenSource: null,
+      envOverride: false,
+      envOverrideName: null,
+      hasCredentialStoreLogin: false,
     });
     mockedResolveSharedAvailableBranchName.mockResolvedValue(
       'generated-branch',
@@ -435,15 +463,7 @@ describe('branch-namer', () => {
     mockedRenameBranch.mockResolvedValue(undefined);
     mockedDoesBranchMatchWorktreeId.mockResolvedValue({ matches: false });
     mockedReaddir.mockResolvedValue([]);
-    mockedResolvePlugins.mockResolvedValue({
-      sdkPlugins: [],
-      skillPluginDir: null,
-      selectedCapabilityRoots: [],
-      codexProcessEnv: {},
-      codexMcpServers: {},
-      mcpServers: {},
-      warnings: [],
-    });
+    mockedResolvePlugins.mockResolvedValue(makeResolvedPlugins());
   });
 
   afterEach(() => {
@@ -619,17 +639,14 @@ describe('branch-namer', () => {
         },
       }),
     );
-    mockedResolvePlugins.mockResolvedValueOnce({
-      sdkPlugins: [{ type: 'local', path: '/plugins/branch' }],
-      skillPluginDir: null,
-      selectedCapabilityRoots: [],
-      codexProcessEnv: {},
-      codexMcpServers: {},
-      mcpServers: {
-        helper: { type: 'stdio', command: 'helper-mcp' },
-      },
-      warnings: [],
-    });
+    mockedResolvePlugins.mockResolvedValueOnce(
+      makeResolvedPlugins({
+        sdkPlugins: [{ type: 'local', path: '/plugins/branch' }],
+        mcpServers: {
+          helper: { type: 'stdio', command: 'helper-mcp' },
+        },
+      }),
+    );
     mockedClaudeQuery.mockReturnValue(
       makeQuery([
         {
@@ -816,7 +833,7 @@ describe('branch-namer', () => {
         branchNamingPluginSelections: {
           collectionIds: [],
           skillRefs: [],
-          pluginRefs: ['plugin-a'],
+          pluginRefs: [{ marketplaceId: 'official', pluginName: 'plugin-a' }],
           mcpServerRefs: [],
         },
       }),
@@ -837,14 +854,7 @@ describe('branch-namer', () => {
     await jest.advanceTimersByTimeAsync(30_000);
     await rejection;
     expect(mockedRenameBranch).not.toHaveBeenCalled();
-    finishPluginResolution?.({
-      sdkPlugins: [],
-      skillPluginDir: null,
-      selectedCapabilityRoots: [],
-      codexProcessEnv: {},
-      mcpServers: {},
-      warnings: [],
-    });
+    finishPluginResolution?.(makeResolvedPlugins());
     await Promise.resolve();
 
     jest.useRealTimers();
@@ -992,26 +1002,23 @@ describe('branch-namer', () => {
         },
       }),
     );
-    mockedResolvePlugins.mockResolvedValueOnce({
-      sdkPlugins: [],
-      skillPluginDir: null,
-      selectedCapabilityRoots: [
-        {
-          id: 'plugin-root',
-          location: {
-            type: 'environment',
-            environmentId: 'local',
-            path: 'file:///tmp/plugin-root',
+    mockedResolvePlugins.mockResolvedValueOnce(
+      makeResolvedPlugins({
+        selectedCapabilityRoots: [
+          {
+            id: 'plugin-root',
+            location: {
+              type: 'environment',
+              environmentId: 'local',
+              path: 'file:///tmp/plugin-root',
+            },
           },
+        ],
+        codexMcpServers: {
+          helper: { command: 'helper-mcp', args: [] },
         },
-      ],
-      codexProcessEnv: {},
-      codexMcpServers: {
-        helper: { command: 'helper-mcp', args: [] },
-      },
-      mcpServers: {},
-      warnings: [],
-    });
+      }),
+    );
     mockedResolveSharedAvailableBranchName.mockResolvedValue('codex-plugin');
     const helperChatId =
       'helper-branch-namer-12345678-1234-4234-9234-123456789abc';

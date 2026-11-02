@@ -96,6 +96,8 @@ export function reduceDelegationEvent(
   )
     return state;
   const event = envelope.event;
+  // A receipt changes no run state, so the broker writes nothing for it.
+  if (event.type === 'transcript_receipt') return state;
   if (event.type === 'started' && state.status === 'running') {
     // A mid-run capability reload may move the run to a new native session
     // (a Codex child is re-seeded on a fresh thread). Only the identity moves.

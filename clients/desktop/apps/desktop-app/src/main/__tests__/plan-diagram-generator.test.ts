@@ -29,12 +29,15 @@ const mockedRunCodexStructuredHelperQuery = jest.mocked(
 
 initClaudeModels([{ id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' }]);
 
-function firstClaudeCall(): Record<string, unknown> {
-  const call = mockedRunClaudeStructuredHelperQuery.mock.calls[0]?.[0] as
-    | Record<string, unknown>
-    | undefined;
+function firstClaudeCall(): Parameters<
+  typeof runClaudeStructuredHelperQuery
+>[0] {
+  const call = mockedRunClaudeStructuredHelperQuery.mock.calls[0]?.[0];
   expect(call).toBeDefined();
-  return call ?? {};
+  if (call === undefined) {
+    throw new Error('Expected Claude structured helper query to be called.');
+  }
+  return call;
 }
 
 describe('plan diagram generator', () => {

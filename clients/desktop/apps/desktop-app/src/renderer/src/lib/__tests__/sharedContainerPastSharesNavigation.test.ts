@@ -103,6 +103,8 @@ it('opens an accepted share in the viewer and closes the page', async () => {
       id: 'c1',
       organizationId: 'org-1',
       ownerUserId: 'owner-1',
+      owner: { userId: 'owner-1', name: 'Dana' },
+      access: 'organization',
       containerType: 'CODE_WORKTREE',
       title: 'Plan',
       revision: 1,

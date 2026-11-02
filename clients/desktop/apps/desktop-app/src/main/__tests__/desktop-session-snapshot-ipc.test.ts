@@ -1,4 +1,5 @@
 import type { SidebarItemGroup } from '@canopy/protocol/sidebar';
+import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 jest.mock('../services/sidebar-item-groups-service', () => ({
   projectSidebarItemGroups: jest.fn(() => Promise.resolve(undefined)),
 }));
@@ -60,6 +61,24 @@ const mockedScheduleInvalidation = jest.mocked(
 const mockedSubscribeChatSessionActivity = jest.mocked(
   subscribeChatSessionActivity,
 );
+
+function invokeEventFixture(): IpcMainInvokeEvent {
+  // These handlers do not inspect sender or frame state.
+  return {} as IpcMainInvokeEvent;
+}
+
+function createSnapshotWindow(
+  send: BrowserWindow['webContents']['send'],
+): BrowserWindow {
+  // The handler only checks the window lifecycle and sends through webContents.
+  const window: Pick<BrowserWindow, 'isDestroyed'> & {
+    webContents: Pick<BrowserWindow['webContents'], 'send'>;
+  } = {
+    isDestroyed: (): boolean => false,
+    webContents: { send },
+  };
+  return window as BrowserWindow;
+}
 
 describe('desktop session snapshot IPC', () => {
   beforeEach(() => {
@@ -127,13 +146,19 @@ describe('desktop session snapshot IPC', () => {
         type: 'single-repo',
         hidden: true,
       });
-      for (const [workspaceLocalId, localId, hidden] of [
+      const worktrees: readonly (readonly [string, string, boolean])[] = [
         ['visible', 'ok', false],
         ['visible', 'hidden-tree', true],
         ['hidden', 'tree', false],
         ['missing', 'orphan', false],
-      ])
-        options?.onWorktree?.({ localId, workspaceLocalId, hidden });
+      ];
+      for (const [workspaceLocalId, localId, hidden] of worktrees)
+        options?.onWorktree?.({
+          localId,
+          workspaceLocalId,
+          branch: 'main',
+          hidden,
+        });
       return Promise.resolve([]);
     });
     jest.mocked(listWorktreeChatSummaries).mockResolvedValue([]);
@@ -152,13 +177,10 @@ describe('desktop session snapshot IPC', () => {
     );
     const handler = registration?.[1];
 
-    const result = await handler?.(
-      {},
-      {
-        workspaceLocalId: 'workspace-1',
-        worktreeLocalId: 'worktree-1',
-      },
-    );
+    const result = await handler?.(invokeEventFixture(), {
+      workspaceLocalId: 'workspace-1',
+      worktreeLocalId: 'worktree-1',
+    });
     const expected: Partial<PortalSessionShellState> = {
       workspaces: [
         {
@@ -191,7 +213,9 @@ describe('desktop session snapshot IPC', () => {
       ([channel]) => channel === IPC_CHANNELS.desktopSessionSnapshot,
     );
 
-    await expect(registration?.[1]({}, undefined)).resolves.toBeDefined();
+    await expect(
+      registration?.[1](invokeEventFixture(), undefined),
+    ).resolves.toBeDefined();
     expect(
       mockedListWorkspacePortalEntities.mock.calls[0]?.[0],
     ).toBeUndefined();
@@ -203,17 +227,19 @@ describe('desktop session snapshot IPC', () => {
       ([channel]) => channel === IPC_CHANNELS.desktopSessionSnapshotInvalidate,
     );
 
-    registration?.[1]({});
+    registration?.[1](invokeEventFixture());
 
     expect(mockedScheduleInvalidation).toHaveBeenCalledTimes(1);
   });
 
   it('broadcasts stale notifications only while the window is alive', () => {
-    const send = jest.fn();
-    const getWindow = jest.fn(() => ({
-      isDestroyed: (): boolean => false,
-      webContents: { send },
-    }));
+    const send = jest.fn<
+      ReturnType<BrowserWindow['webContents']['send']>,
+      Parameters<BrowserWindow['webContents']['send']>
+    >();
+    const getWindow = jest.fn<BrowserWindow | null, []>(() =>
+      createSnapshotWindow(send),
+    );
     registerDesktopSessionSnapshotHandlers(getWindow);
     const listener = mockedSubscribeInvalidation.mock.calls[0]?.[0];
 
@@ -280,7 +306,9 @@ describe('desktop session snapshot IPC', () => {
     const handler = mockedRegisterIpcHandler.mock.calls.find(
       ([channel]) => channel === IPC_CHANNELS.desktopSessionSnapshot,
     )?.[1];
-    const result = await handler?.({}, { workspaceLocalId: 'workspace-1' });
+    const result = await handler?.(invokeEventFixture(), {
+      workspaceLocalId: 'workspace-1',
+    });
     expect(projectSidebarItemGroups).toHaveBeenCalledWith({ appAdvisor: true });
     expect(result).toMatchObject({ appAdvisorItemGroups: groups });
   });

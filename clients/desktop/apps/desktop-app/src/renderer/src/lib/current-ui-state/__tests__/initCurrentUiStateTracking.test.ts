@@ -5,6 +5,8 @@ import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
+import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
+import type { PipelineRunRowState } from '@/lib/pipelineRunRowState';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
@@ -57,18 +59,18 @@ beforeEach(() => {
     currentWorktreeId: null,
     summaries: [],
     statesById: {},
+    rowStatesById: {},
   });
   useCanopyPortalStore.setState({
     hydrated: true,
     state: {
       status: 'disabled',
       connectionStatus: 'inactive',
-      selectedServerId: null,
-      selectedServerName: null,
-      selectedServerBaseUrl: null,
       sessionId: null,
       pairingCode: null,
+      hostCode: null,
       pairingCodeExpiresAt: null,
+      machineName: null,
       activatedAt: null,
       lastSeenAt: null,
       lastErrorAt: null,
@@ -183,6 +185,60 @@ describe('initCurrentUiStateTracking', () => {
     }
   });
 
+  it("reports the popout nav's forwarded batch removal dialog as Work Entry batch state", () => {
+    let forward: ((state: unknown) => void) | undefined;
+    const unsubscribe = jest.fn();
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        appAdvisor: {
+          onWindowUiStateChanged: (callback: (state: unknown) => void) => {
+            forward = callback;
+            return unsubscribe;
+          },
+        },
+      },
+    });
+    const windowState = {
+      activeWorkEntryId: 'entry-1',
+      activeChatId: null,
+      navCollapsed: false,
+      groupEditorId: null,
+      settingsModalOpen: false,
+      archivedOverviewOpen: false,
+      archivedOverviewWorkspaceId: null,
+      emptyTrashConfirmationOpen: false,
+      emptyTrashRunning: false,
+      lastArchivedOverviewRequestId: null,
+      lastArchivedOverviewConfirmationOpened: null,
+    };
+    const dispose = initCurrentUiStateTracking();
+    try {
+      forward?.({
+        ...windowState,
+        batchRemovalDialog: {
+          open: true,
+          mode: 'delete',
+          count: 2,
+          phase: 'confirm',
+        },
+      });
+      expect(
+        useCurrentUiStateStore.getState().envelope.snapshot
+          .workEntryBatchRemovalDialog,
+      ).toEqual({ open: true, mode: 'delete', count: 2, phase: 'confirm' });
+
+      forward?.({ ...windowState, batchRemovalDialog: null });
+      expect(
+        useCurrentUiStateStore.getState().envelope.snapshot
+          .workEntryBatchRemovalDialog,
+      ).toBeUndefined();
+    } finally {
+      dispose();
+      Reflect.deleteProperty(window, 'api');
+    }
+  });
+
   it('recomputes the App Advisor UI-state envelope when feature flags change', () => {
     const dispose = initCurrentUiStateTracking();
     try {
@@ -224,6 +280,9 @@ describe('initCurrentUiStateTracking', () => {
 
   it('ignores pipeline detail updates but tracks pipeline selection changes', () => {
     const dispose = initCurrentUiStateTracking();
+    const currentUiState = useCurrentUiStateStore.getState();
+    const originalRecomputeEnvelope =
+      currentUiState.recomputeEnvelope.bind(currentUiState);
     const recomputeEnvelope = jest.spyOn(
       useCurrentUiStateStore.getState(),
       'recomputeEnvelope',
@@ -238,6 +297,97 @@ describe('initCurrentUiStateTracking', () => {
       expect(recomputeEnvelope).toHaveBeenCalledTimes(1);
     } finally {
       recomputeEnvelope.mockRestore();
+      useCurrentUiStateStore.setState({
+        recomputeEnvelope: originalRecomputeEnvelope,
+      });
+      dispose();
+    }
+  });
+
+  it('recomputes for relevant row pause facts but ignores unrelated step events', () => {
+    const summary: ExecutionSummary = {
+      id: 'run-paused',
+      pipeline_id: 'pipeline-paused',
+      pipeline_name: 'Paused pipeline',
+      status: 'paused',
+      status_reasons: [],
+      started_at: '2026-10-24T00:00:00.000Z',
+      cwd: '/repo',
+      project_id: 'workspace-1',
+      worktree_id: 'worktree-1',
+    };
+    const row: PipelineRunRowState = {
+      id: summary.id,
+      status: 'paused',
+      pipeline_snapshot: { jobs: {} },
+      jobs: {},
+      job_groups: {},
+      pending_pauses: [
+        {
+          id: 'input-pause',
+          kind: 'input',
+          job_id: 'build',
+          logical_job_id: 'build',
+          step_id: 'input',
+          request: { fields: [] },
+        },
+      ],
+    };
+    useChatStore.setState({
+      selectedWorktree: {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      },
+    });
+    usePipelineRunsStore.setState({ summaries: [summary] });
+    const dispose = initCurrentUiStateTracking();
+    const currentUiState = useCurrentUiStateStore.getState();
+    const originalRecomputeEnvelope =
+      currentUiState.recomputeEnvelope.bind(currentUiState);
+    const recomputeEnvelope = jest.spyOn(
+      useCurrentUiStateStore.getState(),
+      'recomputeEnvelope',
+    );
+
+    try {
+      expect(
+        useCurrentUiStateStore.getState().envelope.snapshot.activePipelineRun,
+      ).not.toHaveProperty('inputRequired');
+
+      usePipelineRunsStore.setState({
+        rowStatesById: { [summary.id]: row },
+      });
+
+      expect(recomputeEnvelope).toHaveBeenCalledTimes(1);
+      expect(
+        useCurrentUiStateStore.getState().envelope.snapshot.activePipelineRun,
+      ).toMatchObject({
+        executionId: summary.id,
+        inputRequired: true,
+        resumable: false,
+      });
+
+      recomputeEnvelope.mockClear();
+      usePipelineRunsStore.setState({
+        rowStatesById: {
+          [summary.id]: {
+            ...row,
+            jobs: {
+              build: {
+                status: 'running',
+                steps: { compile: { status: 'running' } },
+              },
+            },
+          },
+        },
+      });
+
+      expect(recomputeEnvelope).not.toHaveBeenCalled();
+    } finally {
+      recomputeEnvelope.mockRestore();
+      useCurrentUiStateStore.setState({
+        recomputeEnvelope: originalRecomputeEnvelope,
+      });
       dispose();
     }
   });
@@ -278,6 +428,9 @@ describe('initCurrentUiStateTracking', () => {
 
   it('recomputes the App Advisor UI-state envelope when project layout mode changes', () => {
     const dispose = initCurrentUiStateTracking();
+    const currentUiState = useCurrentUiStateStore.getState();
+    const originalRecomputeEnvelope =
+      currentUiState.recomputeEnvelope.bind(currentUiState);
     const recomputeEnvelope = jest.spyOn(
       useCurrentUiStateStore.getState(),
       'recomputeEnvelope',
@@ -296,6 +449,9 @@ describe('initCurrentUiStateTracking', () => {
       expect(recomputeEnvelope).toHaveBeenCalledTimes(1);
     } finally {
       recomputeEnvelope.mockRestore();
+      useCurrentUiStateStore.setState({
+        recomputeEnvelope: originalRecomputeEnvelope,
+      });
       dispose();
     }
   });

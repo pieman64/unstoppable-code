@@ -1,3 +1,6 @@
+import type { SafetyDenyReason } from '@canopy/protocol/approvals';
+export type { SafetyDenyReason } from '@canopy/protocol/approvals';
+
 export type ApprovalMode = 'ask' | 'auto' | 'full-access';
 export const APPROVAL_MODES: readonly ApprovalMode[] = [
   'ask',
@@ -108,13 +111,28 @@ export interface ApprovalEvaluationContext {
    * path once per approval session and supplies the result.
    */
   pathCaseInsensitive?: boolean;
-  /** Canonical policy files that governed agents must never silently modify. */
+  /**
+   * Canonical policy files that governed agents must never silently modify.
+   * A `*` in an entry matches any characters within one path segment, so one
+   * entry can name files created later, such as timestamped backups.
+   */
   protectedFileWritePaths?: readonly string[];
 }
 
 export type ApprovalEvaluation =
   | { outcome: 'allow'; matchedRule?: ApprovalRule }
-  | { outcome: 'deny'; matchedRule?: ApprovalRule; safety?: boolean }
+  | {
+      outcome: 'deny';
+      matchedRule?: ApprovalRule;
+      safety?: false;
+      safetyReason?: never;
+    }
+  | {
+      outcome: 'deny';
+      safety: true;
+      safetyReason: SafetyDenyReason;
+      matchedRule?: never;
+    }
   | { outcome: 'prompt' };
 
 export interface ApprovalsFile {

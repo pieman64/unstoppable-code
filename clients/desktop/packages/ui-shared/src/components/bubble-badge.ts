@@ -54,23 +54,13 @@ export const BUBBLE_BADGE_CHROME =
 export const BUBBLE_INDICATOR_BADGE_CLASS = `${BUBBLE_BADGE_CHROME} h-5 w-5`;
 
 /** Interactive corner action, sized for the standard 14px glyph. */
-export const BUBBLE_ACTION_BADGE_CLASS = `${BUBBLE_BADGE_CHROME} h-7 w-7 transition hover:fg-primary`;
+export const BUBBLE_ACTION_BADGE_CLASS = `${BUBBLE_BADGE_CHROME} h-7 w-7 transition-colors hover:fg-primary`;
 
 /**
  * Destructive variant of {@link BUBBLE_ACTION_BADGE_CLASS} for clear/cancel
  * actions on queued bubbles.
  */
-export const BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS = `${BUBBLE_BADGE_CHROME} h-7 w-7 transition hover:fg-destructive`;
-
-/**
- * Labeled pill action rendered beneath a bubble rather than pinned to its
- * corner (the queued bubble's "Interrupt"). Same quaternary surface and
- * elevation as the corner badges, using the repo's standard quaternary button
- * treatment: the hover state is a `--bg-subtle` overlay rather than a
- * background swap, so the token stays the single source of the base color.
- */
-export const BUBBLE_PILL_ACTION_CLASS =
-  'inline-flex items-center gap-1 rounded-full bg-quaternary px-2.5 py-1 text-2xs font-medium fg-primary shadow-sm transition enabled:hover:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))] disabled:cursor-not-allowed disabled:opacity-50';
+export const BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS = `${BUBBLE_BADGE_CHROME} h-7 w-7 transition-colors hover:fg-destructive`;
 
 /** Glyph size for the passive leading indicator. */
 export const BUBBLE_INDICATOR_GLYPH_PX = 10;

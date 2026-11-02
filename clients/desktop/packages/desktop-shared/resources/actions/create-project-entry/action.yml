@@ -1,0 +1,36 @@
+name: Create Project Entry
+description: Create a task (a Work Entry with its first chat) in a cowork project, including the Personal and organization Chats projects, and optionally place it in a sidebar group. Runs in the desktop app; group problems never fail the step.
+scope: [global, directory, worktree]
+inputs:
+  project_id:
+    description: Cowork project to create the task in. Required; when missing, the step fails with failure_reason validation_failed. Code projects fail with failure_reason unsupported_action; use create-worktree.
+    required: false
+  title:
+    description: Task title, at most 200 characters. Optional.
+    required: false
+  group:
+    description: Sidebar group name to join, created when missing. Optional.
+    required: false
+outputs:
+  project_id:
+    description: The project the task was created in.
+  task_id:
+    description: The new task (Work Entry) id.
+  chat_id:
+    description: The task's first chat.
+  task_created:
+    description: 'true when this step created the task.'
+  chat_created:
+    description: 'true when this step created the chat.'
+  group_id:
+    description: Id of the group the task joined, or empty.
+  group_created:
+    description: 'true when this step created the group.'
+  grouped:
+    description: 'true when the task is in the requested group after this step.'
+  not_grouped_reason:
+    description: 'Why grouped is false when a group was requested: the sidebar group refusal code (for example group_limit_reached, item_not_groupable or group_not_found) or group_assignment_failed. Empty otherwise.'
+  failure_reason:
+    description: Typed reason when the step failed (not_found, owner_context_unavailable, validation_failed, target_not_ready, unsupported_action, authorization_conflict, needs_desktop). Empty on success, and also when the step timed out, was cancelled or hit an unexpected error; check the step outcome for those.
+runs:
+  using: host

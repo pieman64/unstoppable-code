@@ -254,6 +254,7 @@ export interface CodexMcpElicitationPolicy {
   allowExternalMutation: boolean;
   evaluate(
     call: CodexMcpElicitationCall,
+    signal?: AbortSignal,
   ): CodexMcpElicitationEvaluation | Promise<CodexMcpElicitationEvaluation>;
 }
 
@@ -297,6 +298,7 @@ export interface CodexRunTurnRequest extends Omit<
   nativeApprovalPolicy?: (
     method: string,
     request: Record<string, unknown>,
+    signal?: AbortSignal,
   ) => Promise<Record<string, unknown>>;
 }
 

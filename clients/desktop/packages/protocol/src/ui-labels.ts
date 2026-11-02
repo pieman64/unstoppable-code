@@ -54,6 +54,48 @@ export const WORKSPACE_LABEL_PLURAL = 'Projects';
 // sentence; lowercase it inline (.toLowerCase()) for mid-sentence prose copy
 // (e.g. "...before enabling remote control.").
 export const REMOTE_CONTROL_LABEL = 'Remote Control';
+// User-facing name for the app-wide agent formerly called "App Advisor".
+// Internally this feature is still `app_advisor` / `app-advisor` /
+// `APP_ADVISOR_*` (the bot id, action families, IPC channels, Portal commands,
+// `AppAdvisor*` files and components, data-testid values, persisted keys and
+// telemetry names) — this label is the ONLY user-visible representation. A
+// proper noun: use it bare ("Open Orchestrator", no "the") and never lowercase
+// it for prose. The one lowercased use is the collapsed-turn chip
+// (CollapsedTurnSummary), which matches its lowercase sibling chips. The Dart
+// mirrors below cannot import it and hard-code the word:
+//   - apps/mobile/lib/ui/features/home/views/widgets/home_navigation_drawer.dart
+//   - apps/mobile/lib/ui/features/remote/views/remote_app_advisor_screen.dart
+//   - apps/mobile/lib/ui/features/remote/views/remote_app_advisor_chat_screen.dart
+//   - apps/mobile/lib/ui/core/chat/view_models/tool_call_display.dart
+//   - apps/mobile/lib/ui/core/chat/view_models/turn_grouping.dart (lowercased
+//     chip label, like its siblings)
+//   - apps/mobile/lib/ui/features/stats/stats_aggregation.dart
+//   - apps/mobile/lib/ui/features/remote/view_models/app_advisor_controller.dart
+//   - apps/mobile/lib/data/repositories/remote_app_advisor_commands.dart
+// ui-labels-mobile-mirror.test.ts fails if they drift.
+export const ORCHESTRATOR_LABEL = 'Orchestrator';
+// The name this feature shipped under. Only for matching labels stored or sent
+// by older builds ({@link isOrchestratorLabel}) and for the agent-facing
+// "(formerly App Advisor)" note; never render it in app UI.
+export const ORCHESTRATOR_FORMER_LABEL = 'App Advisor';
+// The name agents learn the feature by, at the first point a prompt introduces
+// it. Later mentions in the same prompt use ORCHESTRATOR_LABEL.
+export const ORCHESTRATOR_AGENT_NAME = `${ORCHESTRATOR_LABEL} (formerly ${ORCHESTRATOR_FORMER_LABEL})`;
+
+/**
+ * Whether a stored or remote-fed label names Orchestrator under its current or
+ * former name. Trimmed and case-insensitive, because transcripts, notification
+ * metadata and mirrored tab titles written by older builds still carry
+ * "App Advisor". The one place that knows both names.
+ */
+export function isOrchestratorLabel(value: string | null | undefined): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === ORCHESTRATOR_LABEL.toLowerCase() ||
+    normalized === ORCHESTRATOR_FORMER_LABEL.toLowerCase()
+  );
+}
 // Execution-location label for cloud-backed rows, the counterpart to
 // REMOTE_CONTROL_LABEL. A bare noun on purpose: it names WHERE the work runs,
 // not the hosted product (which is brand-derived as "<Brand> Cloud"), so it
@@ -158,3 +200,6 @@ export function isDefaultCoworkWorkspaceName(name: string): boolean {
  */
 export const WORKSPACE_ROOT_REPO_ID = '__workspace_root__';
 export const WORKSPACE_ROOT_REPO_NAME = 'Project root';
+
+/** Stable identity of the Cowork working-folder root; its display name is user-owned. */
+export const COWORK_WORKSPACE_FILE_ROOT_ID = 'workspace';

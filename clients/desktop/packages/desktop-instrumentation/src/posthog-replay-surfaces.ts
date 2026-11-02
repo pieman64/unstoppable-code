@@ -170,6 +170,7 @@ export const HOSTED_SETTINGS_PAGE_REPLAY_PRIVACY = Object.freeze({
   'account/billing': 'reviewed',
   // Experiment names and switches, like the local Labs section.
   'account/labs': 'reviewed',
+  'account/appearance': 'reviewed',
   'organizations/list': 'reviewed',
   'organization/feed': 'blocked',
   'organization/statistics': 'blocked',

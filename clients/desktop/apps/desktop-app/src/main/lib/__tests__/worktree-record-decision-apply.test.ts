@@ -14,30 +14,62 @@ import {
   type WorktreePrStatus,
 } from '@canopy/desktop-shared/types';
 import {
+  admitCoworkPublishManifest,
+  admitCoworkStageManifest,
   allocateCoworkMigrationTo,
   applyAdoptedWorkspaceIndexReleaseTo,
+  applyArchiveRestoreRecordTo,
+  applyArchiveRestoreRemovalTo,
+  applyCoworkCreationIndexTo,
+  applyCoworkCreationManifestTo,
+  applyCoworkMetadataIndexTo,
+  applyCoworkMetadataTo,
+  applyCoworkPublishIndexTo,
+  applyCoworkPublishManifestTo,
+  applyCoworkStageManifestTo,
+  checkCoworkDiscardIndex,
+  CoworkWorkspaceRecordRefusedError,
+  coworkCreationItemFor,
+  coworkCreationTaken,
+  discardsCoworkStaging,
   applyCoworkMigrationManifestTo,
   applyCoworkProvisionIndexTo,
   applyCoworkProvisionManifestTo,
   applyHookExecutionContextsRebindTo,
   applyOrganizationPrivateMemoryTo,
   applyPipelineResultsSeenTo,
+  applyWorktreeBranchRename,
   applyWorktreeListDecisionTo,
   applyWorktreeRowDecisionTo,
   checkAdoptedWorkspaceRelease,
   decideOrganizationOwnerRefresh,
   isDeepStrictEqualData,
   withUnknownCoworkFields,
+  workspaceAdditionWriteFor,
+  workspaceCreationIds,
+  workspaceCreationWriteFor,
 } from '../worktree-record-decision-apply';
 import type * as ApplyModule from '../worktree-record-decision-apply';
 import type {
+  ArchiveRestoreRecordDecision,
+  ArchiveRestoreRemovalDecision,
+  CoworkCreationAllocationDecision,
+  CoworkDiscardDecision,
+  CoworkMetadataDecision,
   CoworkProvisionDecision,
+  CoworkPublishDecision,
+  CoworkStageDecision,
   OrganizationOwnerBinding,
   W5ManifestRead,
+  WorkspaceAdditionDecision,
+  WorkspaceCreationDecision,
+  WorktreeBranchRenameDecision,
   WorktreeListDecision,
   WorktreeRowDecision,
 } from '../worktree-record-decisions';
 import type {
+  MultiRepoSidebarItem,
+  SingleRepoSidebarItem,
   WorkspaceConfigFile,
   WorkspaceIndexEntry,
   WorkspaceOwnershipTransfer,
@@ -66,6 +98,12 @@ const PR_STATUS: WorktreePrStatus = {
         state: 'merged',
         title: 'Feature',
         checkStatus: 'passing',
+        checkDetails: [],
+        reviewStatus: 'none',
+        reviewers: [],
+        hasConflicts: false,
+        commentCount: 0,
+        updatedAt: '2026-10-02T00:00:00.000Z',
       },
     },
   ],
@@ -456,10 +494,12 @@ describe('worktree record decision apply imports', () => {
       .importedFiles.map((entry) => entry.fileName);
   }
 
-  it('imports only shared types and its sibling pure modules', () => {
+  it('imports only shared types, hook normalization and its sibling pure modules', () => {
     expect(
       importsOf('worktree-record-decision-apply.ts').filter(
-        (specifier) => !ALLOWED.has(specifier),
+        (specifier) =>
+          !ALLOWED.has(specifier) &&
+          specifier !== '@canopy/desktop-shared/hooks',
       ),
     ).toEqual([]);
     expect(
@@ -467,6 +507,76 @@ describe('worktree record decision apply imports', () => {
         (specifier) => !ALLOWED.has(specifier),
       ),
     ).toEqual([]);
+  });
+
+  // W6f2 reuses the existing in-memory hook normalizer and overlay key;
+  // duplicating them would let source recording drift from source conversion.
+  it('keeps hook normalization dependencies within the reviewed pure graph', () => {
+    const root = path.resolve(libDir, '../../../../..');
+    const config = ts.readConfigFile(
+      path.join(root, 'tsconfig.base.json'),
+      (fileName) => ts.sys.readFile(fileName),
+    );
+    const { options } = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      root,
+    );
+    const pureFiles = new Set([
+      'packages/desktop-shared/src/hooks.ts',
+      'packages/desktop-shared/src/brand/env.ts',
+      'packages/desktop-shared/src/lib/codex-speed.ts',
+      'packages/desktop-shared/src/lib/plugin-selections-normalization.ts',
+      'packages/desktop-shared/src/lib/scoped-config-utils.ts',
+      'packages/desktop-shared/src/plugin-refs.ts',
+      'packages/desktop-shared/src/scripts.ts',
+      'packages/desktop-shared/src/thinking.ts',
+      'packages/desktop-shared/src/types/approvals.ts',
+      'packages/plugin-interop/src/github-repo.ts',
+      'packages/protocol/src/agents/index.ts',
+      'packages/protocol/src/automations/index.ts',
+      'packages/protocol/src/capability-files/index.ts',
+      'packages/protocol/src/configured-prompt-references/index.ts',
+      'packages/protocol/src/hook-triggers.ts',
+      'packages/protocol/src/installed-items/index.ts',
+      'packages/protocol/src/marketplace/index.ts',
+      'packages/protocol/src/pipelines/package.ts',
+      'packages/protocol/src/plugins/catalog.ts',
+      'packages/protocol/src/plugins/index.ts',
+      'packages/protocol/src/scripts/index.ts',
+      'packages/protocol/src/thinking/index.ts',
+      'packages/protocol/src/try-it/index.ts',
+    ]);
+    const visited = new Set<string>();
+    function visit(file: string): void {
+      if (visited.has(file)) return;
+      visited.add(file);
+      const relative = path.relative(root, file).split(path.sep).join('/');
+      // Generated brand modules contain constants and their current re-export.
+      expect(
+        pureFiles.has(relative) ||
+          /^\.cache\/brand\/[^/]+\/desktop-brand\.ts$/.test(relative),
+      ).toBe(true);
+      const { outputText } = ts.transpileModule(readFileSync(file, 'utf8'), {
+        compilerOptions: { module: ts.ModuleKind.ESNext },
+      });
+      for (const { fileName } of ts.preProcessFile(outputText, true, true)
+        .importedFiles) {
+        // The only external runtime dependency is Zod's pure schema validation.
+        if (fileName === 'zod') continue;
+        const resolved = ts.resolveModuleName(
+          fileName,
+          file,
+          options,
+          ts.sys,
+        ).resolvedModule;
+        if (!resolved)
+          throw new Error(`Unresolved pure dependency: ${fileName}`);
+        visit(resolved.resolvedFileName);
+      }
+    }
+    visit(path.join(root, 'packages/desktop-shared/src/hooks.ts'));
+    expect(visited.size).toBeGreaterThan(1);
   });
 
   it('loads alone, without Electron or the desktop persistence module', () => {
@@ -816,5 +926,466 @@ describe('ownership, Cowork and seen apply', () => {
     });
     expect(same).toEqual({ worktrees: rows, newlySeen: [] });
     expect(same.worktrees).toBe(rows);
+  });
+});
+
+// W6a2 (CAN-4814): the pure apply of the remaining Cowork decisions, at the
+// edges the real-worker suite does not reach.
+describe('remaining Cowork apply', () => {
+  const OWNER: OrganizationOwnerBinding = {
+    type: 'organization',
+    organizationId: 'org',
+    projectId: 'project',
+    instanceId: 'instance',
+    bindingGeneration: 2,
+  };
+  const OK: W5ManifestRead = {
+    authority: 'ok',
+    ownerMalformed: false,
+    memoryMalformed: false,
+  };
+  const ABSENT: W5ManifestRead = { ...OK, authority: 'absent' };
+  function manifest(
+    fields: Partial<WorkspaceConfigFile> = {},
+  ): WorkspaceConfigFile {
+    return { version: 1, type: 'cowork', repos: [], ...fields };
+  }
+  function entry(
+    id: string,
+    type: WorkspaceIndexEntry['type'] = 'cowork',
+  ): WorkspaceIndexEntry {
+    return { id, name: id, type, color: '#123456', collapsed: false, order: 0 };
+  }
+  /** The reason `work` was refused for. */
+  function refusal(work: () => unknown): unknown {
+    try {
+      work();
+    } catch (error) {
+      return error instanceof CoworkWorkspaceRecordRefusedError
+        ? error.reason
+        : error;
+    }
+    return undefined;
+  }
+
+  it('allocates from a JSON round trip of its decision, and refuses a taken id at publication', () => {
+    const decision: CoworkCreationAllocationDecision = {
+      kind: 'cowork.create.allocate',
+      name: 'Fresh',
+      createdAt: CREATED_AT,
+      owner: OWNER,
+      pendingIds: ['pending'],
+    };
+    expect(coworkCreationTaken([entry('a')], decision)).toEqual(
+      new Set(['a', 'pending']),
+    );
+    const index = { count: 1, color: '#000000' };
+    const item = coworkCreationItemFor('fresh', index, decision);
+    expect(coworkCreationItemFor('fresh', index, roundTrip(decision))).toEqual(
+      item,
+    );
+    expect(item).toMatchObject({ order: 1, owner: OWNER });
+    const create = { kind: 'cowork.create', item } as const;
+    expect(applyCoworkCreationIndexTo([entry('a')], create)).toHaveLength(2);
+    expect(
+      refusal(() => applyCoworkCreationIndexTo([entry('fresh')], create)),
+    ).toBe('identity-changed');
+    const config = manifest();
+    expect(
+      refusal(() =>
+        applyCoworkCreationManifestTo(config, OK, {
+          kind: 'cowork.create.manifest',
+          item,
+        }),
+      ),
+    ).toBe('identity-changed');
+    expect(config).toEqual(manifest());
+  });
+
+  it('stages only over its own project, never claiming an indexed id without a manifest', () => {
+    const decision: CoworkStageDecision = {
+      kind: 'cowork.stage',
+      item: { ...entry('staged'), type: 'cowork', owner: OWNER },
+      owner: OWNER,
+    };
+    for (const [config, read] of [
+      [manifest({ owner: { ...OWNER, projectId: 'other' } }), OK],
+      [manifest({ owner: OWNER }), { ...OK, ownerMalformed: true }],
+      [manifest({ type: 'single-repo', owner: OWNER }), OK],
+    ] as const)
+      expect(
+        refusal(() => admitCoworkStageManifest(config, read, decision)),
+      ).toBe('identity-changed');
+    // Another instance of the same project refreshes the owner.
+    const rebound = manifest({ owner: { ...OWNER, instanceId: 'other' } });
+    admitCoworkStageManifest(rebound, OK, decision);
+    expect(applyCoworkStageManifestTo(rebound, OK, true, decision)).toBe(false);
+    expect(rebound.owner).toEqual(OWNER);
+    expect(
+      refusal(() =>
+        applyCoworkStageManifestTo(manifest(), ABSENT, true, decision),
+      ),
+    ).toBe('identity-changed');
+  });
+
+  it('projects a publish before its owner changes and writes nothing for the same name and binding', () => {
+    const decision: CoworkPublishDecision = {
+      kind: 'cowork.publish',
+      workspaceId: 'staged',
+      name: 'Published',
+      owner: OWNER,
+    };
+    expect(
+      refusal(() => admitCoworkPublishManifest(manifest(), ABSENT, decision)),
+    ).toBe('configuration-unavailable');
+    const transfer: WorkspaceOwnershipTransfer = {
+      version: 1,
+      previousOwner: { type: 'personal' },
+      organizationId: 'org',
+      projectId: 'project',
+      convertedAt: CREATED_AT,
+    };
+    const config = manifest({
+      owner: { ...OWNER, bindingGeneration: 1 },
+      ownershipTransfer: transfer,
+    });
+    const index = { entry: undefined, count: 3, color: '#000000' };
+    const outcome = applyCoworkPublishManifestTo(config, index, decision);
+    expect(outcome).toMatchObject({
+      changed: true,
+      item: { order: 3, owner: OWNER, ownershipTransfer: transfer },
+    });
+    expect(config.ownershipTransfer).toBeUndefined();
+    expect(applyCoworkPublishIndexTo([], undefined, outcome)).toHaveLength(1);
+    const published = { ...entry('staged'), name: 'Published' };
+    const same = applyCoworkPublishManifestTo(
+      manifest({ owner: OWNER }),
+      { ...index, entry: published },
+      decision,
+    );
+    expect(same.changed).toBe(false);
+    expect(applyCoworkPublishIndexTo([published], published, same)).toBe(
+      undefined,
+    );
+  });
+
+  it('imports only the fields it carries and renames only from an import', () => {
+    const decision: CoworkMetadataDecision = {
+      kind: 'cowork.metadata.import',
+      workspaceId: 'fresh',
+      name: ' Bundle ',
+      cowork: { description: 'imported' },
+    };
+    const settings = Object.assign(
+      { future: 1 },
+      { description: 'old', defaultModel: 'old' },
+    );
+    const config = manifest({ cowork: settings });
+    applyCoworkMetadataTo(config, settings, roundTrip(decision));
+    expect(config.cowork).toEqual({ future: 1, description: 'imported' });
+    const entries = [entry('a'), entry('fresh')];
+    expect(applyCoworkMetadataIndexTo(entries, entries[1], decision)).toEqual([
+      entries[0],
+      { ...entries[1], name: 'Bundle' },
+    ]);
+    const install: CoworkMetadataDecision = {
+      kind: 'cowork.metadata.install',
+      workspaceId: 'fresh',
+      externalId: 'template',
+      contentHash: 'hash',
+    };
+    expect(
+      applyCoworkMetadataIndexTo(entries, entries[1], install),
+    ).toBeUndefined();
+    // A non-import change writes the hidden settings back, even when absent.
+    const bare = manifest();
+    applyCoworkMetadataTo(bare, {}, install);
+    expect(bare.cowork).toEqual({});
+  });
+
+  it('discards by project, not instance, and only an unpublished staging the index can prove', () => {
+    const decision: CoworkDiscardDecision = {
+      kind: 'cowork.discard',
+      workspaceId: 'staged',
+      projectId: 'project',
+    };
+    expect(checkCoworkDiscardIndex('partial', [], decision)).toBe(
+      'index-unavailable',
+    );
+    expect(checkCoworkDiscardIndex('ok', [entry('staged')], decision)).toBe(
+      'published',
+    );
+    expect(checkCoworkDiscardIndex('absent', [], decision)).toBeNull();
+    const read = {
+      authority: 'ok',
+      ownerMalformed: false,
+      type: 'cowork',
+      owner: { ...OWNER, instanceId: 'other', bindingGeneration: 9 },
+    } as const;
+    expect(discardsCoworkStaging(read, decision)).toBe(true);
+    for (const kept of [
+      { ...read, owner: { ...OWNER, projectId: 'other' } },
+      { ...read, owner: undefined },
+      { ...read, ownerMalformed: true },
+      { ...read, type: 'single-repo' },
+      { ...read, authority: 'absent' },
+      { ...read, authority: 'unreadable' },
+    ] as const)
+      expect(discardsCoworkStaging(kept, decision)).toBe(false);
+  });
+});
+
+// W6a1 (CAN-4815): the sidebar writes of the workspace-service staging
+// decisions, which the real-worker suite applies through the writer.
+describe('workspace-service staging apply', () => {
+  function single(id: string, order: number): SingleRepoSidebarItem {
+    return {
+      type: 'single-repo',
+      id,
+      name: id,
+      repoPath: `/repos/${id}`,
+      color: '#0EA5E9',
+      worktrees: [],
+      collapsed: false,
+      order,
+    };
+  }
+  const project: MultiRepoSidebarItem = {
+    type: 'multi-repo',
+    id: 'source',
+    name: 'source',
+    color: '#0EA5E9',
+    repos: [],
+    worktrees: [],
+    collapsed: false,
+    order: 1,
+    sourceRepoPath: '/repos/source',
+  };
+  /** The decision after a JSON round trip, as a host other than main gets it. */
+  function serialized<T>(decision: T): T {
+    return JSON.parse(JSON.stringify(decision)) as T;
+  }
+
+  it('writes a scoped addition alone, keeping every other entry', () => {
+    const decision: WorkspaceAdditionDecision = {
+      kind: 'workspace.add',
+      item: single('fresh', 1),
+      scope: { kind: 'workspace' },
+    };
+    const write = workspaceAdditionWriteFor(decision);
+    expect(write).toEqual({
+      items: [single('fresh', 1)],
+      options: {
+        preserveEmptyTemporary: false,
+        preserveUnmentionedWorkspaceIds: true,
+        replaceOwnershipWorkspaceIds: ['fresh'],
+      },
+    });
+    expect(workspaceAdditionWriteFor(serialized(decision))).toEqual(write);
+  });
+
+  it('writes an unscoped addition after the sidebar it read, binding only the addition', () => {
+    const decision: WorkspaceAdditionDecision = {
+      kind: 'workspace.add',
+      item: single('claimed', 2),
+      scope: {
+        kind: 'sidebar',
+        previousItems: [single('a', 0), single('b', 1)],
+        preserveWorkspaceIds: ['warned'],
+      },
+    };
+    const write = workspaceAdditionWriteFor(decision);
+    expect(write).toEqual({
+      items: [single('a', 0), single('b', 1), single('claimed', 2)],
+      options: {
+        preserveWorkspaceIds: ['warned'],
+        replaceOwnershipWorkspaceIds: ['claimed'],
+      },
+    });
+    // Omitted empty temporary workspaces stay the writer's to preserve.
+    expect(write.options).not.toHaveProperty('preserveEmptyTemporary');
+    expect(workspaceAdditionWriteFor(serialized(decision))).toEqual(write);
+  });
+
+  it('publishes a create alone, binding its owner', () => {
+    const decision: WorkspaceCreationDecision = {
+      kind: 'workspace.create.publish',
+      item: single('fresh', 1),
+    };
+    expect(workspaceCreationWriteFor(decision)).toEqual({
+      items: [single('fresh', 1)],
+      options: {
+        preserveEmptyTemporary: false,
+        preserveUnmentionedWorkspaceIds: true,
+        replaceOwnershipWorkspaceIds: ['fresh'],
+      },
+    });
+    expect(workspaceCreationIds(decision)).toEqual(['fresh']);
+  });
+
+  it('publishes an import with its children in order, keeping every binding on disk', () => {
+    const decision: WorkspaceCreationDecision = {
+      kind: 'workspace.import.publish',
+      workspace: project,
+      childWorkspaces: [single('first', 2), single('second', 3)],
+    };
+    const write = workspaceCreationWriteFor(decision);
+    expect(write).toEqual({
+      items: [project, single('first', 2), single('second', 3)],
+      options: {
+        preserveEmptyTemporary: false,
+        preserveUnmentionedWorkspaceIds: true,
+      },
+    });
+    expect(workspaceCreationIds(decision)).toEqual([
+      'source',
+      'first',
+      'second',
+    ]);
+    expect(workspaceCreationWriteFor(serialized(decision))).toEqual(write);
+    // An import without new members locks only its project.
+    expect(workspaceCreationIds({ ...decision, childWorkspaces: [] })).toEqual([
+      'source',
+    ]);
+  });
+});
+
+// W6f1 (CAN-4836): the branch rename's row write, which the real-worker suite
+// applies through the row writer.
+describe('branch rename apply', () => {
+  function apply(
+    current: WorktreeData,
+    decision: WorktreeBranchRenameDecision,
+  ): WorktreeData {
+    const next = applyWorktreeBranchRename(current, decision);
+    // A JSON copy applies alike, and a retried updater pass agrees.
+    const copy = JSON.parse(
+      JSON.stringify(decision),
+    ) as WorktreeBranchRenameDecision;
+    expect(applyWorktreeBranchRename(current, copy)).toEqual(next);
+    expect(applyWorktreeBranchRename(next, decision)).toBe(next);
+    return next;
+  }
+
+  it('moves the sidebar branch on a root rename, clearing the PR status', () => {
+    expect(
+      apply(row('a', { lastKnownPrStatus: PR_STATUS, status: 'done' }), {
+        kind: 'worktree.branch.rename',
+        branchName: 'renamed',
+        updatesSidebarBranch: true,
+      }),
+    ).toEqual(row('a', { branchName: 'renamed', lastKnownPrStatus: null }));
+  });
+
+  it('keeps the sidebar branch on a member repository rename', () => {
+    expect(
+      apply(row('a', { lastKnownPrStatus: PR_STATUS }), {
+        kind: 'worktree.branch.rename',
+        branchName: 'member',
+        updatesSidebarBranch: false,
+      }),
+    ).toEqual(row('a', { lastKnownPrStatus: null }));
+  });
+
+  it('returns the row itself when it already holds the rename', () => {
+    const renamed = row('a', {
+      branchName: 'renamed',
+      lastKnownPrStatus: null,
+    });
+    expect(
+      applyWorktreeBranchRename(renamed, {
+        kind: 'worktree.branch.rename',
+        branchName: 'renamed',
+        updatesSidebarBranch: true,
+      }),
+    ).toBe(renamed);
+  });
+
+  it('stores the name as given, without trimming', () => {
+    expect(
+      apply(row('a'), {
+        kind: 'worktree.branch.rename',
+        branchName: 'renamed\u00a0',
+        updatesSidebarBranch: true,
+      }).branchName,
+    ).toBe('renamed\u00a0');
+  });
+});
+
+// W6e1 (CAN-4917): the archive restore records' list writes, which the
+// real-worker suite applies through the list writer.
+describe('archive restore apply', () => {
+  const NEWER = '2026-10-05T00:00:00.000Z';
+  const STAGED = row('recovery-1', {
+    label: 'Archived work',
+    restoredFromFilesOnlyArchiveId: 'archive-1',
+  });
+  const RECORD: ArchiveRestoreRecordDecision = {
+    kind: 'archive.container.restore.record',
+    worktree: STAGED,
+  };
+  const REMOVAL: ArchiveRestoreRemovalDecision = {
+    kind: 'archive.container.restore.remove',
+    worktree: { id: 'recovery-1', createdAt: CREATED_AT },
+  };
+  function copy<T>(decision: T): T {
+    return JSON.parse(JSON.stringify(decision)) as T;
+  }
+
+  it('appends the staged row after the current rows', () => {
+    const current = [row('a'), row('b')];
+    const pass = applyArchiveRestoreRecordTo(current, RECORD);
+    expect(pass).toEqual({
+      worktrees: [row('a'), row('b'), STAGED],
+      decided: { status: 'recorded', worktree: STAGED },
+    });
+    expect(current).toEqual([row('a'), row('b')]);
+    // A JSON copy applies alike.
+    expect(applyArchiveRestoreRecordTo(current, copy(RECORD))).toEqual(pass);
+  });
+
+  it('keeps the list when the same incarnation already holds the id', () => {
+    const existing = row('recovery-1', { label: 'Renamed' });
+    const current = [row('a'), existing];
+    const pass = applyArchiveRestoreRecordTo(current, RECORD);
+    expect(pass.worktrees).toBe(current);
+    expect(pass.decided).toEqual({
+      status: 'already-recorded',
+      worktree: existing,
+    });
+    // A retried pass over its own result agrees.
+    expect(applyArchiveRestoreRecordTo(pass.worktrees, RECORD)).toEqual(pass);
+  });
+
+  it('reports another incarnation at the id without changing the list', () => {
+    const other = row('recovery-1', { createdAt: NEWER });
+    const current = [other];
+    const pass = applyArchiveRestoreRecordTo(current, RECORD);
+    expect(pass.worktrees).toBe(current);
+    expect(pass.decided).toEqual({
+      status: 'identity-changed',
+      worktree: other,
+    });
+  });
+
+  it('removes only the recorded incarnation, keeping the order of the rest', () => {
+    const current = [row('a'), STAGED, row('b')];
+    const pass = applyArchiveRestoreRemovalTo(current, REMOVAL);
+    expect(pass).toEqual({ worktrees: [row('a'), row('b')], removed: true });
+    expect(applyArchiveRestoreRemovalTo(current, copy(REMOVAL))).toEqual(pass);
+    // A retried pass over its own result removes nothing more.
+    const again = applyArchiveRestoreRemovalTo(pass.worktrees, REMOVAL);
+    expect(again.worktrees).toBe(pass.worktrees);
+    expect(again.removed).toBe(false);
+  });
+
+  it.each([
+    ['another incarnation', [row('recovery-1', { createdAt: NEWER })]],
+    ['no row', [row('a')]],
+    ['an empty list', []],
+  ])('keeps the list itself for %s at the id', (_label, current) => {
+    const pass = applyArchiveRestoreRemovalTo(current, REMOVAL);
+    expect(pass.worktrees).toBe(current);
+    expect(pass.removed).toBe(false);
   });
 });

@@ -9,6 +9,66 @@ import type {
   PipelinePluginCollectionPreference,
 } from '@canopy/desktop-shared/types/pipeline';
 
+type LegacyNullPluginField = 'externalSource' | 'cachePath' | 'cachedAt';
+type MarketplacePluginInfo =
+  ShareablePluginCatalog['marketplaces'][number]['plugins'][number];
+type MarketplaceCatalogEntry = ShareablePluginCatalog['marketplaces'][number];
+
+function withLegacyNullPluginFields<T extends object>(
+  plugin: T,
+  fields: readonly LegacyNullPluginField[],
+): T {
+  // These fixtures preserve nulls from older collection payloads at the input boundary.
+  for (const field of fields) {
+    Reflect.set(plugin, field, null);
+  }
+  return plugin;
+}
+
+function claudeNativePluginFields(
+  name: string,
+  installLocation: string,
+  sourcePath: string,
+): Pick<MarketplacePluginInfo, 'providerSupport' | 'facets'> {
+  return {
+    providerSupport: { claude: 'native', codex: 'none' },
+    facets: {
+      claude: {
+        provider: 'claude',
+        mode: 'native',
+        name,
+        installLocation,
+        sourcePath,
+      },
+    },
+  };
+}
+
+function claudeMarketplaceStatus(
+  pluginCount: number,
+): Pick<MarketplaceCatalogEntry, 'providerStatus' | 'validProviders'> {
+  const lastCheckedAt = '2026-01-01T00:00:00.000Z';
+  return {
+    providerStatus: {
+      claude: {
+        provider: 'claude',
+        state: 'valid',
+        accepted: true,
+        pluginCount,
+        lastCheckedAt,
+      },
+      codex: {
+        provider: 'codex',
+        state: 'invalid',
+        accepted: false,
+        pluginCount: 0,
+        lastCheckedAt,
+      },
+    },
+    validProviders: ['claude'],
+  };
+}
+
 const catalog: ShareablePluginCatalog = {
   skills: [
     {
@@ -44,21 +104,30 @@ const catalog: ShareablePluginCatalog = {
       lastUpdated: '2026-01-01T00:00:00.000Z',
       pluginCount: 1,
       plugins: [
-        {
-          name: 'browser',
-          description: 'Browser helper',
-          version: '',
-          author: '',
-          category: '',
-          homepage: '',
-          sourcePath: 'plugins/browser',
-          marketplaceId: 'owner-marketplace',
-          details: null,
-          externalSource: null,
-          cachePath: '/tmp/browser',
-          cachedAt: '2026-01-01T00:00:00.000Z',
-        },
+        withLegacyNullPluginFields(
+          {
+            name: 'browser',
+            description: 'Browser helper',
+            version: '',
+            author: '',
+            category: '',
+            homepage: '',
+            sourcePath: 'plugins/browser',
+            marketplaceId: 'owner-marketplace',
+            details: null,
+            ...claudeNativePluginFields(
+              'browser',
+              '/tmp/browser',
+              'plugins/browser',
+            ),
+            externalSource: undefined,
+            cachePath: '/tmp/browser',
+            cachedAt: '2026-01-01T00:00:00.000Z',
+          },
+          ['externalSource'],
+        ),
       ],
+      ...claudeMarketplaceStatus(1),
     },
   ],
 };
@@ -195,21 +264,33 @@ describe('pipeline plugin collection resolver', () => {
           lastUpdated: '2026-01-01T00:00:00.000Z',
           pluginCount: 1,
           plugins: [
-            {
-              name: 'external-browser',
-              description: 'External browser helper',
-              version: '',
-              author: '',
-              category: '',
-              homepage: '',
-              sourcePath: '',
-              marketplaceId: 'owner-marketplace',
-              details: null,
-              externalSource: { url: 'https://github.com/owner/browser' },
-              cachePath: null,
-              cachedAt: null,
-            },
+            withLegacyNullPluginFields(
+              {
+                name: 'external-browser',
+                description: 'External browser helper',
+                version: '',
+                author: '',
+                category: '',
+                homepage: '',
+                sourcePath: '',
+                marketplaceId: 'owner-marketplace',
+                details: null,
+                ...claudeNativePluginFields(
+                  'external-browser',
+                  '/tmp/marketplace',
+                  '',
+                ),
+                externalSource: {
+                  source: 'github',
+                  url: 'https://github.com/owner/browser',
+                },
+                cachePath: undefined,
+                cachedAt: undefined,
+              },
+              ['cachePath', 'cachedAt'],
+            ),
           ],
+          ...claudeMarketplaceStatus(1),
         },
       ],
     };
@@ -268,11 +349,20 @@ describe('pipeline plugin collection resolver', () => {
                 sourcePath: cachePath,
                 marketplaceId: 'owner-marketplace',
                 details: null,
-                externalSource: { url: 'https://github.com/owner/browser' },
+                ...claudeNativePluginFields(
+                  'external-browser',
+                  cachePath,
+                  cachePath,
+                ),
+                externalSource: {
+                  source: 'github',
+                  url: 'https://github.com/owner/browser',
+                },
                 cachePath,
                 cachedAt: '2026-01-01T00:00:00.000Z',
               },
             ],
+            ...claudeMarketplaceStatus(1),
           },
         ],
       };
@@ -426,41 +516,47 @@ describe('pipeline plugin collection resolver', () => {
             lastUpdated: '2026-01-01T00:00:00.000Z',
             pluginCount: 1,
             plugins: [
-              {
-                name: 'paired-plugin',
-                description: 'Paired helper',
-                version: '',
-                author: '',
-                category: '',
-                homepage: '',
-                sourcePath: '',
-                marketplaceId: 'owner-marketplace',
-                details: null,
-                externalSource: { url: 'https://github.com/owner/paired' },
-                cachePath: null,
-                cachedAt: null,
-                providerSupport: { claude: 'native', codex: 'native' },
-                facets: {
-                  claude: {
-                    provider: 'claude',
-                    mode: 'native',
-                    name: 'paired-plugin',
-                    installLocation: '/missing/claude',
-                    sourcePath: '',
-                    externalSource: {
-                      source: 'github',
-                      url: 'https://github.com/owner/paired',
+              withLegacyNullPluginFields(
+                {
+                  name: 'paired-plugin',
+                  description: 'Paired helper',
+                  version: '',
+                  author: '',
+                  category: '',
+                  homepage: '',
+                  sourcePath: '',
+                  marketplaceId: 'owner-marketplace',
+                  details: null,
+                  externalSource: {
+                    source: 'github',
+                    url: 'https://github.com/owner/paired',
+                  },
+                  cachePath: undefined,
+                  cachedAt: undefined,
+                  providerSupport: { claude: 'native', codex: 'native' },
+                  facets: {
+                    claude: {
+                      provider: 'claude',
+                      mode: 'native',
+                      name: 'paired-plugin',
+                      installLocation: '/missing/claude',
+                      sourcePath: '',
+                      externalSource: {
+                        source: 'github',
+                        url: 'https://github.com/owner/paired',
+                      },
+                    },
+                    codex: {
+                      provider: 'codex',
+                      mode: 'native',
+                      name: 'paired-plugin',
+                      installLocation: codexPath,
+                      sourcePath: codexPath,
                     },
                   },
-                  codex: {
-                    provider: 'codex',
-                    mode: 'native',
-                    name: 'paired-plugin',
-                    installLocation: codexPath,
-                    sourcePath: codexPath,
-                  },
                 },
-              },
+                ['cachePath', 'cachedAt'],
+              ),
             ],
             providerStatus: {
               claude: {

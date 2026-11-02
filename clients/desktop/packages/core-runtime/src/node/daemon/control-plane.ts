@@ -8,6 +8,7 @@ import {
 } from '@canopy/core-transport';
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import {
+  CANOPY_HOST_EXECUTION_MEMBER,
   CANOPY_JSON_RPC_PROTOCOL_ERROR_CODES,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CoreRuntimeHealthGetResultSchema,
@@ -32,6 +33,7 @@ import {
   canopyInvalidArgumentError,
   canopyPermissionDeniedError,
 } from '../../runtime/errors';
+import { hostExecutionOption } from '../../runtime/host-execution';
 import type { CanopyDispatcher } from '../../runtime/types';
 import type {
   PlatformByteStream,
@@ -93,7 +95,14 @@ export interface CanopyDaemonControlPlaneOptions {
   };
   /** The kernel's dispatcher and operation registry (`CanopyRuntime`). */
   readonly dispatcher: CanopyDispatcher;
-  readonly operations: readonly Pick<RuntimeOperation, 'name' | 'kind'>[];
+  /**
+   * `declaresMeta` operations get `_meta` in params as well as in metadata,
+   * as their params schema requires; the rest get it split off.
+   */
+  readonly operations: readonly Pick<
+    RuntimeOperation,
+    'name' | 'kind' | 'declaresMeta'
+  >[];
   /** Trusted host policy: principal and grants for an authenticated connection. */
   readonly callerFor: (
     connection: CanopyControlConnectionIdentity,
@@ -121,6 +130,41 @@ export interface CanopyDaemonControlPlane {
   readonly leases: CanopyLeaseRegistry;
   readonly obligations: CanopyObligationRegistry;
   /** Stops serving and closes every connection; the listener stays with its owner. */
+  close(): Promise<void>;
+}
+
+/** What one plane instance needs to serve its connections. */
+type CanopyControlServingOptions = Pick<
+  CanopyDaemonControlPlaneOptions,
+  | 'dispatcher'
+  | 'operations'
+  | 'callerFor'
+  | 'buildVersion'
+  | 'leases'
+  | 'channels'
+  | 'connection'
+  | 'maxActiveRequests'
+  | 'leaseBoundOperations'
+  | 'clock'
+>;
+
+export interface CanopyControlStreamOptions extends Omit<
+  CanopyControlServingOptions,
+  'callerFor'
+> {
+  /** One stream the host admitted before serving; it still runs the D3 handshake. */
+  readonly stream: PlatformByteStream;
+  readonly auth: CanopyFramedAuthOptions;
+  /** Fixed at admission and used for every request; the connection never changes it. */
+  readonly caller: CanopyCallerDescriptor;
+  /** The daemon plane's obligations: held for the session so it cannot idle-stop. */
+  readonly obligations: Pick<CanopyObligationRegistry, 'hold'>;
+}
+
+export interface CanopyControlStreamSession {
+  /** Settles once the session has ended and released its obligation. */
+  readonly done: Promise<void>;
+  /** Ends the session and closes its stream. */
   close(): Promise<void>;
 }
 
@@ -310,13 +354,20 @@ function selectProtocolVersion(
 /** Serves one authenticated connection until it closes. */
 function serveControlConnection(
   connection: CanopyFramedConnection,
-  options: CanopyDaemonControlPlaneOptions,
+  options: CanopyControlServingOptions,
   leases: CanopyLeaseRegistry,
   channels: CanopyChannelRegistry,
   registrations: ReturnType<typeof createCanopyLeaseRegistrations>,
   planeSignal: AbortSignal,
 ): void {
   const kinds = new Map(options.operations.map((op) => [op.name, op.kind]));
+  const declaringMeta: ReadonlySet<string> = new Set(
+    options.operations.filter((op) => op.declaresMeta).map((op) => op.name),
+  );
+  const paramsFor = (request: CanopyJsonRpcRequest): Record<string, unknown> =>
+    declaringMeta.has(request.method)
+      ? request.params
+      : without(request.params, '_meta');
   const leaseBound: ReadonlySet<string> = new Set(
     options.leaseBoundOperations ?? [],
   );
@@ -538,7 +589,6 @@ function serveControlConnection(
 
   const stream = async (
     request: CanopyJsonRpcRequest,
-    body: Record<string, unknown>,
     caller: CanopyCallerDescriptor,
   ): Promise<void> => {
     const { id, method } = request;
@@ -548,11 +598,15 @@ function serveControlConnection(
       String(id),
     );
     try {
-      const handle = await options.dispatcher.openStream(method, body, {
-        caller,
-        metadata: request.params._meta,
-        signal: AbortSignal.any([connection.signal, registration.signal]),
-      });
+      const handle = await options.dispatcher.openStream(
+        method,
+        paramsFor(request),
+        {
+          caller,
+          metadata: request.params._meta,
+          signal: AbortSignal.any([connection.signal, registration.signal]),
+        },
+      );
       registration.attach(() => handle.close());
       const { subscriptionId } = handle.openResult;
       await connection.send({ jsonrpc: '2.0', id, result: handle.openResult });
@@ -591,23 +645,27 @@ function serveControlConnection(
     caller: CanopyCallerDescriptor,
   ): Promise<void> => {
     const { id, method } = request;
-    const { _meta, ...body } = request.params;
+    const { [CANOPY_HOST_EXECUTION_MEMBER]: execution, ...params } =
+      paramsFor(request);
     const fence = leaseBound.has(method)
       ? fenceLeasedCall(leases, connection.connectionId)
       : null;
     try {
       const call = {
         caller,
-        metadata: _meta,
+        metadata: request.params._meta,
         signal: fence
           ? AbortSignal.any([connection.signal, fence.signal])
           : connection.signal,
+        // Same-host input for this request only; the dispatcher refuses it
+        // on operations that do not accept it (CAN-5496).
+        ...hostExecutionOption(execution),
       };
       let result: unknown;
       try {
         result = query
-          ? await options.dispatcher.query(method, body, call)
-          : await options.dispatcher.instruction(method, body, call);
+          ? await options.dispatcher.query(method, params, call)
+          : await options.dispatcher.instruction(method, params, call);
       } catch (error) {
         throw fence?.refusal() ?? error;
       }
@@ -681,7 +739,7 @@ function serveControlConnection(
         return await dispatch(request, kind === 'query', caller);
       if (leaseBound.has(method) && !leases.lease(connection.connectionId))
         throw new CanopyOperationError(LEASE_REQUIRED);
-      return await stream(request, without(request.params, '_meta'), caller);
+      return await stream(request, caller);
     } catch (error) {
       return fail(id, error);
     }
@@ -718,13 +776,14 @@ function serveControlConnection(
 }
 
 /**
- * The daemon control plane (doc 17 §W2): authenticated framed connections,
- * per-connection `core.runtime.initialize` negotiation, connection-bound
- * client leases, and the idle grace that asks the host to stop.
+ * One plane instance's leases, registrations, channels and connections.
+ * Instances share nothing, so a second instance never sees the first's state.
  */
-export function serveCanopyDaemonControlPlane(
-  options: CanopyDaemonControlPlaneOptions,
-): CanopyDaemonControlPlane {
+function createControlServing(options: CanopyControlServingOptions): {
+  readonly leases: CanopyLeaseRegistry;
+  readonly serve: (connection: CanopyFramedConnection) => void;
+  readonly close: () => void;
+} {
   const clock = options.clock ?? CANOPY_SYSTEM_CLOCK;
   const { maxActiveRequests } = options;
   if (
@@ -742,23 +801,12 @@ export function serveCanopyDaemonControlPlane(
       resolveCanopyChannelLimits(options.connection).maxChannels,
     ),
   });
-  const obligations = createCanopyObligationRegistry();
-  const idle = startCanopyIdleGrace(
-    leases,
-    obligations,
-    options.onIdle,
-    options.idleGrace,
-    clock,
-  );
   const connections = new Set<CanopyFramedConnection>();
   const closing = new AbortController();
-  let closed = false;
-  acceptCanopyFramedConnections({
-    listener: options.binding.listener,
-    auth: options.binding.auth,
-    connection: options.connection,
-    onConnection: (connection) => {
-      if (closed) return connection.close();
+  return {
+    leases,
+    serve: (connection): void => {
+      if (closing.signal.aborted) return connection.close();
       connections.add(connection);
       connection.signal.addEventListener(
         'abort',
@@ -774,20 +822,111 @@ export function serveCanopyDaemonControlPlane(
         closing.signal,
       );
     },
-  }).done.catch(() => undefined);
-  return {
-    leases,
-    obligations,
-    close: (): Promise<void> => {
-      if (closed) return Promise.resolve();
-      closed = true;
+    close: (): void => {
+      if (closing.signal.aborted) return;
       closing.abort();
-      idle.close();
       connections.forEach((connection) => connection.close());
       channels.close();
       registrations.close();
       leases.close();
+    },
+  };
+}
+
+/**
+ * The daemon control plane (doc 17 §W2): authenticated framed connections,
+ * per-connection `core.runtime.initialize` negotiation, connection-bound
+ * client leases, and the idle grace that asks the host to stop.
+ */
+export function serveCanopyDaemonControlPlane(
+  options: CanopyDaemonControlPlaneOptions,
+): CanopyDaemonControlPlane {
+  const serving = createControlServing(options);
+  const obligations = createCanopyObligationRegistry();
+  const idle = startCanopyIdleGrace(
+    serving.leases,
+    obligations,
+    options.onIdle,
+    options.idleGrace,
+    options.clock ?? CANOPY_SYSTEM_CLOCK,
+  );
+  acceptCanopyFramedConnections({
+    listener: options.binding.listener,
+    auth: options.binding.auth,
+    connection: options.connection,
+    onConnection: serving.serve,
+  }).done.catch(() => undefined);
+  return {
+    leases: serving.leases,
+    obligations,
+    close: (): Promise<void> => {
+      idle.close();
+      serving.close();
       return Promise.resolve();
+    },
+  };
+}
+
+/**
+ * Serves one stream the host admitted out of band as its own plane instance:
+ * every request runs as the admitted caller, never through `callerFor`. The
+ * daemon plane's obligation is held from this call until the session ends.
+ */
+export function serveCanopyControlStream(
+  options: CanopyControlStreamOptions,
+): CanopyControlStreamSession {
+  const { caller } = options;
+  const serving = createControlServing({
+    dispatcher: options.dispatcher,
+    operations: options.operations,
+    callerFor: () => caller,
+    buildVersion: options.buildVersion,
+    leases: options.leases,
+    channels: options.channels,
+    connection: options.connection,
+    maxActiveRequests: options.maxActiveRequests,
+    leaseBoundOperations: options.leaseBoundOperations,
+    clock: options.clock,
+  });
+  const release = options.obligations.hold('control stream');
+  let settle = (): void => undefined;
+  const done = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  let ended = false;
+  const end = (): void => {
+    if (ended) return;
+    ended = true;
+    serving.close();
+    release();
+    settle();
+  };
+  const duplex = platformStreamDuplex(options.stream);
+  let connected = false;
+  void (async (): Promise<void> => {
+    try {
+      const connection = await createCanopyFramedConnection(duplex, {
+        ...options.connection,
+        role: 'server',
+        auth: options.auth,
+      });
+      if (ended) return connection.close();
+      connected = true;
+      serving.serve(connection);
+      connection.signal.addEventListener('abort', end, { once: true });
+      if (connection.signal.aborted) end();
+    } catch {
+      duplex.destroy();
+      end();
+    }
+  })();
+  return {
+    done,
+    close: (): Promise<void> => {
+      // A served connection closes with the serving state; a handshake does not.
+      if (!connected) duplex.destroy();
+      end();
+      return done;
     },
   };
 }

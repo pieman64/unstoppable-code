@@ -11,6 +11,7 @@ import * as fs from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import * as loader from '../../lib/packaged-module-loader';
 import * as ownership from '../process-ownership';
+import { CopilotProcessReceipt } from '../process-receipts';
 
 jest.mock('node:fs/promises', () => ({
   __esModule: true,
@@ -20,6 +21,10 @@ jest.mock('node:child_process', () => ({
   __esModule: true,
   ...jest.requireActual<typeof childProcess>('node:child_process'),
 }));
+
+/** What Node's ChildProcess.spawn throws for an errno it does not defer. */
+const spawnFailure = (): Error =>
+  Object.assign(new Error('spawn EBADF'), { code: 'EBADF', syscall: 'spawn' });
 
 describe('Copilot runtime ownership', () => {
   it('strips ambient credentials, endpoint overrides and injected hooks without changing HOME', () => {
@@ -170,6 +175,68 @@ describe('Copilot bounded process cleanup', () => {
     signal: controller.signal,
   });
 
+  it('saves root identity before admission and later detached descendants before cleanup', async () => {
+    const root = { pid: 12345, parent: 1, group: 12345, started: 'root' };
+    const tool = { pid: 23456, parent: 12345, group: 23456, started: 'tool' };
+    const save = jest
+      .spyOn(CopilotProcessReceipt.prototype, 'save')
+      .mockResolvedValue();
+    const remove = jest
+      .spyOn(CopilotProcessReceipt.prototype, 'removeIfReaped')
+      .mockResolvedValue();
+    jest.mocked(ownership.snapshotCopilotDescendants).mockResolvedValue([root]);
+    jest.mocked(ownership.killCopilotProcess).mockImplementation(() => {
+      child.emit('close', 0);
+      return Promise.resolve();
+    });
+    const starting = startCopilotRuntime({
+      ...options(),
+      receiptDirectory: '/owned/receipts',
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    output.write('listening on port 1234');
+    const runtime = await starting;
+    expect(save).toHaveBeenCalledWith([root]);
+    expect(ownership.snapshotCopilotDescendants).toHaveBeenCalledWith(
+      12345,
+      true,
+    );
+    jest
+      .mocked(ownership.snapshotCopilotDescendants)
+      .mockResolvedValue([root, tool]);
+    await jest.advanceTimersByTimeAsync(500);
+    expect(save).toHaveBeenLastCalledWith([root, tool]);
+    await runtime.close();
+    expect(remove).toHaveBeenCalledWith([root, tool]);
+  });
+
+  it('never admits a runtime when its identity receipt cannot be saved', async () => {
+    const root = { pid: 12345, parent: 1, group: 12345, started: 'root' };
+    const diskFailure = new Error('receipt disk full');
+    jest
+      .spyOn(CopilotProcessReceipt.prototype, 'save')
+      .mockRejectedValue(diskFailure);
+    const remove = jest
+      .spyOn(CopilotProcessReceipt.prototype, 'removeIfReaped')
+      .mockResolvedValue();
+    jest.mocked(ownership.snapshotCopilotDescendants).mockResolvedValue([root]);
+    jest.mocked(ownership.killCopilotProcess).mockImplementation(() => {
+      child.emit('close', 0);
+      return Promise.resolve();
+    });
+    const starting = startCopilotRuntime({
+      ...options(),
+      receiptDirectory: '/owned/receipts',
+    });
+    const failure = expect(starting).rejects.toBe(diskFailure);
+    await jest.advanceTimersByTimeAsync(0);
+    output.write('listening on port 1234');
+    await failure;
+    expect(ownership.killCopilotProcess).toHaveBeenCalled();
+    expect(ownership.terminateCopilotDescendants).toHaveBeenCalledWith([root]);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
   it.each(['darwin', 'win32'])(
     'never signals or inspects a reaped parent on %s',
     async (platformName) => {
@@ -316,6 +383,23 @@ describe('Copilot bounded process cleanup', () => {
       await runtime.close();
     });
 
+    it('counts a probe that spans several ticks as one failure', async () => {
+      const runtime = await started();
+      let fail: (error: Error) => void = () => undefined;
+      jest.mocked(ownership.snapshotCopilotDescendants).mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(
+        500 * (MAX_CONSECUTIVE_OBSERVATION_FAILURES + 1),
+      );
+      fail(inspectionFailure);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(ownership.killCopilotProcess).not.toHaveBeenCalled();
+      await runtime.close();
+    });
+
     it('stops the runtime when inspection keeps failing', async () => {
       const runtime = await started();
       jest
@@ -330,6 +414,91 @@ describe('Copilot bounded process cleanup', () => {
         child,
         'SIGKILL',
       );
+      await expect(runtime.close()).rejects.toBe(inspectionFailure);
+    });
+
+    it('stops with the inspection error when the process query cannot spawn', async () => {
+      const runtime = await started();
+      jest.mocked(ownership.snapshotCopilotDescendants).mockRestore();
+      jest.spyOn(childProcess, 'execFile').mockImplementation(() => {
+        throw spawnFailure();
+      });
+      await jest.advanceTimersByTimeAsync(
+        500 * (MAX_CONSECUTIVE_OBSERVATION_FAILURES - 1),
+      );
+      expect(ownership.killCopilotProcess).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(500);
+      expect(ownership.killCopilotProcess).toHaveBeenCalledWith(
+        child,
+        'SIGKILL',
+      );
+      await expect(runtime.close()).rejects.toThrow(
+        'Copilot process ownership could not be inspected.',
+      );
+    });
+
+    it('closes with the descendants already observed when the final probe fails', async () => {
+      const survivor = {
+        pid: 23456,
+        parent: 12345,
+        group: 23456,
+        started: 'original',
+      };
+      const warning = jest
+        .spyOn(process, 'emitWarning')
+        .mockImplementation(() => undefined);
+      const snapshot = jest.mocked(ownership.snapshotCopilotDescendants);
+      snapshot.mockResolvedValue([survivor]);
+      const runtime = await started();
+      snapshot.mockRejectedValueOnce(inspectionFailure);
+      await expect(runtime.close()).resolves.toBeUndefined();
+      expect(ownership.terminateCopilotDescendants).toHaveBeenCalledWith([
+        survivor,
+      ]);
+      expect(warning).toHaveBeenCalledTimes(1);
+    });
+
+    it('starts through one failed startup probe', async () => {
+      jest
+        .mocked(ownership.snapshotCopilotDescendants)
+        .mockRejectedValueOnce(inspectionFailure);
+      const runtime = await started();
+      await jest.advanceTimersByTimeAsync(500);
+      expect(ownership.killCopilotProcess).not.toHaveBeenCalled();
+      await runtime.close();
+    });
+
+    it('warns, naming the OS error, when the final probe falls back', async () => {
+      const warning = jest
+        .spyOn(process, 'emitWarning')
+        .mockImplementation(() => undefined);
+      const runtime = await started();
+      jest
+        .mocked(ownership.snapshotCopilotDescendants)
+        .mockRejectedValueOnce(
+          Object.assign(
+            new Error('Copilot process ownership could not be inspected.'),
+            { cause: spawnFailure() },
+          ),
+        );
+      await runtime.close();
+      expect(warning.mock.calls).toEqual([
+        [
+          'Copilot process ownership could not be confirmed during cleanup; using the processes observed earlier.',
+          { code: 'COPILOT_OWNERSHIP_PROBE_SKIPPED', detail: 'spawn EBADF' },
+        ],
+      ]);
+    });
+
+    it('reports lost ownership when the final probe exhausts the failure budget', async () => {
+      const runtime = await started();
+      jest
+        .mocked(ownership.snapshotCopilotDescendants)
+        .mockRejectedValue(inspectionFailure);
+      await jest.advanceTimersByTimeAsync(
+        500 * (MAX_CONSECUTIVE_OBSERVATION_FAILURES - 1),
+      );
+      expect(ownership.killCopilotProcess).not.toHaveBeenCalled();
       await expect(runtime.close()).rejects.toBe(inspectionFailure);
     });
 
@@ -402,6 +571,153 @@ describe('Windows Copilot descendant ownership', () => {
       );
     },
   );
+});
+
+describe('Copilot process deadlines', () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    jest.spyOn(childProcess, 'execFile').mockImplementation((...args) => {
+      const callback = args[args.length - 1];
+      if (typeof callback === 'function') callback(null, '', '');
+      return new childProcess.ChildProcess();
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform });
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('keeps persisted POSIX start identities stable across locale and timezone changes', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    await ownership.snapshotCopilotDescendants(12345, true);
+    const expectedEnv: unknown = expect.objectContaining({
+      LC_ALL: 'C',
+      TZ: 'UTC',
+    });
+    expect(childProcess.execFile).toHaveBeenCalledWith(
+      '/bin/ps',
+      expect.any(Array),
+      expect.objectContaining({ env: expectedEnv }),
+      expect.any(Function),
+    );
+  });
+
+  it('gives Windows x64 PowerShell under ARM64 emulation 5 s to inspect processes', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    await ownership.snapshotCopilotDescendants(12345);
+    expect(childProcess.execFile).toHaveBeenCalledWith(
+      'powershell.exe',
+      expect.any(Array),
+      expect.objectContaining({ timeout: 5000 }),
+      expect.any(Function),
+    );
+  });
+
+  it('lets a Windows taskkill outlive the awaited cleanup step', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const child = Object.assign(new childProcess.ChildProcess(), {
+      pid: 12345,
+    });
+    await ownership.killCopilotProcess(child, 'SIGKILL');
+    expect(childProcess.execFile).toHaveBeenCalledWith(
+      'taskkill',
+      ['/pid', '12345', '/t', '/f'],
+      expect.objectContaining({ timeout: 3000 }),
+      expect.any(Function),
+    );
+  });
+
+  it('lets a Windows descendant kill outlive the awaited cleanup step', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    await ownership.terminateCopilotDescendants([
+      { pid: 23456, parent: 12345, group: 0, started: '20260930030003000000' },
+    ]);
+    expect(childProcess.execFile).toHaveBeenCalledWith(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', '-'],
+      expect.objectContaining({ timeout: 3000 }),
+      expect.any(Function),
+    );
+  });
+
+  it('keeps each awaited cleanup step bounded at 1.5 s on every platform', async () => {
+    jest.useFakeTimers();
+    let failure: unknown;
+    const pending = ownership
+      .withCopilotCleanupDeadline(new Promise<never>(() => undefined))
+      .catch((error: unknown) => {
+        failure = error;
+      });
+    await jest.advanceTimersByTimeAsync(1499);
+    expect(failure).toBeUndefined();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(failure).toMatchObject({
+      message: 'Copilot process cleanup did not finish.',
+    });
+    await pending;
+  });
+});
+
+describe('Copilot process commands that cannot spawn', () => {
+  const platform = process.platform;
+  beforeEach(() => {
+    // Node reports only EACCES, EAGAIN, EMFILE, ENFILE and ENOENT through the
+    // callback; any other spawn errno is thrown synchronously.
+    jest.spyOn(childProcess, 'execFile').mockImplementation(() => {
+      throw spawnFailure();
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform });
+    jest.restoreAllMocks();
+  });
+
+  it.each(['darwin', 'win32'])(
+    'reports an ownership snapshot that cannot spawn on %s',
+    async (platformName) => {
+      Object.defineProperty(process, 'platform', { value: platformName });
+      await expect(ownership.snapshotCopilotDescendants(12345)).rejects.toThrow(
+        'Copilot process ownership could not be inspected.',
+      );
+    },
+  );
+
+  it('keeps the spawn error behind the inspection error', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    const error: unknown = await ownership
+      .snapshotCopilotDescendants(12345)
+      .catch((rejection: unknown) => rejection);
+    expect(error).toMatchObject({
+      cause: { code: 'EBADF', syscall: 'spawn' },
+    });
+    // Like a native cause, it stays out of serialized errors and logs.
+    expect(Object.keys(error ?? {})).not.toContain('cause');
+  });
+
+  it('reports a Windows tree kill that cannot spawn', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const child = Object.assign(new childProcess.ChildProcess(), {
+      pid: 12345,
+    });
+    await expect(
+      ownership.killCopilotProcess(child, 'SIGKILL'),
+    ).rejects.toThrow('Copilot process termination failed.');
+  });
+
+  it('reports a Windows descendant kill that cannot spawn', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    await expect(
+      ownership.terminateCopilotDescendants([
+        {
+          pid: 23456,
+          parent: 12345,
+          group: 0,
+          started: '20260930030003000000',
+        },
+      ]),
+    ).rejects.toThrow('Copilot process termination failed.');
+  });
 });
 
 test('reaps an observed detached tool after a real CLI process crashes', async () => {

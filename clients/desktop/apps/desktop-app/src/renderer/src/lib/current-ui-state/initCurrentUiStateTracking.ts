@@ -27,6 +27,62 @@ import { throttleTrailing } from './throttle-trailing';
  */
 const SIDEBAR_RECOMPUTE_THROTTLE_MS = 100;
 
+interface RelevantPipelinePauseFacts {
+  executionId: string | null;
+  stateExists: boolean;
+  inputPauseRequiresInput: boolean;
+}
+
+function relevantPipelinePauseFacts(
+  pipelineRuns: ReturnType<typeof usePipelineRunsStore.getState>,
+): RelevantPipelinePauseFacts {
+  const selectedWorktree = useChatStore.getState().selectedWorktree;
+  const projectId =
+    selectedWorktree?.projectId ?? pipelineRuns.currentProjectId;
+  const worktreeId =
+    selectedWorktree?.worktreeId ?? pipelineRuns.currentWorktreeId;
+  const summary =
+    pipelineRuns.summaries.find(
+      (entry) =>
+        entry.project_id === projectId && entry.worktree_id === worktreeId,
+    ) ??
+    pipelineRuns.summaries.find(
+      (entry) =>
+        entry.project_id === pipelineRuns.currentProjectId &&
+        entry.worktree_id === pipelineRuns.currentWorktreeId,
+    );
+  if (!summary) {
+    return {
+      executionId: null,
+      stateExists: false,
+      inputPauseRequiresInput: false,
+    };
+  }
+
+  const executionState =
+    pipelineRuns.statesById[summary.id] ??
+    pipelineRuns.rowStatesById[summary.id];
+  return {
+    executionId: summary.id,
+    stateExists: executionState !== undefined,
+    inputPauseRequiresInput:
+      executionState?.pending_pauses?.some(
+        (pause) => pause.kind === 'input' && pause.request !== undefined,
+      ) ?? false,
+  };
+}
+
+function pipelinePauseFactsChanged(
+  left: RelevantPipelinePauseFacts,
+  right: RelevantPipelinePauseFacts,
+): boolean {
+  return (
+    left.executionId !== right.executionId ||
+    left.stateExists !== right.stateExists ||
+    left.inputPauseRequiresInput !== right.inputPauseRequiresInput
+  );
+}
+
 /**
  * Wire the current-UI-state envelope to recompute whenever any of the
  * top-level renderer stores publish a new value. Component-local reporters
@@ -63,15 +119,19 @@ export function initCurrentUiStateTracking(): () => void {
   const unsubPipelineRuns = usePipelineRunsStore.subscribe(
     (state, previousState) => {
       // The hidden UI snapshot deliberately excludes pipeline logs and
-      // detail. Step output lives in `pipelineStepLogStore`, and `statesById`
-      // changes on every execution event; rebuilding + hashing the full
-      // snapshot for those only burns renderer time. Keep this subscription
-      // aligned with the fields read by `findRelevantPipelineSummary`.
-      if (
+      // detail. Step output lives in `pipelineStepLogStore`; row changes only
+      // matter when the relevant run's state-exists or input-pause facts
+      // change. Avoid rebuilding + hashing the full snapshot for step/job
+      // events that do not affect those facts.
+      const selectionChanged =
         state.currentProjectId !== previousState.currentProjectId ||
         state.currentWorktreeId !== previousState.currentWorktreeId ||
-        state.summaries !== previousState.summaries
-      ) {
+        state.summaries !== previousState.summaries;
+      const pauseFactsChanged = pipelinePauseFactsChanged(
+        relevantPipelinePauseFacts(previousState),
+        relevantPipelinePauseFacts(state),
+      );
+      if (selectionChanged || pauseFactsChanged) {
         recompute();
       }
     },
@@ -85,6 +145,17 @@ export function initCurrentUiStateTracking(): () => void {
   const unsubBrowser = useBrowserStore.subscribe(recompute);
   const unsubAppAdvisorWindow =
     window.api?.appAdvisor?.onWindowUiStateChanged?.((state) => {
+      // The popout nav's bulk removal dialog, read by the snapshot builder
+      // beside the main rail's.
+      useCurrentUiStateStore
+        .getState()
+        .updateSlice(
+          'appAdvisor.batchRemovalDialog',
+          state.batchRemovalDialog === undefined ||
+            state.batchRemovalDialog === null
+            ? null
+            : { ...state.batchRemovalDialog },
+        );
       useCurrentUiStateStore.getState().updateSlice('appAdvisor.window', {
         activeWorkEntryId: state.activeWorkEntryId,
         activeChatId: state.activeChatId,

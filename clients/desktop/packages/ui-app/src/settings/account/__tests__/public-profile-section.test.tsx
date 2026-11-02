@@ -322,11 +322,11 @@ describe('PublicProfileSection', () => {
     const manager = container.querySelector(
       '[data-testid="published-artifacts-manager"]',
     );
-    expect(manager?.textContent).toContain("Couldn't load this. Try again.");
+    expect(manager?.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
 
     const retry = Array.from(manager?.querySelectorAll('button') ?? []).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     await act(async () => {
       retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -336,8 +336,12 @@ describe('PublicProfileSection', () => {
 
     expect(calls).toBe(2);
     expect(manager?.textContent).not.toContain("Couldn't load this.");
-    expect(
-      container.querySelector('[data-testid="featured-work-empty"]'),
-    ).not.toBeNull();
+    const empty = container.querySelector(
+      '[data-testid="featured-work-empty"]',
+    );
+    expect(empty).not.toBeNull();
+    // CAN-4651: the empty state names workflows, never pipelines.
+    expect(empty?.textContent).toContain('a skill, run, plan, or workflow');
+    expect(empty?.textContent).not.toMatch(/pipeline/i);
   });
 });

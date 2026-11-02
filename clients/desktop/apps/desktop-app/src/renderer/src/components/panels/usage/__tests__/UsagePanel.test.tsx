@@ -31,7 +31,6 @@ jest.mock('@/components/pages/usage/ProviderUsageCards', () => {
       typeof ProviderUsageCardsModule
     >('@/components/pages/usage/ProviderUsageCards')
       .selectAccountProviderUsageSummaries,
-    ShutdownResumeButton: (): null => null,
     OpenCodeUsageSection: jest.requireActual<typeof ProviderUsageCardsModule>(
       '@/components/pages/usage/ProviderUsageCards',
     ).OpenCodeUsageSection,
@@ -45,6 +44,9 @@ jest.mock('@/components/pages/usage/ProviderUsageCards', () => {
       }),
   };
 });
+jest.mock('@/components/pages/usage/InterruptedSessionsNotice', () => ({
+  InterruptedSessionsNotice: (): null => null,
+}));
 jest.mock('@/components/pages/usage/AiCreditsUsageCard', () => {
   const react = jest.requireActual<typeof ReactNamespace>('react');
   return {
@@ -87,7 +89,7 @@ function makeChatTab(overrides: Partial<ChatTab> & { id: string }): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     ...overrides,
   };
@@ -396,8 +398,9 @@ describe('UsagePanel', () => {
 
   it('active-chat: shows the follow-the-chat empty state when no chat is active', () => {
     renderPanel('active-chat');
-    expect(has('usage-panel-cards')).toBe(false);
     expect(has('usage-provider-card-codex')).toBe(false);
+    // The Updated line and its refresh stay, so the panel can still refresh.
+    expect(has('usage-updated-line')).toBe(true);
     expect(container.textContent).toContain('follows the active chat');
   });
 });

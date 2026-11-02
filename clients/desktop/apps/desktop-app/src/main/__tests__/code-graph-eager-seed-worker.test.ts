@@ -3,7 +3,7 @@ const mockCloneCompletedCodeGraphDatabase = jest.fn();
 const mockReadPublishedCodeGraphBase = jest.fn();
 const mockSeedCodeGraphDatabase = jest.fn();
 
-jest.mock('@canopy/desktop-shared/node/code-graph/base-graph', () => ({
+jest.mock('@canopy/code-graph/base-graph', () => ({
   hasCompletedCodeGraph: (...args: unknown[]): unknown =>
     mockHasCompletedCodeGraph(...args),
   cloneCompletedCodeGraphDatabase: (...args: unknown[]): unknown =>
@@ -13,10 +13,11 @@ jest.mock('@canopy/desktop-shared/node/code-graph/base-graph', () => ({
   seedCodeGraphDatabase: (...args: unknown[]): unknown =>
     mockSeedCodeGraphDatabase(...args),
 }));
-jest.mock('@canopy/desktop-shared/node/code-graph/engine', () => ({
+jest.mock('@canopy/code-graph/engine', () => ({
   CodeGraphEngine: { open: jest.fn() },
 }));
 
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { executeCodeGraphEagerSeed } from '../code-graph/build-worker';
 
 describe('executeCodeGraphEagerSeed', () => {
@@ -48,6 +49,7 @@ describe('executeCodeGraphEagerSeed', () => {
       repositories: [{ repoId: 'root', rootPath: '/worktree' }],
       sourceValidation: 'metadata-only',
       targetValidation: 'metadata-only',
+      openFilesBlockReplacement: hostOperatingSystem() === 'win32',
     });
   });
 

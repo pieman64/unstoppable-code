@@ -5,8 +5,7 @@
  * host pages need a deep-link past the list: an agent row opens the matched
  * agent's editor over its Marketplace detail (through the navigation store's
  * agent reveal) and a plugin
- * row opens the matched plugin's detail view (through the Plugins page's
- * module-private CustomEvent contract).
+ * row opens the matched source/plugin through a durable store intent.
  */
 import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
 import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
@@ -90,33 +89,20 @@ describe('palette target-level navigation dispatch', () => {
   });
 
   it('plugin row navigates to Plugins and opens the matched plugin detail', () => {
-    jest.useFakeTimers();
-    const navigate = jest
-      .spyOn(useNavigationStore.getState(), 'navigate')
-      .mockImplementation();
-    const openTab = jest.fn();
-    const openDetail = jest.fn();
-    window.addEventListener('canopy:plugins-open-tab', openTab);
-    window.addEventListener('canopy:plugin-open-detail', openDetail);
-    const page = document.createElement('div');
-    page.dataset.testid = 'page-plugins';
-    document.body.append(page);
-
+    useNavigationStore.setState({
+      activePage: 'overview',
+      pendingPluginsNavigation: undefined,
+    });
     const [item] = buildPluginItems([makePlugin()]);
     void item.execute();
-
-    expect(navigate).toHaveBeenCalledWith('plugins');
-    jest.runAllTimers();
-    expect(openTab).toHaveBeenCalledWith(
-      expect.objectContaining({ detail: { tab: 'marketplace' } }),
-    );
-    expect(openDetail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        detail: { marketplaceId: 'mkt-1', pluginName: 'Formatter' },
-      }),
-    );
-    window.removeEventListener('canopy:plugins-open-tab', openTab);
-    window.removeEventListener('canopy:plugin-open-detail', openDetail);
+    expect(useNavigationStore.getState().activePage).toBe('plugins');
+    expect(useNavigationStore.getState().pendingPluginsNavigation).toEqual({
+      kind: 'marketplace-source',
+      target: 'detail',
+      sourceId: 'mkt-1',
+      pluginKey: 'Formatter',
+    });
+    useNavigationStore.getState().consumePluginsNavigation();
   });
 
   it('skill row deep-links through the store pending payload (no event race)', () => {

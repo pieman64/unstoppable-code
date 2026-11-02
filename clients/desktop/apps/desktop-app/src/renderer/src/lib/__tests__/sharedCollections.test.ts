@@ -26,7 +26,7 @@ interface RawWriteDocument {
 }
 
 function makeSharedSkillDetail(
-  overrides: Partial<SharedSkillDetail> = {},
+  overrides: Partial<Omit<SharedSkillDetail, 'publicShare'>> = {},
 ): SharedSkillDetail {
   return {
     id: 'srv-skill-1',
@@ -40,6 +40,7 @@ function makeSharedSkillDetail(
     updatedAt: '2026-01-01T00:00:00.000Z',
     canUpdate: true,
     canDelete: true,
+    publicShare: null,
     rawSkill: '---\nname: helper\ndescription: a helper\n---\nbody\n',
     ...overrides,
   };

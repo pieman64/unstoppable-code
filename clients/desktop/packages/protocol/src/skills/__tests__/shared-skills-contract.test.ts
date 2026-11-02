@@ -51,6 +51,7 @@ describe('shared-skill API contract', () => {
         id: 'team-1',
         name: 'Platform',
         slug: 'platform',
+        organization: { id: 'org-1', name: 'Canopy' },
       },
       createdBy: {
         id: 'user-1',

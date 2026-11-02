@@ -41,6 +41,7 @@ export * from './shared-item-subscriptions';
 export * from './shared-containers';
 export * from './unified-entry';
 export * from './installed-items';
+export * from './file-save-conflict';
 
 export * from './archive-retention';
 export * from './resource-owner';

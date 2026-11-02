@@ -11,6 +11,9 @@ import type {
   AiGatewayToolSchemaProfile,
 } from '../ai-gateway-models';
 
+/** The mirror accepts and serves global Agent Ledger scopes. */
+export const LEDGER_GLOBAL_CAPABILITY = 'ledger-global-v1';
+
 export const CANOPY_SERVER_CAPABILITIES = [
   'account-v1',
   'resource-context-v1',
@@ -38,6 +41,14 @@ export const CANOPY_SERVER_CAPABILITIES = [
   // command (CAN-3959). Optional, so an older server degrades to "uncheck
   // the run condition to share" instead of a failed publish.
   'automations-run-condition-v4',
+  // Publication of v5 documents whose pipelines travel in the capability
+  // package (`packaged` refs and prompt `pipelineDependencies`). Optional, so
+  // an older server degrades to sharing without pipeline dependencies.
+  'automations-pipeline-dependencies-v5',
+  // Publication of v6 documents with pipeline automation destinations
+  // (CAN-4550). Optional; older servers keep accepting legacy `workspace`
+  // pipeline targets only.
+  'automations-pipeline-targets-v6',
   // Curated Automation Marketplace catalog. Optional for older servers.
   'automation-catalog-v1',
   'session-exports-v1',
@@ -60,6 +71,7 @@ export const CANOPY_SERVER_CAPABILITIES = [
   // older server, which would treat the reclaim as a fresh claim and could
   // revive a superseded instance, is never asked to reclaim.
   'org-project-reclaim-v1',
+  'org-shared-multi-repo-v1',
   'llm-proxy-v1',
   'oauth-links-v1',
   'model-routing-v1',
@@ -69,6 +81,11 @@ export const CANOPY_SERVER_CAPABILITIES = [
   // older server degrades to "no editing" instead of erroring.
   'mcp-connections-v2',
   MEMORY_SEARCH_CAPABILITY,
+  // Global (workflow) Agent Ledger scopes (CAN-4545): sync schema version 2
+  // and version-2 mirror reads. Optional and the sole gate for global sync,
+  // so a desktop holds global events locally against an older mirror instead
+  // of marking them for repair.
+  LEDGER_GLOBAL_CAPABILITY,
 ] as const;
 
 export const REQUIRED_CANOPY_SERVER_CAPABILITIES = [

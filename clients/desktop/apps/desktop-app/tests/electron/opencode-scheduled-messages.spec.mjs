@@ -59,6 +59,8 @@ test('OpenCode scheduled message survives restart and resumes the same chat', as
     );
     expect(run).toMatchObject({ ok: true, run: { status: 'success' } });
     await expect(f.panel).toContainText('OpenCode fixture reply 2.');
+    // CAN-4549 D4: a composer-scheduled send stays the user's own message.
+    await expect(f.panel.getByTestId('agent-sent-title')).toHaveCount(0);
     expect(await f.tab()).toMatchObject({
       sdkSessionId: before.sdkSessionId,
       model: 'opencode:fixture%2Fmodel',

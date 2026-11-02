@@ -69,10 +69,8 @@ describe('buildProviderConnectorRows', () => {
           provider: 'codex',
           connectors: [
             {
-              name: 'Gmail',
               displayName: 'Gmail',
               connected: true,
-              status: 'Connected',
               installUrl: 'https://chatgpt.com/apps/gmail/connector_2128aeb',
             },
           ],
@@ -96,10 +94,8 @@ describe('buildProviderConnectorRows', () => {
           provider: 'codex',
           connectors: [
             {
-              name: 'Google Drive',
               displayName: 'Google Drive',
               connected: false,
-              status: 'Not linked',
               installUrl: 'https://chatgpt.com/apps/google-drive/connector_5f3',
             },
           ],
@@ -143,10 +139,8 @@ describe('buildProviderConnectorRows', () => {
           provider: 'claude',
           connectors: [
             {
-              name: 'claude.ai Notion',
               displayName: 'Notion',
               connected: true,
-              status: '✔ Connected',
             },
           ],
         },
@@ -204,10 +198,8 @@ describe('buildProviderConnectorRows with a served catalog', () => {
           provider: 'claude',
           connectors: [
             {
-              name: 'claude.ai Unstoppable Domains (Staging)',
               displayName: 'Unstoppable Domains (Staging)',
               connected: true,
-              status: '✔ Connected',
             },
           ],
         },
@@ -291,10 +283,8 @@ describe('buildProviderConnectorRows — alternate routes', () => {
           provider: 'claude',
           connectors: [
             {
-              name: 'claude.ai Gmail',
               displayName: 'Gmail',
               connected: true,
-              status: '✔ Connected',
             },
           ],
           alternateRoutes: [
@@ -321,10 +311,8 @@ describe('buildProviderConnectorRows — snapshot staleness', () => {
           provider: 'codex',
           connectors: [
             {
-              name: 'Slack',
               displayName: 'Slack',
               connected: false,
-              status: 'Not linked',
             },
           ],
           snapshotAt: '2026-08-24T09:51:37.000Z',
@@ -344,10 +332,8 @@ describe('buildProviderConnectorRows — snapshot staleness', () => {
           provider: 'codex',
           connectors: [
             {
-              name: 'Slack',
               displayName: 'Slack',
               connected: true,
-              status: 'Connected',
             },
           ],
           snapshotAt: '2026-08-24T09:51:37.000Z',
@@ -384,10 +370,8 @@ describe('claudeConnectorName aliasing', () => {
           provider: 'claude',
           connectors: [
             {
-              name: 'claude.ai Gmail (Work)',
               displayName: 'Gmail (Work)',
               connected: true,
-              status: '✔ Connected',
             },
           ],
         },

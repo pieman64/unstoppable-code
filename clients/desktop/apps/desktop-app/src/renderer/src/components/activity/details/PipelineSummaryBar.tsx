@@ -2,11 +2,11 @@ import { useState, type JSX } from 'react';
 import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
 import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import { buildEventInputs } from '@/lib/pipelineDetailsView';
-import { HookIcon } from '@canopy/ui-shared/icons';
+import { ChevronIcon, HookIcon } from '@canopy/ui-shared/icons';
 import { PipelineTimer } from '../PipelineTimer';
 import { getPipelineExecutionStatusBadgeClassName } from '../utils';
-import { DetailChevronIcon } from './DetailChevronIcon';
 import { KeyValueTable } from './PipelineStepDetailParts';
+import { Button } from '@canopy/ui-shared/components';
 
 /**
  * One run fact. Its value stays on one line, so a timestamp never breaks
@@ -137,16 +137,17 @@ export function PipelineSummaryBar({
         </SummaryField>
       </div>
 
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="compact"
+        className="mt-3"
         onClick={(): void => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
         data-testid="pipeline-summary-more"
-        className="focus-ring mt-3 inline-flex items-center gap-1.5 text-2xs font-medium fg-secondary transition-colors hover:fg-primary/80"
       >
-        <DetailChevronIcon open={expanded} />
+        <ChevronIcon open={expanded} />
         More details
-      </button>
+      </Button>
 
       {expanded && (
         <div className="mt-3 space-y-3 border-t pt-3">
@@ -170,7 +171,7 @@ export function PipelineSummaryBar({
               {state.pipeline_snapshot.description}
             </DetailRow>
           )}
-          <DetailRow label="Pipeline ID">
+          <DetailRow label="Workflow ID">
             <span className="break-words font-mono text-xs fg-primary/80">
               {state.pipeline_id}
             </span>

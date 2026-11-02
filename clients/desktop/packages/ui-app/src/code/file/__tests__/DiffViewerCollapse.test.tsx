@@ -44,6 +44,13 @@ function baseState(diff: DiffViewerSession | undefined): FileViewerState {
     closeFile: (): void => {},
     openDiff: (): Promise<string> => Promise.resolve(key),
     closeDiff: (): void => {},
+    refreshFile: (): Promise<void> => Promise.resolve(),
+    markFileChanged: (): void => {},
+    reloadFromDisk: (): Promise<boolean> => Promise.resolve(false),
+    dismissExternalChange: (): void => {},
+    overwriteWithEdits: (): Promise<boolean> => Promise.resolve(false),
+    chooseOverlapVersion: (): void => {},
+    notifyFileChanged: (): void => {},
   };
 }
 

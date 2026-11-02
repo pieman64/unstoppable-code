@@ -6,8 +6,9 @@ import { StatusPill } from '../StatusPill';
 // from the component so a change to the metrics fails this test instead of
 // silently agreeing with itself.
 const STATUS_PILL_METRICS =
-  'inline-flex h-4 shrink-0 items-center rounded-full bg-subtle px-1.5 text-3xs font-medium leading-none';
-const STATUS_PILL_CLASS = `${STATUS_PILL_METRICS} fg-quaternary`;
+  'inline-flex h-4.5 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-1.75 text-2xs font-medium leading-none';
+const STATUS_PILL_CLASS = `${STATUS_PILL_METRICS} bg-muted fg-secondary`;
+const WARNING_CLASS = `${STATUS_PILL_METRICS} bg-warning-subtle fg-warning-strong`;
 
 describe('StatusPill', () => {
   it('renders one span carrying exactly the shared metrics', () => {
@@ -26,25 +27,21 @@ describe('StatusPill', () => {
     );
   });
 
-  it('swaps the ink through a typed tone without touching the metrics', () => {
+  it('maps quiet inks to the neutral badge and warning inks to the warning badge', () => {
     expect(
       renderToStaticMarkup(<StatusPill tone="warning">Unavailable</StatusPill>),
-    ).toBe(
-      `<span class="${STATUS_PILL_METRICS} fg-warning">Unavailable</span>`,
-    );
+    ).toBe(`<span class="${WARNING_CLASS}">Unavailable</span>`);
     expect(
       renderToStaticMarkup(
         <StatusPill tone="warning-strong">Sign-in expired</StatusPill>,
       ),
-    ).toBe(
-      `<span class="${STATUS_PILL_METRICS} fg-warning-strong">Sign-in expired</span>`,
-    );
+    ).toBe(`<span class="${WARNING_CLASS}">Sign-in expired</span>`);
     expect(
       renderToStaticMarkup(<StatusPill tone="tertiary">Imported</StatusPill>),
-    ).toBe(`<span class="${STATUS_PILL_METRICS} fg-tertiary">Imported</span>`);
+    ).toBe(`<span class="${STATUS_PILL_CLASS}">Imported</span>`);
     expect(
       renderToStaticMarkup(<StatusPill tone="secondary">Codex</StatusPill>),
-    ).toBe(`<span class="${STATUS_PILL_METRICS} fg-secondary">Codex</span>`);
+    ).toBe(`<span class="${STATUS_PILL_CLASS}">Codex</span>`);
   });
 
   it('appends placement classes after the metrics and tone', () => {

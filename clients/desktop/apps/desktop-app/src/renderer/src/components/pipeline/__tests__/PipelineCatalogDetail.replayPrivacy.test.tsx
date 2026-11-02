@@ -37,8 +37,6 @@ const PIPELINE: PipelineInfo = {
     type: 'organization',
     id: 'org-1',
     name: 'Acme Corp',
-    createdAt: '2026-04-01T00:00:00.000Z',
-    updatedAt: '2026-04-01T00:00:00.000Z',
   },
 };
 

@@ -41,7 +41,6 @@ import {
   ChildProcess,
   execFile,
   type ExecFileException,
-  type ExecFileOptions,
 } from 'node:child_process';
 import { lstat, mkdir, readlink, symlink, unlink } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -81,17 +80,6 @@ const mockedUnlink = jest.mocked(unlink);
 const mockedGetCanopyRuntimeMode = jest.mocked(getCanopyRuntimeMode);
 const mockedGetBundledCanopyCliPath = jest.mocked(getBundledCanopyCliPath);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
-
-type ExecFileCallback = (
-  error: ExecFileException | null,
-  result?: { stdout: string; stderr: string },
-) => void;
-
-type ExecFileNodeCallback = (
-  error: ExecFileException | null,
-  stdout: string | Buffer,
-  stderr: string | Buffer,
-) => void;
 
 type ActualFsPromises = {
   lstat: typeof lstat;
@@ -182,25 +170,14 @@ function mockExecFileOutput(
   stdout = '',
 ): void {
   mockedExecFile.mockImplementation(function mockExecFile(
-    _file: string,
-    _args: readonly string[] | null | undefined,
-    optionsOrCallback?:
-      | ExecFileOptions
-      | ExecFileCallback
-      | ExecFileNodeCallback
-      | null,
-    cb?: ExecFileCallback | ExecFileNodeCallback | null,
+    _file: Parameters<typeof execFile>[0],
+    _args: Parameters<typeof execFile>[1],
+    _options: Parameters<typeof execFile>[2],
+    cb: Parameters<typeof execFile>[3],
   ): ChildProcess {
     if (typeof cb === 'function') {
       Reflect.apply(cb, undefined, [error, { stdout, stderr: '' }, '']);
       return new ChildProcess();
-    }
-
-    if (typeof optionsOrCallback === 'function') {
-      Reflect.apply(optionsOrCallback, undefined, [
-        error,
-        { stdout, stderr: '' },
-      ]);
     }
 
     return new ChildProcess();
@@ -696,21 +673,11 @@ describe('installCliToPath', () => {
       'C:\\Program Files\\Canopy\\resources\\cli\\canopy.exe',
     );
     mockedExecFile.mockImplementation(function mockExecFile(
-      _file: string,
-      _args: readonly string[] | null | undefined,
-      optionsOrCallback?:
-        | ExecFileOptions
-        | ExecFileCallback
-        | ExecFileNodeCallback
-        | null,
-      cb?: ExecFileCallback | ExecFileNodeCallback | null,
+      _file: Parameters<typeof execFile>[0],
+      _args: Parameters<typeof execFile>[1],
+      _options: Parameters<typeof execFile>[2],
+      cb: Parameters<typeof execFile>[3],
     ): ChildProcess {
-      const callback =
-        typeof cb === 'function'
-          ? cb
-          : typeof optionsOrCallback === 'function'
-            ? optionsOrCallback
-            : null;
       const command = isStringArray(_args)
         ? (_args[_args.length - 1] ?? '')
         : '';
@@ -719,8 +686,8 @@ describe('installCliToPath', () => {
           ? 'C:\\Tools;%USERPROFILE%\\bin\r\n'
           : '';
 
-      if (callback) {
-        Reflect.apply(callback, undefined, [null, { stdout, stderr: '' }]);
+      if (typeof cb === 'function') {
+        Reflect.apply(cb, undefined, [null, { stdout, stderr: '' }]);
       }
 
       return new ChildProcess();

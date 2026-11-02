@@ -12,6 +12,11 @@ import type {
   CloudDigestPreferencesState,
 } from '@canopy/desktop-shared/types';
 import { CloudDigestSettings } from '../CloudDigestSettings';
+import {
+  chooseSettingsOption,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 const WEEKLY_ONLY: CloudDigestPreferences = {
   daily: false,
@@ -21,14 +26,11 @@ const WEEKLY_ONLY: CloudDigestPreferences = {
   monthlyAnchorDay: 1,
 };
 
-function anchor(field: string): HTMLSelectElement {
-  const node = container.querySelector(
+function anchor(field: string): HTMLButtonElement {
+  return settingsSelectTrigger(
+    container,
     `[data-testid="cloud-digest-anchor-${field}"]`,
   );
-  if (!(node instanceof HTMLSelectElement)) {
-    throw new Error(`Missing anchor select for ${field}`);
-  }
-  return node;
 }
 
 interface ApiMocks {
@@ -143,7 +145,13 @@ describe('CloudDigestSettings', () => {
     api.saveCloudDigestPreferences.mockResolvedValue({
       available: true,
       resolved: true,
-      preferences: { daily: true, weekly: true, monthly: false },
+      preferences: {
+        daily: true,
+        weekly: true,
+        monthly: false,
+        weeklyAnchorDay: 1,
+        monthlyAnchorDay: 1,
+      },
     });
 
     await render();
@@ -167,7 +175,13 @@ describe('CloudDigestSettings', () => {
     api.saveCloudDigestPreferences.mockResolvedValue({
       available: true,
       resolved: true,
-      preferences: { daily: false, weekly: false, monthly: false },
+      preferences: {
+        daily: false,
+        weekly: false,
+        monthly: false,
+        weeklyAnchorDay: 1,
+        monthlyAnchorDay: 1,
+      },
     });
 
     await render();
@@ -426,8 +440,8 @@ describe('CloudDigestSettings', () => {
 
     await render();
 
-    expect(anchor('weekly').value).toBe('4');
-    expect(anchor('monthly').value).toBe('12');
+    expect(settingsSelectValue(anchor('weekly'))).toBe('4');
+    expect(settingsSelectValue(anchor('monthly'))).toBe('12');
     const text = section()?.textContent ?? '';
     expect(text).toContain('Every Thursday, covering the previous week.');
     expect(text).toContain(
@@ -438,10 +452,8 @@ describe('CloudDigestSettings', () => {
   it('saves the complete object when an anchor changes', async () => {
     await render();
 
+    await chooseSettingsOption(anchor('weekly'), '5');
     await act(async () => {
-      const select = anchor('weekly');
-      select.value = '5';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
       await Promise.resolve();
       await Promise.resolve();
     });

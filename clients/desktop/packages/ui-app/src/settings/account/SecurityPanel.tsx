@@ -7,24 +7,23 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
-import {
-  GitHubIcon,
-  Globe,
-  Lock,
-  Mail,
-  Shield,
-} from '@canopy/ui-shared/icons/AppIcons';
+import { GitHubIcon, Globe, Mail } from '@canopy/ui-shared/icons/AppIcons';
 import {
   GoogleIcon,
   SingleSignOnIcon,
   UnstoppableDomainsIcon,
 } from '@canopy/ui-shared/icons';
 import {
+  Button,
+  TextInput,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsFormSkeleton,
 } from '@canopy/ui-shared/components';
-import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
+import {
+  SETTINGS_CARD_ROW_CLASS,
+  SettingsCard,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
 import {
   CREDENTIAL_PROVIDER_ID,
   LAST_AUTH_SOURCE_ERROR,
@@ -153,8 +152,8 @@ export function SecurityPanel({
 
       {status === 'ready' && data && (
         <>
-          <SettingsCard icon={<Shield size={18} />} title="Sign-in methods">
-            <ul className="divide-y rounded-md border">
+          <SettingsCard title="Sign-in methods">
+            <ul className="flex flex-col">
               {sources.map((source) => (
                 <AuthSourceRow
                   key={source.accountId}
@@ -163,34 +162,48 @@ export function SecurityPanel({
                 />
               ))}
               {sources.length === 0 && (
-                <li className="px-4 py-3 text-s fg-secondary">
+                <li
+                  className={`${SETTINGS_CARD_ROW_CLASS} text-s fg-secondary`}
+                >
                   No sign-in methods found.
                 </li>
               )}
             </ul>
 
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {SOCIAL_PROVIDER_IDS.map((provider) =>
-                linkedProviders.has(provider) ? null : (
-                  <button
-                    key={provider}
-                    type="button"
-                    onClick={() => handleLink(provider)}
-                    className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-                  >
-                    Link {authSourceLabel(provider)}
-                  </button>
-                ),
-              )}
-            </div>
+            {SOCIAL_PROVIDER_IDS.some(
+              (provider) => !linkedProviders.has(provider),
+            ) ? (
+              <div className={SETTINGS_CARD_ROW_CLASS}>
+                <div className="min-w-0">
+                  <div className="text-s font-medium fg-primary">
+                    Add a sign-in method
+                  </div>
+                  <p className="text-xs text-pretty fg-secondary">
+                    Sign in with another account you already use.
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  {SOCIAL_PROVIDER_IDS.map((provider) =>
+                    linkedProviders.has(provider) ? null : (
+                      <Button
+                        key={provider}
+                        size="compact"
+                        variant="secondary"
+                        onClick={() => handleLink(provider)}
+                      >
+                        Link {authSourceLabel(provider)}
+                      </Button>
+                    ),
+                  )}
+                </div>
+              </div>
+            ) : null}
 
             {emailPasswordAuthEnabled && (
-              <div className="mt-6 border-t pt-6">
-                <PasswordSection
-                  hasCredential={hasCredential}
-                  onChanged={() => void refresh()}
-                />
-              </div>
+              <PasswordSection
+                hasCredential={hasCredential}
+                onChanged={() => void refresh()}
+              />
             )}
           </SettingsCard>
 
@@ -206,11 +219,7 @@ export function SecurityPanel({
       {/* Rendered outside the auth-sources `status` conditional so API keys
           always show and manage their own fetch — an auth-sources load
           failure must not hide this panel. */}
-      <SettingsCard
-        icon={<Lock size={18} />}
-        title="API keys"
-        testId="account-api-keys-section"
-      >
+      <SettingsCard title="API keys" testId="account-api-keys-section">
         <ApiKeysManager
           brandDisplayName={brandDisplayName}
           showHeading={false}
@@ -294,7 +303,7 @@ export function AuthSourceRow({
   };
 
   return (
-    <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+    <li className={`${SETTINGS_CARD_ROW_CLASS} flex-wrap`}>
       <div className="flex items-center gap-3">
         <AuthSourceIcon providerId={source.providerId} />
         <div className="min-w-0">
@@ -320,35 +329,35 @@ export function AuthSourceRow({
             Remove this sign-in method?
           </span>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
+            <Button
+              size="compact"
+              variant="destructive"
               onClick={() => void handleRemove()}
               disabled={removing}
-              className="rounded-md bg-destructive px-3 py-1.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {removing ? 'Removing…' : 'Remove'}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              size="compact"
+              variant="secondary"
               onClick={() => {
                 setConfirming(false);
                 setError(null);
               }}
               disabled={removing}
-              className="rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
-        <button
-          type="button"
+        <Button
+          size="compact"
+          variant="secondary"
           onClick={() => setConfirming(true)}
-          className="rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary"
         >
           Remove
-        </button>
+        </Button>
       )}
     </li>
   );
@@ -414,22 +423,27 @@ export function PasswordSection({
 
   if (!open) {
     return (
-      <div className="flex flex-col gap-2">
-        <button
-          type="button"
+      <div className={SETTINGS_CARD_ROW_CLASS}>
+        <div className="min-w-0">
+          <div className="text-s font-medium fg-primary">Password</div>
+          <p className="text-xs text-pretty fg-secondary" role="status">
+            {saved
+              ? PASSWORD_SAVED
+              : hasCredential
+                ? 'Sign in with your email and a password.'
+                : 'Not set'}
+          </p>
+        </div>
+        <Button
+          size="compact"
+          variant="secondary"
           onClick={() => {
             setOpen(true);
             setSaved(false);
           }}
-          className="self-start rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
         >
           {hasCredential ? 'Change password' : 'Set password'}
-        </button>
-        {saved && (
-          <p className="text-s fg-secondary" role="status">
-            {PASSWORD_SAVED}
-          </p>
-        )}
+        </Button>
       </div>
     );
   }
@@ -437,32 +451,30 @@ export function PasswordSection({
   return (
     <form
       onSubmit={(e) => void handleSubmit(e)}
-      className="flex max-w-sm flex-col gap-3"
+      className={`${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-3`}
     >
       {hasCredential && (
         <label className="flex flex-col gap-1 text-s fg-secondary">
           <span className="font-medium fg-primary">Current password</span>
-          <input
+          <TextInput
             type="password"
             required
             autoComplete="current-password"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
             disabled={submitting}
-            className="rounded-md border bg-card px-3 py-2 text-s fg-primary disabled:opacity-50"
           />
         </label>
       )}
       <label className="flex flex-col gap-1 text-s fg-secondary">
         <span className="font-medium fg-primary">New password</span>
-        <input
+        <TextInput
           type="password"
           required
           autoComplete="new-password"
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           disabled={submitting}
-          className="rounded-md border bg-card px-3 py-2 text-s fg-primary disabled:opacity-50"
         />
       </label>
 
@@ -473,21 +485,22 @@ export function PasswordSection({
       )}
 
       <div className="flex items-center gap-2">
-        <button
+        <Button
           type="submit"
+          size="compact"
+          variant="secondary"
           disabled={submitting}
-          className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {submitting ? 'Saving…' : 'Save password'}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          size="compact"
+          variant="secondary"
           onClick={close}
           disabled={submitting}
-          className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );

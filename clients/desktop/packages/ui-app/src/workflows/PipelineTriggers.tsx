@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import { ORCHESTRATOR_LABEL, REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { Button } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -24,9 +24,9 @@ export const PIPELINE_START_KINDS: readonly PipelineStartKind[] = [
 
 const PIPELINE_START_DESCRIPTIONS: Readonly<Record<PipelineStartKind, string>> =
   {
-    manual: `Run, App Advisor or ${REMOTE_CONTROL_LABEL}`,
+    manual: `Run, ${ORCHESTRATOR_LABEL} or ${REMOTE_CONTROL_LABEL}`,
     'plan-approved': 'From an approved plan',
-    'task-ready': 'From a new task in pipeline mode',
+    'task-ready': 'From a new task in workflow mode',
   };
 
 /** A hook that runs the pipeline. */
@@ -150,7 +150,7 @@ export function PipelineTriggers({
           onEditStarts ? (
             <Button
               variant="ghost"
-              size="control"
+              size="compact"
               onClick={onEditStarts}
               data-testid="pipeline-trigger-edit-starts"
             >
@@ -198,8 +198,8 @@ export function PipelineTriggers({
         {hooks.length === 0 ? (
           <EmptyRow testId="pipeline-trigger-hooks-empty">
             {manual
-              ? 'No hooks run this pipeline.'
-              : 'Hooks only run pipelines with a Manual trigger.'}
+              ? 'No hooks run this workflow.'
+              : 'Hooks only run workflows with a Manual trigger.'}
           </EmptyRow>
         ) : (
           <ul
@@ -232,8 +232,8 @@ export function PipelineTriggers({
         {automations.length === 0 ? (
           <EmptyRow testId="pipeline-trigger-automations-empty">
             {manual
-              ? 'No automations run this pipeline.'
-              : 'Automations only run pipelines with a Manual trigger.'}
+              ? 'No automations run this workflow.'
+              : 'Automations only run workflows with a Manual trigger.'}
           </EmptyRow>
         ) : (
           <ul

@@ -1,10 +1,23 @@
+import { getPlanModeHintStore } from '@/lib/planModeHint';
+import { ComposerTipArbiterProvider } from '@canopy/ui-shared/components';
+import {
+  isPlanModeReadOnly,
+  isGenuinePlanModeUse,
+} from '@canopy/ui-shared/lib/plan-mode-suggestion';
+import { notifyHomeTaskSent } from '../onboarding-tips/homeSendEvents';
+import { HomeWorkspaceReadiness } from './HomeWorkspaceReadiness';
+import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
+import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   buildComposerCommands,
   getComposerAction,
 } from '@/lib/composerCommands';
-import { requestComposerAction } from '@/lib/composerShortcutRequests';
+import {
+  requestComposerAction,
+  requestModelPickerOpen,
+} from '@/lib/composerShortcutRequests';
 import {
   useCallback,
   useId,
@@ -31,9 +44,11 @@ import {
 } from '@canopy/ui-rich/editor';
 import {
   DraftComposerEditor,
+  PlanModeHint,
   composerDraftContentEquals,
   useComposerDraftRestoration,
   type ComposerDraftSnapshot,
+  type PlanModeSuggestion,
 } from '@canopy/ui-app';
 import {
   COWORK_HOME_WORKTREE_ID,
@@ -47,11 +62,14 @@ import {
   CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  ComposerDrawer,
   ComposerHeroFrame,
+  FirstSendFailedNotice,
   Notice,
   NoticeButton,
   Tooltip,
 } from '@canopy/ui-shared/components';
+import { defaultChatPlaceholder } from '@canopy/ui-shared/lib';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useSelectedOrgWithoutPlan } from '@/hooks/useSelectedOrgWithoutPlan';
 import {
@@ -83,11 +101,17 @@ import {
   isHomeSendEnabled,
   resolveHomeAttachmentWorktreeId,
   useHomeComposerStore,
+  resolveHomeEffectiveProviderType,
   defaultNewWorktreeBaseTarget,
   homeBranchTargetsEqual,
   isGitHubConnectResumeFresh,
 } from '@/stores/homeComposerStore';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import {
+  HOME_COMPOSER_KEY,
+  markSuggestedPromptInserted,
+} from '@/lib/chatMessageSendTelemetry';
+import { trackHomeChatSend } from './homeSendTelemetry';
 import { snapshotHomeTask } from '@/lib/repeat-task-automation/draft';
 import { maybeOfferRepeatTaskAutomation } from '@/lib/repeat-task-automation/offer';
 import {
@@ -119,11 +143,6 @@ import { DirectoryPicker } from '@/components/chat/DirectoryPicker';
 import { SuggestedPromptChips } from '@/components/suggestions/SuggestedPromptChips';
 import { useSuggestedPrompts } from '@/components/suggestions/useSuggestedPrompts';
 import type { SuggestedPrompt } from '@/components/suggestions/mcpPromptIndex';
-import {
-  setOnboardingHomeHost,
-  useOnboardingSuggestionSurfaces,
-} from '@/stores/onboardingSuggestionSurfacesStore';
-import { notifyHomeTaskSent } from './onboarding-suggestions/sendEvents';
 import { HomeBelowComposerGallery } from './HomeBelowComposerGallery';
 import { HomeContinueSection } from './HomeContinueSection';
 import { isHomeBelowComposerGalleryEnabled } from './home-below-composer-gallery-flag';
@@ -131,6 +150,7 @@ import { ModelGatewayKeyBanner } from '@/components/chat/ModelGatewayKeyBanner';
 import { resolveOrgGatewayOrganizationId } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
 import { HomeWorkspacePicker } from './HomeWorkspacePicker';
+import { HomeWorkspaceSelectionReason } from './HomeWorkspaceSelectionReason';
 import { HomeBranchPicker } from './HomeBranchPicker';
 import { HomeBaseBranchPicker } from './HomeBaseBranchPicker';
 import { HomeComposerControls } from './HomeComposerControls';
@@ -220,7 +240,15 @@ function readHomeComposerWorkspaceId(): string | null {
  * `useTaskReadyPipelineLauncher` (pipeline mode, mirroring the Create Task
  * modal's `task_ready` pipeline picker flow).
  */
-export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
+export function HomeSurface(props: HomeSurfaceProps): JSX.Element {
+  return (
+    <ComposerTipArbiterProvider>
+      <HomeSurfaceContent {...props} />
+    </ComposerTipArbiterProvider>
+  );
+}
+
+function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const composerId = useId();
   const composerActionScope = useMemo(
     () => ({ scope: 'home' as const, composerId }),
@@ -248,24 +276,6 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
   );
   const addToast = useGitHubStore((state) => state.addToast);
 
-  const onboardingVisible = useOnboardingSuggestionSurfaces((s) => s.visible);
-  const onboardingQueueStatus = useOnboardingSuggestionSurfaces(
-    (s) => s.queueStatus,
-  );
-  const onboardingHomeHasRows = useOnboardingSuggestionSurfaces(
-    (s) => s.homeHasRows,
-  );
-  // Active only while the card has something to show: once the queue is
-  // genuinely empty the module hands Home back (chips, readiness).
-  const onboardingActive =
-    variant === 'page' && onboardingVisible && onboardingHomeHasRows;
-  // Queue status is the loading-safe prompt-chip gate. The runtime remains
-  // mounted after exhaustion so it can discover later recommendations, but
-  // chips should return as soon as the current shared checklist is empty.
-  const onboardingChecklistShown =
-    variant === 'page' &&
-    onboardingVisible &&
-    onboardingQueueStatus !== 'exhausted';
   const belowComposerGallery =
     variant === 'page' && isHomeBelowComposerGalleryEnabled();
 
@@ -286,6 +296,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
     thinkingLevel,
     sendError,
     sendErrorRetryable,
+    sendErrorChooseModel,
     scheduledSendDraft,
     branchTarget,
     newWorktreeBaseTarget,
@@ -312,6 +323,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
       thinkingLevel: s.thinkingLevel,
       sendError: s.sendError,
       sendErrorRetryable: s.sendErrorRetryable,
+      sendErrorChooseModel: s.sendErrorChooseModel,
       scheduledSendDraft: s.scheduledSendDraft,
       branchTarget: s.branchTarget,
       newWorktreeBaseTarget: s.newWorktreeBaseTarget,
@@ -567,7 +579,9 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
    * behavior (the commands popup is a quick-trigger affordance, not an
    * append-at-cursor one).
    */
+  const [hintDraftRevision, setHintDraftRevision] = useState(0);
   function handleInsertCommandText(text: string): void {
+    setHintDraftRevision((revision) => revision + 1);
     resetEditor(editor);
     if (text) {
       Transforms.insertText(editor, text);
@@ -649,11 +663,6 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
     !suggestedPromptsFlagEnabled ||
       composerDisabled ||
       !surfaceVisible ||
-      // The onboarding suggestions module absorbs the prompt-suggestion role
-      // while it has rows to show or the shared queue is still loading. It
-      // deliberately stays mounted after exhaustion so future recommendations
-      // can appear; chips return as soon as the current queue is empty.
-      onboardingChecklistShown ||
       belowComposerGallery
       ? null
       : suggestionSelections,
@@ -662,6 +671,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
 
   function handleSelectSuggestedPrompt(prompt: SuggestedPrompt): void {
     handleInsertCommandText(prompt.text);
+    markSuggestedPromptInserted(HOME_COMPOSER_KEY);
   }
 
   // ---------------------------------------------------------------------
@@ -673,6 +683,9 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
   // candidate set for the selected workspace — for cowork targets these come
   // from the cowork managed dirs; prompt mentions expand at send time
   // (`homeSend`).
+  const filesGuestGate = useDesktopFilesGuestGate(
+    `${workspaceId}/${JSON.stringify(branchTarget)}`,
+  );
   const fileTypeaheadEnabled = Boolean(workspaceId) && !composerDisabled;
   useEffect(() => {
     if (!fileTypeaheadEnabled || !workspaceId) {
@@ -681,13 +694,20 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
     const itemsStore = useWorkspaceItemsStore.getState();
     void itemsStore.loadNotes(workspaceId);
     void itemsStore.loadPrompts(workspaceId);
-    if (isCoworkChatTarget(workspaceId)) {
+    if (
+      filesGuestGate.status === 'signed-in' &&
+      isCoworkChatTarget(workspaceId)
+    ) {
       // Cowork attachments are physically shared across Work Entries (the
       // workspace-items cowork adapter ignores worktreeId), so staging keys
       // stay on the legacy shared `home` bucket intentionally.
-      void itemsStore.loadAttachments(workspaceId, COWORK_HOME_WORKTREE_ID);
+      void itemsStore.loadAttachments(
+        workspaceId,
+        COWORK_HOME_WORKTREE_ID,
+        filesGuestGate.captureAccess(),
+      );
     }
-  }, [fileTypeaheadEnabled, workspaceId]);
+  }, [fileTypeaheadEnabled, workspaceId, filesGuestGate]);
   const workspaceItemSources = useWorkspaceItemsStore(
     useShallow((s): WorkspaceItemMentionSources => {
       // Fallbacks must be the stable module-level empties: a fresh `[]` per
@@ -703,10 +723,12 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
       return {
         notes: s.notes[workspaceId] ?? EMPTY_NOTE_ITEMS,
         prompts: s.prompts[workspaceId] ?? EMPTY_PROMPT_ITEMS,
-        attachments: isCoworkChatTarget(workspaceId)
-          ? (s.attachments[`${workspaceId}/${COWORK_HOME_WORKTREE_ID}`] ??
-            EMPTY_ATTACHMENT_ITEMS)
-          : EMPTY_ATTACHMENT_ITEMS,
+        attachments:
+          filesGuestGate.status === 'signed-in' &&
+          isCoworkChatTarget(workspaceId)
+            ? (s.attachments[`${workspaceId}/${COWORK_HOME_WORKTREE_ID}`] ??
+              EMPTY_ATTACHMENT_ITEMS)
+            : EMPTY_ATTACHMENT_ITEMS,
       };
     }),
   );
@@ -869,6 +891,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
     newWorktreeBaseTarget,
   ]);
   const startupResumeOffer = useStartupResumeStore((s) => s.offer);
+  const [continueVisible, setContinueVisible] = useState(false);
   useCurrentUiStateReporter('home.surface', {
     variant,
     workspaceSelected: Boolean(workspaceId),
@@ -902,8 +925,8 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
     fileIndexLoading,
     sendErrorVisible: Boolean(sendError),
     inlineSlashMenuOpen: composerMenu.open,
-    startupResumeOfferVisible: startupResumeOffer !== null,
-    ...(startupResumeOffer
+    startupResumeOfferVisible: continueVisible && startupResumeOffer !== null,
+    ...(continueVisible && startupResumeOffer
       ? { startupResumeOfferKind: startupResumeOffer.kind }
       : {}),
   });
@@ -976,7 +999,14 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
    */
   function handleEditorPaste(event: ClipboardEvent<HTMLDivElement>): void {
     const items = event.clipboardData?.items;
-    if (!items) return;
+    if (!items || !Array.from(items).some((item) => item.kind === 'file'))
+      return;
+    if (filesGuestGate.interceptAttachment()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const isCurrent = filesGuestGate.captureAccess();
 
     const filePaths: string[] = [];
     const blobFiles: File[] = [];
@@ -1015,12 +1045,15 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
           blobFiles,
           'clipboard-image',
         );
+        if (!isCurrent()) return;
         const imported = await importChatAttachments(
           target,
           filePaths,
           clipboardItems,
+          isCurrent,
         );
         const store = useHomeComposerStore.getState();
+        if (!isCurrent()) return;
         if (
           !isHomeAttachmentImportCurrent(
             target,
@@ -1037,6 +1070,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
         store.setSendError(null);
       } catch {
         const store = useHomeComposerStore.getState();
+        if (!isCurrent()) return;
         if (
           isHomeAttachmentImportCurrent(
             target,
@@ -1135,18 +1169,25 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
     selectWorkspace(prevWorkspaceId);
   }
 
-  function handleSend(): void {
+  function handleSend(origin: 'user' | 'github-connect-resume' = 'user'): void {
     const sendAccountEpoch = useWorkspaceContextStore.getState().accountEpoch;
     const {
       mode,
+      planMode: submittedPlanMode,
       workspaceId: draftWorkspaceId,
       text,
       attachments,
       branchTarget,
       branchTargets,
-      planMode: submittedPlanMode,
+      scheduledSendDraft: submittedSchedule,
       pendingAttachmentImportIds,
     } = useHomeComposerStore.getState();
+    const submittedStore = useHomeComposerStore.getState();
+    const submittedProvider = resolveHomeEffectiveProviderType(
+      draftWorkspaceId,
+      submittedStore.model,
+      submittedStore.executionHarness,
+    );
     if (!draftWorkspaceId) return;
     if (pendingAttachmentImportIds.length > 0) return;
 
@@ -1165,6 +1206,12 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
 
     // Captured before dispatch resets the draft.
     const submittedTask = snapshotHomeTask(variant);
+    const submittedWorkspace = useProjectsStore
+      .getState()
+      .projects.find((project) => project.id === draftWorkspaceId);
+    // Recorded at submit so a send that fails before its turn starts is
+    // still counted (CAN-4630).
+    if (origin === 'user') trackHomeChatSend();
     void (async (): Promise<void> => {
       const sent = await dispatchHomeSend();
       if (
@@ -1172,8 +1219,25 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
         useWorkspaceContextStore.getState().accountEpoch === sendAccountEpoch
       ) {
         clearComposerAfterSend(draftWorkspaceId);
-        // Completes any armed onboarding suggestion (see sendEvents.ts).
-        notifyHomeTaskSent({ kind: 'chat', planMode: submittedPlanMode });
+        if (
+          isGenuinePlanModeUse({
+            planMode: submittedPlanMode,
+            planAvailable: !isCoworkChatTarget(draftWorkspaceId),
+            planReadOnly: isPlanModeReadOnly(submittedProvider),
+            pipelineMode: false,
+          })
+        )
+          void getPlanModeHintStore().getState().markTried();
+        // Report accepted Home turns to the independent contextual tips.
+        notifyHomeTaskSent({
+          kind: 'chat',
+          acceptedTurn:
+            submittedSchedule === null &&
+            (text.trim().length > 0 || attachments.length > 0),
+          worktreeChat:
+            submittedWorkspace !== undefined &&
+            submittedWorkspace.type !== 'cowork',
+        });
         void maybeOfferRepeatTaskAutomation(submittedTask);
       }
     })();
@@ -1195,7 +1259,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
       store.consumeGitHubConnectResume();
       return;
     }
-    handleSend();
+    handleSend('github-connect-resume');
     useHomeComposerStore.getState().consumeGitHubConnectResume();
     // handleSend is a plain function over current store state; the nonce is
     // the effect's real trigger.
@@ -1226,6 +1290,9 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
   const heading = useHomeHeading();
   const homeComposerRef = useRef<HTMLDivElement>(null);
   const [voiceRecording, setVoiceRecording] = useState(false);
+  const [planModeHint, setPlanModeHint] = useState<PlanModeSuggestion | null>(
+    null,
+  );
 
   return (
     <div
@@ -1294,22 +1361,75 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
                   : askOwnerToChoosePlanCopy(orgWithoutPlan.organizationName)}
               </Notice>
             )}
-            {/* Grey depth overhang ABOVE the composer — mirrors the old
-                  resume strip, but frames the project/worktree/branch
-                  selectors instead of sitting under the box. `-mb-4` +
-                  `pb-5` tucks under the elevated composer while keeping a
-                  4px visible inset (`p-1`) on all sides of the pickers. */}
-            {showComposerContext && (
-              <div
-                data-testid="home-composer-context-overhang"
-                className="pointer-events-auto relative z-10 mx-4 -mb-4 rounded-t-2xl bg-depth p-1 pb-5 shadow-2xs"
+            {/* A failed send is one of the heading's notices: it hangs above
+                  the composer context, as on the web New Task hero. */}
+            {sendError && sendErrorChooseModel?.message === sendError ? (
+              // CAN-5021: a refused model keeps the whole draft in the
+              // composer; the primary action opens its model picker.
+              <FirstSendFailedNotice
+                data-testid="home-composer-error"
+                title="Couldn’t send"
+                message={sendError}
+                onChooseModel={() => requestModelPickerOpen({ scope: 'home' })}
+                focusKey={
+                  surfaceVisible && sendErrorChooseModel.focus
+                    ? sendErrorChooseModel.failureId
+                    : null
+                }
+                className="pointer-events-auto mb-3"
+              />
+            ) : sendError ? (
+              <Notice
+                data-testid="home-composer-error"
+                intent="destructive"
+                role="alert"
+                title="Couldn’t send"
+                className="pointer-events-auto mb-3"
+                actions={
+                  sendErrorRetryable ? (
+                    <NoticeButton
+                      variant="primary"
+                      data-testid="home-composer-retry"
+                      onClick={() => handleSend()}
+                    >
+                      Try again
+                    </NoticeButton>
+                  ) : undefined
+                }
               >
-                <HomeComposerContextRow visible>
+                {/* Send failures can echo git output and local paths. */}
+                <span
+                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} block max-h-24 overflow-y-auto whitespace-pre-wrap break-words`}
+                >
+                  {sendError}
+                </span>
+              </Notice>
+            ) : null}
+            {/* The composer's top drawer frames the composer's tip (the
+                  draft's plan hint, CAN-4008) and the project/worktree/branch
+                  selectors, and tucks under the elevated composer (`z-20`). */}
+            {(showComposerContext || planModeHint?.visible === true) && (
+              <ComposerDrawer
+                edge="top"
+                data-testid="home-composer-context-overhang"
+                className="pointer-events-auto z-10"
+              >
+                {planModeHint !== null ? (
+                  <PlanModeHint hint={planModeHint} />
+                ) : null}
+                <HomeComposerContextRow visible={showComposerContext}>
                   {showWorkspacePicker && (
                     <HomeWorkspacePicker
                       commandOpenSignal={workspaceCommandOpenSignal}
                       shortcutEnabled={variant === 'page'}
                       onRestoreFocus={(): void => focusEditor(editor)}
+                    />
+                  )}
+                  {showWorkspacePicker && linkProjectPreview === null && (
+                    <HomeWorkspaceSelectionReason
+                      onSwitch={(): void =>
+                        setWorkspaceCommandOpenSignal((signal) => signal + 1)
+                      }
                     />
                   )}
                   {selectionPickersVisible && showBranchPicker && (
@@ -1326,7 +1446,7 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
                           .getState()
                           .setBranchPickerRevealed(true)
                       }
-                      className="focus-ring inline-flex h-7 max-w-52 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs fg-secondary ring-1 ring-inset ring-line-base transition hover:bg-subtle hover:fg-primary"
+                      className="focus-ring inline-flex h-7 max-w-52 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:bg-subtle hover:fg-primary"
                     >
                       <span className="truncate">{collapsedBranchSummary}</span>
                       <ChevronDownMediumIcon className="h-3.5 w-3.5 shrink-0" />
@@ -1346,159 +1466,139 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
                     </div>
                   )}
                 </HomeComposerContextRow>
-              </div>
+              </ComposerDrawer>
             )}
           </>
         }
         composer={
-          <div
-            ref={homeComposerRef}
-            data-testid="home-composer"
-            className="relative z-20 w-full rounded-2xl bg-tertiary shadow-lg"
-          >
-            {/* The org gateway a member has no working key for. Home is a
+          <div>
+            <div
+              ref={homeComposerRef}
+              data-testid="home-composer"
+              className="relative z-20 w-full rounded-2xl bg-tertiary shadow-lg"
+            >
+              {/* The org gateway a member has no working key for. Home is a
  composer like any other: without this, the first thing a
  new member of an enforcing org does is send a task that
  cannot run, with nothing on screen saying why. Kept inside
  the composer box so it does not shift the vertical center
  line anchored on the composer box. */}
-            <ModelGatewayKeyBanner
-              selectedGatewayOrganizationId={selectedGatewayOrganizationId}
-            />
-            <span
-              ref={composerMenu.anchorRef}
-              aria-hidden
-              className="pointer-events-none absolute inset-0"
-            />
-            {sendError && (
-              <Notice
-                data-testid="home-composer-error"
-                intent="destructive"
-                role="alert"
-                title="Couldn’t send"
-                className="mx-4 mt-3"
-                actions={
-                  sendErrorRetryable ? (
-                    <NoticeButton
-                      variant="primary"
-                      data-testid="home-composer-retry"
-                      onClick={handleSend}
-                    >
-                      Try again
-                    </NoticeButton>
-                  ) : undefined
+              <ModelGatewayKeyBanner
+                selectedGatewayOrganizationId={selectedGatewayOrganizationId}
+              />
+              <span
+                ref={composerMenu.anchorRef}
+                aria-hidden
+                className="pointer-events-none absolute inset-0"
+              />
+              <DraftComposerEditor
+                editor={editor}
+                value={editorValue}
+                onChange={handleEditorChange}
+                onKeyDown={handleEditorKeyDown}
+                onPaste={handleEditorPaste}
+                placeholder={
+                  // While dictating, the empty box prompts for speech, as the
+                  // chat composer does.
+                  voiceRecording
+                    ? 'Start talking…'
+                    : mode === 'pipeline'
+                      ? 'Describe the task we are working on'
+                      : defaultChatPlaceholder(true, true)
                 }
-              >
-                {/* Send failures can echo git output and local paths. */}
-                <span
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} block max-h-24 overflow-y-auto whitespace-pre-wrap break-words`}
-                >
-                  {sendError}
-                </span>
-              </Notice>
-            )}
+                dataTestId="home-composer-editor"
+                disabled={editorLocked}
+              />
 
-            <DraftComposerEditor
-              editor={editor}
-              value={editorValue}
-              onChange={handleEditorChange}
-              onKeyDown={handleEditorKeyDown}
-              onPaste={handleEditorPaste}
-              placeholder={
-                // While dictating, the empty box prompts for speech, as the
-                // chat composer does.
-                voiceRecording
-                  ? 'Start talking…'
-                  : mode === 'pipeline'
-                    ? 'Describe the task we are working on'
-                    : '@ to mention, / skills and commands'
-              }
-              dataTestId="home-composer-editor"
-              disabled={editorLocked}
-            />
-
-            {mode === 'chat' && scheduledSendDraft && (
-              <div className="px-4 pt-2">
-                <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-fg-info/30 bg-info-subtle py-1 pl-2 pr-1 text-2xs fg-info">
-                  <span
-                    data-testid="home-scheduled-send-pill"
-                    className="flex min-w-0 items-center gap-1.5"
-                  >
-                    <ScheduleIcon width={13} height={13} className="shrink-0" />
-                    <span className="truncate">
-                      Scheduled send{' '}
-                      {new Date(scheduledSendDraft.runAt).toLocaleString()}
+              {mode === 'chat' && scheduledSendDraft && (
+                <div className="px-4 pt-2">
+                  <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-fg-info/30 bg-info-subtle py-1 pl-2 pr-1 text-2xs fg-info">
+                    <span
+                      data-testid="home-scheduled-send-pill"
+                      className="flex min-w-0 items-center gap-1.5"
+                    >
+                      <ScheduleIcon
+                        width={13}
+                        height={13}
+                        className="shrink-0"
+                      />
+                      <span className="truncate">
+                        Scheduled send{' '}
+                        {new Date(scheduledSendDraft.runAt).toLocaleString()}
+                      </span>
                     </span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setScheduledSendDraft(null)}
-                    aria-label="Clear scheduled send"
-                    data-testid="home-scheduled-send-pill-clear"
-                    className="focus-ring shrink-0 rounded-sm p-0.5 fg-info transition hover:bg-info-subtle"
-                  >
-                    <AppCatalogCloseIcon
-                      aria-hidden="true"
-                      width="12"
-                      height="12"
-                    />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <HomeComposerControls
-              key={`${accountEpoch}:${homeComposerContextKey(scopingContext)}`}
-              composerActionScope={composerActionScope}
-              composerMenu={composerMenu}
-              searchFiles={searchComposerFiles}
-              onSelectFile={(file) =>
-                composerMenu.insertFile(file, (fileIndex ?? []).length)
-              }
-              editor={editor}
-              disabled={composerDisabled}
-              shortcutEnabled={variant === 'page'}
-              onSend={handleSend}
-              onEditorExternallyChanged={handleEditorExternallyChanged}
-              commands={composerCommands}
-              commandsRefreshing={slashCommandsRefreshing}
-              isCodex={isCodexProvider}
-              onSelectCommand={handlePopupSelectCommand}
-              composerBoxRef={homeComposerRef}
-              onVoiceRecordingChange={setVoiceRecording}
-            />
-            {mode === 'pipeline' && taskPlanPreset && (
-              <div
-                data-testid="home-task-plan-guidance"
-                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-3"
-              >
-                <div className="inline-flex shrink-0 items-center gap-1 rounded-md bg-fg-primary/[0.06] py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
-                  <span>Task planning</span>
-                  <Tooltip label="Cancel task planning">
                     <button
                       type="button"
-                      data-testid="home-task-plan-cancel"
-                      aria-label="Cancel task planning"
-                      disabled={composerDisabled}
-                      onClick={(): void => {
-                        useHomeComposerStore.getState().setMode('chat');
-                        focusEditor(editor);
-                      }}
-                      className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-sm fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
+                      onClick={() => setScheduledSendDraft(null)}
+                      aria-label="Clear scheduled send"
+                      data-testid="home-scheduled-send-pill-clear"
+                      className="focus-ring shrink-0 rounded-sm p-0.5 fg-info transition-colors hover:bg-info-subtle"
                     >
-                      <CloseMediumIcon size={16} aria-hidden="true" />
+                      <AppCatalogCloseIcon
+                        aria-hidden="true"
+                        width="12"
+                        height="12"
+                      />
                     </button>
-                  </Tooltip>
+                  </div>
                 </div>
-                <p
-                  role="status"
-                  className="min-w-0 flex-1 basis-64 text-xs fg-secondary"
+              )}
+
+              <HomeComposerControls
+                key={`${accountEpoch}:${homeComposerContextKey(scopingContext)}`}
+                composerActionScope={composerActionScope}
+                composerMenu={composerMenu}
+                searchFiles={searchComposerFiles}
+                onSelectFile={(file) =>
+                  composerMenu.insertFile(file, (fileIndex ?? []).length)
+                }
+                editor={editor}
+                hintDraftRevision={hintDraftRevision}
+                disabled={composerDisabled}
+                shortcutEnabled={variant === 'page'}
+                onSend={() => handleSend()}
+                onEditorExternallyChanged={handleEditorExternallyChanged}
+                commands={composerCommands}
+                commandsRefreshing={slashCommandsRefreshing}
+                isCodex={isCodexProvider}
+                onSelectCommand={handlePopupSelectCommand}
+                composerBoxRef={homeComposerRef}
+                onVoiceRecordingChange={setVoiceRecording}
+                onPlanModeHintChange={setPlanModeHint}
+              />
+              {mode === 'pipeline' && taskPlanPreset && (
+                <div
+                  data-testid="home-task-plan-guidance"
+                  className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pb-3"
                 >
-                  <span className="sr-only">Task planning selected. </span>
-                  Describe your task above, then submit to generate a plan.
-                </p>
-              </div>
-            )}
+                  <div className="inline-flex shrink-0 items-center gap-1 rounded-md bg-fg-primary/[0.06] py-0.5 pl-2.5 pr-0.5 text-xs font-medium fg-secondary">
+                    <span>Task planning</span>
+                    <Tooltip label="Cancel task planning">
+                      <button
+                        type="button"
+                        data-testid="home-task-plan-cancel"
+                        aria-label="Cancel task planning"
+                        disabled={composerDisabled}
+                        onClick={(): void => {
+                          useHomeComposerStore.getState().setMode('chat');
+                          focusEditor(editor);
+                        }}
+                        className="focus-ring inline-flex h-6 w-6 items-center justify-center rounded-sm fg-secondary transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:opacity-40"
+                      >
+                        <CloseMediumIcon size={16} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  </div>
+                  <p
+                    role="status"
+                    className="min-w-0 flex-1 basis-64 text-xs fg-secondary"
+                  >
+                    <span className="sr-only">Task planning selected. </span>
+                    Describe your task above, then submit to generate a plan.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         }
         hanging={
@@ -1522,6 +1622,28 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
               {mode === 'chat' && (
                 <HomeMcpSignInStrip
                   selections={pluginSelections}
+                  ownerKey={`${workspaceId ?? ''}/${draftGeneration}/${mode}`}
+                  getSelections={(): ChatTabPluginSelections | null => {
+                    const current = useHomeComposerStore.getState();
+                    return current.workspaceId === workspaceId &&
+                      current.draftGeneration === draftGeneration &&
+                      current.mode === mode
+                      ? current.pluginSelections
+                      : null;
+                  }}
+                  onSelectionsChange={(next): boolean => {
+                    const current = useHomeComposerStore.getState();
+                    if (
+                      current.workspaceId !== workspaceId ||
+                      current.draftGeneration !== draftGeneration ||
+                      current.mode !== mode
+                    )
+                      return false;
+                    current.setPluginSelections(next);
+                    return (
+                      useHomeComposerStore.getState().pluginSelections === next
+                    );
+                  }}
                   reportUiState={variant === 'page'}
                 />
               )}
@@ -1537,13 +1659,20 @@ export function HomeSurface({ variant }: HomeSurfaceProps): JSX.Element {
                 {/* Continue leads so a returning user's way back to their
                     work stays directly below the composer (CAN-4746). */}
                 <HomeContinueSection
+                  onVisibilityChange={setContinueVisible}
                   interruptedActive={variant === 'page' && surfaceVisible}
                   isPageVariant={variant === 'page'}
                 />
 
-                {variant === 'page' && onboardingActive ? (
-                  <div ref={setOnboardingHomeHost} className="w-full" />
-                ) : null}
+                {variant === 'page' &&
+                  selectedWorkspace &&
+                  selectedWorkspace.type !== 'cowork' && (
+                    <HomeWorkspaceReadiness
+                      key={selectedWorkspace.id}
+                      workspaceId={selectedWorkspace.id}
+                      workspaceName={selectedWorkspace.name}
+                    />
+                  )}
 
                 {suggestedPrompts.length > 0 && (
                   <SuggestedPromptChips

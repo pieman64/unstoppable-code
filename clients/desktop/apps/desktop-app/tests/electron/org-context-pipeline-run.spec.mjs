@@ -191,7 +191,7 @@ async function runPlanPipeline(window, source, pipelineName) {
   await run.click();
 
   await expect(pipelineModal).toHaveCount(0, { timeout: 30_000 });
-  await expect(window.getByText(/Pipeline unavailable/)).toHaveCount(0);
+  await expect(window.getByText(/Workflow unavailable/)).toHaveCount(0);
   // Starting the run keeps the Plan panel open and brings up the worktree's
   // activity panel, where the new run's card appears.
   await expect(planPanel).toBeVisible();

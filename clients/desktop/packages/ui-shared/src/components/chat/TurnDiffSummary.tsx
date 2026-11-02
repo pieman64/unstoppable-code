@@ -138,7 +138,7 @@ export function TurnDiffSummary({
                   onClick={
                     onFileClick ? (): void => onFileClick(file.path) : undefined
                   }
-                  className="min-w-0 cursor-pointer rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition hover:bg-fg-primary/[0.04]"
+                  className="min-w-0 cursor-pointer rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
                   data-file-status={file.status}
                   data-file-path={file.path}
                 >

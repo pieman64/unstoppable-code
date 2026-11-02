@@ -1,3 +1,4 @@
+import type { DesktopSettingsDeepLinkSection } from '@canopy/protocol/share-deep-link';
 import { settingsRouteToPath } from '@canopy/protocol/settings';
 import type { SettingsRoute } from '@canopy/protocol/settings';
 import type { SettingsSection } from '@/components/settings/SettingsNav';
@@ -11,6 +12,7 @@ import {
   openAuthenticatedCloudPage,
   openAuthenticatedCloudPageReported,
 } from '@/lib/openAuthenticatedCloudPage';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 
 /**
@@ -183,6 +185,61 @@ export function openAccountOrganizationPage(
   }
   openAuthenticatedCloudPage(settingsRouteToPath(route));
   return 'web';
+}
+
+/**
+ * Longest a settings deep link waits for a configured LaunchDarkly's first
+ * answer: main's 5-second start timeout plus a margin for the broadcast.
+ */
+export const SETTINGS_DEEP_LINK_FLAG_WAIT_MS = 6_000;
+
+let cancelPendingDeepLink: (() => void) | null = null;
+
+/** Drops a settings deep link still waiting for the first flag answer. */
+export function cancelPendingSettingsDeepLink(): void {
+  cancelPendingDeepLink?.();
+  cancelPendingDeepLink = null;
+}
+
+/**
+ * Opens the Settings section a validated web deep link names. Organizations
+ * (CAN-5111, from the invite lander) is a hosted page, so without hosted
+ * settings in this window it opens the signed-in web list instead. A newer
+ * link replaces one still waiting.
+ */
+export function openSettingsDeepLink(
+  section: DesktopSettingsDeepLinkSection,
+): void {
+  cancelPendingSettingsDeepLink();
+  if (section !== 'organizations') {
+    useNavigationStore.getState().openSettings(section);
+    return;
+  }
+  const open = (): void => {
+    openAccountOrganizationPage({ scope: 'organizations' });
+  };
+  if (
+    hostedSettingsOpenable() ||
+    useFeatureFlagsStore.getState().snapshot.status !== 'initializing'
+  ) {
+    open();
+    return;
+  }
+  // A link that cold-starts the app can arrive before LaunchDarkly answers,
+  // while the hosted-settings flag reads off. Wait for that answer instead
+  // of sending someone who just left the browser back to it.
+  const finish = (): void => {
+    cancelPendingSettingsDeepLink();
+    open();
+  };
+  const unsubscribe = useFeatureFlagsStore.subscribe((state) => {
+    if (state.snapshot.status !== 'initializing') finish();
+  });
+  const timer = setTimeout(finish, SETTINGS_DEEP_LINK_FLAG_WAIT_MS);
+  cancelPendingDeepLink = (): void => {
+    clearTimeout(timer);
+    unsubscribe();
+  };
 }
 
 /**

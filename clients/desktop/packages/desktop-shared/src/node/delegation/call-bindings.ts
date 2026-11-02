@@ -85,9 +85,14 @@ export class DelegationCallBindings {
     if (signal.aborted) this.dispose();
   }
 
+  /**
+   * `anchor` supplies the card's message at the time of this call: the owner
+   * key ignores it, so one turn's calls can anchor to different messages.
+   */
   bind(
     toolCallId: string,
     request: AgentDelegationSpawnRequest,
+    anchor: Pick<DelegationParentOwner, 'userMessageId'> = this.owner,
   ): AgentDelegationResult<string> {
     if (
       this.disposed ||
@@ -127,7 +132,11 @@ export class DelegationCallBindings {
     const binding = {
       token,
       requestKey: fingerprint,
-      context: Object.freeze({ ...this.owner, toolCallId }),
+      context: Object.freeze({
+        ...this.owner,
+        userMessageId: anchor.userMessageId,
+        toolCallId,
+      }),
     };
     this.byCall.set(toolCallId, binding);
     this.byToken.set(token, binding);

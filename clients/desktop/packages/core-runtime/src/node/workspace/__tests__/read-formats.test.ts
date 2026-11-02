@@ -29,6 +29,7 @@ describe('portable workspace read formats', () => {
         raw: null,
         document: undefined,
         rawEntriesById: new Map(),
+        rawEntries: [],
         unreadableEntries: [],
       });
       expect(readWorkspaceManifest(input)).toEqual({ authority: input.state });
@@ -107,12 +108,25 @@ describe('portable workspace read formats', () => {
             activitySectionOrder: undefined,
           },
         ],
-        rawEntriesById: new Map([
+        rawEntriesById: new Map<string, Record<string, unknown>>([
           ['z', first],
           ['a', other],
         ]),
+        rawEntries: [first, other, duplicate],
         unreadableEntries: [],
       });
+    },
+  );
+
+  it.each([undefined, '', '   ', '  Vendor Spend Q3  '])(
+    'normalizes optional Cowork display names consistently for sidebar and filesystem readers (%j)',
+    (name) => {
+      const read = readWorkspaceIndex(
+        present({ version: 1, workspaces: [{ ...row, name }] }),
+        sections,
+      );
+      expect(read.authority).toBe('ok');
+      expect(read.entries[0]?.name).toBe(name?.trim() ?? '');
     },
   );
 
@@ -127,6 +141,7 @@ describe('portable workspace read formats', () => {
     const read = readWorkspaceIndex(present(document), sections);
     expect(read.authority).toBe('partial');
     expect(read.unreadableEntries).toEqual([unknownRow]);
+    expect(read.rawEntries).toEqual([row]);
     expect(read.entries).toEqual([
       { ...row, collapsed: false, order: 0, activitySectionOrder: undefined },
     ]);
@@ -146,6 +161,7 @@ describe('portable workspace read formats', () => {
         raw: null,
         document: undefined,
         rawEntriesById: new Map(),
+        rawEntries: [],
         unreadableEntries: [],
       });
     },

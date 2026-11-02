@@ -25,6 +25,7 @@ import {
   createSettingsOrchestratedOperations,
   createSettingsWriteFollowUps,
 } from './account-organization-settings-orchestration';
+import { createInvitationSettingsWriteObserver } from './invitation-settings-telemetry';
 
 let service: AccountOrganizationSettingsService | undefined;
 
@@ -54,6 +55,7 @@ export function getAccountOrganizationSettingsService(): AccountOrganizationSett
     paymentHandoffAvailable: isPaymentHandoffAvailable,
     resolveOrchestrated: createSettingsOrchestratedOperations(),
     resolveWriteFollowUp: createSettingsWriteFollowUps(),
+    observeWrite: createInvitationSettingsWriteObserver(),
   });
   return service;
 }

@@ -526,7 +526,12 @@ test('Stop then Dismiss during a capacity read keeps the interrupted chat stoppe
     const modal = window.getByTestId('resume-queue-modal');
     hold = true;
     if (!(await modal.isVisible())) {
-      const openQueue = window.getByTestId('resume-queue-sidebar');
+      // A single-session chip opens its chat; its trailing action opens the
+      // queue.
+      await expect(window.getByTestId('resume-queue-sidebar')).toContainText(
+        'Stopped quota recovery',
+      );
+      const openQueue = window.getByTestId('resume-queue-sidebar-open-queue');
       await expect(openQueue).toBeVisible();
       await expect(openQueue).toBeEnabled();
       // Hidden Linux windows do not advance the frames used by click's
@@ -665,7 +670,7 @@ for (const location of ['project', 'local']) {
       });
       const expectedName =
         location === 'local'
-          ? 'Local pipelines'
+          ? 'Local workflows'
           : JSON.parse(
               readFileSync(
                 path.join(userDataDir, 'workspaces', 'index.json'),
@@ -692,7 +697,15 @@ for (const location of ['project', 'local']) {
       if (!(await modal.isVisible())) {
         await expect(button).toBeVisible();
         await expect(button).toBeEnabled();
-        await button.click({ force: true });
+        // The single-session chip opens its session (here the pipeline run);
+        // its trailing action opens the queue.
+        await expect(
+          window.getByTestId('resume-queue-sidebar-title'),
+        ).toContainText('Recovered pipeline label');
+        const openQueue = window.getByTestId('resume-queue-sidebar-open-queue');
+        await expect(openQueue).toBeVisible();
+        await expect(openQueue).toBeEnabled();
+        await openQueue.click({ force: true });
       }
       await expect(
         modal.locator('li').filter({ hasText: 'Recovered pipeline label' }),

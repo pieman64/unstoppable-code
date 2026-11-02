@@ -29,6 +29,8 @@
     "packages/core-transport/src/**/*.tsx",
     "packages/core-client/src/**/*.ts",
     "packages/core-client/src/**/*.tsx",
+    "packages/code-graph/src/**/*.ts",
+    "packages/code-graph/src/**/*.tsx",
     "packages/desktop-shared/src/**/*.ts",
     "packages/desktop-shared/src/**/*.tsx",
     "packages/desktop-instrumentation/src/**/*.ts",

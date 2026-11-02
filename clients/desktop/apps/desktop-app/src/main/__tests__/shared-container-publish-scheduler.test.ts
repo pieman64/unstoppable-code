@@ -1,9 +1,13 @@
 import { CanopyCloudClientError } from '../canopy-cloud/client';
-import { SharedContainerPublicationStateStore } from '../shared-containers/publication-state';
+import {
+  SharedContainerPublicationStateStore,
+  type SharedContainerPublicationRecord,
+} from '../shared-containers/publication-state';
 import {
   SharedContainerPublishScheduler,
   SHARED_CONTAINER_PUBLISH_IDLE_DEBOUNCE_MS,
   classifySharedContainerPublishFailure,
+  type SharedContainerPublishTarget,
 } from '../shared-containers/publish/scheduler';
 import { SharedContainerPublishInventoryChangedError } from '../shared-containers/publish/source-files';
 
@@ -17,6 +21,42 @@ describe('shared-container publish scheduler', () => {
   };
 
   afterEach(() => jest.useRealTimers());
+
+  it('bounds package recovery after successful degraded publications and resumes it after restart', async () => {
+    jest.useFakeTimers();
+    let state: SharedContainerPublicationRecord = {
+      ...target,
+      status: 'published',
+      updatedAt: 'now',
+      packageRecoveryPending: true,
+      packageRecoveryAttempts: 1,
+    };
+    const stateStore = new SharedContainerPublicationStateStore();
+    jest
+      .spyOn(stateStore, 'get')
+      .mockImplementation(() => Promise.resolve(state));
+    const publish = jest.fn(() => {
+      state = {
+        ...state,
+        packageRecoveryAttempts: (state.packageRecoveryAttempts ?? 0) + 1,
+      };
+      return Promise.resolve(state);
+    });
+    const scheduler = new SharedContainerPublishScheduler({
+      publish,
+      stateStore,
+      hasAudience: (): Promise<boolean> => Promise.resolve(true),
+      random: (): number => 0,
+      pruneStaging: (): Promise<void> => Promise.resolve(),
+    });
+    await scheduler.recover([state]);
+    expect(publish).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(publish).toHaveBeenCalledTimes(4);
+    expect(jest.getTimerCount()).toBe(0);
+    await scheduler.recover([state]);
+    expect(publish).toHaveBeenCalledTimes(4);
+  });
 
   it('schedules known code publications and collapses repeated activity', async () => {
     jest.useFakeTimers();
@@ -272,18 +312,21 @@ describe('shared-container publish scheduler', () => {
   it('does not coalesce a replacement container into an in-flight old target', async () => {
     jest.useFakeTimers();
     let resolveOldPublish!: () => void;
-    let currentState = {
+    let currentState: SharedContainerPublicationRecord = {
       ...target,
       status: 'not-published' as const,
       updatedAt: 'now',
     };
     const replacement = { ...target, containerId: 'container-2' };
-    const publish = jest.fn((scheduled: typeof target) => {
+    const publish = jest.fn<
+      Promise<SharedContainerPublicationRecord>,
+      [scheduled: SharedContainerPublishTarget]
+    >((scheduled): Promise<SharedContainerPublicationRecord> => {
       if (scheduled.containerId !== target.containerId) {
-        return Promise.resolve();
+        return Promise.resolve(currentState);
       }
-      return new Promise<void>((resolve) => {
-        resolveOldPublish = resolve;
+      return new Promise<SharedContainerPublicationRecord>((resolve) => {
+        resolveOldPublish = (): void => resolve(currentState);
       });
     });
     const scheduler = new SharedContainerPublishScheduler({

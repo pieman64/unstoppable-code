@@ -38,7 +38,7 @@ import {
   type SharedContainerEligibilityResponse,
   type SharedContainerForkProvenance,
   type SharedContainerForkRequest,
-  type SharedContainerForkResponse,
+  type SharedContainerForkResult,
   type SharedContainerPrepareGithubRequest,
   type SharedContainerPrepareGithubResponse,
   type SharedContainerPublicationState,
@@ -151,17 +151,36 @@ import {
   refreshSharedContainerRunCopy,
 } from '../shared-containers/run/run-copy';
 import { stopWorktreeScripts } from '../services/scripts-service';
-import { ptyManager } from '../terminal/pty-manager';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { listTrackedShellScriptsForWorktree } from '../lib/script-runner';
 import { forkSharedContainer } from '../shared-containers/fork';
+import { recoverForkCapabilityInstalls } from '../shared-containers/capability-package/install';
+import { isCapabilityPackageDigest } from '@canopy/protocol/pipelines';
+import {
+  SharedContainerForkError,
+  forkSourceNotAccepted,
+  validateForkDestination,
+} from '../shared-containers/fork/destination';
 import {
   getSharedContainerForkProvenancePath,
   readSharedContainerForkProvenance,
 } from '../shared-containers/fork/provenance';
 import { sendToWebContents } from '../lib/web-contents-send';
+import {
+  recordInviteSendTelemetry,
+  recordInviteAcceptTelemetry,
+} from '../lib/desktop-telemetry';
 
 const grantMutationTails = new Map<string, Promise<void>>();
 const activeRunCopyRefreshRequests = new Set<string>();
+
+function telemetryContainerType(
+  value: unknown,
+): 'WORKTREE' | 'COWORK' | 'CLOUD_CHAT' | undefined {
+  if (value === 'CODE_WORKTREE') return 'WORKTREE';
+  if (value === 'COWORK_WORK_ENTRY') return 'COWORK';
+  return value === 'CLOUD_CHAT' ? 'CLOUD_CHAT' : undefined;
+}
 
 function recordSharedContainerPreviewFailure(
   request: SharedContainerPreviewRequest,
@@ -377,10 +396,10 @@ function assertSharedContainerRunEnabled(): void {
 async function stopSharedContainerProcesses(
   containerId: string,
 ): Promise<void> {
-  ptyManager.killWorktreeTerminals(
-    SHARED_CONTAINER_VIEWER_PROJECT_ID,
-    containerId,
-  );
+  workerTerminal.killWorktree({
+    projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+    worktreeId: containerId,
+  });
   await stopWorktreeScripts({
     projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
     worktreeId: containerId,
@@ -573,6 +592,14 @@ export function registerSharedContainerHandlers(): void {
         error,
       ),
     );
+  // A crash between fork capability installation steps leaves a journal. The
+  // installer finishes it when the ledger committed, or undoes its own objects.
+  void recoverForkCapabilityInstalls().catch((error: unknown) =>
+    logMainProcessWarn(
+      '[shared-containers] failed to recover fork capability installs',
+      error,
+    ),
+  );
   const reconciliation = getSharedContainerReconciliationService();
   const reader = getSharedContainerReader();
   reconciliation.onChanged((state) => {
@@ -997,13 +1024,35 @@ export function registerSharedContainerHandlers(): void {
           request,
           organizationId,
           serverWorktreeExternalId,
-          () =>
-            createSharedContainerGrant({
+          async () => {
+            const created = await createSharedContainerGrant({
               ...(organizationId !== undefined ? { organizationId } : {}),
               worktreeId: serverWorktreeExternalId,
               recipient,
               capabilities: request.capabilities,
-            }),
+            });
+            // The server has committed the grant, even if later publication fails.
+            try {
+              const containerType = telemetryContainerType(
+                request.containerType,
+              );
+              if (containerType !== undefined)
+                recordInviteSendTelemetry({
+                  inviteType: 'teammate_share',
+                  inviteId: created.container.id,
+                  grantId: created.grant.id,
+                  recipientKind: recipient.kind,
+                  sendSurface: 'share_dialog',
+                  shareAudience:
+                    request.audience ??
+                    (recipient.kind === 'email' ? 'public' : 'organization'),
+                  containerType,
+                });
+            } catch {
+              /* Telemetry cannot turn a committed grant into a retry. */
+            }
+            return created;
+          },
         );
       } catch (error) {
         // Network/timeout, invalid-response, 5xx, and conflict outcomes may have
@@ -1271,6 +1320,13 @@ export function registerSharedContainerHandlers(): void {
       request.organizationId,
       undefined,
       request.access,
+      () =>
+        recordInviteAcceptTelemetry({
+          inviteType: 'teammate_share',
+          inviteId: request.containerId,
+          acceptSurface: 'desktop_share_accept',
+          containerType: telemetryContainerType(request.containerType),
+        }),
     );
     return { accepted: true, record };
   });
@@ -1302,10 +1358,10 @@ export function registerSharedContainerHandlers(): void {
         projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
         worktreeId: request.containerId,
       }).length > 0 ||
-      ptyManager.hasWorktreeTerminals(
-        SHARED_CONTAINER_VIEWER_PROJECT_ID,
-        request.containerId,
-      );
+      workerTerminal.hasLiveTerminals({
+        projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+        worktreeId: request.containerId,
+      });
     return {
       allowed: acceptance?.runAllowedAt !== undefined,
       ...(acceptance?.runAllowedAt
@@ -1425,10 +1481,10 @@ export function registerSharedContainerHandlers(): void {
           });
           const hasRunning =
             scripts.length > 0 ||
-            ptyManager.hasWorktreeTerminals(
-              SHARED_CONTAINER_VIEWER_PROJECT_ID,
-              request.containerId,
-            );
+            workerTerminal.hasLiveTerminals({
+              projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+              worktreeId: request.containerId,
+            });
           if (hasRunning && request.stopRunning !== true) {
             throw new Error(
               'Stop shared-container processes before refreshing.',
@@ -1495,7 +1551,7 @@ export function registerSharedContainerHandlers(): void {
     async (_event, request) => openSharedContainerViewer(request, false),
   );
 
-  registerIpcHandler<[SharedContainerForkRequest], SharedContainerForkResponse>(
+  registerIpcHandler<[SharedContainerForkRequest], SharedContainerForkResult>(
     IPC_CHANNELS.sharedContainersFork,
     async (_event, request) => {
       assertSharedContainersEnabled();
@@ -1510,25 +1566,27 @@ export function registerSharedContainerHandlers(): void {
         throw new Error('Invalid sourceOwnerDisplayName');
       }
       if (
-        !request.destination ||
-        (request.destination.kind !== 'existing-workspace' &&
-          request.destination.kind !== 'new-workspace')
+        request.expectedPackageDigest !== undefined &&
+        !isCapabilityPackageDigest(request.expectedPackageDigest)
       ) {
-        throw new Error('Invalid fork destination');
+        throw new Error('Invalid fork expectedPackageDigest');
       }
-      if (request.destination.kind === 'existing-workspace') {
-        validateId(request.destination.workspaceId, 'workspaceId');
-      } else if (
-        request.destination.parentDirectory !== undefined &&
-        typeof request.destination.parentDirectory !== 'string'
-      ) {
-        throw new Error('Invalid fork parentDirectory');
+      try {
+        const destination = validateForkDestination(request.destination);
+        if (!(await isSharedContainerAccepted(request.containerId))) {
+          throw forkSourceNotAccepted();
+        }
+        return await forkSharedContainer({
+          ...request,
+          destination,
+          sourceOwnerDisplayName: request.sourceOwnerDisplayName.trim(),
+        });
+      } catch (error) {
+        if (error instanceof SharedContainerForkError) {
+          return { ok: false, code: error.code, message: error.message };
+        }
+        throw error;
       }
-      await assertSharedContainerAccepted(request.containerId);
-      return forkSharedContainer({
-        ...request,
-        sourceOwnerDisplayName: request.sourceOwnerDisplayName.trim(),
-      });
     },
   );
 

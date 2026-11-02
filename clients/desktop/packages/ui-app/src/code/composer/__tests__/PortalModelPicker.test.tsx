@@ -21,7 +21,10 @@ import type {
   AgentExecutionHarness,
   ModelLibraryAccess,
 } from '@canopy/protocol/models';
-import { PortalModelPicker } from '../PortalModelPicker';
+import {
+  PortalModelPicker,
+  type PortalModelPickerProps,
+} from '../PortalModelPicker';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -180,12 +183,15 @@ describe('PortalModelPicker', () => {
     providerType?: string;
     providerAvailability?: PortalChatProviderAvailability;
     capturedHarness?: AgentExecutionHarness;
+    selectedHarness?: AgentExecutionHarness;
     brandDisplayName?: string;
     autoOption?: ModelPickerAutoOption;
     modelLibrary?: {
       access: ModelLibraryAccess;
       onUnlock: (modelId?: string) => void;
     };
+    libraryAccess?: ModelLibraryAccess;
+    rowReadiness?: PortalModelPickerProps['rowReadiness'];
     onSelect: (modelId: string) => void;
   }): void {
     const { catalog: mountCatalog = catalog, ...rest } = props;
@@ -815,7 +821,7 @@ describe('PortalModelPicker', () => {
             !el.closest('[hidden]'),
         );
         expect(row).toBeDefined();
-        expect(row?.textContent).not.toContain('AI credits');
+        expect(row?.textContent).not.toContain('AI Credits');
         expect(row?.querySelector('[aria-label="AI Credits only"]')).toBeNull();
         act(() => {
           row?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -1062,12 +1068,14 @@ describe('PortalModelPicker', () => {
     }
 
     it.each([
-      ['needs_sign_in', 'Unlock with sign-in'],
+      ['needs_sign_in', 'Unlock with sign-in', 'Sign in'],
       [
         'needs_sign_in_then_purchase',
         'Unlock with sign-in and AI Credit purchase',
+        // CAN-5213: the visible label names both steps.
+        'Sign in and buy',
       ],
-    ] as const)('labels %s rows with Sign in', (access, hint) => {
+    ] as const)('labels %s rows with %s', (access, hint, label) => {
       const onUnlock = jest.fn();
       const onSelect = jest.fn();
       mount({
@@ -1077,11 +1085,50 @@ describe('PortalModelPicker', () => {
       });
       openMenu();
       const row = optionById('opus');
-      expect(lockLabel(row)?.textContent).toBe('Sign in');
+      expect(lockLabel(row)?.textContent).toBe(label);
       expect(row?.textContent).toContain(hint);
       expect(lockLabel(optionById('gpt-5.6-terra'))).toBeNull();
       click(row ?? null);
       expect(onUnlock).toHaveBeenCalledWith('opus');
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('retains the chosen OpenCode harness when a locked row starts recovery', () => {
+      const onUnlock = jest.fn();
+      const onSelect = jest.fn();
+      mount({
+        catalog: lockedCatalog.map((row) =>
+          row.id === 'opus'
+            ? {
+                ...row,
+                harnessChoices: [
+                  {
+                    harness: 'opencode',
+                    provider: 'opencode',
+                    supportedThinkingLevels: [],
+                    supportsImages: false,
+                    supportsFastMode: false,
+                    contextWindow: 64_000,
+                    funding: 'ai-credits',
+                  },
+                ],
+              }
+            : row,
+        ),
+        providerAvailability: { claude: true, opencode: true },
+        modelLibrary: { access: 'needs_purchase', onUnlock },
+        onSelect,
+      });
+      openMenu();
+      const tab = document.querySelector(
+        '[data-testid="portal-chat-model-harness-tab-opencode"]',
+      );
+      expect(tab).not.toBeNull();
+      click(tab);
+      const row = optionById('opus');
+      expect(row?.getAttribute('data-locked')).toBe('true');
+      click(row ?? null);
+      expect(onUnlock).toHaveBeenCalledWith('opus', 'opencode');
       expect(onSelect).not.toHaveBeenCalled();
     });
 
@@ -1134,6 +1181,135 @@ describe('PortalModelPicker', () => {
       expect(lockLabel(optionById('opus'))).toBeNull();
       click(optionById('opus') ?? null);
       expect(onSelect).toHaveBeenCalledWith('opus');
+    });
+
+    describe('availability cues (CAN-5213)', () => {
+      const gatewayCatalog: ModelCatalog = [
+        ...lockedCatalog,
+        {
+          id: 'deepseek-v4-pro',
+          label: 'DeepSeek V4 Pro',
+          provider: 'codex',
+          source: 'ai-gateway',
+          harness: 'codex',
+          vendor: 'deepseek',
+          kind: 'model',
+          available: true,
+          libraryEligibility: 'available',
+        },
+      ];
+
+      function available(row: Element | undefined): boolean {
+        return row?.getAttribute('data-available') === 'true';
+      }
+
+      it('never infers Available from library eligibility alone', () => {
+        mount({
+          catalog: gatewayCatalog,
+          modelLibrary: { access: 'needs_sign_in', onUnlock: jest.fn() },
+          onSelect: jest.fn(),
+        });
+        openMenu();
+        expect(document.querySelector('[data-available]')).toBeNull();
+        expect(lockLabel(optionById('deepseek-v4-pro'))).toBeNull();
+      });
+
+      it('makes no claim while readiness is unknown', () => {
+        mount({
+          catalog: gatewayCatalog,
+          modelLibrary: { access: 'needs_sign_in', onUnlock: jest.fn() },
+          rowReadiness: {
+            usableNow: () => 'unknown',
+            creditsSufficient: 'unknown',
+            dailyCreditsOn: 'unknown',
+            onTurnOnDailyCredits: jest.fn(),
+          },
+          onSelect: jest.fn(),
+        });
+        openMenu();
+        expect(document.querySelector('[data-available]')).toBeNull();
+        expect(lockLabel(optionById('deepseek-v4-pro'))).toBeNull();
+      });
+
+      it('marks settled usable rows Available and selects them', () => {
+        const onSelect = jest.fn();
+        mount({
+          catalog: gatewayCatalog,
+          modelLibrary: { access: 'needs_sign_in', onUnlock: jest.fn() },
+          rowReadiness: {
+            usableNow: (id) => (id === 'deepseek-v4-pro' ? 'yes' : 'unknown'),
+            creditsSufficient: 'yes',
+            dailyCreditsOn: 'no',
+          },
+          onSelect,
+        });
+        openMenu();
+        const row = optionById('deepseek-v4-pro');
+        expect(available(row)).toBe(true);
+        // The library lock still wins on its own row.
+        expect(available(optionById('opus'))).toBe(false);
+        expect(lockLabel(optionById('opus'))?.textContent).toBe('Sign in');
+        click(row ?? null);
+        expect(onSelect).toHaveBeenCalledWith('deepseek-v4-pro');
+      });
+
+      const UNFUNDED = {
+        usableNow: () => 'no' as const,
+        creditsSufficient: 'no' as const,
+        dailyCreditsOn: 'no' as const,
+      };
+
+      it('offers no daily-credit lock without a host recovery', () => {
+        mount({
+          catalog: gatewayCatalog,
+          modelLibrary: { access: 'needs_sign_in', onUnlock: jest.fn() },
+          rowReadiness: UNFUNDED,
+          onSelect: jest.fn(),
+        });
+        openMenu();
+        expect(lockLabel(optionById('deepseek-v4-pro'))).toBeNull();
+      });
+
+      it('asks for daily credits when the host can turn them on', () => {
+        const onTurnOnDailyCredits = jest.fn();
+        const onSelect = jest.fn();
+        const readiness = UNFUNDED;
+        mount({
+          catalog: gatewayCatalog,
+          modelLibrary: { access: 'needs_sign_in', onUnlock: jest.fn() },
+          rowReadiness: { ...readiness, onTurnOnDailyCredits },
+          onSelect,
+        });
+        openMenu();
+        const row = optionById('deepseek-v4-pro');
+        expect(lockLabel(row)?.textContent).toBe('Needs free daily credits');
+        expect(row?.textContent).toContain(
+          'Turn on free daily credits to use this model.',
+        );
+        click(row ?? null);
+        expect(onTurnOnDailyCredits).toHaveBeenCalledTimes(1);
+        // The same model and harness recovery would carry for a library lock.
+        expect(onTurnOnDailyCredits).toHaveBeenCalledWith(
+          'deepseek-v4-pro',
+          'codex',
+        );
+        expect(onSelect).not.toHaveBeenCalled();
+      });
+
+      it('adds no cue for an unlocked viewer', () => {
+        mount({
+          catalog: gatewayCatalog,
+          modelLibrary: { access: 'unlocked', onUnlock: jest.fn() },
+          rowReadiness: {
+            usableNow: () => 'yes',
+            creditsSufficient: 'yes',
+            dailyCreditsOn: 'yes',
+          },
+          onSelect: jest.fn(),
+        });
+        openMenu();
+        expect(document.querySelector('[data-available]')).toBeNull();
+      });
     });
 
     it('turns Auto into the recovery action while locked', () => {
@@ -1223,11 +1399,13 @@ describe('PortalModelPicker', () => {
             );
             expect(autoRow()?.getAttribute('aria-disabled')).toBe('true');
             expect(autoRow()?.textContent).toContain(
-              MODEL_PICKER_AUTO_REASONS.tooFewCandidates,
+              harness === 'opencode'
+                ? MODEL_PICKER_AUTO_REASONS.unsupportedHarness
+                : MODEL_PICKER_AUTO_REASONS.tooFewCandidates,
             );
             click(autoRow());
             expect(onSelectAuto).not.toHaveBeenCalled();
-            click(optionById('opus'));
+            click(optionById('opus') ?? null);
             expect(onSelect).toHaveBeenCalledWith(`${harness}:opus`);
           },
         );
@@ -1336,6 +1514,17 @@ describe('PortalModelPicker', () => {
         ?.textContent ?? ''
     );
   }
+
+  it('adds no credits tag for pre-purchase access on its flat rows (CAN-5028)', () => {
+    // The Portal list carries no credits tag today, so the free label has
+    // nothing to replace here; rows never gain a tag from access alone.
+    mount({ libraryAccess: 'needs_purchase', onSelect: jest.fn() });
+    openMenu();
+    expect(
+      document.querySelector('[data-testid^="portal-chat-model-row-credits-"]'),
+    ).toBeNull();
+    expect(document.body.textContent).not.toContain('Free AI Credits');
+  });
 
   it('labels the trigger with the selected model and renders provider + agent sections on open', () => {
     mount({ currentModel: 'opus', onSelect: () => {} });
@@ -1586,6 +1775,89 @@ describe('PortalModelPicker', () => {
 
   // An OpenCode row exactly as the desktop projects it: the discovered managed
   // model, grouped under the OpenCode provider, with no thinking chip.
+  it('can leave an empty OpenCode selection for a native model without a managed route', () => {
+    const onSelect = jest.fn();
+    mount({
+      selectedHarness: 'opencode',
+      currentModel: 'opencode:fixture%2Fmodel',
+      providerAvailability: { opencode: true, claude: true },
+      onSelect,
+      catalog: [
+        opencodeRow,
+        ...catalog,
+        {
+          id: 'managed',
+          label: 'Managed',
+          provider: 'codex',
+          source: 'ai-gateway',
+          harness: 'codex',
+          kind: 'model',
+          available: true,
+          harnessChoices: [
+            {
+              harness: 'opencode',
+              provider: 'opencode',
+              supportedThinkingLevels: [],
+              supportsImages: false,
+              supportsFastMode: false,
+              contextWindow: 64_000,
+              funding: 'ai-credits',
+            },
+          ],
+        },
+      ],
+    });
+    openMenu();
+    const tab = document.querySelector(
+      '[data-testid="portal-chat-model-harness-tab-claude"]',
+    );
+    expect(tab).not.toBeNull();
+    click(tab);
+    click(optionById('opus') ?? null);
+    expect(onSelect).toHaveBeenCalledWith('opus', 'claude');
+  });
+
+  it('selects an advertised OpenCode choice without changing the model identity', () => {
+    const picks = jest.fn();
+    const row = {
+      id: 'native-model',
+      label: 'Native model',
+      provider: 'codex' as const,
+      source: 'codex' as const,
+      kind: 'model' as const,
+      available: true,
+      supportsFastMode: true,
+      supportedThinkingLevels: ['high' as const],
+      harnessChoices: [
+        { harness: 'codex' as const, provider: 'codex' as const },
+        {
+          harness: 'opencode' as const,
+          provider: 'opencode' as const,
+          supportedThinkingLevels: [],
+          supportsFastMode: false,
+          supportsImages: false,
+          contextWindow: 64_000,
+          funding: 'ai-credits' as const,
+        },
+      ],
+    };
+    mount({
+      catalog: [row],
+      providerAvailability: { codex: false, opencode: true },
+      onSelect: picks,
+    });
+    openMenu();
+    const tab = document.querySelector(
+      '[data-testid="portal-chat-model-harness-tab-opencode"]',
+    );
+    expect(tab).not.toBeNull();
+    click(tab);
+    const option = optionById('native-model');
+    expect(option?.getAttribute('aria-disabled')).toBe('false');
+    click(option ?? null);
+    expect(picks).toHaveBeenCalledWith('native-model', 'opencode');
+  });
+
   const opencodeRow: ModelCatalog[number] = {
     id: 'opencode:fixture%2Fmodel',
     label: 'OpenCode default',
@@ -1897,7 +2169,7 @@ describe('PortalModelPicker', () => {
       ).toEqual(['deepseek-v4-pro', 'kimi-k3', 'aurora-lite']);
       // The tabbed browser labels credit billing independently of grouping.
       expect(optionById('deepseek-v4-pro')?.textContent).toContain(
-        'AI credits',
+        'AI Credits',
       );
       expect(optionById('kimi-k3')?.textContent).not.toContain('$');
     });
@@ -1979,7 +2251,7 @@ describe('PortalModelPicker', () => {
       openMenu();
       const row = optionById('deepseek-v4-pro');
       expect(row?.getAttribute('aria-disabled')).toBe('false');
-      expect(row?.textContent).toContain('AI credits');
+      expect(row?.textContent).toContain('AI Credits');
       const detail = detailTextFor('deepseek-v4-pro');
       expect(detail).toContain('Extra charge only');
       expect(detail).toContain('Billed to AI Credits.');

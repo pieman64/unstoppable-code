@@ -19,7 +19,7 @@ import {
   type McpTestConnectionOutcome,
 } from '@canopy/ui-app/capability';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { extractIpcErrorMessage } from '@/lib/errors';
+import { withIpcErrorMessage } from '@/lib/ipcErrorMessage';
 import type { AccountMcpActions } from '@/hooks/useAccountMcpActions';
 import {
   AccountMcpCredentialDialog,
@@ -38,15 +38,6 @@ import {
   promoteCustomMcpServer,
   requireCapturedMcpAccount,
 } from './mcpManagementOperations';
-
-/** The shared sections show thrown messages verbatim; drop Electron's IPC wrapper. */
-async function withIpcErrorMessage<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    throw new Error(extractIpcErrorMessage(error));
-  }
-}
 
 /** Host lifecycle stays here; both hosts render the same feature sections. */
 export function DesktopMcpManagementSections({

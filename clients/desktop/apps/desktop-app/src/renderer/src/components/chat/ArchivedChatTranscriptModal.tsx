@@ -1,4 +1,4 @@
-import { TranscriptPagingControls } from '@canopy/ui-shared/components';
+import { Button, TranscriptPagingControls } from '@canopy/ui-shared/components';
 import {
   installTranscriptPage,
   TRANSCRIPT_PAGE_LOAD_ERROR,
@@ -59,8 +59,6 @@ export interface ArchivedChatTranscriptModalProps {
   noEnterAnimation?: boolean;
 }
 
-const headerActionClass =
-  'inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50';
 const transcriptLoadRetryDelaysMs = [0, 150, 400, 900];
 
 /**
@@ -110,14 +108,6 @@ export function ArchivedChatTranscriptModal({
     useCallback((): Promise<ShareRunEligibilityResponse> => {
       return checkShareEligibility(projectId, worktreeId, summary.chatId);
     }, [checkShareEligibility, projectId, worktreeId, summary.chatId]);
-
-  const handleShareRunDone = useCallback(
-    // The share dialog raises the success toast (with the link) itself.
-    (): void => {
-      setShareRunOpen(false);
-    },
-    [],
-  );
 
   const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -316,12 +306,12 @@ export function ArchivedChatTranscriptModal({
       headerActions={
         <>
           {summary.restorable && (
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={onRestore}
               disabled={busy}
               data-testid="archived-chat-transcript-restore"
-              className={`${headerActionClass} fg-accent hover:bg-accent-subtle`}
             >
               {restoring ? (
                 <LoadingSpinner />
@@ -329,14 +319,13 @@ export function ArchivedChatTranscriptModal({
                 <UnarchiveIcon width={16} height={16} />
               )}
               <span>Restore</span>
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onSummarize}
             disabled={busy}
             data-testid="archived-chat-transcript-summarize"
-            className={`${headerActionClass} fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary`}
           >
             {summarizing ? (
               <LoadingSpinner />
@@ -344,18 +333,17 @@ export function ArchivedChatTranscriptModal({
               <ArticleShortcutIcon width={16} height={16} />
             )}
             <span>Summarize</span>
-          </button>
+          </Button>
           {shareEntryVisible ? (
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={(): void => setShareRunOpen(true)}
               disabled={busy}
               data-testid="archived-chat-transcript-share-run"
-              className={`${headerActionClass} fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary`}
             >
               <ShareIcon width={16} height={16} />
               <span>Share session</span>
-            </button>
+            </Button>
           ) : null}
         </>
       }
@@ -438,7 +426,6 @@ export function ArchivedChatTranscriptModal({
           onClose={(): void => setShareRunOpen(false)}
           onShare={handleShareRunSubmit}
           checkEligibility={handleShareRunEligibility}
-          onShared={handleShareRunDone}
         />
       )}
     </DialogModal>

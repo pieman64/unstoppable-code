@@ -178,10 +178,18 @@ test.describe('REG-2878 Home composer provider triggers', () => {
           await editor.pressSequentially(
             `${entryPoint === 'plus' ? '' : provider === 'codex' ? '$' : '/'}home-available-skill`,
           );
-          const available = menu
-            .getByRole('group', { name: 'Available to enable' })
+          // The add menu groups an available skill under its heading; typed
+          // slash search is one flat list that tags the row (CAN-5271).
+          const available = (
+            entryPoint === 'plus'
+              ? menu.getByRole('group', { name: 'Available to enable' })
+              : menu
+          )
             .getByRole('button')
-            .filter({ hasText: 'Home composer home-available-skill' });
+            .filter({ hasText: 'Home composer home-available-skill' })
+            .filter({
+              has: window.getByTestId('slash-command-availability-tag'),
+            });
           await expect(available).toBeVisible();
           await available.click();
           await expect(menu).toHaveCount(0);

@@ -78,6 +78,8 @@ test('aborts a stalled response and permits only HTTPS or loopback HTTP', async 
 });
 
 test('bounds a real response that sends headers then stalls its body', async () => {
+  // A real socket server is the point of this test; app-core itself stays browser-safe.
+  // oxlint-disable-next-line no-restricted-imports
   const { createServer } = await import('node:http');
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'application/json' });

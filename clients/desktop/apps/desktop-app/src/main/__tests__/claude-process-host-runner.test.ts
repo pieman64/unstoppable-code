@@ -1,10 +1,10 @@
 import { EventEmitter } from 'node:events';
-import { once } from 'node:events';
 import type { SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
 import type {
   ClaudeProcessHostRequest,
   ClaudeProcessHostSpawnRequest,
 } from '../agents/claude-process-host-protocol';
+import type { HostedClaudeProcessRecord } from '../agents/claude-process-registry';
 
 class FakeUtilityProcess extends EventEmitter {
   public readonly postMessage = jest.fn<void, [ClaudeProcessHostRequest]>();
@@ -25,13 +25,27 @@ jest.mock('@canopy/desktop-shared/node/lib/process-kill', () => ({
   killProcessGroupByPid: (...args: [number, NodeJS.Signals]): Promise<void> =>
     killProcessGroupByPidMock(...args),
 }));
+const registerHostedClaudeProcessMock = jest.fn<
+  void,
+  [HostedClaudeProcessRecord]
+>();
+const unregisterHostedClaudeProcessMock = jest.fn<void, [number]>();
+jest.mock('../agents/claude-process-registry', () => ({
+  registerHostedClaudeProcess: (record: HostedClaudeProcessRecord): void =>
+    registerHostedClaudeProcessMock(record),
+  unregisterHostedClaudeProcess: (pid: number): void =>
+    unregisterHostedClaudeProcessMock(pid),
+}));
 
 import {
+  checkHostedClaudeProcessOwnersForTests,
   resetClaudeProcessHostForTests,
   runClaudeCliProcessOffMain,
   shutdownClaudeProcessHost,
   spawnClaudeCodeProcessOffMain,
   withholdClaudeProcessStdoutCreditUntil,
+  type HostedClaudeProcessDiagnostic,
+  type HostedClaudeProcessOwner,
 } from '../agents/claude-process-host-runner';
 
 function options(controller = new AbortController()): SpawnOptions {
@@ -63,6 +77,8 @@ describe('Claude process host runner', () => {
     forkMock.mockReset();
     killProcessGroupByPidMock.mockReset();
     killProcessGroupByPidMock.mockResolvedValue();
+    registerHostedClaudeProcessMock.mockReset();
+    unregisterHostedClaudeProcessMock.mockReset();
     children.length = 0;
     forkMock.mockImplementation(() => {
       const child = new FakeUtilityProcess();
@@ -93,7 +109,11 @@ describe('Claude process host runner', () => {
     const request = spawnRequest(children[0]);
     const stdout: Buffer[] = [];
     spawned.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
-    const exit = once(spawned, 'exit');
+    const exit = new Promise<[number | null, NodeJS.Signals | null]>(
+      (resolve): void => {
+        spawned.once('exit', (code, signal): void => resolve([code, signal]));
+      },
+    );
 
     spawned.stdin.write(Buffer.from([0, 1, 2, 255]));
     spawned.stdin.end();
@@ -442,6 +462,80 @@ describe('Claude process host runner', () => {
     });
   });
 
+  it('keeps a process that errored after spawning killable until it exits', async () => {
+    const spawned = spawnClaudeCodeProcessOffMain(options());
+    const request = spawnRequest(children[0]);
+    const errors: Error[] = [];
+    spawned.on('error', (error) => errors.push(error));
+    let exited = false;
+    spawned.once('exit', () => {
+      exited = true;
+    });
+    children[0]?.emit('message', {
+      type: 'started',
+      requestId: request.requestId,
+      pid: 4242,
+    });
+
+    children[0]?.emit('message', {
+      type: 'error',
+      requestId: request.requestId,
+      message: 'kill EPERM',
+      exitPending: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(errors.map((error) => error.message)).toEqual(['kill EPERM']);
+    expect(exited).toBe(false);
+    expect(spawned.kill('SIGKILL')).toBe(true);
+    expect(children[0]?.postMessage).toHaveBeenCalledWith({
+      type: 'kill',
+      requestId: request.requestId,
+      signal: 'SIGKILL',
+    });
+
+    // The host still owns the pid, so a host crash still kills its group.
+    children[0]?.emit('exit', 9);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(killProcessGroupByPidMock).toHaveBeenCalledWith(4242, 'SIGKILL');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(exited).toBe(true);
+  });
+
+  it('settles a bounded CLI command that errored after spawning when its host then crashes', async () => {
+    const result = runClaudeCliProcessOffMain({
+      command: '/mock/claude',
+      args: ['plugin', 'marketplace', 'update', 'acme'],
+      env: { PATH: '/bin' },
+      timeoutMs: 1_000,
+    });
+    const command = spawnRequest(children[0]);
+    const sibling = spawnClaudeCodeProcessOffMain(options());
+    const siblingExit = new Promise<[number | null, NodeJS.Signals | null]>(
+      (resolve) =>
+        sibling.once('exit', (code, signal) => resolve([code, signal])),
+    );
+    sibling.on('error', () => undefined);
+    children[0]?.emit('message', {
+      type: 'started',
+      requestId: command.requestId,
+      pid: 4242,
+    });
+    children[0]?.emit('message', {
+      type: 'error',
+      requestId: command.requestId,
+      message: 'kill EPERM',
+      exitPending: true,
+    });
+
+    // The crash fails every live proxy; one that already reported an error
+    // must not emit another into a caller that listens only once.
+    children[0]?.emit('exit', 9);
+
+    await expect(result).rejects.toThrow('kill EPERM');
+    await expect(siblingExit).resolves.toEqual([null, 'SIGKILL']);
+  });
+
   it('runs a bounded CLI command and preserves stdout plus stderr', async () => {
     const result = runClaudeCliProcessOffMain({
       command: '/mock/claude',
@@ -693,5 +787,283 @@ describe('Claude process host runner', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  describe('hosted PID tracking and owner consistency (CAN-4835)', () => {
+    function owner(registered: { value: boolean }): HostedClaudeProcessOwner & {
+      diagnostics: HostedClaudeProcessDiagnostic[];
+    } {
+      const diagnostics: HostedClaudeProcessDiagnostic[] = [];
+      return {
+        sessionKey: 'project/worktree/chat',
+        sessionInstanceId: 'instance-1',
+        isRegistered: () => registered.value,
+        recordDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        diagnostics,
+      };
+    }
+
+    function start(
+      child: FakeUtilityProcess | undefined,
+      index: number,
+      pid: number,
+      startedAtMs = 1_700_000_000_000,
+    ): string {
+      const { requestId } = spawnRequest(child, index);
+      child?.emit('message', { type: 'started', requestId, pid, startedAtMs });
+      return requestId;
+    }
+
+    function killRequests(
+      child: FakeUtilityProcess | undefined,
+      requestId: string,
+    ): ClaudeProcessHostRequest[] {
+      return (child?.postMessage.mock.calls ?? [])
+        .map(([message]) => message)
+        .filter(
+          (message) =>
+            message.type === 'kill' && message.requestId === requestId,
+        );
+    }
+
+    it('persists the reported PID with its owner, then drops it and reports the exit', async () => {
+      const chat = owner({ value: true });
+      const spawned = spawnClaudeCodeProcessOffMain(options(), chat);
+      const requestId = start(children[0], 0, 4242);
+      const exit = new Promise<void>((resolve): void => {
+        spawned.once('exit', (): void => resolve());
+      });
+
+      expect(registerHostedClaudeProcessMock).toHaveBeenCalledWith({
+        pid: 4242,
+        startedAtMs: 1_700_000_000_000,
+        executable: '/mock/claude',
+        sessionKey: 'project/worktree/chat',
+        sessionInstanceId: 'instance-1',
+      });
+      expect(chat.diagnostics).toEqual([
+        { kind: 'claude_process_started', pid: 4242 },
+      ]);
+
+      children[0]?.emit('message', {
+        type: 'exit',
+        requestId,
+        code: 0,
+        signal: null,
+      });
+      await exit;
+
+      expect(unregisterHostedClaudeProcessMock).toHaveBeenCalledWith(4242);
+      const exited = chat.diagnostics[1];
+      if (exited?.kind !== 'claude_process_exited')
+        throw new Error('Expected an exit diagnostic.');
+      expect(exited).toEqual({
+        kind: 'claude_process_exited',
+        pid: 4242,
+        exitCode: 0,
+        signal: null,
+        uptimeMs: exited.uptimeMs,
+      });
+      expect(exited.uptimeMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it("persists and reports a delegated run's CLI without an owner check", () => {
+      const diagnostics: HostedClaudeProcessDiagnostic[] = [];
+      spawnClaudeCodeProcessOffMain(options(), {
+        sessionKey: 'project/worktree/parent',
+        delegationId: 'delegation-1',
+        recordDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      const requestId = start(children[0], 0, 6161);
+
+      expect(registerHostedClaudeProcessMock).toHaveBeenCalledWith({
+        pid: 6161,
+        startedAtMs: 1_700_000_000_000,
+        executable: '/mock/claude',
+        sessionKey: 'project/worktree/parent',
+        delegationId: 'delegation-1',
+      });
+      expect(diagnostics).toEqual([
+        { kind: 'claude_process_started', pid: 6161 },
+      ]);
+      checkHostedClaudeProcessOwnersForTests();
+      checkHostedClaudeProcessOwnersForTests();
+      expect(killRequests(children[0], requestId)).toEqual([]);
+    });
+
+    it('persists an unowned helper CLI without a session and without diagnostics', () => {
+      spawnClaudeCodeProcessOffMain(options());
+      start(children[0], 0, 5151);
+
+      expect(registerHostedClaudeProcessMock).toHaveBeenCalledWith({
+        pid: 5151,
+        startedAtMs: 1_700_000_000_000,
+        executable: '/mock/claude',
+      });
+    });
+
+    it('tracks no PID for a spawn that failed before it had one', async () => {
+      const chat = owner({ value: true });
+      const spawned = spawnClaudeCodeProcessOffMain(options(), chat);
+      spawned.on('error', () => undefined);
+      const exit = new Promise((resolve) => spawned.once('exit', resolve));
+      const requestId = start(children[0], 0, 0);
+      children[0]?.emit('message', {
+        type: 'error',
+        requestId,
+        message: 'spawn ENOENT',
+      });
+      await exit;
+
+      expect(registerHostedClaudeProcessMock).not.toHaveBeenCalled();
+      expect(unregisterHostedClaudeProcessMock).not.toHaveBeenCalled();
+      expect(chat.diagnostics).toEqual([]);
+    });
+
+    it('drops the PIDs a host crash SIGKILLed and reports their exits', async () => {
+      const chat = owner({ value: true });
+      const spawned = spawnClaudeCodeProcessOffMain(options(), chat);
+      spawned.on('error', () => undefined);
+      const exit = new Promise((resolve) => spawned.once('exit', resolve));
+      start(children[0], 0, 4242);
+
+      children[0]?.emit('exit', 9);
+      await exit;
+
+      expect(killProcessGroupByPidMock).toHaveBeenCalledWith(4242, 'SIGKILL');
+      expect(unregisterHostedClaudeProcessMock).toHaveBeenCalledWith(4242);
+      expect(chat.diagnostics.at(-1)).toMatchObject({
+        kind: 'claude_process_exited',
+        pid: 4242,
+        exitCode: null,
+        signal: 'SIGKILL',
+      });
+    });
+
+    it('SIGKILLs a CLI on the second check that finds its owner unregistered', () => {
+      const registered = { value: true };
+      const chat = owner(registered);
+      spawnClaudeCodeProcessOffMain(options(), chat);
+      const requestId = start(children[0], 0, 4242);
+
+      checkHostedClaudeProcessOwnersForTests();
+      registered.value = false;
+      // The first check only notes the missing owner: teardown may be
+      // mid-flight.
+      checkHostedClaudeProcessOwnersForTests();
+      expect(killRequests(children[0], requestId)).toEqual([]);
+
+      checkHostedClaudeProcessOwnersForTests();
+      checkHostedClaudeProcessOwnersForTests();
+
+      expect(killRequests(children[0], requestId)).toEqual([
+        { type: 'kill', requestId, signal: 'SIGKILL' },
+      ]);
+      const untracked = chat.diagnostics.filter(
+        (diagnostic) => diagnostic.kind === 'claude_process_untracked',
+      );
+      expect(untracked).toHaveLength(1);
+      const [killed] = untracked;
+      if (killed?.kind !== 'claude_process_untracked')
+        throw new Error('Expected an untracked diagnostic.');
+      expect(killed).toEqual({
+        kind: 'claude_process_untracked',
+        pid: 4242,
+        uptimeMs: killed.uptimeMs,
+      });
+      expect(killed.uptimeMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('kills an owner-less CLI before the host reported its PID', () => {
+      const chat = owner({ value: false });
+      spawnClaudeCodeProcessOffMain(options(), chat);
+      const { requestId } = spawnRequest(children[0]);
+
+      checkHostedClaudeProcessOwnersForTests();
+      checkHostedClaudeProcessOwnersForTests();
+
+      expect(killRequests(children[0], requestId)).toEqual([
+        { type: 'kill', requestId, signal: 'SIGKILL' },
+      ]);
+      expect(chat.diagnostics).toEqual([{ kind: 'claude_process_untracked' }]);
+    });
+
+    it('spares registered, re-registered and unowned CLIs', () => {
+      const flapping = { value: false };
+      spawnClaudeCodeProcessOffMain(options(), owner({ value: true }));
+      spawnClaudeCodeProcessOffMain(options(), owner(flapping));
+      spawnClaudeCodeProcessOffMain(options());
+      const requestIds = [0, 1, 2].map((index) =>
+        start(children[0], index, 4000 + index),
+      );
+
+      checkHostedClaudeProcessOwnersForTests();
+      flapping.value = true;
+      checkHostedClaudeProcessOwnersForTests();
+      flapping.value = false;
+      checkHostedClaudeProcessOwnersForTests();
+
+      for (const requestId of requestIds) {
+        expect(killRequests(children[0], requestId)).toEqual([]);
+      }
+    });
+
+    it('treats an owner check that throws as registered', () => {
+      spawnClaudeCodeProcessOffMain(options(), {
+        ...owner({ value: true }),
+        isRegistered: () => {
+          throw new Error('registry unavailable');
+        },
+      });
+      const requestId = start(children[0], 0, 4242);
+
+      checkHostedClaudeProcessOwnersForTests();
+      checkHostedClaudeProcessOwnersForTests();
+
+      expect(killRequests(children[0], requestId)).toEqual([]);
+    });
+
+    it('runs the owner check every minute while an owned CLI is live', async () => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask'] });
+      const setIntervalSpy = jest.spyOn(globalThis, 'setInterval');
+      try {
+        const registered = { value: true };
+        const spawned = spawnClaudeCodeProcessOffMain(
+          options(),
+          owner(registered),
+        );
+        const requestId = start(children[0], 0, 4242);
+        expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+        expect(setIntervalSpy).toHaveBeenCalledWith(
+          expect.any(Function),
+          60_000,
+        );
+        registered.value = false;
+
+        jest.advanceTimersByTime(60_000);
+        expect(killRequests(children[0], requestId)).toEqual([]);
+        jest.advanceTimersByTime(60_000);
+        expect(killRequests(children[0], requestId)).toEqual([
+          { type: 'kill', requestId, signal: 'SIGKILL' },
+        ]);
+
+        const exit = new Promise<void>((resolve): void => {
+          spawned.once('exit', (): void => resolve());
+        });
+        children[0]?.emit('message', {
+          type: 'exit',
+          requestId,
+          code: null,
+          signal: 'SIGKILL',
+        });
+        await exit;
+        // With no owned CLI left the next tick stops the interval.
+        jest.advanceTimersByTime(60_000);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally {
+        setIntervalSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    });
   });
 });

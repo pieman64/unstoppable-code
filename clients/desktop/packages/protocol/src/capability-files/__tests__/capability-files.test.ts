@@ -37,4 +37,26 @@ describe('capability file primitives', () => {
       false,
     );
   });
+
+  it('still detects JWTs and private-key headers', () => {
+    expect(
+      containsSecretMaterial('Bearer-less eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl'),
+    ).toBe(true);
+    expect(
+      containsSecretMaterial('-----BEGIN RSA PRIVATE KEY-----\nMIIE...'),
+    ).toBe(true);
+    expect(containsSecretMaterial('-----BEGIN PRIVATE KEY-----')).toBe(true);
+    expect(containsSecretMaterial('-----BEGIN PUBLIC KEY-----')).toBe(false);
+  });
+
+  it.each([
+    ['repeated JWT-shaped prefixes', 'eyJa-'],
+    ['repeated private-key headers', '-----BEGIN A A A A A A A A '],
+  ])('scans %s in linear time', (_label, unit) => {
+    const text = unit.repeat(Math.ceil((1024 * 1024) / unit.length));
+    const started = performance.now();
+    containsSecretMaterial(text);
+    // Linear on loaded CI workers; the quadratic forms took seconds here.
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
 });

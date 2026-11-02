@@ -10,14 +10,17 @@ import {
   trackExecution,
   tryReserveExecution,
 } from '../pipelines/pipeline-execution-registry';
+import { getExecutionAccounting } from '../execution-accounting';
 
 function createState(id: string): ExecutionState {
+  // Version-3 persisted states predate current materialization and pause fields.
   return {
     version: 3,
     id,
     pipeline_id: id,
     pipeline_snapshot: {
       name: id,
+      scope: ['directory'],
       jobs: {},
     },
     status: 'cancelled',
@@ -27,7 +30,7 @@ function createState(id: string): ExecutionState {
     cwd: '/tmp/repo',
     env: {},
     inputs: {},
-  };
+  } as ExecutionState;
 }
 
 describe('pipeline-execution-registry', () => {
@@ -67,6 +70,54 @@ describe('pipeline-execution-registry', () => {
     await cancellation;
 
     expect(settled).toBe(true);
+  });
+
+  it('holds a core pipeline lease from reservation until the execution settles, however it ends', async () => {
+    const active = (): number =>
+      getExecutionAccounting().familyStatus().pipeline.active;
+    const settle = (
+      id: string,
+    ): {
+      handle: ExecutionHandle;
+      finish: (outcome: 'resolve' | 'reject') => void;
+    } => {
+      let finish: (outcome: 'resolve' | 'reject') => void = () => undefined;
+      const completion = new Promise<ExecutionState>((resolve, reject) => {
+        finish = (outcome): void => {
+          if (outcome === 'resolve') resolve(createState(id));
+          else reject(new Error('step crashed'));
+        };
+      });
+      return {
+        handle: {
+          id,
+          cancel: () => completion,
+          getState: () => createState(id),
+          waitForCompletion: () => completion,
+        },
+        finish: (outcome): void => {
+          finish(outcome);
+        },
+      };
+    };
+    const baseline = active();
+    const succeeds = settle('lease-succeeds');
+    const crashes = settle('lease-crashes');
+
+    reserveExecution('lease-abandoned');
+    reserveExecution(succeeds.handle.id);
+    reserveExecution(crashes.handle.id);
+    expect(active()).toBe(baseline + 3);
+
+    releaseExecutionReservation('lease-abandoned');
+    trackExecution(succeeds.handle);
+    trackExecution(crashes.handle);
+    expect(active()).toBe(baseline + 2);
+
+    succeeds.finish('resolve');
+    crashes.finish('reject');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(active()).toBe(baseline);
   });
 
   it('claims a reservation atomically without replacing its owner', () => {
@@ -195,7 +246,9 @@ it('rejects shutdown when a late-attached execution cannot finish checkpointing'
     const completion = new Promise<ExecutionState>((resolve) => {
       finish = resolve;
     });
-    const pauseForShutdown = jest.fn(() => new Promise<void>(() => undefined));
+    const pauseForShutdown = jest.fn(
+      () => new Promise<ExecutionState>(() => undefined),
+    );
     const handle: ExecutionHandle = {
       id: 'late-stuck-start',
       getState: () => createState('late-stuck-start'),

@@ -56,7 +56,9 @@ function fakeApi(): {
   const listeners = new Set<
     (message: AccountOrganizationSettingsEventMessage) => void
   >();
-  const read = jest.fn(() => Promise.resolve({ ok: true, result: BOOTSTRAP }));
+  const read = jest.fn(() =>
+    Promise.resolve({ ok: true as const, result: BOOTSTRAP }),
+  );
   const subscribe = jest.fn<
     Promise<AccountOrganizationSettingsResponse>,
     [SubscribeRequest]

@@ -126,6 +126,47 @@ describe('ComposerEditor', () => {
     unmount(container, root);
   });
 
+  it.each([
+    [false, false, 'Send a message'],
+    [true, false, 'Send a message, / skills and commands'],
+    [false, true, 'Send a message, @ to mention'],
+    [true, true, '@ to mention, / skills and commands'],
+  ])(
+    'derives the default from slash=%s and mentions=%s, preserving an override',
+    async (slash, mentions, expected) => {
+      const props = {
+        fetchSlashCommands: slash
+          ? (): Promise<never[]> => Promise.resolve([])
+          : undefined,
+        searchFileMentions: mentions
+          ? (): Promise<never[]> => Promise.resolve([])
+          : undefined,
+      };
+      const { container, root } = mount(<ComposerEditor {...props} />);
+      try {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        expect(
+          container.querySelector('[data-slate-placeholder]')?.textContent,
+        ).toBe(expected);
+        act(() =>
+          root.render(
+            <ComposerEditor
+              {...props}
+              placeholder="Explicit host instruction"
+            />,
+          ),
+        );
+        expect(
+          container.querySelector('[data-slate-placeholder]')?.textContent,
+        ).toBe('Explicit host instruction');
+      } finally {
+        unmount(container, root);
+      }
+    },
+  );
+
   it('runs a host-owned editor in controlled mode and exposes it on the handle', () => {
     const editor = createChatEditor();
     const value: Descendant[] = createEmptyValue();

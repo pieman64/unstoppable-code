@@ -8,16 +8,29 @@ const mockUnsubscribeCodexThread = jest.fn().mockResolvedValue(undefined);
 const mockSpawnClaudeCodeProcessOffMain = jest.fn();
 // Local memory is opt-in (CAN-1969); default off so advisor turns keep
 // provider-native memory defaults. Tests flip the mock to assert suppression.
-jest.mock('../lib/preferences-store', () => ({
-  ...jest.requireActual<typeof PreferencesStoreModule>(
+jest.mock('../lib/preferences-store', () => {
+  const actual = jest.requireActual<typeof PreferencesStoreModule>(
     '../lib/preferences-store',
-  ),
-  readLocalMemoryEnabledPreference: jest.fn(() => Promise.resolve(false)),
-}));
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readLocalMemoryEnabledPreference: {
+        value: jest.fn(() => Promise.resolve(false)),
+        enumerable: true,
+      },
+    },
+  );
+});
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
-    startThread: mockStartThread,
-    resumeThread: mockResumeThread,
+    get startThread(): typeof mockStartThread {
+      return mockStartThread;
+    },
+    get resumeThread(): typeof mockResumeThread {
+      return mockResumeThread;
+    },
   })),
 }));
 
@@ -43,7 +56,9 @@ jest.mock('../pipelines/config-paths', () => ({
   getEnhancedEnv: jest.fn(() => ({})),
 }));
 jest.mock('../agents/claude-process-host-runner', () => ({
-  spawnClaudeCodeProcessOffMain: mockSpawnClaudeCodeProcessOffMain,
+  get spawnClaudeCodeProcessOffMain(): typeof mockSpawnClaudeCodeProcessOffMain {
+    return mockSpawnClaudeCodeProcessOffMain;
+  },
 }));
 
 const mockAppendTranscriptRecord = jest.fn();
@@ -52,10 +67,18 @@ const mockEndClaudeQuery = jest.fn();
 const mockObserveClaudeEvent = jest.fn();
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    appendTranscriptRecord: mockAppendTranscriptRecord,
-    beginClaudeQuery: mockBeginClaudeQuery,
-    endClaudeQuery: mockEndClaudeQuery,
-    observeClaudeEvent: mockObserveClaudeEvent,
+    get appendTranscriptRecord(): typeof mockAppendTranscriptRecord {
+      return mockAppendTranscriptRecord;
+    },
+    get beginClaudeQuery(): typeof mockBeginClaudeQuery {
+      return mockBeginClaudeQuery;
+    },
+    get endClaudeQuery(): typeof mockEndClaudeQuery {
+      return mockEndClaudeQuery;
+    },
+    get observeClaudeEvent(): typeof mockObserveClaudeEvent {
+      return mockObserveClaudeEvent;
+    },
   })),
 }));
 
@@ -130,11 +153,13 @@ function mockCodexEventAttempts(attempts: unknown[][]): RunTurnMock {
       );
     });
   }
-  mockStartThread.mockResolvedValue({
-    threadId: 'thread-1',
-    runTurn,
-    unsubscribe: mockUnsubscribeCodexThread,
-  });
+  mockStartThread.mockImplementation(() =>
+    Promise.resolve({
+      threadId: 'thread-1',
+      runTurn,
+      unsubscribe: mockUnsubscribeCodexThread,
+    }),
+  );
   return runTurn;
 }
 
@@ -322,11 +347,13 @@ it('applies the native-memory suppression to started and resumed Codex advisor t
       codexAdvisorEvents(),
       codexAdvisorEvents(),
     ]);
-    mockResumeThread.mockResolvedValue({
-      threadId: 'thread-1',
-      runTurn,
-      unsubscribe: mockUnsubscribeCodexThread,
-    });
+    mockResumeThread.mockImplementation(() =>
+      Promise.resolve({
+        threadId: 'thread-1',
+        runTurn,
+        unsubscribe: mockUnsubscribeCodexThread,
+      }),
+    );
 
     await runPipelineAdvisorSdkTurn(createInput({ sdkSessionId: 'thread-1' }));
     expect(mockStartThread).not.toHaveBeenCalled();
@@ -450,7 +477,7 @@ it('stops retrying Codex structured-output failures after two retries', async ()
   ]);
 
   await expect(runPipelineAdvisorSdkTurn(createInput())).rejects.toThrow(
-    'Pipeline Advisor Codex turn failed: Response does not match output schema on attempt 3',
+    'Workflow Advisor Codex turn failed: Response does not match output schema on attempt 3',
   );
   expect(runStreamed).toHaveBeenCalledTimes(3);
   expect(mockUnsubscribeCodexThread).toHaveBeenCalledTimes(1);
@@ -466,7 +493,7 @@ it('fails non-schema Codex turn failures without retrying', async () => {
   ]);
 
   await expect(runPipelineAdvisorSdkTurn(createInput())).rejects.toThrow(
-    'Pipeline Advisor Codex turn failed: model overloaded',
+    'Workflow Advisor Codex turn failed: model overloaded',
   );
   expect(runStreamed).toHaveBeenCalledTimes(1);
 });
@@ -485,7 +512,7 @@ it('does not return stale agent JSON after a Codex stream error', async () => {
   ]);
 
   await expect(runPipelineAdvisorSdkTurn(createInput())).rejects.toThrow(
-    'Pipeline Advisor Codex turn failed: stream disconnected',
+    'Workflow Advisor Codex turn failed: stream disconnected',
   );
 });
 
@@ -603,11 +630,13 @@ describe('Codex advisor speed admission', () => {
         errorInfo: 'badRequest',
       }),
     );
-    mockStartThread.mockResolvedValue({
-      threadId: 'thread-1',
-      runTurn,
-      unsubscribe: mockUnsubscribeCodexThread,
-    });
+    mockStartThread.mockImplementation(() =>
+      Promise.resolve({
+        threadId: 'thread-1',
+        runTurn,
+        unsubscribe: mockUnsubscribeCodexThread,
+      }),
+    );
 
     await expect(
       runPipelineAdvisorSdkTurn(
@@ -675,11 +704,13 @@ it.each(['claude', 'codex'] as const)(
           { type: 'turn.completed', usage: { input_tokens: 3 } },
         ],
       ]);
-      mockResumeThread.mockResolvedValue({
-        threadId: 'thread-1',
-        runTurn,
-        unsubscribe: mockUnsubscribeCodexThread,
-      });
+      mockResumeThread.mockImplementation(() =>
+        Promise.resolve({
+          threadId: 'thread-1',
+          runTurn,
+          unsubscribe: mockUnsubscribeCodexThread,
+        }),
+      );
     }
     const result = await runPipelineAdvisorSdkTurn(
       createInput({

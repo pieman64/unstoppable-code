@@ -3,8 +3,10 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { ChatLookProvider } from '@canopy/ui-shared/components';
 import type { DisplayBlock } from '../types';
-import { ToolStepGroup } from '../ToolStepGroup';
+import { CleanToolStepGroup, ToolStepGroup } from '../ToolStepGroup';
+import { segmentCleanSteps } from '../tool-step-groups';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -66,9 +68,11 @@ function rowButton(): HTMLButtonElement {
 describe('ToolStepGroup', () => {
   it('shows one closed row with a plain-words summary', () => {
     render(
-      <ToolStepGroup toolUses={TOOL_USES} streaming={false}>
-        <div data-testid="step-rows" />
-      </ToolStepGroup>,
+      <ChatLookProvider value="classic">
+        <ToolStepGroup toolUses={TOOL_USES} streaming={false}>
+          <div data-testid="step-rows" />
+        </ToolStepGroup>
+      </ChatLookProvider>,
     );
     expect(summary()).toBe('Searched 1 time, read 2 files');
     expect(rowButton().getAttribute('aria-expanded')).toBe('false');
@@ -77,9 +81,11 @@ describe('ToolStepGroup', () => {
 
   it('opens and closes the rows when the summary is clicked', () => {
     render(
-      <ToolStepGroup toolUses={TOOL_USES} streaming={false}>
-        <div data-testid="step-rows" />
-      </ToolStepGroup>,
+      <ChatLookProvider value="classic">
+        <ToolStepGroup toolUses={TOOL_USES} streaming={false}>
+          <div data-testid="step-rows" />
+        </ToolStepGroup>
+      </ChatLookProvider>,
     );
     act(() => rowButton().click());
     expect(rowButton().getAttribute('aria-expanded')).toBe('true');
@@ -90,9 +96,11 @@ describe('ToolStepGroup', () => {
 
   it('opens for a search hit without being clicked', () => {
     render(
-      <ToolStepGroup toolUses={TOOL_USES} streaming={false} forceExpanded>
-        <div data-testid="step-rows" />
-      </ToolStepGroup>,
+      <ChatLookProvider value="classic">
+        <ToolStepGroup toolUses={TOOL_USES} streaming={false} forceExpanded>
+          <div data-testid="step-rows" />
+        </ToolStepGroup>
+      </ChatLookProvider>,
     );
     expect(container.querySelector('[data-testid="step-rows"]')).not.toBeNull();
   });
@@ -108,9 +116,11 @@ describe('ToolStepGroup', () => {
       ),
     ];
     render(
-      <ToolStepGroup toolUses={running} streaming>
-        <div />
-      </ToolStepGroup>,
+      <ChatLookProvider value="classic">
+        <ToolStepGroup toolUses={running} streaming>
+          <div />
+        </ToolStepGroup>
+      </ChatLookProvider>,
     );
     expect(summary()).toBe('Searched 1 time, read 2 files, ran 1 command');
     expect(
@@ -125,9 +135,11 @@ describe('ToolStepGroup', () => {
       toolUse('4', 'Bash', { command: 'npm test' }, false),
     ];
     render(
-      <ToolStepGroup toolUses={unfinished} streaming={false}>
-        <div />
-      </ToolStepGroup>,
+      <ChatLookProvider value="classic">
+        <ToolStepGroup toolUses={unfinished} streaming={false}>
+          <div />
+        </ToolStepGroup>
+      </ChatLookProvider>,
     );
     expect(
       container.querySelector('[data-testid="chat-tool-step-running"]'),
@@ -150,19 +162,21 @@ describe('ToolStepGroup', () => {
         toolUse('4', 'Bash', { command: 'npm test' }, false),
       ];
       render(
-        <ToolStepGroup
-          toolUses={running}
-          streaming
-          liveSteps={
-            liveSteps === undefined
-              ? undefined
-              : liveSteps.map((step) => <div key={step} data-step={step} />)
-          }
-        >
-          {['1', '2', '3', '4'].map((step) => (
-            <div key={step} data-testid="all-step" data-step={step} />
-          ))}
-        </ToolStepGroup>,
+        <ChatLookProvider value="classic">
+          <ToolStepGroup
+            toolUses={running}
+            streaming
+            liveSteps={
+              liveSteps === undefined
+                ? undefined
+                : liveSteps.map((step) => <div key={step} data-step={step} />)
+            }
+          >
+            {['1', '2', '3', '4'].map((step) => (
+              <div key={step} data-testid="all-step" data-step={step} />
+            ))}
+          </ToolStepGroup>
+        </ChatLookProvider>,
       );
     }
 
@@ -226,18 +240,44 @@ describe('ToolStepGroup', () => {
 
     it('summarizes thinking steps when they are given', () => {
       render(
-        <ToolStepGroup
-          toolUses={[]}
-          steps={[
-            { type: 'thinking', text: 'Where is the cache?' },
-            { type: 'thinking', text: 'Check the store.' },
-          ]}
-          streaming={false}
-        >
-          <div />
-        </ToolStepGroup>,
+        <ChatLookProvider value="classic">
+          <ToolStepGroup
+            toolUses={[]}
+            steps={[
+              { type: 'thinking', text: 'Where is the cache?' },
+              { type: 'thinking', text: 'Check the store.' },
+            ]}
+            streaming={false}
+          >
+            <div />
+          </ToolStepGroup>
+        </ChatLookProvider>,
       );
       expect(summary()).toBe('Thought 2 times');
     });
+  });
+});
+
+describe('CleanToolStepGroup live line', () => {
+  it('keeps what the running step names out of session replay', () => {
+    const [segment] = segmentCleanSteps([
+      {
+        id: 'm1',
+        role: 'assistant',
+        timestamp: 1,
+        blocks: [toolUse('9', 'Read', { file_path: '/repo/secret.ts' }, false)],
+      },
+    ]);
+    if (segment?.kind !== 'steps') throw new Error('expected a run');
+    render(
+      <ChatLookProvider value="clean">
+        <CleanToolStepGroup segment={segment} live />
+      </ChatLookProvider>,
+    );
+    const blocked = container.querySelector('.ph-no-capture');
+    expect(blocked?.textContent).toContain('secret.ts');
+    // Only the words: the row and its button stay recordable.
+    expect(blocked?.closest('button')).not.toBe(blocked);
+    expect(blocked?.tagName).toBe('SPAN');
   });
 });

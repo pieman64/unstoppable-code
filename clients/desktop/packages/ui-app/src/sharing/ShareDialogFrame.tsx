@@ -26,7 +26,10 @@ import { ShareFooter, type ShareFooterSecondaryAction } from './ShareFooter';
  * a sentence in the dialog.
  */
 
-/** A share toast: feedback to a click, raised by the host after a share. */
+/**
+ * A share toast: feedback the host raises for an outcome the dialog does not
+ * stay open for (a removed public link, an unconfirmed delivery).
+ */
 export interface ShareToast {
   readonly tone: 'success' | 'warning';
   readonly message: string;
@@ -47,9 +50,9 @@ export interface ShareDialogLifecycle {
   /**
    * `sharing` locks the form and spins the primary; `error` pins the error
    * notice above the footer; `partial` means the share landed but its public
-   * link did not.
+   * link did not; `success` means it landed and pins the success notice.
    */
-  readonly status: 'idle' | 'sharing' | 'error' | 'partial';
+  readonly status: 'idle' | 'sharing' | 'error' | 'partial' | 'success';
   /** Something already landed in this session: show Done in the footer. */
   readonly committed: boolean;
 }
@@ -64,29 +67,43 @@ function capitalize(value: string): string {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
-/** Inputs for the standard success toast after a share. */
-export interface ShareSuccessToastInput {
+/** The success notice a landed share keeps the dialog open on. */
+export interface ShareSuccessNotice {
+  readonly tone: 'success' | 'warning';
+  readonly message: string;
+  /** The share's link, shown under the message; never auto-copied. */
+  readonly link?: string;
+}
+
+/** Inputs for the standard success notice after a share. */
+export interface ShareSuccessNoticeInput {
   readonly noun: string;
   readonly scope: ShareAudience | null;
   readonly targetName?: string;
   readonly isUpdate: boolean;
-  /** Host-supplied sentence (e.g. a pending delivery): a warning toast. */
+  /**
+   * The dialog opened on a share that already existed rather than one it
+   * just made, so a public share reads "is public", not "is now public".
+   */
+  readonly reopened?: boolean;
+  /** Host-supplied sentence (e.g. a pending delivery): a warning notice. */
   readonly message?: string;
   readonly shareUrl?: string;
 }
 
 /**
- * The standard toast copy. It names the audience and never says
+ * The standard success copy. It names the audience and never says
  * "successfully"; a host message replaces the sentence as a warning.
  */
-export function shareSuccessToast({
+export function shareSuccessNotice({
   noun,
   scope,
   targetName,
   isUpdate,
+  reopened = false,
   message,
   shareUrl,
-}: ShareSuccessToastInput): ShareToast {
+}: ShareSuccessNoticeInput): ShareSuccessNotice {
   const Noun = capitalize(noun);
   const link =
     shareUrl !== undefined && shareUrl !== '' ? { link: shareUrl } : {};
@@ -97,7 +114,7 @@ export function shareSuccessToast({
   if (isUpdate) {
     sentence = `${Noun} updated`;
   } else if (scope === 'public') {
-    sentence = `${Noun} is now public`;
+    sentence = reopened ? `${Noun} is public` : `${Noun} is now public`;
   } else if (targetName !== undefined && targetName !== '') {
     sentence = `${Noun} shared with ${targetName}`;
   } else if (scope === 'team') {
@@ -135,10 +152,18 @@ const KNOWN_SHARE_STAGES: ReadonlySet<string> = new Set([
 ]);
 const GENERIC_STAGE_CAPTION = 'Sharing…';
 
+/**
+ * Stages whose wire value keeps a former name; the caption uses the current
+ * one (CAN-4651: workflows were called pipelines).
+ */
+const SHARE_STAGE_DISPLAY: ReadonlyMap<string, string> = new Map([
+  ['Publishing pipeline…', 'Publishing workflow…'],
+]);
+
 /** Caption for a capability-package stage, e.g. `Uploading files · 3 of 12`. */
 export function shareStageCaption(stage: PipelinePackageProgressEvent): string {
   const caption = KNOWN_SHARE_STAGES.has(stage.stage)
-    ? stage.stage
+    ? (SHARE_STAGE_DISPLAY.get(stage.stage) ?? stage.stage)
     : GENERIC_STAGE_CAPTION;
   // A count only means something with work to count: never "0 of 0".
   if (
@@ -183,8 +208,20 @@ export interface ShareDialogFrameProps {
   readonly errorMessage?: string;
   /** Recovery for the error, e.g. Sign in. Rendered in the error notice. */
   readonly errorAction?: ReactNode;
+  /**
+   * A failed action on the dialog's current state (removing a public link),
+   * shown in the error notice without leaving that state.
+   */
+  readonly actionErrorMessage?: string;
   /** The partial-success sentence, shown when `lifecycle.status` is `partial`. */
   readonly partialMessage?: string;
+  /** The success notice, shown when `lifecycle.status` is `success`. */
+  readonly success?: ShareSuccessNotice;
+  /**
+   * A control at the end of the success notice's link line (its message
+   * line when there is no link), e.g. the Remove public link icon button.
+   */
+  readonly successLinkAction?: ReactNode;
   /** Retries the public link after a partial success. */
   readonly onRetryPublic?: () => void;
   readonly retryingPublic?: boolean;
@@ -226,7 +263,10 @@ export function ShareDialogFrame({
   after,
   errorMessage,
   errorAction,
+  actionErrorMessage,
   partialMessage,
+  success,
+  successLinkAction,
   onRetryPublic,
   retryingPublic = false,
   showSubmit = true,
@@ -274,6 +314,7 @@ export function ShareDialogFrame({
       return (
         <CopyLinkButton
           url={link.url}
+          size="compact"
           dataTestId={`${p}-copy-link`}
           {...(copyText ? { write: copyText } : {})}
           {...(onLinkCopied ? { onCopy: onLinkCopied } : {})}
@@ -329,6 +370,13 @@ export function ShareDialogFrame({
         )}
       </div>
 
+      {actionErrorMessage !== undefined && actionErrorMessage !== '' && (
+        <div className="px-5 pb-3">
+          <Notice intent="destructive" role="alert" data-testid={`${p}-error`}>
+            {actionErrorMessage}
+          </Notice>
+        </div>
+      )}
       {lifecycle.status === 'error' && errorMessage && (
         <div className="px-5 pb-3">
           <Notice
@@ -346,6 +394,43 @@ export function ShareDialogFrame({
           <Notice intent="attention" data-testid={`${p}-partial`}>
             {partialMessage}
           </Notice>
+        </div>
+      )}
+
+      {lifecycle.status === 'success' && success && (
+        <div className="px-5 pb-3">
+          {success.link !== undefined ? (
+            <Notice
+              intent={success.tone === 'success' ? 'positive' : 'attention'}
+              title={success.message}
+              titleLayout="stacked"
+              data-testid={`${p}-success`}
+            >
+              <span className="flex items-center gap-1">
+                <span
+                  className="min-w-0 flex-1 break-all select-all"
+                  data-testid={`${p}-link`}
+                >
+                  {success.link}
+                </span>
+                {successLinkAction}
+              </span>
+            </Notice>
+          ) : (
+            <Notice
+              intent={success.tone === 'success' ? 'positive' : 'attention'}
+              data-testid={`${p}-success`}
+            >
+              {successLinkAction ? (
+                <span className="flex items-center gap-1">
+                  <span className="min-w-0 flex-1">{success.message}</span>
+                  {successLinkAction}
+                </span>
+              ) : (
+                success.message
+              )}
+            </Notice>
+          )}
         </div>
       )}
 

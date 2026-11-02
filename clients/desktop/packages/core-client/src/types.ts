@@ -1,6 +1,7 @@
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import type {
   CanopyErrorPayload,
+  CanopyHostExecution,
   CanopyInstructionDefinitionMap,
   CanopyQueryDefinitionMap,
   CanopyQueryRequestMetadata,
@@ -68,10 +69,18 @@ export interface CanopyEffectiveManifest {
 export interface CanopyClientQueryOptions {
   readonly metadata?: CanopyQueryRequestMetadata;
   readonly signal?: AbortSignal;
+  /**
+   * Same-host execution input, sent as `_execution` only by operations that
+   * accept it (CAN-5496). Supply it only from a trusted host builder; never
+   * from params, renderer, Portal or remote input. Never log it.
+   */
+  readonly execution?: CanopyHostExecution;
 }
 export interface CanopyClientInstructionOptions {
   readonly metadata?: CanopyRequestMetadata;
   readonly signal?: AbortSignal;
+  /** As {@link CanopyClientQueryOptions.execution}. */
+  readonly execution?: CanopyHostExecution;
 }
 export interface CanopyClientStreamOptions<
   Frame = unknown,

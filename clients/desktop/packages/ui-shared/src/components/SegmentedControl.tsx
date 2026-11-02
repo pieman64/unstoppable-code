@@ -5,6 +5,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
+import { useFlipBox } from '../lib/flip-box';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
 import { getWindow } from '../panels/window-registry';
 import { Tooltip } from './Tooltip';
@@ -140,6 +141,15 @@ interface SurfacePlacement {
 }
 
 /**
+ * The surface's slide: a compositor translate and stretch, not `left`/`width`,
+ * on the 200ms Tailwind `ease-out` curve it has always used.
+ */
+const SURFACE_SLIDE = {
+  durationMs: 200,
+  easing: 'cubic-bezier(0, 0, 0.2, 1)',
+} as const;
+
+/**
  * Two to four short, mutually exclusive choices. The chosen segment is raised
  * on the secondary button's resting surface, which slides to the picked
  * segment rather than jumping, so the picker reads as one control moving
@@ -157,7 +167,9 @@ export function SegmentedControl<T extends string>({
   dataTestId,
 }: SegmentedControlProps<T>): JSX.Element {
   const trackRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLSpanElement>(null);
   const [surface, setSurface] = useState<SurfacePlacement | null>(null);
+  useFlipBox(surfaceRef, SURFACE_SLIDE);
 
   // Measured rather than computed from the option count: segments under a
   // tooltip size to their labels, so they are not equal. The surface is
@@ -204,13 +216,11 @@ export function SegmentedControl<T extends string>({
     >
       {surface && (
         <span
+          ref={surfaceRef}
           aria-hidden="true"
           data-testid={dataTestId ? `${dataTestId}-indicator` : undefined}
-          className={`absolute inset-y-0.5 left-0 transition-[transform,width] duration-200 ease-out motion-reduce:transition-none ${SEGMENT_CORNER_CLASS_NAME[shape]} ${SECONDARY_SURFACE_SHELL_CLASS}`}
-          style={{
-            width: surface.width,
-            transform: `translateX(${surface.left}px)`,
-          }}
+          className={`absolute inset-y-0.5 origin-top-left ${SEGMENT_CORNER_CLASS_NAME[shape]} ${SECONDARY_SURFACE_SHELL_CLASS}`}
+          style={{ left: surface.left, width: surface.width }}
         />
       )}
       {options.map((option) => {

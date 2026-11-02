@@ -371,7 +371,7 @@ describe('createFileViewerStore', () => {
     expect(store.getState().activeDiffKey).toBeNull();
   });
 
-  it('re-opening a dirty session preserves the buffer and does not re-read', async () => {
+  it('re-opening a dirty session checks disk but preserves the buffer', async () => {
     const mock = createMockClient(DESKTOP_CAPS);
     let reads = 0;
     mock.queryResponders['file.read'] = (): Promise<PortalFilePreview> => {
@@ -384,13 +384,40 @@ describe('createFileViewerStore', () => {
 
     await store.getState().openFile(READ_REQUEST);
 
-    expect(reads).toBe(1);
+    expect(reads).toBe(2);
     const session = store.getState().files[key];
     expect(session.content).toBe('my edits');
     expect(session.dirty).toBe(true);
+    // Disk still matches the baseline, so there is nothing to announce.
+    expect(session.externalChange ?? null).toBeNull();
   });
 
-  it('re-opening a loading session focuses it without starting another read', async () => {
+  it('re-opening a dirty session flags a newer disk version without replacing edits', async () => {
+    const mock = createMockClient(DESKTOP_CAPS);
+    let reads = 0;
+    mock.queryResponders['file.read'] = (): Promise<PortalFilePreview> => {
+      reads += 1;
+      return Promise.resolve(
+        reads === 1 ? preview() : preview({ content: 'eight', version: 'v2' }),
+      );
+    };
+    const store = createFileViewerStore(mock.client);
+    const key = await store.getState().openFile(READ_REQUEST);
+    store.getState().updateContent(key, 'my edits');
+
+    await store.getState().openFile(READ_REQUEST);
+
+    const session = store.getState().files[key];
+    expect(session.content).toBe('my edits');
+    expect(session.preview?.version).toBe('v1');
+    expect(session.externalChange).toEqual({
+      reloading: false,
+      error: null,
+      source: null,
+    });
+  });
+
+  it('re-opening a loading session focuses it and waits for that read without starting another', async () => {
     const mock = createMockClient(DESKTOP_CAPS);
     const gate = deferred<PortalFilePreview>();
     let reads = 0;
@@ -404,11 +431,12 @@ describe('createFileViewerStore', () => {
     const secondOpen = store.getState().openFile(READ_REQUEST);
 
     expect(reads).toBe(1);
-    expect(await secondOpen).toBe(fileViewerKey(READ_REQUEST));
     expect(store.getState().activeFileKey).toBe(fileViewerKey(READ_REQUEST));
 
     gate.resolve(preview());
+    expect(await secondOpen).toBe(fileViewerKey(READ_REQUEST));
     await firstOpen;
+    expect(reads).toBe(1);
     expect(store.getState().files[fileViewerKey(READ_REQUEST)].status).toBe(
       'idle',
     );
@@ -431,7 +459,9 @@ describe('createFileViewerStore', () => {
     gate.resolve(preview({ content: 'v1 edit', version: 'v2' }));
     const ok = await savePromise;
 
-    expect(ok).toBe(true);
+    // The snapshot committed, but the newer typing is not saved: callers
+    // such as close-save must not treat the document as clean.
+    expect(ok).toBe(false);
     const session = store.getState().files[key];
     expect(session.content).toBe('v2 edit while saving');
     expect(session.dirty).toBe(true);
@@ -790,13 +820,16 @@ describe('createFileViewerStore', () => {
     const latestOpen = store.getState().openFile(READ_REQUEST);
     staleRead.resolve(preview({ content: 'stale', version: 'v1' }));
     await staleOpen;
-    // A must not release B's loading sentinel, so a reopen stays focus-only.
+    // A must not release B's loading sentinel, so a reopen stays focus-only
+    // and waits for B.
     expect(store.getState().files[key].status).toBe('loading');
-    await store.getState().openFile(READ_REQUEST);
+    const focusOpen = store.getState().openFile(READ_REQUEST);
     expect(reads).toBe(3);
 
     latestRead.resolve(preview({ content: 'latest', version: 'v3' }));
     await latestOpen;
+    await focusOpen;
+    expect(reads).toBe(3);
     const session = store.getState().files[key];
     expect(session.content).toBe('latest');
     expect(session.preview?.version).toBe('v3');

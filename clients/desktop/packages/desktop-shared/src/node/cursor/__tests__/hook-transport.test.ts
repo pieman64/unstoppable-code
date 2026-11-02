@@ -376,7 +376,9 @@ describe('Cursor response usage hook', () => {
     const reports: CursorReportedUsage[] = [];
     const hook = await createCursorUsageHook(
       () => 'cursor-session',
-      (usage) => reports.push(usage),
+      (usage) => {
+        reports.push(usage);
+      },
     );
     try {
       await post(hook, { ...payload, conversation_id: 'another-chat' });
@@ -411,7 +413,9 @@ describe('Cursor response usage hook', () => {
     const reports: CursorReportedUsage[] = [];
     const hook = await createCursorUsageHook(
       () => 'cursor-session',
-      (usage) => reports.push(usage),
+      (usage) => {
+        reports.push(usage);
+      },
     );
     try {
       await post(hook, { ...payload, padding: 'x'.repeat(64 * 1024) }).catch(

@@ -1,10 +1,11 @@
 /** @jest-environment jsdom */
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
-import type {
-  CodeReviewUpdatedEvent,
-  CodeReviewGetResponse,
-  CodeReviewModalOpenRequest,
+import {
+  emptyCodeReviewFile,
+  type CodeReviewUpdatedEvent,
+  type CodeReviewGetResponse,
+  type CodeReviewModalOpenRequest,
 } from '@canopy/desktop-shared/types';
 import { useWorktreeReview } from '../useWorktreeReview';
 
@@ -61,9 +62,9 @@ it('shares artifact reads, ignores late initial data, and releases per-panel vis
         projectId: 'p',
         worktreeId: 'w',
         fingerprint: 'fresh',
-        review: null,
+        review: emptyCodeReviewFile(),
       });
-      resolveGet({ fingerprint: 'stale', review: null });
+      resolveGet({ fingerprint: 'stale', review: emptyCodeReviewFile() });
     });
     expect(container.textContent).toBe('freshfresh');
     await act(async () => {

@@ -260,7 +260,9 @@ function readPageArea(window) {
         bottomRight: radius(style.borderBottomRightRadius),
         bottomLeft: radius(style.borderBottomLeftRadius),
       },
-      cardRadius: Math.max(windowRadius / zoom - 4, 4),
+      // #6167 made the card inset 6px; its corners stay concentric with
+      // the window after interface zoom.
+      cardRadius: Math.max(windowRadius / zoom - 6, 6),
     };
   });
 }
@@ -555,7 +557,8 @@ test('the native Browser page fills its card and rounds only the card corners in
           window.__canopyPanelTestApi.focusPanel(group, panel),
         [dockedGroupId, id],
       );
-    await focusTab('panel-activity');
+    // Minimal no longer seeds Activity; open a real neighboring New tab.
+    await window.getByTestId(`panel-add-tab-${dockedGroupId}`).click();
     await nativePageHidden(electronApp);
     await focusTab(panelId);
     await checkNativePageInCard(

@@ -5,27 +5,7 @@ import {
   HeaderActionButton,
   RunningProcessCard,
 } from '@canopy/ui-shared/components';
-import {
-  ChevronRightMediumIcon,
-  ExternalIcon,
-  SettingsIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
-
-/** Right-pointing app chevron used to expand inline rows. */
-export function ChevronIcon({ open }: { open: boolean }): JSX.Element {
-  return (
-    <ChevronRightMediumIcon
-      size={16}
-      className={`transition-transform ${open ? 'rotate-90' : ''}`}
-    />
-  );
-}
-
-/** Inline “open in modal” glyph used in both the live-output ribbon and the
- * completed-run cards in HooksSection and ScriptsSection. */
-export function EnlargeIcon(): JSX.Element {
-  return <ExternalIcon size={16} />;
-}
+import { ExternalIcon, SettingsIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 /** Thin wrapper around the shared loading-spinner used in both sections. */
 export function Spinner(): JSX.Element {
@@ -105,10 +85,10 @@ export function LiveOutputShell({
         <button
           type="button"
           onClick={onEnlarge}
-          className="focus-ring rounded p-0.5 fg-accent/70 transition hover:fg-accent"
+          className="focus-ring rounded p-0.5 fg-accent/70 transition-colors hover:fg-accent"
           aria-label="Enlarge output"
         >
-          <EnlargeIcon />
+          <ExternalIcon size={14} />
         </button>
       }
       actionSlot={devServerSlot}
@@ -196,10 +176,10 @@ export function CompletedRunCard({
           <button
             type="button"
             onClick={onEnlarge}
-            className={`focus-ring rounded p-0.5 transition ${enlargeButtonClass}`}
+            className={`focus-ring rounded p-0.5 transition-colors ${enlargeButtonClass}`}
             aria-label="Enlarge output"
           >
-            <EnlargeIcon />
+            <ExternalIcon size={14} />
           </button>
           <span className={`font-medium ${labelClass}`}>{label}</span>
         </div>

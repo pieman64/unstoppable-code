@@ -6,8 +6,6 @@ import { TitlebarIconButton } from '../TitlebarIconButton';
 export interface PanelAddPanelButtonProps {
   groupId: string;
   addPanel: NonNullable<PanelTabBarAddTab['addPanel']>;
-  /** The group is full: render disabled, explaining why with this note. */
-  fullNote?: string;
 }
 
 /**
@@ -18,23 +16,7 @@ export interface PanelAddPanelButtonProps {
 export function PanelAddPanelButton({
   groupId,
   addPanel,
-  fullNote,
 }: PanelAddPanelButtonProps): JSX.Element {
-  if (fullNote !== undefined) {
-    return (
-      <div className="canopy-panel-add-tab-root">
-        <TitlebarIconButton
-          tooltipLabel={fullNote}
-          surface="panelTabStrip"
-          data-testid={`panel-add-panel-${groupId}`}
-          icon={ListAddIcon}
-          aria-label={addPanel.label}
-          aria-description={fullNote}
-          disabled
-        />
-      </div>
-    );
-  }
   return (
     <div className="canopy-panel-add-tab-root">
       <TitlebarIconButton

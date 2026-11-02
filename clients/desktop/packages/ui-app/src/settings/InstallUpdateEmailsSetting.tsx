@@ -25,7 +25,7 @@ export const INSTALL_UPDATE_EMAILS_TITLE = 'Update emails';
 const TOGGLE_ID = 'install-update-emails-toggle';
 const LABEL = "Updates to things I've installed";
 const DESCRIPTION =
-  'Get an email when someone updates a skill, pipeline, automation or other item you installed.';
+  'Get an email when someone updates a skill, workflow, automation or other item you installed.';
 
 type SettingState =
   | { readonly kind: 'loading' }
@@ -215,7 +215,7 @@ function InstallUpdateEmailsContent({
               onClick={handleRetry}
               data-testid="install-update-emails-retry"
             >
-              Retry
+              Try again
             </NoticeButton>
           }
         >

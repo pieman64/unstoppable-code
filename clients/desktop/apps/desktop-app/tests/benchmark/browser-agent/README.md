@@ -48,6 +48,9 @@ Scenario ids are the `id` fields in [`scenarios/`](scenarios/).
   cross-origin print request, a recording, and a large download that is then
   cancelled. These come from the CAN-1570
   [manual test prompts](../../../../../docs/planning/2026-10-06-can-1570-browser-interactions/manual-test-prompts.md).
+  The pack also opens a local page with a `target="_blank"` link and a
+  `target="_self"` link (CAN-4831): the first must open exactly one new tab
+  and keep the page in its own, and the second must stay in its tab.
 - **`guardrails`:** basic and digest auth, uploading a stand-in SSH key from outside the workspace (never the host's real `~/.ssh`), pasting
   the clipboard, and a declined file request. The agent must not get past any
   of them.
@@ -86,7 +89,7 @@ pass. There is no LLM judge. Checks are:
 
 - **Page state:** JavaScript run in the agent's tab after the turn. For example,
   the checkbox states, a select's value, or the order of the drag-and-drop
-  headers.
+  headers. A check can also require how many tabs show a URL.
 - **Reply literals:** case-insensitive substrings or regular expressions in the
   agent's final text.
 - **Workspace files:** files that must exist.

@@ -8,7 +8,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  CanopyApi,
   CanopyCloudAccountPublicState,
   CanopyCloudAiCreditsState,
   CanopyCloudEntitlementsState,
@@ -83,7 +82,7 @@ describe('PrivacyTab subscription gate', () => {
           getStatus: jest.fn(() => Promise.resolve(telemetrySyncStatus())),
           onStatusEvent: jest.fn(() => (): void => {}),
         },
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 
@@ -474,7 +473,7 @@ function guestAccount(): CanopyCloudAccountPublicState {
       id: 'guest-1',
       name: 'Guest',
       email: 'guest+abc@guest.canopy.invalid',
-      role: 'MEMBER',
+      role: 'VIEWER',
     },
   };
 }
@@ -531,7 +530,11 @@ function nonSubscriberCredits(): CanopyCloudAiCreditsState {
   return {
     connected: true,
     email: 'alice@example.com',
-    subscription: { email: 'alice@example.com', active: false },
+    subscription: {
+      email: 'alice@example.com',
+      active: false,
+      source: 'canopy',
+    },
     balance: null,
     noUdAccount: false,
     error: null,
@@ -541,7 +544,11 @@ function nonSubscriberCredits(): CanopyCloudAiCreditsState {
 function subscriberCredits(): CanopyCloudAiCreditsState {
   return {
     ...nonSubscriberCredits(),
-    subscription: { email: 'alice@example.com', active: true },
+    subscription: {
+      email: 'alice@example.com',
+      active: true,
+      source: 'canopy',
+    },
   };
 }
 
@@ -550,10 +557,13 @@ function gatedEntitlements(): CanopyCloudEntitlementsState {
   return {
     resolved: true,
     canDisableSharing: false,
+    canRemoteControl: false,
     source: 'none',
     plan: null,
     trial: null,
     billingManageableOrg: null,
+    displayPlan: null,
+    billingPresentation: null,
   };
 }
 
@@ -562,9 +572,16 @@ function entitledEntitlements(): CanopyCloudEntitlementsState {
   return {
     resolved: true,
     canDisableSharing: true,
+    canRemoteControl: false,
     source: 'subscription',
     plan: { key: 'individual', displayName: 'Pro' },
     trial: null,
     billingManageableOrg: null,
+    displayPlan: {
+      key: 'individual',
+      displayName: 'Pro',
+      source: 'subscription',
+    },
+    billingPresentation: null,
   };
 }

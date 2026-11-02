@@ -1,3 +1,9 @@
+import type {
+  PairingTelemetryAttempt,
+  PairingTelemetryRecorder,
+  PairingTelemetryOutcome,
+} from '@canopy/desktop-instrumentation/pairing';
+import { beginPairingTelemetry } from '../lib/pairing-telemetry';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type {
@@ -81,6 +87,7 @@ export interface RemoteRelayFactoryOptions {
 }
 
 export interface RemoteControlServiceDeps {
+  recordPairing?: PairingTelemetryRecorder;
   store: RemoteAccessStore;
   createRelay: (options: RemoteRelayFactoryOptions) => RemoteRelay;
   fetchToken: (deviceId: string) => Promise<DeviceRelayTokenResponse>;
@@ -144,9 +151,11 @@ interface IncomingPairingEntry {
   view: RemoteIncomingPairing;
   publicKey: string;
   decide: (approve: boolean) => void;
+  cancel: () => void;
 }
 
 interface OutgoingPairingEntry {
+  telemetry?: PairingTelemetryAttempt;
   view: RemoteOutgoingPairing;
   rpc: RpcPeer | null;
   cancelled: boolean;
@@ -352,7 +361,7 @@ export class RemoteControlService {
     this.connections.clear();
     for (const session of Array.from(this.hostSessions))
       session.close('shutdown');
-    for (const entry of Array.from(this.incoming.values())) entry.decide(false);
+    for (const entry of Array.from(this.incoming.values())) entry.cancel();
     // A finished pairing's outcome stays on screen.
     if (this.pairingInProgress()) this.cancelOutgoing();
     this.sessions?.dispose();
@@ -571,7 +580,7 @@ export class RemoteControlService {
 
   private endAllControl(): void {
     for (const session of Array.from(this.hostSessions)) session.end('revoked');
-    for (const entry of Array.from(this.incoming.values())) entry.decide(false);
+    for (const entry of Array.from(this.incoming.values())) entry.cancel();
   }
 
   private closeControllerSessions(
@@ -693,12 +702,28 @@ export class RemoteControlService {
         }
         requested = true;
         const request = PairRequestParamsSchema.parse(params);
+        const telemetry = beginPairingTelemetry(this.deps.recordPairing, {
+          pairing_kind: 'computer_incoming',
+          pairing_entry: 'incoming_prompt',
+          peer_platform: request.platform,
+        });
+        let decisionOutcome: PairingTelemetryOutcome = 'declined';
         let stopWatchingClose = (): void => undefined;
         const approved = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(
-            () => resolve(false),
-            PAIRING_DECISION_TIMEOUT_MS,
-          );
+          let settled = false;
+          const settle = (
+            approve: boolean,
+            outcome: PairingTelemetryOutcome,
+          ): void => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            decisionOutcome = outcome;
+            resolve(approve);
+          };
+          const timer = setTimeout(() => {
+            settle(false, 'timed_out');
+          }, PAIRING_DECISION_TIMEOUT_MS);
           this.incoming.set(pairingId, {
             view: {
               pairingId,
@@ -708,14 +733,15 @@ export class RemoteControlService {
               code: session.handshake.shortAuthenticationString,
             },
             publicKey: session.handshake.peerPublicKey,
+            cancel: () => {
+              settle(false, 'failed');
+            },
             decide: (approve) => {
-              clearTimeout(timer);
-              resolve(approve);
+              settle(approve, 'declined');
             },
           });
           stopWatchingClose = rpc.onClose(() => {
-            clearTimeout(timer);
-            resolve(false);
+            settle(false, 'failed');
           });
           this.scheduleBroadcast();
         });
@@ -725,23 +751,32 @@ export class RemoteControlService {
         // The other computer saves the pairing only once it hears the answer;
         // after the connection closes it never will, so neither does this one.
         if (approved && !rpc.isClosed) {
-          await this.deps.store.update((current) =>
-            rpc.isClosed
-              ? current
-              : {
-                  ...current,
-                  pairedControllers: upsertPairedDevice(
-                    current.pairedControllers,
-                    {
-                      deviceId: session.peerDeviceId,
-                      name: request.name,
-                      platform: request.platform,
-                      publicKey: session.handshake.peerPublicKey,
-                      pairedAt: new Date(this.now()).toISOString(),
-                    },
-                  ),
-                },
-          );
+          let persisted = false;
+          try {
+            await this.deps.store.update((current) => {
+              if (rpc.isClosed) return current;
+              persisted = true;
+              return {
+                ...current,
+                pairedControllers: upsertPairedDevice(
+                  current.pairedControllers,
+                  {
+                    deviceId: session.peerDeviceId,
+                    name: request.name,
+                    platform: request.platform,
+                    publicKey: session.handshake.peerPublicKey,
+                    pairedAt: new Date(this.now()).toISOString(),
+                  },
+                ),
+              };
+            });
+            telemetry?.end(persisted && !rpc.isClosed ? 'approved' : 'failed');
+          } catch (error) {
+            telemetry?.end('failed');
+            throw error;
+          }
+        } else {
+          telemetry?.end(approved ? 'failed' : decisionOutcome);
         }
         const result: PairRequestResult = {
           approved,
@@ -784,6 +819,11 @@ export class RemoteControlService {
       cancelled: false,
       committed: false,
     };
+    entry.telemetry = beginPairingTelemetry(this.deps.recordPairing, {
+      pairing_kind: 'computer_outgoing',
+      pairing_entry: 'pair_computer_dialog',
+      peer_platform: peer.platform,
+    });
     this.outgoing = entry;
     this.scheduleBroadcast();
     void this.runOutgoingPairing(entry, sessions);
@@ -828,6 +868,7 @@ export class RemoteControlService {
       );
       rpc.close('closed');
       if (!result.approved) {
+        entry.telemetry?.end('rejected');
         update({ status: 'rejected' });
         return;
       }
@@ -843,9 +884,11 @@ export class RemoteControlService {
           pairedAt: new Date(this.now()).toISOString(),
         }),
       }));
+      entry.telemetry?.end('approved');
       update({ status: 'approved', name: result.name });
     } catch (error) {
       if (entry.cancelled) return;
+      entry.telemetry?.end('failed');
       update({
         status: 'failed',
         error:
@@ -865,6 +908,7 @@ export class RemoteControlService {
       if (entry.view.status !== 'awaiting-approval') this.outgoing = null;
       return;
     }
+    entry.telemetry?.end('cancelled');
     entry.cancelled = true;
     entry.rpc?.close('closed');
     this.outgoing = null;

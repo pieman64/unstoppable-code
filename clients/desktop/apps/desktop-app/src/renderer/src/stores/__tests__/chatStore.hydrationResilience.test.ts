@@ -18,6 +18,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type * as ChatStoreModule from '../chatStore';
 import type * as TabLifecycleModule from '../chat/tab-lifecycle';
+import type * as HydrationModule from '../chat/hydration';
 import { shouldKeepWorktreeChatHydrated } from '../chat/hydration';
 import type { WorktreeChatState } from '../chat/types';
 
@@ -37,7 +38,17 @@ declare global {
   }
 }
 
+let loadedHydration: typeof HydrationModule | null = null;
+
+// A pending idle-unload timer closes over its module instance, so it keeps a
+// `jest.resetModules()` copy of the whole store graph alive until it fires.
+function releaseLoadedChatStore(): void {
+  loadedHydration?.clearIdleChatUnloadTimer();
+  loadedHydration = null;
+}
+
 function loadChatStore(): typeof ChatStoreModule {
+  releaseLoadedChatStore();
   jest.resetModules();
   Object.defineProperty(global, 'window', {
     configurable: true,
@@ -56,7 +67,10 @@ function loadChatStore(): typeof ChatStoreModule {
       },
     },
   });
-  return jest.requireActual<typeof ChatStoreModule>('../chatStore');
+  const chatStore = jest.requireActual<typeof ChatStoreModule>('../chatStore');
+  loadedHydration =
+    jest.requireActual<typeof HydrationModule>('../chat/hydration');
+  return chatStore;
 }
 
 function persistedTab(id: string): PersistedChatTab {
@@ -112,6 +126,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 600));
+  releaseLoadedChatStore();
 });
 
 describe('chat tab hydration resilience', () => {

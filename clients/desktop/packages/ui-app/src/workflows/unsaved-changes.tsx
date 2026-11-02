@@ -1,11 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import {
-  Button,
-  DialogModal,
-  LoadingSpinner,
-} from '@canopy/ui-shared/components';
+import { ConfirmDialog } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /** What a save attempt came to. A failure keeps the editor and the draft. */
@@ -190,13 +186,13 @@ export interface UnsavedChangesDialogProps {
   readonly saving?: boolean;
   readonly onSave: () => void;
   readonly onDiscard: () => void;
-  /** X, Escape or a click outside. There is no Cancel button. */
+  /** Cancel, Escape or a click outside: keep editing. */
   readonly onKeepEditing: () => void;
 }
 
 /**
- * `Save changes to "…"?` with Discard and Save changes. Closing it any other
- * way keeps editing.
+ * `Save changes to “…”?`, a two-way choice: Cancel keeps editing, then
+ * Discard and the default Save changes, which Enter presses.
  */
 export function UnsavedChangesDialog({
   name,
@@ -206,46 +202,26 @@ export function UnsavedChangesDialog({
   onKeepEditing,
 }: UnsavedChangesDialogProps): JSX.Element {
   return (
-    <DialogModal
-      onClose={saving ? (): void => undefined : onKeepEditing}
-      closeOnBackdrop={!saving}
-      closeOnEscape={!saving}
-      closeButtonDisabled={saving}
+    <ConfirmDialog
       title={
         <span>
-          Save changes to &quot;
-          <span className={REPLAY_MASK_CLASS}>{name}</span>&quot;?
+          Save changes to “<span className={REPLAY_MASK_CLASS}>{name}</span>”?
         </span>
       }
-      maxWidth="md"
-      trapFocus
+      message="Discarding loses the edits you haven’t saved."
+      confirmLabel="Save changes"
+      busyLabel="Saving…"
+      busy={saving}
+      onConfirm={onSave}
+      onCancel={onKeepEditing}
+      secondaryAction={{
+        label: 'Discard',
+        onSelect: onDiscard,
+        testId: 'workflows-unsaved-discard',
+      }}
       dataTestId="workflows-unsaved-dialog"
-    >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
-        <p className="text-s fg-secondary">You have unsaved changes.</p>
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            variant="outline"
-            size="lg"
-            disabled={saving}
-            data-testid="workflows-unsaved-discard"
-            onClick={onDiscard}
-          >
-            Discard
-          </Button>
-          <Button
-            variant="primary"
-            size="lg"
-            disabled={saving}
-            aria-busy={saving}
-            data-testid="workflows-unsaved-save"
-            onClick={onSave}
-          >
-            {saving ? <LoadingSpinner className="shrink-0" decorative /> : null}
-            Save changes
-          </Button>
-        </div>
-      </div>
-    </DialogModal>
+      confirmTestId="workflows-unsaved-save"
+      cancelTestId="workflows-unsaved-cancel"
+    />
   );
 }

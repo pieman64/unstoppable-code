@@ -48,6 +48,16 @@ function createMockClient(): MockClient {
   const unsubscribeCalls: DomainEventName[] = [];
   const commandCalls: RecordedCommand[] = [];
 
+  function handlersFor<K extends DomainEventName>(
+    name: K,
+  ): Array<(event: DomainEventMap[K]) => void> {
+    const current = handlers[name];
+    if (current) return current;
+    const created: Array<(event: DomainEventMap[K]) => void> = [];
+    Reflect.set(handlers, name, created);
+    return created;
+  }
+
   const client: CanopyClient = {
     capabilities: {
       localExecution: true,
@@ -76,11 +86,15 @@ function createMockClient(): MockClient {
       handler: (event: DomainEventMap[K]) => void,
     ): Unsubscribe {
       subscribeCalls.push(name);
-      const list = (handlers[name] ??= []);
+      const list = handlersFor(name);
       list.push(handler);
       return (): void => {
         unsubscribeCalls.push(name);
-        handlers[name] = list.filter((h) => h !== handler);
+        Reflect.set(
+          handlers,
+          name,
+          list.filter((h) => h !== handler),
+        );
       };
     },
   };
@@ -118,6 +132,124 @@ function chatMessage(
 }
 
 describe('createChatStore', () => {
+  it.each(['event', 'hydrate'] as const)(
+    'retains only the matching occurrence read metadata during %s replacement',
+    (method) => {
+      const mock = createMockClient();
+      const store = createChatStore(mock.client);
+      const apply = (
+        parts: NonNullable<PortalChatMessage['parts']>,
+        revision: number,
+      ): void => {
+        const message = chatMessage({
+          messageId: 'result-row',
+          role: 'assistant',
+          createdAtMs: 10,
+          updatedAtMs: revision,
+          parts,
+        });
+        if (method === 'hydrate') store.getState().hydrate('c1', [message]);
+        else
+          mock.emit('chat.message', {
+            occurredAt: new Date(revision).toISOString(),
+            scope: 'worktree',
+            workspaceLocalId: 'ws',
+            worktreeLocalId: 'wt',
+            chatId: 'c1',
+            message,
+          });
+      };
+      apply(
+        [
+          {
+            kind: 'tool_result',
+            data: { toolUseId: 'same', output: 'first' },
+            occurrence: { id: 'first#0', revision: 1 },
+            outputLocator: {
+              messageId: 'first',
+              blockOrdinal: 0,
+              field: 'output',
+            },
+          },
+          {
+            kind: 'tool_result',
+            data: { toolUseId: 'same', output: 'second' },
+            occurrence: { id: 'second#0', revision: 2 },
+            outputLocator: {
+              messageId: 'second',
+              blockOrdinal: 0,
+              field: 'output',
+            },
+          },
+        ],
+        100,
+      );
+      apply(
+        [
+          {
+            kind: 'tool_result',
+            data: { toolUseId: 'same', output: 'preview two' },
+            occurrence: { id: 'second#0', revision: 90 },
+          },
+          {
+            kind: 'tool_result',
+            data: { toolUseId: 'same', output: 'preview one' },
+            occurrence: { id: 'first#0', revision: 90 },
+          },
+          {
+            kind: 'tool_result',
+            data: { toolUseId: 'same', output: 'new result' },
+            occurrence: { id: 'third#0', revision: 90 },
+          },
+        ],
+        200,
+      );
+      expect(store.getState().threads.c1.messages[0].parts).toEqual([
+        {
+          kind: 'tool_result',
+          data: { toolUseId: 'same', output: 'preview two' },
+          occurrence: { id: 'second#0', revision: 2 },
+          outputLocator: {
+            messageId: 'second',
+            blockOrdinal: 0,
+            field: 'output',
+          },
+        },
+        {
+          kind: 'tool_result',
+          data: { toolUseId: 'same', output: 'preview one' },
+          occurrence: { id: 'first#0', revision: 1 },
+          outputLocator: {
+            messageId: 'first',
+            blockOrdinal: 0,
+            field: 'output',
+          },
+        },
+        {
+          kind: 'tool_result',
+          data: { toolUseId: 'same', output: 'new result' },
+          occurrence: { id: 'third#0', revision: 90 },
+        },
+      ]);
+      apply(
+        [
+          {
+            kind: 'tool_result',
+            data: { toolUseId: 'same', output: 'ambiguous' },
+          },
+        ],
+        300,
+      );
+      expect(store.getState().threads.c1.messages[0].parts).toEqual([
+        {
+          kind: 'tool_result',
+          data: { toolUseId: 'same', output: 'ambiguous' },
+        },
+      ]);
+      store[CLIENT_STORE_DISPOSE]?.();
+    },
+  );
+
   it('does not repair an old unmatched tool use when the latest turn is clean', () => {
     jest.useFakeTimers();
     jest.setSystemTime(1_000_000);
@@ -792,6 +924,42 @@ describe('createChatStore', () => {
     expect(store.getState().threads.c1?.queuedMessages).toEqual([]);
   });
 
+  it('defaults waiting delegation ids to a frozen empty array', () => {
+    const store = createChatStore(createMockClient().client);
+
+    store.getState().hydrate('c1', [], { route: { scope: 'standalone' } });
+
+    const waitingDelegationIds =
+      store.getState().threads.c1?.waitingDelegationIds;
+    expect(waitingDelegationIds).toEqual([]);
+    expect(waitingDelegationIds && Object.isFrozen(waitingDelegationIds)).toBe(
+      true,
+    );
+  });
+
+  it('sets, clears, preserves, and reuses equal waiting delegation ids', () => {
+    const store = createChatStore(createMockClient().client);
+
+    store.getState().hydrate('c1', [], {
+      waitingDelegationIds: ['delegate-1', 'delegate-2'],
+    });
+    const first = store.getState().threads.c1?.waitingDelegationIds;
+    const firstThread = store.getState().threads.c1;
+    expect(first).toEqual(['delegate-1', 'delegate-2']);
+
+    store.getState().hydrate('c1', [], {
+      waitingDelegationIds: ['delegate-1', 'delegate-2'],
+    });
+    expect(store.getState().threads.c1?.waitingDelegationIds).toBe(first);
+    expect(store.getState().threads.c1).toBe(firstThread);
+
+    store.getState().hydrate('c1', [], {});
+    expect(store.getState().threads.c1?.waitingDelegationIds).toBe(first);
+
+    store.getState().hydrate('c1', [], { waitingDelegationIds: [] });
+    expect(store.getState().threads.c1?.waitingDelegationIds).toEqual([]);
+  });
+
   it('clears steering capabilities when an authoritative hydration supplies undefined', () => {
     const store = createChatStore(createMockClient().client);
     const capabilities = {
@@ -1058,6 +1226,50 @@ describe('createChatStore', () => {
       expect(thread.status).toBe('error');
       expect(thread.error).toBe('boom');
       expect(thread.turnActive).toBe(false);
+    });
+
+    it("shows a failed turn's error once after history brings its saved Error row", () => {
+      const mock = createMockClient();
+      const store = createChatStore(mock.client);
+      // Portal sequence from CI run 40655255952: the live failed frame, then a
+      // chat history response carrying the reducer's saved `Error: …` row.
+      // Hydrate keeps the live row, so the turn holds both ids.
+      const error = 'The Cursor version check exited before it completed.';
+      const user = chatMessage({
+        messageId: 'u1',
+        role: 'user',
+        text: 'Hi',
+        createdAtMs: 1,
+      });
+      emitTo(mock, user);
+      emitTo(mock, turnTimer('streaming', 2));
+      emitTo(
+        mock,
+        chatMessage({
+          messageId: 'u1:assistant',
+          role: 'assistant',
+          status: 'failed',
+          text: error,
+          createdAtMs: 5,
+        }),
+      );
+      store.getState().hydrate('c1', [
+        user,
+        turnTimer('complete', 3),
+        chatMessage({
+          messageId: 'c1:c1:u1:provider:initial:1:0',
+          role: 'system',
+          text: `Error: ${error}`,
+          createdAtMs: 4,
+        }),
+      ]);
+      const thread = store.getState().threads['c1'];
+      expect(thread.turnGroups).toHaveLength(1);
+      expect(thread.turnGroups[0].finalMessageIds).toEqual([
+        'u1:assistant',
+        'u1:turn-timer',
+      ]);
+      expect(thread.error).toBe(error);
     });
   });
 
@@ -2641,6 +2853,91 @@ describe('createChatStore — settings & optimistic (CAN-739)', () => {
           (message) => message.messageId === 'optimistic-owned',
         ),
       ).toBe(true);
+    });
+
+    describe('canonical timers', () => {
+      const canonicalTimer = (
+        status: PortalChatMessage['status'],
+        createdAtMs: number,
+        turnId: string,
+        userMessageId: string,
+      ): PortalChatMessage =>
+        chatMessage({
+          messageId: `${turnId}:timer`,
+          role: 'system',
+          status,
+          parts: [
+            {
+              kind: 'turn_timer',
+              data: {
+                turnId,
+                userMessageId,
+                startedAt: 0,
+                completedAt: status === 'streaming' ? null : createdAtMs,
+              },
+            },
+          ],
+          createdAtMs,
+        });
+      const echo = chatMessage({
+        messageId: 'server-user',
+        role: 'user',
+        text: 'hello',
+        createdAtMs: 150,
+      });
+
+      it('lets the owned execution end the optimistic raise', () => {
+        const mock = createMockClient();
+        const store = createChatStore(mock.client);
+        store.getState().addOptimisticUserMessage('c1', {
+          text: 'hello',
+          createdAtMs: 100,
+          localId: 'optimistic-owned',
+        });
+        emitTo(mock, echo);
+        emitTo(mock, canonicalTimer('complete', 200, 'T1', 'server-user'));
+
+        const authoritative = store.getState().threads['c1'];
+        expect(authoritative.status).toBe('idle');
+        expect(authoritative.turnActive).toBe(false);
+        store
+          .getState()
+          .rollbackOptimisticSend('c1', { localId: 'optimistic-owned' });
+        expect(store.getState().threads['c1']).toBe(authoritative);
+      });
+
+      it('ignores an older execution ending under the optimistic raise', () => {
+        const mock = createMockClient();
+        const store = createChatStore(mock.client);
+        store.getState().addOptimisticUserMessage('c1', {
+          text: 'hello',
+          createdAtMs: 100,
+          localId: 'optimistic-owned',
+        });
+        emitTo(mock, echo);
+        emitTo(mock, canonicalTimer('complete', 200, 'T0', 'old'));
+
+        expect(store.getState().threads['c1'].status).toBe('streaming');
+        expect(store.getState().threads['c1'].turnActive).toBe(true);
+      });
+
+      it('keeps two executions that share an anchor as two timer rows', () => {
+        const mock = createMockClient();
+        const store = createChatStore(mock.client);
+        emitTo(mock, echo);
+        emitTo(mock, canonicalTimer('complete', 200, 'T1', 'server-user'));
+        emitTo(mock, canonicalTimer('streaming', 300, 'T2', 'server-user'));
+
+        const running = store.getState().threads['c1'];
+        expect(running.messages.map((message) => message.messageId)).toEqual([
+          'server-user',
+          'T1:timer',
+          'T2:timer',
+        ]);
+        expect(running.turnActive).toBe(true);
+        emitTo(mock, canonicalTimer('complete', 400, 'T2', 'server-user'));
+        expect(store.getState().threads['c1'].turnActive).toBe(false);
+      });
     });
 
     it('ignores a newly hydrated terminal timer from an older turn', () => {

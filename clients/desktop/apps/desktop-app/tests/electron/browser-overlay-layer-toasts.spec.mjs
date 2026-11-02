@@ -204,7 +204,9 @@ async function overlayLayer(electronApp) {
         (child) =>
           child.webContents &&
           !child.webContents.isDestroyed() &&
-          child.webContents.getURL() === 'about:blank',
+          child.webContents.getURL() === 'about:blank' &&
+          // The notifications slot; the above-browser slot is another layer.
+          child.webContents.getTitle() === 'Notifications',
       );
       if (index === -1) continue;
       const child = children[index];
@@ -232,7 +234,10 @@ async function closeOverlayLayer(electronApp) {
   await electronApp.evaluate(({ BrowserWindow }) => {
     for (const win of BrowserWindow.getAllWindows()) {
       for (const child of win.contentView.children ?? []) {
-        if (child.webContents?.getURL() === 'about:blank') {
+        if (
+          child.webContents?.getURL() === 'about:blank' &&
+          child.webContents.getTitle() === 'Notifications'
+        ) {
           child.webContents.close();
           return;
         }
@@ -247,7 +252,12 @@ async function clickInOverlayLayer(electronApp, selector) {
     async ({ BrowserWindow }, target) => {
       for (const win of BrowserWindow.getAllWindows()) {
         for (const child of win.contentView.children ?? []) {
-          if (child.webContents?.getURL() !== 'about:blank') continue;
+          if (
+            child.webContents?.getURL() !== 'about:blank' ||
+            child.webContents.getTitle() !== 'Notifications'
+          ) {
+            continue;
+          }
           return child.webContents.executeJavaScript(
             `(() => { const el = document.querySelector(${JSON.stringify(target)}); if (!el) return false; el.click(); return true; })()`,
           );
@@ -278,7 +288,12 @@ async function pressInOverlayLayer(electronApp, selector) {
       for (const win of BrowserWindow.getAllWindows()) {
         for (const child of win.contentView.children ?? []) {
           const contents = child.webContents;
-          if (contents?.getURL() !== 'about:blank') continue;
+          if (
+            contents?.getURL() !== 'about:blank' ||
+            contents.getTitle() !== 'Notifications'
+          ) {
+            continue;
+          }
           const point = await contents.executeJavaScript(
             `(() => { const el = document.querySelector(${JSON.stringify(target)}); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`,
           );
@@ -315,7 +330,12 @@ async function leavingCardInOverlayLayer(electronApp) {
   return electronApp.evaluate(async ({ BrowserWindow }) => {
     for (const win of BrowserWindow.getAllWindows()) {
       for (const child of win.contentView.children ?? []) {
-        if (child.webContents?.getURL() !== 'about:blank') continue;
+        if (
+          child.webContents?.getURL() !== 'about:blank' ||
+          child.webContents.getTitle() !== 'Notifications'
+        ) {
+          continue;
+        }
         return child.webContents.executeJavaScript(
           `(() => { const el = document.querySelector('[data-testid="toast-stack-card"][data-ending-style]'); return el ? el.getBoundingClientRect().left : null; })()`,
         );

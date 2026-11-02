@@ -26,7 +26,10 @@ export function createSecureFileServices(
   options: SecureFileServiceOptions = {},
 ): PlatformSecureFileServices {
   const windows = os === 'win32';
-  const ops = { ...files.NODE_OPERATIONS, ...options.operations };
+  const ops = {
+    ...(windows ? files.WINDOWS_OPERATIONS : files.NODE_OPERATIONS),
+    ...options.operations,
+  };
   const policy: files.RetryPolicy = {
     // 10 Windows tries ride out about 2.25 s of scanner locks.
     attempts: windows ? 10 : 1,
@@ -54,8 +57,7 @@ export function createSecureFileServices(
     },
     rename: (request) =>
       files.renameRegularFile(request, ops, policy, !windows),
-    syncDirectory: async (target) =>
-      windows ? 'unsupported' : files.syncDirectory(target, ops),
+    syncDirectory: (target) => files.syncDirectory(target, ops),
   };
   return Object.freeze(services);
 }

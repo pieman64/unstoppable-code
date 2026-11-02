@@ -16,7 +16,15 @@ import type { WebSearchAction } from './WebSearchAction';
 
 export type ResponseItem =
   | {
+      type: 'additional_tools';
+      id?: ResponseItemId;
+      role: string;
+      tools: unknown[];
+    }
+  | {
       type: 'message';
+      encrypted_content?: string;
+      status?: string;
       id?: ResponseItemId;
       role: string;
       content: Array<ContentItem>;
@@ -41,6 +49,7 @@ export type ResponseItem =
     }
   | {
       type: 'local_shell_call';
+      encrypted_content?: string;
       /**
        * Legacy id field retained for compatibility with older payloads.
        */
@@ -55,6 +64,8 @@ export type ResponseItem =
     }
   | {
       type: 'function_call';
+      encrypted_content?: string;
+      status?: string;
       id?: ResponseItemId;
       name: string;
       namespace?: string;
@@ -65,6 +76,7 @@ export type ResponseItem =
     }
   | {
       type: 'tool_search_call';
+      encrypted_content?: string;
       id?: ResponseItemId;
       call_id: string | null;
       status?: string;
@@ -83,6 +95,7 @@ export type ResponseItem =
     }
   | {
       type: 'custom_tool_call';
+      encrypted_content?: string;
       id?: ResponseItemId;
       status?: string;
       call_id: string;
@@ -110,6 +123,7 @@ export type ResponseItem =
     }
   | {
       type: 'web_search_call';
+      encrypted_content?: string;
       id?: ResponseItemId;
       status?: string;
       action?: WebSearchAction;
@@ -117,6 +131,7 @@ export type ResponseItem =
     }
   | {
       type: 'image_generation_call';
+      encrypted_content?: string;
       id?: ResponseItemId;
       status: string;
       revised_prompt?: string;

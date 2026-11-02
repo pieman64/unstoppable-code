@@ -487,7 +487,7 @@ describe('brand tooling', () => {
   it('rejects malformed bundle identifiers before plist rendering', () => {
     const tempRoot = createTempBrandRepo('bad-bundle-id', (manifest) => {
       manifest.dictation = {
-        ...((manifest.dictation as Record<string, unknown>) ?? {}),
+        ...(manifest.dictation ?? {}),
         bundleId: 'com.bad&bundle.dictate',
       };
     });
@@ -793,7 +793,7 @@ describe('brand tooling', () => {
   it('rejects duplicate fallback entries instead of silently deduping them', () => {
     const tempRoot = createTempBrandRepo('duplicate-fallback', (manifest) => {
       manifest.storage = {
-        ...((manifest.storage as Record<string, unknown>) ?? {}),
+        ...(manifest.storage ?? {}),
         dataDirNames: {
           prod: ['.duplicate-fallback', '.canopy', '.canopy'],
           rc: ['.duplicate-fallback-rc', '.canopy-rc'],
@@ -819,7 +819,7 @@ describe('brand tooling', () => {
   it('rejects secure data directory traversal segments', () => {
     const tempRoot = createTempBrandRepo('secure-traversal', (manifest) => {
       manifest.storage = {
-        ...((manifest.storage as Record<string, unknown>) ?? {}),
+        ...(manifest.storage ?? {}),
         secureDataDirNames: {
           prod: '..',
           rc: '.secure-traversal-rc-secure',

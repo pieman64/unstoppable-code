@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type {
+  CanopyCloudAccountPublicState,
   DeepLinkResolveShareResponse,
   DeepLinkShareOpenEvent,
   PublicShareSnapshot,
@@ -16,23 +18,41 @@ import {
   findInstalledSkillByContentHash,
   describeSharedSkillImportNotice,
   importSharedSkill,
+  lookupInstalledSharedSkill,
+  sharedSkillReceiptsEnforced,
+  sharedSkillWriteFailureCode,
 } from '@/lib/sharedSkillImport';
+import { extractIpcErrorMessage } from '@/lib/errors';
 import { findInstalledPipelineByContent } from '@/lib/publicShareInstallState';
 import { findInstalledAutomationByOrigin } from '@/lib/publicAutomationInstallState';
 import { buildSkillStarterPrompt } from '@/lib/publicShareExamplePrompt';
 import { stageSkillStarterPrompt } from '@/lib/publicShareTryNowStaging';
+import {
+  insertSkillInvocation,
+  watchShareChatTarget,
+  type ShareChatInsertOutcome,
+  type ShareChatTarget,
+} from './shareChatTarget';
 import { parseSkillSource } from '@/lib/skillFrontmatter';
 import { formatUnresolvedCapabilitiesNotice } from '@/lib/unresolvedCapabilities';
 import { tryParseAndValidateYaml } from '@/lib/pipeline-yaml';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  isConnectedNonGuest,
+  useCloudConnectGateStore,
+} from '@/stores/cloudConnectGateStore';
+import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
+import { readCanopyCloudAccountChangeReason } from '@/lib/canopyCloudAccountChange';
 import { useChatStore } from '@/stores/chatStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import {
   findInstalledSharedPluginTarget,
   installSharedPluginRef,
 } from '@/lib/publicSharePluginInstall';
 import { resolveSharedCollectionImport } from '@/lib/sharedCollectionImport';
+import { shareLandingErrorCopy } from './shareLandingErrorCopy';
 
 /**
  * Shell-agnostic state machine for the public-share landing surface
@@ -64,22 +84,59 @@ const SKILLS_CHANGED_EVENT = 'canopy:skills-changed';
  * present an incomplete pipeline as a successful install.
  */
 const PACKAGE_UPGRADE_REQUIRED_MESSAGE =
-  'This shared pipeline includes dependencies that this version cannot install. Update the desktop app to continue.';
+  'This shared workflow includes dependencies that this version cannot install. Update the desktop app to continue.';
 const DEFINITION_ONLY_INSTALLED_STATUS =
-  'Pipeline definition installed without dependencies.';
+  'Workflow definition installed without dependencies.';
 
 type ResolveFailure = Extract<
   DeepLinkResolveShareResponse,
   { ok: false }
 >['reason'];
 
+/** Failures a different sign-in may recover, so account changes re-resolve. */
+function recoversWithAccount(reason: ResolveFailure): boolean {
+  return reason === 'sign-in-required' || reason === 'not-a-member';
+}
+
+/**
+ * Which credential a resolve reads under. A new sign-in, even to the same
+ * account, issues a new server key. Manual-key saves instead advance the
+ * stored entry's update stamp, so replacing those counts as a change too.
+ * `null` when the read is inconclusive and proves nothing about a change.
+ */
+function accountIdentity(
+  account: CanopyCloudAccountPublicState | null,
+): string | null {
+  if (account !== null && account.read !== undefined && account.read !== 'ok')
+    return null;
+  if (!isConnectedNonGuest(account)) return 'signed-out';
+  return `${account?.account?.id ?? ''}:${account?.serverApiKeyId ?? ''}:${account?.updatedAt ?? ''}`;
+}
+
 export type PublicShareLandingPhase =
   | { phase: 'loading' }
   | { phase: 'error'; reason: ResolveFailure }
   | { phase: 'ready'; snapshot: PublicShareSnapshot };
 
+/** What an in-place skill update must prove it is replacing (CAN-5307). */
+export interface PublicShareSkillReplacement {
+  expectedLocalContentHash: string;
+  expectedSourceContentHash: string;
+  expectedSourcePackageDigest?: string;
+  /** The copy has edits of the user's, or no install-time hash to tell. */
+  locallyEdited: boolean;
+}
+
 export type PublicShareInstalledTarget =
-  | { entity: 'skill'; sourceId: string; skillName: string }
+  | {
+      entity: 'skill';
+      sourceId: string;
+      skillName: string;
+      /** A receipted copy whose content or package differs from the share. */
+      updateAvailable?: boolean;
+      /** Present with `updateAvailable` for a scoped share's copy. */
+      replacement?: PublicShareSkillReplacement;
+    }
   | {
       entity: 'pipeline';
       pipelineId: string;
@@ -118,6 +175,18 @@ export interface PublicShareLanding {
   snapshot: PublicShareSnapshot | null;
   /** True while the arrival installed-state detection is running. */
   detecting: boolean;
+  /**
+   * Why the installed copy could not be verified, or `''`. While set, the
+   * review offers neither Install nor Update, only `refresh`.
+   */
+  verificationError: string;
+  /**
+   * The review is stale (a conflicting edit, a changed share): only a
+   * `refresh` may continue. Never retried with new hashes automatically.
+   */
+  needsRefresh: boolean;
+  /** Re-reads the share and its installed state, as a fresh review. */
+  refresh: () => void;
   installed: PublicShareInstalledTarget | null;
   installing: boolean;
   installError: string;
@@ -154,6 +223,18 @@ export interface PublicShareLanding {
    * prefill lands in the follow-up PR). Never auto-submits.
    */
   tryNow: (onNavigate?: () => void) => void;
+  /**
+   * **Use in this chat** (CAN-5219): appends an installed skill's invocation
+   * to the captured chat's composer, keeping its draft, and never sends.
+   * `installed` must still be this landing's installed copy and no install
+   * may be running. Reports the TRY_NOW handoff leg only once the composer
+   * accepted the text. Stays callable after the landing closes, so the
+   * installation notice can offer it.
+   */
+  insertInChat: (
+    installed: PublicShareInstalledTarget,
+    target: ShareChatTarget,
+  ) => Promise<ShareChatInsertOutcome>;
   /** Opens the installed entity's management surface (viewer/editor). */
   manage: (onNavigate?: () => void) => void;
   /** Removes the local installed copy; resolves whether it was removed. */
@@ -179,7 +260,31 @@ export interface PublicShareLanding {
   closeInstallReview: () => void;
   /** Record a completed wizard install and report the INSTALLED leg. */
   completeInstallReview: (activityId: string) => void;
+  /**
+   * Resolves the same link again after a failure (CAN-5222). A no-op while a
+   * resolve is running, so repeated clicks never overlap.
+   */
+  retryResolve: () => void;
+  /**
+   * Recovers `sign-in-required`: opens the sign-in gate when signed out, or
+   * account settings when a connected credential was refused. The landing
+   * re-resolves once the account changes; cancelling leaves it as it was.
+   */
+  signIn: () => void;
+  /**
+   * Recovers `not-a-member`: opens account settings, where the reader can sign
+   * out and sign in with another account. Nothing is signed out for them.
+   */
+  switchAccount: () => void;
 }
+
+const SKILL_COPY_MISSING_MESSAGE =
+  'Your installed copy of this skill is missing. Restore it, then try again.';
+const SKILL_COPY_UNVERIFIED_MESSAGE =
+  'Your installed copy of this skill could not be checked. Try again.';
+
+/** Detection that must block Install rather than fall back to it. */
+class InstalledStateUnverifiedError extends Error {}
 
 async function detectInstalled(
   snapshot: PublicShareSnapshot,
@@ -209,6 +314,47 @@ async function detectInstalled(
           updateAvailable: found.updateAvailable,
         }
       : null;
+  }
+  if (snapshot.entity === 'skill' && snapshot.scopedShare === true) {
+    // CAN-5307: a team or organization skill's receipt establishes the
+    // install; its hashes only decide whether an update is available.
+    if (sharedSkillReceiptsEnforced()) {
+      const found = await lookupInstalledSharedSkill({
+        id: snapshot.sourceRemoteId ?? snapshot.externalId,
+        rawSkill: snapshot.rawSkill,
+        contentHash: snapshot.contentHash,
+        ...(snapshot.distributionMode !== undefined
+          ? { distributionMode: snapshot.distributionMode }
+          : {}),
+        ...(snapshot.package !== undefined
+          ? { package: snapshot.package }
+          : {}),
+      });
+      if (found.status === 'absent') return null;
+      if (found.status === 'missing-copy')
+        throw new InstalledStateUnverifiedError(SKILL_COPY_MISSING_MESSAGE);
+      if (found.status === 'unverified')
+        throw new InstalledStateUnverifiedError(SKILL_COPY_UNVERIFIED_MESSAGE);
+      return {
+        entity: 'skill',
+        sourceId: found.sourceId,
+        skillName: found.skillName,
+        ...(found.updateAvailable
+          ? {
+              updateAvailable: true,
+              replacement: {
+                expectedLocalContentHash: found.localContentHash,
+                expectedSourceContentHash: found.sourceContentHash,
+                // Main reads omission as "no package", whatever the mode says.
+                ...(snapshot.package !== undefined
+                  ? { expectedSourcePackageDigest: snapshot.package.digest }
+                  : {}),
+                locallyEdited: found.locallyEdited,
+              },
+            }
+          : {}),
+      };
+    }
   }
   if (snapshot.entity === 'skill') {
     const found = await findInstalledSkillByContentHash(snapshot.contentHash);
@@ -351,10 +497,17 @@ export function usePublicShareLanding(
   link: DeepLinkShareOpenEvent,
   options?: PublicShareLandingOptions,
 ): PublicShareLanding {
+  const contextGeneration = useWorkspaceContextStore(
+    (store) => store.appliedGeneration,
+  );
+  const reviewGenerationRef = useRef(0);
   const [state, setState] = useState<PublicShareLandingPhase>({
     phase: 'loading',
   });
   const [detecting, setDetecting] = useState(false);
+  const [verificationError, setVerificationError] = useState('');
+  const [needsRefresh, setNeedsRefresh] = useState(false);
+  const [refreshCount, setRefreshCount] = useState(0);
   const [installed, setInstalledState] =
     useState<PublicShareInstalledTarget | null>(null);
   const installedRef = useRef<PublicShareInstalledTarget | null>(null);
@@ -367,8 +520,15 @@ export function usePublicShareLanding(
   );
   const [installing, setInstalling] = useState(false);
   const installInFlightRef = useRef(false);
+  const refresh = useCallback((): void => {
+    if (installInFlightRef.current) return;
+    setRefreshCount((count) => count + 1);
+  }, []);
+  const insertInFlightRef = useRef(false);
+  const consumedInsertRef = useRef<PublicShareInstalledTarget | null>(null);
   const [installError, setInstallError] = useState('');
   const [uninstalling, setUninstalling] = useState(false);
+  const uninstallInFlightRef = useRef(false);
   const [installProgress, setInstallProgress] = useState('');
   const [installStatus, setInstallStatus] = useState('');
   const [agentReadiness, setAgentReadiness] =
@@ -393,21 +553,141 @@ export function usePublicShareLanding(
     externalId: string;
     staleActivity?: ScheduledActivity;
   } | null>(null);
+  // CAN-5222: a retry or an account change starts a new attempt for the same
+  // link. Only one runs at a time; a newer attempt discards the older result.
+  const [resolveAttempt, setResolveAttempt] = useState(0);
+  const resolvingRef = useRef(true);
+  // Set once an attempt fails in a way another sign-in may fix, and kept until
+  // one succeeds or reaches a failure account changes cannot recover.
+  const [watchingAccount, setWatchingAccount] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
+    };
+  }, []);
   const reportHandoffEvents = options?.reportHandoffEvents === true;
   const reportHandoff = useCallback(
     (
       event: Parameters<typeof window.api.deepLinkReportHandoffEvent>[0],
     ): void => {
       if (!reportHandoffEvents) return;
-      void window.api.deepLinkReportHandoffEvent(event);
+      try {
+        void window.api
+          .deepLinkReportHandoffEvent(event)
+          .catch(() => undefined);
+      } catch {
+        // Reporting never changes the outcome of installation or staging.
+      }
     },
     [reportHandoffEvents],
   );
 
+  const resolveRequest = useMemo(
+    () => ({
+      entity: link.entity,
+      externalId: link.externalId,
+      ...(link.automationSource !== undefined
+        ? { automationSource: link.automationSource }
+        : {}),
+      ...(link.audience !== undefined ? { audience: link.audience } : {}),
+      // Forward the pin the recipient reviewed on the web page verbatim so
+      // the server can answer 409 rather than hand back different content.
+      ...(link.packageVersion !== undefined
+        ? { packageVersion: link.packageVersion }
+        : {}),
+      ...(link.expectedPipelineContentHash !== undefined
+        ? { expectedPipelineContentHash: link.expectedPipelineContentHash }
+        : {}),
+      ...(link.expectedDistributionMode !== undefined
+        ? { expectedDistributionMode: link.expectedDistributionMode }
+        : {}),
+      ...(link.expectedPackageDigest !== undefined
+        ? { expectedPackageDigest: link.expectedPackageDigest }
+        : {}),
+      ...(link.expectedCollectionContentHash !== undefined
+        ? {
+            expectedCollectionContentHash: link.expectedCollectionContentHash,
+          }
+        : {}),
+      ...(link.expectedWorkspaceTemplateContentHash !== undefined
+        ? {
+            expectedWorkspaceTemplateContentHash:
+              link.expectedWorkspaceTemplateContentHash,
+          }
+        : {}),
+      ...(link.expectedAutomationContentHash !== undefined
+        ? {
+            expectedAutomationContentHash: link.expectedAutomationContentHash,
+          }
+        : {}),
+    }),
+    [
+      link.audience,
+      link.automationSource,
+      link.entity,
+      link.externalId,
+      link.packageVersion,
+      link.expectedCollectionContentHash,
+      link.expectedPipelineContentHash,
+      link.expectedDistributionMode,
+      link.expectedPackageDigest,
+      link.expectedWorkspaceTemplateContentHash,
+      link.expectedAutomationContentHash,
+    ],
+  );
+  // Each link owns its recovery lifetime, including saved gate callbacks and
+  // asynchronous account reads. A newer event supersedes older account reads.
+  const recovery = useMemo(
+    (): {
+      request: typeof resolveRequest;
+      active: boolean;
+      watching: boolean;
+      identity: string | null;
+      read: number;
+      revision: number;
+    } => ({
+      request: resolveRequest,
+      active: true,
+      watching: false,
+      identity: null,
+      read: 0,
+      revision: 0,
+    }),
+    [resolveRequest],
+  );
   useEffect(() => {
+    recovery.active = true;
+    setWatchingAccount(false);
+    return (): void => {
+      recovery.active = false;
+    };
+  }, [recovery]);
+
+  useEffect(() => {
+    const recheck = (): void => {
+      if (installInFlightRef.current || uninstallInFlightRef.current) return;
+      setRefreshCount((count) => count + 1);
+    };
+    window.addEventListener(SKILLS_CHANGED_EVENT, recheck);
+    return (): void =>
+      window.removeEventListener(SKILLS_CHANGED_EVENT, recheck);
+  }, []);
+
+  useEffect(() => {
+    reviewGenerationRef.current += 1;
     let cancelled = false;
+    const revision = recovery.revision;
+    const isCurrent = (): boolean =>
+      !cancelled && recovery.active && revision === recovery.revision;
+    resolvingRef.current = true;
     setState({ phase: 'loading' });
     setInstalled(null);
+    // This resolve owns detection now; an older one may have stopped mid-way.
+    setDetecting(false);
+    setVerificationError('');
+    setNeedsRefresh(false);
     setInstallError('');
     setInstallProgress('');
     setInstallStatus('');
@@ -418,50 +698,18 @@ export function usePublicShareLanding(
     setWorkspaceReadiness(null);
     setWorkspaceReadinessLoading(false);
     void window.api
-      .deepLinkResolveShare({
-        entity: link.entity,
-        externalId: link.externalId,
-        ...(link.automationSource !== undefined
-          ? { automationSource: link.automationSource }
-          : {}),
-        ...(link.audience !== undefined ? { audience: link.audience } : {}),
-        // Forward the pin the recipient reviewed on the web page verbatim so
-        // the server can answer 409 rather than hand back different content.
-        ...(link.packageVersion !== undefined
-          ? { packageVersion: link.packageVersion }
-          : {}),
-        ...(link.expectedPipelineContentHash !== undefined
-          ? { expectedPipelineContentHash: link.expectedPipelineContentHash }
-          : {}),
-        ...(link.expectedDistributionMode !== undefined
-          ? { expectedDistributionMode: link.expectedDistributionMode }
-          : {}),
-        ...(link.expectedPackageDigest !== undefined
-          ? { expectedPackageDigest: link.expectedPackageDigest }
-          : {}),
-        ...(link.expectedCollectionContentHash !== undefined
-          ? {
-              expectedCollectionContentHash: link.expectedCollectionContentHash,
-            }
-          : {}),
-        ...(link.expectedWorkspaceTemplateContentHash !== undefined
-          ? {
-              expectedWorkspaceTemplateContentHash:
-                link.expectedWorkspaceTemplateContentHash,
-            }
-          : {}),
-        ...(link.expectedAutomationContentHash !== undefined
-          ? {
-              expectedAutomationContentHash: link.expectedAutomationContentHash,
-            }
-          : {}),
-      })
+      .deepLinkResolveShare(recovery.request)
       .then(async (result): Promise<void> => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
+        resolvingRef.current = false;
         if (!result.ok) {
           setState({ phase: 'error', reason: result.reason });
+          recovery.watching = recoversWithAccount(result.reason);
+          setWatchingAccount(recovery.watching);
           return;
         }
+        recovery.watching = false;
+        setWatchingAccount(false);
         setState({ phase: 'ready', snapshot: result.snapshot });
         if (
           result.snapshot.entity === 'agent' &&
@@ -477,7 +725,7 @@ export function usePublicShareLanding(
           void reviewed
             .catch(() => undefined)
             .finally(() => {
-              if (!cancelled) setAgentReviewLoading(false);
+              if (isCurrent()) setAgentReviewLoading(false);
             });
         }
         if (
@@ -497,10 +745,10 @@ export function usePublicShareLanding(
               package: agentPackage,
             })
             .then((readiness) => {
-              if (!cancelled) setAgentReadiness(readiness);
+              if (isCurrent()) setAgentReadiness(readiness);
             })
             .catch(() => {
-              if (cancelled) return;
+              if (!isCurrent()) return;
               setAgentReadiness({
                 status: 'ready',
                 distributionMode: 'package',
@@ -522,7 +770,7 @@ export function usePublicShareLanding(
               });
             })
             .finally(() => {
-              if (!cancelled) setAgentReadinessLoading(false);
+              if (isCurrent()) setAgentReadinessLoading(false);
             });
         }
         if (result.snapshot.entity === 'workspace') {
@@ -537,10 +785,10 @@ export function usePublicShareLanding(
             void window.api.chatProject
               .inspectTemplateCapabilityPackages({ packages })
               .then((readiness) => {
-                if (!cancelled) setWorkspaceReadiness(readiness);
+                if (isCurrent()) setWorkspaceReadiness(readiness);
               })
               .catch(() => {
-                if (cancelled) return;
+                if (!isCurrent()) return;
                 setWorkspaceReadiness({
                   status: 'ready',
                   distributionMode: 'package',
@@ -555,46 +803,206 @@ export function usePublicShareLanding(
                 });
               })
               .finally(() => {
-                if (!cancelled) setWorkspaceReadinessLoading(false);
+                if (isCurrent()) setWorkspaceReadinessLoading(false);
               });
           }
         }
         // Arrival installed-state detection: flips the primary action to
-        // "Try now" when this exact pinned content is already installed.
+        // "Try now" when this exact pinned content is already installed. A
+        // context switch meanwhile detects again and owns the answer.
+        const detection = reviewGenerationRef.current;
+        const isCurrentDetection = (): boolean =>
+          isCurrent() && detection === reviewGenerationRef.current;
         setDetecting(true);
         try {
-          const found = await detectInstalled(result.snapshot, link.audience);
-          if (!cancelled) setInstalled(found);
-        } catch {
-          // Detection is best-effort; fall back to the Install state.
+          const found = await detectInstalled(
+            result.snapshot,
+            recovery.request.audience,
+          );
+          if (isCurrentDetection()) setInstalled(found);
+        } catch (error) {
+          // A receipted copy that cannot be verified must block installation
+          // so that recovery cannot create a duplicate installed skill.
+          if (
+            isCurrentDetection() &&
+            error instanceof InstalledStateUnverifiedError
+          )
+            setVerificationError(error.message);
         } finally {
-          if (!cancelled) setDetecting(false);
+          if (isCurrentDetection()) setDetecting(false);
         }
       })
       .catch((): void => {
-        if (!cancelled) {
+        if (isCurrent()) {
+          resolvingRef.current = false;
+          recovery.watching = false;
+          setWatchingAccount(false);
           setState({ phase: 'error', reason: 'cloud-unreachable' });
         }
       });
     return (): void => {
       cancelled = true;
+      reviewGenerationRef.current += 1;
     };
-  }, [
-    link.audience,
-    link.automationSource,
-    link.entity,
-    link.externalId,
-    link.packageVersion,
-    link.expectedCollectionContentHash,
-    link.expectedPipelineContentHash,
-    link.expectedDistributionMode,
-    link.expectedPackageDigest,
-    link.expectedWorkspaceTemplateContentHash,
-    link.expectedAutomationContentHash,
-    setInstalled,
-  ]);
+  }, [refreshCount, resolveAttempt, recovery, setInstalled]);
 
   const snapshot = state.phase === 'ready' ? state.snapshot : null;
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
+
+  // A context switch made elsewhere keeps the reviewed share open, and main
+  // refuses an install the new context does not allow (CAN-2962). Only the
+  // installed state depends on the context, so only it is read again
+  // (CAN-5307). A running install or uninstall keeps its own result, since
+  // main checked it against the context it ran in, and the read waits until
+  // it settles. The agent review and package readiness stay as reviewed:
+  // main checks the context again when the install runs. A share still
+  // resolving, or one that failed, has no review to keep, so it resolves
+  // again in the new context.
+  const detectedContextRef = useRef(contextGeneration);
+  const contextDetectPendingRef = useRef(false);
+  const contextDetectDeferredRef = useRef(false);
+  useEffect(() => {
+    if (detectedContextRef.current !== contextGeneration) {
+      detectedContextRef.current = contextGeneration;
+      contextDetectPendingRef.current = true;
+    }
+    if (!contextDetectPendingRef.current) return;
+    if (installInFlightRef.current || uninstallInFlightRef.current) {
+      contextDetectDeferredRef.current = true;
+      return;
+    }
+    contextDetectPendingRef.current = false;
+    // A deferred read keeps what the settled operation reported.
+    const deferred = contextDetectDeferredRef.current;
+    contextDetectDeferredRef.current = false;
+    reviewGenerationRef.current += 1;
+    const reviewed = snapshotRef.current;
+    if (reviewed === null) {
+      resolvingRef.current = true;
+      setResolveAttempt((attempt) => attempt + 1);
+      return;
+    }
+    // Fenced by the review generation, not by this effect's lifetime: an
+    // install or uninstall settling re-runs the effect without replacing
+    // this read.
+    const generation = reviewGenerationRef.current;
+    const isCurrent = (): boolean =>
+      recovery.active && generation === reviewGenerationRef.current;
+    setVerificationError('');
+    if (!deferred) setInstallError('');
+    setDetecting(true);
+    void detectInstalled(reviewed, recovery.request.audience)
+      .then((found): void => {
+        if (isCurrent()) setInstalled(found);
+      })
+      .catch((error: unknown): void => {
+        if (isCurrent() && error instanceof InstalledStateUnverifiedError)
+          setVerificationError(error.message);
+      })
+      .finally((): void => {
+        if (isCurrent()) setDetecting(false);
+      });
+  }, [contextGeneration, installing, uninstalling, recovery, setInstalled]);
+
+  const retryResolve = useCallback((): void => {
+    if (!mountedRef.current || resolvingRef.current) return;
+    resolvingRef.current = true;
+    setResolveAttempt((attempt) => attempt + 1);
+  }, []);
+
+  // Sign-in completion and the account-changed event both report the same
+  // change, so a resolve restarts only when the credential actually differs
+  // from the one the latest attempt used. A change during a running resolve
+  // restarts it, discarding the result read under the old account.
+  const reresolveIfAccountChanged = useCallback(
+    (event?: Event): void => {
+      if (!recovery.active || !recovery.watching) return;
+      if (
+        event &&
+        readCanopyCloudAccountChangeReason(event) === 'same-account-refresh'
+      )
+        return;
+      const read = ++recovery.read;
+      void window.api
+        .loadCanopyCloudAccount()
+        .then((account) => accountIdentity(account))
+        .catch((): null => null)
+        .then((identity): void => {
+          if (
+            !recovery.active ||
+            !recovery.watching ||
+            read !== recovery.read ||
+            identity === null
+          )
+            return;
+          if (identity === recovery.identity) return;
+          recovery.identity = identity;
+          recovery.revision += 1;
+          resolvingRef.current = true;
+          setResolveAttempt((attempt) => attempt + 1);
+        });
+    },
+    [recovery],
+  );
+
+  useEffect(() => {
+    if (!watchingAccount || !recovery.watching) return undefined;
+    let active = true;
+    const read = ++recovery.read;
+    void window.api
+      .loadCanopyCloudAccount()
+      .then((account): void => {
+        const identity = accountIdentity(account);
+        if (
+          active &&
+          recovery.active &&
+          read === recovery.read &&
+          identity !== null &&
+          recovery.identity === null
+        )
+          recovery.identity = identity;
+      })
+      .catch(() => undefined);
+    window.addEventListener(
+      CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
+      reresolveIfAccountChanged,
+    );
+    return (): void => {
+      active = false;
+      window.removeEventListener(
+        CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
+        reresolveIfAccountChanged,
+      );
+    };
+  }, [watchingAccount, recovery, reresolveIfAccountChanged]);
+
+  const landingEntity =
+    link.entity === 'shared-container' ? 'workspace' : link.entity;
+  const signIn = useCallback((): void => {
+    void window.api
+      .loadCanopyCloudAccount()
+      .catch((): null => null)
+      .then((account): void => {
+        if (!mountedRef.current || !recovery.active) return;
+        // The connect gate resumes at once for a connected account, so a
+        // refused credential needs account settings to sign in again.
+        if (isConnectedNonGuest(account)) {
+          openCloudAccountSettings();
+          return;
+        }
+        useCloudConnectGateStore.getState().requestConnect(
+          {
+            subtitle: shareLandingErrorCopy('sign-in-required', landingEntity),
+          },
+          reresolveIfAccountChanged,
+        );
+      });
+  }, [landingEntity, recovery, reresolveIfAccountChanged]);
+
+  const switchAccount = useCallback((): void => {
+    if (recovery.active) openCloudAccountSettings();
+  }, [recovery]);
 
   // Packaged installs stream per-dependency transfer progress; the label is
   // cleared the moment the operation settles.
@@ -613,7 +1021,9 @@ export function usePublicShareLanding(
 
   const install =
     useCallback(async (): Promise<PublicShareInstallResult | null> => {
-      if (!snapshot || installInFlightRef.current) return null;
+      if (!snapshot || detecting || installInFlightRef.current) return null;
+      const reviewGeneration = reviewGenerationRef.current;
+      if (verificationError !== '' || needsRefresh) return null;
       if (snapshot.entity === 'automation') {
         // A rebind, not a write: the wizard owns workspace selection, branch
         // confirmation, and the capability-package review. INSTALLED is
@@ -912,6 +1322,22 @@ export function usePublicShareLanding(
             audience: link.audience,
           });
         } else if (snapshot.entity === 'skill') {
+          const current = installedRef.current;
+          const replacement =
+            current?.entity === 'skill' && current.updateAvailable === true
+              ? current.replacement
+              : undefined;
+          if (
+            current?.entity === 'skill' &&
+            current.updateAvailable === true &&
+            replacement === undefined
+          ) {
+            // Never continue as Install over a stale copy: that duplicates it.
+            setNeedsRefresh(true);
+            setInstallError(SKILL_COPY_UNVERIFIED_MESSAGE);
+            return null;
+          }
+          const outcome = replacement ? 'updated' : 'installed';
           const imported = await importSharedSkill({
             ...(snapshot.sourceRemoteId
               ? { sourceRemoteId: snapshot.sourceRemoteId }
@@ -933,7 +1359,30 @@ export function usePublicShareLanding(
             ...(snapshot.package !== undefined
               ? { package: snapshot.package }
               : {}),
+            ...(current?.entity === 'skill' && replacement
+              ? {
+                  replaceInstalled: {
+                    skillName: current.skillName,
+                    expectedLocalContentHash:
+                      replacement.expectedLocalContentHash,
+                    expectedSourceContentHash:
+                      replacement.expectedSourceContentHash,
+                    ...(replacement.expectedSourcePackageDigest !== undefined
+                      ? {
+                          expectedSourcePackageDigest:
+                            replacement.expectedSourcePackageDigest,
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
           });
+          // The write is durable, but its result belongs only to the review
+          // that initiated it. Events still notify other installed surfaces.
+          if (reviewGeneration !== reviewGenerationRef.current) {
+            window.dispatchEvent(new Event(SKILLS_CHANGED_EVENT));
+            return null;
+          }
           if (snapshot.publisher && imported.packageInstallError) {
             setInstalled(null);
             reportStatus('');
@@ -944,17 +1393,43 @@ export function usePublicShareLanding(
             window.dispatchEvent(new Event(SKILLS_CHANGED_EVENT));
             return null;
           }
-          succeed({
+          // Reload actual receipt/package state. A failed check does not undo
+          // durable bytes, nor prove the package/subscription is current.
+          let landedSkill: PublicShareInstalledTarget = {
             entity: 'skill',
             sourceId: CUSTOM_SKILL_SOURCE_ID,
             skillName: imported.skillName,
-          });
-          // Partial success has to reach the user. The skill landed, but if its
-          // supporting files did not, saying nothing would leave the recipient
-          // believing they received the whole thing.
+          };
+          let verificationFailed = false;
+          if (snapshot.scopedShare === true && sharedSkillReceiptsEnforced()) {
+            try {
+              const reloaded = await detectInstalled(snapshot, link.audience);
+              if (reviewGeneration !== reviewGenerationRef.current) return null;
+              if (
+                reloaded?.entity !== 'skill' ||
+                reloaded.skillName !== imported.skillName
+              )
+                throw new InstalledStateUnverifiedError(
+                  SKILL_COPY_UNVERIFIED_MESSAGE,
+                );
+              landedSkill = reloaded;
+            } catch {
+              if (reviewGeneration !== reviewGenerationRef.current) return null;
+              verificationFailed = true;
+              landedSkill = { ...landedSkill, updateAvailable: true };
+              setVerificationError(SKILL_COPY_UNVERIFIED_MESSAGE);
+              setNeedsRefresh(true);
+            }
+          }
+          succeed(landedSkill);
           reportStatus(
-            describeSharedSkillImportNotice(imported) ?? '',
-            imported.packageInstallError !== undefined ||
+            verificationFailed
+              ? `Skill ${outcome}. The installed copy could not be checked. Try again.`
+              : (describeSharedSkillImportNotice(imported, outcome) ?? ''),
+            verificationFailed ||
+              imported.subscriptionWarning !== undefined ||
+              imported.packageInstallError !== undefined ||
+              imported.packageInstall?.supportingFilesComplete === false ||
               (imported.packageInstall?.uninstalledResourceLabels.length ?? 0) >
                 0,
           );
@@ -990,7 +1465,7 @@ export function usePublicShareLanding(
           ) {
             await reconcileFailedPackageValidation();
             setInstallError(
-              result.error ?? 'Failed to install this shared pipeline.',
+              result.error ?? 'Failed to install this shared workflow.',
             );
             return null;
           }
@@ -1024,7 +1499,7 @@ export function usePublicShareLanding(
               result.data.distributionMode !== 'definition_only'
             ) {
               setInstallError(
-                result.error ?? 'Failed to install this shared pipeline.',
+                result.error ?? 'Failed to install this shared workflow.',
               );
               return null;
             }
@@ -1043,7 +1518,7 @@ export function usePublicShareLanding(
             const parsed = tryParseAndValidateYaml(snapshot.rawPipeline);
             if (!parsed.success) {
               setInstallError(
-                `This pipeline could not be parsed: ${parsed.error}`,
+                `This workflow could not be parsed: ${parsed.error}`,
               );
               return null;
             }
@@ -1057,7 +1532,7 @@ export function usePublicShareLanding(
               content: parsed.pipeline,
             });
             if (!result.success || !result.data) {
-              setInstallError(result.error ?? 'Failed to save the pipeline.');
+              setInstallError(result.error ?? 'Failed to save the workflow.');
               return null;
             }
             succeed({ entity: 'pipeline', pipelineId: result.data.id });
@@ -1071,14 +1546,26 @@ export function usePublicShareLanding(
           }
         }
       } catch (error) {
+        if (reviewGeneration !== reviewGenerationRef.current) return null;
         if (isPackageSnapshot(snapshot)) {
           await reconcileFailedPackageValidation();
         }
-        setInstallError(
-          error instanceof Error
-            ? error.message
-            : 'Failed to install this share.',
-        );
+        const skillFailure =
+          snapshot.entity === 'skill'
+            ? sharedSkillWriteFailureCode(error)
+            : null;
+        if (skillFailure !== null) {
+          // A conflict means what was reviewed is no longer what would be
+          // written. The review is refreshed, not retried with new hashes.
+          setNeedsRefresh(true);
+          setInstallError(extractIpcErrorMessage(error));
+        } else {
+          setInstallError(
+            error instanceof Error
+              ? error.message
+              : 'Failed to install this share.',
+          );
+        }
       } finally {
         installInFlightRef.current = false;
         setInstalling(false);
@@ -1086,7 +1573,16 @@ export function usePublicShareLanding(
       }
       if (landed === null) return null;
       return { target: landed, status: landedStatus, partial: landedPartial };
-    }, [snapshot, link.externalId, link.audience, setInstalled, reportHandoff]);
+    }, [
+      snapshot,
+      detecting,
+      verificationError,
+      needsRefresh,
+      link.externalId,
+      link.audience,
+      setInstalled,
+      reportHandoff,
+    ]);
 
   // CAN-3651: an automation link opens straight into the install review,
   // whatever its intent. The review is the inspectable preview (schedule,
@@ -1202,6 +1698,64 @@ export function usePublicShareLanding(
     [snapshot, installed, link.externalId, link.audience, reportHandoff],
   );
 
+  const insertInChat = useCallback(
+    async (
+      target: PublicShareInstalledTarget,
+      chat: ShareChatTarget,
+    ): Promise<ShareChatInsertOutcome> => {
+      if (
+        target.entity !== 'skill' ||
+        snapshot?.entity !== 'skill' ||
+        installInFlightRef.current ||
+        insertInFlightRef.current ||
+        consumedInsertRef.current === target ||
+        installedRef.current !== target
+      )
+        return 'stale';
+      insertInFlightRef.current = true;
+      let current = true;
+      const pending = useNavigationStore.getState().pendingShareInstall;
+      const stop = watchShareChatTarget(chat, (): void => {
+        current = false;
+      });
+      const stopReview = useNavigationStore.subscribe((state): void => {
+        if (state.pendingShareInstall !== pending) current = false;
+      });
+      try {
+        // The offer outlives the review: its cached target alone cannot prove
+        // the installed folder/package still exists or has the reviewed content.
+        const found = await detectInstalled(snapshot, link.audience);
+        if (
+          !current ||
+          installedRef.current !== target ||
+          useNavigationStore.getState().pendingShareInstall !== pending ||
+          found?.entity !== 'skill' ||
+          found.sourceId !== target.sourceId ||
+          found.skillName !== target.skillName
+        )
+          return 'stale';
+        const outcome = insertSkillInvocation(chat, target.skillName);
+        if (outcome === 'inserted') {
+          consumedInsertRef.current = target;
+          reportHandoff({
+            entity: 'skill',
+            externalId: link.externalId,
+            eventType: 'TRY_NOW',
+            audience: link.audience,
+          });
+        }
+        return outcome;
+      } catch {
+        return 'stale';
+      } finally {
+        stop();
+        stopReview();
+        insertInFlightRef.current = false;
+      }
+    },
+    [snapshot, link.externalId, link.audience, reportHandoff],
+  );
+
   // Behavioral `intent=try` (PR2b): once `installed` is known — from the
   // arrival detection, or right after an explicit Install on a try-intent
   // arrival (deliberate: the link promised "lands ready to stage", so the
@@ -1288,6 +1842,7 @@ export function usePublicShareLanding(
     if (
       !installed ||
       uninstalling ||
+      uninstallInFlightRef.current ||
       installInFlightRef.current ||
       installedRef.current !== installed
     ) {
@@ -1301,6 +1856,8 @@ export function usePublicShareLanding(
     // can already live in it — so removal stays in the sidebar's own delete
     // flow rather than behind a one-click Uninstall on a share landing.
     if (installed.entity === 'workspace') return false;
+    const reviewGeneration = reviewGenerationRef.current;
+    uninstallInFlightRef.current = true;
     setUninstalling(true);
     setInstallError('');
     try {
@@ -1346,13 +1903,27 @@ export function usePublicShareLanding(
       } else {
         const result = await window.pipelines.delete(installed.pipelineId);
         if (!result.success) {
-          setInstallError(result.error ?? 'Failed to uninstall the pipeline.');
+          setInstallError(result.error ?? 'Failed to uninstall the workflow.');
           return false;
         }
       }
-      setInstalled(null);
+      if (reviewGeneration !== reviewGenerationRef.current) return false;
+      if (
+        snapshot?.entity === 'skill' &&
+        snapshot.scopedShare === true &&
+        sharedSkillReceiptsEnforced()
+      ) {
+        const remaining = await detectInstalled(snapshot, link.audience);
+        if (reviewGeneration !== reviewGenerationRef.current) return false;
+        setInstalled(remaining);
+      } else {
+        setInstalled(null);
+      }
       return true;
     } catch (error) {
+      if (reviewGeneration !== reviewGenerationRef.current) return false;
+      if (error instanceof InstalledStateUnverifiedError)
+        setVerificationError(error.message);
       setInstallError(
         error instanceof Error
           ? error.message
@@ -1360,9 +1931,10 @@ export function usePublicShareLanding(
       );
       return false;
     } finally {
+      uninstallInFlightRef.current = false;
       setUninstalling(false);
     }
-  }, [installed, uninstalling, setInstalled, snapshot]);
+  }, [installed, uninstalling, setInstalled, snapshot, link.audience]);
 
   const closeInstallReview = useCallback((): void => {
     setInstallReview(null);
@@ -1394,6 +1966,9 @@ export function usePublicShareLanding(
     state,
     snapshot,
     detecting,
+    verificationError,
+    needsRefresh,
+    refresh,
     installed,
     installing,
     installError,
@@ -1407,11 +1982,15 @@ export function usePublicShareLanding(
     workspaceReadinessLoading,
     install,
     tryNow,
+    insertInChat,
     manage,
     uninstall,
     installReview,
     openingInstallReview,
     closeInstallReview,
     completeInstallReview,
+    retryResolve,
+    signIn,
+    switchAccount,
   };
 }

@@ -1,7 +1,11 @@
 /**
  * @jest-environment jsdom
  */
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import {
+  CLIENT_FEATURE_FLAGS,
+  getDefaultFeatureFlagSnapshot,
+} from '@canopy/protocol/feature-flags';
+import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -28,12 +32,11 @@ beforeEach(() => {
     state: {
       status: 'disabled',
       connectionStatus: 'inactive',
-      selectedServerId: null,
-      selectedServerName: null,
-      selectedServerBaseUrl: null,
       sessionId: null,
       pairingCode: null,
       pairingCodeExpiresAt: null,
+      machineName: null,
+      hostCode: null,
       activatedAt: null,
       lastSeenAt: null,
       lastErrorAt: null,
@@ -51,6 +54,7 @@ beforeEach(() => {
   });
   useFeatureFlagsStore.getState().setSnapshot({
     values: {
+      ...getDefaultFeatureFlagSnapshot().values,
       [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
       [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]: false,
     },
@@ -296,7 +300,7 @@ it('keeps only known folder kinds, never the folder itself', (): void => {
 
 it('reports a Personal folder conflict, with ids only once access is established (CAN-3648)', (): void => {
   const conflictOf = (
-    folderConflict: unknown,
+    folderConflict: AppAdvisorJson,
   ): ReturnType<typeof buildCurrentUiStateSnapshot>['addWorkspace'] =>
     buildCurrentUiStateSnapshot({
       'addWorkspace.modal': {

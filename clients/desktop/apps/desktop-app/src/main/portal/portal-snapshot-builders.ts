@@ -1,3 +1,5 @@
+import { listPortalWatchersForSnapshot } from './adapters/watchers-adapter';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateId } from '../lib/validation';
 import { listWorktreeChatSummaryBatch } from '../services/worktree-chat-summary-batch';
 import {
@@ -14,6 +16,8 @@ import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
 import { projectSidebarItemGroups } from '../services/sidebar-item-groups-service';
 import type {
   PortalChatMessage,
+  PortalChangedFile,
+  PortalChangedFilesPayload,
   PortalEntityEnvelope,
   PortalEventEnvelope,
   PortalHookRun,
@@ -68,7 +72,10 @@ import {
   pipelineToPortalEntity,
 } from '../services/pipelines-service';
 import { readPortalStateStore } from './portal-state-store';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
+import {
+  PORTAL_EVENT_BATCH_MAX_BYTES,
+  worktreeScopedParentLocalId,
+} from '@canopy/protocol/portal';
 import { performance } from 'node:perf_hooks';
 import { portalSnapshotWorkBudget } from './portal-snapshot-work-budget';
 import {
@@ -84,6 +91,8 @@ import { projectNewTaskControls } from './worktree-new-task-controls';
 import { getLatestAppAdvisorWindowUiState } from '../ipc/app-advisor';
 import { portalSnapshotRoutingKey } from './portal-snapshot-lane';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
+import { capChangedFilesPayload } from './changed-files-paging';
+import { portalEventMaxRoutedByteLength } from './portal-outbox';
 
 export interface BuiltPortalSnapshot {
   snapshot: PortalStateSnapshotPayload;
@@ -97,6 +106,81 @@ export interface BuiltPortalSnapshot {
  * across every worktree at once.
  */
 const WORKTREE_ACTIONS_CONCURRENCY = 4;
+
+const SNAPSHOT_MEASUREMENT_EVENT_ID = '00000000-0000-4000-8000-000000000000';
+const PORTAL_SNAPSHOT_EVENT_BUDGET = PORTAL_EVENT_BATCH_MAX_BYTES - 4096;
+
+function isChangedFile(value: unknown): value is PortalChangedFile {
+  return (
+    isRecord(value) &&
+    typeof value.filePath === 'string' &&
+    typeof value.status === 'string' &&
+    (value.repoId === undefined || typeof value.repoId === 'string')
+  );
+}
+
+function isChangedFilesPayload(
+  value: unknown,
+): value is PortalChangedFilesPayload {
+  return (
+    isRecord(value) &&
+    typeof value.workspaceLocalId === 'string' &&
+    typeof value.worktreeLocalId === 'string' &&
+    Array.isArray(value.uncommitted) &&
+    value.uncommitted.every(isChangedFile) &&
+    Array.isArray(value.committed) &&
+    value.committed.every(isChangedFile) &&
+    (value.notices === undefined ||
+      (Array.isArray(value.notices) && value.notices.every(isRecord)))
+  );
+}
+
+function capChangedFilesInSnapshot(
+  snapshot: PortalStateSnapshotPayload,
+  commandId?: string,
+): PortalStateSnapshotPayload {
+  const entityIndex = snapshot.entities.findIndex(
+    (entity) => entity.entityType === 'changed_files',
+  );
+  const changedFilesEntity = snapshot.entities[entityIndex];
+  if (
+    !changedFilesEntity ||
+    !isChangedFilesPayload(changedFilesEntity.payload)
+  ) {
+    return snapshot;
+  }
+
+  const originalPayload = changedFilesEntity.payload;
+  // The outbox splits per entity, so size this candidate in the head frame.
+  const measureSnapshot = (candidate: PortalChangedFilesPayload): number => {
+    const candidateSnapshot: PortalStateSnapshotPayload = {
+      ...snapshot,
+      entities: [{ ...changedFilesEntity, payload: candidate }],
+    };
+    const event: PortalEventEnvelope = {
+      type: 'portal.state.snapshot',
+      ...(commandId ? { commandId } : {}),
+      eventId: SNAPSHOT_MEASUREMENT_EVENT_ID,
+      clientEventId: SNAPSHOT_MEASUREMENT_EVENT_ID,
+      occurredAt: snapshot.generatedAt,
+      payload: candidateSnapshot,
+    };
+    return portalEventMaxRoutedByteLength(event);
+  };
+  const cappedPayload = capChangedFilesPayload(
+    originalPayload,
+    measureSnapshot,
+    PORTAL_SNAPSHOT_EVENT_BUDGET,
+  );
+  if (cappedPayload === originalPayload) return snapshot;
+
+  return {
+    ...snapshot,
+    entities: snapshot.entities.map((entity, index) =>
+      index === entityIndex ? { ...entity, payload: cappedPayload } : entity,
+    ),
+  };
+}
 
 export function listActivitySummaryPortalEntities(
   scope: PortalStateRequestPayload['scope'],
@@ -965,13 +1049,13 @@ export async function buildPortalSnapshot(
         // browser re-arms its hydration key and retries after the tab becomes
         // resolvable.
         throw new Error(
-          `App Advisor chat is not resolvable: ${preferredChatId}`,
+          `${ORCHESTRATOR_LABEL} chat is not resolvable: ${preferredChatId}`,
         );
       }
       entries = entries.filter(({ entry }) => entry.id === preferredEntryId);
       if (entries.length === 0) {
         throw new Error(
-          `App Advisor Work Entry is not resolvable: ${preferredEntryId}`,
+          `${ORCHESTRATOR_LABEL} Work Entry is not resolvable: ${preferredEntryId}`,
         );
       }
     } else if (windowUiState.activeWorkEntryId) {
@@ -1213,10 +1297,17 @@ export async function buildPortalSnapshot(
     );
   }
 
+  entities.push(
+    ...(await listPortalWatchersForSnapshot(
+      { ...request, target: snapshotTarget },
+      entities,
+    )),
+  );
+
   await projectModelLibraryContext(entities, request, options?.commandId);
 
-  return {
-    snapshot: {
+  const snapshot: PortalStateSnapshotPayload = capChangedFilesInSnapshot(
+    {
       scope: request.scope,
       ...(request.scope === 'overview' && request.includeChatSummaries === true
         ? { chatSummariesComplete: true }
@@ -1241,6 +1332,8 @@ export async function buildPortalSnapshot(
         : {}),
       generatedAt: new Date().toISOString(),
     },
-    followUpEvents,
-  };
+    options?.commandId,
+  );
+
+  return { snapshot, followUpEvents };
 }

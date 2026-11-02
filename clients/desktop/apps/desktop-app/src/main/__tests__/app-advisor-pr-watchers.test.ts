@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-assignment */
 import type { ResourceContextDecision } from '@canopy/desktop-shared/lib/resource-context-policy';
+import type { SessionDiagnosticRecord } from '../observability/service';
+import { LocalWatcherScheduler } from '../app-advisor/local-watcher-scheduler';
 
 jest.mock('../feature-flags', () => ({
   getFeatureFlagService: jest.fn(() => ({ isEnabled: jest.fn(() => true) })),
@@ -24,6 +26,7 @@ jest.mock('../agents/delegation/service', () => ({
   deliverManagedDelegationWatcherToChild: () => Promise.resolve(),
 }));
 const mockFetchGitHubPullRequest = jest.fn();
+const mockRecordSessionDiagnostic = jest.fn<void, [SessionDiagnosticRecord]>();
 jest.mock('../lib/github-pr-read-model', () => ({
   ...jest.requireActual('../lib/github-pr-read-model'),
   readGitHubPullRequestForWatcher: (...args: unknown[]) =>
@@ -63,7 +66,9 @@ jest.mock('../agents/session-manager', () => ({
   getAllActiveSessionInfos: jest.fn(() => []),
 }));
 jest.mock('../observability', () => ({
-  getObservabilityService: () => ({ recordSessionDiagnostic: jest.fn() }),
+  getObservabilityService: () => ({
+    recordSessionDiagnostic: mockRecordSessionDiagnostic,
+  }),
 }));
 jest.mock('../lib/cowork-work-entries', () => ({
   resolveWorkEntryForChat: jest.fn(() =>
@@ -114,6 +119,7 @@ import {
   type AppAdvisorWindowCommand,
   type ChatWindowCommand,
 } from '@canopy/desktop-shared/types';
+import type { WatcherChatDelivery } from '../services/watcher-chat-delivery';
 import type {
   GitHubPullRequestFiredContext,
   GitHubPullRequestSnapshot,
@@ -124,8 +130,11 @@ import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
 import { getGitHubWorkflowRunObserver } from '../lib/github-workflow-run-observer';
 import { getGitHubPullRequestObserver } from '../lib/github-pull-request-observer';
 import { GitHubBrokerError } from '../lib/github-broker';
+import { resolveWorkEntryForChat } from '../lib/cowork-work-entries';
 import { resetChatStateServiceForTests } from '../services/chat-state-service';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
+
+const mockResolveWorkEntryForChat = jest.mocked(resolveWorkEntryForChat);
 
 const HEAD_SHA = 'a'.repeat(40);
 const NO_QUEUE_HISTORY: PrMergeQueueHistory = {
@@ -228,10 +237,13 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<boolean> {
   return predicate();
 }
 
-function sentMessages(): Extract<
-  AppAdvisorWindowCommand,
-  { type: 'send_watcher_message' }
->[] {
+type RecordedWatcherMessage = WatcherChatDelivery & {
+  type: 'send_watcher_message';
+};
+
+const deliveredWatcherMessages: RecordedWatcherMessage[] = [];
+
+function sentMessages(): RecordedWatcherMessage[] {
   return sendAppAdvisorWindowCommand.mock.calls.flatMap(([command]) =>
     command.type === 'send_watcher_message' ? [command] : [],
   );
@@ -245,16 +257,26 @@ function firedContext(
   return JSON.parse(match[1]);
 }
 
-const sendAppAdvisorWindowCommand = jest.fn<void, [AppAdvisorWindowCommand]>();
+const sendAppAdvisorWindowCommand = jest.fn<
+  void,
+  [AppAdvisorWindowCommand | RecordedWatcherMessage]
+>();
+const deliverWatcherMessage = jest.fn<
+  Promise<'submitted' | 'already_delivered' | 'terminal_presenter'>,
+  [WatcherChatDelivery]
+>();
+const ensureAppAdvisorWindow = jest.fn(() =>
+  Promise.resolve({ open: true, focused: false }),
+);
 
 function configureService(): void {
   getAppAdvisorWatcherService().configure({
     getMainWindow: () => null,
     getAppAdvisorWindow: () => null,
-    ensureAppAdvisorWindow: () =>
-      Promise.resolve({ open: true, focused: false }),
+    ensureAppAdvisorWindow,
     sendAppAdvisorWindowCommand,
     sendChatWindowCommand: () => true,
+    deliverWatcherMessage,
   });
   getGitHubWorkflowRunObserver().stop();
   getGitHubPullRequestObserver().stop();
@@ -263,6 +285,16 @@ function configureService(): void {
 describe('GitHub pull request watchers', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
+    ensureAppAdvisorWindow
+      .mockReset()
+      .mockResolvedValue({ open: true, focused: false });
+    sendAppAdvisorWindowCommand.mockReset();
+    deliverWatcherMessage.mockReset();
+    mockResolveWorkEntryForChat.mockReset().mockResolvedValue({
+      entryId: 'entry-app-advisor',
+      archivedInEntryId: null,
+    });
+    deliveredWatcherMessages.length = 0;
     mockBackgroundExecutionEnabled = false;
     mockDeliveryAuthorization = { allow: true };
     resetChatStateServiceForTests();
@@ -270,15 +302,18 @@ describe('GitHub pull request watchers', () => {
     dataDirPath = await mkdtemp(join(tmpdir(), 'canopy-pr-watchers-test-'));
     watchersFilePath = join(dataDirPath, 'app-advisor-watchers.json');
     baselines();
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type !== 'send_watcher_message') return;
-      queueMicrotask(() => {
-        getAppAdvisorWatcherService().acknowledgeWatcherMessageDelivery(
-          command.watcherId,
-          command.deliveryId,
-          { ok: true },
-        );
-      });
+    sendAppAdvisorWindowCommand.mockImplementation(() => {
+      // The mock retains command-shaped message assertions only. Direct
+      // delivery outcomes no longer use the renderer acknowledgement path.
+    });
+    deliverWatcherMessage.mockImplementation((delivery) => {
+      const message: RecordedWatcherMessage = {
+        ...delivery,
+        type: 'send_watcher_message',
+      };
+      deliveredWatcherMessages.push(message);
+      sendAppAdvisorWindowCommand(message);
+      return Promise.resolve('submitted');
     });
     configureService();
   });
@@ -366,6 +401,244 @@ describe('GitHub pull request watchers', () => {
     expect(sentMessages()).toHaveLength(0);
   });
 
+  it('attributes a held pull request baseline before queue entry to the same operation', async () => {
+    const service = getAppAdvisorWatcherService();
+    const read = mockFetchGitHubPullRequest.getMockImplementation();
+    if (!read) throw new Error('Missing pull request baseline fixture');
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const fetching = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    mockFetchGitHubPullRequest.mockImplementationOnce(
+      async (...args: unknown[]) => {
+        entered();
+        await held;
+        return read(...args);
+      },
+    );
+    let registration: Promise<unknown> | undefined;
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      registration = service.watchGitHubItems(prInput(12), destination());
+      await fetching;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.watch_git_hub_pull_requests' &&
+            record.waitPhase === 'baseline_fetch' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled).toMatchObject({
+        waitScope: destination(),
+        waitElapsedMs: 1_000,
+      });
+      release();
+      await registration;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            baseline_fetch: expect.any(Number),
+            queue_wait: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      await registration?.catch(() => undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it('attributes a held observer rescan after persistence to the registration operation', async () => {
+    const service = getAppAdvisorWatcherService();
+    const observer = getGitHubPullRequestObserver();
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const rescanning = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const rescan = jest
+      .spyOn(observer, 'rescan')
+      .mockImplementationOnce(async () => {
+        entered();
+        await held;
+      });
+    let registration: Promise<unknown> | undefined;
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    try {
+      registration = service.watchGitHubItems(prInput(12), destination());
+      await rescanning;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.watch_git_hub_pull_requests' &&
+            record.waitPhase === 'observer_rescan' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled).toMatchObject({
+        waitScope: destination(),
+        waitElapsedMs: 1_000,
+      });
+      release();
+      await registration;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            queue_wait: expect.any(Number),
+            observer_rescan: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      await registration?.catch(() => undefined);
+      rescan.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('attributes an observation rescan to its complete mutation', async () => {
+    const observer = getGitHubPullRequestObserver();
+    let resolveEnd = (): void => undefined;
+    const endRecorded = new Promise<void>((resolve) => {
+      resolveEnd = resolve;
+    });
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const rescanning = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const rescan = jest
+      .spyOn(observer, 'rescan')
+      .mockImplementationOnce(async () => {
+        entered();
+        await held;
+      });
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    let operation: Promise<void> | undefined;
+    try {
+      operation =
+        getAppAdvisorWatcherService().applyGitHubPullRequestObservation({
+          observations: [],
+        });
+      await rescanning;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation ===
+              'watcher.apply_git_hub_pull_request_observation' &&
+            record.waitPhase === 'observer_rescan' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled?.waitElapsedMs).toBe(1_000);
+      mockRecordSessionDiagnostic.mockImplementation((record) => {
+        if (
+          record.waitOperationId === stalled?.waitOperationId &&
+          record.waitPhase === 'end'
+        )
+          resolveEnd();
+      });
+      release();
+      await operation;
+      await endRecorded;
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            queue_wait: expect.any(Number),
+            observer_rescan: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      await operation?.catch(() => undefined);
+      mockRecordSessionDiagnostic.mockReset();
+      rescan.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('attributes a delete scheduler rescan to the complete deletion', async () => {
+    const service = getAppAdvisorWatcherService();
+    const registration = await service.watchGitHubItems(
+      prInput(12),
+      destination(),
+    );
+    if (!registration.ok || registration.status !== 'created')
+      throw new Error('setup');
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = (): void => undefined;
+    const rescanning = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const rescan = jest
+      .spyOn(LocalWatcherScheduler.prototype, 'rescan')
+      .mockImplementationOnce(async () => {
+        entered();
+        await held;
+      });
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask', 'setImmediate'] });
+    let operation: Promise<boolean> | undefined;
+    try {
+      operation = service.deleteWatcher(registration.watcherId);
+      await rescanning;
+      await jest.advanceTimersByTimeAsync(1_000);
+      const stalled = mockRecordSessionDiagnostic.mock.calls
+        .map(([record]) => record)
+        .find(
+          (record) =>
+            record.waitOperation === 'watcher.delete_watcher' &&
+            record.waitPhase === 'scheduler_rescan' &&
+            record.waitOutcome === 'stalled',
+        );
+      expect(stalled?.waitElapsedMs).toBe(1_000);
+      release();
+      await expect(operation).resolves.toBe(true);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          waitOperationId: stalled?.waitOperationId,
+          waitPhase: 'end',
+          waitPhaseDurationsMs: expect.objectContaining({
+            queue_wait: expect.any(Number),
+            scheduler_rescan: expect.any(Number),
+          }),
+        }),
+      );
+    } finally {
+      release();
+      await operation?.catch(() => undefined);
+      rescan.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it.each([
     [
       'merged',
@@ -438,10 +711,12 @@ describe('GitHub pull request watchers', () => {
     const first = await service.watchGitHubItems(
       prInput(12, 13),
       destination(),
+      { toolUseId: 'pr-first' },
     );
     const second = await service.watchGitHubItems(
       prInput(13, 12),
       destination(),
+      { toolUseId: 'pr-retry' },
     );
     const otherChat = await service.watchGitHubItems(
       prInput(12, 13),
@@ -575,6 +850,7 @@ describe('GitHub pull request watchers', () => {
           repository: 'acme/api',
           number: 12,
           snapshot: closed(12),
+          queueHistory: NO_QUEUE_HISTORY,
         },
       ],
     });
@@ -602,12 +878,17 @@ describe('GitHub pull request watchers', () => {
 
   it('does not consume a reopened pull request request with a pending close delivery', async () => {
     const service = getAppAdvisorWatcherService();
-    const held: Extract<
-      AppAdvisorWindowCommand,
-      { type: 'send_watcher_message' }
-    >[] = [];
-    sendAppAdvisorWindowCommand.mockImplementation((command) => {
-      if (command.type === 'send_watcher_message') held.push(command);
+    const held: WatcherChatDelivery[] = [];
+    let completeDelivery: (() => void) | undefined;
+    deliverWatcherMessage.mockImplementation((delivery) => {
+      held.push(delivery);
+      deliveredWatcherMessages.push({
+        ...delivery,
+        type: 'send_watcher_message',
+      });
+      return new Promise((resolve) => {
+        completeDelivery = () => resolve('submitted');
+      });
     });
     const first = await service.watchGitHubItems(
       prInput(12, 13),
@@ -622,6 +903,7 @@ describe('GitHub pull request watchers', () => {
           repository: 'acme/api',
           number: 12,
           snapshot: closed(12),
+          queueHistory: NO_QUEUE_HISTORY,
         },
       ],
     });
@@ -634,13 +916,8 @@ describe('GitHub pull request watchers', () => {
       destination(),
     );
 
-    for (const command of held) {
-      service.acknowledgeWatcherMessageDelivery(
-        command.watcherId,
-        command.deliveryId,
-        { ok: true },
-      );
-    }
+    expect(held).toHaveLength(1);
+    completeDelivery?.();
     expect(retry).toMatchObject({ ok: true, status: 'created' });
     if (!retry.ok || retry.status !== 'created') throw new Error('retry');
     expect(retry.watcherId).not.toBe(first.watcherId);
@@ -732,6 +1009,64 @@ describe('GitHub pull request watchers', () => {
       items: [{ key: 'acme/api#12', settledAs: 'merged' }],
     });
     expect(watcher.runtimeState).not.toHaveProperty('pendingDelivery');
+  });
+
+  it('keeps an Advisor GitHub delivery retryable when its Work Entry is missing', async () => {
+    const service = getAppAdvisorWatcherService();
+    ensureAppAdvisorWindow.mockRejectedValueOnce(
+      new Error('No App Advisor window should be opened.'),
+    );
+    const result = await service.watchGitHubItems(prInput(12), destination());
+    if (!result.ok || result.status !== 'created') throw new Error('setup');
+    mockResolveWorkEntryForChat.mockResolvedValue({
+      entryId: null,
+      archivedInEntryId: null,
+    });
+
+    await service.applyGitHubPullRequestObservation({
+      observations: [
+        {
+          kind: 'snapshot',
+          subscriberIds: [result.watcherId],
+          repository: 'acme/api',
+          number: 12,
+          snapshot: closed(12),
+          queueHistory: NO_QUEUE_HISTORY,
+        },
+      ],
+    });
+
+    expect(
+      await waitFor(async () => {
+        const watcher = (await readWatchers())[0];
+        return (
+          watcher?.status === 'firing' &&
+          watcher.runtimeState?.kind === 'github_pull_requests' &&
+          watcher.runtimeState.pendingDelivery?.attempts === 1
+        );
+      }),
+    ).toBe(true);
+    const [watcher] = await readWatchers();
+    expect(watcher).toMatchObject({
+      status: 'firing',
+      runtimeState: {
+        pendingDelivery: {
+          attempts: 1,
+        },
+      },
+    });
+    if (watcher?.runtimeState?.kind !== 'github_pull_requests') {
+      throw new Error('Expected a GitHub pull request watcher.');
+    }
+    expect(
+      Date.parse(watcher.runtimeState.pendingDelivery?.nextAttemptAt ?? ''),
+    ).toBeGreaterThan(Date.now());
+    expect(mockResolveWorkEntryForChat).toHaveBeenCalledWith(
+      APP_ADVISOR_PROJECT_ID,
+      'advisor-chat',
+    );
+    expect(deliverWatcherMessage).not.toHaveBeenCalled();
+    expect(ensureAppAdvisorWindow).not.toHaveBeenCalled();
   });
 
   it('consumes a grouped watcher only after every item has been delivered', async () => {
@@ -830,6 +1165,80 @@ describe('GitHub pull request watchers', () => {
     // The persisted queue state survives the load guards for the next diff.
     expect(await service.listGitHubPullRequestSubscriptions()).toEqual([
       expect.objectContaining({ number: 12, last: queued }),
+    ]);
+  });
+
+  it("publishes each pull request's last snapshot on the summary, and keeps it once fired", async () => {
+    const service = getAppAdvisorWatcherService();
+    const result = await service.watchGitHubItems(prInput(12), destination());
+    if (!result.ok || result.status !== 'created') throw new Error('setup');
+    const queued = snapshot(12, {
+      queue: {
+        entryId: 'MQE_1',
+        enqueuedAt: '2026-10-07T00:00:30.000Z',
+        phase: 'awaiting_checks',
+        position: 2,
+      },
+      observedAt: '2026-10-07T00:00:45.000Z',
+    });
+    await service.applyGitHubPullRequestObservation({
+      observations: [
+        {
+          kind: 'snapshot',
+          subscriberIds: [result.watcherId],
+          repository: 'acme/api',
+          number: 12,
+          snapshot: queued,
+          queueHistory: NO_QUEUE_HISTORY,
+        },
+      ],
+    });
+
+    const [active] = await service.list();
+    expect(active?.githubPullRequestProgress).toEqual({
+      pullRequests: [
+        {
+          repository: 'acme/api',
+          number: 12,
+          url: 'https://github.com/acme/api/pull/12',
+          title: 'PR 12',
+          state: 'open',
+          baseRefName: 'develop',
+          queue: { phase: 'awaiting_checks', position: 2 },
+          observedAt: '2026-10-07T00:00:45.000Z',
+        },
+      ],
+    });
+    // Runtime-only state (queue cursors, the outbox) stays in main.
+    expect(JSON.stringify(active)).not.toContain('MQE_1');
+
+    await service.applyGitHubPullRequestObservation({
+      observations: [
+        {
+          kind: 'snapshot',
+          subscriberIds: [result.watcherId],
+          repository: 'acme/api',
+          number: 12,
+          snapshot: merged(12),
+          queueHistory: NO_QUEUE_HISTORY,
+        },
+      ],
+    });
+    await waitFor(async () =>
+      (await service.listCompleted()).some(
+        (watcher) => watcher.id === result.watcherId,
+      ),
+    );
+    const fired = (await service.listCompleted()).find(
+      (watcher) => watcher.id === result.watcherId,
+    );
+    expect(fired?.githubPullRequestProgress?.pullRequests).toEqual([
+      expect.objectContaining({
+        number: 12,
+        state: 'merged',
+        queue: null,
+        settledAt: expect.any(String),
+      }),
     ]);
   });
 
@@ -965,7 +1374,7 @@ describe('GitHub pull request watchers', () => {
     );
     if (!result.ok || result.status !== 'created') throw new Error('setup');
     mockBackgroundExecutionEnabled = true;
-    mockDeliveryAuthorization = { allow: false, reason: 'revoked' };
+    mockDeliveryAuthorization = { allow: false, reason: 'access-removed' };
 
     await service.applyGitHubPullRequestObservation({
       observations: [
@@ -1062,6 +1471,7 @@ describe('GitHub pull request watchers', () => {
           Promise.resolve({ open: true, focused: false }),
         sendAppAdvisorWindowCommand,
         sendChatWindowCommand,
+        deliverWatcherMessage,
       });
     });
 
@@ -1141,15 +1551,15 @@ describe('GitHub pull request watchers', () => {
             )?.status === 'fired',
         ),
       ).toBe(true);
-      expect(sendChatWindowCommand).toHaveBeenCalledTimes(1);
-      expect(sendChatWindowCommand).toHaveBeenCalledWith(
+      // Main delivers the turn itself; the chat window command is only the
+      // terminal-presenter fallback.
+      expect(deliveredWatcherMessages).toEqual([
         expect.objectContaining({
-          type: 'send_watcher_message',
           ...cowork('a'),
           watcherId: watched.watcherId,
         }),
-      );
-      expect(sentMessages()).toHaveLength(0);
+      ]);
+      expect(sendChatWindowCommand).not.toHaveBeenCalled();
     });
 
     it('rejects a legacy sentinel-keyed cowork chat before reading GitHub', async () => {

@@ -1,4 +1,5 @@
 import { ActionLane } from '../action-lane';
+import type { BrowserCdpSend } from '../actionability';
 import {
   dispatchClick,
   dispatchFill,
@@ -287,6 +288,7 @@ describe('input dispatch', () => {
   it('returns a pending dialog when direct focus is blocked', async () => {
     const dialog = {
       id: 'dialog',
+      browserId: 'browser-1',
       type: 'alert' as const,
       message: 'Pause',
       url: 'https://example.test/',
@@ -495,6 +497,8 @@ describe('input dispatch', () => {
       completed: true,
       inputMode: 'trusted',
     });
+    if (!outcome.value.completed || outcome.value.focused)
+      throw new Error('Expected a completed focus fallback.');
     expect(typeof outcome.value.warning).toBe('string');
     expect(send.mock.calls.map(([method]) => method)).toContain(
       'Input.dispatchMouseEvent',
@@ -550,6 +554,8 @@ describe('input dispatch', () => {
       completed: true,
       inputMode: 'trusted',
     });
+    if (!outcome.value.completed || outcome.value.focused)
+      throw new Error('Expected a completed focus fallback.');
     expect(typeof outcome.value.warning).toBe('string');
     expect(settledWithinBudget).toBe(true);
   });
@@ -559,6 +565,7 @@ describe('input dispatch', () => {
     async (kind) => {
       const dialog = {
         id: 'dialog',
+        browserId: 'browser-1',
         type: 'alert' as const,
         message: 'Pause',
         url: 'https://example.test/',
@@ -568,15 +575,15 @@ describe('input dispatch', () => {
         Promise.reject(new Error('blocked by dialog'));
       const parsed = parseKeyCombo('Enter', 'darwin');
       if (!parsed.ok) throw new Error(parsed.error.message);
-      const outcome = await lane().run((context) =>
+      const outcome = await lane().run(async (context) =>
         kind === 'press'
-          ? dispatchPress({
+          ? await dispatchPress({
               send: failed,
               lane: context,
               events: buildKeyEventSequence(parsed, 'darwin'),
               getPendingDialog: () => dialog,
             })
-          : dispatchFill({
+          : await dispatchFill({
               lane: context,
               fillPrepared: failed,
               getPendingDialog: () => dialog,
@@ -634,6 +641,7 @@ describe('input dispatch', () => {
     });
     const dialog = {
       id: 'dialog',
+      browserId: 'browser-1',
       type: 'confirm' as const,
       message: 'Continue?',
       url: 'https://example.test/',
@@ -666,7 +674,9 @@ describe('input dispatch', () => {
   it('dispatches Enter as a keyDown with its text and no native key code', async () => {
     const combo = parseKeyCombo('Enter', 'darwin');
     if (!combo.ok) throw new Error(combo.error.message);
-    const send = jest.fn((): Promise<object> => Promise.resolve({}));
+    const send = jest.fn<Promise<unknown>, Parameters<BrowserCdpSend>>(
+      (): Promise<object> => Promise.resolve({}),
+    );
     const outcome = await lane().run((context) =>
       dispatchPress({
         send,

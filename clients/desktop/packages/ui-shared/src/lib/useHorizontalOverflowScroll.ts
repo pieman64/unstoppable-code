@@ -45,6 +45,17 @@ export interface HorizontalOverflowScroll<T extends HTMLElement> {
    * delay. Programmatic scrolls (scrollIntoView) stay silent.
    */
   readonly isScrollbarRevealed: boolean;
+  /**
+   * Optional hit zone along the strip's bottom edge, for a strip whose thumb
+   * is a thin line (fill tab rows). While the pointer is over it the bar
+   * stays revealed and `isScrollbarActive` is true (the caller grows the
+   * line); pressing the thumb drags it from the grab point, pressing the
+   * track beside it jumps there and keeps dragging. Callers that render no
+   * track keep the thumb's own pointer handling.
+   */
+  readonly trackRef: RefObject<HTMLDivElement | null>;
+  /** The track is hovered or the thumb is being dragged. */
+  readonly isScrollbarActive: boolean;
 }
 
 // Sub-pixel rounding slack so a fully-scrolled edge reports no overflow.
@@ -55,6 +66,11 @@ const MIN_THUMB_WIDTH_PX = 24;
 const SCROLLBAR_HIDE_DELAY_MS = 600;
 /** Matches the thumb's CSS `left`/`bottom` inset from the strip's edges. */
 const THUMB_EDGE_INSET_PX = 2;
+/**
+ * How long the pointer must rest on the thin-line track before the line
+ * shows, so moving across the tabs never makes it blink.
+ */
+export const SCROLL_TRACK_HOVER_DELAY_MS = 250;
 
 export function useHorizontalOverflowScroll<
   T extends HTMLElement,
@@ -67,6 +83,9 @@ export function useHorizontalOverflowScroll<
   const [hasOverflow, setHasOverflow] = useState(false);
   const [isScrollbarRevealed, setIsScrollbarRevealed] = useState(false);
   const [isScrollAreaHovered, setIsScrollAreaHovered] = useState(false);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [isTrackHovered, setIsTrackHovered] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const scrollbarBehavior = useScrollbarBehavior(ref);
   const revealedRef = useRef(false);
   const hideTimerRef = useRef<number | null>(null);
@@ -203,23 +222,102 @@ export function useHorizontalOverflowScroll<
       };
       reveal();
     };
-    const handleThumbPointerMove = (event: PointerEvent): void => {
+    // Scroll distance per pixel of thumb travel: the scroll range over the
+    // room the thumb can move in (the inset track less the thumb).
+    const scrollPerPixel = (): number => {
+      if (!thumb) return 0;
+      const travel =
+        el.clientWidth - THUMB_EDGE_INSET_PX * 2 - thumb.offsetWidth;
+      return travel > 0 ? (el.scrollWidth - el.clientWidth) / travel : 0;
+    };
+    const dragTo = (event: PointerEvent): void => {
       const drag = dragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId || !thumb) return;
+      if (!drag || drag.pointerId !== event.pointerId) return;
       const maxScrollLeft = el.scrollWidth - el.clientWidth;
-      const availableTrack = el.clientWidth - thumb.offsetWidth;
-      if (availableTrack <= 0) return;
-      el.scrollLeft =
-        drag.startScrollLeft +
-        ((event.clientX - drag.startX) / availableTrack) * maxScrollLeft;
+      // Instant (no smooth-scroll easing) and clamped at both ends, so the
+      // thumb stays under the grab point.
+      el.style.scrollBehavior = 'auto';
+      el.scrollLeft = Math.min(
+        maxScrollLeft,
+        Math.max(
+          0,
+          drag.startScrollLeft +
+            (event.clientX - drag.startX) * scrollPerPixel(),
+        ),
+      );
+    };
+    const handleThumbPointerMove = (event: PointerEvent): void => {
+      dragTo(event);
     };
     const endThumbDrag = (event: PointerEvent): void => {
       if (dragRef.current?.pointerId !== event.pointerId) return;
       dragRef.current = null;
-      if (thumb?.hasPointerCapture(event.pointerId)) {
+      setIsDragging(false);
+      el.style.scrollBehavior = '';
+      el.ownerDocument.documentElement.style.userSelect = '';
+      if (thumb?.hasPointerCapture?.(event.pointerId)) {
         thumb.releasePointerCapture(event.pointerId);
       }
+      if (track?.hasPointerCapture?.(event.pointerId)) {
+        track.releasePointerCapture(event.pointerId);
+      }
       scheduleHide();
+    };
+
+    // The thin-line track: hover reveals and holds the bar; a press on the
+    // thumb drags from the grab point, a press beside it jumps there first.
+    const track = trackRef.current;
+    let trackHoverTimer: number | null = null;
+    const clearTrackHoverTimer = (): void => {
+      if (trackHoverTimer !== null) {
+        window.clearTimeout(trackHoverTimer);
+        trackHoverTimer = null;
+      }
+    };
+    const handleTrackEnter = (): void => {
+      if (el.scrollWidth - el.clientWidth <= EDGE_TOLERANCE_PX) return;
+      clearTrackHoverTimer();
+      // Only a pointer that rests on the line shows it.
+      trackHoverTimer = window.setTimeout(() => {
+        trackHoverTimer = null;
+        thumbHoverRef.current = true;
+        setIsTrackHovered(true);
+        reveal();
+      }, SCROLL_TRACK_HOVER_DELAY_MS);
+    };
+    const handleTrackLeave = (): void => {
+      clearTrackHoverTimer();
+      thumbHoverRef.current = false;
+      setIsTrackHovered(false);
+      if (revealedRef.current) scheduleHide();
+    };
+    const handleTrackPointerDown = (event: PointerEvent): void => {
+      if (!track || !thumb || event.button !== 0) return;
+      if (el.scrollWidth - el.clientWidth <= EDGE_TOLERANCE_PX) return;
+      // No text selection while dragging.
+      event.preventDefault();
+      const rect = thumb.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right) {
+        // Centre the thumb on the press, then drag on from there.
+        el.style.scrollBehavior = 'auto';
+        el.scrollLeft = Math.min(
+          el.scrollWidth - el.clientWidth,
+          Math.max(
+            0,
+            el.scrollLeft +
+              (event.clientX - (rect.left + rect.right) / 2) * scrollPerPixel(),
+          ),
+        );
+      }
+      track.setPointerCapture(event.pointerId);
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startScrollLeft: el.scrollLeft,
+      };
+      el.ownerDocument.documentElement.style.userSelect = 'none';
+      setIsDragging(true);
+      reveal();
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
@@ -234,6 +332,13 @@ export function useHorizontalOverflowScroll<
     thumb?.addEventListener('pointerup', endThumbDrag);
     thumb?.addEventListener('pointercancel', endThumbDrag);
     thumb?.addEventListener('lostpointercapture', endThumbDrag);
+    track?.addEventListener('pointerenter', handleTrackEnter);
+    track?.addEventListener('pointerleave', handleTrackLeave);
+    track?.addEventListener('pointerdown', handleTrackPointerDown);
+    track?.addEventListener('pointermove', dragTo);
+    track?.addEventListener('pointerup', endThumbDrag);
+    track?.addEventListener('pointercancel', endThumbDrag);
+    track?.addEventListener('lostpointercapture', endThumbDrag);
 
     const view = el.ownerDocument.defaultView;
     const resizeObserver =
@@ -264,6 +369,15 @@ export function useHorizontalOverflowScroll<
       thumb?.removeEventListener('pointerup', endThumbDrag);
       thumb?.removeEventListener('pointercancel', endThumbDrag);
       thumb?.removeEventListener('lostpointercapture', endThumbDrag);
+      clearTrackHoverTimer();
+      track?.removeEventListener('pointerenter', handleTrackEnter);
+      track?.removeEventListener('pointerleave', handleTrackLeave);
+      track?.removeEventListener('pointerdown', handleTrackPointerDown);
+      track?.removeEventListener('pointermove', dragTo);
+      track?.removeEventListener('pointerup', endThumbDrag);
+      track?.removeEventListener('pointercancel', endThumbDrag);
+      track?.removeEventListener('lostpointercapture', endThumbDrag);
+      el.ownerDocument.documentElement.style.userSelect = '';
       clearHideTimer();
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
@@ -299,6 +413,8 @@ export function useHorizontalOverflowScroll<
 
   return {
     ref,
+    trackRef,
+    isScrollbarActive: hasOverflow && (isTrackHovered || isDragging),
     overflowRef,
     showStartFade,
     showEndFade,

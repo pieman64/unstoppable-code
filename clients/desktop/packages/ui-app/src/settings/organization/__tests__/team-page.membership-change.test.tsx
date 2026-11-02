@@ -86,12 +86,10 @@ async function click(testId: string): Promise<void> {
 async function renderPage(overrides: Partial<TeamPageProps>): Promise<void> {
   const props: TeamPageProps = {
     initialDetail: buildOrganizationDetail(),
-    organizations: [],
     viewerEmail: 'viewer@example.com',
     billingEnabled: false,
     memoryEnabled: false,
     projectsEnabled: false,
-    billingNeedsAttention: false,
     mobileBrowser: false,
     activeTab: 'members',
     ...overrides,

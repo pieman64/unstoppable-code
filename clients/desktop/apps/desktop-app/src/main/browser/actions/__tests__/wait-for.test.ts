@@ -299,7 +299,7 @@ describe('waitForBrowserCondition', () => {
 
   it('cancels a pending probe and returns promptly', async () => {
     const controller = new AbortController();
-    const probe = jest.fn(
+    const probe = jest.fn<Promise<BrowserWaitForProbe>, [AbortSignal, number]>(
       (): Promise<BrowserWaitForProbe> =>
         new Promise<BrowserWaitForProbe>(() => {}),
     );

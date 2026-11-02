@@ -235,7 +235,7 @@ describe('ledger tools runtime', () => {
 
       expect(
         ledgerChatContainerFor(
-          { projectId: 'cowork-1', worktreeId: 'entry-1', chatId: 'c' },
+          { projectId: 'cowork-1', worktreeId: 'entry-1' },
           host,
         ),
       ).toEqual({
@@ -245,7 +245,7 @@ describe('ledger tools runtime', () => {
       });
       expect(
         ledgerChatContainerFor(
-          { projectId: 'multi-1', worktreeId: 'wt-1', chatId: 'c' },
+          { projectId: 'multi-1', worktreeId: 'wt-1' },
           host,
         ),
       ).toEqual({
@@ -1492,6 +1492,113 @@ describe('ledger tools runtime', () => {
       state.workspaceTypes.set('workspace-1', 'cowork');
 
       await expect(openPipelineAgent()).resolves.toBeNull();
+    });
+
+    describe("without a worktree, in its owner's global (workflow) Ledger", () => {
+      /** The desktop pipeline host: it binds the signed-in account's Ledger. */
+      function globalHost(): LedgerToolsHost {
+        return {
+          ...host,
+          containerCreatedAt: async (container): Promise<string | null> =>
+            container.kind === 'global'
+              ? (await harness.service.scopes.resolveGlobal(container.owner))
+                  .containerCreatedAt
+              : host.containerCreatedAt(container),
+          findContainerCreatedAt: async (container): Promise<string | null> =>
+            container.kind === 'global'
+              ? ((
+                  await harness.service.scopes.findGlobal(
+                    container.owner,
+                    harness.accountId,
+                  )
+                )?.containerCreatedAt ?? null)
+              : host.containerCreatedAt(container),
+        };
+      }
+
+      function openGlobalAgent(): Promise<LedgerChatToolsSession | null> {
+        return openLedgerPipelineAgentTools({
+          target: {
+            projectId: 'pipeline',
+            worktreeId: 'execution-1',
+            chatId: 'pipeline:execution-1',
+          },
+          globalOwner: { kind: 'personal' },
+          harness: 'codex',
+          readSettings: (): LedgerChatSettings => ({
+            model: 'gpt-5-codex',
+            thinkingEffort: 'high',
+            planMode: false,
+            mode: 'read_only',
+          }),
+          pipelineAgent: pipelineCaller(),
+          host: globalHost(),
+        }).then((session) => {
+          if (session !== null) sessions.push(session);
+          return session;
+        });
+      }
+
+      it('records the agent there, and says its entries reference no files', async () => {
+        const session = await openGlobalAgent();
+        if (session === null) throw new Error('Expected pipeline agent tools');
+        const entryId = readEntryId(await addTask(session, 'Workflow work'));
+
+        const detail = await dispatcher
+          .query(
+            'core.ledger.entry.get',
+            { entryId },
+            { caller: harness.caller(harness.registerUser()) },
+          )
+          .catch((): null => null);
+        // The user's binding is the task's, which never reads it.
+        expect(detail).toBeNull();
+        expect(session.scope.container).toEqual({
+          kind: 'global',
+          owner: { kind: 'personal' },
+        });
+        const prompt = session.systemPrompt();
+        expect(prompt).toContain('workflows Feed');
+        expect(prompt).toContain("can't reference files");
+        expect(prompt).not.toContain('rootId');
+        expect(prompt).not.toContain('Plan mode exception');
+      });
+
+      it.each([
+        ['the flag is off', { flag: false }],
+        ['agent recording is off', { recording: false }],
+      ])(
+        'opens none, binding nothing, when %s',
+        async (_label, overrides: Partial<TestHostState>) => {
+          Object.assign(state, overrides);
+
+          await expect(openGlobalAgent()).resolves.toBeNull();
+          expect(harness.storeRequests()).toBe(0);
+        },
+      );
+
+      it('fails closed once another account signs in, writing nowhere', async () => {
+        const session = await openGlobalAgent();
+        if (session === null) throw new Error('Expected pipeline agent tools');
+        await addTask(session, 'Before the switch');
+        const countsBefore = harness.store.repository.getStorageCounts();
+
+        harness.accountId = 'account-2';
+        const result = await addTask(session, 'After the switch');
+        // The first refusal drops the binding; the next call rebinds.
+        const retried = await addTask(session, 'Again after the switch');
+
+        for (const refused of [result, retried]) {
+          expect(parseResult(refused)).toMatchObject({
+            error: { code: 'FEED_UNAVAILABLE', reason: 'no_ledger_scope' },
+          });
+        }
+        // Rechecks and rebinds only look: the new account's Ledger is not minted.
+        expect(harness.store.repository.getStorageCounts()).toMatchObject({
+          entries: countsBefore.entries,
+          scopes: countsBefore.scopes,
+        });
+      });
     });
 
     it('tells the agent whose Ledger it records in, without a Plan mode exception', async () => {

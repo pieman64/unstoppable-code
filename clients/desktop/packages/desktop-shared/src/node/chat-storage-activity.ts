@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Per-scope accounting of canonical chat-storage work, for local diagnostics.
  *
@@ -25,6 +27,8 @@ export interface ChatStorageActivity {
   commits: number;
   mutations: number;
   bytesWritten: number;
+  /** Transcript JSONL and append staging bytes only, not other storage classes. */
+  transcriptBytesWritten: number;
   fileSyncs: number;
   directorySyncs: number;
   /** Summed commit durations, queue wait included. */
@@ -35,6 +39,8 @@ export interface ChatStorageActivity {
 }
 
 export interface ChatStorageScopeActivity {
+  /** Opaque digest of the normalized scope directory; no raw identifiers. */
+  scopeKey: string;
   /** Undefined when no repository registered the scope's directory. */
   identity: ChatStorageScopeIdentity | undefined;
   activity: ChatStorageActivity;
@@ -67,6 +73,7 @@ function emptyActivity(): ChatStorageActivity {
     commits: 0,
     mutations: 0,
     bytesWritten: 0,
+    transcriptBytesWritten: 0,
     fileSyncs: 0,
     directorySyncs: 0,
     commitMsTotal: 0,
@@ -136,10 +143,15 @@ export function registerChatStorageScope(
 }
 
 /** Bytes a chat-storage writer put in `path`. */
-export function recordChatStorageScopeWrite(path: string, bytes: number): void {
+export function recordChatStorageScopeWrite(
+  path: string,
+  bytes: number,
+  transcript = false,
+): void {
   if (!(bytes > 0)) return;
   record(path, (activity) => {
     activity.bytesWritten += bytes;
+    if (transcript) activity.transcriptBytesWritten += bytes;
   });
 }
 
@@ -200,6 +212,11 @@ export function takeChatStorageActivity():
   if (!active) return undefined;
   const window: ChatStorageActivityWindow = {
     scopes: Array.from(scopes, ([key, activity]) => ({
+      scopeKey: createHash('sha256')
+        .update('chat-storage-activity\0')
+        .update(key)
+        .digest('hex')
+        .slice(0, 16),
       identity: identities.get(key),
       activity,
     })),

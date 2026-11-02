@@ -1,3 +1,5 @@
+import { startRemotePairingTelemetry } from '../lib/desktop-telemetry';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +17,7 @@ import {
 import { is } from '@electron-toolkit/utils';
 import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { getWindowTitleBarOptions } from '../lib/window-title-bar';
 import {
   DeviceRelayTokenResponseSchema,
   isDeviceId,
@@ -253,16 +256,18 @@ export function initializeRemoteControl(options: {
     preloadPath: join(__dirname, '../preload/index.js'),
     title: (host: RemoteWindowHost, surface: RemoteSurface): string =>
       surface === 'app-advisor'
-        ? `App Advisor — ${host.name}`
+        ? `${ORCHESTRATOR_LABEL} — ${host.name}`
         : `${host.name} — ${BRAND.displayName}`,
     baseWindowOptions: (): BrowserWindowConstructorOptions => ({
       minWidth: 800,
       minHeight: 500,
       icon: options.iconPath,
-      titleBarStyle: 'hiddenInset',
-      trafficLightPosition: macWindowButtonPosition(
-        uiScaleToZoomFactor(uiScale),
-      ),
+      ...getWindowTitleBarOptions({
+        titleBarStyle: 'hiddenInset',
+        trafficLightPosition: macWindowButtonPosition(
+          uiScaleToZoomFactor(uiScale),
+        ),
+      }),
       autoHideMenuBar: true,
       ...getMainWindowMaterialOptions(hostPlatformOperatingSystem()),
       webPreferences: { spellcheck: true, ...uiZoomWebPreferences(uiScale) },
@@ -279,6 +284,7 @@ export function initializeRemoteControl(options: {
   });
 
   service = new RemoteControlService({
+    recordPairing: startRemotePairingTelemetry,
     store,
     createRelay: (relayOptions: RemoteRelayFactoryOptions): RemoteRelay =>
       new RelayClient({

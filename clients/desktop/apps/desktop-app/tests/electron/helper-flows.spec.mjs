@@ -485,9 +485,7 @@ test.describe('helper flows (live, mock-redirected)', () => {
         .toBe('failure');
 
       await app.openAuditPage();
-      await window
-        .getByTestId('audit-trail-event-type-filter')
-        .selectOption('chat_summary');
+      await app.chooseAuditTrailFilter('event-type', 'chat_summary');
       const auditEntries = window.getByTestId('audit-entry-list');
       await expect(auditEntries).toContainText('Chat summary');
       await expect(auditEntries).toContainText('Failure');

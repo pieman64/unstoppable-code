@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ComposerControlHighlight } from '../PlanModeHighlight';
+import { ComposerControlHighlight } from '../ComposerControlHighlight';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { CheckIcon } from '../icons/AppIcons';
 import { WORKSPACE_COLOR_PALETTE } from './workspace-color-palette';
 
 export interface ColorSwatchOption {
@@ -17,15 +18,28 @@ export interface ColorSwatchPickerProps {
   disabled?: boolean;
   /** Applied to the swatch row, for automation. */
   testId?: string;
+  /**
+   * `compact` is the 20px swatch that sits in a settings row beside its
+   * label; `default` is the 24px swatch of a menu or a page of its own.
+   */
+  size?: 'default' | 'compact';
 }
+
+const SWATCH_SIZE_CLASS_NAMES = {
+  default: 'h-6 w-6',
+  compact: 'h-5 w-5',
+} as const;
+
+// The app checkmark's compact tier, as in a checkbox.
+const CHECK_SIZE = 14;
 
 /**
  * The app's one color chooser: a row of fixed palette swatches, the selected
- * one ringed.
+ * one marked with a checkmark inside it (never a ring).
  *
  * Every surface that lets a user color something — workspaces, browser
  * profiles — renders this, so a swatch is the same size, the same shape, and
- * ringed the same way wherever it appears. There is deliberately no free-form
+ * marked the same way wherever it appears. There is deliberately no free-form
  * color input: an arbitrary hue cannot be checked for contrast against the
  * surfaces it lands on, and the palette is what keeps the app's colored marks
  * legible in both color modes.
@@ -40,6 +54,7 @@ export function ColorSwatchPicker({
   palette = WORKSPACE_COLOR_PALETTE,
   disabled = false,
   testId,
+  size = 'default',
 }: ColorSwatchPickerProps): JSX.Element {
   return (
     <div className="flex flex-wrap gap-2" data-testid={testId}>
@@ -48,21 +63,24 @@ export function ColorSwatchPicker({
         const label =
           typeof option === 'string' ? `Color ${option}` : option.label;
         const color = typeof option === 'string' ? option : option.color;
+        const selected = value === swatch;
         return (
           <button
             key={swatch}
             type="button"
             aria-label={label}
-            aria-pressed={value === swatch}
+            aria-pressed={selected}
             disabled={disabled}
             onClick={() => onChange(swatch)}
-            className={`focus-ring h-6 w-6 rounded-full transition disabled:opacity-60 ${
-              value === swatch
-                ? 'ring-2 ring-line-focus ring-offset-2 ring-offset-base'
-                : 'hover:opacity-80'
+            className={`focus-ring inline-flex shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:opacity-60 ${SWATCH_SIZE_CLASS_NAMES[size]} ${
+              selected ? '' : 'hover:opacity-80'
             }`}
             style={{ backgroundColor: color }}
-          />
+          >
+            {selected ? (
+              <CheckIcon size={CHECK_SIZE} aria-hidden={true} />
+            ) : null}
+          </button>
         );
       })}
     </div>

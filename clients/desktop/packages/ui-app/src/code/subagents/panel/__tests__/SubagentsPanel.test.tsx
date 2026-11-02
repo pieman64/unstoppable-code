@@ -2,11 +2,7 @@
 import { act, useEffect, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { DiagramCanvasProps } from '@canopy/ui-rich/diagram';
-import {
-  SubagentsViewProvider,
-  type SubagentNode,
-  type SubagentTree,
-} from '@canopy/ui-shared';
+import type { SubagentNode, SubagentTree } from '@canopy/ui-shared';
 import { SubagentsPanel, type SubagentsPanelProps } from '../SubagentsPanel';
 import type { SubagentCommandResult } from '../../types';
 import {
@@ -329,25 +325,11 @@ function mountPanelWithRerender(props: SubagentsPanelProps): MountedPanel {
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
-  // These cover the Subagents view; SubagentsPanel.classic.test.tsx covers
-  // the classic panel.
-  act(() =>
-    root.render(
-      <SubagentsViewProvider value>
-        <SubagentsPanel {...props} />
-      </SubagentsViewProvider>,
-    ),
-  );
+  act(() => root.render(<SubagentsPanel {...props} />));
   return {
     container,
     rerender(nextProps): void {
-      act(() =>
-        root.render(
-          <SubagentsViewProvider value>
-            <SubagentsPanel {...nextProps} />
-          </SubagentsViewProvider>,
-        ),
-      );
+      act(() => root.render(<SubagentsPanel {...nextProps} />));
     },
   };
 }
@@ -565,14 +547,6 @@ describe('SubagentsPanel', () => {
     ).toBeNull();
   });
 
-  /** The grid cells one List row shows; the list has no header row. */
-  function rowCellCount(container: Element, id: string): number {
-    const row = container.querySelector(
-      `[data-testid="subagents-list-row-${id}"]`,
-    );
-    return row?.querySelectorAll('[role="gridcell"]').length ?? -1;
-  }
-
   it('uses the minimal list columns in a narrow panel so titles keep their width', () => {
     panelWidth = 330;
     const task = makeNode('task', null, 1);
@@ -580,9 +554,10 @@ describe('SubagentsPanel', () => {
       baseProps(makeTree([task]), { scopeKey: 'minimal-columns' }),
     );
     clickTestId('subagents-view-list');
-    expect(panel.querySelector('[role="columnheader"]')).toBeNull();
-    // Task and Time.
-    expect(rowCellCount(panel, 'task')).toBe(2);
+    const headings = Array.from(
+      panel.querySelectorAll('[role="columnheader"]'),
+    ).map((heading) => heading.textContent);
+    expect(headings).toEqual(['Task', 'Time', '']);
     expect(
       panel.querySelector('[data-testid="subagents-list-select-task"]'),
     ).not.toBeNull();
@@ -592,12 +567,14 @@ describe('SubagentsPanel', () => {
     const task = makeNode('task', null, 1);
     const full = mountPanel(baseProps(makeTree([task])));
     clickTestId('subagents-view-list');
-    expect(full.querySelector('[role="columnheader"]')).toBeNull();
-    // Task, Status, Model, Workspace and Time; no listed task has changes.
-    expect(rowCellCount(full, 'task')).toBe(5);
+    expect(full.textContent).toContain('Workspace');
+    // No listed task has changes, so there is no Changes column.
+    expect(full.textContent).not.toContain('Changes');
     clickTestId('subagents-list-select-task');
-    // Task, Status and Time beside the details.
-    expect(rowCellCount(full, 'task')).toBe(3);
+    const compactHeadings = Array.from(
+      full.querySelectorAll('[role="columnheader"]'),
+    ).map((heading) => heading.textContent);
+    expect(compactHeadings).toEqual(['Task', 'Status', 'Time', '']);
 
     for (const root of mountedRoots.splice(0)) act(() => root.unmount());
     document.body.replaceChildren();
@@ -608,8 +585,16 @@ describe('SubagentsPanel', () => {
       }),
     );
     clickTestId('subagents-view-list');
-    // Task, Status, Model and Time.
-    expect(rowCellCount(noWorkspace, 'task')).toBe(4);
+    const noWorkspaceHeadings = Array.from(
+      noWorkspace.querySelectorAll('[role="columnheader"]'),
+    ).map((heading) => heading.textContent);
+    expect(noWorkspaceHeadings).toEqual([
+      'Task',
+      'Status',
+      'Model',
+      'Time',
+      '',
+    ]);
 
     for (const root of mountedRoots.splice(0)) act(() => root.unmount());
     document.body.replaceChildren();
@@ -618,10 +603,14 @@ describe('SubagentsPanel', () => {
       baseProps(makeTree([task]), { scopeKey: 'narrow-columns' }),
     );
     clickTestId('subagents-view-list');
-    expect(rowCellCount(narrow, 'task')).toBe(3);
+    expect(
+      Array.from(narrow.querySelectorAll('[role="columnheader"]')).map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(['Task', 'Status', 'Time', '']);
   });
 
-  it('keeps skipped ancestors out of Active-filtered List rows and drops the Status column', () => {
+  it('shows skipped ancestors in the Active-filtered List view', () => {
     const hidden = {
       ...makeNode('hidden', null, 1, 'completed', ['visible']),
       title: 'Finished parent',
@@ -633,19 +622,13 @@ describe('SubagentsPanel', () => {
     const container = mountPanel(baseProps(makeTree([hidden, visible])));
 
     clickTestId('subagents-view-list');
-    const allCells = rowCellCount(container, 'visible');
     clickTestId('subagents-filter-active');
 
     const row = container.querySelector(
       '[data-testid="subagents-list-row-visible"]',
     );
     expect(row?.textContent).toContain('Live child');
-    expect(row?.textContent).not.toContain('via Finished parent');
-    // Every Active row is running, so the Status column goes.
-    expect(rowCellCount(container, 'visible')).toBe(allCells - 1);
-
-    clickTestId('subagents-filter-all');
-    expect(rowCellCount(container, 'visible')).toBe(allCells);
+    expect(row?.textContent).toContain('via Finished parent');
   });
 
   it('stores a clicked depth stub as focus and supports Up and Show all', () => {
@@ -1495,208 +1478,5 @@ describe('SubagentsPanel', () => {
       noMatchingSummary.querySelector('[data-testid="subagents-tree-root"]')
         ?.textContent,
     ).toContain('1 active');
-  });
-
-  it('offers Stop all delegates for the live managed tasks, with a confirm step', async () => {
-    const onStopAllDelegations = jest.fn(
-      (): Promise<boolean> => Promise.resolve(true),
-    );
-    const tree = makeTree([
-      makeNode('live-a', null, 1, 'running'),
-      makeNode('live-b', null, 1, 'queued'),
-      makeNode('done', null, 1, 'completed'),
-    ]);
-    mountPanel(
-      baseProps(tree, {
-        scopeKey: 'stop-all',
-        onStopAllDelegations,
-        capabilities: {
-          stop: true,
-          messaging: false,
-          worktreeDetails: true,
-          nativeInterrupt: false,
-          openWorkflow: false,
-          stopWorkflow: false,
-        },
-      }),
-    );
-    clickTestId('agent-activity-stop-all');
-    expect(
-      document.querySelector(
-        '[data-testid="agent-activity-stop-all-confirmation"]',
-      )?.textContent,
-    ).toContain('2');
-    await act(async () => {
-      clickTestId('agent-activity-stop-all-confirm');
-      await Promise.resolve();
-    });
-    expect(onStopAllDelegations).toHaveBeenCalledTimes(1);
-  });
-
-  it('puts the picker and red Stop all on the first toolbar row, filters then icon Tree/List on the second', () => {
-    const tree = makeTree([makeNode('live', null, 1, 'running')]);
-    const container = mountPanel(
-      baseProps(tree, {
-        scopeKey: 'one-toolbar-row',
-        onStopAllDelegations: (): Promise<boolean> => Promise.resolve(true),
-        capabilities: {
-          stop: true,
-          messaging: false,
-          worktreeDetails: true,
-          nativeInterrupt: false,
-          openWorkflow: false,
-          stopWorkflow: false,
-        },
-      }),
-    );
-    const headers = container.querySelectorAll(
-      '[data-testid="subagents-panel"] > header',
-    );
-    expect(headers).toHaveLength(1);
-    const toolbar = container.querySelector<HTMLElement>(
-      '[data-testid="subagents-toolbar"]',
-    );
-    expect(toolbar).not.toBeNull();
-    for (const testId of [
-      'subagents-root-picker',
-      'subagents-filter',
-      'subagents-filter-all',
-      'subagents-filter-active',
-      'subagents-filter-attention',
-      'subagents-levels',
-      'subagents-view-tree',
-      'subagents-view-list',
-      'agent-activity-stop-all',
-    ]) {
-      expect(
-        toolbar?.querySelector(`[data-testid="${testId}"]`),
-      ).not.toBeNull();
-    }
-    // The filters use the same segmented control as Tree/List.
-    const filter = toolbar?.querySelector('[data-testid="subagents-filter"]');
-    expect(filter?.getAttribute('role')).toBe('group');
-    expect(filter?.className).toBe(
-      toolbar?.querySelector('[data-testid="subagents-view"]')?.className,
-    );
-    expect(
-      toolbar
-        ?.querySelector('[data-testid="subagents-filter-all"]')
-        ?.getAttribute('aria-pressed'),
-    ).toBe('true');
-    // Row 1: the picker on the left, Stop all at the right end.
-    const [firstRow, secondRow] = Array.from(toolbar?.children ?? []);
-    expect(toolbar?.children).toHaveLength(2);
-    expect(
-      firstRow?.querySelector('[data-testid="subagents-root-picker"]'),
-    ).not.toBeNull();
-    const stopAllCluster = firstRow
-      ?.querySelector('[data-testid="agent-activity-stop-all"]')
-      ?.closest('.ml-auto');
-    expect(stopAllCluster?.parentElement).toBe(firstRow);
-    // Row 2: the filters on the left; Levels (Tree only) and the view on
-    // the right.
-    expect(secondRow?.getAttribute('data-testid')).toBe(
-      'subagents-toolbar-views',
-    );
-    expect(secondRow?.className).toContain('justify-between');
-    const [leftGroup, rightGroup] = Array.from(secondRow?.children ?? []);
-    expect(leftGroup?.getAttribute('data-testid')).toBe('subagents-filter');
-    const rightOrder = Array.from(
-      rightGroup?.querySelectorAll(
-        '[data-testid="subagents-levels"], [data-testid="subagents-view"]',
-      ) ?? [],
-    ).map((element) => element.getAttribute('data-testid'));
-    expect(rightOrder).toEqual(['subagents-levels', 'subagents-view']);
-    // Counts read in tertiary ink after the label; the name stays `All 1`.
-    const all = toolbar?.querySelector('[data-testid="subagents-filter-all"]');
-    expect(all?.textContent).toBe('All 1');
-    expect(all?.querySelector('.fg-tertiary')?.textContent).toBe(' 1');
-    // Tree/List are icon-only segments named by their labels.
-    for (const [testId, name] of [
-      ['subagents-view-tree', 'Tree'],
-      ['subagents-view-list', 'List'],
-    ] as const) {
-      const segment = toolbar?.querySelector(`[data-testid="${testId}"]`);
-      expect(segment?.getAttribute('aria-label')).toBe(name);
-      expect(segment?.textContent).toBe('');
-      expect(segment?.querySelector('svg')).not.toBeNull();
-      expect(segment?.querySelector('svg')?.getAttribute('width')).toBe('12px');
-    }
-    // Stop all rests as a quiet ghost in destructive ink, without a fill.
-    const stopAll = toolbar?.querySelector<HTMLElement>(
-      '[data-testid="agent-activity-stop-all"]',
-    );
-    const stopAllClasses = stopAll?.className.split(/\s+/) ?? [];
-    expect(stopAllClasses).toContain('fg-destructive');
-    expect(stopAllClasses).not.toContain('bg-destructive');
-    expect(stopAll?.textContent).toBe('Stop all');
-    expect(stopAll?.getAttribute('aria-label')).toBe('Stop all delegates');
-  });
-
-  it('drops an open Stop all confirmation when another chat is selected', () => {
-    const tree = makeTree([makeNode('live', null, 1, 'running')]);
-    const props = baseProps(tree, {
-      scopeKey: 'stop-all-root-switch',
-      rootChats: [
-        { id: 'root-chat', title: 'Root chat', total: 1, live: 1 },
-        { id: 'other-chat', title: 'Other chat', total: 1, live: 1 },
-      ],
-      onStopAllDelegations: (): Promise<boolean> => Promise.resolve(true),
-      capabilities: {
-        stop: true,
-        messaging: false,
-        worktreeDetails: true,
-        nativeInterrupt: false,
-        openWorkflow: false,
-        stopWorkflow: false,
-      },
-    });
-    const panel = mountPanelWithRerender(props);
-    clickTestId('agent-activity-stop-all');
-    expect(
-      panel.container.querySelector(
-        '[data-testid="agent-activity-stop-all-confirmation"]',
-      ),
-    ).not.toBeNull();
-
-    // The confirm would now stop the other chat's delegates; it must ask again.
-    panel.rerender({ ...props, selectedRootId: 'other-chat' });
-    expect(
-      panel.container.querySelector(
-        '[data-testid="agent-activity-stop-all-confirmation"]',
-      ),
-    ).toBeNull();
-    expect(
-      panel.container.querySelector('[data-testid="agent-activity-stop-all"]'),
-    ).not.toBeNull();
-  });
-
-  it('offers no Stop all when no managed task is live or the host cannot stop', () => {
-    const settled = makeTree([makeNode('done', null, 1, 'completed')]);
-    mountPanel(
-      baseProps(settled, {
-        scopeKey: 'stop-all-settled',
-        onStopAllDelegations: (): Promise<boolean> => Promise.resolve(true),
-        capabilities: {
-          stop: true,
-          messaging: false,
-          worktreeDetails: true,
-          nativeInterrupt: false,
-          openWorkflow: false,
-          stopWorkflow: false,
-        },
-      }),
-    );
-    expect(
-      document.querySelector('[data-testid="agent-activity-stop-all"]'),
-    ).toBeNull();
-    mountPanel(
-      baseProps(makeTree([makeNode('live', null, 1)]), {
-        scopeKey: 'stop-all-no-host',
-      }),
-    );
-    expect(
-      document.querySelector('[data-testid="agent-activity-stop-all"]'),
-    ).toBeNull();
   });
 });

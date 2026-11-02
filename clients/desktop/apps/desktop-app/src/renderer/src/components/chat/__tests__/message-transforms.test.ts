@@ -1,4 +1,5 @@
 import { hasUnresolvedToolUseInCurrentTurn } from '../../../stores/chat/messages';
+import type { ChatMessage } from '@/stores/chatStore';
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 import {
   reorderMessagesForDisplay,
@@ -10,50 +11,14 @@ import {
   getToolCategory,
   parseMcpToolName,
 } from '@canopy/desktop-shared/lib/turn-utils';
-import type { PersistedToolOutputReference } from '@canopy/agent-transcript/types';
+import type { DisplayBlock, DisplayMessage } from '../types';
 
 // ---------------------------------------------------------------------------
 // Helpers to build test fixtures
 // ---------------------------------------------------------------------------
 
-type Block = {
-  type: string;
-  asyncQuestionAnswer?: {
-    requestId: string;
-    startsTurn: boolean;
-    answers: Array<{ question: string; selectedOptions: string[] }>;
-  };
-  text?: string;
-  toolUseId?: string;
-  toolName?: string;
-  input?: string;
-  output?: string;
-  isError?: boolean;
-  fullOutputRef?: PersistedToolOutputReference;
-  startedAt?: number;
-  completedAt?: number | null;
-  agentBlockId?: string;
-  callId?: string;
-  tool?: string;
-  status?: string;
-  senderThreadId?: string;
-  receiverThreadIds?: string[];
-  prompt?: string;
-  agentsStates?: Record<string, { status: string; message?: string | null }>;
-  receiverAgents?: Record<string, { nickname?: string; role?: string }>;
-  description?: string;
-  displayName?: string;
-  subBlocks?: Block[];
-};
-
-type Msg = {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  blocks: Block[];
-  timestamp: number;
-  parentToolUseId?: string;
-  parentBlockId?: string;
-};
+type Block = ChatMessage['blocks'][number];
+type Msg = ChatMessage;
 
 function msg(
   id: string,
@@ -64,7 +29,7 @@ function msg(
   return { id, role, blocks, timestamp: Date.now(), ...extra };
 }
 
-function textBlock(text: string): Block {
+function textBlock(text: string): Extract<Block, { type: 'text' }> {
   return { type: 'text', text };
 }
 
@@ -72,27 +37,30 @@ function toolUseBlock(
   toolUseId: string,
   toolName: string,
   input = '{}',
-): Block {
+): Extract<Block, { type: 'tool_use' }> {
   return { type: 'tool_use', toolUseId, toolName, input };
 }
 
 function timerBlock(
   startedAt: number,
   completedAt: number | null = null,
-): Block {
+): Extract<Block, { type: 'turn_timer' }> {
   return { type: 'turn_timer', startedAt, completedAt };
 }
 
-function thinkingBlock(text: string): Block {
+function thinkingBlock(text: string): Extract<Block, { type: 'thinking' }> {
   return { type: 'thinking', text };
+}
+
+function displayMsg(id: string, blocks: DisplayBlock[]): DisplayMessage {
+  return { id, role: 'assistant', blocks, timestamp: Date.now() };
 }
 
 // Cast helpers — message-transforms expects ChatMessage / DisplayMessage but
 // our lightweight test fixtures match their structural shape.
+const asChat = (msgs: Msg[]): ChatMessage[] => msgs;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const asChat = (msgs: Msg[]): any[] => msgs;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const asDisplay = (msgs: Msg[]): any[] => msgs;
+const asDisplay = (msgs: Array<Msg | DisplayMessage>): any[] => msgs;
 
 // ---------------------------------------------------------------------------
 // reorderMessagesForDisplay
@@ -255,6 +223,157 @@ describe('reorderMessagesForDisplay', () => {
     const result = reorderMessagesForDisplay(input);
     // Only the last pending timer is kept; earlier ones are replaced
     expect(result.map((m: Msg) => m.id)).toEqual(['1', 't2', '2']);
+  });
+
+  it("shows every canonical execution's timer, at the end of its turn", () => {
+    const input = asChat([
+      msg('u1', 'user', [textBlock('a')]),
+      msg('t-first', 'system', [
+        { ...timerBlock(1, 2), turnId: 'turn-1', userMessageId: 'u1' },
+      ]),
+      msg('t-restart', 'system', [
+        { ...timerBlock(3, null), turnId: 'turn-2', userMessageId: 'u1' },
+      ]),
+      msg('a1', 'assistant', [textBlock('answer')]),
+      msg('u2', 'user', [textBlock('b')]),
+    ]);
+    const result = reorderMessagesForDisplay(input);
+    // A restart execution's timer no longer replaces the first one.
+    expect(result.map((m: Msg) => m.id)).toEqual([
+      'u1',
+      'a1',
+      't-restart',
+      't-first',
+      'u2',
+    ]);
+  });
+
+  it("keeps a resumed turn live: the latest execution's timer owns the turn", () => {
+    const input = asChat([
+      msg('u1', 'user', [textBlock('a')]),
+      msg('t-first', 'system', [
+        { ...timerBlock(1, 2), turnId: 'turn-1', userMessageId: 'u1' },
+      ]),
+      msg('t-restart', 'system', [
+        { ...timerBlock(3, null), turnId: 'turn-2', userMessageId: 'u1' },
+      ]),
+      msg('a1', 'assistant', [textBlock('answer')]),
+    ]);
+    const groups = groupIntoTurns(
+      mergeToolResults(reorderMessagesForDisplay(input)),
+    );
+    const turn = groups[0];
+    expect(turn?.kind).toBe('turn-group');
+    if (turn?.kind !== 'turn-group') return;
+    expect(turn.timerMessage.id).toBe('t-restart');
+    expect(turn.isComplete).toBe(false);
+    // The earlier execution's timer still shows, as its own row.
+    expect(
+      groups
+        .slice(1)
+        .map((group) =>
+          group.kind === 'standalone' ? group.message.id : group.kind,
+        ),
+    ).toEqual(['t-first']);
+  });
+
+  describe('wake boundaries (turn-state phase 40d)', () => {
+    const wakeInput = (spawnedBy: {
+      taskId?: string;
+      toolUseId?: string;
+    }): Msg[] => [
+      msg('u1', 'user', [textBlock('run the tests in the background')]),
+      msg('a1', 'assistant', [
+        toolUseBlock(
+          'tool-1',
+          'Bash',
+          JSON.stringify({ command: 'npm test', description: 'Run the tests' }),
+        ),
+      ]),
+      msg('t1', 'system', [
+        { ...timerBlock(1, 2), turnId: 'turn-1', userMessageId: 'u1' },
+      ]),
+      msg('tw', 'system', [
+        { ...timerBlock(3, null), turnId: 'wake', spawnedBy },
+      ]),
+      msg('a-wake', 'assistant', [textBlock('The tests passed.')]),
+    ];
+
+    it('heads a wake with a boundary row naming its task, closed by its own timer', () => {
+      const result = reorderMessagesForDisplay(
+        asChat(wakeInput({ taskId: 'task-1', toolUseId: 'tool-1' })),
+      );
+      expect(result.map((m: Msg) => m.id)).toEqual([
+        'u1',
+        'a1',
+        't1',
+        'tw:wake',
+        'a-wake',
+        'tw',
+      ]);
+      expect(result[3]).toMatchObject({
+        role: 'system',
+        blocks: [
+          {
+            type: 'wake_boundary',
+            turnId: 'wake',
+            taskLabel: 'Run the tests',
+            spawningUserMessageId: 'u1',
+          },
+        ],
+      });
+      const groups = groupIntoTurns(mergeToolResults(result));
+      expect(
+        groups.map((group) =>
+          group.kind === 'turn-group'
+            ? [group.userMessage.id, group.timerMessage.id, group.isComplete]
+            : group.kind,
+        ),
+      ).toEqual([
+        ['u1', 't1', true],
+        ['tw:wake', 'tw', false],
+      ]);
+    });
+
+    it("names no task when the provider doesn't say what woke the turn", () => {
+      const result = reorderMessagesForDisplay(asChat(wakeInput({})));
+      const boundary = result.find((m: Msg) => m.id === 'tw:wake');
+      expect(boundary?.blocks).toEqual([
+        { type: 'wake_boundary', turnId: 'wake' },
+      ]);
+    });
+  });
+
+  it("places a canonical timer in its anchor's turn, not where it was appended", () => {
+    const input = asChat([
+      msg('u1', 'user', [textBlock('a')]),
+      msg('a1', 'assistant', [textBlock('answer')]),
+      msg('u2', 'user', [textBlock('b')]),
+      msg('a2', 'assistant', [textBlock('second answer')]),
+      msg('t1', 'system', [
+        { ...timerBlock(1, 2), turnId: 'turn-1', userMessageId: 'u1' },
+      ]),
+    ]);
+    const result = reorderMessagesForDisplay(input);
+    expect(result.map((m: Msg) => m.id)).toEqual([
+      'u1',
+      'a1',
+      't1',
+      'u2',
+      'a2',
+    ]);
+  });
+
+  it('keeps a canonical timer whose anchor is not in the transcript where it was appended', () => {
+    const input = asChat([
+      msg('u1', 'user', [textBlock('a')]),
+      msg('t1', 'system', [
+        { ...timerBlock(1, 2), turnId: 'turn-1', userMessageId: 'missing' },
+      ]),
+      msg('a1', 'assistant', [textBlock('answer')]),
+    ]);
+    const result = reorderMessagesForDisplay(input);
+    expect(result.map((m: Msg) => m.id)).toEqual(['u1', 'a1', 't1']);
   });
 
   it('drops legacy Claude Code queue-operation prompt echoes before the real user message', () => {
@@ -566,23 +685,20 @@ describe('computeTurnSummary', () => {
   });
 
   it('counts a codex_agent display block as one agent (Phase F3 §5)', () => {
-    const input = asDisplay([
-      msg('a1', 'assistant', [
-        {
-          type: 'codex_agent',
-          agentBlockId: 'codex-agent-1',
-          callId: '1',
-          status: 'inProgress',
-          senderThreadId: 'root',
-          receiverThreadIds: ['sub'],
-          prompt: 'do',
-          description: 'do',
-          displayName: 'Codex',
-          agentsStates: {},
-          subBlocks: [],
-        },
-      ]),
-    ]);
+    const agentBlock: Extract<DisplayBlock, { type: 'codex_agent' }> = {
+      type: 'codex_agent',
+      agentBlockId: 'codex-agent-1',
+      callId: '1',
+      status: 'inProgress',
+      senderThreadId: 'root',
+      receiverThreadIds: ['sub'],
+      prompt: 'do',
+      description: 'do',
+      displayName: 'Codex',
+      agentsStates: {},
+      subBlocks: [],
+    };
+    const input = asDisplay([displayMsg('a1', [agentBlock])]);
     const result = computeTurnSummary(input);
     expect(result.agent).toBe(1);
     expect(result.other).toBe(0);

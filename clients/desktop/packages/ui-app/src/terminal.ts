@@ -9,6 +9,7 @@ export {
   getOrCreateInstance,
   peekInstance,
   TERMINAL_BG_COLOR,
+  TERMINAL_THEME,
   type TerminalInstanceEntry,
 } from './code/terminal/terminal-instances';
 export {

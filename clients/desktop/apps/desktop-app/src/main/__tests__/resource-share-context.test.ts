@@ -11,15 +11,21 @@ jest.mock('../lib/resource-context', () => ({
 jest.mock('../lib/canopy-cloud-account-store', () => ({
   loadCanopyCloudAccountPublicState: jest.fn(),
 }));
+jest.mock('../canopy-cloud/config', () => ({
+  getCanopyCloudBaseUrl: (): string => 'https://cloud.test',
+}));
 
 describe('preserveOrganizationPublicLink', () => {
   beforeEach(() => {
     jest.mocked(resourceContextEnabled).mockReturnValue(true);
     jest.mocked(loadCanopyCloudAccountPublicState).mockResolvedValue({
-      status: 'ok',
+      read: 'ok',
       hasApiKey: true,
+      authMode: 'api_key',
+      credentialSource: 'manual',
       capabilities: [],
       personalOrganizationId: 'personal-org',
+      storageAvailable: true,
     });
   });
 
@@ -43,14 +49,35 @@ describe('preserveOrganizationPublicLink', () => {
     jest.mocked(resourceContextEnabled).mockReturnValue(false);
     await expect(preserveOrganizationPublicLink(owner)).resolves.toBe(false);
     jest.mocked(resourceContextEnabled).mockReturnValue(true);
-    jest
-      .mocked(loadCanopyCloudAccountPublicState)
-      .mockResolvedValue({ status: 'ok', hasApiKey: true, capabilities: [] });
+    jest.mocked(loadCanopyCloudAccountPublicState).mockResolvedValue({
+      read: 'ok',
+      hasApiKey: true,
+      authMode: 'api_key',
+      credentialSource: 'manual',
+      capabilities: [],
+      storageAvailable: true,
+    });
     await expect(preserveOrganizationPublicLink(owner)).resolves.toBe(true);
   });
 });
 
 describe('toPortalExistingShare', () => {
+  it('carries the public link so a reopened Share shows it', () => {
+    expect(
+      toPortalExistingShare({
+        shareScope: 'private',
+        owner: { type: 'user', id: 'user-1' },
+        publicShare: {
+          upToDate: true,
+          sharePath: '/portal/plugins/skills/shared/abc',
+        },
+      }),
+    ).toEqual({
+      audience: 'public',
+      publicUrl: 'https://cloud.test/portal/plugins/skills/shared/abc',
+    });
+  });
+
   it('preserves organization ownership separately from a legacy public audience', () => {
     expect(
       toPortalExistingShare({

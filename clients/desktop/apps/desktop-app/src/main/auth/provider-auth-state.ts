@@ -638,7 +638,7 @@ export function buildClaudeAuthStatusFromPayload(
   if (authenticated) {
     if (subscriptionType) {
       accountKind = 'subscription';
-    } else if (authMethod && /api\s*key/i.test(authMethod)) {
+    } else if (authMethod && /api[_\s-]*key/i.test(authMethod)) {
       accountKind = 'api_key';
     }
   }

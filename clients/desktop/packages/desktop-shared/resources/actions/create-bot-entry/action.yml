@@ -1,0 +1,37 @@
+name: Create Bot Entry
+description: Create an Orchestrator task (a Work Entry with its first, empty chat) and optionally place it in a sidebar group. Runs in the desktop app; group problems never fail the step.
+scope: [global, directory, worktree]
+inputs:
+  bot_id:
+    description: Bot that owns the task (app_advisor).
+    required: false
+    default: app_advisor
+  title:
+    description: Task title, at most 200 characters. Optional.
+    required: false
+  group:
+    description: Sidebar group name to join, created when missing. Optional.
+    required: false
+outputs:
+  bot_id:
+    description: The bot the task was created for.
+  task_id:
+    description: The new task (Work Entry) id.
+  chat_id:
+    description: The task's first chat.
+  task_created:
+    description: 'true when this step created the task.'
+  chat_created:
+    description: 'true when this step created the chat.'
+  group_id:
+    description: Id of the group the task joined, or empty.
+  group_created:
+    description: 'true when this step created the group.'
+  grouped:
+    description: 'true when the task is in the requested group after this step.'
+  not_grouped_reason:
+    description: 'Why grouped is false when a group was requested: the sidebar group refusal code (for example group_limit_reached, item_not_groupable or group_not_found) or group_assignment_failed. Empty otherwise.'
+  failure_reason:
+    description: Typed reason when the step failed (not_found, advisor_access_disabled, owner_context_unavailable, validation_failed, target_not_ready, authorization_conflict, needs_desktop). Empty on success, and also when the step timed out, was cancelled or hit an unexpected error; check the step outcome for those.
+runs:
+  using: host

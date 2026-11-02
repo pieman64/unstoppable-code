@@ -1,3 +1,11 @@
+jest.mock('../lib/desktop-telemetry', () => ({
+  recordGitCommitTelemetry: jest.fn(),
+  recordPullRequestOpenedTelemetry: jest.fn(),
+}));
+import {
+  recordGitCommitTelemetry,
+  recordPullRequestOpenedTelemetry,
+} from '../lib/desktop-telemetry';
 jest.mock('../lib/git', () => ({
   applyIndexPatch: jest.fn(),
   checkoutPathsFromRef: jest.fn(),
@@ -1140,6 +1148,8 @@ function buildHarness(
     );
 
   const deps: SplitterDeps = {
+    recordGitCommitTelemetry,
+    recordPullRequestOpenedTelemetry,
     createWorktree,
     runWorktreeSetup,
     setWorktreeGrouping,
@@ -1234,6 +1244,14 @@ describe('executePrSplit happy path', () => {
     const harness = buildHarness();
     const map = await executePrSplit(buildExecOptions(harness));
 
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(4);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledTimes(4);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledWith({
+      projectId: 'ws-1',
+      source: 'manual',
+      flow: 'split_pr',
+      repoCount: 1,
+    });
     // Integration branch created off origin/<detectedBase> with an empty init
     // commit, then pushed.
     expect(mockedCreateBranchWithEmptyCommit).toHaveBeenCalledWith(
@@ -1549,7 +1567,7 @@ describe('executePrSplit dependent PR retargeting', () => {
     });
     // First base update lands on GitHub, the second dies mid-batch.
     harness.updatePrBase
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ prUrl: 'https://github.com/o/r/pull/46' })
       .mockRejectedValueOnce(new Error('base update failed'));
 
     await expect(executePrSplit(buildExecOptions(harness))).rejects.toThrow(
@@ -2405,6 +2423,24 @@ describe('executePrSplit failure and cancellation', () => {
     setupHappyGitMocks();
   });
 
+  it('does not count adopted PRs and tolerates injected telemetry failures', async () => {
+    const harness = buildHarness();
+    harness.createPr.mockImplementation((_repo, branch) =>
+      Promise.resolve({
+        prNumber: 1,
+        prUrl: `https://github.com/o/r/pull/${branch}`,
+        created: false,
+      }),
+    );
+    jest.mocked(recordGitCommitTelemetry).mockImplementationOnce(() => {
+      throw new Error('telemetry');
+    });
+    await expect(
+      executePrSplit(buildExecOptions(harness)),
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
+  });
+
   it('stops at the first red child: no PR for it and no integration PR', async () => {
     const harness = buildHarness({ verifyExit: 1 });
 
@@ -2425,6 +2461,8 @@ describe('executePrSplit failure and cancellation', () => {
     // The carve commit succeeded (only verify failed), so its sha is recorded
     // alongside the red status so a resume can re-verify instead of re-carving.
     expect(redChild?.carveCommitSha).toBe('commit-sha-abc');
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(2);
+    expect(recordPullRequestOpenedTelemetry).not.toHaveBeenCalled();
     expect(harness.progress.some((e) => e.phase === 'error')).toBe(true);
   });
 
@@ -2448,6 +2486,8 @@ describe('executePrSplit failure and cancellation', () => {
     expect(map.status).toBe('cancelled');
     // Only the first child PR was created; no second child, no integration PR.
     expect(harness.createPr).toHaveBeenCalledTimes(1);
+    expect(recordPullRequestOpenedTelemetry).toHaveBeenCalledTimes(1);
+    expect(recordGitCommitTelemetry).toHaveBeenCalledTimes(2);
     expect(harness.progress.some((e) => e.phase === 'cancelled')).toBe(true);
   });
 

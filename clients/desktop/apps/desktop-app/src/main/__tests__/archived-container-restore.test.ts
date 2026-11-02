@@ -1,4 +1,12 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+import { resolveWorktreeCwd } from '../lib/resolve-worktree';
+import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
+import {
+  policyExecution,
+  policyRuntime,
+  replayPolicy,
+  seedDestinationPolicy,
+} from './helpers/copilot-policy-replay';
 import {
   access,
   mkdir,
@@ -15,8 +23,11 @@ import { dirname, join } from 'node:path';
 import {
   APP_ADVISOR_PROJECT_ID,
   type ArchivedContainerManifest,
+  type ArchivedContainerManifestV1,
+  type ArchivedContainerManifestV2,
   type ArchivedChatsFile,
   type ChatTabsFile,
+  type CreateWorkspaceWorktreeResponse,
   type TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 
@@ -244,12 +255,18 @@ jest.mock('../browser/browser-profile-lifecycle', () => ({
     ) => removeOwner(),
   ),
 }));
-const mockTransferPlanExploreTargets = jest.fn(
-  (): Promise<string[]> => Promise.resolve([]),
-);
+const mockTransferPlanExploreTargets = jest.fn<
+  Promise<string[]>,
+  [
+    from: { projectId: string; worktreeId: string },
+    to: { projectId: string; worktreeId: string },
+  ]
+>(() => Promise.resolve([]));
 jest.mock('../lib/plan-explore-registry', () => ({
-  transferPlanExploreTargets: (...args: unknown[]): Promise<string[]> =>
-    mockTransferPlanExploreTargets(...args),
+  transferPlanExploreTargets: (
+    from: { projectId: string; worktreeId: string },
+    to: { projectId: string; worktreeId: string },
+  ): Promise<string[]> => mockTransferPlanExploreTargets(from, to),
 }));
 
 import {
@@ -360,6 +377,30 @@ function callOrder(mock: {
   return mock.mock.invocationCallOrder;
 }
 
+function withLegacyIncompleteCreationIdentity(response: {
+  id: string;
+  branchName: string;
+  createdAt: string;
+  trackedRepoBaseBranches?: Record<string, string>;
+  needsRepair?: false;
+}): CreateWorkspaceWorktreeResponse {
+  Reflect.deleteProperty(response, 'createdAt');
+  Reflect.deleteProperty(response, 'needsRepair');
+  return response;
+}
+
+function legacyMissingRootRepairResponse(value: {
+  id: string;
+  branchName: string;
+  createdAt: string;
+  trackedRepoBaseBranches?: Record<string, string>;
+  needsRepair: true;
+  repairIssues: Array<{ code: 'missing-root'; message: string }>;
+}): CreateWorkspaceWorktreeResponse {
+  // This intentionally malformed pre-schema test double exercises the restore rejection path.
+  return value as unknown as CreateWorkspaceWorktreeResponse;
+}
+
 const PROJECT_ID = 'workspace-1';
 const CONTAINER_ID = 'old-worktree';
 let rootDir: string;
@@ -371,8 +412,8 @@ let worktreeContainerRestored: jest.SpiedFunction<
 >;
 
 function manifest(
-  overrides: Partial<ArchivedContainerManifest> = {},
-): ArchivedContainerManifest {
+  overrides: Partial<ArchivedContainerManifestV1> = {},
+): ArchivedContainerManifestV1 {
   return {
     version: 1,
     id: CONTAINER_ID,
@@ -391,11 +432,20 @@ function manifest(
   };
 }
 
-function version2Manifest(): ArchivedContainerManifest {
-  const version2: ArchivedContainerManifest = {
-    ...manifest(),
+function version2Manifest(): ArchivedContainerManifestV2 {
+  const version2: ArchivedContainerManifestV2 = {
     version: 2,
     kind: 'worktree',
+    id: CONTAINER_ID,
+    projectId: PROJECT_ID,
+    name: 'Original worktree',
+    createdAt: '2026-07-01T00:00:00.000Z',
+    archivedAt: '2026-07-20T00:00:00.000Z',
+    retentionDays: 7,
+    expiresAt: '2026-07-27T00:00:00.000Z',
+    chatCount: 0,
+    archivedChatCount: 0,
+    executionCount: 0,
     branchName: 'feature/archive',
     workspaceType: 'single-repo',
     originalWorktree: {
@@ -460,6 +510,12 @@ const emptyArchives: ArchivedChatsFile = { version: 1, archived: [] };
 describe('archived container restore', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
+    jest
+      .mocked(resolveWorktreeCwd)
+      .mockImplementation(
+        (projectId, worktreeId, selectedRepoId) =>
+          `/worktrees/${projectId}/${worktreeId}${selectedRepoId ? `/${selectedRepoId}` : ''}`,
+      );
     rootDir = await mkdtemp(join(tmpdir(), 'canopy-restore-'));
     mockRecoveryEvidenceRoot = join(rootDir, 'worktree-data');
     jest.mocked(homedir).mockReturnValue(join(rootDir, 'home'));
@@ -629,9 +685,8 @@ describe('archived container restore', () => {
     jest
       .mocked(updateWorkspaceWorktrees)
       .mockRejectedValueOnce(new Error('process interrupted after copy'))
-      .mockImplementationOnce(
-        (_projectId, update: (worktrees: unknown[]) => unknown[]) =>
-          Promise.resolve(update([])),
+      .mockImplementationOnce((_projectId, update) =>
+        Promise.resolve(update([])),
       );
 
     await expect(
@@ -644,10 +699,11 @@ describe('archived container restore', () => {
         createdAt: expect.any(String),
       },
     });
-    const stagedId = Reflect.get(
-      Reflect.get(currentManifest, 'restoreStaging'),
-      'id',
-    );
+    const restoreStaging = Reflect.get(currentManifest, 'restoreStaging');
+    if (typeof restoreStaging !== 'object' || restoreStaging === null) {
+      throw new Error('Expected restore staging identity');
+    }
+    const stagedId = Reflect.get(restoreStaging, 'id');
 
     await expect(
       restoreArchivedContainer(PROJECT_ID, CONTAINER_ID),
@@ -812,9 +868,11 @@ describe('archived container restore', () => {
     jest
       .mocked(updateWorkspaceWorktrees)
       .mockImplementation((_projectId, update) => {
-        worktrees = update(worktrees);
         // Like the real writer, resolve with the list it committed.
-        return Promise.resolve(worktrees);
+        return Promise.resolve(update(worktrees)).then((updatedWorktrees) => {
+          worktrees = updatedWorktrees;
+          return updatedWorktrees;
+        });
       });
     jest.mocked(restoreArchivedRecoveryFiles).mockImplementation(async () => {
       await mkdir(destination, { recursive: true });
@@ -1074,6 +1132,8 @@ describe('archived container restore', () => {
       manifest: null,
       sourceRepoPath: '/repos/source',
       repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1089,7 +1149,7 @@ describe('archived container restore', () => {
         Promise.resolve(
           repoPath === '/repos/added'
             ? new Map([['feature/archive', '/worktrees/other-worktree']])
-            : new Map(),
+            : new Map<string, string>(),
         ),
       );
     jest
@@ -1130,6 +1190,8 @@ describe('archived container restore', () => {
       manifest: null,
       sourceRepoPath: '/repos/source',
       repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1140,11 +1202,15 @@ describe('archived container restore', () => {
       );
     jest.mocked(readWorkspaceWorktrees).mockResolvedValue([]);
     jest.mocked(listCheckedOutBranches).mockResolvedValue(new Map());
-    jest.mocked(createMultiRepoWorktree).mockResolvedValue({
-      id: 'new-worktree',
-      branchName: 'feature/archive',
-      trackedRepoBaseBranches: {},
-    });
+    jest.mocked(createMultiRepoWorktree).mockResolvedValue(
+      withLegacyIncompleteCreationIdentity({
+        id: 'new-worktree',
+        branchName: 'feature/archive',
+        createdAt: '2026-10-15T00:00:00.000Z',
+        trackedRepoBaseBranches: {},
+        needsRepair: false,
+      }),
+    );
 
     await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
 
@@ -1171,6 +1237,8 @@ describe('archived container restore', () => {
       manifest: null,
       sourceRepoPath: '/repos/source',
       repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1220,6 +1288,8 @@ describe('archived container restore', () => {
       manifest: null,
       sourceRepoPath: '/repos/source',
       repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1279,6 +1349,8 @@ describe('archived container restore', () => {
       manifest: null,
       sourceRepoPath: '/repos/source',
       repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1296,11 +1368,15 @@ describe('archived container restore', () => {
       .mockImplementation((_repoPath, branch) =>
         Promise.resolve(branch !== 'feature/archive'),
       );
-    jest.mocked(createMultiRepoWorktree).mockResolvedValue({
-      id: 'new-worktree',
-      branchName: 'feature/archive-2',
-      trackedRepoBaseBranches: {},
-    });
+    jest.mocked(createMultiRepoWorktree).mockResolvedValue(
+      withLegacyIncompleteCreationIdentity({
+        id: 'new-worktree',
+        branchName: 'feature/archive-2',
+        createdAt: '2026-10-15T00:00:00.000Z',
+        trackedRepoBaseBranches: {},
+        needsRepair: false,
+      }),
+    );
 
     await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
 
@@ -1324,6 +1400,8 @@ describe('archived container restore', () => {
       manifest: null,
       sourceRepoPath: '/repos/source',
       repos: [{ id: 'added', name: 'Added', repoPath: '/repos/added' }],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1342,7 +1420,7 @@ describe('archived container restore', () => {
         Promise.resolve(
           repoPath === '/repos/source'
             ? new Map([['feature/archive', '/worktrees/other']])
-            : new Map(),
+            : new Map<string, string>(),
         ),
       );
     jest
@@ -1350,11 +1428,15 @@ describe('archived container restore', () => {
       .mockImplementation((_repoPath, branch) =>
         Promise.resolve(branch !== 'feature/archive'),
       );
-    jest.mocked(createMultiRepoWorktree).mockResolvedValue({
-      id: 'new-worktree',
-      branchName: 'feature/archive-3',
-      trackedRepoBaseBranches: {},
-    });
+    jest.mocked(createMultiRepoWorktree).mockResolvedValue(
+      withLegacyIncompleteCreationIdentity({
+        id: 'new-worktree',
+        branchName: 'feature/archive-3',
+        createdAt: '2026-10-15T00:00:00.000Z',
+        trackedRepoBaseBranches: {},
+        needsRepair: false,
+      }),
+    );
 
     await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
 
@@ -1421,13 +1503,16 @@ describe('archived container restore', () => {
           messages: [],
           sdkSessionId: 'session-old',
           claudeForkSessionOnNextSend: true,
-          staleSessionDetected: true,
-          staleSessionResumeId: 'resume-old',
-          queuedMessages: [],
-          lastTurnWasResumeAttempt: true,
         },
       ],
     };
+    const staleChat = chats.tabs[0];
+    if (staleChat === undefined) throw new Error('Expected stale chat fixture');
+    // Preserve legacy chat-tab inputs while keeping the typed fixture current.
+    Reflect.set(staleChat, 'staleSessionDetected', true);
+    Reflect.set(staleChat, 'staleSessionResumeId', 'resume-old');
+    Reflect.set(staleChat, 'queuedMessages', []);
+    Reflect.set(staleChat, 'lastTurnWasResumeAttempt', true);
     jest.mocked(readArchivedContainerChats).mockResolvedValue(chats);
 
     await expect(
@@ -1576,6 +1661,8 @@ describe('archived container restore', () => {
         { id: 'repo-a', name: 'Repo A', repoPath: '/repos/repo-a' },
         { id: 'repo-b', name: 'Repo B', repoPath: '/repos/repo-b' },
       ],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1584,19 +1671,21 @@ describe('archived container restore', () => {
       .mockImplementation((_repo, branch) =>
         Promise.resolve(branch === 'feature/archive-2'),
       );
-    jest.mocked(createMultiRepoWorktree).mockResolvedValue({
-      id: 'new-worktree',
-      branchName: 'feature/archive-2',
-      createdAt: '2026-10-15T00:00:00.000Z',
-      trackedRepoBaseBranches: {},
-      needsRepair: true,
-      repairIssues: [
-        {
-          code: 'missing-root',
-          message: 'Project root is missing',
-        },
-      ],
-    });
+    jest.mocked(createMultiRepoWorktree).mockResolvedValue(
+      legacyMissingRootRepairResponse({
+        id: 'new-worktree',
+        branchName: 'feature/archive-2',
+        createdAt: '2026-10-15T00:00:00.000Z',
+        trackedRepoBaseBranches: {},
+        needsRepair: true,
+        repairIssues: [
+          {
+            code: 'missing-root',
+            message: 'Project root is missing',
+          },
+        ],
+      }),
+    );
 
     await expect(
       restoreArchivedContainer(PROJECT_ID, CONTAINER_ID),
@@ -1653,6 +1742,8 @@ describe('archived container restore', () => {
         { id: 'repo-a', name: 'Repo A', repoPath: '/repos/repo-a' },
         { id: 'repo-b', name: 'Repo B', repoPath: '/repos/repo-b' },
       ],
+      scripts: undefined,
+      defaultPluginSelections: undefined,
       suppressedManifestRepos: [],
       unresolvedManifestRepoIds: [],
     });
@@ -1717,6 +1808,148 @@ describe('archived container restore', () => {
     );
   });
 
+  it('relocates checkout authority and scoped cwd in both initial and partial execution restore', async () => {
+    const source = join(rootDir, 'old-checkout');
+    const destination = join(rootDir, 'new-checkout');
+    jest
+      .mocked(resolveWorktreeCwd)
+      .mockImplementation((_project, id) =>
+        id === CONTAINER_ID ? source : destination,
+      );
+    const runtime = policyRuntime(rootDir, PROJECT_ID, 'new-worktree');
+    jest.mocked(createElectronExecutionRuntime).mockReturnValue(runtime);
+    await writeFile(join(rootDir, 'CLAUDE.md'), 'ANCESTOR');
+    await seedDestinationPolicy(destination);
+    const archiveDir = getArchivedContainerExecutionsDir(
+      PROJECT_ID,
+      CONTAINER_ID,
+    );
+    await mkdir(archiveDir, { recursive: true });
+    const state = policyExecution(runtime, source);
+    state.project_id = PROJECT_ID;
+    state.worktree_id = CONTAINER_ID;
+    state.target = {
+      scope: 'worktree',
+      workspace_id: PROJECT_ID,
+      worktree_id: CONTAINER_ID,
+      path: state.cwd,
+      created: false,
+    };
+    await writeFile(
+      join(archiveDir, `${state.id}.json`),
+      JSON.stringify(state),
+    );
+    await writeFile(join(archiveDir, 'execution-retry.json'), '{bad json');
+    const first = await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
+    expect(first.warnings.join(' ')).toContain('execution-retry');
+    const migrated = await loadExecutionState(state.id, runtime.executionsDir);
+    if (!migrated) throw new Error('Missing restored execution');
+    await replayPolicy(migrated, runtime, 'retry');
+    expect(migrated).toMatchObject({
+      execution_checkout_root: destination,
+      cwd: join(destination, 'desktop'),
+    });
+    await writeFile(
+      join(archiveDir, 'execution-retry.json'),
+      JSON.stringify({ ...state, id: 'execution-retry' }),
+    );
+    await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
+    const retried = await loadExecutionState(
+      'execution-retry',
+      runtime.executionsDir,
+    );
+    if (!retried) throw new Error('Missing partial-restore execution');
+    await replayPolicy(retried, runtime, 'resume');
+    expect(retried.execution_checkout_root).toBe(destination);
+    expect(createSingleRepoWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])(
+    'restores unmapped execution paths only for the archived worktree identity: %s',
+    async (owned) => {
+      const archiveDir = getArchivedContainerExecutionsDir(
+        PROJECT_ID,
+        CONTAINER_ID,
+      );
+      await mkdir(archiveDir, { recursive: true });
+      const targetId = owned ? CONTAINER_ID : 'unrelated-worktree';
+      await writeFile(
+        join(archiveDir, 'unmapped-execution.json'),
+        JSON.stringify({
+          id: 'unmapped-execution',
+          project_id: PROJECT_ID,
+          worktree_id: CONTAINER_ID,
+          cwd: '/previous-storage/checkout/scoped',
+          execution_checkout_root: '/previous-storage/checkout',
+          status: 'success',
+          jobs: {},
+          target: {
+            scope: 'worktree',
+            workspace_id: PROJECT_ID,
+            worktree_id: targetId,
+            path: '/previous-storage/checkout/scoped',
+          },
+        }),
+      );
+      await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
+      const restored: unknown = JSON.parse(
+        await readFile(
+          join(rootDir, 'live-executions', 'unmapped-execution.json'),
+          'utf8',
+        ),
+      );
+      expect(restored).toMatchObject({
+        cwd: owned
+          ? `/worktrees/${PROJECT_ID}/new-worktree`
+          : '/previous-storage/checkout/scoped',
+        execution_checkout_root: '/previous-storage/checkout',
+        target: {
+          worktree_id: owned ? 'new-worktree' : targetId,
+          path: owned
+            ? `/worktrees/${PROJECT_ID}/new-worktree`
+            : '/previous-storage/checkout/scoped',
+        },
+      });
+    },
+  );
+
+  it.each([true, false])(
+    'restores target-less unmapped cwd only for archive-owned records: %s',
+    async (owned) => {
+      const archiveDir = getArchivedContainerExecutionsDir(
+        PROJECT_ID,
+        CONTAINER_ID,
+      );
+      await mkdir(archiveDir, { recursive: true });
+      await writeFile(
+        join(archiveDir, 'legacy-unmapped.json'),
+        JSON.stringify({
+          id: 'legacy-unmapped',
+          project_id: PROJECT_ID,
+          worktree_id: owned ? CONTAINER_ID : 'another-worktree',
+          cwd: '/previous-storage/checkout/scoped',
+          execution_checkout_root: null,
+          status: 'success',
+          jobs: {},
+        }),
+      );
+      await restoreArchivedContainer(PROJECT_ID, CONTAINER_ID);
+      const restored: unknown = JSON.parse(
+        await readFile(
+          join(rootDir, 'live-executions', 'legacy-unmapped.json'),
+          'utf8',
+        ),
+      );
+      expect(restored).toMatchObject({
+        cwd: owned
+          ? `/worktrees/${PROJECT_ID}/new-worktree`
+          : '/previous-storage/checkout/scoped',
+        execution_checkout_root: null,
+      });
+      expect(restored).not.toHaveProperty('target');
+    },
+  );
+
   it('preserves unknown execution fields and resumes a stamped partial restore without creating twice', async () => {
     const archiveDir = getArchivedContainerExecutionsDir(
       PROJECT_ID,
@@ -1729,7 +1962,7 @@ describe('archived container restore', () => {
         id: 'execution-good',
         project_id: PROJECT_ID,
         worktree_id: CONTAINER_ID,
-        cwd: '/old/cwd',
+        cwd: `/worktrees/${PROJECT_ID}/${CONTAINER_ID}`,
         status: 'success',
         future_field: { preserved: true },
         jobs: {
@@ -1745,7 +1978,7 @@ describe('archived container restore', () => {
           scope: 'worktree',
           workspace_id: PROJECT_ID,
           worktree_id: CONTAINER_ID,
-          path: '/old/cwd',
+          path: `/worktrees/${PROJECT_ID}/${CONTAINER_ID}`,
           unknown_target_field: 42,
         },
       }),
@@ -1813,7 +2046,7 @@ describe('archived container restore', () => {
         id: 'execution-retry',
         project_id: PROJECT_ID,
         worktree_id: CONTAINER_ID,
-        cwd: '/old/cwd',
+        cwd: `/worktrees/${PROJECT_ID}/${CONTAINER_ID}`,
         status: 'success',
       }),
     );

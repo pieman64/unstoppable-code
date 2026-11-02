@@ -15,6 +15,7 @@ import { mergeChatPluginSelections } from '@/lib/chatPluginSelections';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { subtractPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Button } from '@canopy/ui-shared/components';
 
 interface ChatPluginsModalProps {
   initial: ChatTabPluginSelections;
@@ -95,6 +96,20 @@ function selectionsFingerprint(selections: ChatTabPluginSelections): string {
       ),
     ),
   });
+}
+
+/**
+ * The picker rebuilds selections from its checkboxes, which carry no MCP
+ * sign-in routes. Keep the routes the chat already accepted, including those
+ * of unchecked plugins: a route stays until it is changed in MCP settings.
+ */
+function withAcceptedAuthRoutes(
+  saved: ChatTabPluginSelections,
+  initial: ChatTabPluginSelections,
+): ChatTabPluginSelections {
+  if (saved.mcpHttpAuthPreferences || !initial.mcpHttpAuthPreferences?.length)
+    return saved;
+  return { ...saved, mcpHttpAuthPreferences: initial.mcpHttpAuthPreferences };
 }
 
 function selectionsEqual(
@@ -197,15 +212,16 @@ export function ChatPluginsModal({
         {/* Header */}
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-m font-semibold fg-primary">Plugins</h2>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
             onClick={onClose}
             disabled={saving}
-            className="flex h-7 w-7 items-center justify-center rounded-lg fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary"
             aria-label="Close"
           >
             <AppCatalogCloseIcon width="14" height="14" />
-          </button>
+          </Button>
         </div>
 
         {showRecommended && projectId && (
@@ -273,8 +289,10 @@ export function ChatPluginsModal({
               onChange={setAllowDeferredTools}
             />
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
+            className="ml-auto"
             onClick={() => {
               if (
                 sanitizedSelections ||
@@ -282,7 +300,10 @@ export function ChatPluginsModal({
               ) {
                 setSaving(true);
                 setSaveError(null);
-                const saved = sanitizedSelections ?? selections;
+                const saved = withAcceptedAuthRoutes(
+                  sanitizedSelections ?? selections,
+                  initial,
+                );
                 void Promise.resolve(
                   appliedProjectDefaults
                     ? onSave(saved, allowDeferredTools, appliedProjectDefaults)
@@ -301,10 +322,9 @@ export function ChatPluginsModal({
               (!sanitizedSelections &&
                 allowDeferredTools === deferredToolsAllowed)
             }
-            className="ml-auto rounded-lg bg-fg-primary/10 px-4 py-1.5 text-s font-medium fg-primary transition hover:bg-fg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>,

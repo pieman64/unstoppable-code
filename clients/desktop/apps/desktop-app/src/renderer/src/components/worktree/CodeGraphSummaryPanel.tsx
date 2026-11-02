@@ -74,6 +74,8 @@ interface CodeGraphSummaryPanelProps {
   /** Bump to force a reload (e.g. when the host tab/modal (re)opens). */
   reloadToken?: number;
   testId?: string;
+  /** `rows` lays the summary out as settings rows; see `CodeGraphSummaryView`. */
+  layout?: 'cards' | 'rows';
   /** Sanitized ownership metadata exposed to App Advisor while mounted. */
   advisorContext?: {
     scope: 'worktree' | 'workspace-shadow';
@@ -106,6 +108,7 @@ export function CodeGraphSummaryPanel({
   externalBuilding = false,
   reloadToken,
   testId = 'code-graph-summary',
+  layout = 'cards',
   advisorContext,
 }: CodeGraphSummaryPanelProps): JSX.Element {
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'error'>('loading');
@@ -241,6 +244,7 @@ export function CodeGraphSummaryPanel({
       onBuild={handleBuildClick}
       onOpenSettings={onOpenSettings}
       testId={testId}
+      layout={layout}
     />
   );
 }

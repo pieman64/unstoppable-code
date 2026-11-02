@@ -233,6 +233,7 @@ async function launchWithSeededApproval({
   tabId,
   event,
   viewportSize,
+  injectOnLaunch = true,
 }) {
   seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
   seedWorktreeChat({
@@ -255,7 +256,7 @@ async function launchWithSeededApproval({
   await app.selectWorktree(WORKTREE_ID);
   await expect(window.getByTestId('panel-content-chat')).toBeVisible();
   await dismissApprovalsUpgradeNoticeIfPresent(window);
-  await injectApprovalRequestEvent(electronApp, event);
+  if (injectOnLaunch) await injectApprovalRequestEvent(electronApp, event);
   return { electronApp, window, app };
 }
 
@@ -284,6 +285,50 @@ function codexCommandEvent({ requestId, tabId, command, toolUseId }) {
     details: { kind: 'command', command },
     suggestedTarget: { kind: 'command', pattern: command },
     toolUseId,
+  };
+}
+
+// CAN-5165: a long temporary worktree root, so the absolute path cannot fit
+// on one line in the card at any supported width.
+const FILE_CHANGE_ROOT =
+  '/private/var/folders/xy/abcdefghijklmnopqrstuvwx/T/canopy-worktrees/demo-ts-pnpm-vite/demo-main';
+const FILE_CHANGE_RELATIVE =
+  'src/components/settings/panels/ApprovalPreferencesPanel.tsx';
+const FILE_CHANGE_ABSOLUTE = `${FILE_CHANGE_ROOT}/${FILE_CHANGE_RELATIVE}`;
+
+/** The event the Claude adapter delivers for a contained Edit or Write. */
+function claudeFileChangeEvent({ requestId, tabId, title, change }) {
+  return {
+    requestId,
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    chatId: tabId,
+    provider: 'claude',
+    title,
+    details: {
+      kind: 'file-write',
+      path: FILE_CHANGE_ABSOLUTE,
+      displayPath: FILE_CHANGE_RELATIVE,
+      change,
+    },
+    suggestedTarget: { kind: 'file-write', path: FILE_CHANGE_ABSOLUTE },
+  };
+}
+
+/** Runs in the page: the target label renders on one line, cut with an
+ * ellipsis instead of wrapping, and the card itself does not overflow. */
+function fileTargetLayout() {
+  const label = document.querySelector(
+    '[data-testid="tool-approval-file-target-label"]',
+  );
+  const card = document.querySelector('[data-testid="tool-approval-card"]');
+  if (!label || !card) return null;
+  const lineHeight = Number.parseFloat(getComputedStyle(label).lineHeight);
+  return {
+    height: label.getBoundingClientRect().height,
+    lineHeight,
+    clipped: label.scrollWidth > label.clientWidth,
+    cardOverflows: card.scrollWidth > card.clientWidth,
   };
 }
 
@@ -748,8 +793,8 @@ test.describe('tool approval prompt interaction matrix', () => {
       const card = window.getByTestId('tool-approval-card');
       await expect(card).toBeVisible();
 
-      await card.getByText('Add a reason').click();
-      const reasonBox = card.locator('textarea');
+      await card.getByTestId('tool-approval-reason-toggle').click();
+      const reasonBox = card.getByTestId('tool-approval-reason');
       await expect(reasonBox).toBeVisible();
       await reasonBox.fill('Force-pushing to a shared branch is too risky.');
       await expect(card.getByText('Hide reason')).toBeVisible();
@@ -861,6 +906,272 @@ test.describe('tool approval prompt interaction matrix', () => {
         path: testInfo.outputPath('file-write-kind-card.png'),
       });
 
+      await window.getByTestId('tool-approval-deny').click();
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+    } finally {
+      if (electronApp) {
+        await closeCanopy(electronApp, userDataDir);
+      } else {
+        rmSync(userDataDir, { recursive: true, force: true });
+        rmSync(`${userDataDir}-secure`, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('CAN-5165: an Edit card shows the relative target on one line, the old and new text, and the full path on request', async ({}, testInfo) => {
+    const TAB_ID = 'file-change-edit';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-interactions-'),
+    );
+    let electronApp;
+    try {
+      const launched = await launchWithSeededApproval({
+        userDataDir,
+        tabId: TAB_ID,
+        viewportSize: { width: 900, height: 700 },
+        event: claudeFileChangeEvent({
+          requestId: 'req-file-change-edit',
+          tabId: TAB_ID,
+          title: 'Edit file',
+          change: {
+            kind: 'edit',
+            oldText: "const mode = 'auto';\nexport default mode;",
+            newText: "const mode = 'ask';\nexport default mode;",
+          },
+        }),
+      });
+      electronApp = launched.electronApp;
+      const { window } = launched;
+
+      const card = window.getByTestId('tool-approval-card');
+      await expect(card).toBeVisible();
+      const target = window.getByTestId('tool-approval-file-target');
+      await expect(target).toHaveText(FILE_CHANGE_RELATIVE);
+      await expect(card).not.toContainText(FILE_CHANGE_ROOT);
+      const preview = window.getByTestId('approval-file-change-preview');
+      await expect(preview).toContainText("const mode = 'auto';");
+      await expect(preview).toContainText("const mode = 'ask';");
+
+      const layout = await window.evaluate(fileTargetLayout);
+      expect(layout).not.toBeNull();
+      expect(layout.height).toBeLessThan(layout.lineHeight * 1.5);
+      expect(layout.cardOverflows).toBe(false);
+
+      // Keyboard access to the full path, without hovering.
+      await target.focus();
+      await window.keyboard.press('Enter');
+      await expect(target).toHaveAttribute('aria-expanded', 'true');
+      await expect(
+        window.getByTestId('tool-approval-file-target-full'),
+      ).toHaveText(FILE_CHANGE_ABSOLUTE);
+
+      await window.screenshot({
+        path: testInfo.outputPath('file-change-edit-card.png'),
+      });
+
+      await window.getByTestId('tool-approval-allow').click();
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+    } finally {
+      if (electronApp) {
+        await closeCanopy(electronApp, userDataDir);
+      } else {
+        rmSync(userDataDir, { recursive: true, force: true });
+        rmSync(`${userDataDir}-secure`, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('CAN-5165: a Write card bounds its preview, expands to the last line, returns focus on Escape, and still denies', async ({}, testInfo) => {
+    const TAB_ID = 'file-change-write';
+    const LINES = Array.from(
+      { length: 40 },
+      (_, i) => `export const line${i + 1} = ${i + 1};`,
+    );
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-interactions-'),
+    );
+    let electronApp;
+    try {
+      const launched = await launchWithSeededApproval({
+        userDataDir,
+        tabId: TAB_ID,
+        event: claudeFileChangeEvent({
+          requestId: 'req-file-change-write',
+          tabId: TAB_ID,
+          title: 'Write file',
+          change: { kind: 'write', content: LINES.join('\n') },
+        }),
+      });
+      electronApp = launched.electronApp;
+      const { window } = launched;
+
+      const preview = window.getByTestId('approval-file-change-preview');
+      await expect(preview).toContainText('Proposed content');
+      await expect(preview).toContainText('line8 = 8');
+      await expect(preview).not.toContainText('line40 = 40');
+      await expect(preview).toContainText('32 more lines');
+      await expect(
+        window.getByTestId('approval-file-change-source-truncated'),
+      ).toHaveCount(0);
+
+      const expand = window.getByTestId('approval-file-change-expand');
+      await expect(expand).toHaveText('View full change');
+      await expand.focus();
+      await window.keyboard.press('Enter');
+
+      const modal = window.getByTestId('tool-approval-content-modal');
+      await expect(modal).toBeVisible();
+      await expect(modal).toContainText('Full change');
+      const body = window.getByTestId('tool-approval-content-modal-body');
+      await expect(body).toContainText('line40 = 40');
+      await expect(body.getByTestId('approval-file-change-expand')).toHaveCount(
+        0,
+      );
+      await expect(
+        window.getByTestId('tool-approval-content-modal-subtitle'),
+      ).toHaveText(FILE_CHANGE_ABSOLUTE);
+
+      await window.screenshot({
+        path: testInfo.outputPath('file-change-write-modal.png'),
+      });
+
+      await window.keyboard.press('Escape');
+      await expect(modal).toHaveCount(0);
+      await expect(expand).toBeFocused();
+
+      await window.getByTestId('tool-approval-deny').click();
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+    } finally {
+      if (electronApp) {
+        await closeCanopy(electronApp, userDataDir);
+      } else {
+        rmSync(userDataDir, { recursive: true, force: true });
+        rmSync(`${userDataDir}-secure`, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('CAN-5165: invisible text differences and shortened context stay reviewable', async ({}, testInfo) => {
+    const tabId = 'file-change-edge-cases';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-interactions-'),
+    );
+    let electronApp;
+    try {
+      const launched = await launchWithSeededApproval({
+        userDataDir,
+        tabId,
+        event: claudeFileChangeEvent({
+          requestId: 'req-mixed-endings',
+          tabId,
+          title: 'Edit file',
+          change: { kind: 'edit', oldText: 'a\r\nb\n', newText: 'a\nb\r\n' },
+        }),
+      });
+      electronApp = launched.electronApp;
+      const { window } = launched;
+      await expect(
+        window.getByTestId('approval-file-change-ending'),
+      ).toHaveCount(2);
+      await window.getByTestId('tool-approval-deny').click();
+      await injectApprovalRequestEvent(
+        electronApp,
+        claudeFileChangeEvent({
+          requestId: 'req-blank-write',
+          tabId,
+          title: 'Write file',
+          change: { kind: 'write', content: '\n' },
+        }),
+      );
+      await expect(window.getByTestId('approval-file-change-blank')).toHaveText(
+        'Blank line',
+      );
+      await window.getByTestId('tool-approval-deny').click();
+      const context = 'c'.repeat(201);
+      await injectApprovalRequestEvent(
+        electronApp,
+        claudeFileChangeEvent({
+          requestId: 'req-context-edit',
+          tabId,
+          title: 'Edit file',
+          change: {
+            kind: 'edit',
+            oldText: `${context}\nold`,
+            newText: `${context}\nnew`,
+          },
+        }),
+      );
+      const expand = window.getByTestId('approval-file-change-expand');
+      await expect(expand).toHaveText('View full change');
+      await expand.focus();
+      await window.keyboard.press('Enter');
+      const modal = window.getByTestId('tool-approval-content-modal');
+      await expect(modal).toContainText(context);
+      await window.screenshot({
+        path: testInfo.outputPath('file-change-context-modal.png'),
+      });
+      // Resolution while open removes the portaled content with its card.
+      await electronApp.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows()[0]?.webContents.send(
+          'approval:cancelled',
+          { requestId: 'req-context-edit' },
+        );
+      });
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+      await expect(modal).toHaveCount(0);
+    } finally {
+      if (electronApp) await closeCanopy(electronApp, userDataDir);
+      else {
+        rmSync(userDataDir, { recursive: true, force: true });
+        rmSync(`${userDataDir}-secure`, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('CAN-5165: a capped change warns in the card and the modal and never claims to show the full change', async ({}, testInfo) => {
+    const TAB_ID = 'file-change-capped';
+    const LINES = Array.from({ length: 30 }, (_, i) => `row ${i + 1}`);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-approval-interactions-'),
+    );
+    let electronApp;
+    try {
+      const launched = await launchWithSeededApproval({
+        userDataDir,
+        tabId: TAB_ID,
+        event: claudeFileChangeEvent({
+          requestId: 'req-file-change-capped',
+          tabId: TAB_ID,
+          title: 'Write file',
+          change: { kind: 'write', content: LINES.join('\n'), truncated: true },
+        }),
+      });
+      electronApp = launched.electronApp;
+      const { window } = launched;
+
+      const card = window.getByTestId('tool-approval-card');
+      await expect(card).toBeVisible();
+      await expect(
+        card.getByTestId('approval-file-change-source-truncated'),
+      ).toBeVisible();
+      const expand = window.getByTestId('approval-file-change-expand');
+      await expect(expand).toHaveText('View available change');
+      await expand.click();
+
+      const modal = window.getByTestId('tool-approval-content-modal');
+      await expect(modal).toContainText('Available change');
+      await expect(modal).not.toContainText('Full change');
+      await expect(
+        modal.getByTestId('approval-file-change-source-truncated'),
+      ).toBeVisible();
+      await expect(modal).toContainText('row 30');
+
+      await window.screenshot({
+        path: testInfo.outputPath('file-change-capped-modal.png'),
+      });
+
+      await window.keyboard.press('Escape');
+      await expect(modal).toHaveCount(0);
       await window.getByTestId('tool-approval-deny').click();
       await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
     } finally {
@@ -1171,7 +1482,7 @@ test.describe('tool approval prompt interaction matrix', () => {
       // an ambiguous `getByLabel` match across the global and project forms.
       await expect(
         window.getByTestId('approval-project-workspace'),
-      ).toHaveValue(WORKSPACE_ID);
+      ).toHaveAttribute('data-value', WORKSPACE_ID);
       await window
         .getByTestId('approval-add-rule-project-value')
         .fill('git push --force*');
@@ -1272,9 +1583,13 @@ test.describe('tool approval prompt interaction matrix', () => {
         window.getByTestId('settings-approvals-section'),
       ).toBeVisible();
 
-      const projectTable = window.getByTestId('approval-project-rules-table');
-      await expect(projectTable).toContainText('rm -rf *');
-      await expect(projectTable).toContainText('Deny');
+      // The group also holds the new-rule form, whose behavior dropdown
+      // names Deny too, so read the seeded rule's own row.
+      const seededRule = window
+        .getByTestId('approval-project-rules-table')
+        .locator('[data-testid^="approval-rule-row-"]')
+        .filter({ hasText: 'rm -rf *' });
+      await expect(seededRule).toContainText('Deny');
 
       await window.screenshot({
         path: testInfo.outputPath('settings-approvals-seeded-rule.png'),
@@ -1599,3 +1914,276 @@ test.describe('tool approval prompt interaction matrix', () => {
 // `tool-approvals-claude-live.spec.mjs`; see that spec's header for why the
 // equivalent Codex live turn is not currently automatable).
 // ---------------------------------------------------------------------------
+
+// CAN-4997: settled destinations and native keyboard activation, without live agents.
+test.describe('CAN-4997 approval keyboard focus', () => {
+  let electronApp;
+  let window;
+  let userDataDir;
+  const tabId = 'keyboard-approvals';
+  const event = (id, command = `echo ${id}`) =>
+    claudeCommandEvent({ requestId: id, tabId, command });
+  const editor = () =>
+    window.locator('[data-chat-textarea][contenteditable="true"]');
+  const card = () => window.getByTestId('tool-approval-card');
+  const primary = () => window.getByTestId('tool-approval-allow');
+
+  test.beforeEach(async () => {
+    userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-keyboard-approvals-'),
+    );
+    const launched = await launchWithSeededApproval({
+      userDataDir,
+      tabId,
+      event: event('unused'),
+      injectOnLaunch: false,
+    });
+    electronApp = launched.electronApp;
+    window = launched.window;
+    await expect(editor()).toBeVisible();
+    await editor().focus();
+    await expect(editor()).toBeFocused();
+  });
+
+  test.afterEach(async () => {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+    else {
+      rmSync(userDataDir, { recursive: true, force: true });
+      rmSync(`${userDataDir}-secure`, { recursive: true, force: true });
+    }
+    electronApp = undefined;
+  });
+
+  test('three approvals need one native Enter each, then restore the composer and placeholder', async () => {
+    for (const id of ['first', 'second', 'third'])
+      await injectApprovalRequestEvent(electronApp, event(id));
+    await expect(window.locator('[data-slate-placeholder]')).toHaveText(
+      'Answer the approval above first',
+    );
+    for (const id of ['first', 'second', 'third']) {
+      await expect(card().locator('code')).toHaveText(`echo ${id}`);
+      await expect(primary()).toBeFocused();
+      await window.keyboard.press('Enter');
+    }
+    await expect(card()).toHaveCount(0);
+    await expect(editor()).toBeFocused();
+    await expect(window.locator('[data-slate-placeholder]')).not.toHaveText(
+      'Answer the approval above first',
+    );
+  });
+
+  test('draft and another editor keep focus while arrivals are announced', async () => {
+    await editor().fill('wip');
+    await injectApprovalRequestEvent(electronApp, event('draft'));
+    await expect(card()).toBeVisible();
+    await expect(editor()).toBeFocused();
+    await expect(editor()).toHaveText('wip');
+    await expect(window.getByTestId('tool-approval-announcer')).toContainText(
+      'echo draft',
+    );
+    // A second editable surface outside the composer uses the same real guard.
+    await window.evaluate(() => {
+      const field = document.createElement('textarea');
+      field.dataset.testid = 'other-editable';
+      document.body.append(field);
+      field.focus();
+    });
+    await injectApprovalAutoResolvedEvent(electronApp, {
+      requestId: 'draft',
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: tabId,
+      reason: 'mode-change',
+      mode: 'full-access',
+      previousMode: 'ask',
+    });
+    await injectApprovalRequestEvent(electronApp, event('other-editor'));
+    await expect(card().locator('code')).toHaveText('echo other-editor');
+    await expect(window.getByTestId('other-editable')).toBeFocused();
+    await expect(editor()).toHaveText('wip');
+  });
+
+  test('Tab reaches the labelled reason field and the platform chord denies then hands off', async () => {
+    await injectApprovalRequestEvent(electronApp, event('deny-first'));
+    await injectApprovalRequestEvent(electronApp, event('allow-next'));
+    await expect(primary()).toBeFocused();
+    const toggle = window.getByTestId('tool-approval-reason-toggle');
+    for (
+      let step = 0;
+      step < 8 &&
+      !(await toggle.evaluate((el) => el === document.activeElement));
+      step += 1
+    ) {
+      await window.keyboard.press('Tab');
+    }
+    await expect(toggle).toBeFocused();
+    await window.keyboard.press('Enter');
+    const reason = window.getByTestId('tool-approval-reason');
+    await expect(reason).toBeFocused();
+    await expect(reason).toHaveAccessibleName('Reason for denying');
+    await window.keyboard.type('Please use the safer command');
+    await window.keyboard.press(
+      process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter',
+    );
+    await expect(card().locator('code')).toHaveText('echo allow-next');
+    await expect(primary()).toBeFocused();
+    await window.keyboard.press('Enter');
+    await expect(card()).toHaveCount(0);
+    await expect(editor()).toBeFocused();
+  });
+
+  test('external removal preserves a still-enabled navigation button, then repairs a disappearing one', async () => {
+    for (const id of ['one', 'two', 'three', 'four'])
+      await injectApprovalRequestEvent(electronApp, event(id));
+    const next = window.getByTestId('tool-approval-nav-next');
+    await next.focus();
+    await window.keyboard.press('Enter');
+    await expect(card().locator('code')).toHaveText('echo two');
+    await expect(next).toBeFocused();
+    for (const id of ['two', 'four', 'one']) {
+      await injectApprovalAutoResolvedEvent(electronApp, {
+        requestId: id,
+        projectId: WORKSPACE_ID,
+        worktreeId: WORKTREE_ID,
+        chatId: tabId,
+        reason: 'mode-change',
+        mode: 'full-access',
+        previousMode: 'ask',
+      });
+      await expect(card().locator('code')).toHaveText('echo three');
+      if (id === 'two') await expect(next).toBeFocused();
+    }
+    await expect(primary()).toBeFocused();
+  });
+
+  test('external removal of the displayed middle approval repairs a disabled navigation button', async () => {
+    for (const id of ['one', 'two', 'three'])
+      await injectApprovalRequestEvent(electronApp, event(id));
+    const next = window.getByTestId('tool-approval-nav-next');
+    await next.focus();
+    await window.keyboard.press('Enter');
+    await expect(card().locator('code')).toHaveText('echo two');
+    await expect(next).toBeFocused();
+
+    await injectApprovalAutoResolvedEvent(electronApp, {
+      requestId: 'two',
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: tabId,
+      reason: 'mode-change',
+      mode: 'full-access',
+      previousMode: 'ask',
+    });
+
+    await expect(card().locator('code')).toHaveText('echo three');
+    await expect(next).toBeDisabled();
+    await expect(primary()).toBeFocused();
+  });
+
+  test('deferred startup focus cannot undo an approval arrival handoff', async () => {
+    await window.evaluate(() => {
+      const raf = window.requestAnimationFrame;
+      const cancel = window.cancelAnimationFrame;
+      const callbacks = new Map();
+      let next = 1;
+      window.requestAnimationFrame = (callback) => {
+        const id = next++;
+        callbacks.set(id, callback);
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => {
+        callbacks.delete(id);
+      };
+      window.__releaseApprovalStartupFrames = () => {
+        window.requestAnimationFrame = raf;
+        window.cancelAnimationFrame = cancel;
+        for (const callback of callbacks.values()) callback(performance.now());
+        callbacks.clear();
+      };
+    });
+    await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
+    const activeRoot = window
+      .locator('[data-chat-composer-root]')
+      .filter({ has: editor() });
+    await expect(activeRoot).not.toHaveAttribute(
+      'data-chat-composer-tab-id',
+      tabId,
+    );
+    const activeChat = await activeRoot.getAttribute(
+      'data-chat-composer-tab-id',
+    );
+    await editor().focus();
+    await injectApprovalRequestEvent(electronApp, {
+      ...event('startup'),
+      chatId: activeChat,
+    });
+    await expect(primary()).toBeFocused();
+    await window.evaluate(() => window.__releaseApprovalStartupFrames());
+    await window.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await expect(card().locator('code')).toHaveText('echo startup');
+    await expect(primary()).toBeFocused();
+  });
+
+  test('menu and full-content modal close restore live targets and removal hands off', async () => {
+    await injectApprovalRequestEvent(
+      electronApp,
+      event('long', 'echo ' + 'x'.repeat(900)),
+    );
+    await injectApprovalRequestEvent(electronApp, event('next'));
+    const menuTrigger = window.getByLabel('More allow options', {
+      exact: true,
+    });
+    await menuTrigger.focus();
+    await window.keyboard.press('Enter');
+    await expect(window.getByTestId('tool-approval-allow-menu')).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(menuTrigger).toBeFocused();
+    const view = window.getByTestId('tool-approval-content-view-full');
+    await view.focus();
+    await window.keyboard.press('Enter');
+    await expect(
+      window.getByTestId('tool-approval-content-modal'),
+    ).toBeVisible();
+    await window.keyboard.press('Escape');
+    await expect(view).toBeFocused();
+    await window.keyboard.press('Enter');
+    await injectApprovalAutoResolvedEvent(electronApp, {
+      requestId: 'long',
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: tabId,
+      reason: 'mode-change',
+      mode: 'full-access',
+      previousMode: 'ask',
+    });
+    await expect(card().locator('code')).toHaveText('echo next');
+    await expect(primary()).toBeFocused();
+  });
+
+  test('browser-file requests focus Choose files and Decline restores the composer', async () => {
+    await injectApprovalRequestEvent(electronApp, {
+      ...event('files'),
+      title: 'Choose upload files',
+      suggestedTarget: undefined,
+      details: {
+        kind: 'browser-file-request',
+        origin: 'https://upload.example',
+        multiple: true,
+      },
+    });
+    const choose = window.getByTestId('tool-approval-choose-files');
+    await expect(choose).toBeFocused();
+    // Real picker cancellation is covered in browser-files.spec.mjs. Synthetic
+    // requests have no picker callback; assert only the reachable Decline path.
+    await expect(choose).toBeEnabled();
+    await window.getByTestId('tool-approval-decline-files').click();
+    await expect(card()).toHaveCount(0);
+    await expect(editor()).toBeFocused();
+  });
+});

@@ -461,16 +461,16 @@ test.describe('Sidebar effective-plan subtitle', () => {
           'organization/settings',
           { timeout: 30_000 },
         );
+        // The OWNER's organization, on its Billing page.
         await expect(
-          win.getByTestId('settings-nav-organization-settings'),
-        ).toHaveAttribute('aria-current', 'page');
-        // The OWNER's organization, on its Billing tab.
-        await expect(
-          win.getByTestId('settings-nav-group-organization'),
-        ).toContainText('Northwind Labs');
-        await expect(
-          content.getByTestId('team-settings-tab-billing'),
-        ).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
+          win.getByTestId('settings-nav-organization-settings-billing'),
+        ).toHaveAttribute('aria-current', 'page', { timeout: 30_000 });
+        await expect(win.getByTestId('settings-nav-scope-title')).toHaveText(
+          'Northwind Labs',
+        );
+        await expect(content.getByTestId('page-header-title')).toHaveText(
+          'Billing',
+        );
         expect(
           await mints(`/organization/${ownerId}/settings?tab=billing`),
         ).toBe(0);

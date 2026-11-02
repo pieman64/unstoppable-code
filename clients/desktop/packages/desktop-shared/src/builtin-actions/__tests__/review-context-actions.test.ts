@@ -1048,7 +1048,7 @@ describe('review context builtin actions', () => {
     );
     expect(outputs.pending_review_escrow_file).toBeUndefined();
     expect(
-      mockedExecFile.mock.calls.some(([, args]) => args.includes('DELETE')),
+      mockedExecFile.mock.calls.some(([, args]) => args?.includes('DELETE')),
     ).toBe(false);
   });
 
@@ -1146,7 +1146,7 @@ describe('review context builtin actions', () => {
     expect(outputs.failure_mode).toBe('pending_review_escrow_failed');
     expect(outputs.pending_review_escrow_file).toBeUndefined();
     expect(
-      mockedExecFile.mock.calls.some(([, args]) => args.includes('DELETE')),
+      mockedExecFile.mock.calls.some(([, args]) => args?.includes('DELETE')),
     ).toBe(false);
   });
 
@@ -1329,10 +1329,11 @@ describe('review context builtin actions', () => {
     expect(outputs.pending_review_restoration_status).toBe('restored');
     expect(outputs.error_message).toContain('disk full');
     expect(
-      mockedExecFile.mock.calls.some(([, args]) =>
-        args.some((arg) =>
-          arg.endsWith('github-pending-review-77-restore.json'),
-        ),
+      mockedExecFile.mock.calls.some(
+        ([, args]) =>
+          args?.some((arg) =>
+            arg.endsWith('github-pending-review-77-restore.json'),
+          ) === true,
       ),
     ).toBe(true);
     expect(readJsonFile(outputs.pending_review_escrow_file)).toMatchObject({
@@ -1810,10 +1811,10 @@ describe('review context builtin actions', () => {
     expect(outputs.failure_mode).toBe('pending_review_inspection_failed');
     expect(outputs.review_id).toBe('');
     expect(
-      mockedExecFile.mock.calls.some(([, args]) => args.includes('POST')),
+      mockedExecFile.mock.calls.some(([, args]) => args?.includes('POST')),
     ).toBe(false);
     expect(
-      mockedExecFile.mock.calls.some(([, args]) => args.includes('DELETE')),
+      mockedExecFile.mock.calls.some(([, args]) => args?.includes('DELETE')),
     ).toBe(false);
   });
 
@@ -2139,6 +2140,14 @@ describe('review context builtin actions', () => {
     );
 
     const fallbackPayload = readJsonFile(outputs.fallback_payload_file);
+    if (
+      typeof fallbackPayload !== 'object' ||
+      fallbackPayload === null ||
+      !('body' in fallbackPayload) ||
+      typeof fallbackPayload.body !== 'string'
+    ) {
+      throw new Error('Expected the fallback payload to contain a string body');
+    }
     expect(fallbackPayload).toMatchObject({
       event: 'COMMENT',
       comments: [],

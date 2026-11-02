@@ -1,10 +1,12 @@
-import type { SidebarItem } from '../../types';
+import type { MultiRepoSidebarItem } from '../../types';
 import {
   hasVisibleWorkspaceContent,
   isRetiredTemporaryWorkspace,
 } from '../workspace-visibility';
 
-function multiRepo(overrides: Partial<SidebarItem> = {}): SidebarItem {
+function multiRepo(
+  overrides: Partial<MultiRepoSidebarItem> = {},
+): MultiRepoSidebarItem {
   return {
     type: 'multi-repo',
     id: 'combine',

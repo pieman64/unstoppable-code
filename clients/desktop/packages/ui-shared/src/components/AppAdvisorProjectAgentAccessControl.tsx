@@ -1,10 +1,13 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
-import { ChoiceMark } from './Choice';
+import { ChoiceList, ChoiceListRow } from './ChoiceList';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import {
   SegmentedControl,
   type SegmentedControlShape,
 } from './SegmentedControl';
+
+const ACCESS_LABEL = `Allow project agents to use ${ORCHESTRATOR_LABEL} chats and create automations`;
 
 export type AppAdvisorProjectAgentAccessOwner =
   | { kind: 'personal' }
@@ -50,12 +53,9 @@ const MODE_DESCRIPTIONS: Record<
   AppAdvisorProjectAgentAccessControlMode,
   string
 > = {
-  enabled:
-    'Code and cowork agents can message, read, and watch App Advisor chats, and can create automations that prompt App Advisor.',
-  'selected-owners':
-    'Only agents in projects owned by the selected owners (Personal or an organization) can message, read, and watch App Advisor chats or create App Advisor automations.',
-  disabled:
-    "Code and cowork agents can't message, read, or watch App Advisor chats, or create automations that prompt App Advisor. Automations that already exist keep running.",
+  enabled: `Code and cowork agents can message, read, and watch ${ORCHESTRATOR_LABEL} chats, and can create automations that prompt ${ORCHESTRATOR_LABEL}.`,
+  'selected-owners': `Only agents in projects owned by the selected owners (Personal or an organization) can message, read, and watch ${ORCHESTRATOR_LABEL} chats or create ${ORCHESTRATOR_LABEL} automations.`,
+  disabled: `Code and cowork agents can't message, read, or watch ${ORCHESTRATOR_LABEL} chats, or create automations that prompt ${ORCHESTRATOR_LABEL}. Automations that already exist keep running.`,
 };
 
 function ownerKey(owner: AppAdvisorProjectAgentAccessOwner): string {
@@ -165,11 +165,11 @@ export function AppAdvisorProjectAgentAccessControl({
             id={`${testIdPrefix}-label`}
             className="block text-s font-medium fg-primary"
           >
-            Allow project agents to use App Advisor chats and create automations
+            {ACCESS_LABEL}
           </div>
           <div className="text-xs text-pretty fg-secondary">
-            Controls whether code and cowork agents can use App Advisor tools
-            and create automations that prompt App Advisor.
+            Controls whether code and cowork agents can use {ORCHESTRATOR_LABEL}{' '}
+            tools and create automations that prompt {ORCHESTRATOR_LABEL}.
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -193,7 +193,7 @@ export function AppAdvisorProjectAgentAccessControl({
               },
             ]}
             onChange={handleModeChange}
-            label="Allow project agents to use App Advisor chats and create automations"
+            label={ACCESS_LABEL}
             width="control"
             shape={segmentShape}
             disabled={disabled || saving}
@@ -209,9 +209,7 @@ export function AppAdvisorProjectAgentAccessControl({
       </div>
       {value.mode === 'selected-owners' ? (
         <>
-          <div
-            className="divide-y rounded-lg ring-1 ring-inset ring-line-base"
-            role="group"
+          <ChoiceList
             aria-label="Owners"
             data-testid={`${testIdPrefix}-owner-list`}
           >
@@ -220,10 +218,9 @@ export function AppAdvisorProjectAgentAccessControl({
                 ownersMatch(owner, row.owner),
               );
               return (
-                <button
+                <ChoiceListRow
                   key={`${ownerKey(row.owner)}-${index}`}
-                  type="button"
-                  aria-pressed={selected}
+                  selected={selected}
                   aria-disabled={
                     row.unavailable && !selected ? 'true' : undefined
                   }
@@ -233,46 +230,39 @@ export function AppAdvisorProjectAgentAccessControl({
                   onClick={(): void =>
                     handleOwnerToggle(row.owner, row.unavailable, selected)
                   }
-                  className={`focus-ring flex w-full items-center gap-3 px-3 py-2 text-left text-s transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                    selected
-                      ? 'bg-accent-subtle fg-primary'
-                      : 'fg-primary hover:bg-secondary/40'
-                  }`}
                 >
-                  <ChoiceMark kind="checkbox" checked={selected} />
-                  <span className="min-w-0 flex-1">
-                    {row.staleOrganizationId !== null ? (
-                      <>
-                        <span className="block truncate font-medium">
-                          {row.label}
-                        </span>
-                        <span className="block truncate font-mono text-xs fg-secondary">
-                          {row.staleOrganizationId}
-                        </span>
-                      </>
-                    ) : (
-                      <span
-                        className={`block truncate font-medium ${
-                          row.owner.kind === 'organization'
-                            ? REPLAY_MASK_CLASS
-                            : ''
-                        }`}
-                      >
+                  {row.staleOrganizationId !== null ? (
+                    <>
+                      <span className="block truncate font-medium">
                         {row.label}
-                        {row.unavailable ? ' (unavailable)' : ''}
                       </span>
-                    )}
-                  </span>
-                </button>
+                      <span className="block truncate font-mono text-xs fg-secondary">
+                        {row.staleOrganizationId}
+                      </span>
+                    </>
+                  ) : (
+                    <span
+                      className={`block truncate font-medium ${
+                        row.owner.kind === 'organization'
+                          ? REPLAY_MASK_CLASS
+                          : ''
+                      }`}
+                    >
+                      {row.label}
+                      {row.unavailable ? ' (unavailable)' : ''}
+                    </span>
+                  )}
+                </ChoiceListRow>
               );
             })}
-          </div>
+          </ChoiceList>
           {value.selectedOwners.length === 0 ? (
             <div
               className="text-xs fg-secondary"
               data-testid={`${testIdPrefix}-no-owners`}
             >
-              No owners selected, so no project agents can use App Advisor.
+              No owners selected, so no project agents can use{' '}
+              {ORCHESTRATOR_LABEL}.
             </div>
           ) : null}
         </>

@@ -7,9 +7,13 @@ import type {
   ChatSendMessageRequest,
   PersistedChatBlock,
   PlanExitRequestEvent,
+  TrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import { extractCandidatePaths } from '@canopy/desktop-shared/plan-detection-paths';
+import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { useActivityStore } from '../activityStore';
+import { useGitHubStore } from '../githubStore';
+import { reconcileTrackedPlans } from '@/lib/plans/reconcile-tracked-plans';
 import type {
   ChatMessage,
   ChatTab,
@@ -33,6 +37,23 @@ export function hasPendingTrackedPlanReview(
 ): boolean {
   return (
     Boolean(tab?.trackedPlanId) && tab?.trackedPlanReviewStatus === 'pending'
+  );
+}
+
+/**
+ * A new turn retires this tab's waiting plan request: the same eligibility
+ * main applies when it accepts the turn (CAN-5431). Proposal exits keep their
+ * own lifecycle.
+ */
+export function retiresSupersededPlanExit(
+  tab: Pick<ChatTab, 'pendingPlanExit' | 'trackedPlanSource'>,
+): boolean {
+  return (
+    tab.pendingPlanExit !== undefined &&
+    !isPlanProposal({
+      ...tab.pendingPlanExit,
+      source: tab.pendingPlanExit.source ?? tab.trackedPlanSource,
+    })
   );
 }
 
@@ -252,30 +273,98 @@ export interface PlanExitTarget {
   tab: ChatTab;
 }
 
-export function updateTrackedPlanReview(
-  target: Pick<
-    PlanExitTarget,
-    'projectId' | 'worktreeId' | 'targetChatId' | 'tab'
-  >,
+/**
+ * Outcome of synchronizing a chat's review decision into its tracked plan.
+ * `reconcile-failed` still means the update committed: the returned record is
+ * in the activity store and only the follow-up list refresh failed.
+ */
+export type TrackedPlanReviewSyncResult =
+  | 'skipped'
+  | 'updated'
+  | 'update-failed'
+  | 'reconcile-failed';
+
+function notifyTrackedPlanReviewSyncFailed(
+  target: Pick<PlanExitTarget, 'projectId' | 'worktreeId' | 'targetChatId'>,
   reviewStatus: 'approved' | 'dismissed',
+  retry: () => void,
 ): void {
-  if (!target.tab.trackedPlanId) {
-    return;
+  useGitHubStore
+    .getState()
+    .addToast(
+      reviewStatus === 'approved'
+        ? "Couldn't save the plan's approval. Select to refresh status."
+        : "Couldn't save the plan's dismissal. Select to refresh status.",
+      'error',
+      retry,
+      {
+        projectId: target.projectId,
+        worktreeId: target.worktreeId,
+        chatId: target.targetChatId,
+      },
+    );
+}
+
+/**
+ * Persist a chat's review decision on its tracked plan, then reconcile the
+ * worktree's plan list. The returned record is applied before the list read
+ * starts, and list requests already in flight cannot restore the earlier
+ * status. Never rejects; failures resolve as a result and surface a notice.
+ */
+export async function updateTrackedPlanReview(
+  target: Pick<PlanExitTarget, 'projectId' | 'worktreeId' | 'targetChatId'> & {
+    tab: Pick<PlanExitTarget['tab'], 'trackedPlanId'>;
+  },
+  reviewStatus: 'approved' | 'dismissed',
+): Promise<TrackedPlanReviewSyncResult> {
+  const planId = target.tab.trackedPlanId;
+  if (!planId) {
+    return 'skipped';
   }
 
-  void window.api.activity.plans.update({
+  const now = new Date().toISOString();
+  let plan: TrackedPlanData | null = null;
+  try {
+    plan = await window.api.activity.plans.update({
+      projectId: target.projectId,
+      worktreeId: target.worktreeId,
+      planId,
+      chatId: target.targetChatId,
+      initiationSource: 'user',
+      reviewStatus,
+      approvedAt: reviewStatus === 'approved' ? now : null,
+      dismissedAt: reviewStatus === 'dismissed' ? now : null,
+    });
+  } catch {
+    plan = null;
+  }
+  if (
+    !plan ||
+    plan.id !== planId ||
+    plan.projectId !== target.projectId ||
+    plan.worktreeId !== target.worktreeId ||
+    plan.reviewStatus !== reviewStatus
+  ) {
+    notifyTrackedPlanReviewSyncFailed(target, reviewStatus, () => {
+      // A newer revision may exist by the time this notice is selected.
+      // Recovery reads current authority instead of replaying an old decision.
+      void reconcileTrackedPlans({
+        projectId: target.projectId,
+        worktreeId: target.worktreeId,
+        chatId: target.targetChatId,
+      });
+    });
+    return 'update-failed';
+  }
+
+  const activity = useActivityStore.getState();
+  activity.commitTrackedPlanUpdate(plan);
+  const reconciled = await reconcileTrackedPlans({
     projectId: target.projectId,
     worktreeId: target.worktreeId,
-    planId: target.tab.trackedPlanId,
     chatId: target.targetChatId,
-    initiationSource: 'user',
-    reviewStatus,
-    approvedAt: reviewStatus === 'approved' ? new Date().toISOString() : null,
-    dismissedAt: reviewStatus === 'dismissed' ? new Date().toISOString() : null,
   });
-  void useActivityStore
-    .getState()
-    .loadTrackedPlans(target.projectId, target.worktreeId);
+  return reconciled ? 'updated' : 'reconcile-failed';
 }
 
 export function getPlanExitTarget(

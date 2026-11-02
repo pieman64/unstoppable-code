@@ -70,6 +70,8 @@ export interface TryItContinuationReceipt {
  */
 export interface TryItContinuation<Host = never> {
   version: 1;
+  /** New draft continuations resolve only capability selections. */
+  intent?: 'select-capability';
   sourceChatId: string;
   sourceSessionId: string;
   sourceAccountKey: string;
@@ -85,6 +87,8 @@ export interface TryItContinuation<Host = never> {
   destinationChatId?: string;
   failure?: TryItContinuationFailure;
   receipt?: TryItContinuationReceipt;
+  /** Capability selection accepted; this is not a turn/send receipt. */
+  selectionResolution?: TryItContinuationReceipt;
   host?: Host;
 }
 
@@ -163,6 +167,7 @@ export function isTryItContinuation<Host = never>(
     !Object.keys(value).every((key) =>
       [
         'version',
+        'intent',
         'sourceChatId',
         'sourceSessionId',
         'sourceAccountKey',
@@ -176,10 +181,12 @@ export function isTryItContinuation<Host = never>(
         'destinationChatId',
         'failure',
         'receipt',
+        'selectionResolution',
         'host',
       ].includes(key),
     ) ||
     value.version !== 1 ||
+    (value.intent !== undefined && value.intent !== 'select-capability') ||
     !isIdentifier(value.sourceChatId) ||
     !isIdentifier(value.sourceSessionId) ||
     !isIdentifier(value.sourceAccountKey) ||
@@ -229,7 +236,23 @@ export function isTryItContinuation<Host = never>(
     )
       return false;
   }
-  return value.status !== 'completed' || value.receipt !== undefined;
+  if (value.selectionResolution !== undefined) {
+    if (
+      value.status !== 'completed' ||
+      value.receipt !== undefined ||
+      !isReceipt(value.selectionResolution) ||
+      value.selectionResolution.requestId !== value.requestId ||
+      value.selectionResolution.accountKey !== value.destinationAccountKey ||
+      value.selectionResolution.chatId !==
+        (value.destinationChatId ?? value.sourceChatId)
+    )
+      return false;
+  }
+  return (
+    value.status !== 'completed' ||
+    value.receipt !== undefined ||
+    value.selectionResolution !== undefined
+  );
 }
 
 export function sameTryItCapability(
@@ -302,6 +325,11 @@ export function resolveTryItSignInGate(input: {
   transcriptLoading: boolean;
   initialAttemptSettled: boolean;
   hasUserTurn: boolean;
+  /**
+   * The capability was staged, unsent, in this chat's composer (CAN-5218).
+   * Stands in for `hasUserTurn`: a staged draft has no turn yet.
+   */
+  staged?: boolean;
   readiness: TryItCapabilityReadiness;
   authentication: 'idle' | 'active' | 'cancelled' | 'failed';
   setup?: 'idle' | 'active' | 'cancelled' | 'failed';
@@ -313,7 +341,7 @@ export function resolveTryItSignInGate(input: {
     input.account === 'loading' ||
     input.transcriptLoading ||
     !input.initialAttemptSettled ||
-    !input.hasUserTurn ||
+    !(input.hasUserTurn || input.staged === true) ||
     input.capability === null
   )
     return 'hidden';

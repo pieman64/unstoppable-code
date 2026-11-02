@@ -7,6 +7,7 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   ENTRY_ID,
   CHAT_ID,
+  FAILURE_MESSAGE,
   seedCoworkFailureToast,
   showCoworkFailureToast,
 } from './coworkFailureToastFixture.mjs';
@@ -23,9 +24,7 @@ for (const detail of [false, true]) {
       const app = new CanopyAppDriver(window);
       const toast = await showCoworkFailureToast(electronApp, window, app);
       if (detail) {
-        await toast
-          .getByRole('button', { name: 'Expand', exact: true })
-          .click();
+        await toast.getByText(FAILURE_MESSAGE, { exact: true }).click();
         await window
           .getByRole('dialog')
           .getByRole('button', { name: ENTRY_ID, exact: true })

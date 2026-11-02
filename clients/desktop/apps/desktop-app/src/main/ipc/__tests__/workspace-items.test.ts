@@ -1,12 +1,13 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { registerWorkspaceItemHandlers } from '../workspace-items';
 import {
   listNotesForProject,
   readNoteForProject,
   listPromptsForProject,
   readPromptForProject,
-  listAttachmentsForProject,
 } from '../../services/workspace-items-service';
+import { listAttachmentsForIpc } from '../../canopy-runtime/workspace-item-attachments-dispatch';
 
 const handlers = new Map<
   string,
@@ -25,7 +26,10 @@ jest.mock('../../services/workspace-items-service', () => ({
   readNoteForProject: jest.fn(),
   listPromptsForProject: jest.fn(),
   readPromptForProject: jest.fn(),
-  listAttachmentsForProject: jest.fn(),
+}));
+// CAN-4105: the attachment list projects core.workspace.item.list.
+jest.mock('../../canopy-runtime/workspace-item-attachments-dispatch', () => ({
+  listAttachmentsForIpc: jest.fn(),
 }));
 jest.mock('../../lib/paths', () => ({}));
 jest.mock('../../lib/agent-attachments', () => ({}));
@@ -40,6 +44,15 @@ jest.mock('../../lib/dialog-window', () => ({}));
 jest.mock('../../shared-containers/file-scope-store', () => ({}));
 jest.mock('../../shared-containers/publish/scheduler', () => ({}));
 
+const caller: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: [],
+};
+const dispatcher = { query: jest.fn(), instruction: jest.fn() };
+
 const item = {
   id: 'item-1',
   title: 'Title',
@@ -52,7 +65,7 @@ describe('project items IPC read delegation', (): void => {
   beforeEach((): void => {
     jest.resetAllMocks();
     handlers.clear();
-    registerWorkspaceItemHandlers();
+    registerWorkspaceItemHandlers({ dispatcher, resolveCaller: () => caller });
   });
 
   it('delegates workspaceNotesList and preserves the desktop result', async (): Promise<void> => {
@@ -124,14 +137,14 @@ describe('project items IPC read delegation', (): void => {
         createdAt: '2026-09-08',
       },
     ];
-    jest.mocked(listAttachmentsForProject).mockResolvedValue(result);
+    jest.mocked(listAttachmentsForIpc).mockResolvedValue(result);
     const handler = handlers.get(IPC_CHANNELS.workspaceAttachmentsList);
     if (!handler) throw new Error('Missing read handler');
     await expect(
       handler(undefined, { projectId: 'project-1', worktreeId: 'wt-1' }),
     ).resolves.toBe(result);
-    expect(listAttachmentsForProject).toHaveBeenCalledWith(
-      ...['project-1', 'wt-1'],
+    expect(listAttachmentsForIpc).toHaveBeenCalledWith(
+      ...[dispatcher, caller, 'project-1', 'wt-1'],
     );
   });
 });

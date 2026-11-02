@@ -17,7 +17,11 @@ interface HostedClaudeProcess {
   discardingStdout: boolean;
   stdoutEnded: boolean;
   close: { code: number | null; signal: NodeJS.Signals | null } | null;
+  sigkillEscalation: NodeJS.Timeout | null;
 }
+
+/** How long a child may ignore a softer signal before its group is SIGKILLed. */
+const SIGKILL_ESCALATION_MS = 5_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -39,6 +43,32 @@ export function startClaudeProcessHost(
     parentPort.postMessage(response);
   };
 
+  const clearSigkillEscalation = (state: HostedClaudeProcess): void => {
+    if (!state.sigkillEscalation) return;
+    clearTimeout(state.sigkillEscalation);
+    state.sigkillEscalation = null;
+  };
+
+  const killProcess = (
+    requestId: string,
+    state: HostedClaudeProcess,
+    signal: NodeJS.Signals,
+  ): void => {
+    killChildProcessGroup(state.child, signal);
+    if (signal === 'SIGKILL') {
+      clearSigkillEscalation(state);
+      return;
+    }
+    if (state.sigkillEscalation) return;
+    state.sigkillEscalation = setTimeout(() => {
+      state.sigkillEscalation = null;
+      if (active.get(requestId) === state && state.close === null) {
+        killChildProcessGroup(state.child, 'SIGKILL');
+      }
+    }, SIGKILL_ESCALATION_MS);
+    state.sigkillEscalation.unref?.();
+  };
+
   const finishClosedProcess = (
     requestId: string,
     state: HostedClaudeProcess,
@@ -47,6 +77,7 @@ export function startClaudeProcessHost(
       return;
     if (active.get(requestId) !== state) return;
     active.delete(requestId);
+    clearSigkillEscalation(state);
     post({
       type: 'exit',
       requestId,
@@ -121,6 +152,7 @@ export function startClaudeProcessHost(
       return;
     }
     try {
+      const startedAtMs = Date.now();
       const child = spawn(request.command, request.args, {
         cwd: request.cwd,
         env: request.env,
@@ -136,6 +168,7 @@ export function startClaudeProcessHost(
         discardingStdout: false,
         stdoutEnded: false,
         close: null,
+        sigkillEscalation: null,
       };
       active.set(request.requestId, state);
       const finishStdout = (): void => {
@@ -165,8 +198,24 @@ export function startClaudeProcessHost(
           });
         }
       });
-      child.once('error', (error) => {
-        if (active.get(request.requestId) !== state) return;
+      // `on`, not `once`: a tracked child can fail more than one signal, and an
+      // unhandled 'error' would crash this host and orphan every child.
+      let errorReported = false;
+      child.on('error', (error) => {
+        if (active.get(request.requestId) !== state || errorReported) return;
+        errorReported = true;
+        // With a pid the child was spawned, and an error (a signal it could
+        // not be sent) does not mean it exited. Keep it tracked, killable and
+        // in shutdown's sweep until its exit arrives.
+        if (child.pid !== undefined) {
+          post({
+            type: 'error',
+            requestId: request.requestId,
+            message: error.message,
+            exitPending: true,
+          });
+          return;
+        }
         active.delete(request.requestId);
         post({
           type: 'error',
@@ -189,6 +238,7 @@ export function startClaudeProcessHost(
         type: 'started',
         requestId: request.requestId,
         pid: child.pid ?? 0,
+        startedAtMs,
       });
     } catch (error) {
       post({
@@ -215,6 +265,8 @@ export function startClaudeProcessHost(
         return Promise.resolve();
       }),
     );
+    for (const state of Array.from(active.values()))
+      clearSigkillEscalation(state);
     active.clear();
     post({ type: 'shutdown-complete' });
     exitProcess(0);
@@ -239,7 +291,8 @@ export function startClaudeProcessHost(
         // process exit and leave its request/pid tracked indefinitely.
         const alreadyExited = state.close !== null;
         discardStdout(payload.requestId, state);
-        if (!alreadyExited) killChildProcessGroup(state.child, payload.signal);
+        if (!alreadyExited)
+          killProcess(payload.requestId, state, payload.signal);
       }
     } else if (
       payload.type === 'stdout-ack' &&

@@ -2,6 +2,7 @@
 
 import { useCallback, type JSX } from 'react';
 import {
+  Button,
   DialogModal,
   ThinkingSpinner,
   Tooltip,
@@ -31,9 +32,6 @@ export interface PrMergeWarningDialogProps {
 }
 
 const TRIAGE_UNAVAILABLE = "Triaging review comments isn't available here yet.";
-
-const TRIAGE_BUTTON =
-  'electron-no-drag focus-ring inline-flex items-center gap-1.5 self-start rounded-md border bg-fg-primary/5 px-3 py-1.5 text-xs font-medium fg-primary/80 transition hover:bg-fg-primary/10 disabled:opacity-60';
 
 /**
  * Confirmation shown when the user clicks Merge on a PR that still has
@@ -103,23 +101,23 @@ export function PrMergeWarningDialog({
         {onTriageReviewComments === undefined ? (
           // Capability-gated: shown unavailable with its reason, not hidden.
           <Tooltip label={TRIAGE_UNAVAILABLE}>
-            <button
-              type="button"
+            <Button
+              size="compact"
               aria-disabled="true"
               data-testid="pr-merge-warning-triage"
-              className={`${TRIAGE_BUTTON} cursor-not-allowed opacity-60 hover:bg-fg-primary/5`}
+              className="self-start"
             >
               <ChatIcon className="h-3.5 w-3.5" />
               Triage review comments
-            </button>
+            </Button>
           </Tooltip>
         ) : (
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={handleTriage}
             disabled={isSubmitting || isTriaging}
             data-testid="pr-merge-warning-triage"
-            className={TRIAGE_BUTTON}
+            className="self-start"
           >
             {isTriaging ? (
               <ThinkingSpinner tone="primary" quiet />
@@ -127,27 +125,22 @@ export function PrMergeWarningDialog({
               <ChatIcon className="h-3.5 w-3.5" />
             )}
             {isTriaging ? 'Starting…' : 'Triage review comments'}
-          </button>
+          </Button>
         )}
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-4">
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={isSubmitting}
-          className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80 disabled:opacity-60"
-        >
+        <Button size="compact" onClick={onClose} disabled={isSubmitting}>
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="warning"
+          size="compact"
           onClick={handleConfirm}
           disabled={isSubmitting}
           data-testid="pr-merge-warning-confirm"
-          className="focus-ring rounded-md bg-warning px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-warning/90 disabled:opacity-60"
         >
           {isSubmitting ? 'Merging…' : 'Merge anyway'}
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

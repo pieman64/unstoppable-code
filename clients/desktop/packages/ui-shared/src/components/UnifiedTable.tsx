@@ -30,6 +30,8 @@ import {
 import { getUnifiedTableItemKey } from './unified-table-virtualization';
 import { LoadingPlaceholder } from './StatusBlocks';
 import { SegmentedControl } from './SegmentedControl';
+import { Badge } from './Badge';
+import { Button } from './Button';
 import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
 
 /**
@@ -230,11 +232,10 @@ function SourceMultiSelect({
   };
   return (
     <>
-      <button
+      <Button
         ref={buttonRef}
-        type="button"
+        size="compact"
         onClick={() => setOpen((value) => !value)}
-        className="focus-ring flex items-center gap-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
       >
         <span className="max-w-30 truncate">
           {active.size === 0
@@ -242,7 +243,7 @@ function SourceMultiSelect({
             : `${String(active.size)} source${active.size === 1 ? '' : 's'}`}
         </span>
         <span aria-hidden>⌄</span>
-      </button>
+      </Button>
       {open &&
         createPortal(
           <div
@@ -299,13 +300,13 @@ function SourceMultiSelect({
             </div>
             {active.size > 0 && (
               <div className="border-t px-2 py-1.5">
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="compact"
                   onClick={() => onChange(new Set())}
-                  className="text-3xs fg-secondary transition-colors hover:fg-primary"
                 >
                   Clear all
-                </button>
+                </Button>
               </div>
             )}
           </div>,
@@ -314,13 +315,6 @@ function SourceMultiSelect({
     </>
   );
 }
-
-const BADGE_TONE_CLASS: Record<UnifiedTableBadgeTone, string> = {
-  neutral: 'bg-fg-primary/10 fg-primary/80',
-  info: 'bg-accent-subtle fg-accent',
-  warning: 'bg-warning-subtle fg-warning',
-  danger: 'bg-destructive-subtle fg-destructive',
-};
 
 function KindIcon({
   row,
@@ -463,12 +457,12 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             {row.badges && row.badges.length > 0 && (
               <span className="mb-1 flex flex-wrap gap-1">
                 {row.badges.map((badge, index) => (
-                  <span
+                  <Badge
                     key={`${badge.label}-${String(index)}`}
-                    className={`rounded px-1.5 py-0.5 text-3xs font-medium leading-none ${BADGE_TONE_CLASS[badge.tone]}`}
+                    tone={badge.tone}
                   >
                     {badge.label}
-                  </span>
+                  </Badge>
                 ))}
               </span>
             )}
@@ -575,13 +569,13 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
               </span>
             )
           ) : (
-            <button
-              type="button"
+            <Button
+              variant="ghost-quiet"
+              size="compact"
               onClick={() => onView(row)}
-              className="focus-ring shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium fg-accent transition-colors hover:bg-secondary"
             >
               View
-            </button>
+            </Button>
           )}
         </span>
       </td>

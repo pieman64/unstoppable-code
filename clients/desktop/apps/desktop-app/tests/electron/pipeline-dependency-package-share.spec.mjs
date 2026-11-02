@@ -575,8 +575,8 @@ test('web install deep link atomically installs a pinned package without global 
     expect(packageRequests).toHaveLength(4);
     for (const request of packageRequests) {
       // Desktop requests its current package contract
-      // (PIPELINE_PACKAGE_CLIENT_VERSION, 5 for installed-item refs).
-      expect(request.version).toBe('5');
+      // (PIPELINE_PACKAGE_CLIENT_VERSION, 6 for automation resources).
+      expect(request.version).toBe('6');
       expect(request.search.expectedPackageDigest).toBe(PACKAGE_DIGEST);
     }
     const snapshotRequest = cloud.requests.find((request) =>
@@ -742,7 +742,7 @@ test('web install deep link atomically installs a pinned package without global 
     await installFromReview(
       window,
       modal,
-      'Pipeline definition installed without dependencies.',
+      'Workflow definition installed without dependencies.',
     );
 
     const definitionOnlyInstalls = ledger(userDataDir);
@@ -798,7 +798,7 @@ test('definition-only install preserves missing-content readiness and blocks Run
     await installFromReview(
       window,
       modal,
-      'Pipeline definition installed without dependencies.',
+      'Workflow definition installed without dependencies.',
     );
 
     const installs = ledger(userDataDir);

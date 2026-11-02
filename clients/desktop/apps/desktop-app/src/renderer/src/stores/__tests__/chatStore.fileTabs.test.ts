@@ -20,6 +20,8 @@ import type {
   QueryName,
   Unsubscribe,
 } from '@canopy/app-core';
+import { buildPipelineRunArtifactReceipt } from '@canopy/desktop-shared/lib/agent-artifacts';
+import type * as AppAdvisorWatchersStoreModule from '../appAdvisorWatchersStore';
 import type * as ChatStoreModule from '../chatStore';
 import type * as ClaudeTerminalStoreModule from '../claudeTerminalStore';
 import type { ChatTab } from '../chatStore';
@@ -28,6 +30,7 @@ import type * as FileTabUiModule from '../fileTabUiStore';
 import type * as AppStateModule from '@canopy/app-state';
 import type * as NavigationStoreModule from '../navigationStore';
 import type * as TabScrollPositionsModule from '../../lib/tab-scroll-positions';
+import type * as LastViewModeModule from '../../lib/file-viewer/last-view-mode';
 
 const flushScopeMock = jest.fn<Promise<void>, [unknown]>();
 const forkOpenWorktreeTabsMock = jest.fn<
@@ -144,6 +147,8 @@ function makeChatTab(id: string, overrides?: Partial<ChatTab>): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     ...overrides,
   };
 }
@@ -375,7 +380,11 @@ describe('openFileTab', () => {
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { thinkingLevel: 'high', fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
     };
 
@@ -796,6 +805,174 @@ describe('createEmptyFileTab / assignFileTab', () => {
   });
 });
 
+describe('file view mode defaults and session memory (CAN-4955)', () => {
+  function open(
+    useChatStore: (typeof ChatStoreModule)['useChatStore'],
+    absolutePath: string,
+    initialViewMode?: ChatTab['fileViewMode'],
+    target?: { projectId: string; worktreeId: string },
+  ): ChatTab | undefined {
+    const filename = absolutePath.split('/').pop() ?? absolutePath;
+    const tabId = useChatStore.getState().openFileTab(
+      {
+        absolutePath,
+        filename,
+        ...(initialViewMode ? { initialViewMode } : {}),
+      },
+      target,
+    );
+    const key = target ? `${target.projectId}/${target.worktreeId}` : KEY;
+    return useChatStore
+      .getState()
+      .worktreeChats[key]?.tabs.find((tab) => tab.id === tabId);
+  }
+
+  function setup(): (typeof ChatStoreModule)['useChatStore'] {
+    const { useChatStore } = loadChatStore();
+    useChatStore.setState({
+      selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      worktreeChats: {
+        [KEY]: { tabs: [makeChatTab('chat-1')], activeTabId: 'chat-1' },
+      },
+    });
+    return useChatStore;
+  }
+
+  it('opens fresh files in their kind default', () => {
+    const useChatStore = setup();
+    expect(open(useChatStore, '/abs/notes.md')?.fileViewMode).toBe('preview');
+    expect(open(useChatStore, '/abs/page.htm')?.fileViewMode).toBe('preview');
+    expect(open(useChatStore, '/abs/rows.csv')?.fileViewMode).toBe('table');
+    expect(open(useChatStore, '/abs/index.ts')?.fileViewMode).toBeUndefined();
+  });
+
+  it('restores Source and Formatted choices after close from any entry point', () => {
+    const useChatStore = setup();
+    const first = open(useChatStore, '/abs/notes.md');
+    useChatStore.getState().setFileTabViewMode(first?.id ?? '', 'raw');
+    useChatStore.getState().closeTab(first?.id ?? '');
+
+    const reopened = open(useChatStore, '/abs/notes.md');
+    expect(reopened?.fileViewMode).toBe('raw');
+    useChatStore.getState().setFileTabViewMode(reopened?.id ?? '', 'preview');
+    useChatStore.getState().closeTab(reopened?.id ?? '');
+
+    expect(open(useChatStore, '/abs/notes.md')?.fileViewMode).toBe('preview');
+  });
+
+  it('lets an explicit mode beat memory without changing an open tab', () => {
+    const useChatStore = setup();
+    const first = open(useChatStore, '/abs/notes.md');
+    useChatStore.getState().setFileTabViewMode(first?.id ?? '', 'raw');
+    // Already open: the supplied mode is ignored.
+    expect(open(useChatStore, '/abs/notes.md', 'preview')?.fileViewMode).toBe(
+      'raw',
+    );
+    useChatStore.getState().closeTab(first?.id ?? '');
+    expect(open(useChatStore, '/abs/notes.md', 'preview')?.fileViewMode).toBe(
+      'preview',
+    );
+  });
+
+  it('restores the last reading mode after a detour through Diff', () => {
+    const useChatStore = setup();
+    const chosen = open(useChatStore, '/abs/notes.md');
+    useChatStore.getState().setFileTabViewMode(chosen?.id ?? '', 'raw');
+    useChatStore.getState().setFileTabViewMode(chosen?.id ?? '', 'diff');
+    useChatStore.getState().closeTab(chosen?.id ?? '');
+    expect(open(useChatStore, '/abs/notes.md')?.fileViewMode).toBe('raw');
+
+    const fresh = open(useChatStore, '/abs/other.md');
+    useChatStore.getState().setFileTabViewMode(fresh?.id ?? '', 'diff');
+    useChatStore.getState().closeTab(fresh?.id ?? '');
+    expect(open(useChatStore, '/abs/other.md')?.fileViewMode).toBe('preview');
+  });
+
+  it('remembers restored modes from an individual and a bulk close', () => {
+    const { useChatStore } = loadChatStore();
+    useChatStore.setState({
+      selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      worktreeChats: {
+        [KEY]: {
+          tabs: [
+            makeChatTab('chat-1'),
+            makeFileTab('file-a', '/abs/a.md', { fileViewMode: 'raw' }),
+            makeFileTab('file-b', '/abs/b.md', { fileViewMode: 'raw' }),
+            makeFileTab('file-c', '/abs/c.csv', { fileViewMode: 'raw' }),
+          ],
+          activeTabId: 'chat-1',
+        },
+      },
+    });
+
+    useChatStore.getState().closeTab('file-a');
+    useChatStore.getState().closeTabs(['file-b', 'file-c']);
+
+    expect(open(useChatStore, '/abs/a.md')?.fileViewMode).toBe('raw');
+    expect(open(useChatStore, '/abs/b.md')?.fileViewMode).toBe('raw');
+    expect(open(useChatStore, '/abs/c.csv')?.fileViewMode).toBe('raw');
+  });
+
+  it('keeps a restored Source mode through Diff without requiring another toggle', () => {
+    const useChatStore = setup();
+    useChatStore.setState({
+      worktreeChats: {
+        [KEY]: {
+          tabs: [
+            makeChatTab('chat-1'),
+            makeFileTab('restored-file', '/abs/restored.md', {
+              fileViewMode: 'raw',
+            }),
+          ],
+          activeTabId: 'restored-file',
+        },
+      },
+    });
+    useChatStore.getState().setFileTabViewMode('restored-file', 'diff');
+    useChatStore.getState().closeTab('restored-file');
+    expect(open(useChatStore, '/abs/restored.md')?.fileViewMode).toBe('raw');
+  });
+
+  it('keeps memory separate per worktree', () => {
+    const useChatStore = setup();
+    const first = open(useChatStore, '/abs/notes.md');
+    useChatStore.getState().setFileTabViewMode(first?.id ?? '', 'raw');
+    useChatStore.getState().closeTab(first?.id ?? '');
+
+    expect(
+      open(useChatStore, '/abs/notes.md', undefined, {
+        projectId: PROJECT_ID,
+        worktreeId: 'other-worktree',
+      })?.fileViewMode,
+    ).toBe('preview');
+  });
+
+  it('resolves an assigned file afresh instead of keeping the empty tab mode', () => {
+    const useChatStore = setup();
+    const first = open(useChatStore, '/abs/notes.md');
+    useChatStore.getState().setFileTabViewMode(first?.id ?? '', 'raw');
+    useChatStore.getState().closeTab(first?.id ?? '');
+
+    const assign = (absolutePath: string): ChatTab | undefined => {
+      const emptyId = useChatStore.getState().createEmptyFileTab() ?? '';
+      useChatStore.getState().setFileTabViewMode(emptyId, 'table');
+      useChatStore.getState().assignFileTab(emptyId, {
+        absolutePath,
+        filename: absolutePath.split('/').pop() ?? absolutePath,
+      });
+      return useChatStore
+        .getState()
+        .worktreeChats[KEY]?.tabs.find((tab) => tab.id === emptyId);
+    };
+
+    expect(assign('/abs/notes.md')?.fileViewMode).toBe('raw');
+    expect(assign('/abs/fresh.md')?.fileViewMode).toBe('preview');
+    const code = assign('/abs/index.ts');
+    expect(code).toBeDefined();
+    expect(code).not.toHaveProperty('fileViewMode');
+  });
+});
+
 describe('migrateWorktreeTabsToAdhocWorkspace', () => {
   function makeCombineResponse(
     overrides?: Partial<AdhocMultiRepoCombineResponse>,
@@ -855,7 +1032,7 @@ describe('migrateWorktreeTabsToAdhocWorkspace', () => {
       worktreeChats: {
         [sourceKey]: { tabs: [sourceTab], activeTabId: sourceTab.id },
       },
-      tabDrafts: { [sourceTab.id]: 'unsent draft' },
+      tabDrafts: { [sourceTab.id]: [{ text: 'unsent draft' }] },
       pendingQuestions: {
         'req-1': {
           requestId: 'req-1',
@@ -1112,33 +1289,12 @@ describe('switchTab on a file tab', () => {
   it('retains the previous chat provider without discovery', () => {
     const { useChatStore } = loadChatStore();
 
-    const fileTab: ChatTab = {
-      id: 'file-1',
+    const fileTab: ChatTab = makeChatTab('file-1', {
       title: 'notes.md',
       kind: 'file',
       filePath: '/abs/path/notes.md',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
-    const chatTab: ChatTab = {
-      id: 'chat-1',
-      title: 'Chat',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-      providerType: 'codex',
-    };
+    });
+    const chatTab: ChatTab = makeChatTab('chat-1', { providerType: 'codex' });
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
       worktreeChats: {
@@ -1328,33 +1484,8 @@ describe('sendMessage on a file tab', () => {
   it('routes to an existing chat tab when the active tab is a file tab', async () => {
     const { useChatStore } = loadChatStore();
 
-    const fileTab: ChatTab = {
-      id: 'file-1',
-      title: 'notes.md',
-      kind: 'file',
-      filePath: '/abs/path/notes.md',
-      description: '/abs/path/notes.md',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
-    const chatTab: ChatTab = {
-      id: 'chat-1',
-      title: 'Chat',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
+    const fileTab: ChatTab = makeFileTab('file-1', '/abs/path/notes.md');
+    const chatTab: ChatTab = makeChatTab('chat-1');
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
       worktreeChats: {
@@ -1377,21 +1508,7 @@ describe('sendMessage on a file tab', () => {
   it('creates a writable chat tab when only a file tab exists', async () => {
     const { useChatStore } = loadChatStore();
 
-    const fileTab: ChatTab = {
-      id: 'file-1',
-      title: 'notes.md',
-      kind: 'file',
-      filePath: '/abs/path/notes.md',
-      description: '/abs/path/notes.md',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
+    const fileTab: ChatTab = makeFileTab('file-1', '/abs/path/notes.md');
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
       worktreeChats: {
@@ -1534,24 +1651,126 @@ describe('sendMessage on a file tab', () => {
   });
 });
 
+describe('sendMessage watched-run carry', () => {
+  it('does not carry a watched run the chat launched into the new turn', async () => {
+    const { useChatStore } = loadChatStore();
+    const { useAppAdvisorWatchersStore } = jest.requireActual<
+      typeof AppAdvisorWatchersStoreModule
+    >('../appAdvisorWatchersStore');
+    const launchedRun = buildPipelineRunArtifactReceipt({
+      operation: 'pipeline.run',
+      executionId: 'exec-chat',
+      pipelineId: 'pipe-chat',
+      pipelineName: 'Chat build',
+      initialStatus: 'running',
+      queuedAt: '2026-04-25T00:00:01.000Z',
+      createdAt: '2026-04-25T00:00:01.000Z',
+      projectId: PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+      navigationTarget: {
+        kind: 'pipeline_execution',
+        executionId: 'exec-chat',
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+      },
+    });
+    const destination = {
+      projectId: PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: 'chat-1',
+    };
+    useAppAdvisorWatchersStore.setState({
+      watchers: [
+        {
+          id: 'watch-chat',
+          trigger: 'worktree_pipeline_completion',
+          status: 'active',
+          label: 'Chat build watcher',
+          target: {
+            kind: 'worktree_pipeline',
+            projectId: PROJECT_ID,
+            worktreeId: WORKTREE_ID,
+            pipelineId: 'pipe-chat',
+            executionId: 'exec-chat',
+          },
+          destination,
+          createdAt: '2026-04-25T00:00:02.000Z',
+        },
+      ],
+    });
+    useChatStore.setState({
+      selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      worktreeChats: {
+        [KEY]: {
+          tabs: [
+            makeChatTab('chat-1', {
+              messages: [
+                {
+                  id: 'turn-1',
+                  role: 'user',
+                  blocks: [{ type: 'text', text: 'Run the build' }],
+                  timestamp: 1,
+                },
+                {
+                  id: 'assistant-1',
+                  role: 'assistant',
+                  blocks: [
+                    {
+                      type: 'tool_use',
+                      toolUseId: 'tool-1',
+                      toolName: 'DispatchAction',
+                      input: '{}',
+                    },
+                  ],
+                  timestamp: 2,
+                },
+                {
+                  id: 'result-1',
+                  role: 'assistant',
+                  blocks: [
+                    {
+                      type: 'tool_result',
+                      toolUseId: 'tool-1',
+                      toolName: 'DispatchAction',
+                      output: JSON.stringify({
+                        ok: true,
+                        result: { agentArtifacts: [launchedRun] },
+                      }),
+                      isError: false,
+                    },
+                  ],
+                  timestamp: 3,
+                },
+              ],
+            }),
+          ],
+          activeTabId: 'chat-1',
+        },
+      },
+    });
+
+    await useChatStore.getState().sendMessage('What next?');
+
+    // The launching turn already lists the run; carrying it into the new
+    // turn would list it again once that turn completes (CAN-4690).
+    const tab = useChatStore.getState().worktreeChats[KEY].tabs[0];
+    expect(sendMessageApiMock).toHaveBeenCalledTimes(1);
+    expect(
+      tab.messages.filter((message) => message.role === 'user'),
+    ).toHaveLength(2);
+    expect(tab.agentArtifactCarryByTurn).toBeUndefined();
+  });
+});
+
 describe('syncActiveEmptyTabToDefaults on a file tab', () => {
   it('is a no-op — no model/providerType/thinkingLevel mutation, no discovery', async () => {
     const { useChatStore } = loadChatStore();
 
-    const fileTab: ChatTab = {
-      id: 'file-1',
+    const fileTab: ChatTab = makeChatTab('file-1', {
       title: 'notes.md',
       kind: 'file',
       filePath: '/abs/path/notes.md',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
+    });
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
       worktreeChats: {
@@ -1816,6 +2035,53 @@ async function flushMicrotasks(times = 8): Promise<void> {
   }
 }
 
+describe('explicit reopen of an existing file tab', () => {
+  it('checks the shared session against disk without adding a tab', async () => {
+    const { useChatStore } = loadChatStore();
+    const file = attachSharedFileStore();
+    useChatStore.setState({
+      selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      worktreeChats: { [KEY]: { tabs: [], activeTabId: '' } },
+    });
+    const params = {
+      absolutePath: '/abs/path/notes.md',
+      filename: 'notes.md',
+    };
+    const tabId = useChatStore.getState().openFileTab(params) ?? '';
+    const key = await seedFileSession(file, tabId, 'notes.md');
+    const refreshFile = jest.fn((): Promise<void> => Promise.resolve());
+    file.store.setState({ refreshFile });
+
+    // Already active: no activation transition, so the reopen itself reads.
+    expect(useChatStore.getState().openFileTab(params)).toBe(tabId);
+    // Background presentation keeps the current tab.
+    useChatStore.getState().createTab();
+    const chatTabId = useChatStore.getState().worktreeChats[KEY].activeTabId;
+    expect(chatTabId).not.toBe(tabId);
+    expect(
+      useChatStore
+        .getState()
+        .openFileTab(params, undefined, { activate: false }),
+    ).toBe(tabId);
+    expect(useChatStore.getState().worktreeChats[KEY].activeTabId).toBe(
+      chatTabId,
+    );
+    const emptyId = useChatStore.getState().createEmptyFileTab() ?? '';
+    expect(useChatStore.getState().assignFileTab(emptyId, params)).toBe(tabId);
+
+    expect(refreshFile.mock.calls).toEqual([[key], [key], [key]]);
+    expect(
+      useChatStore
+        .getState()
+        .worktreeChats[
+          KEY
+        ].tabs.filter((tab) => tab.kind === 'file' && tab.filePath === params.absolutePath),
+    ).toHaveLength(1);
+    file.controller.releaseTab(tabId);
+    file.detach();
+  });
+});
+
 describe('closeTab on a dirty file tab', () => {
   /**
    * Common setup: a worktree with a single dirty file tab plus a chat tab, so
@@ -1834,33 +2100,10 @@ describe('closeTab on a dirty file tab', () => {
     const file = attachSharedFileStore();
 
     const fileTabId = 'file-1';
-    const fileTab: ChatTab = {
-      id: fileTabId,
-      title: 'notes.md',
-      kind: 'file',
-      filePath: '/abs/path/notes.md',
-      description: '/abs/path/notes.md',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
-    const chatTab: ChatTab = {
-      id: 'chat-1',
-      title: 'Chat',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
+    const fileTab: ChatTab = makeFileTab(fileTabId, '/abs/path/notes.md', {
+      fileViewMode: 'raw',
+    });
+    const chatTab: ChatTab = makeChatTab('chat-1');
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
       worktreeChats: {
@@ -1902,6 +2145,17 @@ describe('closeTab on a dirty file tab', () => {
     expect(pending?.fileKey).toBe(fileKey);
     expect(pending?.projectId).toBe(PROJECT_ID);
     expect(pending?.worktreeId).toBe(WORKTREE_ID);
+    file.fileTabUi.useFileTabUiStore.getState().clearPendingUnsavedClose();
+    const memory = jest.requireActual<typeof LastViewModeModule>(
+      '../../lib/file-viewer/last-view-mode',
+    );
+    expect(
+      memory.readRememberedFileViewMode({
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+        absolutePath: '/abs/path/notes.md',
+      }),
+    ).toBeUndefined();
     file.detach();
   });
 
@@ -1946,6 +2200,16 @@ describe('closeTab on a dirty file tab', () => {
     const session = file.controller.getSession(fileTabId);
     expect(session?.error).toBe('disk full');
     expect(session?.dirty).toBe(true);
+    const memory = jest.requireActual<typeof LastViewModeModule>(
+      '../../lib/file-viewer/last-view-mode',
+    );
+    expect(
+      memory.readRememberedFileViewMode({
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+        absolutePath: '/abs/path/notes.md',
+      }),
+    ).toBeUndefined();
     file.detach();
   });
 
@@ -2025,32 +2289,12 @@ describe('closeTab on a dirty file tab', () => {
     const { useChatStore } = loadChatStore();
 
     const otherKey = `${PROJECT_ID}/other-worktree`;
-    const fileTab: ChatTab = {
-      id: 'file-1',
+    const fileTab: ChatTab = makeChatTab('file-1', {
       title: 'notes.md',
       kind: 'file',
       filePath: '/abs/path/notes.md',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
-    const otherChatTab: ChatTab = {
-      id: 'chat-1',
-      title: 'Chat',
-      messages: [],
-      status: 'idle',
-      error: null,
-      createdAt: '2026-04-25T00:00:00.000Z',
-      queuedMessages: [],
-      planMode: false,
-      proposalMode: 'optional',
-      thinkingLevel: 'high',
-    };
+    });
+    const otherChatTab: ChatTab = makeChatTab('chat-1');
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
       worktreeChats: {

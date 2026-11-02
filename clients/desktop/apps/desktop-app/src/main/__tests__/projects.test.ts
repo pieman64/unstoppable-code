@@ -66,13 +66,17 @@ jest.mock('../lib/workspace-source-control', () => ({
   repairExistingWorkspaceRootWorktrees: jest.fn(),
 }));
 jest.mock('../lib/script-resolver', () => ({
-  resolveProjectScripts: mockResolveProjectScripts,
+  get resolveProjectScripts(): typeof mockResolveProjectScripts {
+    return mockResolveProjectScripts;
+  },
   resolveWorkspaceRepoScripts: jest.fn(() => Promise.resolve({})),
   resolveWorkspaceRootScripts: jest.fn(() => Promise.resolve({})),
   toScriptOverrides: jest.fn(() => undefined),
 }));
 jest.mock('../lib/hook-resolver', () => ({
-  resolveProjectHooks: mockResolveProjectHooks,
+  get resolveProjectHooks(): typeof mockResolveProjectHooks {
+    return mockResolveProjectHooks;
+  },
   resolveWorkspaceRepoDataHooks: jest.fn(() => Promise.resolve({})),
   resolveWorkspaceRepoHooks: jest.fn(() => Promise.resolve({})),
   resolveWorkspaceRootHooks: jest.fn(() => Promise.resolve({})),
@@ -102,7 +106,9 @@ jest.mock('../lib/project-source-change-apply', () => ({
   applyProjectSourceChangesToWorktree: jest.fn(),
 }));
 jest.mock('../lib/worktree-boot-recovery', () => ({
-  reconcileGitPendingWorktrees: mockReconcileGitPendingWorktrees,
+  get reconcileGitPendingWorktrees(): typeof mockReconcileGitPendingWorktrees {
+    return mockReconcileGitPendingWorktrees;
+  },
 }));
 jest.mock('../lib/workspace-deletion', () => ({
   deleteWorkspace: jest.fn(),
@@ -111,24 +117,31 @@ jest.mock('../lib/workspace-persistence', () => {
   const actual = jest.requireActual<typeof WorkspacePersistence>(
     '../lib/workspace-persistence',
   );
-  return {
-    ...actual,
-    updateWorkspaceWorktrees: jest.fn(),
-  };
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      updateWorkspaceWorktrees: {
+        value: jest.fn(),
+        enumerable: true,
+      },
+    },
+  );
 });
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
 }));
 jest.mock('../lib/archived-containers', () => ({
-  countArchivedContainers: mockCountArchivedContainers,
+  get countArchivedContainers(): typeof mockCountArchivedContainers {
+    return mockCountArchivedContainers;
+  },
 }));
 jest.mock('../lib/cowork-work-entries-file', () => ({
   readWorkEntryCount: jest.fn().mockResolvedValue(0),
   readWorkEntrySidebarSummary: jest.fn().mockResolvedValue({ count: 0 }),
 }));
-jest.mock('../lib/worktree-branch-watcher', () => ({
-  ensureWorktreeBranchWatchers: jest.fn(() => Promise.resolve()),
-  syncWorktreeBranchWatchers: jest.fn(() => Promise.resolve()),
+jest.mock('../lib/worktree-lifecycle-signals', () => ({
+  publishWorktreeLifecycleChange: jest.fn(),
 }));
 let capturedExternalSnapshotCallback:
   | ((workspaceId: string, worktrees: readonly WorktreeData[]) => void)
@@ -147,11 +160,15 @@ const mockSyncWorktreesFileWatchers = jest.fn(
   },
 );
 jest.mock('../lib/worktrees-file-watcher', () => ({
-  syncWorktreesFileWatchers: mockSyncWorktreesFileWatchers,
+  get syncWorktreesFileWatchers(): typeof mockSyncWorktreesFileWatchers {
+    return mockSyncWorktreesFileWatchers;
+  },
 }));
 const mockReconcileExternalWorktreeSnapshot = jest.fn(() => Promise.resolve());
 jest.mock('../lib/worktree-registry-reconciliation', () => ({
-  reconcileExternalWorktreeSnapshot: mockReconcileExternalWorktreeSnapshot,
+  get reconcileExternalWorktreeSnapshot(): typeof mockReconcileExternalWorktreeSnapshot {
+    return mockReconcileExternalWorktreeSnapshot;
+  },
 }));
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
@@ -174,11 +191,7 @@ import { repairExistingWorkspaceRootWorktrees } from '../lib/workspace-source-co
 import { updateWorkspaceWorktrees } from '../lib/workspace-persistence';
 import { deleteWorkspace } from '../lib/workspace-deletion';
 import { readPreferencesFile } from '../lib/preferences-store';
-import {
-  ensureWorktreeBranchWatchers,
-  syncWorktreeBranchWatchers,
-} from '../lib/worktree-branch-watcher';
-import { publishWorktreeGitReady } from '../lib/worktree-git-ready-hooks';
+import { publishWorktreeLifecycleChange } from '../lib/worktree-lifecycle-signals';
 import { syncWorktreesFileWatchers } from '../lib/worktrees-file-watcher';
 
 const mockedReadFile = jest.mocked(readFile);
@@ -192,8 +205,8 @@ const mockedSyncTrackedWorktrees = jest.mocked(syncTrackedWorktrees);
 const mockedSyncCodeGraphBaseRepositories = jest.mocked(
   syncCodeGraphBaseRepositories,
 );
-const mockedSyncWorktreeBranchWatchers = jest.mocked(
-  syncWorktreeBranchWatchers,
+const mockedPublishWorktreeLifecycleChange = jest.mocked(
+  publishWorktreeLifecycleChange,
 );
 const mockedSyncWorktreesFileWatchers = jest.mocked(syncWorktreesFileWatchers);
 const mockedApplyProjectSourceChangesToWorktree = jest.mocked(
@@ -232,7 +245,9 @@ type ReorderWorkspacesHandler = (
 ) => Promise<void>;
 
 let loadHandler: LoadHandler;
-let callerGrants = ['core.workspace.read', 'core.worktree.read'];
+let callerGrants: Array<
+  `core.${string}.${string}` | `worker.${string}.${string}`
+> = ['core.workspace.read', 'core.worktree.read'];
 let saveHandler: SaveHandler;
 let applySourceChangesHandler: ApplySourceChangesHandler;
 let saveDefaultPluginsHandler: SaveDefaultPluginsHandler;
@@ -270,6 +285,15 @@ function makeProject(
     worktrees: [],
     ...overrides,
   };
+}
+
+function expectSingleRepoItem(
+  item: SidebarItem | undefined,
+): SingleRepoSidebarItem {
+  if (!item || item.type !== 'single-repo') {
+    throw new Error('Expected a single-repo sidebar item');
+  }
+  return item;
 }
 
 function makeWorkspaceIndexJson(
@@ -445,9 +469,14 @@ beforeEach(() => {
     referenceRepoPath: '/repos/source',
   });
   mockedRepairExistingWorkspaceRootWorktrees.mockResolvedValue(undefined);
-  mockedReadPreferencesFile.mockResolvedValue({
-    worktreeFilterHiddenWorkspaceIds: [],
-  } as Awaited<ReturnType<typeof readPreferencesFile>>);
+  const preferences: Partial<Awaited<ReturnType<typeof readPreferencesFile>>> =
+    {
+      worktreeFilterHiddenWorkspaceIds: [],
+    };
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  mockedReadPreferencesFile.mockResolvedValue(
+    preferences as Awaited<ReturnType<typeof readPreferencesFile>>,
+  );
 
   registerProjectHandlers(
     mockGetWindow,
@@ -502,39 +531,6 @@ beforeEach(() => {
 });
 
 describe('registerProjectHandlers', () => {
-  it('starts branch watchers once when a worktree checkout becomes ready', async () => {
-    // Registering the handlers again replaces the hook instead of adding one.
-    registerProjectHandlers(
-      mockGetWindow,
-      jest
-        .requireActual<
-          typeof DesktopRuntimeModule
-        >('../canopy-runtime/desktop-runtime')
-        .createDesktopRuntime(),
-      () => ({
-        principalId: 'test',
-        clientInstanceId: 'test',
-        authorityId: 'local-desktop',
-        interfaceKind: 'test',
-        grants: callerGrants,
-      }),
-    );
-    const event = {
-      projectId: 'ws-1',
-      worktreeId: 'wt-1',
-      branchName: 'mink-2-1792088684150',
-      workspaceKind: 'single-repo' as const,
-    };
-
-    await publishWorktreeGitReady(event);
-
-    expect(jest.mocked(ensureWorktreeBranchWatchers)).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(ensureWorktreeBranchWatchers)).toHaveBeenCalledWith(
-      event,
-      mockGetWindow,
-    );
-  });
-
   it('registers a targeted tracked-base-branch writer', async () => {
     const call = mockedRegisterIpcHandler.mock.calls.find(
       ([channel]) => channel === 'worktree:set-tracked-base-branch',
@@ -887,8 +883,12 @@ describe('registerProjectHandlers', () => {
     ]);
   });
 
-  it('starts the project reference repo poller', () => {
-    expect(mockedStartPolling).toHaveBeenCalledWith(expect.any(Function));
+  it('starts the project reference repo poller over the desktop dispatcher', () => {
+    expect(mockedStartPolling).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.anything(),
+    );
+    expect(typeof mockedStartPolling.mock.calls[0]?.[1].query).toBe('function');
   });
 });
 
@@ -1254,7 +1254,9 @@ describe('load handler', () => {
 
     const result = await loadHandler();
 
-    expect(result.items[0]?.activitySectionOrder).toEqual(activitySectionOrder);
+    expect(expectSingleRepoItem(result.items[0]).activitySectionOrder).toEqual(
+      activitySectionOrder,
+    );
   });
 
   it('preserves failed project runtime state during partial-load synchronization', async () => {
@@ -1332,10 +1334,8 @@ describe('load handler', () => {
       loadedItems,
       preserveWorkspaceIds,
     );
-    expect(mockedSyncWorktreeBranchWatchers).toHaveBeenLastCalledWith(
-      loadedItems,
-      mockGetWindow,
-      preserveWorkspaceIds,
+    expect(mockedPublishWorktreeLifecycleChange).toHaveBeenLastCalledWith(
+      'projects-loaded',
     );
     expect(mockedSyncWorktreesFileWatchers).toHaveBeenLastCalledWith(
       loadedItems,
@@ -1589,7 +1589,7 @@ describe('load handler', () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0].id).toBe('project-1');
     expect(result.items[0].name).toBe('Test Project');
-    expect(result.items[0].worktrees).toEqual([wt]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([wt]);
     expect(mockedSyncTrackedWorktrees).toHaveBeenCalledWith(
       result.items,
       new Set(),
@@ -1655,8 +1655,8 @@ describe('load handler', () => {
     const result = await loadHandler();
 
     expect(result.items).toHaveLength(2);
-    expect(result.items[0].worktrees).toEqual([wt1]);
-    expect(result.items[1].worktrees).toEqual([wt2]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([wt1]);
+    expect(expectSingleRepoItem(result.items[1]).worktrees).toEqual([wt2]);
   });
 
   it('ignores multi-repo projects with invalid canopy.json files and returns a warning', async () => {
@@ -1719,8 +1719,11 @@ describe('load handler', () => {
     expect(warning?.code).toBe('invalid-canopy-json');
     expect(warning?.workspaceId).toBe('workspace-b');
     expect(warning?.workspaceName).toBe('Workspace B');
-    expect(warning?.filePath).toBe('/repos/workspace-b/canopy.json');
-    expect(warning?.reason).toMatch(
+    if (warning?.code !== 'invalid-canopy-json') {
+      throw new Error('Expected invalid canopy.json warning');
+    }
+    expect(warning.filePath).toBe('/repos/workspace-b/canopy.json');
+    expect(warning.reason).toMatch(
       /Unexpected token|Expected double-quoted property name|position|line 3 column 3/,
     );
     const failedWorkspaceIds = new Set(['workspace-b']);
@@ -1763,7 +1766,7 @@ describe('load handler', () => {
     const result = await loadHandler();
 
     expect(result.items).toHaveLength(1);
-    expect(result.items[0].worktrees).toEqual([]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([]);
   });
 
   it('returns empty worktrees when worktrees file has wrong version', async () => {
@@ -1797,7 +1800,7 @@ describe('load handler', () => {
 
     const result = await loadHandler();
 
-    expect(result.items[0].worktrees).toEqual([]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([]);
   });
 
   it('returns empty worktrees when worktrees field is not an array', async () => {
@@ -1833,7 +1836,7 @@ describe('load handler', () => {
 
     const result = await loadHandler();
 
-    expect(result.items[0].worktrees).toEqual([]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([]);
   });
 
   it('returns empty worktrees when worktrees field is null', async () => {
@@ -1867,7 +1870,7 @@ describe('load handler', () => {
 
     const result = await loadHandler();
 
-    expect(result.items[0].worktrees).toEqual([]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([]);
   });
 
   it('returns empty worktrees when worktrees JSON is invalid', async () => {
@@ -1901,7 +1904,7 @@ describe('load handler', () => {
 
     const result = await loadHandler();
 
-    expect(result.items[0].worktrees).toEqual([]);
+    expect(expectSingleRepoItem(result.items[0]).worktrees).toEqual([]);
   });
 });
 
@@ -1997,10 +2000,8 @@ describe('save handler', () => {
       [],
       preservedWorkspaceIds,
     );
-    expect(mockedSyncWorktreeBranchWatchers).toHaveBeenCalledWith(
-      [],
-      mockGetWindow,
-      preservedWorkspaceIds,
+    expect(mockedPublishWorktreeLifecycleChange).toHaveBeenCalledWith(
+      'projects-saved',
     );
     expect(mockedSyncWorktreesFileWatchers).toHaveBeenCalledWith(
       [],
@@ -2046,10 +2047,8 @@ describe('save handler', () => {
       [],
       preservedWorkspaceIds,
     );
-    expect(mockedSyncWorktreeBranchWatchers).toHaveBeenCalledWith(
-      [],
-      mockGetWindow,
-      preservedWorkspaceIds,
+    expect(mockedPublishWorktreeLifecycleChange).toHaveBeenCalledWith(
+      'projects-saved',
     );
     expect(mockedSyncWorktreesFileWatchers).toHaveBeenCalledWith(
       [],
@@ -2296,6 +2295,7 @@ describe('delete handler', () => {
         archivedGitRefs: { status: 'done' },
         chatSearchRows: { status: 'done' },
         managedRepository: { status: 'done' },
+        skillSuggestions: { status: 'done' },
       },
     });
   });
@@ -2318,6 +2318,7 @@ describe('delete handler', () => {
         archivedGitRefs: { status: 'done' },
         chatSearchRows: { status: 'done' },
         managedRepository: { status: 'failed', error: new Error('EBUSY') },
+        skillSuggestions: { status: 'done' },
       },
     });
 
@@ -2340,6 +2341,32 @@ describe('delete handler', () => {
 
   it('rejects invalid project id', async () => {
     await expect(deleteHandler({}, { projectId: 'INVALID' })).rejects.toThrow();
+    expect(mockedDeleteWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('passes a supersede operation id and rejects a malformed one at the boundary', async () => {
+    const operationId = '00000000-0000-4000-8000-000000000000';
+    await deleteHandler(
+      {},
+      { projectId: 'project-1', supersedeInterruptedDeletion: operationId },
+    );
+    expect(mockedDeleteWorkspace).toHaveBeenCalledWith({
+      workspaceId: 'project-1',
+      source: 'single_repo_project_delete',
+      singleRepoProject: true,
+      supersedeInterruptedDeletion: operationId,
+    });
+
+    mockedDeleteWorkspace.mockClear();
+    await expect(
+      deleteHandler(
+        {},
+        {
+          projectId: 'project-1',
+          supersedeInterruptedDeletion: 'NOT/an-operation-id',
+        },
+      ),
+    ).rejects.toThrow('Invalid supersedeInterruptedDeletion');
     expect(mockedDeleteWorkspace).not.toHaveBeenCalled();
   });
 });

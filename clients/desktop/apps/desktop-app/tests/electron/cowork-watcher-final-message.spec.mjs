@@ -133,33 +133,26 @@ test('independent Cowork ScheduleWakeup calls create distinct watchers', async (
   seedCoworkDestination(userDataDir);
   const marker = 'Canopy-CCOWORKWAKEUPREGISTRATION';
   const reply = 'Both wakeup registration requests completed.';
+  const helloInstruction = 'Say hello.';
+  const goodbyeInstruction = 'Say goodbye.';
+  const wakeupStep = (followUpInstruction) => ({
+    toolCalls: [
+      {
+        name: 'mcp__canopy__ScheduleWakeup',
+        input: { delaySeconds: 60, followUpInstruction },
+      },
+    ],
+    stopReason: 'tool_use',
+  });
   await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
     llm: {
+      // Two independent wakeups differ by follow-up instruction. The third
+      // call repeats the first exactly: an identical pending wakeup is
+      // returned with its original time instead of creating a third watcher.
       steps: [
-        {
-          toolCalls: [
-            {
-              name: 'mcp__canopy__ScheduleWakeup',
-              input: {
-                delaySeconds: 60,
-                followUpInstruction: 'Say hello.',
-              },
-            },
-          ],
-          stopReason: 'tool_use',
-        },
-        {
-          toolCalls: [
-            {
-              name: 'mcp__canopy__ScheduleWakeup',
-              input: {
-                delaySeconds: 60,
-                followUpInstruction: 'Say hello.',
-              },
-            },
-          ],
-          stopReason: 'tool_use',
-        },
+        wakeupStep(helloInstruction),
+        wakeupStep(goodbyeInstruction),
+        wakeupStep(helloInstruction),
         { text: reply, stopReason: 'end_turn' },
       ],
     },
@@ -223,6 +216,9 @@ test('independent Cowork ScheduleWakeup calls create distinct watchers', async (
       });
     }
     expect(new Set(wakeups.map((watcher) => watcher.id)).size).toBe(2);
+    expect(
+      wakeups.map((watcher) => watcher.followUpInstruction).sort(),
+    ).toEqual([goodbyeInstruction, helloInstruction].sort());
     await app.openWatchersPage();
     for (const watcher of wakeups) {
       const row = app.workflowsWatcherRunRow(watcher.id);

@@ -2,13 +2,16 @@
  * @jest-environment jsdom
  */
 import { act } from 'react';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  DetectPublicAgentRequest,
+  CanopyCloudAccountPublicState,
+  DeepLinkResolveShareResponse,
   DeepLinkShareOpenEvent,
-  PipelinePackageReadiness,
   PublicShareSnapshot,
 } from '@canopy/desktop-shared/types';
+import type { DetectPublicAgentRequest } from '@canopy/desktop-shared/types/agent-models';
+import type { PipelinePackageReadiness } from '@canopy/desktop-shared/types/pipeline';
 import * as CollectionImport from '@/lib/sharedCollectionImport';
 import {
   CUSTOM_SKILL_SOURCE_ID,
@@ -18,6 +21,7 @@ import type { CollectionConfig } from '@canopy/desktop-shared/types/collections'
 import type * as SharedSkillImportModule from '@/lib/sharedSkillImport';
 import type { SharedWorkspaceTemplateDocument } from '@canopy/protocol';
 import { tryParseAndValidateYaml } from '@/lib/pipeline-yaml';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   type PublicShareLanding,
   usePublicShareLanding,
@@ -32,11 +36,20 @@ jest.mock('@/stores/featureFlagsStore', () => ({
   },
 }));
 const mockImportSharedSkill = jest.fn();
+const mockLookupInstalledSharedSkill = jest.fn();
 jest.mock('@/lib/sharedSkillImport', () => ({
   ...jest.requireActual<Record<string, unknown>>('@/lib/sharedSkillImport'),
   findInstalledSkillByContentHash: jest.fn().mockResolvedValue(null),
+  lookupInstalledSharedSkill: (...args: unknown[]): unknown =>
+    mockLookupInstalledSharedSkill(...args),
   importSharedSkill: (...args: unknown[]): unknown =>
     mockImportSharedSkill(...args),
+}));
+const mockInsertSkillInvocation = jest.fn();
+jest.mock('../shareChatTarget', () => ({
+  watchShareChatTarget: jest.fn(() => (): void => undefined),
+  insertSkillInvocation: (...args: unknown[]): unknown =>
+    mockInsertSkillInvocation(...args),
 }));
 const mockOpenPipelineEdit = jest.fn();
 const mockOpenAutomationEdit = jest.fn();
@@ -46,6 +59,7 @@ const mockSwitchChatProject = jest.fn().mockResolvedValue(true);
 const mockLoadProjects = jest.fn().mockResolvedValue(undefined);
 jest.mock('@/stores/navigationStore', () => ({
   useNavigationStore: {
+    subscribe: jest.fn(() => (): void => undefined),
     getState: (): {
       openPipelineEdit: jest.Mock;
       openAutomationEdit: jest.Mock;
@@ -60,6 +74,31 @@ jest.mock('@/stores/navigationStore', () => ({
       navigate: mockNavigate,
     }),
   },
+}));
+const mockRequestConnect = jest.fn<void, [{ subtitle?: string }, () => void]>();
+// The real store imports openBillingPage, which imports this mock, so the
+// actual module loads only when isConnectedNonGuest is first called.
+jest.mock('@/stores/cloudConnectGateStore', () => ({
+  isConnectedNonGuest: (
+    account: CanopyCloudAccountPublicState | null | undefined,
+  ): boolean =>
+    jest
+      .requireActual<{
+        isConnectedNonGuest: (
+          account: CanopyCloudAccountPublicState | null | undefined,
+        ) => boolean;
+      }>('@/stores/cloudConnectGateStore')
+      .isConnectedNonGuest(account),
+  useCloudConnectGateStore: {
+    getState: (): { requestConnect: typeof mockRequestConnect } => ({
+      requestConnect: mockRequestConnect,
+    }),
+  },
+}));
+const mockOpenCloudAccountSettings = jest.fn();
+jest.mock('@/lib/navigation/settings-destinations', () => ({
+  openCloudAccountSettings: (...args: unknown[]): unknown =>
+    mockOpenCloudAccountSettings(...args),
 }));
 jest.mock('@/stores/chatStore', () => ({
   useChatStore: {
@@ -311,7 +350,7 @@ describe('usePublicShareLanding package failure guards', () => {
 
     expect(result).toEqual({
       target: { entity: 'pipeline', pipelineId: 'pipeline-2' },
-      status: 'Pipeline definition installed without dependencies.',
+      status: 'Workflow definition installed without dependencies.',
       // The author chose to share the definition alone; nothing failed.
       partial: false,
     });
@@ -598,7 +637,6 @@ describe('usePublicShareLanding public Agents', () => {
     entity: 'agent',
     externalId: SHARE_ID,
     intent: 'install',
-    expectedAgentContentHash: CONTENT_HASH,
   };
   const agentPackage = {
     digest: NEW_DIGEST,
@@ -963,13 +1001,12 @@ describe('usePublicShareLanding automation install review', () => {
   });
 
   it('opens the review without an install intent too', async () => {
+    const legacyLink: DeepLinkShareOpenEvent = { ...automationLink };
+    // Simulate an older decoded link: the current contract normalizes intent,
+    // while this branch intentionally keeps pinning the hook's fallback.
+    Reflect.deleteProperty(legacyLink, 'intent');
     await act(async () => {
-      root.render(
-        <AutomationHarness
-          probe={probe}
-          shareLink={{ ...automationLink, intent: undefined }}
-        />,
-      );
+      root.render(<AutomationHarness probe={probe} shareLink={legacyLink} />);
       for (let i = 0; i < 10; i += 1) await Promise.resolve();
     });
 
@@ -980,7 +1017,11 @@ describe('usePublicShareLanding automation install review', () => {
   });
 
   it('reports the review as opening until it is ready', async () => {
-    let resolveShare: (value: unknown) => void = () => {};
+    let resolveShare: (
+      value:
+        | DeepLinkResolveShareResponse
+        | PromiseLike<DeepLinkResolveShareResponse>,
+    ) => void = () => {};
     window.api.deepLinkResolveShare = jest.fn(
       () =>
         new Promise((resolve) => {
@@ -1394,6 +1435,128 @@ describe('scoped agent share landing', () => {
     act(() => root.unmount());
     container.remove();
   });
+  it('keeps the reviewed share across a context switch made elsewhere (CAN-2962)', async (): Promise<void> => {
+    await act(async (): Promise<void> => {
+      root.render(<AgentHarness />);
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(probe.current?.snapshot?.entity).toBe('agent');
+    expect(list).toHaveBeenCalledTimes(1);
+    // The new context would refuse a fresh resolve of this share.
+    jest
+      .mocked(window.api.deepLinkResolveShare)
+      .mockResolvedValue({ ok: false, reason: 'not-found' });
+    list.mockResolvedValue({
+      agents: [
+        {
+          id: 'agent_model_org',
+          remoteId: SHARE_ID,
+          remoteContentHash: CONTENT_HASH,
+          importedFromRemoteId: SHARE_ID,
+          importedContentHash: 'local-hash',
+          contentHash: 'local-hash',
+        },
+      ],
+    });
+    await act(async (): Promise<void> => {
+      useWorkspaceContextStore.setState((state) => ({
+        appliedGeneration: state.appliedGeneration + 1,
+      }));
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    // Main refuses the install instead; only installed state is read again.
+    expect(window.api.deepLinkResolveShare).toHaveBeenCalledTimes(1);
+    expect(probe.current?.state.phase).toBe('ready');
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(probe.current?.installed).toMatchObject({
+      entity: 'agent',
+      agentId: 'agent_model_org',
+    });
+    expect(probe.current?.detecting).toBe(false);
+  });
+  it('re-reads installed state after an install running across a context switch', async (): Promise<void> => {
+    await act(async (): Promise<void> => {
+      root.render(<AgentHarness />);
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    let refuse: (error: Error) => void = () => undefined;
+    importShared.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        refuse = reject;
+      }),
+    );
+    let work: Promise<unknown> | undefined;
+    await act(async (): Promise<void> => {
+      work = probe.current?.install();
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(importShared).toHaveBeenCalledTimes(1);
+    await act(async (): Promise<void> => {
+      useWorkspaceContextStore.setState((state) => ({
+        appliedGeneration: state.appliedGeneration + 1,
+      }));
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    // The read waits for the install to settle.
+    expect(list).toHaveBeenCalledTimes(1);
+    await act(async (): Promise<void> => {
+      refuse(new Error('Agent unavailable (context-mismatch)'));
+      await work;
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(probe.current?.installError).not.toBe('');
+    expect(probe.current?.detecting).toBe(false);
+  });
+  it('resolves a failed share again after a context switch', async (): Promise<void> => {
+    const resolve = jest.mocked(window.api.deepLinkResolveShare);
+    resolve.mockResolvedValueOnce({ ok: false, reason: 'not-found' });
+    await act(async (): Promise<void> => {
+      root.render(<AgentHarness />);
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'not-found',
+    });
+    await act(async (): Promise<void> => {
+      useWorkspaceContextStore.setState((state) => ({
+        appliedGeneration: state.appliedGeneration + 1,
+      }));
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.snapshot?.entity).toBe('agent');
+  });
+  it('drops a resolve still in flight when the context switches', async (): Promise<void> => {
+    const resolve = jest.mocked(window.api.deepLinkResolveShare);
+    let answerStale: (value: { ok: false; reason: 'not-found' }) => void = () =>
+      undefined;
+    resolve.mockReturnValueOnce(
+      new Promise((resolveStale) => {
+        answerStale = resolveStale;
+      }),
+    );
+    await act(async (): Promise<void> => {
+      root.render(<AgentHarness />);
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(probe.current?.state.phase).toBe('loading');
+    await act(async (): Promise<void> => {
+      useWorkspaceContextStore.setState((state) => ({
+        appliedGeneration: state.appliedGeneration + 1,
+      }));
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    // The old context's answer arrives last and is ignored.
+    await act(async (): Promise<void> => {
+      answerStale({ ok: false, reason: 'not-found' });
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.snapshot?.entity).toBe('agent');
+    expect(probe.current?.detecting).toBe(false);
+  });
   it('does not offer scoped uninstall for the authored source with later local edits', async (): Promise<void> => {
     agentLink.intent = 'try';
     list.mockResolvedValue({
@@ -1687,6 +1850,102 @@ describe('usePublicShareLanding skill install endpoint', () => {
       status: '',
       partial: false,
     });
+  });
+
+  it('reports Try now only once Use in this chat stages the skill (CAN-5219)', async () => {
+    const chat = { projectId: 'project', worktreeId: 'worktree', tabId: 'a' };
+    await arrive({});
+    const landed: {
+      result: Awaited<ReturnType<PublicShareLanding['install']>>;
+    } = { result: null };
+    await act(async () => {
+      landed.result = (await probe.current?.install()) ?? null;
+    });
+    if (landed.result === null) throw new Error('not installed');
+    const { target } = landed.result;
+    if (target.entity !== 'skill') throw new Error('expected skill target');
+    const tryNowReported = (): number =>
+      jest
+        .mocked(window.api.deepLinkReportHandoffEvent)
+        .mock.calls.filter(([event]) => event.eventType === 'TRY_NOW').length;
+
+    // Another installed copy is stale: nothing is staged.
+    expect(
+      await probe.current?.insertInChat(
+        { ...target, skillName: 'other' },
+        chat,
+      ),
+    ).toBe('stale');
+    expect(mockInsertSkillInvocation).not.toHaveBeenCalled();
+
+    jest.mocked(findInstalledSkillByContentHash).mockResolvedValue({
+      sourceId: 'custom:app',
+      skillName: 'helper',
+      skillId: 'custom:app/helper',
+    });
+    mockInsertSkillInvocation.mockReturnValueOnce('unhandled');
+    expect(await probe.current?.insertInChat(target, chat)).toBe('unhandled');
+    expect(tryNowReported()).toBe(0);
+
+    mockInsertSkillInvocation.mockReturnValueOnce('inserted');
+    expect(await probe.current?.insertInChat(target, chat)).toBe('inserted');
+    expect(mockInsertSkillInvocation).toHaveBeenLastCalledWith(chat, 'helper');
+    expect(window.api.deepLinkReportHandoffEvent).toHaveBeenLastCalledWith({
+      entity: 'skill',
+      externalId: SHARE_ID,
+      eventType: 'TRY_NOW',
+      audience: undefined,
+    });
+    expect(tryNowReported()).toBe(1);
+    expect(await probe.current?.insertInChat(target, chat)).toBe('stale');
+    expect(mockInsertSkillInvocation).toHaveBeenCalledTimes(2);
+    expect(tryNowReported()).toBe(1);
+  });
+
+  it.each(['rejection', 'throw'])(
+    'keeps successful insertion consumed after telemetry %s',
+    async (failure) => {
+      await arrive({});
+      let target: PublicShareLanding['installed'] = null;
+      await act(async () => {
+        target = (await probe.current?.install())?.target ?? null;
+      });
+      if (target === null) throw new Error('not installed');
+      jest.mocked(findInstalledSkillByContentHash).mockResolvedValue({
+        sourceId: 'custom:app',
+        skillName: 'helper',
+        skillId: 'custom:app/helper',
+      });
+      jest
+        .mocked(window.api.deepLinkReportHandoffEvent)
+        .mockImplementation(() => {
+          if (failure === 'throw') throw new Error('offline');
+          return Promise.reject(new Error('offline'));
+        });
+      mockInsertSkillInvocation.mockReturnValue('inserted');
+      const chat = { projectId: 'project', worktreeId: 'worktree', tabId: 'a' };
+      expect(await probe.current?.insertInChat(target, chat)).toBe('inserted');
+      expect(await probe.current?.insertInChat(target, chat)).toBe('stale');
+      expect(mockInsertSkillInvocation).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('rejects an installed copy removed after the review closed', async () => {
+    await arrive({});
+    let target: PublicShareLanding['installed'] = null;
+    await act(async () => {
+      target = (await probe.current?.install())?.target ?? null;
+    });
+    if (target === null) throw new Error('not installed');
+    jest.mocked(findInstalledSkillByContentHash).mockResolvedValue(null);
+    expect(
+      await probe.current?.insertInChat(target, {
+        projectId: 'project',
+        worktreeId: 'worktree',
+        tabId: 'a',
+      }),
+    ).toBe('stale');
+    expect(mockInsertSkillInvocation).not.toHaveBeenCalled();
   });
 
   it('keeps a publisher package failure retryable instead of marking it installed', async () => {
@@ -2322,5 +2581,777 @@ describe('usePublicShareLanding collection install authorization', () => {
     await renderCollection();
     expect(probe.current?.detecting).toBe(false);
     expect(probe.current?.installed).toEqual(expected);
+  });
+});
+
+describe('scoped skill updates in place (CAN-5307)', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let probe: HookProbe;
+  const resolveShare = jest.fn();
+  const skillLink: DeepLinkShareOpenEvent = {
+    entity: 'skill',
+    externalId: SHARE_ID,
+    intent: 'install',
+    audience: 'TEAM',
+  };
+  const packageSummary = { digest: NEW_DIGEST, totalFiles: 2, totalBytes: 10 };
+  const LOCAL_HASH = 'b'.repeat(64);
+  const SOURCE_HASH = 'a'.repeat(64);
+  const stale = {
+    status: 'installed',
+    skillId: 'custom:app/helper',
+    sourceId: CUSTOM_SKILL_SOURCE_ID,
+    skillName: 'helper',
+    updateAvailable: true,
+    locallyEdited: true,
+    localContentHash: LOCAL_HASH,
+    sourceContentHash: SOURCE_HASH,
+  };
+
+  function SkillHarness({
+    shareLink = skillLink,
+  }: {
+    shareLink?: DeepLinkShareOpenEvent;
+  }): null {
+    probe.current = usePublicShareLanding(shareLink);
+    return null;
+  }
+
+  async function flush(): Promise<void> {
+    await act(async () => {
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+  }
+
+  async function arrive(): Promise<void> {
+    act(() => {
+      root.render(<SkillHarness />);
+    });
+    await flush();
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockResourceContextEnabled = true;
+    mockLookupInstalledSharedSkill.mockResolvedValue(stale);
+    mockImportSharedSkill.mockResolvedValue({
+      skillId: 'custom:app/helper',
+      skillName: 'helper',
+      reused: false,
+    });
+    resolveShare.mockResolvedValue({
+      ok: true,
+      snapshot: {
+        entity: 'skill',
+        externalId: SHARE_ID,
+        name: 'helper',
+        description: '',
+        rawSkill: '# Helper v2',
+        contentHash: CONTENT_HASH,
+        dependencies: [],
+        distributionMode: 'package',
+        package: packageSummary,
+        scopedShare: true,
+        authorUsername: null,
+        updatedAt: '2026-10-29T00:00:00.000Z',
+      },
+    });
+    Object.assign(window, {
+      api: {
+        deepLinkResolveShare: resolveShare,
+        deepLinkReportHandoffEvent: jest.fn().mockResolvedValue({}),
+      },
+      pipelines: {},
+    });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    probe = { current: null };
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    mockResourceContextEnabled = false;
+  });
+
+  it('treats a receipted copy with different bytes as installed, with an update', async () => {
+    await arrive();
+
+    expect(mockLookupInstalledSharedSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ id: SHARE_ID, rawSkill: '# Helper v2' }),
+    );
+    expect(probe.current?.installed).toEqual({
+      entity: 'skill',
+      sourceId: CUSTOM_SKILL_SOURCE_ID,
+      skillName: 'helper',
+      updateAvailable: true,
+      replacement: {
+        expectedLocalContentHash: LOCAL_HASH,
+        expectedSourceContentHash: SOURCE_HASH,
+        expectedSourcePackageDigest: NEW_DIGEST,
+        locallyEdited: true,
+      },
+    });
+    expect(probe.current?.verificationError).toBe('');
+  });
+
+  it('replaces the reviewed copy in place and reloads its actual state', async () => {
+    await arrive();
+    mockLookupInstalledSharedSkill.mockResolvedValue({
+      ...stale,
+      updateAvailable: false,
+      locallyEdited: false,
+      localContentHash: SOURCE_HASH,
+    });
+    let result: Awaited<ReturnType<PublicShareLanding['install']>> = null;
+    await act(async () => {
+      result = (await probe.current?.install()) ?? null;
+    });
+
+    expect(mockImportSharedSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        replaceInstalled: {
+          skillName: 'helper',
+          expectedLocalContentHash: LOCAL_HASH,
+          expectedSourceContentHash: SOURCE_HASH,
+          expectedSourcePackageDigest: NEW_DIGEST,
+        },
+      }),
+    );
+    expect(result).toEqual({
+      target: {
+        entity: 'skill',
+        sourceId: CUSTOM_SKILL_SOURCE_ID,
+        skillName: 'helper',
+      },
+      status: '',
+      partial: false,
+    });
+  });
+
+  it('keeps the update available when the supporting files did not all land', async () => {
+    await arrive();
+    mockImportSharedSkill.mockResolvedValue({
+      skillId: 'custom:app/helper',
+      skillName: 'helper',
+      reused: false,
+      packageInstall: {
+        supportingFilesComplete: false,
+        supportingFileCount: 1,
+        installedDependencies: [],
+        uninstalledResourceLabels: [],
+        keptLocalFiles: ['notes.md'],
+      },
+    });
+    let result: Awaited<ReturnType<PublicShareLanding['install']>> = null;
+    await act(async () => {
+      result = (await probe.current?.install()) ?? null;
+    });
+
+    expect(result).toMatchObject({
+      target: { updateAvailable: true },
+      status:
+        'Skill updated. You already had one of its files, so your version was kept.',
+      partial: true,
+    });
+  });
+
+  it('requires a fresh review after a conflict and never retries on its own', async () => {
+    await arrive();
+    mockImportSharedSkill.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'skills:write-raw': Error: Skill unavailable (local-conflict). Your installed skill changed. Refresh and review your edits again.",
+      ),
+    );
+    await act(async () => {
+      await probe.current?.install();
+    });
+    expect(probe.current?.needsRefresh).toBe(true);
+    expect(probe.current?.installError).toBe(
+      'Skill unavailable (local-conflict). Your installed skill changed. Refresh and review your edits again.',
+    );
+    await act(async () => {
+      await probe.current?.install();
+    });
+    expect(mockImportSharedSkill).toHaveBeenCalledTimes(1);
+
+    act(() => probe.current?.refresh());
+    await flush();
+    expect(resolveShare).toHaveBeenCalledTimes(2);
+    expect(probe.current?.needsRefresh).toBe(false);
+    expect(probe.current?.installError).toBe('');
+  });
+
+  it('reports a durable update as partial and blocks actions if the post-write check fails', async () => {
+    await arrive();
+    mockLookupInstalledSharedSkill.mockResolvedValue({ status: 'unverified' });
+    let result: Awaited<ReturnType<PublicShareLanding['install']>> = null;
+    await act(async () => {
+      result = (await probe.current?.install()) ?? null;
+    });
+    expect(result).toMatchObject({
+      partial: true,
+      target: { updateAvailable: true },
+    });
+    expect(probe.current?.verificationError).not.toBe('');
+    await act(async () => {
+      await probe.current?.install();
+    });
+    expect(mockImportSharedSkill).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps subscription bookkeeping failure visible as partial success', async () => {
+    await arrive();
+    mockImportSharedSkill.mockResolvedValue({
+      skillId: stale.skillId,
+      skillName: 'helper',
+      reused: false,
+      subscriptionWarning: 'subscription-update-failed',
+    });
+    let result: Awaited<ReturnType<PublicShareLanding['install']>> = null;
+    await act(async () => {
+      result = (await probe.current?.install()) ?? null;
+    });
+    expect(result).toMatchObject({ partial: true });
+  });
+
+  it('discards a write completion from a previous share review', async () => {
+    await arrive();
+    const pending =
+      deferred<
+        Awaited<ReturnType<typeof SharedSkillImportModule.importSharedSkill>>
+      >();
+    mockImportSharedSkill.mockReturnValue(pending.promise);
+    let work: ReturnType<PublicShareLanding['install']> | undefined;
+    act(() => {
+      work = probe.current?.install();
+    });
+    mockLookupInstalledSharedSkill.mockResolvedValue({ status: 'absent' });
+    await act(async () => {
+      root.render(
+        <SkillHarness
+          shareLink={{ ...skillLink, externalId: 'another-share' }}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+    await act(async () => {
+      pending.resolve({
+        skillId: stale.skillId,
+        skillName: 'helper',
+        reused: false,
+      });
+      await work;
+    });
+    expect(probe.current?.installed).toBeNull();
+  });
+
+  it('rechecks installed state on skill events and resource-context changes', async () => {
+    await arrive();
+    mockLookupInstalledSharedSkill.mockResolvedValue({ status: 'absent' });
+    act(() => {
+      window.dispatchEvent(new Event('canopy:skills-changed'));
+    });
+    await flush();
+    expect(probe.current?.installed).toBeNull();
+    mockLookupInstalledSharedSkill.mockResolvedValue(stale);
+    act(() => {
+      useWorkspaceContextStore.setState((state) => ({
+        appliedGeneration: state.appliedGeneration + 1,
+      }));
+    });
+    await flush();
+    expect(probe.current?.installed).toMatchObject({ skillName: 'helper' });
+  });
+
+  it.each([
+    [
+      'unverified',
+      'Your installed copy of this skill could not be checked. Try again.',
+    ],
+    [
+      'missing-copy',
+      'Your installed copy of this skill is missing. Restore it, then try again.',
+    ],
+  ])('offers no install while the copy is %s', async (status, message) => {
+    mockLookupInstalledSharedSkill.mockResolvedValue({ status });
+    await arrive();
+
+    expect(probe.current?.installed).toBeNull();
+    expect(probe.current?.verificationError).toBe(message);
+    await act(async () => {
+      await probe.current?.install();
+    });
+    expect(mockImportSharedSkill).not.toHaveBeenCalled();
+  });
+});
+
+describe('usePublicShareLanding failure recovery (CAN-5222)', () => {
+  const skillLink: DeepLinkShareOpenEvent = {
+    entity: 'skill',
+    externalId: SHARE_ID,
+    audience: 'ORGANIZATION',
+    intent: 'install',
+  };
+  const skillSnapshot = {
+    entity: 'skill',
+    externalId: SHARE_ID,
+    name: 'Scoped skill',
+    description: 'Scoped fixture',
+    rawSkill: '---\nname: scoped\n---\nBody\n',
+    contentHash: CONTENT_HASH,
+    authorUsername: 'fixture-author',
+    updatedAt: '2026-10-29T00:00:00.000Z',
+  } as PublicShareSnapshot;
+  const READY: DeepLinkResolveShareResponse = {
+    ok: true,
+    snapshot: skillSnapshot,
+  };
+  const SIGNED_OUT: CanopyCloudAccountPublicState = {
+    hasApiKey: false,
+    authMode: null,
+    credentialSource: null,
+    capabilities: [],
+    storageAvailable: true,
+  };
+  function connected(
+    accountId: string,
+    keyId: string,
+  ): CanopyCloudAccountPublicState {
+    return {
+      hasApiKey: true,
+      authMode: null,
+      credentialSource: null,
+      capabilities: [],
+      storageAvailable: true,
+      serverApiKeyId: keyId,
+      account: {
+        id: accountId,
+        name: 'Reader',
+        email: 'reader@example.com',
+        role: 'DEVELOPER',
+      },
+    };
+  }
+
+  let currentLink: DeepLinkShareOpenEvent;
+  let container: HTMLDivElement;
+  let root: Root;
+  let probe: HookProbe;
+  let resolve: jest.Mock<
+    Promise<DeepLinkResolveShareResponse>,
+    [Record<string, unknown>]
+  >;
+  let loadAccount: jest.Mock<Promise<CanopyCloudAccountPublicState>, []>;
+
+  function SkillHarness(): null {
+    probe.current = usePublicShareLanding(currentLink);
+    return null;
+  }
+
+  async function flush(): Promise<void> {
+    await act(async () => {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    });
+  }
+
+  async function mount(): Promise<void> {
+    act(() => {
+      root.render(<SkillHarness />);
+    });
+    await flush();
+  }
+
+  async function changeAccount(
+    account: CanopyCloudAccountPublicState,
+  ): Promise<void> {
+    loadAccount.mockResolvedValue(account);
+    act(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    await flush();
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    currentLink = skillLink;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    probe = { current: null };
+    resolve = jest.fn<
+      Promise<DeepLinkResolveShareResponse>,
+      [Record<string, unknown>]
+    >();
+    loadAccount = jest
+      .fn<Promise<CanopyCloudAccountPublicState>, []>()
+      .mockResolvedValue(SIGNED_OUT);
+    Object.assign(window, {
+      api: {
+        deepLinkResolveShare: resolve,
+        deepLinkReportHandoffEvent: jest.fn().mockResolvedValue({
+          success: true,
+        }),
+        loadCanopyCloudAccount: loadAccount,
+      },
+      pipelines: {},
+      skills: { list: jest.fn().mockResolvedValue([]) },
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('retries the same link after a failure until it resolves', async () => {
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'cloud-unreachable' })
+      .mockResolvedValueOnce({ ok: false, reason: 'cloud-unreachable' })
+      .mockResolvedValueOnce(READY);
+    await mount();
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'cloud-unreachable',
+    });
+
+    act(() => probe.current?.retryResolve());
+    await flush();
+    // A repeated failure stays actionable.
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'cloud-unreachable',
+    });
+
+    act(() => probe.current?.retryResolve());
+    await flush();
+    expect(probe.current?.state).toEqual({
+      phase: 'ready',
+      snapshot: skillSnapshot,
+    });
+    expect(resolve).toHaveBeenCalledTimes(3);
+    expect(resolve.mock.calls[2]?.[0]).toEqual(resolve.mock.calls[0]?.[0]);
+    expect(resolve.mock.calls[0]?.[0]).toMatchObject({
+      entity: 'skill',
+      externalId: SHARE_ID,
+      audience: 'ORGANIZATION',
+    });
+  });
+
+  it('never overlaps attempts on repeated clicks', async () => {
+    const pending = deferred<DeepLinkResolveShareResponse>();
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'cloud-unreachable' })
+      .mockReturnValueOnce(pending.promise);
+    await mount();
+    act(() => {
+      probe.current?.retryResolve();
+      probe.current?.retryResolve();
+    });
+    act(() => probe.current?.retryResolve());
+    expect(probe.current?.state).toEqual({ phase: 'loading' });
+    expect(resolve).toHaveBeenCalledTimes(2);
+    act(() => pending.resolve(READY));
+    await flush();
+    expect(probe.current?.state.phase).toBe('ready');
+  });
+
+  it('opens the connect gate when signed out and resolves once after sign-in', async () => {
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'sign-in-required' })
+      .mockResolvedValueOnce(READY);
+    await mount();
+    act(() => probe.current?.signIn());
+    await flush();
+    expect(mockRequestConnect).toHaveBeenCalledTimes(1);
+    expect(mockRequestConnect.mock.calls[0]?.[0]).toEqual({
+      subtitle: 'Sign in to open this skill.',
+    });
+    expect(mockOpenCloudAccountSettings).not.toHaveBeenCalled();
+
+    // Signing in both resumes the gate and broadcasts the account change.
+    const proceed = mockRequestConnect.mock.calls[0]?.[1];
+    if (proceed === undefined) throw new Error('connect gate not requested');
+    loadAccount.mockResolvedValue(connected('acct-a', 'key-a'));
+    act(() => {
+      proceed();
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    await flush();
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.state).toEqual({
+      phase: 'ready',
+      snapshot: skillSnapshot,
+    });
+  });
+
+  it('keeps the share recoverable when sign-in is cancelled', async () => {
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'sign-in-required' })
+      .mockResolvedValueOnce(READY);
+    await mount();
+    act(() => probe.current?.signIn());
+    await flush();
+    // The gate closed without a change: nothing re-resolves.
+    await changeAccount(SIGNED_OUT);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'sign-in-required',
+    });
+    act(() => probe.current?.signIn());
+    await flush();
+    expect(mockRequestConnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens account settings for a connected but refused credential', async () => {
+    loadAccount.mockResolvedValue(connected('acct-a', 'key-a'));
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'sign-in-required' })
+      .mockResolvedValueOnce(READY);
+    await mount();
+    act(() => probe.current?.signIn());
+    await flush();
+    expect(mockOpenCloudAccountSettings).toHaveBeenCalledTimes(1);
+    expect(mockRequestConnect).not.toHaveBeenCalled();
+
+    // Signing in again to the same account issues a new key.
+    await changeAccount(connected('acct-a', 'key-b'));
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.state.phase).toBe('ready');
+  });
+
+  it('recovers once after replacing a manual key for the same account', async () => {
+    const account: CanopyCloudAccountPublicState = {
+      ...connected('acct-a', ''),
+      authMode: 'api_key',
+      credentialSource: 'manual',
+      serverApiKeyId: undefined,
+      createdAt: '2026-10-29T00:00:00.000Z',
+      updatedAt: '2026-10-29T00:00:00.000Z',
+    };
+    loadAccount.mockResolvedValue(account);
+    const pending = deferred<DeepLinkResolveShareResponse>();
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'sign-in-required' })
+      .mockReturnValueOnce(pending.promise);
+    await mount();
+    act(() => probe.current?.signIn());
+    await flush();
+    expect(mockOpenCloudAccountSettings).toHaveBeenCalledTimes(1);
+
+    const replacement = {
+      ...account,
+      updatedAt: '2026-10-29T00:01:00.000Z',
+    };
+    await changeAccount(replacement);
+    await changeAccount(replacement);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.state.phase).toBe('loading');
+    act(() => pending.resolve(READY));
+    await flush();
+    expect(probe.current?.state.phase).toBe('ready');
+  });
+
+  it('does not retry a refused manual key on an account-data refresh', async () => {
+    const account: CanopyCloudAccountPublicState = {
+      ...connected('acct-a', ''),
+      authMode: 'api_key',
+      credentialSource: 'manual',
+      serverApiKeyId: undefined,
+      updatedAt: '2026-10-29T00:00:00.000Z',
+    };
+    loadAccount.mockResolvedValue(account);
+    resolve.mockResolvedValue({ ok: false, reason: 'sign-in-required' });
+    await mount();
+    loadAccount.mockResolvedValue({
+      ...account,
+      updatedAt: '2026-10-29T00:01:00.000Z',
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, {
+          detail: { reason: 'same-account-refresh' },
+        }),
+      );
+    });
+    await flush();
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'sign-in-required',
+    });
+  });
+
+  it('re-resolves after switching to another account from an access refusal', async () => {
+    loadAccount.mockResolvedValue(connected('acct-a', 'key-a'));
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'not-a-member' })
+      .mockResolvedValueOnce({ ok: false, reason: 'sign-in-required' })
+      .mockResolvedValueOnce(READY);
+    await mount();
+    act(() => probe.current?.switchAccount());
+    expect(mockOpenCloudAccountSettings).toHaveBeenCalledTimes(1);
+
+    // An event for the unchanged account does not re-resolve.
+    await changeAccount(connected('acct-a', 'key-a'));
+    expect(resolve).toHaveBeenCalledTimes(1);
+
+    await changeAccount(SIGNED_OUT);
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'sign-in-required',
+    });
+    await changeAccount(connected('acct-b', 'key-c'));
+    expect(resolve).toHaveBeenCalledTimes(3);
+    expect(probe.current?.state.phase).toBe('ready');
+  });
+
+  it('discards a result read under the previous account', async () => {
+    loadAccount.mockResolvedValue(connected('acct-a', 'key-a'));
+    const oldAccountRead = deferred<DeepLinkResolveShareResponse>();
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'not-a-member' })
+      .mockReturnValueOnce(oldAccountRead.promise)
+      .mockResolvedValueOnce(READY);
+    await mount();
+    await changeAccount(connected('acct-b', 'key-b'));
+    expect(probe.current?.state).toEqual({ phase: 'loading' });
+    // The account changes again while that resolve is still running.
+    await changeAccount(connected('acct-c', 'key-c'));
+    act(() => oldAccountRead.resolve({ ok: false, reason: 'not-a-member' }));
+    await flush();
+    expect(resolve).toHaveBeenCalledTimes(3);
+    expect(probe.current?.state.phase).toBe('ready');
+  });
+
+  it('stops listening for account changes once the share resolves or unmounts', async () => {
+    loadAccount.mockResolvedValue(connected('acct-a', 'key-a'));
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'not-a-member' })
+      .mockResolvedValueOnce(READY);
+    await mount();
+    await changeAccount(connected('acct-b', 'key-b'));
+    expect(probe.current?.state.phase).toBe('ready');
+    const reads = loadAccount.mock.calls.length;
+    await changeAccount(connected('acct-c', 'key-c'));
+    expect(loadAccount).toHaveBeenCalledTimes(reads);
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not watch account changes for failures sign-in cannot fix', async () => {
+    resolve.mockResolvedValue({ ok: false, reason: 'not-found' });
+    await mount();
+    await changeAccount(connected('acct-b', 'key-b'));
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+  it('stops watching when a recovery attempt reaches an unavailable share', async () => {
+    resolve
+      .mockResolvedValueOnce({ ok: false, reason: 'not-a-member' })
+      .mockResolvedValueOnce({ ok: false, reason: 'not-found' });
+    await mount();
+    act(() => probe.current?.retryResolve());
+    await flush();
+    await changeAccount(connected('acct-b', 'key-b'));
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'not-found',
+    });
+  });
+
+  it('stops recovery when the new link fails with a terminal reason', async () => {
+    resolve
+      .mockResolvedValue({ ok: false, reason: 'not-found' })
+      .mockResolvedValueOnce({ ok: false, reason: 'not-a-member' })
+      .mockResolvedValueOnce({ ok: false, reason: 'not-found' });
+    await mount();
+    currentLink = { ...skillLink, externalId: 'other-share' };
+    act(() => root.render(<SkillHarness />));
+    await flush();
+    await changeAccount(connected('acct-b', 'key-b'));
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'not-found',
+    });
+  });
+
+  it('ignores sign-in completion saved for an older link', async () => {
+    resolve
+      .mockResolvedValue({ ok: false, reason: 'cloud-unreachable' })
+      .mockResolvedValueOnce({ ok: false, reason: 'sign-in-required' })
+      .mockResolvedValueOnce({ ok: false, reason: 'cloud-unreachable' });
+    await mount();
+    act(() => probe.current?.signIn());
+    await flush();
+    const proceed = mockRequestConnect.mock.calls[0]?.[1];
+    if (!proceed) throw new Error('No pending sign-in');
+    currentLink = { ...skillLink, externalId: 'other-share' };
+    act(() => root.render(<SkillHarness />));
+    await flush();
+    loadAccount.mockResolvedValue(connected('acct-b', 'key-b'));
+    act(() => proceed());
+    await flush();
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'cloud-unreachable',
+    });
+  });
+
+  it('ignores older account reads that finish after a newer account event', async () => {
+    loadAccount.mockResolvedValue(connected('acct-a', 'key-a'));
+    resolve.mockResolvedValue({ ok: false, reason: 'not-a-member' });
+    await mount();
+    const oldRead = deferred<CanopyCloudAccountPublicState>();
+    loadAccount.mockReturnValueOnce(oldRead.promise);
+    act(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    await changeAccount(connected('acct-c', 'key-c'));
+    expect(resolve).toHaveBeenCalledTimes(2);
+    act(() => oldRead.resolve(connected('acct-b', 'key-b')));
+    await flush();
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('cleans up a failed landing on unmount, including pending account reads', async () => {
+    resolve.mockResolvedValue({ ok: false, reason: 'not-a-member' });
+    await mount();
+    const pendingAccount = deferred<CanopyCloudAccountPublicState>();
+    loadAccount.mockReturnValueOnce(pendingAccount.promise);
+    act(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    act(() => root.render(null));
+    const reads = loadAccount.mock.calls.length;
+    act(() => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    });
+    act(() => pendingAccount.resolve(connected('acct-b', 'key-b')));
+    await flush();
+    expect(loadAccount).toHaveBeenCalledTimes(reads);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a pending resolve after changing the share link', async () => {
+    const oldResolve = deferred<DeepLinkResolveShareResponse>();
+    resolve
+      .mockReturnValueOnce(oldResolve.promise)
+      .mockResolvedValueOnce({ ok: false, reason: 'not-found' });
+    await mount();
+    currentLink = { ...skillLink, externalId: 'other-share' };
+    act(() => root.render(<SkillHarness />));
+    await flush();
+    act(() => oldResolve.resolve(READY));
+    await flush();
+    expect(probe.current?.state).toEqual({
+      phase: 'error',
+      reason: 'not-found',
+    });
   });
 });

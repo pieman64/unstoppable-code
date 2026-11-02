@@ -1,5 +1,6 @@
 import type * as ValidationModule from '../lib/validation';
 import type * as ActiveChatInputModule from '../services/active-chat-input';
+import { DELEGATION_NOTICE_KIND } from '@canopy/agent-actions';
 const mockEditRetainedTerminalAgentInput = jest
   .fn<Promise<void>, [unknown]>()
   .mockResolvedValue(undefined);
@@ -11,17 +12,32 @@ jest.mock('../cursor/connection', () => ({
     mockReadCursorAccount(),
 }));
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
+import type * as SessionManagerModule from '../agents/session-manager';
 import type * as AgentDefaultModelModule from '../agents/agent-default-model';
 import type * as DesktopSharedTypesModule from '@canopy/desktop-shared/types';
 import type * as WorktreeChatTurnModule from '../lib/worktree-chat-turn';
+import type * as ChatDispatchAuthorizationModule from '../services/chat-dispatch-authorization';
 import type * as WorkOwnerModule from '../agents/work-owner';
 import type * as ChatTabDispatchUtilsModule from '../lib/chat-tab-dispatch-utils';
 import type * as DeliveryTrackerModule from '../memory/delivery-tracker';
 import type * as ModelGatewayStateModule from '../lib/model-gateway-state';
+import type * as HookChatModule from '../lib/hook-chat';
+import type * as ApprovalModeResolutionModule from '../lib/approval-mode-resolution';
+import type * as CodexCapabilityTransitionModule from '../codex/capability-transition';
 
 const mockPrepareOrgMemory = jest
   .fn<Promise<unknown>, [unknown]>()
   .mockResolvedValue(null);
+// This suite mocks the chat state service, so the queue's ownership is never
+// bound and issues no dispatch capability; its dispatches stand in for
+// queue-admitted ones.
+jest.mock('../services/chat-dispatch-authorization', () => ({
+  ...jest.requireActual<typeof ChatDispatchAuthorizationModule>(
+    '../services/chat-dispatch-authorization',
+  ),
+  consumeDispatchAuthorization: (): void => undefined,
+}));
+
 jest.mock('../lib/worktree-chat-turn', () => ({
   ...jest.requireActual<typeof WorktreeChatTurnModule>(
     '../lib/worktree-chat-turn',
@@ -189,7 +205,10 @@ jest.mock('../agents/utils', () => ({
   }),
 }));
 
-const mockResolveSessionWorkOwner = jest.fn(() => Promise.resolve(undefined));
+const mockResolveSessionWorkOwner = jest.fn<
+  ReturnType<typeof WorkOwnerModule.resolveSessionWorkOwner>,
+  Parameters<typeof WorkOwnerModule.resolveSessionWorkOwner>
+>(() => Promise.resolve(undefined));
 const mockCaptureSessionWorkOwner = jest.fn();
 jest.mock('../agents/work-owner', () => {
   const actual = jest.requireActual<typeof WorkOwnerModule>(
@@ -199,7 +218,9 @@ jest.mock('../agents/work-owner', () => {
     ...actual,
     captureSessionWorkOwner: (...args: unknown[]): unknown =>
       mockCaptureSessionWorkOwner(...args),
-    resolveSessionWorkOwner: (...args: unknown[]): unknown =>
+    resolveSessionWorkOwner: (
+      ...args: Parameters<typeof WorkOwnerModule.resolveSessionWorkOwner>
+    ): ReturnType<typeof WorkOwnerModule.resolveSessionWorkOwner> =>
       mockResolveSessionWorkOwner(...args),
   };
 });
@@ -312,13 +333,21 @@ const updateQueuedHookChatPlanModeMock = jest.fn();
 const updateQueuedHookChatApprovalModeMock = jest.fn();
 const updateQueuedHookChatCodexFastModeMock = jest.fn();
 const updateQueuedHookChatThinkingLevelMock = jest.fn();
-const updateQueuedHookChatInterfaceModeMock = jest.fn(() => true);
+const updateQueuedHookChatInterfaceModeMock = jest.fn<
+  ReturnType<typeof HookChatModule.updateQueuedHookChatInterfaceMode>,
+  Parameters<typeof HookChatModule.updateQueuedHookChatInterfaceMode>
+>(() => true);
 const updateQueuedHookChatModelMock = jest.fn();
 const updateQueuedHookChatPluginSelectionsMock = jest.fn();
-const hasQueuedHookChatMock = jest.fn(() => false);
+const hasQueuedHookChatMock = jest.fn<
+  ReturnType<typeof HookChatModule.hasQueuedHookChat>,
+  Parameters<typeof HookChatModule.hasQueuedHookChat>
+>(() => false);
 
 jest.mock('../lib/hook-chat', () => ({
-  hasQueuedHookChat: (...args: unknown[]): unknown =>
+  hasQueuedHookChat: (
+    ...args: Parameters<typeof HookChatModule.hasQueuedHookChat>
+  ): ReturnType<typeof HookChatModule.hasQueuedHookChat> =>
     hasQueuedHookChatMock(...args),
   cancelQueuedHookChat: (...args: [string]): { cancelled: boolean } =>
     cancelQueuedHookChatMock(...args),
@@ -332,7 +361,9 @@ jest.mock('../lib/hook-chat', () => ({
     updateQueuedHookChatCodexFastModeMock(...args),
   updateQueuedHookChatThinkingLevel: (...args: unknown[]): unknown =>
     updateQueuedHookChatThinkingLevelMock(...args),
-  updateQueuedHookChatInterfaceMode: (...args: unknown[]): unknown =>
+  updateQueuedHookChatInterfaceMode: (
+    ...args: Parameters<typeof HookChatModule.updateQueuedHookChatInterfaceMode>
+  ): ReturnType<typeof HookChatModule.updateQueuedHookChatInterfaceMode> =>
     updateQueuedHookChatInterfaceModeMock(...args),
   updateQueuedHookChatModel: (...args: unknown[]): unknown =>
     updateQueuedHookChatModelMock(...args),
@@ -341,6 +372,7 @@ jest.mock('../lib/hook-chat', () => ({
 }));
 
 jest.mock('../agents/session-manager', () => ({
+  restrictSessionApprovalRules: jest.fn(),
   beginSessionTurnPreparation: jest.fn(() => jest.fn()),
   releaseSessionTurnPreparationOnActivation: jest.fn(),
   getOrCreateSession: jest.fn(),
@@ -358,6 +390,13 @@ jest.mock('../agents/session-manager', () => ({
   destroySession: jest.fn().mockResolvedValue(undefined),
   suppressCodexAuthenticationRecovery: jest.fn(),
   markSessionForNextTurnRecreation: jest.fn(),
+  sessionHasActiveTurnOrNativeWork: jest.fn(() => false),
+  chatHasNativeBackgroundWork: jest.fn(() => false),
+  updateSessionTurnSettingsModel: jest.fn(),
+  updateSessionModel: jest.fn(),
+  getSessionTurnSettings: jest.fn(() => undefined),
+  setSessionTurnSettings: jest.fn(),
+  getSessionRecreateReasons: jest.fn(() => []),
   getSessionProviderType: jest.fn(),
   getSessionCodeGraphToolsAdvertised: jest.fn(() => undefined),
   getSessionGlobalInstructionsSnapshot: jest.fn(() => undefined),
@@ -368,6 +407,22 @@ jest.mock('../agents/session-manager', () => ({
       `${projectId}/${worktreeId}/${chatId}`,
   ),
   subscribeChatSessionActivity: jest.fn((): (() => void) => () => {}),
+  subscribeLiveBackgroundTasks: jest.fn((): (() => void) => () => {}),
+  getChatSessionLiveness: jest.fn(
+    (projectId: string, worktreeId: string, chatId: string) => {
+      const { getSession, getActiveChatIds } = jest.requireMock<
+        typeof SessionManagerModule
+      >('../agents/session-manager');
+      const session = getSession(projectId, worktreeId, chatId);
+      return {
+        foreground:
+          session?.isDisposed?.() !== true &&
+          (session?.hasPendingSteeringInput?.() === true ||
+            getActiveChatIds(projectId, worktreeId).includes(chatId)),
+        background: false,
+      };
+    },
+  ),
   hasActiveChatTurns: jest.fn(() => false),
   isSessionAiCreditsRouted: jest.fn(() => false),
   isSessionAccountProxyRouted: jest.fn(() => false),
@@ -381,6 +436,7 @@ jest.mock('../agents/session-manager', () => ({
 jest.mock('../mcp/pending-requests', () => ({
   resolveRequest: jest.fn(),
   rejectRequest: jest.fn(),
+  hasPendingRequestForSession: jest.fn(() => false),
 }));
 
 jest.mock('../mcp/plan-pending-requests', () => ({
@@ -392,7 +448,10 @@ const mockResolvePersistedApprovalMode = jest.fn().mockResolvedValue('ask');
 const mockResolveApprovalProjectId = jest.fn(
   (projectId: string): string | undefined => projectId,
 );
-const mockSurfaceForChat = jest.fn((): string => 'worktree');
+const mockSurfaceForChat = jest.fn<
+  ReturnType<typeof ApprovalModeResolutionModule.surfaceForChat>,
+  Parameters<typeof ApprovalModeResolutionModule.surfaceForChat>
+>(() => 'worktree');
 const mockEndPendingApprovalDefaultWrite = jest.fn();
 const mockApprovalDefaultIntentGenerations = new Map<string, number>();
 const mockCommittedApprovalDefaultIntentGenerations = new Map<string, number>();
@@ -424,7 +483,10 @@ jest.mock('../lib/approval-mode-resolution', () => ({
     mockResolvePersistedApprovalMode(...args),
   resolveApprovalProjectId: (...args: unknown[]): unknown =>
     mockResolveApprovalProjectId(...(args as [string])),
-  surfaceForChat: (...args: unknown[]): unknown => mockSurfaceForChat(...args),
+  surfaceForChat: (
+    ...args: Parameters<typeof ApprovalModeResolutionModule.surfaceForChat>
+  ): ReturnType<typeof ApprovalModeResolutionModule.surfaceForChat> =>
+    mockSurfaceForChat(...args),
   defaultsKeyForSurface: (surface: string): string =>
     surface === 'cowork'
       ? 'cowork'
@@ -449,12 +511,14 @@ jest.mock('../lib/preferences-broadcast', () => ({
     mockBroadcastPreferencesSynced(...args),
 }));
 
-const mockReadPreferencesFile = jest.fn();
+const mockReadPreferencesFile = jest.fn<Promise<Record<string, unknown>>, []>();
 const mockGetWorkspaceType = jest.fn();
 const mockReadEffectiveWorkspaceConfig = jest.fn();
 
 jest.mock('../ipc/preferences', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile() {
+    return mockReadPreferencesFile;
+  },
 }));
 
 // Simulates `updatePreferencesFileWithPrevious`: the updater runs INSIDE the
@@ -468,10 +532,19 @@ const mockUpdatePreferencesFile = jest.fn(
     Promise.resolve(updater(queuedPreferencesState)),
 );
 jest.mock('../lib/preferences-store', () => ({
+  readPreferencesFileDetailed: async (): Promise<{
+    preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+    authority: 'ok' | 'unreadable';
+  }> => ({
+    preferences: await mockReadPreferencesFile(),
+    authority: mockPeekPreferencesLoadError() != null ? 'unreadable' : 'ok',
+  }),
   // Not degraded: approval resolution fails closed when this is non-null.
   peekPreferencesLoadError: (...args: unknown[]): unknown =>
     mockPeekPreferencesLoadError(...args),
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile() {
+    return mockReadPreferencesFile;
+  },
   updatePreferencesFile: (...args: unknown[]): unknown =>
     mockUpdatePreferencesFile(...(args as [(previous: unknown) => unknown])),
 }));
@@ -500,7 +573,9 @@ jest.mock('../ipc/standalone-chat', () => ({
 
 const scheduleSummaryGenerationMock = jest.fn();
 jest.mock('../lib/worktree-summary-scheduler', () => ({
-  scheduleSummaryGeneration: scheduleSummaryGenerationMock,
+  get scheduleSummaryGeneration() {
+    return scheduleSummaryGenerationMock;
+  },
 }));
 
 const startObservedTaskMock = jest.fn<
@@ -548,26 +623,43 @@ const mockHandleChatTerminalEvent = jest.fn();
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    startObservedTask: startObservedTaskMock,
-    finalizeObservedTask: finalizeObservedTaskMock,
-    observeChatEvent: observeChatEventMock,
-    completeChatTurn: completeChatTurnMock,
-    startChatTurn: startChatTurnMock,
-    recordSessionDiagnostic: recordSessionDiagnosticMock,
-    recordInjectedPromptForOpenChatTurn:
-      recordInjectedPromptForOpenChatTurnMock,
+    get startObservedTask() {
+      return startObservedTaskMock;
+    },
+    get finalizeObservedTask() {
+      return finalizeObservedTaskMock;
+    },
+    get observeChatEvent() {
+      return observeChatEventMock;
+    },
+    get completeChatTurn() {
+      return completeChatTurnMock;
+    },
+    get startChatTurn() {
+      return startChatTurnMock;
+    },
+    get recordSessionDiagnostic() {
+      return recordSessionDiagnosticMock;
+    },
+    get recordInjectedPromptForOpenChatTurn() {
+      return recordInjectedPromptForOpenChatTurnMock;
+    },
   })),
 }));
 
 jest.mock('../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: jest.fn(() => ({
-    handleCanonicalChatTerminalEvent: mockHandleChatTerminalEvent,
+    get handleCanonicalChatTerminalEvent() {
+      return mockHandleChatTerminalEvent;
+    },
   })),
 }));
 
 jest.mock('../lib/turn-diff-capture', () => ({
   captureTurnStart: jest.fn().mockResolvedValue(undefined),
   captureTurnEndAndDiff: jest.fn().mockResolvedValue(null),
+  // The chat turn's end capture since turn-state phase 40f.
+  captureTurnEndAndDiffs: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock('../lib/window-send', () => ({
@@ -615,6 +707,26 @@ const mockIngestProviderEventWithOutcome = jest.fn<
   Promise<ProviderEventIngestOutcome>,
   [ProviderEventInput]
 >(ingestOutcomeFromCommit);
+const ingestResultFromOutcome = async (
+  input: ProviderEventInput,
+): Promise<ProviderEventIngestResult> => {
+  const outcome = await mockIngestProviderEventWithOutcome(input);
+  const data = isRecord(input.data) ? input.data : null;
+  const startingPickup =
+    data?.type === 'canopy_input_delivery' &&
+    data.phase === 'picked-up' &&
+    data.startsTurn === true;
+  return startingPickup
+    ? {
+        outcome,
+        pickup: outcome === 'not-applied' ? 'rejected' : 'accepted',
+      }
+    : { outcome };
+};
+const mockIngestProviderEventWithResult = jest.fn<
+  Promise<ProviderEventIngestResult>,
+  [ProviderEventInput]
+>(ingestResultFromOutcome);
 const mockHasMutation = jest.fn<
   Promise<boolean>,
   [{ projectId: string; worktreeId: string }, string]
@@ -632,8 +744,8 @@ const mockReconcileHostQueue = jest.fn().mockResolvedValue(undefined);
 const mockReplaceCompatibilityTabs = jest.fn(
   (
     scope: { projectId: string; worktreeId: string },
-    tabsFile: unknown,
-  ): unknown =>
+    tabsFile: ChatTabsFile,
+  ): Promise<void> =>
     mockWriteChatTabsFile(scope.projectId, scope.worktreeId, tabsFile),
 );
 const mockUpdateCompatibilityTab = jest.fn(
@@ -658,7 +770,10 @@ const mockUpdateCompatibilityTab = jest.fn(
     return { tabsFile, updated };
   },
 );
-const mockChatStateCommand = jest.fn((envelope: unknown) => {
+const mockChatStateCommand = jest.fn<
+  Promise<DesktopSharedTypesModule.ChatCommandResult>,
+  [envelope: unknown]
+>((envelope: unknown): Promise<DesktopSharedTypesModule.ChatCommandResult> => {
   void envelope;
   return Promise.resolve({
     commandId: 'test',
@@ -707,42 +822,85 @@ const mockConsumeTranscript = jest.fn(
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: () => ({
     claimRetainedTerminalAgentInputForNative: (
-      request: ChatSendMessageRequest,
-    ): Promise<ChatSendMessageRequest> => Promise.resolve(request),
+      request: DesktopSharedTypesModule.ChatSendMessageRequest,
+    ): Promise<DesktopSharedTypesModule.ChatSendMessageRequest> =>
+      Promise.resolve(request),
     restoreRetainedTerminalAgentInputAfterFailedNativeAdmission:
       (): Promise<void> => Promise.resolve(),
-    answerPendingQuestion: mockAnswerPendingQuestion,
-    command: mockChatStateCommand,
-    consumeTranscript: mockConsumeTranscript,
-    ensureChatForTrustedSend: mockEnsureChatForTrustedSend,
-    editRetainedTerminalAgentInput: mockEditRetainedTerminalAgentInput,
-    getCompatibilityTabs: mockGetCompatibilityTabs,
-    getState: mockGetChatState,
-    hasMutation: mockHasMutation,
-    ingestProviderEvent: mockIngestProviderEvent,
-    ingestProviderEventWithOutcome: mockIngestProviderEventWithOutcome,
+    get answerPendingQuestion() {
+      return mockAnswerPendingQuestion;
+    },
+    get command() {
+      return mockChatStateCommand;
+    },
+    commitTurnOverrideModelFor: (): Promise<void> => Promise.resolve(),
+    get consumeTranscript() {
+      return mockConsumeTranscript;
+    },
+    get ensureChatForTrustedSend() {
+      return mockEnsureChatForTrustedSend;
+    },
+    get editRetainedTerminalAgentInput() {
+      return mockEditRetainedTerminalAgentInput;
+    },
+    get getCompatibilityTabs() {
+      return mockGetCompatibilityTabs;
+    },
+    get getState() {
+      return mockGetChatState;
+    },
+    get hasMutation() {
+      return mockHasMutation;
+    },
+    holdRuntimeHost: (): (() => void) => (): void => undefined,
+    get ingestProviderEvent() {
+      return mockIngestProviderEvent;
+    },
+    get ingestProviderEventWithOutcome() {
+      return mockIngestProviderEventWithOutcome;
+    },
+    get ingestProviderEventWithResult() {
+      return mockIngestProviderEventWithResult;
+    },
     inputDelivery: {
-      steerWatcher: () => Promise.resolve({ status: 'fallback' as const }),
+      steerGenerated: () => Promise.resolve({ status: 'fallback' as const }),
       stop: async (
         _target: unknown,
         operation: () => Promise<void>,
       ): Promise<void> => operation(),
     },
-    reconcileHostQueue: mockReconcileHostQueue,
-    replaceCompatibilityTabs: mockReplaceCompatibilityTabs,
-    updateCompatibilityTab: mockUpdateCompatibilityTab,
-    runWithScopeActivity: mockRunWithScopeActivity,
+    get reconcileHostQueue() {
+      return mockReconcileHostQueue;
+    },
+    get replaceCompatibilityTabs() {
+      return mockReplaceCompatibilityTabs;
+    },
+    get updateCompatibilityTab() {
+      return mockUpdateCompatibilityTab;
+    },
+    get runWithScopeActivity() {
+      return mockRunWithScopeActivity;
+    },
   }),
 }));
 
 // Typed so specs can inspect the transition input without `any`.
 const mockMaterializeCodexCapabilityTransition = jest.fn<
-  unknown,
-  [input: Record<string, unknown>]
+  ReturnType<
+    typeof CodexCapabilityTransitionModule.materializeCodexCapabilityTransition
+  >,
+  Parameters<
+    typeof CodexCapabilityTransitionModule.materializeCodexCapabilityTransition
+  >
 >();
 jest.mock('../codex/capability-transition', () => ({
-  materializeCodexCapabilityTransition: (...args: unknown[]): unknown =>
-    mockMaterializeCodexCapabilityTransition(...args),
+  materializeCodexCapabilityTransition: (
+    ...args: Parameters<
+      typeof CodexCapabilityTransitionModule.materializeCodexCapabilityTransition
+    >
+  ): ReturnType<
+    typeof CodexCapabilityTransitionModule.materializeCodexCapabilityTransition
+  > => mockMaterializeCodexCapabilityTransition(...args),
 }));
 
 const mockDispatchAppAdvisorChatMessage = jest.fn<
@@ -774,11 +932,21 @@ const mockClaudeTerminalSetApprovalMode = jest.fn();
 
 jest.mock('../integration/claude-terminal-session-service', () => ({
   getClaudeTerminalSessionService: jest.fn(() => ({
-    getState: mockClaudeTerminalGetState,
-    cleanup: mockClaudeTerminalCleanup,
-    updateDeferredToolsContext: mockClaudeTerminalUpdateDeferredToolsContext,
-    setPlanMode: mockClaudeTerminalSetPlanMode,
-    setApprovalMode: mockClaudeTerminalSetApprovalMode,
+    get getState() {
+      return mockClaudeTerminalGetState;
+    },
+    get cleanup() {
+      return mockClaudeTerminalCleanup;
+    },
+    get updateDeferredToolsContext() {
+      return mockClaudeTerminalUpdateDeferredToolsContext;
+    },
+    get setPlanMode() {
+      return mockClaudeTerminalSetPlanMode;
+    },
+    get setApprovalMode() {
+      return mockClaudeTerminalSetApprovalMode;
+    },
   })),
 }));
 
@@ -796,6 +964,7 @@ import type {
 import type { ObservabilityService } from '../observability/service';
 import type {
   ProviderEventIngestOutcome,
+  ProviderEventIngestResult,
   ProviderEventInput,
 } from '../services/chat-state-service';
 import {
@@ -824,10 +993,14 @@ import {
   getSessionSelectedModel,
   destroySession,
   markSessionForNextTurnRecreation,
+  sessionHasActiveTurnOrNativeWork,
+  chatHasNativeBackgroundWork,
+  updateSessionTurnSettingsModel,
   getSessionProviderType,
   isSessionAiCreditsRouted,
   getSessionAiCreditsRoutedState,
   shouldRecreateSessionOnNextTurn,
+  restrictSessionApprovalRules,
 } from '../agents/session-manager';
 import {
   resolveWorktreeCwd,
@@ -848,11 +1021,14 @@ import {
 } from '../lib/transient-error-retry-service';
 import {
   captureTurnStart,
-  captureTurnEndAndDiff,
+  captureTurnEndAndDiffs,
 } from '../lib/turn-diff-capture';
 import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
 import { readPersistedChatDispatchMetadata } from '../lib/chat-tabs-reader';
-import { getChatQueueService } from '../services/chat-queue-service';
+import {
+  getChatQueueService,
+  type ChatQueueRevivalLease,
+} from '../services/chat-queue-service';
 import {
   dispatchHostQueuedWorktreeChatMessage,
   dispatchLocalWorktreeChatMessage,
@@ -876,7 +1052,10 @@ import { getWorktreeAttachmentsDir } from '../lib/paths';
 import { updateChatMeta } from '../ipc/standalone-chat';
 import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
-import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
+import {
+  deferredToolsReloadCoordinator,
+  type DeferredToolsResumeRequest,
+} from '../deferred-tools/reload-coordinator';
 import { backgroundHelperQueueTestExports } from '../lib/background-helper-queue';
 import { getStoppedTurnResumeService } from '../services/stopped-turn-resume-service';
 
@@ -888,6 +1067,15 @@ const mockedGetSession = jest.mocked(getSession);
 const mockedDestroySession = jest.mocked(destroySession);
 const mockedMarkSessionForNextTurnRecreation = jest.mocked(
   markSessionForNextTurnRecreation,
+);
+const mockedSessionHasActiveTurnOrNativeWork = jest.mocked(
+  sessionHasActiveTurnOrNativeWork,
+);
+const mockedChatHasNativeBackgroundWork = jest.mocked(
+  chatHasNativeBackgroundWork,
+);
+const mockedUpdateSessionTurnSettingsModel = jest.mocked(
+  updateSessionTurnSettingsModel,
 );
 const mockedGetSessionProviderType = jest.mocked(getSessionProviderType);
 const mockedShouldRecreateSessionOnNextTurn = jest.mocked(
@@ -911,7 +1099,7 @@ const mockedGetTransientRetryStateSnapshot = jest.mocked(
   getTransientRetryStateSnapshot,
 );
 const mockedCaptureTurnStart = jest.mocked(captureTurnStart);
-const mockedCaptureTurnEndAndDiff = jest.mocked(captureTurnEndAndDiff);
+const mockedCaptureTurnEndAndDiffs = jest.mocked(captureTurnEndAndDiffs);
 const mockedSendToWindow = jest.mocked(sendToWindow);
 const mockedSendToWindowDetailed = jest.mocked(sendToWindowDetailed);
 const mockedReadPersistedChatDispatchMetadata = jest.mocked(
@@ -955,7 +1143,9 @@ initOllamaModels([
 function makePreferences(
   overrides: Partial<PreferencesData> = {},
 ): PreferencesData {
-  return {
+  // A partial fixture: the tests rely on unset preferences staying undefined,
+  // so the full type is applied at this one boundary.
+  const preferences: Partial<PreferencesData> = {
     worktreePanelPercent: 32,
     activityPanelExpanded: false,
     activityPanelWidthPercent: 25,
@@ -1047,6 +1237,8 @@ function makePreferences(
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     },
     terminalDrawerCollapsed: true,
@@ -1065,6 +1257,8 @@ function makePreferences(
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
       categorySounds: {
         chat: 'Default',
@@ -1075,6 +1269,8 @@ function makePreferences(
         prCreate: 'Default',
         pipeline: 'Default',
         terminal: 'Default',
+        runComment: 'Default',
+        activation: 'Default',
       },
     },
     branchNamingPluginSelections: {
@@ -1111,6 +1307,7 @@ function makePreferences(
     ...overrides,
     showDiagnosticsPill: overrides.showDiagnosticsPill ?? true,
   };
+  return preferences as PreferencesData;
 }
 
 const PROD_MCP_BLOCKER: AuthDependencyFailure = {
@@ -1155,6 +1352,59 @@ function expectLatestSessionLifecycleDrain(): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function makeLegacyNullActiveTabFile(): ChatTabsFile {
+  const file: ChatTabsFile = { version: 1, activeTabId: '', tabs: [] };
+  // These tests deliberately model the legacy null activeTabId input.
+  Reflect.set(file, 'activeTabId', null);
+  return file;
+}
+
+function makeTestCodexCapabilityTransition(
+  threadId: string,
+  snapshotId: string,
+  cleanup: {
+    delete?: () => void | Promise<void>;
+    releaseRoutes?: () => void | Promise<void>;
+    unsubscribe?: () => void | Promise<void>;
+  } = {},
+): CodexCapabilityTransitionModule.CodexCapabilityTransition {
+  const handle: CodexCapabilityTransitionModule.CodexCapabilityTransition['handle'] =
+    {
+      threadId,
+      capabilitySnapshotId: snapshotId,
+      runTurn: () =>
+        Promise.resolve({
+          status: 'completed',
+          threadId,
+          finalText: '',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        }),
+      submitSteeringInput: () =>
+        Promise.resolve({ kind: 'accepted', attemptId: 'test' }),
+      injectItems: () => Promise.resolve(),
+      interrupt: () => Promise.resolve(),
+      unsubscribe: () => Promise.resolve(cleanup.unsubscribe?.()),
+      delete: () => Promise.resolve(cleanup.delete?.()),
+    };
+  return {
+    handle,
+    snapshotId,
+    releaseRoutes: () => Promise.resolve(cleanup.releaseRoutes?.()),
+  };
+}
+
+function getQueueLeaseFromAcceptanceResult(
+  value: unknown,
+): ChatQueueRevivalLease | undefined {
+  if (!isRecord(value) || value.accepted !== true || !isRecord(value.lease)) {
+    return undefined;
+  }
+  const { rootId, epoch } = value.lease;
+  return typeof rootId === 'string' && typeof epoch === 'number'
+    ? { rootId, epoch }
+    : undefined;
 }
 
 function expectChatActiveSessions(value: unknown): {
@@ -1230,6 +1480,8 @@ function makeWindowAccessors(
     closeAppAdvisorWindow: closeAppAdvisorWindowMock,
     toggleAppAdvisorWindow: toggleAppAdvisorWindowMock,
     getAppAdvisorWindowState: () => ({ open: false, focused: false }),
+    markAppAdvisorWindowRendererReady: () => ({ open: false, focused: false }),
+    setAppAdvisorFloatingSize: () => ({ open: false, focused: false }),
     sendAppAdvisorWindowCommand: sendAppAdvisorWindowCommandMock,
     sendChatWindowCommand: jest.fn(() => true),
     notifyStartupUnlocked: jest.fn(),
@@ -1242,6 +1494,8 @@ beforeEach(() => {
   mockPersistOrgMemoryUsedForChat.mockReset().mockResolvedValue(true);
   mockMemoryAckDelivered.mockReset();
   mockMemoryAckDropped.mockReset();
+  mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(false);
+  mockedChatHasNativeBackgroundWork.mockReturnValue(false);
   getChatQueueService().resetForTests();
   getStoppedTurnResumeService().resetForTests();
 });
@@ -1288,8 +1542,166 @@ describe('chat IPC sendMessage', () => {
     mockIngestProviderEventWithOutcome.mockImplementation(
       ingestOutcomeFromCommit,
     );
+    mockIngestProviderEventWithResult
+      .mockReset()
+      .mockImplementation(ingestResultFromOutcome);
     mockHasMutation.mockResolvedValue(false);
     registerChatHandlers(makeWindowAccessors());
+  });
+
+  it.each([
+    {
+      source: 'worktree',
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    },
+    {
+      source: 'standalone',
+      projectId: STANDALONE_CHAT_PROJECT_ID,
+      worktreeId: 'standalone-project',
+      chatId: 'standalone-chat',
+    },
+  ])(
+    'routes a large Codex MCP result for $source to shared ingest intact',
+    async (target) => {
+      mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+      await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        ...target,
+        userMessageId: 'large-mcp-message',
+        text: 'Inspect the result',
+        providerType: 'codex',
+        model: 'gpt-5.5',
+      });
+      const onEvent = mockedGetOrCreateSession.mock.calls[0]?.[1];
+      if (!onEvent) throw new Error('Expected chat provider callback');
+      const body = `start-${'x'.repeat(65_536)}-end`;
+      const data = {
+        type: 'codex',
+        event: {
+          type: 'item.completed',
+          item: {
+            id: 'mcp-call-large',
+            type: 'mcp_tool_call',
+            status: 'completed',
+            result: { content: [{ type: 'text', text: body }] },
+          },
+        },
+      };
+
+      await onEvent(data);
+      await flushPromises();
+
+      expect(mockIngestProviderEventWithOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ data }),
+      );
+      expect(body).toHaveLength(65_546);
+    },
+  );
+
+  it('rejects a host-issued delegation notice batch id at IPC ingress', async () => {
+    // If the composer fails to reject the forged host-only field, let dispatch
+    // complete so this test fails specifically on the missing guard.
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+    await expect(
+      getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        projectId: 'proj',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        userMessageId: 'forged-delegation-notice',
+        text: 'This must not run',
+        delegationNoticeBatchId: 'forged-delegation-notice',
+      }),
+    ).rejects.toThrow(
+      'Untrusted chat input cannot contain the "delegationNoticeBatchId" field.',
+    );
+    expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a host-issued watcher part snapshot at IPC ingress', async () => {
+    // If the composer fails to reject the forged host-only field, let dispatch
+    // complete so this test fails specifically on the missing guard.
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+    await expect(
+      getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        projectId: 'proj',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        userMessageId: 'forged-delegation-notice',
+        text: 'This must not run',
+        watcherPartSnapshots: 'forged-delegation-notice',
+      }),
+    ).rejects.toThrow(
+      'Untrusted chat input cannot contain the "watcherPartSnapshots" field.',
+    );
+    expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects the delegation notice kind without a watcher delivery id', async () => {
+    // Keep a missing rejection from failing later on an unrelated session
+    // setup detail.
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+    await expect(
+      getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        projectId: 'proj',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        userMessageId: 'forged-delegation-notice',
+        text: 'This must not run',
+        watcherFired: { kind: DELEGATION_NOTICE_KIND },
+      }),
+    ).rejects.toThrow(
+      'Delegation completion notices require a validated watcher delivery.',
+    );
+    expect(mockCheckWatcherIngress).not.toHaveBeenCalled();
+    expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  it('admits the delegation notice kind through validated terminal watcher delivery', async () => {
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+    const request = {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      userMessageId: 'terminal-delegation-notice',
+      text: 'Terminal presenter notice',
+      watcherFired: { kind: DELEGATION_NOTICE_KIND },
+      watcherDeliveryId: 'terminal-delivery-1',
+    };
+
+    await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, request);
+
+    expect(mockCheckWatcherIngress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        watcherFired: { kind: DELEGATION_NOTICE_KIND },
+        watcherDeliveryId: 'terminal-delivery-1',
+      }),
+    );
+    expect(mockedGetOrCreateSession).toHaveBeenCalled();
+  });
+
+  it('keeps a denied delegation notice terminal delivery held', async () => {
+    mockCheckWatcherIngress.mockResolvedValue({
+      allowed: false,
+      outcome: 'held',
+      reason: 'owner_boundary',
+    });
+
+    const result = await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      userMessageId: 'denied-terminal-delegation-notice',
+      text: 'Terminal presenter notice',
+      watcherFired: { kind: DELEGATION_NOTICE_KIND },
+      watcherDeliveryId: 'terminal-delivery-denied',
+    });
+
+    expect(result).toEqual({
+      watcherDeliveryHeld: { outcome: 'held', reason: 'owner_boundary' },
+    });
+    expect(mockCheckWatcherIngress).toHaveBeenCalled();
+    expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
   });
 
   it.each(['../delivery', '', 'delivery/invalid'])(
@@ -1440,7 +1852,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('dispatches the first worktree turn with the persisted explicit harness', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockedReadPersistedChatDispatchMetadata.mockResolvedValueOnce({
       model: 'ollama-qwen3-coder',
       providerType: 'ollama',
@@ -1462,7 +1874,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('refuses a renderer-supplied agentSent marker, dispatching nothing', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     const send = getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: APP_ADVISOR_PROJECT_ID,
       worktreeId: 'entry-app-advisor',
@@ -1485,7 +1897,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('invalidates an older stopped-turn offer when a new turn starts', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     const target = {
       projectId: 'project',
       worktreeId: 'worktree',
@@ -1507,8 +1919,330 @@ describe('chat IPC sendMessage', () => {
     ).resolves.toEqual({ disposition: 'stale' });
   });
 
+  describe('R-S1: chatSendMessage takes approval authority from the saved tab (CAN-4469)', () => {
+    const rendererGrant = {
+      id: 'rule-renderer-supplied',
+      behavior: 'allow' as const,
+      target: { kind: 'command' as const, pattern: 'npm test' },
+      createdAt: '2026-10-22T00:00:00.000Z',
+      origin: 'prompt' as const,
+    };
+    const rendererDeny = {
+      ...rendererGrant,
+      id: 'rule-renderer-deny',
+      behavior: 'deny' as const,
+      target: { kind: 'command' as const, pattern: 'rm -rf *' },
+    };
+
+    async function sendWithSavedAskTab(target: {
+      projectId: string;
+      worktreeId: string;
+      chatId: string;
+    }): Promise<unknown> {
+      const readTabs = mockReadChatTabsFile.getMockImplementation();
+      mockReadChatTabsFile.mockResolvedValue({
+        version: 1,
+        activeTabId: target.chatId,
+        tabs: [
+          {
+            id: target.chatId,
+            title: 'Saved at Ask',
+            messages: [],
+            createdAt: '2026-10-23T00:00:00.000Z',
+            providerType: 'claude',
+            approvalMode: 'ask',
+          },
+        ],
+      });
+      mockResolvePersistedApprovalMode.mockImplementation(
+        (_projectId: string, _worktreeId: string, tabMode?: string) =>
+          Promise.resolve(tabMode ?? 'full-access'),
+      );
+      mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          ...target,
+          userMessageId: 'renderer-send-1',
+          text: 'run the tests',
+          providerType: 'claude',
+          approvalMode: 'full-access',
+          sessionApprovalRules: [rendererGrant, rendererDeny],
+        });
+        return mockedGetOrCreateSession.mock.calls.at(-1)?.[0];
+      } finally {
+        if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+        else mockReadChatTabsFile.mockReset();
+        mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+      }
+    }
+
+    it('does not hand a worktree turn a renderer allow rule or wider mode the chat does not hold', async () => {
+      const sessionOptions = await sendWithSavedAskTab({
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      });
+      expect(sessionOptions).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          // A renderer deny rule still narrows the turn.
+          sessionApprovalRules: [rendererDeny],
+        }),
+      );
+    });
+
+    it('does not hand a cowork turn a renderer allow rule or wider mode the chat does not hold', async () => {
+      const sessionOptions = await sendWithSavedAskTab({
+        projectId: 'cowork-default',
+        worktreeId: 'home',
+        chatId: 'chat-renderer-rules',
+      });
+      expect(sessionOptions).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          sessionApprovalRules: [rendererDeny],
+        }),
+      );
+      expect(
+        getLiveApprovalMode('cowork-default', 'home', 'chat-renderer-rules'),
+      ).toBe('ask');
+      clearLiveApprovalMode('cowork-default', 'home', 'chat-renderer-rules');
+    });
+
+    it('applies a cowork chat narrowed while its session was created', async () => {
+      const readTabs = mockReadChatTabsFile.getMockImplementation();
+      const createSession = mockedGetOrCreateSession.getMockImplementation();
+      const savedTab = (
+        approvalMode: 'auto' | 'full-access',
+      ): ChatTabsFile => ({
+        version: 1,
+        activeTabId: 'chat-narrowed',
+        tabs: [
+          {
+            id: 'chat-narrowed',
+            title: 'Narrowed',
+            messages: [],
+            createdAt: '2026-10-23T00:00:00.000Z',
+            providerType: 'claude',
+            approvalMode,
+            // The grant is removed with the narrowing.
+            ...(approvalMode === 'full-access'
+              ? { sessionApprovalRules: [rendererGrant] }
+              : {}),
+          },
+        ],
+      });
+      mockReadChatTabsFile.mockResolvedValue(savedTab('full-access'));
+      mockResolvePersistedApprovalMode.mockImplementation(
+        (_projectId: string, _worktreeId: string, tabMode?: string) =>
+          Promise.resolve(tabMode ?? 'full-access'),
+      );
+      const setApprovalMode = jest.fn<Promise<void>, [string]>(() =>
+        Promise.resolve(),
+      );
+      const session = { ...makeMockSession(), setApprovalMode };
+      mockedGetOrCreateSession.mockImplementation(() => {
+        mockReadChatTabsFile.mockResolvedValue(savedTab('auto'));
+        return Promise.resolve(session);
+      });
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId: 'cowork-default',
+          worktreeId: 'home',
+          chatId: 'chat-narrowed',
+          userMessageId: 'renderer-send-narrowed',
+          text: 'run the tests',
+          providerType: 'claude',
+          approvalMode: 'full-access',
+        });
+
+        expect(mockedGetOrCreateSession.mock.calls.at(-1)?.[0]).toEqual(
+          expect.objectContaining({
+            approvalMode: 'full-access',
+            sessionApprovalRules: [rendererGrant],
+          }),
+        );
+        expect(setApprovalMode).toHaveBeenLastCalledWith('auto');
+        // The live session, new or reused, drops the removed grant.
+        expect(jest.mocked(restrictSessionApprovalRules)).toHaveBeenCalledWith(
+          'cowork-default',
+          'home',
+          'chat-narrowed',
+          [],
+        );
+      } finally {
+        if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+        else mockReadChatTabsFile.mockReset();
+        if (createSession)
+          mockedGetOrCreateSession.mockImplementation(createSession);
+        mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+        clearLiveApprovalMode('cowork-default', 'home', 'chat-narrowed');
+      }
+    });
+
+    describe('an agent send admitted against narrower authority than the cowork chat now holds', () => {
+      const laterGrant = {
+        ...rendererGrant,
+        id: 'rule-granted-after-admission',
+        target: { kind: 'command' as const, pattern: 'npm run lint' },
+      };
+      const chatId = 'chat-admitted';
+      const request = {
+        projectId: 'cowork-default',
+        worktreeId: 'home',
+        chatId,
+        text: 'run the tests',
+        providerType: 'claude' as const,
+        admittedApproval: {
+          approvalMode: 'ask' as const,
+          sessionApprovalRules: [{ ...rendererGrant, id: 'as-admitted' }],
+        },
+      };
+
+      async function sessionOptionsFor(
+        send: (userMessageId: string) => Promise<unknown>,
+      ): Promise<unknown> {
+        const readTabs = mockReadChatTabsFile.getMockImplementation();
+        // Widened after the admission.
+        mockReadChatTabsFile.mockResolvedValue({
+          version: 1,
+          activeTabId: chatId,
+          tabs: [
+            {
+              id: chatId,
+              title: 'Widened',
+              messages: [],
+              createdAt: '2026-10-23T00:00:00.000Z',
+              providerType: 'claude',
+              approvalMode: 'full-access',
+              sessionApprovalRules: [rendererGrant, laterGrant],
+            },
+          ],
+        });
+        mockResolvePersistedApprovalMode.mockImplementation(
+          (_projectId: string, _worktreeId: string, tabMode?: string) =>
+            Promise.resolve(tabMode ?? 'full-access'),
+        );
+        mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+        try {
+          await send(
+            `admitted-${String(mockedGetOrCreateSession.mock.calls.length)}`,
+          );
+          return mockedGetOrCreateSession.mock.calls.at(-1)?.[0];
+        } finally {
+          if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+          else mockReadChatTabsFile.mockReset();
+          mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+          clearLiveApprovalMode('cowork-default', 'home', chatId);
+        }
+      }
+
+      it('runs a queued main-owned dispatch within what was admitted', async () => {
+        const sessionOptions = await sessionOptionsFor((userMessageId) =>
+          dispatchHostQueuedWorktreeChatMessage(
+            { ...request, userMessageId },
+            'desktop',
+            true,
+          ),
+        );
+
+        expect(sessionOptions).toEqual(
+          expect.objectContaining({
+            approvalMode: 'ask',
+            sessionApprovalRules: [rendererGrant],
+          }),
+        );
+        expect(
+          jest.mocked(restrictSessionApprovalRules),
+        ).toHaveBeenLastCalledWith('cowork-default', 'home', chatId, [
+          rendererGrant,
+        ]);
+      });
+
+      it('runs the admitted turn at its cap without keeping the cap for the next user turn', async () => {
+        const readTabs = mockReadChatTabsFile.getMockImplementation();
+        mockReadChatTabsFile.mockResolvedValue({
+          version: 1,
+          activeTabId: chatId,
+          tabs: [
+            {
+              id: chatId,
+              title: 'Full Access',
+              messages: [],
+              createdAt: '2026-10-23T00:00:00.000Z',
+              providerType: 'claude',
+              approvalMode: 'full-access',
+              sessionApprovalRules: [rendererGrant],
+            },
+          ],
+        });
+        mockResolvePersistedApprovalMode.mockImplementation(
+          (_projectId: string, _worktreeId: string, tabMode?: string) =>
+            Promise.resolve(tabMode ?? 'full-access'),
+        );
+        const setApprovalMode = jest.fn<Promise<void>, [string]>(() =>
+          Promise.resolve(),
+        );
+        mockedGetOrCreateSession.mockResolvedValue({
+          ...makeMockSession(),
+          setApprovalMode,
+        });
+        try {
+          await dispatchHostQueuedWorktreeChatMessage(
+            { ...request, userMessageId: 'admitted-then-user-1' },
+            'desktop',
+            true,
+          );
+          expect(mockedGetOrCreateSession.mock.calls.at(-1)?.[0]).toEqual(
+            expect.objectContaining({ approvalMode: 'ask' }),
+          );
+          expect(setApprovalMode).toHaveBeenLastCalledWith('ask');
+          expect(getLiveApprovalMode('cowork-default', 'home', chatId)).toBe(
+            'full-access',
+          );
+
+          await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+            projectId: 'cowork-default',
+            worktreeId: 'home',
+            chatId,
+            userMessageId: 'admitted-then-user-2',
+            text: 'and the lint',
+            providerType: 'claude',
+          });
+          expect(mockedGetOrCreateSession.mock.calls.at(-1)?.[0]).toEqual(
+            expect.objectContaining({ approvalMode: 'full-access' }),
+          );
+          expect(setApprovalMode).toHaveBeenLastCalledWith('full-access');
+        } finally {
+          if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+          else mockReadChatTabsFile.mockReset();
+          mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+          clearLiveApprovalMode('cowork-default', 'home', chatId);
+        }
+      });
+
+      it('ignores the field on a renderer send, where main never sets it', async () => {
+        const sessionOptions = await sessionOptionsFor((userMessageId) =>
+          Promise.resolve(
+            getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+              ...request,
+              userMessageId,
+            }),
+          ),
+        );
+
+        expect(sessionOptions).toEqual(
+          expect.objectContaining({
+            approvalMode: 'full-access',
+            sessionApprovalRules: [rendererGrant, laterGrant],
+          }),
+        );
+      });
+    });
+  });
+
   it('does not dispatch when Stop arrives while an Auto model change is pending', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     let releaseModelChange: (() => void) | undefined;
     let markModelChangeStarted: (() => void) | undefined;
     const modelChangeStarted = new Promise<void>((resolve) => {
@@ -1857,16 +2591,20 @@ describe('chat IPC sendMessage', () => {
       mockEnsureChatForTrustedSend.mockRejectedValueOnce(
         new Error('stop after pin'),
       );
-      let persistedProvider: unknown;
-      let persistedHarness: unknown;
+      let persistedProvider: ChatTabsFile['tabs'][number]['providerType'];
+      let persistedHarness: ChatTabsFile['tabs'][number]['executionHarness'];
       let racingChange: Promise<boolean> | undefined;
       mockChatStateCommand.mockImplementation((envelope: unknown) => {
         const command = (envelope as { command?: Record<string, unknown> })
           .command;
         if (command?.type === 'chat.set_model') {
           persistedModel = String(command.model);
-          persistedProvider = command.providerType;
-          persistedHarness = command.executionHarness;
+          if (command.providerType === 'codex') {
+            persistedProvider = command.providerType;
+          }
+          if (command.executionHarness === 'codex') {
+            persistedHarness = command.executionHarness;
+          }
           // Another surface switches the chat right after the pin commits.
           racingChange ??= changeChatModel({
             projectId: 'standalone-chat',
@@ -2209,7 +2947,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('refuses an Auto turn when its routed model can no longer be applied', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockReadChatTabsFile.mockResolvedValue({
       version: 1,
       activeTabId: 'chat',
@@ -2262,7 +3000,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('applies an Auto-routed managed model without an explicit harness override', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockReadChatTabsFile.mockResolvedValue({
       version: 1,
       activeTabId: 'chat',
@@ -2322,7 +3060,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('classifies a rejected Auto model mutation as a pre-provider apply failure', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockReadChatTabsFile.mockResolvedValue({
       version: 1,
       activeTabId: 'chat',
@@ -2382,7 +3120,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('refuses a stale Copilot model before persisting a user prompt', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     const failure: unknown = await Promise.resolve(
       getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
         projectId: 'project-1',
@@ -2404,7 +3142,7 @@ describe('chat IPC sendMessage', () => {
 
   it('runs a model-less Copilot Cowork send with the validated live model', async () => {
     mockAssertCopilotModelAvailable.mockResolvedValueOnce(undefined);
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockedGetSessionSelectedModel.mockReturnValue('copilot:gpt-5');
     mockedGetActiveSessionInfos.mockReturnValue([
       makeActiveSessionInfo({
@@ -2491,7 +3229,7 @@ describe('chat IPC sendMessage', () => {
         version: 'test',
         phase: 'disconnected',
       });
-      mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+      mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
       if (signal === 'stored model')
         mockedReadPersistedChatDispatchMetadata.mockResolvedValue({
           model: 'cursor-default',
@@ -2547,7 +3285,7 @@ describe('chat IPC sendMessage', () => {
   );
 
   it('persists a Cursor Cowork prompt when the managed runtime is connected', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
       worktreeId: 'home',
@@ -2560,7 +3298,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('runs a Cowork prompt on Claude when the live session harness is claude, whatever its provider label', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockedGetActiveSessionInfos.mockReturnValue([
       makeActiveSessionInfo({
         projectId: 'cowork-default',
@@ -2594,7 +3332,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('records the Cursor provider on a model-less Cowork prompt that a live Cursor session runs', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockedGetSessionSelectedModel.mockReturnValue('cursor-default');
     mockedGetActiveSessionInfos.mockReturnValue([
       makeActiveSessionInfo({
@@ -2642,7 +3380,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('refuses a model-less Cowork prompt when the live Cursor session holds no model either', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockedGetActiveSessionInfos.mockReturnValue([
       makeActiveSessionInfo({
         projectId: 'cowork-default',
@@ -2672,7 +3410,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('refuses a model-less Cursor Cowork route before persisting a prompt', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockedReadPersistedChatDispatchMetadata.mockResolvedValue({
       providerType: 'cursor',
     });
@@ -2699,7 +3437,7 @@ describe('chat IPC sendMessage', () => {
       let retained: ((data: unknown) => void) | undefined;
       mockedGetOrCreateSession.mockImplementation((_opts, onEvent) => {
         retained ??= onEvent;
-        return session;
+        return Promise.resolve(session);
       });
       const send = getHandler(IPC_CHANNELS.chatSendMessage);
       for (const userMessageId of ['first', 'second']) {
@@ -2740,7 +3478,7 @@ describe('chat IPC sendMessage', () => {
     const sendFresh = jest.fn();
     fresh.sendMessage = sendFresh;
     mockedGetSession.mockReturnValue(disposed);
-    mockedGetOrCreateSession.mockReturnValue(fresh);
+    mockedGetOrCreateSession.mockResolvedValue(fresh);
     jest.mocked(getActiveChatIds).mockReturnValue(['stop-follow-up']);
     try {
       await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -2768,7 +3506,7 @@ describe('chat IPC sendMessage', () => {
     'queues busy %s messages in the canonical host queue',
     async (surface) => {
       const session = makeMockSession();
-      mockedGetOrCreateSession.mockReturnValue(session);
+      mockedGetOrCreateSession.mockResolvedValue(session);
       const projectId =
         surface === 'cowork'
           ? 'cowork-default'
@@ -2796,59 +3534,256 @@ describe('chat IPC sendMessage', () => {
     },
   );
 
-  it('follows a committed Claude pickup into a new cowork root turn', async () => {
-    const session = makeMockSession();
-    session.getSteeringCapabilities = () => ({
-      provider: 'claude',
-      generation: 'live',
-      steer: true,
-      withdraw: true,
-      interrupt: true,
-    });
-    mockedGetOrCreateSession.mockReturnValue(session);
-    await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
-      projectId: 'cowork-default',
-      worktreeId: 'steering-entry',
-      chatId: 'steering-chat',
-      userMessageId: 'original',
-      text: 'Original',
-      providerType: 'claude',
-    });
-    const call = mockedGetOrCreateSession.mock.calls[0];
-    const onEvent = call?.[1];
-    if (!onEvent) throw new Error('Expected cowork route');
-    getChatQueueService().onTurnTerminal(
-      {
-        projectId: 'cowork-default',
-        worktreeId: 'steering-entry',
-        chatId: 'steering-chat',
-      },
-      'complete',
-      'original',
-    );
-    void onEvent({
-      type: 'canopy_input_delivery',
-      provider: 'claude',
-      phase: 'picked-up',
-      generation: 'live',
-      attemptId: 'attempt',
-      startsTurn: true,
-      userMessageId: 'selected',
-    });
-    void onEvent({
-      type: 'assistant',
-      canopy_turn_user_message_id: 'selected',
-      message: {
-        id: 'reply',
-        role: 'assistant',
-        content: [{ type: 'text', text: 'Selected reply' }],
-      },
-    });
-    await call[3]?.drainEventsBeforeRemoval?.();
-    expect(mockIngestProviderEvent).toHaveBeenLastCalledWith(
-      expect.objectContaining({ turnUserMessageId: 'selected' }),
-    );
-  });
+  it.each(['cowork', 'resumed'] as const)(
+    'keeps the %s route on its adopted root after a repeated rejected pickup',
+    async (routeKind) => {
+      const projectId = 'cowork-default';
+      const worktreeId = 'steering-entry';
+      const chatId = `steering-${routeKind}`;
+      const target = { projectId, worktreeId, chatId };
+      deferredToolsReloadCoordinator.resetForTests();
+      const initialSession = makeMockSession();
+      const resumedSession = makeMockSession();
+      const addSteeringCapabilities = (session: AgentSession): void => {
+        session.getSteeringCapabilities = () => ({
+          provider: 'claude',
+          generation: 'live',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        });
+      };
+      addSteeringCapabilities(initialSession);
+      addSteeringCapabilities(resumedSession);
+      if (routeKind === 'resumed') {
+        mockedGetOrCreateSession
+          .mockResolvedValueOnce(initialSession)
+          .mockResolvedValueOnce(resumedSession);
+      } else {
+        mockedGetOrCreateSession.mockResolvedValue(initialSession);
+      }
+      const registerResumeHandler = jest.spyOn(
+        deferredToolsReloadCoordinator,
+        'registerResumeHandler',
+      );
+      const queue = getChatQueueService();
+      const acceptTurnRevival = jest.spyOn(queue, 'acceptTurnRevival');
+      const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+      const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+      const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId: 'original',
+          text: 'Original',
+          providerType: 'claude',
+        });
+
+        let routeIndex = 0;
+        if (routeKind === 'resumed') {
+          const registration = registerResumeHandler.mock.calls.find(
+            ([scope]) => scope.chatId === chatId,
+          );
+          const resume = registration?.[1];
+          if (!resume) throw new Error('Expected deferred-tools resume route');
+          const resumeRequest: DeferredToolsResumeRequest = {
+            scope: target,
+            requestId: 'resume-request',
+            toolCallId: 'resume-tool',
+            userMessageId: 'original',
+            continuationText: 'Resume the current turn',
+            enabledResources: [],
+            providerType: 'claude',
+            signal: new AbortController().signal,
+          };
+          await resume(resumeRequest);
+          routeIndex = 1;
+        }
+
+        const call = mockedGetOrCreateSession.mock.calls[routeIndex];
+        const onEvent = call?.[1];
+        if (!call || !onEvent) throw new Error(`Expected ${routeKind} route`);
+
+        mockIngestProviderEventWithResult
+          .mockResolvedValueOnce({
+            outcome: 'not-applied',
+            pickup: 'rejected',
+          })
+          .mockResolvedValueOnce({ outcome: 'applied' })
+          .mockResolvedValueOnce({ outcome: 'applied' })
+          .mockResolvedValueOnce({ outcome: 'applied', pickup: 'accepted' })
+          .mockResolvedValueOnce({
+            outcome: 'not-applied',
+            pickup: 'rejected',
+          })
+          .mockResolvedValueOnce({ outcome: 'applied' })
+          .mockResolvedValueOnce({ outcome: 'applied' })
+          .mockResolvedValueOnce({
+            outcome: 'not-applied',
+            pickup: 'already-accepted',
+          })
+          .mockResolvedValueOnce({ outcome: 'applied' })
+          .mockResolvedValueOnce({ outcome: 'applied' });
+
+        // Same-root unknown attempts can be rejected after Stop. They must not
+        // roll back the running root or block its ordinary output and terminal.
+        await onEvent({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId: 'unknown-initial-attempt',
+          startsTurn: true,
+          userMessageId: 'original',
+        });
+        expect(queue.isTurnActive(target)).toBe(true);
+        await onEvent({
+          type: 'assistant',
+          canopy_turn_user_message_id: 'original',
+          message: {
+            id: 'original-reply',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Original reply' }],
+          },
+        });
+        await onEvent({
+          type: 'result',
+          canopy_turn_user_message_id: 'original',
+          is_error: false,
+          result: 'Original done',
+        });
+        await onEvent({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId: 'selected-attempt',
+          startsTurn: true,
+          userMessageId: 'selected',
+        });
+        expect(queue.isTurnActive(target)).toBe(true);
+        await onEvent({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId: 'repeated-selected-attempt',
+          startsTurn: true,
+          userMessageId: 'selected',
+        });
+        expect(queue.isTurnActive(target)).toBe(true);
+        await onEvent({
+          type: 'assistant',
+          canopy_turn_user_message_id: 'selected',
+          message: {
+            id: 'selected-reply',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Selected reply' }],
+          },
+        });
+        await onEvent({
+          type: 'result',
+          canopy_turn_user_message_id: 'selected',
+          is_error: false,
+          result: 'Selected done',
+        });
+        await onEvent({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId: 'ambiguous-commit-retry',
+          startsTurn: true,
+          userMessageId: 'retry-root',
+        });
+        await onEvent({
+          type: 'assistant',
+          canopy_turn_user_message_id: 'retry-root',
+          message: {
+            id: 'retry-reply',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Retry reply' }],
+          },
+        });
+        await onEvent({
+          type: 'result',
+          canopy_turn_user_message_id: 'retry-root',
+          is_error: false,
+          result: 'Retry done',
+        });
+        await call[3]?.drainEventsBeforeRemoval?.();
+
+        expect(
+          acceptTurnRevival.mock.calls.map(([, rootId]) => rootId),
+        ).toEqual(['original', 'selected', 'selected', 'retry-root']);
+        expect(confirmTurnRevival).toHaveBeenCalledTimes(2);
+        const selectedAcceptanceValue: unknown =
+          acceptTurnRevival.mock.results[1]?.value;
+        const retryAcceptanceValue: unknown =
+          acceptTurnRevival.mock.results[3]?.value;
+        const selectedLease = getQueueLeaseFromAcceptanceResult(
+          selectedAcceptanceValue,
+        );
+        const retryLease =
+          getQueueLeaseFromAcceptanceResult(retryAcceptanceValue);
+        if (!selectedLease || !retryLease) {
+          throw new Error('Expected both accepted pickup leases');
+        }
+        expect(confirmTurnRevival).toHaveBeenNthCalledWith(
+          1,
+          target,
+          selectedLease,
+        );
+        expect(confirmTurnRevival).toHaveBeenNthCalledWith(
+          2,
+          target,
+          retryLease,
+        );
+        expect(rollbackTurnRevival).not.toHaveBeenCalled();
+        expect(onTurnTerminal).toHaveBeenCalledWith(
+          target,
+          'complete',
+          'original',
+        );
+        expect(onTurnTerminal).toHaveBeenCalledWith(
+          target,
+          'complete',
+          'selected',
+        );
+        expect(onTurnTerminal).toHaveBeenLastCalledWith(
+          target,
+          'complete',
+          'retry-root',
+        );
+        expect(
+          mockIngestProviderEventWithResult.mock.calls.map(
+            ([input]) => input.turnUserMessageId,
+          ),
+        ).toEqual([
+          'original',
+          'original',
+          'original',
+          'original',
+          'selected',
+          'selected',
+          'selected',
+          'selected',
+          'retry-root',
+          'retry-root',
+        ]);
+      } finally {
+        acceptTurnRevival.mockRestore();
+        confirmTurnRevival.mockRestore();
+        rollbackTurnRevival.mockRestore();
+        onTurnTerminal.mockRestore();
+        registerResumeHandler.mockRestore();
+        deferredToolsReloadCoordinator.resetForTests();
+      }
+    },
+  );
 
   it('waits for the prior cowork terminal commit before accepting a pickup root', async () => {
     const session = makeMockSession();
@@ -2859,7 +3794,7 @@ describe('chat IPC sendMessage', () => {
       withdraw: true,
       interrupt: true,
     });
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
       worktreeId: 'steering-entry',
@@ -2872,40 +3807,55 @@ describe('chat IPC sendMessage', () => {
     const onEvent = call?.[1];
     if (!onEvent) throw new Error('Expected cowork route');
 
-    let releaseTerminalCommit: ((committed: boolean) => void) | undefined;
-    mockIngestProviderEvent.mockImplementationOnce(
+    let releaseTerminalCommit:
+      | ((result: ProviderEventIngestResult) => void)
+      | undefined;
+    const queue = getChatQueueService();
+    const acceptTurnRevival = jest.spyOn(queue, 'acceptTurnRevival');
+    mockIngestProviderEventWithResult.mockImplementationOnce(
       () =>
-        new Promise<boolean>((resolve) => {
+        new Promise<ProviderEventIngestResult>((resolve) => {
           releaseTerminalCommit = resolve;
         }),
     );
-    void onEvent({ type: 'result', is_error: false, result: 'Done' });
-    await flushPromises();
-    void onEvent({
-      type: 'canopy_input_delivery',
-      provider: 'claude',
-      phase: 'picked-up',
-      generation: 'live',
-      attemptId: 'attempt',
-      startsTurn: true,
-      userMessageId: 'selected',
-    });
-    await flushPromises();
+    try {
+      void onEvent({ type: 'result', is_error: false, result: 'Done' });
+      await flushPromises();
+      void onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        phase: 'picked-up',
+        generation: 'live',
+        attemptId: 'attempt',
+        startsTurn: true,
+        userMessageId: 'selected',
+      });
+      await flushPromises();
 
-    releaseTerminalCommit?.(true);
-    await call[3]?.drainEventsBeforeRemoval?.();
+      expect(acceptTurnRevival).not.toHaveBeenCalled();
 
-    const pickupCommit = mockIngestProviderEvent.mock.calls.at(-1)?.[0];
-    expect(pickupCommit?.turnUserMessageId).toBe('original');
-    expect(
-      pickupCommit && isRecord(pickupCommit.data)
-        ? pickupCommit.data.turnRootAccepted
-        : undefined,
-    ).toBe(true);
+      releaseTerminalCommit?.({ outcome: 'applied' });
+      await call[3]?.drainEventsBeforeRemoval?.();
+      const pickupCommit =
+        mockIngestProviderEventWithResult.mock.calls.at(-1)?.[0];
+      expect(acceptTurnRevival).toHaveBeenCalledWith(
+        {
+          projectId: 'cowork-default',
+          worktreeId: 'steering-entry',
+          chatId: 'steering-chat',
+        },
+        'selected',
+      );
+      expect(pickupCommit?.turnUserMessageId).toBe('original');
+    } finally {
+      releaseTerminalCommit?.({ outcome: 'applied' });
+      await call[3]?.drainEventsBeforeRemoval?.();
+      acceptTurnRevival.mockRestore();
+    }
   });
 
   it('preserves a fast cowork provider prefix behind a slow durable commit', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
       worktreeId: 'pressure-entry',
@@ -2986,7 +3936,7 @@ describe('chat IPC sendMessage', () => {
     expect(committed).toEqual(events.map((event) => event.sequence));
   });
 
-  it('keeps the current cowork root when a committed pickup is rejected', async () => {
+  it('does not present a pickup refused by the route router', async () => {
     const session = makeMockSession();
     session.getSteeringCapabilities = () => ({
       provider: 'claude',
@@ -2995,7 +3945,7 @@ describe('chat IPC sendMessage', () => {
       withdraw: true,
       interrupt: true,
     });
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
       worktreeId: 'steering-entry',
@@ -3008,57 +3958,939 @@ describe('chat IPC sendMessage', () => {
     const onEvent = call?.[1];
     if (!onEvent) throw new Error('Expected cowork route');
     const queueService = getChatQueueService();
-    const onTurnRevived = jest
-      .spyOn(queueService, 'onTurnRevived')
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
+    const acceptTurnRevival = jest
+      .spyOn(queueService, 'acceptTurnRevival')
+      .mockReturnValueOnce({ accepted: false });
     mockedSendToWindowDetailed.mockClear();
 
-    void onEvent({
-      type: 'canopy_input_delivery',
-      provider: 'claude',
-      phase: 'picked-up',
-      generation: 'live',
-      attemptId: 'stale-attempt',
-      startsTurn: true,
-      userMessageId: 'stale-selected',
-    });
-    void onEvent({
-      type: 'assistant',
-      message: {
-        id: 'reply',
-        role: 'assistant',
-        content: [{ type: 'text', text: 'Original reply' }],
-      },
-    });
-    await call[3]?.drainEventsBeforeRemoval?.();
+    try {
+      await onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        phase: 'picked-up',
+        generation: 'live',
+        attemptId: 'stale-attempt',
+        startsTurn: true,
+        userMessageId: 'stale-selected',
+      });
+      await onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'stale-selected',
+        message: {
+          id: 'reply',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Original reply' }],
+        },
+      });
+      await call[3]?.drainEventsBeforeRemoval?.();
 
-    expect(onTurnRevived).toHaveBeenCalledWith(
-      {
-        projectId: 'cowork-default',
-        worktreeId: 'steering-entry',
-        chatId: 'steering-chat',
-      },
-      'stale-selected',
-    );
-    expect(onTurnRevived).toHaveBeenCalledTimes(1);
-    expect(mockIngestProviderEvent).toHaveBeenLastCalledWith(
-      expect.objectContaining({ turnUserMessageId: 'original' }),
-    );
-    expect(
-      mockedSendToWindowDetailed.mock.calls.some(
-        ([, channel, payload]) =>
-          channel === IPC_CHANNELS.chatEvent &&
-          isRecord(payload) &&
-          isRecord(payload.data) &&
-          payload.data.type === 'canopy_input_delivery' &&
-          payload.data.userMessageId === 'stale-selected',
-      ),
-    ).toBe(false);
+      expect(acceptTurnRevival).toHaveBeenCalledWith(
+        {
+          projectId: 'cowork-default',
+          worktreeId: 'steering-entry',
+          chatId: 'steering-chat',
+        },
+        'stale-selected',
+      );
+      expect(acceptTurnRevival).toHaveBeenCalledTimes(1);
+      expect(mockIngestProviderEventWithResult).toHaveBeenCalledTimes(1);
+      expect(
+        mockedSendToWindowDetailed.mock.calls.some(
+          ([, channel, payload]) =>
+            channel === IPC_CHANNELS.chatEvent &&
+            isRecord(payload) &&
+            isRecord(payload.data) &&
+            payload.data.type === 'canopy_input_delivery' &&
+            payload.data.userMessageId === 'stale-selected',
+        ),
+      ).toBe(false);
+    } finally {
+      acceptTurnRevival.mockRestore();
+    }
+  });
+
+  it('rolls back a rejected, not-yet-adopted router pickup and drops its tagged output', async () => {
+    const session = makeMockSession();
+    session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'live',
+      steer: true,
+      withdraw: true,
+      interrupt: true,
+    });
+    mockedGetOrCreateSession.mockResolvedValue(session);
+    await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+      projectId: 'cowork-default',
+      worktreeId: 'steering-entry',
+      chatId: 'rejected-pickup',
+      userMessageId: 'original',
+      text: 'Original',
+      providerType: 'claude',
+    });
+    const call = mockedGetOrCreateSession.mock.calls[0];
+    const onEvent = call?.[1];
+    if (!call || !onEvent) throw new Error('Expected cowork route');
+    const target = {
+      projectId: 'cowork-default',
+      worktreeId: 'steering-entry',
+      chatId: 'rejected-pickup',
+    };
+    const queue = getChatQueueService();
+    const acceptTurnRevival = jest.spyOn(queue, 'acceptTurnRevival');
+    const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+    queue.onTurnTerminal(target, 'complete', 'original');
+    mockIngestProviderEventWithResult.mockResolvedValueOnce({
+      outcome: 'not-applied',
+      pickup: 'rejected',
+    });
+
+    try {
+      await onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        phase: 'picked-up',
+        generation: 'live',
+        attemptId: 'rejected-attempt',
+        startsTurn: true,
+        userMessageId: 'rejected-root',
+      });
+      await onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'rejected-root',
+        message: {
+          id: 'must-not-apply',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Rejected output' }],
+        },
+      });
+      await onEvent({
+        type: 'result',
+        canopy_turn_user_message_id: 'rejected-root',
+        is_error: false,
+        result: 'Rejected terminal',
+      });
+      await call[3]?.drainEventsBeforeRemoval?.();
+
+      const firstAcceptanceValue: unknown =
+        acceptTurnRevival.mock.results[0]?.value;
+      const routerLease =
+        getQueueLeaseFromAcceptanceResult(firstAcceptanceValue);
+      if (!routerLease) {
+        throw new Error('Expected router to accept a provisional lease');
+      }
+      expect(confirmTurnRevival).not.toHaveBeenCalled();
+      expect(rollbackTurnRevival).toHaveBeenCalledTimes(2);
+      expect(rollbackTurnRevival).toHaveBeenNthCalledWith(
+        1,
+        target,
+        routerLease,
+      );
+      expect(rollbackTurnRevival).toHaveBeenNthCalledWith(
+        2,
+        target,
+        routerLease,
+      );
+      expect(mockIngestProviderEventWithResult).toHaveBeenCalledTimes(1);
+      expect(onTurnTerminal).toHaveBeenCalledTimes(1);
+      expect(onTurnTerminal).toHaveBeenCalledWith(
+        target,
+        'complete',
+        'original',
+      );
+      expect(
+        mockedSendToWindowDetailed.mock.calls.some(
+          ([, channel, payload]) =>
+            channel === IPC_CHANNELS.chatEvent &&
+            isRecord(payload) &&
+            isRecord(payload.data) &&
+            payload.data.canopy_turn_user_message_id === 'rejected-root',
+        ),
+      ).toBe(false);
+      expect(typeof call[3]?.drainEventsBeforeRemoval).toBe('function');
+    } finally {
+      confirmTurnRevival.mockRestore();
+      rollbackTurnRevival.mockRestore();
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it.each(['cowork', 'resumed'] as const)(
+    'retries rejected %s root cleanup on tagged terminal without ingesting idle lifecycle events',
+    async (routeKind) => {
+      const projectId = 'cowork-default';
+      const worktreeId = 'rejected-lifecycle-entry';
+      const chatId = `rejected-lifecycle-${routeKind}`;
+      const target = { projectId, worktreeId, chatId };
+      deferredToolsReloadCoordinator.resetForTests();
+      const initialSession = makeMockSession();
+      const resumedSession = makeMockSession();
+      const addSteeringCapabilities = (session: AgentSession): void => {
+        session.getSteeringCapabilities = () => ({
+          provider: 'claude',
+          generation: 'live',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        });
+      };
+      addSteeringCapabilities(initialSession);
+      addSteeringCapabilities(resumedSession);
+      if (routeKind === 'resumed') {
+        mockedGetOrCreateSession
+          .mockResolvedValueOnce(initialSession)
+          .mockResolvedValueOnce(resumedSession);
+      } else {
+        mockedGetOrCreateSession.mockResolvedValue(initialSession);
+      }
+      const registerResumeHandler = jest.spyOn(
+        deferredToolsReloadCoordinator,
+        'registerResumeHandler',
+      );
+      const queue = getChatQueueService();
+      const firstLease: ChatQueueRevivalLease = {
+        rootId: 'rejected-root',
+        epoch: 11,
+      };
+      const retryLease: ChatQueueRevivalLease = {
+        rootId: 'rejected-root',
+        epoch: 12,
+      };
+      const acceptTurnRevival = jest
+        .spyOn(queue, 'acceptTurnRevival')
+        .mockReturnValueOnce({ accepted: true, lease: firstLease })
+        .mockReturnValueOnce({ accepted: true, lease: retryLease });
+      const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+      const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+      const reconcileSessionActivity = jest.spyOn(
+        queue,
+        'reconcileSessionActivity',
+      );
+
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId: 'original',
+          text: 'Original',
+          providerType: 'claude',
+        });
+
+        let routeIndex = 0;
+        if (routeKind === 'resumed') {
+          const registration = registerResumeHandler.mock.calls.find(
+            ([scope]) => scope.chatId === chatId,
+          );
+          const resume = registration?.[1];
+          if (!resume) throw new Error('Expected deferred-tools resume route');
+          const resumeRequest: DeferredToolsResumeRequest = {
+            scope: target,
+            requestId: 'resume-request',
+            toolCallId: 'resume-tool',
+            userMessageId: 'original',
+            continuationText: 'Resume the current turn',
+            enabledResources: [],
+            providerType: 'claude',
+            signal: new AbortController().signal,
+          };
+          await resume(resumeRequest);
+          routeIndex = 1;
+        }
+
+        const call = mockedGetOrCreateSession.mock.calls[routeIndex];
+        const onEvent = call?.[1];
+        if (!call || !onEvent) throw new Error(`Expected ${routeKind} route`);
+
+        mockIngestProviderEventWithResult.mockResolvedValueOnce({
+          outcome: 'applied',
+        });
+        await onEvent({
+          type: 'result',
+          is_error: false,
+          result: 'Original done',
+        });
+        await call[3]?.drainEventsBeforeRemoval?.();
+        expect(mockIngestProviderEventWithResult).toHaveBeenCalled();
+        const originalIngestInput =
+          mockIngestProviderEventWithResult.mock.calls[0]?.[0];
+        if (!originalIngestInput || !isRecord(originalIngestInput.data)) {
+          throw new Error(
+            'Expected the original result to reach canonical ingest',
+          );
+        }
+        expect(originalIngestInput.data.type).toBe('result');
+        expect(originalIngestInput.turnUserMessageId).toBe('original');
+        expect(onTurnTerminal).toHaveBeenCalledWith(
+          target,
+          'complete',
+          'original',
+        );
+        mockedSendToWindowDetailed.mockClear();
+        mockIngestProviderEventWithResult
+          .mockResolvedValueOnce({
+            outcome: 'not-applied',
+            pickup: 'rejected',
+          })
+          .mockResolvedValueOnce({
+            outcome: 'not-applied',
+            pickup: 'rejected',
+          });
+
+        const pickup = (attemptId: string): Record<string, unknown> => ({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId,
+          startsTurn: true,
+          userMessageId: 'rejected-root',
+          canopy_turn_user_message_id: 'rejected-root',
+        });
+        await onEvent(pickup('rejected-attempt'));
+        await onEvent(pickup('rejected-retry-attempt'));
+        expect(rollbackTurnRevival).toHaveBeenNthCalledWith(
+          1,
+          target,
+          firstLease,
+        );
+        expect(rollbackTurnRevival).toHaveBeenNthCalledWith(
+          2,
+          target,
+          retryLease,
+        );
+
+        await onEvent({
+          type: 'assistant',
+          canopy_turn_user_message_id: 'rejected-root',
+          message: {
+            id: 'rejected-reply',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Drop rejected output' }],
+          },
+        });
+        await onEvent({
+          type: 'result',
+          is_error: false,
+          result: 'Rejected root terminal',
+          canopy_turn_user_message_id: 'rejected-root',
+        });
+        await onEvent({
+          type: 'system',
+          subtype: 'status',
+          status: 'idle',
+          canopy_turn_user_message_id: 'rejected-root',
+        });
+        await call[3]?.drainEventsBeforeRemoval?.();
+
+        expect(rollbackTurnRevival).toHaveBeenCalledTimes(3);
+        expect(rollbackTurnRevival).toHaveBeenLastCalledWith(
+          target,
+          firstLease,
+        );
+        expect(acceptTurnRevival).toHaveBeenCalledTimes(2);
+        expect(onTurnTerminal).toHaveBeenCalledTimes(1);
+        expect(mockIngestProviderEventWithResult).toHaveBeenCalledTimes(3);
+        expect(
+          mockIngestProviderEventWithResult.mock.calls.map(
+            ([input]) => input.turnUserMessageId,
+          ),
+        ).toEqual(['original', 'original', 'original']);
+        expect(reconcileSessionActivity).toHaveBeenCalledTimes(1);
+        expect(mockedSendToWindowDetailed).not.toHaveBeenCalled();
+      } finally {
+        acceptTurnRevival.mockRestore();
+        rollbackTurnRevival.mockRestore();
+        onTurnTerminal.mockRestore();
+        reconcileSessionActivity.mockRestore();
+        registerResumeHandler.mockRestore();
+        deferredToolsReloadCoordinator.resetForTests();
+      }
+    },
+  );
+
+  it.each(['cowork', 'resumed'] as const)(
+    'allows a tagged rejected %s pickup root to be adopted on an accepted retry',
+    async (routeKind) => {
+      const projectId = 'cowork-default';
+      const worktreeId = 'tagged-retry-entry';
+      const chatId = `tagged-retry-${routeKind}`;
+      const target = { projectId, worktreeId, chatId };
+      deferredToolsReloadCoordinator.resetForTests();
+      const initialSession = makeMockSession();
+      const resumedSession = makeMockSession();
+      const addSteeringCapabilities = (session: AgentSession): void => {
+        session.getSteeringCapabilities = () => ({
+          provider: 'claude',
+          generation: 'live',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        });
+      };
+      addSteeringCapabilities(initialSession);
+      addSteeringCapabilities(resumedSession);
+      if (routeKind === 'resumed') {
+        mockedGetOrCreateSession
+          .mockResolvedValueOnce(initialSession)
+          .mockResolvedValueOnce(resumedSession);
+      } else {
+        mockedGetOrCreateSession.mockResolvedValue(initialSession);
+      }
+      const registerResumeHandler = jest.spyOn(
+        deferredToolsReloadCoordinator,
+        'registerResumeHandler',
+      );
+      const queue = getChatQueueService();
+      const rejectedLease: ChatQueueRevivalLease = {
+        rootId: 'selected-root',
+        epoch: 21,
+      };
+      const acceptedRetryLease: ChatQueueRevivalLease = {
+        rootId: 'selected-root',
+        epoch: 22,
+      };
+      const acceptTurnRevival = jest
+        .spyOn(queue, 'acceptTurnRevival')
+        .mockReturnValueOnce({ accepted: true, lease: rejectedLease })
+        .mockReturnValueOnce({ accepted: true, lease: acceptedRetryLease });
+      const confirmTurnRevival = jest
+        .spyOn(queue, 'confirmTurnRevival')
+        .mockReturnValue(true);
+      const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+      const onTurnTerminal = jest.spyOn(queue, 'onTurnTerminal');
+
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId: 'original',
+          text: 'Original',
+          providerType: 'claude',
+        });
+
+        let routeIndex = 0;
+        if (routeKind === 'resumed') {
+          const registration = registerResumeHandler.mock.calls.find(
+            ([scope]) => scope.chatId === chatId,
+          );
+          const resume = registration?.[1];
+          if (!resume) throw new Error('Expected deferred-tools resume route');
+          const resumeRequest: DeferredToolsResumeRequest = {
+            scope: target,
+            requestId: 'resume-request',
+            toolCallId: 'resume-tool',
+            userMessageId: 'original',
+            continuationText: 'Resume the current turn',
+            enabledResources: [],
+            providerType: 'claude',
+            signal: new AbortController().signal,
+          };
+          await resume(resumeRequest);
+          routeIndex = 1;
+        }
+        const call = mockedGetOrCreateSession.mock.calls[routeIndex];
+        const onEvent = call?.[1];
+        if (!call || !onEvent) throw new Error(`Expected ${routeKind} route`);
+
+        mockIngestProviderEventWithResult
+          .mockResolvedValueOnce({ outcome: 'not-applied', pickup: 'rejected' })
+          .mockResolvedValueOnce({
+            outcome: 'not-applied',
+            pickup: 'accepted',
+          })
+          .mockResolvedValueOnce({ outcome: 'applied' })
+          .mockResolvedValueOnce({ outcome: 'applied' });
+        const taggedPickup = (attemptId: string): Record<string, unknown> => ({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId,
+          startsTurn: true,
+          userMessageId: 'selected-root',
+          canopy_turn_user_message_id: 'selected-root',
+        });
+
+        await onEvent(taggedPickup('rejected-first-attempt'));
+        await onEvent(taggedPickup('accepted-retry-attempt'));
+        await onEvent({
+          type: 'assistant',
+          canopy_turn_user_message_id: 'selected-root',
+          message: {
+            id: 'retry-assistant',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Accepted retry output' }],
+          },
+        });
+        await onEvent({
+          type: 'result',
+          is_error: false,
+          result: 'Accepted retry result',
+          canopy_turn_user_message_id: 'selected-root',
+        });
+        await call[3]?.drainEventsBeforeRemoval?.();
+
+        expect(mockIngestProviderEventWithResult).toHaveBeenCalledTimes(4);
+        expect(confirmTurnRevival).toHaveBeenCalledTimes(1);
+        expect(confirmTurnRevival).toHaveBeenCalledWith(
+          target,
+          acceptedRetryLease,
+        );
+        expect(rollbackTurnRevival).toHaveBeenCalledTimes(1);
+        expect(rollbackTurnRevival).toHaveBeenCalledWith(target, rejectedLease);
+        expect(onTurnTerminal).toHaveBeenCalledWith(
+          target,
+          'complete',
+          'selected-root',
+        );
+        expect(
+          mockIngestProviderEventWithResult.mock.calls.map(
+            ([input]) => input.turnUserMessageId,
+          ),
+        ).toEqual(['original', 'original', 'selected-root', 'selected-root']);
+      } finally {
+        acceptTurnRevival.mockRestore();
+        confirmTurnRevival.mockRestore();
+        rollbackTurnRevival.mockRestore();
+        onTurnTerminal.mockRestore();
+        registerResumeHandler.mockRestore();
+        deferredToolsReloadCoordinator.resetForTests();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'admits a Cowork deferred-tools continuation through the reload hold (admitted: %s)',
+    async (admitted) => {
+      const projectId = 'cowork-default';
+      const worktreeId = 'reload-hold-entry';
+      const chatId = `reload-hold-${String(admitted)}`;
+      const target = { projectId, worktreeId, chatId };
+      deferredToolsReloadCoordinator.resetForTests();
+      const initialSession = makeMockSession();
+      const resumedSession = makeMockSession();
+      const sendMessage = jest.fn();
+      resumedSession.sendMessage = sendMessage;
+      mockedGetOrCreateSession.mockResolvedValueOnce(initialSession);
+      // A refused continuation never creates its session.
+      if (admitted)
+        mockedGetOrCreateSession.mockResolvedValueOnce(resumedSession);
+      const registerResumeHandler = jest.spyOn(
+        deferredToolsReloadCoordinator,
+        'registerResumeHandler',
+      );
+      const release = jest.fn();
+      const admit = jest
+        .spyOn(getChatQueueService(), 'admitDirectDispatchWhenAllowed')
+        .mockResolvedValue(
+          admitted ? { authorization: undefined, release } : undefined,
+        );
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId: 'original',
+          text: 'Original',
+          providerType: 'claude',
+        });
+        const resume = registerResumeHandler.mock.calls.find(
+          ([scope]) => scope.chatId === chatId,
+        )?.[1];
+        if (!resume) throw new Error('Expected deferred-tools resume route');
+        const signal = new AbortController().signal;
+        const continuation = resume({
+          scope: target,
+          requestId: 'reload-request',
+          toolCallId: 'reload-tool',
+          userMessageId: 'continuation',
+          continuationText: 'Continue with the loaded tool',
+          enabledResources: [],
+          providerType: 'claude',
+          signal,
+        });
+
+        if (admitted) await continuation;
+        else
+          await expect(continuation).rejects.toThrow(
+            'The reload could not continue this chat.',
+          );
+        // The hold the reload took at its interruption admits only this
+        // continuation, as the worktree and App Advisor continuations are.
+        expect(admit).toHaveBeenCalledWith(
+          target,
+          'continuation',
+          signal,
+          'reload-request',
+        );
+        if (admitted)
+          expect(sendMessage).toHaveBeenCalledWith(
+            'Continue with the loaded tool',
+            { userMessageId: 'continuation' },
+          );
+        else expect(sendMessage).not.toHaveBeenCalled();
+        expect(release).not.toHaveBeenCalled();
+      } finally {
+        admit.mockRestore();
+        registerResumeHandler.mockRestore();
+        deferredToolsReloadCoordinator.resetForTests();
+      }
+    },
+  );
+
+  it.each(['cowork', 'resumed'] as const)(
+    'ingests owned delegation snapshots tagged with a rejected or earlier %s root',
+    async (routeKind) => {
+      const projectId = 'cowork-default';
+      const worktreeId = 'delegation-root-entry';
+      const chatId = `delegation-root-${routeKind}`;
+      const target = { projectId, worktreeId, chatId };
+      deferredToolsReloadCoordinator.resetForTests();
+      const initialSession = makeMockSession();
+      const resumedSession = makeMockSession();
+      const addSteeringCapabilities = (session: AgentSession): void => {
+        session.getSteeringCapabilities = () => ({
+          provider: 'claude',
+          generation: 'live',
+          steer: true,
+          withdraw: true,
+          interrupt: true,
+        });
+      };
+      addSteeringCapabilities(initialSession);
+      addSteeringCapabilities(resumedSession);
+      if (routeKind === 'resumed') {
+        mockedGetOrCreateSession
+          .mockResolvedValueOnce(initialSession)
+          .mockResolvedValueOnce(resumedSession);
+      } else {
+        mockedGetOrCreateSession.mockResolvedValue(initialSession);
+      }
+      const registerResumeHandler = jest.spyOn(
+        deferredToolsReloadCoordinator,
+        'registerResumeHandler',
+      );
+      const queue = getChatQueueService();
+      const rejectedLease: ChatQueueRevivalLease = {
+        rootId: 'rejected-root',
+        epoch: 41,
+      };
+      const adoptedLease: ChatQueueRevivalLease = {
+        rootId: 'adopted-root',
+        epoch: 42,
+      };
+      const acceptTurnRevival = jest
+        .spyOn(queue, 'acceptTurnRevival')
+        .mockReturnValueOnce({ accepted: true, lease: rejectedLease })
+        .mockReturnValueOnce({ accepted: true, lease: adoptedLease });
+      const confirmTurnRevival = jest
+        .spyOn(queue, 'confirmTurnRevival')
+        .mockReturnValue(true);
+      const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+      // A delegate keeps the tag of the turn that started it, so its
+      // snapshots can arrive after the route has moved to another root.
+      const delegationSnapshot = (
+        parentTurnId: string,
+        sequence: number,
+      ): Record<string, unknown> => ({
+        type: 'canopy_delegation',
+        canopy_turn_user_message_id: parentTurnId,
+        delegation: {
+          delegationId: `child-of-${parentTurnId}`,
+          runGeneration: 1,
+          sequence,
+          parentHarnessId: 'claude',
+          parentTurnId,
+          parentToolCallId: `call-${parentTurnId}`,
+          createdAt: 1,
+          task: {
+            description: 'Review',
+            prompt: 'Read',
+            executionMode: 'background',
+          },
+          snapshot: {
+            delegationId: `child-of-${parentTurnId}`,
+            status: 'completed',
+            outputTruncated: false,
+            routeSnapshot: {
+              selectedModelId: 'reviewer',
+              runtimeModelId: 'runtime',
+              harnessId: 'claude',
+            },
+          },
+          transcript: [],
+        },
+      });
+
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId: 'original',
+          text: 'Original',
+          providerType: 'claude',
+        });
+
+        let routeIndex = 0;
+        if (routeKind === 'resumed') {
+          const registration = registerResumeHandler.mock.calls.find(
+            ([scope]) => scope.chatId === chatId,
+          );
+          const resume = registration?.[1];
+          if (!resume) throw new Error('Expected deferred-tools resume route');
+          const resumeRequest: DeferredToolsResumeRequest = {
+            scope: target,
+            requestId: 'resume-request',
+            toolCallId: 'resume-tool',
+            userMessageId: 'original',
+            continuationText: 'Resume the current turn',
+            enabledResources: [],
+            providerType: 'claude',
+            signal: new AbortController().signal,
+          };
+          await resume(resumeRequest);
+          routeIndex = 1;
+        }
+        const call = mockedGetOrCreateSession.mock.calls[routeIndex];
+        const onEvent = call?.[1];
+        if (!call || !onEvent) throw new Error(`Expected ${routeKind} route`);
+
+        mockIngestProviderEventWithResult.mockImplementation(({ data }) =>
+          Promise.resolve(
+            isRecord(data) && data.type === 'canopy_input_delivery'
+              ? data.userMessageId === 'rejected-root'
+                ? { outcome: 'not-applied', pickup: 'rejected' }
+                : { outcome: 'applied', pickup: 'accepted' }
+              : { outcome: 'applied' },
+          ),
+        );
+        const pickup = (
+          attemptId: string,
+          rootId: string,
+        ): Record<string, unknown> => ({
+          type: 'canopy_input_delivery',
+          provider: 'claude',
+          phase: 'picked-up',
+          generation: 'live',
+          attemptId,
+          startsTurn: true,
+          userMessageId: rootId,
+          canopy_turn_user_message_id: rootId,
+        });
+
+        await onEvent(pickup('rejected-attempt', 'rejected-root'));
+        await onEvent(delegationSnapshot('rejected-root', 2));
+        await onEvent(pickup('adopted-attempt', 'adopted-root'));
+        await onEvent(delegationSnapshot('original', 3));
+        await call[3]?.drainEventsBeforeRemoval?.();
+
+        expect(rollbackTurnRevival).toHaveBeenCalledWith(target, rejectedLease);
+        expect(confirmTurnRevival).toHaveBeenCalledWith(target, adoptedLease);
+        const ingestedDelegationParents =
+          mockIngestProviderEventWithResult.mock.calls
+            .map(([input]) => input.data)
+            .filter(
+              (data): data is Record<string, unknown> =>
+                isRecord(data) && data.type === 'canopy_delegation',
+            )
+            .map((data) => data.canopy_turn_user_message_id);
+        expect(ingestedDelegationParents).toEqual([
+          'rejected-root',
+          'original',
+        ]);
+        const presentedDelegationParents = mockedSendToWindowDetailed.mock.calls
+          .map(([, channel, payload]) =>
+            channel === IPC_CHANNELS.chatEvent &&
+            isRecord(payload) &&
+            isRecord(payload.data) &&
+            payload.data.type === 'canopy_delegation'
+              ? payload.data.canopy_turn_user_message_id
+              : undefined,
+          )
+          .filter((parent) => parent !== undefined);
+        expect(presentedDelegationParents).toEqual([
+          'rejected-root',
+          'original',
+        ]);
+      } finally {
+        acceptTurnRevival.mockRestore();
+        confirmTurnRevival.mockRestore();
+        rollbackTurnRevival.mockRestore();
+        registerResumeHandler.mockRestore();
+        deferredToolsReloadCoordinator.resetForTests();
+      }
+    },
+  );
+
+  it('rolls back the exact lease when confirmation fails for the current root', async () => {
+    const session = makeMockSession();
+    session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'live',
+      steer: true,
+      withdraw: true,
+      interrupt: true,
+    });
+    mockedGetOrCreateSession.mockResolvedValue(session);
+    const target = {
+      projectId: 'cowork-default',
+      worktreeId: 'current-root-confirm-entry',
+      chatId: 'current-root-confirm',
+    };
+    await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+      ...target,
+      userMessageId: 'original',
+      text: 'Original',
+      providerType: 'claude',
+    });
+    const call = mockedGetOrCreateSession.mock.calls[0];
+    const onEvent = call?.[1];
+    if (!call || !onEvent) throw new Error('Expected cowork route');
+    const lease: ChatQueueRevivalLease = { rootId: 'original', epoch: 31 };
+    const queue = getChatQueueService();
+    const acceptTurnRevival = jest
+      .spyOn(queue, 'acceptTurnRevival')
+      .mockReturnValue({ accepted: true, lease });
+    const confirmTurnRevival = jest
+      .spyOn(queue, 'confirmTurnRevival')
+      .mockReturnValue(false);
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+
+    try {
+      mockIngestProviderEventWithResult
+        .mockResolvedValueOnce({ outcome: 'applied', pickup: 'accepted' })
+        .mockResolvedValueOnce({ outcome: 'applied' })
+        .mockResolvedValueOnce({ outcome: 'applied' });
+      await onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        phase: 'picked-up',
+        generation: 'live',
+        attemptId: 'current-root-attempt',
+        startsTurn: true,
+        userMessageId: 'original',
+      });
+      await onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'original',
+        message: {
+          id: 'original-reply-after-confirm-race',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Still-current output' }],
+        },
+      });
+      await onEvent({
+        type: 'result',
+        canopy_turn_user_message_id: 'original',
+        is_error: false,
+        result: 'Current root done',
+      });
+      await call[3]?.drainEventsBeforeRemoval?.();
+
+      expect(confirmTurnRevival).toHaveBeenCalledWith(target, lease);
+      expect(rollbackTurnRevival).toHaveBeenCalledTimes(1);
+      expect(rollbackTurnRevival).toHaveBeenCalledWith(target, lease);
+      expect(
+        mockIngestProviderEventWithResult.mock.calls.map(
+          ([input]) => input.turnUserMessageId,
+        ),
+      ).toEqual(['original', 'original', 'original']);
+    } finally {
+      acceptTurnRevival.mockRestore();
+      confirmTurnRevival.mockRestore();
+      rollbackTurnRevival.mockRestore();
+    }
+  });
+
+  it('does not let a superseded pickup lease switch roots or roll back its replacement', async () => {
+    const session = makeMockSession();
+    session.getSteeringCapabilities = () => ({
+      provider: 'claude',
+      generation: 'live',
+      steer: true,
+      withdraw: true,
+      interrupt: true,
+    });
+    mockedGetOrCreateSession.mockResolvedValue(session);
+    await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+      projectId: 'cowork-default',
+      worktreeId: 'steering-entry',
+      chatId: 'superseded-pickup',
+      userMessageId: 'original',
+      text: 'Original',
+      providerType: 'claude',
+    });
+    const call = mockedGetOrCreateSession.mock.calls[0];
+    const onEvent = call?.[1];
+    if (!call || !onEvent) throw new Error('Expected cowork route');
+    const target = {
+      projectId: 'cowork-default',
+      worktreeId: 'steering-entry',
+      chatId: 'superseded-pickup',
+    };
+    const queue = getChatQueueService();
+    const acceptTurnRevival = jest.spyOn(queue, 'acceptTurnRevival');
+    const confirmTurnRevival = jest.spyOn(queue, 'confirmTurnRevival');
+    const rollbackTurnRevival = jest.spyOn(queue, 'rollbackTurnRevival');
+    queue.onTurnTerminal(target, 'complete', 'original');
+    let replacementLease: ChatQueueRevivalLease | undefined;
+    mockIngestProviderEventWithResult.mockImplementationOnce(() => {
+      const replacement = queue.acceptTurnRevival(target, 'selected');
+      if (!replacement.accepted) {
+        throw new Error('Expected a newer same-root lease');
+      }
+      replacementLease = replacement.lease;
+      return Promise.resolve<ProviderEventIngestResult>({
+        outcome: 'applied',
+        pickup: 'accepted',
+      });
+    });
+
+    try {
+      await onEvent({
+        type: 'canopy_input_delivery',
+        provider: 'claude',
+        phase: 'picked-up',
+        generation: 'live',
+        attemptId: 'superseded-attempt',
+        startsTurn: true,
+        userMessageId: 'selected',
+      });
+      await onEvent({
+        type: 'assistant',
+        canopy_turn_user_message_id: 'selected',
+        message: {
+          id: 'must-not-apply',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Superseded output' }],
+        },
+      });
+      await call[3]?.drainEventsBeforeRemoval?.();
+
+      const firstAcceptanceValue: unknown =
+        acceptTurnRevival.mock.results[0]?.value;
+      const originalLease =
+        getQueueLeaseFromAcceptanceResult(firstAcceptanceValue);
+      if (!originalLease || !replacementLease) {
+        throw new Error('Expected both same-root router leases');
+      }
+      expect(confirmTurnRevival).toHaveBeenCalledWith(target, originalLease);
+      expect(rollbackTurnRevival).toHaveBeenCalledWith(target, originalLease);
+      expect(mockIngestProviderEventWithResult).toHaveBeenCalledTimes(1);
+      expect(queue.confirmTurnRevival(target, replacementLease)).toBe(true);
+    } finally {
+      acceptTurnRevival.mockRestore();
+      confirmTurnRevival.mockRestore();
+      rollbackTurnRevival.mockRestore();
+    }
   });
 
   it('retries a cowork turn when the durable prompt exists but was not accepted', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockIngestProviderEvent.mockResolvedValueOnce(false);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -3095,7 +4927,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('retries a worktree turn when its prompt exists but was not accepted', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockIngestProviderEvent.mockResolvedValueOnce(false);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -3115,7 +4947,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('releases the queue after suppressing an already-accepted replay', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     mockIngestProviderEvent.mockResolvedValueOnce(false);
     mockHasMutation.mockResolvedValueOnce(true);
 
@@ -3158,7 +4990,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('deduplicates a replay using the stable worktree prompt identity', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
     const mutationIds = new Set<string>();
     mockIngestProviderEvent.mockImplementation((input) => {
       if (!input.mutationId || mutationIds.has(input.mutationId)) {
@@ -3225,6 +5057,42 @@ describe('chat IPC sendMessage', () => {
     expect(mockedResolveWorktreeCwd).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    'delivers App Advisor watcher messages without a presentation precondition (fired=%s)',
+    async (fired) => {
+      ensureAppAdvisorWindowMock.mockRejectedValueOnce(
+        new Error('Advisor window failed to load'),
+      );
+      await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: 'entry-app-advisor',
+        chatId: 'app-advisor-chat',
+        userMessageId: fired ? 'watcher-fired' : 'watcher-deleted',
+        text: 'Watcher notification',
+        hiddenContext: {
+          kind: 'canopy-watcher-event',
+          text: 'Watcher context',
+        },
+        ...(fired
+          ? { watcherFired: { kind: 'worktree_chat_completion' } }
+          : {}),
+        assistantMode: 'app-advisor',
+        initiationSource: 'user',
+      });
+      expect(mockDispatchAppAdvisorChatMessage).toHaveBeenCalledTimes(1);
+      // The window is still opened to present the turn, but the send neither
+      // waits for it nor fails with it.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(ensureAppAdvisorWindowMock).toHaveBeenCalledTimes(1);
+      ensureAppAdvisorWindowMock.mockReset();
+      ensureAppAdvisorWindowMock.mockResolvedValue({
+        open: false,
+        focused: false,
+      });
+    },
+  );
+
   it('holds App Advisor sends inside the Work Entry deletion activity fence', async () => {
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: APP_ADVISOR_PROJECT_ID,
@@ -3247,7 +5115,7 @@ describe('chat IPC sendMessage', () => {
 
   it('holds ordinary worktree sends inside the deletion activity fence', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const send = getHandler(IPC_CHANNELS.chatSendMessage);
 
     await send(undefined, {
@@ -3275,6 +5143,33 @@ describe('chat IPC sendMessage', () => {
       getChatQueueService().getWorktreeSnapshots('proj', 'worktree')[0]?.queue,
     ).toHaveLength(1);
   });
+
+  it.each([
+    [APP_ADVISOR_PROJECT_ID, 'entry-app-advisor'],
+    [PIPELINE_EDITOR_PROJECT_ID, PIPELINE_EDITOR_WORKTREE_ID],
+  ])(
+    'does not install request authority ahead of the %s dispatcher (CAN-4940)',
+    async (projectId, worktreeId) => {
+      const chatId = 'request-authority';
+      clearLiveApprovalMode(projectId, worktreeId, chatId);
+      try {
+        await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+          projectId,
+          worktreeId,
+          chatId,
+          userMessageId: 'authority-message',
+          text: 'Start',
+          approvalMode: 'full-access',
+        });
+        // The service, not this request boundary, must resolve and install the saved authority.
+        expect(
+          getLiveApprovalMode(projectId, worktreeId, chatId),
+        ).toBeUndefined();
+      } finally {
+        clearLiveApprovalMode(projectId, worktreeId, chatId);
+      }
+    },
+  );
 
   it('clamps and registers App Advisor approval mode before dispatch', async () => {
     setLiveApprovalMode(
@@ -3479,7 +5374,7 @@ describe('chat IPC sendMessage', () => {
 
   it('notifies watcher service once for standalone chat terminal events', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: STANDALONE_CHAT_PROJECT_ID,
@@ -3515,7 +5410,7 @@ describe('chat IPC sendMessage', () => {
 
   it('notifies standalone watchers only for root Codex errors', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: STANDALONE_CHAT_PROJECT_ID,
@@ -3623,7 +5518,7 @@ describe('chat IPC sendMessage', () => {
   });
 
   it('reports no refusal for a send the preflight allows', async () => {
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
 
     const result = await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'proj',
@@ -3638,7 +5533,7 @@ describe('chat IPC sendMessage', () => {
 
   it('notifies watcher service once for worktree chat terminal events after completing the audit turn', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'proj',
@@ -3682,7 +5577,7 @@ describe('chat IPC sendMessage', () => {
     const mainWindow = new BrowserWindow();
     registerChatHandlers(makeWindowAccessors(() => mainWindow));
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'proj',
@@ -3744,14 +5639,20 @@ describe('chat IPC sendMessage', () => {
       'proj',
       'worktree',
       'chat',
+      'stop',
     );
   });
 
   it('settles the interrupted turn before dispatching a forced queued prompt', async () => {
     const mainWindow = new BrowserWindow();
     registerChatHandlers(makeWindowAccessors(() => mainWindow));
-    const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    // The provider reports idle once the interrupted turn's cancel completes.
+    const cancel = jest.fn((): Promise<void> => {
+      jest.mocked(getActiveChatIds).mockReturnValue([]);
+      return Promise.resolve();
+    });
+    const session = { ...makeMockSession(), cancel };
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedGetSession.mockReturnValue(session);
     mockedGetSessionProviderType.mockReturnValue('codex');
     const target = {
@@ -3783,10 +5684,16 @@ describe('chat IPC sendMessage', () => {
     }
 
     mockedSendToWindow.mockClear();
-    await getHandler(IPC_CHANNELS.chatQueueForce)(undefined, {
-      ...target,
-      entryId: queuedEntry.id,
-    });
+    // Send now interrupts only a turn the provider reports as running.
+    jest.mocked(getActiveChatIds).mockReturnValue(['chat']);
+    try {
+      await getHandler(IPC_CHANNELS.chatQueueForce)(undefined, {
+        ...target,
+        entryId: queuedEntry.id,
+      });
+    } finally {
+      jest.mocked(getActiveChatIds).mockReturnValue([]);
+    }
 
     const chatEvents = mockedSendToWindow.mock.calls.filter(
       ([, channel]) => channel === IPC_CHANNELS.chatEvent,
@@ -3840,7 +5747,7 @@ describe('chat IPC sendMessage', () => {
 
   it('synchronizes plan mode onto an existing session before sending a message', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'proj',
@@ -3884,7 +5791,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes worktree Codex multi-agent preference into Codex worktree sessions', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ codexMultiAgentWorktreeChatsEnabled: false }),
     );
@@ -3909,7 +5816,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes the Codex subagent concurrency preference into cowork sessions', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ codexMaxConcurrentSubagents: 3 }),
     );
@@ -3933,7 +5840,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes enabled Claude RTK through worktree chat turns before sendMessage', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ rtkEnabled: true }),
     );
@@ -3973,7 +5880,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes disabled Claude RTK through worktree chat turns before sendMessage', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ rtkEnabled: false }),
     );
@@ -4015,7 +5922,7 @@ describe('chat IPC sendMessage', () => {
     'rejects native Claude send while Claude Code terminal is %s',
     async (turnState) => {
       const session = makeMockSession();
-      mockedGetOrCreateSession.mockReturnValue(session);
+      mockedGetOrCreateSession.mockResolvedValue(session);
       mockClaudeTerminalGetState.mockReturnValue({ turnState });
 
       await expect(
@@ -4041,7 +5948,7 @@ describe('chat IPC sendMessage', () => {
 
   it('cleans up inactive Claude Code terminal state before native Claude send', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockClaudeTerminalGetState.mockReturnValue({ turnState: 'idle' });
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -4093,7 +6000,7 @@ describe('chat IPC sendMessage', () => {
     'forwards the RTK preference %s to Cursor worktree chat turns',
     async (rtkEnabled) => {
       const session = makeMockSession();
-      mockedGetOrCreateSession.mockReturnValue(session);
+      mockedGetOrCreateSession.mockResolvedValue(session);
       mockedReadPreferencesFile.mockResolvedValue(
         makePreferences({ rtkEnabled }),
       );
@@ -4124,7 +6031,7 @@ describe('chat IPC sendMessage', () => {
 
   it('does not enable RTK for Codex worktree chat turns even if the preference is true', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ rtkEnabled: true }),
     );
@@ -4151,7 +6058,7 @@ describe('chat IPC sendMessage', () => {
 
   it('triggers background branch naming on the first message without mutating the prompt', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedDoesBranchMatchWorktreeId.mockResolvedValue({ matches: true });
     mockedIsBranchPromptSent.mockResolvedValue(false);
 
@@ -4200,7 +6107,7 @@ describe('chat IPC sendMessage', () => {
 
   it('validates selectedRepoId at the IPC boundary before resolving cwd', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'proj',
@@ -4228,7 +6135,7 @@ describe('chat IPC sendMessage', () => {
       .spyOn(console, 'warn')
       .mockImplementation((): void => undefined);
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedGetActiveSessionInfos.mockReturnValue([]);
     mockedSendToWindowDetailed
       .mockReturnValueOnce({ delivered: true })
@@ -4321,7 +6228,7 @@ describe('chat IPC sendMessage', () => {
 
   it('retries background branch naming when the legacy flag is set but the branch still matches the worktree id', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedDoesBranchMatchWorktreeId.mockResolvedValue({
       matches: true,
       matchingRepos: ['repo-a'],
@@ -4360,7 +6267,7 @@ describe('chat IPC sendMessage', () => {
 
   it('clears the legacy branch naming flag when background naming fails', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedDoesBranchMatchWorktreeId.mockResolvedValue({ matches: true });
     mockedIsBranchPromptSent.mockResolvedValue(false);
     mockedGenerateAndRenameBranch.mockRejectedValue(new Error('rename failed'));
@@ -4387,7 +6294,7 @@ describe('chat IPC sendMessage', () => {
 
   it('records branch naming with the configured Codex provider', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedDoesBranchMatchWorktreeId.mockResolvedValue({ matches: true });
     mockedIsBranchPromptSent.mockResolvedValue(true);
     mockedReadPreferencesFile.mockResolvedValue(
@@ -4425,7 +6332,7 @@ describe('chat IPC sendMessage', () => {
 
   it('injects attachment system instructions into worktree messages sent to agents', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const attachmentDir = getWorktreeAttachmentsDir('proj', 'worktree');
     const firstAttachment = `${attachmentDir}/notes-1.txt`;
     const secondAttachment = `${attachmentDir}/notes-2.txt`;
@@ -4484,7 +6391,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes enriched transcript metadata into startChatTurn', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'standalone-chat',
@@ -4545,7 +6452,7 @@ describe('chat IPC sendMessage', () => {
 
   it('coerces invalid standalone initiationSource to user', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: STANDALONE_CHAT_PROJECT_ID,
@@ -4569,7 +6476,7 @@ describe('chat IPC sendMessage', () => {
 
   it('preserves valid standalone initiationSource values', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: STANDALONE_CHAT_PROJECT_ID,
@@ -4593,7 +6500,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes enabled Claude RTK through standalone chat turns before sendMessage', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ rtkEnabled: true }),
     );
@@ -4634,7 +6541,7 @@ describe('chat IPC sendMessage', () => {
 
   it('forwards rtkEnabled false for standalone Codex chats', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ rtkEnabled: true }),
     );
@@ -4662,7 +6569,7 @@ describe('chat IPC sendMessage', () => {
 
   it('passes standalone Codex multi-agent preference into standalone Codex sessions', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({ codexMultiAgentStandaloneChatsEnabled: false }),
     );
@@ -4688,7 +6595,7 @@ describe('chat IPC sendMessage', () => {
 
   it('destroys standalone sessions flagged for next-turn recreation before sending', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedShouldRecreateSessionOnNextTurn.mockReturnValue(true);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -4722,7 +6629,7 @@ describe('chat IPC sendMessage', () => {
 
   it('adds multi-repo repository scope instructions to plan-mode worktree prompts', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockGetWorkspaceType.mockReturnValue('multi-repo');
     mockReadEffectiveWorkspaceConfig.mockResolvedValue({
       sourceRepoPath: '/workspace/source',
@@ -4776,7 +6683,7 @@ describe('chat IPC sendMessage', () => {
 
   it('does not append multi-repo repository scope instructions outside plan mode', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockGetWorkspaceType.mockReturnValue('multi-repo');
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -4807,7 +6714,7 @@ describe('chat IPC sendMessage', () => {
 
   it('recreates the session on the next turn after a plan-mode transition', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedShouldRecreateSessionOnNextTurn.mockReturnValue(true);
     mockGetWorkspaceType.mockReturnValue('multi-repo');
     mockReadEffectiveWorkspaceConfig.mockResolvedValue({
@@ -4855,20 +6762,22 @@ describe('chat IPC sendMessage', () => {
     let sessionEventHandler: ((data: unknown) => void) | undefined;
     mockedGetOrCreateSession.mockImplementation((_opts, onEvent) => {
       sessionEventHandler = onEvent;
-      return session;
+      return Promise.resolve(session);
     });
-    mockedCaptureTurnEndAndDiff.mockResolvedValue({
-      files: [
-        {
-          path: 'src/app.ts',
-          status: 'modified',
-          insertions: 3,
-          deletions: 1,
-        },
-      ],
-      totalInsertions: 3,
-      totalDeletions: 1,
-      capturedAt: 123,
+    mockedCaptureTurnEndAndDiffs.mockResolvedValue({
+      turn: {
+        files: [
+          {
+            path: 'src/app.ts',
+            status: 'modified',
+            insertions: 3,
+            deletions: 1,
+          },
+        ],
+        totalInsertions: 3,
+        totalDeletions: 1,
+        capturedAt: 123,
+      },
     });
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -4896,8 +6805,9 @@ describe('chat IPC sendMessage', () => {
     await flushPromises();
     await flushPromises();
 
-    expect(mockedCaptureTurnEndAndDiff).toHaveBeenCalledWith(
+    expect(mockedCaptureTurnEndAndDiffs).toHaveBeenCalledWith(
       'proj/worktree/chat',
+      { userMessageId: 'msg-5' },
     );
     expect(mockedSendToWindowDetailed).toHaveBeenCalledWith(
       null,
@@ -4931,13 +6841,17 @@ describe('chat IPC sendMessage', () => {
     const sessionEventHandlers: Array<(data: unknown) => void> = [];
     mockedGetOrCreateSession.mockImplementation((_opts, onEvent) => {
       sessionEventHandlers.push(onEvent);
-      return sessionEventHandlers.length === 1 ? firstSession : secondSession;
+      return Promise.resolve(
+        sessionEventHandlers.length === 1 ? firstSession : secondSession,
+      );
     });
-    mockedCaptureTurnEndAndDiff.mockResolvedValue({
-      files: [],
-      totalInsertions: 0,
-      totalDeletions: 0,
-      capturedAt: 123,
+    mockedCaptureTurnEndAndDiffs.mockResolvedValue({
+      turn: {
+        files: [],
+        totalInsertions: 0,
+        totalDeletions: 0,
+        capturedAt: 123,
+      },
     });
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -4980,7 +6894,7 @@ describe('chat IPC sendMessage', () => {
     await flushPromises();
     await flushPromises();
 
-    expect(mockedCaptureTurnEndAndDiff).not.toHaveBeenCalled();
+    expect(mockedCaptureTurnEndAndDiffs).not.toHaveBeenCalled();
 
     newHandler({
       type: 'result',
@@ -4992,9 +6906,10 @@ describe('chat IPC sendMessage', () => {
     await flushPromises();
     await flushPromises();
 
-    expect(mockedCaptureTurnEndAndDiff).toHaveBeenCalledTimes(1);
-    expect(mockedCaptureTurnEndAndDiff).toHaveBeenCalledWith(
+    expect(mockedCaptureTurnEndAndDiffs).toHaveBeenCalledTimes(1);
+    expect(mockedCaptureTurnEndAndDiffs).toHaveBeenCalledWith(
       'proj/worktree/chat',
+      { userMessageId: 'msg-new' },
     );
     expect(mockedSendToWindowDetailed).toHaveBeenCalledWith(
       null,
@@ -5023,7 +6938,7 @@ describe('chat IPC sendMessage', () => {
       // it was created; later getOrCreateSession calls return that session
       // without installing their newly supplied callback.
       retainedSessionEventHandler ??= onEvent;
-      return session;
+      return Promise.resolve(session);
     });
 
     const send = getHandler(IPC_CHANNELS.chatSendMessage);
@@ -5079,9 +6994,9 @@ describe('chat IPC sendMessage', () => {
     const session = makeMockSession();
     let onEvent: ((data: unknown) => void) | undefined;
     mockedGetOrCreateSession.mockImplementation(
-      (_opts, handler): AgentSession => {
+      (_opts, handler): Promise<AgentSession> => {
         onEvent = handler;
-        return session;
+        return Promise.resolve(session);
       },
     );
 
@@ -5117,9 +7032,9 @@ describe('chat IPC sendMessage', () => {
     const session = makeMockSession();
     let onEvent: ((data: unknown) => void) | undefined;
     mockedGetOrCreateSession.mockImplementation(
-      (_opts, handler): AgentSession => {
+      (_opts, handler): Promise<AgentSession> => {
         onEvent = handler;
-        return session;
+        return Promise.resolve(session);
       },
     );
 
@@ -5155,9 +7070,9 @@ describe('chat IPC sendMessage', () => {
     const session = makeMockSession();
     let onEvent: ((data: unknown) => void) | undefined;
     mockedGetOrCreateSession.mockImplementation(
-      (_opts, handler): AgentSession => {
+      (_opts, handler): Promise<AgentSession> => {
         onEvent = handler;
-        return session;
+        return Promise.resolve(session);
       },
     );
 
@@ -5821,12 +7736,15 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     mockIngestProviderEventWithOutcome.mockImplementation(
       ingestOutcomeFromCommit,
     );
+    mockIngestProviderEventWithResult
+      .mockReset()
+      .mockImplementation(ingestResultFromOutcome);
     registerChatHandlers(makeWindowAccessors());
   });
 
   it('injects prepared owner-scoped organization memory into a native Cowork send', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockPrepareOrgMemory.mockResolvedValueOnce({
       attempt: {
         result: {
@@ -5867,7 +7785,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('discloses and broadcasts retrieved organization memory for a native Cowork send', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const facts = [
       {
         factId: 'fact-release-train',
@@ -5933,7 +7851,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
         throw new Error('provider rejected the turn');
       }),
     };
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockPrepareOrgMemory.mockResolvedValueOnce({
       attempt: {
         result: {
@@ -5968,9 +7886,59 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     expect(mockPersistOrgMemoryUsedForChat).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])(
+    'commits and dispatches one Cowork watcher user row (fired=%s)',
+    async (fired) => {
+      const sendMessage = jest.fn();
+      const session = { ...makeMockSession(), sendMessage };
+      mockedGetOrCreateSession.mockResolvedValue(session);
+      const userMessageId = fired
+        ? 'watcher-fired-cowork'
+        : 'watcher-deleted-cowork';
+      await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        projectId: 'cowork-default',
+        worktreeId: 'entry-watchers',
+        chatId: 'chat-watchers',
+        userMessageId,
+        text: 'Watcher notification',
+        providerType: 'claude',
+        hiddenContext: {
+          kind: 'canopy-watcher-event',
+          text: 'Watcher context',
+        },
+        ...(fired
+          ? { watcherFired: { kind: 'worktree_chat_completion' } }
+          : {}),
+      });
+      const promptCommits = mockIngestProviderEvent.mock.calls.filter(
+        ([input]) =>
+          input.mutationId === `chat-watchers:${userMessageId}:user-prompt`,
+      );
+      expect(promptCommits).toHaveLength(1);
+      expect(promptCommits[0]?.[0].data).toMatchObject({
+        type: 'canopy_user_prompt',
+        canopy_persisted_messages: [
+          expect.objectContaining({
+            id: userMessageId,
+            role: 'user',
+            ...(fired
+              ? { watcherFired: { kind: 'worktree_chat_completion' } }
+              : {}),
+          }),
+        ],
+      });
+      if (!fired) {
+        expect(promptCommits[0]?.[0].data).not.toHaveProperty(
+          'canopy_persisted_messages.0.watcherFired',
+        );
+      }
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('admits the full cowork send before asynchronous dispatch preparation', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -5992,7 +7960,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('guards cowork usage-limit cleanup with the pre-send timestamp', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6014,7 +7982,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('commits the prompt and provider events before broadcasting cowork state', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const request = {
       projectId: 'cowork-default',
       worktreeId: 'entry-1',
@@ -6096,7 +8064,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('broadcasts a terminal result when canonical state already settled', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6132,7 +8100,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('delivers an activity-only cowork event but suppresses a rejected one', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6177,7 +8145,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('exposes the current cowork provider-event tail to session teardown', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6216,7 +8184,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('delivers Cowork attachment blocks to OpenCode from the managed attachment root', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const baseDir = getCoworkManagedSubdir('/tmp/repo', 'attachments');
     const attachmentPaths = [`${baseDir}/notes.txt`];
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
@@ -6241,7 +8209,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('uses the cowork managed attachments dir instead of a legacy resolveCoworkWorkspaceId(worktreeId) lookup', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const attachmentsDir = getCoworkManagedSubdir('/tmp/repo', 'attachments');
     const attachmentPath = `${attachmentsDir}/notes.txt`;
 
@@ -6331,7 +8299,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     'uses the cowork system and %s tool prompts and marks the chat standalone in the audit turn',
     async (providerType) => {
       const session = makeMockSession();
-      mockedGetOrCreateSession.mockReturnValue(session);
+      mockedGetOrCreateSession.mockResolvedValue(session);
 
       await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
         projectId: 'cowork-default',
@@ -6360,7 +8328,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('records the original instruction snapshot when resuming a cowork provider session', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     mockedReadPreferencesFile.mockResolvedValue(
       makePreferences({
         globalInstructions: {
@@ -6395,7 +8363,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('includes watcher hidden context in cowork provider prompts', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
     const watcherContext = [
       '<system_instruction>',
       '<canopy_watcher_event>',
@@ -6497,7 +8465,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('skips the Claude Code terminal-service cleanup path', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6514,7 +8482,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('notifies the watcher service with standalone scope for terminal events', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6550,7 +8518,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('does not write the legacy chat-history meta mirror for cowork sends', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6571,7 +8539,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     'preserves a disabled deferred-tools policy for %s sessions',
     async (providerType) => {
       const session = makeMockSession();
-      mockedGetOrCreateSession.mockReturnValue(session);
+      mockedGetOrCreateSession.mockResolvedValue(session);
 
       await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
         projectId: 'cowork-default',
@@ -6611,15 +8579,35 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     resumedSession.sendMessage = resumedSendMessage;
     mockedGetSession.mockReturnValue(initialSession);
     mockedGetOrCreateSession
-      .mockReturnValueOnce(initialSession)
-      .mockImplementationOnce(() => {
+      .mockResolvedValueOnce(initialSession)
+      .mockImplementationOnce((): Promise<AgentSession> => {
         setLiveApprovalMode('cowork-default', 'home', 'chat-reload', 'ask');
-        return resumedSession;
+        return Promise.resolve(resumedSession);
       });
     const registerResumeHandler = jest.spyOn(
       deferredToolsReloadCoordinator,
       'registerResumeHandler',
     );
+    // The chat's saved mode is the turn's authority (CAN-4469).
+    const readTabs = mockReadChatTabsFile.getMockImplementation();
+    mockResolvePersistedApprovalMode.mockImplementation(
+      (_projectId: string, _worktreeId: string, tabMode?: string) =>
+        Promise.resolve(tabMode ?? 'ask'),
+    );
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      activeTabId: 'chat-reload',
+      tabs: [
+        {
+          id: 'chat-reload',
+          title: 'Reload',
+          messages: [],
+          createdAt: '2026-10-23T00:00:00.000Z',
+          providerType: 'codex',
+          approvalMode: 'full-access',
+        },
+      ],
+    });
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6693,6 +8681,199 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     );
     expect(startChatTurnMock).toHaveBeenCalledTimes(1);
     registerResumeHandler.mockRestore();
+    if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+    else mockReadChatTabsFile.mockReset();
+    mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+  });
+
+  it('rereads cowork saved authority on resume instead of trusting stale live grants (CAN-4940)', async () => {
+    const chatId = 'cowork-resume-authority';
+    const target = { projectId: 'cowork-default', worktreeId: 'home', chatId };
+    const grant: DesktopSharedTypesModule.ApprovalRule = {
+      id: 'stale-grant',
+      behavior: 'allow',
+      target: { kind: 'command', pattern: 'npm test *' },
+      createdAt: '2026-10-24T00:00:00.000Z',
+      origin: 'prompt',
+    };
+    const initialSession = makeMockSession();
+    const resumedSession = makeMockSession();
+    const setResumedApprovalMode = jest.fn(() => Promise.resolve());
+    resumedSession.setApprovalMode = setResumedApprovalMode;
+    mockedGetSession.mockReturnValue(initialSession);
+    mockedGetOrCreateSession
+      .mockResolvedValueOnce(initialSession)
+      .mockResolvedValueOnce(resumedSession);
+    const registration = jest.spyOn(
+      deferredToolsReloadCoordinator,
+      'registerResumeHandler',
+    );
+    const readTabs = mockReadChatTabsFile.getMockImplementation();
+    const saved = (
+      mode: DesktopSharedTypesModule.ApprovalMode,
+      rules: DesktopSharedTypesModule.ApprovalRule[],
+    ): ChatTabsFile => ({
+      version: 1,
+      activeTabId: chatId,
+      tabs: [
+        {
+          id: chatId,
+          title: 'Resume',
+          messages: [],
+          createdAt: grant.createdAt,
+          approvalMode: mode,
+          sessionApprovalRules: rules,
+        },
+      ],
+    });
+    mockResolvePersistedApprovalMode.mockImplementation(
+      (_project: string, _worktree: string, mode?: string) =>
+        Promise.resolve(mode ?? 'ask'),
+    );
+    mockReadChatTabsFile.mockResolvedValue(saved('full-access', [grant]));
+    try {
+      await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
+        ...target,
+        userMessageId: 'resume-message',
+        text: 'Start',
+        providerType: 'codex',
+      });
+      const resume = registration.mock.calls.find(
+        ([scope]) => scope.chatId === chatId,
+      )?.[1];
+      if (!resume) throw new Error('Missing cowork resume');
+      // Disk revokes the authority while the live registry and old request remain wide.
+      mockReadChatTabsFile.mockResolvedValue(saved('ask', []));
+      setLiveApprovalMode(
+        target.projectId,
+        target.worktreeId,
+        chatId,
+        'full-access',
+      );
+      await resume({
+        scope: target,
+        requestId: 'reload-authority',
+        toolCallId: 'tool',
+        userMessageId: 'resume-message',
+        continuationText: 'Continue',
+        enabledResources: [],
+        sdkSessionId: undefined,
+        providerType: 'codex',
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        },
+        signal: new AbortController().signal,
+      });
+      expect(mockedGetOrCreateSession.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({
+          approvalMode: 'ask',
+          sessionApprovalRules: [],
+        }),
+      );
+      expect(setResumedApprovalMode).toHaveBeenLastCalledWith('ask');
+      expect(
+        getLiveApprovalMode(target.projectId, target.worktreeId, chatId),
+      ).toBe('ask');
+    } finally {
+      registration.mockRestore();
+      if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+      else mockReadChatTabsFile.mockReset();
+      mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+      clearLiveApprovalMode(target.projectId, target.worktreeId, chatId);
+    }
+  });
+
+  it('keeps an admitted agent turn at its cap through a deferred-tools reload (CAN-4821)', async () => {
+    const chatId = 'chat-admitted-reload';
+    const initialSession = makeMockSession();
+    const resumedSession = makeMockSession();
+    const resumedSetApprovalMode = jest.fn().mockResolvedValue(undefined);
+    resumedSession.setApprovalMode = resumedSetApprovalMode;
+    mockedGetSession.mockReturnValue(initialSession);
+    mockedGetOrCreateSession
+      .mockResolvedValueOnce(initialSession)
+      .mockResolvedValueOnce(resumedSession);
+    const registerResumeHandler = jest.spyOn(
+      deferredToolsReloadCoordinator,
+      'registerResumeHandler',
+    );
+    const readTabs = mockReadChatTabsFile.getMockImplementation();
+    mockResolvePersistedApprovalMode.mockImplementation(
+      (_projectId: string, _worktreeId: string, tabMode?: string) =>
+        Promise.resolve(tabMode ?? 'ask'),
+    );
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      activeTabId: chatId,
+      tabs: [
+        {
+          id: chatId,
+          title: 'Reload',
+          messages: [],
+          createdAt: '2026-10-23T00:00:00.000Z',
+          providerType: 'claude',
+          approvalMode: 'full-access',
+        },
+      ],
+    });
+    try {
+      await dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'cowork-default',
+          worktreeId: 'home',
+          chatId,
+          userMessageId: 'msg-admitted-reload',
+          text: 'Use the deferred tool',
+          providerType: 'claude',
+          admittedApproval: { approvalMode: 'ask', sessionApprovalRules: [] },
+        },
+        'desktop',
+        true,
+      );
+      // The chat's later turns are not capped.
+      expect(getLiveApprovalMode('cowork-default', 'home', chatId)).toBe(
+        'full-access',
+      );
+      const resume = registerResumeHandler.mock.calls.find(
+        ([scope]) => scope.chatId === chatId,
+      )?.[1];
+      if (!resume) throw new Error('Expected cowork deferred-tools resume');
+
+      await resume({
+        scope: { projectId: 'cowork-default', worktreeId: 'home', chatId },
+        requestId: 'reload-request',
+        toolCallId: 'tool-call',
+        userMessageId: 'msg-admitted-reload',
+        continuationText: '<system_instruction>Continue</system_instruction>',
+        enabledResources: [],
+        sdkSessionId: undefined,
+        providerType: 'claude',
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        },
+        signal: new AbortController().signal,
+      });
+
+      expect(mockedGetOrCreateSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ approvalMode: 'ask' }),
+        expect.any(Function),
+        expect.any(Function),
+        expect.anything(),
+      );
+      expect(resumedSetApprovalMode).toHaveBeenLastCalledWith('ask');
+    } finally {
+      registerResumeHandler.mockRestore();
+      if (readTabs) mockReadChatTabsFile.mockImplementation(readTabs);
+      else mockReadChatTabsFile.mockReset();
+      mockResolvePersistedApprovalMode.mockReset().mockResolvedValue('ask');
+      clearLiveApprovalMode('cowork-default', 'home', chatId);
+    }
   });
 
   it('resumes a started Claude fork child after a deferred-tools reload', async () => {
@@ -6701,8 +8882,8 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
     const resumedSession = makeMockSession();
     mockedGetSession.mockReturnValue(initialSession);
     mockedGetOrCreateSession
-      .mockReturnValueOnce(initialSession)
-      .mockReturnValueOnce(resumedSession);
+      .mockResolvedValueOnce(initialSession)
+      .mockResolvedValueOnce(resumedSession);
     const registerResumeHandler = jest.spyOn(
       deferredToolsReloadCoordinator,
       'registerResumeHandler',
@@ -6764,7 +8945,7 @@ describe('chat IPC sendMessage cowork treatment for a real cowork project id', (
 
   it('does not finalize observability for the internal reload interruption', async () => {
     const session = makeMockSession();
-    mockedGetOrCreateSession.mockReturnValue(session);
+    mockedGetOrCreateSession.mockResolvedValue(session);
 
     await getHandler(IPC_CHANNELS.chatSendMessage)(undefined, {
       projectId: 'cowork-default',
@@ -6993,7 +9174,39 @@ describe('chat IPC planModeToggle', () => {
       'workspace',
       'worktree',
       'chat',
+      'plan',
     );
+  });
+
+  it('defers live plan-mode changes while the session has active or native work', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(true);
+    const refreshRestartHold = jest
+      .spyOn(getChatQueueService(), 'refreshRestartHold')
+      .mockImplementation(() => {});
+
+    await getHandler(IPC_CHANNELS.planModeToggle)(undefined, {
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      enabled: true,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setPlanMode).not.toHaveBeenCalled();
+    expect(mockedMarkSessionForNextTurnRecreation).toHaveBeenCalledWith(
+      'workspace',
+      'worktree',
+      'chat',
+      'plan',
+    );
+    expect(refreshRestartHold).toHaveBeenCalledWith({
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    refreshRestartHold.mockRestore();
   });
 
   it('does not mark standalone chat sessions for recreation on plan-mode toggle', async () => {
@@ -7101,6 +9314,8 @@ describe('chat IPC approval mode propagation', () => {
         );
         return Promise.resolve();
       },
+      check: (): Promise<never> =>
+        Promise.reject(new Error('Unexpected approval check in recorder')),
     });
     return {
       modes,
@@ -7212,6 +9427,49 @@ describe('chat IPC approval mode propagation', () => {
     resetApprovalSessionRegistryForTests();
   });
 
+  it('applies a non-Full Access approval downgrade during native work without destroying the session', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(true);
+    mockedChatHasNativeBackgroundWork.mockReturnValue(true);
+    setLiveApprovalMode(
+      'workspace-native-work-approval',
+      'worktree',
+      'terminal-chat',
+      'auto',
+    );
+
+    await getHandler(IPC_CHANNELS.approvalModeSet)(undefined, {
+      projectId: 'workspace-native-work-approval',
+      worktreeId: 'worktree',
+      chatId: 'terminal-chat',
+      mode: 'ask',
+      previousMode: 'auto',
+    });
+
+    expect(
+      getLiveApprovalMode(
+        'workspace-native-work-approval',
+        'worktree',
+        'terminal-chat',
+      ),
+    ).toBe('ask');
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setApprovalMode).toHaveBeenCalledWith('ask');
+    expect(mockedDestroySession).not.toHaveBeenCalled();
+    expect(mockedMarkSessionForNextTurnRecreation).toHaveBeenCalledWith(
+      'workspace-native-work-approval',
+      'worktree',
+      'terminal-chat',
+      'approval',
+    );
+    clearLiveApprovalMode(
+      'workspace-native-work-approval',
+      'worktree',
+      'terminal-chat',
+    );
+  });
+
   it('does not reject approvals.setMode when a pending re-evaluation throws', async () => {
     // A propagated rejection would make the renderer skip `applyRendererMode`
     // and desync the UI from a mode that *is* canonical. The safe fallback is
@@ -7231,6 +9489,8 @@ describe('chat IPC approval mode propagation', () => {
       {
         reevaluatePendingApprovals: (): Promise<void> =>
           Promise.reject(new Error('re-evaluation exploded')),
+        check: (): Promise<never> =>
+          Promise.reject(new Error('Unexpected approval check in recorder')),
       },
     );
 
@@ -7273,9 +9533,9 @@ describe('chat IPC approval mode propagation', () => {
         projectId: 'workspace',
         worktreeId: 'worktree',
         command: {
-          type: 'chat.patch_tab_settings',
+          type: 'chat.set_approval_mode',
           tabId: 'terminal-chat',
-          patch: { approvalMode: 'ask' },
+          approvalMode: 'ask',
         },
       }),
     );
@@ -7305,7 +9565,7 @@ describe('chat IPC approval mode propagation', () => {
         mode: 'full-access',
         previousMode: 'ask',
       }),
-    ).rejects.toThrow('Canonical settings patch was rejected');
+    ).rejects.toThrow('Canonical approval mode change was rejected');
 
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(session.setApprovalMode).not.toHaveBeenCalled();
@@ -7364,11 +9624,71 @@ describe('chat IPC approval mode propagation', () => {
         'terminal-chat',
       ),
     ).toBe('ask');
-    expect(lastCanonicalChatCommand()).toMatchObject({
-      patch: { approvalMode: 'ask' },
+    expect(lastCanonicalChatCommand()).toEqual({
+      type: 'chat.set_approval_mode',
+      tabId: 'terminal-chat',
+      approvalMode: 'ask',
     });
     clearLiveApprovalMode(
       'workspace-runtime-failure',
+      'worktree',
+      'terminal-chat',
+    );
+  });
+
+  // CAN-4469 O6: no extra mechanism when the rollback commit also fails; the
+  // saved tab stays escalated, so the user must be told the change failed.
+  it('reports the runtime failure when the escalation rollback commit also fails', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    setLiveApprovalMode(
+      'workspace-rollback-failure',
+      'worktree',
+      'terminal-chat',
+      'ask',
+    );
+    mockClaudeTerminalSetApprovalMode
+      .mockRejectedValueOnce(new Error('terminal update failed'))
+      .mockResolvedValueOnce(undefined);
+    mockChatStateCommand
+      .mockResolvedValueOnce({
+        commandId: 'test',
+        revision: 1,
+        outcome: 'applied',
+      })
+      .mockResolvedValueOnce({
+        commandId: 'test',
+        revision: 1,
+        outcome: 'rejected',
+        reason: 'ENOSPC',
+      });
+
+    await expect(
+      getHandler(IPC_CHANNELS.approvalModeSet)(undefined, {
+        projectId: 'workspace-rollback-failure',
+        worktreeId: 'worktree',
+        chatId: 'terminal-chat',
+        mode: 'full-access',
+        previousMode: 'ask',
+      }),
+    ).rejects.toThrow('terminal update failed');
+
+    expect(lastCanonicalChatCommand()).toEqual({
+      type: 'chat.set_approval_mode',
+      tabId: 'terminal-chat',
+      approvalMode: 'ask',
+    });
+    expect(
+      getLiveApprovalMode(
+        'workspace-rollback-failure',
+        'worktree',
+        'terminal-chat',
+      ),
+    ).toBe('ask');
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setApprovalMode).toHaveBeenLastCalledWith('ask');
+    clearLiveApprovalMode(
+      'workspace-rollback-failure',
       'worktree',
       'terminal-chat',
     );
@@ -7396,6 +9716,12 @@ describe('chat IPC approval mode propagation', () => {
       'worktree',
       'terminal-chat',
       { retainDelegations: true },
+    );
+    expect(mockedMarkSessionForNextTurnRecreation).toHaveBeenCalledWith(
+      'workspace-downgrade',
+      'worktree',
+      'terminal-chat',
+      'approval',
     );
     // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(session.setApprovalMode).not.toHaveBeenCalled();
@@ -7552,14 +9878,14 @@ describe('chat IPC approval mode propagation', () => {
     const canonicalCalls = mockChatStateCommand.mock.calls;
     expect(canonicalCalls[0]?.[0]).toMatchObject({
       command: {
-        type: 'chat.patch_tab_settings',
-        patch: { approvalMode: 'ask' },
+        type: 'chat.set_approval_mode',
+        approvalMode: 'ask',
       },
     });
     expect(canonicalCalls[1]?.[0]).toMatchObject({
       command: {
-        type: 'chat.patch_tab_settings',
-        patch: { approvalMode: 'full-access' },
+        type: 'chat.set_approval_mode',
+        approvalMode: 'full-access',
       },
     });
     clearLiveApprovalMode(
@@ -7635,8 +9961,10 @@ describe('chat IPC approval mode propagation', () => {
         'terminal-chat',
       ),
     ).toBe('ask');
-    expect(lastCanonicalChatCommand()).toMatchObject({
-      patch: { approvalMode: 'ask' },
+    expect(lastCanonicalChatCommand()).toEqual({
+      type: 'chat.set_approval_mode',
+      tabId: 'terminal-chat',
+      approvalMode: 'ask',
     });
     expect(updateQueuedHookChatApprovalModeMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'full-access' }),
@@ -8053,7 +10381,7 @@ describe('chat IPC approval mode propagation', () => {
         mode: 'ask',
         previousMode: 'full-access',
       }),
-    ).rejects.toThrow('Canonical settings patch was rejected');
+    ).rejects.toThrow('Canonical approval mode change was rejected');
 
     expect(mockedDestroySession).toHaveBeenCalledWith(
       'workspace-failed-downgrade',
@@ -8659,6 +10987,43 @@ describe('chat IPC settings handlers commit canonical tab patches', () => {
         },
       }),
     ]);
+  });
+
+  it('defers live thinking-level changes while the session has active or native work', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(true);
+
+    await getHandler(IPC_CHANNELS.thinkingLevelToggle)(undefined, {
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      level: 'high',
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setThinkingLevel).not.toHaveBeenCalled();
+    expect(patchCommands()).toEqual([
+      expect.objectContaining({
+        patch: { modelConfig: { thinkingLevel: 'high', fastMode: false } },
+      }),
+    ]);
+  });
+
+  it('applies thinking-level changes to an idle live session', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(false);
+
+    await getHandler(IPC_CHANNELS.thinkingLevelToggle)(undefined, {
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      level: 'high',
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setThinkingLevel).toHaveBeenCalledWith('high');
   });
 
   it('thinking-level toggles commit in the order they were requested', async () => {
@@ -9630,7 +11995,7 @@ describe('chat IPC chatCancel', () => {
       tabs: [persistedTab],
       activeTabId: 'chat',
     });
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
 
     await getHandler(IPC_CHANNELS.chatCancel)(undefined, {
       projectId: 'proj',
@@ -9662,6 +12027,71 @@ describe('chat IPC chatCancel', () => {
       expect.any(Function),
       expect.any(Object),
     );
+  });
+
+  it('fails a Resume retryably while another dispatch owns the chat', async () => {
+    const persistedTab = {
+      id: 'chat',
+      title: 'Chat',
+      createdAt: '2026-09-23T00:00:00.000Z',
+      messages: [],
+      interfaceMode: 'canopy' as const,
+      sdkSessionId: 'canonical-session',
+      providerType: 'claude' as const,
+      executionHarness: 'claude' as const,
+      model: 'claude-sonnet-4-6' as const,
+    };
+    mockGetChatState.mockResolvedValue({
+      runtimeByChatId: {
+        chat: {
+          status: 'streaming',
+          activeTurn: { userMessageId: 'user-message', startedAt: 1 },
+          queuedMessageIds: [],
+        },
+      },
+      tabsFile: { version: 1, tabs: [persistedTab], activeTabId: 'chat' },
+    });
+    mockReadChatTabsFile.mockResolvedValue({
+      version: 1,
+      tabs: [persistedTab],
+      activeTabId: 'chat',
+    });
+    await getHandler(IPC_CHANNELS.chatCancel)(undefined, {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    const admit = jest
+      .spyOn(getChatQueueService(), 'admitDirectDispatch')
+      .mockResolvedValue(undefined);
+    const resume = {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      userMessageId: 'user-message',
+    };
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatResumeStoppedTurn)(undefined, resume),
+      ).resolves.toEqual({
+        disposition: 'failed',
+        error: 'Could not resume the stopped turn. Try again.',
+        retryable: true,
+      });
+      expect(admit).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: 'chat' }),
+        'user-message',
+      );
+      expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+      // The offer stays available: a dispatched offer would answer
+      // `already_dispatched` instead of retrying admission.
+      await expect(
+        getHandler(IPC_CHANNELS.chatResumeStoppedTurn)(undefined, resume),
+      ).resolves.toMatchObject({ disposition: 'failed', retryable: true });
+      expect(admit).toHaveBeenCalledTimes(2);
+    } finally {
+      admit.mockRestore();
+    }
   });
 
   it('does not dispatch a resume invalidated while canonical metadata is loading', async () => {
@@ -9706,7 +12136,7 @@ describe('chat IPC chatCancel', () => {
           });
       }),
     );
-    mockedGetOrCreateSession.mockReturnValue(makeMockSession());
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
 
     await getHandler(IPC_CHANNELS.chatCancel)(undefined, target);
     const resume = getHandler(IPC_CHANNELS.chatResumeStoppedTurn)(undefined, {
@@ -9942,6 +12372,7 @@ describe('chat IPC chatCancel', () => {
       'proj',
       'worktree',
       'chat',
+      'stop',
     );
   });
 
@@ -9980,6 +12411,7 @@ describe('chat IPC chatCancel', () => {
       'proj',
       'worktree',
       'chat',
+      'stop',
     );
   });
 
@@ -10358,6 +12790,7 @@ describe('chat IPC model changes', () => {
         {
           modelId: 'gateway-chat-harness',
           gatewayId: 'openai/gateway-chat-harness',
+          family: 'openai',
           gatewayOnly: true,
           ...entry,
         },
@@ -10414,6 +12847,12 @@ describe('chat IPC model changes', () => {
         name: 'Locked Plugin Agent',
         baseModel: 'claude-sonnet-4-6',
         instructions: 'Use the inherited plugin.',
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        },
         createdAt: '2026-08-16T00:00:00.000Z',
         updatedAt: '2026-08-16T00:00:00.000Z',
         available: true,
@@ -10503,7 +12942,112 @@ describe('chat IPC model changes', () => {
     );
   });
 
-  it('recreates an active session when a same-harness model changes provider source', async () => {
+  it('defers a model change to the next turn when a provider turn is active', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedGetSessionProviderType.mockReturnValue('ollama');
+    mockedGetActiveSessionInfos.mockReturnValue([
+      makeActiveSessionInfo({
+        providerType: 'ollama',
+        turnActive: true,
+      }),
+    ]);
+    mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(true);
+    const refreshRestartHold = jest
+      .spyOn(getChatQueueService(), 'refreshRestartHold')
+      .mockImplementation(() => {});
+
+    const result = await getHandler(IPC_CHANNELS.chatModelChange)(undefined, {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      model: 'gpt-5.5',
+      lockedHarness: 'codex',
+    });
+
+    expect(result).toBe(true);
+    expect(lastCanonicalChatCommand()).toMatchObject({
+      type: 'chat.set_model',
+      model: 'gpt-5.5',
+    });
+    expect(mockedDestroySession).not.toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setModel).not.toHaveBeenCalled();
+    expect(refreshRestartHold).toHaveBeenCalledWith({
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    refreshRestartHold.mockRestore();
+  });
+
+  it('defers a model change when native background work is live without a turn', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedGetSessionProviderType.mockReturnValue('ollama');
+    mockedGetActiveSessionInfos.mockReturnValue([]);
+    mockedSessionHasActiveTurnOrNativeWork.mockReturnValue(true);
+    const refreshRestartHold = jest
+      .spyOn(getChatQueueService(), 'refreshRestartHold')
+      .mockImplementation(() => {});
+
+    const result = await getHandler(IPC_CHANNELS.chatModelChange)(undefined, {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      model: 'gpt-5.5',
+      lockedHarness: 'codex',
+    });
+
+    expect(result).toBe(true);
+    expect(lastCanonicalChatCommand()).toMatchObject({
+      type: 'chat.set_model',
+      model: 'gpt-5.5',
+    });
+    expect(mockedDestroySession).not.toHaveBeenCalled();
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setModel).not.toHaveBeenCalled();
+    expect(refreshRestartHold).toHaveBeenCalledWith({
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    refreshRestartHold.mockRestore();
+  });
+
+  it('updates idle in-place session model settings after applying the model', async () => {
+    const session = makeMockSession();
+    mockedGetSession.mockReturnValue(session);
+    mockedGetSessionProviderType.mockReturnValue('claude');
+    mockedGetSessionSelectedModel.mockReturnValue('claude-sonnet-4-6');
+    const refreshRestartHold = jest
+      .spyOn(getChatQueueService(), 'refreshRestartHold')
+      .mockImplementation(() => {});
+
+    await getHandler(IPC_CHANNELS.chatModelChange)(undefined, {
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      model: 'claude-haiku-4-5-20251001',
+    });
+
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(session.setModel).toHaveBeenCalledWith('claude-haiku-4-5-20251001');
+    expect(mockedUpdateSessionTurnSettingsModel).toHaveBeenCalledWith(
+      'proj',
+      'worktree',
+      'chat',
+      'claude-haiku-4-5-20251001',
+    );
+    expect(refreshRestartHold).toHaveBeenCalledWith({
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    refreshRestartHold.mockRestore();
+  });
+
+  it('recreates an idle session when a same-harness model changes provider source', async () => {
     const setModel = jest.fn().mockResolvedValue(undefined);
     const session: AgentSession = { ...makeMockSession(), setModel };
     mockedGetSession.mockReturnValue(session);
@@ -10589,15 +13133,13 @@ describe('chat IPC chatUpdatePlugins', () => {
         },
       ],
     });
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-new',
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-new', 'snapshot-new', {
         unsubscribe,
         delete: removeProvisionalThread,
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes,
-    });
+        releaseRoutes,
+      }),
+    );
     jest.mocked(getActiveSessionCapabilityProfile).mockReturnValue({
       assistantMode: 'pipeline-editor',
       codeGraphToolsAdvertised: false,
@@ -10698,15 +13240,11 @@ describe('chat IPC chatUpdatePlugins', () => {
                   },
                 ],
         });
-        return Promise.resolve({
-          handle: {
-            threadId: 'thread-new',
-            unsubscribe: jest.fn(),
+        return Promise.resolve(
+          makeTestCodexCapabilityTransition('thread-new', 'new', {
             delete: removeThread,
-          },
-          snapshotId: 'new',
-          releaseRoutes: jest.fn(),
-        });
+          }),
+        );
       });
       const update = getHandler(IPC_CHANNELS.chatUpdatePlugins)(undefined, {
         projectId: 'proj',
@@ -10948,15 +13486,9 @@ describe('chat IPC chatUpdatePlugins', () => {
         },
       ],
     });
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-new',
-        unsubscribe: jest.fn().mockResolvedValue(undefined),
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes: jest.fn(),
-    });
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-new', 'snapshot-new'),
+    );
     jest.mocked(getSessionAiCreditsRoutedState).mockReturnValue(undefined);
 
     await getHandler(IPC_CHANNELS.chatUpdatePlugins)(undefined, {
@@ -11002,15 +13534,9 @@ describe('chat IPC chatUpdatePlugins', () => {
         },
       ],
     });
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-new',
-        unsubscribe: jest.fn().mockResolvedValue(undefined),
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes: jest.fn(),
-    });
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-new', 'snapshot-new'),
+    );
 
     await getHandler(IPC_CHANNELS.chatUpdatePlugins)(undefined, {
       projectId: 'proj',
@@ -11055,15 +13581,9 @@ describe('chat IPC chatUpdatePlugins', () => {
         },
       ],
     });
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-new',
-        unsubscribe: jest.fn().mockResolvedValue(undefined),
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes: jest.fn(),
-    });
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-new', 'snapshot-new'),
+    );
 
     await getHandler(IPC_CHANNELS.chatUpdatePlugins)(undefined, {
       projectId: 'proj',
@@ -11227,6 +13747,9 @@ describe('chat IPC chatUpdatePlugins', () => {
         },
       );
       expect(mockedDestroySession).toHaveBeenCalled();
+      if (!isRecord(response)) {
+        throw new Error('Expected plugin update response to be an object');
+      }
       expect(response.sdkSessionId).toBe('provider-session');
     } finally {
       activeReload.mockRestore();
@@ -11274,15 +13797,12 @@ describe('chat IPC chatUpdatePlugins', () => {
         pendingMessageCount: 0,
       },
     ] as never);
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-materialized',
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-materialized', 'snapshot-new', {
         unsubscribe,
-        delete: jest.fn().mockResolvedValue(undefined),
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes,
-    });
+        releaseRoutes,
+      }),
+    );
 
     const response = await getHandler(IPC_CHANNELS.chatUpdatePlugins)(
       undefined,
@@ -11314,6 +13834,9 @@ describe('chat IPC chatUpdatePlugins', () => {
         ],
       }),
     );
+    if (!isRecord(response)) {
+      throw new Error('Expected plugin update response to be an object');
+    }
     expect(response.sdkSessionId).toBe('thread-materialized');
   });
 
@@ -11367,6 +13890,7 @@ describe('chat IPC chatUpdatePlugins', () => {
       'proj',
       'worktree',
       'chat',
+      'plugins',
     );
     expect(updateQueuedHookChatPluginSelectionsMock).toHaveBeenCalledWith({
       projectId: 'proj',
@@ -11377,7 +13901,7 @@ describe('chat IPC chatUpdatePlugins', () => {
     });
   });
 
-  it('rejects a non-materializing picker save when its chat tab was removed', async () => {
+  it('defers plugin changes during native background work without materializing a Codex thread', async () => {
     const pluginSelections = {
       collectionIds: [],
       skillRefs: [{ sourceId: 'personal', skillName: 'review' }],
@@ -11386,9 +13910,71 @@ describe('chat IPC chatUpdatePlugins', () => {
     };
     mockReadChatTabsFile.mockResolvedValue({
       version: 1,
-      activeTabId: null,
-      tabs: [],
+      activeTabId: 'chat',
+      tabs: [
+        {
+          id: 'chat',
+          title: 'Codex chat',
+          messages: [],
+          createdAt: '2026-07-22T00:00:00.000Z',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          sdkSessionId: 'thread-active',
+        },
+      ],
     });
+    const session = makeMockSession();
+    session.getProviderSessionId = (): string => 'thread-active';
+    mockedGetSession.mockReturnValue(session);
+    mockedGetActiveSessionInfos.mockReturnValue([]);
+    mockedChatHasNativeBackgroundWork.mockReturnValue(true);
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition(
+        'thread-materialized',
+        'snapshot-materialized',
+      ),
+    );
+    const refreshRestartHold = jest
+      .spyOn(getChatQueueService(), 'refreshRestartHold')
+      .mockImplementation(() => {});
+
+    const response = await getHandler(IPC_CHANNELS.chatUpdatePlugins)(
+      undefined,
+      {
+        projectId: 'proj',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        pluginSelections,
+        materializeCodexThread: true,
+        expectedCurrentThreadId: 'thread-active',
+      },
+    );
+
+    expect(response).toEqual({ pluginSelections });
+    expect(mockMaterializeCodexCapabilityTransition).not.toHaveBeenCalled();
+    expect(mockedDestroySession).not.toHaveBeenCalled();
+    expect(mockedMarkSessionForNextTurnRecreation).toHaveBeenCalledWith(
+      'proj',
+      'worktree',
+      'chat',
+      'plugins',
+    );
+    expect(refreshRestartHold).toHaveBeenCalledWith({
+      projectId: 'proj',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+    });
+    refreshRestartHold.mockRestore();
+  });
+
+  it('rejects a non-materializing picker save when its chat tab was removed', async () => {
+    const pluginSelections = {
+      collectionIds: [],
+      skillRefs: [{ sourceId: 'personal', skillName: 'review' }],
+      pluginRefs: [],
+      mcpServerRefs: [],
+    };
+    mockReadChatTabsFile.mockResolvedValue(makeLegacyNullActiveTabFile());
 
     await expect(
       getHandler(IPC_CHANNELS.chatUpdatePlugins)(undefined, {
@@ -11410,11 +13996,7 @@ describe('chat IPC chatUpdatePlugins', () => {
       pluginRefs: [],
       mcpServerRefs: [],
     };
-    mockReadChatTabsFile.mockResolvedValue({
-      version: 1,
-      activeTabId: null,
-      tabs: [],
-    });
+    mockReadChatTabsFile.mockResolvedValue(makeLegacyNullActiveTabFile());
     hasQueuedHookChatMock.mockReturnValueOnce(true);
 
     await expect(
@@ -11483,6 +14065,7 @@ describe('chat IPC chatUpdatePlugins', () => {
       'proj',
       'worktree',
       'chat',
+      'plugins',
     );
   });
 
@@ -11589,6 +14172,7 @@ describe('chat IPC chatUpdatePlugins', () => {
       'proj',
       'worktree',
       'chat',
+      'plugins',
     );
   });
 
@@ -11648,15 +14232,12 @@ describe('chat IPC chatUpdatePlugins', () => {
       .mockReturnValueOnce([makeActiveSessionInfo()])
       .mockReturnValueOnce([makeActiveSessionInfo()])
       .mockReturnValueOnce([makeActiveSessionInfo({ pendingMessageCount: 1 })]);
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-new',
-        unsubscribe: jest.fn().mockResolvedValue(undefined),
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-new', 'snapshot-new', {
         delete: removeProvisionalThread,
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes,
-    });
+        releaseRoutes,
+      }),
+    );
 
     await expect(
       getHandler(IPC_CHANNELS.chatUpdatePlugins)(undefined, {
@@ -11728,15 +14309,12 @@ describe('chat IPC chatUpdatePlugins', () => {
         },
       ],
     });
-    mockMaterializeCodexCapabilityTransition.mockResolvedValue({
-      handle: {
-        threadId: 'thread-new',
-        unsubscribe: jest.fn().mockResolvedValue(undefined),
+    mockMaterializeCodexCapabilityTransition.mockResolvedValue(
+      makeTestCodexCapabilityTransition('thread-new', 'snapshot-new', {
         delete: removeProvisionalThread,
-      },
-      snapshotId: 'snapshot-new',
-      releaseRoutes,
-    });
+        releaseRoutes,
+      }),
+    );
     mockWriteChatTabsFile.mockRejectedValueOnce(new Error('disk full'));
 
     await expect(

@@ -60,7 +60,7 @@ function dependencies(
     readWorkspaceOwner: () => Promise.resolve(undefined),
     listSharedContainerAnchorKeys: () => [],
     ...overrides,
-  } as SharedContainerEligibilityDependencies;
+  };
 }
 
 function resolved<T>(value: T): () => Promise<T> {
@@ -76,7 +76,10 @@ describe('shared-container eligibility', () => {
         request,
         dependencies({
           readAccount: () =>
-            Promise.resolve({ status: 'degraded', reason: 'decrypt-failed' }),
+            Promise.resolve({
+              status: 'error',
+              error: new Error('decrypt-failed'),
+            }),
           recordProbeFailure,
         }),
       ),
@@ -376,7 +379,7 @@ describe('shared-container eligibility', () => {
     });
 
     it('checks every child repository in a multi-repo worktree', async () => {
-      const getRemoteUrl = jest.fn(() =>
+      const getRemoteUrl = jest.fn<Promise<string>, [string]>(() =>
         Promise.resolve('git@github.com:acme/repo.git'),
       );
 
@@ -514,7 +517,9 @@ describe('shared-container eligibility', () => {
 
   describe('github preparation', () => {
     it('pushes the same-named branch and reports ready', async () => {
-      const pushBranch = jest.fn(() => Promise.resolve());
+      const pushBranch = jest.fn<Promise<void>, [string, string]>(() =>
+        Promise.resolve(),
+      );
       let pushed = false;
 
       await expect(
@@ -1335,12 +1340,26 @@ describe('shared-container eligibility', () => {
           {
             id: 'team-selected',
             name: 'Selected',
-            organization: { id: 'org-1', name: 'Org One' },
+            createdAt: '',
+            updatedAt: '',
+            organization: {
+              id: 'org-1',
+              name: 'Org One',
+              createdAt: '',
+              updatedAt: '',
+            },
           },
           {
             id: 'team-other',
             name: 'Other',
-            organization: { id: 'org-2', name: 'Org Two' },
+            createdAt: '',
+            updatedAt: '',
+            organization: {
+              id: 'org-2',
+              name: 'Org Two',
+              createdAt: '',
+              updatedAt: '',
+            },
           },
         ],
         createdAt: '',

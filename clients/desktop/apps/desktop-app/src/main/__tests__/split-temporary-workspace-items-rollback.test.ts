@@ -149,7 +149,7 @@ function plan(id: string): TrackedPlanData {
 }
 
 function executionState(id: string, cwd: string): ExecutionState {
-  return {
+  const state: ExecutionState = {
     version: 7,
     id,
     pipeline_id: 'pipeline',
@@ -158,8 +158,11 @@ function executionState(id: string, cwd: string): ExecutionState {
       scope: ['worktree'],
       jobs: {},
     },
+    job_definitions: {},
+    job_groups: {},
     status: 'success',
     status_reasons: [],
+    pending_pauses: [],
     jobs: {},
     started_at: '2026-08-03T00:00:00.000Z',
     cwd,
@@ -168,6 +171,11 @@ function executionState(id: string, cwd: string): ExecutionState {
     project_id: 'source',
     worktree_id: 'source-wt',
   };
+  // Keep this persisted v7 fixture legacy by omitting fields added later.
+  Reflect.deleteProperty(state, 'job_definitions');
+  Reflect.deleteProperty(state, 'job_groups');
+  Reflect.deleteProperty(state, 'pending_pauses');
+  return state;
 }
 
 describe('undoSplitChatsAndPlansMigration', () => {
@@ -381,6 +389,7 @@ describe('undoSplitChatsAndPlansMigration', () => {
     jest.mocked(readChatTabsFile).mockResolvedValue({
       version: 1,
       tabs: [],
+      activeTabId: '',
     });
     jest.mocked(readChatArchivesFile).mockResolvedValue({
       version: 1,
@@ -910,6 +919,7 @@ describe('undoSplitChatsAndPlansMigration', () => {
     const restoredArchive = {
       tab: tab('target-archive'),
       archivedAt: '2026-08-03T00:00:00.000Z',
+      turnCount: 1,
     };
     jest.mocked(readChatTabsFileForIndex).mockResolvedValue({
       version: 1,
@@ -1483,6 +1493,7 @@ describe('migrateSplitPipelineExecutions', () => {
   it('rewrites every checkout and worktree locator while retaining snapshots', async () => {
     const state: ExecutionState = {
       ...executionState('execution-1', '/old/repo/subdir'),
+      execution_checkout_root: '/old/repo',
       repo_path: '/old/repo',
       pipeline_file_dir: '/old/repo/.canopy/pipelines',
       target: {
@@ -1530,6 +1541,7 @@ describe('migrateSplitPipelineExecutions', () => {
         project_id: 'destination',
         worktree_id: 'destination-wt',
         cwd: '/new/repo/subdir',
+        execution_checkout_root: '/new/repo',
         repo_path: '/new/repo',
         pipeline_file_dir: '/new/repo/.canopy/pipelines',
         target: {
@@ -1543,4 +1555,65 @@ describe('migrateSplitPipelineExecutions', () => {
       '/runs',
     );
   });
+  it.each([true, false])(
+    'moves source references in a different split checkout only when mapped: %s',
+    async (mapped) => {
+      const sourceRoot = mapped ? '/old/source-repo' : '/independent/source';
+      const expectedRoot = mapped ? '/new/source-repo' : sourceRoot;
+      const state: ExecutionState = {
+        ...executionState('execution-1', '/old/execution-repo/desktop'),
+        execution_checkout_root: '/old/execution-repo',
+        repo_path: sourceRoot,
+        pipeline_file_dir: `${sourceRoot}/pipelines`,
+      };
+      jest.mocked(listExecutionSummaries).mockResolvedValue([
+        {
+          id: state.id,
+          pipeline_id: state.pipeline_id,
+          pipeline_name: 'Pipeline',
+          status: 'success',
+          status_reasons: [],
+          started_at: state.started_at,
+          cwd: state.cwd,
+          project_id: 'source',
+          worktree_id: 'source-wt',
+        },
+      ]);
+      jest.mocked(loadExecutionState).mockResolvedValue(state);
+      jest.mocked(saveExecutionState).mockResolvedValue();
+      const snapshots = await migrateSplitPipelineExecutions({
+        workspaceId: 'source',
+        worktreeId: 'source-wt',
+        targets: [
+          {
+            repoId: 'execution-repo',
+            destinationWorkspaceId: 'execution-destination',
+            destinationWorktreeId: 'execution-wt',
+            oldCheckoutPath: '/old/execution-repo',
+            newCheckoutPath: '/new/execution-repo',
+          },
+          {
+            repoId: 'source-repo',
+            destinationWorkspaceId: 'source-destination',
+            destinationWorktreeId: 'source-destination-wt',
+            oldCheckoutPath: '/old/source-repo',
+            newCheckoutPath: '/new/source-repo',
+          },
+        ],
+      });
+      expect(saveExecutionState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          project_id: 'execution-destination',
+          worktree_id: 'execution-wt',
+          cwd: '/new/execution-repo/desktop',
+          execution_checkout_root: '/new/execution-repo',
+          repo_path: expectedRoot,
+          pipeline_file_dir: `${expectedRoot}/pipelines`,
+        }),
+        '/runs',
+      );
+      expect(snapshots.get(state.id)).toBe(state);
+      expect(state.repo_path).toBe(sourceRoot);
+    },
+  );
 });

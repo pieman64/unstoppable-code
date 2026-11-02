@@ -15,7 +15,20 @@ export interface ResumeOffer {
   attemptId: string;
   userMessageId: string;
   state: ResumeOfferState;
+  executionId?: string;
   invalidatedByNewTurn?: boolean;
+}
+
+/**
+ * A caller that carries a Resume execution id is fenced to it.
+ * shortcut: callers without one (every dispatcher until phase 35c2 wires the
+ * id) keep today's unfenced behavior; drop this once they all pass it.
+ */
+function matchesExecution(
+  offer: ResumeOffer,
+  executionId: string | undefined,
+): boolean {
+  return executionId === undefined || offer.executionId === executionId;
 }
 
 function targetKey(target: ChatCancelRequest): string {
@@ -124,12 +137,14 @@ export class StoppedTurnResumeService {
     target: ChatCancelRequest,
     userMessageId: string,
     attemptId: string,
+    executionId?: string,
   ): boolean {
     const offer = this.offers.get(targetKey(target));
     if (
       offer?.userMessageId !== userMessageId ||
       offer.attemptId !== attemptId ||
-      offer.state !== 'in_progress'
+      offer.state !== 'in_progress' ||
+      !matchesExecution(offer, executionId)
     ) {
       return false;
     }
@@ -141,11 +156,15 @@ export class StoppedTurnResumeService {
   public ownsTerminalSettlement(
     target: ChatCancelRequest,
     userMessageId: string,
+    attemptId?: string,
+    executionId?: string,
   ): boolean {
     const offer = this.offers.get(targetKey(target));
     return (
       offer !== undefined &&
       offer.userMessageId === userMessageId &&
+      (attemptId === undefined || offer.attemptId === attemptId) &&
+      matchesExecution(offer, executionId) &&
       (offer.state === 'in_progress' || offer.state === 'dispatched')
     );
   }
@@ -154,15 +173,34 @@ export class StoppedTurnResumeService {
   public settleTerminalOwnership(
     target: ChatCancelRequest,
     userMessageId: string,
+    attemptId?: string,
+    executionId?: string,
   ): void {
     const key = targetKey(target);
     const offer = this.offers.get(key);
     if (
       offer?.userMessageId === userMessageId &&
+      (attemptId === undefined || offer.attemptId === attemptId) &&
+      matchesExecution(offer, executionId) &&
       (offer.state === 'in_progress' || offer.state === 'dispatched')
     ) {
       this.offers.delete(key);
     }
+  }
+
+  private currentOwnedOfferState(
+    key: string,
+    expectedOffer: ResumeOffer,
+    executionId: string,
+  ): ResumeOfferState | undefined {
+    const currentOffer = this.offers.get(key);
+    if (
+      currentOffer !== expectedOffer ||
+      currentOffer.executionId !== executionId
+    ) {
+      return undefined;
+    }
+    return currentOffer.state;
   }
 
   public async resume(
@@ -173,6 +211,7 @@ export class StoppedTurnResumeService {
     dispatch: (
       attemptId: string,
       isCurrent: () => boolean,
+      executionId: string,
     ) => Promise<boolean | void>,
   ): Promise<ChatResumeStoppedTurnResult> {
     const key = targetKey(request);
@@ -190,16 +229,40 @@ export class StoppedTurnResumeService {
     }
 
     offer.state = 'in_progress';
+    const executionId = randomUUID();
+    offer.executionId = executionId;
     try {
       const dispatched = await dispatch(
         offer.attemptId,
-        () => this.offers.get(key) === offer && offer.state === 'in_progress',
+        () =>
+          this.offers.get(key) === offer &&
+          offer.state === 'in_progress' &&
+          offer.executionId === executionId,
+        executionId,
       );
-      if (dispatched === false) return { disposition: 'stale' };
-      if (this.offers.get(key) === offer) offer.state = 'dispatched';
+      const stateAfterDispatch = this.currentOwnedOfferState(
+        key,
+        offer,
+        executionId,
+      );
+      if (stateAfterDispatch === undefined) return { disposition: 'stale' };
+      if (stateAfterDispatch === 'dispatched' && dispatched !== false)
+        return { disposition: 'dispatched' };
+      if (stateAfterDispatch !== 'in_progress') return { disposition: 'stale' };
+      if (dispatched === false) {
+        if (offer.invalidatedByNewTurn) this.offers.delete(key);
+        else offer.state = 'available';
+        return { disposition: 'stale' };
+      }
+      offer.state = 'dispatched';
       return { disposition: 'dispatched' };
     } catch {
-      if (this.offers.get(key) === offer) {
+      const stateAfterFailure = this.currentOwnedOfferState(
+        key,
+        offer,
+        executionId,
+      );
+      if (stateAfterFailure === 'in_progress') {
         if (offer.invalidatedByNewTurn) this.offers.delete(key);
         else offer.state = 'available';
       }

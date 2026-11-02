@@ -87,6 +87,20 @@ class SimulatedCrash extends Error {
   public override readonly name = 'SimulatedCrash';
 }
 
+/**
+ * A simulated crash, raw or as the cause of a typed storage failure: on
+ * Windows a folder flush after the crash opens read-write and so reports it
+ * as a `DirectoryFlushError` (CAN-5151 D1).
+ */
+function isSimulatedCrash(error: unknown): boolean {
+  for (let current = error, depth = 0; depth < 8; depth += 1) {
+    if (current instanceof SimulatedCrash) return true;
+    if (!(current instanceof Error)) return false;
+    current = current.cause;
+  }
+  return false;
+}
+
 const OPTIONS: ChatStateV2BackendOptions = {
   // One step below is larger than this and takes the version 2 path.
   deltaJournal: { largeRecordBytes: 4096 },
@@ -318,7 +332,13 @@ const ACTIVE_TURN_STEPS: Step[] = [
       type: 'pending_question.upserted',
       question: {
         ...QUESTION,
-        answers: [{ questionId: '0', answer: 'main' }],
+        answers: [
+          {
+            questionId: '0',
+            question: 'Which branch?',
+            selectedOptions: ['main'],
+          },
+        ],
         answeredAt: TURN_STARTED_AT + 2_000,
       },
     },
@@ -699,7 +719,7 @@ describe('default delta journal fault injection', () => {
         () => undefined,
         (error: unknown) => error,
       );
-      if (crash !== undefined && !(crash instanceof SimulatedCrash))
+      if (crash !== undefined && !isSimulatedCrash(crash))
         throw new Error(
           `Crash at event ${n} of ${total} failed otherwise: ${crash instanceof Error ? crash.message : typeof crash}`,
         );

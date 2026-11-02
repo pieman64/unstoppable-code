@@ -33,10 +33,12 @@ import {
   type LedgerOwnerCandidate,
   type LedgerStatus,
 } from '@canopy/protocol/canopy-core/core/ledger';
-import type {
-  LedgerViewEntry,
-  LedgerViewResult,
-  LedgerViewScope,
+import {
+  isLedgerTaskViewScope,
+  ledgerViewScopeKey,
+  type LedgerViewEntry,
+  type LedgerViewResult,
+  type LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
 import {
   LedgerCorrectionBox,
@@ -90,6 +92,10 @@ export interface LedgerScopeRowsState {
 }
 
 const NO_CORRECTION_IDS: readonly string[] = [];
+
+/** Why a global (workflow) entry's file can't open: it can have none. */
+const GLOBAL_FILES_UNAVAILABLE =
+  "Global Feed entries can't reference files. Add file references to a task's Feed.";
 
 function sameStrings(
   left: readonly string[],
@@ -377,6 +383,11 @@ export function createLedgerScopeActions({
     openFile: (entry, file): void => {
       onOpenError(null);
       const { scope } = view().getState();
+      // Only a task has files; a global (workflow) entry never references one.
+      if (!isLedgerTaskViewScope(scope)) {
+        failOpen(entry.entryId, GLOBAL_FILES_UNAVAILABLE);
+        return;
+      }
       void navigator.openFile(scope, file).then((opened) => {
         if (!opened.ok) failOpen(entry.entryId, opened.message);
       });
@@ -936,7 +947,7 @@ export function useLedgerNow(): Date {
   return now;
 }
 
-/** The name a scope is known by in maps: its project and work. */
+/** The name a scope is known by in maps. */
 export function ledgerScopeKey(scope: LedgerViewScope): string {
-  return `${scope.projectId}/${scope.worktreeId}`;
+  return ledgerViewScopeKey(scope);
 }

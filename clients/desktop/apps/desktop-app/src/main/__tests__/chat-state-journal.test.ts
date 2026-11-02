@@ -11,6 +11,8 @@ import {
 import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { directoryFlushOpenFlags } from '@canopy/core-platform/directory-flush';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import type { ChatJournalRecord } from '@canopy/desktop-shared/types';
 import {
   appendChatJournalRecord,
@@ -147,7 +149,11 @@ describe('chat state journal', () => {
 
     await appendChatJournalRecord(journalPath, record(1));
 
-    expect(openMock).toHaveBeenCalledWith(dirname(journalPath), 'r');
+    // CAN-5151 D1: Windows opens the folder read-write to flush it.
+    expect(openMock).toHaveBeenCalledWith(
+      dirname(journalPath),
+      directoryFlushOpenFlags(hostOperatingSystem()),
+    );
   });
 
   it('ignores and truncates only an incomplete final line', async () => {

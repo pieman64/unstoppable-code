@@ -17,6 +17,7 @@ import {
 interface MockWatcher {
   close: jest.Mock<void, []>;
   emitChange: (filename?: string | Buffer) => void;
+  emitError: (error: Error) => void;
   on: jest.Mock<MockWatcher, [string, (...args: unknown[]) => void]>;
 }
 
@@ -29,12 +30,19 @@ jest.mock('node:fs', () => ({
       _options: unknown,
       listener: (_event: string, filename: string | Buffer | null) => void,
     ) => {
+      const handlers = new Map<string, (...args: unknown[]) => void>();
       const watcher: MockWatcher = {
         close: jest.fn<void, []>(),
         emitChange(filename = 'worktrees.json'): void {
           listener('change', filename);
         },
-        on: jest.fn(() => watcher),
+        emitError(error): void {
+          handlers.get('error')?.(error);
+        },
+        on: jest.fn((event, handler) => {
+          handlers.set(event, handler);
+          return watcher;
+        }),
       };
       watchers.push(watcher);
       return watcher;
@@ -95,7 +103,6 @@ function cowork(id: string): SidebarItem {
     id,
     name: id,
     color: '#123456',
-    worktrees: [],
     collapsed: false,
     order: 0,
   };
@@ -352,4 +359,187 @@ describe('worktrees file watchers', () => {
     expect(watchers[1]?.close).toHaveBeenCalledTimes(1);
     expect(mockedSendToWindow).not.toHaveBeenCalled();
   });
+});
+
+describe('worktrees file watch recovery', () => {
+  const codes = ['ENOSPC', 'EMFILE', 'ENFILE', 'EACCES', 'EPERM'];
+  it.each(codes)(
+    'polls actual changes after synchronous %s without resync loops',
+    async (code) => {
+      mockedWatch.mockImplementationOnce(() => {
+        throw Object.assign(new Error(code), { code });
+      });
+      const reconcile = jest.fn();
+      syncWorktreesFileWatchers(
+        [workspace('ws-1')],
+        getWindow,
+        new Set(),
+        reconcile,
+      );
+      await jest.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 20; i++)
+        syncWorktreesFileWatchers([workspace('ws-1')], getWindow);
+      expect(mockedWatch).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(4_000);
+      expect(mockedSendToWindow).not.toHaveBeenCalled();
+      mockedReadFile.mockResolvedValue('external');
+      await jest.advanceTimersByTimeAsync(2_500);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(4_000);
+      expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(codes)(
+    'recovers from emitted %s and ignores late callbacks',
+    async (code) => {
+      syncWorktreesFileWatchers([workspace('ws-1')], getWindow);
+      await jest.advanceTimersByTimeAsync(0);
+      watchers[0]?.emitError(Object.assign(new Error(code), { code }));
+      watchers[0]?.emitChange();
+      mockedReadFile.mockResolvedValue('external');
+      await jest.advanceTimersByTimeAsync(2_500);
+      expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(27_500);
+      expect(mockedWatch).toHaveBeenCalledTimes(2);
+      const reads = mockedReadFile.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(mockedReadFile).toHaveBeenCalledTimes(reads);
+      stopWorktreesFileWatchers();
+      watchers[1]?.emitChange();
+      watchers[0]?.emitError(Object.assign(new Error(code), { code }));
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(mockedWatch).toHaveBeenCalledTimes(2);
+      expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('suppresses polled self-writes but reconciles an external edit in the write window', async () => {
+    mockedWatch.mockImplementationOnce(() => {
+      throw Object.assign(new Error('limit'), { code: 'ENOSPC' });
+    });
+    const reconcile = jest.fn();
+    syncWorktreesFileWatchers(
+      [workspace('ws-1')],
+      getWindow,
+      new Set(),
+      reconcile,
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    mockedReadFile.mockResolvedValue('self');
+    mockedIsSelfWriteContent.mockReturnValue(true);
+    await jest.advanceTimersByTimeAsync(2_500);
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
+    mockedReadFile.mockResolvedValue('external');
+    mockedIsSelfWriteContent.mockReturnValue(false);
+    mockedWasRecentSelfWrite.mockReturnValue(true);
+    await jest.advanceTimersByTimeAsync(2_500);
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
+    mockedWasRecentSelfWrite.mockReturnValue(false);
+    await jest.advanceTimersByTimeAsync(500);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overlap polling reads or notify after removal during a read', async () => {
+    mockedWatch.mockImplementationOnce(() => {
+      throw Object.assign(new Error('limit'), { code: 'EMFILE' });
+    });
+    syncWorktreesFileWatchers([workspace('ws-1')], getWindow);
+    await jest.advanceTimersByTimeAsync(0);
+    let finish: (content: string) => void = () => undefined;
+    mockedReadFile.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const reads = mockedReadFile.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(8_000);
+    expect(mockedReadFile).toHaveBeenCalledTimes(reads + 1);
+    syncWorktreesFileWatchers([], getWindow);
+    finish('external');
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
+    expect(mockedWatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('warns once for worktrees-file exhaustion across retries and restarts', async () => {
+  await jest.isolateModulesAsync(async () => {
+    const { dialog } = await import('electron');
+    const warning = jest
+      .spyOn(dialog, 'showMessageBox')
+      .mockResolvedValue({ response: 0, checkboxChecked: false });
+    const fs = await import('node:fs');
+    const originalWatch = jest.mocked(fs.watch).getMockImplementation();
+    jest.mocked(fs.watch).mockImplementation(() => {
+      throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    });
+    const { readFile } = await import('node:fs/promises');
+    jest.mocked(readFile).mockResolvedValue('stable');
+    const watcher = await import('../lib/worktrees-file-watcher');
+    watcher.syncWorktreesFileWatchers([workspace('ws-1')], getWindow);
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(fs.watch).toHaveBeenCalledTimes(4);
+    watcher.stopWorktreesFileWatchers();
+    watcher.syncWorktreesFileWatchers([workspace('ws-1')], getWindow);
+    expect(warning).toHaveBeenCalledTimes(1);
+    watcher.stopWorktreesFileWatchers();
+    if (originalWatch) jest.mocked(fs.watch).mockImplementation(originalWatch);
+    warning.mockRestore();
+  });
+});
+
+it('catches an external list change after native recovery during an in-flight poll', async () => {
+  mockedWatch.mockImplementationOnce(() => {
+    throw Object.assign(new Error('limit'), { code: 'ENOSPC' });
+  });
+  syncWorktreesFileWatchers([workspace('ws-1')], getWindow);
+  await jest.advanceTimersByTimeAsync(0);
+  let finish: (content: string) => void = () => undefined;
+  mockedReadFile
+    .mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue('latest');
+  await jest.advanceTimersByTimeAsync(30_000);
+  expect(mockedWatch).toHaveBeenCalledTimes(2);
+  finish('{"version":1,"worktrees":[]}');
+  await jest.advanceTimersByTimeAsync(500);
+  expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
+});
+
+it('reads fresh content for a native event during an older recovery read', async () => {
+  mockedWatch.mockImplementationOnce(() => {
+    throw Object.assign(new Error('limit'), { code: 'ENOSPC' });
+  });
+  const reconcile = jest.fn();
+  syncWorktreesFileWatchers(
+    [workspace('ws-1')],
+    getWindow,
+    new Set(),
+    reconcile,
+  );
+  await jest.advanceTimersByTimeAsync(28_000);
+  let finish: (content: string) => void = () => undefined;
+  mockedReadFile
+    .mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue('latest');
+  await jest.advanceTimersByTimeAsync(2_000);
+  watchers[0]?.emitChange();
+  await jest.advanceTimersByTimeAsync(500);
+  finish('{"version":1,"worktrees":[]}');
+  await jest.advanceTimersByTimeAsync(0);
+  expect(mockedParseSnapshot).toHaveBeenLastCalledWith('latest');
+  expect(reconcile).toHaveBeenCalledTimes(1);
 });

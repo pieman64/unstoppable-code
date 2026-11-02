@@ -750,7 +750,7 @@ export function AgentVisualFrame(
       </div>
       {/* After the frame in tab order, so Tab out of the visual reaches them. */}
       <div
-        className={`absolute z-10 flex items-center gap-1 transition pointer-coarse:opacity-100 ${
+        className={`absolute z-10 flex items-center gap-1 transition-opacity pointer-coarse:opacity-100 ${
           // A frame the pointer is in takes the hover with it, so the actions
           // stay up for as long as the pointer is let in.
           activated

@@ -1,4 +1,7 @@
-const mockApplyToolSchemaProfile = jest.fn((schema: unknown) => schema);
+const mockApplyToolSchemaProfile = jest.fn<
+  unknown,
+  [schema: unknown, profile: 'standard' | 'flat']
+>((schema) => schema);
 
 jest.mock('../codex/tool-schema-profile', () => ({
   applyToolSchemaProfile: (...args: [unknown, 'standard' | 'flat']): unknown =>

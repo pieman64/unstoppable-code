@@ -36,9 +36,68 @@ export interface AccessFormState {
     readonly mode: 'all' | 'selected';
     readonly organizationIds: readonly string[];
   };
-  readonly remotes: {
-    readonly mode: 'all' | 'selected';
-    readonly remoteIds: readonly string[];
+  readonly hosts: AccessHostsState;
+}
+
+/** The device choice in the Hosts section. */
+export type AccessDeviceChoice = 'all' | 'selected' | 'none';
+
+/**
+ * The Hosts section's draft on a Tasks connection. `remoteIds` keeps the
+ * checked devices while another choice is made, so choosing Selected again
+ * restores them; `buildAccess` sends only what the choice allows.
+ */
+export interface AccessHostsState {
+  /** The Cloud agents switch: the managed host. */
+  readonly managed: boolean;
+  readonly devices: AccessDeviceChoice;
+  readonly remoteIds: readonly string[];
+  /** Show device names to this agent. */
+  readonly exposeNames: boolean;
+}
+
+/** The host ID agents see for the managed cloud host. */
+export const MANAGED_HOST_ID = 'linux-managed';
+
+/** What an Account connection sends: it reaches no host. */
+export const ACCOUNT_HOSTS: ExternalAgentAccess['hosts'] = {
+  managed: false,
+  connected: { mode: 'selected', remoteIds: [] },
+  exposeNames: false,
+};
+
+/** Where a new Tasks connection starts: Cloud agents on, no devices. */
+export const NEW_TASKS_HOSTS: ExternalAgentAccess['hosts'] = {
+  managed: true,
+  connected: { mode: 'selected', remoteIds: [] },
+  exposeNames: false,
+};
+
+/** The Hosts draft a new Tasks connection starts from (consent). */
+export function initialAccessHostsState(): AccessHostsState {
+  return {
+    managed: NEW_TASKS_HOSTS.managed,
+    // Selected shows the device list; with nothing checked it grants none.
+    devices: 'selected',
+    remoteIds: [],
+    exposeNames: NEW_TASKS_HOSTS.exposeNames,
+  };
+}
+
+/** The Hosts draft for a stored connection's `hosts`. */
+export function accessHostsStateFromAccess(
+  hosts: ExternalAgentAccess['hosts'],
+): AccessHostsState {
+  return {
+    managed: hosts.managed,
+    devices:
+      hosts.connected.mode === 'all'
+        ? 'all'
+        : hosts.connected.remoteIds.length > 0
+          ? 'selected'
+          : 'none',
+    remoteIds: [...hosts.connected.remoteIds],
+    exposeNames: hosts.exposeNames,
   };
 }
 
@@ -298,6 +357,27 @@ export function countAccessTools(source: AccessModelSource): number {
   );
 }
 
+/**
+ * The chosen hosts allow this tool. Matches the server's expansion: on the
+ * Tasks server, a tool that takes a host is allowed when the choice includes at
+ * least one host kind it supports (Cloud agents on for the managed host, or all
+ * or at least one selected device for connected hosts). A tool with
+ * `hosts: null` takes no host and is always allowed.
+ */
+function hostsAllowTool(
+  source: AccessModelSource,
+  state: AccessFormState,
+  tool: ExternalAgentAccessTool,
+): boolean {
+  if (source.server !== 'tasks' || tool.hosts === null) return true;
+  const hosts = buildHosts(source, state, true);
+  const connected =
+    hosts.connected.mode === 'all' || hosts.connected.remoteIds.length > 0;
+  return (
+    (tool.hosts.managed && hosts.managed) || (tool.hosts.connected && connected)
+  );
+}
+
 export function countEnabledAccessTools(
   source: AccessModelSource,
   state: AccessFormState,
@@ -316,6 +396,7 @@ export function countEnabledAccessTools(
       count +
       group.tools.filter((tool) => {
         if (disabled.has(tool.name)) return false;
+        if (!hostsAllowTool(source, state, tool)) return false;
         if (tool.defaultOff && !enabledDefaultOff.has(tool.name)) return false;
         return levelRank(level) >= accessRank(tool.access);
       }).length +
@@ -349,20 +430,26 @@ export function toAccessEditorGroups(
       levels.push('write');
     }
 
-    const tools: AgentAccessToolRow[] = group.tools.map((tool) => ({
-      name: tool.name,
-      title: tool.title,
-      access: tool.access,
-      defaultOff: tool.defaultOff,
-      markers: markerList(tool),
-      enabled:
-        !disabled.has(tool.name) &&
-        (!tool.defaultOff || enabledDefaultOff.has(tool.name)) &&
-        levelRank(level) >= accessRank(tool.access),
-      available:
-        group.unavailableReason === null &&
-        levelRank(level) >= accessRank(tool.access),
-    }));
+    const tools: AgentAccessToolRow[] = group.tools.map((tool) => {
+      // A tool for a host the agent can't reach stays off until it can.
+      const hostAllowed = hostsAllowTool(source, state, tool);
+      return {
+        name: tool.name,
+        title: tool.title,
+        access: tool.access,
+        defaultOff: tool.defaultOff,
+        markers: markerList(tool),
+        enabled:
+          hostAllowed &&
+          !disabled.has(tool.name) &&
+          (!tool.defaultOff || enabledDefaultOff.has(tool.name)) &&
+          levelRank(level) >= accessRank(tool.access),
+        available:
+          hostAllowed &&
+          group.unavailableReason === null &&
+          levelRank(level) >= accessRank(tool.access),
+      };
+    });
 
     const destructiveCopy = DESTRUCTIVE_GROUP_COPY[group.id];
 
@@ -414,88 +501,169 @@ export function showsAccessOrganizations(
   );
 }
 
-function remoteGroup(
+function tasksGroupLevel(
   source: AccessModelSource,
-): ExternalAgentAccessGroup | undefined {
-  return source.groups.find((group) => group.id === 'remote');
+  state: AccessFormState,
+): AgentAccessLevel {
+  if (source.server !== 'tasks') return 'off';
+  const group = source.groups.find((candidate) => candidate.id === 'tasks');
+  if (group === undefined) return 'off';
+  return effectiveGroupLevel(group, groupLevel(source, state.levels, group.id));
 }
 
-export function showsAccessDesktops(
+/** Tasks access is Read or Write, so the agent uses the hosts chosen here. */
+function usesAccessHosts(
+  source: AccessModelSource,
+  state: AccessFormState,
+): boolean {
+  return tasksGroupLevel(source, state) !== 'off';
+}
+
+/**
+ * The Hosts section shows while Tasks access is Read or Write, and also while
+ * the draft has no host, so a blocked save can always be fixed.
+ */
+export function showsAccessHosts(
+  source: AccessModelSource,
+  state: AccessFormState,
+  options: { readonly keepUnusedScope?: boolean } = {},
+): boolean {
+  return (
+    usesAccessHosts(source, state) || accessHostsMissing(source, state, options)
+  );
+}
+
+/**
+ * Devices can be chosen on a Tasks connection while Remote Control is on;
+ * while it is off they stay unavailable, and a stored choice is kept.
+ */
+export function showsAccessDevices(
+  source: AccessModelSource,
+  remoteControlEnabled: boolean,
+): boolean {
+  return remoteControlEnabled && source.server === 'tasks';
+}
+
+/** Tasks write access reaches the person's devices. */
+export function devicesWriteAccess(
   source: AccessModelSource,
   state: AccessFormState,
   remoteControlEnabled: boolean,
 ): boolean {
-  const group = remoteGroup(source);
   return (
-    source.server === 'tasks' &&
     remoteControlEnabled &&
-    group !== undefined &&
-    group.unavailableReason === null &&
-    groupLevel(source, state.levels, group.id) !== 'off'
+    tasksGroupLevel(source, state) === 'write' &&
+    state.hosts.devices !== 'none'
   );
 }
 
-export function desktopsWriteAccess(
-  source: AccessModelSource,
-  state: AccessFormState,
-  remoteControlEnabled: boolean,
-): boolean {
-  const group = remoteGroup(source);
-  return (
-    source.server === 'tasks' &&
-    remoteControlEnabled &&
-    group !== undefined &&
-    group.unavailableReason === null &&
-    groupLevel(source, state.levels, group.id) === 'write'
-  );
-}
-
-/** `remotes.remoteIds` holds at most this many desktops (connection policy bound). */
+/** `hosts.connected.remoteIds` holds at most this many devices (connection policy bound). */
 export const MAX_ACCESS_DESKTOPS = 500;
 
 function uniqueIds(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
 
-/**
- * Switches between "Selected desktops" and "All my desktops". The checked
- * desktops stay in the draft while "All" is chosen, so switching back
- * restores them; `buildAccess` sends an empty list for "All".
- */
-export function setAccessDesktopMode(
+/** Turns the Cloud agents switch (the managed host) on or off. */
+export function setAccessManagedHost(
   state: AccessFormState,
-  mode: 'all' | 'selected',
+  managed: boolean,
 ): AccessFormState {
-  return { ...state, remotes: { ...state.remotes, mode } };
+  return { ...state, hosts: { ...state.hosts, managed } };
+}
+
+/** Turns Show device names to this agent on or off. */
+export function setAccessExposeNames(
+  state: AccessFormState,
+  exposeNames: boolean,
+): AccessFormState {
+  return { ...state, hosts: { ...state.hosts, exposeNames } };
 }
 
 /**
- * Checks or unchecks one desktop. Checking is a no-op once the selection
- * holds `MAX_ACCESS_DESKTOPS`; unchecking also removes a desktop that is no
- * longer paired.
+ * Chooses All, Selected or None. The checked devices stay in the draft while
+ * another choice is made, so choosing Selected again restores them;
+ * `buildAccess` sends an empty list for All and None.
  */
-export function setAccessDesktopSelected(
+export function setAccessDeviceChoice(
+  state: AccessFormState,
+  devices: AccessDeviceChoice,
+): AccessFormState {
+  return { ...state, hosts: { ...state.hosts, devices } };
+}
+
+/**
+ * Checks or unchecks one device. Checking is a no-op once the selection holds
+ * `MAX_ACCESS_DESKTOPS`; unchecking also removes a device that is no longer
+ * paired.
+ */
+export function setAccessDeviceSelected(
   state: AccessFormState,
   remoteId: string,
   selected: boolean,
 ): AccessFormState {
   const remaining = uniqueIds(
-    state.remotes.remoteIds.filter((candidate) => candidate !== remoteId),
+    state.hosts.remoteIds.filter((candidate) => candidate !== remoteId),
   );
   if (selected && remaining.length >= MAX_ACCESS_DESKTOPS) return state;
   return {
     ...state,
-    remotes: {
-      ...state.remotes,
+    hosts: {
+      ...state.hosts,
       remoteIds: selected ? [...remaining, remoteId] : remaining,
     },
   };
 }
 
-/** The selection is full: no further desktop can be checked. */
-export function desktopSelectionFull(state: AccessFormState): boolean {
-  return uniqueIds(state.remotes.remoteIds).length >= MAX_ACCESS_DESKTOPS;
+/** The selection is full: no further device can be checked. */
+export function deviceSelectionFull(state: AccessFormState): boolean {
+  return uniqueIds(state.hosts.remoteIds).length >= MAX_ACCESS_DESKTOPS;
 }
+
+function connectedHosts(
+  hosts: AccessHostsState,
+): ExternalAgentAccess['hosts']['connected'] {
+  if (hosts.devices === 'all') return { mode: 'all', remoteIds: [] };
+  if (hosts.devices === 'none') return { mode: 'selected', remoteIds: [] };
+  return { mode: 'selected', remoteIds: uniqueIds(hosts.remoteIds) };
+}
+
+function buildHosts(
+  source: AccessModelSource,
+  state: AccessFormState,
+  keepUnusedScope: boolean,
+): ExternalAgentAccess['hosts'] {
+  if (source.server !== 'tasks') return ACCOUNT_HOSTS;
+  // Consent starts fresh: with Tasks off, the new-connection default.
+  if (!usesAccessHosts(source, state) && !keepUnusedScope) {
+    return NEW_TASKS_HOSTS;
+  }
+  return {
+    managed: state.hosts.managed,
+    connected: connectedHosts(state.hosts),
+    exposeNames: state.hosts.exposeNames,
+  };
+}
+
+/**
+ * The Tasks access would reach no host: Cloud agents off and no devices.
+ * Saving is blocked with "Choose at least one host." until one is chosen.
+ */
+export function accessHostsMissing(
+  source: AccessModelSource,
+  state: AccessFormState,
+  options: { readonly keepUnusedScope?: boolean } = {},
+): boolean {
+  if (source.server !== 'tasks') return false;
+  const hosts = buildHosts(source, state, options.keepUnusedScope === true);
+  return (
+    !hosts.managed &&
+    hosts.connected.mode === 'selected' &&
+    hosts.connected.remoteIds.length === 0
+  );
+}
+
+export const HOSTS_REQUIRED_MESSAGE = 'Choose at least one host.';
 
 export interface DesktopAccessRow {
   readonly desktop: ExternalAgentDesktop;
@@ -566,12 +734,6 @@ export function buildAccess(
     toolNames.has(name),
   );
   const organizationAccess = showsAccessOrganizations(source, state);
-  const group = remoteGroup(source);
-  const remoteAccess =
-    source.server === 'tasks' &&
-    group !== undefined &&
-    group.unavailableReason === null &&
-    groupLevel(source, state.levels, group.id) !== 'off';
 
   const keep = options.keepUnusedScope === true;
   return {
@@ -590,16 +752,7 @@ export function buildAccess(
                 : [...state.organizations.organizationIds],
           }
         : { mode: 'all', organizationIds: [] },
-    remotes:
-      (remoteAccess || keep) && source.server === 'tasks'
-        ? {
-            mode: state.remotes.mode,
-            remoteIds:
-              state.remotes.mode === 'all'
-                ? []
-                : uniqueIds(state.remotes.remoteIds),
-          }
-        : { mode: 'selected', remoteIds: [] },
+    hosts: buildHosts(source, state, keep),
   };
 }
 
@@ -642,10 +795,10 @@ export function accessFormStateFromDetail(
       mode: detail.current.organizations.mode,
       organizationIds: [...detail.current.organizations.organizationIds],
     },
-    remotes: {
-      mode: detail.current.remotes.mode,
-      remoteIds: [...detail.current.remotes.remoteIds],
-    },
+    hosts:
+      detail.server === 'tasks'
+        ? accessHostsStateFromAccess(detail.current.hosts)
+        : accessHostsStateFromAccess(ACCOUNT_HOSTS),
   };
 }
 

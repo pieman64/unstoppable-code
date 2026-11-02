@@ -25,35 +25,52 @@ describe('fake Codex app-server marketplace protocol', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('returns the generated PluginInstalledResponse shape by default', async () => {
+  async function requestInstalledPlugins(
+    fixturePath: string,
+  ): Promise<unknown> {
     const statePath = path.join(tempDir, 'codex-state.json');
     fs.writeFileSync(
       statePath,
       JSON.stringify({ nextThread: 1, nextTurn: 1, threads: {} }),
       'utf8',
     );
-    child = spawn(process.execPath, [FIXTURE_PATH], {
+    child = spawn(process.execPath, [fixturePath], {
       env: {
         ...process.env,
         CANOPY_E2E_CODEX_STATE_PATH: statePath,
         CANOPY_E2E_CODEX_PLUGIN_FIXTURE_PATH: '',
+        // Keep these tests on the non-replay path even if the shell sets it.
+        CANOPY_LIFECYCLE_REPLAY_SCENARIO_OPTIONS: undefined,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const runningChild = child;
 
-    const response = await new Promise<unknown>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       const output = createInterface({ input: runningChild.stdout });
+      let stderr = '';
+      runningChild.stderr.setEncoding('utf8');
+      runningChild.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      // Stay under Jest's default 5 s test timeout so this error is reported.
       const timeout = setTimeout(() => {
         output.close();
         reject(new Error('Timed out waiting for fake Codex response'));
-      }, 5_000);
+      }, 4_000);
       output.once('line', (line) => {
         clearTimeout(timeout);
         output.close();
         resolve(JSON.parse(line));
       });
       runningChild.once('error', reject);
+      // A crash before the reply rejects with its stderr. The exit after the
+      // afterEach kill settles nothing because the promise already resolved.
+      runningChild.once('exit', (code) => {
+        clearTimeout(timeout);
+        output.close();
+        reject(new Error(`Fake Codex exited with code ${code}:\n${stderr}`));
+      });
       runningChild.stdin.write(
         `${JSON.stringify({
           id: 1,
@@ -62,14 +79,45 @@ describe('fake Codex app-server marketplace protocol', () => {
         })}\n`,
       );
     });
+  }
 
-    expect(response).toEqual({
+  it('returns the generated PluginInstalledResponse shape by default', async () => {
+    await expect(requestInstalledPlugins(FIXTURE_PATH)).resolves.toEqual({
       id: 1,
       result: {
         marketplaces: [],
         marketplaceLoadErrors: [],
       },
     });
+  });
+
+  // The public desktop export ships these fixtures without the turn-state
+  // harness contract under scripts/, which only replay mode needs.
+  it('starts outside replay mode without the turn-state harness contract', async () => {
+    const fixturesDir = path.join(
+      tempDir,
+      'export/apps/desktop-app/tests/electron/fixtures',
+    );
+    fs.mkdirSync(fixturesDir, { recursive: true });
+    // Mirror the fixture's sibling imports, static and lazy. A missing sibling
+    // fails with its module name in the exit error.
+    for (const name of [
+      'fake-codex-app-server.mjs',
+      'codex-chat-summary-traffic.mjs',
+      'lifecycle-replay-codex.mjs',
+      'lifecycle-replay.mjs',
+    ]) {
+      fs.copyFileSync(
+        path.join(path.dirname(FIXTURE_PATH), name),
+        path.join(fixturesDir, name),
+      );
+    }
+
+    await expect(
+      requestInstalledPlugins(
+        path.join(fixturesDir, 'fake-codex-app-server.mjs'),
+      ),
+    ).resolves.toMatchObject({ id: 1 });
   });
 });
 
@@ -246,4 +294,26 @@ describe('fake Codex app-server chat-summary turns', () => {
       'failed',
     );
   });
+
+  // Real Codex follows a non-retrying turn error with turn/completed (status
+  // failed, carrying the error); the desktop holds the error until then.
+  it.each(['usage-limit-banner', 'usage-limit-resume', 'proxy-quota'])(
+    'completes the turn as failed after a non-retrying quota error in %s mode',
+    async (mode) => {
+      const server = startServer(mode);
+      const threadId = await server.startThread(1, { cwd: tempDir });
+      const messages = await server.runTurn(2, threadId, 'Keep working');
+      const errorIndex = messages.findIndex(
+        (message) => field(message, 'method') === 'error',
+      );
+      expect(errorIndex).toBeGreaterThan(-1);
+      expect(field(messages[errorIndex], 'params', 'willRetry')).toBe(false);
+      const quotaError = field(messages[errorIndex], 'params', 'error');
+      expect(field(quotaError, 'codexErrorInfo')).toBe('usageLimitExceeded');
+      expect(messages.length - 1).toBeGreaterThan(errorIndex);
+      const completed = messages.at(-1);
+      expect(field(completed, 'params', 'turn', 'status')).toBe('failed');
+      expect(field(completed, 'params', 'turn', 'error')).toEqual(quotaError);
+    },
+  );
 });

@@ -42,6 +42,17 @@ jest.mock('../lib/project-owner', () => ({
   ): unknown => mockDecideSameOwnerAccess(caller, target),
 }));
 
+let mockOrganizationIds: string[] = [ORG_A, ORG_B];
+jest.mock('../lib/workspace-context-service', () => ({
+  getWorkspaceContextService: (): unknown => ({
+    initialize: (): Promise<void> => Promise.resolve(),
+    whenIdle: (): Promise<void> => Promise.resolve(),
+    getState: (): unknown => ({
+      organizations: mockOrganizationIds.map((id) => ({ id })),
+    }),
+  }),
+}));
+
 let mockMetadata: Record<string, PipelineLocalMetadata> = {};
 let mockMetadataReadable = true;
 const mockRecordUserPipelineOwner = jest.fn(
@@ -66,16 +77,24 @@ jest.mock('@canopy/desktop-shared/pipelines/store', () => ({
         : { success: false, error: 'not found' },
 }));
 
+import { PipelineHostRefusal } from '@canopy/desktop-shared/pipelines/host-actions';
 import {
   agentPipelineOwnerContext,
+  assertPipelineHostTargetOwner,
   assertRunPipelineTargetOwner,
+  CHOOSE_RUN_OWNER_MESSAGE,
   createDesktopPipelineOwnershipPort,
   getUserPipelineOwner,
+  isAcceptableRequestedOwner,
   isLocalUserPipeline,
+  pipelineHostCallerOwner,
+  readUserPipelineLocalRunOwner,
   resolveExecutionOwnerContext,
+  RUN_OWNER_UNAVAILABLE_MESSAGE,
   selectedOwnerContext,
   validatePipelineOwnerTargetsOnSave,
 } from '../pipelines/pipeline-owner-policy';
+import { PIPELINE_NOW_OWNED_MESSAGE } from '@canopy/desktop-shared/types/pipeline';
 
 const WORKTREE_TARGET = {
   scope: 'worktree' as const,
@@ -248,6 +267,200 @@ describe('pipeline owner policy', () => {
     });
   });
 
+  describe("a person's global run owner", () => {
+    function personGlobal(
+      requestedOwner: string | undefined,
+      userPipelineId: string | null = 'user-pipeline',
+    ): Parameters<typeof resolveExecutionOwnerContext>[0] {
+      return {
+        ...BASE_REQUEST,
+        scope: 'global',
+        userPipelineId: userPipelineId ?? undefined,
+        person: { requestedOwner },
+      };
+    }
+
+    it("keeps a user pipeline's saved owner over the selected organization", async () => {
+      mockMetadata['user-pipeline'] = { owner: `org:${ORG_B}` };
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(undefined)),
+      ).resolves.toEqual({ owner: `org:${ORG_B}` });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the chosen owner equals the saved owner', async () => {
+      mockMetadata['user-pipeline'] = { owner: `org:${ORG_B}` };
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(`org:${ORG_B}`)),
+      ).resolves.toEqual({ owner: `org:${ORG_B}` });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it('refuses a chosen owner that differs from the saved owner without rewriting it', async () => {
+      mockMetadata['user-pipeline'] = { owner: `org:${ORG_B}` };
+      await expect(
+        resolveExecutionOwnerContext(personGlobal('personal')),
+      ).resolves.toEqual({
+        refusal: PIPELINE_NOW_OWNED_MESSAGE,
+        code: 'pipeline_now_owned',
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockMetadata['user-pipeline']?.owner).toBe(`org:${ORG_B}`);
+    });
+
+    it('asks a person to choose an owner for an unowned pipeline instead of defaulting one', async () => {
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(undefined)),
+      ).resolves.toEqual({ refusal: CHOOSE_RUN_OWNER_MESSAGE });
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(undefined, null)),
+      ).resolves.toEqual({ refusal: CHOOSE_RUN_OWNER_MESSAGE });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it('returns the chosen owner and the user pipeline to bind, without binding it itself', async () => {
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(`org:${ORG_B}`)),
+      ).resolves.toEqual({
+        owner: `org:${ORG_B}`,
+        bindUserPipelineId: 'user-pipeline',
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it('runs as Personal without binding when the account has no organization to choose', async () => {
+      mockOrganizationIds = [];
+      try {
+        const result = await resolveExecutionOwnerContext(
+          personGlobal('personal'),
+        );
+        // Personal was the only owner shown, so nothing was chosen to keep.
+        expect(result).toEqual({ owner: 'personal' });
+        expect(result).not.toHaveProperty('bindUserPipelineId');
+      } finally {
+        mockOrganizationIds = [ORG_A, ORG_B];
+      }
+      // With an organization to choose from, Personal is a choice and binds.
+      await expect(
+        resolveExecutionOwnerContext(personGlobal('personal')),
+      ).resolves.toEqual({
+        owner: 'personal',
+        bindUserPipelineId: 'user-pipeline',
+      });
+    });
+
+    it('does not bind a definition outside the local user pipeline store', async () => {
+      const result = await resolveExecutionOwnerContext(
+        personGlobal('personal', null),
+      );
+      expect(result).toEqual({ owner: 'personal' });
+      expect(result).not.toHaveProperty('bindUserPipelineId');
+    });
+
+    it.each(['org:not-a-uuid', 'organization', '', `org:${ORG_B}x`])(
+      'refuses the malformed owner %p',
+      async (requestedOwner) => {
+        await expect(
+          resolveExecutionOwnerContext(personGlobal(requestedOwner)),
+        ).resolves.toEqual({ refusal: RUN_OWNER_UNAVAILABLE_MESSAGE });
+        expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      },
+    );
+
+    it('is Personal with organization projects off for an omitted or Personal choice', async () => {
+      mockFlagEnabled = false;
+      mockMetadata['user-pipeline'] = { owner: `org:${ORG_B}` };
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(undefined)),
+      ).resolves.toEqual({ owner: 'personal' });
+      await expect(
+        resolveExecutionOwnerContext(personGlobal('personal')),
+      ).resolves.toEqual({ owner: 'personal' });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+      expect(mockMetadata['user-pipeline']?.owner).toBe(`org:${ORG_B}`);
+    });
+
+    it('refuses an organization choice with organization projects off', async () => {
+      mockFlagEnabled = false;
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(`org:${ORG_A}`)),
+      ).resolves.toEqual({ refusal: RUN_OWNER_UNAVAILABLE_MESSAGE });
+    });
+
+    it("refuses while the saved owner can't be read", async () => {
+      mockMetadataReadable = false;
+      await expect(
+        resolveExecutionOwnerContext(personGlobal(`org:${ORG_B}`)),
+      ).resolves.toEqual({
+        refusal: anyStringContaining("Couldn't confirm where"),
+      });
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it('does not apply to a project run', async () => {
+      mockResolveProjectSavedOwner.mockResolvedValue({
+        kind: 'organization',
+        organizationId: ORG_B,
+      });
+      await expect(
+        resolveExecutionOwnerContext({
+          ...BASE_REQUEST,
+          projectId: 'project-1',
+          userPipelineId: 'user-pipeline',
+          person: { requestedOwner: undefined },
+        }),
+      ).resolves.toEqual({ owner: `org:${ORG_B}` });
+    });
+
+    it('lets an explicit binding win over a person choice', async () => {
+      await expect(
+        resolveExecutionOwnerContext({
+          ...personGlobal('personal'),
+          explicit: `org:${ORG_A}`,
+        }),
+      ).resolves.toEqual({ owner: `org:${ORG_A}` });
+    });
+  });
+
+  describe('requested owner acceptance', () => {
+    it('accepts Personal and organization owners with the flag on', () => {
+      expect(isAcceptableRequestedOwner('personal')).toBe(true);
+      expect(isAcceptableRequestedOwner(`org:${ORG_A}`)).toBe(true);
+    });
+
+    it('accepts only Personal with the flag off', () => {
+      mockFlagEnabled = false;
+      expect(isAcceptableRequestedOwner('personal')).toBe(true);
+      expect(isAcceptableRequestedOwner(`org:${ORG_A}`)).toBe(false);
+    });
+
+    it.each(['', 'org:', 'org:nope', 'Personal', ORG_A])(
+      'refuses the malformed owner %p',
+      (value) => {
+        expect(isAcceptableRequestedOwner(value)).toBe(false);
+      },
+    );
+  });
+
+  describe('single-pipeline local run owner read', () => {
+    it('returns the saved owner, or nothing for an unowned pipeline', () => {
+      mockMetadata['user-pipeline'] = { owner: `org:${ORG_B}` };
+      expect(readUserPipelineLocalRunOwner('user-pipeline')).toBe(
+        `org:${ORG_B}`,
+      );
+      expect(readUserPipelineLocalRunOwner('legacy')).toBeUndefined();
+      expect(mockRecordUserPipelineOwner).not.toHaveBeenCalled();
+    });
+
+    it("throws while stored owners can't be read", () => {
+      mockMetadataReadable = false;
+      mockMetadata['user-pipeline'] = { owner: `org:${ORG_B}` };
+      expect(() => readUserPipelineLocalRunOwner('user-pipeline')).toThrow(
+        "Couldn't confirm where",
+      );
+    });
+  });
+
   describe('legacy user pipeline owner backfill', () => {
     it('takes and keeps the selected organization', async () => {
       await expect(getUserPipelineOwner('legacy')).resolves.toBe(
@@ -414,6 +627,204 @@ describe('pipeline owner policy', () => {
         })?.chat.chatId,
       ).toBe('c');
     });
+  });
+
+  describe('host caller owner', () => {
+    it('reads absent as Personal and unparseable as unknown, never Personal', () => {
+      expect(pipelineHostCallerOwner(undefined)).toEqual({ kind: 'personal' });
+      expect(pipelineHostCallerOwner('personal')).toEqual({
+        kind: 'personal',
+      });
+      expect(
+        pipelineHostCallerOwner('org:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+      ).toEqual({
+        kind: 'organization',
+        organizationId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      });
+      expect(pipelineHostCallerOwner('garbage')).toEqual({ kind: 'unknown' });
+      expect(pipelineHostCallerOwner('')).toEqual({ kind: 'unknown' });
+    });
+  });
+
+  describe('host step target check', () => {
+    const CALLER = {
+      executionId: 'exec-1',
+      jobId: 'job',
+      stepId: 'step',
+      attempt: 0,
+      iteration: 0,
+      idempotencyKey: 'pipeline-host:exec-1:job::step:0:0',
+    };
+    const PROJECT_TARGET = {
+      kind: 'project' as const,
+      projectId: 'project-b',
+      workspaceType: 'single-repo' as const,
+    };
+
+    it('checks the project against the execution owner', async () => {
+      await expect(
+        assertPipelineHostTargetOwner(
+          { ...CALLER, executionContext: `org:${ORG_A}` },
+          { ...PROJECT_TARGET, taskId: 'task-b' },
+        ),
+      ).resolves.toBeUndefined();
+      expect(mockDecideSameOwnerAccess).toHaveBeenCalledWith(
+        { kind: 'organization', organizationId: ORG_A },
+        { projectId: 'project-b', worktreeId: 'task-b' },
+      );
+    });
+
+    it('checks a project the step creates the task in without a task', async () => {
+      await assertPipelineHostTargetOwner(
+        { ...CALLER, executionContext: 'personal' },
+        PROJECT_TARGET,
+      );
+      expect(mockDecideSameOwnerAccess).toHaveBeenCalledWith(
+        { kind: 'personal' },
+        { projectId: 'project-b' },
+      );
+    });
+
+    it('hides another owner exactly like a missing project', async () => {
+      mockDecideSameOwnerAccess.mockResolvedValue({ kind: 'hidden' });
+      const refusal = await assertPipelineHostTargetOwner(
+        { ...CALLER, executionContext: `org:${ORG_B}` },
+        PROJECT_TARGET,
+      ).catch((error: unknown) => error);
+
+      expect(refusal).toBeInstanceOf(PipelineHostRefusal);
+      expect(refusal).toMatchObject({
+        failureReason: 'not_found',
+        message: "Project `project-b` isn't available to this pipeline",
+      });
+    });
+
+    it.each(['caller_owner_unknown', 'target_owner_unknown'] as const)(
+      'fails closed with owner_context_unavailable when %s',
+      async (kind) => {
+        mockDecideSameOwnerAccess.mockResolvedValue({ kind });
+        await expect(
+          assertPipelineHostTargetOwner(
+            { ...CALLER, executionContext: 'personal' },
+            PROJECT_TARGET,
+          ),
+        ).rejects.toMatchObject({
+          failureReason: 'owner_context_unavailable',
+        });
+      },
+    );
+
+    it('fails closed on an unparsable execution owner', async () => {
+      mockDecideSameOwnerAccess.mockImplementation((caller) =>
+        Promise.resolve(
+          caller.kind === 'unknown'
+            ? { kind: 'caller_owner_unknown' }
+            : { kind: 'allowed' },
+        ),
+      );
+      await expect(
+        assertPipelineHostTargetOwner(
+          { ...CALLER, executionContext: 'garbage' },
+          PROJECT_TARGET,
+        ),
+      ).rejects.toMatchObject({ failureReason: 'owner_context_unavailable' });
+    });
+
+    it('exempts App Advisor', async () => {
+      await assertPipelineHostTargetOwner(CALLER, {
+        kind: 'bot',
+        botId: 'app_advisor',
+        taskId: 'entry-1',
+      });
+      expect(mockDecideSameOwnerAccess).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('save-time literal host step target check', () => {
+    function hostStepPipeline(
+      uses: string,
+      withInputs: Record<string, string>,
+    ): Pipeline {
+      return {
+        name: 'Global',
+        on: 'dispatch',
+        scope: ['global'],
+        jobs: { build: { steps: [{ id: 'host', uses, with: withInputs }] } },
+      } satisfies Pipeline;
+    }
+
+    it.each([
+      ['builtin/create-worktree', { workspace_id: 'project-b' }],
+      ['builtin/create-worktree', { project_id: 'project-b' }],
+      ['builtin/move-to-group', { project_id: 'project-b', task_id: 't-1' }],
+      ['builtin/create-project-entry', { project_id: 'project-b' }],
+      [
+        'builtin/send-agent-message',
+        { project_id: 'project-b', task_id: 't-1', text: 'hi' },
+      ],
+      [
+        'builtin/wait-for-agent-reply',
+        { project_id: 'project-b', task_id: 't-1', chat_id: 'c-1' },
+      ],
+    ])('refuses a literal %s target of another owner', async (uses, inputs) => {
+      mockDecideSameOwnerAccess.mockResolvedValue({ kind: 'hidden' });
+      await expect(
+        validatePipelineOwnerTargetsOnSave(
+          hostStepPipeline(uses, inputs),
+          `org:${ORG_A}`,
+        ),
+      ).resolves.toBe("Project `project-b` isn't available to this pipeline");
+    });
+
+    it('leaves a bot wait-for-agent-reply target to run time', async () => {
+      mockDecideSameOwnerAccess.mockResolvedValue({ kind: 'hidden' });
+      await expect(
+        validatePipelineOwnerTargetsOnSave(
+          hostStepPipeline('builtin/wait-for-agent-reply', {
+            bot_id: 'app_advisor',
+            task_id: 'entry-1',
+            chat_id: 'c-1',
+          }),
+          `org:${ORG_A}`,
+        ),
+      ).resolves.toBeNull();
+      expect(mockDecideSameOwnerAccess).not.toHaveBeenCalled();
+    });
+
+    it('leaves expression host step targets to run time', async () => {
+      mockDecideSameOwnerAccess.mockResolvedValue({ kind: 'hidden' });
+      await expect(
+        validatePipelineOwnerTargetsOnSave(
+          hostStepPipeline('builtin/create-worktree', {
+            project_id: '${{ inputs.project }}',
+          }),
+          `org:${ORG_A}`,
+        ),
+      ).resolves.toBeNull();
+      expect(mockDecideSameOwnerAccess).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['builtin/create-project-entry', { project_id: '${{ inputs.project }}' }],
+      ['builtin/create-bot-entry', { bot_id: 'app_advisor' }],
+      [
+        'builtin/send-agent-message',
+        { project_id: '${{ inputs.project }}', task_id: 't-1' },
+      ],
+      ['builtin/send-agent-message', { bot_id: 'app_advisor', task_id: 't-1' }],
+    ])(
+      'leaves %s without a literal project to run time',
+      async (uses, inputs) => {
+        mockDecideSameOwnerAccess.mockResolvedValue({ kind: 'hidden' });
+        await expect(
+          validatePipelineOwnerTargetsOnSave(
+            hostStepPipeline(uses, inputs),
+            `org:${ORG_A}`,
+          ),
+        ).resolves.toBeNull();
+        expect(mockDecideSameOwnerAccess).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('save-time literal target check', () => {

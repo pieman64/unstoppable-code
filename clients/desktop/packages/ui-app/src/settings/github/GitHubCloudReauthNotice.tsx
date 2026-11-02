@@ -47,7 +47,7 @@ export function GitHubCloudReauthNotice({
       data-testid="github-cloud-reauth-notice"
       actions={
         <NoticeButton
-          variant="primary"
+          variant="secondary"
           data-testid="github-cloud-reauth-reconnect"
           aria-disabled={busy ? true : undefined}
           aria-busy={busy ? true : undefined}

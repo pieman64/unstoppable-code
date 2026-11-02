@@ -15,6 +15,7 @@ import {
 import path from 'node:path';
 import os from 'node:os';
 import { expect as baseExpect, test } from '@playwright/test';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import {
   seedDemoWorkspaces,
@@ -26,14 +27,10 @@ import { createDelegationInference } from './delegationRuntime.mjs';
 
 // Windows qualification runs under emulation, where native provider turns
 // take several times longer than on macOS. Mirrors managed-delegation.spec.mjs.
-const TIMEOUT_SCALE = process.platform === 'win32' ? 3 : 1;
+const hostPlatform = hostOperatingSystem();
+const TIMEOUT_SCALE = hostPlatform === 'win32' ? 3 : 1;
 const scaled = (ms) => ms * TIMEOUT_SCALE;
 const expect = baseExpect.configure({ timeout: scaled(15_000) });
-
-test.skip(
-  !['darwin', 'win32'].includes(process.platform),
-  'Managed delegation requires the macOS or Windows confined file boundary.',
-);
 
 const workspaceId = 'demo-ts-pnpm-vite';
 const worktreeId = 'demo-main';
@@ -205,6 +202,9 @@ async function openDelegatingChat(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell();
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree('demo-main');
   const panel = window.getByTestId('panel-content-chat');
@@ -305,20 +305,41 @@ test('queued-then-running: second spawn waits for a slot, then starts automatica
     // bare "Queued" label with no live position/waitingFor suffix in this
     // scenario, so this asserts the substring rather than exact text.
     await expect(queueStatus).toContainText('Queued');
-    // AgentBlockCard only renders pendingSpinner when isRunning is true, and
+    // The clean AgentBlockCard shimmers only while isRunning is true, and
     // DelegatedAgentCard sets running = !queued && (...), so a queued card
-    // never gets the spinner even though it is not settled either.
+    // never shimmers even though it is not settled either.
     await expect(
-      queuedCard.getByLabel('Thinking', { exact: true }),
+      queuedCard.locator('[data-step-row-words].canopy-text-shimmer-strong'),
     ).toHaveCount(0);
-    // Positive control: the actually-running sibling does show the spinner
+    // Positive control: the actually-running sibling does shimmer
     // and no queue status, so the absence above is a real distinction.
     await expect(
       runningCard.getByTestId('delegated-agent-queue-status'),
     ).toHaveCount(0);
     await expect(
-      runningCard.getByLabel('Thinking', { exact: true }),
+      runningCard.locator('[data-step-row-words].canopy-text-shimmer-strong'),
     ).toHaveCount(1);
+
+    // A renderer reconnect must project the same admitted/queued generations,
+    // not launch the queued task or lose its card. This runs on Linux too.
+    const generations = runsAfterSpawn.map((run) => ({
+      id: run.state.delegationId,
+      generation: run.state.runGeneration,
+    }));
+    await window.reload();
+    await openDelegatingChat(electronApp);
+    await revealDelegatedCards(transcript, 2);
+    await expect(queueStatus).toContainText('Queued');
+    expect(
+      retainedRuns(userDataDir).map((run) => ({
+        id: run.state.delegationId,
+        generation: run.state.runGeneration,
+      })),
+    ).toEqual(generations);
+    expect(retainedRuns(userDataDir).filter(isQueued)).toHaveLength(1);
+    expect(
+      fixture.requests.filter((request) => request.role === 'child'),
+    ).toHaveLength(2);
 
     fixture.releaseChild();
     await expect
@@ -608,6 +629,16 @@ test('quit-queued-relaunch: quitting while a task is queued settles it as cancel
       expect(record.state.status).toBe('cancelled');
       expect(record.state.stopReason).toBe('shutdown');
       expect(record.state.cancelledByUser).toBe(false);
+      // Recovery restores terminal history without replaying a queued or
+      // running child. Inference is deterministic; process startup is real.
+      expect(
+        retainedRuns(userDataDir).every(
+          (run) => !['pending', 'running'].includes(run.state.status),
+        ),
+      ).toBe(true);
+      expect(
+        fixture.requests.filter((request) => request.role === 'child'),
+      ).toHaveLength(2);
 
       assertionsCompleted = true;
     } finally {

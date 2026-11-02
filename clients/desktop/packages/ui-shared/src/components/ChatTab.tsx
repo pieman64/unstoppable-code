@@ -144,7 +144,7 @@ export function ChatTab({
       className={`focus-ring shrink-0 cursor-not-allowed rounded p-0.5 fg-disabled ${
         closeDisabledReason
           ? ''
-          : 'ml-auto opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
+          : 'ml-auto opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100'
       }`}
     >
       {closeGlyph}
@@ -186,7 +186,7 @@ export function ChatTab({
           onSelect?.();
         }
       }}
-      className={`group relative flex shrink-0 cursor-pointer items-center border-r text-xs transition ${
+      className={`group relative flex shrink-0 cursor-pointer items-center border-r text-xs transition-opacity ${
         pinned
           ? 'justify-center gap-0 px-2.5 py-3'
           : 'max-w-45 gap-1.5 px-3 py-3'
@@ -231,7 +231,7 @@ export function ChatTab({
               e.stopPropagation();
               onClose?.();
             }}
-            className="focus-ring ml-auto shrink-0 rounded p-0.5 fg-secondary opacity-0 transition hover:bg-fg-primary/[0.1] hover:fg-primary group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:bg-fg-primary/[0.1] focus-visible:fg-primary focus-visible:opacity-100 pointer-coarse:opacity-100"
+            className="focus-ring ml-auto shrink-0 rounded p-0.5 fg-secondary opacity-0 transition-opacity hover:bg-fg-primary/[0.1] hover:fg-primary group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:bg-fg-primary/[0.1] focus-visible:fg-primary focus-visible:opacity-100 pointer-coarse:opacity-100"
             aria-label={closeButtonAriaLabel}
           >
             {closeGlyph}

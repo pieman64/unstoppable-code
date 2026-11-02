@@ -9,6 +9,7 @@ import {
 import type { SharedAutomationSummary } from '@canopy/protocol/automations';
 import {
   parseWorkspaceContext,
+  serializeWorkspaceContext,
   type WorkspaceContext,
   type WorkspaceContextOrganization,
 } from '@canopy/protocol/workspace-context';
@@ -17,6 +18,7 @@ import {
   automationRunsInMessage,
   workspaceContextDisplayLabel,
 } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { isGlobalPipelineAutomationAction } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 import { automationActionWorkspaceId } from '@/components/panels/automations/automations-panel-data';
 
 /**
@@ -63,13 +65,24 @@ function isTargetWorkspaceInContext(
   return isWorkspaceInContext(workspace, context, linkedPersonalIds);
 }
 
+/**
+ * Whether an automation belongs in the selected context. A pipeline with no
+ * project is filed under its saved owner (absent reads as Personal), never by
+ * its inert `workspaceId` or the App Advisor "show everywhere" rule; main's
+ * `automationInContext` applies the same rule.
+ */
 export function isAutomationInContext(
-  activity: { action: AutomationAction },
+  activity: { action: AutomationAction; executionContext?: string },
   projectsById: ReadonlyMap<string, ScopedWorkspace>,
   context: WorkspaceContext | undefined,
   linkedPersonalIds: ReadonlySet<string>,
 ): boolean {
   if (context === undefined) return true;
+  if (isGlobalPipelineAutomationAction(activity.action))
+    return (
+      (activity.executionContext ?? 'personal') ===
+      serializeWorkspaceContext(context)
+    );
   return isTargetWorkspaceInContext(
     automationActionWorkspaceId(activity.action),
     projectsById,

@@ -7,6 +7,7 @@ import {
   ColorSwatchPicker,
   Notice,
   NoticeButton,
+  SettingsButtonRow,
 } from '@canopy/ui-shared';
 import type {
   BrowserProfileRecord,
@@ -26,7 +27,6 @@ import {
   collidingProfileNames,
   profileNameQualifier,
 } from '@/lib/browserProfileNames';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 /**
  * Readable trailing label for a profile row.
@@ -84,7 +84,6 @@ function rowLabel(
 }
 
 export function BrowserProfilesSettings(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const projects = useProjectsStore((state) => state.projects);
   const [cleanup, setCleanup] = useState<
     Awaited<
@@ -315,7 +314,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                     placeholder="Personal or Work"
                   />
                   <Button
-                    size={settingsButtonSize}
+                    size="compact"
                     type="submit"
                     variant="primary"
                     data-testid="browser-profile-create"
@@ -328,28 +327,23 @@ export function BrowserProfilesSettings(): JSX.Element {
             />
           </form>
           {profiles.map((profile) => (
-            // The row keeps the group's padding and hairline; the button
-            // bleeds into that padding so the selected ring sits clear of
-            // the text, which stays on the rows' shared edge.
-            <div key={profile.profileId} className="flex min-h-7 items-center">
-              <button
-                type="button"
-                data-testid={`browser-profile-row-${profile.profileId}`}
-                aria-pressed={selectedId === profile.profileId}
-                onClick={() => select(profile.profileId)}
-                className={`focus-ring -mx-2 -my-1.5 flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left text-s fg-primary transition-colors ${
-                  selectedId === profile.profileId
-                    ? 'bg-accent-subtle ring-1 ring-line-accent'
-                    : 'hover:bg-subtle'
-                }`}
-              >
+            // Picking a profile opens its settings below; the chosen row
+            // carries the checkmark.
+            <SettingsButtonRow
+              key={profile.profileId}
+              trailing="select"
+              selected={selectedId === profile.profileId}
+              data-testid={`browser-profile-row-${profile.profileId}`}
+              onClick={() => select(profile.profileId)}
+              label={
                 <BrowserProfileBadge
                   name={profile.displayName}
                   color={profile.color}
+                  className="max-w-full"
                 />
-                <ScopeLabel {...rowLabel(profile, projects, colliding)} />
-              </button>
-            </div>
+              }
+              meta={<ScopeLabel {...rowLabel(profile, projects, colliding)} />}
+            />
           ))}
           {/* First load only: loading more keeps the listed profiles and
               holds the button until the next page arrives. */}
@@ -364,8 +358,8 @@ export function BrowserProfilesSettings(): JSX.Element {
           {nextOffset !== undefined && (
             <div>
               <Button
-                size={settingsButtonSize}
-                variant="ghost"
+                size="compact"
+                variant="secondary"
                 disabled={loading}
                 onClick={() => void run(() => load(nextOffset))}
               >
@@ -380,13 +374,7 @@ export function BrowserProfilesSettings(): JSX.Element {
         // together; `contents` keeps both sections direct items of the page.
         <div className="contents" data-testid="browser-profile-details">
           <SettingsSection
-            title={
-              <BrowserProfileBadge
-                name={selected.displayName}
-                color={selected.color}
-                className="max-w-full"
-              />
-            }
+            title={selected.displayName}
             headingId="browser-profile-details-heading"
             description={
               selected.kind === 'task'
@@ -416,7 +404,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                           onChange={(event) => setRename(event.target.value)}
                         />
                         <Button
-                          size={settingsButtonSize}
+                          size="compact"
                           type="submit"
                           variant="secondary"
                           disabled={busy || !rename.trim()}
@@ -457,7 +445,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                   description="Removes this profile and its browser data."
                   control={
                     <Button
-                      size={settingsButtonSize}
+                      size="compact"
                       ref={deleteTrigger}
                       variant="destructive"
                       data-testid="browser-profile-delete"
@@ -521,15 +509,15 @@ export function BrowserProfilesSettings(): JSX.Element {
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <Button
-                      size={settingsButtonSize}
-                      variant="ghost"
+                      size="compact"
+                      variant="secondary"
                       disabled={busy}
                       onClick={dismissDeletePrompt}
                     >
                       Cancel
                     </Button>
                     <Button
-                      size={settingsButtonSize}
+                      size="compact"
                       variant="destructive"
                       data-testid="browser-profile-confirm-delete"
                       disabled={busy}

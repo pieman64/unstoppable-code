@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { requestAnswersFromRenderer } from '../canopy-tools/session-runtime';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import type { WindowSendResult } from '../lib/window-send';
+import type * as WindowSendModule from '../lib/window-send';
 import { resolveRequest } from '../mcp/pending-requests';
 
 const upsertPendingQuestion = jest.fn().mockResolvedValue(undefined);
@@ -31,13 +31,28 @@ jest.mock('../services/attention-tracker', () => ({
   }),
 }));
 
-const sendDetailed = jest.fn((): WindowSendResult => ({ delivered: true }));
-const send = jest.fn((): boolean => true);
+const sendDetailed = jest.fn<
+  WindowSendModule.WindowSendResult,
+  Parameters<typeof WindowSendModule.sendToWindowDetailed>
+>(() => ({ delivered: true }));
+const send = jest.fn<boolean, Parameters<typeof WindowSendModule.sendToWindow>>(
+  () => true,
+);
 jest.mock('../lib/window-send', () => ({
-  sendToWindowDetailed: (...args: unknown[]): WindowSendResult =>
-    sendDetailed(...args),
-  sendToWindow: (...args: unknown[]): boolean => send(...args),
+  sendToWindowDetailed: (
+    ...args: Parameters<typeof WindowSendModule.sendToWindowDetailed>
+  ): WindowSendModule.WindowSendResult => sendDetailed(...args),
+  sendToWindow: (
+    ...args: Parameters<typeof WindowSendModule.sendToWindow>
+  ): boolean => send(...args),
 }));
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
 
 describe('requestAnswersFromRenderer ask-user timeout', () => {
   beforeEach(() => {
@@ -152,12 +167,13 @@ describe('requestAnswersFromRenderer ask-user timeout', () => {
     const rejection = expect(promise).rejects.toThrow('ask_user_cancelled');
 
     controller.abort();
-    await Promise.resolve();
+    await flushMicrotasks();
     expect(send).not.toHaveBeenCalledWith(
       null,
       IPC_CHANNELS.mcpExpireAskUser,
       expect.anything(),
     );
+    expect(finishConsume).toBeDefined();
 
     finishConsume?.();
     await rejection;
@@ -172,7 +188,7 @@ describe('requestAnswersFromRenderer ask-user timeout', () => {
   it('keeps the main-owned question answerable when no renderer is available', async () => {
     sendDetailed.mockReturnValueOnce({
       delivered: false,
-      reason: 'window_unavailable',
+      reason: 'no_window',
     });
     let requestId = '';
     const promise = requestAnswersFromRenderer({

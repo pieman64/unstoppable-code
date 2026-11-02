@@ -12,14 +12,22 @@ jest.mock('../../../canopy-runtime/desktop-runtime', () => ({
   }),
 }));
 jest.mock('../../../services/standalone-chat-service', () => ({
-  resolveStandaloneChatTarget: mockResolve,
+  get resolveStandaloneChatTarget(): typeof mockResolve {
+    return mockResolve;
+  },
 }));
 jest.mock('../chat-state-query', () => ({
-  queryPortalChatState: mockChatState,
+  get queryPortalChatState(): typeof mockChatState {
+    return mockChatState;
+  },
 }));
 jest.mock('@canopy/desktop-instrumentation/electron/main', () => ({
-  startDesktopOperation: mockStart,
-  succeedDesktopOperation: mockSucceed,
+  get startDesktopOperation(): typeof mockStart {
+    return mockStart;
+  },
+  get succeedDesktopOperation(): typeof mockSucceed {
+    return mockSucceed;
+  },
   failDesktopOperation: jest.fn(),
 }));
 

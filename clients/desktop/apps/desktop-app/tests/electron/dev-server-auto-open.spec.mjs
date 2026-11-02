@@ -39,7 +39,7 @@ test('legacy pattern shows its browser destination and manual open', async () =>
       'aria-pressed',
       'true',
     );
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await dialog.getByTestId('project-settings-back').click();
     await injectScriptRunEvent(electronApp, {
       projectId: PROJECT_ID,
       worktreeId: WORKTREE_ID,
@@ -150,21 +150,18 @@ test('auto-open toggle saves to canopy.json and reloads in project settings', as
       )
       .toEqual({ pattern: PATTERN, openTarget: 'external' });
     settings = await openAutoOpenSettings(window);
-    await settings.dialog
-      .getByRole('button', { name: 'Local override', exact: true })
-      .click();
-    const localEditor = settings.dialog
-      .getByText('Launch script', { exact: true })
-      .locator('xpath=../..');
+    await settings.dialog.getByTestId('project-settings-scope-local').click();
+    const localEditor = settings.dialog.getByTestId(
+      'project-settings-script-launch',
+    );
     await localEditor.locator('textarea').fill('npm run local-dev');
     await localEditor
       .getByRole('button', { name: 'Add pattern', exact: true })
       .click();
     await localEditor.getByLabel('Pattern', { exact: true }).fill(PATTERN);
     await localEditor.getByTestId('dev-server-pattern-auto-open').click();
-    await settings.dialog
-      .getByRole('button', { name: 'Save local', exact: true })
-      .click();
+    // A local override is written by Save local.
+    await settings.dialog.getByTestId('project-settings-save-local').click();
     const localConfigPath = path.join(
       fixture.userDataDir,
       'workspaces',
@@ -201,7 +198,7 @@ test('live auto-open follows each destination once and ignores restored output',
   try {
     const window = await electronApp.firstWindow();
     const { dialog } = await openAutoOpenSettings(window);
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await dialog.getByTestId('project-settings-back').click();
     const restored = await window.evaluate(
       ({ projectId, worktreeId }) =>
         window.api.loadWorktreeScriptRuns({

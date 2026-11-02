@@ -4,6 +4,7 @@ import type { JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { LedgerFilePicker } from '@canopy/app-core';
 import type { LedgerViewDraft, LedgerViewStore } from '@canopy/app-state';
+import { isLedgerTaskViewScope } from '@canopy/protocol/ledger-view';
 import { LedgerEntryForm } from '@canopy/ui-shared/components';
 import {
   LedgerDraftFileSearch,
@@ -80,8 +81,10 @@ export function LedgerComposer({
           onChange={onChange}
         />
       )}
+      referencesFiles={isLedgerTaskViewScope(scope)}
       fileSearch={
-        files === undefined ? undefined : (
+        // A global (workflow) scope has no files to reference.
+        files === undefined || !isLedgerTaskViewScope(scope) ? undefined : (
           <LedgerDraftFileSearch
             files={files}
             scope={scope}

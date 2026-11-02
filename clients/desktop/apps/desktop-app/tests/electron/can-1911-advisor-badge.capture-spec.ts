@@ -261,7 +261,7 @@ async function measureAdvisorBadgeContrast(
       return result;
     }
     const badges = Array.from(
-      document.querySelectorAll('[aria-label="Pipeline Advisor ETA"]'),
+      document.querySelectorAll('[aria-label="Workflow Advisor ETA"]'),
     );
     return badges.map((badge) => {
       const fg = parseColor(getComputedStyle(badge).color);
@@ -306,7 +306,7 @@ test.describe('CAN-1911 advisor badge readability', () => {
       ).toBeVisible({ timeout: 15_000 });
 
       // All three advisor badge states must be on screen before measuring.
-      const badges = window.locator('[aria-label="Pipeline Advisor ETA"]');
+      const badges = window.locator('[aria-label="Workflow Advisor ETA"]');
       await expect(badges).toHaveCount(3, { timeout: 15_000 });
 
       const dark = process.env.CANOPY_E2E_CAPTURE_COLOR_MODE === 'dark';

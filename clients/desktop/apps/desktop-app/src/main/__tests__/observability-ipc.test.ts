@@ -42,8 +42,12 @@ const getStablePostHogAnonymousKeyMock = jest.fn<Promise<string>, []>();
 const getStableAnonymousKeyMock = jest.fn<Promise<string>, []>();
 
 jest.mock('../lib/anonymous-id', () => ({
-  getStableAnonymousKey: getStableAnonymousKeyMock,
-  getStablePostHogAnonymousKey: getStablePostHogAnonymousKeyMock,
+  get getStableAnonymousKey(): typeof getStableAnonymousKeyMock {
+    return getStableAnonymousKeyMock;
+  },
+  get getStablePostHogAnonymousKey(): typeof getStablePostHogAnonymousKeyMock {
+    return getStablePostHogAnonymousKeyMock;
+  },
 }));
 
 import {
@@ -710,7 +714,7 @@ test('exposes the domain-only instrumentation projection through observability I
     .spyOn(instrumentation, 'getDesktopPostHogEmailDomain')
     .mockResolvedValue('example.test');
   try {
-    registerObservabilityHandlers();
+    registerObservabilityHandlers(() => null);
     const handler = registeredHandlers.get(
       IPC_CHANNELS.observabilityGetPostHogEmailDomain,
     );

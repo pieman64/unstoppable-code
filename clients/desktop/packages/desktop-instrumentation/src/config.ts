@@ -1,3 +1,4 @@
+import type { BrandReleaseFlavor } from '@canopy/protocol/brand';
 import type {
   DesktopInstrumentationPrivacyLevel,
   DesktopInstrumentationProvider,
@@ -50,6 +51,8 @@ export interface DesktopInstrumentationConfig {
   providers: readonly DesktopInstrumentationProvider[];
   /** Bundled release version of the app, independent of any provider. */
   appVersion?: string;
+  /** Bundled release flavor; omitted when the build sets no known flavor. */
+  releaseChannel?: BrandReleaseFlavor;
   datadog: DatadogInstrumentationConfig;
   posthog: PostHogInstrumentationConfig;
 }
@@ -108,6 +111,14 @@ function readBuildString(value: string | undefined): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readReleaseChannel(
+  value: string | undefined,
+): BrandReleaseFlavor | undefined {
+  return value === 'internal' || value === 'rc' || value === 'stable'
+    ? value
+    : undefined;
 }
 
 function readBuildNumber(value: number | undefined, fallback: number): number {
@@ -195,6 +206,10 @@ export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig 
     appVersion:
       typeof __CANOPY_APP_VERSION__ !== 'undefined'
         ? readBuildString(__CANOPY_APP_VERSION__)
+        : undefined,
+    releaseChannel:
+      typeof __CANOPY_RELEASE_FLAVOR__ !== 'undefined'
+        ? readReleaseChannel(__CANOPY_RELEASE_FLAVOR__)
         : undefined,
     datadog: {
       enabled: datadogEnabled,

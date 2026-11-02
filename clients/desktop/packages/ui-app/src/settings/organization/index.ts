@@ -7,25 +7,16 @@ export { OrganizationMemberPage } from './OrganizationMemberPage';
 export { OrganizationGroupsPage } from './OrganizationGroupsPage';
 export { OrganizationProjectsPage } from './OrganizationProjectsPage';
 export { OrganizationSettingsPage } from './OrganizationSettingsPage';
-export {
-  TeamPage,
-  organizationSwitchTab,
-  type TeamLapsedInfo,
-  type TeamPageProps,
-} from './team-page';
+export { TeamPage, type TeamLapsedInfo, type TeamPageProps } from './team-page';
 export { TeamPanel, type TeamPanelProps } from './team-panel';
 export {
-  OrganizationIdentity,
   OrganizationSettingsPlaceholder,
-  OrgSwitcher,
   PersonalOverviewHeader,
   organizationHeaderModel,
   organizationTabForRoute,
   useOrganizationHeaderModel,
   type OrganizationHeaderModel,
-  type OrganizationIdentityProps,
   type OrganizationSettingsPlaceholderProps,
-  type OrgSwitcherProps,
 } from './organization-header';
 export {
   teamPagePropsFromData,

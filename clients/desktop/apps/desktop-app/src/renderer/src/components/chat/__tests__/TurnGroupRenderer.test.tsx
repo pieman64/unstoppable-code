@@ -1,5 +1,8 @@
 /** @jest-environment jsdom */
-import { computeTurnSummary } from '@canopy/desktop-shared/lib/turn-utils';
+import {
+  computeTurnSummary,
+  type TurnToolResult,
+} from '@canopy/desktop-shared/lib/turn-utils';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { act, type ComponentProps, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -26,6 +29,48 @@ import {
 } from '@canopy/desktop-shared/lib/display-message-visual';
 import type { ChatVisualOwner } from '@canopy/ui-app';
 import type * as UiAppModule from '@canopy/ui-app';
+import type * as UiSharedComponentsModule from '@canopy/ui-shared/components';
+import {
+  buildGitHubWorkflowRunArtifactReceipt,
+  buildPipelineRunArtifactReceipt,
+} from '@canopy/desktop-shared/lib/agent-artifacts';
+import type {
+  AgentArtifactReceiptV1,
+  PipelineRunArtifactReceiptV1,
+} from '@canopy/desktop-shared/types';
+
+// The outcome control's jump handler, as the renderer last passed it, so a
+// test can request a step no tooltip entry offers (CAN-5056).
+let mockLastOutcomeJump: ((toolUseId?: string) => void) | undefined;
+// Chat detail: `recent` when the live step window is on, else `compact` when
+// grouping is on, else `detailed`.
+let mockLiveStepWindow = false;
+let mockGroupToolCalls = false;
+jest.mock('@canopy/ui-shared/components', () => {
+  const actual = jest.requireActual<typeof UiSharedComponentsModule>(
+    '@canopy/ui-shared/components',
+  );
+  return {
+    ...actual,
+    useChatDetail: (): ReturnType<typeof actual.useChatDetail> =>
+      mockLiveStepWindow
+        ? 'recent'
+        : mockGroupToolCalls
+          ? 'compact'
+          : 'detailed',
+    TurnOutcomeControl: (
+      props: Parameters<typeof actual.TurnOutcomeControl>[0],
+    ): ReturnType<typeof actual.TurnOutcomeControl> => {
+      mockLastOutcomeJump = props.onJumpToOutcome;
+      return actual.TurnOutcomeControl(props);
+    },
+  };
+});
+
+function lastOutcomeJump(): (toolUseId?: string) => void {
+  if (!mockLastOutcomeJump) throw new Error('Missing outcome jump');
+  return mockLastOutcomeJump;
+}
 
 jest.mock('@canopy/ui-app', () => ({
   ...jest.requireActual<typeof UiAppModule>('@canopy/ui-app'),
@@ -39,6 +84,20 @@ jest.mock('@canopy/ui-app', () => ({
   ),
   ChatVisualSourceButton: (): null => null,
 }));
+
+function visualToolResult(
+  visualRef: ChatVisualOwner['reference'],
+  owner?: Pick<ChatVisualOwner, 'messageId' | 'toolUseId'>,
+): TurnToolResult & {
+  visualRef: ChatVisualOwner['reference'];
+  messageId?: string;
+  toolUseId?: string;
+} {
+  return Object.assign(
+    { output: 'Shown', isError: false, visualRef },
+    owner ?? {},
+  );
+}
 
 const forkTabMock = jest.fn();
 const branchTabMock = jest.fn();
@@ -60,23 +119,8 @@ jest.mock('../TurnTimer', () => {
 let chatStoreState: Record<string, unknown> = {};
 let mockEarlyAccess = false;
 
-let mockSubagentsView = false;
-
 jest.mock('@/stores/labsExperimentsStore', () => ({
-  useLabsExperimentEnabled: (id: string): boolean =>
-    id === 'subagents-view' ? mockSubagentsView : mockEarlyAccess,
-}));
-
-let mockLiveStepWindow = false;
-
-jest.mock('@/stores/chatLiveStepWindowStore', () => ({
-  useChatLiveStepWindowEnabled: (): boolean => mockLiveStepWindow,
-}));
-
-let mockGroupToolCalls = false;
-
-jest.mock('@/stores/chatGroupToolCallsStore', () => ({
-  useChatGroupToolCallsEnabled: (): boolean => mockGroupToolCalls,
+  useLabsExperimentEnabled: (): boolean => mockEarlyAccess,
 }));
 
 jest.mock('@/stores/chatStore', () => ({
@@ -102,21 +146,74 @@ jest.mock('@/components/watchers/ChatWatcherButton', () => ({
   ),
 }));
 
-jest.mock('../ActiveAgentActivitySection', () => ({
-  ActiveAgentActivitySection: ({
-    variant,
-    knownPipelineRuns,
+jest.mock('../DesktopAgentActivitySection', () => ({
+  DesktopAgentActivitySection: ({
+    artifacts,
   }: {
-    variant?: string;
-    knownPipelineRuns?: Record<string, unknown>;
+    artifacts: ReadonlyArray<{
+      executionId?: string;
+      runId?: string;
+      dedupeKey: string;
+    }>;
   }): JSX.Element => (
     <div
-      data-testid="live-watcher-activity"
-      data-variant={variant}
-      data-known-pipeline-runs={Object.keys(knownPipelineRuns ?? {}).join(',')}
+      data-testid="turn-agent-activity"
+      data-artifacts={artifacts
+        .map((a) => a.executionId ?? a.runId ?? a.dedupeKey)
+        .join(',')}
     />
   ),
 }));
+
+const RECEIPT_AT = '2026-09-18T00:00:00.000Z';
+
+function pipelineRun(
+  operation: string,
+  executionId: string,
+): PipelineRunArtifactReceiptV1 {
+  return buildPipelineRunArtifactReceipt({
+    operation,
+    createdAt: RECEIPT_AT,
+    executionId,
+    pipelineId: 'pipe-1',
+    pipelineName: 'Build',
+    initialStatus: 'running',
+    queuedAt: RECEIPT_AT,
+    projectId: 'project',
+    worktreeId: 'worktree',
+    navigationTarget: {
+      kind: 'pipeline_execution',
+      executionId,
+      projectId: 'project',
+      worktreeId: 'worktree',
+    },
+  });
+}
+
+function githubRun(runId: string): AgentArtifactReceiptV1 {
+  const htmlUrl = `https://github.com/acme/api/actions/runs/${runId}`;
+  return buildGitHubWorkflowRunArtifactReceipt({
+    operation: 'github.watch',
+    createdAt: RECEIPT_AT,
+    watcherId: 'gh-1',
+    repository: 'acme/api',
+    runId,
+    runAttempt: 1,
+    htmlUrl,
+    state: { kind: 'intermediate', status: 'in_progress' },
+    observedAt: RECEIPT_AT,
+    navigationTarget: {
+      kind: 'github_workflow_run',
+      repository: 'acme/api',
+      runId,
+      htmlUrl,
+    },
+  });
+}
+
+const launchedRun = pipelineRun('pipeline.run', 'exec-1');
+const watchedRun = pipelineRun('pipeline.watch', 'exec-2');
+const watchedGitHubRun = githubRun('101');
 
 function activeTurnGroup(): TurnGroup {
   return {
@@ -181,6 +278,32 @@ function completedTurnGroupWithReviewToolCall(): TurnGroup {
     isComplete: true,
   };
 }
+
+describe('thinking icon', () => {
+  it('marks thinking with the lightbulb in the default look, folded and open', () => {
+    const group = completedTurnGroupWithReviewToolCall();
+    group.assistantMessages.unshift({
+      id: 'assistant-0',
+      role: 'assistant',
+      blocks: [{ type: 'thinking', text: 'Weighing the options' }],
+      timestamp: 2,
+    });
+    for (const isLastTurnGroup of [false, true]) {
+      const html = renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={group}
+            chatPendingQuestions={[]}
+            isLastTurnGroup={isLastTurnGroup}
+            isLastForkableTurnGroup={isLastTurnGroup}
+          />
+        </ChatLookProvider>,
+      );
+      expect(html).toContain('data-glyph="lightbulb"');
+      expect(html).not.toContain('data-glyph="brain-circuit"');
+    }
+  });
+});
 
 function completedTurnGroupWithSetBaseBranchToolCall(): TurnGroup {
   return {
@@ -304,7 +427,7 @@ describe('clean chat look summary', () => {
 
   it('keeps icon chips under the classic look', () => {
     const html = renderIn('classic');
-    expect(html).toContain('title="bash"');
+    expect(html).toContain('title="Ran 1 command"');
     expect(html).not.toContain('data-testid="turn-work-header"');
   });
 
@@ -315,7 +438,31 @@ describe('clean chat look summary', () => {
     expect(html).toContain('Worked');
     // What the steps did reads as words on hover.
     expect(html).toContain('title="Ran 1 command, read 1 file"');
-    expect(html).not.toContain('title="bash"');
+    expect(html).not.toContain('title="Ran 1 command"');
+  });
+
+  it('spaces the "Worked for" line from the prompt the same, pinned or not', () => {
+    const render = (hideUserMessage: boolean): string =>
+      renderToStaticMarkup(
+        <ChatLookProvider value="clean">
+          <TurnGroupRenderer
+            group={finishedWorkTurn()}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+            hideUserMessage={hideUserMessage}
+          />
+        </ChatLookProvider>,
+      );
+    const afterPrompt = (html: string): string =>
+      html.slice(Math.max(0, html.indexOf('turn-work-header') - 200));
+    // The prompt hoisted into the pinned section header leaves the same
+    // room above the header as a prompt in the turn: no spacer either way;
+    // the header carries its own 4px above and below.
+    expect(renderIn('clean')).not.toContain('class="h-2.5"');
+    const pinned = render(true);
+    expect(pinned).not.toContain('class="h-2.5"');
+    expect(afterPrompt(pinned)).toContain('class="px-3 pt-2 pb-1"');
   });
 
   it('offers one Copy message in the reply row under either look', () => {
@@ -342,12 +489,8 @@ describe('collapsed visual retention', () => {
             toolUseId: 'final-tool',
             toolName: 'canopy_show_visual',
             input: '{}',
-            result: {
-              output: 'Shown',
-              isError: false,
-              messageId: 'final-visual',
-              toolUseId: 'final-tool',
-              visualRef: {
+            result: visualToolResult(
+              {
                 version: 1,
                 visualId: 'vis_123e4567-e89b-42d3-a456-426614174000',
                 artifactId: `sha256-v1-${'a'.repeat(64)}`,
@@ -357,19 +500,22 @@ describe('collapsed visual retention', () => {
                 title: 'Final visual',
                 maxHeight: 320,
               },
-            },
+              { messageId: 'final-visual', toolUseId: 'final-tool' },
+            ),
           },
           { type: 'text', text: 'Final answer' },
         ],
       },
     ];
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        group={group}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          group={group}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
     expect(html.match(/data-testid="chat-visual-block"/g)).toHaveLength(1);
     expect(html).toContain('data-variant="inline"');
@@ -409,12 +555,14 @@ describe('collapsed visual retention', () => {
     };
     group.assistantMessages.splice(1, 0, visualMessage);
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        group={group}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          group={group}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-variant="visual-only"');
     expect(html).not.toContain('Hidden intermediate reasoning');
@@ -491,12 +639,14 @@ describe('collapsed visual retention', () => {
     try {
       act(() =>
         root.render(
-          <TurnGroupRenderer
-            group={group}
-            chatPendingQuestions={[]}
-            isLastTurnGroup
-            isLastForkableTurnGroup
-          />,
+          <ChatLookProvider value="classic">
+            <TurnGroupRenderer
+              group={group}
+              chatPendingQuestions={[]}
+              isLastTurnGroup
+              isLastForkableTurnGroup
+            />
+          </ChatLookProvider>,
         ),
       );
       expect(
@@ -527,76 +677,246 @@ describe('collapsed visual retention', () => {
   });
 });
 
+describe('revealing a tool call (show where it started)', () => {
+  function completedTurnWithBackgroundCall(): TurnGroup {
+    const call = (
+      id: string,
+      toolUseId: string,
+      toolName: string,
+      input: Record<string, unknown>,
+    ): TurnGroup['assistantMessages'][number] => ({
+      id,
+      role: 'assistant',
+      blocks: [
+        {
+          type: 'tool_use',
+          toolUseId,
+          toolName,
+          input: JSON.stringify(input),
+          result: { output: 'ok', isError: false },
+        },
+      ],
+      timestamp: 2,
+    });
+    return {
+      ...completedTurnGroup(),
+      assistantMessages: [
+        call('read', 'tool-read', 'Read', { file_path: '/repo/a.ts' }),
+        call('monitor', 'tool-monitor', 'Monitor', {
+          command: 'tail -f build.log',
+          description: 'build errors',
+        }),
+        {
+          id: 'final',
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'Watching the build.' }],
+          timestamp: 3,
+        },
+      ],
+    };
+  }
+
+  it('opens the collapsed turn and the step row that hold the revealed call', () => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    const group = completedTurnWithBackgroundCall();
+    const originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const render = (revealRequest?: { messageId: string }): void =>
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <TurnGroupRenderer
+              group={group}
+              chatPendingQuestions={[]}
+              isLastTurnGroup
+              isLastForkableTurnGroup
+              revealRequest={revealRequest}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+    try {
+      render();
+      expect(
+        container.querySelector('[data-tool-use-id="tool-monitor"]'),
+      ).toBeNull();
+
+      render({ messageId: 'monitor' });
+      expect(
+        container.querySelector('[data-tool-use-id="tool-monitor"]'),
+      ).not.toBeNull();
+      // The turn stays open as saved state: the person can still collapse it.
+      const summary = container.querySelector<HTMLButtonElement>(
+        'button[aria-label^="Agent steps:"]',
+      );
+      expect(summary?.getAttribute('aria-expanded')).toBe('true');
+    } finally {
+      act(() => root.unmount());
+      globalThis.ResizeObserver = originalResizeObserver;
+    }
+  });
+
+  it.each(['classic', 'clean'] as const)(
+    'opens the grouped %s step row that holds the revealed call',
+    (look) => {
+      (
+        globalThis as typeof globalThis & {
+          IS_REACT_ACT_ENVIRONMENT?: boolean;
+        }
+      ).IS_REACT_ACT_ENVIRONMENT = true;
+      mockGroupToolCalls = true;
+      const group = completedTurnWithBackgroundCall();
+      const originalResizeObserver = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      };
+      const container = document.createElement('div');
+      const root = createRoot(container);
+      const render = (revealRequest?: { messageId: string }): void =>
+        act(() =>
+          root.render(
+            <ChatLookProvider value={look}>
+              <TurnGroupRenderer
+                group={group}
+                chatPendingQuestions={[]}
+                isLastTurnGroup
+                isLastForkableTurnGroup
+                revealRequest={revealRequest}
+              />
+            </ChatLookProvider>,
+          ),
+        );
+      try {
+        render();
+        expect(
+          container.querySelector('[data-tool-use-id="tool-monitor"]'),
+        ).toBeNull();
+
+        render({ messageId: 'monitor' });
+        expect(
+          container.querySelector('[data-tool-use-id="tool-monitor"]'),
+        ).not.toBeNull();
+      } finally {
+        act(() => root.unmount());
+        globalThis.ResizeObserver = originalResizeObserver;
+        mockGroupToolCalls = false;
+      }
+    },
+  );
+});
+
 describe('TurnGroupRenderer collapsed summary icon', () => {
   it('shows the code-flavored icon for the plan-category chip in Code Review chats', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroupWithReviewToolCall()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        targetOverride={{
-          projectId: CODE_REVIEW_CHAT_PROJECT_ID,
-          worktreeId: 'worktree-1',
-          chatId: 'chat-1',
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroupWithReviewToolCall()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          targetOverride={{
+            projectId: CODE_REVIEW_CHAT_PROJECT_ID,
+            worktreeId: 'worktree-1',
+            chatId: 'chat-1',
+          }}
+        />
+      </ChatLookProvider>,
     );
-    expect(html).toContain(renderToStaticMarkup(<CodeBracketsIcon />));
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <CodeBracketsIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 
   it('keeps the Plan Explore map icon for the plan-category chip in Plan Explore chats', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroupWithReviewToolCall()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        targetOverride={{
-          projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
-          worktreeId: 'plan-1',
-          chatId: 'chat-1',
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroupWithReviewToolCall()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          targetOverride={{
+            projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
+            worktreeId: 'plan-1',
+            chatId: 'chat-1',
+          }}
+        />
+      </ChatLookProvider>,
     );
-    expect(html).toContain(renderToStaticMarkup(<PlanModeIcon />));
-    expect(html).not.toContain(renderToStaticMarkup(<CodeBracketsIcon />));
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <PlanModeIcon />
+        </ChatLookProvider>,
+      ),
+    );
+    expect(html).not.toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <CodeBracketsIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 
   it('maps set-base-branch calls to the App Advisor summary block', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroupWithSetBaseBranchToolCall()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroupWithSetBaseBranchToolCall()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
 
-    expect(html).toContain(renderToStaticMarkup(<AppAdvisorIcon />));
-    expect(html).toContain('1 app advisor');
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <AppAdvisorIcon />
+        </ChatLookProvider>,
+      ),
+    );
+    expect(html).toContain('1 orchestrator');
     expect(html).not.toContain('1 other');
   });
 
   it('maps the worktree SetBaseBranch tool to the branded app summary block', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroupWithWorktreeSetBaseBranchToolCall()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroupWithWorktreeSetBaseBranchToolCall()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
 
     expect(html).toContain('1 app');
     expect(logoPath).toBeTruthy();
     expect(html).toContain(logoPath);
-    expect(html).not.toContain('1 app advisor');
+    expect(html).not.toContain('1 orchestrator');
     expect(html).not.toContain('1 other');
   });
 });
@@ -649,13 +969,15 @@ describe('recorded turn outcome visibility (CAN-4278)', () => {
       };
       try {
         const html = renderToStaticMarkup(
-          <TurnGroupRenderer
-            chatId="chat-1"
-            group={completedTurnGroup()}
-            chatPendingQuestions={[]}
-            isLastTurnGroup
-            isLastForkableTurnGroup={false}
-          />,
+          <ChatLookProvider value="classic">
+            <TurnGroupRenderer
+              chatId="chat-1"
+              group={completedTurnGroup()}
+              chatPendingQuestions={[]}
+              isLastTurnGroup
+              isLastForkableTurnGroup={false}
+            />
+          </ChatLookProvider>,
         );
         const host = document.createElement('div');
         host.innerHTML = html;
@@ -673,6 +995,158 @@ describe('recorded turn outcome visibility (CAN-4278)', () => {
   );
 });
 
+describe('interrupted turn outcome (CAN-5178)', () => {
+  function renderWithTab(
+    tab: Record<string, unknown>,
+    group: TurnGroup,
+    look: 'classic' | 'clean' = 'classic',
+  ): HTMLElement {
+    chatStoreState = {
+      worktreeChats: {
+        'project/worktree': {
+          tabs: [
+            {
+              id: 'chat-1',
+              kind: 'chat',
+              title: 'My session',
+              messages: [],
+              queuedMessages: [],
+              status: 'idle',
+              ...tab,
+            },
+          ],
+        },
+      },
+    };
+    try {
+      const host = document.createElement('div');
+      host.innerHTML = renderToStaticMarkup(
+        <ChatLookProvider value={look}>
+          <TurnGroupRenderer
+            chatId="chat-1"
+            group={group}
+            chatPendingQuestions={[]}
+            isLastTurnGroup={false}
+            isLastForkableTurnGroup={false}
+          />
+        </ChatLookProvider>,
+      );
+      return host;
+    } finally {
+      chatStoreState = {};
+    }
+  }
+
+  /** A successful Read, then an Edit a restart cut off: 14 seconds. */
+  function restartedEditTurn(): TurnGroup {
+    const group = completedTurnGroup();
+    group.assistantMessages = [
+      {
+        id: 'work',
+        role: 'assistant',
+        timestamp: 2,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'read-1',
+            toolName: 'Read',
+            input: '{"file_path":"/repo/a.ts"}',
+            result: { output: 'contents', isError: false },
+          },
+          {
+            type: 'tool_use',
+            toolUseId: 'edit-1',
+            toolName: 'Edit',
+            input: '{"file_path":"/repo/a.ts"}',
+            result: {
+              output: 'Interrupted',
+              isError: true,
+              interruption: { reason: 'app_restart', at: 15_000 },
+            },
+          },
+        ],
+      },
+      {
+        id: 'final',
+        role: 'assistant',
+        timestamp: 3,
+        blocks: [{ type: 'text', text: 'Partial answer' }],
+      },
+    ];
+    group.timerMessage = {
+      id: 'timer-1',
+      role: 'system',
+      blocks: [{ type: 'turn_timer', startedAt: 1_000, completedAt: 15_000 }],
+      timestamp: 4,
+    };
+    return group;
+  }
+
+  it('counts the interrupted edit apart from errors, footer visible at rest', () => {
+    const host = renderWithTab(
+      { interruptedTurns: { 'user-1': {} } },
+      restartedEditTurn(),
+    );
+    const control = host.querySelector<HTMLElement>(
+      '[data-testid="turn-outcome-control"]',
+    );
+    expect(control?.dataset.turnInterrupted).toBe('1');
+    expect(control?.hasAttribute('data-turn-failed')).toBe(false);
+    expect(control?.textContent).toBe('1 interrupted');
+    const label = host.querySelector('[data-testid="turn-timer-label"]');
+    expect(label?.textContent).toBe('Interrupted after 0:14');
+    expect(label?.className).not.toContain('opacity-0');
+  });
+
+  it('says "Interrupted after" in the clean header', () => {
+    const host = renderWithTab(
+      { interruptedTurns: { 'user-1': {} } },
+      restartedEditTurn(),
+      'clean',
+    );
+    expect(
+      host.querySelector('[data-testid="turn-work-header"]')?.textContent,
+    ).toContain('Interrupted after 14s');
+    expect(host.textContent).not.toContain('Worked for');
+  });
+
+  it('interrupts a tool-free turn from main’s record alone', () => {
+    const host = renderWithTab(
+      { interruptedTurns: { 'user-1': { resumedBy: 'user-2' } } },
+      completedTurnGroup(),
+    );
+    expect(
+      host.querySelector('[data-testid="turn-timer-label"]')?.textContent,
+    ).toMatch(/^Interrupted/);
+    expect(host.querySelector('[data-testid="turn-outcome-control"]')).toBe(
+      null,
+    );
+  });
+
+  it('never inherits another turn’s interruption record', () => {
+    const host = renderWithTab(
+      { interruptedTurns: { 'user-0': {} } },
+      completedTurnGroup(),
+    );
+    expect(
+      host.querySelector('[data-testid="turn-timer-label"]')?.textContent,
+    ).toMatch(/^Completed/);
+  });
+
+  it('keeps a recorded cancellation ahead of the interruption', () => {
+    const host = renderWithTab(
+      {
+        interruptedTurns: { 'user-1': {} },
+        turnEnds: { 'user-1': { outcome: 'cancelled', endedAt: 15_000 } },
+      },
+      restartedEditTurn(),
+    );
+    expect(
+      host.querySelector('[data-testid="turn-timer-label"]')?.textContent,
+    ).toBe('Cancelled after 0:14');
+  });
+});
+
 describe('TurnGroupRenderer active fork action', () => {
   beforeEach(() => {
     forkTabMock.mockReset();
@@ -685,18 +1159,20 @@ describe('TurnGroupRenderer active fork action', () => {
   it('branches the panel owner when another worktree is selected', () => {
     withWorktreeChatTab('owner-project', 'owner-worktree');
     renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        targetOverride={{
-          projectId: 'owner-project',
-          worktreeId: 'owner-worktree',
-          chatId: 'chat-1',
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          targetOverride={{
+            projectId: 'owner-project',
+            worktreeId: 'owner-worktree',
+            chatId: 'chat-1',
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(mockBranchAction).toBeDefined();
@@ -710,30 +1186,75 @@ describe('TurnGroupRenderer active fork action', () => {
 
   it('shows the inline active fork action for non-terminal sessions', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={activeTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        sourceSdkSessionId="session-1"
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={activeTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          sourceSdkSessionId="session-1"
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('aria-label="Fork');
   });
 
+  it("heads a wake's turn with its boundary row and leaves fork to the prompt's turn", () => {
+    const wake: TurnGroup = {
+      ...activeTurnGroup(),
+      userMessage: {
+        id: 'timer-wake:wake',
+        role: 'system',
+        blocks: [
+          {
+            type: 'wake_boundary',
+            turnId: 'wake',
+            taskLabel: 'Run the tests',
+            spawningUserMessageId: 'user-1',
+          },
+        ],
+        timestamp: 3,
+      },
+    };
+    const html = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={wake}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          sourceSdkSessionId="session-1"
+          onShowSpawningCall={jest.fn()}
+        />
+      </ChatLookProvider>,
+    );
+
+    expect(html).toContain('data-testid="wake-turn-boundary"');
+    expect(html).toContain(
+      'Continued after <strong>Run the tests</strong> finished',
+    );
+    expect(html).toContain(
+      'data-testid="wake-turn-boundary-show-spawning-turn"',
+    );
+    expect(html).not.toContain('aria-label="Fork');
+  });
+
   it('hides the inline active fork action for Claude terminal sessions', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={activeTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        sourceSdkSessionId="session-1"
-        suppressActiveForkAction
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={activeTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          sourceSdkSessionId="session-1"
+          suppressActiveForkAction
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('aria-label="Fork');
@@ -741,13 +1262,15 @@ describe('TurnGroupRenderer active fork action', () => {
 
   it('shows the watcher button for active real worktree turns', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={activeTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={activeTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="chat-watcher-button-chat-1"');
@@ -755,18 +1278,20 @@ describe('TurnGroupRenderer active fork action', () => {
 
   it('hides the watcher button for synthetic plan-explore turns', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={activeTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        targetOverride={{
-          projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
-          worktreeId: 'plan-1',
-          chatId: 'chat-1',
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={activeTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          targetOverride={{
+            projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
+            worktreeId: 'plan-1',
+            chatId: 'chat-1',
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="chat-watcher-button-chat-1"');
@@ -783,27 +1308,31 @@ describe('TurnGroupRenderer active fork action', () => {
       runAllowed: false,
     } as const;
     const completed = renderToStaticMarkup(
-      <WorkspaceAccessContext.Provider value={readOnly}>
-        <TurnGroupRenderer
-          chatId="chat-1"
-          group={completedTurnGroup()}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />
-      </WorkspaceAccessContext.Provider>,
+      <ChatLookProvider value="classic">
+        <WorkspaceAccessContext.Provider value={readOnly}>
+          <TurnGroupRenderer
+            chatId="chat-1"
+            group={completedTurnGroup()}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </WorkspaceAccessContext.Provider>
+      </ChatLookProvider>,
     );
     const active = renderToStaticMarkup(
-      <WorkspaceAccessContext.Provider value={readOnly}>
-        <TurnGroupRenderer
-          chatId="chat-1"
-          group={activeTurnGroup()}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-          sourceSdkSessionId="session-1"
-        />
-      </WorkspaceAccessContext.Provider>,
+      <ChatLookProvider value="classic">
+        <WorkspaceAccessContext.Provider value={readOnly}>
+          <TurnGroupRenderer
+            chatId="chat-1"
+            group={activeTurnGroup()}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+            sourceSdkSessionId="session-1"
+          />
+        </WorkspaceAccessContext.Provider>
+      </ChatLookProvider>,
     );
 
     expect(completed).not.toContain('data-testid="turn-share-session"');
@@ -815,13 +1344,15 @@ describe('TurnGroupRenderer active fork action', () => {
   it('shows the Share control on the last forkable completed turn', () => {
     withWorktreeChatTab();
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="turn-share-session"');
@@ -831,18 +1362,20 @@ describe('TurnGroupRenderer active fork action', () => {
     registerCoworkWorkspaceIds(['cowork-project']);
     withWorktreeChatTab('cowork-project', 'cowork-entry');
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        targetOverride={{
-          projectId: 'cowork-project',
-          worktreeId: 'cowork-entry',
-          chatId: 'chat-1',
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          targetOverride={{
+            projectId: 'cowork-project',
+            worktreeId: 'cowork-entry',
+            chatId: 'chat-1',
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="turn-share-session"');
@@ -851,14 +1384,16 @@ describe('TurnGroupRenderer active fork action', () => {
   it('hides the Share control while the turn is still active', () => {
     withWorktreeChatTab();
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={activeTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        sourceSdkSessionId="session-1"
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={activeTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          sourceSdkSessionId="session-1"
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="turn-share-session"');
@@ -988,13 +1523,15 @@ describe('TurnGroupRenderer turn feedback placement (CAN-1521)', () => {
   it('still renders the feedback control when there is no single turn_timer block', () => {
     withWorktreeChatTab();
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroupWithoutTimerBlock()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroupWithoutTimerBlock()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
 
     // The fallback row exists, and the thumbs are inside it.
@@ -1012,13 +1549,15 @@ describe('TurnGroupRenderer turn feedback placement (CAN-1521)', () => {
   it('renders the control inside the timer row (not the fallback row) for a normal turn', () => {
     withWorktreeChatTab();
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat-1"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
 
     // Exactly one control, and the fallback row must NOT also appear —
@@ -1062,56 +1601,58 @@ describe('unanswered async questions in collapsed turns', () => {
           (message) => message.id !== 'assistant-1',
         );
       const html = renderToStaticMarkup(
-        <TurnGroupRenderer
-          group={group}
-          transcriptTurn={
-            sparse
-              ? {
-                  id: group.userMessage.id,
-                  start: 0,
-                  end: 1000,
-                  complete: true,
-                  before: 984,
-                  finalMessageIds: ['assistant-2'],
-                  summary: fullSummary,
-                }
-              : undefined
-          }
-          chatPendingQuestions={
-            state === 'missing'
-              ? []
-              : [
-                  {
-                    requestId: 'pending-question',
-                    projectId: 'project',
-                    worktreeId: 'worktree',
-                    chatId: 'chat-1',
-                    delivery: 'async',
-                    questions: [
-                      {
-                        question: 'Which scope?',
-                        options: ['Full'],
-                        allowOther: true,
-                      },
-                    ],
-                    ...(state === 'answered'
-                      ? {
-                          answeredAt: 5,
-                          answers: [
-                            {
-                              question: 'Which scope?',
-                              selectedOptions: ['Full'],
-                            },
-                          ],
-                        }
-                      : {}),
-                    ...(state === 'dismissed' ? { dismissedAt: 5 } : {}),
-                  },
-                ]
-          }
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={group}
+            transcriptTurn={
+              sparse
+                ? {
+                    id: group.userMessage.id,
+                    start: 0,
+                    end: 1000,
+                    complete: true,
+                    before: 984,
+                    finalMessageIds: ['assistant-2'],
+                    summary: fullSummary,
+                  }
+                : undefined
+            }
+            chatPendingQuestions={
+              state === 'missing'
+                ? []
+                : [
+                    {
+                      requestId: 'pending-question',
+                      projectId: 'project',
+                      worktreeId: 'worktree',
+                      chatId: 'chat-1',
+                      delivery: 'async',
+                      questions: [
+                        {
+                          question: 'Which scope?',
+                          options: ['Full'],
+                          allowOther: true,
+                        },
+                      ],
+                      ...(state === 'answered'
+                        ? {
+                            answeredAt: 5,
+                            answers: [
+                              {
+                                question: 'Which scope?',
+                                selectedOptions: ['Full'],
+                              },
+                            ],
+                          }
+                        : {}),
+                      ...(state === 'dismissed' ? { dismissedAt: 5 } : {}),
+                    },
+                  ]
+            }
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
       // A waiting question asks in the composer, not in the transcript.
       expect(html).not.toContain('data-testid="ask-user-question-card"');
@@ -1122,116 +1663,88 @@ describe('unanswered async questions in collapsed turns', () => {
   );
 });
 
-describe('background watcher activity recovery', () => {
-  it('hydrates watched activity on the latest completed turn without saved artifacts', () => {
+// Background drawer D3: a completed turn's box lists only what the chat list
+// placed in it (its tiles and runs), under either view; background agents,
+// tasks and the runs the drawer lists stay out.
+describe('completed turn agent activity', () => {
+  it('lists the receipts the chat list placed in the turn', () => {
     const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="background-chat"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
-    );
-    expect(html).toContain('data-testid="live-watcher-activity"');
-    expect(html).toContain('data-variant="completed"');
-  });
-
-  it('recovers a pipeline-id-only watcher from known chat-initiated runs', () => {
-    const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="background-chat"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-        knownPipelineRuns={{
-          'exec-1': {
-            version: 1,
-            kind: 'pipeline_run',
-            operation: 'pipeline.run',
-            dedupeKey: 'canopy:pipeline_run:execution:exec-1',
-            createdAt: '2026-09-18T00:00:00.000Z',
-            executionId: 'exec-1',
-            pipelineId: 'pipe-1',
-            pipelineName: 'Build',
-            initialStatus: 'running',
-            queuedAt: '2026-09-18T00:00:00.000Z',
-            projectId: 'project',
-            worktreeId: 'worktree',
-            navigationTarget: {
-              kind: 'pipeline_execution',
-              executionId: 'exec-1',
-              projectId: 'project',
-              worktreeId: 'worktree',
-            },
-          },
-        }}
-      />,
-    );
-
-    expect(html).toContain('data-known-pipeline-runs="exec-1"');
-  });
-
-  it('shows the running latest turn’s activity in the turn under the Subagents view', () => {
-    // No pinned section: its background tasks, runs and artifacts list in
-    // the turn while it runs; subagents live in the top bar's running count.
-    mockSubagentsView = true;
-    try {
-      const html = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
         <TurnGroupRenderer
-          chatId="background-chat"
+          chatId="c"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup={false}
+          isLastForkableTurnGroup={false}
+          completedAgentArtifacts={[launchedRun]}
+        />
+      </ChatLookProvider>,
+    );
+    expect(html).toContain('data-artifacts="exec-1"');
+  });
+
+  it('renders no box when the chat list places nothing in the turn', () => {
+    const html = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="c"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          completedAgentArtifacts={[]}
+        />
+      </ChatLookProvider>,
+    );
+    expect(html).not.toContain('data-testid="turn-agent-activity"');
+  });
+
+  it('lists completed watcher receipts', () => {
+    const html = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="c"
+          group={completedTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          completedAgentArtifacts={[watchedRun, watchedGitHubRun]}
+        />
+      </ChatLookProvider>,
+    );
+    expect(html).toContain('data-artifacts="exec-2,101"');
+  });
+
+  it('shows placed completed run records while their parent turn is still active', () => {
+    const html = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="c"
           group={activeTurnGroup()}
           chatPendingQuestions={[]}
           isLastTurnGroup
           isLastForkableTurnGroup
-        />,
-      );
-      expect(html).toContain('data-testid="live-watcher-activity"');
-      expect(html).toContain('data-variant="completed"');
-    } finally {
-      mockSubagentsView = false;
-    }
-  });
-
-  it('leaves a running latest turn’s activity to the pinned section while the view is off', () => {
-    const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="background-chat"
-        group={activeTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+          completedAgentArtifacts={[launchedRun]}
+        />
+      </ChatLookProvider>,
     );
-    expect(html).not.toContain('data-testid="live-watcher-activity"');
-  });
-
-  it('does not attach current watchers to older completed turns', () => {
-    const html = renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="background-chat"
-        group={completedTurnGroup()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup={false}
-        isLastForkableTurnGroup={false}
-      />,
-    );
-    expect(html).not.toContain('data-testid="live-watcher-activity"');
+    expect(html).toContain('data-artifacts="exec-1"');
   });
 });
 
 it('renders only a spinner and Working label while the submitted turn awaits its real timer', () => {
   const markup = renderToStaticMarkup(
-    <TurnGroupRenderer
-      chatId="chat"
-      group={activeTurnGroup()}
-      pendingTimer
-      chatPendingQuestions={[]}
-      isLastTurnGroup
-      isLastForkableTurnGroup
-      sourceSdkSessionId="session"
-    />,
+    <ChatLookProvider value="classic">
+      <TurnGroupRenderer
+        chatId="chat"
+        group={activeTurnGroup()}
+        pendingTimer
+        chatPendingQuestions={[]}
+        isLastTurnGroup
+        isLastForkableTurnGroup
+        sourceSdkSessionId="session"
+      />
+    </ChatLookProvider>,
   );
   expect(markup).toContain('data-testid="turn-timer-label"');
   expect(markup).toContain('>Working…</span>');
@@ -1276,13 +1789,15 @@ describe('grouped tool calls (Group tool calls setting)', () => {
 
   function renderTurn(): string {
     return renderToStaticMarkup(
-      <TurnGroupRenderer
-        chatId="chat"
-        group={runningTurnWithToolCalls()}
-        chatPendingQuestions={[]}
-        isLastTurnGroup
-        isLastForkableTurnGroup
-      />,
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          chatId="chat"
+          group={runningTurnWithToolCalls()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
     );
   }
 
@@ -1406,13 +1921,15 @@ describe('live step window (CAN-4274)', () => {
   function show(group: TurnGroup): void {
     act(() =>
       root.render(
-        <TurnGroupRenderer
-          chatId="chat"
-          group={group}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            chatId="chat"
+            group={group}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       ),
     );
   }
@@ -1471,6 +1988,132 @@ describe('live step window (CAN-4274)', () => {
       ).toHaveLength(0);
     },
   );
+
+  it.each([false, true])(
+    'keeps the newest steps under the clean live line (grouping %p)',
+    (grouping) => {
+      mockLiveStepWindow = true;
+      mockGroupToolCalls = grouping;
+      act(() =>
+        root.render(
+          <ChatLookProvider value="clean">
+            <TurnGroupRenderer
+              chatId="chat"
+              group={turn([
+                thought('think-1'),
+                calls('read-1', ['Read']),
+                thought('think-2'),
+                calls('bash-1', ['Bash'], true),
+              ])}
+              chatPendingQuestions={[]}
+              isLastTurnGroup
+              isLastForkableTurnGroup
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      const [line] = groups();
+      expect(liveIds(line)).toEqual(['read-1', 'think-2', 'bash-1']);
+      // The line counts only the step the window hides, so the running
+      // command is said once, in its own row.
+      expect(line.hasAttribute('data-live')).toBe(false);
+      const summary =
+        line.querySelector('[data-testid="chat-tool-step-summary"]')
+          ?.textContent ?? '';
+      expect(summary).not.toMatch(/Run/);
+      expect(container.textContent?.match(/Running/g) ?? []).toHaveLength(1);
+    },
+  );
+
+  function runningAgent(id: string): Message {
+    return {
+      id,
+      role: 'assistant',
+      blocks: [
+        {
+          type: 'agent',
+          toolUseId: `${id}-agent`,
+          subagentType: 'Explore',
+          description: 'Check the source',
+          prompt: 'Investigate',
+          runInBackground: false,
+          subBlocks: [],
+        },
+      ],
+      timestamp: 2,
+    };
+  }
+
+  function showClean(messages: Message[]): void {
+    act(() =>
+      root.render(
+        <ChatLookProvider value="clean">
+          <TurnGroupRenderer
+            chatId="chat"
+            group={turn(messages)}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
+      ),
+    );
+  }
+
+  it('keeps a running helper agent in view when it is the only step', () => {
+    mockLiveStepWindow = true;
+    showClean([runningAgent('agent-only')]);
+    const live = container.querySelector('[data-testid="chat-tool-step-live"]');
+    expect(
+      live?.querySelector('[data-chat-message-id="agent-only"]'),
+    ).not.toBeNull();
+    expect(live?.textContent).toContain('Check the source');
+  });
+
+  it('counts a running helper agent among the newest steps', () => {
+    mockLiveStepWindow = true;
+    showClean([
+      calls('bash-1', ['Bash']),
+      calls('bash-2', ['Bash']),
+      calls('bash-3', ['Bash']),
+      calls('bash-4', ['Bash']),
+      calls('bash-5', ['Bash']),
+      runningAgent('agent-last'),
+    ]);
+    const [line] = groups();
+    expect(liveIds(line)).toEqual(['bash-4', 'bash-5', 'agent-last']);
+    expect(
+      line.querySelector('[data-testid="chat-tool-step-summary"]')?.textContent,
+    ).toBe('Ran 3 commands');
+  });
+
+  it('shows the steps without a line while the window holds them all', () => {
+    mockLiveStepWindow = true;
+    act(() =>
+      root.render(
+        <ChatLookProvider value="clean">
+          <TurnGroupRenderer
+            chatId="chat"
+            group={turn([
+              calls('read-1', ['Read']),
+              calls('bash-1', ['Bash'], true),
+            ])}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
+      ),
+    );
+    expect(groups()).toHaveLength(0);
+    const live = container.querySelector('[data-testid="chat-tool-step-live"]');
+    expect(
+      Array.from(
+        live?.querySelectorAll('[data-chat-message-id]') ?? [],
+        (row) => row.getAttribute('data-chat-message-id'),
+      ),
+    ).toEqual(['read-1', 'bash-1']);
+  });
 
   it('counts each call in a message that holds several and never repeats one', () => {
     mockLiveStepWindow = true;
@@ -1651,14 +2294,16 @@ describe('live step window (CAN-4274)', () => {
     const showSearching = (group: TurnGroup): void =>
       act(() =>
         root.render(
-          <TurnGroupRenderer
-            chatId="chat"
-            group={group}
-            chatPendingQuestions={[]}
-            isLastTurnGroup
-            isLastForkableTurnGroup
-            searchMessageId="say-1"
-          />,
+          <ChatLookProvider value="classic">
+            <TurnGroupRenderer
+              chatId="chat"
+              group={group}
+              chatPendingQuestions={[]}
+              isLastTurnGroup
+              isLastForkableTurnGroup
+              searchMessageId="say-1"
+            />
+          </ChatLookProvider>,
         ),
       );
     const messages: Message[] = [
@@ -1889,13 +2534,15 @@ describe('live step window (CAN-4274)', () => {
 
     function markup(): string {
       return renderToStaticMarkup(
-        <TurnGroupRenderer
-          chatId="chat"
-          group={realisticTurn()}
-          chatPendingQuestions={[]}
-          isLastTurnGroup
-          isLastForkableTurnGroup
-        />,
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            chatId="chat"
+            group={realisticTurn()}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
       );
     }
 
@@ -1916,5 +2563,1485 @@ describe('live step window (CAN-4274)', () => {
       expect(html).toContain('data-chat-message-id="read-1"');
       expect(html).not.toContain('Thought');
     });
+  });
+});
+
+describe('safety denial notices in a collapsed turn', () => {
+  it.each([false, true])(
+    'keeps the notice visible when its denied tool row collapses (visual: %s)',
+    (withVisual) => {
+      const group = completedTurnGroup();
+      group.assistantMessages = [
+        {
+          id: 'work',
+          role: 'assistant',
+          timestamp: 2,
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: 'bash-1',
+              toolName: 'Bash',
+              input: '{"command":"git push --force origin HEAD"}',
+              result: { output: 'Blocked', isError: true },
+            },
+            {
+              type: 'approval_safety_denied_info',
+              receiptId: 'approval-safety-1',
+              timestamp: 2,
+              reason: 'force-push',
+              command: 'git push --force origin HEAD',
+              mode: 'ask',
+              toolUseId: 'bash-1',
+            },
+            { type: 'thinking', text: 'Hidden intermediate reasoning' },
+          ],
+        },
+        {
+          id: 'final',
+          role: 'assistant',
+          timestamp: 3,
+          blocks: [{ type: 'text', text: 'The push was blocked.' }],
+        },
+      ];
+      if (withVisual) {
+        group.assistantMessages[0]?.blocks.push({
+          type: 'tool_use',
+          toolUseId: 'visual-tool',
+          toolName: 'mcp__canopy__ShowVisual',
+          input: '{}',
+          result: visualToolResult({
+            version: 1,
+            visualId: 'vis_123e4567-e89b-12d3-a456-426614174000',
+            artifactId: `sha256-v1-${'a'.repeat(64)}`,
+            sha256: 'a'.repeat(64),
+            byteLength: 4,
+            mediaType: 'text/html',
+            title: 'Retained chart',
+            maxHeight: 320,
+          }),
+        });
+      }
+      const html = renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <TurnGroupRenderer
+            group={group}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
+      );
+      expect(html).toContain('data-testid="approval-safety-denied-notice"');
+      expect(html).not.toContain('Hidden intermediate reasoning');
+      expect(
+        html.indexOf('data-testid="approval-safety-denied-notice"'),
+      ).toBeLessThan(html.indexOf('The push was blocked.'));
+    },
+  );
+});
+
+describe('clean chat look steps between replies', () => {
+  type Block = TurnGroup['assistantMessages'][number]['blocks'][number];
+  let messageIndex = 0;
+  function message(...blocks: Block[]): TurnGroup['assistantMessages'][number] {
+    messageIndex += 1;
+    return {
+      id: `m${messageIndex}`,
+      role: 'assistant',
+      timestamp: messageIndex + 1,
+      blocks,
+    };
+  }
+  function tool(
+    id: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    result?: { output: string; isError: boolean },
+  ): Block {
+    return {
+      type: 'tool_use',
+      toolUseId: id,
+      toolName,
+      input: JSON.stringify(input),
+      ...(result ? { result } : {}),
+    };
+  }
+  const ok = { output: 'ok', isError: false };
+  const failed = { output: 'fatal', isError: true };
+
+  /** The user's turn from 2026-10-22, still running, thinking at the end. */
+  function streamingTurn(): TurnGroup {
+    messageIndex = 0;
+    const group = activeTurnGroup();
+    group.assistantMessages = [
+      message(tool('t1', 'mcp__linear__list_issues', {}, ok)),
+      message(
+        tool(
+          'ask',
+          'mcp__canopy__AskUserQuestion',
+          { questions: [{ question: 'What should we work on?' }] },
+          { output: 'Q: What should we work on?\nA: CAN-3321', isError: false },
+        ),
+      ),
+      message(tool('t2', 'mcp__linear__get_issue', {}, ok)),
+      message(tool('b1', 'Bash', { command: 'git status' }, failed)),
+      message({ type: 'thinking', text: 'The path may differ.' }),
+      message({ type: 'text', text: 'Pulling up the canopy repo.' }),
+      message(tool('b2', 'Bash', { command: 'git fetch' }, failed)),
+      message(
+        tool('t3', 'mcp__canopy__GetCodeGraphContext', {}, ok),
+        tool('b3', 'Bash', { command: 'git log' }, ok),
+      ),
+      message({ type: 'text', text: 'The checkout has an unfinished merge.' }),
+      message(tool('b4', 'Bash', { command: 'git worktree add' }, ok)),
+      message({ type: 'thinking', text: 'Start with the toolbar.' }),
+    ];
+    return group;
+  }
+
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const originalResizeObserver = globalThis.ResizeObserver;
+
+  beforeEach(() => {
+    // Grouping follows Settings → "Group tool calls".
+    mockGroupToolCalls = true;
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    globalThis.ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    mockGroupToolCalls = false;
+    globalThis.ResizeObserver = originalResizeObserver;
+  });
+
+  function show(group: TurnGroup): void {
+    act(() =>
+      root.render(
+        <ChatLookProvider value="clean">
+          <TurnGroupRenderer
+            group={group}
+            chatPendingQuestions={[]}
+            isLastTurnGroup
+            isLastForkableTurnGroup
+          />
+        </ChatLookProvider>,
+      ),
+    );
+  }
+
+  const groups = (): HTMLElement[] =>
+    Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[data-testid="chat-tool-step-group"]',
+      ),
+    );
+  const lineOf = (group: HTMLElement): string =>
+    group.querySelector('[data-step-row]')?.textContent ?? '';
+
+  it('folds all the work between two replies into one closed line', () => {
+    show(streamingTurn());
+    // Before the question, after it, after each reply: four lines, not a
+    // row per tool call.
+    expect(groups().map(lineOf)).toEqual([
+      'Used 1 tool',
+      'Used 1 tool, ran 1 command· 1 error',
+      'Ran 2 commands, checked the code graph· 1 error',
+      'Thinking',
+    ]);
+    // Closed: no single step row shows until the person opens a line.
+    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(0);
+    // The question reads as the answer card alone, without a tool row.
+    expect(container.textContent).not.toContain('Asked you');
+    expect(
+      container.querySelector('[data-testid="answered-questions"]'),
+    ).not.toBeNull();
+  });
+
+  it('shimmers one live line and keeps the timer row quiet', () => {
+    show(streamingTurn());
+    const live = groups().at(-1);
+    expect(live?.querySelector('.canopy-text-shimmer-strong')).not.toBeNull();
+    expect(
+      container.querySelectorAll('.canopy-text-shimmer-strong'),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector('[data-testid="turn-timer-label"]'),
+    ).toBeNull();
+  });
+
+  it('keeps every line in place as steps stream in', () => {
+    const group = streamingTurn();
+    show(group);
+    const before = groups();
+    const running = {
+      ...group,
+      assistantMessages: [
+        ...group.assistantMessages,
+        message(tool('r1', 'Read', { file_path: '/repo/BrowserToolbar.tsx' })),
+      ],
+    };
+    show(running);
+    const after = groups();
+    // Same lines, same nodes: the new step joins the live line.
+    expect(after).toHaveLength(before.length);
+    after.forEach((node, index) => expect(node).toBe(before[index]));
+    expect(lineOf(after.at(-1) ?? container)).toBe(
+      'Reading BrowserToolbar.tsx',
+    );
+    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(0);
+  });
+
+  it('shows "Thinking" on its own line until the next step starts', () => {
+    const group = streamingTurn();
+    group.assistantMessages = group.assistantMessages.slice(0, 6);
+    show(group);
+    expect(groups().map(lineOf).at(-1)).toBe('Thinking');
+    const reply = container.querySelector('[data-chat-message-id="m6"]');
+    expect(reply).not.toBeNull();
+  });
+
+  it('keeps a turn that finishes on screen open, so nothing moves', () => {
+    const group = streamingTurn();
+    show(group);
+    show({
+      ...group,
+      assistantMessages: [
+        ...group.assistantMessages,
+        message({ type: 'text', text: 'Here is the audit.' }),
+      ],
+      timerMessage: {
+        ...group.timerMessage,
+        blocks: [{ type: 'turn_timer', startedAt: 1, completedAt: 9 }],
+      },
+      isComplete: true,
+    });
+    expect(container.textContent).toContain('Pulling up the canopy repo.');
+    expect(container.textContent).toContain('Worked');
+    expect(groups().map(lineOf).at(-1)).toBe('Ran 1 command');
+  });
+
+  it('keeps one row per tool call while Group tool calls is off', () => {
+    mockGroupToolCalls = false;
+    const group = streamingTurn();
+    show(group);
+    expect(
+      groups().filter((g) => g.closest('[data-testid="turn-timer"]') === null),
+    ).toHaveLength(0);
+    expect(
+      container.querySelectorAll('[data-tool-status]').length,
+    ).toBeGreaterThan(4);
+    // The newest thought shimmers in its own row, so the slot under the
+    // reply stays empty rather than saying "Thinking" twice.
+    expect(
+      container.querySelector('[data-testid="turn-timer"]')?.textContent,
+    ).toBe('');
+    // Once the newest step is done, the slot says the agent is thinking.
+    show({
+      ...group,
+      assistantMessages: [
+        ...group.assistantMessages,
+        message(tool('b9', 'Bash', { command: 'ls' }, ok)),
+      ],
+    });
+    expect(
+      container.querySelector('[data-testid="turn-timer"]')?.textContent,
+    ).toBe('Thinking');
+  });
+});
+
+describe('first-send starting status (CAN-4742)', () => {
+  function startingTurn(
+    assistantMessages: TurnGroup['assistantMessages'] = [],
+    completedAt: number | null = null,
+  ): TurnGroup {
+    return {
+      kind: 'turn-group',
+      userMessage: {
+        id: 'user-1',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Why is the deck empty?' }],
+        timestamp: 1,
+      },
+      assistantMessages,
+      timerMessage: {
+        id: 'timer-1',
+        role: 'system',
+        blocks: [{ type: 'turn_timer', startedAt: 1, completedAt }],
+        timestamp: 1,
+      },
+      isComplete: completedAt !== null,
+    };
+  }
+
+  function renderIn(
+    look: 'classic' | 'clean',
+    group: TurnGroup,
+    starting = true,
+  ): string {
+    return renderToStaticMarkup(
+      <ChatLookProvider value={look}>
+        <TurnGroupRenderer
+          group={group}
+          pendingTimer
+          starting={starting}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
+    );
+  }
+
+  function count(html: string, needle: string): number {
+    return html.split(needle).length - 1;
+  }
+
+  it.each(['classic', 'clean'] as const)(
+    'shows one polite "Starting…" status before any output under the %s look',
+    (look) => {
+      const html = renderIn(look, startingTurn());
+      expect(count(html, 'data-testid="turn-starting-status"')).toBe(1);
+      expect(count(html, 'role="status"')).toBe(1);
+      expect(html).toContain('Starting…');
+      expect(html).not.toContain('data-testid="turn-work-header"');
+      expect(html).not.toContain('Working');
+    },
+  );
+
+  it.each(['classic', 'clean'] as const)(
+    'hands over to the normal turn on the first reply under the %s look',
+    (look) => {
+      const html = renderIn(
+        look,
+        startingTurn([
+          {
+            id: 'reply',
+            role: 'assistant',
+            timestamp: 2,
+            blocks: [{ type: 'text', text: 'Looking now.' }],
+          },
+        ]),
+      );
+      expect(html).not.toContain('turn-starting-status');
+    },
+  );
+
+  it.each(['classic', 'clean'] as const)(
+    'ends starting on the first thinking or agent activity under the %s look',
+    (look) => {
+      const blocks: TurnGroup['assistantMessages'][number]['blocks'] = [
+        { type: 'thinking', text: 'Checking the source.' },
+        { type: 'image', path: '/tmp/answer.png', alt: 'Generated answer' },
+        {
+          type: 'agent',
+          toolUseId: 'agent-1',
+          subagentType: 'Explore',
+          description: 'Check the source',
+          prompt: 'Investigate',
+          runInBackground: false,
+          subBlocks: [],
+        },
+      ];
+      for (const block of blocks) {
+        const html = renderIn(
+          look,
+          startingTurn([
+            {
+              id: 'activity',
+              role: 'assistant',
+              timestamp: 2,
+              blocks: [block],
+            },
+          ]),
+        );
+        expect(html).not.toContain('turn-starting-status');
+      }
+    },
+  );
+
+  it.each(['classic', 'clean'] as const)(
+    'keeps starting through hidden plan-mode tools under the %s look',
+    (look) => {
+      for (const toolName of ['EnterPlanMode', 'ExitPlanMode']) {
+        const message: TurnGroup['assistantMessages'][number] = {
+          id: 'hidden-plan',
+          role: 'assistant',
+          timestamp: 2,
+          blocks: [
+            { type: 'tool_use', toolUseId: 'plan-1', toolName, input: '{}' },
+          ],
+        };
+        expect(renderIn(look, startingTurn([message]))).toContain(
+          'turn-starting-status',
+        );
+        expect(
+          renderIn(
+            look,
+            startingTurn([
+              message,
+              {
+                id: 'reply',
+                role: 'assistant',
+                timestamp: 3,
+                blocks: [{ type: 'text', text: 'Visible answer' }],
+              },
+            ]),
+          ),
+        ).not.toContain('turn-starting-status');
+      }
+    },
+  );
+
+  it('hands over on the first tool step, not on an empty reply', () => {
+    expect(
+      renderIn(
+        'clean',
+        startingTurn([
+          {
+            id: 'empty',
+            role: 'assistant',
+            timestamp: 2,
+            blocks: [{ type: 'text', text: '' }],
+          },
+        ]),
+      ),
+    ).toContain('turn-starting-status');
+    expect(
+      renderIn(
+        'clean',
+        startingTurn([
+          {
+            id: 'tool',
+            role: 'assistant',
+            timestamp: 2,
+            blocks: [
+              {
+                type: 'tool_use',
+                toolUseId: 'bash-1',
+                toolName: 'Bash',
+                input: '{"command":"ls"}',
+              },
+            ],
+          },
+        ]),
+      ),
+    ).not.toContain('turn-starting-status');
+  });
+
+  it('ends when the turn finishes without output', () => {
+    expect(renderIn('clean', startingTurn([], 5))).not.toContain(
+      'turn-starting-status',
+    );
+  });
+
+  it('leaves an ordinary running turn unchanged', () => {
+    const html = renderIn('clean', startingTurn(), false);
+    expect(html).not.toContain('turn-starting-status');
+    expect(html).toContain('data-testid="turn-work-header"');
+  });
+});
+
+describe('turn outcomes (CAN-4810)', () => {
+  const bash = (
+    id: string,
+    isError: boolean,
+  ): TurnGroup['assistantMessages'][number] => ({
+    id: `step-${id}`,
+    role: 'assistant',
+    timestamp: 2,
+    blocks: [
+      {
+        type: 'tool_use',
+        toolUseId: id,
+        toolName: 'Bash',
+        input: JSON.stringify({ command: `echo ${id}` }),
+        result: { output: isError ? 'Blocked' : 'ok', isError },
+      },
+    ],
+  });
+
+  /** Four Bash steps, the last one safety-denied, then the reply. */
+  function deniedPushTurn(): TurnGroup {
+    const group = completedTurnGroup();
+    group.assistantMessages = [
+      bash('status', false),
+      bash('add', false),
+      bash('commit', false),
+      bash('push', true),
+      {
+        id: 'receipt',
+        role: 'system',
+        timestamp: 3,
+        blocks: [
+          {
+            type: 'approval_safety_denied_info',
+            receiptId: 'approval-safety-1',
+            timestamp: 3,
+            reason: 'force-push',
+            command: 'fixture only',
+            mode: 'ask',
+            toolUseId: 'push',
+          },
+        ],
+      },
+      {
+        id: 'final',
+        role: 'assistant',
+        timestamp: 4,
+        blocks: [{ type: 'text', text: 'The push was blocked.' }],
+      },
+    ];
+    return group;
+  }
+
+  function renderStatic(
+    group: TurnGroup,
+    props: Partial<ComponentProps<typeof TurnGroupRenderer>> = {},
+  ): string {
+    return renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <TurnGroupRenderer
+          group={group}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          {...props}
+        />
+      </ChatLookProvider>,
+    );
+  }
+
+  it('labels the steps and names the blocked step on the classic summary', () => {
+    const html = renderStatic(deniedPushTurn());
+    expect(html).toContain('data-testid="chat-turn-summary"');
+    expect(html).toContain(
+      'aria-label="Agent steps: Ran 4 commands, 1 blocked"',
+    );
+    expect(html).toContain('data-turn-step-count="4"');
+    expect(html).toContain('4 steps');
+    expect(html).toContain('data-turn-blocked="1"');
+    expect(html).not.toContain('data-turn-failed');
+    expect(html).toContain('data-tool-chip="bash"');
+  });
+
+  it('does not count an unplaced receipt explicitly owned by another turn', () => {
+    const group = deniedPushTurn();
+    group.assistantMessages = group.assistantMessages.map((message) => ({
+      ...message,
+      blocks: message.blocks.map((block) =>
+        block.type === 'approval_safety_denied_info'
+          ? { ...block, turnUserMessageId: 'another-turn' }
+          : block,
+      ),
+    }));
+    const html = renderStatic(group);
+    expect(html).toContain('aria-label="Agent steps: Ran 4 commands, 1 error"');
+    expect(html).not.toContain('data-turn-blocked');
+  });
+
+  it('adds the same outcome to the clean header', () => {
+    const html = renderToStaticMarkup(
+      <ChatLookProvider value="clean">
+        <TurnGroupRenderer
+          group={deniedPushTurn()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+        />
+      </ChatLookProvider>,
+    );
+    expect(html).toContain('data-testid="turn-work-header"');
+    expect(html).toContain(
+      'aria-label="Agent steps: Ran 4 commands, 1 blocked"',
+    );
+    expect(html).toContain('data-turn-blocked="1"');
+    expect(html).toContain('Worked for');
+  });
+
+  it('keeps a success-only turn named as before', () => {
+    const group = deniedPushTurn();
+    group.assistantMessages = group.assistantMessages
+      .filter((message) => message.id !== 'receipt')
+      .map((message) =>
+        message.id === 'step-push' ? bash('push', false) : message,
+      );
+    const html = renderStatic(group);
+    expect(html).toContain('aria-label="Agent steps: Ran 4 commands"');
+    expect(html).not.toContain('data-turn-outcomes');
+  });
+
+  it('uses the paged index outcomes, never the loaded subset, and treats missing metadata as unknown', () => {
+    const group = deniedPushTurn();
+    // Only the reply is loaded; the index knows the whole turn.
+    group.assistantMessages = group.assistantMessages.filter(
+      (message) => message.id === 'final',
+    );
+    const transcriptTurn = {
+      id: 'user-1',
+      start: 0,
+      end: 7,
+      complete: true,
+      summary: { ...computeTurnSummary([]), bash: 4 },
+      finalMessageIds: ['final'],
+      before: 5,
+    };
+    const indexed = renderStatic(group, {
+      transcriptTurn: {
+        ...transcriptTurn,
+        outcomes: { blocked: 1, failed: 2, interrupted: 0 },
+      },
+    });
+    expect(indexed).toContain(
+      'aria-label="Agent steps: Ran 4 commands, 1 blocked, 2 errors"',
+    );
+    const legacy = renderStatic(group, { transcriptTurn });
+    expect(legacy).toContain('aria-label="Agent steps: Ran 4 commands"');
+    expect(legacy).not.toContain('data-turn-outcomes');
+  });
+
+  it('keeps completed projection outcomes when the receipt is omitted from a neighboring page', () => {
+    const group = deniedPushTurn();
+    group.assistantMessages = group.assistantMessages.filter(
+      (message) => message.id !== 'receipt',
+    );
+    const html = renderStatic(group, {
+      transcriptTurn: {
+        id: 'user-1',
+        start: 0,
+        end: 7,
+        complete: true,
+        summary: computeTurnSummary(group.assistantMessages),
+        outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+        finalMessageIds: ['final'],
+        files: [],
+      },
+    });
+    expect(html).toContain(
+      'aria-label="Agent steps: Ran 4 commands, 1 blocked"',
+    );
+    expect(html).not.toContain('data-turn-failed');
+  });
+
+  it('incorporates a loaded denial that arrives after a completed projection', () => {
+    const group = deniedPushTurn();
+    const html = renderStatic(group, {
+      transcriptTurn: {
+        id: 'user-1',
+        start: 0,
+        end: 6,
+        complete: true,
+        summary: computeTurnSummary(group.assistantMessages),
+        outcomes: { blocked: 0, failed: 1, interrupted: 0 },
+        deniedToolUseIds: [],
+        finalMessageIds: ['final'],
+        files: [],
+      },
+    });
+    expect(html).toContain(
+      'aria-label="Agent steps: Ran 4 commands, 1 blocked"',
+    );
+    expect(html).not.toContain('data-turn-failed');
+  });
+
+  describe('landing on expand', () => {
+    let frames: FrameRequestCallback[] = [];
+    let container: HTMLDivElement;
+    let root: ReturnType<typeof createRoot>;
+    const originalResizeObserver = globalThis.ResizeObserver;
+
+    beforeEach(() => {
+      frames = [];
+      globalThis.ResizeObserver = class {
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      };
+      // jsdom has no CSS namespace; ids in these fixtures need no escaping.
+      Object.defineProperty(globalThis, 'CSS', {
+        configurable: true,
+        value: { escape: (value: string): string => value },
+      });
+      jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+        frames.push(cb);
+        return frames.length;
+      });
+      jest
+        .spyOn(window, 'cancelAnimationFrame')
+        .mockImplementation(() => undefined);
+      container = document.createElement('div');
+      document.body.append(container);
+      root = createRoot(container);
+    });
+
+    afterEach(() => {
+      act(() => root.unmount());
+      container.remove();
+      jest.restoreAllMocks();
+      globalThis.ResizeObserver = originalResizeObserver;
+      mockGroupToolCalls = false;
+    });
+
+    function mount(
+      group: TurnGroup,
+      props: Partial<ComponentProps<typeof TurnGroupRenderer>> = {},
+    ): HTMLButtonElement {
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <div data-chat-turn-group="user-1">
+              <TurnGroupRenderer
+                group={group}
+                chatPendingQuestions={[]}
+                isLastTurnGroup
+                isLastForkableTurnGroup
+                {...props}
+              />
+            </div>
+          </ChatLookProvider>,
+        ),
+      );
+      const summary = container.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-turn-summary"]',
+      );
+      if (!summary) throw new Error('Missing turn summary');
+      return summary;
+    }
+
+    function flushFrames(): void {
+      for (let index = 0; index < 20 && frames.length > 0; index += 1) {
+        const next = frames.shift();
+        act(() => next?.(index * 16));
+      }
+    }
+
+    const rowToggle = (toolUseId: string): Element | null =>
+      container.querySelector(
+        `[data-tool-use-id="${toolUseId}"] button[aria-expanded]`,
+      );
+
+    it('focuses the blocked step, revealing it inside a folded step group', () => {
+      mockGroupToolCalls = true;
+      const summary = mount(deniedPushTurn());
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      const toggle = rowToggle('push');
+      expect(toggle).not.toBeNull();
+      expect(document.activeElement).toBe(toggle);
+    });
+
+    it('prefers a blocked step over an earlier failed one', () => {
+      const group = deniedPushTurn();
+      group.assistantMessages[0] = bash('status', true);
+      const summary = mount(group);
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(document.activeElement).toBe(rowToggle('push'));
+    });
+
+    it('scopes a pinned control landing to its turn when another turn reuses the step id', () => {
+      container.dataset.testid = 'chat-message-list-scroll';
+      const summary = mount(deniedPushTurn());
+      const home = summary.parentElement;
+      const neighbor = document.createElement('div');
+      neighbor.innerHTML =
+        '<div data-chat-turn-group="neighbor"><div data-tool-use-id="push"><button aria-expanded="false">Other turn</button></div></div>';
+      container.prepend(neighbor);
+      // Sticky controls mount outside the turn, inside the transcript scroller.
+      container.append(summary);
+      try {
+        summary.focus();
+        act(() => summary.click());
+        flushFrames();
+        const target = container.querySelector(
+          '[data-chat-turn-group="user-1"] [data-tool-use-id="push"] button[aria-expanded]',
+        );
+        expect(document.activeElement).toBe(target);
+      } finally {
+        home?.prepend(summary);
+        neighbor.remove();
+      }
+    });
+
+    it('uses projected denial IDs to land on an omitted-receipt owner before an earlier failure', () => {
+      const group = deniedPushTurn();
+      group.assistantMessages = group.assistantMessages.filter(
+        (message) => message.id !== 'receipt',
+      );
+      group.assistantMessages[0] = bash('status', true);
+      const transcriptTurn = {
+        id: 'user-1',
+        start: 0,
+        end: 7,
+        complete: true,
+        summary: computeTurnSummary(group.assistantMessages),
+        outcomes: { blocked: 1, failed: 1, interrupted: 0 },
+        deniedToolUseIds: ['push'],
+        finalMessageIds: ['final'],
+        files: [],
+      };
+      const summary = mount(group, { transcriptTurn });
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(document.activeElement).toBe(rowToggle('push'));
+    });
+
+    it('targets the first failed step when nothing was blocked', () => {
+      const group = deniedPushTurn();
+      group.assistantMessages = group.assistantMessages.filter(
+        (message) => message.id !== 'receipt',
+      );
+      group.assistantMessages[1] = bash('add', true);
+      const summary = mount(group);
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(document.activeElement).toBe(rowToggle('add'));
+    });
+
+    it('lands on a failed agent step the outcome helper counted', () => {
+      const group = deniedPushTurn();
+      group.assistantMessages = group.assistantMessages.filter(
+        (message) => message.id !== 'receipt',
+      );
+      group.assistantMessages[3] = {
+        id: 'step-agent',
+        role: 'assistant',
+        timestamp: 2,
+        blocks: [
+          {
+            type: 'agent',
+            toolUseId: 'helper',
+            subagentType: 'general-purpose',
+            description: 'Check the branch',
+            prompt: 'Check the branch',
+            runInBackground: false,
+            subBlocks: [],
+            result: { output: 'Failed', isError: true },
+          },
+        ],
+      };
+      const summary = mount(group);
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      const row = container.querySelector('[data-tool-use-id="helper"]');
+      expect(row).not.toBeNull();
+      expect(row?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('leaves focus where the reader moved it', () => {
+      const summary = mount(deniedPushTurn());
+      const elsewhere = document.createElement('button');
+      document.body.append(elsewhere);
+      try {
+        summary.focus();
+        act(() => summary.click());
+        act(() => {
+          elsewhere.dispatchEvent(
+            new MouseEvent('pointerdown', { bubbles: true }),
+          );
+          elsewhere.focus();
+        });
+        flushFrames();
+        expect(document.activeElement).toBe(elsewhere);
+      } finally {
+        elsewhere.remove();
+      }
+    });
+
+    it('does not choose a loaded failure while the blocked step is outside the page', () => {
+      const group = deniedPushTurn();
+      group.assistantMessages = [
+        bash('loaded-failure', true),
+        group.assistantMessages[5],
+      ];
+      const summary = mount(group, {
+        transcriptTurn: {
+          id: 'user-1',
+          start: 0,
+          end: 100,
+          before: 1,
+          complete: true,
+          summary: computeTurnSummary(group.assistantMessages),
+          outcomes: { blocked: 1, failed: 1, interrupted: 0 },
+          finalMessageIds: ['final'],
+          files: [],
+        },
+      });
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(document.activeElement).toBe(summary);
+    });
+
+    it('waits for history, then focuses the mounted blocked row', async () => {
+      let finish: (() => void) | undefined;
+      const load = jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const group = deniedPushTurn();
+      const summary = mount(group, {
+        onLoadHistory: load,
+        historyLoading: true,
+        transcriptTurn: {
+          id: 'user-1',
+          start: 0,
+          end: 100,
+          before: 1,
+          complete: true,
+          summary: computeTurnSummary(group.assistantMessages),
+          outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+          finalMessageIds: ['final'],
+          files: [],
+        },
+      });
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(rowToggle('push')).toBeNull();
+      await act(() => Promise.resolve());
+      await act(async () => {
+        finish?.();
+        await Promise.resolve();
+      });
+      mount(group);
+      flushFrames();
+      expect(document.activeElement).toBe(rowToggle('push'));
+    });
+
+    it('wheel input cancels landing while history loads', async () => {
+      let finish: (() => void) | undefined;
+      const load = jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const group = deniedPushTurn();
+      const summary = mount(group, {
+        onLoadHistory: load,
+        historyLoading: true,
+        transcriptTurn: {
+          id: 'user-1',
+          start: 0,
+          end: 100,
+          before: 1,
+          complete: true,
+          summary: computeTurnSummary(group.assistantMessages),
+          outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+          finalMessageIds: ['final'],
+          files: [],
+        },
+      });
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(rowToggle('push')).toBeNull();
+      act(() => {
+        summary.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+      });
+      await act(() => Promise.resolve());
+      await act(async () => {
+        finish?.();
+        await Promise.resolve();
+      });
+      mount(group);
+      flushFrames();
+      expect(rowToggle('push')).not.toBeNull();
+      expect(document.activeElement).toBe(summary);
+    });
+
+    it('a second toggle cancels a pending history expansion', async () => {
+      let finish: (() => void) | undefined;
+      const load = jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const group = deniedPushTurn();
+      const summary = mount(group, {
+        onLoadHistory: load,
+        transcriptTurn: {
+          id: 'user-1',
+          start: 0,
+          end: 100,
+          before: 1,
+          complete: true,
+          summary: computeTurnSummary(group.assistantMessages),
+          outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+          finalMessageIds: ['final'],
+          files: [],
+        },
+      });
+      summary.focus();
+      act(() => summary.click());
+      act(() => summary.click());
+      await act(() => Promise.resolve());
+      await act(async () => {
+        finish?.();
+        await Promise.resolve();
+      });
+      flushFrames();
+      expect(summary.getAttribute('aria-expanded')).toBe('false');
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it('opens the section without landing when the history load rejects', async () => {
+      const group = deniedPushTurn();
+      const summary = mount(group, {
+        onLoadHistory: () => Promise.reject(new Error('offline')),
+        transcriptTurn: {
+          id: 'user-1',
+          start: 0,
+          end: 100,
+          before: 1,
+          complete: true,
+          summary: computeTurnSummary(group.assistantMessages),
+          outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+          finalMessageIds: ['final'],
+          files: [],
+        },
+      });
+      summary.focus();
+      await act(async () => {
+        summary.click();
+        await Promise.resolve();
+      });
+      flushFrames();
+      expect(summary.getAttribute('aria-expanded')).toBe('true');
+      expect(document.activeElement).toBe(summary);
+    });
+
+    it('ignores a load completion after the component switches turns', async () => {
+      let finish: (() => void) | undefined;
+      const group = deniedPushTurn();
+      const summary = mount(group, {
+        onLoadHistory: () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+        transcriptTurn: {
+          id: 'user-1',
+          start: 0,
+          end: 100,
+          before: 1,
+          complete: true,
+          summary: computeTurnSummary(group.assistantMessages),
+          outcomes: { blocked: 1, failed: 0, interrupted: 0 },
+          finalMessageIds: ['final'],
+          files: [],
+        },
+      });
+      await act(async () => {
+        summary.click();
+        await Promise.resolve();
+      });
+      const next = {
+        ...deniedPushTurn(),
+        userMessage: { ...group.userMessage, id: 'next-user' },
+      };
+      const nextSummary = mount(next);
+      await act(async () => {
+        finish?.();
+        await Promise.resolve();
+      });
+      flushFrames();
+      expect(nextSummary.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('does not land when collapsing', () => {
+      const summary = mount(deniedPushTurn());
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      summary.focus();
+      act(() => summary.click());
+      flushFrames();
+      expect(document.activeElement).toBe(summary);
+      expect(rowToggle('push')).toBeNull();
+    });
+
+    describe('from the outcome control (CAN-5056)', () => {
+      const outcomeControl = (): HTMLButtonElement => {
+        const control = container.querySelector<HTMLButtonElement>(
+          '[data-testid="turn-outcome-control"]',
+        );
+        if (!control) throw new Error('Missing outcome control');
+        return control;
+      };
+      const hover = (element: HTMLElement): void =>
+        act(() => {
+          element.dispatchEvent(
+            new MouseEvent('mouseover', {
+              bubbles: true,
+              relatedTarget: document.body,
+            }),
+          );
+        });
+      const tooltip = (): HTMLElement | null =>
+        document.querySelector<HTMLElement>(
+          '[data-testid="turn-outcome-tooltip-surface"]',
+        );
+      const toolRow = (toolUseId: string): HTMLElement | null =>
+        container.querySelector<HTMLElement>(
+          `[data-tool-use-id="${toolUseId}"]`,
+        );
+      const blurActive = (): void =>
+        act(() => {
+          if (document.activeElement instanceof HTMLElement)
+            document.activeElement.blur();
+        });
+      const jump = (): void => {
+        const control = outcomeControl();
+        act(() => control.focus());
+        act(() => control.click());
+        flushFrames();
+      };
+
+      it('expands a collapsed turn and lands on the first affected step without toggling twice', () => {
+        const summary = mount(deniedPushTurn());
+        jump();
+        expect(summary.getAttribute('aria-expanded')).toBe('true');
+        expect(document.activeElement).toBe(rowToggle('push'));
+        expect(toolRow('push')?.dataset.chatCallFocus).toBe('true');
+      });
+
+      it('lands again on an expanded turn, on every click', () => {
+        const summary = mount(deniedPushTurn());
+        summary.focus();
+        act(() => summary.click());
+        flushFrames();
+        blurActive();
+
+        jump();
+        expect(summary.getAttribute('aria-expanded')).toBe('true');
+        expect(document.activeElement).toBe(rowToggle('push'));
+
+        blurActive();
+        delete toolRow('push')?.dataset.chatCallFocus;
+        jump();
+        expect(summary.getAttribute('aria-expanded')).toBe('true');
+        expect(document.activeElement).toBe(rowToggle('push'));
+        expect(toolRow('push')?.dataset.chatCallFocus).toBe('true');
+      });
+
+      it('lands on the step a tooltip entry names', () => {
+        const group = deniedPushTurn();
+        group.assistantMessages[0] = bash('status', true);
+        mount(group);
+        hover(outcomeControl());
+        const entries = Array.from(
+          tooltip()?.querySelectorAll<HTMLElement>(
+            '[data-turn-outcome-step]',
+          ) ?? [],
+        );
+        // Blocked first, like the landing order.
+        expect(entries.map((entry) => entry.dataset.turnOutcomeStep)).toEqual([
+          'push',
+          'status',
+        ]);
+
+        act(() => entries[1]?.click());
+        flushFrames();
+
+        expect(tooltip()).toBeNull();
+        expect(document.activeElement).toBe(rowToggle('status'));
+        expect(toolRow('status')?.dataset.chatCallFocus).toBe('true');
+      });
+
+      it('falls back to the first affected step for an id it cannot find', () => {
+        const group = deniedPushTurn();
+        group.assistantMessages[0] = bash('status', true);
+        mockLastOutcomeJump = undefined;
+        const summary = mount(group);
+        const jumpTo = lastOutcomeJump();
+
+        act(() => jumpTo('gone'));
+        flushFrames();
+
+        // Blocked first, like the landing order.
+        expect(summary.getAttribute('aria-expanded')).toBe('true');
+        expect(document.activeElement).toBe(rowToggle('push'));
+        expect(toolRow('push')?.dataset.chatCallFocus).toBe('true');
+        expect(toolRow('status')?.dataset.chatCallFocus).toBeUndefined();
+      });
+
+      it('says only the counts for a paged turn', () => {
+        const group = deniedPushTurn();
+        group.assistantMessages = [
+          bash('loaded-failure', true),
+          group.assistantMessages[5],
+        ];
+        mount(group, {
+          transcriptTurn: {
+            id: 'user-1',
+            start: 0,
+            end: 100,
+            before: 0,
+            complete: true,
+            summary: computeTurnSummary(group.assistantMessages),
+            outcomes: { blocked: 1, failed: 1, interrupted: 0 },
+            finalMessageIds: ['final'],
+            files: [],
+          },
+        });
+        hover(outcomeControl());
+        expect(tooltip()?.textContent).toBe(
+          '1 step was blocked1 step ran into an errorEffect on the result is unknown',
+        );
+        expect(tooltip()?.querySelector('[data-turn-outcome-step]')).toBeNull();
+      });
+
+      it('clears the ring on collapse and on unmount', () => {
+        const summary = mount(deniedPushTurn());
+        jump();
+        const row = toolRow('push');
+        expect(row?.dataset.chatCallFocus).toBe('true');
+        act(() => summary.click());
+        expect(row?.dataset.chatCallFocus).toBeUndefined();
+
+        jump();
+        const again = toolRow('push');
+        expect(again?.dataset.chatCallFocus).toBe('true');
+        act(() => root.unmount());
+        root = createRoot(container);
+        expect(again?.dataset.chatCallFocus).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('TurnGroupRenderer approval wait (CAN-4996)', () => {
+  function renderGroup(
+    look: 'classic' | 'clean',
+    props: Partial<ComponentProps<typeof TurnGroupRenderer>>,
+  ): string {
+    return renderToStaticMarkup(
+      <ChatLookProvider value={look}>
+        <TurnGroupRenderer
+          group={activeTurnGroup()}
+          chatPendingQuestions={[]}
+          isLastTurnGroup
+          isLastForkableTurnGroup
+          {...props}
+        />
+      </ChatLookProvider>,
+    );
+  }
+
+  it('pauses the classic timer while the chat waits on an approval', () => {
+    const html = renderGroup('classic', { waitingForApproval: true });
+    expect(html).toContain('data-state="paused"');
+    expect(html).toContain('Waiting for you · ');
+    expect(html).not.toContain('Working…');
+  });
+
+  it('pauses the clean header and drops its live line', () => {
+    const html = renderGroup('clean', { waitingForApproval: true });
+    expect(html).toContain('data-turn-header="paused"');
+    expect(html).toContain('data-state="paused"');
+    expect(html).not.toContain('Working for');
+    expect(html).not.toContain('Thinking');
+  });
+
+  it('keeps the timer live without an approval', () => {
+    expect(renderGroup('classic', {})).toContain('data-state="live"');
+    expect(renderGroup('clean', {})).toContain('data-turn-header="live"');
+  });
+
+  it('leaves a completed turn as it was', () => {
+    const html = renderGroup('classic', {
+      group: completedTurnGroup(),
+      waitingForApproval: true,
+    });
+    expect(html).toContain('data-state="completed"');
+    expect(html).not.toContain('Waiting for you');
+  });
+
+  it.each(['classic', 'clean'] as const)(
+    'wires only this unfinished chat’s matching calls through the %s turn provider (CAN-5291)',
+    (look) => {
+      const savedState = chatStoreState;
+      const savedGrouping = mockGroupToolCalls;
+      try {
+        mockGroupToolCalls = false;
+        withWorktreeChatTab();
+        const request = {
+          requestId: 'approval',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'chat-1',
+          provider: 'claude',
+          title: 'Run command',
+          details: { kind: 'command', command: 'pnpm test' },
+        };
+        chatStoreState.pendingApprovals = { approval: request };
+        const group = activeTurnGroup();
+        const call = (
+          id: string,
+          command: string,
+        ): TurnGroup['assistantMessages'][number] => ({
+          id,
+          role: 'assistant',
+          timestamp: 2,
+          blocks: [
+            {
+              type: 'tool_use',
+              toolUseId: id,
+              toolName: 'Bash',
+              input: JSON.stringify({ command }),
+            },
+          ],
+        });
+        group.assistantMessages = [
+          call('approved', 'sleep 30'),
+          call('waiting', 'pnpm test'),
+        ];
+        const html = (): string =>
+          renderGroup(look, {
+            chatId: 'chat-1',
+            group,
+            waitingForApproval: true,
+          });
+        const host = document.createElement('div');
+        host.innerHTML = html();
+        expect(
+          host
+            .querySelector('[data-tool-use-id="waiting"]')
+            ?.getAttribute('data-tool-approval'),
+        ).toBe('waiting');
+        expect(
+          host
+            .querySelector('[data-tool-use-id="approved"]')
+            ?.hasAttribute('data-tool-approval'),
+        ).toBe(false);
+        chatStoreState.pendingApprovals = {
+          approval: { ...request, chatId: 'other-chat' },
+        };
+        expect(html()).not.toContain('data-tool-approval');
+        chatStoreState.pendingApprovals = { approval: request };
+        group.isComplete = true;
+        expect(html()).not.toContain('data-tool-approval');
+        group.isComplete = false;
+        group.assistantMessages = [call('approved', 'sleep 30')];
+        expect(html()).not.toContain('data-tool-approval');
+        // A late streamed call recomputes the turn's predicate.
+        group.assistantMessages = [
+          ...group.assistantMessages,
+          call('waiting', 'pnpm test'),
+        ];
+        expect(html()).toContain('data-tool-approval="waiting"');
+        chatStoreState.pendingApprovals = {};
+        expect(html()).not.toContain('data-tool-approval');
+      } finally {
+        chatStoreState = savedState;
+        mockGroupToolCalls = savedGrouping;
+      }
+    },
+  );
+});
+
+describe('TurnGroupRenderer Copy plan (CAN-5354)', () => {
+  const PLAN = '# Plan ✓\n\n1. Edit `src/a.ts`\n\n```ts\nconst x = 1;\n```\n';
+  const PLAN_FILE = '/Users/me/.claude/plans/brave-otter.md';
+
+  function withPlanTurn(group: TurnGroup, writeIsError = false): TurnGroup {
+    group.assistantMessages = [
+      {
+        id: 'plan-write',
+        role: 'assistant',
+        timestamp: 2,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'toolu_plan_file',
+            toolName: 'Write',
+            input: JSON.stringify({ file_path: PLAN_FILE, content: PLAN }),
+            result: { output: 'ok', isError: writeIsError },
+          },
+        ],
+      },
+      {
+        id: 'plan-exit',
+        role: 'assistant',
+        timestamp: 3,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'toolu_exit_plan',
+            toolName: 'ExitPlanMode',
+            input: '{}',
+          },
+          { type: 'text', text: 'Here is the plan.' },
+        ],
+      },
+    ];
+    return group;
+  }
+
+  function renderIn(look: 'classic' | 'clean', group: TurnGroup): string {
+    withWorktreeChatTab();
+    return renderToStaticMarkup(
+      <ChatLookProvider value={look}>
+        <TurnGroupRenderer
+          chatId="chat-1"
+          group={group}
+          chatPendingQuestions={[]}
+          isLastTurnGroup={false}
+          isLastForkableTurnGroup={false}
+        />
+      </ChatLookProvider>,
+    );
+  }
+
+  function count(html: string, testId: string): number {
+    return html.match(new RegExp(`data-testid="${testId}"`, 'g'))?.length ?? 0;
+  }
+
+  it.each(['classic', 'clean'] as const)(
+    'gives a finished %s plan turn one Copy plan instead of reply Copy',
+    (look) => {
+      for (const group of [
+        completedTurnGroup(),
+        completedTurnGroupWithoutTimerBlock(),
+      ]) {
+        const html = renderIn(look, withPlanTurn(group));
+        expect(count(html, 'turn-copy-plan')).toBe(1);
+        expect(count(html, 'turn-copy-message')).toBe(0);
+        expect(html).toContain('aria-label="Copy plan"');
+      }
+    },
+  );
+
+  it('offers no Copy plan while the plan turn runs', () => {
+    const running = withPlanTurn(completedTurnGroup());
+    running.isComplete = false;
+    expect(count(renderIn('classic', running), 'turn-copy-plan')).toBe(0);
+  });
+
+  it('keeps Copy plan unavailable when the plan-file write failed', () => {
+    const html = renderIn('classic', withPlanTurn(completedTurnGroup(), true));
+    expect(count(html, 'turn-copy-plan')).toBe(1);
+    expect(html).toContain('aria-disabled="true"');
+    expect(count(html, 'turn-copy-message')).toBe(0);
   });
 });

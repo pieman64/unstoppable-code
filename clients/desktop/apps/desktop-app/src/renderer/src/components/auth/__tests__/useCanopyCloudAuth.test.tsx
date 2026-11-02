@@ -122,7 +122,10 @@ describe('useCanopyCloudAuth — connect announcements', () => {
     Object.assign(window, {
       api: {
         loadPreferences: jest.fn(() => Promise.resolve(makeTestPreferences())),
-        savePreferences: jest.fn(() => Promise.resolve()),
+        savePreferences: jest.fn<
+          ReturnType<CanopyApi['savePreferences']>,
+          Parameters<CanopyApi['savePreferences']>
+        >(() => Promise.resolve(makeTestPreferences())),
         loadCanopyCloudAccount,
         loadCanopyCloudApiKey,
         saveCanopyCloudApiKey,

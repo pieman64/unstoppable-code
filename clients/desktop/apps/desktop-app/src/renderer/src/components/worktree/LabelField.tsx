@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import {
   useEffect,
   useLayoutEffect,
@@ -113,15 +114,16 @@ export function LabelField({
         <span className="text-3xs font-medium fg-secondary">Label</span>
         {!editing && (
           <Tooltip label={trimmedLabel ? 'Edit label' : 'Set label'}>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="compact"
+              iconOnly
               onClick={beginEdit}
-              className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
               aria-label={trimmedLabel ? 'Edit label' : 'Set label'}
               data-testid="label-field-edit"
             >
               <PencilIcon />
-            </button>
+            </Button>
           </Tooltip>
         )}
       </div>
@@ -145,23 +147,18 @@ export function LabelField({
             aria-label="Label"
             data-testid="label-field-input"
           />
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             disabled={saving}
             onClick={submit}
-            className="focus-ring shrink-0 rounded-md bg-accent px-2 py-1 text-xs font-medium fg-emphasis hover:bg-accent/90 disabled:opacity-60"
             data-testid="label-field-save"
           >
             {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            type="button"
-            onClick={cancelEdit}
-            disabled={saving}
-            className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-secondary hover:bg-secondary hover:fg-primary disabled:opacity-60"
-          >
+          </Button>
+          <Button size="compact" onClick={cancelEdit} disabled={saving}>
             Cancel
-          </button>
+          </Button>
           {error && (
             <p className="sr-only" role="alert">
               {error}

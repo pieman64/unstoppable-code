@@ -41,6 +41,7 @@ export interface DailyCreditDripSaveOutcome {
  */
 export async function saveDailyCreditDripChoice(
   enabled: boolean,
+  isCurrent: () => boolean = () => true,
 ): Promise<DailyCreditDripSaveOutcome> {
   let accountChanged = false;
   const onAccountChanged = (): void => {
@@ -58,7 +59,7 @@ export async function saveDailyCreditDripChoice(
   }
   // A result for the previous account must not overwrite surfaces that have
   // already re-read the new account's preference.
-  if (!accountChanged) {
+  if (!accountChanged && isCurrent()) {
     window.dispatchEvent(
       new CustomEvent<DailyCreditDripPreferenceSaveResult>(
         DAILY_CREDIT_DRIP_CHANGED_EVENT,

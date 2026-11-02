@@ -136,6 +136,151 @@ it('re-probes before spawning on Windows and hands off no claim', async () => {
   expect(posix).toMatchObject({ error: { kind: 'invalid_argument' } });
 });
 
+describe('on Windows without a startup claim', () => {
+  const unclaimed = (
+    world: ScriptedDaemon,
+    signal?: AbortSignal,
+  ): Overrides => ({
+    platform: 'win32',
+    ports: { descriptor: world.descriptor, supervisor: world.supervisor },
+    ...(signal && { signal }),
+  });
+
+  it("attaches to a sibling launcher's daemon that publishes after its own child lost the endpoint", async () => {
+    const world = new ScriptedDaemon();
+    // Our daemon exits at once ("Endpoint is in use."); the winner publishes later.
+    world.child = (pid): void => void setTimeout(() => world.exit(pid), 10);
+    setTimeout(() => world.publish(7), 400);
+    expect(await run(launch(world, unclaimed(world)))).toEqual({
+      value: 'client-1',
+      descriptor: descriptorFor(7),
+      started: false,
+    });
+    expect(world.count('spawn')).toBe(1);
+    // The exited child is rolled back before the winner's token is read.
+    expect(world.events.slice(-3)).toEqual([
+      'terminate:900',
+      'token:secret-token-ref',
+      'attach:600',
+    ]);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    ['nothing', null],
+    ['its own stale descriptor', descriptorFor(900)],
+  ] as const)(
+    'reports an exit before readiness once the deadline passes with %s published',
+    async (_, raw) => {
+      const world = new ScriptedDaemon();
+      world.child = (pid): void => {
+        world.raw = raw;
+        world.exit(pid);
+      };
+      const outcome = await run(launch(world, unclaimed(world)));
+      expect(outcome).toMatchObject({
+        error: {
+          kind: 'unavailable',
+          message: 'Core exited before it was ready.',
+        },
+      });
+      expect(outcome).not.toHaveProperty('value');
+      expect(world.count('spawn')).toBe(1);
+      // Kept probing for a winner until the deadline instead of failing at once.
+      expect(world.count('read')).toBeGreaterThan(5);
+      expect(world.events).toContain('terminate:900');
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('reports a child exit during the final probe sleep instead of a timeout', async () => {
+    const world = new ScriptedDaemon();
+    world.child = (pid): void => void setTimeout(() => world.exit(pid), 950);
+    const outcome = await run(launch(world, unclaimed(world)));
+    expect(outcome).toMatchObject({
+      error: {
+        kind: 'unavailable',
+        message: 'Core exited before it was ready.',
+      },
+    });
+    expect(world.count('read')).toBeGreaterThan(5);
+    expect(world.events).toContain('terminate:900');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('reports an exit while the final descriptor read is blocked', async () => {
+    const world = new ScriptedDaemon();
+    world.child = (pid): void => void setTimeout(() => world.exit(pid), 950);
+    world.gates.set('read', () =>
+      world.count('read') >= 10
+        ? new Promise<never>(() => {})
+        : Promise.resolve(),
+    );
+    const outcome = await run(launch(world, unclaimed(world)));
+    expect(outcome).toMatchObject({
+      error: {
+        kind: 'unavailable',
+        message: 'Core exited before it was ready.',
+      },
+    });
+    expect(world.events).toContain('terminate:900');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('reports an exit after an unattachable live descriptor goes stale', async () => {
+    const world = new ScriptedDaemon();
+    world.refusals = 100;
+    world.child = (pid): void => {
+      setTimeout(() => world.publish(pid), 10);
+      setTimeout(() => {
+        world.raw = null;
+        world.exit(pid);
+      }, 950);
+    };
+    const outcome = await run(launch(world, unclaimed(world)));
+    expect(world.count('attach')).toBeGreaterThan(0);
+    expect(outcome).toMatchObject({
+      error: {
+        kind: 'unavailable',
+        message: 'Core exited before it was ready.',
+      },
+    });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the timeout when only rollback makes the child exit', async () => {
+    const world = new ScriptedDaemon();
+    world.child = (): void => {};
+    const outcome = await run(launch(world, unclaimed(world)));
+    expect(outcome).toMatchObject({ error: { kind: 'deadline_exceeded' } });
+    expect(world.events).toContain('terminate:900');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('keeps the timeout when the child exit is observed after the monotonic deadline', async () => {
+    const world = new ScriptedDaemon();
+    world.child = (pid): void =>
+      void setTimeout(() => {
+        jumpClock();
+        world.exit(pid);
+      }, 950);
+    const outcome = await run(launch(world, unclaimed(world)));
+    expect(outcome).toMatchObject({ error: { kind: 'deadline_exceeded' } });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('stops waiting for a winner when the caller cancels', async () => {
+    const world = new ScriptedDaemon();
+    const abort = new AbortController();
+    world.child = (pid): void => world.exit(pid);
+    setTimeout(() => abort.abort(), 300);
+    const outcome = await run(launch(world, unclaimed(world, abort.signal)));
+    expect(outcome).toMatchObject({ error: { kind: 'cancelled' } });
+    expect(world.count('spawn')).toBe(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+});
+
 it.each<[string, (world: ScriptedDaemon) => void, RegExp]>([
   [
     'incompatible live major',
@@ -670,6 +815,14 @@ it.each<[string, Overrides]>([
   ['short hash', { dataRootHash: 'a'.repeat(63) }],
   ['reserved switch', { daemon: { executable: 'c', args: ['--data-root'] } }],
   [
+    'W5 host switch',
+    { daemon: { executable: 'c', args: ['--w5-host', 'v1'] } },
+  ],
+  [
+    'inline W5 host switch',
+    { daemon: { executable: 'c', args: ['--w5-host=v1'] } },
+  ],
+  [
     'inline switch',
     { daemon: { executable: 'c', args: ['--runtime-mode=x'] } },
   ],
@@ -794,4 +947,18 @@ it('passes a live cleanup cancellation signal to release only after group cleanu
     world.events.indexOf('release'),
   );
   expect(release).toHaveBeenCalledWith(world.handle, expect.any(AbortSignal));
+});
+
+it('reports not_launcher on an already-running daemon and never recycles it', async () => {
+  const world = new ScriptedDaemon();
+  world.publish(7);
+  expect(
+    await run(
+      launch(world, {
+        daemon: { executable: '/private/bin/canopy', migrationChannel: true },
+      }),
+    ),
+  ).toMatchObject({ started: false, migration: 'not_launcher' });
+  expect(world.events).not.toContain('spawn');
+  expect(world.events.join(' ')).not.toMatch(/terminate|commit|acquire/);
 });

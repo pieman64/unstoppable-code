@@ -7,6 +7,8 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type * as ReactNamespace from 'react';
 import type { RepoFileIndex } from '@canopy/desktop-shared/types';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import type { ChatMessage } from '@/stores/chatStore';
 import type * as ChatRenderStoresTestUtils from '@/test-utils/chatRenderStores';
@@ -167,8 +169,9 @@ describe('ChatMessageList file-path mention index sharing', () => {
     mountedRoot = createRoot(host);
 
     act(() => {
+      // The list stops native tasks through the client (turn-state D5).
       mountedRoot?.render(
-        <>
+        <CanopyClientProvider client={ipcCanopyClient}>
           {['chat-one', 'chat-two'].map((chatId) => (
             <ChatMessageList
               key={chatId}
@@ -184,7 +187,7 @@ describe('ChatMessageList file-path mention index sharing', () => {
               onClearQueuedMessage={(): void => undefined}
             />
           ))}
-        </>,
+        </CanopyClientProvider>,
       );
     });
 

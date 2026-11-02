@@ -63,17 +63,32 @@ function typeValue(value: string): void {
 }
 
 describe('RenameDialog', () => {
-  it('keeps the existing inset presentation and submits raw empty input', () => {
-    const props = dialog({ variant: 'inset' });
+  it('takes the compact confirmation shape with a capsule field and Enter to submit', () => {
+    const props = dialog();
     render(<RenameDialog {...props} />);
-    expect(input().className).toContain('inset-ring-line-base');
-    expect(input().closest('label')).toBeNull();
-    expect(input().form?.className).toBe('');
-    expect(button('rename-save').className).not.toContain('bg-accent');
+    const card = document.querySelector('[role="dialog"]');
+    expect(card?.className).toContain('max-w-95');
+    // No header rule and no close button: Cancel and Escape close it.
+    expect(card?.querySelector('[aria-label="Close"]')).toBeNull();
+    expect(card?.querySelector('.border-b')).toBeNull();
+    // The field rests on the neutral edge and focuses to the neutral halo.
+    expect(input().className).toContain('rounded-full');
+    expect(input().className).toContain('focus-visible:shadow-field-focus');
+    expect(input().className).not.toContain('focus-ring');
+    expect(button('rename-cancel').className).toContain('rounded-full');
+    // Escape on Cancel and Enter on Rename sit inside the buttons.
+    for (const id of ['rename-cancel', 'rename-save']) {
+      expect(
+        button(id).querySelector('[data-testid="kbd-chip"]'),
+      ).toBeInstanceOf(Element);
+    }
     typeValue('   ');
-    act(() => button('rename-save').click());
+    act(() => {
+      input().form?.requestSubmit();
+    });
     expect(props.onSubmit).toHaveBeenCalledWith('   ');
   });
+
   it('focuses and selects the initial value with host copy and limits', () => {
     render(
       <RenameDialog
@@ -92,7 +107,8 @@ describe('RenameDialog', () => {
     expect(document.body.textContent).toContain(
       'Leave empty to use the generated name.',
     );
-    expect(button('rename-save').textContent).toBe('Save');
+    expect(button('rename-save').getAttribute('aria-label')).toBeNull();
+    expect(button('rename-save').firstChild?.textContent).toBe('Rename');
     expect(button('rename-save').className).toContain('bg-accent');
   });
 
@@ -143,6 +159,10 @@ describe('RenameDialog', () => {
     const props = dialog({ busy: true });
     render(<RenameDialog {...props} />);
     expect(button('rename-save').disabled).toBe(true);
+    // A busy submit does not offer Enter.
+    expect(
+      button('rename-save').querySelector('[data-testid="kbd-chip"]'),
+    ).toBeNull();
     act(() => {
       input().form?.requestSubmit();
     });
@@ -163,5 +183,65 @@ describe('RenameDialog', () => {
       root.render(<RenameDialog key="b" {...props} initialValue="Fresh" />),
     );
     expect(input().value).toBe('Fresh');
+  });
+
+  describe('field error', () => {
+    const DUPLICATE = 'A workflow named “Bug fix” already exists.';
+
+    function error(): HTMLElement | null {
+      return document.querySelector<HTMLElement>(
+        '[data-testid="rename-input-error"]',
+      );
+    }
+
+    it('shows nothing before the person submits, even for a value the host rejects', () => {
+      const props = dialog({ error: DUPLICATE });
+      render(<RenameDialog {...props} />);
+      typeValue('Bug fix');
+      expect(error()).toBeNull();
+      expect(input().getAttribute('aria-invalid')).toBeNull();
+    });
+
+    it('shows the error under the field after submit, linked to it, and keeps the text', () => {
+      const props = dialog({ helperText: 'Names are shared.' });
+      const root = render(<RenameDialog {...props} />);
+      typeValue('Bug fix');
+      act(() => button('rename-save').click());
+      expect(props.onSubmit).toHaveBeenCalledWith('Bug fix');
+      act(() => root.render(<RenameDialog {...props} error={DUPLICATE} />));
+
+      const message = error();
+      expect(message).toBeInstanceOf(HTMLElement);
+      expect(message?.textContent).toBe(DUPLICATE);
+      expect(input().value).toBe('Bug fix');
+      expect(input().getAttribute('aria-invalid')).toBe('true');
+      const describedBy = input().getAttribute('aria-describedby') ?? '';
+      expect(describedBy.split(' ')).toContain(message?.id);
+      expect(describedBy.split(' ')).toHaveLength(2);
+      // Under the field, before the helper and the buttons.
+      expect(
+        input().compareDocumentPosition(message ?? document.body) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it('clears the error as soon as the field is edited, and shows it again on the next submit', () => {
+      const props = dialog();
+      const root = render(<RenameDialog {...props} />);
+      typeValue('Bug fix');
+      act(() => button('rename-save').click());
+      act(() => root.render(<RenameDialog {...props} error={DUPLICATE} />));
+      expect(error()).toBeInstanceOf(HTMLElement);
+
+      typeValue('Bug fix for Windows');
+      expect(error()).toBeNull();
+      expect(input().getAttribute('aria-invalid')).toBeNull();
+      expect(input().value).toBe('Bug fix for Windows');
+
+      typeValue('Bug fix');
+      expect(error()).toBeNull();
+      act(() => button('rename-save').click());
+      expect(error()?.textContent).toBe(DUPLICATE);
+    });
   });
 });

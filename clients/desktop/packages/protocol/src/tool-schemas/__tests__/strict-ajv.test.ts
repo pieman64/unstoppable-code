@@ -1,21 +1,26 @@
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020';
 import { stripStrictNulls, toStrictToolSchema, type JsonSchemaValue } from '..';
 import paritySchemas from './fixtures/parity-schemas.json';
 
 // The schema cases of the parity harness shared with Agentic Core.
 const cases: [string, JsonSchemaValue][] = Object.entries(paritySchemas);
 
+function compileSchema(schema: JsonSchemaValue): ValidateFunction {
+  if (
+    typeof schema === 'boolean' ||
+    (typeof schema === 'object' && schema !== null && !Array.isArray(schema))
+  ) {
+    return new Ajv2020({ strict: false, validateFormats: false }).compile(
+      schema,
+    );
+  }
+  throw new Error('not a schema');
+}
+
 function compileError(schema: JsonSchemaValue): string | null {
-  const ajv = new Ajv2020({ strict: false, validateFormats: false });
   try {
-    if (
-      typeof schema === 'boolean' ||
-      (typeof schema === 'object' && schema && !Array.isArray(schema))
-    ) {
-      ajv.compile(schema);
-      return null;
-    }
-    return 'not a schema';
+    compileSchema(schema);
+    return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -36,13 +41,12 @@ describe('strict tool schemas compile in Ajv', () => {
 
   it('accepts strict-shaped arguments and strips them back for the original', () => {
     const schema = paritySchemas.array_union_branch_items;
-    const ajv = new Ajv2020({ strict: false });
-    const validateStrict = ajv.compile(toStrictToolSchema(schema));
+    const validateStrict = compileSchema(toStrictToolSchema(schema));
     const strictArguments = { rows: [{ k: 'x', limit: null }] };
     expect(validateStrict(strictArguments)).toBe(true);
     const stripped = stripStrictNulls(strictArguments, schema);
     expect(stripped).toEqual({ rows: [{ k: 'x' }] });
-    expect(new Ajv2020({ strict: false }).compile(schema)(stripped)).toBe(true);
+    expect(compileSchema(schema)(stripped)).toBe(true);
   });
 
   // A nullable allOf member or $ref target must not hide a sibling `type`
@@ -77,7 +81,7 @@ describe('strict tool schemas compile in Ajv', () => {
     const modelArguments = { query: 'x', limit: null };
     const stripped = stripStrictNulls(modelArguments, schema);
     expect(stripped).toEqual({ query: 'x' });
-    const validateOriginal = new Ajv2020({ strict: false }).compile(schema);
+    const validateOriginal = compileSchema(schema);
     expect(validateOriginal(modelArguments)).toBe(false);
     expect(validateOriginal(stripped)).toBe(true);
   });
@@ -103,12 +107,12 @@ describe('strict tool schemas compile in Ajv', () => {
     const strict = toStrictToolSchema(schema);
     expect(strict).not.toHaveProperty('properties');
     expect(strict).not.toHaveProperty('additionalProperties');
-    const validateStrict = new Ajv2020({ strict: false }).compile(strict);
+    const validateStrict = compileSchema(strict);
     const modelArguments = { query: 'x', limit: null };
     expect(validateStrict(modelArguments)).toBe(true);
     const stripped = stripStrictNulls(modelArguments, schema);
     expect(stripped).toEqual({ query: 'x' });
-    expect(new Ajv2020({ strict: false }).compile(schema)(stripped)).toBe(true);
+    expect(compileSchema(schema)(stripped)).toBe(true);
   });
 
   it('strips a null that two oneOf members would both accept', () => {
@@ -121,10 +125,8 @@ describe('strict tool schemas compile in Ajv', () => {
       },
     };
     const strict = toStrictToolSchema(schema);
-    expect(new Ajv2020({ strict: false }).compile(strict)({ v: null })).toBe(
-      true,
-    );
-    const validateOriginal = new Ajv2020({ strict: false }).compile(schema);
+    expect(compileSchema(strict)({ v: null })).toBe(true);
+    const validateOriginal = compileSchema(schema);
     expect(validateOriginal({ v: null })).toBe(false);
     const stripped = stripStrictNulls({ v: null }, schema);
     expect(stripped).toEqual({});

@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PlusMediumIcon, SettingsIcon } from '../../icons/AppIcons';
+import { resetInputModality } from '../../lib/input-modality';
 import { TitlebarIconButton } from '../TitlebarIconButton';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -124,5 +125,52 @@ describe('TitlebarIconButton surface', () => {
     expect(held).toContain('aria-expanded:bg-subtle');
     expect(held).toContain('aria-expanded:fg-primary');
     expect(held).toContain('aria-expanded="true"');
+  });
+});
+
+describe('TitlebarIconButton tooltip shortcut', () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  beforeEach(() => {
+    resetInputModality(document);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('names the keys after the label as one cap per key', () => {
+    act(() => {
+      root.render(
+        <TitlebarIconButton
+          icon={SettingsIcon}
+          aria-label="Search"
+          tooltipShortcut="⌘K"
+        />,
+      );
+    });
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+      );
+      container.querySelector('button')?.focus();
+    });
+
+    const tooltip = document.body.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toBe('Search⌘K');
+    expect(
+      Array.from(tooltip?.querySelectorAll('kbd') ?? []).map(
+        (cap) => cap.textContent,
+      ),
+    ).toEqual(['⌘', 'K']);
+    // The button's name stays its label.
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe(
+      'Search',
+    );
   });
 });

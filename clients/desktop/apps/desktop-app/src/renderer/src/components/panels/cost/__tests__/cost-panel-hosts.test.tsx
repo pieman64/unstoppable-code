@@ -34,16 +34,31 @@ const SCOPE_VIEW: CostScopeView = {
   hasCodexEstimate: false,
 };
 
+const noScopeChatResult = {
+  status: 'unavailable',
+  reason: 'no_scope',
+} satisfies Awaited<ReturnType<CostApi['getChat']>>;
+
 function costApi(): CostApi & {
-  readonly getScope: jest.Mock;
-  readonly getChat: jest.Mock;
+  readonly getScope: jest.Mock<
+    ReturnType<CostApi['getScope']>,
+    Parameters<CostApi['getScope']>
+  >;
+  readonly getChat: jest.Mock<
+    ReturnType<CostApi['getChat']>,
+    Parameters<CostApi['getChat']>
+  >;
 } {
   const ok: CostViewResult<CostScopeView> = { status: 'ok', value: SCOPE_VIEW };
   return {
-    getScope: jest.fn(() => Promise.resolve(ok)),
-    getChat: jest.fn(() =>
-      Promise.resolve({ status: 'unavailable', reason: 'no_scope' }),
-    ),
+    getScope: jest.fn<
+      ReturnType<CostApi['getScope']>,
+      Parameters<CostApi['getScope']>
+    >(() => Promise.resolve(ok)),
+    getChat: jest.fn<
+      ReturnType<CostApi['getChat']>,
+      Parameters<CostApi['getChat']>
+    >(() => Promise.resolve(noScopeChatResult)),
     getPipelineRun: jest.fn(() =>
       Promise.resolve({ status: 'unavailable', reason: 'no_scope' }),
     ),

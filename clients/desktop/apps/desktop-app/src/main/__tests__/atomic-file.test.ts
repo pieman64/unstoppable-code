@@ -97,25 +97,29 @@ describe('writeFileAtomically', () => {
       durable: true,
     });
 
-    if (process.platform === 'win32') {
-      // Node cannot open a directory on Windows.
-      expect(order).toEqual(['sync', 'rename']);
-    } else {
-      expect(order).toEqual(['sync', 'rename', 'sync']);
-      expect(openMock).toHaveBeenLastCalledWith('/data/summaries', 'r');
-    }
+    expect(order).toEqual(['sync', 'rename', 'sync']);
+    // Windows flushes a folder only through a read-write handle (CAN-5151 D1).
+    expect(openMock).toHaveBeenLastCalledWith(
+      expect.stringMatching(/^[\\/]data[\\/]summaries$/),
+      process.platform === 'win32' ? 'r+' : 'r',
+    );
   });
 
-  it('fails a durable write whose directory cannot be synced', async () => {
-    if (process.platform === 'win32') return;
+  it('reports a durable write whose directory cannot be synced as outcome unknown', async () => {
     // The file syncs; the directory does not.
     sync
       .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('EIO'));
+      .mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }));
 
     await expect(
       writeFileAtomically('/data/summaries/wt-1.json', '{}', { durable: true }),
-    ).rejects.toThrow('EIO');
+    ).rejects.toMatchObject({
+      name: 'StorageOutcomeUnknownError',
+      stage: 'directory_flush',
+      cause: { name: 'DirectoryFlushError', stage: 'flush', code: 'EIO' },
+    });
+    expect(renameMock).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(2);
   });
 
   it('syncs nothing unless durable', async () => {
@@ -199,5 +203,35 @@ describe('renameWithRetry', () => {
       }),
     ).resolves.toBeUndefined();
     expect(renameMock).toHaveBeenCalledTimes(8);
+  });
+
+  it('rechecks the caller fence after each backoff and aborts without renaming', async () => {
+    const locked = Object.assign(new Error('locked'), { code: 'EBUSY' });
+    renameMock.mockRejectedValueOnce(locked).mockRejectedValueOnce(locked);
+    const superseded = new Error('superseded');
+    const beforeRetry = jest
+      .fn<void, []>()
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw superseded;
+      });
+
+    await expect(
+      renameWithRetry('/workspace/temp', '/workspace/live', {
+        retryDelaysMs: [0, 0, 0],
+        beforeRetry,
+      }),
+    ).rejects.toBe(superseded);
+    expect(beforeRetry).toHaveBeenCalledTimes(2);
+    expect(renameMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not run the retry fence when the first attempt succeeds', async () => {
+    const beforeRetry = jest.fn<void, []>();
+    await renameWithRetry('/workspace/temp', '/workspace/live', {
+      beforeRetry,
+    });
+    expect(beforeRetry).not.toHaveBeenCalled();
+    expect(renameMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -545,7 +545,7 @@ export async function deleteArchiveActivityWorktree({
   await archiveRow.hover();
   await archiveRow.getByTestId('worktree-actions-menu-button').click();
   await window.getByTestId('worktree-actions-menu-delete').click();
-  const dialog = window.getByRole('dialog', { name: 'Delete worktree?' });
+  const dialog = window.getByRole('dialog', { name: /^Delete worktree/ });
   // A known clean/done worktree can delete directly. Otherwise confirm its
   // branch handling; only then check authoritative completion in the caller.
   await expect
@@ -557,8 +557,9 @@ export async function deleteArchiveActivityWorktree({
   if (await dialog.isVisible()) {
     if (buildKind === 'production') {
       // Automation-only test IDs are absent from the release bundle.
+      // The branch switch keeps the local branch by default.
       await dialog
-        .getByRole('button', { name: 'Preserve local', exact: true })
+        .getByRole('button', { name: 'Delete worktree', exact: true })
         .click();
     } else {
       await dialog.getByTestId('worktree-removal-preserve-branch').click();

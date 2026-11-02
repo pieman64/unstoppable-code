@@ -116,6 +116,27 @@ describe('code-graph fingerprint runner', () => {
     });
   });
 
+  it('kills a fingerprint worker canceled before it spawned once it spawns', async () => {
+    const pending = runCodeGraphWorkerFingerprint('one', REPOSITORIES);
+    void pending.catch(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    const child = children[0];
+    if (!child) throw new Error('No fingerprint worker forked');
+    // Before launch a kill reaches nothing, as Electron's does.
+    child.kill.mockReturnValue(false);
+
+    const canceled = cancelCodeGraphFingerprint('one');
+    await expect(pending).rejects.toMatchObject({ reason: 'canceled' });
+    expect(child.kill).toHaveBeenCalledTimes(1);
+
+    child.kill.mockReturnValue(true);
+    child.emit('spawn');
+    expect(child.kill).toHaveBeenCalledTimes(2);
+    child.emit('exit', 0);
+    await canceled;
+  });
+
   it('kills and rejects an active fingerprint on cancellation', async () => {
     const pending = runCodeGraphWorkerFingerprint('one', REPOSITORIES);
     void pending.catch(() => {});

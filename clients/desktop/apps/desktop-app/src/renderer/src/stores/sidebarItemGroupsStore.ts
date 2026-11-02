@@ -1,5 +1,13 @@
 import { create } from 'zustand';
 import {
+  createSidebarPlacementStore,
+  createSidebarPlacementWriteQueue,
+  projectSidebarPlacementOrders,
+  moveSidebarItemMembership,
+  type SidebarPlacementSnapshot,
+  type SidebarPlacementStore,
+} from '@canopy/app-state';
+import {
   isSidebarItemGroupRetained,
   normalizeSidebarItemGroups,
   nextSidebarItemGroupColor,
@@ -17,8 +25,12 @@ import type {
   SidebarItemGroupPendingPlacement,
   SidebarItemGroupView,
 } from '@canopy/ui-app/sidebar';
+import { useWorkspaceContextStore } from './workspaceContextStore';
 import { useProjectsStore } from './projectsStore';
-import { useStandaloneChatStore } from './standaloneChatStore';
+import {
+  getWorkEntrySnapshotRevision,
+  useStandaloneChatStore,
+} from './standaloneChatStore';
 
 export function sidebarItemGroupScopeKey(scope: SidebarItemGroupScope): string {
   return scope.appAdvisor
@@ -28,6 +40,7 @@ export function sidebarItemGroupScopeKey(scope: SidebarItemGroupScope): string {
 
 interface SidebarItemGroupsState {
   byScope: Record<string, SidebarItemGroupView[]>;
+  orderByScope: Record<string, readonly string[]>;
   errors: Record<string, string | undefined>;
   confirmCreatedItem: (
     scope: SidebarItemGroupScope,
@@ -41,8 +54,29 @@ interface SidebarItemGroupsState {
     scope: SidebarItemGroupScope;
     groupId: string;
   }) => Promise<void>;
-  moveItem: (request: SidebarItemGroupMoveItemRequest) => Promise<void>;
+  moveItem: (
+    request: SidebarItemGroupMoveItemRequest,
+    membershipOnly?: boolean,
+  ) => Promise<void>;
   moveGroup: (request: SidebarItemGroupMoveRequest) => Promise<void>;
+}
+
+// Created on first write so importing this store has no load-time dependency
+// on @canopy/app-state.
+let scopeWrites: ReturnType<typeof createSidebarPlacementWriteQueue> | null =
+  null;
+let writeContext = 0;
+function saveInScope<T>(
+  scope: SidebarItemGroupScope,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const context = writeContext;
+  scopeWrites ??= createSidebarPlacementWriteQueue();
+  return scopeWrites(`${context}:${sidebarItemGroupScopeKey(scope)}`, () => {
+    if (context !== writeContext)
+      return Promise.reject(new Error('Sidebar context changed'));
+    return operation();
+  });
 }
 
 const generations = new Map<string, number>();
@@ -109,6 +143,10 @@ function placementRequestsFor(
 
 export function resetSidebarItemGroupPlacementRequestsForTests(): void {
   placementRequests.clear();
+  for (const controller of Array.from(coworkPlacements.values()))
+    controller.dispose();
+  coworkPlacements.clear();
+  useSidebarItemGroupsStore.setState({ orderByScope: {} });
 }
 
 function confirmMembership(
@@ -146,23 +184,36 @@ function nextGeneration(key: string): number {
   return generation;
 }
 
+function isCoworkScope(scope: SidebarItemGroupScope): boolean {
+  if (scope.appAdvisor) return false;
+  const project = useProjectsStore
+    .getState()
+    .projects.find((candidate) => candidate.id === scope.workspaceLocalId);
+  if (project) return project.type === 'cowork';
+  const entries = useStandaloneChatStore.getState();
+  return (
+    entries.activeChatProjectId === scope.workspaceLocalId ||
+    entries.sidebarEntriesByProject?.[scope.workspaceLocalId] !== undefined
+  );
+}
+
 async function refreshOrder(scope: SidebarItemGroupScope): Promise<void> {
   if (scope.appAdvisor)
     await useStandaloneChatStore.getState().refreshWorkEntries('app-advisor');
-  else {
-    await useProjectsStore.getState().loadProjects({ silent: true });
-    const project = useProjectsStore
+  else if (isCoworkScope(scope))
+    await useStandaloneChatStore
       .getState()
-      .projects.find((item) => item.id === scope.workspaceLocalId);
-    if (project?.type === 'cowork')
-      await useStandaloneChatStore
-        .getState()
-        .refreshWorkEntries(scope.workspaceLocalId);
-  }
+      .refreshWorkEntries(scope.workspaceLocalId);
+  else await useProjectsStore.getState().loadProjects({ silent: true });
 }
 
 async function readGroups(scope: SidebarItemGroupScope): Promise<void> {
   const key = sidebarItemGroupScopeKey(scope);
+  const placement = coworkPlacements.get(key);
+  if (placement) {
+    placement.reconcile();
+    return;
+  }
   const generation = nextGeneration(key);
   const groups = await window.api.sidebarItemGroups.list(scope);
   if (generations.get(key) !== generation) return;
@@ -185,6 +236,13 @@ async function mutate<T>(
   confirmed?: (groups: SidebarItemGroup[], result: T) => SidebarItemGroup[],
 ): Promise<T> {
   const key = sidebarItemGroupScopeKey(scope);
+  const placement = coworkPlacement(scope);
+  if (placement)
+    return placement.changeGroups(
+      optimistic,
+      () => saveInScope(scope, operation),
+      confirmed,
+    );
   const run = async (): Promise<T> => {
     const store = useSidebarItemGroupsStore;
     if (store.getState().byScope[key] === undefined) await readGroups(scope);
@@ -227,7 +285,7 @@ async function mutate<T>(
     }));
     let result: T;
     try {
-      result = await operation();
+      result = await saveInScope(scope, operation);
     } catch (error) {
       nextGeneration(key);
       store.setState((state) => ({
@@ -284,11 +342,22 @@ async function mutate<T>(
 export const useSidebarItemGroupsStore = create<SidebarItemGroupsState>(
   (set, get) => ({
     byScope: {},
+    orderByScope: {},
     errors: {},
     // Called only after the host's grouped creation acknowledgement, before
     // publishing the new renderer row. In-flight older reads cannot erase it.
     confirmCreatedItem: (scope, destinationGroupId, itemId): void => {
       const key = sidebarItemGroupScopeKey(scope);
+      const placement = coworkPlacements.get(key);
+      if (placement) {
+        void placement
+          .changeGroups(
+            (groups) => confirmMembership(groups, destinationGroupId, itemId),
+            () => Promise.resolve(),
+          )
+          .catch(() => undefined);
+        return;
+      }
       // A created row arrives already ordered; no earlier request applies.
       forgetPlacementRequests(key, itemId);
       // Keep an unhydrated scope undefined so its snapshot groups remain
@@ -420,7 +489,9 @@ export const useSidebarItemGroupsStore = create<SidebarItemGroupsState>(
         (groups) => groups.filter((group) => group.id !== request.groupId),
         () => window.api.sidebarItemGroups.ungroup(request),
       ),
-    moveItem: (request): Promise<void> => {
+    moveItem: (request, membershipOnly = false): Promise<void> => {
+      const placementStore = coworkPlacement(request.scope);
+      if (placementStore) return placementStore.move(request, membershipOnly);
       const key = sidebarItemGroupScopeKey(request.scope);
       // Main puts the row where the request says, or last without one.
       const placement: SidebarItemGroupPendingPlacement = {
@@ -434,14 +505,13 @@ export const useSidebarItemGroupsStore = create<SidebarItemGroupsState>(
       return mutate(
         request.scope,
         (groups) => {
-          for (const group of groups)
-            group.memberIds = group.memberIds.filter(
-              (id) => id !== request.itemId,
-            );
-          const moved: SidebarItemGroupView[] = groups;
+          const moved = moveSidebarItemMembership<SidebarItemGroupView>(
+            groups,
+            request.itemId,
+            request.groupId,
+          );
           const target = moved.find((group) => group.id === request.groupId);
           if (target && request.groupId !== null) {
-            target.memberIds.push(request.itemId);
             recordPlacementRequest(key, {
               groupId: request.groupId,
               placement,
@@ -522,7 +592,9 @@ function retainSnapshotAnchors(
 export function overlaySidebarItemGroups(
   snapshot: SessionViewModel,
   byScope: Readonly<Record<string, SidebarItemGroupView[]>>,
+  orders: Readonly<Record<string, readonly string[]>> = {},
 ): SessionViewModel {
+  snapshot = projectSidebarPlacementOrders(snapshot, orders);
   let changed = false;
   const workspaces = (snapshot.workspaces ?? []).map((workspace) => {
     const key = `workspace:${workspace.localId}`;
@@ -545,4 +617,131 @@ export function overlaySidebarItemGroups(
         ...(appAdvisorItemGroups === undefined ? {} : { appAdvisorItemGroups }),
       }
     : snapshot;
+}
+
+type PlacementEntries = Awaited<
+  ReturnType<typeof window.api.workEntries.list>
+>['entries'];
+const coworkPlacements = new Map<string, SidebarPlacementStore>();
+
+function coworkPlacement(
+  scope: SidebarItemGroupScope,
+): SidebarPlacementStore | undefined {
+  if (scope.appAdvisor) return undefined;
+  const projectId = scope.workspaceLocalId;
+  if (!isCoworkScope(scope)) return undefined;
+  const key = sidebarItemGroupScopeKey(scope);
+  const existing = coworkPlacements.get(key);
+  if (existing) return existing;
+  const entriesForScope = (): PlacementEntries => {
+    const state = useStandaloneChatStore.getState();
+    return state.activeChatProjectId === projectId
+      ? state.workEntries
+      : (state.sidebarEntriesByProject[projectId] ?? []);
+  };
+  const snapshot = (
+    entries: PlacementEntries,
+    groups: readonly SidebarItemGroup[],
+  ): SidebarPlacementSnapshot => ({
+    order: entries.map((entry) => entry.id),
+    groups,
+    movableItemIds: new Set(
+      entries.filter((entry) => !entry.pinned).map((entry) => entry.id),
+    ),
+  });
+  const acceptedEntries = new WeakMap<
+    SidebarPlacementSnapshot,
+    PlacementEntries
+  >();
+  const controller = createSidebarPlacementStore(
+    snapshot(
+      entriesForScope(),
+      useSidebarItemGroupsStore.getState().byScope[key] ?? [],
+    ),
+    {
+      save: (request) =>
+        saveInScope(scope, () =>
+          window.api.sidebarItemGroups.moveItem(request),
+        ),
+      read: async (): Promise<SidebarPlacementSnapshot> => {
+        const revision = getWorkEntrySnapshotRevision(projectId);
+        const [response, groups] = await Promise.all([
+          window.api.workEntries.list({ projectId }),
+          window.api.sidebarItemGroups.list(scope),
+        ]);
+        if (revision !== getWorkEntrySnapshotRevision(projectId))
+          throw new Error('Sidebar entries changed during reconciliation');
+        const next = snapshot(response.entries, groups);
+        acceptedEntries.set(next, response.entries);
+        return next;
+      },
+      // IPC rejection alone does not prove that an order-first write did not commit.
+      classifyFailure: () => 'uncertain',
+    },
+  );
+  // A hydration read begun before this controller must not overwrite its intents.
+  nextGeneration(key);
+  coworkPlacements.set(key, controller);
+  let applied: SidebarPlacementSnapshot | undefined;
+  controller.subscribe((state) => {
+    const entries = acceptedEntries.get(state.confirmed);
+    const authoritative = entries !== undefined && applied !== state.confirmed;
+    if (entries && authoritative) {
+      applied = state.confirmed;
+      useStandaloneChatStore
+        .getState()
+        .applyWorkEntriesSnapshot(projectId, entries);
+    }
+    useSidebarItemGroupsStore.setState((current) => ({
+      byScope: {
+        ...current.byScope,
+        [key]: [...state.rendered.groups],
+      },
+      orderByScope: { ...current.orderByScope, [key]: state.rendered.order },
+      errors: {
+        ...current.errors,
+        [key]: state.error instanceof Error ? state.error.message : undefined,
+      },
+    }));
+  });
+  return controller;
+}
+
+useWorkspaceContextStore.subscribe((state, previous) => {
+  if (
+    state.accountEpoch === previous.accountEpoch &&
+    JSON.stringify(state.state.context) ===
+      JSON.stringify(previous.state.context)
+  )
+    return;
+  writeContext += 1;
+  generations.forEach((_generation, key) => {
+    nextGeneration(key);
+  });
+  for (const controller of Array.from(coworkPlacements.values()))
+    controller.dispose();
+  coworkPlacements.clear();
+  useSidebarItemGroupsStore.setState({
+    orderByScope: {},
+    byScope: {},
+    errors: {},
+  });
+});
+
+/** Unsolicited entry inventory can delete or add rows, but cannot acknowledge a move. */
+export function observeCoworkSidebarEntries(
+  projectId: string,
+  entries: PlacementEntries,
+): void {
+  const controller = coworkPlacements.get(
+    sidebarItemGroupScopeKey({ workspaceLocalId: projectId }),
+  );
+  if (!controller) return;
+  controller.updateInventory({
+    order: entries.map((entry) => entry.id),
+    groups: controller.getState().confirmed.groups,
+    movableItemIds: new Set(
+      entries.filter((entry) => !entry.pinned).map((entry) => entry.id),
+    ),
+  });
 }

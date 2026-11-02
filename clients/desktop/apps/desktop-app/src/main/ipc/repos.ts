@@ -34,6 +34,9 @@ import { remoteUrlsMatch } from '../lib/repo-url-matcher';
 import { showOpenDialogForEvent } from '../lib/dialog-window';
 import { registerIpcHandler } from './register';
 import { ensureUniqueDestination } from '../lib/unique-destination';
+import { readRepositoryRemoteUrl } from '../canopy-runtime/worker-git-dispatch';
+import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
+import type { DesktopIpcCallerResolver } from './file-tree';
 
 function inferRepoNameFromRemote(remoteUrl: string): string {
   return repositoryNameFromCloneUrl(remoteUrl);
@@ -92,7 +95,10 @@ async function getAndEnsureDefaultReposDir(): Promise<string> {
   return defaultReposDir;
 }
 
-export function registerRepoHandlers(): void {
+export function registerRepoHandlers(runtime: {
+  dispatcher: WorkerGitDispatcher;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   registerIpcHandler(
     IPC_CHANNELS.repoDefaultCloneDir,
     async (): Promise<string> => {
@@ -280,10 +286,11 @@ export function registerRepoHandlers(): void {
     },
   );
 
+  // ---- Remote URL (worker.git.remote.get) ----
   registerIpcHandler(
     IPC_CHANNELS.repoGetRemoteUrl,
     async (
-      _event,
+      event,
       request: GetRemoteUrlRequest,
     ): Promise<GetRemoteUrlResponse> => {
       const repoPath = request.repoPath.trim();
@@ -291,8 +298,11 @@ export function registerRepoHandlers(): void {
         throw new Error('Repository path must be an absolute path');
       }
 
-      const remoteUrl = await getRemoteUrl(repoPath);
-      return { remoteUrl };
+      return readRepositoryRemoteUrl(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        repoPath,
+      );
     },
   );
 

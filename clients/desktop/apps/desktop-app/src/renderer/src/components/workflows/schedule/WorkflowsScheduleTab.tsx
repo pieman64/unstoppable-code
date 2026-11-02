@@ -5,10 +5,10 @@ import type {
   ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import {
-  WORKFLOW_NO_PROJECT,
-  WorkflowsFilterMenu,
-  type WorkflowsFilterOption,
-} from '@canopy/ui-app/workflows';
+  FilterDropdown,
+  type FilterOption,
+} from '@canopy/ui-shared/components';
+import { WORKFLOW_NO_PROJECT } from '@canopy/ui-app/workflows';
 import type { AutomationScope } from '@/hooks/useAutomationScope';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { matchesScheduleProject } from '@/lib/workflows/schedule-filter';
@@ -71,7 +71,7 @@ export function WorkflowsScheduleTab({
       : recentRuns.filter((run) => ids.has(run.activityId));
   }, [project, recentRuns, shownActivities]);
 
-  const options = useMemo<readonly WorkflowsFilterOption<string>[]>(() => {
+  const options = useMemo<readonly FilterOption<string>[]>(() => {
     const count = (value: string): number =>
       activities.filter((activity) => matchesScheduleProject(activity, value))
         .length;
@@ -123,7 +123,8 @@ export function WorkflowsScheduleTab({
         onSelect={setSelectedActivityId}
         describeAction={describeAction}
         toolbarFilters={
-          <WorkflowsFilterMenu
+          <FilterDropdown
+            size="default"
             title="Project"
             label={selectedLabel}
             anyLabel="Any project"

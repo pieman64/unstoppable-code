@@ -1,10 +1,10 @@
 import { z } from 'zod';
+import { decodeW5WorktreeUpdateOutcome } from '@canopy/core-runtime/node/w5/worktree-outcome';
 import { getWorkspaceWorktreesFilePath } from './paths';
 import { withW5Commit } from './w5-commit-log-file-store';
 import {
   checkW5ExpectedRevision,
   w5ExpectedRevision,
-  w5WorktreeOutcomeSchema,
   type W5BoundaryOptions,
 } from './w5-boundary-operation';
 import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
@@ -335,10 +335,7 @@ export async function updateWorktree(
       parameters: () => ({ ...parameters, patch: admittedPatch }),
     },
     () => Promise.resolve(admittedPatch),
-    (outcome) =>
-      z
-        .object({ worktree: w5WorktreeOutcomeSchema, changed: z.boolean() })
-        .parse(outcome),
+    decodeW5WorktreeUpdateOutcome,
     (patch, options, save) => {
       async function stageWorktreeUpdate(): Promise<WorktreeUpdateOutcome> {
         await checkW5ExpectedRevision(
@@ -490,6 +487,8 @@ export interface WorktreeGroupMembershipReorderRequest {
   decide: (rows: readonly WorktreeData[]) => Promise<{
     order: readonly string[];
     commitMembership: () => Promise<void>;
+    /** Stack children the move unstacked from their base to group them. */
+    ungroupItemIds?: readonly string[];
   }>;
 }
 
@@ -510,7 +509,8 @@ export async function reorderWorktreeGroupMembership(
     await updateWorkspaceWorktrees(
       request.workspaceId,
       async (rows) => {
-        const { order, commitMembership } = await request.decide(rows);
+        const { order, commitMembership, ungroupItemIds } =
+          await request.decide(rows);
         order.forEach((id) => validateId(id, 'worktreeId'));
         const rowIds = new Set(rows.map((row) => row.id));
         if (
@@ -525,7 +525,12 @@ export async function reorderWorktreeGroupMembership(
         }
         // No list change reaches storage if the sidecar cannot be reconciled.
         await commitMembership();
-        return reorderWorktreesById(rows, order);
+        const ungrouped = new Set(ungroupItemIds);
+        return reorderWorktreesById(rows, order).map((row) =>
+          ungrouped.has(row.id)
+            ? { ...row, branchGroupingOverride: 'ungroup' as const }
+            : row,
+        );
       },
       {
         groupMutation: true,

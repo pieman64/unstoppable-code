@@ -3,7 +3,10 @@ import type {
   ChatCreationAction,
   ChatSendAction,
 } from '@canopy/desktop-shared/lib/chat-send-actions';
-import type { AgentChatSendContext } from '../../agent-messaging/send-orchestration';
+import type {
+  AgentChatSendContext,
+  AgentChatSendError as AgentChatSendErrorClass,
+} from '../../agent-messaging/send-orchestration';
 import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
 import type { DesktopAgentMessageAdmission } from '../desktop-environment-port';
 
@@ -40,6 +43,7 @@ jest.mock('../desktop-environment-port', (): object => ({
 
 import {
   admitScheduledProjectMessage,
+  createDesktopPipelineProjectBotPort,
   createDesktopProjectBotPort,
   readmitQueuedProjectMessage,
   type DesktopAgentAdmissions,
@@ -263,6 +267,138 @@ describe('desktop project and bot port admission', () => {
     ).rejects.toMatchObject({
       name: 'AgentSenderContextError',
       code: 'authorization_conflict',
+    });
+  });
+});
+
+describe('pipeline project and bot port', () => {
+  const pipeline = {
+    executionId: 'exec-1',
+    stepId: 'create',
+    owner: { kind: 'personal' },
+  } as const;
+  const pipelineCall = { host: call.host };
+
+  beforeEach(() => {
+    mockCreate.mockReset().mockResolvedValue({
+      address: { botId: 'app_advisor', taskId: 'planned', chatId: 'planned' },
+      taskCreated: true,
+      chatCreated: true,
+    });
+  });
+
+  it('routes a pipeline creation to the creation orchestration with the pipeline caller', async () => {
+    const port = createDesktopPipelineProjectBotPort(
+      pipeline,
+      admissions({}),
+      'planned-task',
+    );
+    await expect(
+      port.dispatch(
+        { type: 'bots.create_task', botId: 'app_advisor' },
+        pipelineCall,
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    const [created, context] = mockCreate.mock.calls[0] ?? [];
+    expect(created).toEqual({ type: 'bots.create_task', botId: 'app_advisor' });
+    expect(context?.caller).toEqual({
+      kind: 'pipeline',
+      source: {
+        executionId: 'exec-1',
+        pipelineId: 'exec-1',
+        pipelineName: '',
+        stepId: 'create',
+        owner: { kind: 'personal' },
+      },
+    });
+    expect(context?.plannedTaskId).toBe('planned-task');
+    expect(mockCreate.mock.calls[0]?.[1].startAdmission).toBeUndefined();
+    expect(mockCreate.mock.calls[0]?.[1].watcherDestination).toBeUndefined();
+  });
+
+  it.each([
+    {
+      type: 'projects.list',
+      pageSize: 20,
+      includeDefault: true,
+      sort: 'name',
+      order: 'asc',
+    },
+    {
+      type: 'bots.send_message',
+      botId: 'app_advisor',
+      taskId: 't',
+      chatId: 'c',
+      text: 'x',
+    },
+    { type: 'projects.create_task_chat', projectId: 'p', taskId: 't' },
+    { type: 'bots.create_task', botId: 'app_advisor', initialMessage: 'hi' },
+  ] as const)(
+    'refuses %o from a pipeline caller in this phase',
+    async (refused) => {
+      const port = createDesktopPipelineProjectBotPort(
+        pipeline,
+        admissions({}),
+      );
+      await expect(port.dispatch(refused, pipelineCall)).rejects.toMatchObject({
+        code: 'unsupported_action',
+      });
+      expect(mockCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('seeds a project chat from the origin agent start admission for an agent-originated run', async () => {
+    const start = jest.fn().mockResolvedValue({ approvalMode: 'default' });
+    const origin = {
+      projectId: 'origin',
+      worktreeId: 'origin-task',
+      chatId: 'origin-chat',
+    };
+    mockCreate.mockImplementation(async (_action, context) => {
+      await context.startAdmission?.(
+        { workspaceId: 'cowork-default', worktreeId: 'planned' },
+        false,
+      );
+      return {};
+    });
+    const port = createDesktopPipelineProjectBotPort(
+      { ...pipeline, agentOrigin: origin },
+      admissions({ agentChatStartAdmission: start }),
+    );
+    await port.dispatch(
+      { type: 'projects.create_task', projectId: 'cowork-default' },
+      pipelineCall,
+    );
+    expect(start).toHaveBeenCalledWith(
+      { workspaceId: 'cowork-default', worktreeId: 'planned' },
+      false,
+      {
+        scope: {
+          workspaceId: 'origin',
+          worktreeId: 'origin-task',
+          chatId: 'origin-chat',
+        },
+        host: call.host,
+      },
+    );
+  });
+
+  it('reports a creation refusal as the typed response, not a throw', async () => {
+    const { AgentChatSendError } = jest.requireActual<{
+      AgentChatSendError: typeof AgentChatSendErrorClass;
+    }>('../../agent-messaging/send-orchestration');
+    mockCreate.mockRejectedValue(
+      new AgentChatSendError('not_found', 'Hidden.'),
+    );
+    const port = createDesktopPipelineProjectBotPort(pipeline, admissions({}));
+    await expect(
+      port.dispatch(
+        { type: 'projects.create_task', projectId: 'cowork-default' },
+        pipelineCall,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'not_found', message: 'Hidden.' },
     });
   });
 });

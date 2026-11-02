@@ -1,0 +1,4154 @@
+[
+  {
+    "label": "get a file with no state",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [],
+        "commentThreads": []
+      }
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "append annotations and threads, dropping invalid entries",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Title ann-1",
+            "body": "Body ann-1"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree",
+              "annotationId": "ann-1"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Title ann-1",
+                "body": "Body ann-1"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "append keeps stored entries with duplicate ids",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Title ann-1",
+            "body": "Body ann-1"
+          },
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree",
+              "annotationId": "ann-1"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Title ann-1",
+                "body": "Body ann-1"
+              },
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "get normalizes the requested path",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Title ann-1",
+            "body": "Body ann-1"
+          },
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree",
+              "annotationId": "ann-1"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "save a staged user thread and an edited annotation",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Edited title",
+            "body": "Body ann-1"
+          },
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree",
+              "annotationId": "ann-1"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "user-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five"
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Edited title",
+                "body": "Body ann-1"
+              },
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": true
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent lists open threads (annotation thread hidden until submitted)",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "text": "1 open file/diff/diagram/plan comment thread(s):\n- user-thread [open] 1 comment(s): /workspace/src/a.ts repo//workspace/src/a.ts:5 (old) [Diff view; source uncommitted; snapshot snapshot-1; side old; repository repo; anchor matched]"
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent cannot reply to a staged-only thread",
+    "outcome": {
+      "result": {
+        "ok": false,
+        "resolved": false,
+        "error": "File comment thread not found."
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": true
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "submit the user comment",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Edited title",
+            "body": "Body ann-1"
+          },
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree",
+              "annotationId": "ann-1"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "user-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five"
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Edited title",
+                "body": "Body ann-1"
+              },
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent reads the submitted thread",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "text": "File: /workspace/src/a.ts\nThread user-thread [open] (anchor matched)\nAnchor: repo//workspace/src/a.ts:5 (old)\nContext: Diff view; source uncommitted; snapshot snapshot-1; side old; repository repo\nQuote:\n```\nfive\n```\n\nComments:\n- [user] 2026-10-01T00:01:00.000Z: Please rename this."
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent replies and resolves",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "resolved": true,
+        "store": "file"
+      }
+    },
+    "events": [
+      {
+        "target": "all-windows",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Edited title",
+                "body": "Body ann-1"
+              },
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Renamed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "a stale renderer save keeps the agent reply and resolution",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Edited title",
+            "body": "Body ann-1"
+          },
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree",
+              "annotationId": "ann-1"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "user-thread",
+            "status": "resolved",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five"
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "Renamed.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Edited title",
+                "body": "Body ann-1"
+              },
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Renamed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent replies without resolving",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "resolved": false,
+        "store": "file"
+      }
+    },
+    "events": [
+      {
+        "target": "all-windows",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Edited title",
+                "body": "Body ann-1"
+              },
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree",
+                  "annotationId": "ann-1"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Renamed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "One more note.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Edited title",
+              "body": "Body ann-1"
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree",
+                "annotationId": "ann-1"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "dismiss an annotation and detach its thread",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "user-thread",
+            "status": "resolved",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five"
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "Renamed.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "One more note.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Renamed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "One more note.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "dismiss on an untouched file writes an empty document",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/b.ts",
+        "annotations": [],
+        "commentThreads": []
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/b.ts",
+            "annotations": [],
+            "commentThreads": []
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/b.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "append a concurrent thread the renderer has not seen",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "agent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "user-thread",
+            "status": "resolved",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five"
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "Renamed.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "One more note.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "concurrent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "agent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Renamed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "One more note.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "concurrent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "agent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "concurrent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/b.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "save deletes a thread from the base and keeps the concurrent one",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-2",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 7,
+            "lineEnd": 7,
+            "kind": "context",
+            "title": "Title ann-2",
+            "body": "Body ann-2"
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "user-thread",
+            "status": "resolved",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five"
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "Renamed.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              },
+              {
+                "id": "<uuid>",
+                "author": "agent",
+                "body": "One more note.",
+                "createdAt": "2026-10-22T12:00:00.000Z",
+                "staged": false
+              }
+            ]
+          },
+          {
+            "id": "concurrent-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:00:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "quote": "two\nthree"
+            },
+            "comments": [
+              {
+                "id": "agent-comment",
+                "author": "agent",
+                "body": "Could you confirm this?",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "staged": false
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p1",
+          "worktreeId": "w1",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-2",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 7,
+                "lineEnd": 7,
+                "kind": "context",
+                "title": "Title ann-2",
+                "body": "Body ann-2"
+              }
+            ],
+            "commentThreads": [
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Renamed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "One more note.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              },
+              {
+                "id": "concurrent-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:00:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "new",
+                  "lineStart": 2,
+                  "lineEnd": 3,
+                  "quote": "two\nthree"
+                },
+                "comments": [
+                  {
+                    "id": "agent-comment",
+                    "author": "agent",
+                    "body": "Could you confirm this?",
+                    "createdAt": "2026-10-01T00:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "concurrent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/b.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent lists open threads across files",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "text": "1 open file/diff/diagram/plan comment thread(s):\n- concurrent-thread [open] 1 comment(s): /workspace/src/a.ts repo//workspace/src/a.ts:2-3 (new) [File view; anchor matched]"
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "concurrent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/b.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent reply to an unknown thread",
+    "outcome": {
+      "result": {
+        "ok": false,
+        "resolved": false,
+        "error": "File comment thread not found."
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "concurrent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/b.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent read of an unknown thread",
+    "outcome": {
+      "result": {
+        "ok": false,
+        "text": "",
+        "error": "Comment thread not found."
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 7,
+              "lineEnd": 7,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Renamed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "One more note.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "concurrent-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:00:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "quote": "two\nthree"
+              },
+              "comments": [
+                {
+                  "id": "agent-comment",
+                  "author": "agent",
+                  "body": "Could you confirm this?",
+                  "createdAt": "2026-10-01T00:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/b.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "code-review chat scope maps to its target",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "resolved": true,
+        "store": "file"
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "review-project",
+          "worktreeId": "review-worktree",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [],
+            "commentThreads": [
+              {
+                "id": "user-thread",
+                "status": "open",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "target": "all-windows",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "review-project",
+          "worktreeId": "review-worktree",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [],
+            "commentThreads": [
+              {
+                "id": "user-thread",
+                "status": "resolved",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "anchorState": "matched",
+                "anchor": {
+                  "source": "code",
+                  "view": "diff",
+                  "diff": {
+                    "source": "uncommitted",
+                    "snapshotId": "snapshot-1"
+                  },
+                  "repoId": "repo",
+                  "filePath": "/workspace/src/a.ts",
+                  "side": "old",
+                  "lineStart": 5,
+                  "quote": "five"
+                },
+                "comments": [
+                  {
+                    "id": "user-comment",
+                    "author": "user",
+                    "body": "Please rename this.",
+                    "createdAt": "2026-10-01T00:01:00.000Z",
+                    "staged": false
+                  },
+                  {
+                    "id": "<uuid>",
+                    "author": "agent",
+                    "body": "Reviewed.",
+                    "createdAt": "2026-10-22T12:00:00.000Z",
+                    "staged": false
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "resolved",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                },
+                {
+                  "id": "<uuid>",
+                  "author": "agent",
+                  "body": "Reviewed.",
+                  "createdAt": "2026-10-22T12:00:00.000Z",
+                  "staged": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "code-review chat scope without a target",
+    "outcome": {
+      "result": {
+        "ok": false,
+        "text": "",
+        "error": "No code-review target registered."
+      }
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "invalid project id",
+    "outcome": {
+      "error": "Invalid projectId: must be lowercase alphanumeric with hyphens"
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "invalid worktree id on read",
+    "outcome": {
+      "error": "Invalid worktreeId: must be lowercase alphanumeric with hyphens"
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "read-only recipient scope",
+    "outcome": {
+      "error": "Shared-container recipient workspaces are read-only"
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "invalid annotation id",
+    "outcome": {
+      "error": "Invalid annotationId: must be lowercase alphanumeric with hyphens"
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "save without a document path",
+    "outcome": {
+      "error": "Invalid file annotation document."
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "append without a file path",
+    "outcome": {
+      "error": "Invalid file annotation append request."
+    },
+    "events": [],
+    "state": null
+  },
+  {
+    "label": "save with malformed collections",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [],
+        "commentThreads": []
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p2",
+          "worktreeId": "w2",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [],
+            "commentThreads": []
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "corrupt state reads as empty",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [],
+        "commentThreads": []
+      }
+    },
+    "events": [],
+    "state": {
+      "unparsed": "{\"version\":1,\"files\":["
+    }
+  },
+  {
+    "label": "a save replaces corrupt state",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Title ann-1",
+            "body": "Body ann-1"
+          }
+        ],
+        "commentThreads": []
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p3",
+          "worktreeId": "w3",
+          "document": {
+            "filePath": "/workspace/src/a.ts",
+            "annotations": [
+              {
+                "id": "ann-1",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Title ann-1",
+                "body": "Body ann-1"
+              }
+            ],
+            "commentThreads": []
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1"
+            }
+          ],
+          "commentThreads": []
+        }
+      ]
+    }
+  },
+  {
+    "label": "an unknown state version reads as empty",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [],
+        "commentThreads": []
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 2,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "label": "existing data keeps unknown fields and drops invalid entries",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/a.ts",
+        "annotations": [
+          {
+            "id": "ann-1",
+            "repoId": "repo",
+            "filePath": "/workspace/src/a.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Title ann-1",
+            "body": "Body ann-1",
+            "extraAnnotationField": {
+              "a": 1
+            }
+          }
+        ],
+        "commentThreads": [
+          {
+            "id": "user-thread",
+            "status": "open",
+            "createdAt": "2026-10-01T00:01:00.000Z",
+            "anchorState": "matched",
+            "anchor": {
+              "source": "code",
+              "view": "diff",
+              "diff": {
+                "source": "uncommitted",
+                "snapshotId": "snapshot-1"
+              },
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "old",
+              "lineStart": 5,
+              "quote": "five",
+              "extraAnchorField": 1
+            },
+            "comments": [
+              {
+                "id": "user-comment",
+                "author": "user",
+                "body": "Please rename this.",
+                "createdAt": "2026-10-01T00:01:00.000Z",
+                "staged": false,
+                "extraCommentField": [1, 2]
+              }
+            ],
+            "extraThreadField": "kept"
+          }
+        ]
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "extra": "top-level field",
+      "files": [
+        "not a document",
+        {
+          "filePath": 42
+        },
+        {
+          "filePath": "/workspace/src/../src/a.ts",
+          "legacyField": true,
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1",
+              "extraAnnotationField": {
+                "a": 1
+              }
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 1.5,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            },
+            {
+              "id": "ann-3",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "unknown-kind",
+              "title": "Title ann-3",
+              "body": "Body ann-3"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five",
+                "extraAnchorField": 1
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false,
+                  "extraCommentField": [1, 2]
+                }
+              ],
+              "extraThreadField": "kept"
+            },
+            {
+              "id": "diff-without-identity",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "bad-comment",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "c",
+                  "author": "robot"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/c.ts",
+          "annotations": "not an array"
+        }
+      ]
+    }
+  },
+  {
+    "label": "agent sees threads from existing data",
+    "outcome": {
+      "result": {
+        "ok": true,
+        "text": "1 open file/diff/diagram/plan comment thread(s):\n- user-thread [open] 1 comment(s): /workspace/src/a.ts repo//workspace/src/a.ts:5 (old) [Diff view; source uncommitted; snapshot snapshot-1; side old; repository repo; anchor matched]"
+      }
+    },
+    "events": [],
+    "state": {
+      "version": 1,
+      "extra": "top-level field",
+      "files": [
+        "not a document",
+        {
+          "filePath": 42
+        },
+        {
+          "filePath": "/workspace/src/../src/a.ts",
+          "legacyField": true,
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1",
+              "extraAnnotationField": {
+                "a": 1
+              }
+            },
+            {
+              "id": "ann-2",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 1.5,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-2",
+              "body": "Body ann-2"
+            },
+            {
+              "id": "ann-3",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "unknown-kind",
+              "title": "Title ann-3",
+              "body": "Body ann-3"
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five",
+                "extraAnchorField": 1
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false,
+                  "extraCommentField": [1, 2]
+                }
+              ],
+              "extraThreadField": "kept"
+            },
+            {
+              "id": "diff-without-identity",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false
+                }
+              ]
+            },
+            {
+              "id": "bad-comment",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five"
+              },
+              "comments": [
+                {
+                  "id": "c",
+                  "author": "robot"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/c.ts",
+          "annotations": "not an array"
+        }
+      ]
+    }
+  },
+  {
+    "label": "a write rewrites existing data in the current format",
+    "outcome": {
+      "result": {
+        "filePath": "/workspace/src/c.ts",
+        "annotations": [
+          {
+            "id": "ann-c",
+            "repoId": "repo",
+            "filePath": "/workspace/src/c.ts",
+            "side": "new",
+            "lineStart": 2,
+            "lineEnd": 3,
+            "kind": "context",
+            "title": "Title ann-c",
+            "body": "Body ann-c"
+          }
+        ],
+        "commentThreads": []
+      }
+    },
+    "events": [
+      {
+        "target": "main-window",
+        "channel": "file-annotations:updated",
+        "payload": {
+          "projectId": "p5",
+          "worktreeId": "w5",
+          "document": {
+            "filePath": "/workspace/src/c.ts",
+            "annotations": [
+              {
+                "id": "ann-c",
+                "repoId": "repo",
+                "filePath": "/workspace/src/c.ts",
+                "side": "new",
+                "lineStart": 2,
+                "lineEnd": 3,
+                "kind": "context",
+                "title": "Title ann-c",
+                "body": "Body ann-c"
+              }
+            ],
+            "commentThreads": []
+          }
+        }
+      }
+    ],
+    "state": {
+      "version": 1,
+      "files": [
+        {
+          "filePath": "/workspace/src/a.ts",
+          "annotations": [
+            {
+              "id": "ann-1",
+              "repoId": "repo",
+              "filePath": "/workspace/src/a.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-1",
+              "body": "Body ann-1",
+              "extraAnnotationField": {
+                "a": 1
+              }
+            }
+          ],
+          "commentThreads": [
+            {
+              "id": "user-thread",
+              "status": "open",
+              "createdAt": "2026-10-01T00:01:00.000Z",
+              "anchorState": "matched",
+              "anchor": {
+                "source": "code",
+                "view": "diff",
+                "diff": {
+                  "source": "uncommitted",
+                  "snapshotId": "snapshot-1"
+                },
+                "repoId": "repo",
+                "filePath": "/workspace/src/a.ts",
+                "side": "old",
+                "lineStart": 5,
+                "quote": "five",
+                "extraAnchorField": 1
+              },
+              "comments": [
+                {
+                  "id": "user-comment",
+                  "author": "user",
+                  "body": "Please rename this.",
+                  "createdAt": "2026-10-01T00:01:00.000Z",
+                  "staged": false,
+                  "extraCommentField": [1, 2]
+                }
+              ],
+              "extraThreadField": "kept"
+            }
+          ]
+        },
+        {
+          "filePath": "/workspace/src/c.ts",
+          "annotations": [
+            {
+              "id": "ann-c",
+              "repoId": "repo",
+              "filePath": "/workspace/src/c.ts",
+              "side": "new",
+              "lineStart": 2,
+              "lineEnd": 3,
+              "kind": "context",
+              "title": "Title ann-c",
+              "body": "Body ann-c"
+            }
+          ],
+          "commentThreads": []
+        }
+      ]
+    }
+  }
+]

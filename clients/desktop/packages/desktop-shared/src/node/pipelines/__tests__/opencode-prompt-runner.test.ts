@@ -1,9 +1,12 @@
+import { prepareOpenCodeInferenceRoute } from '../../opencode/inference-route';
+import { AI_CREDITS_PROXY_ERROR_MARKER } from '@canopy/protocol';
 import { brandEnvName } from '../../../brand/env';
 import { runRtkRewrite } from '../../rtk/rewrite';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runOpenCodeTurn } from '../../opencode/turn-driver';
+import type { OpenCodeCapabilityBinding } from '../../opencode/capability-snapshot';
 import {
   runOpenCodePipelinePrompt,
   type OpenCodePipelineCapabilities,
@@ -21,13 +24,25 @@ afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
 
+function capabilityBinding(sessionId: string): OpenCodeCapabilityBinding {
+  return {
+    version: 3,
+    sessionId,
+    digest: 'a'.repeat(64),
+    generation: 1,
+  };
+}
+
 async function run(
   answers: string[],
   missingUsage = false,
 ): Promise<Awaited<ReturnType<typeof runOpenCodePipelinePrompt>>> {
   let attempt = 0;
   jest.mocked(runOpenCodeTurn).mockImplementation(async (_request, host) => {
-    await host.onSession?.('fixture-session');
+    await host.onSession?.(
+      'fixture-session',
+      capabilityBinding('fixture-session'),
+    );
     const responseText = answers[attempt++];
     return {
       sessionId: 'fixture-session',
@@ -41,6 +56,7 @@ async function run(
             usage: {
               input_tokens: 10 * attempt,
               output_tokens: 2 * attempt,
+              reasoning_tokens: 0,
               cache_read_input_tokens: 3 * attempt,
               cache_creation_input_tokens: attempt,
             },
@@ -175,9 +191,16 @@ const successfulTurn = {
   usage: {
     input_tokens: 10,
     output_tokens: 2,
+    reasoning_tokens: 0,
     cache_read_input_tokens: 3,
     cache_creation_input_tokens: 1,
   },
+};
+const successfulUsageSnapshot = {
+  input_tokens: 10,
+  output_tokens: 2,
+  cache_read_input_tokens: 3,
+  cache_creation_input_tokens: 1,
 };
 function snapshots(transcript: string): unknown[] {
   return transcript
@@ -215,10 +238,13 @@ test.each(['metadata', 'cleanup'] as const)(
     );
     expect(result).toMatchObject({
       status: 'cancelled',
-      failure: { message: 'OpenCode pipeline turn was cancelled.' },
+      failure: { message: 'OpenCode workflow turn was cancelled.' },
     });
     expect(snapshots(result.transcript)).toEqual([
-      expect.objectContaining({ is_error: true, usage: successfulTurn.usage }),
+      expect.objectContaining({
+        is_error: true,
+        usage: successfulUsageSnapshot,
+      }),
     ]);
   },
 );
@@ -237,7 +263,10 @@ test('deadline expiring during runtime cleanup cannot return success', async () 
       failure: { message: 'Step timed out after 1 minute(s)' },
     });
     expect(snapshots(result.transcript)).toEqual([
-      expect.objectContaining({ is_error: true, usage: successfulTurn.usage }),
+      expect.objectContaining({
+        is_error: true,
+        usage: successfulUsageSnapshot,
+      }),
     ]);
   } finally {
     jest.useRealTimers();
@@ -267,7 +296,10 @@ test.each(['error', 'cancelled', 'missing-session'] as const)(
     expect(result.status).toBe('failure');
     expect(runOpenCodeTurn).toHaveBeenCalledTimes(2);
     expect(snapshots(result.transcript)).toEqual([
-      expect.objectContaining({ is_error: false, usage: successfulTurn.usage }),
+      expect.objectContaining({
+        is_error: false,
+        usage: successfulUsageSnapshot,
+      }),
       expect.objectContaining({
         is_error: true,
         usage: {
@@ -293,7 +325,7 @@ test('cleanup failure retains consumed usage and does not close the runtime twic
   });
   expect(close).toHaveBeenCalledTimes(1);
   expect(snapshots(result.transcript)).toEqual([
-    expect.objectContaining({ is_error: true, usage: successfulTurn.usage }),
+    expect.objectContaining({ is_error: true, usage: successfulUsageSnapshot }),
   ]);
 });
 
@@ -315,7 +347,7 @@ test('a host without capability projection rejects selected capabilities before 
   expect(runOpenCodeTurn).not.toHaveBeenCalled();
 });
 
-test('selected capabilities are delivered once and retained through schema retries', async () => {
+test('selected capabilities are recreated for each schema retry', async () => {
   const dispose = jest.fn();
   const prepareCapabilities = jest.fn(() =>
     Promise.resolve({
@@ -339,8 +371,8 @@ test('selected capabilities are delivered once and retained through schema retri
     runtimeHost,
   );
   expect(result.status).toBe('success');
-  expect(prepareCapabilities).toHaveBeenCalledTimes(1);
-  expect(dispose).toHaveBeenCalledTimes(1);
+  expect(prepareCapabilities).toHaveBeenCalledTimes(2);
+  expect(dispose).toHaveBeenCalledTimes(2);
   const turns = jest.mocked(runOpenCodeTurn).mock.calls.map(([turn]) => turn);
   expect(turns).toHaveLength(2);
   for (const turn of turns) {
@@ -378,6 +410,80 @@ test('cancellation disposes capabilities that finish preparing after the step st
   release?.();
   await Promise.resolve();
   expect(dispose).toHaveBeenCalledTimes(1);
+});
+
+test('a schema retry can call selected MCP tools after the previous inference lease closes', async () => {
+  let activeLease = new AbortController();
+  const dispose = jest.fn();
+  const runtimeHost: OpenCodePromptHost = {
+    ...host(),
+    open: (signal) => {
+      activeLease = new AbortController();
+      const lease = activeLease;
+      return Promise.resolve({
+        executable: process.execPath,
+        env: {},
+        signal: AbortSignal.any([signal, lease.signal]),
+        close: () => {
+          lease.abort();
+          return Promise.resolve();
+        },
+      });
+    },
+    prepareCapabilities: () => {
+      const lease = activeLease;
+      return Promise.resolve({
+        mcpSnapshot: [
+          {
+            name: 'selected',
+            identity: 'fixture',
+            tools: [{ name: 'files.read', inputSchema: { type: 'object' } }],
+          },
+        ],
+        authorizeMcpTool: () =>
+          Promise.resolve({
+            decision: lease.signal.aborted ? 'deny' : 'allow',
+          }),
+        dispose,
+      });
+    },
+  };
+  let attempt = 0;
+  jest.mocked(runOpenCodeTurn).mockImplementation(async (_turn, callbacks) => {
+    const decision = await callbacks.authorize({
+      sessionId: 'fixture-session',
+      toolCallId: `call-${attempt}`,
+      toolName: 'selected_files_read',
+      toolArgs: {},
+    });
+    if (decision.decision !== 'allow')
+      return {
+        ...successfulTurn,
+        isError: true,
+        message: 'Selected MCP route was disposed.',
+      };
+    return {
+      ...successfulTurn,
+      responseText: attempt++ === 0 ? 'invalid' : '{"answer":"ok"}',
+    };
+  });
+  const result = await runOpenCodePipelinePrompt(
+    request({
+      pluginSelections: selectedSkill,
+      permissionPreset: 'dangerous_all',
+      schema: { type: 'object' },
+    }),
+    runtimeHost,
+  );
+  expect(result).toMatchObject({
+    status: 'success',
+    structured: { answer: 'ok' },
+  });
+  expect(runOpenCodeTurn).toHaveBeenCalledTimes(2);
+  expect(jest.mocked(runOpenCodeTurn).mock.calls[1]?.[0].prompt).toContain(
+    'Response was not valid JSON.',
+  );
+  expect(dispose).toHaveBeenCalledTimes(2);
 });
 
 test.each(['none', 'read_only', 'plan', 'dangerous_all'] as const)(
@@ -448,6 +554,97 @@ test.each(['none', 'read_only', 'plan', 'dangerous_all'] as const)(
     }
   },
 );
+
+describe('explicit host inference', () => {
+  const prepared = prepareOpenCodeInferenceRoute({
+    bindingKey: 'b'.repeat(64),
+    protocol: 'openai-responses',
+    baseUrl: `http://127.0.0.1:43123/codex-gateway/${'a'.repeat(48)}`,
+    headers: { 'x-canopy-work-owner': 'personal' },
+    model: {
+      id: 'vendor/model',
+      contextWindow: 128000,
+      outputLimit: 4096,
+      supportsVision: false,
+    },
+  });
+  const terminalError = Object.assign(
+    new Error(
+      JSON.stringify({
+        error: {
+          canopy_proxy: AI_CREDITS_PROXY_ERROR_MARKER,
+          code: 'invalid_request',
+          message: 'The host stopped this request.',
+        },
+      }),
+    ),
+    { api_error_status: 502 },
+  );
+
+  test.each([false, true])(
+    'uses the trusted host route and closes it, failed=%s',
+    async (failed) => {
+      jest.mocked(runOpenCodeTurn).mockResolvedValue({
+        sessionId: 'managed-session',
+        responseText: 'Done',
+        isError: failed,
+        cancelled: false,
+        message: failed ? 'ECONNRESET' : '',
+      });
+      const close = jest.fn(() => Promise.resolve());
+      const failureError = jest.fn(() => terminalError);
+      const host: OpenCodePromptHost = {
+        open: (signal: AbortSignal) =>
+          Promise.resolve({
+            executable: process.execPath,
+            env: {},
+            signal,
+            close,
+            inferenceRoute: prepared.route,
+            rawModelId: prepared.rawModelId,
+            failureError,
+            accountScope: 'ai_credits' as const,
+          }),
+        authorize: () => Promise.resolve({ decision: 'deny' as const }),
+      };
+      const result = await runOpenCodePipelinePrompt(
+        {
+          cwd,
+          model: 'gateway-model',
+          prompt: 'Hello',
+          environment: {},
+          executionsDir: join(cwd, 'executions'),
+          executionId: 'managed',
+          jobId: 'job',
+          stepId: 'step',
+          attempt: 1,
+          permissionPreset: 'none',
+          totalTimeoutMs: 10000,
+        },
+        host,
+      );
+      expect(runOpenCodeTurn).toHaveBeenCalledTimes(1);
+      expect(jest.mocked(runOpenCodeTurn).mock.calls[0]?.[0]).toMatchObject({
+        inferenceRoute: prepared.route,
+        rawModelId: prepared.rawModelId,
+        model: 'gateway-model',
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe(failed ? 'failure' : 'success');
+      if (failed && result.status === 'failure') {
+        expect(result.failure?.message).toContain(
+          AI_CREDITS_PROXY_ERROR_MARKER,
+        );
+        expect(result.failure?.classification).toBeUndefined();
+        expect(failureError).toHaveBeenCalledTimes(1);
+        expect(failureError).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'ECONNRESET' }),
+          false,
+        );
+      }
+    },
+  );
+});
 
 it('applies RTK to approved v2 shell calls in pipeline prompts', async () => {
   jest.mocked(runRtkRewrite).mockResolvedValueOnce('rtk git status');

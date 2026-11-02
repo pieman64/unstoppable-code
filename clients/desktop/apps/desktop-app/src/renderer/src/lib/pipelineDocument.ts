@@ -32,6 +32,10 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   type AutomationAction,
 } from '@canopy/desktop-shared/types';
+import {
+  pipelineAutomationTaskId,
+  pipelineAutomationWorkspaceId,
+} from '@canopy/desktop-shared/lib/automation-pipeline-target';
 
 /**
  * Canonical YAML serialization for a pipeline document.
@@ -109,7 +113,7 @@ export type AutomationPipelineDocumentResult = PipelineDocumentResult & {
   worktree?: AutomationPipelineWorktree;
 };
 
-const DEFAULT_LOAD_ERROR = 'Failed to load pipeline';
+const DEFAULT_LOAD_ERROR = 'Failed to load workflow';
 
 /**
  * Build a renderer-shaped `PipelineData` from a `SharedPipelineDetail`
@@ -192,24 +196,37 @@ export async function loadAutomationPipelineDocument(
     );
     return info
       ? loadPipelineDocument(pipelineInfoToDocumentLocator(info))
-      : { error: 'Pipeline not found' };
+      : { error: 'Workflow not found' };
   }
-  if (action.pipelineSource === 'project') {
+  const workspaceId = pipelineAutomationWorkspaceId(action);
+  const taskId = pipelineAutomationTaskId(action);
+  // The checkout project pipelines are discovered in: the base worktree of a
+  // fresh-worktree run, or the existing task of a task run on a code project.
+  let checkoutWorktreeId = action.baseWorktreeId;
+  if (action.pipelineSource === 'project' && workspaceId) {
     let cwd: string | undefined;
-    if (action.baseWorktreeId) {
+    if (checkoutWorktreeId) {
       cwd = await window.api.getWorktreePath({
-        projectId: action.workspaceId,
-        worktreeId: action.baseWorktreeId,
+        projectId: workspaceId,
+        worktreeId: checkoutWorktreeId,
         ...(action.repoId ? { repoId: action.repoId } : {}),
       });
     } else {
       const project = (await window.api.loadProjects()).items.find(
-        (candidate) => candidate.id === action.workspaceId,
+        (candidate) => candidate.id === workspaceId,
       );
       if (project?.type === 'cowork') {
+        // A cowork task (Work Entry) runs at the cowork root too.
         cwd = await window.api.getWorktreePath({
           projectId: project.id,
           worktreeId: COWORK_HOME_WORKTREE_ID,
+        });
+      } else if (project && taskId) {
+        checkoutWorktreeId = taskId;
+        cwd = await window.api.getWorktreePath({
+          projectId: project.id,
+          worktreeId: taskId,
+          ...(action.repoId ? { repoId: action.repoId } : {}),
         });
       } else if (project?.type === 'single-repo') {
         cwd = project.repoPath;
@@ -218,6 +235,10 @@ export async function loadAutomationPipelineDocument(
           cwd = project.repos.find(
             (repo) => repo.id === action.repoId,
           )?.repoPath;
+        else if (action.target?.kind === 'project')
+          // A project-folder run uses the configured source folder, as main
+          // does, not the reference checkout it may be a linked worktree of.
+          cwd = project.sourceRepoPath;
         else
           cwd = (
             await window.api.getWorkspaceSettingsData({
@@ -227,7 +248,7 @@ export async function loadAutomationPipelineDocument(
       }
     }
     if (!cwd)
-      return { error: 'Pipeline cannot be read from this automation target' };
+      return { error: 'Workflow cannot be read from this automation target' };
     const discovered = await window.pipelines.discoverProject(cwd);
     if (!discovered.success) return { error: DEFAULT_LOAD_ERROR };
     const matches = discovered.data?.filter(
@@ -237,18 +258,18 @@ export async function loadAutomationPipelineDocument(
           candidate.filename === action.projectPipelineFilename),
     );
     const info = matches?.length === 1 ? matches[0] : undefined;
-    if (!info) return { error: 'Pipeline not found' };
+    if (!info) return { error: 'Workflow not found' };
     const result = await loadPipelineDocument(
       pipelineInfoToDocumentLocator(info, cwd),
     );
     return result.data
       ? {
           ...result,
-          ...(action.baseWorktreeId !== undefined
+          ...(checkoutWorktreeId !== undefined
             ? {
                 worktree: {
-                  projectId: action.workspaceId,
-                  worktreeId: action.baseWorktreeId,
+                  projectId: workspaceId,
+                  worktreeId: checkoutWorktreeId,
                   ...(action.repoId ? { repoId: action.repoId } : {}),
                 },
               }
@@ -256,7 +277,7 @@ export async function loadAutomationPipelineDocument(
         }
       : result;
   }
-  return { error: 'Pipeline cannot be read from this automation target' };
+  return { error: 'Workflow cannot be read from this automation target' };
 }
 
 /**
@@ -303,7 +324,7 @@ export async function loadPipelineShareTargetDocument(
       const info = matches?.length === 1 ? matches[0] : undefined;
       return info
         ? await loadPipelineDocument(pipelineInfoToDocumentLocator(info))
-        : { error: 'Pipeline not found' };
+        : { error: 'Workflow not found' };
     }
     const worktree: AutomationPipelineWorktree = {
       projectId: target.projectId,
@@ -311,7 +332,7 @@ export async function loadPipelineShareTargetDocument(
       ...(target.repoId ? { repoId: target.repoId } : {}),
     };
     const cwd = await window.api.getWorktreePath(worktree);
-    if (!cwd) return { error: "This pipeline's worktree is unavailable" };
+    if (!cwd) return { error: "This workflow's worktree is unavailable" };
     const discovered = await window.pipelines.discoverProject(cwd);
     const info = discovered.data?.find(
       (candidate) =>
@@ -321,7 +342,7 @@ export async function loadPipelineShareTargetDocument(
         projectPipelineRelativePath(cwd, candidate.filePath) ===
           target.relativePath,
     );
-    if (!info) return { error: 'Pipeline not found' };
+    if (!info) return { error: 'Workflow not found' };
     const result = await loadPipelineDocument(
       pipelineInfoToDocumentLocator(info, cwd),
     );
@@ -374,7 +395,7 @@ async function invokePipelineDocumentLoad(
   }
 
   if (pipelineId === null) {
-    return { error: 'Pipeline id is required to load this pipeline' };
+    return { error: 'Workflow id is required to load this workflow' };
   }
 
   const result =
@@ -411,7 +432,7 @@ export async function fetchPipelineDocument(
     // which resolves against the local stored catalog and fails with an
     // opaque "not found". Name the real problem instead — `handleRowDelete`
     // guards the same case.
-    return { error: 'This shared pipeline is missing its remote id' };
+    return { error: 'This shared workflow is missing its remote id' };
   }
   return loadPipelineDocument(pipelineInfoToDocumentLocator(info, cwd));
 }

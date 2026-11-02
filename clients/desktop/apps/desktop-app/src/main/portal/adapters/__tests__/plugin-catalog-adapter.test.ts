@@ -120,7 +120,7 @@ function command(
     payload,
     createdAt: '2026-08-27T00:00:00.000Z',
     expiresAt: null,
-  } as PortalCommandEnvelope;
+  };
 }
 
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
@@ -438,13 +438,10 @@ describe('plugin-catalog portal adapter', () => {
         PortalCommandEnvelope['type'],
       ]
     > = [
-      [
-        handlePortalPluginsListMarketplaces as never,
-        'portal.plugins.list_marketplaces',
-      ],
-      [handlePortalSkillsList as never, 'portal.skills.list'],
-      [handlePortalMcpListServers as never, 'portal.mcp.list_servers'],
-      [handlePortalCollectionsList as never, 'portal.collections.list'],
+      [handlePortalPluginsListMarketplaces, 'portal.plugins.list_marketplaces'],
+      [handlePortalSkillsList, 'portal.skills.list'],
+      [handlePortalMcpListServers, 'portal.mcp.list_servers'],
+      [handlePortalCollectionsList, 'portal.collections.list'],
     ];
     for (const [handler, type] of handlers) {
       const events: PortalEventEnvelope[] = [];

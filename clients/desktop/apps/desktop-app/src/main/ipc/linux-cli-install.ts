@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -122,7 +122,137 @@ async function directories(
   return true;
 }
 
-async function managedVersion(paths: InstallPaths): Promise<string | null> {
+// One layout projection for both copying and freshness checks: the .deb
+// splits tools/notices out of resources/cli; an extracted tarball is flat.
+async function distributionMembers(source: string): Promise<
+  Array<{
+    source: string;
+    name: string;
+  }>
+> {
+  await directories(source);
+  const entries = await fs.readdir(source);
+  if (entries.includes(RECEIPT))
+    throw new Error('Reserved CLI install receipt in source.');
+  const members = entries.map((name) => ({
+    source: path.join(source, name),
+    name,
+  }));
+  if (
+    path.basename(source) === 'cli' &&
+    path.basename(path.dirname(source)) === 'resources'
+  ) {
+    const companions = [...TOOLS, 'THIRD_PARTY_NOTICES.txt'];
+    const existing = await Promise.all(
+      companions.map((name) => statIfPresent(path.join(source, name))),
+    );
+    if (existing.some(Boolean) && !existing.every(Boolean)) {
+      throw new Error('Incomplete in-place CLI distribution.');
+    }
+    if (!existing.every(Boolean)) {
+      const resources = path.dirname(source);
+      const bin = path.join(resources, 'bin');
+      if (!(await directories(bin)))
+        throw new Error('Incomplete CLI distribution: companion tools.');
+      for (const name of companions)
+        members.push({
+          source: path.join(
+            name === 'THIRD_PARTY_NOTICES.txt' ? resources : bin,
+            name,
+          ),
+          name,
+        });
+    }
+  }
+  return members.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+}
+
+interface PackageSnapshot {
+  identity: string;
+  files: Array<{ source: string; name: string }>;
+}
+
+// One bounded cache per GUI process. Metadata invalidates it; the durable
+// receipt stores content identity, so inode/permission changes and restarts
+// cannot make an identical package appear outdated.
+let cachedPackageRevision: { identity: string; revision: string } | null = null;
+
+async function snapshotPackage(
+  executable: string,
+): Promise<PackageSnapshot | null> {
+  if (!(await statIfPresent(executable))) return null;
+  const identity = createHash('sha256').update(executable);
+  const files: PackageSnapshot['files'] = [];
+  async function visit(file: string, name: string): Promise<void> {
+    const stat = await fs.lstat(file, { bigint: true });
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) {
+      throw new Error(`Unsafe CLI distribution member: ${file}`);
+    }
+    if (stat.isFile()) {
+      identity.update(
+        JSON.stringify([
+          name,
+          String(stat.dev),
+          String(stat.ino),
+          String(stat.mode),
+          String(stat.size),
+          String(stat.mtimeNs),
+          String(stat.ctimeNs),
+        ]),
+      );
+      files.push({ source: file, name });
+    } else {
+      for (const entry of (await fs.readdir(file)).sort()) {
+        await visit(path.join(file, entry), path.join(name, entry));
+      }
+    }
+  }
+  for (const member of await distributionMembers(path.dirname(executable))) {
+    await visit(member.source, member.name);
+  }
+  await requirePayload(path.dirname(executable));
+  return { identity: identity.digest('hex'), files };
+}
+
+async function packageRevision(bundledCliPath: string): Promise<string | null> {
+  const executable = absolutePath(bundledCliPath, 'Bundled CLI');
+  try {
+    const snapshot = await snapshotPackage(executable);
+    if (!snapshot) return null;
+    if (cachedPackageRevision?.identity === snapshot.identity) {
+      return cachedPackageRevision.revision;
+    }
+    const revision = createHash('sha256');
+    for (const file of snapshot.files) {
+      const input = await fs.open(
+        file.source,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        if (!(await input.stat()).isFile())
+          throw new Error(`Unsafe CLI distribution member: ${file.source}`);
+        const hash = createHash('sha256');
+        await pipeline(input.createReadStream(), hash);
+        revision.update(JSON.stringify([file.name, hash.digest('hex')]));
+      } finally {
+        await input.close();
+      }
+    }
+    if ((await snapshotPackage(executable))?.identity !== snapshot.identity) {
+      throw new Error('CLI package changed during installation. Try again.');
+    }
+    const result = revision.digest('hex');
+    cachedPackageRevision = { identity: snapshot.identity, revision: result };
+    return result;
+  } catch (error) {
+    if (hasCode(error, 'ENOENT')) return null;
+    throw error;
+  }
+}
+
+async function managedVersion(paths: InstallPaths): Promise<{
+  packageRevision: string | null;
+} | null> {
   if (!(await directories(paths.root, false, true))) return null;
   const pointer = await statIfPresent(paths.current);
   if (!pointer) return null;
@@ -156,10 +286,16 @@ async function managedVersion(paths: InstallPaths): Promise<string | null> {
   ) {
     throw new Error(`Invalid CLI install receipt: ${version}`);
   }
-  return version;
+  const revision: unknown = Reflect.get(value, 'packageRevision');
+  return {
+    packageRevision: typeof revision === 'string' ? revision : null,
+  };
 }
 
-async function status(options: InstallOptions): Promise<CliPathStatus> {
+async function status(
+  options: InstallOptions,
+  comparePackage = false,
+): Promise<CliPathStatus> {
   const paths = installPaths(options);
   await directories(paths.bin);
   await directories(paths.root, false, true);
@@ -173,13 +309,27 @@ async function status(options: InstallOptions): Promise<CliPathStatus> {
   if (!stat) return { ...base, state: 'missing' };
   if (!stat.isSymbolicLink()) return { ...base, state: 'regular-file' };
   const target = await fs.readlink(paths.launcher);
-  const owned =
-    path.resolve(paths.bin, target) === paths.target &&
-    (await managedVersion(paths)) !== null;
+  const managed =
+    path.resolve(paths.bin, target) === paths.target
+      ? await managedVersion(paths)
+      : null;
+  let revision: string | null = null;
+  if (managed && comparePackage) {
+    try {
+      revision = await packageRevision(options.bundledCliPath);
+    } catch {
+      // A damaged or unavailable GUI package cannot invalidate the independent
+      // installed CLI or prevent its removal. Explicit install stays strict.
+    }
+  }
   return {
     ...base,
     symlinkTarget: target,
-    state: owned ? 'correct-symlink' : 'foreign-symlink',
+    state: !managed
+      ? 'foreign-symlink'
+      : revision !== null && revision !== managed.packageRevision
+        ? 'outdated'
+        : 'correct-symlink',
   };
 }
 
@@ -228,8 +378,16 @@ async function copyTree(source: string, destination: string): Promise<void> {
 }
 
 async function requirePayload(directory: string): Promise<void> {
+  const members = new Map(
+    (await distributionMembers(directory)).map(({ name, source }) => [
+      name,
+      source,
+    ]),
+  );
   for (const name of [BRAND.cliName, ...TOOLS, 'THIRD_PARTY_NOTICES.txt']) {
-    const stat = await fs.lstat(path.join(directory, name));
+    const source = members.get(name);
+    if (!source) throw new Error(`Incomplete CLI distribution: ${name}`);
+    const stat = await fs.lstat(source);
     if (
       !stat.isFile() ||
       stat.size === 0 ||
@@ -286,7 +444,7 @@ export function createLinuxCliInstaller(options: InstallOptions): {
   uninstall: () => Promise<CliInstallResult>;
 } {
   return {
-    getStatus: (): Promise<CliPathStatus> => status(options),
+    getStatus: (): Promise<CliPathStatus> => status(options, true),
     install: async (): Promise<CliInstallResult> => {
       let staging: string | null = null;
       let temporaryPointer: string | null = null;
@@ -311,51 +469,24 @@ export function createLinuxCliInstaller(options: InstallOptions): {
         const source = path.dirname(
           absolutePath(options.bundledCliPath, 'Bundled CLI'),
         );
-        await directories(source);
-        for (const entry of await fs.readdir(source)) {
-          if (entry === RECEIPT)
-            throw new Error('Reserved CLI install receipt in source.');
-          await copyTree(path.join(source, entry), path.join(staging, entry));
-        }
-        // Electron stages the SEA/modules/resources under resources/cli, but
-        // tools under resources/bin and notices at the resources root. Compose
-        // a standalone tree before publication: the installed CLI must resolve
-        // tools beside itself rather than depend on a GUI installation.
-        if (
-          path.basename(source) === 'cli' &&
-          path.basename(path.dirname(source)) === 'resources'
-        ) {
-          const resources = path.dirname(source);
-          const members = [...TOOLS, 'THIRD_PARTY_NOTICES.txt'];
-          const stagedPayload = staging;
-          const existing = await Promise.all(
-            members.map((member) =>
-              statIfPresent(path.join(stagedPayload, member)),
-            ),
-          );
-          // Accept a complete tree or the split package, never a mixture of
-          // potentially different companion versions from both source roots.
-          if (existing.some(Boolean) && !existing.every(Boolean)) {
-            throw new Error('Incomplete in-place CLI distribution.');
-          }
-          if (!existing.every(Boolean)) {
-            const bin = path.join(resources, 'bin');
-            if (!(await directories(bin))) {
-              throw new Error('Incomplete CLI distribution: companion tools.');
-            }
-            for (const tool of TOOLS) {
-              await copyTree(path.join(bin, tool), path.join(staging, tool));
-            }
-            await copyTree(
-              path.join(resources, 'THIRD_PARTY_NOTICES.txt'),
-              path.join(staging, 'THIRD_PARTY_NOTICES.txt'),
-            );
-          }
+        const revision = await packageRevision(options.bundledCliPath);
+        if (revision === null) throw new Error('Bundled CLI is missing.');
+        for (const member of await distributionMembers(source)) {
+          await copyTree(member.source, path.join(staging, member.name));
         }
         await requirePayload(staging);
+        if ((await packageRevision(options.bundledCliPath)) !== revision) {
+          throw new Error(
+            'CLI package changed during installation. Try again.',
+          );
+        }
         await fs.writeFile(
           path.join(staging, RECEIPT),
-          JSON.stringify({ version: 1, cliName: BRAND.cliName }),
+          JSON.stringify({
+            version: 1,
+            cliName: BRAND.cliName,
+            packageRevision: revision,
+          }),
           { flag: 'wx', mode: 0o600 },
         );
         const id = randomUUID();

@@ -391,10 +391,25 @@ describe('TeamFeedSection member filter privacy', () => {
         </TestSettingsHost>,
       );
     });
-    const select = container.querySelector(
+    const trigger = container.querySelector<HTMLButtonElement>(
       '[data-testid="team-feed-member-filter"]',
     );
-    expect(select?.className).toContain('ph-no-capture');
-    expect(select?.textContent).toContain('Ada Lovelace');
+    if (trigger === null) throw new Error('no member filter');
+    act(() => trigger.click());
+    const option = document.querySelector<HTMLElement>(
+      `[data-testid="team-feed-member-filter-option-${MEMBER.id}"]`,
+    );
+    if (option === null) throw new Error('no member option');
+    const name = Array.from(option.querySelectorAll('span')).find(
+      (span) => span.textContent === 'Ada Lovelace',
+    );
+    expect(name?.className).toContain('ph-no-capture');
+    act(() => option.click());
+    // The picked name shows on the trigger, blocked, and stays out of its
+    // accessible name, which session replay records as written.
+    expect(trigger.querySelector('.ph-no-capture')?.textContent).toBe(
+      'Ada Lovelace',
+    );
+    expect(trigger.getAttribute('aria-label')).toBe('Member');
   });
 });

@@ -306,6 +306,7 @@ export function organizationBootstrap(org) {
     projectsEnabled: true,
     canViewUsageStats,
     freeAccess: false,
+    githubConnected: org.githubConnection?.connected ?? false,
     lapse: lapsed ? clone(org.lapsed) : null,
   };
 }
@@ -883,6 +884,7 @@ const ACCOUNT_PAGES = new Set([
   'security',
   'billing',
   'labs',
+  'appearance',
 ]);
 
 function isRouteId(value) {
@@ -962,6 +964,7 @@ export const HOSTED_SETTINGS_PAGE_DATA_ROUTES = Object.freeze([
   { scope: 'account', page: 'billing' },
   { scope: 'account', page: 'billing', invoiceId: HOSTED_SETTINGS_INVOICE_ID },
   { scope: 'account', page: 'labs' },
+  { scope: 'account', page: 'appearance' },
   { scope: 'organizations' },
   ...[
     { page: 'feed' },
@@ -1048,6 +1051,9 @@ function accountPageData(state, kind, route) {
       return { data: {} };
     // Desktop opens Labs in its own section; the kind still loads like web's.
     case 'account.labs':
+      return { data: {} };
+    // Desktop keeps Chat detail under Display; the kind still loads like web's.
+    case 'account.appearance':
       return { data: {} };
     case 'account.integrations':
       // The web page guard 404s while the server's Integrations flag is off.

@@ -216,6 +216,7 @@ describe('worktree archive boundary (CAN-3811)', () => {
     });
 
     expect(mockedArchiveSingle).toHaveBeenCalledWith({
+      sourceAdmission: 'required',
       w5Commit: { operation: 'core.worktree.archive' },
       workspaceId: 'ws-1',
       worktreeId: 'wt-1',

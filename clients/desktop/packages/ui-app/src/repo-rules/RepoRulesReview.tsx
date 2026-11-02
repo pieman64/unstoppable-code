@@ -18,8 +18,10 @@ import type {
   RepoRulesScanResponse,
   RepoRulesStatus,
 } from '@canopy/protocol/repo-rules';
+import type { CanopyClient } from '@canopy/app-core';
 import { useCanopyClient } from '@canopy/app-state';
 import {
+  AdvancedDisclosure,
   Button,
   ErrorBanner,
   LoadingSpinner,
@@ -31,17 +33,51 @@ import {
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
 import { CapabilityGate } from '../capability/CapabilityGate';
+import { ruleCountLabel } from './repoRulesCopy';
 
 /**
  * Review flow for using a project's Cursor rules in chats (CAN-2053): choose a
- * workspace when the entry point has none, explain what is read, scan, review
- * each rule, and save the workspace policy. Hosts supply the flow through the
+ * workspace when the entry point has none, then scan it and review each rule.
+ * The scan starts as soon as a workspace is known (CAN-4675); it is read-only,
+ * leaving repository files and the saved policy unchanged. Rules turn on only
+ * through an explicit `repoRules.apply`. Hosts supply the flow through the
  * `repoRules.*` client operations and the `repoRulesImport` capability; a host
  * without it renders the unsupported state and makes no client calls.
  */
 export interface RepoRulesReviewWorkspace {
   readonly id: string;
   readonly name: string;
+}
+
+/**
+ * An offered project's latest decision (CAN-4980): a save that left rules on
+ * or off, or an explicit Skip.
+ */
+export type RepoRulesProjectDecision = 'on' | 'off' | 'skipped';
+
+/** Whether a multi-project offer keeps choosing or closes after a decision. */
+export type RepoRulesOfferOutcome = 'continue' | 'close';
+
+/**
+ * A multi-project offer (CAN-4980). The host owns the members, their
+ * decisions, and what resolving them completes; the review lists only the
+ * offered projects, returns to the chooser after each save, and lets the user
+ * skip an undecided one.
+ */
+export interface RepoRulesReviewOffer {
+  /** The one authoritative decision for each offered project. */
+  readonly decisions: Readonly<
+    Partial<Record<string, RepoRulesProjectDecision>>
+  >;
+  /**
+   * Records a decision and says whether projects remain. Called for a save
+   * before `onApplied`, and for Skip; opening, cancelling, and failures are
+   * not decisions.
+   */
+  readonly onDecide: (
+    workspaceId: string,
+    decision: RepoRulesProjectDecision,
+  ) => RepoRulesOfferOutcome;
 }
 
 export interface RepoRulesReviewProps {
@@ -55,19 +91,30 @@ export interface RepoRulesReviewProps {
    */
   readonly initialWorkspaceId?: string;
   readonly onClose: () => void;
-  /** Called after a successful save, before `onClose`. */
+  /** Runs the multi-project offer flow instead of closing after a save. */
+  readonly offer?: RepoRulesReviewOffer;
+  /**
+   * Called after a successful save, before `onClose` or, in an offer with
+   * projects left, before returning to the chooser.
+   */
   readonly onApplied?: (result: {
     readonly workspaceId: string;
     readonly status: RepoRulesStatus;
+    /** Selected rules submitted by this save; zero when rules are off. */
+    readonly ruleCount: number;
   }) => void;
 }
 
 type Phase =
   | { readonly kind: 'choose' }
-  | { readonly kind: 'consent' }
   | { readonly kind: 'scanning' }
   | { readonly kind: 'scan-error'; readonly message: string }
   | { readonly kind: 'review'; readonly scan: RepoRulesScanResponse };
+
+type ScanState =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'ready'; readonly scan: RepoRulesScanResponse }
+  | { readonly kind: 'error'; readonly message: string };
 
 type StatusState =
   | { readonly kind: 'loading' }
@@ -127,8 +174,16 @@ const DIAGNOSTIC_MESSAGES: Record<
   unavailable: "This project's checkout is unavailable.",
 };
 
-const SNAPSHOT_NOTE =
-  'Changes apply to new chats. Chats already running keep their inline instructions and rule index. Files read through rule entries or @file references remain live.';
+const DECISION_LABELS: Record<RepoRulesProjectDecision, string> = {
+  on: 'Rules on',
+  off: 'Rules off',
+  skipped: 'Skipped',
+};
+
+const NEW_CHATS_NOTE =
+  'Applies to new chats. Open chats keep their current rules.';
+
+const SCAN_ERROR_FALLBACK = "Couldn't scan this project's rules.";
 
 function activationKind(rule: RepoRuleProposal): RepoRuleKind {
   return rule.kind === 'auto' && rule.flags.includes('unsupported-glob')
@@ -142,10 +197,6 @@ function errorMessage(error: unknown, fallback: string): string {
 
 function needsRescan(message: string): boolean {
   return /scan again/i.test(message);
-}
-
-function ruleCountLabel(count: number): string {
-  return count === 1 ? '1 rule' : `${count} rules`;
 }
 
 /** Unsupported state shown where the host can't read local repositories. */
@@ -181,20 +232,36 @@ export function RepoRulesReview(props: RepoRulesReviewProps): JSX.Element {
   );
 }
 
+/**
+ * The automatic scan and saved-status request for one workspace session. It
+ * outlives a Strict Mode effect replay so the replayed effect subscribes to
+ * the same requests instead of issuing duplicates.
+ */
+interface AutoScanRequest {
+  readonly client: CanopyClient;
+  readonly workspaceId: string;
+  readonly session: number;
+  readonly attempt: number;
+  readonly scan: Promise<RepoRulesScanResponse>;
+  readonly status: Promise<RepoRulesStatus>;
+}
+
 function RepoRulesReviewFlow({
   appName,
   workspaces,
   initialWorkspaceId,
   onClose,
+  offer,
   onApplied,
 }: RepoRulesReviewProps): JSX.Element {
   const client = useCanopyClient();
   const [workspaceId, setWorkspaceId] = useState<string | null>(
     initialWorkspaceId ?? null,
   );
-  const [phase, setPhase] = useState<Phase>(
-    initialWorkspaceId ? { kind: 'consent' } : { kind: 'choose' },
-  );
+  // Bumps on every project choice, so returning to the same project still
+  // starts a fresh scan and ignores responses from the earlier visit.
+  const [session, setSession] = useState(0);
+  const [scanState, setScanState] = useState<ScanState>({ kind: 'loading' });
   const [statusState, setStatusState] = useState<StatusState>({
     kind: 'loading',
   });
@@ -204,11 +271,26 @@ function RepoRulesReviewFlow({
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [previews, setPreviews] = useState<Record<string, PreviewState>>({});
+  // The offer decision just made, announced on the chooser.
+  const [decided, setDecided] = useState<{
+    readonly workspaceId: string;
+    readonly decision: RepoRulesProjectDecision;
+  } | null>(null);
   // Bumps on workspace change and unmount so late responses are ignored.
   const generation = useRef(0);
-  const scanGeneration = useRef(0);
+  const applyingRef = useRef(false);
+  const decidingRef = useRef(false);
+  const callbacks = useRef({ offer, onApplied, onClose });
+  useEffect(() => {
+    callbacks.current = { offer, onApplied, onClose };
+    decidingRef.current = false;
+  }, [offer, onApplied, onClose]);
+  // Bumps on every scan attempt so only the newest one is shown.
+  const scanAttempt = useRef(0);
+  const autoScan = useRef<AutoScanRequest | null>(null);
   const previewRequests = useRef<Record<string, number>>({});
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const nextSkipRef = useRef<HTMLButtonElement | null>(null);
 
   const workspace = workspaces.find((entry) => entry.id === workspaceId);
   const workspaceName = workspace?.name ?? 'this project';
@@ -221,42 +303,110 @@ function RepoRulesReviewFlow({
   }, []);
 
   useEffect(() => {
-    if (!workspaceId) return;
-    const current = ++generation.current;
-    setStatusState({ kind: 'loading' });
-    client
-      .query('repoRules.status', { workspaceId })
-      .then((status) => {
-        if (generation.current === current)
-          setStatusState({ kind: 'ready', status });
-      })
-      .catch(() => {
-        if (generation.current === current) setStatusState({ kind: 'error' });
-      });
-  }, [client, workspaceId]);
+    if (!workspaceId) {
+      autoScan.current = null;
+      return;
+    }
+    let request = autoScan.current;
+    if (
+      !request ||
+      request.client !== client ||
+      request.workspaceId !== workspaceId ||
+      request.session !== session
+    ) {
+      scanAttempt.current += 1;
+      request = {
+        client,
+        workspaceId,
+        session,
+        attempt: scanAttempt.current,
+        scan: client.query('repoRules.scan', { workspaceId }),
+        status: client.query('repoRules.status', { workspaceId }),
+      };
+      autoScan.current = request;
+    }
+    const { attempt } = request;
+    let active = true;
+    request.status.then(
+      (status) => {
+        if (active) setStatusState({ kind: 'ready', status });
+      },
+      () => {
+        if (active) setStatusState({ kind: 'error' });
+      },
+    );
+    request.scan.then(
+      (result) => {
+        if (active && scanAttempt.current === attempt)
+          setScanState({ kind: 'ready', scan: result });
+      },
+      (error: unknown) => {
+        if (active && scanAttempt.current === attempt)
+          setScanState({
+            kind: 'error',
+            message: errorMessage(error, SCAN_ERROR_FALLBACK),
+          });
+      },
+    );
+    return (): void => {
+      active = false;
+    };
+  }, [client, workspaceId, session]);
+
+  // A finished scan waits for the saved status so the primary action never
+  // flips from "Turn on" to "Save"; a failed scan shows right away.
+  const phase: Phase = !workspaceId
+    ? { kind: 'choose' }
+    : scanState.kind === 'error'
+      ? { kind: 'scan-error', message: scanState.message }
+      : scanState.kind === 'ready' && statusState.kind !== 'loading'
+        ? { kind: 'review', scan: scanState.scan }
+        : { kind: 'scanning' };
 
   useEffect(() => {
     headingRef.current?.focus();
   }, [phase.kind]);
+  useEffect(() => {
+    if (phase.kind === 'choose' && decided?.decision === 'skipped')
+      nextSkipRef.current?.focus();
+  }, [phase.kind, decided]);
 
-  const scan = useCallback((): void => {
+  const resetWorkspace = useCallback((nextWorkspaceId: string | null): void => {
+    generation.current += 1;
+    applyingRef.current = false;
+    setApplying(false);
+    scanAttempt.current += 1;
+    setWorkspaceId(nextWorkspaceId);
+    setSession((value) => value + 1);
+    setScanState({ kind: 'loading' });
+    setStatusState({ kind: 'loading' });
+    setOverrides({});
+    setPreviews({});
+    setApplyError(null);
+  }, []);
+
+  useEffect(() => {
+    if (offer && workspaceId && !workspace) resetWorkspace(null);
+  }, [offer, workspaceId, workspace, resetWorkspace]);
+
+  const rescan = useCallback((): void => {
     if (!workspaceId) return;
-    scanGeneration.current += 1;
+    const attempt = ++scanAttempt.current;
     const current = generation.current;
     setApplyError(null);
     setPreviews({});
-    setPhase({ kind: 'scanning' });
+    setScanState({ kind: 'loading' });
     client
       .query('repoRules.scan', { workspaceId })
       .then((result) => {
-        if (generation.current === current)
-          setPhase({ kind: 'review', scan: result });
+        if (generation.current === current && scanAttempt.current === attempt)
+          setScanState({ kind: 'ready', scan: result });
       })
       .catch((error: unknown) => {
-        if (generation.current === current)
-          setPhase({
-            kind: 'scan-error',
-            message: errorMessage(error, "Couldn't scan this project's rules."),
+        if (generation.current === current && scanAttempt.current === attempt)
+          setScanState({
+            kind: 'error',
+            message: errorMessage(error, SCAN_ERROR_FALLBACK),
           });
       });
   }, [client, workspaceId]);
@@ -266,10 +416,18 @@ function RepoRulesReviewFlow({
       | { readonly enabled: false }
       | { readonly enabled: true; readonly scan: RepoRulesScanResponse },
   ): void => {
-    if (!workspaceId || applying) return;
+    if (!workspaceId || applyingRef.current || decidingRef.current) return;
     const current = generation.current;
+    applyingRef.current = true;
     setApplying(true);
     setApplyError(null);
+    // The result reports what this request submitted, not the selection or
+    // workspace when the response arrives.
+    const selectedRuleCount = request.enabled
+      ? request.scan.proposals.filter(
+          (rule) => overrides[rule.id] ?? rule.selected,
+        ).length
+      : 0;
     const args = request.enabled
       ? {
           workspaceId,
@@ -284,17 +442,48 @@ function RepoRulesReviewFlow({
       .command('repoRules.apply', args)
       .then((status) => {
         if (generation.current !== current) return;
+        applyingRef.current = false;
         setApplying(false);
-        onApplied?.({ workspaceId, status });
-        onClose();
+        const decision = status.enabled ? 'on' : 'off';
+        const latest = callbacks.current;
+        const outcome = latest.offer?.onDecide(workspaceId, decision);
+        latest.onApplied?.({
+          workspaceId,
+          status,
+          ruleCount: status.enabled ? selectedRuleCount : 0,
+        });
+        if (outcome !== 'continue') {
+          latest.onClose();
+          return;
+        }
+        setDecided({ workspaceId, decision });
+        resetWorkspace(null);
       })
       .catch((error: unknown) => {
         if (generation.current !== current) return;
+        applyingRef.current = false;
         setApplying(false);
         setApplyError(
           errorMessage(error, "Couldn't save your Cursor rule settings."),
         );
       });
+  };
+
+  const skip = (skippedId: string): void => {
+    if (
+      !offer ||
+      applyingRef.current ||
+      decidingRef.current ||
+      offer.decisions[skippedId] !== undefined
+    )
+      return;
+    decidingRef.current = true;
+    if (offer.onDecide(skippedId, 'skipped') === 'close') {
+      onClose();
+      return;
+    }
+    setDecided({ workspaceId: skippedId, decision: 'skipped' });
+    // Focus moves to the next remaining Skip after its new row renders.
   };
 
   const togglePreview = (ruleId: string, scanId: string): void => {
@@ -310,14 +499,14 @@ function RepoRulesReviewFlow({
       return;
     }
     const current = generation.current;
-    const currentScan = scanGeneration.current;
+    const currentScan = scanAttempt.current;
     setPreviews((prev) => ({ ...prev, [ruleId]: { kind: 'loading' } }));
     client
       .query('repoRules.preview', { workspaceId, scanId, ruleId })
       .then(({ body }) => {
         if (
           generation.current !== current ||
-          scanGeneration.current !== currentScan ||
+          scanAttempt.current !== currentScan ||
           previewRequests.current[ruleId] !== previewRequest
         )
           return;
@@ -328,7 +517,7 @@ function RepoRulesReviewFlow({
       .catch((error: unknown) => {
         if (
           generation.current !== current ||
-          scanGeneration.current !== currentScan ||
+          scanAttempt.current !== currentScan ||
           previewRequests.current[ruleId] !== previewRequest
         )
           return;
@@ -366,82 +555,35 @@ function RepoRulesReviewFlow({
   let announcement: ReactNode = '';
   let body: ReactNode;
   switch (phase.kind) {
-    case 'choose':
+    case 'choose': {
+      const decidedName = decided
+        ? workspaces.find((entry) => entry.id === decided.workspaceId)?.name
+        : undefined;
+      if (decided && decidedName !== undefined)
+        announcement = (
+          <>
+            {decided.decision === 'skipped'
+              ? 'Skipped'
+              : `${DECISION_LABELS[decided.decision]} for`}{' '}
+            <span className={REPLAY_MASK_CLASS}>{decidedName}</span>
+          </>
+        );
       body = (
         <ChooseWorkspace
           headingRef={headingRef}
+          nextSkipRef={nextSkipRef}
           workspaces={workspaces}
-          onChoose={(id): void => {
-            setWorkspaceId(id);
-            setOverrides({});
-            setPhase({ kind: 'consent' });
+          offer={offer}
+          onChoose={(nextWorkspaceId): void => {
+            setDecided(null);
+            resetWorkspace(nextWorkspaceId);
           }}
+          onSkip={skip}
           onClose={onClose}
         />
       );
       break;
-    case 'consent':
-      body = (
-        <section className="space-y-4" data-testid="repo-rules-consent">
-          <h3
-            ref={headingRef}
-            tabIndex={-1}
-            className="text-m font-medium fg-primary outline-none"
-          >
-            Use Cursor rules from{' '}
-            <span className={REPLAY_MASK_CLASS}>{workspaceName}</span>
-          </h3>
-          <div className="space-y-2 text-s fg-secondary">
-            <p>{appName} reads these files in each repository:</p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>
-                <code className="font-mono">.cursorrules</code> at the
-                repository root
-              </li>
-              <li>
-                <code className="font-mono">.mdc</code> files in{' '}
-                <code className="font-mono">.cursor/rules</code> folders,
-                including nested ones
-              </li>
-              <li>
-                Root AGENTS.md and CLAUDE.md, to find rules that repeat them
-              </li>
-            </ul>
-            <p>
-              It checks whether files a rule mentions exist, without opening
-              them. Nothing in the repository changes.
-            </p>
-            <p>
-              Once rules are on, each new chat reads the current rules, so edits
-              and new files in these folders apply without another review. Rules
-              in new nested folders need another scan. AGENTS.md and CLAUDE.md
-              win when they conflict. Cursor reads these rules itself and
-              doesn&apos;t get a copy.
-            </p>
-          </div>
-          <StatusSummary
-            statusState={statusState}
-            diagnostic={diagnostic}
-            disabledCount={status?.disabledRuleIds.length ?? 0}
-          />
-          {applyError ? <ErrorBanner className="" error={applyError} /> : null}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            {turnOffButton}
-            <Button
-              variant="primary"
-              disabled={applying}
-              onClick={scan}
-              data-testid="repo-rules-scan"
-            >
-              Scan rules
-            </Button>
-          </div>
-        </section>
-      );
-      break;
+    }
     case 'scanning':
       announcement = (
         <>
@@ -450,18 +592,22 @@ function RepoRulesReviewFlow({
         </>
       );
       body = (
-        <section
-          className="flex items-center gap-3 py-6"
-          data-testid="repo-rules-scanning"
-        >
-          <LoadingSpinner tone="tertiary" decorative />
-          <h3
-            ref={headingRef}
-            tabIndex={-1}
-            className="text-s fg-secondary outline-none"
-          >
-            Scanning Cursor rules…
-          </h3>
+        <section className="space-y-4" data-testid="repo-rules-scanning">
+          <div className="flex items-center gap-3 py-6">
+            <LoadingSpinner tone="tertiary" decorative />
+            <h3
+              ref={headingRef}
+              tabIndex={-1}
+              className="text-s fg-secondary outline-none"
+            >
+              Scanning Cursor rules…
+            </h3>
+          </div>
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+          </div>
         </section>
       );
       break;
@@ -483,7 +629,7 @@ function RepoRulesReviewFlow({
               Cancel
             </Button>
             {turnOffButton}
-            <Button variant="primary" onClick={scan}>
+            <Button variant="primary" onClick={rescan}>
               Try again
             </Button>
           </div>
@@ -500,7 +646,16 @@ function RepoRulesReviewFlow({
         <ReviewStep
           headingRef={headingRef}
           scan={result}
+          appName={appName}
           workspaceName={workspaceName}
+          status={
+            <StatusSummary
+              statusState={statusState}
+              diagnostic={diagnostic}
+              disabledCount={status?.disabledRuleIds.length ?? 0}
+            />
+          }
+          statusDiagnostic={diagnostic}
           overrides={overrides}
           previews={previews}
           onToggle={(ruleId, next): void =>
@@ -517,7 +672,7 @@ function RepoRulesReviewFlow({
                   blockMessageFromReplay
                 />
               ) : null}
-              <p className="text-xs fg-tertiary">{SNAPSHOT_NOTE}</p>
+              <p className="text-xs fg-tertiary">{NEW_CHATS_NOTE}</p>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button variant="ghost" disabled={applying} onClick={onClose}>
                   Cancel
@@ -525,7 +680,7 @@ function RepoRulesReviewFlow({
                 {applyError && needsRescan(applyError) ? (
                   <Button
                     disabled={applying}
-                    onClick={scan}
+                    onClick={rescan}
                     data-testid="repo-rules-rescan"
                   >
                     Scan again
@@ -569,16 +724,7 @@ function RepoRulesReviewFlow({
           variant="ghost"
           disabled={applying}
           data-testid="repo-rules-change-project"
-          onClick={(): void => {
-            generation.current += 1;
-            scanGeneration.current += 1;
-            setWorkspaceId(null);
-            setOverrides({});
-            setPreviews({});
-            setApplyError(null);
-            setStatusState({ kind: 'loading' });
-            setPhase({ kind: 'choose' });
-          }}
+          onClick={(): void => resetWorkspace(null)}
         >
           Choose another project
         </Button>
@@ -589,15 +735,28 @@ function RepoRulesReviewFlow({
 
 function ChooseWorkspace({
   headingRef,
+  nextSkipRef,
   workspaces,
+  offer,
   onChoose,
+  onSkip,
   onClose,
 }: {
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
+  readonly nextSkipRef: RefObject<HTMLButtonElement | null>;
   readonly workspaces: readonly RepoRulesReviewWorkspace[];
+  readonly offer: RepoRulesReviewOffer | undefined;
   readonly onChoose: (workspaceId: string) => void;
+  readonly onSkip: (workspaceId: string) => void;
   readonly onClose: () => void;
 }): JSX.Element {
+  const statusIdPrefix = useId();
+  const nextUndecidedId = workspaces.find(
+    (entry) => offer?.decisions[entry.id] === undefined,
+  )?.id;
+  const anyDecided = workspaces.some(
+    (entry) => offer?.decisions[entry.id] !== undefined,
+  );
   return (
     <section className="space-y-4" data-testid="repo-rules-choose">
       <h3
@@ -609,7 +768,9 @@ function ChooseWorkspace({
       </h3>
       {workspaces.length === 0 ? (
         <p className="text-s fg-secondary">
-          Add a code project first, then review its Cursor rules.
+          {offer
+            ? 'These projects are no longer available.'
+            : 'Add a code project first, then review its Cursor rules.'}
         </p>
       ) : (
         <>
@@ -618,26 +779,59 @@ function ChooseWorkspace({
             worktrees.
           </p>
           <ul className="space-y-1">
-            {workspaces.map((entry) => (
-              <li key={entry.id}>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start"
-                  onClick={(): void => onChoose(entry.id)}
-                  data-testid={`repo-rules-choose-${entry.id}`}
-                >
-                  <span className={`truncate ${REPLAY_MASK_CLASS}`}>
-                    {entry.name}
-                  </span>
-                </Button>
-              </li>
-            ))}
+            {workspaces.map((entry) => {
+              const decision = offer?.decisions[entry.id];
+              const statusId = `${statusIdPrefix}-${entry.id}`;
+              return (
+                <li key={entry.id} className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    className="min-w-0 flex-1 justify-start"
+                    onClick={(): void => onChoose(entry.id)}
+                    {...(decision ? { 'aria-describedby': statusId } : {})}
+                    data-testid={`repo-rules-choose-${entry.id}`}
+                  >
+                    <span className={`truncate ${REPLAY_MASK_CLASS}`}>
+                      {entry.name}
+                    </span>
+                  </Button>
+                  {decision ? (
+                    <span
+                      id={statusId}
+                      className="shrink-0 text-xs fg-secondary"
+                      data-testid={`repo-rules-decision-${entry.id}`}
+                    >
+                      {DECISION_LABELS[decision]}
+                    </span>
+                  ) : offer ? (
+                    <Button
+                      size="sm"
+                      ref={
+                        entry.id === nextUndecidedId ? nextSkipRef : undefined
+                      }
+                      variant="ghost"
+                      className="shrink-0"
+                      onClick={(): void => onSkip(entry.id)}
+                      data-testid={`repo-rules-skip-${entry.id}`}
+                    >
+                      Skip
+                      <span className={`sr-only ${REPLAY_MASK_CLASS}`}>
+                        {' '}
+                        {entry.name}
+                      </span>
+                    </Button>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         </>
       )}
       <div className="flex justify-end">
         <Button variant="ghost" onClick={onClose}>
-          Cancel
+          {offer && (anyDecided || workspaces.length === 0)
+            ? 'Close'
+            : 'Cancel'}
         </Button>
       </div>
     </section>
@@ -657,7 +851,7 @@ function StatusSummary({
   if (statusState.kind === 'error') {
     return (
       <Notice intent="attention" data-testid="repo-rules-status-error">
-        Couldn&apos;t load the saved setting. You can still scan.
+        Couldn&apos;t load the saved setting.
       </Notice>
     );
   }
@@ -675,7 +869,7 @@ function StatusSummary({
       {disabledCount > 0
         ? `, with ${ruleCountLabel(disabledCount)} turned off.`
         : '.'}{' '}
-      {SNAPSHOT_NOTE}
+      {NEW_CHATS_NOTE}
     </Notice>
   );
 }
@@ -683,7 +877,10 @@ function StatusSummary({
 function ReviewStep({
   headingRef,
   scan,
+  appName,
   workspaceName,
+  status,
+  statusDiagnostic,
   overrides,
   previews,
   onToggle,
@@ -693,7 +890,12 @@ function ReviewStep({
 }: {
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly scan: RepoRulesScanResponse;
+  readonly appName: string;
   readonly workspaceName: string;
+  /** Saved-status summary, shown under the reassurance. */
+  readonly status: ReactNode;
+  /** Saved-status diagnostic message, so a matching scan one shows once. */
+  readonly statusDiagnostic: string | null;
   readonly overrides: Readonly<Record<string, boolean>>;
   readonly previews: Readonly<Record<string, PreviewState>>;
   readonly onToggle: (ruleId: string, next: boolean) => void;
@@ -703,9 +905,11 @@ function ReviewStep({
 }): JSX.Element {
   const repoIds = [...new Set(scan.proposals.map((rule) => rule.repoId))];
   const multiRepo = repoIds.length > 1;
-  const diagnostic = scan.diagnostic
+  const scanDiagnostic = scan.diagnostic
     ? DIAGNOSTIC_MESSAGES[scan.diagnostic]
     : null;
+  const diagnostic =
+    scanDiagnostic === statusDiagnostic ? null : scanDiagnostic;
   return (
     <section className="space-y-4" data-testid="repo-rules-review-step">
       <div className="space-y-1">
@@ -723,13 +927,14 @@ function ReviewStep({
             </>
           )}
         </h3>
-        <p className="text-s fg-secondary">
-          {scan.worktreeId
-            ? 'Scanned the selected checkout.'
-            : "Scanned the project's repositories."}{' '}
-          Other branches can have different rules.
+        <p className="text-s fg-secondary" data-testid="repo-rules-reassurance">
+          {appName} reads <code className="font-mono">.cursor/rules</code> and{' '}
+          <code className="font-mono">.cursorrules</code> in{' '}
+          <span className={REPLAY_MASK_CLASS}>{workspaceName}</span>. Nothing in
+          the repository changes.
         </p>
       </div>
+      {status}
       {diagnostic ? <Notice intent="attention">{diagnostic}</Notice> : null}
       {scan.proposals.length === 0 ? (
         <p className="text-s fg-secondary" data-testid="repo-rules-empty">
@@ -788,6 +993,29 @@ function ReviewStep({
           </ul>
         </div>
       ) : null}
+      <AdvancedDisclosure
+        label="How rules work"
+        dataTestId="repo-rules-how-rules-work"
+      >
+        <ul className="list-disc space-y-1 pl-5 text-xs fg-secondary">
+          <li>
+            Each new chat reads the current rules, so edits apply without
+            another review. Rules in a new nested folder need another scan.
+          </li>
+          <li>AGENTS.md and CLAUDE.md win when they conflict.</li>
+          <li>
+            Other branches can have different rules.{' '}
+            {scan.worktreeId
+              ? 'This review scanned the selected checkout.'
+              : "This review scanned the project's repositories."}
+          </li>
+          <li>Cursor reads these rules itself and doesn&apos;t get a copy.</li>
+          <li>
+            Files a rule points to are checked for existence, not opened. Files
+            read through rules or @file references stay live in chats.
+          </li>
+        </ul>
+      </AdvancedDisclosure>
       {footer}
     </section>
   );

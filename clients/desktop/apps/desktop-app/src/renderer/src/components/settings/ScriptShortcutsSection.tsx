@@ -8,7 +8,7 @@ import {
 import { formatAcceleratorForDisplay } from '@canopy/protocol/shortcuts';
 import type { ScriptAction } from '@canopy/protocol/script-actions';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { ShortcutKeys } from '@/components/shared/ShortcutKeys';
+import { Kbd } from '@canopy/ui-shared/components';
 import { rendererShortcutPlatform } from '@/lib/globalFocusShortcut';
 import { useChatStore } from '@/stores/chatStore';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
@@ -65,7 +65,8 @@ export function ScriptShortcutsSection(): JSX.Element | null {
               }
               control={
                 <span className={reason === null ? undefined : 'opacity-60'}>
-                  <ShortcutKeys
+                  <Kbd
+                    data-testid="shortcut-keys"
                     shortcut={formatAcceleratorForDisplay(
                       action.shortcut,
                       platform,

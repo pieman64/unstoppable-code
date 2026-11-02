@@ -22,6 +22,7 @@ import {
   type AppAdvisorSettingsSaveResponse,
   type AppAdvisorUiStateEnvelope,
   type AppAdvisorWindowOpenRequest,
+  type AppAdvisorWindowBatchRemovalDialog,
   type AppAdvisorWindowState,
   type AppAdvisorWindowUiState,
   type OpenTurnFileRequest,
@@ -56,6 +57,7 @@ import {
 } from '@canopy/desktop-shared/remote-control/surfaces';
 import { registerIpcHandler } from './register';
 import { setLatestAppAdvisorWindowUiState } from '../app-advisor/window-ui-state';
+import { isRecord } from '../lib/type-guards';
 
 export { getLatestAppAdvisorWindowUiState } from '../app-advisor/window-ui-state';
 
@@ -558,6 +560,32 @@ function serializeSettingsSaveRequest(
   };
 }
 
+/**
+ * The popout nav's open batch removal dialog, reduced to its mode, count,
+ * and phase; `null` when closed and `undefined` when not reported. Throws on
+ * a malformed one.
+ */
+function serializeBatchRemovalDialog(
+  value: unknown,
+): AppAdvisorWindowBatchRemovalDialog | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!isRecord(value)) {
+    throw new Error('Invalid App Advisor window UI state');
+  }
+  const { open, mode, phase, count } = value;
+  if (
+    open !== true ||
+    (mode !== 'archive' && mode !== 'delete') ||
+    (phase !== 'confirm' && phase !== 'running' && phase !== 'results') ||
+    typeof count !== 'number' ||
+    !Number.isSafeInteger(count) ||
+    count < 0
+  ) {
+    throw new Error('Invalid App Advisor window UI state');
+  }
+  return { open: true, mode, count, phase };
+}
+
 function serializeWindowUiState(
   state: AppAdvisorWindowUiState,
 ): AppAdvisorWindowUiState {
@@ -596,6 +624,9 @@ function serializeWindowUiState(
   ) {
     throw new Error('Invalid App Advisor window UI state');
   }
+  const batchRemovalDialog = serializeBatchRemovalDialog(
+    state.batchRemovalDialog,
+  );
   if (state.activeWorkEntryId !== null) {
     validateId(state.activeWorkEntryId, 'activeWorkEntryId');
   }
@@ -630,6 +661,7 @@ function serializeWindowUiState(
     ...(state.hasUnsentDraft === undefined
       ? {}
       : { hasUnsentDraft: state.hasUnsentDraft }),
+    ...(batchRemovalDialog === undefined ? {} : { batchRemovalDialog }),
   };
 }
 
@@ -649,7 +681,7 @@ function timeoutResponse(requestId: string): AppAdvisorRendererToolResponse {
     uiState: latestUiState ?? undefined,
     error: {
       code: 'timeout',
-      message: 'Timed out waiting for the App Advisor renderer bridge.',
+      message: 'Timed out waiting for the Orchestrator renderer bridge.',
       retryable: true,
     },
   };
@@ -665,7 +697,7 @@ function surfaceUnavailableResponse(
     error: {
       code: 'surface_unavailable',
       message: targetsAppAdvisorSurface(request)
-        ? 'The App Advisor window is unavailable.'
+        ? 'The Orchestrator window is unavailable.'
         : `The main ${BRAND.displayName} window renderer bridge is unavailable.`,
       retryable: true,
     },
@@ -1060,7 +1092,7 @@ export function completeAppAdvisorAskUserRequest(
           uiState: latestUiState ?? undefined,
           error: {
             code: 'execution_failed',
-            message: 'App Advisor question was dismissed without an answer.',
+            message: 'Orchestrator question was dismissed without an answer.',
           },
         },
   );

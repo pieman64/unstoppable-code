@@ -777,7 +777,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           'scope',
           'SidebarItemGroupScope',
           true,
-          'Target project: {workspaceLocalId:string}, or {appAdvisor:true} for Advisor entries.',
+          'Target project: {workspaceLocalId:string}, or {appAdvisor:true} for Orchestrator entries.',
         ),
         field(
           'itemId',
@@ -831,7 +831,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           'scope',
           'SidebarItemGroupScope',
           true,
-          'Target project: {workspaceLocalId:string}, or {appAdvisor:true} for Advisor entries.',
+          'Target project: {workspaceLocalId:string}, or {appAdvisor:true} for Orchestrator entries.',
         ),
         field(
           'groupId',
@@ -864,7 +864,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'sidebar.item_groups.list',
       category: 'sidebar',
       summary:
-        'List sidebar groups with id, name, color, order and membership in a local project or Advisor context.',
+        'List sidebar groups with id, name, color, order and membership in a local project or Orchestrator context.',
       fields: [
         field(
           'scope',
@@ -877,7 +877,14 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         type: 'sidebar.item_groups.list',
         scope: { appAdvisor: true },
       },
-      keywords: ['sidebar', 'group', 'advisor', 'order', 'membership'],
+      keywords: [
+        'sidebar',
+        'group',
+        'advisor',
+        'orchestrator',
+        'order',
+        'membership',
+      ],
       notes: [
         'Uses the same canonical service as the desktop UI. Read-only scopes reject writes. Recency mode changes membership without changing manual order. Worktree and Cowork agents can list and update groups in their current project; set_item assigns their current entry. Managed delegates cannot manage groups.',
       ],
@@ -918,7 +925,14 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         scope: { appAdvisor: true },
         itemId: 'entry-one',
       },
-      keywords: ['sidebar', 'group', 'advisor', 'order', 'membership'],
+      keywords: [
+        'sidebar',
+        'group',
+        'advisor',
+        'orchestrator',
+        'order',
+        'membership',
+      ],
       notes: [
         'Uses the same canonical service as the desktop UI. Read-only scopes reject writes. Recency mode changes membership without changing manual order. Worktree and Cowork agents can list and update groups in their current project; set_item assigns their current entry. Managed delegates cannot manage groups.',
       ],
@@ -963,7 +977,14 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         groupId: 'grp-one',
         collapsed: true,
       },
-      keywords: ['sidebar', 'group', 'advisor', 'order', 'membership'],
+      keywords: [
+        'sidebar',
+        'group',
+        'advisor',
+        'orchestrator',
+        'order',
+        'membership',
+      ],
       notes: [
         'Uses the same canonical service as the desktop UI. Read-only scopes reject writes. Recency mode changes membership without changing manual order. Worktree and Cowork agents can list and update groups in their current project; set_item assigns their current entry. Managed delegates cannot manage groups.',
       ],
@@ -1006,7 +1027,14 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         itemId: 'entry-one',
         groupId: null,
       },
-      keywords: ['sidebar', 'group', 'advisor', 'order', 'membership'],
+      keywords: [
+        'sidebar',
+        'group',
+        'advisor',
+        'orchestrator',
+        'order',
+        'membership',
+      ],
       notes: [
         'Uses the same canonical service as the desktop UI. Read-only scopes reject writes. Recency mode changes membership without changing manual order. Worktree and Cowork agents can list and update groups in their current project; set_item assigns their current entry. Managed delegates cannot manage groups.',
       ],
@@ -1042,7 +1070,14 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         groupId: 'grp-one',
         before: 'entry-two',
       },
-      keywords: ['sidebar', 'group', 'advisor', 'order', 'membership'],
+      keywords: [
+        'sidebar',
+        'group',
+        'advisor',
+        'orchestrator',
+        'order',
+        'membership',
+      ],
       notes: [
         'Uses the same canonical service as the desktop UI. Read-only scopes reject writes. Recency mode changes membership without changing manual order. Worktree and Cowork agents can list and update groups in their current project; set_item assigns their current entry. Managed delegates cannot manage groups.',
       ],
@@ -1065,7 +1100,14 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         scope: { appAdvisor: true },
         groupId: 'grp-one',
       },
-      keywords: ['sidebar', 'group', 'advisor', 'order', 'membership'],
+      keywords: [
+        'sidebar',
+        'group',
+        'advisor',
+        'orchestrator',
+        'order',
+        'membership',
+      ],
       notes: [
         'Uses the same canonical service as the desktop UI. Read-only scopes reject writes. Recency mode changes membership without changing manual order. Worktree and Cowork agents can list and update groups in their current project; set_item assigns their current entry. Managed delegates cannot manage groups.',
       ],
@@ -1835,13 +1877,13 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'settings.set_daily_credit_drip',
       category: 'settings',
       summary:
-        'Turn the daily free AI Credits on or off for the connected cloud account.',
+        'Turn free daily AI Credits on or off for the connected cloud account.',
       fields: [
         field(
           'enabled',
           'boolean',
           true,
-          'True to opt in to the daily free AI Credits; false to stop them.',
+          'True to opt in to free daily AI Credits; false to stop them.',
         ),
       ],
       example: { type: 'settings.set_daily_credit_drip', enabled: true },
@@ -1853,6 +1895,9 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'free daily credits',
         'turn on free daily credits',
         'daily free AI Credits',
+        'free daily AI Credits',
+        'turn on free daily AI Credits',
+        'stop free daily AI Credits',
         'free AI Credits',
         'stop daily credits',
         'daily drip',
@@ -1861,9 +1906,9 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'billing',
       ],
       notes: [
-        'Saves the same cloud account preference as the Daily free AI Credits toggle in Settings and the Home onboarding card. Answering either way marks the choice as decided.',
+        'Saves the same cloud account preference as the Free daily AI Credits toggle in Settings and the Home onboarding card. Answering either way marks the choice as decided.',
         "Turning it on grants today's free credits right away when they have not been granted yet; the result reports the amount as granted.",
-        "Requires a connected cloud account. settings.dailyCreditDrip is reported only while the legacy Accounts settings section is open. With hosted account settings on, that section has no drip toggle: open Billing/AI Credits with settings.open and { scope: 'account', page: 'billing' }.",
+        "Requires a connected cloud account. settings.dailyCreditDrip is reported while the Accounts control is open, or the Providers control for a guest with hosted settings on. Signed-in accounts with hosted settings use Billing/AI Credits: open it with settings.open and { scope: 'account', page: 'billing' }.",
       ],
     },
     {
@@ -3147,8 +3192,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'plugins.open_management',
       category: 'plugins',
-      summary:
-        'Open the "Your plugins" management view at a section: installed plugins, skills, MCP servers, Collections, or marketplaces.',
+      summary: `Open ${CUSTOMIZE_LABEL} at the destination for a section: installed plugins, skills, MCP servers, Collections, or marketplace sources.`,
       fields: [
         field(
           'section',
@@ -4207,7 +4251,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       notes: [
         'Supply exactly one of path or remoteUrl. Read-only: it adds, moves and changes nothing.',
         "Returns { kind: 'organization', organizationId, organizationName, projectId, projectName, repositoryName } when exactly one organization project you can use holds the repository, otherwise { kind: 'none' }. No match, several candidates, a folder that is not a top-level checkout with an origin, a missing capability, any error and a 3 second time box all answer none; treat none as 'nothing to say', never as an error.",
-        "Call it before workspace.open_add_dialog, or after navigation.open_import_projects, when the member names a repository or folder. On organization, tell the member that <repositoryName> belongs to <organizationName> and offer workspace.add_org_project with the returned projectId as the way to add it there. workspace.add_org_project only works while that organization is selected: if the member accepts, first call workspace_context.switch with { context: { kind: 'organization', organizationId } } from the result. If workspaceContext in the UI state already selects that organization, skip the hint and the switch: the member is already adding there. The member may still add it to Personal; the Advisor never moves a project itself.",
+        "Call it before workspace.open_add_dialog, or after navigation.open_import_projects, when the member names a repository or folder. On organization, tell the member that <repositoryName> belongs to <organizationName> and offer workspace.add_org_project with the returned projectId as the way to add it there. workspace.add_org_project only works while that organization is selected: if the member accepts, first call workspace_context.switch with { context: { kind: 'organization', organizationId } } from the result. If workspaceContext in the UI state already selects that organization, skip the hint and the switch: the member is already adding there. The member may still add it to Personal; Orchestrator never moves a project itself.",
         'The result carries no filesystem paths and names only organizations the member belongs to.',
       ],
     },
@@ -4510,7 +4554,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'worktree.archive',
       category: 'worktree',
-      summary: `Open the removal confirmation dialog for a ${WORKTREE_LABEL} entry (worktree). Deletion retention is always on: mode "delete" (default) opens "Delete worktree?", which keeps the removed worktree's chats, Git state, and pipeline history for the project's retention window; mode "archive" opens "Archive worktree?", which keeps them until the user deletes the archive. The dialog has no mode switch, so pass the mode the user asked for. The user confirms by choosing Delete local or Preserve local, which also decides whether the local Git branch is deleted; the dialog names the requested choice.`,
+      summary: `Open the removal confirmation dialog for a ${WORKTREE_LABEL} entry (worktree). Deletion retention is always on: mode "delete" (default) opens "Delete worktree?", which keeps the removed worktree's chats, Git state, and pipeline history for the project's retention window; mode "archive" opens "Archive worktree?", which keeps them until the user deletes the archive. The dialog has no mode switch, so pass the mode the user asked for. Its Keep the local branch switch starts at the requested branch handling and the dialog names that request; the user can flip it, then confirms with Delete worktree or Archive worktree.`,
       fields: [
         PROJECT_FIELD,
         WORKTREE_FIELD,
@@ -5005,7 +5049,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'Only temporary multi-repo projects can be split; the temporary project disappears once its last worktree is gone.',
         'Responds after the fast phase with planned dispositions; checkout moves, removals, and source teardown continue in the background (split destinations appear as setting-up worktrees until ready).',
         'Blocked while the worktree has active agent chats or running/paused pipelines.',
-        'Permanent deletion cannot be authorized through App Advisor action arguments. When the effective preview would delete repository or root data, ask the user to review and confirm the operation in the Split project dialog.',
+        'Permanent deletion cannot be authorized through Orchestrator action arguments. When the effective preview would delete repository or root data, ask the user to review and confirm the operation in the Split project dialog.',
       ],
     },
     {
@@ -6103,7 +6147,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'worktree-chat.list_background_processes',
       category: 'worktree-chat',
       summary:
-        'List background processes known for a worktree chat, including task ids, status, and whether they can be stopped.',
+        "List a worktree chat's background work: background processes and the provider's background agents, workflows and tasks, with task ids, status, and whether they can be stopped.",
       fields: [
         PROJECT_FIELD,
         WORKTREE_FIELD,
@@ -6118,15 +6162,22 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: [
         'chat',
         'background process',
+        'background agent',
+        'background task',
         'task',
         'agent activity',
         'stop',
+      ],
+      notes: [
+        'Managed delegations are not listed: use delegation.stop or delegation.stop_all for those.',
+        'Background agents and tasks without a process card have no description.',
       ],
     },
     {
       type: 'worktree-chat.stop_background_process',
       category: 'worktree-chat',
-      summary: 'Stop one live background process by its provider task id.',
+      summary:
+        "Stop one live background process, agent, workflow or task by its provider task id, as its row's Stop in the composer's background drawer does.",
       fields: [
         PROJECT_FIELD,
         WORKTREE_FIELD,
@@ -6145,7 +6196,20 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         chatId: 'chat-1',
         taskId: 'task-1',
       },
-      keywords: ['chat', 'background process', 'task', 'stop', 'cancel'],
+      keywords: [
+        'chat',
+        'background process',
+        'background agent',
+        'background task',
+        'task',
+        'stop',
+        'cancel',
+      ],
+      notes: [
+        'Ends only that task, never the parent turn or other background work.',
+        'Returns the outcome: stopped (the task ends once the provider confirms), already-finished, or session-ended.',
+        'Codex chats refuse: their tasks have no per-task Stop yet.',
+      ],
     },
     {
       type: 'delegation.tree',
@@ -6796,7 +6860,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'worktree-chat.set_plan_mode',
       category: 'worktree-chat',
-      summary: `Enable or disable planning mode on a ${WORKTREE_LABEL} entry (worktree) ${CHAT_UNIT_LABEL} tab. App Advisor's own ${CHAT_UNIT_LABEL_PLURAL} do not support planning mode.`,
+      summary: `Enable or disable planning mode on a ${WORKTREE_LABEL} entry (worktree) ${CHAT_UNIT_LABEL} tab. Orchestrator's own ${CHAT_UNIT_LABEL_PLURAL} do not support planning mode.`,
       fields: [
         field(
           'projectId',
@@ -7868,7 +7932,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'advisor-chat.create_entry',
       hidden: true,
       category: 'advisor-chat',
-      summary: `Start a new App Advisor Work Entry whose only ${CHAT_UNIT_LABEL} sends text as its first message, and return its workEntryId and chatId. The new ${CHAT_UNIT_LABEL} uses the App Advisor model, thinking level, and plugins. The visible selection does not change.`,
+      summary: `Start a new Orchestrator Work Entry whose only ${CHAT_UNIT_LABEL} sends text as its first message, and return its workEntryId and chatId. The new ${CHAT_UNIT_LABEL} uses the Orchestrator model, thinking level, and plugins. The visible selection does not change.`,
       fields: [
         field(
           'title',
@@ -7886,6 +7950,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: [
         'app advisor',
         'advisor',
+        'orchestrator',
         'new advisor entry',
         'new entry',
         'work entry',
@@ -7896,20 +7961,20 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
       notes: [
         'Legacy adapter for bots.create_task with botId app_advisor and text mapped to initialMessage; prefer the canonical action. Preserves the workEntryId and chatId result.',
-        'Use only when the user asks to start separate App Advisor work. This does not copy the current conversation; use StartForkedAgent for that.',
+        'Use only when the user asks to start separate Orchestrator work. This does not copy the current conversation; use StartForkedAgent for that.',
       ],
     },
     {
       type: 'advisor-chat.create_chat',
       hidden: true,
       category: 'advisor-chat',
-      summary: `Start another App Advisor ${CHAT_UNIT_LABEL} in an existing Work Entry, send text as its first message, and return its chatId. It reuses the Work Entry's empty ${CHAT_UNIT_LABEL} when there is one. The visible selection does not change.`,
+      summary: `Start another Orchestrator ${CHAT_UNIT_LABEL} in an existing Work Entry, send text as its first message, and return its chatId. It reuses the Work Entry's empty ${CHAT_UNIT_LABEL} when there is one. The visible selection does not change.`,
       fields: [
         field(
           'workEntryId',
           'string',
           true,
-          'App Advisor Work Entry id, such as the current entry from get_current_ui_state.',
+          'Orchestrator Work Entry id, such as the current entry from get_current_ui_state.',
         ),
         field('text', 'string', true, 'First message to send.'),
       ],
@@ -7921,6 +7986,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: [
         'app advisor',
         'advisor',
+        'orchestrator',
         'start advisor chat',
         'new chat',
         'create chat',
@@ -7937,9 +8003,9 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'advisor-chat.send_message',
       hidden: true,
       category: 'advisor-chat',
-      summary: `Send a user message to another existing App Advisor ${CHAT_UNIT_LABEL}, such as one started by advisor-chat.create_chat or StartForkedAgent. The ${CHAT_UNIT_LABEL} keeps its own model and settings. The visible selection does not change.`,
+      summary: `Send a user message to another existing Orchestrator ${CHAT_UNIT_LABEL}, such as one started by advisor-chat.create_chat or StartForkedAgent. The ${CHAT_UNIT_LABEL} keeps its own model and settings. The visible selection does not change.`,
       fields: [
-        field('chatId', 'string', true, 'App Advisor chat id.'),
+        field('chatId', 'string', true, 'Orchestrator chat id.'),
         field(
           'workEntryId',
           'string',
@@ -7957,6 +8023,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: [
         'app advisor',
         'advisor',
+        'orchestrator',
         'send',
         'message',
         'send to advisor chat',
@@ -9191,70 +9258,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: ['pipeline', 'get', 'details', 'inputs', 'yaml', 'definition'],
     },
     {
-      type: 'pipeline.run',
-      category: 'pipeline',
-      summary: `Run a pipeline for a ${WORKTREE_LABEL} entry (worktree).`,
-      fields: [
-        field('pipelineId', 'string', true, 'Pipeline id to run.'),
-        PROJECT_FIELD,
-        WORKTREE_FIELD,
-        field(
-          'inputs',
-          'Record<string,string>',
-          false,
-          'Pipeline input values.',
-        ),
-        field(
-          'runMode',
-          "'dispatch' | 'plan_ready' | 'task_ready'",
-          false,
-          'Run mode/event to use. Defaults to dispatch.',
-        ),
-        field(
-          'planPath',
-          'string',
-          false,
-          'Plan file path required for plan_ready and optional for task_ready.',
-        ),
-        field(
-          'taskPath',
-          'string',
-          false,
-          'Task file path required for task_ready.',
-        ),
-        field('planId', 'string', false, 'Optional tracked plan id.'),
-        field(
-          'repoId',
-          'string',
-          false,
-          'Optional repo id for source-backed project execution cwd.',
-        ),
-        field(
-          'watchers',
-          'AppAdvisorInlineWatcherSetup[]',
-          false,
-          'Optional watcher entries to arm for the new pipeline execution immediately after it starts. Do not include target or destination ids.',
-        ),
-      ],
-      example: {
-        type: 'pipeline.run',
-        pipelineId: 'build',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-        inputs: { target: 'test' },
-        watchers: [{ terminalStatuses: ['success', 'failure', 'cancelled'] }],
-      },
-      keywords: [
-        'pipeline',
-        'run',
-        'execute',
-        'start',
-        'dispatch',
-        'plan_ready',
-        'task_ready',
-      ],
-    },
-    {
       type: 'pipeline.open_run',
       category: 'pipeline',
       summary:
@@ -9270,7 +9273,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'pipeline.debug_run',
       category: 'pipeline',
       summary:
-        'Open App Advisor and start a debug chat for a failed pipeline run.',
+        'Open Orchestrator and start a debug chat for a failed pipeline run.',
       fields: [EXECUTION_FIELD],
       example: { type: 'pipeline.debug_run', executionId: 'execution-1' },
       keywords: ['pipeline', 'debug', 'failed run', 'failure'],
@@ -9758,7 +9761,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           'worktreeId',
           'string',
           false,
-          'Worktree id, or the Cowork or App Advisor Work Entry id.',
+          'Worktree id, or the Cowork or Orchestrator Work Entry id.',
         ),
         field('entryId', 'string', false, 'Entry to select in the panel.'),
       ],
@@ -9781,7 +9784,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'show',
       ],
       notes: [
-        'Opens the selected work when the scope is omitted; another Cowork or App Advisor Work Entry must be selected first.',
+        'Opens the selected work when the scope is omitted; another Cowork or Orchestrator Work Entry must be selected first.',
       ],
       requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key,
     },
@@ -10348,16 +10351,16 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'app_advisor.open',
       category: 'app-advisor',
-      summary: 'Open the App Advisor dialog.',
+      summary: 'Open the Orchestrator dialog.',
       fields: [],
       example: { type: 'app_advisor.open' },
-      keywords: ['advisor', 'assistant', 'open'],
+      keywords: ['advisor', 'orchestrator', 'assistant', 'open'],
     },
     {
       type: 'app_advisor.update_settings',
       category: 'app-advisor',
       summary:
-        'Update App Advisor deletion retention and Auto Delete settings.',
+        'Update Orchestrator deletion retention and Auto Delete settings.',
       fields: [
         field(
           'archiveRetentionDays',
@@ -10379,6 +10382,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       },
       keywords: [
         'advisor',
+        'orchestrator',
         'assistant',
         'settings',
         'auto delete',
@@ -10388,23 +10392,23 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'app_advisor.close',
       category: 'app-advisor',
-      summary: 'Close the App Advisor dialog.',
+      summary: 'Close the Orchestrator dialog.',
       fields: [],
       example: { type: 'app_advisor.close' },
-      keywords: ['advisor', 'assistant', 'close'],
+      keywords: ['advisor', 'orchestrator', 'assistant', 'close'],
     },
     {
       type: 'app_advisor.toggle',
       category: 'app-advisor',
-      summary: 'Toggle the App Advisor dialog.',
+      summary: 'Toggle the Orchestrator dialog.',
       fields: [],
       example: { type: 'app_advisor.toggle' },
-      keywords: ['advisor', 'assistant', 'toggle'],
+      keywords: ['advisor', 'orchestrator', 'assistant', 'toggle'],
     },
     {
       type: 'watcher.list',
       category: 'watchers',
-      summary: `List all visible global watchers across App Advisor and ${WORKTREE_LABEL} entry (worktree) ${CHAT_UNIT_LABEL} destinations.`,
+      summary: `List all visible global watchers across Orchestrator and ${WORKTREE_LABEL} entry (worktree) ${CHAT_UNIT_LABEL} destinations.`,
       fields: [],
       example: { type: 'watcher.list' },
       keywords: ['watcher', 'watchers', 'list', 'global', 'automations'],
@@ -10558,7 +10562,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'automation.create',
       category: 'automations',
       summary:
-        'Create a new triggered activity with a scheduled cron trigger or one-time trigger that dispatches an App Advisor prompt or a project-targeted action: a chat prompt (code projects provision an automation-owned worktree; cowork projects start a cowork chat) or a pipeline run (worktree-scoped on code projects, directory-scoped at the cowork root on cowork projects).',
+        'Create a new triggered activity with a scheduled cron trigger or one-time trigger that dispatches an Orchestrator prompt or a project-targeted action: a chat prompt (code projects provision an automation-owned worktree; cowork projects start a cowork chat) or a pipeline run (worktree-scoped on code projects, directory-scoped at the cowork root on cowork projects).',
       fields: [
         field(
           'input',
@@ -10592,7 +10596,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         {
           type: 'automation.create',
           input: {
-            name: 'One-time App Advisor reminder',
+            name: 'One-time Orchestrator reminder',
             schedule: {
               kind: 'one_time',
               runAt: '2099-06-01T15:00:00.000Z',
@@ -10693,6 +10697,23 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
             },
           },
         },
+        {
+          type: 'automation.create',
+          input: {
+            name: 'Weekly digest with no project',
+            schedule: {
+              kind: 'cron',
+              expression: '0 9 * * 1',
+              timezone: 'local',
+            },
+            action: {
+              type: 'worktree_pipeline',
+              target: { kind: 'global' },
+              pipelineId: 'user-weekly-digest',
+              pipelineSource: 'user',
+            },
+          },
+        },
       ],
       keywords: [
         'automation',
@@ -10725,16 +10746,19 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
       notes: [
         'input.name must be non-empty. schedule is the persisted trigger field: either { kind: "cron", expression: "<five fields>", timezone: "local" } or { kind: "one_time", runAt: "<ISO timestamp>", timezone: "local" }.',
-        'action variants are app_advisor_prompt { workEntryId?, sidebarGroupName?, prompt, approvalMode? }, standalone_prompt { chatProjectId, workEntryId?, sidebarGroupName?, prompt, approvalMode? }, worktree_prompt { workspaceId, baseWorktreeId?, baseBranch?, existingBranch?, existingWorktreeId?, sidebarGroupName?, prompt, planMode?, interfaceMode?, approvalMode? }, or worktree_pipeline { workspaceId, baseWorktreeId?, pipelineId, pipelineSource?, inputs? }.',
-        'The Automations page groups these as two actions: App Advisor (app_advisor_prompt) and Project, where the project kind plus a Chat/Pipeline choice picks the variant — code project + Chat is worktree_prompt, code project + Pipeline is worktree_pipeline, cowork project + Chat is standalone_prompt (chatProjectId IS the cowork project id), and cowork project + Pipeline is worktree_pipeline with the cowork workspaceId.',
+        'action variants are app_advisor_prompt { workEntryId?, sidebarGroupName?, prompt, approvalMode? }, standalone_prompt { chatProjectId, workEntryId?, sidebarGroupName?, prompt, approvalMode? }, worktree_prompt { workspaceId, baseWorktreeId?, baseBranch?, existingBranch?, existingWorktreeId?, sidebarGroupName?, prompt, planMode?, interfaceMode?, approvalMode? }, or worktree_pipeline { target?, workspaceId?, baseWorktreeId?, repoId?, pipelineId, pipelineSource?, inputs? }.',
+        'The Automations page groups these as two actions: Orchestrator (app_advisor_prompt) and Project, where the project kind plus a Chat/Pipeline choice picks the variant — code project + Chat is worktree_prompt, code project + Pipeline is worktree_pipeline, cowork project + Chat is standalone_prompt (chatProjectId IS the cowork project id), and cowork project + Pipeline is worktree_pipeline with the cowork workspaceId.',
         'worktree_pipeline with a cowork workspaceId runs the pipeline directory-scoped at the cowork root without creating a worktree; baseWorktreeId and repoId must be omitted, and worktree-only pipelines (YAML scope: worktree) are rejected. On code projects the run provisions a fresh worktree (optionally from baseWorktreeId) and is worktree-scoped.',
+        'worktree_pipeline target chooses where it runs; omit target to keep the behavior above. { kind: "global" } runs with no project in its own scratch folder: omit workspaceId, baseWorktreeId, repoId, and projectPipelineFilename; the pipeline must declare scope: global and cannot be a project pipeline (pipelineSource "project"). { kind: "new_worktree" } creates a fresh worktree each run on a code project. { kind: "task", taskId } runs in an existing worktree (code) or Work Entry (cowork) of workspaceId without creating anything. { kind: "project" } runs directory-scoped in the project folder of workspaceId without creating a task. Every kind except global requires workspaceId; baseWorktreeId applies only to new_worktree.',
+        "A pipeline automation with no project is owned by the caller: a code or cowork agent creates it in its own project's owner, Orchestrator in the selected owner. It keeps that owner when it is turned on, run, or edited, and a user pipeline it names must belong to the same owner. Do not pass executionContext.",
         'Agent-dispatched automation.create cannot configure an If Command gate because it would execute host shell content. Configure trusted gates manually in the Automations UI.',
         'For prompt actions, optional model, modelConfig, pluginSelections, legacy portable plugins, and approvalMode mirror the Automations page chat settings; omit model/modelConfig/approvalMode to use the destination defaults. pluginSelections uses the full chat picker shape: collectionIds, skillRefs, pluginRefs, and mcpServerRefs. worktree_prompt also supports planMode and interfaceMode; baseBranch creates a fresh branch from an existing local/remote branch, while existingBranch checks out that branch directly. baseWorktreeId, baseBranch, and existingBranch are mutually exclusive.',
         'worktree_prompt existingWorktreeId opens the NEW chat on that already-existing worktree with no provisioning (no worktree row, no setup scripts); the run fails when the worktree does not exist in the target project. It cannot be combined with baseWorktreeId, baseBranch, or existingBranch. Get a worktree id from a prior automation run result ({ worktreeId } — the same-worktree handoff case) or from projects.list_tasks for the code project: the returned taskId is the worktree id, scoped by projectId. This still opens a fresh chat tab; it never injects into an existing chat session.',
-        'app_advisor_prompt and standalone_prompt workEntryId likewise open the NEW chat inside that already-existing Work Entry (an App Advisor Work Entry, or a Work Entry of the cowork project) instead of creating a Work Entry per run; the run fails when the entry no longer exists. The Automations page authors these, and existingWorktreeId, as its "Existing chat" Run-in mode with "New chat" picked.',
+        'app_advisor_prompt and standalone_prompt workEntryId likewise open the NEW chat inside that already-existing Work Entry (an Orchestrator Work Entry, or a Work Entry of the cowork project) instead of creating a Work Entry per run; the run fails when the entry no longer exists. The Automations page authors these, and existingWorktreeId, as its "Existing chat" Run-in mode with "New chat" picked.',
         `sidebarGroupName is an optional destination-local group name for prompt actions; each newly created Work Entry or worktree joins that group (created if needed). Blank is absent, names are trimmed to at most ${SIDEBAR_ITEM_GROUP_NAME_LIMIT} Unicode code points, existing Work Entry/worktree targets ignore it, and this local customization is not included in a shared automation document.`,
         'worktree_prompt is an automation-owned worktree prompt and is not a scheduled send into an existing chat tab/session. If the user asks to schedule a message, response, or Continue into the current/existing worktree chat, use projects.schedule_message instead.',
         'Do not create worktree_session_prompt activities through generic automation.create. Scheduled worktree chat messages are created from projects.schedule_message, the target chat composer, or the usage-limit banner, then managed as triggered activities with automation.list / automation.get / automation.update / automation.disable / automation.delete / automation.run_now.',
+        'A chat prompt automation (worktree_prompt, standalone_prompt, app_advisor_prompt) may be stored, and read back by automation.list / automation.get, as a worktree_pipeline with target { kind: "global" } that runs a workflow the automation owns, built from create-task, send-message and wait-for-reply steps. Its runs send the same chat. Create it with the chat action either way; a prompt that sets plugins (directly or through a prompt reference) or an approval mode, and an Orchestrator prompt that sets a model, is stored as the chat action.',
       ],
     },
     {
@@ -10779,6 +10803,17 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
             },
           },
         },
+        {
+          type: 'automation.update',
+          id: 'chat-automation-1',
+          patch: {
+            action: {
+              type: 'standalone_prompt',
+              chatProjectId: 'cowork-1',
+              prompt: 'Summarize this week’s notes.',
+            },
+          },
+        },
       ],
       keywords: [
         'automation',
@@ -10806,6 +10841,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'sidebarGroupName remains a destination-local prompt-action customization when its destination is unchanged; it is not included in a shared automation document.',
         'For existing worktree_session_prompt activities, use automation.get first, then include the same workspaceId, worktreeId, chatId, and purpose in any action patch. You may update prompt, fileReferences, attachmentPaths, attachmentPromptContexts, inputMode, schedule, name, or enabled. Creating, converting, retargeting, or changing purpose for worktree_session_prompt is blocked.',
         'Agent-dispatched automation.update cannot add or replace an If Command gate. If the activity already has one, only enabled: false is allowed unless the patch also sets ifCommand to an empty string to clear the gate.',
+        'An automation stored as a worktree_pipeline with target { kind: "global" } running a workflow it owns stands for a chat action. Patch name, schedule or enabled as usual, or send a chat action (worktree_prompt, standalone_prompt, app_advisor_prompt) to change what it sends; it may then be stored as the chat action again. Edit the owned workflow with pipeline.update only for what a chat action cannot express; once it was changed that way, a chat action patch is refused.',
       ],
     },
     {
@@ -10873,7 +10909,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'automation.share',
       category: 'automations',
-      summary: `Share a triggered activity to the configured ${cloudName} account as a portable document, or update its existing share. Activities that resume a pipeline execution, or whose prompt mentions a plugin available only on this machine, are refused with a typed reason. Machine bindings, run-condition commands, input values, the approval mode, plan mode on App Advisor and Cowork prompts, and local plugin selections are stripped, and the result notices name what stayed behind.`,
+      summary: `Share a triggered activity to the configured ${cloudName} account as a portable document, or update its existing share. Activities that resume a pipeline execution, or whose prompt mentions a plugin available only on this machine, are refused with a typed reason. Machine bindings, run-condition commands, input values, the approval mode, plan mode on Orchestrator and Cowork prompts, and local plugin selections are stripped, and the result notices name what stayed behind.`,
       fields: [
         field('id', 'string', true, 'Local triggered activity id to share.'),
         field(
@@ -11076,9 +11112,22 @@ function projectPageAvailability(
   };
 }
 
-export function searchAppAdvisorActions(
+/**
+ * Searches the Advisor catalog. The main process passes shared-family rows
+ * it composes (`sharedCatalog`) so they share one ranking and limit; this
+ * module never copies them.
+ */
+export function searchAppAdvisorActions<
+  TShared extends AgentActionCatalogEntry = never,
+>(
   input: SearchAppAdvisorActionsInput = {},
-): SearchAppAdvisorActionsResult {
+  sharedCatalog: readonly TShared[] = [],
+): AgentActionSearchResult<
+  AgentActionSearchResultAction<
+    AppAdvisorActionCatalogEntry | TShared,
+    AppAdvisorActionSearchExtras
+  >
+> {
   // Older snapshot reducers can collapse arrays to count objects. Treat an
   // invalid transport shape as unknown availability, preserving unrelated
   // results without advertising gated destinations.
@@ -11092,14 +11141,21 @@ export function searchAppAdvisorActions(
         ? reportedPages.includes(page)
         : !PAGES_REQUIRING_AVAILABILITY.has(page)),
   );
-  const availableCatalog = APP_ADVISOR_ACTION_CATALOG.flatMap((entry) => {
-    if (entry.hidden) return [];
-    const projected = projectPageAvailability(entry, availablePages, input);
-    return projected ? [projected] : [];
-  });
+  const availableCatalog: (AppAdvisorActionCatalogEntry | TShared)[] = [
+    ...APP_ADVISOR_ACTION_CATALOG.flatMap((entry) => {
+      if (entry.hidden) return [];
+      const projected = projectPageAvailability(entry, availablePages, input);
+      return projected ? [projected] : [];
+    }),
+    ...sharedCatalog,
+  ];
+  const hookTriggersOf = (
+    entry: AppAdvisorActionCatalogEntry | TShared,
+  ): readonly HookWatcherTriggerCatalogEntry[] | undefined =>
+    'hookTriggers' in entry ? entry.hookTriggers : undefined;
   return searchAgentActionCatalog(availableCatalog, input, {
     haystackTerms: (entry) =>
-      (entry.hookTriggers ?? []).flatMap((hookTrigger) => [
+      (hookTriggersOf(entry) ?? []).flatMap((hookTrigger) => [
         hookTrigger.triggerName,
         hookTrigger.title,
         hookTrigger.hookKeyExamples.project,
@@ -11107,9 +11163,11 @@ export function searchAppAdvisorActions(
         hookTrigger.hookKeyExamples.workspaceRepoPattern,
         ...hookTrigger.keywords,
       ]),
-    resultExtras: (entry, query): Partial<AppAdvisorActionSearchExtras> =>
-      entry.hookTriggers
-        ? { hookTriggers: rankHookTriggers(entry.hookTriggers, query) }
-        : {},
+    resultExtras: (entry, query): Partial<AppAdvisorActionSearchExtras> => {
+      const hookTriggers = hookTriggersOf(entry);
+      return hookTriggers
+        ? { hookTriggers: rankHookTriggers(hookTriggers, query) }
+        : {};
+    },
   });
 }

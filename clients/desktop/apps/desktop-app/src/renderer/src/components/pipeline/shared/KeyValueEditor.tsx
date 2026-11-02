@@ -4,6 +4,7 @@ import { TextField } from './TextField';
 import { EnlargeValueModal } from './EnlargeValueModal';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { Tooltip } from '@canopy/ui-shared';
+import { Button } from '@canopy/ui-shared/components';
 import {
   MaximizeIcon as AppCatalogMaximizeIcon,
   CloseIcon as AppCatalogCloseIcon,
@@ -136,37 +137,38 @@ export function KeyValueEditor({
                   title={`Type: ${valType}`}
                   description="Select to cycle"
                 >
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
                     onClick={() => cycleType(key)}
                     aria-label={`Type: ${valType}. Select to cycle`}
-                    className="px-1.5 py-1.5 text-3xs font-mono leading-none fg-secondary
-                      hover:fg-primary bg-secondary rounded transition-colors min-w-8 text-center"
                   >
                     {TYPE_LABELS[valType]}
-                  </button>
+                  </Button>
                 </ActionTooltip>
               )}
               {!readonly && (
                 <Tooltip label="Edit in expanded view">
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="compact"
+                    iconOnly
                     onClick={() => setEnlargeKey(key)}
                     aria-label="Edit in expanded view"
-                    className="p-1.5 fg-secondary hover:fg-primary transition-colors rounded"
                   >
                     <AppCatalogMaximizeIcon width="14" height="14" />
-                  </button>
+                  </Button>
                 </Tooltip>
               )}
               {!readonly && (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
                   onClick={() => removeEntry(key)}
-                  className="p-1.5 fg-secondary hover:fg-destructive transition-colors rounded"
+                  aria-label={`Remove ${key}`}
                 >
                   <AppCatalogCloseIcon width="14" height="14" />
-                </button>
+                </Button>
               )}
             </div>
 
@@ -219,14 +221,13 @@ export function KeyValueEditor({
             className="flex-1"
             onKeyDown={(e) => e.key === 'Enter' && addEntry()}
           />
-          <button
+          <Button
+            size="compact"
             onClick={addEntry}
             disabled={!newKey || newKey in value}
-            className="px-3 py-2 text-xs font-medium bg-secondary fg-primary rounded-md
-              hover:bg-accent-subtle transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Add
-          </button>
+          </Button>
         </div>
       )}
 

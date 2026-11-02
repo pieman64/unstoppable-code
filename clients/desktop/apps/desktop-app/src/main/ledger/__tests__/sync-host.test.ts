@@ -43,8 +43,18 @@ function entry(
       role: 'DEVELOPER',
     },
     organizations: [
-      { id: HEALTHY_ORG, name: 'Acme' },
-      { id: LAPSED_ORG, name: 'Globex' },
+      {
+        id: HEALTHY_ORG,
+        name: 'Acme',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        id: LAPSED_ORG,
+        name: 'Globex',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
     ],
     orgBillingStates: [
       {

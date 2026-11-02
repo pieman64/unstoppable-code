@@ -1,0 +1,2521 @@
+{
+  "status/worktree": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "state": "ready",
+          "projection": {
+            "formatVersion": 1,
+            "schemaVersion": 5,
+            "extractorVersion": 6,
+            "projectionRevision": 3,
+            "lastBuildAt": "<lastBuildAt>",
+            "completedBuildAt": "<completedBuildAt>",
+            "derivedAt": "<derivedAt>",
+            "assembly": "complete",
+            "customLanguagesFingerprint": "c91cac190acc5876eda975d8217ca705a9b226c9771399693da8a7256d8bfc92",
+            "repositories": [
+              {
+                "repoId": "golden",
+                "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d",
+                "counts": {
+                  "fileCount": 10,
+                  "symbolCount": 33,
+                  "edgeCount": 56,
+                  "contextUnresolvedEdgeCount": 12,
+                  "contextFilesWithErrors": 0,
+                  "legacyUnresolvedEdgeCount": 12,
+                  "legacyFilesWithErrors": 0,
+                  "communityCount": 7,
+                  "flowCount": 5
+                }
+              }
+            ],
+            "totals": {
+              "fileCount": 10,
+              "symbolCount": 33,
+              "edgeCount": 56,
+              "contextUnresolvedEdgeCount": 12,
+              "contextFilesWithErrors": 0,
+              "legacyUnresolvedEdgeCount": 12,
+              "legacyFilesWithErrors": 0,
+              "communityCount": 7,
+              "flowCount": 5
+            },
+            "topCommunities": [
+              {
+                "id": "com_d54cc309de4b3ce5c5f3f495938f4db1",
+                "repoId": "golden",
+                "label": "README.md",
+                "size": 9,
+                "cohesion": 0.608108108108108
+              },
+              {
+                "id": "com_b471560807dd09e2079143831a2ef9b1",
+                "repoId": "golden",
+                "label": "src/calc.ts",
+                "size": 8,
+                "cohesion": 0.7372262773722629
+              },
+              {
+                "id": "com_c7044af67732919c6f72450babaca385",
+                "repoId": "golden",
+                "label": "src/main.ts",
+                "size": 6,
+                "cohesion": 0.5454545454545454
+              },
+              {
+                "id": "com_777905dc4b0d870b007e6da3800fe9b2",
+                "repoId": "golden",
+                "label": "package.json",
+                "size": 4,
+                "cohesion": 1
+              },
+              {
+                "id": "com_96c0e5cdec57ba94681463a4c08ec5e8",
+                "repoId": "golden",
+                "label": ".github/workflows",
+                "size": 3,
+                "cohesion": 1
+              }
+            ],
+            "customLanguages": null
+          },
+          "diagnostics": {
+            "freshness": "content",
+            "recordedAt": "<recordedAt>",
+            "repositories": [
+              {
+                "repoId": "golden",
+                "symbolCount": 33,
+                "edgeCount": 56,
+                "communityLimits": {
+                  "symbolResolution": 50000,
+                  "fileProjection": 50000,
+                  "maxSymbols": 1000000,
+                  "maxEdges": 5000000
+                },
+                "eligibleFiles": 10,
+                "unsupportedFiles": 0,
+                "excludedFiles": 0,
+                "examples": [],
+                "filesWithErrors": 0,
+                "oversizedFiles": 0,
+                "communityStatus": "complete",
+                "flowStatus": "complete",
+                "warnings": [],
+                "edges": [
+                  {
+                    "kind": "CALLS",
+                    "language": "typescript",
+                    "reason": "resolved",
+                    "count": 11
+                  },
+                  {
+                    "kind": "CALLS",
+                    "language": "typescript",
+                    "reason": "unknown",
+                    "count": 5
+                  },
+                  {
+                    "kind": "CALLS",
+                    "language": "typescript",
+                    "reason": "unsupported-binding",
+                    "count": 6
+                  },
+                  {
+                    "kind": "DOCUMENTS",
+                    "language": "markdown",
+                    "reason": "resolved",
+                    "count": 4
+                  },
+                  {
+                    "kind": "IMPORTS_FROM",
+                    "language": "typescript",
+                    "reason": "resolved",
+                    "count": 4
+                  },
+                  {
+                    "kind": "IPC_HANDLES",
+                    "language": "typescript",
+                    "reason": "resolved",
+                    "count": 1
+                  },
+                  {
+                    "kind": "REFERENCES",
+                    "language": "typescript",
+                    "reason": "resolved",
+                    "count": 1
+                  },
+                  {
+                    "kind": "USES_PIPELINE_ACTION",
+                    "language": "github-workflow",
+                    "reason": "external",
+                    "count": 1
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "status/missing": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "state": "missing"
+        }
+      ]
+    }
+  },
+  "status/empty": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "state": "pending",
+          "reason": "build-incomplete",
+          "observed": {
+            "schemaVersion": 5,
+            "extractorVersion": null,
+            "projectionRevision": null,
+            "lastBuildAt": null,
+            "completedBuildAt": null,
+            "derivedAt": null
+          },
+          "diagnostics": null
+        }
+      ]
+    }
+  },
+  "summary/worktree": {
+    "ok": true,
+    "result": {
+      "kind": "readonly-summary",
+      "value": {
+        "state": "ready",
+        "projection": {
+          "formatVersion": 1,
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "projectionRevision": 3,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>",
+          "derivedAt": "<derivedAt>",
+          "assembly": "complete",
+          "customLanguagesFingerprint": "c91cac190acc5876eda975d8217ca705a9b226c9771399693da8a7256d8bfc92",
+          "repositories": [
+            {
+              "repoId": "golden",
+              "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d",
+              "counts": {
+                "fileCount": 10,
+                "symbolCount": 33,
+                "edgeCount": 56,
+                "contextUnresolvedEdgeCount": 12,
+                "contextFilesWithErrors": 0,
+                "legacyUnresolvedEdgeCount": 12,
+                "legacyFilesWithErrors": 0,
+                "communityCount": 7,
+                "flowCount": 5
+              }
+            }
+          ],
+          "totals": {
+            "fileCount": 10,
+            "symbolCount": 33,
+            "edgeCount": 56,
+            "contextUnresolvedEdgeCount": 12,
+            "contextFilesWithErrors": 0,
+            "legacyUnresolvedEdgeCount": 12,
+            "legacyFilesWithErrors": 0,
+            "communityCount": 7,
+            "flowCount": 5
+          },
+          "topCommunities": [
+            {
+              "id": "com_d54cc309de4b3ce5c5f3f495938f4db1",
+              "repoId": "golden",
+              "label": "README.md",
+              "size": 9,
+              "cohesion": 0.608108108108108
+            },
+            {
+              "id": "com_b471560807dd09e2079143831a2ef9b1",
+              "repoId": "golden",
+              "label": "src/calc.ts",
+              "size": 8,
+              "cohesion": 0.7372262773722629
+            },
+            {
+              "id": "com_c7044af67732919c6f72450babaca385",
+              "repoId": "golden",
+              "label": "src/main.ts",
+              "size": 6,
+              "cohesion": 0.5454545454545454
+            },
+            {
+              "id": "com_777905dc4b0d870b007e6da3800fe9b2",
+              "repoId": "golden",
+              "label": "package.json",
+              "size": 4,
+              "cohesion": 1
+            },
+            {
+              "id": "com_96c0e5cdec57ba94681463a4c08ec5e8",
+              "repoId": "golden",
+              "label": ".github/workflows",
+              "size": 3,
+              "cohesion": 1
+            }
+          ],
+          "customLanguages": null
+        },
+        "diagnostics": {
+          "freshness": "content",
+          "recordedAt": "<recordedAt>",
+          "repositories": [
+            {
+              "repoId": "golden",
+              "symbolCount": 33,
+              "edgeCount": 56,
+              "communityLimits": {
+                "symbolResolution": 50000,
+                "fileProjection": 50000,
+                "maxSymbols": 1000000,
+                "maxEdges": 5000000
+              },
+              "eligibleFiles": 10,
+              "unsupportedFiles": 0,
+              "excludedFiles": 0,
+              "examples": [],
+              "filesWithErrors": 0,
+              "oversizedFiles": 0,
+              "communityStatus": "complete",
+              "flowStatus": "complete",
+              "warnings": [],
+              "edges": [
+                {
+                  "kind": "CALLS",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 11
+                },
+                {
+                  "kind": "CALLS",
+                  "language": "typescript",
+                  "reason": "unknown",
+                  "count": 5
+                },
+                {
+                  "kind": "CALLS",
+                  "language": "typescript",
+                  "reason": "unsupported-binding",
+                  "count": 6
+                },
+                {
+                  "kind": "DOCUMENTS",
+                  "language": "markdown",
+                  "reason": "resolved",
+                  "count": 4
+                },
+                {
+                  "kind": "IMPORTS_FROM",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 4
+                },
+                {
+                  "kind": "IPC_HANDLES",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 1
+                },
+                {
+                  "kind": "REFERENCES",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 1
+                },
+                {
+                  "kind": "USES_PIPELINE_ACTION",
+                  "language": "github-workflow",
+                  "reason": "external",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "summary/base": {
+    "ok": true,
+    "result": {
+      "kind": "readonly-summary",
+      "value": {
+        "state": "ready",
+        "projection": {
+          "formatVersion": 1,
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "projectionRevision": 1,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>",
+          "derivedAt": "<derivedAt>",
+          "assembly": "complete",
+          "customLanguagesFingerprint": "c91cac190acc5876eda975d8217ca705a9b226c9771399693da8a7256d8bfc92",
+          "repositories": [
+            {
+              "repoId": "golden",
+              "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d",
+              "counts": {
+                "fileCount": 10,
+                "symbolCount": 33,
+                "edgeCount": 56,
+                "contextUnresolvedEdgeCount": 12,
+                "contextFilesWithErrors": 0,
+                "legacyUnresolvedEdgeCount": 12,
+                "legacyFilesWithErrors": 0,
+                "communityCount": 7,
+                "flowCount": 5
+              }
+            }
+          ],
+          "totals": {
+            "fileCount": 10,
+            "symbolCount": 33,
+            "edgeCount": 56,
+            "contextUnresolvedEdgeCount": 12,
+            "contextFilesWithErrors": 0,
+            "legacyUnresolvedEdgeCount": 12,
+            "legacyFilesWithErrors": 0,
+            "communityCount": 7,
+            "flowCount": 5
+          },
+          "topCommunities": [
+            {
+              "id": "com_d54cc309de4b3ce5c5f3f495938f4db1",
+              "repoId": "golden",
+              "label": "README.md",
+              "size": 9,
+              "cohesion": 0.608108108108108
+            },
+            {
+              "id": "com_b471560807dd09e2079143831a2ef9b1",
+              "repoId": "golden",
+              "label": "src/calc.ts",
+              "size": 8,
+              "cohesion": 0.7372262773722629
+            },
+            {
+              "id": "com_c7044af67732919c6f72450babaca385",
+              "repoId": "golden",
+              "label": "src/main.ts",
+              "size": 6,
+              "cohesion": 0.5454545454545454
+            },
+            {
+              "id": "com_777905dc4b0d870b007e6da3800fe9b2",
+              "repoId": "golden",
+              "label": "package.json",
+              "size": 4,
+              "cohesion": 1
+            },
+            {
+              "id": "com_96c0e5cdec57ba94681463a4c08ec5e8",
+              "repoId": "golden",
+              "label": ".github/workflows",
+              "size": 3,
+              "cohesion": 1
+            }
+          ],
+          "customLanguages": null
+        },
+        "diagnostics": {
+          "freshness": "reparsed",
+          "recordedAt": "<recordedAt>",
+          "repositories": [
+            {
+              "repoId": "golden",
+              "symbolCount": 33,
+              "edgeCount": 56,
+              "communityLimits": {
+                "symbolResolution": 50000,
+                "fileProjection": 50000,
+                "maxSymbols": 1000000,
+                "maxEdges": 5000000
+              },
+              "eligibleFiles": 10,
+              "unsupportedFiles": 0,
+              "excludedFiles": 0,
+              "examples": [],
+              "filesWithErrors": 0,
+              "oversizedFiles": 0,
+              "communityStatus": "complete",
+              "flowStatus": "complete",
+              "warnings": [],
+              "edges": [
+                {
+                  "kind": "CALLS",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 11
+                },
+                {
+                  "kind": "CALLS",
+                  "language": "typescript",
+                  "reason": "unknown",
+                  "count": 5
+                },
+                {
+                  "kind": "CALLS",
+                  "language": "typescript",
+                  "reason": "unsupported-binding",
+                  "count": 6
+                },
+                {
+                  "kind": "DOCUMENTS",
+                  "language": "markdown",
+                  "reason": "resolved",
+                  "count": 4
+                },
+                {
+                  "kind": "IMPORTS_FROM",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 4
+                },
+                {
+                  "kind": "IPC_HANDLES",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 1
+                },
+                {
+                  "kind": "REFERENCES",
+                  "language": "typescript",
+                  "reason": "resolved",
+                  "count": 1
+                },
+                {
+                  "kind": "USES_PIPELINE_ACTION",
+                  "language": "github-workflow",
+                  "reason": "external",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "summary/missing": {
+    "ok": true,
+    "result": {
+      "kind": "readonly-summary",
+      "value": {
+        "state": "missing"
+      }
+    }
+  },
+  "summary/empty": {
+    "ok": true,
+    "result": {
+      "kind": "readonly-summary",
+      "value": {
+        "state": "pending",
+        "reason": "build-incomplete",
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": null,
+          "projectionRevision": null,
+          "lastBuildAt": null,
+          "completedBuildAt": null,
+          "derivedAt": null
+        },
+        "diagnostics": null
+      }
+    }
+  },
+  "fingerprint-metadata/worktree": {
+    "ok": true,
+    "result": {
+      "kind": "fingerprint-metadata",
+      "value": {
+        "fingerprint": null,
+        "schemaVersion": 5,
+        "extractorVersion": 6,
+        "completed": true,
+        "derivedPending": false,
+        "lastBuildAt": "<lastBuildAt>"
+      }
+    }
+  },
+  "fingerprint-metadata/empty": {
+    "ok": true,
+    "result": {
+      "kind": "fingerprint-metadata",
+      "value": {
+        "fingerprint": null,
+        "schemaVersion": 5,
+        "extractorVersion": null,
+        "completed": false,
+        "derivedPending": false,
+        "lastBuildAt": null
+      }
+    }
+  },
+  "fingerprint-metadata/missing": {
+    "ok": false,
+    "code": "database-error",
+    "message": "The retained Code Graph could not be read. Try again."
+  },
+  "callers/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/__tests__/calc.test.ts",
+            "kind": "file",
+            "filePath": "src/__tests__/calc.test.ts",
+            "line": 5
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.sum",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "line": 23
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 16
+          },
+          {
+            "qualifiedName": "src/calc.ts::subtract",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 7
+          }
+        ]
+      ]
+    }
+  },
+  "callers/add-scoped": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/__tests__/calc.test.ts",
+            "kind": "file",
+            "filePath": "src/__tests__/calc.test.ts",
+            "line": 5
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.sum",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "line": 23
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 16
+          },
+          {
+            "qualifiedName": "src/calc.ts::subtract",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 7
+          }
+        ]
+      ]
+    }
+  },
+  "callers/unknown": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        []
+      ]
+    }
+  },
+  "callees/multiply": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/calc.ts::add",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 16
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 12
+          },
+          {
+            "qualifiedName": "src/calc.ts::subtract",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 12
+          }
+        ]
+      ]
+    }
+  },
+  "callees/run": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 6
+          }
+        ]
+      ]
+    }
+  },
+  "importers/calc": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          "src/__tests__/calc.test.ts",
+          "src/main.ts",
+          "src/report.ts"
+        ]
+      ]
+    }
+  },
+  "imports/main": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/calc.ts",
+            "kind": "file",
+            "filePath": "src/calc.ts",
+            "line": 1
+          },
+          {
+            "qualifiedName": "src/channels.ts",
+            "kind": "file",
+            "filePath": "src/channels.ts",
+            "line": 2
+          }
+        ]
+      ]
+    }
+  },
+  "children/calculator": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/calc.ts::Calculator.sum",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "line": 22
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.product",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "line": 26
+          }
+        ]
+      ]
+    }
+  },
+  "children/calc-file": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        []
+      ]
+    }
+  },
+  "tests-for/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          "src/__tests__/calc.test.ts"
+        ]
+      ]
+    }
+  },
+  "docs-for/main": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "README.md::golden-fixture",
+            "filePath": "README.md",
+            "line": 3
+          },
+          {
+            "qualifiedName": "README.md::golden-fixture.usage",
+            "filePath": "README.md",
+            "line": 7
+          },
+          {
+            "qualifiedName": "docs/architecture.md::architecture",
+            "filePath": "docs/architecture.md",
+            "line": 3
+          }
+        ]
+      ]
+    }
+  },
+  "rationale-for/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/calc.ts::rationale.L1",
+            "marker": "NOTE",
+            "text": "arithmetic stays pure so every caller can share it.",
+            "filePath": "src/calc.ts",
+            "line": 1
+          }
+        ]
+      ]
+    }
+  },
+  "rationale-for/register": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/main.ts::rationale.L9",
+            "marker": "TODO",
+            "text": "register the handler only after the window is ready.",
+            "filePath": "src/main.ts",
+            "line": 9
+          }
+        ]
+      ]
+    }
+  },
+  "rationale-for/calc-file": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        []
+      ]
+    }
+  },
+  "file-summary/calc": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "file": "src/calc.ts",
+          "symbols": [
+            {
+              "qualifiedName": "src/calc.ts::rationale.L1",
+              "kind": "rationale",
+              "exported": false
+            },
+            {
+              "qualifiedName": "src/calc.ts::add",
+              "kind": "function",
+              "exported": true
+            },
+            {
+              "qualifiedName": "src/calc.ts::subtract",
+              "kind": "function",
+              "exported": true
+            },
+            {
+              "qualifiedName": "src/calc.ts::multiply",
+              "kind": "function",
+              "exported": true
+            },
+            {
+              "qualifiedName": "src/calc.ts::Calculator",
+              "kind": "class",
+              "exported": true
+            },
+            {
+              "qualifiedName": "src/calc.ts::Calculator.sum",
+              "kind": "method",
+              "exported": false
+            },
+            {
+              "qualifiedName": "src/calc.ts::Calculator.product",
+              "kind": "method",
+              "exported": false
+            }
+          ],
+          "imports": [],
+          "importerCount": 3
+        }
+      ]
+    }
+  },
+  "file-summary/readme": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "file": "README.md",
+          "symbols": [
+            {
+              "qualifiedName": "README.md::golden-fixture",
+              "kind": "doc_section",
+              "exported": false
+            },
+            {
+              "qualifiedName": "README.md::golden-fixture.usage",
+              "kind": "doc_section",
+              "exported": false
+            }
+          ],
+          "imports": [],
+          "importerCount": 0
+        }
+      ]
+    }
+  },
+  "file-summary/unknown": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        null
+      ]
+    }
+  },
+  "scripts-for-file/package": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "name": "build",
+            "command": "tsc -p ."
+          },
+          {
+            "name": "test",
+            "command": "jest"
+          }
+        ]
+      ]
+    }
+  },
+  "ipc-channel/qualified": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "channel": {
+            "qualifiedName": "src/channels.ts::ipc.COMPUTE",
+            "filePath": "src/channels.ts",
+            "signature": "fixture:compute",
+            "line": 2
+          },
+          "handlers": [
+            {
+              "qualifiedName": "src/main.ts::register",
+              "kind": "function",
+              "filePath": "src/main.ts",
+              "line": 13
+            }
+          ],
+          "invokers": [],
+          "ambiguousCount": 0,
+          "unresolvedCallSiteCount": 0
+        }
+      ]
+    }
+  },
+  "ipc-channel/value": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "channel": {
+            "qualifiedName": "src/channels.ts::ipc.COMPUTE",
+            "filePath": "src/channels.ts",
+            "signature": "fixture:compute",
+            "line": 2
+          },
+          "handlers": [
+            {
+              "qualifiedName": "src/main.ts::register",
+              "kind": "function",
+              "filePath": "src/main.ts",
+              "line": 13
+            }
+          ],
+          "invokers": [],
+          "ambiguousCount": 0,
+          "unresolvedCallSiteCount": 0
+        }
+      ]
+    }
+  },
+  "ipc-channel/key": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "channel": {
+            "qualifiedName": "src/channels.ts::ipc.RESET",
+            "filePath": "src/channels.ts",
+            "signature": "fixture:reset",
+            "line": 3
+          },
+          "handlers": [],
+          "invokers": [],
+          "ambiguousCount": 0,
+          "unresolvedCallSiteCount": 0
+        }
+      ]
+    }
+  },
+  "symbol-detail/subtract": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "qualifiedName": "src/calc.ts::subtract",
+          "kind": "function",
+          "filePath": "src/calc.ts",
+          "lineStart": 6,
+          "lineEnd": 8,
+          "signature": "function subtract(left: number, right: number): number {",
+          "exported": true
+        }
+      ]
+    }
+  },
+  "symbol-detail/calculator-sum": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "qualifiedName": "src/calc.ts::Calculator.sum",
+          "kind": "method",
+          "filePath": "src/calc.ts",
+          "lineStart": 22,
+          "lineEnd": 24,
+          "signature": "public sum(values: readonly number[]): number {",
+          "exported": false
+        }
+      ]
+    }
+  },
+  "community-for-symbol/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "id": "com_b471560807dd09e2079143831a2ef9b1",
+          "repositoryId": "golden",
+          "label": "src/calc.ts",
+          "cohesion": 0.7372262773722629,
+          "size": 8,
+          "fingerprint": "b471560807dd09e2079143831a2ef9b1",
+          "extra": {}
+        }
+      ]
+    }
+  },
+  "flows-for-symbol/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "id": "flow_e7bf96f99edb8c7fafe88a6397c0b044",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_ca988104fd0bc78e03078605f3c84978",
+            "name": "src/calc.ts::Calculator.sum",
+            "criticality": 0.332,
+            "symbolCount": 2,
+            "fileSpread": 1,
+            "maxDepth": 1,
+            "extra": {
+              "entryPointEvidence": "call-graph-root",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.5,
+                "externalCallRatio": 0.5,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.5,
+                "depthRatio": 0.067
+              }
+            }
+          },
+          {
+            "id": "flow_df6e038125426701cbc400c0135ca3bd",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_9bb88d5d2862f1243c4903a2dbcd2cb2",
+            "name": "src/report.ts::difference",
+            "criticality": 0.313,
+            "symbolCount": 3,
+            "fileSpread": 2,
+            "maxDepth": 2,
+            "extra": {
+              "entryPointEvidence": "call-graph-root",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.667,
+                "externalCallRatio": 0,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.667,
+                "depthRatio": 0.133
+              }
+            }
+          },
+          {
+            "id": "flow_61d584ef62bf098bbf12a8402fb22859",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_228113c110d28e8a683821ea51ffff2c",
+            "name": "src/main.ts::register",
+            "criticality": 0.28,
+            "symbolCount": 5,
+            "fileSpread": 2,
+            "maxDepth": 3,
+            "extra": {
+              "entryPointEvidence": "ipc-handler",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.4,
+                "externalCallRatio": 0.25,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.6,
+                "depthRatio": 0.2
+              }
+            }
+          },
+          {
+            "id": "flow_2c993ad9aa488d8cdc4c2129468e6dd8",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_e7b841b5d2e5d4f2075f87ed2c86d06d",
+            "name": "src/main.ts::run",
+            "criticality": 0.272,
+            "symbolCount": 4,
+            "fileSpread": 2,
+            "maxDepth": 2,
+            "extra": {
+              "entryPointEvidence": "conventional-name",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.5,
+                "externalCallRatio": 0.167,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.5,
+                "depthRatio": 0.133
+              }
+            }
+          },
+          {
+            "id": "flow_0e82854354b4c9ea6ef53cc2deb7b0a8",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_11488c299acbf133ad9bddaaf805501b",
+            "name": "src/calc.ts::Calculator.product",
+            "criticality": 0.197,
+            "symbolCount": 4,
+            "fileSpread": 1,
+            "maxDepth": 2,
+            "extra": {
+              "entryPointEvidence": "call-graph-root",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.25,
+                "externalCallRatio": 0.167,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.5,
+                "depthRatio": 0.133
+              }
+            }
+          }
+        ]
+      ]
+    }
+  },
+  "derived-stats": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "communityCount": 7,
+          "flowCount": 5
+        }
+      ]
+    }
+  },
+  "derived-stats/scoped": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "communityCount": 7,
+          "flowCount": 5
+        }
+      ]
+    }
+  },
+  "communities": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "id": "com_d54cc309de4b3ce5c5f3f495938f4db1",
+            "repositoryId": "golden",
+            "label": "README.md",
+            "cohesion": 0.608108108108108,
+            "size": 9,
+            "fingerprint": "d54cc309de4b3ce5c5f3f495938f4db1",
+            "extra": {}
+          },
+          {
+            "id": "com_b471560807dd09e2079143831a2ef9b1",
+            "repositoryId": "golden",
+            "label": "src/calc.ts",
+            "cohesion": 0.7372262773722629,
+            "size": 8,
+            "fingerprint": "b471560807dd09e2079143831a2ef9b1",
+            "extra": {}
+          },
+          {
+            "id": "com_c7044af67732919c6f72450babaca385",
+            "repositoryId": "golden",
+            "label": "src/main.ts",
+            "cohesion": 0.5454545454545454,
+            "size": 6,
+            "fingerprint": "c7044af67732919c6f72450babaca385",
+            "extra": {}
+          },
+          {
+            "id": "com_777905dc4b0d870b007e6da3800fe9b2",
+            "repositoryId": "golden",
+            "label": "package.json",
+            "cohesion": 1,
+            "size": 4,
+            "fingerprint": "777905dc4b0d870b007e6da3800fe9b2",
+            "extra": {}
+          },
+          {
+            "id": "com_96c0e5cdec57ba94681463a4c08ec5e8",
+            "repositoryId": "golden",
+            "label": ".github/workflows",
+            "cohesion": 1,
+            "size": 3,
+            "fingerprint": "96c0e5cdec57ba94681463a4c08ec5e8",
+            "extra": {}
+          },
+          {
+            "id": "com_a374fa91fb76ea13d84c6aaae848733e",
+            "repositoryId": "golden",
+            "label": "tsconfig.json",
+            "cohesion": 1,
+            "size": 2,
+            "fingerprint": "a374fa91fb76ea13d84c6aaae848733e",
+            "extra": {}
+          },
+          {
+            "id": "com_c4a9e6a1bf0a10452d7c84bbc1505e09",
+            "repositoryId": "golden",
+            "label": "src/channels.ts",
+            "cohesion": 0,
+            "size": 1,
+            "fingerprint": "c4a9e6a1bf0a10452d7c84bbc1505e09",
+            "extra": {}
+          }
+        ]
+      ]
+    }
+  },
+  "flows": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "id": "flow_e7bf96f99edb8c7fafe88a6397c0b044",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_ca988104fd0bc78e03078605f3c84978",
+            "name": "src/calc.ts::Calculator.sum",
+            "criticality": 0.332,
+            "symbolCount": 2,
+            "fileSpread": 1,
+            "maxDepth": 1,
+            "extra": {
+              "entryPointEvidence": "call-graph-root",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.5,
+                "externalCallRatio": 0.5,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.5,
+                "depthRatio": 0.067
+              }
+            }
+          },
+          {
+            "id": "flow_df6e038125426701cbc400c0135ca3bd",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_9bb88d5d2862f1243c4903a2dbcd2cb2",
+            "name": "src/report.ts::difference",
+            "criticality": 0.313,
+            "symbolCount": 3,
+            "fileSpread": 2,
+            "maxDepth": 2,
+            "extra": {
+              "entryPointEvidence": "call-graph-root",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.667,
+                "externalCallRatio": 0,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.667,
+                "depthRatio": 0.133
+              }
+            }
+          },
+          {
+            "id": "flow_61d584ef62bf098bbf12a8402fb22859",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_228113c110d28e8a683821ea51ffff2c",
+            "name": "src/main.ts::register",
+            "criticality": 0.28,
+            "symbolCount": 5,
+            "fileSpread": 2,
+            "maxDepth": 3,
+            "extra": {
+              "entryPointEvidence": "ipc-handler",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.4,
+                "externalCallRatio": 0.25,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.6,
+                "depthRatio": 0.2
+              }
+            }
+          },
+          {
+            "id": "flow_2c993ad9aa488d8cdc4c2129468e6dd8",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_e7b841b5d2e5d4f2075f87ed2c86d06d",
+            "name": "src/main.ts::run",
+            "criticality": 0.272,
+            "symbolCount": 4,
+            "fileSpread": 2,
+            "maxDepth": 2,
+            "extra": {
+              "entryPointEvidence": "conventional-name",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.5,
+                "externalCallRatio": 0.167,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.5,
+                "depthRatio": 0.133
+              }
+            }
+          },
+          {
+            "id": "flow_0e82854354b4c9ea6ef53cc2deb7b0a8",
+            "repositoryId": "golden",
+            "entrySymbolId": "sym_11488c299acbf133ad9bddaaf805501b",
+            "name": "src/calc.ts::Calculator.product",
+            "criticality": 0.197,
+            "symbolCount": 4,
+            "fileSpread": 1,
+            "maxDepth": 2,
+            "extra": {
+              "entryPointEvidence": "call-graph-root",
+              "truncated": false,
+              "criticalityComponents": {
+                "fileSpreadRatio": 0.25,
+                "externalCallRatio": 0.167,
+                "securityKeywordFraction": 0,
+                "testGapFraction": 0.5,
+                "depthRatio": 0.133
+              }
+            }
+          }
+        ]
+      ]
+    }
+  },
+  "hubs": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/__tests__/calc.test.ts",
+            "kind": "file",
+            "filePath": "src/__tests__/calc.test.ts",
+            "degree": 12
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "degree": 9
+          },
+          {
+            "qualifiedName": "src/calc.ts",
+            "kind": "file",
+            "filePath": "src/calc.ts",
+            "degree": 8
+          },
+          {
+            "qualifiedName": "src/calc.ts::add",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "degree": 7
+          },
+          {
+            "qualifiedName": "src/main.ts",
+            "kind": "file",
+            "filePath": "src/main.ts",
+            "degree": 7
+          }
+        ]
+      ]
+    }
+  },
+  "search/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "matchKind": "exact",
+            "symbolId": "sym_8359401c0fc410a52a4b8c0dca8636cd",
+            "name": "add",
+            "qualifiedName": "src/calc.ts::add",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "lineStart": 2
+          }
+        ]
+      ]
+    }
+  },
+  "search/prefix": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "matchKind": "prefix",
+            "symbolId": "sym_ecf98e227c74019b73d0e04563392faa",
+            "name": "multiply",
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "lineStart": 10
+          }
+        ]
+      ]
+    }
+  },
+  "search/no-match": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        []
+      ]
+    }
+  },
+  "impact-radius/add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/__tests__/calc.test.ts",
+            "kind": "file",
+            "filePath": "src/__tests__/calc.test.ts",
+            "depth": 1
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.sum",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "depth": 1
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "depth": 1
+          },
+          {
+            "qualifiedName": "src/calc.ts::subtract",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "depth": 1
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.product",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "depth": 2
+          },
+          {
+            "qualifiedName": "src/main.ts::run",
+            "kind": "function",
+            "filePath": "src/main.ts",
+            "depth": 2
+          },
+          {
+            "qualifiedName": "src/report.ts::difference",
+            "kind": "function",
+            "filePath": "src/report.ts",
+            "depth": 2
+          }
+        ]
+      ]
+    }
+  },
+  "impact-radius/add-bounded": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/__tests__/calc.test.ts",
+            "kind": "file",
+            "filePath": "src/__tests__/calc.test.ts",
+            "depth": 1
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.sum",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "depth": 1
+          }
+        ]
+      ]
+    }
+  },
+  "call-path/run-to-add": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "status": "found",
+          "hops": [
+            {
+              "source": "src/main.ts::run",
+              "target": "src/calc.ts::multiply",
+              "kind": "CALLS",
+              "direction": "forward",
+              "filePath": "src/main.ts",
+              "line": 6,
+              "confidenceTier": "RESOLVED",
+              "confidenceScore": 0.9,
+              "resolverId": "import-binding",
+              "evidence": "{\"capture\":\"reference.call\",\"offset\":203,\"lexicalScope\":true,\"via\":\"src/calc.ts\"}",
+              "evidenceTruncated": false
+            },
+            {
+              "source": "src/calc.ts::multiply",
+              "target": "src/calc.ts::add",
+              "kind": "CALLS",
+              "direction": "forward",
+              "filePath": "src/calc.ts",
+              "line": 16,
+              "confidenceTier": "RESOLVED",
+              "confidenceScore": 0.9,
+              "resolverId": "local-scope",
+              "evidence": "{\"capture\":\"reference.call\",\"offset\":458,\"lexicalScope\":true,\"lexicalTarget\":\"src/calc.ts::add\"}",
+              "evidenceTruncated": false
+            }
+          ],
+          "visitedNodes": 4,
+          "visitedEdges": 5,
+          "limits": {
+            "maxDepth": 6,
+            "maxNodes": 200,
+            "maxEdges": 5000
+          }
+        }
+      ]
+    }
+  },
+  "call-path/add-to-run": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "status": "no-path",
+          "hops": [],
+          "visitedNodes": 1,
+          "visitedEdges": 0,
+          "limits": {
+            "maxDepth": 6,
+            "maxNodes": 200,
+            "maxEdges": 5000
+          }
+        }
+      ]
+    }
+  },
+  "relationship-path/report-to-calc": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        {
+          "status": "found",
+          "hops": [
+            {
+              "source": "src/report.ts",
+              "target": "src/calc.ts",
+              "kind": "IMPORTS_FROM",
+              "direction": "forward",
+              "filePath": "src/report.ts",
+              "line": 1,
+              "confidenceTier": "RESOLVED",
+              "confidenceScore": 0.95,
+              "resolverId": "ts-module-resolution",
+              "evidence": "{\"names\":[{\"imported\":\"subtract\",\"local\":\"subtract\"}],\"defaultLocal\":null,\"namespaceLocal\":null,\"isReExport\":false,\"resolvedPath\":\"src/calc.ts\"}",
+              "evidenceTruncated": false
+            }
+          ],
+          "visitedNodes": 3,
+          "visitedEdges": 2,
+          "limits": {
+            "maxDepth": 6,
+            "maxNodes": 200,
+            "maxEdges": 5000
+          }
+        }
+      ]
+    }
+  },
+  "callers/add-base": {
+    "ok": true,
+    "result": {
+      "kind": "calls",
+      "value": [
+        [
+          {
+            "qualifiedName": "src/__tests__/calc.test.ts",
+            "kind": "file",
+            "filePath": "src/__tests__/calc.test.ts",
+            "line": 5
+          },
+          {
+            "qualifiedName": "src/calc.ts::Calculator.sum",
+            "kind": "method",
+            "filePath": "src/calc.ts",
+            "line": 23
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 16
+          },
+          {
+            "qualifiedName": "src/calc.ts::subtract",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "line": 7
+          }
+        ]
+      ]
+    }
+  },
+  "detect-changed/base": {
+    "ok": true,
+    "result": {
+      "kind": "detect-changed",
+      "value": {
+        "changed": [
+          {
+            "qualifiedName": "src/calc.ts::subtract",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "lineStart": 6,
+            "lineEnd": 8,
+            "changeKind": "modified"
+          },
+          {
+            "qualifiedName": "src/calc.ts::multiply",
+            "kind": "function",
+            "filePath": "src/calc.ts",
+            "lineStart": 10,
+            "lineEnd": 19,
+            "changeKind": "modified"
+          },
+          {
+            "qualifiedName": "src/report.ts",
+            "kind": "file",
+            "filePath": "src/report.ts",
+            "lineStart": 1,
+            "lineEnd": 6,
+            "changeKind": "added-file"
+          },
+          {
+            "qualifiedName": "src/report.ts::difference",
+            "kind": "function",
+            "filePath": "src/report.ts",
+            "lineStart": 3,
+            "lineEnd": 5,
+            "changeKind": "added-file"
+          }
+        ],
+        "unmatchedFiles": [
+          "src/renderer.ts"
+        ],
+        "lastBuildAt": "<lastBuildAt>"
+      }
+    }
+  },
+  "detect-changed/head": {
+    "ok": true,
+    "result": {
+      "kind": "detect-changed",
+      "value": {
+        "changed": [],
+        "unmatchedFiles": [],
+        "lastBuildAt": "<lastBuildAt>"
+      }
+    }
+  },
+  "detect-changed/unsafe-ref": {
+    "ok": false,
+    "code": "database-error",
+    "message": "The retained Code Graph could not be read. Try again."
+  },
+  "change-impact/base": {
+    "ok": true,
+    "result": {
+      "kind": "change-impact",
+      "value": {
+        "report": {
+          "repoId": "golden",
+          "baseRef": "golden-base",
+          "changed": [
+            {
+              "qualifiedName": "src/calc.ts::subtract",
+              "kind": "function",
+              "filePath": "src/calc.ts",
+              "lineStart": 6,
+              "lineEnd": 8,
+              "changeKind": "modified"
+            },
+            {
+              "qualifiedName": "src/calc.ts::multiply",
+              "kind": "function",
+              "filePath": "src/calc.ts",
+              "lineStart": 10,
+              "lineEnd": 19,
+              "changeKind": "modified"
+            },
+            {
+              "qualifiedName": "src/report.ts",
+              "kind": "file",
+              "filePath": "src/report.ts",
+              "lineStart": 1,
+              "lineEnd": 6,
+              "changeKind": "added-file"
+            },
+            {
+              "qualifiedName": "src/report.ts::difference",
+              "kind": "function",
+              "filePath": "src/report.ts",
+              "lineStart": 3,
+              "lineEnd": 5,
+              "changeKind": "added-file"
+            }
+          ],
+          "unmatchedFiles": [
+            "src/renderer.ts"
+          ],
+          "delta": {
+            "added": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "kind": "function",
+                "filePath": "src/calc.ts",
+                "lineStart": 6,
+                "lineEnd": 8,
+                "changeKind": "modified"
+              },
+              {
+                "qualifiedName": "src/report.ts",
+                "kind": "file",
+                "filePath": "src/report.ts",
+                "lineStart": 1,
+                "lineEnd": 6,
+                "changeKind": "added-file"
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "kind": "function",
+                "filePath": "src/report.ts",
+                "lineStart": 3,
+                "lineEnd": 5,
+                "changeKind": "added-file"
+              }
+            ],
+            "removed": [
+              {
+                "qualifiedName": "src/renderer.ts",
+                "kind": "file",
+                "filePath": "src/renderer.ts"
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute",
+                "kind": "function",
+                "filePath": "src/renderer.ts"
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute.invoke",
+                "kind": "method",
+                "filePath": "src/renderer.ts"
+              }
+            ],
+            "signatureChanged": []
+          },
+          "risk": {
+            "score": 0.65,
+            "level": "medium",
+            "reasons": [
+              "src/calc.ts::subtract: untested (+0.30), fan-in: 2 caller(s) (+0.10), in 4 flows (+0.25) (score 0.65)",
+              "src/report.ts::difference: untested (+0.30), in 1 flow (+0.25) (score 0.55)",
+              "src/calc.ts::multiply: tested by 1 test file(s) (+0.05), fan-in: 4 caller(s) (+0.10), in 3 flows (+0.25), 1 cross-community caller (+0.05) (score 0.45)"
+            ],
+            "formula": "score(symbol) = min(1, untested + securityKeyword + fanIn + flowParticipation + communityCrossing), where untested = +0.30 when a function/method/class has zero TESTED_BY edges else +0.05 when tested (Phase 4 simplification — binary, no gradient by test count yet), securityKeyword = +0.20 when the qualified name/path matches /auth|token|crypt|secret|password|sql|exec|permission|sandbox/i, fanIn (fan-in) = min(callerCount / 20, 0.10), flowParticipation = min(sum of criticality over every flow containing the symbol, 0.25), communityCrossing = min(0.05 * cross-community caller count, 0.15); overall score = max(score(symbol)) across every changed + removed symbol. Per-symbol ceiling: 0.30 + 0.20 + 0.10 + 0.25 + 0.15 = 1.00, so the high (>=0.70) and critical (>=0.85) levels are reachable."
+          },
+          "impacted": [
+            {
+              "qualifiedName": "src/__tests__/calc.test.ts",
+              "kind": "file",
+              "filePath": "src/__tests__/calc.test.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/calc.ts::Calculator.product",
+              "kind": "method",
+              "filePath": "src/calc.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/calc.ts::multiply",
+              "kind": "function",
+              "filePath": "src/calc.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/main.ts::run",
+              "kind": "function",
+              "filePath": "src/main.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/report.ts::difference",
+              "kind": "function",
+              "filePath": "src/report.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/main.ts::register",
+              "kind": "function",
+              "filePath": "src/main.ts",
+              "depth": 2
+            }
+          ],
+          "impactTruncated": false,
+          "impactSeedsTruncated": false,
+          "impactedTests": [
+            "src/__tests__/calc.test.ts"
+          ],
+          "impactedTestsTruncated": false,
+          "beforeGraph": {
+            "filesBuilt": 2,
+            "filesSkipped": 0
+          },
+          "reviewContext": {
+            "changedSymbols": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "kind": "function",
+                "filePath": "src/calc.ts",
+                "changeKind": "modified",
+                "riskScore": 0.65,
+                "riskReasons": [
+                  "untested (+0.30)",
+                  "fan-in: 2 caller(s) (+0.10)",
+                  "in 4 flows (+0.25)"
+                ]
+              },
+              {
+                "qualifiedName": "src/calc.ts::multiply",
+                "kind": "function",
+                "filePath": "src/calc.ts",
+                "changeKind": "modified",
+                "riskScore": 0.45,
+                "riskReasons": [
+                  "tested by 1 test file(s) (+0.05)",
+                  "fan-in: 4 caller(s) (+0.10)",
+                  "in 3 flows (+0.25)",
+                  "1 cross-community caller (+0.05)"
+                ]
+              },
+              {
+                "qualifiedName": "src/report.ts",
+                "kind": "file",
+                "filePath": "src/report.ts",
+                "changeKind": "added-file",
+                "riskScore": 0,
+                "riskReasons": []
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "kind": "function",
+                "filePath": "src/report.ts",
+                "changeKind": "added-file",
+                "riskScore": 0.55,
+                "riskReasons": [
+                  "untested (+0.30)",
+                  "in 1 flow (+0.25)"
+                ]
+              }
+            ],
+            "impactedFiles": [
+              "src/__tests__/calc.test.ts",
+              "src/calc.ts",
+              "src/main.ts",
+              "src/report.ts"
+            ],
+            "impactedFilesTruncated": false,
+            "testGaps": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "kind": "function",
+                "filePath": "src/calc.ts"
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "kind": "function",
+                "filePath": "src/report.ts"
+              }
+            ],
+            "testGapsTruncated": false,
+            "reviewPriorities": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "score": 0.65
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "score": 0.55
+              },
+              {
+                "qualifiedName": "src/calc.ts::multiply",
+                "score": 0.45
+              },
+              {
+                "qualifiedName": "src/renderer.ts",
+                "score": 0
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute",
+                "score": 0
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute.invoke",
+                "score": 0
+              },
+              {
+                "qualifiedName": "src/report.ts",
+                "score": 0
+              }
+            ],
+            "reviewPrioritiesTruncated": false
+          }
+        },
+        "lastBuildAt": "<lastBuildAt>"
+      }
+    }
+  },
+  "change-impact/base-depth-1": {
+    "ok": true,
+    "result": {
+      "kind": "change-impact",
+      "value": {
+        "report": {
+          "repoId": "golden",
+          "baseRef": "golden-base",
+          "changed": [
+            {
+              "qualifiedName": "src/calc.ts::subtract",
+              "kind": "function",
+              "filePath": "src/calc.ts",
+              "lineStart": 6,
+              "lineEnd": 8,
+              "changeKind": "modified"
+            },
+            {
+              "qualifiedName": "src/calc.ts::multiply",
+              "kind": "function",
+              "filePath": "src/calc.ts",
+              "lineStart": 10,
+              "lineEnd": 19,
+              "changeKind": "modified"
+            },
+            {
+              "qualifiedName": "src/report.ts",
+              "kind": "file",
+              "filePath": "src/report.ts",
+              "lineStart": 1,
+              "lineEnd": 6,
+              "changeKind": "added-file"
+            },
+            {
+              "qualifiedName": "src/report.ts::difference",
+              "kind": "function",
+              "filePath": "src/report.ts",
+              "lineStart": 3,
+              "lineEnd": 5,
+              "changeKind": "added-file"
+            }
+          ],
+          "unmatchedFiles": [
+            "src/renderer.ts"
+          ],
+          "delta": {
+            "added": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "kind": "function",
+                "filePath": "src/calc.ts",
+                "lineStart": 6,
+                "lineEnd": 8,
+                "changeKind": "modified"
+              },
+              {
+                "qualifiedName": "src/report.ts",
+                "kind": "file",
+                "filePath": "src/report.ts",
+                "lineStart": 1,
+                "lineEnd": 6,
+                "changeKind": "added-file"
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "kind": "function",
+                "filePath": "src/report.ts",
+                "lineStart": 3,
+                "lineEnd": 5,
+                "changeKind": "added-file"
+              }
+            ],
+            "removed": [
+              {
+                "qualifiedName": "src/renderer.ts",
+                "kind": "file",
+                "filePath": "src/renderer.ts"
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute",
+                "kind": "function",
+                "filePath": "src/renderer.ts"
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute.invoke",
+                "kind": "method",
+                "filePath": "src/renderer.ts"
+              }
+            ],
+            "signatureChanged": []
+          },
+          "risk": {
+            "score": 0.65,
+            "level": "medium",
+            "reasons": [
+              "src/calc.ts::subtract: untested (+0.30), fan-in: 2 caller(s) (+0.10), in 4 flows (+0.25) (score 0.65)",
+              "src/report.ts::difference: untested (+0.30), in 1 flow (+0.25) (score 0.55)",
+              "src/calc.ts::multiply: tested by 1 test file(s) (+0.05), fan-in: 4 caller(s) (+0.10), in 3 flows (+0.25), 1 cross-community caller (+0.05) (score 0.45)"
+            ],
+            "formula": "score(symbol) = min(1, untested + securityKeyword + fanIn + flowParticipation + communityCrossing), where untested = +0.30 when a function/method/class has zero TESTED_BY edges else +0.05 when tested (Phase 4 simplification — binary, no gradient by test count yet), securityKeyword = +0.20 when the qualified name/path matches /auth|token|crypt|secret|password|sql|exec|permission|sandbox/i, fanIn (fan-in) = min(callerCount / 20, 0.10), flowParticipation = min(sum of criticality over every flow containing the symbol, 0.25), communityCrossing = min(0.05 * cross-community caller count, 0.15); overall score = max(score(symbol)) across every changed + removed symbol. Per-symbol ceiling: 0.30 + 0.20 + 0.10 + 0.25 + 0.15 = 1.00, so the high (>=0.70) and critical (>=0.85) levels are reachable."
+          },
+          "impacted": [
+            {
+              "qualifiedName": "src/__tests__/calc.test.ts",
+              "kind": "file",
+              "filePath": "src/__tests__/calc.test.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/calc.ts::Calculator.product",
+              "kind": "method",
+              "filePath": "src/calc.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/calc.ts::multiply",
+              "kind": "function",
+              "filePath": "src/calc.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/main.ts::run",
+              "kind": "function",
+              "filePath": "src/main.ts",
+              "depth": 1
+            },
+            {
+              "qualifiedName": "src/report.ts::difference",
+              "kind": "function",
+              "filePath": "src/report.ts",
+              "depth": 1
+            }
+          ],
+          "impactTruncated": false,
+          "impactSeedsTruncated": false,
+          "impactedTests": [
+            "src/__tests__/calc.test.ts"
+          ],
+          "impactedTestsTruncated": false,
+          "beforeGraph": {
+            "filesBuilt": 2,
+            "filesSkipped": 0
+          },
+          "reviewContext": {
+            "changedSymbols": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "kind": "function",
+                "filePath": "src/calc.ts",
+                "changeKind": "modified",
+                "riskScore": 0.65,
+                "riskReasons": [
+                  "untested (+0.30)",
+                  "fan-in: 2 caller(s) (+0.10)",
+                  "in 4 flows (+0.25)"
+                ]
+              },
+              {
+                "qualifiedName": "src/calc.ts::multiply",
+                "kind": "function",
+                "filePath": "src/calc.ts",
+                "changeKind": "modified",
+                "riskScore": 0.45,
+                "riskReasons": [
+                  "tested by 1 test file(s) (+0.05)",
+                  "fan-in: 4 caller(s) (+0.10)",
+                  "in 3 flows (+0.25)",
+                  "1 cross-community caller (+0.05)"
+                ]
+              },
+              {
+                "qualifiedName": "src/report.ts",
+                "kind": "file",
+                "filePath": "src/report.ts",
+                "changeKind": "added-file",
+                "riskScore": 0,
+                "riskReasons": []
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "kind": "function",
+                "filePath": "src/report.ts",
+                "changeKind": "added-file",
+                "riskScore": 0.55,
+                "riskReasons": [
+                  "untested (+0.30)",
+                  "in 1 flow (+0.25)"
+                ]
+              }
+            ],
+            "impactedFiles": [
+              "src/__tests__/calc.test.ts",
+              "src/calc.ts",
+              "src/main.ts",
+              "src/report.ts"
+            ],
+            "impactedFilesTruncated": false,
+            "testGaps": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "kind": "function",
+                "filePath": "src/calc.ts"
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "kind": "function",
+                "filePath": "src/report.ts"
+              }
+            ],
+            "testGapsTruncated": false,
+            "reviewPriorities": [
+              {
+                "qualifiedName": "src/calc.ts::subtract",
+                "score": 0.65
+              },
+              {
+                "qualifiedName": "src/report.ts::difference",
+                "score": 0.55
+              },
+              {
+                "qualifiedName": "src/calc.ts::multiply",
+                "score": 0.45
+              },
+              {
+                "qualifiedName": "src/renderer.ts",
+                "score": 0
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute",
+                "score": 0
+              },
+              {
+                "qualifiedName": "src/renderer.ts::requestCompute.invoke",
+                "score": 0
+              },
+              {
+                "qualifiedName": "src/report.ts",
+                "score": 0
+              }
+            ],
+            "reviewPrioritiesTruncated": false
+          }
+        },
+        "lastBuildAt": "<lastBuildAt>"
+      }
+    }
+  },
+  "change-impact/head": {
+    "ok": true,
+    "result": {
+      "kind": "change-impact",
+      "value": {
+        "report": {
+          "repoId": "golden",
+          "baseRef": "HEAD",
+          "changed": [],
+          "unmatchedFiles": [],
+          "delta": {
+            "added": [],
+            "removed": [],
+            "signatureChanged": []
+          },
+          "risk": {
+            "score": 0,
+            "level": "low",
+            "reasons": [],
+            "formula": "score(symbol) = min(1, untested + securityKeyword + fanIn + flowParticipation + communityCrossing), where untested = +0.30 when a function/method/class has zero TESTED_BY edges else +0.05 when tested (Phase 4 simplification — binary, no gradient by test count yet), securityKeyword = +0.20 when the qualified name/path matches /auth|token|crypt|secret|password|sql|exec|permission|sandbox/i, fanIn (fan-in) = min(callerCount / 20, 0.10), flowParticipation = min(sum of criticality over every flow containing the symbol, 0.25), communityCrossing = min(0.05 * cross-community caller count, 0.15); overall score = max(score(symbol)) across every changed + removed symbol. Per-symbol ceiling: 0.30 + 0.20 + 0.10 + 0.25 + 0.15 = 1.00, so the high (>=0.70) and critical (>=0.85) levels are reachable."
+          },
+          "impacted": [],
+          "impactTruncated": false,
+          "impactSeedsTruncated": false,
+          "impactedTests": [],
+          "impactedTestsTruncated": false,
+          "beforeGraph": {
+            "filesBuilt": 0,
+            "filesSkipped": 0
+          },
+          "reviewContext": {
+            "changedSymbols": [],
+            "impactedFiles": [],
+            "impactedFilesTruncated": false,
+            "testGaps": [],
+            "testGapsTruncated": false,
+            "reviewPriorities": [],
+            "reviewPrioritiesTruncated": false
+          }
+        },
+        "lastBuildAt": "<lastBuildAt>"
+      }
+    }
+  },
+  "base-identity/built": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "readable",
+        "matches": {
+          "schema": true,
+          "extractor": true,
+          "canonicalRoot": true,
+          "customLanguagesFingerprint": true,
+          "repoId": true,
+          "gitHead": true,
+          "completed": true
+        },
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>"
+        },
+        "repository": {
+          "repoId": "golden",
+          "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d"
+        }
+      }
+    }
+  },
+  "validate-base/built": {
+    "ok": true,
+    "result": {
+      "kind": "validate-base",
+      "value": true
+    }
+  },
+  "base-identity/other-head": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "readable",
+        "matches": {
+          "schema": true,
+          "extractor": true,
+          "canonicalRoot": true,
+          "customLanguagesFingerprint": true,
+          "repoId": true,
+          "gitHead": false,
+          "completed": true
+        },
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>"
+        },
+        "repository": {
+          "repoId": "golden",
+          "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d"
+        }
+      }
+    }
+  },
+  "validate-base/other-head": {
+    "ok": true,
+    "result": {
+      "kind": "validate-base",
+      "value": false
+    }
+  },
+  "base-identity/other-root": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "readable",
+        "matches": {
+          "schema": true,
+          "extractor": true,
+          "canonicalRoot": false,
+          "customLanguagesFingerprint": true,
+          "repoId": true,
+          "gitHead": true,
+          "completed": true
+        },
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>"
+        },
+        "repository": {
+          "repoId": "golden",
+          "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d"
+        }
+      }
+    }
+  },
+  "validate-base/other-root": {
+    "ok": true,
+    "result": {
+      "kind": "validate-base",
+      "value": false
+    }
+  },
+  "base-identity/other-repo": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "readable",
+        "matches": {
+          "schema": true,
+          "extractor": true,
+          "canonicalRoot": true,
+          "customLanguagesFingerprint": true,
+          "repoId": false,
+          "gitHead": true,
+          "completed": true
+        },
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>"
+        },
+        "repository": {
+          "repoId": "golden",
+          "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d"
+        }
+      }
+    }
+  },
+  "validate-base/other-repo": {
+    "ok": true,
+    "result": {
+      "kind": "validate-base",
+      "value": false
+    }
+  },
+  "base-identity/other-languages": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "readable",
+        "matches": {
+          "schema": true,
+          "extractor": true,
+          "canonicalRoot": true,
+          "customLanguagesFingerprint": false,
+          "repoId": true,
+          "gitHead": true,
+          "completed": true
+        },
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>"
+        },
+        "repository": {
+          "repoId": "golden",
+          "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d"
+        }
+      }
+    }
+  },
+  "validate-base/other-languages": {
+    "ok": true,
+    "result": {
+      "kind": "validate-base",
+      "value": false
+    }
+  },
+  "base-identity/worktree": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "readable",
+        "matches": {
+          "schema": true,
+          "extractor": true,
+          "canonicalRoot": false,
+          "customLanguagesFingerprint": true,
+          "repoId": true,
+          "gitHead": true,
+          "completed": true
+        },
+        "observed": {
+          "schemaVersion": 5,
+          "extractorVersion": 6,
+          "lastBuildAt": "<lastBuildAt>",
+          "completedBuildAt": "<completedBuildAt>"
+        },
+        "repository": {
+          "repoId": "golden",
+          "gitHead": "61e1aa7630f1e56eefad7bdc61f1ca6854238d9d"
+        }
+      }
+    }
+  },
+  "base-identity/missing": {
+    "ok": true,
+    "result": {
+      "kind": "base-identity",
+      "value": {
+        "state": "missing"
+      }
+    }
+  },
+  "validate-base/missing": {
+    "ok": true,
+    "result": {
+      "kind": "validate-base",
+      "value": false
+    }
+  }
+}

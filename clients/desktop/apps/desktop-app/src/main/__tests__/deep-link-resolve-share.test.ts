@@ -1,4 +1,5 @@
 import { ResourceContextUnavailableError } from '../lib/resource-context-error';
+import type { PublicSkillShareSnapshot } from '@canopy/protocol';
 jest.mock('../canopy-cloud/public-share-client', () => ({
   getPublicSkillShareSnapshot: jest.fn(),
   getPublicPipelineShareSnapshot: jest.fn(),
@@ -157,6 +158,16 @@ describe('resolveShareSnapshot', () => {
   it.each(['TEAM', 'ORGANIZATION'] as const)(
     'rejects a changed %s collection package pin',
     async (audience) => {
+      const packageSnapshot = {
+        digest: `pp:v1:${'C'.repeat(43)}`,
+        version: 1 as const,
+        resources: [],
+        environmentRequirements: [],
+        totalFiles: 0,
+        totalBytes: 0,
+      };
+      // This case deliberately supplies a malformed package version.
+      Reflect.set(packageSnapshot, 'version', 3);
       jest.mocked(getScopedCollectionShareSnapshot).mockResolvedValue({
         entity: 'collection',
         externalId: UUID,
@@ -167,14 +178,7 @@ describe('resolveShareSnapshot', () => {
         authorUsername: null,
         updatedAt: '2026-10-02T00:00:00Z',
         distributionMode: 'package',
-        package: {
-          digest: `pp:v1:${'C'.repeat(43)}`,
-          version: 3,
-          resources: [],
-          environmentRequirements: [],
-          totalFiles: 0,
-          totalBytes: 0,
-        },
+        package: packageSnapshot,
       });
       await expect(
         resolveShareSnapshot({
@@ -222,6 +226,53 @@ describe('resolveShareSnapshot', () => {
       resolveShareSnapshot({ entity: 'skill', externalId: UUID }),
     ).resolves.toEqual({ ok: true, snapshot: skillSnapshot });
     expect(getPublicSkillShareSnapshot).toHaveBeenCalledWith(UUID);
+  });
+
+  it.each(['TEAM', 'ORGANIZATION'] as const)(
+    'returns authenticated skill provenance for %s without trusting opener labels',
+    async (audience) => {
+      const snapshot: PublicSkillShareSnapshot = {
+        ...skillSnapshot,
+        scopedShare: true,
+        sharedBy: {
+          name: 'Lena Park',
+          owner: { type: 'organization', id: 'org-acme', name: 'Acme' },
+          shareScope: 'organization',
+        },
+      };
+      jest.mocked(getScopedSkillShareSnapshot).mockResolvedValueOnce(snapshot);
+      await expect(
+        resolveShareSnapshot({
+          entity: 'skill',
+          externalId: UUID,
+          audience,
+          sharedBy: {
+            name: 'Forged sharer',
+            owner: 'Forged owner',
+            shareScope: 'team',
+          },
+          authorUsername: 'forged',
+        }),
+      ).resolves.toEqual({ ok: true, snapshot });
+      expect(getScopedSkillShareSnapshot).toHaveBeenCalledWith(UUID);
+      expect(getPublicSkillShareSnapshot).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps legacy scoped snapshots without provenance valid', async () => {
+    const snapshot: PublicSkillShareSnapshot = {
+      ...skillSnapshot,
+      scopedShare: true,
+    };
+    jest.mocked(getScopedSkillShareSnapshot).mockResolvedValueOnce(snapshot);
+    await expect(
+      resolveShareSnapshot({
+        entity: 'skill',
+        externalId: UUID,
+        audience: 'TEAM',
+      }),
+    ).resolves.toEqual({ ok: true, snapshot });
+    expect(snapshot).not.toHaveProperty('sharedBy');
   });
 
   it('routes workspace requests to the workspace-template client', async () => {
@@ -579,7 +630,12 @@ describe('resolveShareSnapshot', () => {
       actionType: 'app_advisor_prompt' as const,
       contentHash: CONTENT_HASH,
       shareScope: 'team' as const,
-      owner: { type: 'team' as const, id: 'team-1', name: 'Platform' },
+      owner: {
+        type: 'team' as const,
+        id: 'team-1',
+        name: 'Platform',
+        organization: { id: 'org-1', name: 'Platform' },
+      },
       createdAt: '2026-09-15T00:00:00.000Z',
       updatedAt: '2026-09-16T00:00:00.000Z',
       createdBy: { id: 'user-1', name: 'Alex', email: null },
@@ -597,6 +653,7 @@ describe('resolveShareSnapshot', () => {
         action: {
           type: 'app_advisor_prompt' as const,
           prompt: 'Check the queue',
+          plugins: [],
         },
         hasRunCondition: false,
       },
@@ -656,18 +713,80 @@ describe('resolveShareSnapshot', () => {
     ).resolves.toEqual({ ok: false, reason: 'not-found' });
   });
 
-  it('maps transport failures to cloud-unreachable', async () => {
-    for (const error of [
-      new CanopyCloudClientError('network-error', 'offline'),
-      new CanopyCloudClientError('http-error', 'boom', 500),
-      new Error('unexpected'),
-    ]) {
-      (getPublicSkillShareSnapshot as jest.Mock).mockRejectedValue(error);
-      await expect(
-        resolveShareSnapshot({ entity: 'skill', externalId: UUID }),
-      ).resolves.toEqual({ ok: false, reason: 'cloud-unreachable' });
-    }
-  });
+  describe.each([undefined, 'TEAM', 'ORGANIZATION'] as const)(
+    'failure classification for audience %s',
+    (audience) => {
+      it.each([
+        [
+          new CanopyCloudClientError('missing-api-key', 'No credential'),
+          'sign-in-required',
+        ],
+        [
+          new CanopyCloudClientError('http-error', 'Expired', 401),
+          'sign-in-required',
+        ],
+        [
+          new CanopyCloudClientError('http-error', 'Forbidden', 403),
+          'not-a-member',
+        ],
+        [
+          new CanopyCloudClientError(
+            'cloud-not-configured',
+            'No configuration',
+          ),
+          'cloud-unreachable',
+        ],
+        [
+          new CanopyCloudClientError('network-error', 'Offline'),
+          'cloud-unreachable',
+        ],
+        [
+          new CanopyCloudClientError('invalid-response', 'Invalid JSON'),
+          'cloud-unreachable',
+        ],
+        [
+          new CanopyCloudClientError('http-error', 'Server failure', 503),
+          'cloud-unreachable',
+        ],
+        [new Error('Unexpected failure'), 'cloud-unreachable'],
+        [
+          new CanopyCloudClientError('http-error', 'Not found or private', 404),
+          'not-found',
+        ],
+        [new ResourceContextUnavailableError('context-mismatch'), 'not-found'],
+        [
+          new CanopyCloudClientError('http-error', 'Upgrade required', 426),
+          'client-upgrade-required',
+        ],
+        ...[
+          'pipeline_share_changed',
+          'workspace_template_share_changed',
+          'automation_share_changed',
+        ].map((code): [CanopyCloudClientError, string] => [
+          new CanopyCloudClientError('http-error', 'Changed', 409, code),
+          'share-changed',
+        ]),
+        [
+          new CanopyCloudClientError(
+            'http-error',
+            'Conflict',
+            409,
+            'other_code',
+          ),
+          'cloud-unreachable',
+        ],
+      ])('classifies %s as %s', async (error, reason) => {
+        const read =
+          audience === undefined
+            ? getPublicSkillShareSnapshot
+            : getScopedSkillShareSnapshot;
+        jest.mocked(read).mockRejectedValueOnce(error);
+        await expect(
+          resolveShareSnapshot({ entity: 'skill', externalId: UUID, audience }),
+        ).resolves.toEqual({ ok: false, reason });
+      });
+    },
+  );
 });
 
 describe('parseHandoffEventRequest', () => {

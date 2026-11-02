@@ -1,4 +1,8 @@
 import type {
+  AutoResumeMetadata,
+  ToolInterruption,
+} from '@canopy/protocol/portal';
+import type {
   AgentUsage,
   ChatWatcherFiredInfo,
   CodexAgentState,
@@ -20,6 +24,7 @@ export type ToolResult = {
   visualRef?: PersistedVisualReference;
   outputTruncated?: true;
   isError: boolean;
+  interruption?: ToolInterruption;
   /**
    * Structured authentication failure this errored result explains
    * (CAN-1814). Threaded from the persisted `tool_result` block's
@@ -121,4 +126,5 @@ export interface DisplayMessage {
    */
   agentSent?: AgentSentInfo;
   userMessageSource?: PersistedUserMessageSource;
+  autoResume?: AutoResumeMetadata;
 }

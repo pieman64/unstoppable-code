@@ -641,6 +641,7 @@ test('the cost index scenario outlasts its startup delay over audit the app keep
 
 test('opt-in scenarios stay out of the default suite and parse when requested', () => {
   assert.deepEqual(OPT_IN_SCENARIO_NAMES, [
+    'sidebar-reorder',
     'browser-actions',
     'browser-agent-actions',
     'multi-chat-streaming',
@@ -650,9 +651,12 @@ test('opt-in scenarios stay out of the default suite and parse when requested', 
     'managed-delegation-concurrency',
     'code-graph-new-worktree',
     'code-graph-small-edit',
+    'claude-graph-orientation',
     'linear-reference-transcripts',
     'cost-index-first-build',
     'skill-suggestions-backfill',
+    'code-review-registry-cleanup',
+    'code-review-registry-cleanup-trace',
   ]);
   for (const scenario of OPT_IN_SCENARIO_NAMES) {
     assert.ok(SCENARIO_NAMES.includes(scenario), scenario);

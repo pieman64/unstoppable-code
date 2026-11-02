@@ -1,8 +1,10 @@
+import { approvalSafetyDeniedInfoSchema } from '@canopy/protocol/approvals';
 import type {
   PersistedChatBlock,
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import { isDelegatedAgentCallBlock } from '@canopy/agent-transcript';
+import { isTranscriptBlocksReference } from '@canopy/agent-transcript/transcript-storage';
 import { isRecord } from './type-guards';
 
 function isOptionalString(value: unknown): boolean {
@@ -101,7 +103,9 @@ function isRecordOf(
   return isRecord(value) && Object.values(value).every(validate);
 }
 
-function isPersistedChatBlock(value: unknown): value is PersistedChatBlock {
+export function isPersistedChatBlock(
+  value: unknown,
+): value is PersistedChatBlock {
   if (!isRecord(value) || typeof value.type !== 'string') return false;
 
   switch (value.type) {
@@ -211,6 +215,8 @@ function isPersistedChatBlock(value: unknown): value is PersistedChatBlock {
       return (
         typeof value.timestamp === 'number' && Number.isFinite(value.timestamp)
       );
+    case 'approval_safety_denied_info':
+      return approvalSafetyDeniedInfoSchema.safeParse(value).success;
     case 'approval_resolution_info':
       return (
         typeof value.timestamp === 'number' &&
@@ -279,6 +285,9 @@ export function isPersistedChatMessage(
       value.role === 'system') &&
     Array.isArray(value.blocks) &&
     value.blocks.every(isPersistedChatBlock) &&
+    (!Object.prototype.hasOwnProperty.call(value, 'blocksRef') ||
+      (value.blocks.length === 0 &&
+        isTranscriptBlocksReference(value.blocksRef))) &&
     typeof value.timestamp === 'number' &&
     Number.isFinite(value.timestamp)
   );

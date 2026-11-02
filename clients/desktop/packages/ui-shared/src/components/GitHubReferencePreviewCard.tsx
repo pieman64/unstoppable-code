@@ -10,6 +10,7 @@ import { PersonIcon } from '../icons/AppIcons';
 import { DisplayAvatar } from './DisplayAvatar';
 import { GroupedDiffStats } from './GroupedDiffStats';
 import { CometSpinner } from './CometSpinner';
+import { SKELETON_BLOCK_CLASS } from './SkeletonBlock';
 import {
   PR_STATUS_LINES,
   prStatusLineKind,
@@ -236,17 +237,95 @@ function StatusLayoutItemCard({
 
 const FILE_COUNT_FORMAT = new Intl.NumberFormat('en-US');
 
+/** One shaded block of the loading card; the classes give its size and shape. */
+function Bone({ className }: { className: string }): JSX.Element {
+  return (
+    <span
+      aria-hidden="true"
+      className={`${SKELETON_BLOCK_CLASS} ${className}`}
+    />
+  );
+}
+
+/**
+ * The status card while its item loads: the same box, insets and rows as
+ * {@link StatusLayoutItemCard} with a pull request's facts, shaded where the
+ * text will go, so the card keeps its size when the data arrives. The number
+ * is already known and stays in its place.
+ */
+function StatusLayoutItemSkeleton({
+  itemNumber,
+}: {
+  itemNumber: number;
+}): JSX.Element {
+  return (
+    <div
+      role="status"
+      className="flex min-w-0 flex-col gap-2 px-0.5 pt-1 pb-1.5 text-xs"
+      data-testid="github-reference-preview-skeleton"
+      data-layout="status"
+    >
+      <span className="sr-only">Loading preview</span>
+      <div className="flex h-4 min-w-0 items-center gap-1.5 fg-tertiary">
+        <span className="flex shrink-0 items-center gap-1">
+          <Bone className="size-3.5 rounded-full" />
+          <Bone className="h-2.5 w-14 rounded-sm" />
+        </span>
+        <span className="flex min-w-0 flex-1">
+          <Bone className="h-2.5 w-10 rounded-sm" />
+        </span>
+        <span className="shrink-0" aria-hidden="true">
+          #{itemNumber}
+        </span>
+        <Bone className="h-2.5 w-6 shrink-0 rounded-sm" />
+      </div>
+      {/* Two title lines, each one line of text tall. */}
+      <div className="flex flex-col">
+        <span className="flex h-lh items-center">
+          <Bone className="h-3 w-full rounded-sm" />
+        </span>
+        <span className="flex h-lh items-center">
+          <Bone className="h-3 w-3/5 rounded-sm" />
+        </span>
+      </div>
+      <div className="flex h-5 min-w-0 items-center gap-2">
+        <span className="flex min-w-0 flex-1 items-center gap-1">
+          <Bone className="size-4 shrink-0 rounded-full" />
+          <Bone className="h-2.5 w-16 rounded-sm" />
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          <Bone className="h-5 w-20 rounded-full" />
+          <Bone className="h-5 w-12 rounded-full" />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /** Informational hover card for one GitHub repository, issue, or pull request reference. */
 export function GitHubReferencePreviewCard({
   label,
   view,
   layout = 'classic',
+  itemNumber,
 }: {
   /** Display identity: `#1234`, `owner/repo#1234`, or `owner/repo`. */
   label: string;
   view: GitHubReferencePreviewCardView;
   layout?: GitHubReferencePreviewCardLayout;
+  /**
+   * The issue or pull request number, when the reference names one. While it
+   * loads, the status layout shows the card's shape around it.
+   */
+  itemNumber?: number;
 }): JSX.Element {
+  if (
+    view.status === 'loading' &&
+    layout === 'status' &&
+    itemNumber !== undefined
+  ) {
+    return <StatusLayoutItemSkeleton itemNumber={itemNumber} />;
+  }
   if (view.status !== 'ready') {
     return (
       <div className="flex min-w-0 flex-col gap-0.5 text-xs" aria-live="polite">

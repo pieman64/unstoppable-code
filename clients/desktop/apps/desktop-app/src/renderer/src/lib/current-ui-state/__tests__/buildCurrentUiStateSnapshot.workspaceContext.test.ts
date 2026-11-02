@@ -1,7 +1,10 @@
 /**
  * @jest-environment jsdom
  */
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import {
+  CLIENT_FEATURE_FLAGS,
+  getDefaultFeatureFlagSnapshot,
+} from '@canopy/protocol/feature-flags';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -28,12 +31,11 @@ beforeEach(() => {
     state: {
       status: 'disabled',
       connectionStatus: 'inactive',
-      selectedServerId: null,
-      selectedServerName: null,
-      selectedServerBaseUrl: null,
       sessionId: null,
       pairingCode: null,
       pairingCodeExpiresAt: null,
+      machineName: null,
+      hostCode: null,
       activatedAt: null,
       lastSeenAt: null,
       lastErrorAt: null,
@@ -51,6 +53,7 @@ beforeEach(() => {
   });
   useFeatureFlagsStore.getState().setSnapshot({
     values: {
+      ...getDefaultFeatureFlagSnapshot().values,
       [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
       [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]: false,
     },

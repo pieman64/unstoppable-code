@@ -21,7 +21,8 @@ jest.mock('@/hooks/useSharedContainerEntryPointVisible', () => ({
 }));
 
 jest.mock('@/lib/shared-containers/open-forked-container', () => ({
-  openForkedContainer: (): Promise<void> => Promise.resolve(),
+  openForkedContainer: (): Promise<{ switchedTo: null }> =>
+    Promise.resolve({ switchedTo: null }),
 }));
 jest.mock('@/stores/projectsStore', () => ({
   useProjectsStore: (selector: (state: unknown) => unknown): unknown =>
@@ -32,6 +33,7 @@ import { SharedContainerSidebarSection } from '../SharedContainerSidebarSection'
 import {
   useSharedContainerReplicasStore,
   type SharedContainerListEntry,
+  type SharedContainerRemovedEntry,
 } from '../../../stores/sharedContainerReplicasStore';
 import { useWorkspaceContextStore } from '../../../stores/workspaceContextStore';
 import { useFeatureFlagsStore } from '../../../stores/featureFlagsStore';
@@ -70,13 +72,15 @@ function textElement(scope: Element | null, text: string): Element {
   return match;
 }
 
-const ENTRY = {
+const ENTRY: SharedContainerListEntry = {
   organizationId: 'org-1',
   ownerName: 'Dana',
   container: {
     id: 'container-1',
     organizationId: 'org-1',
     ownerUserId: 'user-1',
+    owner: { userId: 'user-1', name: 'Dana' },
+    access: 'organization',
     worktreeId: 'worktree-1',
     containerType: 'CODE_WORKTREE' as const,
     title: 'Checkout flow',
@@ -375,8 +379,10 @@ describe('SharedContainerSidebarSection context scoping (CAN-2954)', () => {
         id,
         organizationId,
         ownerUserId: 'owner',
+        owner: { userId: 'owner', name: 'Dana' },
+        access: 'organization',
         worktreeId: 'wt',
-        containerType: 'worktree' as const,
+        containerType: 'CODE_WORKTREE',
         title: id,
         revision: 1,
         createdAt: '2026-09-10T00:00:00.000Z',
@@ -964,6 +970,107 @@ describe('SharedContainerSidebarSection fork action', () => {
     const item = portalQuery('shared-container-row-container-1-fork');
     expect(item).toBeNull();
   });
+
+  describe('reviewed revision (CAN-4908)', () => {
+    function readable(revisionId: string, revisionCreatedAt: string): unknown {
+      return {
+        containerId: 'container-1',
+        organizationId: 'org-1',
+        containerType: 'CODE_WORKTREE',
+        updatedAt: revisionCreatedAt,
+        status: 'available',
+        revisionId,
+        revision: 1,
+        revisionCreatedAt,
+      };
+    }
+
+    let broadcast: (event: unknown) => void;
+    let getReplicaState: jest.Mock;
+
+    beforeEach(() => {
+      broadcast = (): void => {};
+      getReplicaState = jest.fn(() =>
+        Promise.resolve(readable('revision-1', '2026-09-08T12:00:00.000Z')),
+      );
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        writable: true,
+        value: {
+          getDefaultCloneDirectory: jest.fn(() => Promise.resolve('/repos')),
+          sharedContainers: {
+            getReplicaState,
+            onReplicaChanged: jest.fn((callback: (event: unknown) => void) => {
+              broadcast = callback;
+              return (): void => {
+                broadcast = (): void => {};
+              };
+            }),
+          },
+        },
+      });
+      seedAccepted();
+    });
+
+    async function launchDialog(): Promise<void> {
+      await act(async () => {
+        portalQuery('shared-container-row-container-1-fork')?.click();
+        for (let index = 0; index < 6; index += 1) await Promise.resolve();
+      });
+      await act(async () => {
+        portalQuery('shared-container-fork-continue')?.click();
+        await Promise.resolve();
+      });
+    }
+
+    it('resolves the revision when the dialog opens, not when the menu did', async () => {
+      await openRowMenu();
+      // Promoted between opening the menu and choosing Make a copy.
+      getReplicaState.mockResolvedValue(
+        readable('revision-2', '2026-09-09T15:30:00.000Z'),
+      );
+
+      await launchDialog();
+
+      const line = portalQuery('shared-container-fork-revision');
+      expect(line?.dataset.revisionId).toBe('revision-2');
+      expect(portalQuery('shared-container-fork-revision-update')).toBeNull();
+    });
+
+    it('discloses a promotion that arrives while the dialog is open', async () => {
+      await openRowMenu();
+      await launchDialog();
+      expect(
+        portalQuery('shared-container-fork-revision')?.dataset.revisionId,
+      ).toBe('revision-1');
+
+      act(() => {
+        broadcast(readable('revision-2', '2026-09-09T15:30:00.000Z'));
+      });
+
+      expect(
+        portalQuery('shared-container-fork-revision-update'),
+      ).not.toBeNull();
+      expect(
+        (portalQuery('shared-container-fork-confirm') as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+    });
+
+    it('reports a purged replica as unavailable rather than as an update', async () => {
+      await openRowMenu();
+      await launchDialog();
+
+      act(() => {
+        broadcast({ purged: 'container', containerId: 'container-1' });
+      });
+
+      expect(
+        portalQuery('shared-container-fork-revision-unavailable'),
+      ).not.toBeNull();
+      expect(portalQuery('shared-container-fork-revision-update')).toBeNull();
+    });
+  });
 });
 
 describe('SharedContainerSidebarSection header affordances (CAN-3552)', () => {
@@ -1154,6 +1261,8 @@ describe('SharedContainerSidebarSection invitation dialog (CAN-4052)', () => {
 
     expect(acceptContainer).toHaveBeenCalledWith({
       containerId: 'container-1',
+      // The listing's type reaches main as the acceptance telemetry hint.
+      containerType: 'CODE_WORKTREE',
       organizationId: 'org-1',
     });
     expect(bodyQuery('shared-container-invitation-dialog')).toBeNull();
@@ -1246,7 +1355,7 @@ describe('SharedContainerSidebarSection invitation dialog (CAN-4052)', () => {
 });
 
 describe('SharedContainerSidebarSection Past shares row (CAN-4052)', () => {
-  const REMOVED = {
+  const REMOVED: SharedContainerRemovedEntry = {
     ...ENTRY,
     container: { ...ENTRY.container, id: 'container-9', title: 'Old plan' },
     dismissedAt: '2026-10-01T00:00:00.000Z',

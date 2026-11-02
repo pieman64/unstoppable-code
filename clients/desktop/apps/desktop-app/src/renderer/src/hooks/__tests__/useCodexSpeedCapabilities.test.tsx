@@ -126,6 +126,7 @@ function installBridge(): BridgeStub {
     listenerCount: (): number => listeners.size,
   };
   const codexSpeed: CodexSpeedApi = {
+    readRoute: () => Promise.resolve(NATIVE_ROUTE),
     readCapabilities: bridge.readCapabilities,
     setActive: bridge.setActive,
     onChanged: bridge.onChanged,

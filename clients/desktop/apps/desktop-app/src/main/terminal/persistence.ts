@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { writeFileAtomicallySync } from '@canopy/desktop-shared/node/lib/atomic-file';
 import {
   DEFAULT_TERMINAL_DRAWER_COLLAPSED,
   TERMINAL_CUSTOM_NAME_MAX_LENGTH,
@@ -14,6 +15,7 @@ import {
   type TerminalSession,
   type WorktreeTerminalLayoutState,
 } from '@canopy/desktop-shared/types';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getWorktreeTerminalStateFilePath } from '../lib/paths';
 import { isRecord } from '../lib/type-guards';
 
@@ -22,12 +24,84 @@ interface CachedWorktreeTerminalState {
   worktreeId: string;
   filePath: string;
   state: PersistedWorktreeTerminalStateFile;
+  /** False while the file on disk must be left as it is this session. */
+  writable: boolean;
 }
+
+type TerminalStateFileRead =
+  | { kind: 'absent' }
+  | { kind: 'readable'; value: Record<string, unknown> }
+  | { kind: 'damaged' }
+  | { kind: 'newer' }
+  | { kind: 'unreadable'; code: string | undefined };
 
 const WORKTREE_WRITE_DEBOUNCE_MS = 100;
 
 function worktreeKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== 'object') {
+    return undefined;
+  }
+  const code: unknown = Reflect.get(error, 'code');
+  return typeof code === 'string' ? code : undefined;
+}
+
+function readTerminalStateFile(filePath: string): TerminalStateFileRead {
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch (error) {
+    const code = errorCode(error);
+    return code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unreadable', code };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: 'damaged' };
+  }
+  if (!isRecord(parsed) || typeof parsed.version !== 'number') {
+    return { kind: 'damaged' };
+  }
+  if (parsed.version > 1) {
+    return { kind: 'newer' };
+  }
+  return parsed.version === 1 && hasVersion1Shape(parsed)
+    ? { kind: 'readable', value: parsed }
+    : { kind: 'damaged' };
+}
+
+/** Absent lists read as empty; present ones must hold only valid entries. */
+function hasVersion1Shape(value: Record<string, unknown>): boolean {
+  const { terminals, groups } = value;
+  return (
+    (terminals === undefined ||
+      (Array.isArray(terminals) &&
+        terminals.every(isPersistedTerminalEntry))) &&
+    (groups === undefined ||
+      (Array.isArray(groups) && groups.every(isTerminalGroup)))
+  );
+}
+
+/** Keeps a damaged file's bytes beside it; false when it could not be moved. */
+function setAsideDamagedStateFile(filePath: string): boolean {
+  const asidePath = `${filePath}.damaged-${Date.now()}`;
+  try {
+    renameSync(filePath, asidePath);
+  } catch (error) {
+    logMainProcessWarn('Failed to set aside damaged terminal state', {
+      code: errorCode(error),
+    });
+    return false;
+  }
+  logMainProcessWarn('Set aside damaged terminal state', { asidePath });
+  return true;
 }
 
 function isShutdownExitSignal(signal: string | null): boolean {
@@ -401,18 +475,27 @@ export class TerminalPersistenceStore {
     }
 
     const filePath = getWorktreeTerminalStateFilePath(projectId, worktreeId);
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-    } catch {
-      parsed = null;
+    const file = readTerminalStateFile(filePath);
+    let writable = true;
+    if (file.kind === 'damaged') {
+      writable = setAsideDamagedStateFile(filePath);
+    } else if (file.kind === 'newer' || file.kind === 'unreadable') {
+      writable = false;
+      logMainProcessWarn('Leaving terminal state unchanged this session', {
+        reason: file.kind,
+        ...(file.kind === 'unreadable' ? { code: file.code } : {}),
+      });
     }
 
     const cached: CachedWorktreeTerminalState = {
       projectId,
       worktreeId,
       filePath,
-      state: normalizePersistedState(parsed, projectId, worktreeId),
+      state:
+        file.kind === 'readable'
+          ? normalizePersistedState(file.value, projectId, worktreeId)
+          : createEmptyState(),
+      writable,
     };
     this.cache.set(key, cached);
     return cached;
@@ -449,6 +532,10 @@ export class TerminalPersistenceStore {
     );
   }
 
+  /**
+   * A failed write is logged and leaves the cached state in place, so the
+   * next scheduled write or the quit flush writes it again.
+   */
   private flushWorktreeSync(projectId: string, worktreeId: string): void {
     const key = worktreeKey(projectId, worktreeId);
     const cached = this.cache.get(key);
@@ -457,17 +544,29 @@ export class TerminalPersistenceStore {
     }
 
     this.clearPendingWrite(key);
-    if (isEmptyState(cached.state)) {
-      rmSync(cached.filePath, { force: true });
+    if (!cached.writable) {
       return;
     }
 
-    mkdirSync(dirname(cached.filePath), { recursive: true });
-    writeFileSync(
-      cached.filePath,
-      JSON.stringify(cached.state, null, 2),
-      'utf8',
-    );
+    try {
+      if (isEmptyState(cached.state)) {
+        rmSync(cached.filePath, { force: true });
+        return;
+      }
+
+      mkdirSync(dirname(cached.filePath), { recursive: true });
+      writeFileAtomicallySync(
+        cached.filePath,
+        JSON.stringify(cached.state, null, 2),
+        { encoding: 'utf8' },
+      );
+    } catch (error) {
+      logMainProcessWarn('Failed to write terminal state', {
+        projectId,
+        worktreeId,
+        code: errorCode(error),
+      });
+    }
   }
 
   private upsertTerminalEntry(
@@ -564,6 +663,12 @@ export class TerminalPersistenceStore {
     terminalId: string,
     chunk: Buffer,
   ): void {
+    if (
+      !this.liveSessions.has(terminalId) &&
+      !this.cache.has(worktreeKey(projectId, worktreeId))
+    ) {
+      return;
+    }
     const cached = this.ensureLoaded(projectId, worktreeId);
     const entry = cached.state.terminals.find(
       (terminal) => terminal.session.id === terminalId,
@@ -591,12 +696,14 @@ export class TerminalPersistenceStore {
     exitCode: number | null,
     signal: string | null,
   ): void {
-    this.liveSessions.delete(terminalId);
-    this.getSuppressedLiveTerminals(worktreeKey(projectId, worktreeId)).delete(
-      terminalId,
-    );
+    const wasLive = this.liveSessions.delete(terminalId);
+    const key = worktreeKey(projectId, worktreeId);
     const trailingChunk = this.utf8Decoders.get(terminalId)?.end() ?? '';
     this.utf8Decoders.delete(terminalId);
+    if (!wasLive && !this.cache.has(key)) {
+      return;
+    }
+    this.getSuppressedLiveTerminals(key).delete(terminalId);
     const cached = this.ensureLoaded(projectId, worktreeId);
     const entry = cached.state.terminals.find(
       (terminal) => terminal.session.id === terminalId,
@@ -760,6 +867,26 @@ export class TerminalPersistenceStore {
     }
 
     return null;
+  }
+
+  /**
+   * Drops everything held for a worktree whose data directory is about to be
+   * removed, so no pending or later write recreates its terminal state.
+   */
+  public forgetWorktree(projectId: string, worktreeId: string): void {
+    const key = worktreeKey(projectId, worktreeId);
+    this.clearPendingWrite(key);
+    this.cache.delete(key);
+    this.suppressedLiveTerminals.delete(key);
+    for (const session of Array.from(this.liveSessions.values())) {
+      if (
+        session.projectId === projectId &&
+        session.worktreeId === worktreeId
+      ) {
+        this.liveSessions.delete(session.id);
+        this.utf8Decoders.delete(session.id);
+      }
+    }
   }
 
   public flushAllSync(): void {

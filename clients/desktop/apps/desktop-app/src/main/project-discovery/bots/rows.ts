@@ -39,7 +39,7 @@ export function botChatRow(
       canSend: row.capabilities.canSend,
       canWatch: true,
       canSteerQueuedMessage: false,
-      unavailableReason: 'Steering App Advisor chats is not available yet.',
+      unavailableReason: 'Steering Orchestrator chats is not available yet.',
     },
   };
 }

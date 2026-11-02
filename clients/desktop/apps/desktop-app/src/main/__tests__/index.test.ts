@@ -5,6 +5,50 @@ jest.mock('../auth-terminal/manager', () => ({
 jest.mock('../lib/interrupted-work-recovery', () => ({
   recoverInterruptedWorkAtStartup: jest.fn(() => Promise.resolve()),
 }));
+// Startup awaits this real-process reaper before admission; tests own it.
+const mockRecoverCopilotAtStartup = jest.fn<Promise<void>, []>();
+// Records when quit revokes Copilot runtimes; the real teardown still runs.
+const mockCopilotRuntimesShutdown = jest.fn<void, []>();
+jest.mock('../copilot/connection', () => {
+  const actual = jest.requireActual<typeof CopilotConnectionModule>(
+    '../copilot/connection',
+  );
+  return {
+    ...actual,
+    recoverCopilotAtStartup: (): Promise<void> => mockRecoverCopilotAtStartup(),
+    shutdownCopilotRuntimes: (): Promise<void> => {
+      mockCopilotRuntimesShutdown();
+      return actual.shutdownCopilotRuntimes();
+    },
+  };
+});
+// Quit-preparation stages a test can fail; unset mocks run the real stage.
+const mockFlushResumeQueue = jest.fn<Promise<void> | undefined, []>();
+jest.mock('../services/resume-queue-host', () => {
+  const actual = jest.requireActual<typeof ResumeQueueHostModule>(
+    '../services/resume-queue-host',
+  );
+  return {
+    ...actual,
+    flushResumeQueue: (): Promise<void> =>
+      mockFlushResumeQueue() ?? actual.flushResumeQueue(),
+  };
+});
+const mockShutdownPendingTitles = jest.fn<Promise<void> | undefined, []>();
+jest.mock('../ledger/pending-titles', () => {
+  const actual = jest.requireActual<typeof PendingTitlesModule>(
+    '../ledger/pending-titles',
+  );
+  return {
+    ...actual,
+    shutdownDesktopPendingTitleOrchestrator: (): Promise<void> =>
+      mockShutdownPendingTitles() ??
+      actual.shutdownDesktopPendingTitleOrchestrator(),
+  };
+});
+import type * as CopilotConnectionModule from '../copilot/connection';
+import type * as ResumeQueueHostModule from '../services/resume-queue-host';
+import type * as PendingTitlesModule from '../ledger/pending-titles';
 import type * as DefaultBrowserRegistrationModule from '../browser/default-browser-registration';
 import type { OrgProjectsCapabilityRefreshDeps } from '../services/org-projects-capability-refresh';
 import type { WindowAccessors } from '../ipc';
@@ -18,6 +62,7 @@ import type * as SplitLockServiceModule from '../services/split-lock-service';
 import type * as BackgroundPresenceModule from '../lifecycle/background-presence';
 import type * as LedgerStorageHostModule from '../ledger/storage-host';
 import type * as ConfigPathsModule from '@canopy/desktop-shared/pipelines/config-paths';
+import type * as ProviderAuthStateModule from '../auth/provider-auth-state';
 import type * as DesktopInstrumentationMainModule from '@canopy/desktop-instrumentation/electron/main';
 import type { BrowserWindow, WebContents } from 'electron';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -28,9 +73,11 @@ import {
   IPC_CHANNELS,
   type AppAdvisorWindowCommand,
   type AutoArchiveNotification,
+  type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { ASK_USER_TIMEOUT_MS } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
+import { patchedSdkBridgeConfigFor } from '@canopy/desktop-instrumentation/electron/__tests__/patched-datadog-sdk';
 
 const eventHandlers = new Map<string, (...args: unknown[]) => void>();
 const MAIN_PROCESS_EVENTS = [
@@ -43,6 +90,7 @@ const initialMainProcessListeners = new Map(
   MAIN_PROCESS_EVENTS.map((event) => [event, process.rawListeners(event)]),
 );
 const initialGlobalKeys = new Set(Reflect.ownKeys(globalThis));
+const initialChromeDesktop = process.env.CHROME_DESKTOP;
 const E2E_GLOBAL_SEAM = /^__CANOPY_E2E_/;
 
 function trackRealTimers(): () => void {
@@ -79,6 +127,7 @@ const appGetLoginItemSettingsMock = jest.fn(() => ({
 }));
 const appSetLoginItemSettingsMock = jest.fn();
 const appExitMock = jest.fn();
+const showErrorBoxMock = jest.fn();
 const appIsInApplicationsFolderMock = jest.fn(() => true);
 const appMoveToApplicationsFolderMock = jest.fn(() => false);
 const appSetPathMock = jest.fn();
@@ -148,6 +197,7 @@ interface BrowserWindowOptionsUnderTest {
   minWidth?: number;
   minHeight?: number;
   show?: boolean;
+  backgroundColor?: string;
   webPreferences?: {
     contextIsolation?: boolean;
     spellcheck?: boolean;
@@ -156,10 +206,8 @@ interface BrowserWindowOptionsUnderTest {
 
 type BrowserWindowStub = ReturnType<typeof createBrowserWindowStub>;
 
-declare global {
-  var __CANOPY_RELEASE_FLAVOR__: string | undefined;
-  var __CANOPY_E2E__: boolean | undefined;
-}
+// Test-only global seams are accessed with Reflect because build defines are
+// declared as ambient constants, not `globalThis` properties.
 
 const browserWindowMock = jest.fn<
   BrowserWindowStub,
@@ -194,6 +242,7 @@ const getDisplayMatchingMock = jest.fn(() => ({
 }));
 const pauseAllActivePipelineExecutionsMock = jest.fn();
 const destroyAllSessionsMock = jest.fn();
+const updateClaudeSessionIdleTimeoutMinutesMock = jest.fn();
 const shutdownDelegationLifecycleMock = jest.fn(() => Promise.resolve());
 const getAllActiveSessionInfosMock = jest.fn(
   (): Array<{
@@ -213,7 +262,10 @@ const stopWorktreeBranchWatchersMock = jest.fn();
 const killAllTerminalsMock = jest.fn();
 const shutdownAuthTerminalManagerMock = jest.fn();
 const flushWorkspaceTargetTouchesMock = jest.fn(() => Promise.resolve());
-const touchWorkspaceTargetMock = jest.fn(() => Promise.resolve());
+const touchWorkspaceTargetMock = jest.fn<
+  Promise<void>,
+  [string, string, number]
+>(() => Promise.resolve());
 const touchWorkspaceTargetAfterCommitMock = jest.fn(() => Promise.resolve());
 const touchActiveAutoArchiveTargetsMock = jest.fn(async () => {
   await Promise.all(
@@ -234,6 +286,21 @@ const startAutoArchiveSchedulerMock = jest.fn(() => ({
 }));
 const markAllLiveTerminalsExitedMock = jest.fn();
 
+type W5HostAdmissionUnderTest =
+  | { kind: 'admitted' }
+  | { kind: 'refused'; message: string }
+  | { kind: 'failed' };
+const admitDesktopW5HostMock = jest
+  .fn<Promise<W5HostAdmissionUnderTest>, [string]>()
+  .mockResolvedValue({ kind: 'admitted' });
+// Real registration does file I/O, which microtask-only startup waits miss.
+jest.mock('../lib/w5-host-admission', () => ({
+  admitDesktopW5Host: (dataRoot: string): unknown =>
+    admitDesktopW5HostMock(dataRoot),
+  desktopW5HostAdmission: (): Promise<void> => Promise.resolve(),
+  registerDesktopW5Root: (): Promise<{ kind: 'admitted' }> =>
+    Promise.resolve({ kind: 'admitted' }),
+}));
 jest.mock('../lib/workspace-activity', () => ({
   touchWorkspaceTarget: touchWorkspaceTargetMock,
   touchWorkspaceTargetAfterCommit: touchWorkspaceTargetAfterCommitMock,
@@ -265,6 +332,10 @@ const shutdownCodexGatewayProxyServiceMock = jest.fn();
 const readPreferencesFileMock = jest.fn();
 const writePreferencesFileMock = jest.fn();
 const flushPreferencesWritesMock = jest.fn();
+const startPreferencesGenerationStampMock = jest.fn(
+  (): Promise<'present'> => Promise.resolve('present'),
+);
+const stopPreferencesGenerationStampMock = jest.fn();
 const initializeOllamaServiceMock = jest.fn();
 const shutdownOllamaServiceMock = jest.fn();
 const shutdownPipelineAdvisorServiceMock = jest.fn();
@@ -344,7 +415,14 @@ const shutdownWakeLockServiceMock = jest.fn();
 const setWakeLockEnabledMock = jest.fn();
 const initializeResourceMonitorServiceMock = jest.fn();
 const disposeResourceMonitorServiceMock = jest.fn();
-const initializeDesktopInstrumentationMainMock = jest.fn();
+const initializeDesktopInstrumentationMainMock = jest.fn<
+  ReturnType<
+    typeof DesktopInstrumentationMainModule.initializeDesktopInstrumentationMain
+  >,
+  Parameters<
+    typeof DesktopInstrumentationMainModule.initializeDesktopInstrumentationMain
+  >
+>();
 const setDesktopInstrumentationUserMock = jest.fn();
 const flushDesktopInstrumentationMock = jest.fn();
 const getStableAnonymousKeyMock = jest.fn<Promise<string>, []>();
@@ -427,7 +505,7 @@ const refreshAgentModelsFromStoreMock = jest.fn();
 const prewarmLoginShellPathMock = jest.fn(() => Promise.resolve());
 const scheduleMissingBundledBinaryReportMock = jest.fn();
 const mockIsCloseToTrayEnabled = jest.fn(() => false);
-const mockDiscloseCloseToTray = jest.fn(() => true);
+const mockDiscloseCloseToTray = jest.fn<boolean, [string]>(() => true);
 const mockTrayOptions: {
   current: { onOpen: () => void; onQuit: () => void } | null;
 } = { current: null };
@@ -564,6 +642,7 @@ jest.mock('electron', () => ({
   },
   dialog: {
     showMessageBoxSync: showMessageBoxSyncMock,
+    showErrorBox: showErrorBoxMock,
   },
   powerMonitor: {
     on: powerMonitorOnMock,
@@ -574,6 +653,7 @@ jest.mock('electron', () => ({
   },
   nativeTheme: {
     themeSource: 'system',
+    shouldUseDarkColors: false,
   },
   BrowserWindow: Object.assign(browserWindowMock, {
     getAllWindows: jest.fn(() => []),
@@ -604,6 +684,14 @@ jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => {
     prewarmLoginShellPath: prewarmLoginShellPathMock,
   };
 });
+
+// The real prewarm runs the provider CLI and a login shell on every reload.
+jest.mock('../auth/provider-auth-state', () => ({
+  ...jest.requireActual<typeof ProviderAuthStateModule>(
+    '../auth/provider-auth-state',
+  ),
+  prewarmProviderNativeAuthStatus: jest.fn(),
+}));
 
 jest.mock('../lib/bundled-binary-report', () => ({
   scheduleMissingBundledBinaryReport: scheduleMissingBundledBinaryReportMock,
@@ -665,8 +753,12 @@ jest.mock('../skills', () => ({
 
 jest.mock('../agents/session-manager', () => ({
   destroyAllSessions: destroyAllSessionsMock,
+  updateClaudeSessionIdleTimeoutMinutes:
+    updateClaudeSessionIdleTimeoutMinutesMock,
   getAllActiveSessionInfos: getAllActiveSessionInfosMock,
   subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  listLiveBackgroundTaskOwners: jest.fn(() => []),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
   hasActiveChatTurnsForProject: jest.fn(() => false),
 }));
 
@@ -700,6 +792,8 @@ jest.mock('../lib/session-transfer', () => ({
 }));
 
 jest.mock('../lib/worktree-branch-watcher', () => ({
+  startWorktreeBranchEnrollment: jest.fn(),
+  startWorktreeBranchObserver: jest.fn(),
   stopWorktreeBranchWatchers: stopWorktreeBranchWatchersMock,
 }));
 
@@ -730,10 +824,10 @@ jest.mock('../lib/split-temporary-workspace', () => ({
   isSplitTemporaryWorkspaceInFlight: jest.fn(() => false),
 }));
 
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
     killAll: killAllTerminalsMock,
-    getRunningWorktreeTargets: jest.fn(() => []),
+    runningWorktrees: jest.fn(() => []),
     addEventListener: jest.fn(() => jest.fn()),
   },
 }));
@@ -765,6 +859,8 @@ jest.mock('../observability', () => ({
     recordSessionDiagnostic: recordSessionDiagnosticMock,
     flush: flushObservabilityMock,
     subscribe: subscribeObservabilityMock,
+    enableTurnStateAudit: jest.fn(),
+    observeTurnState: jest.fn(),
   })),
 }));
 
@@ -973,6 +1069,7 @@ jest.mock('@canopy/desktop-instrumentation/electron/main', () => ({
   ),
   initializeDesktopInstrumentationMain:
     initializeDesktopInstrumentationMainMock,
+  createForeignCrashDumpFilter: jest.fn(() => jest.fn()),
   keepDesktopInstrumentationSessionAlive: jest.fn(),
   setDesktopInstrumentationUser: setDesktopInstrumentationUserMock,
   setDesktopPostHogOperationCaptureEnabled: jest.fn(),
@@ -1021,6 +1118,8 @@ jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: readPreferencesFileMock,
   writePreferencesFile: writePreferencesFileMock,
   flushPreferencesWrites: flushPreferencesWritesMock,
+  startPreferencesGenerationStamp: startPreferencesGenerationStampMock,
+  stopPreferencesGenerationStamp: stopPreferencesGenerationStampMock,
 }));
 
 jest.mock('../ipc/preferences', () => ({
@@ -1142,6 +1241,32 @@ function createQuitTestScope(): {
       restorePlatform();
     },
   };
+}
+
+/** Resolves with how a committed quit ended, so tests await it, not turns. */
+function captureShutdownOutcome(): {
+  outcome: Promise<'exit' | 'quit'>;
+  restore: () => void;
+} {
+  const originalQuit = appQuitMock.getMockImplementation();
+  const originalExit = appExitMock.getMockImplementation();
+  const outcome = new Promise<'exit' | 'quit'>((resolve) => {
+    appQuitMock.mockImplementation(() => resolve('quit'));
+    appExitMock.mockImplementation(() => resolve('exit'));
+  });
+  return {
+    outcome,
+    restore(): void {
+      appQuitMock.mockImplementation(originalQuit);
+      appExitMock.mockImplementation(originalExit);
+    },
+  };
+}
+
+function isWindowOpenHandler(
+  value: unknown,
+): value is (details: Electron.HandlerDetails) => unknown {
+  return typeof value === 'function';
 }
 
 function createBrowserWindowStub(): {
@@ -1328,7 +1453,7 @@ describe('main process shutdown', () => {
     jest.clearAllMocks();
     advisorRenderers.length = 0;
     configureAdvisorRenderer = (): void => undefined;
-    delete globalThis.__CANOPY_RELEASE_FLAVOR__;
+    Reflect.deleteProperty(globalThis, '__CANOPY_RELEASE_FLAVOR__');
     eventHandlers.clear();
     whenReadyMock.mockImplementation(() => new Promise<void>(() => {}));
     appIsInApplicationsFolderMock.mockReturnValue(true);
@@ -1393,6 +1518,8 @@ describe('main process shutdown', () => {
     migrateLocalMemoryDefaultOnMock.mockResolvedValue(undefined);
     migrateSidebarManualSortDefaultMock.mockResolvedValue(undefined);
     migrateOpenAppLinksInBuiltInBrowserDefaultMock.mockResolvedValue(undefined);
+    mockRecoverCopilotAtStartup.mockReset();
+    mockRecoverCopilotAtStartup.mockResolvedValue(undefined);
     refreshAgentModelsFromStoreMock.mockResolvedValue(undefined);
     hydrateAiGatewayModelCatalogMock.mockResolvedValue(undefined);
     broadcastModelRegistryUpdatedMock.mockResolvedValue(undefined);
@@ -1422,6 +1549,7 @@ describe('main process shutdown', () => {
     shutdownDesktopCanopyRuntimeMock.mockResolvedValue(undefined);
     flushPreferencesWritesMock.mockResolvedValue(undefined);
     readPreferencesFileMock.mockResolvedValue({
+      theme: 'default',
       windowBounds: null,
       windowMaximized: false,
       windowFullScreen: false,
@@ -1440,7 +1568,14 @@ describe('main process shutdown', () => {
     releaseRealTimers = trackRealTimers();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (initialChromeDesktop === undefined) delete process.env.CHROME_DESKTOP;
+    else process.env.CHROME_DESKTOP = initialChromeDesktop;
+    // Jest yields no macrotask between tests, so startup parked on I/O keeps
+    // each test's whole module graph alive; consecutive startup tests then
+    // exhaust CI's 4 GB heap. Real timers first: a fake setImmediate never fires.
+    jest.useRealTimers();
+    await waitForImmediate();
     releaseRealTimers?.();
     releaseRealTimers = undefined;
     removeE2eGlobalSeams();
@@ -1448,7 +1583,10 @@ describe('main process shutdown', () => {
       const initialListeners = initialMainProcessListeners.get(event) ?? [];
       for (const listener of process.rawListeners(event)) {
         if (!initialListeners.includes(listener)) {
-          process.removeListener(event, listener);
+          process.removeListener(
+            event,
+            listener as (...args: unknown[]) => void,
+          );
         }
       }
     }
@@ -1476,6 +1614,104 @@ describe('main process shutdown', () => {
     } finally {
       restorePlatform();
     }
+  });
+
+  it('applies the saved Claude idle timeout before creating the initial window', async () => {
+    whenReadyMock.mockResolvedValue(undefined);
+    readPreferencesFileMock.mockResolvedValue({
+      claudeSessionIdleTimeoutMinutes: 7,
+    });
+
+    await import('../index');
+    await waitForAppReady();
+
+    expect(updateClaudeSessionIdleTimeoutMinutesMock).toHaveBeenCalledWith(7);
+    expect(browserWindowMock).toHaveBeenCalled();
+    expect(
+      updateClaudeSessionIdleTimeoutMinutesMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(browserWindowMock.mock.invocationCallOrder[0]);
+  });
+
+  it('exits before any startup work while data maintenance holds the data folder', async () => {
+    const message = 'Data maintenance is running. Try again when it finishes.';
+    admitDesktopW5HostMock.mockResolvedValueOnce({ kind: 'refused', message });
+    const flushed: Array<() => void> = [];
+    const isFlushCallback = (value: unknown): value is () => void =>
+      typeof value === 'function';
+    const stderrWrite = jest
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((_chunk, callback?: unknown): boolean => {
+        if (isFlushCallback(callback)) flushed.push(callback);
+        return true;
+      });
+    whenReadyMock.mockResolvedValue(undefined);
+    try {
+      await import('../index');
+      await waitForAppReady();
+
+      expect(admitDesktopW5HostMock).toHaveBeenCalledTimes(1);
+      expect(stderrWrite).toHaveBeenCalledWith(
+        `${message}\n`,
+        expect.any(Function),
+      );
+      expect(showErrorBoxMock).toHaveBeenCalledWith(
+        expect.stringMatching(/^Couldn't open \S/),
+        message,
+      );
+      // The message must reach stderr before the process goes.
+      expect(appExitMock).not.toHaveBeenCalled();
+      flushed.forEach((flush) => flush());
+      expect(appExitMock).toHaveBeenCalledTimes(1);
+      expect(appExitMock).toHaveBeenCalledWith(1);
+      expect(browserWindowMock).not.toHaveBeenCalled();
+      expect(startAutoArchiveSchedulerMock).not.toHaveBeenCalled();
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  it('exits after a bounded wait when stderr never flushes the refusal', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'],
+    });
+    admitDesktopW5HostMock.mockResolvedValueOnce({
+      kind: 'refused',
+      message: 'Data maintenance is running. Try again when it finishes.',
+    });
+    const stderrWrite = jest
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((): boolean => false);
+    whenReadyMock.mockResolvedValue(undefined);
+    try {
+      await import('../index');
+      await waitForAppReady();
+
+      expect(stderrWrite).toHaveBeenCalledWith(
+        expect.stringContaining('Data maintenance is running.'),
+        expect.any(Function),
+      );
+      jest.advanceTimersByTime(999);
+      expect(appExitMock).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(appExitMock).toHaveBeenCalledTimes(1);
+      expect(appExitMock).toHaveBeenCalledWith(1);
+      expect(browserWindowMock).not.toHaveBeenCalled();
+    } finally {
+      stderrWrite.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it('starts when W5 host registration fails for any other reason', async () => {
+    admitDesktopW5HostMock.mockResolvedValueOnce({ kind: 'failed' });
+    whenReadyMock.mockResolvedValue(undefined);
+
+    await import('../index');
+    await waitForAppReady();
+
+    expect(appExitMock).not.toHaveBeenCalled();
+    expect(showErrorBoxMock).not.toHaveBeenCalled();
+    expect(browserWindowMock).toHaveBeenCalled();
   });
 
   it('starts Auto Delete only after the initial renderer window exists', async () => {
@@ -1530,11 +1766,17 @@ describe('main process shutdown', () => {
       expect.objectContaining({ targetId: 'worktree-1' }),
     );
 
-    createdWindow.webContents.send.mockClear();
+    // A sub-frame load leaves the renderer in place.
     createdWindow.webContentsHandlers.get('did-start-loading')?.();
+    expect(getRegisteredWindowAccessors().isMainWindowRendererReady?.()).toBe(
+      true,
+    );
+    // A committed main-frame reload replaces it.
+    createdWindow.webContentsHandlers.get('did-navigate')?.();
     expect(getRegisteredWindowAccessors().isMainWindowRendererReady?.()).toBe(
       false,
     );
+    createdWindow.webContents.send.mockClear();
     publishResult({
       workspaceId: 'workspace-1',
       workspaceName: 'Workspace',
@@ -1938,6 +2180,39 @@ describe('main process shutdown', () => {
     expect(appQuitMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps Copilot runtimes until chat and pipeline checkpoints drain', async () => {
+    let finishChats!: () => void;
+    let finishPipelines!: () => void;
+    destroyAllSessionsMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishChats = resolve;
+      }),
+    );
+    pauseAllActivePipelineExecutionsMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishPipelines = resolve;
+      }),
+    );
+    await import('../index');
+    const beforeQuit = eventHandlers.get('before-quit');
+    if (!beforeQuit) throw new Error('Missing quit hook');
+    beforeQuit({ preventDefault: jest.fn() });
+    for (let turn = 0; turn < 3; turn += 1) await waitForImmediate();
+    // An active Copilot turn must still be live when chats record interruption.
+    expect(destroyAllSessionsMock).toHaveBeenCalledWith({
+      recordInterrupted: true,
+    });
+    expect(pauseAllActivePipelineExecutionsMock).toHaveBeenCalledTimes(1);
+    expect(mockCopilotRuntimesShutdown).not.toHaveBeenCalled();
+    finishChats();
+    for (let turn = 0; turn < 3; turn += 1) await waitForImmediate();
+    expect(mockCopilotRuntimesShutdown).not.toHaveBeenCalled();
+    finishPipelines();
+    for (let turn = 0; turn < 3; turn += 1) await waitForImmediate();
+    expect(mockCopilotRuntimesShutdown).toHaveBeenCalledTimes(1);
+    expect(appQuitMock).toHaveBeenCalledTimes(1);
+  });
+
   it('finishes recovery drains and child teardown before exiting after a shutdown failure', async () => {
     let finishChatShutdown: (() => void) | undefined;
     pauseAllActivePipelineExecutionsMock.mockRejectedValueOnce(
@@ -1973,6 +2248,139 @@ describe('main process shutdown', () => {
     } finally {
       finishChatShutdown?.();
       consoleError.mockRestore();
+    }
+  });
+
+  it.each([
+    [
+      'resume-queue',
+      (error: Error): void => {
+        mockFlushResumeQueue.mockRejectedValueOnce(error);
+      },
+    ],
+    [
+      'ledger-pending-titles',
+      (error: Error): void => {
+        mockShutdownPendingTitles.mockRejectedValueOnce(error);
+      },
+    ],
+    [
+      'auto-archive',
+      (error: Error): void => {
+        stopAutoArchiveMock.mockRejectedValueOnce(error);
+      },
+    ],
+  ])(
+    'still drains recovery and stops Copilot when the %s preparatory stage fails',
+    async (stage, failStage) => {
+      whenReadyMock.mockResolvedValue(undefined);
+      const failure = new Error(`${stage} failed`);
+      failStage(failure);
+      const shutdown = captureShutdownOutcome();
+      const consoleError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        await import('../index');
+        await waitForAppReady();
+        const { logMainProcessWarn } =
+          await import('../lib/main-process-logging');
+        const beforeQuit = eventHandlers.get('before-quit');
+        if (!beforeQuit) throw new Error('Missing quit hook');
+        beforeQuit({ preventDefault: jest.fn() });
+
+        // Quit still fails, with the stage's own error, after teardown.
+        expect(await shutdown.outcome).toBe('exit');
+        expect(appExitMock).toHaveBeenCalledWith(0);
+        expect(appQuitMock).not.toHaveBeenCalled();
+        expect(consoleError).toHaveBeenCalledWith(
+          'Application shutdown could not save interrupted work:',
+          failure,
+        );
+        expect(recordAppDiagnosticMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cleanupStage: stage,
+            cleanupStatus: 'failed',
+          }),
+        );
+        // The remaining preparation, both drains and Copilot's stop all ran.
+        expect(mockShutdownPendingTitles).toHaveBeenCalledTimes(1);
+        expect(stopAutoArchiveMock).toHaveBeenCalledTimes(1);
+        expect(pauseAllActivePipelineExecutionsMock).toHaveBeenCalledTimes(1);
+        expect(destroyAllSessionsMock).toHaveBeenCalledWith({
+          recordInterrupted: true,
+        });
+        expect(mockCopilotRuntimesShutdown).toHaveBeenCalledTimes(1);
+        const [copilotStop = -1] =
+          mockCopilotRuntimesShutdown.mock.invocationCallOrder;
+        expect(
+          pauseAllActivePipelineExecutionsMock.mock.invocationCallOrder[0],
+        ).toBeLessThan(copilotStop);
+        expect(destroyAllSessionsMock.mock.invocationCallOrder[0]).toBeLessThan(
+          copilotStop,
+        );
+        expect(recordAppDiagnosticMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cleanupStage: 'cursor-connections',
+            cleanupStatus: 'completed',
+          }),
+        );
+        expect(shutdownPipelineProcessHostMock).toHaveBeenCalledTimes(1);
+        expect(logMainProcessWarn).toHaveBeenCalledWith(
+          '[shutdown] Preparatory stage failed',
+          failure,
+        );
+      } finally {
+        consoleError.mockRestore();
+        shutdown.restore();
+      }
+    },
+  );
+
+  it('reports both a preparatory failure and a recovery-drain failure', async () => {
+    const preparation = new Error('resume queue flush failed');
+    mockFlushResumeQueue.mockRejectedValueOnce(preparation);
+    pauseAllActivePipelineExecutionsMock.mockRejectedValueOnce(
+      new Error('checkpoint failed'),
+    );
+    const shutdown = captureShutdownOutcome();
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      await import('../index');
+      const { logMainProcessWarn } =
+        await import('../lib/main-process-logging');
+      const beforeQuit = eventHandlers.get('before-quit');
+      if (!beforeQuit) throw new Error('Missing quit hook');
+      beforeQuit({ preventDefault: jest.fn() });
+
+      expect(await shutdown.outcome).toBe('exit');
+      // The recovery-drain failure stays the quit error; preparation is logged.
+      const quitLog = consoleError.mock.calls.find(
+        ([message]) =>
+          message === 'Application shutdown could not save interrupted work:',
+      );
+      const quitError: unknown = quitLog?.[1];
+      expect(quitError).toBeInstanceOf(Error);
+      expect(quitError instanceof Error ? quitError.message : '').toContain(
+        'Application shutdown recovery drain failed: Error: checkpoint failed',
+      );
+      expect(logMainProcessWarn).toHaveBeenCalledWith(
+        '[shutdown] Preparatory stage failed',
+        preparation,
+      );
+      for (const cleanupStage of ['resume-queue', 'pipeline-recovery']) {
+        expect(recordAppDiagnosticMock).toHaveBeenCalledWith(
+          expect.objectContaining({ cleanupStage, cleanupStatus: 'failed' }),
+        );
+      }
+      expect(mockCopilotRuntimesShutdown).toHaveBeenCalledTimes(1);
+      expect(shutdownPipelineProcessHostMock).toHaveBeenCalledTimes(1);
+      expect(appQuitMock).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+      shutdown.restore();
     }
   });
 
@@ -2232,6 +2640,150 @@ describe('main process shutdown', () => {
     releaseRecovery();
     await waitForAppReady();
     expect(browserWindowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reaps prior Copilot processes before repairing work or opening a window', async () => {
+    const { recoverInterruptedWorkAtStartup } =
+      await import('../lib/interrupted-work-recovery');
+    let releaseCopilot: (() => void) | undefined;
+    mockRecoverCopilotAtStartup.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseCopilot = resolve;
+        }),
+    );
+    whenReadyMock.mockResolvedValue(undefined);
+    await import('../index');
+    try {
+      for (let attempt = 0; attempt < 100 && !releaseCopilot; attempt += 1)
+        await waitForImmediate();
+      expect(mockRecoverCopilotAtStartup).toHaveBeenCalledTimes(1);
+      expect(recoverInterruptedWorkAtStartup).not.toHaveBeenCalled();
+      expect(browserWindowMock).not.toHaveBeenCalled();
+    } finally {
+      // Drain the deferred startup before the next test resets modules.
+      releaseCopilot?.();
+      await waitForAppReady();
+    }
+    expect(recoverInterruptedWorkAtStartup).toHaveBeenCalledTimes(1);
+    expect(browserWindowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns and continues startup when Copilot process recovery fails', async () => {
+    const { recoverInterruptedWorkAtStartup } =
+      await import('../lib/interrupted-work-recovery');
+    const { logMainProcessWarn } = await import('../lib/main-process-logging');
+    const failure = new Error('Copilot process recovery did not finish.');
+    mockRecoverCopilotAtStartup.mockRejectedValueOnce(failure);
+    whenReadyMock.mockResolvedValue(undefined);
+    await import('../index');
+    await waitForAppReady();
+    expect(mockRecoverCopilotAtStartup).toHaveBeenCalledTimes(1);
+    expect(logMainProcessWarn).toHaveBeenCalledWith(
+      '[copilot] Startup process recovery did not finish',
+      failure,
+    );
+    expect(recoverInterruptedWorkAtStartup).toHaveBeenCalledTimes(1);
+    expect(browserWindowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips interrupted-work recovery when a quit begins during the Copilot reaper', async () => {
+    const { recoverInterruptedWorkAtStartup } =
+      await import('../lib/interrupted-work-recovery');
+    const shutdown = createQuitTestScope();
+    let releaseCopilot: (() => void) | undefined;
+    mockRecoverCopilotAtStartup.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseCopilot = resolve;
+        }),
+    );
+    whenReadyMock.mockResolvedValue(undefined);
+    try {
+      await import('../index');
+      for (let attempt = 0; attempt < 100 && !releaseCopilot; attempt += 1)
+        await waitForImmediate();
+      const beforeQuit = eventHandlers.get('before-quit');
+      if (!releaseCopilot || !beforeQuit)
+        throw new Error('Expected startup to wait on the Copilot reaper');
+      shutdown.commit(() => beforeQuit({ preventDefault: jest.fn() }));
+      await shutdown.drain();
+      releaseCopilot();
+      for (let turn = 0; turn < 3; turn += 1) await waitForImmediate();
+      await waitForAppReady();
+      expect(recoverInterruptedWorkAtStartup).not.toHaveBeenCalled();
+      expect(browserWindowMock).not.toHaveBeenCalled();
+    } finally {
+      releaseCopilot?.();
+      shutdown.restore();
+    }
+  });
+
+  it('does not reap Copilot processes once a quit began during startup', async () => {
+    const shutdown = createQuitTestScope();
+    let releaseMigration: (() => void) | undefined;
+    migrateOpenAppLinksInBuiltInBrowserDefaultMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseMigration = resolve;
+        }),
+    );
+    whenReadyMock.mockResolvedValue(undefined);
+    try {
+      await import('../index');
+      for (let attempt = 0; attempt < 100 && !releaseMigration; attempt += 1)
+        await waitForImmediate();
+      const beforeQuit = eventHandlers.get('before-quit');
+      if (!releaseMigration || !beforeQuit)
+        throw new Error('Expected startup to wait on the last migration');
+      shutdown.commit(() => beforeQuit({ preventDefault: jest.fn() }));
+      releaseMigration();
+      await shutdown.drain();
+      await waitForAppReady();
+      expect(mockRecoverCopilotAtStartup).not.toHaveBeenCalled();
+      expect(startPreferencesGenerationStampMock).not.toHaveBeenCalled();
+      expect(browserWindowMock).not.toHaveBeenCalled();
+    } finally {
+      releaseMigration?.();
+      shutdown.restore();
+    }
+  });
+
+  it('starts the preferences generation stamp after the startup migrations', async () => {
+    whenReadyMock.mockResolvedValue(undefined);
+
+    await import('../index');
+    await waitForAppReady();
+
+    expect(startPreferencesGenerationStampMock).toHaveBeenCalledTimes(1);
+    // No test wait: production uses its own background timer.
+    expect(startPreferencesGenerationStampMock).toHaveBeenCalledWith();
+    expect(
+      migrateOpenAppLinksInBuiltInBrowserDefaultMock.mock
+        .invocationCallOrder[0],
+    ).toBeLessThan(
+      startPreferencesGenerationStampMock.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(stopPreferencesGenerationStampMock).not.toHaveBeenCalled();
+  });
+
+  it('stops the preferences generation stamp before the quit flush', async () => {
+    await import('../index');
+
+    const beforeQuit = eventHandlers.get('before-quit');
+    if (!beforeQuit) throw new Error('Missing quit hook');
+    beforeQuit({ preventDefault: jest.fn() });
+    for (let turn = 0; turn < 3; turn += 1) await waitForImmediate();
+
+    expect(stopPreferencesGenerationStampMock).toHaveBeenCalledTimes(1);
+    expect(flushPreferencesWritesMock).toHaveBeenCalledTimes(1);
+    expect(
+      stopPreferencesGenerationStampMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      flushPreferencesWritesMock.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(appQuitMock).toHaveBeenCalledTimes(1);
   });
 
   it('waits for the rollout snapshot before starting provider usage reads', async () => {
@@ -2522,6 +3074,23 @@ describe('main process shutdown', () => {
     unsubscribe();
   });
 
+  // Every preload blocks in a sync `datadog:bridge-config` IPC; an uncloneable
+  // reply is never sent and no renderer mounts.
+  it('passes the crash dump filter to Datadog while the preload bridge config reply stays cloneable', async () => {
+    whenReadyMock.mockResolvedValue(undefined);
+
+    await import('../index');
+    await waitForAppReady();
+
+    expect(initializeDesktopInstrumentationMainMock).toHaveBeenCalledTimes(1);
+    const options = initializeDesktopInstrumentationMainMock.mock.calls[0]?.[0];
+    expect(typeof options?.crashDumpFilter).toBe('function');
+    await expect(patchedSdkBridgeConfigFor(options)).resolves.toStrictEqual({
+      allowedWebViewHosts: [],
+      defaultPrivacyLevel: 'mask',
+    });
+  });
+
   it('sets the anonymous telemetry user after instrumentation init succeeds', async () => {
     whenReadyMock.mockResolvedValue(undefined);
     initializeDesktopInstrumentationMainMock.mockResolvedValue({
@@ -2617,7 +3186,7 @@ describe('main process shutdown', () => {
   });
 
   it('uses the internal app user model id for internal builds', async () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
     whenReadyMock.mockResolvedValue(undefined);
 
     await import('../index');
@@ -2632,7 +3201,7 @@ describe('main process shutdown', () => {
   });
 
   it('uses the display name for the runtime safeStorage identity', async () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'rc';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'rc');
     whenReadyMock.mockResolvedValue(undefined);
     jest.doMock('@canopy/brand/current', () => ({
       BRAND: {
@@ -2650,6 +3219,41 @@ describe('main process shutdown', () => {
     }>('electron');
     expect(app.setName).toHaveBeenCalledWith('Unstoppable Code (RC)');
     expect(app.setName).not.toHaveBeenCalledWith('Unstoppable (RC)');
+  });
+
+  it('sets Linux desktop identity after locking and before readiness', async () => {
+    const restorePlatform = setPlatform('linux');
+    const originalDesktopName = process.env.CHROME_DESKTOP;
+    const originalE2e: unknown = Reflect.get(globalThis, '__CANOPY_E2E__');
+    Reflect.set(globalThis, '__CANOPY_E2E__', false);
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'rc');
+    process.env.CHROME_DESKTOP = 'electron.desktop';
+    jest.doMock('@canopy/brand/current', () => ({ BRAND }));
+    try {
+      await import('../index');
+      const { app } = jest.requireMock<{
+        app: { setName: jest.Mock; requestSingleInstanceLock: jest.Mock };
+      }>('electron');
+      expect(app.setName).toHaveBeenCalledWith(`${BRAND.displayName} (RC)`);
+      expect(process.env.CHROME_DESKTOP).toBe(
+        `${BRAND.cliName}-desktop.desktop`,
+      );
+      expect(
+        app.requestSingleInstanceLock.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        app.setName.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+      expect(app.setName.mock.invocationCallOrder[0]).toBeLessThan(
+        whenReadyMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+    } finally {
+      if (typeof originalE2e === 'boolean')
+        Reflect.set(globalThis, '__CANOPY_E2E__', originalE2e);
+      else Reflect.deleteProperty(globalThis, '__CANOPY_E2E__');
+      restorePlatform();
+      if (originalDesktopName === undefined) delete process.env.CHROME_DESKTOP;
+      else process.env.CHROME_DESKTOP = originalDesktopName;
+    }
   });
 
   it('pins out-of-process sandboxed iframes before the app is ready', async () => {
@@ -2716,7 +3320,7 @@ describe('main process shutdown', () => {
     afterEach(() => {
       // The jest global default for this seam is `false`; restore it so the
       // redirect never leaks into sibling tests that exercise `whenReady`.
-      globalThis.__CANOPY_E2E__ = false;
+      Reflect.set(globalThis, '__CANOPY_E2E__', false);
       if (originalCanopyDataDir === undefined) {
         delete process.env.CANOPY_DATA_DIR;
       } else {
@@ -2726,7 +3330,7 @@ describe('main process shutdown', () => {
     });
 
     it('redirects Electron userData to CANOPY_DATA_DIR in E2E builds', async () => {
-      globalThis.__CANOPY_E2E__ = true;
+      Reflect.set(globalThis, '__CANOPY_E2E__', true);
       process.env.CANOPY_DATA_DIR = e2eDataDir;
       whenReadyMock.mockResolvedValue(undefined);
 
@@ -2736,8 +3340,64 @@ describe('main process shutdown', () => {
       expect(appSetPathMock).toHaveBeenCalledWith('userData', e2eDataDir);
     });
 
+    // Perf launches E2E builds, so they must enroll with production's trigger.
+    it('enrolls branch observation at first paint plus 5 s in E2E builds, not at ready', async () => {
+      Reflect.set(globalThis, '__CANOPY_E2E__', true);
+      whenReadyMock.mockResolvedValue(undefined);
+      const createdWindows: Array<ReturnType<typeof createBrowserWindowStub>> =
+        [];
+      browserWindowMock.mockImplementation(() => {
+        const stub = createBrowserWindowStub();
+        createdWindows.push(stub);
+        return stub;
+      });
+
+      await import('../index');
+      await waitForAppReady();
+
+      const branchWatcher = jest.requireMock<{
+        startWorktreeBranchObserver: jest.Mock<void, [Record<string, unknown>]>;
+        startWorktreeBranchEnrollment: jest.Mock;
+      }>('../lib/worktree-branch-watcher');
+      expect(branchWatcher.startWorktreeBranchObserver).toHaveBeenCalledTimes(
+        1,
+      );
+      const observerOptions =
+        branchWatcher.startWorktreeBranchObserver.mock.calls[0]?.[0] ?? {};
+      // No option beyond these two: nothing enrolls before the window.
+      expect(Object.keys(observerOptions).sort()).toEqual([
+        'dispatcher',
+        'getWindow',
+      ]);
+      expect(typeof observerOptions['getWindow']).toBe('function');
+      expect(
+        branchWatcher.startWorktreeBranchEnrollment,
+      ).not.toHaveBeenCalled();
+
+      const mainWindow = createdWindows[0];
+      if (!mainWindow) throw new Error('Expected the main window');
+      const firstLoad = mainWindow.webContents.once.mock.calls.find(
+        ([event]) => event === 'did-finish-load',
+      )?.[1];
+      if (!firstLoad) throw new Error('Expected a first-load listener');
+      // The suite's timer tracker spies on setTimeout and clears its timers.
+      const timeouts = jest.spyOn(globalThis, 'setTimeout');
+      const scheduledBefore = timeouts.mock.calls.length;
+      firstLoad();
+      const fallback = timeouts.mock.calls
+        .slice(scheduledBefore)
+        .find(
+          ([callback]) =>
+            callback === branchWatcher.startWorktreeBranchEnrollment,
+        );
+      expect(fallback?.[1]).toBe(5_000);
+      expect(
+        branchWatcher.startWorktreeBranchEnrollment,
+      ).not.toHaveBeenCalled();
+    });
+
     it('does not redirect userData when the E2E seam is off', async () => {
-      globalThis.__CANOPY_E2E__ = false;
+      Reflect.set(globalThis, '__CANOPY_E2E__', false);
       process.env.CANOPY_DATA_DIR = e2eDataDir;
       whenReadyMock.mockResolvedValue(undefined);
 
@@ -2751,7 +3411,7 @@ describe('main process shutdown', () => {
     });
 
     it('does not redirect userData when CANOPY_DATA_DIR is unset', async () => {
-      globalThis.__CANOPY_E2E__ = true;
+      Reflect.set(globalThis, '__CANOPY_E2E__', true);
       delete process.env.CANOPY_DATA_DIR;
       whenReadyMock.mockResolvedValue(undefined);
 
@@ -2765,7 +3425,7 @@ describe('main process shutdown', () => {
     });
 
     it('does not redirect userData when CANOPY_DATA_DIR does not exist on disk', async () => {
-      globalThis.__CANOPY_E2E__ = true;
+      Reflect.set(globalThis, '__CANOPY_E2E__', true);
       process.env.CANOPY_DATA_DIR = join(e2eDataDir, 'missing-subdir');
       whenReadyMock.mockResolvedValue(undefined);
 
@@ -3004,6 +3664,126 @@ describe('main process shutdown', () => {
     jest.useRealTimers();
   });
 
+  it.each<NodeJS.Platform>(['linux', 'darwin', 'win32'])(
+    'uses the first-activation show path for %s without a URI or second activation',
+    async (platform) => {
+      const restorePlatform = setPlatform(platform);
+      whenReadyMock.mockResolvedValue(undefined);
+      const window = createBrowserWindowStub();
+      browserWindowMock.mockReturnValue(window);
+      try {
+        await import('../index');
+        await waitForAppReady();
+
+        // No URI or second activation: Linux must map its surface before
+        // Wayland can supply the frame that would emit ready-to-show.
+        expect(browserWindowMock).toHaveBeenCalledWith(
+          expect.objectContaining({ show: platform === 'linux' }),
+        );
+        expect(browserWindowMock.mock.calls[0]?.[0]?.backgroundColor).toBe(
+          platform === 'linux' ? '#F2F2ED' : undefined,
+        );
+        expect(window.show).not.toHaveBeenCalled();
+        window.windowHandlers.get('ready-to-show')?.();
+        expect(window.show).toHaveBeenCalledTimes(platform === 'linux' ? 0 : 1);
+      } finally {
+        restorePlatform();
+      }
+    },
+  );
+
+  it.each(['dark', 'system'] as const)(
+    'maps the first Linux window with a dark recipe when %s resolves dark',
+    async (colorMode) => {
+      const restorePlatform = setPlatform('linux');
+      const { nativeTheme } = await import('electron');
+      Object.assign(nativeTheme, { shouldUseDarkColors: true });
+      readPreferencesFileMock.mockResolvedValue({
+        theme: 'dusk',
+        colorMode,
+        windowBounds: null,
+        windowMaximized: false,
+        windowFullScreen: false,
+      });
+      whenReadyMock.mockResolvedValue(undefined);
+      const window = createBrowserWindowStub();
+      browserWindowMock.mockReturnValue(window);
+      try {
+        await import('../index');
+        await waitForAppReady();
+        expect(nativeTheme.themeSource).toBe(colorMode);
+        expect(browserWindowMock).toHaveBeenCalledWith(
+          expect.objectContaining({ show: true, backgroundColor: '#131419' }),
+        );
+      } finally {
+        Object.assign(nativeTheme, { shouldUseDarkColors: false });
+        restorePlatform();
+      }
+    },
+  );
+
+  it('keeps the first Linux window hidden during headless automation', async () => {
+    const restorePlatform = setPlatform('linux');
+    Reflect.set(globalThis, '__CANOPY_E2E__', true);
+    whenReadyMock.mockResolvedValue(undefined);
+    const window = createBrowserWindowStub();
+    browserWindowMock.mockReturnValue(window);
+    try {
+      await import('../index');
+      await waitForAppReady();
+      expect(browserWindowMock).toHaveBeenCalledWith(
+        expect.objectContaining({ show: false }),
+      );
+      window.windowHandlers.get('ready-to-show')?.();
+      expect(window.show).not.toHaveBeenCalled();
+    } finally {
+      Reflect.set(globalThis, '__CANOPY_E2E__', false);
+      restorePlatform();
+    }
+  });
+
+  describe.each(['main', 'Advisor'] as const)('%s window chrome', (family) => {
+    it.each<NodeJS.Platform>(['darwin', 'win32', 'linux'])(
+      'uses the expected window chrome on %s',
+      async (platform) => {
+        const restorePlatform = setPlatform(platform);
+        whenReadyMock.mockResolvedValue(undefined);
+        const windowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+        browserWindowMock.mockImplementation((options) => {
+          windowOptions.push(options ?? {});
+          return createBrowserWindowStub();
+        });
+        try {
+          await import('../index');
+          await waitForAppReady();
+          if (family === 'Advisor') {
+            await getRegisteredWindowAccessors().openAppAdvisorWindow({
+              layout: 'full',
+              focus: false,
+            });
+          }
+          const options = windowOptions[family === 'main' ? 0 : 1];
+          if (!options) throw new Error('Expected constructed window options');
+          if (platform === 'linux') {
+            expect(options.frame).toBe(true);
+            expect(options).not.toHaveProperty('titleBarStyle');
+            expect(options).not.toHaveProperty('trafficLightPosition');
+          } else {
+            expect(options.titleBarStyle).toBe('hiddenInset');
+            expect(options.trafficLightPosition).toEqual({
+              x: 16,
+              y: family === 'main' ? 16 : 15,
+            });
+            expect(options).not.toHaveProperty('frame');
+          }
+          expect(options).not.toHaveProperty('titleBarOverlay');
+        } finally {
+          restorePlatform();
+        }
+      },
+    );
+  });
+
   it('opens the graduated Advisor as a floating view without the legacy toggle', async () => {
     whenReadyMock.mockResolvedValue(undefined);
     browserWindowMock.mockImplementation(() => {
@@ -3100,7 +3880,7 @@ describe('main process shutdown', () => {
         throw new Error('Expected App Advisor BrowserWindow options');
       }
       expect(appAdvisorOptions).toMatchObject({
-        title: 'App Advisor',
+        title: 'Orchestrator',
         minWidth: 360,
         minHeight: 420,
         show: false,
@@ -3659,8 +4439,13 @@ describe('main process shutdown', () => {
             events.push('loadURL:end');
           });
           stub.webContents.send.mockImplementation((channel, command) => {
-            if (channel === IPC_CHANNELS.appAdvisorWindowCommand) {
-              events.push(`command:${String(command?.type)}`);
+            if (
+              channel === IPC_CHANNELS.appAdvisorWindowCommand &&
+              typeof command === 'object' &&
+              command !== null &&
+              'type' in command
+            ) {
+              events.push(`command:${String(command.type)}`);
             }
           });
         };
@@ -3761,8 +4546,13 @@ describe('main process shutdown', () => {
             stub.webContentsHandlers.get('did-finish-load')?.();
           });
           stub.webContents.send.mockImplementation((channel, command) => {
-            if (channel === IPC_CHANNELS.appAdvisorWindowCommand) {
-              events.push(`command:${String(command?.type)}`);
+            if (
+              channel === IPC_CHANNELS.appAdvisorWindowCommand &&
+              typeof command === 'object' &&
+              command !== null &&
+              'type' in command
+            ) {
+              events.push(`command:${String(command.type)}`);
             }
           });
         };
@@ -3819,8 +4609,13 @@ describe('main process shutdown', () => {
             stub.webContentsHandlers.get('did-finish-load')?.();
           });
           stub.webContents.send.mockImplementation((channel, request) => {
-            if (channel === IPC_CHANNELS.appAdvisorToolRequest) {
-              toolRequestEvents.push(String(request?.kind));
+            if (
+              channel === IPC_CHANNELS.appAdvisorToolRequest &&
+              typeof request === 'object' &&
+              request !== null &&
+              'kind' in request
+            ) {
+              toolRequestEvents.push(String(request.kind));
             }
           });
         };
@@ -3940,7 +4735,8 @@ describe('main process shutdown', () => {
       createdWindow = createBrowserWindowStub();
       return createdWindow;
     });
-    const staleSnapshot = {
+    // A partial fixture: these tests rely on unset preferences staying undefined.
+    const preferences: Partial<PreferencesData> = {
       windowBounds: null,
       windowMaximized: false,
       windowFullScreen: false,
@@ -3953,6 +4749,7 @@ describe('main process shutdown', () => {
         appAdvisor: 'full-access' as const,
       },
     };
+    const staleSnapshot = preferences as PreferencesData;
     readPreferencesFileMock.mockResolvedValue(staleSnapshot);
 
     try {
@@ -3960,13 +4757,13 @@ describe('main process shutdown', () => {
       await waitForAppReady();
       if (!createdWindow) throw new Error('Expected main window');
 
-      let releaseDisclosureRead:
-        | ((value: typeof staleSnapshot) => void)
-        | null = null;
+      const disclosureRead: {
+        release?: (value: PreferencesData) => void;
+      } = {};
       readPreferencesFileMock.mockImplementationOnce(
         () =>
-          new Promise((resolve) => {
-            releaseDisclosureRead = resolve;
+          new Promise<PreferencesData>((resolve) => {
+            disclosureRead.release = resolve;
           }),
       );
       let persisted: typeof staleSnapshot & {
@@ -3992,7 +4789,7 @@ describe('main process shutdown', () => {
           appAdvisor: 'full-access',
         },
       };
-      releaseDisclosureRead?.(staleSnapshot);
+      disclosureRead.release?.(staleSnapshot);
       await waitForImmediate();
 
       expect(persisted.approvalDefaults.worktree).toBe('ask');
@@ -4578,6 +5375,70 @@ describe('main process shutdown', () => {
       // Sub-frame loads leave the main page in place.
       createdWindow.webContentsHandlers.get('did-start-loading')?.();
       expect(mainWindowOpen()).toBe(true);
+    });
+
+    it('keeps routing app links through the renderer after a sub-frame load', async () => {
+      const createdWindow = await createMainWindowForLinkMenuTest();
+      const appLinkRouter = await import('../browser/app-link-router');
+      const routeSafeNavigation = jest
+        .spyOn(appLinkRouter, 'routeSafeNavigation')
+        .mockResolvedValue('in-app');
+      const windowOpenHandler =
+        createdWindow.webContents.setWindowOpenHandler.mock.calls[0]?.[0];
+      if (!isWindowOpenHandler(windowOpenHandler)) {
+        throw new Error('Expected a window open handler');
+      }
+      const openChatLink = (): unknown =>
+        windowOpenHandler({
+          url: 'http://127.0.0.1:5195/coordinator.html',
+          frameName: '',
+          features: '',
+          disposition: 'foreground-tab',
+          referrer: { url: '', policy: 'default' },
+        });
+      getRegisteredWindowAccessors().notifyStartupUnlocked();
+
+      // An agent visual or HTML preview iframe in the chat starts loading.
+      createdWindow.webContentsHandlers.get('did-start-loading')?.();
+      openChatLink();
+
+      // Without the renderer, main cannot place the link in the built-in
+      // browser and takes it to the system browser.
+      expect(routeSafeNavigation).toHaveBeenLastCalledWith({
+        url: 'http://127.0.0.1:5195/coordinator.html',
+        sender: createdWindow.webContents,
+        source: 'app-link',
+      });
+
+      // A committed main-frame reload replaces the renderer.
+      createdWindow.webContentsHandlers.get('did-navigate')?.();
+      openChatLink();
+      expect(routeSafeNavigation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sender: null }),
+      );
+
+      getRegisteredWindowAccessors().notifyStartupUnlocked();
+      createdWindow.webContentsHandlers.get('render-process-gone')?.(
+        undefined,
+        { reason: 'crashed', exitCode: 1 },
+      );
+      openChatLink();
+      expect(routeSafeNavigation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sender: null }),
+      );
+      // The recovery reload commits, then the new renderer reports ready.
+      createdWindow.webContentsHandlers.get('did-navigate')?.();
+      getRegisteredWindowAccessors().notifyStartupUnlocked();
+      openChatLink();
+      expect(routeSafeNavigation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sender: createdWindow.webContents }),
+      );
+      // A later committed main-frame reload replaces it again.
+      createdWindow.webContentsHandlers.get('did-navigate')?.();
+      openChatLink();
+      expect(routeSafeNavigation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sender: null }),
+      );
     });
 
     it('resets link target availability when the main window closes', async () => {

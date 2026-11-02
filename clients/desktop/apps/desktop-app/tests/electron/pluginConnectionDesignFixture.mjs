@@ -88,54 +88,60 @@ export function seedPluginConnectionDesign(
 }
 
 /** Only the external inventory/auth seams are fixtures; navigation and UI are real. */
-export async function installPluginConnectionDesignHandlers(electronApp) {
-  await electronApp.evaluate(({ ipcMain }, trustError) => {
-    ipcMain.removeHandler('plugins:read-component');
-    ipcMain.handle('plugins:read-component', () => ({
-      success: true,
-      data: {
-        frontmatter: {},
-        body: 'Search and manage your Gmail messages from your workspace.',
-      },
-    }));
-    for (const channel of [
-      'settings:claude-auth-status',
-      'settings:codex-auth-status',
-    ]) {
-      ipcMain.removeHandler(channel);
-      ipcMain.handle(channel, () => ({
-        authenticated: true,
-        accountLabel: 'Fixture account',
-        detail: null,
-      }));
-    }
-    ipcMain.removeHandler('cursor-connection:status');
-    ipcMain.handle('cursor-connection:status', () => ({
-      supported: true,
-      enabled: true,
-      installed: true,
-    }));
-    ipcMain.removeHandler('mcp-servers:list-detected');
-    ipcMain.handle('mcp-servers:list-detected', () => ({
-      warnings: [],
-      servers: [
-        {
-          key: 'plugin:gmail',
-          displayName: 'gmail',
-          type: 'http',
-          source: 'plugin',
-          pluginServerName: 'gmail',
-          authStatus: 'not_connected',
-          authStatusLabel: 'Not connected',
-          canConnect: true,
+export async function installPluginConnectionDesignHandlers(
+  electronApp,
+  { authenticated = true } = {},
+) {
+  await electronApp.evaluate(
+    ({ ipcMain }, [trustError, signedIn]) => {
+      ipcMain.removeHandler('plugins:read-component');
+      ipcMain.handle('plugins:read-component', () => ({
+        success: true,
+        data: {
+          frontmatter: {},
+          body: 'Search and manage your Gmail messages from your workspace.',
         },
-      ],
-    }));
-    ipcMain.removeHandler('mcp-servers:start-oauth-login');
-    ipcMain.handle('mcp-servers:start-oauth-login', () => {
-      throw new Error(trustError);
-    });
-  }, TRUST_ERROR);
+      }));
+      for (const channel of [
+        'settings:claude-auth-status',
+        'settings:codex-auth-status',
+      ]) {
+        ipcMain.removeHandler(channel);
+        ipcMain.handle(channel, () => ({
+          authenticated: signedIn,
+          accountLabel: signedIn ? 'Fixture account' : null,
+          detail: null,
+        }));
+      }
+      ipcMain.removeHandler('cursor-connection:status');
+      ipcMain.handle('cursor-connection:status', () => ({
+        supported: true,
+        enabled: true,
+        installed: signedIn,
+      }));
+      ipcMain.removeHandler('mcp-servers:list-detected');
+      ipcMain.handle('mcp-servers:list-detected', () => ({
+        warnings: [],
+        servers: [
+          {
+            key: 'plugin:gmail',
+            displayName: 'gmail',
+            type: 'http',
+            source: 'plugin',
+            pluginServerName: 'gmail',
+            authStatus: 'not_connected',
+            authStatusLabel: 'Not connected',
+            canConnect: true,
+          },
+        ],
+      }));
+      ipcMain.removeHandler('mcp-servers:start-oauth-login');
+      ipcMain.handle('mcp-servers:start-oauth-login', () => {
+        throw new Error(trustError);
+      });
+    },
+    [TRUST_ERROR, authenticated],
+  );
 }
 
 export async function openPluginConnectionDesign(window, app) {
@@ -143,7 +149,7 @@ export async function openPluginConnectionDesign(window, app) {
   await app.waitForShell();
   await app.openPluginsPage();
   await window.getByTestId('plugins-search').fill('Gmail');
-  await window.getByTestId('plugins-entry-mkt:demo/market/gmail').click();
+  await window.getByTestId('customize-row-mkt:demo/market/gmail').click();
 }
 
 /** Facet combinations exercise the desktop Cursor resolver's precedence. */
@@ -376,7 +382,7 @@ export async function openCuratedStatusFixture({
     if (!nestedDevice) await window.getByTestId('mcp-browse-detail').waitFor();
   } else {
     await window
-      .getByTestId('plugins-entry-mcp-catalog:vendor-oauth-callback')
+      .getByTestId('customize-row-mcp-catalog:vendor-oauth-callback')
       .click();
   }
   return { electronApp, userDataDir, window };

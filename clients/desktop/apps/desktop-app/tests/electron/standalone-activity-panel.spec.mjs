@@ -135,13 +135,15 @@ test('standalone activity-card panel pins its header while the body scrolls, and
       .getByTestId('panel-content-activity-section')
       .getByTestId('memory-explorer-workspace');
     await activityMemory.scrollIntoViewIfNeeded();
+    // The panel lists this project's memories and those saved for every
+    // project.
     await expect(activityMemory).toContainText('Workspace memory fixture.');
-    await expect(activityMemory).not.toContainText('Private user fixture.');
+    await expect(activityMemory).toContainText('Private user fixture.');
 
     // --- Open Changed Files as a standalone activity-card panel -----------
     const addMenu = window.getByTestId('panel-add-menu');
 
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(addMenu).toBeVisible();
     await window
       .getByTestId('panel-add-menu-item-activity-card-changed-files')
@@ -180,7 +182,7 @@ test('standalone activity-card panel pins its header while the body scrolls, and
     await expect(changedFilesHeader).toBeVisible();
 
     // --- Open Pipeline Runs as a second standalone activity-card panel ----
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(addMenu).toBeVisible();
     await window
       .getByTestId('panel-add-menu-item-activity-card-pipeline-runs')
@@ -201,7 +203,7 @@ test('standalone activity-card panel pins its header while the body scrolls, and
     await expect(primaryList).toBeVisible({ timeout: 20_000 });
     await expect(primaryList).toHaveClass(/flex-1/);
 
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     const memoryEntry = addMenu.getByTestId(
       'panel-add-menu-item-activity-card-memory',
     );
@@ -222,22 +224,30 @@ test('standalone activity-card panel pins its header while the body scrolls, and
     ).toBeVisible();
     const explorer = memoryPanel.getByTestId('memory-explorer-workspace');
     await expect(explorer).toContainText('Workspace memory fixture.');
-    await expect(explorer).not.toContainText('Private user fixture.');
-    const memoryItem = explorer
-      .getByTestId('memory-item')
-      .filter({ hasText: 'Workspace memory fixture.' });
-    await memoryItem.hover();
-    await memoryItem.getByTestId('memory-item-edit').click();
+    await expect(explorer).toContainText('Private user fixture.');
+    await explorer
+      .locator('[data-testid="memory-row"][data-scope="workspace"]')
+      .getByTestId('memory-row-open')
+      .click();
+    await expect(explorer.getByTestId('memory-detail-facts')).toContainText(
+      'Saved for',
+    );
+    await explorer.getByTestId('memory-detail-edit').click();
+    await expect(explorer.getByTestId('memory-item-draft')).toHaveValue(
+      '- Workspace memory fixture.',
+    );
     await explorer
       .getByTestId('memory-item-draft')
-      .fill('Updated workspace memory.');
+      .fill('- Updated workspace memory.');
     await explorer.getByTestId('memory-item-save').click();
-    await expect(explorer).toContainText('Updated workspace memory.');
+    await expect(explorer.getByTestId('memory-detail-body')).toContainText(
+      'Updated workspace memory.',
+    );
     await expect(activityMemory).toContainText('Updated workspace memory.');
     expect(readFileSync(path.join(memoryDir, 'MEMORY.md'), 'utf8')).toContain(
       'Updated workspace memory.',
     );
-    await window.getByTestId('panel-add-panel-group-chat').click();
+    await window.getByTestId('panel-add-tab-group-chat').click();
     await expect(
       addMenu.getByTestId('panel-add-menu-item-activity-card-memory'),
     ).toHaveCount(0);

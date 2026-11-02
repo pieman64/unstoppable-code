@@ -1335,6 +1335,94 @@ test.describe('split-preflight-modal contents', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
+
+  test('lists an open in-app browser in the termination warning, and drops it once the browser closes', async () => {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-electron-splitpr-preflight-browser-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedSplitPrPreferences({
+      userDataDir,
+      splitPrEnabled: true,
+      splitPrThresholdLines: 500,
+    });
+    seedSplitPrOpenPrStatus({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_BRANCH,
+      prNumber: 828,
+      additions: 400,
+      deletions: 200,
+    });
+    const prStatus = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_BRANCH,
+      status: {
+        repos: [
+          {
+            repoId: WORKSPACE_ID,
+            repoName: 'repo',
+            status: buildSplitPrStatusData({
+              prNumber: 828,
+              additions: 400,
+              deletions: 200,
+            }),
+          },
+        ],
+        lastCheckedAt: '2026-04-10T12:00:00.000Z',
+      },
+    };
+
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const win = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(win);
+      await app.waitForShell({ timeout: 30_000 });
+      await selectDemoWorktree(app, win);
+
+      // Open an in-app browser through the panel `+` menu and wait for its
+      // backend session to go live; the preflight counts live sessions.
+      const browserTabs = win.locator(
+        '[data-testid^="panel-tab-panel-browser-"]:not([data-testid*="panel-tab-close"])',
+      );
+      await win.getByTestId('panel-add-tab-group-terminal').click();
+      await expect(win.getByTestId('panel-add-menu')).toBeVisible();
+      await win.getByTestId('panel-add-menu-item-browser').click();
+      await expect(browserTabs).toHaveCount(1);
+      const browserPanelId = (
+        await browserTabs.first().getAttribute('data-testid')
+      ).replace(/^panel-tab-/, '');
+      const browserId = browserPanelId.replace(/^panel-browser-/, '');
+      await expect(
+        win.getByTestId(`browser-pane-${browserId}`),
+      ).toHaveAttribute('data-browser-state', 'live', { timeout: 30_000 });
+
+      await clickSplitPrButtonWithStableStatus(electronApp, win, prStatus);
+      const modal = win.getByTestId('split-preflight-modal');
+      await expect(modal).toBeVisible({ timeout: 15_000 });
+      const warning = win.getByTestId('split-preflight-termination-warning');
+      await expect(warning).toBeVisible();
+      await expect(warning).toContainText('1 browser tab');
+      await win.getByTestId('split-preflight-cancel').click();
+      await expect(modal).toHaveCount(0);
+
+      // Closing the browser removes it from the warning. The close control is
+      // revealed on hover, and the tab title still wins hit-testing over it,
+      // so the click is forced (as archive-worktree-chat.spec.mjs does).
+      await browserTabs.first().hover();
+      await win
+        .getByTestId(`panel-tab-close-${browserPanelId}`)
+        .click({ force: true });
+      await expect(browserTabs).toHaveCount(0);
+      await clickSplitPrButtonWithStableStatus(electronApp, win, prStatus);
+      await expect(modal).toBeVisible({ timeout: 15_000 });
+      await expect(warning).toHaveCount(0);
+      await win.getByTestId('split-preflight-cancel').click();
+      await expect(modal).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1479,7 +1567,7 @@ test.describe('split-workflow-view + lockdown smoke', () => {
       expect(executeResult.error).toContain(
         'This worktree is locked while a Split PR is in progress',
       );
-      expect(executeResult.error).toContain('running a pipeline');
+      expect(executeResult.error).toContain('running a workflow');
 
       // Cancel exits the locked workflow; normal UX (and a launch surface)
       // returns. Assert via the status-bar button (fully ready: eligible +

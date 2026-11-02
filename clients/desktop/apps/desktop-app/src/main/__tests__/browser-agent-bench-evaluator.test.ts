@@ -546,6 +546,28 @@ describe('evaluateScenario', () => {
     expect(checks.map((check) => check.ok)).toEqual([false, false]);
     expect(checks[0]?.detail).toBe('got [false,false], want [true,false]');
   });
+
+  it('fails a tab-count check when a link opened no tab or a second one', () => {
+    const grade = (tabs: number): boolean[] =>
+      evaluateScenario(
+        {
+          ...scenario,
+          allowWithoutBrowser: true,
+          expect: {
+            page: [{ url: 'example.com', js: 'true', equals: true, tabs: 1 }],
+          },
+        },
+        {
+          reply: '',
+          page: [{ found: tabs > 0, value: true, tabs }],
+          files: [],
+          metrics: extractTurnMetrics([]),
+        },
+      ).map((check) => check.ok);
+    expect(grade(1)).toEqual([true, true]);
+    expect(grade(2)).toEqual([true, false]);
+    expect(grade(0)).toEqual([false, false]);
+  });
 });
 
 function run(

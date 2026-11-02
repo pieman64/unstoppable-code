@@ -32,20 +32,16 @@ function pipelineWatcher(
     trigger: overrides.trigger ?? 'worktree_pipeline_completion',
     status: overrides.status ?? 'active',
     label: overrides.label ?? 'Pipeline watcher',
-    target:
-      overrides.target ??
-      ({
-        kind: 'worktree_pipeline',
-        projectId: 'project-1',
-        worktreeId: 'worktree-1',
-      } as AppAdvisorWatcherSummary['target']),
-    destination:
-      overrides.destination ??
-      ({
-        projectId: APP_ADVISOR_PROJECT_ID,
-        worktreeId: APP_ADVISOR_WORKTREE_ID,
-        chatId: 'advisor-chat',
-      } as AppAdvisorWatcherSummary['destination']),
+    target: overrides.target ?? {
+      kind: 'worktree_pipeline',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+    },
+    destination: overrides.destination ?? {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: APP_ADVISOR_WORKTREE_ID,
+      chatId: 'advisor-chat',
+    },
     createdAt: overrides.createdAt ?? '2026-05-27T00:00:00.000Z',
   };
 }
@@ -84,12 +80,12 @@ describe('PipelineRunsSection watcher indicators', () => {
     );
     expect(advisorFirst).toBeGreaterThan(-1);
     expect(watcherAfterAdvisor).toBeGreaterThan(advisorFirst);
-    expect(PIPELINE_RUNS_SOURCE).toContain('modalTitle="Pipeline watchers"');
+    expect(PIPELINE_RUNS_SOURCE).toContain('modalTitle="Workflow watchers"');
     expect(PIPELINE_RUNS_SOURCE).toContain(
-      'modalEmptyMessage="No active watchers for this pipeline."',
+      'modalEmptyMessage="No active watchers for this workflow."',
     );
     expect(PIPELINE_RUNS_SOURCE).toContain(
-      'ariaLabel="Manage pipeline watchers"',
+      'ariaLabel="Manage workflow watchers"',
     );
     expect(PIPELINE_RUNS_SOURCE).toContain(
       'dataTestId={`pipeline-run-watchers-${summary.id}`}',

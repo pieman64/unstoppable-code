@@ -1,5 +1,7 @@
 import {
+  assertAdmittedWriter,
   assertStorageWriteAllowed,
+  evaluateAdmittedWriter,
   evaluateStorageWrite,
   LEGACY_STORAGE_WRITERS,
   STORAGE_WRITER_PRINCIPALS,
@@ -7,6 +9,7 @@ import {
   type StorageOwnershipRow,
   type StorageWriterPrincipal,
 } from '../writer-authority';
+import { STORAGE_OWNERSHIP } from '../storage-ownership.generated';
 
 type Namespace =
   | 'daemon_ns'
@@ -177,6 +180,41 @@ describe('evaluateStorageWrite', () => {
   });
 });
 
+describe('generated ownership table', () => {
+  const ADMITTED = {
+    preferences: ['main/lib/preferences-store'],
+    startup_migrations: ['main/lib/migrations'],
+    workspace_approvals: ['main/lib/approvals-persistence'],
+  };
+
+  it('carries the curated rows with their admitted writers', () => {
+    const admitted = Object.fromEntries(
+      STORAGE_OWNERSHIP.flatMap((row) =>
+        'admittedWriters' in row ? [[row.id, [...row.admittedWriters]]] : [],
+      ),
+    );
+    expect(admitted).toEqual(ADMITTED);
+  });
+
+  it('refuses every principal but Electron main for the curated rows', () => {
+    for (const id of [
+      'preferences',
+      'startup_migrations',
+      'workspace_approvals',
+    ] as const) {
+      expect(
+        evaluateStorageWrite(id, 'electron_main', STORAGE_OWNERSHIP),
+      ).toEqual({ allowed: true });
+      for (const writer of STORAGE_WRITER_PRINCIPALS.filter(
+        (principal) => principal !== 'electron_main',
+      ))
+        expect(evaluateStorageWrite(id, writer, STORAGE_OWNERSHIP)).toEqual(
+          refused('unlisted_writer'),
+        );
+    }
+  });
+});
+
 describe('assertStorageWriteAllowed', () => {
   it('returns for an allowed write', () => {
     expect(() =>
@@ -196,6 +234,66 @@ describe('assertStorageWriteAllowed', () => {
       namespaceId: 'daemon_ns',
       writer: 'desktop_cli',
       reason: 'daemon_owned',
+    });
+  });
+});
+
+describe('evaluateAdmittedWriter', () => {
+  it('admits only listed modules of a curated row, after the principal check', () => {
+    for (const [id, admitted] of [
+      ['preferences', 'main/lib/preferences-store'],
+      ['startup_migrations', 'main/lib/migrations'],
+      ['workspace_approvals', 'main/lib/approvals-persistence'],
+    ] as const) {
+      expect(
+        evaluateAdmittedWriter(
+          id,
+          'electron_main',
+          admitted,
+          STORAGE_OWNERSHIP,
+        ),
+      ).toEqual({ allowed: true });
+      for (const module of [undefined, 'main/lib/other', `${admitted}-copy`])
+        expect(
+          evaluateAdmittedWriter(
+            id,
+            'electron_main',
+            module,
+            STORAGE_OWNERSHIP,
+          ),
+        ).toEqual(refused('unadmitted_writer'));
+      expect(
+        evaluateAdmittedWriter(id, 'desktop_cli', admitted, STORAGE_OWNERSHIP),
+      ).toEqual(refused('unlisted_writer'));
+    }
+  });
+
+  it('leaves rows without admitted writers to the principal decision', () => {
+    expect(
+      evaluateAdmittedWriter('legacy_ns', 'desktop_cli', undefined, ROWS),
+    ).toEqual({ allowed: true });
+    expect(
+      evaluateAdmittedWriter('daemon_ns', 'electron_main', 'any', ROWS),
+    ).toEqual(refused('daemon_owned'));
+  });
+
+  it('throws a typed refusal naming the module', () => {
+    let thrown: unknown;
+    try {
+      assertAdmittedWriter(
+        'workspace_approvals',
+        'electron_main',
+        'main/lib/other',
+        STORAGE_OWNERSHIP,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      name: 'StorageWriteRefusedError',
+      namespaceId: 'workspace_approvals',
+      writer: 'electron_main (main/lib/other)',
+      reason: 'unadmitted_writer',
     });
   });
 });

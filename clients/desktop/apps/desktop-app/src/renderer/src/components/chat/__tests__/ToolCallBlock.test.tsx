@@ -7,6 +7,7 @@ import {
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import { CodeBracketsIcon, GraphIcon, McpIcon } from '@canopy/ui-shared/icons';
+import { ChatLookProvider } from '@canopy/ui-shared/components';
 import { ToolCallBlock } from '../ToolCallBlock';
 import { TranscriptSearchRevealContext } from '../transcript-search-reveal';
 import type { ChatVisualOwner } from '@canopy/ui-app';
@@ -35,7 +36,77 @@ function visibleText(html: string): string {
   return html.replace(/<[^>]*>/g, '');
 }
 
+function malformedPersistedAuthFailureResult(): {
+  output: string;
+  isError: boolean;
+} {
+  const result = {
+    output: 'MCP error -32001: MCP server authorization required',
+    isError: true,
+  };
+  Object.assign(result, { authFailure: { nonsense: true } });
+  return result;
+}
+
 describe('ToolCallBlock', () => {
+  it.each(['WebFetch', 'SendMessage', 'Bash'])(
+    'shows a %s denial as blocked with sanitized text in its expanded panel',
+    (toolName) => {
+      const html = renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <TranscriptSearchRevealContext.Provider value={true}>
+            <ToolCallBlock
+              toolName={toolName}
+              input='{"prompt":"p","message":"m","command":"git push --force"}'
+              result={{
+                output: `PreToolUse:${toolName} hook error: The user denied this tool call: Not on this branch.`,
+                isError: true,
+              }}
+            />
+          </TranscriptSearchRevealContext.Provider>
+        </ChatLookProvider>,
+      );
+      expect(html).toContain('data-tool-status="blocked"');
+      expect(visibleText(html)).toContain('Denied by you');
+      expect(visibleText(html)).toContain(
+        'The user denied this tool call: Not on this branch.',
+      );
+      expect(html).not.toContain('PreToolUse');
+      expect(html).not.toContain('fg-destructive');
+    },
+  );
+
+  it('tints a large error output in the classic look only', () => {
+    const outputClass = (look: 'classic' | 'clean'): string | undefined =>
+      /<pre class="([^"]*)">boom<\/pre>/.exec(
+        renderToStaticMarkup(
+          <ChatLookProvider value={look}>
+            <TranscriptSearchRevealContext.Provider value={true}>
+              <ToolCallBlock
+                toolName="Bash"
+                input='{"command":"ls"}'
+                result={{
+                  output: 'boom',
+                  isError: true,
+                  fullOutputRef: {
+                    version: 1,
+                    artifactId: 'tool-output/boom.txt',
+                    byteLength: 4,
+                    sha256: 'test',
+                    encoding: 'utf-8',
+                    mediaType: 'text/plain',
+                  },
+                }}
+              />
+            </TranscriptSearchRevealContext.Provider>
+          </ChatLookProvider>,
+        ),
+      )?.[1];
+    expect(outputClass('classic')).toContain('fg-destructive/80');
+    expect(outputClass('clean')).toBeDefined();
+    expect(outputClass('clean')).not.toContain('fg-destructive');
+  });
+
   it('uses the owning visual reference title and offers source without raw HTML', () => {
     const visualCall = (
       <ToolCallBlock
@@ -65,9 +136,11 @@ describe('ToolCallBlock', () => {
     expect(collapsed).not.toContain('chat-visual-source-button');
     // Expanded, the row offers the source in place of the raw input.
     const expanded = renderToStaticMarkup(
-      <TranscriptSearchRevealContext.Provider value={true}>
-        {visualCall}
-      </TranscriptSearchRevealContext.Provider>,
+      <ChatLookProvider value="classic">
+        <TranscriptSearchRevealContext.Provider value={true}>
+          {visualCall}
+        </TranscriptSearchRevealContext.Provider>
+      </ChatLookProvider>,
     );
     expect(expanded).toContain('chat-visual-source-button');
     expect(visibleText(expanded)).not.toContain('Stale title');
@@ -75,10 +148,12 @@ describe('ToolCallBlock', () => {
   });
   it('uses the active brand logo for worktree-scoped tool calls', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="canopy_dispatch_action"
-        input='{"action":{"type":"pipeline.run"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="canopy_dispatch_action"
+          input='{"action":{"type":"pipeline.run"}}'
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
     expect(html).toContain('data-tool-family="canopy"');
@@ -91,10 +166,12 @@ describe('ToolCallBlock', () => {
 
   it('renders ImmediateTurnRestart as Refresh and resume with the active brand logo', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`${BRAND.tools.namespace}_immediate_turn_restart`}
-        input="{}"
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`${BRAND.tools.namespace}_immediate_turn_restart`}
+          input="{}"
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
 
@@ -106,10 +183,12 @@ describe('ToolCallBlock', () => {
 
   it('renders worktree hook pause actions as Canopy tool calls', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="canopy_dispatch_action"
-        input='{"action":{"type":"hook.pause","hookKey":"project:pr:checks:fail"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="canopy_dispatch_action"
+          input='{"action":{"type":"hook.pause","hookKey":"project:pr:checks:fail"}}'
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
     expect(html).toContain('data-tool-family="canopy"');
@@ -121,28 +200,36 @@ describe('ToolCallBlock', () => {
 
   it('renders worktree base-branch actions with specific chat-row labels', () => {
     const setBaseHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="app_advisor_dispatch_action"
-        input='{"action":{"type":"worktree.set_base_branch","projectId":"project-1","worktreeId":"worktree-1","baseBranch":"release/next"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="app_advisor_dispatch_action"
+          input='{"action":{"type":"worktree.set_base_branch","projectId":"project-1","worktreeId":"worktree-1","baseBranch":"release/next"}}'
+        />
+      </ChatLookProvider>,
     );
     const createHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="app_advisor_dispatch_action"
-        input='{"action":{"type":"worktree.create","workspaceId":"project-1","baseBranch":"develop"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="app_advisor_dispatch_action"
+          input='{"action":{"type":"worktree.create","workspaceId":"project-1","baseBranch":"develop"}}'
+        />
+      </ChatLookProvider>,
     );
     const createFromWorktreeHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="app_advisor_dispatch_action"
-        input='{"action":{"type":"worktree.create","workspaceId":"project-1","baseWorktreeId":"worktree-1"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="app_advisor_dispatch_action"
+          input='{"action":{"type":"worktree.create","workspaceId":"project-1","baseWorktreeId":"worktree-1"}}'
+        />
+      </ChatLookProvider>,
     );
     const createFromHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="app_advisor_dispatch_action"
-        input='{"action":{"type":"worktree.create_from","workspaceId":"project-1","source":"branch","reference":"feature/source","baseBranch":"develop"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="app_advisor_dispatch_action"
+          input='{"action":{"type":"worktree.create_from","workspaceId":"project-1","source":"branch","reference":"feature/source","baseBranch":"develop"}}'
+        />
+      </ChatLookProvider>,
     );
 
     expect(setBaseHtml).toContain('data-tool-family="app-advisor"');
@@ -162,10 +249,12 @@ describe('ToolCallBlock', () => {
 
   it('renders the worktree SetBaseBranch tool in the branded app family', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`${BRAND.tools.namespace}_set_base_branch`}
-        input='{"baseBranch":"release/next","repoId":"repo-a"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`${BRAND.tools.namespace}_set_base_branch`}
+          input='{"baseBranch":"release/next","repoId":"repo-a"}'
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
 
@@ -178,25 +267,29 @@ describe('ToolCallBlock', () => {
 
   it('uses the active brand logo for worktree read pipeline YAML calls', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__ReadPipelineYaml`}
-        input='{"pipelineId":"build.yml","pattern":"steps"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__ReadPipelineYaml`}
+          input='{"pipelineId":"build.yml","pattern":"steps"}'
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
     expect(html).toContain('data-tool-family="canopy"');
     expect(logoPath).toBeTruthy();
     expect(html).toContain(logoPath);
-    expect(html).toContain('Read pipeline YAML');
+    expect(html).toContain('Read workflow YAML');
     expect(html).toContain('build.yml');
   });
 
   it('renders SetAutoArchive calls as branded Canopy tool calls', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__SetAutoArchive`}
-        input='{"enabled":true}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__SetAutoArchive`}
+          input='{"enabled":true}'
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
     expect(html).toContain('data-tool-family="canopy"');
@@ -207,22 +300,28 @@ describe('ToolCallBlock', () => {
 
   it('renders save, search, and read memory calls as branded Canopy tools', () => {
     const saveHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__SaveMemory`}
-        input='{"text":"Uses Vim","scope":"user"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__SaveMemory`}
+          input='{"text":"Uses Vim","scope":"user"}'
+        />
+      </ChatLookProvider>,
     );
     const searchHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`${BRAND.tools.namespace}_search_memory`}
-        input='{"query":"package manager"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`${BRAND.tools.namespace}_search_memory`}
+          input='{"query":"package manager"}'
+        />
+      </ChatLookProvider>,
     );
     const readHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__ReadMemory`}
-        input='{"scope":"workspace","file":"topics/package-manager.md"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__ReadMemory`}
+          input='{"scope":"workspace","file":"topics/package-manager.md"}'
+        />
+      </ChatLookProvider>,
     );
 
     expect(saveHtml).toContain('data-tool-family="canopy"');
@@ -247,22 +346,28 @@ describe('ToolCallBlock', () => {
 
   it('renders add, search, and update ledger entry calls as branded Canopy tools', () => {
     const addHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__AddFeedEntry`}
-        input='{"type":"TASK","title":"Fix the login redirect loop","content":"Investigate"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__AddFeedEntry`}
+          input='{"type":"TASK","title":"Fix the login redirect loop","content":"Investigate"}'
+        />
+      </ChatLookProvider>,
     );
     const searchHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`${BRAND.tools.namespace}_search_feed_entries`}
-        input='{"query":"login redirect"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`${BRAND.tools.namespace}_search_feed_entries`}
+          input='{"query":"login redirect"}'
+        />
+      </ChatLookProvider>,
     );
     const updateHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__UpdateFeedEntry`}
-        input='{"entryId":"11111111-1111-1111-1111-111111111111","expectedRevision":1,"status":"IN_PROGRESS","owner":"self"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__UpdateFeedEntry`}
+          input='{"entryId":"11111111-1111-1111-1111-111111111111","expectedRevision":1,"status":"IN_PROGRESS","owner":"self"}'
+        />
+      </ChatLookProvider>,
     );
 
     expect(addHtml).toContain('data-tool-family="canopy"');
@@ -320,10 +425,12 @@ describe('ToolCallBlock', () => {
 
     for (const { key, input, testId } of cases) {
       const nativeHtml = renderToStaticMarkup(
-        <ToolCallBlock
-          toolName={CANOPY_INJECTED_TOOL_REGISTRY[key].claudeToolName}
-          input={input}
-        />,
+        <ChatLookProvider value="classic">
+          <ToolCallBlock
+            toolName={CANOPY_INJECTED_TOOL_REGISTRY[key].claudeToolName}
+            input={input}
+          />
+        </ChatLookProvider>,
       );
       expect(nativeHtml).toContain('data-tool-family="canopy"');
       expect(nativeHtml).toContain(`data-testid="${testId}"`);
@@ -334,7 +441,9 @@ describe('ToolCallBlock', () => {
         APP_ADVISOR_TOOL_REGISTRY[key].codexToolName,
       ]) {
         const html = renderToStaticMarkup(
-          <ToolCallBlock toolName={toolName} input={input} />,
+          <ChatLookProvider value="classic">
+            <ToolCallBlock toolName={toolName} input={input} />
+          </ChatLookProvider>,
         );
         expect(html).toContain(`data-tool-name="${toolName}"`);
         expect(withoutToolName(html)).toBe(withoutToolName(nativeHtml));
@@ -344,26 +453,36 @@ describe('ToolCallBlock', () => {
 
   it('renders code-graph tool calls in the graph family with the GraphIcon, not the brand logo', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__QueryCodeGraph`}
-        input='{"mode":"callers","target":"apps/desktop-app/src/main/lib/paths.ts::getWorktreeHomeDir"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__QueryCodeGraph`}
+          input='{"mode":"callers","target":"apps/desktop-app/src/main/lib/paths.ts::getWorktreeHomeDir"}'
+        />
+      </ChatLookProvider>,
     );
     const logoPath = BRAND.assets.logoSvg.match(/<path[^>]+>/)?.[0];
     expect(html).toContain('data-tool-family="graph"');
     expect(html).toContain('Query Code Graph');
     expect(html).toContain('paths.ts::getWorktreeHomeDir');
-    expect(html).toContain(renderToStaticMarkup(<GraphIcon />));
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <GraphIcon />
+        </ChatLookProvider>,
+      ),
+    );
     expect(logoPath).toBeTruthy();
     expect(html).not.toContain(logoPath);
   });
 
   it('keeps branded App Advisor action calls in the app-advisor family', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}_app_advisor__SearchActions`}
-        input='{"query":"pipeline"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}_app_advisor__SearchActions`}
+          input='{"query":"pipeline"}'
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-tool-family="app-advisor"');
     expect(html).toContain('Search actions');
@@ -371,23 +490,27 @@ describe('ToolCallBlock', () => {
 
   it('keeps branded App Advisor read pipeline YAML calls in the app-advisor family', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}_app_advisor__ReadPipelineYaml`}
-        input='{"pipelineId":"build.yml","startLine":2,"endLine":5}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}_app_advisor__ReadPipelineYaml`}
+          input='{"pipelineId":"build.yml","startLine":2,"endLine":5}'
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-tool-family="app-advisor"');
-    expect(html).toContain('Read pipeline YAML');
+    expect(html).toContain('Read workflow YAML');
     expect(html).toContain('build.yml');
     expect(html).toContain('lines 2-5');
   });
 
   it('renders WatchGitHubItems calls in the watcher family', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}_app_advisor__WatchGitHubItems`}
-        input='{"items":[{"kind":"workflow_run","repository":"acme/api","runId":"1"}],"notifyOn":{"conclusions":["failure"]}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}_app_advisor__WatchGitHubItems`}
+          input='{"items":[{"kind":"workflow_run","repository":"acme/api","runId":"1"}],"notifyOn":{"conclusions":["failure"]}}'
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-tool-family="watcher"');
     expect(html).toContain('Watch GitHub workflow runs');
@@ -396,10 +519,12 @@ describe('ToolCallBlock', () => {
 
   it('renders App Advisor hook resume actions in the App Advisor family', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="app_advisor_dispatch_action"
-        input='{"action":{"type":"hook.resume","all":true,"projectId":"project-1","worktreeId":"worktree-1"}}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="app_advisor_dispatch_action"
+          input='{"action":{"type":"hook.resume","all":true,"projectId":"project-1","worktreeId":"worktree-1"}}'
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-tool-family="app-advisor"');
     expect(html).toContain('Resume all hooks');
@@ -408,11 +533,13 @@ describe('ToolCallBlock', () => {
 
   it('renders SendMessage as an "Agent message" row in the agent family', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="SendMessage"
-        input='{"to":"ac70abe6769a1e1ea","summary":"Re-review Windows shell fix","message":"A fix pass addressed your critical finding."}'
-        result={{ output: 'delivered', isError: false }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="SendMessage"
+          input='{"to":"ac70abe6769a1e1ea","summary":"Re-review Windows shell fix","message":"A fix pass addressed your critical finding."}'
+          result={{ output: 'delivered', isError: false }}
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-tool-family="agent"');
     expect(html).toContain('Agent message');
@@ -424,11 +551,13 @@ describe('ToolCallBlock', () => {
 
   it('shows the resolved recipient name for SendMessage when provided', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="SendMessage"
-        input='{"to":"ac70abe6769a1e1ea","summary":"Re-review","message":"body"}'
-        resolvedRecipient="Fix Task 18"
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="SendMessage"
+          input='{"to":"ac70abe6769a1e1ea","summary":"Re-review","message":"body"}'
+          resolvedRecipient="Fix Task 18"
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('Agent message');
     expect(html).toContain('Fix Task 18');
@@ -437,41 +566,73 @@ describe('ToolCallBlock', () => {
 
   it('gives RespondToComment the plan icon in Plan Explore chats and the code icon in Code Review chats', () => {
     const planHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="RespondToComment"
-        input='{"threadId":"t-1","body":"looks good"}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="RespondToComment"
+          input='{"threadId":"t-1","body":"looks good"}'
+        />
+      </ChatLookProvider>,
     );
     expect(planHtml).toContain('data-tool-family="plan"');
-    expect(planHtml).not.toContain(renderToStaticMarkup(<CodeBracketsIcon />));
+    expect(planHtml).not.toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <CodeBracketsIcon />
+        </ChatLookProvider>,
+      ),
+    );
 
     const reviewHtml = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="RespondToComment"
-        input='{"threadId":"t-1","body":"looks good"}'
-        isCodeReviewChat
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="RespondToComment"
+          input='{"threadId":"t-1","body":"looks good"}'
+          isCodeReviewChat
+        />
+      </ChatLookProvider>,
     );
     expect(reviewHtml).toContain('data-tool-family="plan"');
-    expect(reviewHtml).toContain(renderToStaticMarkup(<CodeBracketsIcon />));
+    expect(reviewHtml).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <CodeBracketsIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 
   it('gives GetReviewComments the code icon by name alone, regardless of scope', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock toolName="GetReviewComments" input="{}" />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock toolName="GetReviewComments" input="{}" />
+      </ChatLookProvider>,
     );
     expect(html).toContain('data-tool-family="plan"');
-    expect(html).toContain(renderToStaticMarkup(<CodeBracketsIcon />));
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <CodeBracketsIcon />
+        </ChatLookProvider>,
+      ),
+    );
   });
 
   it('renders proxied Codex MCP calls with the MCP icon and a friendly label', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId=\\"fixture-operation\\""}'
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId=\\"fixture-operation\\""}'
+        />
+      </ChatLookProvider>,
     );
-    expect(html).toContain(renderToStaticMarkup(<McpIcon />));
+    expect(html).toContain(
+      renderToStaticMarkup(
+        <ChatLookProvider value="classic">
+          <McpIcon />
+        </ChatLookProvider>,
+      ),
+    );
     const text = visibleText(html);
     expect(text).toContain('Internal Hub Prod');
     expect(text).toContain('Query Gcp Logs');
@@ -483,11 +644,13 @@ describe('ToolCallBlock', () => {
 
   it('renders Computer Use reset with its cursor icon and keeps details collapsible', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="mcp__cua_repl__js_reset"
-        input='{"reason":"recover stale bindings"}'
-        result={{ output: 'Reset complete', isError: false }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="mcp__cua_repl__js_reset"
+          input='{"reason":"recover stale bindings"}'
+          result={{ output: 'Reset complete', isError: false }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-tool-family="computer-use"');
@@ -500,38 +663,46 @@ describe('ToolCallBlock', () => {
 
   it('keeps the raw canonical MCP name and status in automation metadata', () => {
     const pending = renderToStaticMarkup(
-      <ToolCallBlock toolName={PROXIED_MCP_TOOL_NAME} input="{}" />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock toolName={PROXIED_MCP_TOOL_NAME} input="{}" />
+      </ChatLookProvider>,
     );
     expect(pending).toContain('data-testid="chat-tool-call"');
     expect(pending).toContain(`data-tool-name="${PROXIED_MCP_TOOL_NAME}"`);
     expect(pending).toContain('data-tool-status="pending"');
 
     const success = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input="{}"
-        result={{ output: '3 log entries', isError: false }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input="{}"
+          result={{ output: '3 log entries', isError: false }}
+        />
+      </ChatLookProvider>,
     );
     expect(success).toContain('data-tool-status="success"');
 
     const failure = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input="{}"
-        result={{ output: 'HTTP 504 gateway timeout', isError: true }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input="{}"
+          result={{ output: 'HTTP 504 gateway timeout', isError: true }}
+        />
+      </ChatLookProvider>,
     );
     expect(failure).toContain('data-tool-status="error"');
   });
 
   it('keeps MCP call input and output collapsed until activated', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{ output: '3 log entries', isError: false }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{ output: '3 log entries', isError: false }}
+        />
+      </ChatLookProvider>,
     );
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain('operationId');
@@ -541,14 +712,16 @@ describe('ToolCallBlock', () => {
 
   it('offers an MCP connection CTA when an MCP tool fails for missing authorization', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="chat-connection-cta-mcp"');
@@ -560,25 +733,14 @@ describe('ToolCallBlock', () => {
 
   it('renders one checklist row per dependency from a persisted authFailures array', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'expired',
-            recovery: {
-              kind: 'mcp_oauth',
-              serverId: 'srv-1',
-              configId: 'cfg-1',
-            },
-          },
-          authFailures: [
-            {
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+            authFailure: {
               dependencyClass: 'mcp',
               dependencyId: 'srv-1:cfg-1',
               displayName: 'Prod MCP server',
@@ -589,20 +751,33 @@ describe('ToolCallBlock', () => {
                 configId: 'cfg-1',
               },
             },
-            {
-              dependencyClass: 'mcp',
-              dependencyId: 'srv-2:cfg-1',
-              displayName: 'Docs MCP server',
-              failureClass: 'expired',
-              recovery: {
-                kind: 'mcp_oauth',
-                serverId: 'srv-2',
-                configId: 'cfg-1',
+            authFailures: [
+              {
+                dependencyClass: 'mcp',
+                dependencyId: 'srv-1:cfg-1',
+                displayName: 'Prod MCP server',
+                failureClass: 'expired',
+                recovery: {
+                  kind: 'mcp_oauth',
+                  serverId: 'srv-1',
+                  configId: 'cfg-1',
+                },
               },
-            },
-          ],
-        }}
-      />,
+              {
+                dependencyClass: 'mcp',
+                dependencyId: 'srv-2:cfg-1',
+                displayName: 'Docs MCP server',
+                failureClass: 'expired',
+                recovery: {
+                  kind: 'mcp_oauth',
+                  serverId: 'srv-2',
+                  configId: 'cfg-1',
+                },
+              },
+            ],
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-dependency-id="srv-1:cfg-1"');
@@ -618,25 +793,27 @@ describe('ToolCallBlock', () => {
     // Transcripts persisted before `authFailures` existed carry only
     // `authFailure`, and they must keep rendering their card (CAN-1814 PR 2).
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'expired',
-            recovery: {
-              kind: 'mcp_oauth',
-              serverId: 'srv-1',
-              configId: 'cfg-1',
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'mcp',
+              dependencyId: 'srv-1:cfg-1',
+              displayName: 'Prod MCP server',
+              failureClass: 'expired',
+              recovery: {
+                kind: 'mcp_oauth',
+                serverId: 'srv-1',
+                configId: 'cfg-1',
+              },
             },
-          },
-        }}
-      />,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('Reconnect Prod MCP server');
@@ -645,11 +822,13 @@ describe('ToolCallBlock', () => {
 
   it('does not offer a connection CTA for unrelated MCP failures', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input="{}"
-        result={{ output: 'HTTP 504 gateway timeout', isError: true }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input="{}"
+          result={{ output: 'HTTP 504 gateway timeout', isError: true }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="chat-connection-cta-mcp"');
@@ -660,25 +839,27 @@ describe('ToolCallBlock', () => {
     // entirely when present — see ToolCallBlock.tsx's
     // `structuredAuthFailure` computation.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: '3 log entries',
-          isError: false,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'expired',
-            recovery: {
-              kind: 'mcp_oauth',
-              serverId: 'srv-1',
-              configId: 'cfg-1',
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: '3 log entries',
+            isError: false,
+            authFailure: {
+              dependencyClass: 'mcp',
+              dependencyId: 'srv-1:cfg-1',
+              displayName: 'Prod MCP server',
+              failureClass: 'expired',
+              recovery: {
+                kind: 'mcp_oauth',
+                serverId: 'srv-1',
+                configId: 'cfg-1',
+              },
             },
-          },
-        }}
-      />,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="chat-connection-cta-mcp"');
@@ -690,25 +871,27 @@ describe('ToolCallBlock', () => {
     // main only attaches authFailure to genuine MCP tool_results, so the
     // renderer trusts it without re-deriving MCP-ness from the tool name.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="Bash"
-        input='{"command":"cat app.log"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'expired',
-            recovery: {
-              kind: 'mcp_oauth',
-              serverId: 'srv-1',
-              configId: 'cfg-1',
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="Bash"
+          input='{"command":"cat app.log"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'mcp',
+              dependencyId: 'srv-1:cfg-1',
+              displayName: 'Prod MCP server',
+              failureClass: 'expired',
+              recovery: {
+                kind: 'mcp_oauth',
+                serverId: 'srv-1',
+                configId: 'cfg-1',
+              },
             },
-          },
-        }}
-      />,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="chat-connection-cta-mcp"');
@@ -721,21 +904,23 @@ describe('ToolCallBlock', () => {
     // MCP-specific CTA, and structured data being present must not fall
     // back to the legacy regex either.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'provider',
-            dependencyId: 'claude',
-            displayName: 'Claude',
-            failureClass: 'unauthenticated',
-            recovery: { kind: 'provider_terminal', provider: 'claude' },
-          },
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'provider',
+              dependencyId: 'claude',
+              displayName: 'Claude',
+              failureClass: 'unauthenticated',
+              recovery: { kind: 'provider_terminal', provider: 'claude' },
+            },
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="chat-connection-cta-mcp"');
@@ -746,22 +931,24 @@ describe('ToolCallBlock', () => {
   // is name-agnostic by design, so the card renders and names GitHub.
   it('renders the GitHub reconnect CTA on an injected tool result', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={`mcp__${BRAND.tools.namespace}__WatchGitHubItems`}
-        input='{"items":[123],"notifyOn":{"jobs":{"conclusions":"any"}}}'
-        result={{
-          output:
-            '{"ok":false,"code":"not_authenticated","message":"No GitHub token is available."}',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'integration',
-            dependencyId: 'integration:github',
-            displayName: 'GitHub',
-            failureClass: 'unauthenticated',
-            recovery: { kind: 'github_login' },
-          },
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={`mcp__${BRAND.tools.namespace}__WatchGitHubItems`}
+          input='{"items":[123],"notifyOn":{"jobs":{"conclusions":"any"}}}'
+          result={{
+            output:
+              '{"ok":false,"code":"not_authenticated","message":"No GitHub token is available."}',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'integration',
+              dependencyId: 'integration:github',
+              displayName: 'GitHub',
+              failureClass: 'unauthenticated',
+              recovery: { kind: 'github_login' },
+            },
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="auth-recovery-card"');
@@ -778,18 +965,20 @@ describe('ToolCallBlock', () => {
     // legacy `canopy` one it rejects, so this pins the exclusion itself rather
     // than passing for free under whichever brand the suite happens to run.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="mcp__unstoppable-code__WatchGitHubItems"
-        input='{"items":[123],"notifyOn":{"jobs":{"conclusions":"any"}}}'
-        result={{
-          // Exactly the body `isMcpConnectionError` DOES match — a 401 next
-          // to an `invalid_token` marker — so the exclusion is what suppresses
-          // the card, not a heuristic miss.
-          output:
-            'Error POSTing to endpoint (HTTP 401): {"error":"invalid_token"}',
-          isError: true,
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="mcp__unstoppable-code__WatchGitHubItems"
+          input='{"items":[123],"notifyOn":{"jobs":{"conclusions":"any"}}}'
+          result={{
+            // Exactly the body `isMcpConnectionError` DOES match — a 401 next
+            // to an `invalid_token` marker — so the exclusion is what suppresses
+            // the card, not a heuristic miss.
+            output:
+              'Error POSTing to endpoint (HTTP 401): {"error":"invalid_token"}',
+            isError: true,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="auth-recovery-card"');
@@ -802,21 +991,23 @@ describe('ToolCallBlock', () => {
     // dependencyClass alone rendered "Connect MCP server" for a failure that
     // reconnecting cannot fix.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error: HTTP 403 Forbidden',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'insufficient_scope',
-            recovery: { kind: 'none' },
-          },
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error: HTTP 403 Forbidden',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'mcp',
+              dependencyId: 'srv-1:cfg-1',
+              displayName: 'Prod MCP server',
+              failureClass: 'insufficient_scope',
+              recovery: { kind: 'none' },
+            },
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="chat-connection-cta-mcp"');
@@ -827,21 +1018,23 @@ describe('ToolCallBlock', () => {
     // match must still not produce a CTA once main has said the failure has
     // no inline recovery.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'insufficient_scope',
-            recovery: { kind: 'none' },
-          },
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'mcp',
+              dependencyId: 'srv-1:cfg-1',
+              displayName: 'Prod MCP server',
+              failureClass: 'insufficient_scope',
+              recovery: { kind: 'none' },
+            },
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="chat-connection-cta-mcp"');
@@ -856,25 +1049,27 @@ describe('ToolCallBlock', () => {
     // otherwise render "Connect MCP server" for a failure logging in cannot
     // fix (CAN-1814 review).
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          authFailure: {
-            dependencyClass: 'mcp',
-            dependencyId: 'srv-1:cfg-1',
-            displayName: 'Prod MCP server',
-            failureClass: 'quota_exceeded',
-            recovery: {
-              kind: 'mcp_oauth',
-              serverId: 'srv-1',
-              configId: 'cfg-1',
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={{
+            output: 'MCP error -32001: MCP server authorization required',
+            isError: true,
+            authFailure: {
+              dependencyClass: 'mcp',
+              dependencyId: 'srv-1:cfg-1',
+              displayName: 'Prod MCP server',
+              failureClass: 'quota_exceeded',
+              recovery: {
+                kind: 'mcp_oauth',
+                serverId: 'srv-1',
+                configId: 'cfg-1',
+              },
             },
-          },
-        }}
-      />,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).not.toContain('data-testid="chat-connection-cta-mcp"');
@@ -891,16 +1086,13 @@ describe('ToolCallBlock', () => {
     //     corrupt cache entry, while the tool output is independent evidence
     //     of a real auth failure. Fall back to the heuristic.
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName={PROXIED_MCP_TOOL_NAME}
-        input='{"filter":"operationId"}'
-        result={{
-          output: 'MCP error -32001: MCP server authorization required',
-          isError: true,
-          // Garbage that cannot be read as a verdict.
-          authFailure: { nonsense: true },
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName={PROXIED_MCP_TOOL_NAME}
+          input='{"filter":"operationId"}'
+          result={malformedPersistedAuthFailureResult()}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-testid="chat-connection-cta-mcp"');
@@ -923,16 +1115,18 @@ describe('ToolCallBlock', () => {
     // case above (a readable but non-recoverable verdict) still suppresses.
     const render = (): string =>
       renderToStaticMarkup(
-        <ToolCallBlock
-          toolName={PROXIED_MCP_TOOL_NAME}
-          input='{"filter":"operationId"}'
-          result={{
-            output: 'MCP error -32001: MCP server authorization required',
-            isError: true,
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- intentionally simulates unvalidated persisted JSON missing `recovery`
-            authFailure: JSON.parse('{"dependencyClass":"mcp"}'),
-          }}
-        />,
+        <ChatLookProvider value="classic">
+          <ToolCallBlock
+            toolName={PROXIED_MCP_TOOL_NAME}
+            input='{"filter":"operationId"}'
+            result={{
+              output: 'MCP error -32001: MCP server authorization required',
+              isError: true,
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- intentionally simulates unvalidated persisted JSON missing `recovery`
+              authFailure: JSON.parse('{"dependencyClass":"mcp"}'),
+            }}
+          />
+        </ChatLookProvider>,
       );
 
     expect(render).not.toThrow();
@@ -941,15 +1135,17 @@ describe('ToolCallBlock', () => {
 
   it('renders Claude model-change rows with display names and a stable icon size', () => {
     const html = renderToStaticMarkup(
-      <ToolCallBlock
-        toolName="ClaudeModelChange"
-        input='{"previous_model":"fable[1m]","detected_model":"opus[1m]","previous_model_display":"Fable 5 1M","detected_model_display":"Opus 4.8 1M","reported_model":"claude-opus-4-8"}'
-        result={{
-          output:
-            'Previous model: fable[1m]\nDetected model: opus[1m]\nReported model: claude-opus-4-8',
-          isError: false,
-        }}
-      />,
+      <ChatLookProvider value="classic">
+        <ToolCallBlock
+          toolName="ClaudeModelChange"
+          input='{"previous_model":"fable[1m]","detected_model":"opus[1m]","previous_model_display":"Fable 5 1M","detected_model_display":"Opus 4.8 1M","reported_model":"claude-opus-4-8"}'
+          result={{
+            output:
+              'Previous model: fable[1m]\nDetected model: opus[1m]\nReported model: claude-opus-4-8',
+            isError: false,
+          }}
+        />
+      </ChatLookProvider>,
     );
 
     expect(html).toContain('data-tool-family="claude"');

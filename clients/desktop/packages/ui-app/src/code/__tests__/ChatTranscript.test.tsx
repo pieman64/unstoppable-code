@@ -7,6 +7,17 @@ import type {
   PortalChatTurnGroup,
 } from '@canopy/protocol/portal';
 
+import {
+  COMPLETED_CREDIT_RETRY_MESSAGES as CREDIT_RETRY_MESSAGES,
+  nativeStoppedCreditRetry,
+  cancelledCreditRetry,
+} from '../../../../ui-shared/src/lib/__tests__/fixtures/credit-retry';
+import { persistedMessageToPortalMessage } from '@canopy/agent-transcript';
+import {
+  computeIncrementalTurnGroups,
+  createEmptyTurnGroupCache,
+} from '@canopy/app-state';
+
 import { ChatTranscript, getLatestMessageSignal } from '../ChatTranscript';
 import {
   ChatVisualHostProvider,
@@ -16,7 +27,11 @@ import {
   resetChatVisualsSourcesForTests,
   useChatVisualsSource,
 } from '../chat-visuals-source';
-import { TurnWorkingStatusProvider } from '../ChatPartView';
+import {
+  AskUserQuestionInteractionProvider,
+  TurnWorkingStatusProvider,
+} from '../ChatPartView';
+import { ChatLookProvider } from '@canopy/ui-shared/components/chat-look';
 
 function msg(id: string, text: string): PortalChatMessage {
   return {
@@ -40,9 +55,381 @@ const TURN_GROUPS: PortalChatTurnGroup[] = [
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('ChatTranscript', () => {
+  it('folds a live result in a later message into its call', () => {
+    // Live turns deliver a Claude call and its result as separate messages;
+    // the shell folds them, so the shared transcript must too.
+    const occurrence = { id: 'call-row#0', revision: 3 };
+    const messages: PortalChatMessage[] = [
+      msg('u1', 'read it'),
+      {
+        ...msg('a1', ''),
+        status: 'streaming',
+        parts: [
+          {
+            kind: 'tool_use',
+            occurrence: { id: 'call-row#0', revision: 2 },
+            data: { toolUseId: 'read-1', toolName: 'Read', input: '{}' },
+          },
+        ],
+      },
+      {
+        ...msg('a2', ''),
+        role: 'user',
+        parts: [
+          {
+            kind: 'tool_result',
+            occurrence,
+            outputLocator: {
+              messageId: 'result-row',
+              blockOrdinal: 0,
+              field: 'output',
+            },
+            data: { toolUseId: 'read-1', output: 'preview', isError: false },
+          },
+        ],
+      },
+    ];
+    const out = renderToString(
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={messages}
+          turnGroups={[
+            {
+              userMessageId: 'u1',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a1', 'a2'],
+            },
+          ]}
+          status="streaming"
+        />
+      </ChatLookProvider>,
+    );
+    expect(out).toContain('data-tool-name="Read"');
+    expect(out).not.toContain('data-tool-status="pending"');
+    expect(out).not.toContain('Tool result');
+  });
+
+  it('drops a result already folded into its call by a snapshot', () => {
+    const occurrence = { id: 'call-row#0', revision: 3 };
+    const messages: PortalChatMessage[] = [
+      msg('u1', 'read it'),
+      {
+        ...msg('a1', ''),
+        parts: [
+          {
+            kind: 'tool_use',
+            occurrence,
+            data: {
+              toolUseId: 'read-1',
+              toolName: 'Read',
+              input: '{}',
+              result: { output: 'preview', isError: false },
+            },
+          },
+        ],
+      },
+      {
+        ...msg('a2', ''),
+        role: 'assistant',
+        parts: [
+          {
+            kind: 'tool_result',
+            occurrence,
+            data: { toolUseId: 'read-1', output: 'preview', isError: false },
+          },
+        ],
+      },
+    ];
+    const out = renderToString(
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={messages}
+          turnGroups={[
+            {
+              userMessageId: 'u1',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a1', 'a2'],
+            },
+          ]}
+          status="idle"
+        />
+      </ChatLookProvider>,
+    );
+    expect(out.split('data-tool-name="Read"')).toHaveLength(2);
+    expect(out).not.toContain('Tool result');
+  });
+
+  describe("a wake's link to where its task started (turn-state phase 40e)", () => {
+    const scrollIntoView = jest.fn();
+    const messages: PortalChatMessage[] = [
+      msg('u1', 'watch the build'),
+      {
+        ...msg('a1', ''),
+        parts: [
+          {
+            kind: 'tool_use',
+            toolFamily: 'bash',
+            data: {
+              toolName: 'Monitor',
+              toolUseId: 'toolu-monitor',
+              input: JSON.stringify({ description: 'build errors' }),
+            },
+          },
+        ],
+      },
+      msg('a2', 'Watching the build.'),
+      msg('a-wake', 'The build broke.'),
+    ];
+    const wakeGroups = (
+      wake: NonNullable<PortalChatTurnGroup['wake']>,
+    ): PortalChatTurnGroup[] => [
+      {
+        userMessageId: 'u1',
+        intermediateMessageIds: ['a1'],
+        finalMessageIds: ['a2'],
+        complete: true,
+        summary: { bashCount: 1 },
+      },
+      {
+        userMessageId: 'tw',
+        intermediateMessageIds: [],
+        finalMessageIds: ['a-wake'],
+        complete: true,
+        wake,
+      },
+    ];
+    let container: HTMLDivElement;
+    let root: ReturnType<typeof createRoot>;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      scrollIntoView.mockClear();
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        writable: true,
+        value: scrollIntoView,
+      });
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      root = createRoot(container);
+    });
+
+    afterEach(() => {
+      act(() => root.unmount());
+      container.remove();
+      jest.useRealTimers();
+    });
+
+    function renderAndShow(
+      wake: NonNullable<PortalChatTurnGroup['wake']>,
+    ): void {
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <ChatTranscript
+              messages={messages}
+              turnGroups={wakeGroups(wake)}
+              status="idle"
+              renderTurnFeedback={(id) => (
+                <span data-testid={`feedback-${id}`} />
+              )}
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="wake-turn-boundary-show-spawning-turn"]',
+          )
+          ?.click(),
+      );
+      act(() => {
+        jest.advanceTimersByTime(32);
+      });
+    }
+
+    function turn(id: string): HTMLElement | null {
+      return container.querySelector<HTMLElement>(`[data-turn-id="${id}"]`);
+    }
+
+    it('gives the wake no feedback slot', () => {
+      renderAndShow({ spawningUserMessageId: 'u1' });
+      expect(
+        container.querySelector('[data-testid="feedback-u1"]'),
+      ).not.toBeNull();
+      expect(container.querySelector('[data-testid="feedback-tw"]')).toBeNull();
+    });
+
+    it("opens the call's collapsed turn, centers the call and highlights only it", () => {
+      renderAndShow({
+        spawningUserMessageId: 'u1',
+        spawningToolUseId: 'toolu-monitor',
+      });
+
+      const row = container.querySelector<HTMLElement>(
+        '[data-tool-use-id="toolu-monitor"]',
+      );
+      expect(row).not.toBeNull();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(row);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+      expect(row?.dataset.chatCallFocus).toBe('true');
+      expect(turn('u1')?.dataset.chatCallFocus).toBeUndefined();
+      expect(
+        turn('u1')
+          ?.querySelector('[data-role="user"]')
+          ?.hasAttribute('data-chat-call-focus'),
+      ).toBe(false);
+
+      act(() => {
+        jest.advanceTimersByTime(2500);
+      });
+      expect(row?.dataset.chatCallFocus).toBeUndefined();
+    });
+
+    it('highlights only the prompt bubble when the call is not loaded', () => {
+      renderAndShow({
+        spawningUserMessageId: 'u1',
+        spawningToolUseId: 'toolu-missing',
+      });
+
+      const bubble =
+        turn('u1')?.querySelector<HTMLElement>('[data-role="user"]');
+      expect(bubble).not.toBeNull();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.contexts[0]).toBe(bubble);
+      expect(bubble?.dataset.chatCallFocus).toBe('true');
+      expect(turn('u1')?.dataset.chatCallFocus).toBeUndefined();
+    });
+
+    it('waits for history hydration before revealing a pending question (CAN-4958)', () => {
+      const render = (initialized: boolean): void => {
+        act(() =>
+          root.render(
+            <ChatLookProvider value="classic">
+              <StrictMode>
+                <AskUserQuestionInteractionProvider
+                  value={{
+                    states: [
+                      {
+                        requestId: 'q',
+                        toolUseId: 'toolu-monitor',
+                        questions: [],
+                        answered: false,
+                      },
+                    ],
+                    onAnswer: jest.fn(),
+                    onDismiss: jest.fn(),
+                  }}
+                >
+                  <ChatTranscript
+                    chatId="c1"
+                    initialized={initialized}
+                    messages={messages}
+                    turnGroups={wakeGroups({ spawningUserMessageId: 'u1' })}
+                    status="idle"
+                  />
+                </AskUserQuestionInteractionProvider>
+              </StrictMode>
+            </ChatLookProvider>,
+          ),
+        );
+        act(() => {
+          jest.advanceTimersByTime(64);
+        });
+      };
+      render(false);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      render(true);
+      expect(scrollIntoView).toHaveBeenCalled();
+    });
+
+    it.each([true, false])(
+      'reveals an earlier pending question with correlated id=%s (CAN-4958)',
+      (hasToolId) => {
+        act(() =>
+          root.render(
+            <ChatLookProvider value="classic">
+              <StrictMode>
+                <AskUserQuestionInteractionProvider
+                  value={{
+                    states: [
+                      {
+                        requestId: 'q',
+                        ...(hasToolId ? { toolUseId: 'toolu-monitor' } : {}),
+                        questions: [
+                          { question: 'Continue?', options: ['Yes', 'No'] },
+                        ],
+                        answered: false,
+                      },
+                    ],
+                    onAnswer: jest.fn(),
+                    onDismiss: jest.fn(),
+                  }}
+                >
+                  <ChatTranscript
+                    chatId="c1"
+                    messages={messages.map((message) =>
+                      message.messageId !== 'a1'
+                        ? message
+                        : {
+                            ...message,
+                            parts: [
+                              {
+                                kind: 'tool_use',
+                                toolFamily: 'ask-user',
+                                data: {
+                                  toolName: 'mcp__canopy__AskUserQuestion',
+                                  toolUseId: 'already-answered',
+                                  result: { output: 'Done' },
+                                  input: '{}',
+                                },
+                              },
+                              {
+                                kind: 'tool_use',
+                                toolFamily: 'ask-user',
+                                data: {
+                                  toolName: 'mcp__canopy__AskUserQuestion',
+                                  toolUseId: 'toolu-monitor',
+                                  input: JSON.stringify({
+                                    questions: [
+                                      {
+                                        question: 'Continue?',
+                                        options: ['Yes', 'No'],
+                                      },
+                                    ],
+                                  }),
+                                },
+                              },
+                            ],
+                          },
+                    )}
+                    turnGroups={wakeGroups({ spawningUserMessageId: 'u1' })}
+                    status="idle"
+                  />
+                </AskUserQuestionInteractionProvider>
+              </StrictMode>
+            </ChatLookProvider>,
+          ),
+        );
+        act(() => {
+          jest.advanceTimersByTime(64);
+        });
+        const row = container.querySelector(
+          '[data-tool-use-id="toolu-monitor"]',
+        );
+        expect(row).not.toBeNull();
+        expect(scrollIntoView.mock.contexts).toContainEqual(row);
+      },
+    );
+  });
+
   it('shows the default empty state when there are no messages', () => {
     const out = renderToString(
-      <ChatTranscript messages={[]} turnGroups={[]} status="idle" />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript messages={[]} turnGroups={[]} status="idle" />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-empty"');
     expect(out).toContain('Send a message to start working');
@@ -50,12 +437,14 @@ describe('ChatTranscript', () => {
 
   it('renders the scroll container and footer when there are no messages but a footerSlot', () => {
     const out = renderToString(
-      <ChatTranscript
-        messages={[]}
-        turnGroups={[]}
-        status="idle"
-        footerSlot={<div data-testid="queued-footer">queued</div>}
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[]}
+          turnGroups={[]}
+          status="idle"
+          footerSlot={<div data-testid="queued-footer">queued</div>}
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript"');
     expect(out).toContain('data-testid="queued-footer"');
@@ -65,13 +454,15 @@ describe('ChatTranscript', () => {
 
   it('renders footerStatus under the footer', () => {
     const out = renderToString(
-      <ChatTranscript
-        messages={[]}
-        turnGroups={[]}
-        status="idle"
-        footerSlot={<div data-testid="queued-footer">queued</div>}
-        footerStatus={<p data-testid="footer-status">starting</p>}
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[]}
+          turnGroups={[]}
+          status="idle"
+          footerSlot={<div data-testid="queued-footer">queued</div>}
+          footerStatus={<p data-testid="footer-status">starting</p>}
+        />
+      </ChatLookProvider>,
     );
     const footerAt = out.indexOf('data-testid="queued-footer"');
     const statusAt = out.indexOf('data-testid="footer-status"');
@@ -83,23 +474,27 @@ describe('ChatTranscript', () => {
 
   it('renders a custom empty state', () => {
     const out = renderToString(
-      <ChatTranscript
-        messages={[]}
-        turnGroups={[]}
-        status="idle"
-        emptyState={<span>nothing yet</span>}
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[]}
+          turnGroups={[]}
+          status="idle"
+          emptyState={<span>nothing yet</span>}
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('nothing yet');
   });
 
   it('renders turn groups when there are messages', () => {
     const out = renderToString(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="idle"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="idle"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript"');
     expect(out).toContain('h-full min-h-0');
@@ -139,16 +534,18 @@ describe('ChatTranscript', () => {
     ];
 
     const out = renderToString(
-      <ChatTranscript
-        messages={messages}
-        turnGroups={turnGroups}
-        status="streaming"
-        renderLatestTurnAction={({ disabled }) => (
-          <button type="button" disabled={disabled}>
-            Fork chat
-          </button>
-        )}
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={messages}
+          turnGroups={turnGroups}
+          status="streaming"
+          renderLatestTurnAction={({ disabled }) => (
+            <button type="button" disabled={disabled}>
+              Fork chat
+            </button>
+          )}
+        />
+      </ChatLookProvider>,
     );
 
     expect(out.match(/Fork chat/g)).toHaveLength(1);
@@ -183,11 +580,13 @@ describe('ChatTranscript', () => {
 
   it('shows a streaming indicator while streaming', () => {
     const out = renderToString(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
   });
@@ -198,19 +597,21 @@ describe('ChatTranscript', () => {
     // for the `role="status"` the cloud-chat `Continuing…` banner used to carry
     // before its label moved onto this row.
     const out = renderToString(
-      <TurnWorkingStatusProvider value="Waking this chat…">
-        <ChatTranscript
-          messages={MESSAGES}
-          turnGroups={TURN_GROUPS}
-          status="streaming"
-        />
-      </TurnWorkingStatusProvider>,
+      <ChatLookProvider value="classic">
+        <TurnWorkingStatusProvider value="Compacting context…">
+          <ChatTranscript
+            messages={MESSAGES}
+            turnGroups={TURN_GROUPS}
+            status="streaming"
+          />
+        </TurnWorkingStatusProvider>
+      </ChatLookProvider>,
     );
     const row = out.slice(
       out.indexOf('data-testid="chat-transcript-streaming"') - 200,
     );
     expect(row).toContain('role="status"');
-    expect(out).toContain('Waking this chat…');
+    expect(out).toContain('Compacting context…');
   });
 
   it('places the working row where the turn timer will land, above the turn actions', () => {
@@ -218,12 +619,14 @@ describe('ChatTranscript', () => {
     // takes over: both render after the turn's finals and before its action
     // row, on the same `px-3` bubble-text inset.
     const out = renderToString(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="streaming"
-        renderLatestTurnAction={() => <button type="button">Fork</button>}
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+          renderLatestTurnAction={() => <button type="button">Fork</button>}
+        />
+      </ChatLookProvider>,
     );
     const streamingAt = out.indexOf('data-testid="chat-transcript-streaming"');
     const actionsAt = out.indexOf('data-testid="chat-turn-actions"');
@@ -238,7 +641,13 @@ describe('ChatTranscript', () => {
     // (A message-less transcript renders the empty state instead, so this
     // needs messages the host has not yet grouped.)
     const out = renderToString(
-      <ChatTranscript messages={MESSAGES} turnGroups={[]} status="streaming" />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={[]}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
   });
@@ -250,11 +659,13 @@ describe('ChatTranscript', () => {
     // and `role="status"` implies `aria-atomic`, so an AT that does expose that
     // name would read "Thinking" every time. Pins the unlabelled shape.
     const out = renderToString(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
     expect(out).not.toContain('role="status"');
@@ -268,17 +679,19 @@ describe('ChatTranscript', () => {
       parts: [{ kind: 'turn_timer', data: { startedAt: 1000 } }],
     };
     const out = renderToString(
-      <ChatTranscript
-        messages={[...MESSAGES, timer]}
-        turnGroups={[
-          {
-            userMessageId: 'u1',
-            intermediateMessageIds: [],
-            finalMessageIds: ['a1', 't1'],
-          },
-        ]}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[...MESSAGES, timer]}
+          turnGroups={[
+            {
+              userMessageId: 'u1',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a1', 't1'],
+            },
+          ]}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="turn-timer"');
     expect(out).not.toContain('data-testid="chat-transcript-streaming"');
@@ -293,17 +706,19 @@ describe('ChatTranscript', () => {
       ],
     };
     const out = renderToString(
-      <ChatTranscript
-        messages={[...MESSAGES, timer]}
-        turnGroups={[
-          {
-            userMessageId: 'u1',
-            intermediateMessageIds: [],
-            finalMessageIds: ['a1', 't1'],
-          },
-        ]}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[...MESSAGES, timer]}
+          turnGroups={[
+            {
+              userMessageId: 'u1',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a1', 't1'],
+            },
+          ]}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
   });
@@ -320,22 +735,24 @@ describe('ChatTranscript', () => {
     };
     const nextUser = msg('u2', 'follow-up');
     const out = renderToString(
-      <ChatTranscript
-        messages={[...MESSAGES, orphan, nextUser]}
-        turnGroups={[
-          {
-            userMessageId: 'u1',
-            intermediateMessageIds: [],
-            finalMessageIds: ['a1', 't-orphan'],
-          },
-          {
-            userMessageId: 'u2',
-            intermediateMessageIds: [],
-            finalMessageIds: [],
-          },
-        ]}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[...MESSAGES, orphan, nextUser]}
+          turnGroups={[
+            {
+              userMessageId: 'u1',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a1', 't-orphan'],
+            },
+            {
+              userMessageId: 'u2',
+              intermediateMessageIds: [],
+              finalMessageIds: [],
+            },
+          ]}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
   });
@@ -354,29 +771,33 @@ describe('ChatTranscript', () => {
       ],
     };
     const out = renderToString(
-      <ChatTranscript
-        messages={[...MESSAGES, mixed]}
-        turnGroups={[
-          {
-            userMessageId: 'u1',
-            intermediateMessageIds: ['s1'],
-            finalMessageIds: ['a1'],
-          },
-        ]}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[...MESSAGES, mixed]}
+          turnGroups={[
+            {
+              userMessageId: 'u1',
+              intermediateMessageIds: ['s1'],
+              finalMessageIds: ['a1'],
+            },
+          ]}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
   });
 
   it('shows the error text on error status', () => {
     const out = renderToString(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="error"
-        error="it broke"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="error"
+          error="it broke"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-error"');
     expect(out).toContain('it broke');
@@ -388,19 +809,21 @@ describe('ChatTranscript', () => {
       status: 'failed',
     };
     const out = renderToString(
-      <ChatTranscript
-        messages={[...MESSAGES, msg('u2', 'try it'), failed]}
-        turnGroups={[
-          ...TURN_GROUPS,
-          {
-            userMessageId: 'u2',
-            intermediateMessageIds: [],
-            finalMessageIds: ['a2'],
-          },
-        ]}
-        status="error"
-        error="The version check exited. Try again."
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[...MESSAGES, msg('u2', 'try it'), failed]}
+          turnGroups={[
+            ...TURN_GROUPS,
+            {
+              userMessageId: 'u2',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a2'],
+            },
+          ]}
+          status="error"
+          error="The version check exited. Try again."
+        />
+      </ChatLookProvider>,
     );
     expect(out).not.toContain('data-testid="chat-transcript-error"');
     expect(out.split('The version check exited. Try again.')).toHaveLength(2);
@@ -412,19 +835,21 @@ describe('ChatTranscript', () => {
       status: 'failed',
     };
     const out = renderToString(
-      <ChatTranscript
-        messages={[msg('u1', 'hello there'), failed, msg('u2', 'again')]}
-        turnGroups={[
-          ...TURN_GROUPS,
-          {
-            userMessageId: 'u2',
-            intermediateMessageIds: [],
-            finalMessageIds: [],
-          },
-        ]}
-        status="error"
-        error="it broke"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[msg('u1', 'hello there'), failed, msg('u2', 'again')]}
+          turnGroups={[
+            ...TURN_GROUPS,
+            {
+              userMessageId: 'u2',
+              intermediateMessageIds: [],
+              finalMessageIds: [],
+            },
+          ]}
+          status="error"
+          error="it broke"
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-error"');
   });
@@ -435,19 +860,21 @@ describe('ChatTranscript', () => {
       status: 'failed',
     };
     const out = renderToString(
-      <ChatTranscript
-        messages={[...MESSAGES, msg('u2', 'try it'), failed]}
-        turnGroups={[
-          ...TURN_GROUPS,
-          {
-            userMessageId: 'u2',
-            intermediateMessageIds: [],
-            finalMessageIds: ['a2'],
-          },
-        ]}
-        status="error"
-        error="The connection dropped."
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[...MESSAGES, msg('u2', 'try it'), failed]}
+          turnGroups={[
+            ...TURN_GROUPS,
+            {
+              userMessageId: 'u2',
+              intermediateMessageIds: [],
+              finalMessageIds: ['a2'],
+            },
+          ]}
+          status="error"
+          error="The connection dropped."
+        />
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-error"');
     expect(out).toContain('The connection dropped.');
@@ -485,11 +912,13 @@ describe('ChatTranscript', () => {
     ];
 
     const out = renderToString(
-      <ChatTranscript
-        messages={messages}
-        turnGroups={turnGroups}
-        status="idle"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={messages}
+          turnGroups={turnGroups}
+          status="idle"
+        />
+      </ChatLookProvider>,
     );
 
     const classesAfter = (marker: string | RegExp): string[] =>
@@ -520,13 +949,15 @@ describe('ChatTranscript', () => {
 describe('ChatTranscript working status (REG-2943)', () => {
   it('labels the fallback spinner with the host working status', () => {
     const out = renderToString(
-      <TurnWorkingStatusProvider value="Compacting context…">
-        <ChatTranscript
-          messages={MESSAGES}
-          turnGroups={TURN_GROUPS}
-          status="streaming"
-        />
-      </TurnWorkingStatusProvider>,
+      <ChatLookProvider value="classic">
+        <TurnWorkingStatusProvider value="Compacting context…">
+          <ChatTranscript
+            messages={MESSAGES}
+            turnGroups={TURN_GROUPS}
+            status="streaming"
+          />
+        </TurnWorkingStatusProvider>
+      </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
     expect(out).toContain('Compacting context…');
@@ -540,11 +971,13 @@ it('does not autoscroll when the reader has scrolled away from the bottom', asyn
   const root = createRoot(container);
   act(() =>
     root.render(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     ),
   );
   const viewport = container.querySelector('[data-testid="chat-transcript"]');
@@ -563,11 +996,13 @@ it('does not autoscroll when the reader has scrolled away from the bottom', asyn
   scroll.mockClear();
   act(() =>
     root.render(
-      <ChatTranscript
-        messages={[MESSAGES[0], { ...MESSAGES[1], text: 'new delta' }]}
-        turnGroups={TURN_GROUPS}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={[MESSAGES[0], { ...MESSAGES[1], text: 'new delta' }]}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     ),
   );
   await act(async () => {
@@ -589,11 +1024,13 @@ it.each([200])(
       finalMessageIds: [],
     }));
     const out = renderToString(
-      <ChatTranscript
-        messages={messages}
-        turnGroups={turnGroups}
-        status="idle"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={messages}
+          turnGroups={turnGroups}
+          status="idle"
+        />
+      </ChatLookProvider>,
     );
     // The initial offset must account for the gap between virtual turns, or
     // long transcripts drop their last turns from the first render.
@@ -612,11 +1049,13 @@ it('windows transcripts above 50 turns while retaining the last turn', () => {
     finalMessageIds: [],
   }));
   const out = renderToString(
-    <ChatTranscript
-      messages={messages}
-      turnGroups={turnGroups}
-      status="idle"
-    />,
+    <ChatLookProvider value="classic">
+      <ChatTranscript
+        messages={messages}
+        turnGroups={turnGroups}
+        status="idle"
+      />
+    </ChatLookProvider>,
   );
   expect(out).toContain('data-turn-count="80"');
   expect(out).toContain('data-testid="chat-transcript"');
@@ -633,11 +1072,13 @@ it('keeps following when layout emits a scroll event above the new bottom', asyn
   const root = createRoot(container);
   act(() =>
     root.render(
-      <ChatTranscript
-        messages={MESSAGES}
-        turnGroups={TURN_GROUPS}
-        status="streaming"
-      />,
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+        />
+      </ChatLookProvider>,
     ),
   );
   const viewport = container.querySelector('[data-testid="chat-transcript"]');
@@ -665,11 +1106,13 @@ it('stops following when a scroll moves the reader up away from the bottom', asy
   const render = (text: string): void =>
     act(() =>
       root.render(
-        <ChatTranscript
-          messages={[MESSAGES[0], { ...MESSAGES[1], text }]}
-          turnGroups={TURN_GROUPS}
-          status="streaming"
-        />,
+        <ChatLookProvider value="classic">
+          <ChatTranscript
+            messages={[MESSAGES[0], { ...MESSAGES[1], text }]}
+            turnGroups={TURN_GROUPS}
+            status="streaming"
+          />
+        </ChatLookProvider>,
       ),
     );
   render('first chunk');
@@ -701,13 +1144,15 @@ it('keeps following content after StrictMode replays effects', async () => {
   const render = (text: string): void => {
     act(() =>
       root.render(
-        <StrictMode>
-          <ChatTranscript
-            messages={[MESSAGES[0], { ...MESSAGES[1], text }]}
-            turnGroups={TURN_GROUPS}
-            status="streaming"
-          />
-        </StrictMode>,
+        <ChatLookProvider value="classic">
+          <StrictMode>
+            <ChatTranscript
+              messages={[MESSAGES[0], { ...MESSAGES[1], text }]}
+              turnGroups={TURN_GROUPS}
+              status="streaming"
+            />
+          </StrictMode>
+        </ChatLookProvider>,
       ),
     );
   };
@@ -732,8 +1177,8 @@ it('keeps a pinned reader at the bottom when the footer grows', () => {
   let notify: (() => void) | null = null;
   const previous = globalThis.ResizeObserver;
   class RecordingResizeObserver {
-    constructor(callback: () => void) {
-      notify = callback;
+    constructor(callback: ResizeObserverCallback) {
+      notify = (): void => callback([], this);
     }
     observe(target: Element): void {
       observed.push(target);
@@ -747,12 +1192,14 @@ it('keeps a pinned reader at the bottom when the footer grows', () => {
   try {
     act(() =>
       root.render(
-        <ChatTranscript
-          messages={[]}
-          turnGroups={[]}
-          status="idle"
-          footerSlot={<div data-testid="queued-footer">queued</div>}
-        />,
+        <ChatLookProvider value="classic">
+          <ChatTranscript
+            messages={[]}
+            turnGroups={[]}
+            status="idle"
+            footerSlot={<div data-testid="queued-footer">queued</div>}
+          />
+        </ChatLookProvider>,
       ),
     );
     const viewport = container.querySelector('[data-testid="chat-transcript"]');
@@ -824,16 +1271,18 @@ describe('ChatTranscript and the Chat visuals panel', () => {
     const root = createRoot(container);
     act(() =>
       root.render(
-        <>
-          <ChatVisualHostProvider value={host}>
-            <ChatTranscript
-              messages={messages}
-              turnGroups={turnGroups}
-              status="idle"
-            />
-          </ChatVisualHostProvider>
-          <Listed sourceKey="chat-key" />
-        </>,
+        <ChatLookProvider value="classic">
+          <>
+            <ChatVisualHostProvider value={host}>
+              <ChatTranscript
+                messages={messages}
+                turnGroups={turnGroups}
+                status="idle"
+              />
+            </ChatVisualHostProvider>
+            <Listed sourceKey="chat-key" />
+          </>
+        </ChatLookProvider>,
       ),
     );
     return container;
@@ -930,22 +1379,26 @@ describe('ChatTranscript when the person sends a prompt', () => {
       const messages = props.messages ?? initial.messages ?? HISTORY;
       act(() =>
         root.render(
-          <ChatTranscript
-            {...{
-              initialized: props.initialized ?? initial.initialized ?? true,
-              queuedPromptIds: props.queuedPromptIds ?? initial.queuedPromptIds,
-              queuedPromptMessageIds:
-                props.queuedPromptMessageIds ?? initial.queuedPromptMessageIds,
-            }}
-            chatId={props.chatId ?? initial.chatId ?? 'c1'}
-            messages={messages}
-            turnGroups={groupsFor(messages)}
-            status={props.status ?? 'idle'}
-            footerSlot={<div />}
-            queuedPromptCount={
-              props.queuedPromptCount ?? initial.queuedPromptCount ?? 0
-            }
-          />,
+          <ChatLookProvider value="classic">
+            <ChatTranscript
+              {...{
+                initialized: props.initialized ?? initial.initialized ?? true,
+                queuedPromptIds:
+                  props.queuedPromptIds ?? initial.queuedPromptIds,
+                queuedPromptMessageIds:
+                  props.queuedPromptMessageIds ??
+                  initial.queuedPromptMessageIds,
+              }}
+              chatId={props.chatId ?? initial.chatId ?? 'c1'}
+              messages={messages}
+              turnGroups={groupsFor(messages)}
+              status={props.status ?? 'idle'}
+              footerSlot={<div />}
+              queuedPromptCount={
+                props.queuedPromptCount ?? initial.queuedPromptCount ?? 0
+              }
+            />
+          </ChatLookProvider>,
         ),
       );
       const next = container.querySelector<HTMLElement>(
@@ -1245,5 +1698,89 @@ describe('ChatTranscript when the person sends a prompt', () => {
     await view.flush();
     expect(view.offset()).toBe(100);
     view.unmount();
+  });
+});
+
+describe('CAN-4450 recovered credit hold in Portal transcript', () => {
+  function renderRetry(
+    messages = CREDIT_RETRY_MESSAGES,
+    cancelled = false,
+  ): string {
+    const projected = messages.map((message) =>
+      persistedMessageToPortalMessage({
+        scope: 'worktree',
+        chatId: 'c1',
+        message,
+      }),
+    );
+    // The Portal host also supplies the terminal row status from its turn state.
+    if (cancelled) projected[9].status = 'cancelled';
+    return renderToString(
+      <ChatLookProvider value="classic">
+        <ChatTranscript
+          messages={projected}
+          turnGroups={computeIncrementalTurnGroups(
+            'c1',
+            projected,
+            createEmptyTurnGroupCache(),
+          )}
+          status="idle"
+        />
+      </ChatLookProvider>,
+    );
+  }
+
+  it('removes the recovered inline notice while retaining the reply and original user row once', () => {
+    const out = renderRetry();
+    expect(out).not.toContain(
+      'Chat stopped. Choose how to pay for this message to keep going.',
+    );
+    expect(out).toContain('Ready for your project summary');
+    expect(out).toContain(
+      'API Error: 402 AI Credits are unavailable for this request.',
+    );
+    expect(out.match(/Summarize this project\./g)).toHaveLength(1);
+  });
+
+  it('keeps the cancelled partial reply footer and warning without a detached prior-attempt timestamp', () => {
+    const host = document.createElement('div');
+    host.innerHTML = renderRetry(cancelledCreditRetry(), true);
+    expect(host.textContent).toContain(
+      'Chat stopped. Choose how to pay for this message to keep going.',
+    );
+    expect(host.textContent?.match(/Summarize this project\./g)).toHaveLength(
+      1,
+    );
+    expect(host.textContent).toContain('Ready for your project summary');
+    const footerLabel = host.querySelector(
+      `[data-testid="turn-timer-label"][title="Cancelled at ${new Date(1793229281367).toLocaleString()}"]`,
+    );
+    expect(footerLabel?.textContent).toBe('Cancelled after 0:29');
+    expect(
+      host.querySelector(
+        `[title="Completed at ${new Date(1793228712687).toLocaleString()}"]`,
+      ),
+    ).toBeNull();
+    expect(host.querySelectorAll('[data-testid="turn-timer"]')).toHaveLength(3);
+  });
+
+  it('retains the notice and both attempt timers through the actual native Stop Portal projection', () => {
+    const out = renderRetry(nativeStoppedCreditRetry());
+    expect(out).toContain(
+      'Chat stopped. Choose how to pay for this message to keep going.',
+    );
+    expect(out.match(/data-testid="turn-timer"/g)).toHaveLength(4);
+  });
+
+  it('removes only the obsolete credit-attempt footer, preserving ordinary failed and successful timing', () => {
+    expect(renderRetry().match(/data-testid="turn-timer"/g)).toHaveLength(3);
+  });
+
+  it('keeps unresolved credit-hold copy and timing', () => {
+    const out = renderRetry(CREDIT_RETRY_MESSAGES.slice(0, -2));
+    expect(out).toContain(
+      'Chat stopped. Choose how to pay for this message to keep going.',
+    );
+    expect(out.match(/data-testid="turn-timer"/g)).toHaveLength(3);
   });
 });

@@ -7,6 +7,7 @@ import {
   MAX_ITERATIONS_LIMIT,
   MAX_RETRIES_LIMIT,
 } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import {
   initClaudeModels,
   initModelAliases,
@@ -20,6 +21,10 @@ import {
   getDraftValidation,
   getSafeJobOrder,
 } from '../lib/pipelineEditor';
+
+function textContaining(text: string): unknown {
+  return expect.stringContaining(text);
+}
 
 function makeStep(overrides: Partial<Step> = {}): Step {
   return { name: 'test', run: 'echo hi', ...overrides };
@@ -195,6 +200,90 @@ describe('isPipelineSelectionValid', () => {
         stepIndex: 1,
       }),
     ).toBe(false);
+  });
+});
+
+describe('getDraftValidation assets', () => {
+  const readsSpecialists = makePipeline({
+    build: makeJob({
+      steps: [
+        makeStep({ id: 'read', run: 'ls "${{ assets.specialists.path }}"' }),
+      ],
+    }),
+  });
+  const errors = (pipeline: Pipeline): string[] =>
+    getDraftValidation(pipeline)
+      .filter((issue) => issue.type === 'error')
+      .map((issue) => `${issue.path}: ${issue.message}`);
+
+  it('accepts declared assets and local_state', () => {
+    expect(
+      errors({
+        ...readsSpecialists,
+        assets: [{ id: 'specialists', path: '~/specialists' }],
+        local_state: ['~/state.db'],
+      }),
+    ).toEqual([]);
+  });
+
+  // Raw YAML, as the editor receives it, so malformed values reach the validator.
+  const parsed = (head: string): Pipeline =>
+    parsePipelineText(
+      `name: t\non: dispatch\n${head}jobs:\n  build:\n    steps:\n      - id: read\n        run: ls "\${{ assets.specialists.path }}"\n`,
+    );
+
+  it.each<[string, string, string]>([
+    [
+      'an invalid id',
+      'assets:\n  - id: Specialists\n    path: ~/s\n',
+      'assets[0].id: Invalid asset id "Specialists"',
+    ],
+    [
+      'a duplicate id',
+      'assets:\n  - id: specialists\n    path: ~/a\n  - id: specialists\n    path: ~/b\n',
+      'assets[1].id: Duplicate asset id "specialists"',
+    ],
+    [
+      'an invalid install mode',
+      'assets:\n  - id: specialists\n    path: ~/s\n    install: merge\n',
+      'assets[0].install: Pipeline asset install must be seed or replace',
+    ],
+    [
+      'a missing path',
+      'assets:\n  - id: specialists\n',
+      'assets[0].path: Pipeline asset path is required',
+    ],
+    [
+      'a non-string path',
+      'assets:\n  - id: specialists\n    path: 3\n',
+      'assets[0].path: Pipeline asset path is required',
+    ],
+    [
+      'a non-string local_state entry',
+      'assets:\n  - id: specialists\n    path: ~/s\nlocal_state:\n  - 3\n',
+      'local_state[0]: Each pipeline local_state entry must be a path',
+    ],
+    [
+      'a reference to an undeclared asset',
+      'assets:\n  - id: notes\n    path: ~/notes\n',
+      'assets: Expression reads asset "specialists", which this pipeline does not declare',
+    ],
+  ])('rejects %s', (_label, head, expected) => {
+    expect(errors(parsed(head))).toContainEqual(
+      expect.stringContaining(expected),
+    );
+  });
+
+  it('warns, without blocking save, when a child reads an inherited asset', () => {
+    const issues = getDraftValidation(readsSpecialists);
+    expect(issues.filter((issue) => issue.type === 'error')).toEqual([]);
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        type: 'warning',
+        path: 'assets',
+        message: textContaining('"specialists"'),
+      }),
+    );
   });
 });
 

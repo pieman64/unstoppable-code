@@ -138,13 +138,15 @@ describe('workspace template protocol', () => {
   });
 
   it.each([
-    [{ id: '', text: 'Valid text' }],
-    [{ id: 'valid-id', text: '' }],
-    [
-      { id: 'duplicate', text: 'One' },
-      { id: 'duplicate', text: 'Two' },
-    ],
-  ])('rejects malformed v2 starter prompts %#', (starterPrompts) => {
+    { starterPrompts: [{ id: '', text: 'Valid text' }] },
+    { starterPrompts: [{ id: 'valid-id', text: '' }] },
+    {
+      starterPrompts: [
+        { id: 'duplicate', text: 'One' },
+        { id: 'duplicate', text: 'Two' },
+      ],
+    },
+  ])('rejects malformed v2 starter prompts %#', ({ starterPrompts }) => {
     expect(
       validateSharedWorkspaceTemplateDocument({
         ...validDocument,

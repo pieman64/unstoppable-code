@@ -535,9 +535,9 @@ describe('HomeBranchPicker', () => {
     expect(search?.className).toContain('fg-primary');
     expect(search?.className).toContain('placeholder:fg-tertiary');
     expect(
-      search
+      (search
         ?.closest('.canopy-picker-menu-search')
-        ?.compareDocumentPosition(tablist ?? document.body) &
+        ?.compareDocumentPosition(tablist ?? document.body) ?? 0) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(row?.className.split(' ')).toEqual(

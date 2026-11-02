@@ -43,10 +43,22 @@ import { WORKTREE_LIST_STORAGE, withStorageAdmission } from './w5-storage';
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
-  removeWorkspaceWorktrees,
-  updateWorkspaceWorktrees,
 } from './workspace-persistence';
+import {
+  applyWorktreeListRemoval,
+  applyWorktreeListUpdate,
+} from './workspace-record-decision-port';
 import { WorkspaceSourceChangesRefusedError } from './workspace-source-change-refusal';
+import type { SourceChangesTransition } from './workspace-source-changes';
+import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
+import {
+  commitW5BoundaryStep,
+  w5CompositionLocks,
+} from './w5-composition-operation';
+import {
+  W5FileWriteRefusedError,
+  W5RevisionConflictError,
+} from './w5-commit-log-file-store';
 
 interface TargetProjectContext {
   worktreeId: string;
@@ -174,9 +186,13 @@ async function rollbackCreatedProjectWorktree(
     );
   }
 
-  await removeWorkspaceWorktrees(
+  await applyWorktreeListRemoval(
     projectId,
-    (worktree) => worktree.id === context.worktreeId,
+    {
+      kind: 'workspace.sourceChanges.target.remove',
+      worktreeId: context.worktreeId,
+    },
+    {},
   );
 }
 
@@ -189,19 +205,22 @@ async function appendTargetWorktree(
   projectId: string,
   row: WorktreeData,
 ): Promise<void> {
-  await updateWorkspaceWorktrees(projectId, (current) => {
-    if (current.some((worktree) => worktree.id === row.id)) {
-      throw new Error(`Project worktree ${row.id} already exists`);
-    }
-    return [...current, row];
-  });
+  await applyWorktreeListUpdate(
+    projectId,
+    { kind: 'workspace.sourceChanges.target.record', worktree: row },
+    {},
+  );
 }
 
 async function ensureTargetProjectWorktree(
   request: ProjectApplySourceChangesRequest,
   referenceRepoPath: string,
+  transition?: SourceChangesTransition<ProjectApplySourceChangesResponse>,
 ): Promise<TargetProjectContext> {
-  const worktrees = await readWorkspaceWorktrees(request.projectId);
+  const worktrees = await readWorkspaceWorktrees(
+    request.projectId,
+    transition ? { persistRemovalCleanup: false } : undefined,
+  );
   if (request.target.mode === 'existing') {
     const target = request.target;
     const worktree = worktrees.find((entry) => entry.id === target.worktreeId);
@@ -229,6 +248,7 @@ async function ensureTargetProjectWorktree(
   const worktreeId = generateUniqueAnimalName(existingIds);
   const worktreePath = getWorktreeDir(request.projectId, worktreeId);
 
+  transition?.beforeEffects?.();
   await mkdir(dirname(worktreePath), { recursive: true });
   await mkdir(getWorktreeDataDir(request.projectId, worktreeId), {
     recursive: true,
@@ -247,13 +267,27 @@ async function ensureTargetProjectWorktree(
   };
 
   try {
-    await appendTargetWorktree(request.projectId, {
-      id: worktreeId,
-      branchName,
-      createdAt: new Date().toISOString(),
-    });
+    await commitW5BoundaryStep(
+      transition?.commit,
+      transition ? w5CompositionLocks({ lists: [request.projectId] }) : [],
+      () =>
+        appendTargetWorktree(request.projectId, {
+          id: worktreeId,
+          branchName,
+          createdAt: new Date().toISOString(),
+        }),
+    );
   } catch (error) {
-    await rollbackCreatedProjectWorktree(request.projectId, targetContext);
+    if (
+      !transition ||
+      !(
+        error instanceof W5RevisionConflictError ||
+        error instanceof W5FileWriteRefusedError ||
+        (error instanceof W5CommitRefusedError &&
+          error.reason === 'unapplied-change')
+      )
+    )
+      await rollbackCreatedProjectWorktree(request.projectId, targetContext);
     throw error;
   }
 
@@ -286,6 +320,7 @@ async function applyAdmittedProjectSourceChanges(
   request: ProjectApplySourceChangesRequest,
   getWindow: () => BrowserWindow | null,
   onApplied?: (event: ProjectSourceChangesAppliedEvent) => void,
+  transition?: SourceChangesTransition<ProjectApplySourceChangesResponse>,
 ): Promise<ProjectApplySourceChangesResponse> {
   const config = await readWorkspaceConfig(request.projectId);
   if (config.type !== 'single-repo' || !config.repoPath) {
@@ -302,7 +337,9 @@ async function applyAdmittedProjectSourceChanges(
   const targetContext = await ensureTargetProjectWorktree(
     request,
     referenceRepoPath,
+    transition,
   );
+  transition?.beforeEffects?.();
   await mkdir(getWorktreeDataDir(request.projectId, targetContext.worktreeId), {
     recursive: true,
   });
@@ -322,6 +359,7 @@ async function applyAdmittedProjectSourceChanges(
     };
   }
 
+  let acceptanceStarted = false;
   try {
     applyProjectManifestScripts(manifest, request.scripts);
     applyProjectManifestHooks(manifest, request.hooks);
@@ -336,6 +374,14 @@ async function applyAdmittedProjectSourceChanges(
       createdWorktree: targetContext.createdWorktree,
     });
 
+    const result: ProjectApplySourceChangesResponse = {
+      worktreeId: targetContext.worktreeId,
+      branchName: targetContext.branchName,
+      createdWorktree: targetContext.createdWorktree,
+      referenceRepoPath,
+    };
+    acceptanceStarted = transition !== undefined;
+    const accepted = transition ? await transition.complete(result) : result;
     if (targetContext.createdWorktree) {
       const project = { repoPath: config.repoPath, scripts: config.scripts };
       detachedWorkCallback(() =>
@@ -348,14 +394,17 @@ async function applyAdmittedProjectSourceChanges(
       )();
     }
 
-    return {
-      worktreeId: targetContext.worktreeId,
-      branchName: targetContext.branchName,
-      createdWorktree: targetContext.createdWorktree,
-      referenceRepoPath,
-    };
+    return accepted;
   } catch (error) {
-    if (targetContext.createdWorktree) {
+    if (
+      targetContext.createdWorktree &&
+      !acceptanceStarted &&
+      (!transition ||
+        !(
+          error instanceof W5RevisionConflictError ||
+          error instanceof W5FileWriteRefusedError
+        ))
+    ) {
       await rollbackCreatedProjectWorktree(
         request.projectId,
         targetContext,

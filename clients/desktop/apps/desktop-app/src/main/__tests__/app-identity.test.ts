@@ -4,13 +4,9 @@ import {
   getRuntimeAppUserModelId,
 } from '../lib/app-identity';
 
-declare global {
-  var __CANOPY_RELEASE_FLAVOR__: string | undefined;
-}
-
 describe('app identity', () => {
   beforeEach(() => {
-    delete globalThis.__CANOPY_RELEASE_FLAVOR__;
+    Reflect.deleteProperty(globalThis, '__CANOPY_RELEASE_FLAVOR__');
   });
 
   it('defaults to the stable app identity', () => {
@@ -20,7 +16,7 @@ describe('app identity', () => {
   });
 
   it('keeps stable builds on the public app identity', () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'stable';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'stable');
 
     expect(getCanopyReleaseFlavor()).toBe('stable');
     expect(getRuntimeAppName('Canopy')).toBe('Canopy');
@@ -28,7 +24,7 @@ describe('app identity', () => {
   });
 
   it('uses a separate app identity for internal builds', () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
 
     expect(getCanopyReleaseFlavor()).toBe('internal');
     expect(getRuntimeAppName('Canopy')).toBe('Canopy (Internal)');
@@ -36,7 +32,7 @@ describe('app identity', () => {
   });
 
   it('uses a separate app identity for release candidate builds', () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'rc';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'rc');
 
     expect(getCanopyReleaseFlavor()).toBe('rc');
     expect(getRuntimeAppName('Canopy')).toBe('Canopy (RC)');
@@ -44,7 +40,7 @@ describe('app identity', () => {
   });
 
   it('treats unknown release flavor values as stable', () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'preview';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'preview');
 
     expect(getCanopyReleaseFlavor()).toBe('stable');
     expect(getRuntimeAppName('Canopy')).toBe('Canopy');

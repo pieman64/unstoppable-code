@@ -47,6 +47,87 @@ describe('CapabilityPackageProblems', () => {
       (button) => button.textContent,
     );
 
+  it('dismisses an ambiguous pipeline name from its own sentence', () => {
+    const onDismissReference = jest.fn();
+    act(() => {
+      root.render(
+        <CapabilityPackageProblems
+          blockers={[
+            {
+              code: 'AMBIGUOUS_PIPELINE_REFERENCE',
+              subject: 'Daily',
+              message: 'Daily matches more than one pipeline.',
+              occurrences: [],
+              referenceDismissal: {
+                kind: 'pipeline_reference',
+                token: 'Daily',
+              },
+            },
+          ]}
+          onDismissReference={onDismissReference}
+          disabled={false}
+          testIdPrefix="share-automation"
+        />,
+      );
+    });
+    const item = byTestId(
+      'share-automation-dependency-problems-item-ambiguous-pipeline-reference-daily',
+    );
+    expect(item?.getAttribute('data-dismissible')).toBe('true');
+    const link = byTestId(
+      'share-automation-dependency-problems-dismiss-ambiguous-pipeline-reference-daily',
+    );
+    expect(link?.textContent).toBe('mark it as not a pipeline');
+    expect(link?.getAttribute('aria-label')).toBe(
+      'Mark Daily as not a pipeline',
+    );
+    act(() => {
+      link?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onDismissReference).toHaveBeenCalledWith({
+      kind: 'pipeline_reference',
+      token: 'Daily',
+    });
+  });
+
+  it('lists left-out pipeline mentions with an undo', () => {
+    const onRestoreReference = jest.fn();
+    act(() => {
+      root.render(
+        <CapabilityPackageProblems
+          blockers={[]}
+          dismissedReferences={[
+            { kind: 'child_pipeline_ref', token: '${{ inputs.target }}' },
+          ]}
+          onRestoreReference={onRestoreReference}
+          disabled={false}
+          testIdPrefix="share-automation"
+        />,
+      );
+    });
+    expect(
+      byTestId('share-automation-dependency-problems-notice')?.textContent,
+    ).toContain('1 pipeline mention left out.');
+    const list = byTestId(
+      'share-automation-dependency-problems-dismissed-references',
+    );
+    act(() => {
+      list
+        ?.querySelector('button')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const undo = byTestId(
+      'share-automation-dependency-problems-dismissed-reference-undo-child-inputs-target',
+    );
+    act(() => {
+      undo?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onRestoreReference).toHaveBeenCalledWith({
+      kind: 'child_pipeline_ref',
+      token: '${{ inputs.target }}',
+    });
+  });
+
   it('makes a single problem the headline, with one button', () => {
     const onDismiss = jest.fn();
     act(() => {

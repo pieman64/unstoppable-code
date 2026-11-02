@@ -1,10 +1,9 @@
 // App Advisor watcher-fired transcript UX regression.
 //
-// A real `send_watcher_message` command is delivered to the App Advisor
-// renderer, which dispatches and persists the follow-up through the normal
-// App Advisor chat service. The popout is then reloaded so the assertions read
-// the durable transcript rather than the renderer-local optimistic message.
-// This catches metadata loss that is invisible until App Advisor rehydrates.
+// Main delivers each fired watcher directly to the App Advisor chat queue; the
+// open App Advisor window only observes the committed result. Reloading the
+// popout before the transcript assertions verifies that watcher metadata
+// survives persistence and rehydration.
 
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';

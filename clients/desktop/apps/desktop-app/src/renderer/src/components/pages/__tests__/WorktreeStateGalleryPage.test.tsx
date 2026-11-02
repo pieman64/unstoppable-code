@@ -257,7 +257,7 @@ describe('WorktreeStateGalleryPage render', () => {
       'Set label',
       'Branch info',
       'Launch',
-      'Dispatch pipeline',
+      'Dispatch workflow',
       'Branch from',
       'Hide',
       'Archive',

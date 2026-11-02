@@ -56,11 +56,12 @@ export async function inspectStressHistory(page, { lastBatch = 159 } = {}) {
         await page.mouse.wheel(0, -10_000_000);
         return summary.isVisible();
       },
-      { timeout: 15_000 },
+      // A scrolling journey must not acquire exponential assertion think time.
+      { timeout: 15_000, intervals: [100] },
     )
     .toBe(true);
   await expect(
-    page.getByText('Stress progress 1/0:', { exact: false }),
+    first.getByText('Stress progress 1/0:', { exact: false }),
   ).toHaveCount(0);
   const label = await summary.getAttribute('aria-label');
   await summary.click();
@@ -69,26 +70,34 @@ export async function inspectStressHistory(page, { lastBatch = 159 } = {}) {
       async () => {
         await viewport.hover();
         await page.mouse.wheel(0, -20_000);
-        return page.getByText('Stress progress 1/0:', { exact: false }).count();
+        return first
+          .getByText('Stress progress 1/0:', { exact: false })
+          .count();
       },
-      { timeout: 15_000 },
+      { timeout: 15_000, intervals: [100] },
     )
     .toBe(1);
   // The inspection milestone includes the complete loaded page, not merely
   // its first row. This keeps progressive rendering/windowing experiments
   // honest: deferred work must finish before the task is considered complete.
-  await expect(
-    page.getByText(`Stress progress 1/${lastBatch}:`, { exact: false }),
-  ).toBeAttached({ timeout: 15_000 });
+  // Watch the mounted row directly: assertion polling can add a full second
+  // after attachment and contaminate the whole-journey liveness measurement.
+  await first
+    .getByText(`Stress progress 1/${lastBatch}:`, { exact: false })
+    .waitFor({ state: 'attached', timeout: 15_000 });
   const progressiveMarkdown = first
     .locator('[data-progressive-markdown-complete]')
     .last();
   if ((await progressiveMarkdown.count()) > 0) {
-    await expect(progressiveMarkdown).toHaveAttribute(
-      'data-progressive-markdown-complete',
-      'true',
-      { timeout: 15_000 },
-    );
+    await expect
+      .poll(
+        () =>
+          progressiveMarkdown.getAttribute(
+            'data-progressive-markdown-complete',
+          ),
+        { timeout: 15_000, intervals: [100] },
+      )
+      .toBe('true');
   }
   await expect(summary).toHaveAttribute('aria-label', label);
   await expect(
@@ -96,6 +105,6 @@ export async function inspectStressHistory(page, { lastBatch = 159 } = {}) {
   ).toHaveCount(0);
   await summary.click();
   await expect(
-    page.getByText('Stress progress 1/0:', { exact: false }),
+    first.getByText('Stress progress 1/0:', { exact: false }),
   ).toHaveCount(0);
 }

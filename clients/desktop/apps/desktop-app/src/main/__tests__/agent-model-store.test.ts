@@ -249,7 +249,9 @@ describe('agent-model-store', () => {
       await expect(getAgentModel(legacy.id)).resolves.toMatchObject({
         importedFromRemoteId: importedDetail.id,
       });
-      expect((await getAgentModel(legacy.id)).remoteId).toBeUndefined();
+      const persistedLegacy = await getAgentModel(legacy.id);
+      if (!persistedLegacy) throw new Error('Expected migrated Agent');
+      expect(persistedLegacy.remoteId).toBeUndefined();
     },
   );
 

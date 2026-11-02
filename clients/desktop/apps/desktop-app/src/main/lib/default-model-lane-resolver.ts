@@ -1,5 +1,6 @@
 import {
   CREDITS_LANE_DEFAULT_CANDIDATES,
+  isCodexModelAvailableToAccount,
   repairLaneDefaults,
   resolveDefaultModelLane,
   type BillingLane,
@@ -10,6 +11,7 @@ import {
   AI_GATEWAY_MODELS,
   APP_ADVISOR_PROJECT_ID,
   CLAUDE_MODELS,
+  CODEX_ACCOUNT_MODELS,
   CODEX_MODELS,
   DEFAULT_APP_ADVISOR_MODEL,
   OLLAMA_MODELS,
@@ -66,6 +68,10 @@ import {
 import { getModelGatewayRequirementForOwner } from './model-gateway-state';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import { updatePreferencesFile } from './preferences-store';
+import {
+  peekCodexAccountModelIds,
+  readCodexSpeedCatalog,
+} from '../model-routing/codex-account-models';
 
 /**
  * Thrown when no billing lane can dispatch a model.
@@ -508,7 +514,16 @@ export async function resolveDefaultModelLaneForPreferences(
     (policyActive &&
       !policyDegraded &&
       isModelBlockedByCurrentPolicy(model, owner));
-  const isRunnableOnLane = isModelRunnableOnLane;
+  // The signed-in ChatGPT account's own model list, from cache only: the send
+  // path never waits for `model/list`. A model the account cannot run is
+  // unusable on the Codex lane, so the repair walks to the first one it can
+  // (CAN-4716). Unknown (`null`) changes nothing. The stored default itself is
+  // never rewritten; only this resolution sees the repaired model.
+  const codexAccountModels = peekCodexAccountModelIds();
+  const isRunnableOnLane = (lane: BillingLane, model: ChatModel): boolean =>
+    isModelRunnableOnLane(lane, model) &&
+    (lane !== 'codex-native' ||
+      isCodexModelAvailableToAccount(model, codexAccountModels));
   const repairedDefaults = repairLaneDefaults(
     {
       claude: input.defaults.claude,
@@ -521,7 +536,10 @@ export async function resolveDefaultModelLaneForPreferences(
         lane === 'claude-native'
           ? CLAUDE_MODELS
           : lane === 'codex-native'
-            ? CODEX_MODELS
+            ? // Catalog order first, then the account's own models (its
+              // default first), so the repair picks the first catalog model
+              // the account can run and only then an account-only one.
+              [...CODEX_MODELS, ...CODEX_ACCOUNT_MODELS]
             : lane === 'ollama'
               ? OLLAMA_MODELS
               : AI_GATEWAY_MODELS,
@@ -694,6 +712,17 @@ export async function resolveDefaultModelLaneForPreferences(
     'codex',
     peekProviderNativeAuthAvailability().codex,
   );
+  // Warm the account list for the NEXT resolution once THIS call confirmed the
+  // Codex lane (never when an earlier lane won and Codex was not probed). The
+  // catalog read honours its failure backoff, unlike Auto's reader, so a
+  // failing account does not re-spawn a lookup on every send.
+  if (
+    probedLanes.has('codex-native') &&
+    codexNativeAuth === true &&
+    codexAccountModels === null
+  ) {
+    void readCodexSpeedCatalog();
+  }
 
   const resolution = resolveDefaultModelLane({
     availability: {
@@ -722,6 +751,7 @@ export async function resolveDefaultModelLaneForPreferences(
     isModelInRegistry: (model) => resolveKnownModel(model) !== undefined,
     gatewayRoutesHydrated: hasHydratedGatewayCatalog(),
     ollamaPinned: input.ollamaPinned,
+    codexAccountModels,
     ...(orgGateway ? { orgGateway } : {}),
     guestPrincipal,
     // Synthesized credits candidates carry a nominal `'high'`, which callers

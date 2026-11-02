@@ -25,6 +25,11 @@ const WORKLOAD_PROFILES = Object.freeze({
     browserAgentActionsIterations: 3,
     browserPostCloseSettleMs: 500,
     archivePayloadBytes: 8 * 1024 * 1024,
+    codeReviewRegistryDeleteCycles: 1,
+    codeReviewRegistryMissingDeletes: 1,
+    codeReviewRegistryMatchingRows: 1,
+    codeReviewRegistryUnrelatedRows: 10,
+    codeReviewRegistryRegisterIterations: 5,
     innerPanelCollapseWarmups: 1,
     innerPanelCollapseIterations: 3,
     planOpenSections: 12,
@@ -154,6 +159,9 @@ const WORKLOAD_PROFILES = Object.freeze({
     codeGraphNewWorktreeFiles: 300,
     codeGraphSmallEditSmallFiles: 100,
     codeGraphSmallEditLargeFiles: 1_300,
+    claudeGraphOrientationLaterTurns: 6,
+    claudeGraphOrientationSearchesPerTurn: 6,
+    claudeGraphOrientationFixtureFiles: 120,
     sampleIntervalMs: 250,
   }),
   baseline: Object.freeze({
@@ -170,6 +178,11 @@ const WORKLOAD_PROFILES = Object.freeze({
     browserAgentActionsIterations: 30,
     browserPostCloseSettleMs: 2_000,
     archivePayloadBytes: 64 * 1024 * 1024,
+    codeReviewRegistryDeleteCycles: 3,
+    codeReviewRegistryMissingDeletes: 3,
+    codeReviewRegistryMatchingRows: 2,
+    codeReviewRegistryUnrelatedRows: 100,
+    codeReviewRegistryRegisterIterations: 20,
     innerPanelCollapseWarmups: 3,
     innerPanelCollapseIterations: 20,
     planOpenSections: 40,
@@ -299,6 +312,9 @@ const WORKLOAD_PROFILES = Object.freeze({
     codeGraphNewWorktreeFiles: 1_200,
     codeGraphSmallEditSmallFiles: 1_000,
     codeGraphSmallEditLargeFiles: 13_000,
+    claudeGraphOrientationLaterTurns: 12,
+    claudeGraphOrientationSearchesPerTurn: 8,
+    claudeGraphOrientationFixtureFiles: 400,
     sampleIntervalMs: 200,
   }),
   stress: Object.freeze({
@@ -315,6 +331,11 @@ const WORKLOAD_PROFILES = Object.freeze({
     browserAgentActionsIterations: 60,
     browserPostCloseSettleMs: 5_000,
     archivePayloadBytes: 256 * 1024 * 1024,
+    codeReviewRegistryDeleteCycles: 5,
+    codeReviewRegistryMissingDeletes: 5,
+    codeReviewRegistryMatchingRows: 4,
+    codeReviewRegistryUnrelatedRows: 500,
+    codeReviewRegistryRegisterIterations: 50,
     innerPanelCollapseWarmups: 5,
     innerPanelCollapseIterations: 50,
     planOpenSections: 80,
@@ -444,6 +465,9 @@ const WORKLOAD_PROFILES = Object.freeze({
     codeGraphNewWorktreeFiles: 3_000,
     codeGraphSmallEditSmallFiles: 1_000,
     codeGraphSmallEditLargeFiles: 13_000,
+    claudeGraphOrientationLaterTurns: 20,
+    claudeGraphOrientationSearchesPerTurn: 8,
+    claudeGraphOrientationFixtureFiles: 1_000,
     sampleIntervalMs: 150,
   }),
 });
@@ -457,6 +481,12 @@ const MULTI_CHAT_STREAMING_SCENARIOS = Object.freeze([
 
 const MANAGED_DELEGATION_SCENARIOS = Object.freeze([
   'managed-delegation-concurrency',
+]);
+
+/** The uninstrumented workload and its separately named traced variant. */
+const CODE_REVIEW_REGISTRY_SCENARIOS = Object.freeze([
+  'code-review-registry-cleanup',
+  'code-review-registry-cleanup-trace',
 ]);
 
 /**
@@ -490,6 +520,13 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   codeGraphNewWorktreeFiles: Object.freeze(['code-graph-new-worktree']),
   codeGraphSmallEditSmallFiles: Object.freeze(['code-graph-small-edit']),
   codeGraphSmallEditLargeFiles: Object.freeze(['code-graph-small-edit']),
+  claudeGraphOrientationLaterTurns: Object.freeze(['claude-graph-orientation']),
+  claudeGraphOrientationSearchesPerTurn: Object.freeze([
+    'claude-graph-orientation',
+  ]),
+  claudeGraphOrientationFixtureFiles: Object.freeze([
+    'claude-graph-orientation',
+  ]),
   ledgerScopeEntries: Object.freeze(['ledger-panel']),
   ledgerOtherScopes: Object.freeze(['ledger-panel']),
   ledgerOtherScopeEntries: Object.freeze(['ledger-panel']),
@@ -504,6 +541,11 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   linearReferenceNavigationIterations: Object.freeze([
     'linear-reference-transcripts',
   ]),
+  codeReviewRegistryDeleteCycles: CODE_REVIEW_REGISTRY_SCENARIOS,
+  codeReviewRegistryMissingDeletes: CODE_REVIEW_REGISTRY_SCENARIOS,
+  codeReviewRegistryMatchingRows: CODE_REVIEW_REGISTRY_SCENARIOS,
+  codeReviewRegistryUnrelatedRows: CODE_REVIEW_REGISTRY_SCENARIOS,
+  codeReviewRegistryRegisterIterations: CODE_REVIEW_REGISTRY_SCENARIOS,
 });
 
 /**
@@ -530,15 +572,18 @@ export const SCENARIO_SCOPED_SWITCHES = Object.freeze({
  * default suite and `perf:desktop:smoke` keep their current duration.
  */
 export const OPT_IN_SCENARIO_NAMES = Object.freeze([
+  'sidebar-reorder',
   'browser-actions',
   'browser-agent-actions',
   ...MULTI_CHAT_STREAMING_SCENARIOS,
   ...MANAGED_DELEGATION_SCENARIOS,
   'code-graph-new-worktree',
   'code-graph-small-edit',
+  'claude-graph-orientation',
   'linear-reference-transcripts',
   'cost-index-first-build',
   'skill-suggestions-backfill',
+  ...CODE_REVIEW_REGISTRY_SCENARIOS,
 ]);
 
 /**
@@ -575,6 +620,7 @@ export const PERFORMANCE_PROFILES = Object.freeze({
 });
 
 export const SCENARIO_NAMES = Object.freeze([
+  'sidebar-reorder',
   'startup-settle',
   'startup-realistic',
   'power-user-idle',
@@ -622,8 +668,10 @@ export const SCENARIO_NAMES = Object.freeze([
   'ledger-disabled-idle',
   'code-graph-new-worktree',
   'code-graph-small-edit',
+  'claude-graph-orientation',
   'cost-index-first-build',
   'skill-suggestions-backfill',
+  ...CODE_REVIEW_REGISTRY_SCENARIOS,
 ]);
 
 export const DEFAULT_SCENARIO_NAMES = Object.freeze(
@@ -1115,7 +1163,7 @@ export function performanceUsage() {
 
 Options:
   --profile <smoke|baseline|stress|counters> Workload size (default baseline); counters runs the smoke-sized work-counter ratchet
-  --scenarios <csv>                  startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,ledger-panel,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill
+  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,code-review-registry-cleanup,code-review-registry-cleanup-trace
   --output <path>                    JSON result path
   --label <text>                     Human-readable run label
   --repeat <n>                       Run every scenario n times, each a fresh launch, and keep every sample (default 1)

@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   useEffect,
   useMemo,
@@ -7,6 +8,7 @@ import {
   type JSX,
 } from 'react';
 import { AppAdvisorIcon } from '@canopy/ui-shared/icons';
+import { Button } from '@canopy/ui-shared/components';
 import { ArrowUp as AppCatalogArrowUp } from '@canopy/ui-shared/icons/AppIcons';
 import {
   SlateEditor,
@@ -78,7 +80,7 @@ export function AppAdvisorQuickPromptModal({
       <section
         role="dialog"
         aria-modal="true"
-        aria-label="App Advisor quick prompt"
+        aria-label={`${ORCHESTRATOR_LABEL} quick prompt`}
         data-testid="app-advisor-quick-prompt"
         className="electron-no-drag flex w-full max-w-152 flex-col overflow-hidden rounded-lg bg-card shadow-xl"
         onClick={(event) => event.stopPropagation()}
@@ -89,7 +91,7 @@ export function AppAdvisorQuickPromptModal({
         >
           <AppAdvisorIcon className="mr-2 h-4 w-4 fg-primary" />
           <span className="select-none text-s font-semibold fg-primary">
-            App Advisor
+            {ORCHESTRATOR_LABEL}
           </span>
         </div>
         <div className="relative">
@@ -99,20 +101,22 @@ export function AppAdvisorQuickPromptModal({
             value={value}
             onChange={setValue}
             onKeyDown={handleKeyDown}
-            placeholder="Ask App Advisor…"
+            placeholder={`Ask ${ORCHESTRATOR_LABEL}…`}
             containerClassName="min-h-33 max-h-65 cursor-text overflow-y-auto px-4 py-3"
             editableClassName="min-h-27 whitespace-pre-wrap break-words bg-transparent pr-16 text-s leading-5 fg-primary outline-none placeholder:fg-secondary"
             dataTestId="app-advisor-quick-prompt-editor"
           />
-          <button
-            type="button"
-            onClick={() => void sendPrompt()}
-            disabled={sending || !promptText}
-            aria-label="Send App Advisor prompt"
-            className="focus-ring absolute bottom-3 right-3 flex h-7 w-7 items-center justify-center rounded-lg border fg-secondary transition hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-30"
-          >
-            <AppCatalogArrowUp width="14" height="14" />
-          </button>
+          <span className="absolute bottom-3 right-3 flex">
+            <Button
+              size="compact"
+              iconOnly
+              onClick={() => void sendPrompt()}
+              disabled={sending || !promptText}
+              aria-label={`Send ${ORCHESTRATOR_LABEL} prompt`}
+            >
+              <AppCatalogArrowUp width="14" height="14" />
+            </Button>
+          </span>
         </div>
         {error && (
           <div

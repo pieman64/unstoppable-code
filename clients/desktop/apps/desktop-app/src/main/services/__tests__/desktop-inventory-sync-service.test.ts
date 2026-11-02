@@ -29,11 +29,6 @@ const mockReadPortalStateStore = jest.fn<
   []
 >();
 const mockLogMainProcessError = jest.fn<void, [string, unknown]>();
-const mockDefaultPipelineReader = jest.fn();
-const mockListPortalSkills = jest.fn();
-const mockListPortalCollections = jest.fn();
-const mockListPersonalPortalSkills = jest.fn();
-const mockListPersonalPortalCollections = jest.fn();
 
 jest.mock('../../canopy-cloud/client', () => {
   class CanopyCloudClientError extends Error {
@@ -52,34 +47,46 @@ jest.mock('../../canopy-cloud/client', () => {
   }
   return {
     CanopyCloudClientError,
-    requestCanopyCloudJson: mockRequestCanopyCloudJson,
+    get requestCanopyCloudJson(): typeof mockRequestCanopyCloudJson {
+      return mockRequestCanopyCloudJson;
+    },
   };
 });
 jest.mock('../../lib/canopy-cloud-account-store', () => ({
-  getCanopyCloudCredentials: mockGetCanopyCloudCredentials,
-  subscribeCanopyCloudAccountChanges: mockSubscribeAccountChanges,
+  get getCanopyCloudCredentials(): typeof mockGetCanopyCloudCredentials {
+    return mockGetCanopyCloudCredentials;
+  },
+  get subscribeCanopyCloudAccountChanges(): typeof mockSubscribeAccountChanges {
+    return mockSubscribeAccountChanges;
+  },
 }));
 jest.mock('../../lib/main-process-logging', () => ({
-  logMainProcessError: mockLogMainProcessError,
+  get logMainProcessError(): typeof mockLogMainProcessError {
+    return mockLogMainProcessError;
+  },
 }));
 jest.mock('../../plugins/invocable-inventory-service', () => ({
-  subscribeInvocableInventoryChanges: mockSubscribeInvocableInventoryChanges,
+  get subscribeInvocableInventoryChanges(): typeof mockSubscribeInvocableInventoryChanges {
+    return mockSubscribeInvocableInventoryChanges;
+  },
 }));
 jest.mock('../../portal/portal-state-store', () => ({
-  readPortalStateStore: mockReadPortalStateStore,
+  get readPortalStateStore(): typeof mockReadPortalStateStore {
+    return mockReadPortalStateStore;
+  },
 }));
 jest.mock('../desktop-inventory-pipeline-documents', () => ({
-  listWorktreePipelineInventoryDocuments: mockDefaultPipelineReader,
+  listWorktreePipelineInventoryDocuments: jest.fn(),
 }));
 jest.mock('../plugin-catalog-service', () => ({
   listPortalMarketplaces: jest
     .fn()
     .mockResolvedValue({ marketplaces: [], lastRefreshed: '' }),
-  listPortalSkills: mockListPortalSkills,
-  listPersonalPortalSkills: mockListPersonalPortalSkills,
+  listPortalSkills: jest.fn(),
+  listPersonalPortalSkills: jest.fn(),
   listPortalMcpServers: jest.fn().mockResolvedValue({ servers: [] }),
-  listPortalCollections: mockListPortalCollections,
-  listPersonalPortalCollections: mockListPersonalPortalCollections,
+  listPortalCollections: jest.fn(),
+  listPersonalPortalCollections: jest.fn(),
 }));
 jest.mock('@canopy/brand/current', () => ({
   BRAND: { displayName: 'Canopy', web: { apiNamespace: 'desktop-app' } },
@@ -100,6 +107,23 @@ import {
   hashDesktopInventoryPayload,
   type DesktopInventorySyncServiceOptions,
 } from '../desktop-inventory-sync-service';
+import {
+  listPersonalPortalCollections,
+  listPersonalPortalSkills,
+  listPortalCollections,
+  listPortalSkills,
+} from '../plugin-catalog-service';
+import { listWorktreePipelineInventoryDocuments } from '../desktop-inventory-pipeline-documents';
+
+const mockDefaultPipelineReader = jest.mocked(
+  listWorktreePipelineInventoryDocuments,
+);
+const mockListPortalSkills = jest.mocked(listPortalSkills);
+const mockListPortalCollections = jest.mocked(listPortalCollections);
+const mockListPersonalPortalSkills = jest.mocked(listPersonalPortalSkills);
+const mockListPersonalPortalCollections = jest.mocked(
+  listPersonalPortalCollections,
+);
 
 type Readers = NonNullable<DesktopInventorySyncServiceOptions['readers']>;
 
@@ -259,6 +283,12 @@ describe('DesktopInventorySyncService', () => {
   it('uploads device MCP rows only', async (): Promise<void> => {
     create({
       mcp_servers: jest.fn().mockResolvedValue({
+        providerConnectors: [
+          {
+            provider: 'codex',
+            connectors: [{ displayName: 'Drive', connected: true }],
+          },
+        ],
         servers: [
           { id: 'device', scope: 'device', urlHost: 'mcp.example.test' },
           { id: 'legacy' },
@@ -283,6 +313,12 @@ describe('DesktopInventorySyncService', () => {
       (entry): boolean => entry.kind === 'mcp_servers',
     );
     expect(document?.payload).toEqual({
+      providerConnectors: [
+        {
+          provider: 'codex',
+          connectors: [{ displayName: 'Drive', connected: true }],
+        },
+      ],
       servers: [
         { id: 'device', scope: 'device', urlHost: 'mcp.example.test' },
         { id: 'legacy' },

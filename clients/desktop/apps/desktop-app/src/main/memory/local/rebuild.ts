@@ -549,12 +549,16 @@ export async function restoreConsolidatedSources(
  * and `reason`, when set, why a rebuild should say it refused.
  */
 export class SourceRestoreError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause: unknown;
+
   constructor(
-    readonly cause: unknown,
+    cause: unknown,
     readonly undone: boolean,
     readonly reason?: string,
   ) {
     super(cause instanceof Error ? cause.message : String(cause));
+    this.cause = cause;
     this.name = 'SourceRestoreError';
   }
 }

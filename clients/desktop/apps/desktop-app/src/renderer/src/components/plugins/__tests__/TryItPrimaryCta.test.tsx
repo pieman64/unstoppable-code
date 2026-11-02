@@ -10,6 +10,7 @@ import { TryItPrimaryCta, type TryItPrimaryCtaProps } from '../TryItPrimaryCta';
 const mockStartTryItChat = jest.fn();
 jest.mock('@/lib/tryItChat', () => ({
   startTryItChat: (...args: unknown[]): unknown => mockStartTryItChat(...args),
+  TryItStageCancelledError: class TryItStageCancelledError extends Error {},
 }));
 let mockClaudeAuth: { authenticated: boolean } | null = null;
 let mockCodexAuth: { authenticated: boolean } | null = null;
@@ -173,7 +174,16 @@ describe('TryItPrimaryCta', () => {
       capability,
       prompt: 'Summarize my open Linear issues.',
       runtimeSelections: undefined,
+      isCurrent: expect.any(Function) as unknown,
     });
+    // Staged, unsent: one in-app confirmation.
+    expect(mockAddToast).toHaveBeenCalledTimes(1);
+    expect(mockAddToast).toHaveBeenCalledWith(
+      'Linear is ready to try. Edit the prompt, then send it.',
+      'success',
+      undefined,
+      { forceInApp: true, suppressOsNotification: true },
+    );
   });
 
   it('follows sign-in and sign-out in place', async () => {
@@ -272,12 +282,15 @@ describe('TryItPrimaryCta', () => {
       harnessSupport: { claude: true, codex: false, cursor: false },
     });
     await press(cta());
-    // Exact: no `model`, so the chat keeps the viewer's default.
+    // A newly created chat pins the supported default even beside a chat on another harness.
     expect(mockStartTryItChat).toHaveBeenCalledWith({
       accountId: 'guest',
       capability,
       prompt: 'Summarize my open Linear issues.',
       runtimeSelections: undefined,
+      harnessSupport: { claude: true, codex: false, cursor: false },
+      model: { model: 'opus', thinkingLevel: 'high' },
+      isCurrent: expect.any(Function) as unknown,
     });
   });
 
@@ -314,10 +327,33 @@ describe('TryItPrimaryCta', () => {
     mockStartTryItChat.mockRejectedValueOnce(new Error('offline'));
     await render();
     await press(cta());
+    expect(mockAddToast).toHaveBeenCalledTimes(1);
     expect(mockAddToast).toHaveBeenCalledWith(
       "Couldn't open the chat. Try again.",
       'error',
     );
     expect(cta().disabled).toBe(false);
+  });
+
+  it('drops a launch quietly when its destination changed', async () => {
+    const { TryItStageCancelledError } = jest.requireMock<{
+      TryItStageCancelledError: new () => Error;
+    }>('@/lib/tryItChat');
+    mockStartTryItChat.mockRejectedValueOnce(new TryItStageCancelledError());
+    await render();
+    await press(cta());
+    expect(mockAddToast).not.toHaveBeenCalled();
+    expect(cta().disabled).toBe(false);
+  });
+
+  it('fences the launch to the account that started it', async () => {
+    await render();
+    await press(cta());
+    const [request] = mockStartTryItChat.mock.calls[0] as [
+      { isCurrent: () => boolean },
+    ];
+    expect(request.isCurrent()).toBe(true);
+    await changeAccount(signedIn);
+    expect(request.isCurrent()).toBe(false);
   });
 });

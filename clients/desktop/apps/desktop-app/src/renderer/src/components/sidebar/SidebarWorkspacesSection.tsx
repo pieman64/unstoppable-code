@@ -587,6 +587,7 @@ export function SidebarWorkspacesSection({
     discoveryLoading: model.discoveryLoading,
     selectedWorktreeKey: model.selectedWorktreeKey,
     streamingWorktreeKeys: model.streamingWorktreeKeys,
+    backgroundTaskCounts: model.backgroundTaskCounts,
     activeSessionWorktreeKeys: model.activeSessionWorktreeKeys,
     awaitingApprovalKeys: model.awaitingApprovalKeys,
     pendingQuestionWorktreeKeys: model.pendingQuestionWorktreeKeys,

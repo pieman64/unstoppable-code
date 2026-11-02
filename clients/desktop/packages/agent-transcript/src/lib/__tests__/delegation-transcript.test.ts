@@ -1,6 +1,8 @@
 import {
   delegationTranscriptMessages,
   delegationRootMessages,
+  isDelegatedAgentCallBlock,
+  overlayStreamBackedDelegationCard,
 } from '../delegation-transcript';
 import type {
   AgentDelegationSnapshot,
@@ -13,6 +15,7 @@ import {
   pauseOpenTurnTimer,
   resumePausedTurnTimer,
   type TranscriptReducerState,
+  type TranscriptReducerOptions,
 } from '../transcript-parser';
 import {
   persistedParts,
@@ -102,6 +105,122 @@ function envelope(
 }
 
 describe('owned delegation transcript', () => {
+  it('overlays only stream-backed cards without changing creation identity', () => {
+    const block = delegationTranscriptMessages(envelope().delegation)[0]
+      ?.blocks[0];
+    if (!isDelegatedAgentCallBlock(block))
+      throw new Error('Expected delegation card');
+    const state = {
+      version: 1 as const,
+      status: 'completed' as const,
+      resultIndex: 3,
+      error: null,
+      usage: null,
+      workspaceRevision: null,
+      workspaceDiscarded: false,
+      stopOutcome: null,
+      controlOutcome: null,
+      attribution: null,
+      capabilitySummary: null,
+      nestedChildSummary: null,
+      partialPreview: null,
+      finalPreview: 'done',
+    };
+    expect(overlayStreamBackedDelegationCard(block, state)).toBe(block);
+    const streamed = { ...block, transcriptStore: 'chat-stream-v2' as const };
+    expect(overlayStreamBackedDelegationCard(streamed, state)).toMatchObject({
+      agentBlockId: block.agentBlockId,
+      status: 'completed',
+      resultIndex: 3,
+      finalText: 'done',
+    });
+  });
+  it('drops an answer reference whose preview the descriptor state replaces', () => {
+    const block = delegationTranscriptMessages(envelope().delegation)[0]
+      ?.blocks[0];
+    if (!isDelegatedAgentCallBlock(block))
+      throw new Error('Expected delegation card');
+    const card = {
+      ...block,
+      transcriptStore: 'chat-stream-v2' as const,
+      partialText: 'stored partial preview',
+      partialTextRef: answerRef('1'),
+      finalText: 'stored final preview',
+      finalTextRef: answerRef('2'),
+    };
+    const state = {
+      version: 1 as const,
+      status: 'completed' as const,
+      resultIndex: 3,
+      error: null,
+      usage: null,
+      workspaceRevision: null,
+      workspaceDiscarded: false,
+      stopOutcome: null,
+      controlOutcome: null,
+      attribution: null,
+      capabilitySummary: null,
+      nestedChildSummary: null,
+      partialPreview: null,
+      finalPreview: 'descriptor final preview',
+    };
+    const overlaid = overlayStreamBackedDelegationCard(card, state);
+    expect(overlaid).toMatchObject({
+      partialText: 'stored partial preview',
+      partialTextRef: answerRef('1'),
+      finalText: 'descriptor final preview',
+    });
+    expect(overlaid).not.toHaveProperty('finalTextRef');
+    expect(
+      overlayStreamBackedDelegationCard(card, {
+        ...state,
+        partialPreview: 'descriptor partial preview',
+      }),
+    ).not.toHaveProperty('partialTextRef');
+  });
+  it('accepts well-formed answer references and rejects malformed ones', () => {
+    const card = delegationTranscriptMessages(envelope().delegation)[0]
+      ?.blocks[0];
+    expect(
+      isDelegatedAgentCallBlock({
+        ...card,
+        partialText: 'preview',
+        partialTextRef: answerRef('1'),
+        finalText: 'preview',
+        finalTextRef: answerRef('2'),
+      }),
+    ).toBe(true);
+    for (const malformed of [
+      { ...answerRef('1'), artifactId: '../escape' },
+      { ...answerRef('1'), sha256: 'not-a-digest' },
+      { ...answerRef('1'), byteLength: -1 },
+      { ...answerRef('1'), encoding: 'latin1' },
+      { ...answerRef('1'), extra: true },
+      'sha256-v1-1',
+    ]) {
+      expect(
+        isDelegatedAgentCallBlock({ ...card, partialTextRef: malformed }),
+      ).toBe(false);
+      expect(
+        isDelegatedAgentCallBlock({ ...card, finalTextRef: malformed }),
+      ).toBe(false);
+    }
+  });
+  it('accepts a stream-backed card but rejects unknown stores', () => {
+    const card = delegationTranscriptMessages(envelope().delegation)[0]
+      ?.blocks[0];
+    expect(card).toBeDefined();
+    expect(isDelegatedAgentCallBlock(card)).toBe(true);
+    expect(
+      isDelegatedAgentCallBlock({ ...card, transcriptStore: 'chat-log-v1' }),
+    ).toBe(true);
+    expect(
+      isDelegatedAgentCallBlock({ ...card, transcriptStore: 'chat-stream-v2' }),
+    ).toBe(true);
+    expect(
+      isDelegatedAgentCallBlock({ ...card, transcriptStore: 'future-store' }),
+    ).toBe(false);
+  });
   it('projects authored text to user messages without losing author or delivery', () => {
     const authored = envelope().delegation;
     const user = { kind: 'user' as const };
@@ -147,12 +266,18 @@ describe('owned delegation transcript', () => {
     });
   });
   it('round-trips nested content and child timestamps through Portal import', () => {
-    const nested = envelope(2, 'completed');
-    nested.delegation.snapshot = {
-      ...nested.delegation.snapshot,
-      depth: 2,
-      parentDelegationId: 'parent-agent',
-      parentDescription: 'Review API',
+    const original = envelope(2, 'completed');
+    const nested = {
+      ...original,
+      delegation: {
+        ...original.delegation,
+        snapshot: {
+          ...original.delegation.snapshot,
+          depth: 2,
+          parentDelegationId: 'parent-agent',
+          parentDescription: 'Review API',
+        },
+      },
     };
     const state = parseAgentTranscriptLines([JSON.stringify(nested)], 'codex');
     const message = persistedMessageToPortalMessage({
@@ -261,7 +386,11 @@ describe('owned delegation transcript', () => {
         planMode: false,
         sdkSessionId: 'parent-native',
       };
-      const options = { now: 9999, createMessageId: (): string => 'unused' };
+      const options: TranscriptReducerOptions = {
+        childToolLiveness: { kind: 'unknown' },
+        now: 9999,
+        createMessageId: (): string => 'unused',
+      };
       const state = reduce(root, envelope(), options);
       expect(state.sdkSessionId).toBe('parent-native');
       expect(state.status).toBe('idle');
@@ -301,7 +430,11 @@ describe('owned delegation transcript', () => {
     });
 
     it("keeps a user follow-up's run, which has no root turn, after the earlier run", () => {
-      const options = { now: 9999, createMessageId: (): string => 'unused' };
+      const options: TranscriptReducerOptions = {
+        now: 9999,
+        createMessageId: (): string => 'unused',
+        childToolLiveness: { kind: 'unknown' },
+      };
       const root: TranscriptReducerState = {
         messages: [
           {
@@ -371,6 +504,7 @@ describe('owned delegation transcript', () => {
 
       expect(
         reduce(cleared, envelope(2, 'completed'), {
+          childToolLiveness: { kind: 'unknown' },
           now: 9999,
           createMessageId: (): string => 'unused',
         }),
@@ -464,10 +598,12 @@ it.each(['claude', 'codex'] as const)(
 );
 
 it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
-  'resumes the previous timer for hidden completion prompts, but not visible prompts',
+  'appends a continuation for hidden completion prompts without changing the settled timer',
   (reduce) => {
     const state: TranscriptReducerState = {
       status: 'idle',
+      error: null,
+      planMode: false,
       messages: [
         {
           id: 'user',
@@ -491,7 +627,11 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
       ],
     };
     let id = 0;
-    const options = { now: 9000, createMessageId: (): string => `new-${++id}` };
+    const options: TranscriptReducerOptions = {
+      childToolLiveness: { kind: 'unknown' },
+      now: 9000,
+      createMessageId: (): string => `new-${++id}`,
+    };
     const event = {
       type: 'canopy_user_prompt',
       canopy_hidden: true,
@@ -503,18 +643,21 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
       .flatMap((message) => message.blocks)
       .filter((block) => block.type === 'turn_timer');
     expect(timers).toEqual([
+      state.messages[1].blocks[0],
       {
         type: 'turn_timer',
         startedAt: 1000,
         completedAt: null,
+        pausedAt: 4000,
         accumulatedPausedDurationMs: 5500,
         resumedAt: 9000,
       },
     ]);
-    expect(
-      result.messages.find((message) => message.id === 'timer'),
-    ).toBeDefined();
+    expect(result.messages.find((message) => message.id === 'timer')).toBe(
+      state.messages[1],
+    );
     expect(reduce(result, event, options).messages).toEqual(result.messages);
+    id = 0;
     const premerged = reduce(
       {
         ...state,
@@ -582,10 +725,12 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
 );
 
 it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
-  'releases owned pauses across repeated hidden deliveries and completes the original timer',
+  'releases owned pauses across repeated hidden deliveries and completes only the continuation',
   (reduce) => {
     let state: TranscriptReducerState = {
       status: 'idle',
+      error: null,
+      planMode: false,
       messages: [
         {
           id: 'user',
@@ -608,10 +753,10 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
         },
       ],
     };
+    const original = state.messages[1];
     let nextId = 0;
-    const options = (
-      now: number,
-    ): { now: number; createMessageId: () => string } => ({
+    const options = (now: number): TranscriptReducerOptions => ({
+      childToolLiveness: { kind: 'unknown' },
       now,
       createMessageId: () => `next-${++nextId}`,
     });
@@ -637,7 +782,9 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
       );
     };
     const timer = (): unknown =>
-      state.messages.find((m) => m.id === 'timer')?.blocks[0];
+      state.messages
+        .filter((m) => m.blocks.some((b) => b.type === 'turn_timer'))
+        .at(-1)?.blocks[0];
     hidden(9000);
     for (const [pause, release] of [
       [10000, 11000],
@@ -666,7 +813,9 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
       18000,
       'approval:second',
     );
+    const paused = timer();
     hidden(18500);
+    expect(timer()).toBe(paused);
     state.messages = resumePausedTurnTimer(
       state.messages,
       19000,
@@ -706,11 +855,134 @@ it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
       state.messages
         .flatMap((m) => m.blocks)
         .filter((b) => b.type === 'turn_timer'),
-    ).toHaveLength(1);
+    ).toHaveLength(3);
+    expect(state.messages.find((m) => m.id === 'timer')).toBe(original);
     expect(state.messages.filter((m) => m.hidden)).toHaveLength(3);
     const restored = JSON.parse(
       JSON.stringify(state.messages),
     ) as typeof state.messages;
-    expect(restored.find((m) => m.id === 'timer')?.blocks[0]).toEqual(timer());
+    expect(
+      restored
+        .filter((m) => m.blocks.some((b) => b.type === 'turn_timer'))
+        .at(-1)?.blocks[0],
+    ).toEqual(timer());
   },
 );
+
+it.each([applyClaudeTranscriptEvent, applyCodexTranscriptEvent])(
+  'uses collision-safe continuation ids and keeps replay timestamps out of timer accounting',
+  (reduce) => {
+    const state: TranscriptReducerState = {
+      status: 'idle',
+      error: null,
+      planMode: false,
+      messages: [
+        {
+          id: 'user',
+          role: 'user',
+          timestamp: 1000,
+          blocks: [{ type: 'text', text: 'Review' }],
+        },
+        {
+          id: 'timer',
+          role: 'system',
+          timestamp: 1000,
+          blocks: [
+            {
+              type: 'turn_timer',
+              startedAt: 1000,
+              completedAt: 4000,
+              accumulatedPausedDurationMs: 500,
+            },
+          ],
+        },
+        {
+          id: 'timer:1',
+          role: 'assistant',
+          timestamp: 4000,
+          blocks: [{ type: 'text', text: 'Done' }],
+        },
+      ],
+    };
+    const event = {
+      type: 'canopy_user_prompt',
+      canopy_hidden: true,
+      user_message_id: 'timer:2',
+      original_text: 'Watcher fired',
+    };
+    const options: TranscriptReducerOptions = {
+      childToolLiveness: { kind: 'unknown' },
+      now: 9000,
+      createMessageId: (): string => 'timer',
+    };
+    const next = reduce(state, event, options);
+    expect(next.messages.map((m) => m.id)).toEqual([
+      'user',
+      'timer',
+      'timer:1',
+      'timer:2',
+      'timer:3',
+    ]);
+    expect(next.messages[1]).toBe(state.messages[1]);
+    const repeated = reduce(
+      next,
+      { ...event, user_message_id: 'another' },
+      { ...options, now: 11000 },
+    );
+    expect(
+      repeated.messages.filter((m) =>
+        m.blocks.some((b) => b.type === 'turn_timer'),
+      ),
+    ).toHaveLength(2);
+    expect(repeated.messages.find((m) => m.id === 'timer:3')).toBe(
+      next.messages[4],
+    );
+    const replay = reduce(state, event, {
+      ...options,
+      now: 7,
+      useNowAsTurnTimestamp: false,
+    });
+    expect(replay.messages[1]).toBe(state.messages[1]);
+    expect(replay.messages.at(-1)?.blocks).toEqual([
+      {
+        type: 'turn_timer',
+        startedAt: 1000,
+        completedAt: null,
+        accumulatedPausedDurationMs: 500,
+      },
+    ]);
+    expect(
+      reduce(state, event, { ...options, now: 7, useNowAsTurnTimestamp: false })
+        .messages,
+    ).toEqual(replay.messages);
+    const completed = reduce(
+      replay,
+      reduce === applyClaudeTranscriptEvent
+        ? { type: 'result', subtype: 'success', completed_at: 12000 }
+        : { type: 'turn.completed', completed_at: 12000 },
+      { ...options, now: 8, useNowAsTurnTimestamp: false },
+    );
+    expect(completed.messages[1]).toBe(state.messages[1]);
+    expect(completed.messages.at(-1)?.blocks[0]).toMatchObject({
+      completedAt: 12000,
+    });
+  },
+);
+
+function answerRef(digit: string): {
+  version: 1;
+  artifactId: string;
+  byteLength: number;
+  sha256: string;
+  encoding: 'utf-8';
+  mediaType: 'text/plain';
+} {
+  return {
+    version: 1,
+    artifactId: `sha256-v1-${digit.repeat(64)}`,
+    byteLength: 70_000,
+    sha256: digit.repeat(64),
+    encoding: 'utf-8',
+    mediaType: 'text/plain',
+  };
+}

@@ -1,8 +1,4 @@
-import type {
-  NavigationPage,
-  OnboardingChecklistItemId,
-  SettingsSection,
-} from '../types';
+import type { NavigationPage, SettingsSection } from '../types';
 
 /**
  * Activation notification journey contracts (CAN-1967 / CAN-2438).
@@ -22,24 +18,8 @@ export const ACTIVATION_CAMPAIGN_IDS = [
 
 export type ActivationCampaignId = (typeof ACTIVATION_CAMPAIGN_IDS)[number];
 
-/**
- * The daily Getting Started checklist sequence (CAN-3013).
- *
- * Deliberately NOT a member of {@link ACTIVATION_CAMPAIGN_IDS}: that list is
- * the hub-served contract (`@canopy/protocol/notification-campaigns`), one
- * definition and one send per id. The sequence is one campaign whose steps are
- * the canonical checklist item ids, so its per-step identity is the pair
- * (this id, `OnboardingChecklistItemId`) rather than four more campaign ids.
- */
-export const GETTING_STARTED_SEQUENCE_CAMPAIGN_ID = 'getting-started-sequence';
-
-export type GettingStartedSequenceCampaignId =
-  typeof GETTING_STARTED_SEQUENCE_CAMPAIGN_ID;
-
 /** Every campaign the promotional engine can send, click-route, or measure. */
-export type PromotionalCampaignId =
-  | ActivationCampaignId
-  | GettingStartedSequenceCampaignId;
+export type PromotionalCampaignId = ActivationCampaignId;
 
 /**
  * Why a scheduled send did not happen. Every gate failure records one, so the
@@ -91,12 +71,6 @@ export const CAMPAIGN_SUPPRESSION_REASONS = [
   'role-unknown',
   /** Role-branched campaign: their role maps to neither copy branch. */
   'role-not-mapped',
-  /**
-   * Getting Started sequence only (CAN-3013): the user permanently dismissed
-   * the checklist, which opts them out of being nudged about it. Event-driven:
-   * it clears when they restore the checklist, never on a timer.
-   */
-  'checklist-dismissed',
 ] as const;
 
 export type CampaignSuppressionReason =
@@ -137,29 +111,24 @@ export interface ActivationCampaignRecord {
   clickedAt?: string;
 }
 
-/**
- * Journey-owned activation signals (CAN-2438 phase 2). These are deliberately
- * NOT onboarding-checklist items: the checklist is a user-visible sidebar UI
- * with a fixed six-item list, and adding entries to it to serve a notification
- * campaign would silently change that surface.
- */
+/** Independent first-observation signals used only by activation campaigns. */
 export const ACTIVATION_SIGNAL_NAMES = [
   'first-task-submitted',
   'mobile-paired',
+  'tool-connected',
+  'capability-installed',
 ] as const;
 
 export type ActivationSignalName = (typeof ACTIVATION_SIGNAL_NAMES)[number];
 
-/**
- * Durable state for the Getting Started sequence (CAN-3013). Each step is
- * latched like a campaign so it sends at most once per install; the
- * sequence-level suppression exists only to dedupe funnel events for gates
- * that fail before a step is chosen.
- */
-export interface GettingStartedSequenceRecord {
-  steps: Partial<Record<OnboardingChecklistItemId, ActivationCampaignRecord>>;
-  suppressedAt?: string;
-  suppressedReason?: CampaignSuppressionReason;
+/** Read-only legacy sends retained solely for the shared daily rate limit. */
+export interface LegacyPromotionalSendHistory {
+  steps: Partial<
+    Record<
+      'start-chat' | 'connect-accounts' | 'add-capability' | 'create-account',
+      { sentAt: string }
+    >
+  >;
 }
 
 export interface ActivationJourneyPersistedState {
@@ -172,15 +141,14 @@ export interface ActivationJourneyPersistedState {
   campaigns: Partial<Record<ActivationCampaignId, ActivationCampaignRecord>>;
   /** ISO-8601 first-observation stamps, keyed by signal name. */
   signals: Partial<Record<ActivationSignalName, string>>;
-  /** Absent on files written before CAN-3013; read as an empty sequence. */
-  gettingStarted?: GettingStartedSequenceRecord;
+  /** Legacy send timestamps only, retained for the daily promotional cap. */
+  gettingStarted?: LegacyPromotionalSendHistory;
+  legacyChecklistMigrationVersion?: 1;
 }
 
 /** Renderer navigation intent produced by a campaign notification click. */
 export interface ActivationCampaignNavigateEvent {
   campaignId: PromotionalCampaignId;
-  /** Set for Getting Started sequence clicks: the checklist step clicked. */
-  itemId?: OnboardingChecklistItemId;
   destination: CampaignDestination;
 }
 

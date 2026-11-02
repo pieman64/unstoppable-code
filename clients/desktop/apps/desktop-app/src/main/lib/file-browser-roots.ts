@@ -4,6 +4,9 @@ import {
   buildSingleRepoRootCatalog,
   createFilesystemRoot,
   readRootVisibility,
+  readFilesystemWorkspaceIndexEntry,
+  resolveCoworkWorkspaceRootName,
+  filesystemScopeError,
   type AttachmentsRootSource,
   type FilesystemRoot,
   type FilesystemRootCatalog,
@@ -17,6 +20,7 @@ import {
   type FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import {
+  getWorkspaceIndexFilePath,
   getWorktreeAttachmentsDir,
   getWorkspaceWorktreeAttachmentsDir,
   getWorkspaceWorktreeRepoDir,
@@ -24,7 +28,12 @@ import {
   getWorkspaceWorktreeRootRepoDir,
 } from './paths';
 import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
-import { resolveWorktreeCwd } from './resolve-worktree';
+import {
+  resolveWorktreeCwd,
+  resolveWorktreeTargetIds,
+} from './resolve-worktree';
+import { basename } from 'node:path';
+import { desktopW5FileStore } from './w5-commit-log-file-store';
 import { readWorkspaceConfig } from './workspace-persistence';
 import { isCoworkWorkspace, isMultiRepoWorkspace } from './workspace-registry';
 import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read/viewer-root';
@@ -133,12 +142,23 @@ export async function getFileBrowserRoots(
     // the legacy sentinel keying and real cowork workspace ids. The renderer's
     // `getCwdFromFileIndex` special-cases the workspace root id to resolve
     // the cowork cwd.
+    const target = resolveWorktreeTargetIds(projectId, worktreeId);
+    if (!target) throw filesystemScopeError('roots', 'notFound');
+    const entry = readFilesystemWorkspaceIndexEntry(
+      target.projectId,
+      await desktopW5FileStore.read(getWorkspaceIndexFilePath()),
+    );
+    if (entry.type !== 'cowork')
+      throw filesystemScopeError('roots', 'invalidState');
     const home = resolveWorktreeCwd(projectId, worktreeId);
     return projectCatalog(
       buildCoworkRootCatalog({
         workspace: {
           id: COWORK_WORKSPACE_FILE_ROOT_ID,
-          name: 'Workspace',
+          name: resolveCoworkWorkspaceRootName(
+            entry.name,
+            basename(home) || home,
+          ),
           absolutePath: home,
         },
         notesPath: getCoworkManagedSubdir(home, 'notes'),

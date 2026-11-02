@@ -257,6 +257,17 @@ test('a browser handoff survives two scheduled runs, navigation and reload until
     const userSelection = await selection(window);
     await send(window, 'duplicate');
     expect(await selection(window)).toEqual(userSelection);
+    // Read the reply that arrived behind the file tab. An unread chat would
+    // rightly draw the re-entry after reload to its group (CAN-4957); a
+    // quiet worktree restores the saved Browser selection.
+    await window
+      .getByTestId(`panel-tab-panel-chat-${SEEDED_CHAT_TAB_ID}`)
+      .click();
+    await expect(
+      window.locator(
+        `[data-testid="panel-tab-unread-${SEEDED_CHAT_TAB_ID}"], [data-testid="panel-tab-unread-dot-${SEEDED_CHAT_TAB_ID}"]`,
+      ),
+    ).toHaveCount(0);
     await window.getByTestId(`panel-tab-panel-browser-${browser.id}`).click();
     await expect(browserPane).toBeVisible();
     const beforeReload = await selection(window);

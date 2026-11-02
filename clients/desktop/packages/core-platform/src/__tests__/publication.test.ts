@@ -28,17 +28,17 @@ import {
 } from '@canopy/core-transport/node';
 import type {
   PlatformOperatingSystem,
-  PlatformEndpointBindResult,
-  PlatformUnixSocketAddress,
   PlatformPermissionResult,
   PlatformRenameResult,
   PlatformStartupClaim,
   PlatformEndpointListener,
   PlatformNamedPipeAddress,
   PlatformPipeEndpointServices,
+  PlatformSocketBindResult,
 } from '@canopy/core-runtime';
 import {
   publishCanopyDaemon,
+  type CanopyDaemonHeldClaim,
   type CanopyDaemonPublicationOptions,
 } from '@canopy/core-runtime/node';
 import type * as RuntimeNode from '@canopy/core-runtime/node';
@@ -103,7 +103,7 @@ posix(
         ...endpoints,
         bind: async (
           address: Parameters<typeof endpoints.bind>[0],
-        ): Promise<PlatformEndpointBindResult<PlatformUnixSocketAddress>> => {
+        ): Promise<PlatformSocketBindResult> => {
           await expect(stat(descriptorPath)).rejects.toMatchObject({
             code: 'ENOENT',
           });
@@ -768,16 +768,151 @@ posix(
   },
 );
 
+/** The caller's own claim, acquired before publishing (W5b Q8(a)). */
+async function heldClaim(
+  options: ReturnType<typeof host>,
+): Promise<CanopyDaemonHeldClaim> {
+  await mkdir(join(dataRoot, 'runtime'), { mode: 0o700 });
+  const acquired = await options.claims.tryAcquire();
+  if (acquired.kind !== 'acquired') throw new Error(acquired.kind);
+  return { current: acquired.handle, released: false };
+}
+
+/** Another starter's view of the claim; releases it again when it got it. */
+async function contend(): Promise<string> {
+  const contender = createCanopyStartupClaimPort({
+    dataRoot,
+    owner: { pid: process.pid, startIdentity: 'contender' },
+    inspectProcess: () =>
+      Promise.resolve({ kind: 'alive', startIdentity: 'test-start' }),
+  });
+  const result = await contender.tryAcquire();
+  if (result.kind === 'acquired') await contender.release(result.handle);
+  return result.kind;
+}
+
+posix(
+  'publishes under a held claim and releases it only once published',
+  async () => {
+    const options = host();
+    const held = await heldClaim(options);
+    const tryAcquire = jest.spyOn(options.claims, 'tryAcquire');
+    const bound = await publishCanopyDaemon({ ...options, heldClaim: held });
+    expect(tryAcquire).not.toHaveBeenCalled();
+    expect(held.released).toBe(true);
+    expect(await options.claims.identity(held.current)).toBeNull();
+    expect(await contend()).toBe('acquired');
+    await bound.close();
+    expect(await readdir(join(dataRoot, 'runtime'))).toEqual([]);
+  },
+);
+
+posix(
+  'a failed publication keeps a held claim for its caller to release',
+  async () => {
+    const options = host();
+    const held = await heldClaim(options);
+    const handle = held.current;
+    const platform = {
+      ...options.platform,
+      secureFiles: {
+        ...options.platform.secureFiles,
+        rename: (): Promise<PlatformRenameResult> =>
+          Promise.reject(new Error('rename failed')),
+      },
+    };
+    await expect(
+      publishCanopyDaemon({ ...options, platform, heldClaim: held }),
+    ).rejects.toThrow('rename failed');
+    expect(held).toEqual({ current: handle, released: false });
+    expect(await options.claims.identity(handle)).not.toBeNull();
+    expect(await contend()).toBe('held');
+    expect(await readdir(join(dataRoot, 'runtime'))).toEqual([
+      'startup-claim.json',
+    ]);
+    expect(await options.claims.release(handle)).toBe('released');
+  },
+);
+
+posix(
+  'a held claim follows the reclaim after a release whose receipt was lost',
+  async () => {
+    const options = host();
+    const held = await heldClaim(options);
+    const original = held.current;
+    let lost = true;
+    const claims = {
+      ...options.claims,
+      release: async (
+        handle: object,
+      ): ReturnType<CanopyStartupClaimPort['release']> => {
+        const result = await options.claims.release(handle);
+        if (!lost) return result;
+        lost = false;
+        throw new Error('receipt lost');
+      },
+    };
+    await expect(
+      publishCanopyDaemon({ ...options, claims, heldClaim: held }),
+    ).rejects.toThrow('receipt lost');
+    expect(held.released).toBe(false);
+    expect(held.current).not.toBe(original);
+    expect(await options.claims.identity(original)).toBeNull();
+    expect(await options.claims.identity(held.current)).not.toBeNull();
+    expect(await contend()).toBe('held');
+    await expect(
+      stat(join(dataRoot, 'runtime', 'core.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await options.claims.release(held.current)).toBe('released');
+  },
+);
+
+posix(
+  'refuses a held claim beside a launcher handle or once released',
+  async () => {
+    const options = host();
+    const held = await heldClaim(options);
+    const endpoints = options.platform.endpoints;
+    if (endpoints.semantics !== 'filesystem-socket')
+      throw new Error('Wrong endpoint family');
+    const bind = jest.fn(endpoints.bind.bind(endpoints));
+    const platform = {
+      ...options.platform,
+      endpoints: { ...endpoints, bind },
+    };
+    await expect(
+      publishCanopyDaemon({
+        ...options,
+        platform,
+        heldClaim: held,
+        claimHandle: {},
+      }),
+    ).rejects.toThrow('exclusive');
+    await expect(
+      publishCanopyDaemon({
+        ...options,
+        platform,
+        heldClaim: { ...held, released: true },
+      }),
+    ).rejects.toThrow('Startup claim unavailable.');
+    expect(bind).not.toHaveBeenCalled();
+    expect(await options.claims.release(held.current)).toBe('released');
+  },
+);
+
 posix(
   'foreign adoption fails closed without a fallback acquisition or bind',
   async () => {
     const options = host();
-    const bind = jest.fn(options.platform.endpoints.bind);
+    const endpoints = options.platform.endpoints;
+    if (endpoints.semantics !== 'filesystem-socket')
+      throw new Error('Wrong endpoint family');
+    const bind = jest.fn(endpoints.bind.bind(endpoints));
     const tryAcquire = jest.fn(options.claims.tryAcquire);
     const claims = { ...options.claims, tryAcquire };
     const platform = {
       ...options.platform,
-      endpoints: { ...options.platform.endpoints, bind },
+      endpoints: { ...endpoints, bind },
     };
     await expect(
       publishCanopyDaemon({ ...options, claims, platform, claimHandle: {} }),
@@ -799,13 +934,22 @@ posix(
   },
 );
 
-posix.each([{ dataRoot: 'relative' }, { runtimeMode: 'test' }])(
-  'rejects missing explicit canonical launch configuration %p',
-  async (invalid) => {
-    const options = host();
-    await expect(
-      publishCanopyDaemon({ ...options, ...invalid }),
-    ).rejects.toThrow('Explicit canonical');
+posix.each(['relative data root', 'unsupported runtime mode'] as const)(
+  'rejects missing explicit canonical launch configuration: %s',
+  async (fixture) => {
+    const options: CanopyDaemonPublicationOptions = { ...host() };
+    // Install intentionally invalid runtime input that the public type keeps
+    // callers from constructing, and assert validation at the API boundary.
+    Object.defineProperty(
+      options,
+      fixture === 'relative data root' ? 'dataRoot' : 'runtimeMode',
+      {
+        value: fixture === 'relative data root' ? 'relative' : 'test',
+      },
+    );
+    await expect(publishCanopyDaemon(options)).rejects.toThrow(
+      'Explicit canonical',
+    );
   },
 );
 
@@ -910,12 +1054,18 @@ posix(
   },
 );
 
-test('Windows rejects a launcher claim before acquiring or binding', async () => {
+test('Windows rejects a launcher or held claim before acquiring or binding', async () => {
   const options = windowsHost();
   const tryAcquire = jest.spyOn(options.claims, 'tryAcquire');
   const bind = jest.spyOn(options.platform.endpoints, 'bind');
   await expect(
     publishCanopyDaemon({ ...options, claimHandle: {} }),
+  ).rejects.toThrow('Windows launcher claim unsupported');
+  await expect(
+    publishCanopyDaemon({
+      ...options,
+      heldClaim: { current: {}, released: false },
+    }),
   ).rejects.toThrow('Windows launcher claim unsupported');
   expect(tryAcquire).not.toHaveBeenCalled();
   expect(bind).not.toHaveBeenCalled();

@@ -14,6 +14,7 @@ import {
 import type { WorkspaceNoteItem } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
+  Button,
   HeaderActionButton,
   Markdown,
   markdownOptions,
@@ -148,21 +149,17 @@ function EditorModal({
           />
         </div>
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-s fg-secondary hover:fg-primary"
-          >
+          <Button size="compact" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={(): void => void handleSave()}
             disabled={!title.trim() || saving}
-            className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis hover:bg-accent/90 disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </div>
         {saveError !== null && (
           <p role="alert" className="text-xs fg-destructive">
@@ -198,13 +195,9 @@ function ViewerModal({
       maxWidth="lg"
       headerActions={
         onEdit === undefined ? undefined : (
-          <button
-            type="button"
-            onClick={onEdit}
-            className="rounded-md px-2 py-1 text-xs fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary"
-          >
+          <Button variant="ghost" size="compact" onClick={onEdit}>
             Edit
-          </button>
+          </Button>
         )
       }
     >
@@ -274,7 +267,7 @@ function ItemRow({
 
   return (
     <div
-      className="group relative rounded border bg-fg-primary/[0.02] transition hover:border-fg-primary/10"
+      className="group relative rounded border bg-fg-primary/[0.02] transition-colors hover:border-fg-primary/10"
       data-testid={`${testIdPrefix}-item`}
     >
       <div className="flex items-center gap-2 px-2 py-1.5">

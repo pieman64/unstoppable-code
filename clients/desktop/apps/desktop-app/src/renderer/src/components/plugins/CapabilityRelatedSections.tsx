@@ -164,11 +164,11 @@ export function CapabilityRelatedSections({
       data-testid="capability-related-sections"
     >
       <RelatedItemsSection
-        title="Related pipelines"
+        title="Related workflows"
         {...(pipelinesReason ? { description: pipelinesReason } : {})}
         presentation={presentation}
         hideWhenEmpty={presentation === 'list'}
-        emptyLabel="No pipelines use this yet."
+        emptyLabel="No workflows use this yet."
         loading={refsLoading}
         testId="related-pipelines-section"
         items={relatedPipelines.map((item) => ({
@@ -217,9 +217,8 @@ export function CapabilityRelatedSections({
               return;
             }
             onBeforeNavigate?.();
-            // Hosts without a detail stack (Skills management viewer,
-            // marketplace modal) still get a Back path: the source entry
-            // seeds the Plugins-page stack.
+            // Hosts without a detail stack still get a Back path: the
+            // source entry seeds the Plugins-page stack.
             openPluginsNavigation({
               kind: 'entry-detail',
               entryId: item.entryId,

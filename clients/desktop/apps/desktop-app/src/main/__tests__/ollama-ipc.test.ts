@@ -1,5 +1,14 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { IPC_CHANNELS, initOllamaModels } from '@canopy/desktop-shared/types';
+import type {
+  ModelHarnessAssignmentSnapshot,
+  OllamaInstallationStatus,
+  OllamaState,
+} from '@canopy/desktop-shared/types';
+import {
+  __resetWorkspaceContextServiceForTests,
+  getWorkspaceContextService,
+} from '../lib/workspace-context-service';
 
 let broadcastHandlers: {
   status?: (state: unknown) => void;
@@ -8,7 +17,7 @@ let broadcastHandlers: {
   modelRegistryUpdated?: (snapshot: unknown) => void;
 } = {};
 
-const defaultInstallation = {
+const defaultInstallation: OllamaInstallationStatus = {
   platform: 'win32',
   ready: true,
   path: 'C:/Program Files/Ollama/ollama.exe',
@@ -17,7 +26,7 @@ const defaultInstallation = {
   checkedAt: '2026-07-14T00:00:00.000Z',
   automaticInstallSupported: true,
 };
-const defaultState = {
+const defaultState: OllamaState = {
   port: 11534,
   status: 'stopped',
   models: [],
@@ -120,8 +129,12 @@ const setBroadcastHandlersMock = jest.fn(
 );
 
 jest.mock('../agents/session-manager', () => ({
-  destroySessionsByModel: destroySessionsByModelMock,
-  destroySessionsByProvider: destroySessionsByProviderMock,
+  get destroySessionsByModel(): typeof destroySessionsByModelMock {
+    return destroySessionsByModelMock;
+  },
+  get destroySessionsByProvider(): typeof destroySessionsByProviderMock {
+    return destroySessionsByProviderMock;
+  },
 }));
 
 const readPreferencesFileMock = jest.fn().mockResolvedValue({
@@ -145,23 +158,47 @@ const readPreferencesFileMock = jest.fn().mockResolvedValue({
 });
 
 jest.mock('../ipc/preferences', () => ({
-  readPreferencesFile: readPreferencesFileMock,
+  get readPreferencesFile(): typeof readPreferencesFileMock {
+    return readPreferencesFileMock;
+  },
 }));
 
 jest.mock('../ollama', () => ({
   getOllamaService: jest.fn(() => ({
     getCachedModels: (): typeof defaultState.models => defaultState.models,
-    getState: getStateMock,
-    getModelRegistrySnapshot: getModelRegistrySnapshotMock,
-    refreshModels: refreshModelsMock,
-    pullModel: pullModelMock,
-    deleteModel: deleteModelMock,
-    setConfiguration: setConfigurationMock,
-    testConnection: testConnectionMock,
-    redetectInstallation: redetectInstallationMock,
-    setExecutablePath: setExecutablePathMock,
-    install: installMock,
-    setBroadcastHandlers: setBroadcastHandlersMock,
+    get getState(): typeof getStateMock {
+      return getStateMock;
+    },
+    get getModelRegistrySnapshot(): typeof getModelRegistrySnapshotMock {
+      return getModelRegistrySnapshotMock;
+    },
+    get refreshModels(): typeof refreshModelsMock {
+      return refreshModelsMock;
+    },
+    get pullModel(): typeof pullModelMock {
+      return pullModelMock;
+    },
+    get deleteModel(): typeof deleteModelMock {
+      return deleteModelMock;
+    },
+    get setConfiguration(): typeof setConfigurationMock {
+      return setConfigurationMock;
+    },
+    get testConnection(): typeof testConnectionMock {
+      return testConnectionMock;
+    },
+    get redetectInstallation(): typeof redetectInstallationMock {
+      return redetectInstallationMock;
+    },
+    get setExecutablePath(): typeof setExecutablePathMock {
+      return setExecutablePathMock;
+    },
+    get install(): typeof installMock {
+      return installMock;
+    },
+    get setBroadcastHandlers(): typeof setBroadcastHandlersMock {
+      return setBroadcastHandlersMock;
+    },
   })),
 }));
 
@@ -244,6 +281,13 @@ function setMockWindows(windows: BrowserWindow[]): void {
 // ---------------------------------------------------------------------------
 
 describe('Ollama IPC handlers', () => {
+  afterAll(async () => {
+    // Model-registry reads can initialize the real scoping service. Drain its
+    // startup read and dispose its retry timer before Jest removes Electron.
+    await getWorkspaceContextService().whenIdle();
+    __resetWorkspaceContextServiceForTests();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     clearRegisteredHandlers();
@@ -284,7 +328,10 @@ describe('Ollama IPC handlers', () => {
   });
 
   it('loads and mutates authoritative harness assignment snapshots', async () => {
-    let snapshot = { revision: 1, assignments: [] };
+    let snapshot: ModelHarnessAssignmentSnapshot = {
+      revision: 1,
+      assignments: [],
+    };
     const controller = {
       load: jest.fn(() => Promise.resolve(snapshot)),
       set: jest.fn(

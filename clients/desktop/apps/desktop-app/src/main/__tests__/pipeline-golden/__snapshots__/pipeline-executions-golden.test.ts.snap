@@ -1,0 +1,3917 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`Portal refuses invalid runs and foreign executions 1`] = `
+{
+  "cancelOtherWorktree": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "invalid_target",
+        "message": "Pipeline payload scope does not match the routed target.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "getMissing": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "not_found",
+        "message": "Workflow execution not found.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "invalidLocator": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "Invalid pipelineId: must be lowercase alphanumeric with hyphens",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "missingPipeline": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "not_found",
+        "message": "Workflow not found.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "missingTarget": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "executionId": "<uuid>",
+      },
+    },
+    "updates": [],
+  },
+  "retryMissing": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "not_found",
+        "message": "Workflow execution not found.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "ultraFast": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "modelConfig.speed must be standard, fast, or ultrafast.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "undeclaredInput": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Workflow input validation failed:
+- Workflow input "unknown" is not declared",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "unknownWorktree": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Workflow unavailable (unsupported-target)",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "unsupportedEvent": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "task_ready requires a non-empty task_text.",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+}
+`;
+
+exports[`Portal runs, gets, lists, resumes, retries, starts over and cancels 1`] = `
+{
+  "cancel": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "chatFollowUp": {
+          "planAvailable": false,
+          "reportAvailable": false,
+        },
+        "chatTurns": [],
+        "finishedAt": "<timestamp>",
+        "jobs": [
+          {
+            "jobId": "gate",
+            "name": "Gate",
+            "needs": [],
+            "status": "cancelled",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "ask",
+                "status": "cancelled",
+                "stepId": "ask",
+              },
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "after",
+                "status": "cancelled",
+                "stepId": "after",
+              },
+            ],
+          },
+        ],
+        "localId": "<run:portal-cancel>",
+        "outputTail": "",
+        "pendingPauses": [],
+        "pipelineId": "<pipeline:pause>",
+        "pipelineName": "Golden run pause",
+        "runId": "<run:portal-cancel>",
+        "startedAt": "<timestamp>",
+        "status": "cancelled",
+        "statusReasons": [],
+        "workspaceLocalId": "golden-ws",
+        "worktreeLocalId": "golden-wt",
+      },
+    },
+    "updates": [],
+  },
+  "get": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "chatFollowUp": {
+          "planAvailable": false,
+          "reportAvailable": false,
+        },
+        "chatTurns": [],
+        "finishedAt": "<timestamp>",
+        "jobs": [
+          {
+            "jobId": "build",
+            "name": "Build",
+            "needs": [],
+            "status": "success",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "greet",
+                "outputTail": "portal
+",
+                "status": "success",
+                "stepId": "greet",
+              },
+            ],
+          },
+          {
+            "jobId": "report",
+            "name": "Report",
+            "needs": [
+              "build",
+            ],
+            "status": "success",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "done",
+                "outputTail": "
+",
+                "status": "success",
+                "stepId": "done",
+              },
+            ],
+          },
+        ],
+        "localId": "<run:portal-success>",
+        "outputTail": "portal
+
+
+",
+        "pendingPauses": [],
+        "pipelineId": "<pipeline:success>",
+        "pipelineName": "Golden run success",
+        "runId": "<run:portal-success>",
+        "startedAt": "<timestamp>",
+        "status": "success",
+        "statusReasons": [],
+        "workspaceLocalId": "golden-ws",
+        "worktreeLocalId": "golden-wt",
+      },
+    },
+    "updates": [],
+  },
+  "list": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "runs": [
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "gate",
+                "name": "Gate",
+                "needs": [],
+                "status": "cancelled",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ask",
+                    "status": "cancelled",
+                    "stepId": "ask",
+                  },
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "after",
+                    "status": "cancelled",
+                    "stepId": "after",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:portal-cancel>",
+            "outputTail": "",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:pause>",
+            "pipelineName": "Golden run pause",
+            "runId": "<run:portal-cancel>",
+            "startedAt": "<timestamp>",
+            "status": "cancelled",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "gate",
+                "name": "Gate",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ask",
+                    "status": "success",
+                    "stepId": "ask",
+                  },
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "after",
+                    "outputTail": "resumed
+",
+                    "status": "success",
+                    "stepId": "after",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:portal-pause>",
+            "outputTail": "resumed
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:pause>",
+            "pipelineName": "Golden run pause",
+            "runId": "<run:portal-pause>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "build",
+                "name": "Build",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "greet",
+                    "outputTail": "portal
+",
+                    "status": "success",
+                    "stepId": "greet",
+                  },
+                ],
+              },
+              {
+                "jobId": "report",
+                "name": "Report",
+                "needs": [
+                  "build",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "done",
+                    "outputTail": "
+",
+                    "status": "success",
+                    "stepId": "done",
+                  },
+                ],
+              },
+            ],
+            "localId": "<uuid>",
+            "outputTail": "portal
+
+
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:success>",
+            "pipelineName": "Golden run success",
+            "runId": "<uuid>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "setup",
+                "name": "Setup",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ok",
+                    "outputTail": "setup
+",
+                    "status": "success",
+                    "stepId": "ok",
+                  },
+                ],
+              },
+              {
+                "jobId": "flaky",
+                "name": "Flaky",
+                "needs": [
+                  "setup",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "attempt",
+                    "outputTail": "recovered
+",
+                    "status": "success",
+                    "stepId": "attempt",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:portal-flaky>",
+            "outputTail": "setup
+
+recovered
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:flaky>",
+            "pipelineName": "Golden run flaky",
+            "runId": "<run:portal-flaky>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "build",
+                "name": "Build",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "greet",
+                    "outputTail": "portal
+",
+                    "status": "success",
+                    "stepId": "greet",
+                  },
+                ],
+              },
+              {
+                "jobId": "report",
+                "name": "Report",
+                "needs": [
+                  "build",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "done",
+                    "outputTail": "
+",
+                    "status": "success",
+                    "stepId": "done",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:portal-success>",
+            "outputTail": "portal
+
+
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:success>",
+            "pipelineName": "Golden run success",
+            "runId": "<run:portal-success>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "wait",
+                "name": "Wait",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "first",
+                    "outputTail": "first
+",
+                    "status": "success",
+                    "stepId": "first",
+                  },
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "sleep",
+                    "outputTail": "resumed
+",
+                    "status": "success",
+                    "stepId": "sleep",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-orphan>",
+            "outputTail": "first
+
+resumed
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:slowOnce>",
+            "pipelineName": "Golden run slow once",
+            "runId": "<run:ipc-orphan>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "expansion": "expanded",
+                "jobId": "build",
+                "name": "Build",
+                "needs": [],
+                "status": "cancelled",
+                "steps": [],
+                "variants": [
+                  {
+                    "jobId": "__matrix__build__0",
+                    "matrix": {
+                      "value": "alpha",
+                    },
+                    "name": "Build",
+                    "status": "success",
+                    "steps": [
+                      {
+                        "attempt": 0,
+                        "iteration": 1,
+                        "name": "variant",
+                        "status": "success",
+                        "stepId": "variant",
+                      },
+                    ],
+                  },
+                  {
+                    "jobId": "__matrix__build__1",
+                    "matrix": {
+                      "value": "beta",
+                    },
+                    "name": "Build",
+                    "status": "cancelled",
+                    "steps": [
+                      {
+                        "attempt": 0,
+                        "iteration": 1,
+                        "name": "variant",
+                        "status": "success",
+                        "stepId": "variant",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-matrix-pause>",
+            "outputTail": "",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:matrixPause>",
+            "pipelineName": "Golden run matrix pause",
+            "runId": "<run:ipc-matrix-pause>",
+            "startedAt": "<timestamp>",
+            "status": "cancelled",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "expansion": "expanded",
+                "jobId": "build",
+                "name": "Build",
+                "needs": [],
+                "status": "success",
+                "steps": [],
+                "variants": [
+                  {
+                    "jobId": "__matrix__build__0",
+                    "matrix": {
+                      "value": "alpha",
+                    },
+                    "name": "Build",
+                    "status": "success",
+                    "steps": [
+                      {
+                        "attempt": 0,
+                        "iteration": 1,
+                        "name": "variant",
+                        "status": "success",
+                        "stepId": "variant",
+                      },
+                    ],
+                  },
+                  {
+                    "jobId": "__matrix__build__1",
+                    "matrix": {
+                      "value": "beta",
+                    },
+                    "name": "Build",
+                    "status": "success",
+                    "steps": [
+                      {
+                        "attempt": 1,
+                        "iteration": 1,
+                        "name": "variant",
+                        "status": "success",
+                        "stepId": "variant",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-matrix>",
+            "outputTail": "",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:matrix>",
+            "pipelineName": "Golden run matrix",
+            "runId": "<run:ipc-matrix>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "wait",
+                "name": "Wait",
+                "needs": [],
+                "status": "cancelled",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "first",
+                    "outputTail": "first
+",
+                    "status": "success",
+                    "stepId": "first",
+                  },
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "sleep",
+                    "outputTail": "sleeping
+",
+                    "status": "cancelled",
+                    "stepId": "sleep",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-cancel-running>",
+            "outputTail": "first
+
+sleeping
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:slowOnce>",
+            "pipelineName": "Golden run slow once",
+            "runId": "<run:ipc-cancel-running>",
+            "startedAt": "<timestamp>",
+            "status": "cancelled",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "gate",
+                "name": "Gate",
+                "needs": [],
+                "status": "cancelled",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ask",
+                    "status": "cancelled",
+                    "stepId": "ask",
+                  },
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "after",
+                    "status": "cancelled",
+                    "stepId": "after",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-cancel-paused>",
+            "outputTail": "",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:pause>",
+            "pipelineName": "Golden run pause",
+            "runId": "<run:ipc-cancel-paused>",
+            "startedAt": "<timestamp>",
+            "status": "cancelled",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "gate",
+                "name": "Gate",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ask",
+                    "status": "success",
+                    "stepId": "ask",
+                  },
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "after",
+                    "outputTail": "resumed
+",
+                    "status": "success",
+                    "stepId": "after",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-pause>",
+            "outputTail": "resumed
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:pause>",
+            "pipelineName": "Golden run pause",
+            "runId": "<run:ipc-pause>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "setup",
+                "name": "Setup",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ok",
+                    "outputTail": "setup
+",
+                    "status": "success",
+                    "stepId": "ok",
+                  },
+                ],
+              },
+              {
+                "jobId": "flaky",
+                "name": "Flaky",
+                "needs": [
+                  "setup",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "attempt",
+                    "outputTail": "recovered
+",
+                    "status": "success",
+                    "stepId": "attempt",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-rerun>",
+            "outputTail": "setup
+
+recovered
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:flaky>",
+            "pipelineName": "Golden run flaky",
+            "runId": "<run:ipc-rerun>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "setup",
+                "name": "Setup",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ok",
+                    "outputTail": "setup
+",
+                    "status": "success",
+                    "stepId": "ok",
+                  },
+                ],
+              },
+              {
+                "jobId": "flaky",
+                "name": "Flaky",
+                "needs": [
+                  "setup",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "attempt",
+                    "outputTail": "recovered
+",
+                    "status": "success",
+                    "stepId": "attempt",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-retry-source>",
+            "outputTail": "setup
+
+recovered
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:flaky>",
+            "pipelineName": "Golden run flaky",
+            "runId": "<run:ipc-retry-source>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "build",
+                "name": "Build",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "greet",
+                    "outputTail": "hello
+",
+                    "status": "success",
+                    "stepId": "greet",
+                  },
+                ],
+              },
+              {
+                "jobId": "report",
+                "name": "Report",
+                "needs": [
+                  "build",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "done",
+                    "outputTail": "
+",
+                    "status": "success",
+                    "stepId": "done",
+                  },
+                ],
+              },
+            ],
+            "localId": "<uuid>",
+            "outputTail": "hello
+
+
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:success>",
+            "pipelineName": "Golden run success",
+            "runId": "<uuid>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "setup",
+                "name": "Setup",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "ok",
+                    "outputTail": "setup
+",
+                    "status": "success",
+                    "stepId": "ok",
+                  },
+                ],
+              },
+              {
+                "jobId": "flaky",
+                "name": "Flaky",
+                "needs": [
+                  "setup",
+                ],
+                "status": "failed",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "attempt",
+                    "outputTail": "first-failure
+",
+                    "status": "failed",
+                    "stepId": "attempt",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-flaky>",
+            "outputTail": "setup
+
+first-failure
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:flaky>",
+            "pipelineName": "Golden run flaky",
+            "runId": "<run:ipc-flaky>",
+            "startedAt": "<timestamp>",
+            "status": "failed",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+          {
+            "chatFollowUp": {
+              "planAvailable": false,
+              "reportAvailable": false,
+            },
+            "chatTurns": [],
+            "finishedAt": "<timestamp>",
+            "jobs": [
+              {
+                "jobId": "build",
+                "name": "Build",
+                "needs": [],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "greet",
+                    "outputTail": "golden
+",
+                    "status": "success",
+                    "stepId": "greet",
+                  },
+                ],
+              },
+              {
+                "jobId": "report",
+                "name": "Report",
+                "needs": [
+                  "build",
+                ],
+                "status": "success",
+                "steps": [
+                  {
+                    "attempt": 0,
+                    "iteration": 1,
+                    "name": "done",
+                    "outputTail": "
+",
+                    "status": "success",
+                    "stepId": "done",
+                  },
+                ],
+              },
+            ],
+            "localId": "<run:ipc-success>",
+            "outputTail": "golden
+
+
+",
+            "pendingPauses": [],
+            "pipelineId": "<pipeline:success>",
+            "pipelineName": "Golden run success",
+            "runId": "<run:ipc-success>",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "statusReasons": [],
+            "workspaceLocalId": "golden-ws",
+            "worktreeLocalId": "golden-wt",
+          },
+        ],
+      },
+    },
+    "updates": [],
+  },
+  "rerun": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "chatFollowUp": {
+          "planAvailable": false,
+          "reportAvailable": false,
+        },
+        "chatTurns": [],
+        "jobs": [
+          {
+            "jobId": "build",
+            "name": "Build",
+            "needs": [],
+            "status": "pending",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "greet",
+                "status": "pending",
+                "stepId": "greet",
+              },
+            ],
+          },
+          {
+            "jobId": "report",
+            "name": "Report",
+            "needs": [
+              "build",
+            ],
+            "status": "pending",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "done",
+                "status": "pending",
+                "stepId": "done",
+              },
+            ],
+          },
+        ],
+        "localId": "<uuid>",
+        "outputTail": "",
+        "pendingPauses": [],
+        "pipelineId": "<pipeline:success>",
+        "pipelineName": "Golden run success",
+        "runId": "<uuid>",
+        "startedAt": "<timestamp>",
+        "status": "pending",
+        "statusReasons": [],
+        "workspaceLocalId": "golden-ws",
+        "worktreeLocalId": "golden-wt",
+      },
+    },
+    "updates": [],
+  },
+  "rerunSettled": null,
+  "resume": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "chatFollowUp": {
+          "planAvailable": false,
+          "reportAvailable": false,
+        },
+        "chatTurns": [],
+        "jobs": [
+          {
+            "jobId": "gate",
+            "name": "Gate",
+            "needs": [],
+            "status": "queued",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "ask",
+                "status": "success",
+                "stepId": "ask",
+              },
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "after",
+                "status": "pending",
+                "stepId": "after",
+              },
+            ],
+          },
+        ],
+        "localId": "<run:portal-pause>",
+        "outputTail": "",
+        "pendingPauses": [],
+        "pipelineId": "<pipeline:pause>",
+        "pipelineName": "Golden run pause",
+        "runId": "<run:portal-pause>",
+        "startedAt": "<timestamp>",
+        "status": "pending",
+        "statusReasons": [],
+        "workspaceLocalId": "golden-ws",
+        "worktreeLocalId": "golden-wt",
+      },
+    },
+    "updates": [],
+  },
+  "resumeMissingAnswer": {
+    "event": "portal.command.failed",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "approved is required",
+      },
+      "generatedAt": "<timestamp>",
+      "retryable": false,
+    },
+    "updates": [],
+  },
+  "resumed": {
+    "event_name": "dispatch",
+    "id": "<run:portal-pause>",
+    "initiation_source": "portal",
+    "initiator": {
+      "kind": "portal",
+    },
+    "inputs": {},
+    "jobs": {
+      "gate": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "after": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "ask": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {
+              "approved": "true",
+            },
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run pause",
+    "pipeline_id": "<pipeline:pause>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retried": {
+    "event_name": "dispatch",
+    "id": "<run:portal-flaky>",
+    "initiation_source": "portal",
+    "initiator": {
+      "kind": "portal",
+    },
+    "inputs": {
+      "marker": "<root>/markers/portal-flaky",
+    },
+    "jobs": {
+      "flaky": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "attempt": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "setup": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "ok": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run flaky",
+    "pipeline_id": "<pipeline:flaky>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retry": {
+    "event": "portal.command.completed",
+    "payload": {
+      "generatedAt": "<timestamp>",
+      "result": {
+        "chatFollowUp": {
+          "planAvailable": false,
+          "reportAvailable": false,
+        },
+        "chatTurns": [],
+        "jobs": [
+          {
+            "jobId": "setup",
+            "name": "Setup",
+            "needs": [],
+            "status": "success",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "ok",
+                "outputTail": "setup
+",
+                "status": "success",
+                "stepId": "ok",
+              },
+            ],
+          },
+          {
+            "jobId": "flaky",
+            "name": "Flaky",
+            "needs": [
+              "setup",
+            ],
+            "status": "pending",
+            "steps": [
+              {
+                "attempt": 0,
+                "iteration": 1,
+                "name": "attempt",
+                "outputTail": "first-failure
+",
+                "status": "pending",
+                "stepId": "attempt",
+              },
+            ],
+          },
+        ],
+        "localId": "<run:portal-flaky>",
+        "outputTail": "setup
+
+first-failure
+",
+        "pendingPauses": [],
+        "pipelineId": "<pipeline:flaky>",
+        "pipelineName": "Golden run flaky",
+        "runId": "<run:portal-flaky>",
+        "startedAt": "<timestamp>",
+        "status": StringMatching /\\^\\(pending\\|running\\)\\$/,
+        "statusReasons": [],
+        "workspaceLocalId": "golden-ws",
+        "worktreeLocalId": "golden-wt",
+      },
+    },
+    "updates": [],
+  },
+  "success": {
+    "executionId": "<run:portal-success>",
+    "result": {
+      "event": "portal.command.completed",
+      "payload": {
+        "generatedAt": "<timestamp>",
+        "result": {
+          "executionId": "<run:portal-success>",
+        },
+      },
+      "updates": [],
+    },
+  },
+  "successSettled": {
+    "event_name": "dispatch",
+    "id": "<run:portal-success>",
+    "initiation_source": "portal",
+    "initiator": {
+      "kind": "portal",
+    },
+    "inputs": {
+      "greeting": "portal",
+    },
+    "jobs": {
+      "build": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "greet": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {
+              "said": "portal",
+            },
+            "status": "success",
+          },
+        },
+      },
+      "report": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "done": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run success",
+    "pipeline_id": "<pipeline:success>",
+    "status": "success",
+    "status_reasons": [],
+  },
+}
+`;
+
+exports[`agent actions refuses invalid runs and unknown executions 1`] = `
+{
+  "cancelMissing": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "Execution missing-execution not found.",
+      },
+      "ok": false,
+      "requestId": "",
+    },
+  },
+  "chainMissing": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "Execution missing-execution not found.",
+      },
+      "ok": false,
+      "requestId": "",
+    },
+  },
+  "getMissing": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "Execution missing-execution not found.",
+      },
+      "ok": false,
+      "requestId": "",
+    },
+  },
+  "globalNotDeclared": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "invalid_target",
+        "message": "This pipeline can't run without a project.",
+      },
+      "ok": false,
+      "requestId": "golden-tool-19",
+      "result": {
+        "reason": "unsupported_scope",
+        "status": "rejected",
+      },
+    },
+  },
+  "globalWithInputs": {
+    "isError": true,
+    "text": "Invalid arguments for DispatchAction.
+- A run with no project (scope "global") supports only runMode "dispatch".",
+  },
+  "missingPipeline": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "Pipeline missing-pipeline was not found.",
+      },
+      "ok": false,
+      "requestId": "golden-tool-15",
+      "result": {
+        "reason": "not_found",
+        "status": "rejected",
+      },
+    },
+  },
+  "missingRequiredInput": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Workflow input validation failed:
+- Workflow input "marker" is required",
+      },
+      "ok": false,
+      "requestId": "golden-tool-16",
+      "result": {
+        "reason": "execution_failed",
+        "status": "rejected",
+      },
+    },
+  },
+  "planReadyWithoutPlan": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "golden-tool-18",
+      "result": {
+        "agentArtifacts": [
+          {
+            "createdAt": "<timestamp>",
+            "dedupeKey": "canopy:pipeline_run:execution:<uuid>",
+            "executionId": "<uuid>",
+            "initialStatus": "running",
+            "kind": "pipeline_run",
+            "navigationTarget": {
+              "executionId": "<uuid>",
+              "kind": "pipeline_execution",
+              "projectId": "golden-ws",
+              "worktreeId": "golden-wt",
+            },
+            "operation": "pipeline.run",
+            "pipelineId": "<user-pipeline-id>",
+            "pipelineName": "Golden user pipeline",
+            "projectId": "golden-ws",
+            "queuedAt": "<timestamp>",
+            "startedAt": "<timestamp>",
+            "version": 1,
+            "worktreeId": "golden-wt",
+          },
+        ],
+        "execution": {
+          "eventName": "plan_ready",
+          "executionId": "<uuid>",
+          "executionScope": "worktree",
+          "executionStatus": "running",
+          "owner": "personal",
+          "pipelineId": "<user-pipeline-id>",
+          "pipelineName": "Golden user pipeline",
+          "projectId": "golden-ws",
+          "startedAt": "<timestamp>",
+          "worktreeId": "golden-wt",
+        },
+        "status": "started",
+      },
+    },
+  },
+  "resumeMissing": {
+    "isError": true,
+    "text": "Invalid arguments for DispatchAction.
+- pipeline.execution_resume requires statusReasonIds or pauseResponses from the observed pause.",
+  },
+  "unsupportedRunMode": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "invalid_target",
+        "message": "Pipeline <pipeline:success> does not declare the task_ready run mode.",
+      },
+      "ok": false,
+      "requestId": "golden-tool-17",
+      "result": {
+        "reason": "invalid_target",
+        "status": "rejected",
+      },
+    },
+  },
+}
+`;
+
+exports[`agent actions runs through pipeline.run and controls runs through legacy actions 1`] = `
+{
+  "cancel": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "execution": {
+          "completedAt": "<timestamp>",
+          "cwd": "<worktree>",
+          "description": "",
+          "error": null,
+          "eventName": "dispatch",
+          "id": "<run:agent-cancel>",
+          "inputRequested": false,
+          "inputRequests": [],
+          "inputs": {},
+          "jobs": [
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "cancelled",
+              "id": "gate",
+              "name": "Gate",
+              "outcome": "cancelled",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "cancelled",
+              "stepCount": 2,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "cancelled",
+                  "error": null,
+                  "exitCode": null,
+                  "id": "ask",
+                  "logFile": null,
+                  "outcome": "cancelled",
+                  "startedAt": null,
+                  "status": "cancelled",
+                },
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "cancelled",
+                  "error": null,
+                  "exitCode": null,
+                  "id": "after",
+                  "logFile": null,
+                  "outcome": "cancelled",
+                  "startedAt": null,
+                  "status": "cancelled",
+                },
+              ],
+            },
+          ],
+          "name": "Golden run pause",
+          "pendingPauses": [],
+          "pipelineId": "<pipeline:pause>",
+          "planId": null,
+          "planModified": false,
+          "planPath": null,
+          "projectId": "golden-ws",
+          "reportOutputs": null,
+          "resumableStatusReasons": [],
+          "startedAt": "<timestamp>",
+          "status": "cancelled",
+          "worktreeId": "golden-wt",
+        },
+      },
+    },
+  },
+  "cancelVariant": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "execution": {
+          "completedAt": "<timestamp>",
+          "cwd": "<worktree>",
+          "description": "",
+          "error": null,
+          "eventName": "dispatch",
+          "id": "<run:agent-matrix-pause>",
+          "inputRequested": false,
+          "inputRequests": [],
+          "inputs": {},
+          "jobs": [
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "success",
+              "id": "__matrix__build__0",
+              "name": "__matrix__build__0",
+              "outcome": "success",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "success",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "variant",
+                  "logFile": "<data>/pipeline-executions/<run:agent-matrix-pause>/logs/__matrix__build__0--variant.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+              ],
+            },
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "cancelled",
+              "id": "__matrix__build__1",
+              "name": "__matrix__build__1",
+              "outcome": "cancelled",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "cancelled",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "variant",
+                  "logFile": "<data>/pipeline-executions/<run:agent-matrix-pause>/logs/__matrix__build__1--variant.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+              ],
+            },
+          ],
+          "name": "Golden run matrix pause",
+          "pendingPauses": [],
+          "pipelineId": "<pipeline:matrixPause>",
+          "planId": null,
+          "planModified": false,
+          "planPath": null,
+          "projectId": "golden-ws",
+          "reportOutputs": null,
+          "resumableStatusReasons": [],
+          "startedAt": "<timestamp>",
+          "status": "cancelled",
+          "worktreeId": "golden-wt",
+        },
+      },
+    },
+  },
+  "chainWithoutPlan": {
+    "isError": true,
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "This pipeline execution does not have a saved plan file.",
+      },
+      "ok": false,
+      "requestId": "",
+    },
+  },
+  "get": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "execution": {
+          "completedAt": "<timestamp>",
+          "cwd": "<worktree>",
+          "description": "",
+          "error": null,
+          "eventName": "dispatch",
+          "id": "<run:agent-success>",
+          "inputRequested": false,
+          "inputRequests": [],
+          "inputs": {
+            "greeting": "agent",
+          },
+          "jobs": [
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "success",
+              "id": "build",
+              "name": "Build",
+              "outcome": "success",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "success",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "greet",
+                  "logFile": "<data>/pipeline-executions/<run:agent-success>/logs/build--greet.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+              ],
+            },
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "success",
+              "id": "report",
+              "name": "Report",
+              "outcome": "success",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "success",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "done",
+                  "logFile": "<data>/pipeline-executions/<run:agent-success>/logs/report--done.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+              ],
+            },
+          ],
+          "name": "Golden run success",
+          "pendingPauses": [],
+          "pipelineId": "<pipeline:success>",
+          "planId": null,
+          "planModified": false,
+          "planPath": null,
+          "projectId": "golden-ws",
+          "reportOutputs": null,
+          "resumableStatusReasons": [],
+          "startedAt": "<timestamp>",
+          "status": "success",
+          "worktreeId": "golden-wt",
+        },
+      },
+    },
+  },
+  "list": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "executions": [
+          {
+            "completedAt": "<timestamp>",
+            "description": "",
+            "eventName": "dispatch",
+            "hasPlan": false,
+            "hasReport": false,
+            "id": "<run:agent-success>",
+            "inputRequestCount": 0,
+            "inputRequested": false,
+            "name": "Golden run success",
+            "pipelineId": "<pipeline:success>",
+            "planModified": false,
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "worktreeId": "golden-wt",
+          },
+          {
+            "completedAt": "<timestamp>",
+            "description": "",
+            "eventName": "dispatch",
+            "hasPlan": false,
+            "hasReport": false,
+            "id": "<uuid>",
+            "inputRequestCount": 0,
+            "inputRequested": false,
+            "name": "Golden run success",
+            "pipelineId": "<pipeline:success>",
+            "planModified": false,
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "worktreeId": "golden-wt",
+          },
+          {
+            "completedAt": "<timestamp>",
+            "description": "",
+            "eventName": "dispatch",
+            "hasPlan": false,
+            "hasReport": false,
+            "id": "<uuid>",
+            "inputRequestCount": 0,
+            "inputRequested": false,
+            "name": "Golden run success",
+            "pipelineId": "<pipeline:success>",
+            "planModified": false,
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "worktreeId": "golden-wt",
+          },
+          {
+            "completedAt": "<timestamp>",
+            "description": "",
+            "eventName": "dispatch",
+            "hasPlan": false,
+            "hasReport": false,
+            "id": "<run:portal-success>",
+            "inputRequestCount": 0,
+            "inputRequested": false,
+            "name": "Golden run success",
+            "pipelineId": "<pipeline:success>",
+            "planModified": false,
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "worktreeId": "golden-wt",
+          },
+          {
+            "completedAt": "<timestamp>",
+            "description": "",
+            "eventName": "dispatch",
+            "hasPlan": false,
+            "hasReport": false,
+            "id": "<uuid>",
+            "inputRequestCount": 0,
+            "inputRequested": false,
+            "name": "Golden run success",
+            "pipelineId": "<pipeline:success>",
+            "planModified": false,
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "worktreeId": "golden-wt",
+          },
+          {
+            "completedAt": "<timestamp>",
+            "description": "",
+            "eventName": "dispatch",
+            "hasPlan": false,
+            "hasReport": false,
+            "id": "<run:ipc-success>",
+            "inputRequestCount": 0,
+            "inputRequested": false,
+            "name": "Golden run success",
+            "pipelineId": "<pipeline:success>",
+            "planModified": false,
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "status": "success",
+            "worktreeId": "golden-wt",
+          },
+        ],
+        "filters": {
+          "limit": 20,
+          "pipelineId": "<pipeline:success>",
+          "query": "",
+          "status": null,
+        },
+        "returned": 6,
+        "scope": {
+          "projectId": "golden-ws",
+          "worktreeId": "golden-wt",
+        },
+        "totalMatches": 6,
+      },
+    },
+  },
+  "matrixRetried": {
+    "event_name": "dispatch",
+    "id": "<run:agent-matrix>",
+    "initiation_source": "app_advisor",
+    "initiator": {
+      "chat": {
+        "chatId": "golden-chat",
+        "projectId": "golden-ws",
+        "worktreeId": "golden-wt",
+      },
+      "kind": "agent",
+    },
+    "inputs": {
+      "marker": "<root>/markers/agent-matrix",
+    },
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 1,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run matrix",
+    "pipeline_id": "<pipeline:matrix>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "resume": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "agentArtifacts": [
+          {
+            "createdAt": "<timestamp>",
+            "dedupeKey": "canopy:pipeline_run:execution:<run:agent-pause>",
+            "executionId": "<run:agent-pause>",
+            "initialStatus": "running",
+            "kind": "pipeline_run",
+            "navigationTarget": {
+              "executionId": "<run:agent-pause>",
+              "kind": "pipeline_execution",
+              "projectId": "golden-ws",
+              "worktreeId": "golden-wt",
+            },
+            "operation": "pipeline.execution_resume",
+            "pipelineId": "<pipeline:pause>",
+            "pipelineName": "Golden run pause",
+            "projectId": "golden-ws",
+            "queuedAt": "<timestamp>",
+            "startedAt": "<timestamp>",
+            "version": 1,
+            "worktreeId": "golden-wt",
+          },
+        ],
+        "execution": {
+          "completedAt": null,
+          "cwd": "<worktree>",
+          "description": "",
+          "error": null,
+          "eventName": "dispatch",
+          "id": "<run:agent-pause>",
+          "inputRequested": false,
+          "inputRequests": [],
+          "inputs": {},
+          "jobs": [
+            {
+              "completedAt": null,
+              "conclusion": null,
+              "id": "gate",
+              "name": "Gate",
+              "outcome": null,
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "queued",
+              "stepCount": 2,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "ask",
+                  "logFile": "<data>/pipeline-executions/<run:agent-pause>/logs/gate--ask.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+                {
+                  "completedAt": null,
+                  "conclusion": null,
+                  "error": null,
+                  "exitCode": null,
+                  "id": "after",
+                  "logFile": null,
+                  "outcome": null,
+                  "startedAt": null,
+                  "status": "pending",
+                },
+              ],
+            },
+          ],
+          "name": "Golden run pause",
+          "pendingPauses": [],
+          "pipelineId": "<pipeline:pause>",
+          "planId": null,
+          "planModified": false,
+          "planPath": null,
+          "projectId": "golden-ws",
+          "reportOutputs": null,
+          "resumableStatusReasons": [],
+          "startedAt": "<timestamp>",
+          "status": "running",
+          "worktreeId": "golden-wt",
+        },
+      },
+    },
+  },
+  "resumed": {
+    "event_name": "dispatch",
+    "id": "<run:agent-pause>",
+    "initiation_source": "automation",
+    "initiator": {
+      "chat": {
+        "chatId": "golden-chat",
+        "projectId": "golden-ws",
+        "worktreeId": "golden-wt",
+      },
+      "kind": "agent",
+    },
+    "inputs": {},
+    "jobs": {
+      "gate": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "after": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "ask": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {
+              "approved": "true",
+            },
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run pause",
+    "pipeline_id": "<pipeline:pause>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retried": {
+    "event_name": "dispatch",
+    "id": "<run:agent-flaky>",
+    "initiation_source": "app_advisor",
+    "initiator": {
+      "chat": {
+        "chatId": "golden-chat",
+        "projectId": "golden-ws",
+        "worktreeId": "golden-wt",
+      },
+      "kind": "agent",
+    },
+    "inputs": {
+      "marker": "<root>/markers/agent-flaky",
+    },
+    "jobs": {
+      "flaky": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "attempt": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "setup": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "ok": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run flaky",
+    "pipeline_id": "<pipeline:flaky>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retry": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "agentArtifacts": [
+          {
+            "createdAt": "<timestamp>",
+            "dedupeKey": "canopy:pipeline_run:execution:<run:agent-flaky>",
+            "executionId": "<run:agent-flaky>",
+            "initialStatus": "running",
+            "kind": "pipeline_run",
+            "navigationTarget": {
+              "executionId": "<run:agent-flaky>",
+              "kind": "pipeline_execution",
+              "projectId": "golden-ws",
+              "worktreeId": "golden-wt",
+            },
+            "operation": "pipeline.execution_retry",
+            "pipelineId": "<pipeline:flaky>",
+            "pipelineName": "Golden run flaky",
+            "projectId": "golden-ws",
+            "queuedAt": "<timestamp>",
+            "startedAt": "<timestamp>",
+            "version": 1,
+            "worktreeId": "golden-wt",
+          },
+        ],
+        "execution": {
+          "completedAt": null,
+          "cwd": "<worktree>",
+          "description": "",
+          "error": null,
+          "eventName": "dispatch",
+          "id": "<run:agent-flaky>",
+          "inputRequested": false,
+          "inputRequests": [],
+          "inputs": {
+            "marker": "<root>/markers/agent-flaky",
+          },
+          "jobs": [
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "success",
+              "id": "setup",
+              "name": "Setup",
+              "outcome": "success",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "success",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "ok",
+                  "logFile": "<data>/pipeline-executions/<run:agent-flaky>/logs/setup--ok.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+              ],
+            },
+            {
+              "completedAt": null,
+              "conclusion": null,
+              "id": "flaky",
+              "name": "Flaky",
+              "outcome": null,
+              "retryCount": 0,
+              "startedAt": null,
+              "status": "pending",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": null,
+                  "conclusion": null,
+                  "error": null,
+                  "exitCode": null,
+                  "id": "attempt",
+                  "logFile": null,
+                  "outcome": null,
+                  "startedAt": null,
+                  "status": "pending",
+                },
+              ],
+            },
+          ],
+          "name": "Golden run flaky",
+          "pendingPauses": [],
+          "pipelineId": "<pipeline:flaky>",
+          "planId": null,
+          "planModified": false,
+          "planPath": null,
+          "projectId": "golden-ws",
+          "reportOutputs": null,
+          "resumableStatusReasons": [],
+          "startedAt": "<timestamp>",
+          "status": "running",
+          "worktreeId": "golden-wt",
+        },
+      },
+    },
+  },
+  "retryMatrix": {
+    "isError": false,
+    "result": {
+      "ok": true,
+      "requestId": "",
+      "result": {
+        "execution": {
+          "completedAt": null,
+          "cwd": "<worktree>",
+          "description": "",
+          "error": null,
+          "eventName": "dispatch",
+          "id": "<run:agent-matrix>",
+          "inputRequested": false,
+          "inputRequests": [],
+          "inputs": {
+            "marker": "<root>/markers/agent-matrix",
+          },
+          "jobs": [
+            {
+              "completedAt": "<timestamp>",
+              "conclusion": "success",
+              "id": "__matrix__build__0",
+              "name": "__matrix__build__0",
+              "outcome": "success",
+              "retryCount": 0,
+              "startedAt": "<timestamp>",
+              "status": "success",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": "<timestamp>",
+                  "conclusion": "success",
+                  "error": null,
+                  "exitCode": 0,
+                  "id": "variant",
+                  "logFile": "<data>/pipeline-executions/<run:agent-matrix>/logs/__matrix__build__0--variant.log",
+                  "outcome": "success",
+                  "startedAt": "<timestamp>",
+                  "status": "success",
+                },
+              ],
+            },
+            {
+              "completedAt": null,
+              "conclusion": null,
+              "id": "__matrix__build__1",
+              "name": "__matrix__build__1",
+              "outcome": null,
+              "retryCount": 1,
+              "startedAt": null,
+              "status": "pending",
+              "stepCount": 1,
+              "steps": [
+                {
+                  "completedAt": null,
+                  "conclusion": null,
+                  "error": null,
+                  "exitCode": null,
+                  "id": "variant",
+                  "logFile": null,
+                  "outcome": null,
+                  "startedAt": null,
+                  "status": "pending",
+                },
+              ],
+            },
+          ],
+          "name": "Golden run matrix",
+          "pendingPauses": [],
+          "pipelineId": "<pipeline:matrix>",
+          "planId": null,
+          "planModified": false,
+          "planPath": null,
+          "projectId": "golden-ws",
+          "reportOutputs": null,
+          "resumableStatusReasons": [],
+          "startedAt": "<timestamp>",
+          "status": "running",
+          "worktreeId": "golden-wt",
+        },
+      },
+    },
+  },
+  "success": {
+    "executionId": "<run:agent-success>",
+    "result": {
+      "isError": false,
+      "result": {
+        "ok": true,
+        "requestId": "golden-tool-1",
+        "result": {
+          "agentArtifacts": [
+            {
+              "createdAt": "<timestamp>",
+              "dedupeKey": "canopy:pipeline_run:execution:<run:agent-success>",
+              "executionId": "<run:agent-success>",
+              "initialStatus": "running",
+              "kind": "pipeline_run",
+              "navigationTarget": {
+                "executionId": "<run:agent-success>",
+                "kind": "pipeline_execution",
+                "projectId": "golden-ws",
+                "worktreeId": "golden-wt",
+              },
+              "operation": "pipeline.run",
+              "pipelineId": "<pipeline:success>",
+              "pipelineName": "Golden run success",
+              "projectId": "golden-ws",
+              "queuedAt": "<timestamp>",
+              "startedAt": "<timestamp>",
+              "version": 1,
+              "worktreeId": "golden-wt",
+            },
+          ],
+          "execution": {
+            "eventName": "dispatch",
+            "executionId": "<run:agent-success>",
+            "executionScope": "worktree",
+            "executionStatus": "running",
+            "owner": "personal",
+            "pipelineId": "<pipeline:success>",
+            "pipelineName": "Golden run success",
+            "projectId": "golden-ws",
+            "startedAt": "<timestamp>",
+            "worktreeId": "golden-wt",
+          },
+          "status": "started",
+        },
+      },
+    },
+  },
+  "successSettled": {
+    "event_name": "dispatch",
+    "id": "<run:agent-success>",
+    "initiation_source": "app_advisor",
+    "initiator": {
+      "chat": {
+        "chatId": "golden-chat",
+        "projectId": "golden-ws",
+        "worktreeId": "golden-wt",
+      },
+      "kind": "agent",
+    },
+    "inputs": {
+      "greeting": "agent",
+    },
+    "jobs": {
+      "build": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "greet": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {
+              "said": "agent",
+            },
+            "status": "success",
+          },
+        },
+      },
+      "report": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "done": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run success",
+    "pipeline_id": "<pipeline:success>",
+    "status": "success",
+    "status_reasons": [],
+  },
+}
+`;
+
+exports[`desktop IPC pauses an orphaned run at startup and resumes it 1`] = `
+{
+  "before": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-orphan>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-orphan",
+    },
+    "jobs": {
+      "wait": {
+        "outputs": {},
+        "retry_count": 0,
+        "status": "running",
+        "steps": {
+          "first": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "sleep": {
+            "outputs": {},
+            "status": "running",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run slow once",
+    "pipeline_id": "<pipeline:slowOnce>",
+    "status": "running",
+    "status_reasons": [],
+  },
+  "recovered": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-orphan>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-orphan",
+    },
+    "jobs": {
+      "wait": {
+        "outputs": {},
+        "retry_count": 0,
+        "status": "paused",
+        "steps": {
+          "first": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "sleep": {
+            "outputs": {},
+            "status": "paused",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run slow once",
+    "pipeline_id": "<pipeline:slowOnce>",
+    "status": "paused",
+    "status_reasons": [
+      {
+        "code": "app_shutdown",
+        "kind": "app_shutdown",
+        "source": {
+          "attempt": 0,
+          "iteration": 1,
+          "job_id": "wait",
+          "step_id": "sleep",
+        },
+      },
+    ],
+  },
+  "resume": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-orphan>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "marker": "<root>/markers/ipc-orphan",
+      },
+      "jobs": {
+        "wait": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "queued",
+          "steps": {
+            "first": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+            "sleep": {
+              "outputs": {},
+              "status": "paused",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run slow once",
+      "pipeline_id": "<pipeline:slowOnce>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "resumed": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-orphan>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-orphan",
+    },
+    "jobs": {
+      "wait": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "first": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "sleep": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run slow once",
+    "pipeline_id": "<pipeline:slowOnce>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "sweep": [],
+  "sweepOwnLiveRun": [],
+}
+`;
+
+exports[`desktop IPC retries a failed matrix variant and cancels a paused one 1`] = `
+{
+  "afterCancel": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-matrix-pause>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {},
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "conclusion": "cancelled",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "cancelled",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run matrix pause",
+    "pipeline_id": "<pipeline:matrixPause>",
+    "status": "cancelled",
+    "status_reasons": [],
+  },
+  "cancelVariant": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-matrix-pause>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {},
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "conclusion": "cancelled",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "cancelled",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run matrix pause",
+    "pipeline_id": "<pipeline:matrixPause>",
+    "status": "cancelled",
+    "status_reasons": [],
+  },
+  "failed": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-matrix>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-matrix",
+    },
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "conclusion": "failure",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "failure",
+        "steps": {
+          "variant": {
+            "conclusion": "failure",
+            "error": "Process exited with code 5",
+            "exit_code": 5,
+            "outputs": {},
+            "status": "failure",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run matrix",
+    "pipeline_id": "<pipeline:matrix>",
+    "status": "failure",
+    "status_reasons": [],
+  },
+  "paused": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-matrix-pause>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {},
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "outputs": {},
+        "retry_count": 0,
+        "status": "paused",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [
+      {
+        "attempt": 0,
+        "iteration": 1,
+        "job_id": "__matrix__build__1",
+        "kind": "action",
+        "step_id": "variant",
+      },
+    ],
+    "pipeline": "Golden run matrix pause",
+    "pipeline_id": "<pipeline:matrixPause>",
+    "status": "paused",
+    "status_reasons": [
+      {
+        "code": "action_requested_pause",
+        "kind": "action_paused",
+        "source": {
+          "attempt": 0,
+          "iteration": 1,
+          "job_id": "__matrix__build__1",
+          "step_id": "variant",
+        },
+      },
+    ],
+  },
+  "pausedVariant": "__matrix__build__1",
+  "retried": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-matrix>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-matrix",
+    },
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 1,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run matrix",
+    "pipeline_id": "<pipeline:matrix>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retry": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-matrix>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-matrix",
+    },
+    "jobs": {
+      "__matrix__build__0": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "variant": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "__matrix__build__1": {
+        "outputs": {},
+        "retry_count": 1,
+        "status": "pending",
+        "steps": {
+          "variant": {
+            "outputs": {},
+            "status": "pending",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run matrix",
+    "pipeline_id": "<pipeline:matrix>",
+    "status": "running",
+    "status_reasons": [],
+  },
+  "retryMissing": {
+    "thrown": "Error: Execution "missing-execution" not found",
+  },
+  "retryUnknownJob": {
+    "thrown": "Error: [matrix/not-a-matrix-job] Job "nope" is not a matrix job",
+  },
+}
+`;
+
+exports[`desktop IPC retries, starts over, resumes and cancels 1`] = `
+{
+  "cancelFinished": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-pause>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {},
+      "jobs": {
+        "gate": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "after": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+            "ask": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {
+                "approved": "true",
+              },
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run pause",
+      "pipeline_id": "<pipeline:pause>",
+      "status": "success",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "cancelMissing": {
+    "error": "Error: Execution "missing-execution" not found",
+    "success": false,
+  },
+  "cancelPaused": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-cancel-paused>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {},
+      "jobs": {
+        "gate": {
+          "conclusion": "cancelled",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "cancelled",
+          "steps": {
+            "after": {
+              "conclusion": "cancelled",
+              "outputs": {},
+              "status": "cancelled",
+            },
+            "ask": {
+              "conclusion": "cancelled",
+              "outputs": {},
+              "status": "cancelled",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run pause",
+      "pipeline_id": "<pipeline:pause>",
+      "status": "cancelled",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "cancelRunning": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-cancel-running>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "marker": "<root>/markers/ipc-cancel-running",
+      },
+      "jobs": {
+        "wait": {
+          "conclusion": "cancelled",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "cancelled",
+          "steps": {
+            "first": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+            "sleep": {
+              "conclusion": "cancelled",
+              "outputs": {},
+              "status": "cancelled",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run slow once",
+      "pipeline_id": "<pipeline:slowOnce>",
+      "status": "cancelled",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "cancelledRunning": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-cancel-running>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-cancel-running",
+    },
+    "jobs": {
+      "wait": {
+        "conclusion": "cancelled",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "cancelled",
+        "steps": {
+          "first": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "sleep": {
+            "conclusion": "cancelled",
+            "outputs": {},
+            "status": "cancelled",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run slow once",
+    "pipeline_id": "<pipeline:slowOnce>",
+    "status": "cancelled",
+    "status_reasons": [],
+  },
+  "failed": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-retry-source>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-retry",
+    },
+    "jobs": {
+      "flaky": {
+        "conclusion": "failure",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "failure",
+        "steps": {
+          "attempt": {
+            "conclusion": "failure",
+            "error": "Process exited with code 4",
+            "exit_code": 4,
+            "outputs": {},
+            "status": "failure",
+          },
+        },
+      },
+      "setup": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "ok": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run flaky",
+    "pipeline_id": "<pipeline:flaky>",
+    "status": "failure",
+    "status_reasons": [],
+  },
+  "rerun": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-rerun>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "marker": "<root>/markers/ipc-retry",
+      },
+      "jobs": {
+        "flaky": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "attempt": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+        "setup": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "ok": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run flaky",
+      "pipeline_id": "<pipeline:flaky>",
+      "rerun_source_id": "<run:ipc-retry-source>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "rerunSettled": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-rerun>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-retry",
+    },
+    "jobs": {
+      "flaky": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "attempt": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "setup": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "ok": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run flaky",
+    "pipeline_id": "<pipeline:flaky>",
+    "rerun_source_id": "<run:ipc-retry-source>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "resume": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-pause>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {},
+      "jobs": {
+        "gate": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "queued",
+          "steps": {
+            "after": {
+              "outputs": {},
+              "status": "pending",
+            },
+            "ask": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {
+                "approved": "true",
+              },
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run pause",
+      "pipeline_id": "<pipeline:pause>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "resumeCancelled": {
+    "error": "Execution "<run:ipc-cancel-running>" cannot be resumed because it is cancelled",
+    "success": false,
+  },
+  "resumeFinished": {
+    "error": "Execution "<run:ipc-pause>" cannot be resumed because it is success",
+    "success": false,
+  },
+  "resumeMissingAnswer": {
+    "error": "approved is required",
+    "success": false,
+  },
+  "resumeWrongCheckpoint": {
+    "error": "Checkpoint "nope" is no longer pending",
+    "success": false,
+  },
+  "resumed": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-pause>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {},
+    "jobs": {
+      "gate": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "after": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "ask": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {
+              "approved": "true",
+            },
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run pause",
+    "pipeline_id": "<pipeline:pause>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retried": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-retry-source>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-retry",
+    },
+    "jobs": {
+      "flaky": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "attempt": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+      "setup": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "ok": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run flaky",
+    "pipeline_id": "<pipeline:flaky>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "retry": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-retry-source>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "marker": "<root>/markers/ipc-retry",
+      },
+      "jobs": {
+        "flaky": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "attempt": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+        "setup": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "ok": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run flaky",
+      "pipeline_id": "<pipeline:flaky>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "retryFinished": {
+    "error": "Execution "<run:ipc-retry-source>" cannot be retried because it is success",
+    "success": false,
+  },
+}
+`;
+
+exports[`desktop IPC starts, gets and lists runs and refuses invalid starts 1`] = `
+{
+  "failureSettled": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-flaky>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-flaky",
+    },
+    "jobs": {
+      "flaky": {
+        "conclusion": "failure",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "failure",
+        "steps": {
+          "attempt": {
+            "conclusion": "failure",
+            "error": "Process exited with code 4",
+            "exit_code": 4,
+            "outputs": {},
+            "status": "failure",
+          },
+        },
+      },
+      "setup": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "ok": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run flaky",
+    "pipeline_id": "<pipeline:flaky>",
+    "status": "failure",
+    "status_reasons": [],
+  },
+  "get": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-success>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "greeting": "golden",
+      },
+      "jobs": {
+        "build": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "greet": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {
+                "said": "golden",
+              },
+              "status": "success",
+            },
+          },
+        },
+        "report": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "done": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run success",
+      "pipeline_id": "<pipeline:success>",
+      "status": "success",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "getMissing": {
+    "data": null,
+    "success": true,
+  },
+  "globalForeignOrganization": {
+    "result": {
+      "error": "You no longer have access to something this uses.",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "globalInvalidOwner": {
+    "result": {
+      "error": "Choose an owner for this run.",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "globalNotDeclared": {
+    "error": "This pipeline can't run without a project.",
+    "success": false,
+  },
+  "globalPersonal": {
+    "result": {
+      "error": "Choose an owner for this run.",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "globalWithTarget": {
+    "result": {
+      "error": "A run with no project can't name a project, task, or folder.",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "globalWithWorktreeTarget": {
+    "error": "A run with no project can't name a project, task, or folder.",
+    "success": false,
+  },
+  "list": {
+    "data": [
+      {
+        "completed_at": "<timestamp>",
+        "cwd": "<worktree>",
+        "event_name": "dispatch",
+        "execution_context": "personal",
+        "id": "<run:ipc-flaky>",
+        "initiator": {
+          "kind": "user",
+        },
+        "pipeline_id": "<pipeline:flaky>",
+        "pipeline_name": "Golden run flaky",
+        "project_id": "golden-ws",
+        "started_at": "<timestamp>",
+        "status": "failure",
+        "status_reasons": [],
+        "worktree_id": "golden-wt",
+      },
+      {
+        "completed_at": "<timestamp>",
+        "cwd": "<worktree>",
+        "event_name": "dispatch",
+        "execution_context": "personal",
+        "id": "<run:ipc-success>",
+        "initiator": {
+          "kind": "user",
+        },
+        "pipeline_id": "<pipeline:success>",
+        "pipeline_name": "Golden run success",
+        "project_id": "golden-ws",
+        "started_at": "<timestamp>",
+        "status": "success",
+        "status_reasons": [],
+        "worktree_id": "golden-wt",
+      },
+    ],
+    "success": true,
+  },
+  "missingRequiredInput": {
+    "error": "Workflow input validation failed:
+- Workflow input "marker" is required",
+    "success": false,
+  },
+  "success": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-success>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "greeting": "golden",
+      },
+      "jobs": {
+        "build": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "greet": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+        "report": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "done": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run success",
+      "pipeline_id": "<pipeline:success>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "successSettled": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-success>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "greeting": "golden",
+    },
+    "jobs": {
+      "build": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "greet": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {
+              "said": "golden",
+            },
+            "status": "success",
+          },
+        },
+      },
+      "report": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "done": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run success",
+    "pipeline_id": "<pipeline:success>",
+    "status": "success",
+    "status_reasons": [],
+  },
+  "ultraFast": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<uuid>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "greeting": "hello",
+      },
+      "jobs": {
+        "build": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "greet": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+        "report": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "pending",
+          "steps": {
+            "done": {
+              "outputs": {},
+              "status": "pending",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run success",
+      "pipeline_id": "<pipeline:success>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "undeclaredInput": {
+    "error": "Workflow input validation failed:
+- Workflow input "unknown" is not declared",
+    "success": false,
+  },
+}
+`;
+
+exports[`desktop shutdown checkpoints running work at shutdown and resumes it 1`] = `
+{
+  "checkpointed": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-shutdown>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-shutdown",
+    },
+    "jobs": {
+      "wait": {
+        "outputs": {},
+        "retry_count": 0,
+        "status": "paused",
+        "steps": {
+          "first": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "sleep": {
+            "outputs": {},
+            "status": "paused",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run slow once",
+    "pipeline_id": "<pipeline:slowOnce>",
+    "status": "paused",
+    "status_reasons": [
+      {
+        "code": "app_shutdown",
+        "kind": "app_shutdown",
+        "source": {
+          "attempt": 0,
+          "iteration": 1,
+          "job_id": "wait",
+          "step_id": "sleep",
+        },
+      },
+    ],
+  },
+  "resume": {
+    "data": {
+      "event_name": "dispatch",
+      "id": "<run:ipc-shutdown>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {
+        "marker": "<root>/markers/ipc-shutdown",
+      },
+      "jobs": {
+        "wait": {
+          "outputs": {},
+          "retry_count": 0,
+          "status": "queued",
+          "steps": {
+            "first": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+            "sleep": {
+              "outputs": {},
+              "status": "paused",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden run slow once",
+      "pipeline_id": "<pipeline:slowOnce>",
+      "status": "running",
+      "status_reasons": [],
+    },
+    "success": true,
+  },
+  "resumeDuringShutdown": {
+    "error": "Execution "<run:ipc-shutdown>" is already active",
+    "success": false,
+  },
+  "resumed": {
+    "event_name": "dispatch",
+    "id": "<run:ipc-shutdown>",
+    "initiator": {
+      "kind": "user",
+    },
+    "inputs": {
+      "marker": "<root>/markers/ipc-shutdown",
+    },
+    "jobs": {
+      "wait": {
+        "conclusion": "success",
+        "outputs": {},
+        "retry_count": 0,
+        "status": "success",
+        "steps": {
+          "first": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+          "sleep": {
+            "conclusion": "success",
+            "exit_code": 0,
+            "outputs": {},
+            "status": "success",
+          },
+        },
+      },
+    },
+    "pending_pauses": [],
+    "pipeline": "Golden run slow once",
+    "pipeline_id": "<pipeline:slowOnce>",
+    "status": "success",
+    "status_reasons": [],
+  },
+}
+`;

@@ -15,13 +15,25 @@ import {
   DELEGATION_APPLY_FILE_BOUND,
   DELEGATION_FILE_SESSION_REQUESTS,
   DelegationApplyError,
+  controlsForReplay,
   type AgentDelegationBrokerOptions,
   type DelegationStorage,
   type DelegationWorkspaceHooks,
   type StoredDelegation,
 } from '../broker';
 import { AgentRunnerRegistry } from '../runner-registry';
+import type { AgentRunnerAdapter, DelegationStopReceipt } from '../types';
 import { FakeRunner, routeFixture } from './fixtures';
+import { chatInputDeliveryFailure } from '@canopy/protocol/portal/input-delivery';
+
+const unconfirmedStop: Extract<DelegationStopReceipt, { stopped: false }> = {
+  stopped: false,
+  error: {
+    code: 'launch_uncertain',
+    message: 'Stop is not yet confirmed.',
+    retryable: false,
+  },
+};
 
 const parent: DelegationParentContext = {
   harnessId: 'claude',
@@ -368,7 +380,7 @@ it.each([
       expect(recovered.claude.starts).toHaveLength(0);
       expect(recovered.cursor.starts).toHaveLength(0);
       expect(
-        recovered.broker.getOutput(parent, { delegationId: id }),
+        await recovered.broker.getOutput(parent, { delegationId: id }),
       ).toMatchObject({
         ok: true,
         value: { result: { finalText: 'Retained result', runGeneration: 1 } },
@@ -589,9 +601,14 @@ function workspaceHooks(): unknown {
 
 describe('nested managed delegation authority', () => {
   it('keeps model-provided child descriptions inside the untrusted steering label', async () => {
-    const deliverUpward = jest.fn(() =>
-      Promise.resolve({ kind: 'accepted' as const, attemptId: 'upward' }),
-    );
+    const deliverUpward = jest.fn<
+      Promise<{ kind: 'accepted'; attemptId: string }>,
+      [
+        parent: DelegationParentContext,
+        source: { delegationId: string; description?: string },
+        message: string,
+      ]
+    >(() => Promise.resolve({ kind: 'accepted', attemptId: 'upward' }));
     const { broker, runner } = setup(new MemoryStorage(), { deliverUpward });
     await broker.initialize();
     try {
@@ -922,7 +939,7 @@ describe('nested managed delegation authority', () => {
       },
     });
     expect(
-      broker.getOutput(context, {
+      await broker.getOutput(context, {
         delegationId: result.value.delegationId,
       }),
     ).toMatchObject({
@@ -940,7 +957,7 @@ describe('nested managed delegation authority', () => {
       asyncAdmission: true,
       capacity: 4,
       maxDepthForParent: () => 2,
-      onTerminal: () => Promise.resolve(),
+      onSettled: () => Promise.resolve(),
       resolveRoute: () =>
         Promise.resolve({
           ok: true,
@@ -999,7 +1016,9 @@ describe('nested managed delegation authority', () => {
         runGeneration: 2,
         task: { prompt: 'Continue the nested review.' },
       });
-      expect(broker.getOutput(context, { delegationId: id })).toMatchObject({
+      expect(
+        await broker.getOutput(context, { delegationId: id }),
+      ).toMatchObject({
         ok: true,
         value: {
           currentRunGeneration: 2,
@@ -1129,7 +1148,7 @@ describe('nested managed delegation authority', () => {
           },
         });
         expect(
-          broker.getOutput(parent, { delegationId: id, resultIndex: 2 }),
+          await broker.getOutput(parent, { delegationId: id, resultIndex: 2 }),
         ).toMatchObject({
           ok: true,
           value: {
@@ -1322,7 +1341,7 @@ describe('nested managed delegation authority', () => {
         },
       });
       expect(
-        broker.getOutput(resumedParentContext, {
+        await broker.getOutput(resumedParentContext, {
           delegationId: childId,
           resultIndex: 2,
         }),
@@ -1616,9 +1635,11 @@ describe('durable application delegation broker', () => {
         ],
       },
     });
-    expect(storage.records.get(delegationId)?.state.transcript).toMatchObject([
-      { type: 'thinking' },
-    ]);
+    const stored = storage.records.get(delegationId);
+    if (!stored || stored.version === 3) {
+      throw new Error('Expected a legacy transcript record');
+    }
+    expect(stored.state.transcript).toMatchObject([{ type: 'thinking' }]);
     const before = storage.records.get(delegationId)?.delivery;
     const replayed = await broker.transcripts(parent);
     expect(replayed[0]).toMatchObject({
@@ -1767,9 +1788,10 @@ describe('durable application delegation broker', () => {
     await flush();
     const activeSequence = storage.records.get(spawned.value.delegationId)
       ?.state.sequence;
+    const adapter: AgentRunnerAdapter = runner;
     jest
-      .spyOn(runner, 'stop')
-      .mockResolvedValueOnce({ stopped: false })
+      .spyOn(adapter, 'stop')
+      .mockResolvedValueOnce(unconfirmedStop)
       .mockResolvedValue({ stopped: true });
 
     expect(await broker.stop(parent, spawned.value.delegationId)).toMatchObject(
@@ -2024,7 +2046,7 @@ describe('durable application delegation broker', () => {
       asyncAdmission: true,
       resolveRoute: (): Promise<{ ok: true; value: typeof route }> =>
         Promise.resolve({ ok: true, value: route }),
-      onTerminal: (): Promise<void> => Promise.resolve(),
+      onSettled: (): Promise<void> => Promise.resolve(),
     });
     await first.broker.initialize();
     const spawned = await first.broker.spawn(parent, task);
@@ -2047,7 +2069,7 @@ describe('durable application delegation broker', () => {
       asyncAdmission: true,
       resolveRoute: (): Promise<{ ok: true; value: typeof route }> =>
         Promise.resolve({ ok: true, value: route }),
-      onTerminal: (): Promise<void> => Promise.resolve(),
+      onSettled: (): Promise<void> => Promise.resolve(),
     });
     await restored.broker.initialize();
     expect(crashed.records.get(spawned.value.delegationId)?.delivery).toEqual({
@@ -2165,7 +2187,7 @@ describe('durable application delegation broker', () => {
     );
     const onError = jest.fn();
     const { broker, runner } = setup(new MemoryStorage(), {
-      onTerminal: notified,
+      onSettled: notified,
       onError,
     });
     await broker.initialize();
@@ -2191,8 +2213,14 @@ describe('durable application delegation broker', () => {
       status: 'completed',
       finalText: 'Finished early',
     });
-    expect(notified).not.toHaveBeenCalled();
-    expect(onError).not.toHaveBeenCalled();
+    expect(notified).toHaveBeenCalledWith(
+      parent,
+      result.value.delegationId,
+      expect.objectContaining({ status: 'completed' }),
+    );
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Delivery unavailable' }),
+    );
     expect(runner.closed).toEqual([result.value.delegationId]);
     await broker.close();
   });
@@ -2203,7 +2231,7 @@ describe('durable application delegation broker', () => {
     const onError = jest.fn();
     const { broker, runner } = setup(new MemoryStorage(), {
       releaseRoute,
-      onTerminal: notified,
+      onSettled: notified,
       onError,
     });
     jest
@@ -2224,7 +2252,11 @@ describe('durable application delegation broker', () => {
 
     expect(broker.activeCount(parent)).toBe(0);
     expect(releaseRoute).toHaveBeenCalledWith(routeFixture());
-    expect(notified).not.toHaveBeenCalled();
+    expect(notified).toHaveBeenCalledWith(
+      parent,
+      result.value.delegationId,
+      expect.objectContaining({ status: 'completed' }),
+    );
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'native close failed' }),
     );
@@ -2264,7 +2296,7 @@ describe('durable application delegation broker', () => {
       status: 'suppressed',
       reason: 'automatic_delivery_removed',
     });
-    expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+    expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
       ok: true,
       value: { result: { finalText: 'Done', resultIndex: 1 } },
     });
@@ -2311,11 +2343,11 @@ describe('durable application delegation broker', () => {
     await first.broker.close();
 
     const notified = jest.fn(() => Promise.resolve());
-    const restored = setup(crashed, { onTerminal: notified });
+    const restored = setup(crashed, { onSettled: notified });
     await restored.broker.initialize();
     expect(notified).not.toHaveBeenCalled();
     expect(
-      restored.broker.getOutput(parent, {
+      await restored.broker.getOutput(parent, {
         delegationId: spawned.value.delegationId,
       }),
     ).toMatchObject({
@@ -2349,7 +2381,7 @@ describe('durable application delegation broker', () => {
     await first.broker.close();
 
     const notified = jest.fn(() => Promise.resolve());
-    const restored = setup(crashed, { onTerminal: notified });
+    const restored = setup(crashed, { onSettled: notified });
     await restored.broker.initialize();
     expect(notified).not.toHaveBeenCalled();
     expect(crashed.records.get(spawned.value.delegationId)?.delivery).toEqual({
@@ -2541,7 +2573,7 @@ it('retains stable indexed outputs while an explicit follow-up starts a newer ru
   const id = spawned.value.delegationId;
   await flush();
 
-  expect(broker.getOutput(parent, { delegationId: id })).toEqual({
+  expect(await broker.getOutput(parent, { delegationId: id })).toEqual({
     ok: true,
     value: {
       delegationId: id,
@@ -2575,7 +2607,7 @@ it('retains stable indexed outputs while an explicit follow-up starts a newer ru
     event: { type: 'terminal', status: 'completed', finalText: 'First result' },
   });
   await flush();
-  expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+  expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
     ok: true,
     value: {
       latestResultIndex: 1,
@@ -2601,7 +2633,7 @@ it('retains stable indexed outputs while an explicit follow-up starts a newer ru
     value: { control: { operation: 'follow_up', status: 'completed' } },
   });
   await flush();
-  expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+  expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
     ok: true,
     value: {
       currentRunGeneration: 2,
@@ -2631,12 +2663,12 @@ it('retains stable indexed outputs while an explicit follow-up starts a newer ru
   });
   await flush();
   expect(
-    broker.getOutput(parent, { delegationId: id, resultIndex: 1 }),
+    await broker.getOutput(parent, { delegationId: id, resultIndex: 1 }),
   ).toMatchObject({
     ok: true,
     value: { result: { resultIndex: 1, finalText: 'First result' } },
   });
-  expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+  expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
     ok: true,
     value: {
       latestResultIndex: 2,
@@ -2644,16 +2676,17 @@ it('retains stable indexed outputs while an explicit follow-up starts a newer ru
     },
   });
   expect(
-    broker.getOutput(parent, { delegationId: id, resultIndex: 3 }),
+    await broker.getOutput(parent, { delegationId: id, resultIndex: 3 }),
   ).toMatchObject({ ok: false, error: { code: 'invalid_request' } });
   await broker.close();
 });
 
 it('passes the retained route to follow-up resolution', async () => {
   const retainedRoute = routeFixture({ capabilities: ['read', 'resume'] });
-  const resolveRoute = jest.fn(() =>
-    Promise.resolve({ ok: true as const, value: retainedRoute }),
-  );
+  const resolveRoute = jest.fn<
+    ReturnType<AgentDelegationBrokerOptions['resolveRoute']>,
+    Parameters<AgentDelegationBrokerOptions['resolveRoute']>
+  >(() => Promise.resolve({ ok: true as const, value: retainedRoute }));
   const { broker, runner } = setup(new MemoryStorage(), {
     asyncAdmission: true,
     resolveRoute,
@@ -2705,11 +2738,14 @@ it.each(['accepted', 'unknown'] as const)(
           value: routeFixture({ capabilities: ['read', 'resume'] }),
         }),
     });
-    runner.steeringAdmission = {
-      kind,
-      attemptId: 'fixture',
-      ...(kind === 'unknown' ? { reason: 'receipt ambiguous' } : {}),
-    };
+    runner.steeringAdmission =
+      kind === 'accepted'
+        ? { kind: 'accepted', attemptId: 'fixture' }
+        : {
+            kind: 'unknown',
+            attemptId: 'fixture',
+            reason: 'receipt ambiguous',
+          };
     await broker.initialize();
     const spawned = await broker.spawn(parent, task);
     if (!spawned.ok) throw new Error('Admission failed');
@@ -2740,6 +2776,75 @@ it.each(['accepted', 'unknown'] as const)(
     await broker.close();
   },
 );
+
+it('persists a coded steering admission through validating storage', async () => {
+  const directory = await mkdtemp(
+    path.join(os.tmpdir(), 'delegation-steering-codes-'),
+  );
+  const durable = new FileDelegationStorage(directory);
+  class ValidatingStorage extends MemoryStorage {
+    override async commit(record: StoredDelegation): Promise<void> {
+      await durable.commit(record);
+      await super.commit(record);
+    }
+  }
+  const { broker, runner } = setup(new ValidatingStorage(), {
+    asyncAdmission: true,
+    resolveRoute: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: routeFixture({ capabilities: ['read', 'resume'] }),
+      }),
+  });
+  runner.steeringAdmission = {
+    kind: 'unknown',
+    attemptId: 'fixture',
+    reason: 'Delivery was not confirmed.',
+    failure: chatInputDeliveryFailure('delivery-deadline'),
+  };
+  try {
+    await broker.initialize();
+    const spawned = await broker.spawn(parent, task);
+    if (!spawned.ok) throw new Error('Admission failed');
+    const settle = async (done: () => boolean): Promise<void> => {
+      // File commits finish outside the microtask queue.
+      for (let waited = 0; !done() && waited < 5000; waited += 10)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    };
+    await settle(() => runner.starts.length > 0);
+    await expect(
+      broker.message(
+        { ...parent, toolCallId: 'steer-coded' },
+        {
+          delegationId: spawned.value.delegationId,
+          operation: 'steer',
+          message: 'Check the additional evidence.',
+        },
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await settle(
+      () =>
+        broker.inspect(parent, spawned.value.delegationId)?.control?.status !==
+        'accepted',
+    );
+    expect(broker.inspect(parent, spawned.value.delegationId)).toMatchObject({
+      control: { status: 'completed', steeringDelivery: { kind: 'unknown' } },
+    });
+    // Older builds read these records with a strict schema, so the codes
+    // stay out of storage.
+    const persisted = (await durable.load()).find(
+      (entry) => entry.state.delegationId === spawned.value.delegationId,
+    );
+    expect(persisted?.control?.steeringDelivery).toEqual({
+      kind: 'unknown',
+      attemptId: runner.steeringRequests[0]?.request.attemptId,
+      reason: 'Delivery was not confirmed.',
+    });
+  } finally {
+    await broker.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it('turns inactive steering into one ordinary retained-session follow-up', async () => {
   const { broker, runner } = setup(new MemoryStorage(), {
@@ -2788,6 +2893,65 @@ it('turns inactive steering into one ordinary retained-session follow-up', async
     runGeneration: 2,
     resumeSessionId: 'retained-native',
     task: { prompt: 'Check one more thing.' },
+  });
+  await broker.close();
+});
+
+it('holds a host message for a running delegate without steering until its run ends', async () => {
+  const runner = new FakeRunner('local-sdk');
+  const registry = new AgentRunnerRegistry();
+  registry.register({
+    apiVersion: 1,
+    registrationId: 'third-local',
+    adapter: {
+      harnessId: runner.harnessId,
+      runtimeKind: runner.runtimeKind,
+      adapterVersion: runner.adapterVersion,
+      canRun: () => runner.canRun(),
+      start: (request, sink) => runner.start(request, sink),
+      stop: (handle) => runner.stop(handle),
+      close: (handle) => runner.close(handle),
+    },
+  });
+  const { broker } = setup(new MemoryStorage(), {
+    registry,
+    asyncAdmission: true,
+    resolveRoute: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: routeFixture({ capabilities: ['read', 'resume'] }),
+      }),
+  });
+  await broker.initialize();
+  const spawned = await broker.spawn(parent, task);
+  if (!spawned.ok) throw new Error('Admission failed');
+  const id = spawned.value.delegationId;
+  await flush();
+  await runner.sink?.({
+    delegationId: id,
+    runGeneration: 1,
+    sequence: 1,
+    occurredAt: 1,
+    event: { type: 'started', nativeSessionId: 'retained-native' },
+  });
+  const attemptId = randomUUID();
+  await expect(
+    broker.deliverHostMessage(id, 'A child finished.', attemptId),
+  ).resolves.toMatchObject({ ok: true });
+  const delivered = broker.waitHostMessage(id, attemptId);
+  await runner.sink?.({
+    delegationId: id,
+    runGeneration: 1,
+    sequence: 2,
+    occurredAt: 2,
+    event: { type: 'terminal', status: 'completed', finalText: 'First' },
+  });
+  await delivered;
+  await flush();
+  expect(runner.starts).toHaveLength(2);
+  expect(runner.starts[1]).toMatchObject({
+    runGeneration: 2,
+    task: { prompt: 'A child finished.' },
   });
   await broker.close();
 });
@@ -3266,7 +3430,9 @@ it('lets interrupt supersede an accepted queued follow-up', async () => {
     status: 'interrupted',
     control: { operation: 'interrupt', status: 'completed' },
   });
-  expect(storage.records.get(id)?.controls).toEqual(
+  const stored = storage.records.get(id);
+  if (!stored) throw new Error('Expected stored delegation');
+  expect(controlsForReplay(stored)).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ operation: 'follow_up', status: 'failed' }),
     ]),
@@ -3368,7 +3534,7 @@ it('keeps accepted workspace commands independent from explicit output reads', a
     );
     await flush();
 
-    expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+    expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
       ok: true,
       value: { result: { resultIndex: 1, status: 'completed' } },
     });
@@ -3442,7 +3608,7 @@ it('preserves output while a workspace reservation fails persistence', async () 
         () => undefined,
       );
     await persistenceStarted;
-    expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+    expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
       ok: true,
       value: { result: { resultIndex: 1, status: 'completed' } },
     });
@@ -3844,7 +4010,7 @@ it.each(['interrupt', 'apply', 'discard'] as const)(
 it('starts an explicit follow-up without delivery acknowledgement and then stops it', async () => {
   const { broker, runner } = setup(new MemoryStorage(), {
     asyncAdmission: true,
-    onTerminal: (): Promise<void> => Promise.resolve(),
+    onSettled: (): Promise<void> => Promise.resolve(),
     resolveRoute: (): ReturnType<
       AgentDelegationBrokerOptions['resolveRoute']
     > =>
@@ -4260,9 +4426,10 @@ it('admits a new cancellation after a failed receipt while replaying the failed 
   const { broker, runner } = setup(new MemoryStorage(), {
     asyncAdmission: true,
   });
+  const adapter: AgentRunnerAdapter = runner;
   const stopRunner = jest
-    .spyOn(runner, 'stop')
-    .mockResolvedValueOnce({ stopped: false })
+    .spyOn(adapter, 'stop')
+    .mockResolvedValueOnce(unconfirmedStop)
     .mockResolvedValue({ stopped: true });
   await broker.initialize();
   const spawned = await broker.spawn(parent, task);
@@ -4316,15 +4483,18 @@ it('admits a new cancellation after a failed receipt while replaying the failed 
 });
 
 it('settles coalesced cancellation aliases and permits a fresh stop after failure', async () => {
-  let finishStop: ((receipt: { stopped: false }) => void) | undefined;
+  let finishStop:
+    | ((receipt: Extract<DelegationStopReceipt, { stopped: false }>) => void)
+    | undefined;
   const { broker, runner } = setup(new MemoryStorage(), {
     asyncAdmission: true,
   });
+  const adapter: AgentRunnerAdapter = runner;
   const stopRunner = jest
-    .spyOn(runner, 'stop')
+    .spyOn(adapter, 'stop')
     .mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
+        new Promise<DelegationStopReceipt>((resolve) => {
           finishStop = resolve;
         }),
     )
@@ -4355,7 +4525,7 @@ it('settles coalesced cancellation aliases and permits a fresh stop after failur
   await flush();
   await broker.requestStop(aliasCaller, id);
   if (!finishStop) throw new Error('Expected pending native stop');
-  finishStop({ stopped: false });
+  finishStop(unconfirmedStop);
   await flush();
   await flush();
 
@@ -5071,7 +5241,9 @@ it('retains intentional interruption after a later workspace discard and restart
   await flush();
   await flush();
   expect(storage.records.get(id)?.control?.operation).toBe('discard');
-  expect(storage.records.get(id)?.controls).toEqual(
+  const stored = storage.records.get(id);
+  if (!stored) throw new Error('Expected stored delegation');
+  expect(controlsForReplay(stored)).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ operation: 'interrupt', status: 'completed' }),
     ]),
@@ -5113,7 +5285,7 @@ it('rejects interruption after completion without changing explicit output', asy
     status: 'suppressed',
     reason: 'automatic_delivery_removed',
   });
-  expect(broker.getOutput(parent, { delegationId: id })).toMatchObject({
+  expect(await broker.getOutput(parent, { delegationId: id })).toMatchObject({
     ok: true,
     value: { result: { resultIndex: 1, finalText: 'Done' } },
   });
@@ -5942,100 +6114,6 @@ describe('isolated workspace apply outcomes', () => {
       });
     } finally {
       await rm(directory, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('delegate completion watches', () => {
-  function watchSetup(): {
-    broker: AgentDelegationBroker;
-    registerWatch: jest.Mock;
-  } {
-    const registerWatch = jest.fn(
-      (
-        _parent: DelegationParentContext,
-        request: { mode: 'any' | 'all' },
-        targets: readonly { delegationId: string; runGeneration: number }[],
-      ) =>
-        Promise.resolve({
-          ok: true as const,
-          value: {
-            watcherId: 'watcher-1',
-            mode: request.mode,
-            deadlineAt: 0,
-            targets,
-          },
-        }),
-    );
-    const { broker } = setup(new MemoryStorage(), { registerWatch });
-    return { broker, registerWatch };
-  }
-
-  it('refuses to arm before this chat has any delegate', async () => {
-    const { broker, registerWatch } = watchSetup();
-    await broker.initialize();
-    try {
-      const result = await broker.watch(parent, {
-        delegationIds: [randomUUID()],
-        mode: 'all',
-        timeoutMs: 60_000,
-      });
-      expect(result).toMatchObject({
-        ok: false,
-        error: { code: 'invalid_request', retryable: false },
-      });
-      if (result.ok) throw new Error('Expected a refused watch');
-      expect(result.error.message).toContain('No delegates are active');
-      expect(result.error.message).toContain(
-        'Start a delegate with Delegate Task',
-      );
-      expect(registerWatch).not.toHaveBeenCalled();
-    } finally {
-      await broker.close();
-    }
-  });
-
-  it('names delegation IDs that are not delegates of this chat', async () => {
-    const { broker, registerWatch } = watchSetup();
-    await broker.initialize();
-    try {
-      const spawned = await broker.spawn(parent, task);
-      if (!spawned.ok) throw new Error('Expected admission');
-      await flush();
-      const unknownId = randomUUID();
-      const result = await broker.watch(parent, {
-        delegationIds: [spawned.value.delegationId, unknownId],
-        mode: 'all',
-        timeoutMs: 60_000,
-      });
-      if (result.ok) throw new Error('Expected a refused watch');
-      expect(result.error.code).toBe('invalid_request');
-      expect(result.error.message).toContain(unknownId);
-      expect(result.error.message).not.toContain(spawned.value.delegationId);
-      expect(result.error.message).toContain('List Delegates');
-      expect(registerWatch).not.toHaveBeenCalled();
-    } finally {
-      await broker.close();
-    }
-  });
-
-  it('arms a watch for an active delegate', async () => {
-    const { broker, registerWatch } = watchSetup();
-    await broker.initialize();
-    try {
-      const spawned = await broker.spawn(parent, task);
-      if (!spawned.ok) throw new Error('Expected admission');
-      await flush();
-      await expect(
-        broker.watch(parent, {
-          delegationIds: [spawned.value.delegationId],
-          mode: 'all',
-          timeoutMs: 60_000,
-        }),
-      ).resolves.toMatchObject({ ok: true });
-      expect(registerWatch).toHaveBeenCalledTimes(1);
-    } finally {
-      await broker.close();
     }
   });
 });

@@ -46,7 +46,7 @@ describe('McpSignInPending', () => {
     });
     expect(byTestId('inline')?.textContent).toBe('Waiting for sign-in');
     expect(byTestId('inline')?.getAttribute('role')).toBe('status');
-    expect(byTestId('pill')?.textContent).toBe('Waiting…');
+    expect(byTestId('pill')?.textContent).toBe('Waiting for sign-in');
     expect(byTestId('pill')?.getAttribute('role')).toBe('status');
     // The spinner is decoration beside the words, not a second name.
     expect(container.querySelector('[aria-label="Loading"]')).toBeNull();
@@ -59,6 +59,20 @@ describe('McpSignInPending', () => {
       byTestId('inline')?.querySelector('[aria-hidden="true"]')?.className,
     ).toContain(active.foreground);
     expect(container.innerHTML).not.toContain('accent');
+    act(() => {
+      root.render(
+        <McpSignInPendingStatus
+          variant="pill"
+          serviceName="Linear"
+          dataTestId="named"
+        />,
+      );
+    });
+    // The row shows the name; only assistive technology hears it again.
+    expect(byTestId('named')?.textContent).toBe('Waiting for sign-in');
+    expect(byTestId('named')?.getAttribute('aria-label')).toBe(
+      'Waiting for Linear sign-in',
+    );
   });
 
   it('offers Cancel and Reopen sign-in in a footer', () => {

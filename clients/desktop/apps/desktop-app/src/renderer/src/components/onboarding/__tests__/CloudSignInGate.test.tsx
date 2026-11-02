@@ -22,6 +22,10 @@ jest.mock('@/lib/brand', () => ({
 }));
 
 let mockReportConnected = false;
+let mockLocalPlatform: NodeJS.Platform = 'darwin';
+jest.mock('@/lib/local-platform', () => ({
+  localPlatform: (): NodeJS.Platform => mockLocalPlatform,
+}));
 let mockReportReady = false;
 let receivedOnConnectedChange = false;
 let receivedBenefits: Array<{ label: string }> | undefined;
@@ -55,6 +59,7 @@ jest.mock('@/components/auth/CloudAuthPanel', () => ({
 
 describe('CloudSignInGate', () => {
   beforeEach(() => {
+    mockLocalPlatform = 'darwin';
     mockReportConnected = false;
     mockReportReady = false;
     receivedOnConnectedChange = false;
@@ -78,6 +83,20 @@ describe('CloudSignInGate', () => {
       upgradedFromGuest: false,
     };
   });
+
+  test.each<NodeJS.Platform>(['linux', 'darwin', 'win32'])(
+    'keeps the sign-in content but only adds an empty strip without a %s native frame',
+    (platform) => {
+      mockLocalPlatform = platform;
+      const html = renderToStaticMarkup(
+        <CloudSignInGate onConnected={() => {}} />,
+      );
+      expect(html.includes('electron-drag h-10 shrink-0 w-full')).toBe(
+        platform !== 'linux',
+      );
+      expect(html).toContain('data-testid="mock-account-section"');
+    },
+  );
 
   test('renders the blocking gate with the welcome copy and account panel', () => {
     const html = renderToStaticMarkup(

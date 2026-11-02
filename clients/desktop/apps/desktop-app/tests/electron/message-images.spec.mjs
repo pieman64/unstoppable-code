@@ -107,7 +107,7 @@ async function startExternalOpenCapture() {
   };
 }
 
-test('sent images show in the bubble with early access and stay chips without it', async () => {
+test('sent images show in the bubble with or without early access', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-message-images-'),
@@ -141,17 +141,12 @@ test('sent images show in the bubble with early access and stay chips without it
     const tiles = chat.getByTestId('message-image-attachment');
     const chips = chat.getByTestId('file-attachment-chip');
 
-    // Early access off: develop's chips for every attachment.
-    await expect(chips).toHaveCount(4);
-    await expect(chips).toContainText([
-      'shot.png',
-      'huge.png',
-      'photo.heic',
-      'notes.txt',
-    ]);
-    await expect(chat.getByTestId('message-image-attachments')).toHaveCount(0);
+    // Graduated image previews are present before opting into early access.
+    await expect(tiles).toHaveCount(1);
+    await expect(chips).toHaveCount(3);
+    await expect(chips).toContainText(['huge.png', 'photo.heic', 'notes.txt']);
 
-    // Early access on: only the drawable PNG moves into the bubble.
+    // Toggling early access leaves the attachment presentation unchanged.
     await window.evaluate(() =>
       window.api.experiments.setChoice({
         experimentId: 'early-access',
@@ -184,15 +179,15 @@ test('sent images show in the bubble with early access and stay chips without it
       .poll(() => [...externalOpen.opened])
       .toEqual([pathToFileURL(shot).toString()]);
 
-    // Turning early access back off restores the chips.
+    // Turning early access back off preserves the graduated preview.
     await window.evaluate(() =>
       window.api.experiments.setChoice({
         experimentId: 'early-access',
         enabled: false,
       }),
     );
-    await expect(tiles).toHaveCount(0);
-    await expect(chips).toHaveCount(4);
+    await expect(tiles).toHaveCount(1);
+    await expect(chips).toHaveCount(3);
   } finally {
     await closeCanopy(electronApp, userDataDir).catch(() => undefined);
     await externalOpen.close();

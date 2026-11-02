@@ -255,6 +255,9 @@ for (const variant of ['already-shared', 'curated', 'plugin']) {
         await banner.getByTestId('skill-share-nudge-banner-share').click();
         await expect(modal).toBeVisible();
         await modal.getByTestId('share-plugin-submit').click();
+        // A landed share keeps the dialog open on its success notice.
+        await expect(modal.getByTestId('share-plugin-success')).toBeVisible();
+        await modal.getByTestId('share-plugin-done').click();
         await expect(modal).toHaveCount(0);
         await expect.poll(() => item().nudge).toBe('shared');
         await expect(banner).toHaveCount(0);

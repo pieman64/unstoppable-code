@@ -9,13 +9,19 @@ const mockElectronApp = {
 };
 
 jest.mock('electron', () => ({
-  app: mockElectronApp,
+  get app(): typeof mockElectronApp {
+    return mockElectronApp;
+  },
 }));
 jest.mock('launchdarkly-node-client-sdk', () => ({
-  initialize: mockInitialize,
+  get initialize(): typeof mockInitialize {
+    return mockInitialize;
+  },
 }));
 jest.mock('../context', () => ({
-  buildDesktopFeatureFlagContext: mockBuildContext,
+  get buildDesktopFeatureFlagContext(): typeof mockBuildContext {
+    return mockBuildContext;
+  },
 }));
 
 import {
@@ -180,6 +186,7 @@ describe('FeatureFlagService', () => {
         {
           choicesPath: 'choices',
           availabilityPath: 'availability',
+          pendingSyncPath: 'pending',
           read: (path): unknown =>
             path === 'choices'
               ? {
@@ -244,7 +251,8 @@ describe('FeatureFlagService', () => {
           scope: 'account-b',
           generation: before.generation + 1,
           ready: false,
-          choicesReady: false,
+          // account-b's cached choices are usable before its GET settles.
+          choicesReady: true,
           earlyAccessEnabled: false,
         });
         expect(labs.getSnapshot().experiments[0]).toMatchObject({
@@ -264,7 +272,7 @@ describe('FeatureFlagService', () => {
             scope: 'account-b',
             generation: before.generation + 1,
             ready: true,
-            choicesReady: false,
+            choicesReady: true,
             earlyAccessEnabled: false,
           });
           expect(labs.getSnapshot().experiments[0]).toMatchObject({
@@ -313,7 +321,7 @@ describe('FeatureFlagService', () => {
         // Cached choices remain effective before the account GET completes.
         expect(labs.getSnapshot()).toMatchObject({
           ready: true,
-          choicesReady: false,
+          choicesReady: true,
           earlyAccessEnabled: true,
         });
         expect(labs.getSnapshot().experiments[0]).toMatchObject({
@@ -764,11 +772,11 @@ describe('FeatureFlagService', () => {
       [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
     });
     Object.assign(globalThis, { __CANOPY_E2E__: true });
-    let changeListener: (() => void) | null = null;
+    const changeListeners: Array<() => void> = [];
     const client = createMockClient({
       variation: jest.fn().mockReturnValue(false),
-      on: jest.fn((_event: string, listener: () => void) => {
-        changeListener = listener;
+      on: jest.fn((_event: string, listener: () => void): void => {
+        changeListeners.push(listener);
       }),
     });
     mockInitialize.mockReturnValue(client);
@@ -784,10 +792,12 @@ describe('FeatureFlagService', () => {
         [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
       },
     });
+    const changeListener = changeListeners[0];
+    if (!changeListener) throw new Error('Expected a change listener.');
     expect(client.off).toHaveBeenCalledWith('change', changeListener);
     expect(client.close).toHaveBeenCalledTimes(1);
 
-    changeListener?.();
+    changeListener();
 
     expect(service.getSnapshot().values).toMatchObject({
       [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
@@ -1046,11 +1056,11 @@ describe('FeatureFlagService', () => {
 
   it('cleans up snapshot listeners when unsubscribe is called', async () => {
     process.env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID = 'client-side-id';
-    let changeListener: (() => void) | null = null;
+    const changeListeners: Array<() => void> = [];
     const client = createMockClient({
       variation: jest.fn().mockReturnValueOnce(true).mockReturnValue(false),
-      on: jest.fn((_event: string, listener: () => void) => {
-        changeListener = listener;
+      on: jest.fn((_event: string, listener: () => void): void => {
+        changeListeners.push(listener);
       }),
     });
     mockInitialize.mockReturnValue(client);
@@ -1060,7 +1070,9 @@ describe('FeatureFlagService', () => {
     const unsubscribe = service.onSnapshotChanged(listener);
 
     unsubscribe();
-    changeListener?.();
+    const changeListener = changeListeners[0];
+    if (!changeListener) throw new Error('Expected a change listener.');
+    changeListener();
 
     expect(listener).not.toHaveBeenCalled();
   });

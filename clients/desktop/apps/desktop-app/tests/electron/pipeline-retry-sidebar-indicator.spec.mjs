@@ -57,7 +57,7 @@ test('a successful retry replaces stale failed sidebar severity and tooltip copy
       `[data-testid="worktree-row"][data-branch="${WORKTREE_ID}"]`,
     );
     const indicator = row.getByTestId('worktree-row-pipeline-attention');
-    await expect(indicator).toHaveAttribute('aria-label', 'Pipeline failed', {
+    await expect(indicator).toHaveAttribute('aria-label', 'Workflow failed', {
       timeout: 15_000,
     });
 
@@ -73,7 +73,7 @@ test('a successful retry replaces stale failed sidebar severity and tooltip copy
       type: 'execution.completed',
     });
 
-    await expect(indicator).toHaveAttribute('aria-label', 'Pipeline completed');
+    await expect(indicator).toHaveAttribute('aria-label', 'Workflow completed');
     await expect(indicator.locator('.bg-fg-destructive')).toHaveCount(0);
     await expect(
       row.getByTestId('worktree-row-pipeline-glyph').locator('.fg-success'),
@@ -84,7 +84,7 @@ test('a successful retry replaces stale failed sidebar severity and tooltip copy
     await expect(popover).toBeVisible();
     await expect(
       popover.getByTestId('pipeline-status-popover-header'),
-    ).toHaveText('Pipelines Completed (2)');
+    ).toHaveText('Workflows Completed (2)');
     await expect(popover).toContainText('Already Successful');
     await expect(popover).toContainText('Retried Successfully');
   } finally {
@@ -132,7 +132,7 @@ test('a paused pipeline reports the blocker before the activity panel is opened'
     );
     const pausedGlyph = row.getByTestId('worktree-row-paused-pipeline');
     await expect(pausedGlyph).toBeVisible({ timeout: 15_000 });
-    await expect(pausedGlyph).toHaveAttribute('aria-label', 'Pipeline paused');
+    await expect(pausedGlyph).toHaveAttribute('aria-label', 'Workflow paused');
     await expect(pausedGlyph.locator('.fg-warning')).toHaveCount(1);
 
     // The completed-run glyph must not stand in for a blocked run.

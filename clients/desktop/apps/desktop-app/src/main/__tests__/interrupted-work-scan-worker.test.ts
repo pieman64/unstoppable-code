@@ -115,6 +115,53 @@ describe('interrupted work startup scan', () => {
     expect(found.errors).toEqual([]);
   });
 
+  it('distinguishes anchored sidecars from unfinished ordinary parent rows, with legacy fallback', async () => {
+    const workspace = join(root, 'workspaces', 'workspace');
+    for (const [id, ordinary] of [
+      ['anchored-only', false],
+      ['ordinary-tail', true],
+      ['legacy-tail', undefined],
+    ] as const) {
+      const directory = join(workspace, 'chat-storage-v2', id);
+      await mkdir(directory, { recursive: true });
+      await mkdir(join(workspace, 'chat-storage-manifests'), {
+        recursive: true,
+      });
+      await writeFile(
+        join(workspace, 'chat-storage-manifests', `${id}.json`),
+        JSON.stringify({ version: 2, scopeId: id }),
+      );
+      await writeFile(
+        join(directory, 'live-index.json'),
+        JSON.stringify({
+          version: 2,
+          tabs: [
+            {
+              id: 'chat',
+              transcript: {
+                hasActiveSidecar: true,
+                ...(ordinary === undefined
+                  ? {}
+                  : { hasOrdinaryActiveRows: ordinary }),
+              },
+            },
+          ],
+          runtimeByChatId: {},
+        }),
+      );
+      await writeFile(join(directory, 'metadata-journal.jsonl'), '');
+    }
+    const found = await scanInterruptedWork(
+      [join(root, 'workspaces')],
+      join(root, 'executions'),
+    );
+    expect(found.chatScopes.map((scope) => scope.worktreeId).sort()).toEqual([
+      'legacy-tail',
+      'ordinary-tail',
+    ]);
+    expect(found.errors).toEqual([]);
+  });
+
   it('reports corrupt items and keeps discovering valid work', async () => {
     const executions = join(root, 'executions');
     await mkdir(executions);

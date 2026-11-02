@@ -4,6 +4,7 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { getCopilotSettingsSection } from '@/lib/copilot-settings';
 import { useUsageRefreshOnOpen } from './usageRefreshOnOpen';
 
 /** The popup reads the same account snapshot as the Usage page and panels. */
@@ -70,7 +71,7 @@ export function CopilotAccountUsage(): JSX.Element {
             },
           }
         : {})}
-      onManage={(): void => openSettings('experiments')}
+      onManage={(): void => openSettings(getCopilotSettingsSection())}
     />
   );
 }

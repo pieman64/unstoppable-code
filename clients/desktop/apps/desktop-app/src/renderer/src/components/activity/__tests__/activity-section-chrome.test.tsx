@@ -16,6 +16,12 @@
  * unchanged.
  */
 import { act } from 'react';
+jest.mock('@/hooks/useCanopyCloudConnected', () => ({
+  useTryItAccount: (): { status: 'signed-in'; accountId: string } => ({
+    status: 'signed-in',
+    accountId: 'account:1',
+  }),
+}));
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   TrackedPlanData,
@@ -379,7 +385,7 @@ describe('activity section chrome variants', () => {
     renderFrameless(<PipelineRunsSection onDispatchPipeline={jest.fn()} />);
     expectFramelessSection();
     expect(
-      container.querySelector('[aria-label="Dispatch pipeline"]'),
+      container.querySelector('[aria-label="Dispatch workflow"]'),
     ).not.toBeNull();
   });
 
@@ -396,7 +402,7 @@ describe('activity section chrome variants', () => {
     // The redundant title heading is gone (title + icon now live on the tab).
     expect(header?.querySelector('h3')).toBeNull();
     // The empty-state subtitle is surfaced in the header instead of the title.
-    expect(header?.textContent).toContain('No pipeline runs');
+    expect(header?.textContent).toContain('No workflow runs');
   });
 
   it('renders empty Plans and Pipeline Runs as full-card actions', () => {
@@ -419,7 +425,7 @@ describe('activity section chrome variants', () => {
       '[data-testid="pipeline-dispatch-open"]',
     );
     expect(importPlan?.textContent).toBe('Import plan');
-    expect(dispatchPipeline?.textContent).toBe('Dispatch pipeline');
+    expect(dispatchPipeline?.textContent).toBe('Dispatch workflow');
     for (const action of [importPlan, dispatchPipeline]) {
       expect(action?.getAttribute('data-activity-action-card-button')).toBe(
         'true',
@@ -428,13 +434,23 @@ describe('activity section chrome variants', () => {
       expect(action?.className).toContain('p-3');
       expect(action?.className).toContain('gap-3');
       expect(action?.className).toContain('fg-primary');
-      expect(action?.className).toContain('shadow-sm');
       expect(action?.className).toContain(
         'enabled:hover:bg-[var(--bg-activity-card-hover)]',
       );
     }
+    expect(dispatchPipeline?.className).toContain('shadow-sm');
+    // Plans attaches its explanation under the action, so the shared
+    // container carries the card shadow instead of the button.
+    const plansCard = importPlan?.closest(
+      '[data-testid="action-card-container"]',
+    );
+    expect(plansCard?.className).toContain('shadow-sm');
+    expect(
+      plansCard?.querySelector('[data-testid="activity-plans-empty"]')
+        ?.textContent,
+    ).toContain('Plans your agent writes appear here.');
     expect(container.textContent).not.toContain('No tracked plans yet');
-    expect(container.textContent).not.toContain('No pipeline runs');
+    expect(container.textContent).not.toContain('No workflow runs');
   });
 
   it('offers Dispatch with accessible history when all runs are hidden', () => {
@@ -445,7 +461,9 @@ describe('activity section chrome variants', () => {
           pipeline_id: 'review',
           pipeline_name: 'Hidden review',
           status: 'success',
+          status_reasons: [],
           started_at: '2026-09-15T10:00:00Z',
+          cwd: '/repo',
           hidden: true,
         },
       ],
@@ -457,7 +475,7 @@ describe('activity section chrome variants', () => {
     const dispatch = container.querySelector<HTMLButtonElement>(
       '[data-testid="pipeline-dispatch-open"]',
     );
-    expect(dispatch?.textContent).toBe('Dispatch pipeline');
+    expect(dispatch?.textContent).toBe('Dispatch workflow');
     expect(dispatch?.getAttribute('data-activity-action-card-button')).toBe(
       'true',
     );

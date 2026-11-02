@@ -69,12 +69,10 @@ for (const [label, fileBytes, embeddedImages] of [
         .filter({ hasText: HTML_FILE })
         .first()
         .click();
-      await window
-        .getByRole('button', {
-          name: 'View preview; current view: source',
-          exact: true,
-        })
-        .click();
+      // A fresh HTML file opens formatted from the file palette.
+      await expect(
+        window.getByRole('button', { name: 'Formatted', exact: true }),
+      ).toHaveAttribute('aria-pressed', 'true');
       const frame = window.frameLocator(
         `[data-testid="${HTML_PREVIEW_TEST_ID}"]`,
       );
@@ -161,12 +159,10 @@ test('HTML preview loads workspace-relative images and rejects escaping paths', 
       .filter({ hasText: HTML_FILE })
       .first()
       .click();
-    await window
-      .getByRole('button', {
-        name: 'View preview; current view: source',
-        exact: true,
-      })
-      .click();
+    // A fresh HTML file opens formatted from the file palette.
+    await expect(
+      window.getByRole('button', { name: 'Formatted', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
     const frame = window.frameLocator(
       `[data-testid="${HTML_PREVIEW_TEST_ID}"]`,
     );
@@ -290,11 +286,10 @@ test('HTML file preview renders in a passive constrained sandbox', async () => {
     // Exact name: substring role matching would also hit the file panel
     // tab's close button ("Close canopy-preview-fixture.html").
     const previewButton = window.getByRole('button', {
-      name: 'View preview; current view: source',
+      name: 'Formatted',
       exact: true,
     });
-    await expect(previewButton).toBeVisible();
-    await previewButton.click();
+    await expect(previewButton).toHaveAttribute('aria-pressed', 'true');
 
     const frame = window.getByTestId(HTML_PREVIEW_TEST_ID);
     await expect(frame).toBeVisible();
@@ -375,23 +370,41 @@ for (const [extension, content] of [
         .first()
         .click();
       const viewer = window.getByTestId('file-viewer');
-      const toggle = viewer.getByTestId('file-view-toggle');
-      if (
-        (await toggle.getAttribute('aria-label')).includes(
-          'current view: source',
-        )
-      )
-        await toggle.click();
+      const formatted = viewer.getByTestId('file-view-toggle-formatted');
+      const source = viewer.getByTestId('file-view-toggle-source');
+      await formatted.click();
       const body =
         extension === 'html'
           ? window
               .frameLocator('[data-testid="html-file-preview-frame"]')
               .locator('body')
           : viewer.getByText('Orchid first', { exact: false }).first();
-      await expect(toggle).toHaveAttribute(
-        'aria-label',
-        extension === 'csv' ? /current view: table/ : /current view: preview/,
+      await expect(formatted).toHaveAttribute('aria-pressed', 'true');
+      await expect(formatted).toHaveText(
+        extension === 'csv' ? 'Table' : 'Formatted',
       );
+      // CAN-5004: Code projects keep Source, with the same editing guidance.
+      await expect(source).toHaveText('Source');
+      if (extension !== 'html') {
+        const region = viewer.getByRole('region', {
+          name: extension === 'csv' ? 'Table view' : 'Formatted view',
+          exact: true,
+        });
+        await body.click({ position: { x: 10, y: 10 } });
+        await expect(region).toBeFocused();
+        await window.keyboard.press('x');
+        await expect(
+          viewer.getByTestId('file-readonly-hint-switch'),
+        ).toHaveText('Switch to Source');
+        await expect(source).toBeFocused();
+        await window.keyboard.press('Escape');
+        await expect(region).toBeFocused();
+        await expect(viewer.getByTestId('file-viewer-dirty')).toHaveCount(0);
+      } else {
+        await expect(
+          viewer.getByTestId('file-readonly-hint-switch'),
+        ).toHaveText('Switch to Source');
+      }
       await expect
         .poll(() =>
           window.evaluate(() => {
@@ -503,12 +516,9 @@ for (const [extension, content] of [
         await expect(drawer).toBeVisible();
         await drawer.locator('input').press('Escape');
         await expect(drawer).toHaveCount(0);
-        await toggle.click();
+        await source.click();
         await expect(drawer).toHaveCount(0);
-        await expect(toggle).toHaveAttribute(
-          'aria-label',
-          /current view: source/,
-        );
+        await expect(source).toHaveAttribute('aria-pressed', 'true');
         // The mode switch commits before the host's search listener cleanup.
         // Wait for that cleanup without opening a drawer on an early probe.
         await expect
@@ -544,12 +554,9 @@ for (const [extension, content] of [
           return handled;
         });
         expect(rawAcknowledged).toBe(false);
-        await toggle.click();
+        await formatted.click();
         await expect(drawer).toHaveCount(0);
-        await expect(toggle).toHaveAttribute(
-          'aria-label',
-          /current view: preview/,
-        );
+        await expect(formatted).toHaveAttribute('aria-pressed', 'true');
         await expect
           .poll(() =>
             window.evaluate(() => {
@@ -575,7 +582,7 @@ for (const [extension, content] of [
       );
       await input.fill('orchid');
       await expect(drawer).toContainText('1 of 2');
-      await toggle.click();
+      await source.click();
       await expect(drawer).toHaveCount(0);
     } finally {
       await closeCanopy(electronApp, userDataDir);

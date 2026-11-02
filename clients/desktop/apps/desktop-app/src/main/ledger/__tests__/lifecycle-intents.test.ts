@@ -16,6 +16,9 @@ jest.mock('../../lib/fsync-directory', () => ({
   fsyncDirectory: (directory: string): Promise<void> =>
     mockFsyncDirectory(directory),
 }));
+jest.mock('../../lib/workspace-persistence', () => ({
+  getWorkspaceWorktreeCreatedAt: jest.fn(),
+}));
 
 import type { LedgerContainerIncarnation } from '../lifecycle';
 import {

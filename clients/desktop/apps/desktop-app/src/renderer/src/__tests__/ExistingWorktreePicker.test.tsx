@@ -70,7 +70,7 @@ describe('getCandidateDisabledReason', () => {
       getCandidateDisabledReason(
         makeCandidate({ busyReason: 'running-pipeline' }),
       ),
-    ).toBe('This worktree has a running pipeline execution.');
+    ).toBe('This worktree has a running workflow execution.');
     expect(
       getCandidateDisabledReason(
         makeCandidate({ busyReason: 'setup-pending' }),

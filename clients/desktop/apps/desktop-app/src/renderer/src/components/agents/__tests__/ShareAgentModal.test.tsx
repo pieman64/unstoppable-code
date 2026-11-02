@@ -110,6 +110,20 @@ function sharedDetail(
   };
 }
 
+function publicShareInfo(
+  over: Partial<NonNullable<SharedAgentDetail['publicShare']>> = {},
+): NonNullable<SharedAgentDetail['publicShare']> {
+  return {
+    externalId: 'public-agent-id',
+    pinnedContentHash: 'server-hash',
+    upToDate: true,
+    sharePath: '/s/agents/public-agent',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    ...over,
+  };
+}
+
 /** An existing share owned by {@link ORG}: a real audience to update. */
 function organizationDetail(
   over: Partial<SharedAgentDetail> = {},
@@ -261,11 +275,9 @@ describe('ShareAgentModal', () => {
   it('reports the Agent public share as unavailable after account loss', async () => {
     mockGetShared.mockResolvedValue(
       sharedDetail({
-        publicShare: {
+        publicShare: publicShareInfo({
           externalId: 'public-agent-id',
-          sharePath: '/s/agents/public-agent',
-          upToDate: true,
-        },
+        }),
       }),
     );
     await renderModal(agentDef({ remoteId: 'shared-agent-id' }));
@@ -277,8 +289,10 @@ describe('ShareAgentModal', () => {
 
     jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
       hasApiKey: false,
-      account: null,
       capabilities: [],
+      authMode: null,
+      credentialSource: null,
+      storageAvailable: true,
     });
     act(() => {
       window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
@@ -308,10 +322,9 @@ describe('ShareAgentModal', () => {
     act(() => {
       resolveDetail(
         sharedDetail({
-          publicShare: {
+          publicShare: publicShareInfo({
             sharePath: '/s/agents/public-agent',
-            upToDate: true,
-          },
+          }),
         }),
       );
     });
@@ -359,12 +372,10 @@ describe('ShareAgentModal', () => {
   it('atomically revokes the observed public link with a narrower update', async () => {
     mockGetShared.mockResolvedValue(
       sharedDetail({
-        publicShare: {
+        publicShare: publicShareInfo({
           externalId: 'public-agent-id',
-          sharePath: '/s/agents/public-agent',
-          upToDate: true,
           updatedAt: '2026-08-30T00:00:00.000Z',
-        },
+        }),
       }),
     );
     await renderModal(
@@ -581,8 +592,16 @@ describe('ShareAgentModal', () => {
     // only the account identity can force the reload and the reset.
     jest.mocked(window.api.loadCanopyCloudAccount).mockResolvedValue({
       hasApiKey: true,
-      account: { id: 'acct-2' },
       capabilities: ['agents-crud-v1', 'teams-v1', 'organizations-v1'],
+      authMode: 'api_key',
+      credentialSource: 'manual',
+      storageAvailable: true,
+      account: {
+        id: 'acct-2',
+        name: 'Alice',
+        email: 'alice@example.com',
+        role: 'ADMIN',
+      },
     });
     act(() => {
       window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
@@ -614,12 +633,10 @@ describe('ShareAgentModal', () => {
   it('removes an existing public link behind a confirm and announces it', async () => {
     mockGetShared.mockResolvedValue(
       sharedDetail({
-        publicShare: {
+        publicShare: publicShareInfo({
           externalId: 'public-agent-id',
-          sharePath: '/s/agents/public-agent',
-          upToDate: true,
           updatedAt: '2026-08-30T00:00:00.000Z',
-        },
+        }),
       }),
     );
     const changed = jest.fn();
@@ -738,6 +755,8 @@ describe('ShareAgentModal package review', () => {
       hasApiKey: true,
       capabilities: ['agents-crud-v1', 'teams-v1'],
       storageAvailable: true,
+      authMode: 'api_key',
+      credentialSource: 'manual',
       account: {
         id: 'account-1',
         name: 'Alice',
@@ -805,16 +824,18 @@ describe('ShareAgentModal package review', () => {
       root.render(
         <ShareAgentModal
           agent={{
-            id: 'agent-1',
-            name: 'Reviewer',
-            baseModel: 'claude-sonnet-4-6',
-            instructions: 'Review this change.',
-            pluginSelections: {
-              collectionIds: [],
-              skillRefs: [],
-              pluginRefs: [],
-              mcpServerRefs: [],
-            },
+            ...agentDef({
+              id: 'agent-1',
+              name: 'Reviewer',
+              baseModel: 'claude-sonnet-4-6',
+              instructions: 'Review this change.',
+              pluginSelections: {
+                collectionIds: [],
+                skillRefs: [],
+                pluginRefs: [],
+                mcpServerRefs: [],
+              },
+            }),
           }}
           onClose={() => {}}
           onOpenAccountSettings={() => {}}

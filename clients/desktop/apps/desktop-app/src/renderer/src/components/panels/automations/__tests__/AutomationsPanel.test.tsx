@@ -110,12 +110,32 @@ describe('AutomationsPanel', () => {
         {
           id: 'ws-1',
           name: 'Canopy',
+          type: 'single-repo',
+          repoPath: '/repo/canopy',
+          color: '#654321',
+          collapsed: false,
+          order: 0,
           worktrees: [
-            { id: 'wt-1', branchName: 'feature/panel' },
-            { id: 'wt-2', branchName: 'main' },
+            {
+              id: 'wt-1',
+              branchName: 'feature/panel',
+              createdAt: '2026-08-01T00:00:00.000Z',
+            },
+            {
+              id: 'wt-2',
+              branchName: 'main',
+              createdAt: '2026-08-01T00:00:00.000Z',
+            },
           ],
         },
-        { id: 'cowork-1', name: 'Notes', type: 'cowork' },
+        {
+          id: 'cowork-1',
+          name: 'Notes',
+          type: 'cowork',
+          color: '#654321',
+          collapsed: false,
+          order: 1,
+        },
       ],
     });
     useCurrentUiStateStore.setState({ slices: {} });

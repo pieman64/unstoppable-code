@@ -12,7 +12,9 @@ import type {
 import {
   LedgerComposerPrompt,
   LedgerFeedFilterMenu,
-  TextInput,
+  PageSearchControls,
+  PageSearchField,
+  PageSearchRow,
 } from '@canopy/ui-shared/components';
 import {
   LedgerFeedComposer,
@@ -22,23 +24,30 @@ import {
 
 const SEARCH_INPUT_MAX_LENGTH = 256;
 
-const AUDIENCES: ReadonlyArray<{
-  readonly audience: LedgerFeedAudience;
-  readonly label: string;
-}> = [
-  { audience: 'mine', label: 'Mine' },
-  { audience: 'teammates', label: 'Teammates' },
-  { audience: 'this_device', label: 'This device' },
+const AUDIENCE_LABELS: { readonly [Audience in LedgerFeedAudience]: string } = {
+  mine: 'Mine',
+  teammates: 'Teammates',
+  this_device: 'This device',
+};
+
+/** Every audience, in tab order; a host without a device of its own drops one. */
+export const LEDGER_FEED_ALL_AUDIENCES: readonly LedgerFeedAudience[] = [
+  'mine',
+  'teammates',
+  'this_device',
 ];
 
 /** The Feed's audience, filters and search; typing stays in this toolbar. */
 export function FeedControls({
   store,
+  audiences = LEDGER_FEED_ALL_AUDIENCES,
   onAudienceChange,
   onSearchChange,
   onFiltersChange,
 }: {
   readonly store: LedgerFeedStore;
+  /** The tabs offered, in order. */
+  readonly audiences?: readonly LedgerFeedAudience[];
   readonly onAudienceChange: (audience: LedgerFeedAudience) => void;
   readonly onSearchChange: (text: string) => void;
   readonly onFiltersChange: (filters: LedgerFeedFilters) => void;
@@ -54,51 +63,51 @@ export function FeedControls({
   return (
     <div
       data-testid="ledger-feed-controls"
-      className="flex shrink-0 flex-col gap-2 border-b border-line-base pb-2"
+      className="flex shrink-0 flex-col gap-4 pb-2"
     >
       <div
         role="tablist"
         aria-label="Whose entries"
         className="canopy-tab-list flex gap-1"
       >
-        {AUDIENCES.map((option) => {
-          const active = option.audience === audience;
+        {audiences.map((option) => {
+          const active = option === audience;
           return (
             <button
-              key={option.audience}
+              key={option}
               type="button"
               role="tab"
               aria-selected={active}
-              data-testid={`ledger-feed-audience-${option.audience}`}
-              onClick={() => onAudienceChange(option.audience)}
+              data-testid={`ledger-feed-audience-${option}`}
+              onClick={() => onAudienceChange(option)}
               className={`canopy-tab-trigger px-3 py-2 text-xs font-medium transition-colors ${
                 active ? 'fg-primary' : 'fg-secondary hover:fg-primary'
               }`}
             >
-              {option.label}
+              {AUDIENCE_LABELS[option]}
             </button>
           );
         })}
       </div>
-      <div className="flex min-w-0 items-center gap-2">
-        <LedgerFeedFilterMenu filters={filters} onChange={onFiltersChange} />
-        <TextInput
-          type="search"
+      {/* The page search row: the search fills it, the filters follow as
+          one Filter dropdown. No hairline under it; the list follows. */}
+      <PageSearchRow>
+        <PageSearchField
           data-testid="ledger-feed-search"
           value={queryText}
           maxLength={SEARCH_INPUT_MAX_LENGTH}
-          onChange={(event) => onSearchChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape' && queryText.length > 0) {
-              event.stopPropagation();
-              onSearchChange('');
-            }
-          }}
+          onValueChange={onSearchChange}
           placeholder="Search entries"
           aria-label="Search entries"
-          className="min-w-0 flex-1"
         />
-      </div>
+        <PageSearchControls>
+          <LedgerFeedFilterMenu
+            trigger="page"
+            filters={filters}
+            onChange={onFiltersChange}
+          />
+        </PageSearchControls>
+      </PageSearchRow>
     </div>
   );
 }

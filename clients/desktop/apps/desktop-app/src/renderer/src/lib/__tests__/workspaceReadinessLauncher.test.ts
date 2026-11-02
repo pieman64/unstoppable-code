@@ -56,7 +56,7 @@ function workspace(
 function chatTab(
   id: string,
   title: string,
-  pluginSelections?: ChatTab['pluginSelections'],
+  pluginSelections?: Partial<NonNullable<ChatTab['pluginSelections']>>,
 ): ChatTab {
   return {
     id,
@@ -68,8 +68,19 @@ function chatTab(
     queuedMessages: [],
     planMode: false,
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     proposalMode: 'optional',
-    ...(pluginSelections ? { pluginSelections } : {}),
+    ...(pluginSelections
+      ? {
+          pluginSelections: {
+            collectionIds: [],
+            skillRefs: [],
+            pluginRefs: [],
+            ...pluginSelections,
+          },
+        }
+      : {}),
   };
 }
 

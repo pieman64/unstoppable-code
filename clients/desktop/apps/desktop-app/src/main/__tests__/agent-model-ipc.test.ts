@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ImportPublicAgentRequest } from '@canopy/desktop-shared/types/agent-models';
+import type * as ShareablePluginResolution from '../plugins/shareable-plugin-resolution';
 import {
   initClaudeModels,
   IPC_CHANNELS,
@@ -67,7 +68,10 @@ const mockInstallSubjectCapabilityPackage = jest.fn<
   [InstallSubjectCapabilityPackageRequest]
 >();
 const mockPrepareDesktopWorkspaceTemplateRefs = jest.fn();
-const mockResolveShareablePluginRefs = jest.fn(() => []);
+const mockResolveShareablePluginRefs = jest.fn<
+  ReturnType<typeof ShareablePluginResolution.resolveShareablePluginRefs>,
+  Parameters<typeof ShareablePluginResolution.resolveShareablePluginRefs>
+>();
 const mockFindCapabilityPackageInstallByOwner = jest.fn();
 const mockUpsertCapabilityPackageInstall = jest.fn();
 const mockGetMcpServerStatusByCatalogId = jest.fn();
@@ -107,7 +111,11 @@ jest.mock('../models/model-registry', () => ({
 
 jest.mock('../plugins/shareable-plugin-resolution', () => ({
   loadShareablePluginCatalog: jest.fn(),
-  resolveShareablePluginRefs: (...args: unknown[]): unknown =>
+  resolveShareablePluginRefs: (
+    ...args: Parameters<
+      typeof ShareablePluginResolution.resolveShareablePluginRefs
+    >
+  ): ReturnType<typeof ShareablePluginResolution.resolveShareablePluginRefs> =>
     mockResolveShareablePluginRefs(...args),
 }));
 
@@ -142,8 +150,9 @@ jest.mock('../agents/canopy-server-client', () => ({
 }));
 
 jest.mock('../skills/skill-package-install', () => ({
-  installSubjectCapabilityPackage: (...args: unknown[]): unknown =>
-    mockInstallSubjectCapabilityPackage(...args) as unknown,
+  installSubjectCapabilityPackage: (
+    request: InstallSubjectCapabilityPackageRequest,
+  ): Promise<unknown> => mockInstallSubjectCapabilityPackage(request),
 }));
 
 jest.mock('../pipelines/pipeline-package-install-store', () => ({
@@ -175,16 +184,18 @@ jest.mock('../agents/agent-model-store', () => ({
   ): Promise<unknown> => mockSaveAgentModel(...args),
   deleteAgentModel: (...args: unknown[]): unknown =>
     mockDeleteAgentModel(...args) as unknown,
-  importSharedAgent: (...args: unknown[]): unknown =>
-    mockImportSharedAgent(...args) as unknown,
+  importSharedAgent: (
+    ...args: Parameters<typeof AgentModelStore.importSharedAgent>
+  ): unknown => mockImportSharedAgent(...args),
   writeAgentRemoteMetadata: (...args: unknown[]): unknown =>
     mockWriteAgentRemoteMetadata(...args) as unknown,
   clearAgentRemoteMetadataByRemoteId: (...args: unknown[]): unknown =>
     mockClearAgentRemoteMetadataByRemoteId(...args) as unknown,
   findInstalledPublicAgent: (...args: unknown[]): unknown =>
     mockFindInstalledPublicAgent(...args),
-  importPublicAgent: (...args: unknown[]): unknown =>
-    mockImportPublicAgent(...args),
+  importPublicAgent: (
+    ...args: Parameters<typeof AgentModelStore.importPublicAgent>
+  ): unknown => mockImportPublicAgent(...args),
   uninstallPublicAgent: (...args: unknown[]): unknown =>
     mockUninstallPublicAgent(...args),
 }));
@@ -319,7 +330,9 @@ describe('agent model IPC handlers', () => {
     mockInstallSubjectCapabilityPackage.mockImplementation(async (request) => {
       const installed: InstallSubjectCapabilityPackageResult = {
         supportingFileCount: 0,
-        installedSkills: [{ name: 'Helper', localName: 'helper-2' }],
+        installedSkills: [
+          { name: 'Helper', localName: 'helper-2', resourceId: 'helper' },
+        ],
         uninstalledResourceLabels: [],
         keptLocalFiles: [],
       };
@@ -372,7 +385,18 @@ describe('agent model IPC handlers', () => {
     const agentId = '11111111-1111-4111-8111-111111111111';
     const reviewed: SharedAgentDetail = {
       id: agentId,
+      name: 'Reviewer',
+      modelId: 'agent_model_reviewer',
+      baseModel: 'sonnet',
+      instructionsPreview: 'Review the approved snapshot.',
       contentHash: 'reviewed-hash',
+      shareScope: 'private',
+      owner: { type: 'user', id: 'user-1', name: 'Owner' },
+      createdAt: '',
+      updatedAt: '',
+      createdBy: { id: 'user-1', name: 'Owner', email: 'owner@example.test' },
+      canUpdate: true,
+      canDelete: true,
       agent: {
         version: 1 as const,
         id: 'agent_model_reviewer',
@@ -500,7 +524,9 @@ describe('agent model IPC handlers', () => {
     mockInstallSubjectCapabilityPackage.mockImplementation(async (request) => {
       const installed: InstallSubjectCapabilityPackageResult = {
         supportingFileCount: 0,
-        installedSkills: [{ name: 'helper', localName: 'helper' }],
+        installedSkills: [
+          { name: 'helper', localName: 'helper', resourceId: 'helper' },
+        ],
         uninstalledResourceLabels: [],
         keptLocalFiles: [],
       };
@@ -916,7 +942,9 @@ describe('agent model IPC handlers', () => {
     mockInstallSubjectCapabilityPackage.mockImplementation(async (request) => {
       const installed: InstallSubjectCapabilityPackageResult = {
         supportingFileCount: 0,
-        installedSkills: [{ name: 'helper', localName: 'helper' }],
+        installedSkills: [
+          { name: 'helper', localName: 'helper', resourceId: 'helper' },
+        ],
         uninstalledResourceLabels: [],
         keptLocalFiles: [],
       };
@@ -975,6 +1003,7 @@ describe('agent model IPC handlers', () => {
         ref: skill,
         matchState: 'unmatched',
         displayName: 'reviewer',
+        displaySource: 'github:acme/tools',
       },
     ]);
 
@@ -1465,7 +1494,9 @@ describe('public Agent IPC with the persisted import fingerprint', () => {
             throw new Error('missing install transaction callbacks');
           const installed: InstallSubjectCapabilityPackageResult = {
             supportingFileCount: 0,
-            installedSkills: [{ name: 'helper', localName: 'helper-2' }],
+            installedSkills: [
+              { name: 'helper', localName: 'helper-2', resourceId: 'helper' },
+            ],
             uninstalledResourceLabels: [],
             keptLocalFiles: [],
           };
@@ -1538,7 +1569,9 @@ describe('public Agent IPC with the persisted import fingerprint', () => {
         ): Promise<InstallSubjectCapabilityPackageResult> => {
           const installed: InstallSubjectCapabilityPackageResult = {
             supportingFileCount: 0,
-            installedSkills: [{ name: 'helper', localName: 'helper-2' }],
+            installedSkills: [
+              { name: 'helper', localName: 'helper-2', resourceId: 'helper' },
+            ],
             uninstalledResourceLabels: [],
             keptLocalFiles: [],
           };

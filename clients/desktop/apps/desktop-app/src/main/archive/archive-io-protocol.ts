@@ -104,11 +104,20 @@ export type ArchiveIoOperationRequest =
         referenceRepoPath: string;
         expectedRepositoryIdentity: string;
         worktreePath: string;
+        /** Where the checkout was before a move Git may not have followed. */
+        preMoveWorktreePath?: string;
       };
     })
   | (ArchiveRequestIdentity & {
       type: 'remove-directory';
-      input: { path: string; allowedRoot: string };
+      input: {
+        path: string;
+        allowedRoot: string;
+        /** Refuse unless the directory still has this stat identity (CAN-5334). */
+        expectedIdentity?: { dev: number; ino: number; birthtimeMs: number };
+        /** Required with `expectedIdentity`: the sibling it is moved to first. */
+        asidePath?: string;
+      };
     })
   | (ArchiveRequestIdentity & {
       type: 'reset-directory';
@@ -507,10 +516,22 @@ export function isArchiveIoRequest(value: unknown): value is ArchiveIoRequest {
         validGit(input.git) &&
         absolute(input.referenceRepoPath) &&
         absolute(input.expectedRepositoryIdentity) &&
-        absolute(input.worktreePath)
+        absolute(input.worktreePath) &&
+        (input.preMoveWorktreePath === undefined ||
+          absolute(input.preMoveWorktreePath))
       );
     case 'remove-directory':
-      return absolute(input.path) && absolute(input.allowedRoot);
+      return (
+        absolute(input.path) &&
+        absolute(input.allowedRoot) &&
+        (input.expectedIdentity === undefined
+          ? input.asidePath === undefined
+          : isRecord(input.expectedIdentity) &&
+            typeof input.expectedIdentity.dev === 'number' &&
+            typeof input.expectedIdentity.ino === 'number' &&
+            typeof input.expectedIdentity.birthtimeMs === 'number' &&
+            absolute(input.asidePath))
+      );
     case 'reset-directory':
       return (
         absolute(input.path) &&

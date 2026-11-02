@@ -4,6 +4,11 @@ import type {
   CoreClientLease,
 } from '@canopy/protocol/canopy-core';
 
+import {
+  deliverCanopy,
+  type CanopyDeliveryAttempt,
+  type CanopyReplayDirective,
+} from './delivery';
 import { CanopyClientError, toCanopyClientError } from './errors';
 import type { CanopyClient } from './types';
 
@@ -47,8 +52,11 @@ export type CanopyClientLeaseRegistration<C> = (
 export interface CanopyClientLeaseOptions<C extends CanopyLeaseClient> {
   /** The connected client; the host keeps ownership. */
   readonly client: C;
-  /** Opens a replacement client after the current connection drops. */
-  readonly attach: () => Promise<C>;
+  /**
+   * Opens a replacement client after the current connection drops. Bound a
+   * nested connect by the attempt's signal and remaining time.
+   */
+  readonly attach: (attempt: CanopyDeliveryAttempt) => Promise<C>;
   /** Stable across reconnects and re-acquires. */
   readonly identity: CanopyClientLeaseIdentity;
   /** Proposal only: timing follows each reply's `renewAfterMs` and `expiresAt`. */
@@ -59,6 +67,8 @@ export interface CanopyClientLeaseOptions<C extends CanopyLeaseClient> {
   readonly reconnectGraceMs?: number;
   /** Bounds the whole release cleanup: drain, replay, release. Default 5 000 ms. */
   readonly releaseTimeoutMs?: number;
+  /** Bounds each acquire, renew, or reconnect with its retries. Default 30 000 ms. */
+  readonly deliveryTimeoutMs?: number;
   readonly onError?: (error: CanopyClientError) => void;
 }
 
@@ -87,7 +97,6 @@ const INVALID_STATE = 'core.client.lease.invalidState';
 const REVISION_CONFLICT = 'core.client.lease.revisionConflict';
 const DEFAULT_RECONNECT_GRACE_MS = 10_000;
 const DEFAULT_RELEASE_TIMEOUT_MS = 5_000;
-const RETRY_DELAY_MS = 1_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 type AcquireParams = Params<'core.client.lease.acquire'>;
@@ -148,12 +157,23 @@ const terminalError = (
 ): CanopyClientError =>
   new CanopyClientError({ kind, message, retry: { kind: 'never' } });
 
+/** Renew failures the owner recovers itself instead of replaying. */
+const recoveredByOwner = (error: CanopyClientError): boolean => {
+  const { code, retry } = error.payload;
+  if (retry.kind === 'after_refresh') return false;
+  return (
+    code === NOT_FOUND || code === INVALID_STATE || code === REVISION_CONFLICT
+  );
+};
+
 class LeaseOwner<C extends CanopyLeaseClient> implements CanopyClientLease<C> {
   client: C;
   private phase: Phase = 'idle';
   /** Bumped entering acquiring, recovering, or released; older results are stale. */
   private epoch = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** Aborts the epoch's deliveries, and their waits, when it ends. */
+  private stopped = new AbortController();
   private due: Due | null = null;
   /** The newest acquisition; only a resolved one is ever replaced. */
   private intent: Intent<C> | null = null;
@@ -224,8 +244,7 @@ class LeaseOwner<C extends CanopyLeaseClient> implements CanopyClientLease<C> {
   checkClock(): void {
     const { due } = this;
     if (this.phase !== 'active' || !due) return;
-    if (monotonic() >= due.mono || Date.now() >= due.wall)
-      this.renew(null, false);
+    if (monotonic() >= due.mono || Date.now() >= due.wall) this.renew(false);
     else this.arm();
   }
 
@@ -357,69 +376,73 @@ class LeaseOwner<C extends CanopyLeaseClient> implements CanopyClientLease<C> {
 
   private async submit(intent: Intent<C>): Promise<void> {
     const { client, epoch } = this;
-    let lease: CoreClientLease;
+    // A reply lands even when stale: its lease is owned and its intent bound.
+    const bind = (lease: CoreClientLease): Known<C> =>
+      (intent.bound = this.learn(lease, client, intent.params));
     try {
-      lease = await this.track(client.instruction(ACQUIRE, intent.params));
+      await this.deliver({
+        replay: 'same_idempotency_key',
+        client,
+        epoch,
+        run: () => this.track(client.instruction(ACQUIRE, intent.params)),
+        release: bind,
+        accept: (lease) => {
+          const held = bind(lease);
+          if (intent.superseded) return this.fresh(null);
+          this.adopt(held);
+          this.settle?.resolve(lease);
+        },
+      });
     } catch (error) {
       // A drop or release now owns the still-unresolved intent.
       if (epoch !== this.epoch || client.signal.aborted) return;
       // Superseded or not, an error leaves the outcome unknown: directives rule.
-      const failure = toCanopyClientError(error);
-      const again = (): void => void this.submit(intent);
-      return this.retryOrFail(failure, 'same_idempotency_key', again);
+      return this.fail(toCanopyClientError(error));
     }
-    const held = this.learn(lease, client, intent.params);
-    intent.bound = held;
-    if (epoch !== this.epoch) return;
-    if (intent.superseded) return this.fresh(null);
-    this.adopt(held);
-    this.settle?.resolve(lease);
   }
 
-  /** `sent`: the exact arguments of a failed renew, replayed on `same_request`. */
-  private renew(sent: RenewParams | null, conflictRetried: boolean): void {
+  /** Its delivery replays the exact arguments on `same_request`. */
+  private renew(conflictRetried: boolean): void {
     const { known, client } = this;
     if (!known || !this.to('renewing')) return;
     let args: RenewParams;
     try {
-      args = sent ?? {
-        expectedRevision: known.lease.revision,
-        ...this.presence(),
-      };
+      args = { expectedRevision: known.lease.revision, ...this.presence() };
     } catch (error) {
       return this.fail(toCanopyClientError(error));
     }
     const { epoch } = this;
-    void this.track(client.instruction(RENEW, args)).then(
-      (lease) => {
-        const held = this.learn(lease, client, known.params);
-        if (epoch === this.epoch) this.adopt(held);
-      },
-      (error: unknown) => {
-        if (epoch !== this.epoch || client.signal.aborted) return;
-        this.renewFailed(toCanopyClientError(error), args, conflictRetried);
-      },
-    );
+    const learn = (lease: CoreClientLease): Known<C> =>
+      this.learn(lease, client, known.params);
+    void this.deliver({
+      replay: 'same_request',
+      client,
+      epoch,
+      run: () => this.track(client.instruction(RENEW, args)),
+      release: learn,
+      accept: (lease) => this.adopt(learn(lease)),
+      isFinal: recoveredByOwner,
+    }).catch((error: unknown) => {
+      if (epoch !== this.epoch || client.signal.aborted) return;
+      this.renewFailed(toCanopyClientError(error), conflictRetried);
+    });
   }
 
   private renewFailed(
     failure: CanopyClientError,
-    args: RenewParams,
     conflictRetried: boolean,
   ): void {
-    const { code, retry } = failure.payload;
-    if (retry.kind !== 'after_refresh') {
+    const { code } = failure.payload;
+    if (recoveredByOwner(failure)) {
       // Both mean the core no longer holds this lease: an observed eviction.
       if (code === NOT_FOUND || code === INVALID_STATE) {
         if (this.known) this.owned.delete(this.known.lease.leaseId);
         this.known = null;
         return this.fresh(null);
       }
-      if (code === REVISION_CONFLICT)
-        return conflictRetried ? this.fresh(null) : this.renew(null, true);
+      return conflictRetried ? this.fresh(null) : this.renew(true);
     }
-    const again = (): void => this.renew(args, conflictRetried);
-    this.retryOrFail(failure, 'same_request', again);
+    this.fail(failure);
   }
 
   /** Every reply is owned before binding an intent or checking its epoch. */
@@ -486,24 +509,40 @@ class LeaseOwner<C extends CanopyLeaseClient> implements CanopyClientLease<C> {
   }
 
   private async reconnect(epoch: number): Promise<void> {
-    let client: C;
+    // Never adopted, so ours to close.
+    const close = (client: C): void => void client.close().catch(ignore);
     try {
-      client = await this.options.attach();
+      await this.deliver({
+        replay: 'same_request',
+        client: this.client,
+        epoch,
+        run: async (attempt) => {
+          const attached = await this.options.attach(attempt);
+          if (!attached.signal.aborted) return attached;
+          close(attached);
+          throw new CanopyClientError({
+            kind: 'unavailable',
+            message: 'The replacement connection closed before use.',
+            retry: { kind: 'same_request' },
+          });
+        },
+        release: close,
+        accept: (client) => {
+          this.client = client;
+          this.watch(client);
+          this.resume();
+          // An abort before `watch` listened is a drop of the adopted connection.
+          if (client.signal.aborted) this.dropped(client);
+        },
+      });
     } catch (error) {
       if (epoch !== this.epoch) return;
-      const failure = toCanopyClientError(error);
-      const again = (): void => void this.reconnect(epoch);
-      return this.retryOrFail(failure, 'same_request', again);
+      return this.fail(toCanopyClientError(error));
     }
-    if (epoch !== this.epoch || client.signal.aborted) {
-      // Never adopted, so ours to close; a dead current attach is retried.
-      void client.close().catch(ignore);
-      const retry = (): void => void this.reconnect(epoch);
-      if (epoch === this.epoch) this.timer = setTimeout(retry, RETRY_DELAY_MS);
-      return;
-    }
-    this.client = client;
-    this.watch(client);
+  }
+
+  /** Acquires on the adopted connection, replaying an unresolved acquire first. */
+  private resume(): void {
     const { intent, known } = this;
     // An unresolved acquire replays unchanged first, whatever the grace.
     if (intent && !intent.bound) {
@@ -550,19 +589,32 @@ class LeaseOwner<C extends CanopyLeaseClient> implements CanopyClientLease<C> {
     }
   }
 
-  /** No refresh operation: after_refresh reaches the host intact. */
-  private retryOrFail(
-    error: CanopyClientError,
-    replayable: 'same_request' | 'same_idempotency_key',
-    again: () => void,
-  ): void {
-    const directive = error.payload.retry;
-    if (directive.kind !== replayable) return this.fail(error);
-    // Effects land before onError, so its release clears them.
-    const { epoch } = this;
-    const retry = (): void => void (epoch === this.epoch && again());
-    this.timer = setTimeout(retry, directive.delayMs ?? RETRY_DELAY_MS);
-    this.report(error);
+  /**
+   * One bounded delivery of a lease call. It goes stale when the epoch moves
+   * on, or, for a call on a connection, when that connection drops; a
+   * reconnect runs while the old one is down. No refresh operation exists, so
+   * after_refresh reaches the host intact.
+   */
+  private deliver<T>(call: {
+    replay: CanopyReplayDirective;
+    client: C;
+    epoch: number;
+    run: (attempt: CanopyDeliveryAttempt) => Promise<T>;
+    release: (value: T) => void;
+    accept: (value: T) => void;
+    isFinal?: (error: CanopyClientError) => boolean;
+  }): Promise<T> {
+    const { client, epoch, run, ...options } = call;
+    const reconnecting = this.phase === 'recovering';
+    return deliverCanopy(run, {
+      ...options,
+      signal: this.stopped.signal,
+      timeoutMs: this.options.deliveryTimeoutMs,
+      current: () =>
+        epoch === this.epoch && (reconnecting || !client.signal.aborted),
+      // Effects land before onError, so its release clears them.
+      onRetry: (error) => this.report(error),
+    });
   }
 
   /** Moves along TRANSITIONS; false when the event is stale for this phase. */
@@ -571,6 +623,8 @@ class LeaseOwner<C extends CanopyLeaseClient> implements CanopyClientLease<C> {
     clearTimeout(this.timer);
     if (next !== 'active' && next !== 'renewing') {
       this.epoch += 1;
+      this.stopped.abort();
+      this.stopped = new AbortController();
       this.due = null;
     }
     this.phase = next;

@@ -2,8 +2,13 @@ import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
 } from '@canopy/desktop-shared/types';
-import { assertNoLiveDelegationsInWorktree } from '../agents/delegation/activity';
-import { destroyWorktreeSessions } from '../agents/session-manager';
+import { assertWorktreeCanBeRemoved } from '../agents/background-work';
+import {
+  buildSessionKey,
+  destroyWorktreeSessions,
+  getActiveSessionInfos,
+  markSessionTeardownCause,
+} from '../agents/session-manager';
 import { notifyLedgerContainerArchived } from '../ledger/lifecycle';
 import { workEntryLedgerIncarnation } from '../ledger/lifecycle-containers';
 import { getChatQueueService } from '../services/chat-queue-service';
@@ -25,6 +30,7 @@ import { validateId } from './validation';
 import { WorkspaceTargetAutoArchiveExcludedError } from './workspace-target-exclusion';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
 import { runWithWorkspaceTargetActivityDeletion } from './workspace-activity';
+import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
 
 export interface ArchiveWorkEntryOptions {
   workspaceId: string;
@@ -125,8 +131,8 @@ async function archiveWorkEntryWithoutOperationLock({
   if (!entry) {
     throw new Error(`Unknown work entry ${entryId}`);
   }
-  // A chat with live delegates keeps its Work Entry (the row shows working).
-  assertNoLiveDelegationsInWorktree(workspaceId, entryId);
+  // Active agent/workflow work keeps its Work Entry until it has stopped.
+  assertWorktreeCanBeRemoved(workspaceId, entryId);
   if (
     (expectedLastTouchedAt !== undefined || revalidateAutoArchivePolicy) &&
     entry.lastTouchedAt !== expectedLastTouchedAt
@@ -162,6 +168,20 @@ async function archiveWorkEntryWithoutOperationLock({
       // Quiesce the runtime first so the capture observes the final persisted
       // transcript and telemetry state. A capture failure still leaves the live
       // row and all persisted entry data intact; only ephemeral sessions stop.
+      try {
+        for (const session of getActiveSessionInfos(workspaceId, entryId)) {
+          try {
+            markSessionTeardownCause(
+              buildSessionKey(workspaceId, entryId, session.chatId),
+              'archive',
+            );
+          } catch {
+            // Cause bookkeeping is best-effort and cannot block archival.
+          }
+        }
+      } catch {
+        // Cause bookkeeping is best-effort and cannot block archival.
+      }
       await destroyWorktreeSessions(workspaceId, entryId);
       sessionsDestroyed = true;
       await chatStateService.runWithScopeDeletion(scope, async () => {
@@ -248,7 +268,9 @@ export async function archiveWorkEntry(
         options.entryId,
         () =>
           withArchivedWorkspaceOperationLock(options.workspaceId, () =>
-            archiveWorkEntryWithoutOperationLock(options),
+            runAsLocalFenceHolder(() =>
+              archiveWorkEntryWithoutOperationLock(options),
+            ),
           ),
       ),
   );

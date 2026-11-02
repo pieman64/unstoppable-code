@@ -12,122 +12,128 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "types": [],
     "noUnusedLocals": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "resolveJsonModule": true,
-    "baseUrl": ".",
     "paths": {
       "@/*": [
-        "apps/desktop-app/src/renderer/src/*"
+        "./apps/desktop-app/src/renderer/src/*"
       ],
       "@canopy/protocol": [
-        "packages/protocol/src/index.ts"
+        "./packages/protocol/src/index.ts"
       ],
       "@canopy/protocol/*": [
-        "packages/protocol/src/*"
+        "./packages/protocol/src/*"
       ],
       "@canopy/artifact-crypto": [
-        "packages/artifact-crypto/src/index.ts"
+        "./packages/artifact-crypto/src/index.ts"
       ],
       "@canopy/artifact-crypto/*": [
-        "packages/artifact-crypto/src/*"
+        "./packages/artifact-crypto/src/*"
       ],
       "@canopy/plugin-interop": [
-        "packages/plugin-interop/src/index.ts"
+        "./packages/plugin-interop/src/index.ts"
       ],
       "@canopy/plugin-interop/*": [
-        "packages/plugin-interop/src/*"
+        "./packages/plugin-interop/src/*"
       ],
       "@canopy/agent-actions": [
-        "packages/agent-actions/src/index.ts"
+        "./packages/agent-actions/src/index.ts"
       ],
       "@canopy/agent-actions/*": [
-        "packages/agent-actions/src/*"
+        "./packages/agent-actions/src/*"
       ],
       "@canopy/agent-transcript": [
-        "packages/agent-transcript/src/index.ts"
+        "./packages/agent-transcript/src/index.ts"
       ],
       "@canopy/agent-transcript/*": [
-        "packages/agent-transcript/src/*"
+        "./packages/agent-transcript/src/*"
       ],
       "@canopy/app-core": [
-        "packages/app-core/src/index.ts"
+        "./packages/app-core/src/index.ts"
       ],
       "@canopy/app-core/*": [
-        "packages/app-core/src/*"
+        "./packages/app-core/src/*"
       ],
       "@canopy/app-state": [
-        "packages/app-state/src/index.ts"
+        "./packages/app-state/src/index.ts"
       ],
       "@canopy/app-state/*": [
-        "packages/app-state/src/*"
+        "./packages/app-state/src/*"
       ],
       "@canopy/ui-app": [
-        "packages/ui-app/src/index.ts"
+        "./packages/ui-app/src/index.ts"
       ],
       "@canopy/ui-app/*": [
-        "packages/ui-app/src/*"
+        "./packages/ui-app/src/*"
       ],
       "@canopy/core-client": [
-        "packages/core-client/src/index.ts"
+        "./packages/core-client/src/index.ts"
       ],
       "@canopy/core-client/*": [
-        "packages/core-client/src/*"
+        "./packages/core-client/src/*"
       ],
       "@canopy/core-runtime": [
-        "packages/core-runtime/src/index.ts"
+        "./packages/core-runtime/src/index.ts"
       ],
       "@canopy/core-runtime/*": [
-        "packages/core-runtime/src/*"
+        "./packages/core-runtime/src/*"
       ],
       "@canopy/core-platform": [
-        "packages/core-platform/src/index.ts"
+        "./packages/core-platform/src/index.ts"
       ],
       "@canopy/core-platform/*": [
-        "packages/core-platform/src/*"
+        "./packages/core-platform/src/*"
       ],
       "@canopy/core-transport": [
-        "packages/core-transport/src/index.ts"
+        "./packages/core-transport/src/index.ts"
       ],
       "@canopy/core-transport/*": [
-        "packages/core-transport/src/*"
+        "./packages/core-transport/src/*"
+      ],
+      "@canopy/code-graph": [
+        "./packages/code-graph/src/index.ts"
+      ],
+      "@canopy/code-graph/*": [
+        "./packages/code-graph/src/*"
       ],
       "@canopy/desktop-shared": [
-        "packages/desktop-shared/src/index.ts"
+        "./packages/desktop-shared/src/index.ts"
       ],
       "@canopy/desktop-shared/*": [
-        "packages/desktop-shared/src/*"
+        "./packages/desktop-shared/src/*"
       ],
       "@canopy/desktop-instrumentation": [
-        "packages/desktop-instrumentation/src/index.ts"
+        "./packages/desktop-instrumentation/src/index.ts"
       ],
       "@canopy/desktop-instrumentation/*": [
-        "packages/desktop-instrumentation/src/*"
+        "./packages/desktop-instrumentation/src/*"
       ],
       "@canopy/ui-shared": [
-        "packages/ui-shared/src/index.ts"
+        "./packages/ui-shared/src/index.ts"
       ],
       "@canopy/ui-shared/*": [
-        "packages/ui-shared/src/*"
+        "./packages/ui-shared/src/*"
       ],
       "@canopy/ui-rich": [
-        "packages/ui-rich/src/index.ts"
+        "./packages/ui-rich/src/index.ts"
       ],
       "@canopy/ui-rich/*": [
-        "packages/ui-rich/src/*"
+        "./packages/ui-rich/src/*"
       ],
       "@canopy/brand/current": [
-        ".cache/brand/current/desktop-brand.ts"
+        "./.cache/brand/current/desktop-brand.ts"
       ],
       "@canopy/pipeline-interop": [
-        "packages/pipeline-interop/src/index.ts"
+        "./packages/pipeline-interop/src/index.ts"
       ],
       "@canopy/pipeline-interop/*": [
-        "packages/pipeline-interop/src/*"
+        "./packages/pipeline-interop/src/*"
       ],
       "@canopy/mcp-oauth-core": [
-        "packages/mcp-oauth-core/src/index.ts"
+        "./packages/mcp-oauth-core/src/index.ts"
       ]
     }
   }

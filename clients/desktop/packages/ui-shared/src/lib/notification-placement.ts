@@ -13,6 +13,18 @@ export interface InAppNotificationContainerOptions {
   readonly clearHeader?: boolean;
 }
 
+/**
+ * Width of the notification stack, in CSS pixels: a macOS notification banner
+ * is 344pt wide, so in-app toasts match the system ones beside them. The
+ * column is `21.5rem` (344px at the 16px root) and never wider than the
+ * window less its 16px margins, so on a phone it fills the screen instead.
+ */
+export const IN_APP_NOTIFICATION_WIDTH_PX = 344;
+
+// One literal class per token so Tailwind can see each of them.
+const COLUMN =
+  'pointer-events-none fixed z-toast flex w-[min(21.5rem,calc(100vw-2rem))] flex-col gap-2';
+
 /** Shared notification viewport placement for independent desktop windows. */
 export function getInAppNotificationContainerClasses(
   placement: InAppNotificationPlacement,
@@ -20,16 +32,12 @@ export function getInAppNotificationContainerClasses(
 ): string {
   switch (placement) {
     case 'top-right':
-      return clearHeader
-        ? 'pointer-events-none fixed right-4 top-14 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2'
-        : 'pointer-events-none fixed right-4 top-4 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2';
+      return `${COLUMN} right-4 ${clearHeader ? 'top-14' : 'top-4'}`;
     case 'bottom-left':
-      return 'pointer-events-none fixed bottom-4 left-4 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2';
+      return `${COLUMN} bottom-4 left-4`;
     case 'top-left':
-      return clearHeader
-        ? 'pointer-events-none fixed left-4 top-14 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2'
-        : 'pointer-events-none fixed left-4 top-4 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2';
+      return `${COLUMN} left-4 ${clearHeader ? 'top-14' : 'top-4'}`;
     case 'bottom-right':
-      return 'pointer-events-none fixed bottom-4 right-4 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2';
+      return `${COLUMN} bottom-4 right-4`;
   }
 }

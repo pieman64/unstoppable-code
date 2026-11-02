@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useEffect, useRef, type JSX } from 'react';
+import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
 
 export interface TranscriptPagingControlsProps {
@@ -73,13 +74,14 @@ export const TranscriptPagingControls = memo(function TranscriptPagingControls({
       ) : error ? (
         <>
           <span role="alert">{error}</span>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="compact"
             data-testid="chat-transcript-retry"
             onClick={needsLoad ? onReload : onLoadEarlier}
           >
             Reload messages
-          </button>
+          </Button>
         </>
       ) : null}
     </div>

@@ -1,5 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { JSX } from 'react';
+import { CanopyClientProvider } from '@canopy/app-state';
+import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { ChatMessageList } from '../ChatMessageList';
 import type { ChatMessage, ChatTab } from '@/stores/chatStore';
 import type { TranscriptTurnSummary } from '@canopy/agent-transcript/transcript-storage';
@@ -50,6 +52,11 @@ jest.mock('@/stores/fileListStore', () => ({
     }),
 }));
 
+// Placement is covered by ChatMessageList.active-turn-render-count; here no
+// run is live, so the pinned section renders no run cards.
+jest.mock('../useLiveAgentRunKeys', () => ({
+  useLiveAgentRunKeys: (): ReadonlySet<string> => new Set(),
+}));
 jest.mock('../ForkedFromLink', () => ({
   ForkedFromLink: (): JSX.Element => (
     <div data-testid="forked-from-link">Forked from conversation</div>
@@ -60,16 +67,13 @@ jest.mock('../TurnGroupRenderer', () => ({
   TurnGroupRenderer: ({
     group,
     isLastTurnGroup,
-    knownPipelineRuns,
   }: {
     group: { userMessage: { id: string } };
     isLastTurnGroup: boolean;
-    knownPipelineRuns?: Record<string, unknown>;
   }): JSX.Element => (
     <div
       data-testid={`turn-${group.userMessage.id}`}
       data-last-turn-group={isLastTurnGroup}
-      data-known-pipeline-runs={Object.keys(knownPipelineRuns ?? {}).join(',')}
     >
       turn:{group.userMessage.id}
     </div>
@@ -86,16 +90,12 @@ jest.mock('../QueuedMessageBubble', () => ({
   QueuedMessageBubble: (): JSX.Element => <div />,
 }));
 
-jest.mock('../QueuedMessageEditor', () => ({
-  QueuedMessageEditor: (): JSX.Element => <div />,
-}));
-
 function message(
   id: string,
   role: 'user' | 'assistant' | 'system',
   blocks: ChatMessage['blocks'],
 ): ChatMessage {
-  return { id, role, blocks, timestamp: 1 } as ChatMessage;
+  return { id, role, blocks, timestamp: 1 };
 }
 
 function textMessage(
@@ -110,55 +110,6 @@ function timerMessage(id: string): ChatMessage {
   return message(id, 'system', [
     { type: 'turn_timer', startedAt: 1, completedAt: 2 },
   ]);
-}
-
-function pipelineRunMessages(): ChatMessage[] {
-  const createdAt = '2026-09-18T00:00:00.000Z';
-  return [
-    message('pipeline-tool', 'assistant', [
-      {
-        type: 'tool_use',
-        toolUseId: 'pipeline-tool-use',
-        toolName: 'DispatchAction',
-        input: '{}',
-      },
-    ]),
-    message('pipeline-result', 'assistant', [
-      {
-        type: 'tool_result',
-        toolUseId: 'pipeline-tool-use',
-        toolName: 'DispatchAction',
-        output: JSON.stringify({
-          ok: true,
-          result: {
-            agentArtifacts: [
-              {
-                version: 1,
-                kind: 'pipeline_run',
-                operation: 'pipeline.run',
-                dedupeKey: 'canopy:pipeline_run:execution:exec-1',
-                createdAt,
-                executionId: 'exec-1',
-                pipelineId: 'pipe-1',
-                pipelineName: 'Build',
-                initialStatus: 'running',
-                queuedAt: createdAt,
-                projectId: 'project',
-                worktreeId: 'worktree',
-                navigationTarget: {
-                  kind: 'pipeline_execution',
-                  executionId: 'exec-1',
-                  projectId: 'project',
-                  worktreeId: 'worktree',
-                },
-              },
-            ],
-          },
-        }),
-        isError: false,
-      },
-    ]),
-  ];
 }
 
 function renderList(options: {
@@ -193,14 +144,16 @@ function renderList(options: {
   };
 
   return renderToStaticMarkup(
-    <ChatMessageList
-      messages={options.messages}
-      transcriptTurns={options.transcriptTurns}
-      queuedMessages={[]}
-      chatId="chat-1"
-      onClearQueuedMessage={jest.fn()}
-      enableForkedFromLink={options.enableForkedFromLink ?? true}
-    />,
+    <CanopyClientProvider client={ipcCanopyClient}>
+      <ChatMessageList
+        messages={options.messages}
+        transcriptTurns={options.transcriptTurns}
+        queuedMessages={[]}
+        chatId="chat-1"
+        onClearQueuedMessage={jest.fn()}
+        enableForkedFromLink={options.enableForkedFromLink ?? true}
+      />
+    </CanopyClientProvider>,
   );
 }
 
@@ -217,18 +170,6 @@ describe('ChatMessageList fork source divider placement', () => {
 
     expect(html).toContain('data-testid="turn-user-1"');
     expect(html).toContain('data-last-turn-group="true"');
-  });
-
-  it('forwards chat-initiated pipeline runs to completed turns', () => {
-    const html = renderList({
-      messages: [
-        textMessage('user-1', 'user', 'Run the pipeline'),
-        ...pipelineRunMessages(),
-        timerMessage('timer-1'),
-      ],
-    });
-
-    expect(html).toContain('data-known-pipeline-runs="exec-1"');
   });
 
   it.each([false, true])(

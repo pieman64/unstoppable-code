@@ -160,7 +160,7 @@ export async function handleAppAdvisorDynamicToolCall(
       contentItems: [
         {
           type: 'inputText',
-          text: `Unsupported App Advisor dynamic tool: ${params.tool}`,
+          text: `Unsupported Orchestrator dynamic tool: ${params.tool}`,
         },
       ],
       success: false,

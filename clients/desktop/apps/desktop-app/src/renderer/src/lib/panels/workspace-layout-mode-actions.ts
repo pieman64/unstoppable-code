@@ -12,7 +12,7 @@ import {
   hideOptionalMinimalRegions,
   planMinimalLayout,
 } from './minimal-layout';
-import { earlyAccessMinimalFor } from './early-access-minimal';
+import { usesSimplifiedMinimalDefaults } from './minimal-layout-defaults';
 import { DEFAULT_TERMINAL_GROUP_ID } from './panel-group-ids';
 
 /** Worktrees with a mode transition in flight. */
@@ -90,7 +90,7 @@ async function runTransition(
         record.sourceGroupId === DEFAULT_TERMINAL_GROUP_ID ||
         record.returnTarget?.direction === 'down',
     })),
-    { seedSidePanels: !earlyAccessMinimalFor(worktreeKey) },
+    { seedSidePanels: !usesSimplifiedMinimalDefaults(worktreeKey) },
   );
 
   setPanelLayoutFixedTopology(worktreeKey, true);
@@ -107,10 +107,10 @@ async function runTransition(
         throw new Error('auxiliary adoption failed');
       }
     }
-    // Early access opens Minimal on Chat alone; the user reveals the Side
+    // Minimal opens on Chat alone; the user reveals the Side
     // Panel or Bottom Drawer when they want them. This runs only for a
     // switch the user asked for, never because early access turned on.
-    const target = earlyAccessMinimalFor(worktreeKey)
+    const target = usesSimplifiedMinimalDefaults(worktreeKey)
       ? hideOptionalMinimalRegions(plan.layout)
       : plan.layout;
     if (!store.restoreLayout(worktreeKey, target)) {

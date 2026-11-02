@@ -38,7 +38,7 @@ export function getCandidateDisabledReason(
     case 'active-chat':
       return 'This worktree has an active chat session.';
     case 'running-pipeline':
-      return 'This worktree has a running pipeline execution.';
+      return 'This worktree has a running workflow execution.';
     case 'setup-pending':
       return 'This worktree is still being set up.';
     case 'health-issue':
@@ -199,7 +199,7 @@ export function ExistingWorktreePicker({
                   type="button"
                   onClick={() => toggleWorkspaceCollapsed(group.workspaceId)}
                   aria-expanded={!isCollapsed}
-                  className="focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition hover:bg-secondary/30"
+                  className="focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/30"
                   data-testid={`existing-worktree-picker-group-${group.workspaceId}`}
                 >
                   <WorkspaceBadgeIcon
@@ -250,7 +250,7 @@ export function ExistingWorktreePicker({
                           type="button"
                           onClick={() => onSelect(candidate)}
                           disabled={disabledReason !== null}
-                          className={`focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition ${
+                          className={`focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors ${
                             disabledReason !== null
                               ? 'cursor-not-allowed fg-secondary/60'
                               : isSelected

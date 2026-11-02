@@ -12,7 +12,6 @@ import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-
 import { act, type JSX, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  CanopyApi,
   PreferencesData,
   UpdateState,
 } from '@canopy/desktop-shared/types';
@@ -55,12 +54,6 @@ import { DESKTOP_SHARED_SIDEBAR_STORAGE_KEY } from '../desktop-shared-sidebar-fl
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
   var __workspacesSectionRenders: number;
-
-  interface Window {
-    api: CanopyApi;
-    platform: NodeJS.Platform;
-    devInfo: { isDev: boolean; branch: string | null };
-  }
 }
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -77,6 +70,11 @@ jest.mock(
   '../SidebarWorkspacesSection',
   (): {
     MoreStickyLead: (props: { lead?: ReactNode }) => JSX.Element | null;
+    StickyWorkspaceControls: (props: {
+      lead?: ReactNode;
+      workspaceHeader?: ReactNode;
+      workspaceSlot?: ReactNode;
+    }) => JSX.Element;
     SidebarWorkspacesSection: (props: {
       stickyHeaderLead?: ReactNode;
     }) => JSX.Element;
@@ -243,6 +241,11 @@ jest.mock(
     WakeLockIndicator: (): JSX.Element | null => null,
   }),
 );
+jest.mock('../DesktopSidebarActivityToggle', () => ({
+  DesktopSidebarActivityToggle: (): JSX.Element => (
+    <button data-testid="sidebar-activity-toggle">Activity</button>
+  ),
+}));
 jest.mock(
   '../../resource-diagnostics/ResourceDiagnosticsPill',
   (): {
@@ -353,6 +356,7 @@ function mockSidebarUpdateState(state: UpdateState): void {
 const BASE_PROPS: AppSidebarProps = {
   activePage: 'main',
   onNavigate: jest.fn(),
+  onReturnToSectionRoot: jest.fn(),
   onSettingsClick: jest.fn(),
   settingsOpen: false,
   onCanopyPortalClick: jest.fn(),
@@ -976,7 +980,7 @@ describe('AppSidebar', () => {
       // Spacing is owned by the account menu's banner stack; the slot wrapper
       // itself is bare.
       expect(item?.parentElement?.className).toBe('');
-      expect(item?.textContent).toContain('DEV');
+      expect(item?.textContent).toContain('Dev build');
       expect(item?.textContent).toContain('codex/footer-alignment');
       const [iconSlot, branchLabel, badge] = Array.from(item?.children ?? []);
       expect(iconSlot?.className).toContain('ml-0.5');
@@ -1013,17 +1017,16 @@ describe('AppSidebar', () => {
       expect(badge?.getAttribute('data-testid')).toBe('sidebar-dev-badge');
       expect(item?.className).toContain('items-center');
       expect(item?.className).toContain('pr-2');
-      expect(badge?.className).toContain('h-5');
-      expect(badge?.className).toContain('-mr-1');
+      // The shared 18px warning Badge, 5px from the 28px banner's top,
+      // bottom and trailing edge (its 8px padding less a 3px margin).
+      expect(badge?.textContent).toBe('Dev build');
+      expect(badge?.className).toContain('h-4.5');
+      expect(badge?.className).toContain('rounded-full');
+      expect(badge?.className).toContain('-mr-0.75');
       expect(badge?.className).toContain('shrink-0');
-      expect(badge?.className).toContain('bg-warning');
-      expect(badge?.className).not.toContain('bg-warning/20');
-      expect(badge?.className).toContain('fg-emphasis');
-      expect(badge?.className).not.toContain('fg-warning');
-      expect(badge?.className).toContain('text-3xs');
-      expect(badge?.className).toContain(
-        'rounded-[calc(var(--radius-row)-4px)]',
-      );
+      expect(badge?.className).toContain('bg-warning-subtle fg-warning-strong');
+      expect(badge?.className).not.toContain('fg-emphasis');
+      expect(badge?.className).not.toContain('uppercase');
       expect(item?.lastElementChild).toBe(badge);
       // The mask class is unconditional; the CSS only paints the fade while
       // the footer banner stack has content (banner-driven, not dev-driven).
@@ -1052,7 +1055,7 @@ describe('AppSidebar', () => {
     }
   });
 
-  it('insets the DEV badge 6px on every side of the 32px early-access banner', async () => {
+  it('insets the dev build badge 7px on every side of the 32px early-access banner', async () => {
     setTestEarlyAccessFeatures({ enabled: true, hydrated: true });
     const { container, unmount } = await renderSidebar({}, makePreferences(), {
       isDev: true,
@@ -1065,16 +1068,13 @@ describe('AppSidebar', () => {
       const badge = container.querySelector<HTMLElement>(
         '[data-testid="sidebar-dev-badge"]',
       );
-      // 32px banner, 20px badge: 6px above and below. The banner's 8px right
-      // padding less the badge's -2px margin: 6px on the right too, so the
-      // nested corner is the row's radius less 6px.
+      // 32px banner, 18px badge: 7px above and below. The banner's 8px right
+      // padding less the badge's -1px margin: 7px on the right too.
       expect(item?.classList).toContain('h-8');
-      expect(badge?.classList).toContain('h-5');
-      expect(badge?.classList).toContain('-mr-0.5');
-      expect(badge?.classList).not.toContain('-mr-1');
-      expect(badge?.className).toContain(
-        'rounded-[calc(var(--radius-row)-6px)]',
-      );
+      expect(badge?.classList).toContain('h-4.5');
+      expect(badge?.classList).toContain('-mr-px');
+      expect(badge?.classList).not.toContain('-mr-0.75');
+      expect(badge?.classList).toContain('rounded-full');
     } finally {
       unmount();
     }
@@ -1864,6 +1864,9 @@ describe('AppSidebar', () => {
       const stickySentinel = container.querySelector<HTMLElement>(
         '[data-testid="sidebar-sticky-workspace-sentinel"]',
       );
+      if (!stickySentinel) {
+        throw new Error('Expected sticky workspace sentinel');
+      }
       const viewportQuerySelectorAll = jest.spyOn(viewport, 'querySelectorAll');
       await act(async () => {
         stickySentinel.append(document.createComment('threshold ready'));
@@ -2894,6 +2897,10 @@ describe('AppSidebar', () => {
     const { setProperty } = Object.getOwnPropertyDescriptors(
       CSSStyleDeclaration.prototype,
     );
+    const setPropertyValue = setProperty.value;
+    if (typeof setPropertyValue !== 'function') {
+      throw new Error('Expected CSSStyleDeclaration.setProperty');
+    }
     const write = jest
       .spyOn(CSSStyleDeclaration.prototype, 'setProperty')
       .mockImplementation(function (
@@ -2903,7 +2910,7 @@ describe('AppSidebar', () => {
         priority?: string,
       ): void {
         if (name.startsWith('--sidebar-')) events.push(`write:${name}`);
-        Reflect.apply(setProperty.value, this, [name, value, priority]);
+        Reflect.apply(setPropertyValue, this, [name, value, priority]);
       });
     try {
       const stickyContainer = container.querySelector<HTMLElement>(
@@ -3354,7 +3361,6 @@ describe('AppSidebar', () => {
   it('marks every Labs row with the Labs marker and no other row (CAN-3679)', async () => {
     publishPageExperimentsOn();
     const { container, unmount } = await renderSidebar({
-      sharedCustomAgentsEnabled: true,
       ledgerEnabled: true,
     });
     try {
@@ -3633,7 +3639,7 @@ describe('AppSidebar', () => {
       expect(
         container.querySelector('[data-testid="sidebar-app-advisor-thinking"]'),
       ).not.toBeNull();
-      expect(button?.getAttribute('aria-label')).toBe('Advisor: thinking');
+      expect(button?.getAttribute('aria-label')).toBe('Orchestrator: thinking');
     } finally {
       unmount();
     }
@@ -3652,7 +3658,7 @@ describe('AppSidebar', () => {
       expect(button?.className).not.toContain('bg-info-subtle');
       expect(button?.className).toContain('bg-muted');
       expect(button?.querySelector('span')?.className).toContain('fg-info');
-      expect(button?.getAttribute('aria-label')).toBe('Advisor: unread');
+      expect(button?.getAttribute('aria-label')).toBe('Orchestrator: unread');
     } finally {
       unmount();
     }
@@ -3670,7 +3676,7 @@ describe('AppSidebar', () => {
       );
       expect(button?.className).toContain('bg-muted');
       expect(button?.className).toContain('fg-primary');
-      expect(button?.getAttribute('aria-label')).toBe('Advisor');
+      expect(button?.getAttribute('aria-label')).toBe('Orchestrator');
       expect(button?.getAttribute('aria-pressed')).toBe('true');
     } finally {
       unmount();
@@ -3693,25 +3699,33 @@ describe('AppSidebar', () => {
   );
 
   it.each([
-    // Workflows opens on Runs; on one of its tabs the row is already there.
-    ['overview', ['workflows']],
-    ['workflows-schedule', []],
-    ['workflows-library', []],
+    // Workflows opens on Runs; on one of its tabs the row is the current one,
+    // so a click returns it to its root instead (2026-10-22).
+    ['overview', 'workflows', ['workflows'], []],
+    ['workflows-schedule', 'workflows', [], ['workflows']],
+    ['workflows-library', 'workflows', [], ['workflows']],
+    ['overview', 'plugins', ['plugins'], []],
+    ['plugins', 'plugins', [], ['plugins']],
   ] as const)(
-    'Workflows row on the %s page navigates to %j (CAN-3981)',
-    async (activePage, expected) => {
+    'on the %s page the %s row navigates to %j and returns to the root of %j',
+    async (activePage, key, navigated, returned) => {
       const onNavigate = jest.fn();
+      const onReturnToSectionRoot = jest.fn();
       const { container, unmount } = await renderSidebar({
         activePage,
         onNavigate,
+        onReturnToSectionRoot,
       });
       try {
         act(() => {
           container
-            .querySelector<HTMLElement>('[data-testid="sidebar-nav-workflows"]')
+            .querySelector<HTMLElement>(`[data-testid="sidebar-nav-${key}"]`)
             ?.click();
         });
-        expect(onNavigate.mock.calls).toEqual(expected.map((page) => [page]));
+        expect(onNavigate.mock.calls).toEqual(navigated.map((page) => [page]));
+        expect(onReturnToSectionRoot.mock.calls).toEqual(
+          returned.map((page) => [page]),
+        );
       } finally {
         unmount();
       }
@@ -3859,6 +3873,32 @@ describe('AppSidebar', () => {
     }
   });
 
+  it('keeps guest Activity beside Search instead of crowding titlebar history', async () => {
+    window.localStorage.setItem(DESKTOP_SHARED_SIDEBAR_STORAGE_KEY, '1');
+    const { container, unmount } = await renderSidebar(
+      {},
+      makePreferences({ showDiagnosticsPill: true, sidebarWidth: 220 }),
+    );
+    try {
+      const search = container.querySelector('[data-testid="sidebar-search"]');
+      const activity = container.querySelector(
+        '[data-testid="sidebar-activity-toggle"]',
+      );
+      expect(activity).not.toBeNull();
+      expect(search?.parentElement?.contains(activity)).toBe(true);
+      expect(
+        container
+          .querySelector('[data-testid="sidebar-titlebar"]')
+          ?.contains(activity),
+      ).toBe(false);
+      expect(
+        container.querySelectorAll('[data-testid="sidebar-activity-toggle"]'),
+      ).toHaveLength(1);
+    } finally {
+      unmount();
+    }
+  });
+
   it('keeps compact resource metrics mounted so their label can adapt to the available width', async () => {
     useResourceMonitorStore.setState({ initialized: true, loading: false });
     const { container, unmount } = await renderSidebar(
@@ -3953,12 +3993,15 @@ describe('AppSidebar', () => {
           '[data-testid="sidebar-fixed-navigation"] [data-sidebar-nav-row], [data-testid="sidebar-scrolling-navigation"] [data-sidebar-nav-row]',
         ),
       );
-      // The label without any trailing Labs or Dev marker (CAN-3679).
+      // The label without any trailing Labs or Dev marker (CAN-3679) or
+      // shortcut glyph.
       const labelOf = (row: HTMLElement): string | null => {
         const copy = row.cloneNode(true);
         if (!(copy instanceof HTMLElement)) return row.textContent;
         copy
-          .querySelectorAll('[data-testid^="sidebar-entry-marker-"]')
+          .querySelectorAll(
+            '[data-testid^="sidebar-entry-marker-"], [data-testid="sidebar-row-shortcut"]',
+          )
           .forEach((marker) => marker.remove());
         return copy.textContent;
       };
@@ -3967,7 +4010,7 @@ describe('AppSidebar', () => {
         expect.arrayContaining([
           'New task',
           'Search',
-          'Advisor',
+          'Orchestrator',
           'Workflows',
           'Audit trail',
         ]),

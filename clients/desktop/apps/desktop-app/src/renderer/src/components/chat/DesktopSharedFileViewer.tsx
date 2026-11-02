@@ -1,11 +1,14 @@
 import {
+  Button,
   DiffComparisonToggle,
+  DiffTurnUnavailableState,
   DiffViewModeToggle,
   HeaderActionButton,
   Notice,
   NoticeButton,
-} from '@canopy/ui-shared';
+} from '@canopy/ui-shared/components';
 import { RefreshSpinner } from '@/components/shared/loading/spinners/RefreshSpinner';
+import { brandText } from '@/lib/brand';
 import {
   findFileTitle,
   useFilePreviewFindController,
@@ -31,6 +34,7 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import type { Descendant } from 'slate';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
+import { documentPreviewMaxBytes } from '@canopy/protocol/document-preview';
 import {
   fileViewerKey,
   useFileViewerStore,
@@ -54,11 +58,21 @@ import type {
   ReviewCommentAnchor,
 } from '@canopy/desktop-shared/types';
 import { FileChangeMetadata } from '@canopy/ui-shared/components';
+import type { FileImageSaveSupport } from '@canopy/protocol/file-image-save';
+import { desktopDiagramSaveDestination } from '@/lib/diagramSaveDestination';
 import { LoadingPlaceholder } from '@/components/shared';
 import { useChatStore, useChatTabRenderState } from '@/stores/chatStore';
-import { useFileDiffSnapshot } from './useFileDiffSnapshot';
+import {
+  isTurnDiffUnavailable,
+  useFileDiffSnapshot,
+} from './useFileDiffSnapshot';
 import type { FileDiffContext } from '@canopy/desktop-shared/types/code-review';
-import { MessageIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  ExternalIcon,
+  FolderIcon,
+  GlobeIcon,
+  MessageIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
@@ -66,7 +80,6 @@ import { hasActiveSetupRun, useScriptsStore } from '@/stores/scriptsStore';
 import { desktopFileSessionController } from '@/lib/file-viewer/desktop-file-session-controller';
 import { resolveDesktopDocumentBytes } from '@/lib/file-viewer/desktop-document-bytes';
 import { createDesktopOfficeWorker } from '@/lib/file-viewer/desktop-office-worker';
-import { initialFileTabViewMode } from '@/lib/file-viewer/initial-view-mode';
 import { resolveDesktopPdfPreviewAssets } from '@/lib/pdf-preview-assets';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import {
@@ -91,6 +104,12 @@ import { useActivityStore } from '@/stores/activityStore';
 import { useTabScrollPosition } from './useTabScrollPosition';
 import { useFileComments } from './useFileComments';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
+import {
+  isLocalFileActionAvailable,
+  OPEN_EXTERNAL_FILE_FAILED,
+  REVEAL_FILE_FAILED,
+  resolveLocalFileActionRequest,
+} from '@/lib/file-reveal';
 import { openFileInBrowserPanel } from '@/lib/openFileInBrowserPanel';
 import { FileCommentsDrawer } from './FileCommentsDrawer';
 import { FileSelectionMenu } from './FileSelectionMenu';
@@ -142,7 +161,13 @@ const LazyPptxPreview = lazy(() =>
     default: module.PptxPreview,
   })),
 );
-const SUPPORTED_DOCUMENT_KINDS = ['pdf', 'docx', 'xlsx', 'pptx'] as const;
+const SUPPORTED_DOCUMENT_KINDS = [
+  'pdf',
+  'docx',
+  'xlsx',
+  'pptx',
+  'video',
+] as const;
 
 const MonacoFileEditor = lazy(() =>
   import('./MonacoFileEditor').then((module) => ({
@@ -225,6 +250,9 @@ function DesktopSharedFileViewerImpl({
 }: DesktopSharedFileViewerProps): JSX.Element {
   const [request, setRequest] = useState<PortalFileReadPayload | null>(null);
   const [resolvedRoot, setResolvedRoot] = useState<FileTreeRoot | null>(null);
+  const [imageSaveSupport, setImageSaveSupport] = useState<
+    FileImageSaveSupport | undefined
+  >(undefined);
   const [error, setError] = useState<string | null>(null);
   // Read-only scopes (a shared-container recipient) get the read-only viewer:
   // no editor, no comment authoring, no Show in Finder / Open in.
@@ -318,6 +346,7 @@ function DesktopSharedFileViewerImpl({
     viewMode === 'diff',
     diffRevision,
   );
+  const turnUnavailable = isTurnDiffUnavailable(diffContext);
   const artifacts = useWorktreeReview(
     projectId,
     worktreeId,
@@ -434,6 +463,7 @@ function DesktopSharedFileViewerImpl({
     let cancelled = false;
     setRequest(null);
     setResolvedRoot(null);
+    setImageSaveSupport(undefined);
     setError(null);
     // A Branch-from destination is registered and selected during two-phase
     // creation, before its checkout directories are guaranteed to exist.
@@ -446,8 +476,9 @@ function DesktopSharedFileViewerImpl({
     }
     void window.api
       .getFileTreeRoots({ projectId, worktreeId })
-      .then(({ roots }) => {
+      .then(({ roots, imageSaveSupport: support }) => {
         if (cancelled) return;
+        setImageSaveSupport(support);
         const match = roots
           .map((root) => ({
             root,
@@ -537,8 +568,6 @@ function DesktopSharedFileViewerImpl({
   const rendersAsImage = renderKind === 'image';
   const rendersAsHtml = renderKind === 'html';
   const rendersAsDocument = isRichDocumentRenderKind(renderKind);
-  const rendersAsOfficeDocument =
-    renderKind === 'docx' || renderKind === 'xlsx' || renderKind === 'pptx';
   const officePreviewCopy = useMemo<OfficePreviewCopy>(
     () => ({
       banner: pt(uiText.officePreview.banner),
@@ -546,13 +575,66 @@ function DesktopSharedFileViewerImpl({
     }),
     [],
   );
+  // Reveal and default-app opening are offered for any previewable file with
+  // a local path in a writable scope. Main applies each route's authorization;
+  // scoped reveal also canonicalizes the path against the workspace roots.
+  const localFileRequest = useMemo(
+    () =>
+      resolveLocalFileActionRequest({
+        absolutePath: filePath,
+        surfaceScope: { projectId, worktreeId },
+        surfaceReadOnly: readOnly,
+      }),
+    [filePath, projectId, readOnly, worktreeId],
+  );
+  // Keyed by the file so a failure never follows the tab to another file.
+  const localActionScope = `${projectId}/${worktreeId}/${filePath}`;
+  const [localActionError, setLocalActionError] = useState<{
+    scope: string;
+    message: string;
+  } | null>(null);
+  const localActionGeneration = useRef(0);
+  useEffect(() => {
+    setLocalActionError(null);
+    return (): void => {
+      localActionGeneration.current += 1;
+    };
+  }, [localActionScope]);
+  const canRevealFile = isLocalFileActionAvailable('showInFinder');
+  const canOpenExternalFile = isLocalFileActionAvailable('openExternalFile');
+  const runLocalFileAction = useCallback(
+    (action: 'reveal' | 'open-external'): void => {
+      if (!localFileRequest) return;
+      if (action === 'reveal' ? !canRevealFile : !canOpenExternalFile) return;
+      const generation = ++localActionGeneration.current;
+      setLocalActionError(null);
+      const pending =
+        action === 'reveal'
+          ? window.api.showInFinder(localFileRequest)
+          : window.api.openExternalFile(localFileRequest);
+      pending.catch(() => {
+        if (generation !== localActionGeneration.current) return;
+        setLocalActionError({
+          scope: localActionScope,
+          message:
+            action === 'reveal'
+              ? REVEAL_FILE_FAILED
+              : OPEN_EXTERNAL_FILE_FAILED,
+        });
+      });
+    },
+    [canOpenExternalFile, canRevealFile, localActionScope, localFileRequest],
+  );
   const openOriginalFile = useCallback((): void => {
-    void window.api.showInFinder({
-      absolutePath: filePath,
-      projectId,
-      worktreeId,
-    });
-  }, [filePath, projectId, worktreeId]);
+    runLocalFileAction('reveal');
+  }, [runLocalFileAction]);
+  const openFileExternally = useCallback((): void => {
+    runLocalFileAction('open-external');
+  }, [runLocalFileAction]);
+  const visibleLocalActionError =
+    localActionError?.scope === localActionScope
+      ? localActionError.message
+      : undefined;
 
   useEffect(() => {
     setSetupWaitExpired(false);
@@ -704,56 +786,88 @@ function DesktopSharedFileViewerImpl({
     [],
   );
 
+  const canInsertIntoTargetChat = useChatStore((state) => {
+    const worktreeChat = state.worktreeChats[`${projectId}/${worktreeId}`];
+    return (
+      worktreeChat !== undefined &&
+      resolveSelectionTargetTabId(worktreeChat) !== null
+    );
+  });
+
+  // Appends text to this worktree's selection-target chat composer (the
+  // same chat Send to Chat uses) and switches to that chat. Existing draft
+  // text is kept; nothing is sent. Returns false when no chat can take it.
+  const insertIntoTargetChat = useCallback(
+    (text: string): boolean => {
+      const chat = useChatStore.getState();
+      const worktreeChat = chat.worktreeChats[`${projectId}/${worktreeId}`];
+      if (!worktreeChat) return false;
+      const targetTabId = resolveSelectionTargetTabId({
+        tabs: worktreeChat.tabs,
+        activeTabId: worktreeChat.activeTabId,
+        ...(worktreeChat.lastActiveEditableChatId
+          ? {
+              lastActiveEditableChatId: worktreeChat.lastActiveEditableChatId,
+            }
+          : {}),
+      });
+      if (targetTabId === null) return false;
+      let handled = false;
+      const detail: InsertChatTextDetail = {
+        text,
+        targetTabId,
+        markHandled: (): void => {
+          handled = true;
+        },
+      };
+      document.dispatchEvent(
+        new CustomEvent(INSERT_CHAT_TEXT_EVENT, { detail }),
+      );
+      // A composer can be absent while its tab is in an unmounted panel.
+      // Preserve the old saved-draft path strictly as a fallback; mounted
+      // composers must update their live Slate value so the insertion cannot
+      // be overwritten by their next draft save.
+      if (!handled) {
+        const currentDraft = chat.getTabDraft(targetTabId) ?? [];
+        const block: Descendant = {
+          type: 'paragraph',
+          children: [{ text }],
+        };
+        chat.saveTabDraft(targetTabId, [...currentDraft, block]);
+      }
+      chat.switchTab(targetTabId, { projectId, worktreeId });
+      return true;
+    },
+    [projectId, worktreeId],
+  );
+
   const sendSelectionToChat = useCallback((): void => {
     if (commentPopover?.mode !== 'selection') return;
-    const chat = useChatStore.getState();
-    const worktreeChat = chat.worktreeChats[`${projectId}/${worktreeId}`];
-    if (!worktreeChat) return;
-    const targetTabId = resolveSelectionTargetTabId({
-      tabs: worktreeChat.tabs,
-      activeTabId: worktreeChat.activeTabId,
-      ...(worktreeChat.lastActiveEditableChatId
-        ? {
-            lastActiveEditableChatId: worktreeChat.lastActiveEditableChatId,
-          }
-        : {}),
-    });
-    if (targetTabId === null) return;
-    let handled = false;
-    const detail: InsertChatTextDetail = {
-      text: commentPopover.anchor.quote,
-      targetTabId,
-      markHandled: (): void => {
-        handled = true;
-      },
-    };
-    document.dispatchEvent(new CustomEvent(INSERT_CHAT_TEXT_EVENT, { detail }));
-    // A composer can be absent while its tab is in an unmounted panel. Preserve
-    // the old saved-draft path strictly as a fallback; mounted composers must
-    // update their live Slate value so the insertion cannot be overwritten by
-    // their next draft save.
-    if (!handled) {
-      const currentDraft = chat.getTabDraft(targetTabId) ?? [];
-      const selectionBlock: Descendant = {
-        type: 'paragraph',
-        children: [{ text: commentPopover.anchor.quote }],
-      };
-      chat.saveTabDraft(targetTabId, [...currentDraft, selectionBlock]);
-    }
-    chat.switchTab(targetTabId, { projectId, worktreeId });
+    if (!insertIntoTargetChat(commentPopover.anchor.quote)) return;
     setCommentPopover(null);
-  }, [commentPopover, projectId, worktreeId]);
+  }, [commentPopover, insertIntoTargetChat]);
+
+  // CAN-5362: drafts a follow-up for an overlapping passage. It only adds
+  // text to the composer; the comparison, choices and buffer are untouched.
+  const onAskToKeepEdits = useCallback(
+    (prompt: string): void => {
+      insertIntoTargetChat(prompt);
+    },
+    [insertIntoTargetChat],
+  );
 
   useEffect(() => {
     const wasActive = previousActiveRef.current;
     previousActiveRef.current = active;
     if (!active || wasActive || !request) return;
+    // A video re-read would reload up to 100 MiB and reset playback position.
+    if (renderKind === 'video') return;
     if (rendersAsDocument) {
       setDocumentRetryGeneration((generation) => generation + 1);
     } else {
       void refreshFile(request);
     }
-  }, [active, refreshFile, rendersAsDocument, request]);
+  }, [active, refreshFile, renderKind, rendersAsDocument, request]);
 
   const resolveDocumentBytes = useMemo<
     NonNullable<FileViewerProps['resolveDocumentBytes']>
@@ -767,6 +881,7 @@ function DesktopSharedFileViewerImpl({
               workspaceTarget: { projectId, worktreeId },
             }),
           signal,
+          documentPreviewMaxBytes(filePath),
         ),
     [filePath, projectId, worktreeId],
   );
@@ -852,7 +967,6 @@ function DesktopSharedFileViewerImpl({
               {
                 absolutePath: resolved.absolutePath,
                 filename: resolved.filename,
-                initialViewMode: initialFileTabViewMode(resolved.filename),
               },
               { projectId, worktreeId },
             );
@@ -867,6 +981,23 @@ function DesktopSharedFileViewerImpl({
       tabId,
       worktreeId,
     ],
+  );
+
+  // Diagram pictures are created beside the document when this scope can
+  // write and main advertises create-only image saves; otherwise they download.
+  const diagramSaveDestination = useMemo(
+    () =>
+      desktopDiagramSaveDestination({
+        projectId,
+        worktreeId,
+        filePath,
+        support: imageSaveSupport,
+        readOnly,
+        saveFileContent: (saveRequest) =>
+          window.api.saveFileContent(saveRequest),
+        openFile: (file) => openFileTab(file, { projectId, worktreeId }),
+      }),
+    [filePath, imageSaveSupport, openFileTab, projectId, readOnly, worktreeId],
   );
 
   const resolveAssetSrc = useMemo(
@@ -1091,7 +1222,19 @@ function DesktopSharedFileViewerImpl({
             language={getMonacoLanguage(slot.filePath, slot.language)}
             value={slot.value}
             onChange={slot.onChange}
-            presentation={presentation}
+            // The shared viewer composes host links with its own reveals
+            // (an overlapping passage), so Monaco follows the slot.
+            presentation={
+              slot.reveal
+                ? {
+                    revision: slot.reveal.revision ?? 0,
+                    line: slot.reveal.line,
+                    ...(slot.reveal.lineEnd !== undefined
+                      ? { lineEnd: slot.reveal.lineEnd }
+                      : {}),
+                  }
+                : undefined
+            }
             revealReady={slot.revealReady}
             annotations={comments.document.annotations}
             commentThreads={comments.document.commentThreads}
@@ -1112,7 +1255,6 @@ function DesktopSharedFileViewerImpl({
       openThread,
       onAddSelectionToChat,
       onShowSelectionTarget,
-      presentation,
       tabId,
     ],
   );
@@ -1148,86 +1290,129 @@ function DesktopSharedFileViewerImpl({
     [openFileAsSibling, projectId, resolvedRoot, worktreeId],
   );
 
+  // Every header action shares one quiet toolbar control so the row reads as
+  // a single set: view controls first (diff, then the viewer's own source
+  // toggle), then ways to open the file elsewhere, then panel chrome. Only the
+  // diff toggle keeps visible text, because its counts are data.
   const existingDiffHeaderAction =
     diffTarget || viewMode === 'diff' || storedDiffContext ? (
-      <Tooltip
-        label={
+      <HeaderActionButton
+        tone="neutral"
+        stateStyle="toolbar"
+        tooltipLabel={
           viewMode === 'diff'
             ? 'Return to raw file'
             : "View this file's changes"
         }
+        onClick={(): void => {
+          setCommentPopover(null);
+          setFileTabViewMode(
+            tabId,
+            viewMode === 'diff' ? 'raw' : 'diff',
+            { projectId, worktreeId },
+            diffContext,
+          );
+        }}
+        aria-label="View diff"
+        aria-pressed={viewMode === 'diff'}
+        data-testid="file-viewer-view-diff"
       >
-        <button
-          type="button"
-          onClick={(): void => {
-            setCommentPopover(null);
-            setFileTabViewMode(
-              tabId,
-              viewMode === 'diff' ? 'raw' : 'diff',
-              { projectId, worktreeId },
-              diffContext,
-            );
-          }}
-          aria-label="View diff"
-          aria-pressed={viewMode === 'diff'}
-          data-testid="file-viewer-view-diff"
-          className={`flex h-7 items-center gap-1.5 rounded-md border px-3 py-1 text-xs transition ${viewMode === 'diff' ? 'bg-accent-subtle fg-accent ring-1 ring-inset ring-line-accent' : 'bg-secondary fg-primary hover:bg-accent-subtle hover:fg-accent'}`}
-        >
-          {diffTarget ? (
-            <FileChangeMetadata
-              insertions={diffTarget.file.insertions}
-              deletions={diffTarget.file.deletions}
-              status={diffTarget.file.status}
-            />
-          ) : (
-            'Diff'
-          )}
-          {comments.otherViewCount > 0 && (
-            <span
-              className="flex items-center gap-1"
-              aria-label={`${comments.otherViewCount} open comments in ${viewMode === 'diff' ? 'file' : 'diff'} view`}
-            >
-              <MessageIcon size={12} />
-              {comments.otherViewCount}
-            </span>
-          )}
-        </button>
-      </Tooltip>
+        {diffTarget ? (
+          <FileChangeMetadata
+            insertions={diffTarget.file.insertions}
+            deletions={diffTarget.file.deletions}
+            status={diffTarget.file.status}
+          />
+        ) : (
+          'Diff'
+        )}
+        {comments.otherViewCount > 0 && (
+          <span
+            className="flex items-center gap-1"
+            aria-label={`${comments.otherViewCount} open comments in ${viewMode === 'diff' ? 'file' : 'diff'} view`}
+          >
+            <MessageIcon size={12} />
+            {comments.otherViewCount}
+          </span>
+        )}
+      </HeaderActionButton>
     ) : null;
   const openInBrowserHeaderAction = rendersAsHtml ? (
-    <Tooltip label="Open this page in the browser">
-      <button
-        type="button"
-        onClick={(): void => {
-          void openFileInBrowserPanel(projectId, worktreeId, filePath);
-        }}
-        data-testid="file-viewer-open-in-browser"
-        className="flex h-7 items-center rounded-md bg-secondary px-3 py-1 text-xs fg-primary ring-1 ring-line-base transition hover:bg-accent-subtle hover:fg-accent"
-      >
-        Open in browser
-      </button>
-    </Tooltip>
+    <HeaderActionButton
+      iconOnly
+      tone="neutral"
+      stateStyle="toolbar"
+      aria-label="Open in browser"
+      tooltipLabel="Open this page in the browser"
+      onClick={(): void => {
+        void openFileInBrowserPanel(projectId, worktreeId, filePath);
+      }}
+      data-testid="file-viewer-open-in-browser"
+    >
+      <GlobeIcon aria-hidden="true" />
+    </HeaderActionButton>
   ) : null;
-  const showOpenOriginal = rendersAsOfficeDocument && !readOnly;
-  const headerActions =
-    existingDiffHeaderAction ||
-    showOpenOriginal ||
-    openInBrowserHeaderAction ? (
-      <>
-        {existingDiffHeaderAction}
-        {openInBrowserHeaderAction}
-        {showOpenOriginal ? (
-          <button
-            type="button"
+  const localFileHeaderActions =
+    localFileRequest && (canRevealFile || canOpenExternalFile) ? (
+      <div
+        className="flex shrink-0 items-center gap-1"
+        data-testid="file-viewer-local-actions"
+      >
+        {canRevealFile && (
+          <HeaderActionButton
+            iconOnly
+            tone="neutral"
+            stateStyle="toolbar"
+            aria-label={pt(uiText.fileManager.openItem)}
             onClick={openOriginalFile}
             data-testid="file-viewer-open-original"
-            className="flex h-7 items-center rounded-md bg-secondary px-3 py-1 text-xs fg-primary ring-1 ring-line-base transition hover:bg-accent-subtle hover:fg-accent"
           >
-            {pt(uiText.fileManager.openItem)}
-          </button>
-        ) : null}
+            <FolderIcon aria-hidden="true" />
+          </HeaderActionButton>
+        )}
+        {canOpenExternalFile && (
+          <HeaderActionButton
+            iconOnly
+            tone="neutral"
+            stateStyle="toolbar"
+            aria-label="Open in default app"
+            onClick={openFileExternally}
+            data-testid="file-viewer-open-external"
+          >
+            <ExternalIcon aria-hidden="true" />
+          </HeaderActionButton>
+        )}
+      </div>
+    ) : null;
+  const localActionErrorNotice = visibleLocalActionError ? (
+    <span
+      role="alert"
+      data-testid="file-viewer-local-action-error"
+      title={visibleLocalActionError}
+      className="mx-1 min-w-0 max-w-64 truncate text-xs fg-destructive"
+    >
+      {visibleLocalActionError}
+    </span>
+  ) : null;
+  const headerActions = existingDiffHeaderAction;
+  // After the viewer's source toggle, ahead of the host's panel chrome.
+  const openElsewhereActions =
+    openInBrowserHeaderAction ||
+    localActionErrorNotice ||
+    localFileHeaderActions ? (
+      <>
+        {localActionErrorNotice}
+        {openInBrowserHeaderAction}
+        {localFileHeaderActions}
       </>
     ) : null;
+  const composedTrailingHeaderActions =
+    openElsewhereActions || trailingHeaderActions != null ? (
+      <>
+        {openElsewhereActions}
+        {trailingHeaderActions}
+      </>
+    ) : undefined;
   const rawLineCount = session?.preview?.content
     ? session.preview.content.split(/\r?\n/).length
     : 0;
@@ -1362,6 +1547,11 @@ function DesktopSharedFileViewerImpl({
         data-testid="file-viewer-annotation-surface"
       >
         <FileViewer
+          active={active}
+          appName={brandText.appName}
+          {...(readOnly || !canInsertIntoTargetChat
+            ? {}
+            : { onAskToKeepEdits })}
           searchShortcutActive={searchShortcutActive}
           {...fileFind.viewerProps}
           request={request}
@@ -1377,6 +1567,10 @@ function DesktopSharedFileViewerImpl({
               : undefined
           }
           {...(readOnly ? {} : { renderEditor })}
+          // CAN-5004: the file's own project, not the navigation mode, picks
+          // the vocabulary; the viewer still falls back to Source when the
+          // file cannot be edited.
+          rawViewLabel={project?.type === 'cowork' ? 'edit' : 'source'}
           viewMode={viewMode === 'diff' ? 'raw' : viewMode}
           alternateContent={
             viewMode === 'diff' ? (
@@ -1467,7 +1661,9 @@ function DesktopSharedFileViewerImpl({
                       aria-label="Refresh diff"
                       onClick={() => setDiffRevision((value) => value + 1)}
                     >
-                      <RefreshSpinner spinning={!snapshot && !diffError} />
+                      <RefreshSpinner
+                        spinning={!snapshot && !diffError && !turnUnavailable}
+                      />
                     </HeaderActionButton>
                   </div>
                 )}
@@ -1491,6 +1687,25 @@ function DesktopSharedFileViewerImpl({
                   <p className="p-4 text-xs fg-secondary">
                     No comparison is available for this file.
                   </p>
+                ) : turnUnavailable ? (
+                  <DiffTurnUnavailableState
+                    action={
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          setFileTabViewMode(
+                            tabId,
+                            'diff',
+                            { projectId, worktreeId },
+                            { ...diffContext, source: 'combined' },
+                          )
+                        }
+                      >
+                        Show all branch changes
+                      </Button>
+                    }
+                  />
                 ) : !snapshot ? (
                   <LoadingPlaceholder />
                 ) : (
@@ -1542,8 +1757,8 @@ function DesktopSharedFileViewerImpl({
           }}
           headerActions={headerActions}
           {...(renderPathBreadcrumb ? { renderPathBreadcrumb } : {})}
-          {...(trailingHeaderActions !== undefined
-            ? { trailingHeaderActions }
+          {...(composedTrailingHeaderActions !== undefined
+            ? { trailingHeaderActions: composedTrailingHeaderActions }
             : {})}
           deferMissing={
             setupRetryState === 'waiting' ||
@@ -1551,19 +1766,20 @@ function DesktopSharedFileViewerImpl({
             setupRecheckPending
           }
           unsupportedFileAction={
-            readOnly ? undefined : (
-              <button
-                type="button"
+            localFileRequest === undefined || !canRevealFile ? undefined : (
+              <Button
+                size="compact"
+                className="mt-1"
                 onClick={openOriginalFile}
                 data-testid="file-viewer-open-unsupported"
-                className="focus-ring mt-1 rounded-md border bg-secondary px-3 py-1.5 text-xs fg-primary transition hover:bg-accent-subtle hover:fg-accent"
               >
                 {pt(uiText.fileManager.openItem)}
-              </button>
+              </Button>
             )
           }
           contentScrollBinding={contentScrollBinding}
           onOpenRelativePath={onOpenRelativePath}
+          diagramSaveDestination={diagramSaveDestination}
           resolveAssetSrc={resolveAssetSrc}
           resolveHtmlAsset={resolveHtmlAsset}
           resolveImageSrc={resolveImageSrc}

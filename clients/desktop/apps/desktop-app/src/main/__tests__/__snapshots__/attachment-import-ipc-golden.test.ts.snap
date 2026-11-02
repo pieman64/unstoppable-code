@@ -1,0 +1,1285 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a App Advisor scope through both channels 1`] = `
+{
+  "files": {
+    "app-workspaces/app-advisor/attachments/entry-1/notes.txt": "body of notes.txt",
+    "app-workspaces/app-advisor/attachments/entry-1/paste.png": "png",
+    "app-workspaces/app-advisor/home/.canopy/attachments/notes.txt": "body of notes.txt",
+    "app-workspaces/app-advisor/home/.canopy/attachments/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/app-workspaces/app-advisor/home/.canopy/attachments/notes.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/app-workspaces/app-advisor/home/.canopy/attachments/paste.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/app-workspaces/app-advisor/attachments/entry-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/app-workspaces/app-advisor/attachments/entry-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a app-managed plan explore scope through both channels 1`] = `
+{
+  "files": {
+    "app-workspaces/plan-explore-chat/attachments/wt-1/notes-2.txt": "body of notes.txt",
+    "app-workspaces/plan-explore-chat/attachments/wt-1/notes.txt": "body of notes.txt",
+    "app-workspaces/plan-explore-chat/attachments/wt-1/paste-2.png": "png",
+    "app-workspaces/plan-explore-chat/attachments/wt-1/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/app-workspaces/plan-explore-chat/attachments/wt-1/notes-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes-2.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/app-workspaces/plan-explore-chat/attachments/wt-1/paste-2.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste-2.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/app-workspaces/plan-explore-chat/attachments/wt-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/app-workspaces/plan-explore-chat/attachments/wt-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a cowork scope through both channels 1`] = `
+{
+  "files": {
+    "workspaces/cowork-ws/attachments/wt-1/notes.txt": "body of notes.txt",
+    "workspaces/cowork-ws/attachments/wt-1/paste.png": "png",
+    "workspaces/cowork-ws/home/.canopy/attachments/notes.txt": "body of notes.txt",
+    "workspaces/cowork-ws/home/.canopy/attachments/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/cowork-ws/home/.canopy/attachments/notes.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/cowork-ws/home/.canopy/attachments/paste.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/cowork-ws/attachments/wt-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/cowork-ws/attachments/wt-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a home draft scope through both channels 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/home-draft/notes-2.txt": "body of notes.txt",
+    "workspaces/code-ws/attachments/home-draft/notes.txt": "body of notes.txt",
+    "workspaces/code-ws/attachments/home-draft/paste-2.png": "png",
+    "workspaces/code-ws/attachments/home-draft/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/home-draft/notes-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes-2.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/home-draft/paste-2.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste-2.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/home-draft/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/home-draft/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a multi-repo scope through both channels 1`] = `
+{
+  "files": {
+    "workspaces/multi-ws/attachments/wt-1/notes-2.txt": "body of notes.txt",
+    "workspaces/multi-ws/attachments/wt-1/notes.txt": "body of notes.txt",
+    "workspaces/multi-ws/attachments/wt-1/paste-2.png": "png",
+    "workspaces/multi-ws/attachments/wt-1/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-1/notes-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes-2.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-1/paste-2.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste-2.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a single-repo scope through both channels 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/notes-2.txt": "body of notes.txt",
+    "workspaces/code-ws/attachments/wt-1/notes.txt": "body of notes.txt",
+    "workspaces/code-ws/attachments/wt-1/paste-2.png": "png",
+    "workspaces/code-ws/attachments/wt-1/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/notes-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes-2.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/paste-2.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste-2.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a standalone chat sentinel scope through both channels 1`] = `
+{
+  "files": {
+    "workspaces/standalone-chat/attachments/wt-1/notes.txt": "body of notes.txt",
+    "workspaces/standalone-chat/attachments/wt-1/paste.png": "png",
+    "workspaces/standalone-chat/home/.canopy/attachments/notes.txt": "body of notes.txt",
+    "workspaces/standalone-chat/home/.canopy/attachments/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/standalone-chat/home/.canopy/attachments/notes.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/standalone-chat/home/.canopy/attachments/paste.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/standalone-chat/attachments/wt-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/standalone-chat/attachments/wt-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: destinations imports a file and a clipboard item into a unregistered workspace scope through both channels 1`] = `
+{
+  "files": {
+    "workspaces/ghost-ws/attachments/wt-1/notes-2.txt": "body of notes.txt",
+    "workspaces/ghost-ws/attachments/wt-1/notes.txt": "body of notes.txt",
+    "workspaces/ghost-ws/attachments/wt-1/paste-2.png": "png",
+    "workspaces/ghost-ws/attachments/wt-1/paste.png": "png",
+  },
+  "items": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/ghost-ws/attachments/wt-1/notes-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "notes-2.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/ghost-ws/attachments/wt-1/paste-2.png",
+          "createdAt": "<createdAt>",
+          "filename": "paste-2.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+  "worktree": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/ghost-ws/attachments/wt-1/notes.txt",
+          "filename": "notes.txt",
+          "sizeBytes": 17,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/ghost-ws/attachments/wt-1/paste.png",
+          "filename": "paste.png",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures keeps earlier copies and skips later sources after a workspace-items failure 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/ok.txt": "body of ok.txt",
+  },
+  "result": {
+    "error": {
+      "code": "ENOENT",
+      "message": "ENOENT: no such file or directory, stat '<root>/source/missing.txt'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures keeps earlier copies when the last worktree source fails 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/ok.txt": "body of ok.txt",
+  },
+  "result": {
+    "error": {
+      "code": "ENOENT",
+      "message": "ENOENT: no such file or directory, stat '<root>/source/missing.txt'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures pins invalid requests on the workspace-items channel 1`] = `
+{
+  "dialogs": [],
+  "files": {},
+  "results": {
+    "badProject": {
+      "error": {
+        "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+        "name": "IdentifierValidationError",
+      },
+    },
+    "emptyWorktree": {
+      "error": {
+        "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+        "name": "IdentifierValidationError",
+      },
+    },
+    "missingFilePaths": {
+      "error": {
+        "message": "Cannot read properties of undefined (reading 'length')",
+        "name": "TypeError",
+      },
+    },
+    "missingPayload": {
+      "error": {
+        "message": "Cannot read properties of undefined (reading 'projectId')",
+        "name": "TypeError",
+      },
+    },
+    "nonStringPath": {
+      "error": {
+        "code": "ERR_INVALID_ARG_TYPE",
+        "message": "The "path" argument must be of type string or an instance of Buffer or URL. Received type number (7)",
+        "name": "Error",
+      },
+    },
+    "numericProject": {
+      "error": {
+        "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+        "name": "IdentifierValidationError",
+      },
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures pins invalid requests on the worktree channel 1`] = `
+{
+  "dialogs": [],
+  "files": {},
+  "results": {
+    "badProject": {
+      "error": {
+        "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+        "name": "IdentifierValidationError",
+      },
+    },
+    "emptyWorktree": {
+      "error": {
+        "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+        "name": "IdentifierValidationError",
+      },
+    },
+    "missingFilePaths": {
+      "error": {
+        "message": "Cannot read properties of undefined (reading 'length')",
+        "name": "TypeError",
+      },
+    },
+    "missingPayload": {
+      "error": {
+        "message": "Cannot read properties of undefined (reading 'projectId')",
+        "name": "TypeError",
+      },
+    },
+    "nonStringPath": {
+      "error": {
+        "code": "ERR_INVALID_ARG_TYPE",
+        "message": "The "path" argument must be of type string or an instance of Buffer or URL. Received type number (7)",
+        "name": "Error",
+      },
+    },
+    "numericProject": {
+      "error": {
+        "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+        "name": "IdentifierValidationError",
+      },
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures refuses the read-only viewer on the workspace-items channel before the chooser 1`] = `
+{
+  "dialogs": [],
+  "files": {},
+  "result": {
+    "error": {
+      "message": "Shared-container recipient workspaces are read-only",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures rejects a missing source on the workspace-items channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "code": "ENOENT",
+      "message": "ENOENT: no such file or directory, stat '<root>/source/missing.txt'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures rejects a missing source on the worktree channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "code": "ENOENT",
+      "message": "ENOENT: no such file or directory, stat '<root>/source/missing.txt'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures rejects an extension too long to fit on the workspace-items channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "message": "Attachment filename extension is too long",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures rejects an extension too long to fit on the worktree channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "message": "Attachment filename extension is too long",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures rejects an unreadable source on the workspace-items channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "code": "EACCES",
+      "message": "EACCES: permission denied, copyfile '<root>/source/locked.txt' -> '<root>/data/workspaces/code-ws/attachments/wt-1/locked.txt'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures rejects an unreadable source on the worktree channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "code": "EACCES",
+      "message": "EACCES: permission denied, copyfile '<root>/source/locked.txt' -> '<root>/data/workspaces/code-ws/attachments/wt-1/locked.txt'",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures removes a clipboard file whose write fails on the workspace-items channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "code": "ERR_INVALID_ARG_TYPE",
+      "message": "The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received null",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: failures removes a clipboard file whose write fails on the worktree channel 1`] = `
+{
+  "files": {},
+  "result": {
+    "error": {
+      "code": "ERR_INVALID_ARG_TYPE",
+      "message": "The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received null",
+      "name": "Error",
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: inputs imports the files picked in the workspace-items chooser 1`] = `
+{
+  "dialogs": [
+    [
+      {
+        "properties": [
+          "openFile",
+          "multiSelections",
+        ],
+        "title": "Import attachments",
+      },
+    ],
+  ],
+  "files": {
+    "workspaces/multi-ws/attachments/wt-2/picked-1.txt": "body of picked-1.txt",
+    "workspaces/multi-ws/attachments/wt-2/picked-2.txt": "body of picked-2.txt",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-2/picked-1.txt",
+          "createdAt": "<createdAt>",
+          "filename": "picked-1.txt",
+          "sizeBytes": 20,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-2/picked-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "picked-2.txt",
+          "sizeBytes": 20,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: inputs imports the files picked in the worktree chooser 1`] = `
+{
+  "dialogs": [
+    [
+      {
+        "properties": [
+          "openFile",
+          "multiSelections",
+        ],
+        "title": "Import attachments",
+      },
+    ],
+  ],
+  "files": {
+    "workspaces/multi-ws/attachments/wt-2/picked-1.txt": "body of picked-1.txt",
+    "workspaces/multi-ws/attachments/wt-2/picked-2.txt": "body of picked-2.txt",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-2/picked-1.txt",
+          "filename": "picked-1.txt",
+          "sizeBytes": 20,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/multi-ws/attachments/wt-2/picked-2.txt",
+          "filename": "picked-2.txt",
+          "sizeBytes": 20,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: inputs keeps file results before clipboard results on the workspace-items channel 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/a.txt": "body of a.txt",
+    "workspaces/code-ws/attachments/wt-1/b.md": "body of nested/b.md",
+    "workspaces/code-ws/attachments/wt-1/c.png": "c",
+    "workspaces/code-ws/attachments/wt-1/d.txt": "d",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/a.txt",
+          "createdAt": "<createdAt>",
+          "filename": "a.txt",
+          "sizeBytes": 13,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/b.md",
+          "createdAt": "<createdAt>",
+          "filename": "b.md",
+          "sizeBytes": 19,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/c.png",
+          "createdAt": "<createdAt>",
+          "filename": "c.png",
+          "sizeBytes": 1,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/d.txt",
+          "createdAt": "<createdAt>",
+          "filename": "d.txt",
+          "sizeBytes": 1,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: inputs keeps file results before clipboard results on the worktree channel 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/a.txt": "body of a.txt",
+    "workspaces/code-ws/attachments/wt-1/b.md": "body of nested/b.md",
+    "workspaces/code-ws/attachments/wt-1/c.png": "c",
+    "workspaces/code-ws/attachments/wt-1/d.txt": "d",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/a.txt",
+          "filename": "a.txt",
+          "sizeBytes": 13,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/b.md",
+          "filename": "b.md",
+          "sizeBytes": 19,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/c.png",
+          "filename": "c.png",
+          "sizeBytes": 1,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/d.txt",
+          "filename": "d.txt",
+          "sizeBytes": 1,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: inputs returns no attachments when the workspace-items chooser is cancelled 1`] = `
+{
+  "dialogs": [
+    [
+      {
+        "properties": [
+          "openFile",
+          "multiSelections",
+        ],
+        "title": "Import attachments",
+      },
+    ],
+    [
+      {
+        "properties": [
+          "openFile",
+          "multiSelections",
+        ],
+        "title": "Import attachments",
+      },
+    ],
+  ],
+  "empty": {
+    "result": {
+      "attachments": [],
+    },
+  },
+  "emptyClipboard": {
+    "result": {
+      "attachments": [],
+    },
+  },
+  "files": {},
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: inputs returns no attachments when the worktree chooser is cancelled 1`] = `
+{
+  "dialogs": [
+    [
+      {
+        "properties": [
+          "openFile",
+          "multiSelections",
+        ],
+        "title": "Import attachments",
+      },
+    ],
+    [
+      {
+        "properties": [
+          "openFile",
+          "multiSelections",
+        ],
+        "title": "Import attachments",
+      },
+    ],
+  ],
+  "empty": {
+    "result": {
+      "attachments": [],
+    },
+  },
+  "emptyClipboard": {
+    "result": {
+      "attachments": [],
+    },
+  },
+  "files": {},
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: names and sizes keeps names, collisions and sizes on the workspace-items channel 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/archive-tar.gz": "body of archive.tar.gz",
+    "workspaces/code-ws/attachments/wt-1/clipboard": "nameless",
+    "workspaces/code-ws/attachments/wt-1/empty.bin": "",
+    "workspaces/code-ws/attachments/wt-1/empty.png": "",
+    "workspaces/code-ws/attachments/wt-1/env": "SECRET=1",
+    "workspaces/code-ws/attachments/wt-1/item.png": "long",
+    "workspaces/code-ws/attachments/wt-1/item.txt": "body of éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.txt",
+    "workspaces/code-ws/attachments/wt-1/my-file-1.PNG": "body of My File (1).PNG",
+    "workspaces/code-ws/attachments/wt-1/png": "dot",
+    "workspaces/code-ws/attachments/wt-1/r-sum-final.pdf": "body of résumé final.pdf",
+    "workspaces/code-ws/attachments/wt-1/readme": "body of README",
+    "workspaces/code-ws/attachments/wt-1/taken-2.txt": "already here too",
+    "workspaces/code-ws/attachments/wt-1/taken-3.txt": "new",
+    "workspaces/code-ws/attachments/wt-1/taken.txt": "already here",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/taken-3.txt",
+          "createdAt": "<createdAt>",
+          "filename": "taken-3.txt",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/my-file-1.PNG",
+          "createdAt": "<createdAt>",
+          "filename": "my-file-1.PNG",
+          "sizeBytes": 23,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/r-sum-final.pdf",
+          "createdAt": "<createdAt>",
+          "filename": "r-sum-final.pdf",
+          "sizeBytes": 26,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/readme",
+          "createdAt": "<createdAt>",
+          "filename": "readme",
+          "sizeBytes": 14,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/env",
+          "createdAt": "<createdAt>",
+          "filename": "env",
+          "sizeBytes": 8,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/empty.bin",
+          "createdAt": "<createdAt>",
+          "filename": "empty.bin",
+          "sizeBytes": 0,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/item.txt",
+          "createdAt": "<createdAt>",
+          "filename": "item.txt",
+          "sizeBytes": 252,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/archive-tar.gz",
+          "createdAt": "<createdAt>",
+          "filename": "archive-tar.gz",
+          "sizeBytes": 22,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/clipboard",
+          "createdAt": "<createdAt>",
+          "filename": "clipboard",
+          "sizeBytes": 8,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/png",
+          "createdAt": "<createdAt>",
+          "filename": "png",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/empty.png",
+          "createdAt": "<createdAt>",
+          "filename": "empty.png",
+          "sizeBytes": 0,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/item.png",
+          "createdAt": "<createdAt>",
+          "filename": "item.png",
+          "sizeBytes": 4,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: names and sizes keeps names, collisions and sizes on the worktree channel 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/archive-tar.gz": "body of archive.tar.gz",
+    "workspaces/code-ws/attachments/wt-1/clipboard": "nameless",
+    "workspaces/code-ws/attachments/wt-1/empty.bin": "",
+    "workspaces/code-ws/attachments/wt-1/empty.png": "",
+    "workspaces/code-ws/attachments/wt-1/env": "SECRET=1",
+    "workspaces/code-ws/attachments/wt-1/item.png": "long",
+    "workspaces/code-ws/attachments/wt-1/item.txt": "body of éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé.txt",
+    "workspaces/code-ws/attachments/wt-1/my-file-1.PNG": "body of My File (1).PNG",
+    "workspaces/code-ws/attachments/wt-1/png": "dot",
+    "workspaces/code-ws/attachments/wt-1/r-sum-final.pdf": "body of résumé final.pdf",
+    "workspaces/code-ws/attachments/wt-1/readme": "body of README",
+    "workspaces/code-ws/attachments/wt-1/taken-2.txt": "already here too",
+    "workspaces/code-ws/attachments/wt-1/taken-3.txt": "new",
+    "workspaces/code-ws/attachments/wt-1/taken.txt": "already here",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/taken-3.txt",
+          "filename": "taken-3.txt",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/my-file-1.PNG",
+          "filename": "my-file-1.PNG",
+          "sizeBytes": 23,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/r-sum-final.pdf",
+          "filename": "r-sum-final.pdf",
+          "sizeBytes": 26,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/readme",
+          "filename": "readme",
+          "sizeBytes": 14,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/env",
+          "filename": "env",
+          "sizeBytes": 8,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/empty.bin",
+          "filename": "empty.bin",
+          "sizeBytes": 0,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/item.txt",
+          "filename": "item.txt",
+          "sizeBytes": 252,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/archive-tar.gz",
+          "filename": "archive-tar.gz",
+          "sizeBytes": 22,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/clipboard",
+          "filename": "clipboard",
+          "sizeBytes": 8,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/png",
+          "filename": "png",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/empty.png",
+          "filename": "empty.png",
+          "sizeBytes": 0,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/item.png",
+          "filename": "item.png",
+          "sizeBytes": 4,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: names and sizes numbers sequential Cowork duplicates on the workspace-items channel 1`] = `
+{
+  "files": {
+    "workspaces/cowork-ws/home/.canopy/attachments/x-2.txt": "two",
+    "workspaces/cowork-ws/home/.canopy/attachments/x.txt": "one",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/cowork-ws/home/.canopy/attachments/x.txt",
+          "createdAt": "<createdAt>",
+          "filename": "x.txt",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/cowork-ws/home/.canopy/attachments/x-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "x-2.txt",
+          "sizeBytes": 3,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment import IPC golden: names and sizes numbers sequential duplicates on the workspace-items channel 1`] = `
+{
+  "files": {
+    "workspaces/code-ws/attachments/wt-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2.png": "long two",
+    "workspaces/code-ws/attachments/wt-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png": "long one",
+    "workspaces/code-ws/attachments/wt-1/x-2.txt": "two",
+    "workspaces/code-ws/attachments/wt-1/x-3.txt": "three",
+    "workspaces/code-ws/attachments/wt-1/x-4.txt": "four",
+    "workspaces/code-ws/attachments/wt-1/x.txt": "one",
+  },
+  "result": {
+    "result": {
+      "attachments": [
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/x.txt",
+          "createdAt": "<createdAt>",
+          "filename": "x.txt",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/x-2.txt",
+          "createdAt": "<createdAt>",
+          "filename": "x-2.txt",
+          "sizeBytes": 3,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/x-3.txt",
+          "createdAt": "<createdAt>",
+          "filename": "x-3.txt",
+          "sizeBytes": 5,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/x-4.txt",
+          "createdAt": "<createdAt>",
+          "filename": "x-4.txt",
+          "sizeBytes": 4,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+          "createdAt": "<createdAt>",
+          "filename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+          "sizeBytes": 8,
+        },
+        {
+          "absolutePath": "<root>/data/workspaces/code-ws/attachments/wt-1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2.png",
+          "createdAt": "<createdAt>",
+          "filename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-2.png",
+          "sizeBytes": 8,
+        },
+      ],
+    },
+  },
+}
+`;
+
+exports[`CAN-4105 attachment list Portal golden lists without host paths for each layout 1`] = `
+{
+  "code": [
+    {
+      "commandId": "cmd-golden",
+      "payload": {
+        "result": {
+          "attachments": [
+            {
+              "createdAt": "<createdAt>",
+              "filename": "a.txt",
+              "sizeBytes": 1,
+            },
+          ],
+          "ok": true,
+        },
+      },
+      "type": "portal.command.completed",
+    },
+  ],
+  "cowork": [
+    {
+      "commandId": "cmd-golden",
+      "payload": {
+        "result": {
+          "attachments": [
+            {
+              "createdAt": "<createdAt>",
+              "filename": ".dot",
+              "sizeBytes": 2,
+            },
+            {
+              "createdAt": "<createdAt>",
+              "filename": "one.txt",
+              "sizeBytes": 1,
+            },
+          ],
+          "ok": true,
+        },
+      },
+      "type": "portal.command.completed",
+    },
+  ],
+}
+`;
+
+exports[`CAN-4105 attachment list Portal golden pins a list for malformed project 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4105 attachment list Portal golden pins a list for missing ids 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4105 attachment list Portal golden pins a list for missing store 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "result": {
+        "attachments": [],
+        "ok": true,
+      },
+    },
+    "type": "portal.command.completed",
+  },
+]
+`;
+
+exports[`CAN-4105 attachment list Portal golden pins a list for non-object 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "invalid_payload",
+        "message": "Invalid project items list attachments payload.",
+        "retryable": undefined,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4105 attachment list Portal golden pins a list for numeric worktree 1`] = `
+[
+  {
+    "commandId": "cmd-golden",
+    "payload": {
+      "error": {
+        "code": "execution_failed",
+        "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+        "retryable": false,
+      },
+    },
+    "type": "portal.command.failed",
+  },
+]
+`;
+
+exports[`CAN-4105 attachment list golden lists a App Advisor store with dot files, newest first 1`] = `
+{
+  "result": [
+    {
+      "absolutePath": "<root>/data/app-workspaces/app-advisor/home/.canopy/attachments/.dot",
+      "createdAt": "<createdAt>",
+      "filename": ".dot",
+      "sizeBytes": 2,
+    },
+    {
+      "absolutePath": "<root>/data/app-workspaces/app-advisor/home/.canopy/attachments/one.txt",
+      "createdAt": "<createdAt>",
+      "filename": "one.txt",
+      "sizeBytes": 1,
+    },
+  ],
+}
+`;
+
+exports[`CAN-4105 attachment list golden lists a cowork store with dot files, newest first 1`] = `
+{
+  "result": [
+    {
+      "absolutePath": "<root>/data/workspaces/cowork-ws/home/.canopy/attachments/.dot",
+      "createdAt": "<createdAt>",
+      "filename": ".dot",
+      "sizeBytes": 2,
+    },
+    {
+      "absolutePath": "<root>/data/workspaces/cowork-ws/home/.canopy/attachments/one.txt",
+      "createdAt": "<createdAt>",
+      "filename": "one.txt",
+      "sizeBytes": 1,
+    },
+  ],
+}
+`;
+
+exports[`CAN-4105 attachment list golden pins empty, missing and invalid list requests 1`] = `
+{
+  "badProject": {
+    "error": {
+      "message": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+  "badWorktree": {
+    "error": {
+      "message": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+      "name": "IdentifierValidationError",
+    },
+  },
+  "coworkMissing": {
+    "result": [],
+  },
+  "empty": {
+    "result": [],
+  },
+  "missing": {
+    "result": [],
+  },
+  "missingPayload": {
+    "error": {
+      "message": "Cannot read properties of undefined (reading 'projectId')",
+      "name": "TypeError",
+    },
+  },
+}
+`;

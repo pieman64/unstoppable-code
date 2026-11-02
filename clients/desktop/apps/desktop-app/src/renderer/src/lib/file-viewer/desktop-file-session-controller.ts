@@ -42,6 +42,12 @@ export interface DesktopFileSessionController {
   matches(tabId: string, key: string): boolean;
 
   saveTab(tabId: string): Promise<boolean>;
+  /**
+   * Check a tab's shared session against disk without changing activation.
+   * Clean sessions take the disk version; unsaved edits are kept and flagged
+   * when disk differs. A read already in flight covers this request.
+   */
+  refreshTab(tabId: string): void;
   discardTab(tabId: string): void;
   releaseTab(tabId: string): void;
 
@@ -95,8 +101,8 @@ export function createDesktopFileSessionController(): DesktopFileSessionControll
       autoSaveTimers.delete(key);
       // The shared transaction dedups against an in-flight write and fails
       // closed on a missing confirmed mtime — the controller only picks the
-      // moment to fire.
-      void store?.getState().saveFile(key);
+      // moment to fire. Autosave never moves focus to a conflict notice.
+      void store?.getState().saveFile(key, { origin: 'autosave' });
     }, AUTO_SAVE_DEBOUNCE_MS);
     autoSaveTimers.set(key, timer);
   };
@@ -163,19 +169,33 @@ export function createDesktopFileSessionController(): DesktopFileSessionControll
       const contentChanged = prevSession?.content !== nextSession.content;
       const enteredSaving =
         prevSession?.status !== 'saving' && nextSession.status === 'saving';
+      // A pending save conflict suspends autosave, including queued timers,
+      // until the user resolves it; it never retries on its own.
+      const conflictPending = nextSession.saveConflict != null;
+      const conflictResolved =
+        (prevSession?.saveConflict != null && !conflictPending) ||
+        // Keeping Yours may resolve an overlap without changing the buffer.
+        (nextSession.overlapResolvedRevision ?? 0) >
+          (prevSession?.overlapResolvedRevision ?? 0);
       // Only a SUCCESSFUL completion (saving→idle) may reschedule. A failed save
       // (saving→error) must not loop automatically — it stays dirty until a
       // later edit or an explicit Auto Save re-enable reschedules it.
       const savedSuccessfully =
-        prevSession?.status === 'saving' && nextSession.status === 'idle';
+        prevSession?.status === 'saving' &&
+        nextSession.status === 'idle' &&
+        !conflictPending;
       // Entering a save cancels any queued debounce (we're saving now).
-      if (enteredSaving) {
+      if (enteredSaving || conflictPending) {
         cancelTimer(key);
       }
       // Reset the debounce on a user edit; after a save completes with newer
-      // edits still dirty, schedule the follow-up. Reverting to baseline (or any
-      // transition to clean) cancels the queued timer.
-      if (contentChanged || savedSuccessfully) {
+      // edits still dirty, or a conflict resolves with edits still dirty,
+      // schedule the follow-up. Reverting to baseline (or any transition to
+      // clean) cancels the queued timer.
+      if (
+        !conflictPending &&
+        (contentChanged || savedSuccessfully || conflictResolved)
+      ) {
         if (nextSession.dirty && autoSaveEnabled) {
           scheduleTimer(key);
         } else if (!nextSession.dirty) {
@@ -253,6 +273,12 @@ export function createDesktopFileSessionController(): DesktopFileSessionControll
       return store.getState().saveFile(key);
     },
 
+    refreshTab(tabId): void {
+      const key = getFileKey(tabId);
+      if (!key || !store) return;
+      void store.getState().refreshFile(key);
+    },
+
     discardTab(tabId): void {
       const key = getFileKey(tabId);
       if (!key || !store) return;
@@ -277,7 +303,7 @@ export function createDesktopFileSessionController(): DesktopFileSessionControll
         const files = store?.getState().files;
         if (files) {
           for (const key of Array.from(keyRefs.keys())) {
-            if (files[key]?.dirty) {
+            if (files[key]?.dirty && files[key]?.saveConflict == null) {
               scheduleTimer(key);
             }
           }

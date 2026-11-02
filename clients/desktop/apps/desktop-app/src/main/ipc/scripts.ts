@@ -14,7 +14,6 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   cancelWorktreeSetup,
-  getScriptSourceInfo,
   loadWorktreeScriptRuns,
   runScript,
   saveProjectScriptsFromService,
@@ -26,8 +25,14 @@ import { updateWorkspacePlanDetection } from '../lib/workspace-script-hook-setti
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 import { sendToWebContents } from '../lib/web-contents-send';
+import { readScriptSourceInfo } from '../lib/script-source-info';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import type { DesktopIpcCallerResolver } from './file-tree';
 
-export function registerScriptHandlers(): void {
+export function registerScriptHandlers(runtime: {
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   registerIpcHandler(
     IPC_CHANNELS.scriptRun,
     async (event, request: ScriptRunRequest): Promise<ScriptRunResponse> =>
@@ -83,9 +88,14 @@ export function registerScriptHandlers(): void {
   registerIpcHandler(
     IPC_CHANNELS.scriptSourceInfo,
     async (
-      _event,
+      event,
       request: ScriptSourceInfoRequest,
-    ): Promise<ScriptSourceInfoResponse> => getScriptSourceInfo(request),
+    ): Promise<ScriptSourceInfoResponse> =>
+      readScriptSourceInfo(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 
   registerIpcHandler(

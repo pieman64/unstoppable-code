@@ -325,3 +325,68 @@ describe('HostedSettingsPage holds the previous page while the next loads', () =
     expect(placeholder()).not.toBeNull();
   });
 });
+
+describe('HostedSettingsPage Try again', () => {
+  function failure(): Element | null {
+    return container.querySelector('[data-testid="hosted-settings-failed"]');
+  }
+
+  function retryButton(): HTMLButtonElement {
+    const button = failure()?.querySelector('button');
+    if (!(button instanceof HTMLButtonElement)) throw new Error('no button');
+    return button;
+  }
+
+  it('keeps the failure on screen, its capsule spinning, until the reload settles', async () => {
+    await show(ORG_MEMBERS);
+    await act(async () => {
+      pending.get('/organization/org-1/members')?.reject(new Error('offline'));
+    });
+    expect(failure()?.textContent).toContain("Couldn't load these settings.");
+    expect(retryButton().textContent).toBe('Try again');
+
+    await act(async () => retryButton().click());
+    // The failure stays while the reload runs; nothing blanks to a skeleton.
+    expect(failure()).not.toBeNull();
+    expect(retryButton().textContent).toBe('Trying again…');
+    expect(retryButton().getAttribute('aria-busy')).toBe('true');
+    expect(retryButton().disabled).toBe(true);
+    expect(skeleton()).toBeNull();
+
+    await settle(ORG_MEMBERS);
+    expect(failure()).toBeNull();
+    expect(shownPage()?.dataset.route).toBe('/organization/org-1/members');
+  });
+
+  it('spins only on the route its retry started from', async () => {
+    const groups: SettingsRoute = { ...ORG_FEED, page: 'groups' };
+    await show(ORG_MEMBERS);
+    await act(async () => {
+      pending.get('/organization/org-1/members')?.reject(new Error('offline'));
+    });
+    // Try again on Members hangs while the viewer moves to another tab.
+    await act(async () => retryButton().click());
+    expect(retryButton().textContent).toBe('Trying again…');
+
+    await show(groups);
+    await act(async () => {
+      pending.get(settingsRouteToPath(groups))?.reject(new Error('offline'));
+    });
+    expect(failure()?.textContent).toContain("Couldn't load these settings.");
+    expect(retryButton().textContent).toBe('Try again');
+    expect(retryButton().disabled).toBe(false);
+  });
+
+  it('shows the failure again, ready for another try, when the reload fails', async () => {
+    await show(ORG_MEMBERS);
+    await act(async () => {
+      pending.get('/organization/org-1/members')?.reject(new Error('offline'));
+    });
+    await act(async () => retryButton().click());
+    await act(async () => {
+      pending.get('/organization/org-1/members')?.reject(new Error('offline'));
+    });
+    expect(retryButton().textContent).toBe('Try again');
+    expect(retryButton().disabled).toBe(false);
+  });
+});

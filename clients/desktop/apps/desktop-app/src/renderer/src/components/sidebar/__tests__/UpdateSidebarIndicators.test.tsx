@@ -14,6 +14,11 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { UpdatePrompt } from '../UpdatePrompt';
+import { brand } from '@/lib/brand';
+
+jest.mock('@/lib/brand', () => ({
+  brand: { id: 'unstoppable-code', displayName: 'Example' },
+}));
 
 jest.mock('@/hooks/useUpdateState', () => ({
   useUpdateState: jest.fn(),
@@ -29,12 +34,17 @@ const APP_SIDEBAR_SOURCE = readFileSync(
   join(__dirname, '..', 'AppSidebar.tsx'),
   'utf-8',
 );
-const downloadUpdateMock = jest.fn().mockResolvedValue(undefined);
-const installUpdateMock = jest.fn().mockResolvedValue(undefined);
-const checkForUpdatesMock = jest.fn().mockResolvedValue(undefined);
-const scheduleUpdateMock = jest.fn().mockResolvedValue(undefined);
-const cancelScheduledUpdateMock = jest.fn().mockResolvedValue(undefined);
-const openExternalMock = jest.fn().mockResolvedValue(undefined);
+const downloadUpdateMock = jest.fn<Promise<void>, []>(() => Promise.resolve());
+const installUpdateMock = jest.fn<Promise<void>, []>(() => Promise.resolve());
+const checkForUpdatesMock = jest.fn<Promise<void>, []>(() => Promise.resolve());
+const scheduleUpdateMock = jest.fn<Promise<void>, []>(() => Promise.resolve());
+const cancelScheduledUpdateMock = jest.fn<Promise<void>, []>(() =>
+  Promise.resolve(),
+);
+const openExternalMock = jest.fn<
+  ReturnType<CanopyApi['browser']['openExternal']>,
+  [request: Parameters<CanopyApi['browser']['openExternal']>[0]]
+>(() => Promise.resolve());
 const originalPlatform = window.platform;
 
 let container: HTMLDivElement;
@@ -71,6 +81,8 @@ describe('removed lower-right update notification', () => {
 
 describe('sidebar update prompt', () => {
   beforeEach(() => {
+    brand.id = 'unstoppable-code';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'stable');
     Object.defineProperty(window, 'platform', {
       configurable: true,
       value: 'darwin',
@@ -81,18 +93,48 @@ describe('sidebar update prompt', () => {
     scheduleUpdateMock.mockClear();
     cancelScheduledUpdateMock.mockClear();
     openExternalMock.mockClear();
+    const api = {
+      browser: { openExternal: openExternalMock },
+      update: {
+        downloadUpdate: downloadUpdateMock,
+        installUpdate: installUpdateMock,
+        checkForUpdates: checkForUpdatesMock,
+        scheduleUpdate: scheduleUpdateMock,
+        cancelScheduledUpdate: cancelScheduledUpdateMock,
+        reportBusyState: jest.fn<Promise<void>, [busy: boolean]>(() =>
+          Promise.resolve(),
+        ),
+        getAppVersion: jest.fn<Promise<string>, []>(() =>
+          Promise.resolve('0.26.8'),
+        ),
+        getDependencyVersions: jest.fn<
+          ReturnType<CanopyApi['update']['getDependencyVersions']>,
+          []
+        >(() =>
+          Promise.resolve({
+            claudeCli: '',
+            claudeSdk: '',
+            codexCli: '',
+            ghCli: '',
+            octokit: '',
+            rtkCli: '',
+          }),
+        ),
+        getState: jest.fn<ReturnType<CanopyApi['update']['getState']>, []>(() =>
+          Promise.resolve({ phase: 'idle' }),
+        ),
+        onUpdateEvent: jest.fn<
+          ReturnType<CanopyApi['update']['onUpdateEvent']>,
+          [callback: Parameters<CanopyApi['update']['onUpdateEvent']>[0]]
+        >(() => (): void => {}),
+      },
+    } satisfies {
+      browser: Pick<CanopyApi['browser'], 'openExternal'>;
+      update: CanopyApi['update'];
+    };
     Object.defineProperty(window, 'api', {
       configurable: true,
-      value: {
-        browser: { openExternal: openExternalMock },
-        update: {
-          downloadUpdate: downloadUpdateMock,
-          installUpdate: installUpdateMock,
-          checkForUpdates: checkForUpdatesMock,
-          scheduleUpdate: scheduleUpdateMock,
-          cancelScheduledUpdate: cancelScheduledUpdateMock,
-        },
-      } as Partial<CanopyApi> as CanopyApi,
+      value: api,
     });
   });
 
@@ -129,7 +171,13 @@ describe('sidebar update prompt', () => {
     });
     render(<UpdatePrompt />);
     const prompt = queryPrompt();
-    expect(prompt?.textContent).toBe('Download Linux update');
+    expect(prompt?.textContent).toBe('Reinstall Linux package');
+    expect(container.textContent).toContain(
+      'sudo apt update && sudo apt upgrade',
+    );
+    expect(container.textContent).toContain(
+      'install the current official .deb once more',
+    );
     act(() => {
       prompt?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
@@ -143,6 +191,33 @@ describe('sidebar update prompt', () => {
     expect(downloadUpdateMock).not.toHaveBeenCalled();
     expect(installUpdateMock).not.toHaveBeenCalled();
     expect(scheduleUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unstoppable-code', 'internal'],
+    ['unstoppable-code', 'rc'],
+    ['canopy', 'stable'],
+  ])('keeps %s %s on direct downloads without APT promises', (id, flavor) => {
+    brand.id = id;
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', flavor);
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    mockUpdateState({
+      phase: 'available',
+      info: {
+        version: '1.2.0',
+        manualDownload: {
+          url: 'https://example.invalid/update.deb',
+          guidance: 'Verify its checksum.',
+          checksum: { algorithm: 'SHA-512', value: 'a'.repeat(128) },
+        },
+      },
+    });
+    render(<UpdatePrompt />);
+    expect(queryPrompt()?.textContent).toBe('Download Linux update');
+    expect(container.textContent).not.toMatch(/APT|apt update|once more/);
   });
 
   it('does not expose a restart for stale downloaded events on Linux', () => {

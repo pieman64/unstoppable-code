@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { JSX } from 'react';
+import { isTurnFileRecord } from '@canopy/protocol/turn-files';
 import type { TranscriptTurnFile } from '@canopy/agent-transcript/transcript-storage';
 import type {
   FileReferenceResolveRequest,
@@ -14,6 +15,9 @@ import {
   type TurnFileLocationsTarget,
 } from '../useTurnFileLocations';
 import { resetTurnFileRootsCacheForTests } from '@/lib/turn-file-locations';
+import { collectTurnFiles } from '@canopy/desktop-shared/lib/turn-files';
+import { desktopTurnApprovalWait } from '@/components/chat/tool-approval-matching';
+import type { DisplayMessage } from '@/components/chat/types';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -140,6 +144,161 @@ it('keeps only files that exist inside a target root and reports pending creatio
     baseFilePath: '/ws/report.md',
     href: 'report.md',
   });
+});
+
+it('carries the updated classification onto located and pending files', async () => {
+  const updated: TranscriptTurnFile = {
+    path: '/ws/report.md',
+    state: 'ready',
+    change: 'updated',
+  };
+  const updating: TranscriptTurnFile = {
+    path: '/ws/out/page.html',
+    state: 'creating',
+    change: 'updated',
+  };
+  await flush(() =>
+    root.render(<Probe files={[updated, updating]} complete={false} />),
+  );
+  expect(observed?.pending).toEqual([updating]);
+  expect(observed?.located).toEqual([
+    {
+      path: '/ws/report.md',
+      absolutePath: '/ws/report.md',
+      repoId: 'project',
+      relativePath: 'report.md',
+      change: 'updated',
+    },
+  ]);
+
+  // A later successful Write reclassifies the file as saved.
+  await flush(() =>
+    root.render(
+      <Probe files={[{ path: '/ws/report.md', state: 'ready' }]} complete />,
+    ),
+  );
+  expect(observed?.located).toEqual([
+    {
+      path: '/ws/report.md',
+      absolutePath: '/ws/report.md',
+      repoId: 'project',
+      relativePath: 'report.md',
+    },
+  ]);
+});
+
+it('deduplicates resolved relative and absolute identities with saved precedence', async () => {
+  await flush(() =>
+    root.render(
+      <Probe
+        files={[
+          { path: 'report.md', state: 'ready', change: 'updated' },
+          { path: '/ws/report.md', state: 'ready', saved: true },
+        ]}
+        complete
+      />,
+    ),
+  );
+  expect(observed?.located).toHaveLength(1);
+  expect(observed?.located[0]?.change).toBeUndefined();
+});
+
+it('keeps updated classification when ShowFiles presents the same absolute file', async () => {
+  const files = collectTurnFiles([
+    {
+      id: 'edit',
+      role: 'assistant',
+      timestamp: 1,
+      blocks: [
+        {
+          type: 'tool_use',
+          toolUseId: 'edit',
+          toolName: 'Edit',
+          input: '{"file_path":"report.md"}',
+          result: { output: 'Done', isError: false },
+        },
+        {
+          type: 'tool_use',
+          toolUseId: 'show',
+          toolName: 'ShowFiles',
+          input: '{}',
+          result: {
+            output:
+              '{"files":[{"path":"/ws/report.md","absolutePath":"/ws/report.md","ok":true}]}',
+            isError: false,
+          },
+        },
+      ],
+    },
+  ]);
+  await flush(() => root.render(<Probe files={files} complete />));
+  expect(observed?.located).toHaveLength(1);
+  expect(observed?.located[0]?.change).toBe('updated');
+});
+
+it.each(['creating', 'failed'] as const)(
+  'reconciles %s relative edits before exposing an absolute presentation',
+  async (state) => {
+    await flush(() =>
+      root.render(
+        <Probe
+          files={[
+            { path: '/ws/report.md', state: 'ready' },
+            { path: 'report.md', state, change: 'updated' },
+          ]}
+          complete={state === 'failed'}
+        />,
+      ),
+    );
+    expect(observed?.located).toEqual([]);
+    expect(observed?.pending).toHaveLength(state === 'creating' ? 1 : 0);
+  },
+);
+
+it.each(['creating', 'failed'] as const)(
+  'keeps a successful saved file over its %s canonical retry',
+  async (state) => {
+    await flush(() =>
+      root.render(
+        <Probe
+          files={[
+            { path: '/ws/report.md', state: 'ready', saved: true },
+            { path: 'report.md', state, change: 'updated' },
+          ]}
+          complete={state === 'failed'}
+        />,
+      ),
+    );
+    expect(observed?.located).toHaveLength(1);
+    expect(observed?.located[0]?.saved).toBe(true);
+    expect(observed?.pending).toEqual([]);
+  },
+);
+
+it('keeps a pending edit disabled while its roots lookup is unavailable', async () => {
+  getFileTreeRoots.mockRejectedValueOnce(new Error('offline'));
+  const file: TranscriptTurnFile = {
+    path: 'report.md',
+    state: 'creating',
+    change: 'updated',
+  };
+  await flush(() => root.render(<Probe files={[file]} complete={false} />));
+  expect(observed?.located).toEqual([]);
+  expect(observed?.pending).toEqual([file]);
+});
+
+it('does not turn an unfinished update into a ready chip when the turn ends', async () => {
+  await flush(() =>
+    root.render(
+      <Probe
+        files={[
+          { path: '/ws/report.md', state: 'creating', change: 'updated' },
+        ]}
+        complete
+      />,
+    ),
+  );
+  expect(observed?.located).toEqual([]);
 });
 
 it('re-checks a creation once it completes and checks every file after the turn ends', async () => {
@@ -400,4 +559,246 @@ it('uses an explicitly selected workspace per file and hides everything when roo
   await flush(() => root.render(<Probe files={files} complete noTarget />));
   expect(observed?.located).toEqual([]);
   expect(observed?.pending).toEqual([]);
+});
+
+it.each(['move', 'delete'] as const)(
+  'retires an absolute source after a relative %s with a warm existence cache',
+  async (operation) => {
+    const initial = collectTurnFiles([
+      {
+        id: 'absolute-write',
+        role: 'assistant',
+        timestamp: 1,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'write-1',
+            toolName: 'Write',
+            input: '{"file_path":"/ws/report.md"}',
+            result: { output: 'Done', isError: false },
+          },
+        ],
+      },
+    ]);
+    await flush(() => root.render(<Probe files={initial} complete={false} />));
+    expect(observed?.located).toHaveLength(1);
+    existing.delete('/ws/report.md');
+    existing.add('/ws/renamed.md');
+    try {
+      const files = collectTurnFiles(
+        [
+          {
+            id: operation,
+            role: 'assistant',
+            timestamp: 2,
+            blocks: [
+              {
+                type: 'tool_use',
+                toolUseId: 'patch-1',
+                toolName: 'apply_patch',
+                input:
+                  operation === 'move'
+                    ? '*** Update File: report.md\n*** Move to: renamed.md\n@@\n-old\n+new'
+                    : '*** Delete File: report.md',
+                result: { output: 'Done', isError: false },
+              },
+            ],
+          },
+        ],
+        initial,
+      );
+      await flush(() => root.render(<Probe files={files} complete={false} />));
+      expect(observed?.located.map((file) => file.relativePath)).toEqual(
+        operation === 'move' ? ['renamed.md'] : [],
+      );
+      if (operation === 'move') {
+        expect(observed?.located[0]?.saved).toBe(true);
+        expect(observed?.located[0]?.change).toBeUndefined();
+      }
+      expect(observed?.pending).toEqual([]);
+    } finally {
+      existing.add('/ws/report.md');
+      existing.delete('/ws/renamed.md');
+    }
+  },
+);
+
+it('keeps recreated sources and pre-move provenance after JSON reload and overlapping replay', async () => {
+  const event = (
+    id: string,
+    toolName: string,
+    input: string,
+  ): Parameters<typeof collectTurnFiles>[0][number] => ({
+    id,
+    role: 'assistant',
+    timestamp: 1,
+    blocks: [
+      {
+        type: 'tool_use',
+        toolUseId: id,
+        toolName,
+        input,
+        result: { output: 'Done', isError: false },
+      },
+    ],
+  });
+  const edit = event('first-edit', 'Edit', '{"file_path":"/ws/report.md"}');
+  const move = event(
+    'move',
+    'apply_patch',
+    '*** Update File: report.md\n*** Move to: renamed.md\n@@\n-old\n+new',
+  );
+  const snapshot = collectTurnFiles([edit, move]);
+  const retained: unknown = JSON.parse(JSON.stringify(snapshot));
+  if (!Array.isArray(retained) || !retained.every(isTurnFileRecord))
+    throw new Error('Invalid evidence round trip');
+  const files = collectTurnFiles(
+    [
+      edit,
+      move,
+      event('recreate-source', 'Write', '{"file_path":"/ws/report.md"}'),
+      event('edit-destination', 'Edit', '{"file_path":"renamed.md"}'),
+    ],
+    retained,
+  );
+  expect(files.find((file) => file.evidence)?.evidence).toHaveLength(4);
+  existing.add('/ws/renamed.md');
+  existing.delete('/ws/report.md');
+  try {
+    await flush(() => root.render(<Probe files={snapshot} complete={false} />));
+    expect(observed?.located.map((file) => file.relativePath)).toEqual([
+      'renamed.md',
+    ]);
+    existing.add('/ws/report.md');
+    await flush(() => root.render(<Probe files={files} complete={false} />));
+    expect(observed?.located).toHaveLength(2);
+    expect(
+      observed?.located.find((file) => file.relativePath === 'report.md')
+        ?.saved,
+    ).toBe(true);
+    expect(
+      observed?.located.find((file) => file.relativePath === 'renamed.md')
+        ?.change,
+    ).toBe('updated');
+    expect(
+      observed?.located.find((file) => file.relativePath === 'renamed.md')
+        ?.saved,
+    ).toBeUndefined();
+  } finally {
+    existing.add('/ws/report.md');
+    existing.delete('/ws/renamed.md');
+  }
+});
+
+it('preserves an explicit receipt alias into a secondary root during ordered replay', async () => {
+  getFileTreeRoots.mockResolvedValue({
+    roots: [
+      ...roots.roots,
+      {
+        repoId: 'secondary',
+        repoName: 'secondary',
+        absolutePath: '/ws/secondary',
+        rootKind: 'git-repo',
+      },
+    ],
+  });
+  existing.add('/ws/secondary/report.md');
+  try {
+    const files = collectTurnFiles([
+      {
+        id: 'alias-write',
+        role: 'assistant',
+        timestamp: 1,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'alias-write',
+            toolName: 'Write',
+            input: '{"file_path":"report.md"}',
+            result: { output: 'Done', isError: false },
+          },
+        ],
+      },
+      {
+        id: 'alias-receipt',
+        role: 'assistant',
+        timestamp: 2,
+        blocks: [
+          {
+            type: 'tool_use',
+            toolUseId: 'alias-receipt',
+            toolName: 'ShowFiles',
+            input: '{}',
+            result: {
+              output:
+                '{"files":[{"path":"report.md","absolutePath":"/ws/secondary/report.md","ok":true}]}',
+              isError: false,
+            },
+          },
+        ],
+      },
+    ]);
+    await flush(() => root.render(<Probe files={files} complete={false} />));
+    expect(observed?.located).toHaveLength(1);
+    expect(observed?.located[0]?.absolutePath).toBe('/ws/secondary/report.md');
+    expect(observed?.located[0]?.saved).toBe(true);
+  } finally {
+    existing.delete('/ws/secondary/report.md');
+  }
+});
+
+it('keeps approval waiting through canonical relative/absolute aggregation without a receipt', async () => {
+  const messages: DisplayMessage[] = [
+    {
+      id: 'mixed-edits',
+      role: 'assistant',
+      timestamp: 0,
+      blocks: [
+        {
+          type: 'tool_use',
+          toolUseId: 'waiting',
+          toolName: 'Edit',
+          input: JSON.stringify({ file_path: 'report.md' }),
+        },
+        {
+          type: 'tool_use',
+          toolUseId: 'executing',
+          toolName: 'Edit',
+          input: JSON.stringify({ file_path: '/ws/report.md' }),
+        },
+      ],
+    },
+  ];
+  const files = collectTurnFiles(messages);
+  await flush(() => root.render(<Probe files={files} complete={false} />));
+  expect(observed?.pending).toEqual([
+    { path: '/ws/report.md', state: 'creating', change: 'updated' },
+  ]);
+  const wait = desktopTurnApprovalWait(
+    [
+      {
+        requestId: 'waiting-approval',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        provider: 'claude',
+        title: 'Edit file',
+        toolUseId: 'waiting',
+        details: { kind: 'file-write', path: 'report.md' },
+      },
+    ],
+    messages,
+    files,
+    observed?.pendingPathAliases,
+  );
+  expect(wait.isCallWaiting({ toolUseId: 'waiting', toolName: 'Edit' })).toBe(
+    true,
+  );
+  expect(wait.isCallWaiting({ toolUseId: 'executing', toolName: 'Edit' })).toBe(
+    false,
+  );
+  expect(wait.isFileWaiting('/ws/report.md')).toBe(true);
+  expect(wait.isFileWaiting('/other/report.md')).toBe(false);
+  await flush(() => root.render(<Probe files={[]} complete={false} />));
+  expect(observed?.pendingPathAliases).toEqual([]);
 });

@@ -14,6 +14,7 @@ import {
 import { brandEnvCandidates, setBrandEnv } from '../../../brand/env';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import {
+  buildExpressionAssets,
   buildExpressionContext,
   buildExpressionCanopyIdentity,
   cascadeEnv,
@@ -101,6 +102,7 @@ import type {
   PipelineInputValue,
   MatrixContext,
   PipelinePauseResponse,
+  PipelineAssetExecutionContext,
   PipelinePackageCapabilityOverlay,
   PipelinePluginCollectionPreference,
   RetryMatrixJobRequest,
@@ -116,6 +118,7 @@ export class MatrixExecutorInactiveError extends Error {
 }
 import {
   defaultTargetForExecution,
+  getExecutionCheckoutRoot,
   inferExecutionScope,
   validateResolvedExecutionTarget,
 } from './pipeline-target-resolver';
@@ -144,7 +147,7 @@ async function validateExecutionScopeAndTarget(
     options.target ?? defaultTargetForExecution(scope, options.cwd, options);
   if (!executionContextSatisfies(normalizedPipeline.scope, scope)) {
     throw new Error(
-      `Pipeline "${pipelineId}" cannot run in scope "${scope}"; supported scopes: ${formatScopes(normalizedPipeline.scope)}`,
+      `Workflow "${pipelineId}" cannot run in scope "${scope}"; supported scopes: ${formatScopes(normalizedPipeline.scope)}`,
     );
   }
   await validateResolvedExecutionTarget(options.runtime, target);
@@ -167,6 +170,30 @@ function repoPathForReplayTarget(
     return explicitRepoPath ?? persistedRepoPath ?? target.path;
   }
   return explicitRepoPath ?? persistedRepoPath;
+}
+
+/** Recover only the original selected target of a legacy top-level execution. */
+function replayExecutionCheckoutRoot(
+  state: ExecutionState,
+  options: Pick<ExecutionOptions, 'executionCheckoutRoot'>,
+): string | null {
+  if (
+    state.execution_checkout_root !== undefined &&
+    state.execution_checkout_root !== null
+  )
+    return state.execution_checkout_root;
+  if (options.executionCheckoutRoot !== undefined)
+    return options.executionCheckoutRoot;
+  // A child's target may have been narrowed by with.cwd. Explicit null marks
+  // an unknown boundary, rather than a legacy record that can be recovered.
+  if (
+    state.execution_checkout_root === undefined &&
+    !state.parent_execution_id &&
+    state.target &&
+    state.target.scope !== 'global'
+  )
+    return state.target.path;
+  return null;
 }
 
 async function resolveReplayScopeAndTarget(
@@ -200,7 +227,7 @@ async function resolveReplayScopeAndTarget(
   );
   if (!executionContextSatisfies(pipelineScopes, scope)) {
     throw new Error(
-      `Pipeline "${state.pipeline_id}" cannot run in scope "${scope}"; supported scopes: ${formatScopes(pipelineScopes)}`,
+      `Workflow "${state.pipeline_id}" cannot run in scope "${scope}"; supported scopes: ${formatScopes(pipelineScopes)}`,
     );
   }
   await validateResolvedExecutionTarget(options.runtime, target);
@@ -346,7 +373,7 @@ async function loadSharedPipelineSnapshotFromCache(
   const cachedPipelinePath = state.shared_pipeline_source?.cachedPipelinePath;
   if (!cachedPipelinePath) {
     throw new Error(
-      `Execution "${state.id}" cannot replay its shared pipeline because the cached snapshot metadata is missing`,
+      `Execution "${state.id}" cannot replay its shared workflow because the cached snapshot metadata is missing`,
     );
   }
 
@@ -355,7 +382,7 @@ async function loadSharedPipelineSnapshotFromCache(
     rawPipeline = await fsp.readFile(cachedPipelinePath, 'utf8');
   } catch {
     throw new Error(
-      `Execution "${state.id}" cannot replay its shared pipeline because the cached snapshot file is unavailable`,
+      `Execution "${state.id}" cannot replay its shared workflow because the cached snapshot file is unavailable`,
     );
   }
 
@@ -564,6 +591,7 @@ function syncPendingPauseForJob(
 }
 
 function buildCanopyFromState(state: ExecutionState): ExpressionCanopyContext {
+  const pipelineDataDir = state.pipeline_assets?.pipeline_data_dir;
   return {
     event_name: state.event_name ?? 'dispatch',
     event: state.event_data ?? {},
@@ -573,6 +601,34 @@ function buildCanopyFromState(state: ExecutionState): ExpressionCanopyContext {
       executionContext: state.execution_context,
       initiator: state.initiator,
     }),
+    ...(pipelineDataDir === undefined
+      ? {}
+      : { pipeline_data_dir: pipelineDataDir }),
+  };
+}
+
+/** The asset context main resolved for this run, when it resolved one. */
+function pipelineAssetContextFromOptions(
+  options: Pick<
+    ExecutionOptions,
+    'assetPaths' | 'pipelineDataDir' | 'assetsDir'
+  >,
+): PipelineAssetExecutionContext | undefined {
+  if (
+    options.assetPaths === undefined &&
+    options.pipelineDataDir === undefined &&
+    options.assetsDir === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    asset_paths: { ...(options.assetPaths ?? {}) },
+    ...(options.pipelineDataDir === undefined
+      ? {}
+      : { pipeline_data_dir: options.pipelineDataDir }),
+    ...(options.assetsDir === undefined
+      ? {}
+      : { assets_dir: options.assetsDir }),
   };
 }
 
@@ -1063,6 +1119,7 @@ export function createInitialState(
     executionId,
   );
   const materializedJobs = materializeInitialJobs(normalizedPipeline);
+  const pipelineAssets = pipelineAssetContextFromOptions(options);
   return {
     version: CURRENT_EXECUTION_STATE_VERSION,
     id: executionId,
@@ -1082,10 +1139,14 @@ export function createInitialState(
     env: withExecutionOutputDirEnv(options.env, executionOutputDir),
     inputs: { ...resolvedInputs },
     pipeline_file_dir: options.pipelineFileDir,
+    ...(pipelineAssets === undefined
+      ? {}
+      : { pipeline_assets: pipelineAssets }),
     event_name: options.eventName ?? 'dispatch',
     event_data: materializedEventData,
     model_config: normalizeAgentModelConfig(options.modelConfig),
     repo_path: options.repoPath,
+    execution_checkout_root: getExecutionCheckoutRoot(options),
     project_id: options.projectId,
     worktree_id: options.worktreeId,
     planId: options.planId,
@@ -1531,6 +1592,7 @@ function executeState(
       secretEnv: options.secretEnv,
       runtime: options.runtime,
       repoPath: currentState.repo_path,
+      executionCheckoutRoot: currentState.execution_checkout_root ?? null,
       scope: currentState.scope,
       target: currentState.target,
       modelConfig: currentState.model_config,
@@ -1538,6 +1600,7 @@ function executeState(
       needs,
       inputs: currentState.inputs,
       canopy: buildCanopyFromState(currentState),
+      pipelineAssets: currentState.pipeline_assets,
       signal,
       saveState,
       onStepOutput: dispatchStepOutput,
@@ -1804,6 +1867,7 @@ function executeState(
               prepared.jobs[reason.source.job_id];
           }
         }
+        currentState.pending_pauses = prepared.pending_pauses;
         currentState.status_reasons = prepared.status_reasons;
       }
     }
@@ -2049,6 +2113,9 @@ function executeState(
           inputs: currentState.inputs,
           needs,
           canopy: buildCanopyFromState(currentState),
+          assets: buildExpressionAssets(
+            currentState.pipeline_assets?.asset_paths,
+          ),
           matrix: {},
         });
         try {
@@ -2137,6 +2204,9 @@ function executeState(
             max_retries: definition.max_retries,
           },
           canopy: buildCanopyFromState(currentState),
+          assets: buildExpressionAssets(
+            currentState.pipeline_assets?.asset_paths,
+          ),
           matrix: definition.matrix?.values ?? {},
         });
         const conditionFunctions = {
@@ -2308,6 +2378,9 @@ function executeState(
                   inputs: currentState.inputs,
                   needs,
                   canopy: buildCanopyFromState(currentState),
+                  assets: buildExpressionAssets(
+                    currentState.pipeline_assets?.asset_paths,
+                  ),
                   matrix: {},
                 }),
                 {
@@ -2901,6 +2974,10 @@ export async function resumePipeline(
   recoveredState.cwd = replayTarget.cwd;
   recoveredState.scope = replayTarget.scope;
   recoveredState.target = replayTarget.target;
+  recoveredState.execution_checkout_root = replayExecutionCheckoutRoot(
+    loadedState,
+    options,
+  );
   recoveredState.owner_pid = process.pid;
   recoveredState.env = withExecutionOutputDirEnv(
     {
@@ -3014,6 +3091,10 @@ export async function retryPipelineExecution(
   retryState.cwd = replayTarget.cwd;
   retryState.scope = replayTarget.scope;
   retryState.target = replayTarget.target;
+  retryState.execution_checkout_root = replayExecutionCheckoutRoot(
+    loadedState,
+    options,
+  );
   retryState.owner_pid = process.pid;
   retryState.env = withExecutionOutputDirEnv(
     {
@@ -3092,6 +3173,10 @@ export async function retryMatrixJobExecution(
   retryState.cwd = replayTarget.cwd;
   retryState.scope = replayTarget.scope;
   retryState.target = replayTarget.target;
+  retryState.execution_checkout_root = replayExecutionCheckoutRoot(
+    loadedState,
+    options,
+  );
   retryState.owner_pid = process.pid;
   retryState.env = withExecutionOutputDirEnv(
     {
@@ -3299,7 +3384,7 @@ export async function rerunPipelineExecution(
       if (!outputDirExisted)
         await fsp.rm(executionOutputDir, { recursive: true, force: true });
       throw new Error(
-        `Execution "${sourceExecutionId}" cannot rerun because its shared pipeline snapshot is unavailable`,
+        `Execution "${sourceExecutionId}" cannot rerun because its shared workflow snapshot is unavailable`,
       );
     }
     sharedPipelineSource = {
@@ -3320,6 +3405,7 @@ export async function rerunPipelineExecution(
       cwd: replayTarget.cwd,
       scope: replayTarget.scope,
       target: replayTarget.target,
+      executionCheckoutRoot: replayExecutionCheckoutRoot(sourceState, options),
       env: {
         ...stripReplayManagedEnv(sourceState.env),
         ...stripExecutorManagedEnv(options.env),
@@ -3350,6 +3436,16 @@ export async function rerunPipelineExecution(
       runtime: options.runtime,
       sharedPipelineSource,
       curatedPipelineSource: sourceState.curated_pipeline_source,
+      // A rerun keeps the source run's asset paths unless main resolved them
+      // again for this run.
+      ...(pipelineAssetContextFromOptions(options) === undefined &&
+      sourceState.pipeline_assets
+        ? {
+            assetPaths: sourceState.pipeline_assets.asset_paths,
+            pipelineDataDir: sourceState.pipeline_assets.pipeline_data_dir,
+            assetsDir: sourceState.pipeline_assets.assets_dir,
+          }
+        : {}),
     },
     executionId,
     sourceState.inputs,

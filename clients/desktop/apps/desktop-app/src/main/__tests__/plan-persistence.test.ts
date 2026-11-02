@@ -18,6 +18,9 @@ jest.mock('../observability', () => ({
 
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import type {
+  DataModelDiffDiagram,
+  PlanCommentThread,
+  PlanDiagramArtifacts,
   TrackedPlanData,
   TrackedPlanShareState,
   TrackedPlansFile,
@@ -939,7 +942,7 @@ function cloneJson<T>(value: T): T {
 }
 
 describe('tracked plan diagram and comment thread persistence', () => {
-  const dataModelDiagram = {
+  const dataModelDiagram: DataModelDiffDiagram = {
     schemaVersion: 1,
     current: {
       entities: [
@@ -974,7 +977,7 @@ describe('tracked plan diagram and comment thread persistence', () => {
       },
     ],
   };
-  const diagrams = {
+  const diagrams: PlanDiagramArtifacts = {
     sequence: {
       data: { schemaVersion: 1, nodes: [], edges: [] },
       derivedFromRevision: 1,
@@ -988,7 +991,7 @@ describe('tracked plan diagram and comment thread persistence', () => {
       generatedAt: '2026-03-31T00:06:00.000Z',
     },
   };
-  const commentThreads = [
+  const commentThreads: PlanCommentThread[] = [
     {
       id: 'thread-1',
       status: 'open',
@@ -1107,7 +1110,7 @@ describe('tracked plan diagram and comment thread persistence', () => {
   });
 
   it('merges web-authored comments without clobbering staged drafts (CAN-393)', async () => {
-    const localThreads = [
+    const localThreads: PlanCommentThread[] = [
       {
         id: 'thread-1',
         status: 'open',
@@ -1227,7 +1230,7 @@ describe('tracked plan diagram and comment thread persistence', () => {
   });
 
   it('reports no change when remote comments match the local store (CAN-393)', async () => {
-    const unanchoredThreads = [
+    const unanchoredThreads: PlanCommentThread[] = [
       {
         id: 'thread-1',
         status: 'open',
@@ -1271,7 +1274,7 @@ describe('tracked plan diagram and comment thread persistence', () => {
     // Simulates the post-acknowledgment state: a remote comment already
     // handed off to the chat agent (submittedToChat: true) plus a local
     // owner comment, both already durably saved.
-    const acknowledgedThread = {
+    const acknowledgedThread: PlanCommentThread = {
       id: 'thread-1',
       status: 'open',
       createdAt: '2026-03-31T00:05:00.000Z',
@@ -1512,7 +1515,7 @@ describe('tracked plan diagram and comment thread persistence', () => {
     };
     mockedReadFile.mockResolvedValue(JSON.stringify(file));
 
-    const lateDiagram = {
+    const lateDiagram: DataModelDiffDiagram = {
       ...dataModelDiagram,
       changes: [
         {

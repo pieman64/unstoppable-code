@@ -68,6 +68,11 @@ const mockRegisterProxyCatalog = jest.fn<void, []>();
 jest.mock('../account-proxy/codex-speed-catalog', () => ({
   registerAccountProxyCodexSpeedCatalog: (): void => mockRegisterProxyCatalog(),
 }));
+const mockRegisterAccountModelRegistrySync = jest.fn<void, []>();
+jest.mock('../model-routing/codex-account-model-registry', () => ({
+  registerCodexAccountModelRegistrySync: (): void =>
+    mockRegisterAccountModelRegistrySync(),
+}));
 jest.mock('../lib/window-send', () => ({
   sendToAllWindows: (channel: string, ...args: unknown[]): void =>
     mockSendToAllWindows(channel, ...args),
@@ -605,6 +610,8 @@ describe('registerCodexSpeedHandlers', () => {
       }
 
       expect(mockSubscribeCodexSpeedCatalog).toHaveBeenCalledTimes(2);
+      // Account-only Codex models follow the same catalog (CAN-4716).
+      expect(mockRegisterAccountModelRegistrySync).toHaveBeenCalled();
       expect(mockReadCodexSpeedCatalog).not.toHaveBeenCalled();
       expect(mockSetCodexSpeedConsumerActive).not.toHaveBeenCalled();
       expect(mockSendToAllWindows).not.toHaveBeenCalled();

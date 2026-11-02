@@ -2,7 +2,10 @@ import type { AgentActionCall } from '@canopy/agent-actions';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { SettingsRoute } from '@canopy/protocol/settings';
 import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
-import type { CanopyCloudAccountReadResult } from '../../lib/canopy-cloud-account-store';
+import type {
+  CanopyCloudAccountEntry,
+  CanopyCloudAccountReadResult,
+} from '../../lib/canopy-cloud-account-store';
 import type { SendableBrowserWindow } from '../../lib/window-send';
 import {
   createDesktopSettingsPort,
@@ -170,11 +173,23 @@ describe('desktop settings port', () => {
 });
 
 describe('readDesktopSettingsAccount', () => {
-  const entry = {
+  const entry: CanopyCloudAccountEntry = {
     apiKey: 'key',
     capabilities: [],
-    account: { id: 'acct-1', email: 'user@example.com' },
-    organizations: [{ id: 'org-member', name: 'Member org' }],
+    account: {
+      id: 'acct-1',
+      name: 'Test User',
+      email: 'user@example.com',
+      role: 'DEVELOPER',
+    },
+    organizations: [
+      {
+        id: 'org-member',
+        name: 'Member org',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };

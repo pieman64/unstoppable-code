@@ -11,8 +11,17 @@ import {
   CodexAppServerPool,
   type CodexAppServerConnection,
   type CodexAppServerConnectionOwner,
+  type CodexIngestionLagSnapshot,
   type CodexAppServerPoolResourceSnapshot,
   type CodexAppServerProcessCallbacks,
+} from './connection';
+import { TranscriptAdmissionDiscardedError } from './owner-admission-lanes';
+// Interface code reads ingestion lag through the runtime service boundary,
+// never through the raw app-server transport.
+export type {
+  CodexIngestionLagChange,
+  CodexIngestionLagSample,
+  CodexIngestionLagSnapshot,
 } from './connection';
 import { getObservedCanonicalCodexHome } from './canonical-state';
 import { CodexHostToolDispatcher } from './host-tools';
@@ -56,6 +65,7 @@ import {
   type CodexStdioMcpRegistrationOptions,
 } from './mcp-secret-broker';
 import { waitForCodexMcpServers } from './mcp-server-readiness';
+import { createCodexBackgroundWorkRegistry } from './background-work-registry';
 import {
   ambientCodexMcpServerNames,
   enabledCodexMcpServerNames,
@@ -66,7 +76,11 @@ import {
 import { loadBundledCodexModelCatalog } from './bundled-model-catalog';
 import { isJsonValue } from './rollout-seed';
 import { classifyCodexTransportError } from './transport-errors';
-import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import {
+  chatInputRefusal,
+  type ChatInputAdmission,
+} from '@canopy/protocol/portal/input-delivery';
+import { classifyCodexSteerError } from './steer-refusal';
 
 type JsonRpcId = number | string;
 
@@ -155,6 +169,9 @@ export interface CodexInteractiveClientRequest {
 export interface CodexInteractiveTransport {
   isOnlyOwner(): boolean;
   isInitialized(): boolean;
+  ingestionLag(): CodexIngestionLagSnapshot | undefined;
+  /** The user agent the shared process reported to `initialize`. */
+  harnessUserAgent(): string | undefined;
   ensureInitialized(options?: { signal?: AbortSignal }): Promise<void>;
   request<TMethod extends AppServerRequestMethod>(
     method: TMethod,
@@ -230,6 +247,10 @@ export interface CodexRuntimeService {
 
 interface ActiveTurn {
   turnId?: string;
+  /** This turn's `turn/completed` was read; finalization may still wait. */
+  terminalRead?: boolean;
+  /** Waiting for older transcript receipts before handling the completion. */
+  transcriptDraining?: boolean;
   signal?: AbortSignal;
   pendingTerminalTurn?: Turn;
   pendingTerminalAdmission?: Promise<void>;
@@ -471,6 +492,82 @@ class RuntimeThreadHandle
   implements CodexThreadHandle, CodexAppServerConnectionOwner
 {
   private activeTurn: ActiveTurn | null = null;
+  private readonly hostToolCalls = new Map<
+    JsonRpcId,
+    {
+      threadId: string;
+      turnId: string;
+      callId: string;
+      controller: AbortController;
+    }
+  >();
+
+  private readonly openHostToolRows = new Map<
+    string,
+    Extract<ThreadItem, { type: 'dynamicToolCall' }>
+  >();
+  private readonly stoppedHostToolRows = new Map<
+    string,
+    { text: string; synthetic: boolean }
+  >();
+  private readonly backgroundWorkRegistry: ReturnType<
+    typeof createCodexBackgroundWorkRegistry
+  >;
+
+  private hostToolKey(
+    threadId: string,
+    turnId: string,
+    callId: string,
+  ): string {
+    return JSON.stringify([threadId, turnId, callId]);
+  }
+
+  private rememberStoppedHostTool(key: string, text: string): void {
+    if (this.stoppedHostToolRows.get(key)?.synthetic) return;
+    this.stoppedHostToolRows.set(key, { text, synthetic: false });
+  }
+
+  private closeStoppedHostToolRows(
+    active: ActiveTurn,
+    turnId: string | undefined,
+  ): Promise<void> | undefined {
+    if (!turnId) return;
+    const admissions: Promise<void>[] = [];
+    for (const [key, open] of Array.from(this.openHostToolRows.entries())) {
+      if (key !== this.hostToolKey(this.threadId, turnId, open.id)) continue;
+      const stopped = this.stoppedHostToolRows.get(key);
+      if (!stopped || stopped.synthetic) continue;
+      stopped.synthetic = true;
+      this.openHostToolRows.delete(key);
+      const item: ThreadItem = {
+        ...open,
+        status: 'failed',
+        success: false,
+        contentItems: [{ type: 'inputText', text: stopped.text }],
+      };
+      active.items.push(item);
+      const admission = active.onEvent?.({
+        method: 'item/completed',
+        params: { threadId: this.threadId, turnId, item },
+      });
+      if (admission) admissions.push(admission);
+    }
+    if (admissions.length > 0)
+      return Promise.all(admissions).then(() => undefined);
+  }
+
+  private abortHostToolCalls(threadId?: string, turnId?: string): void {
+    for (const call of Array.from(this.hostToolCalls.values())) {
+      if (threadId !== undefined && call.threadId !== threadId) continue;
+      if (turnId !== undefined && call.turnId !== turnId) continue;
+      this.rememberStoppedHostTool(
+        this.hostToolKey(call.threadId, call.turnId, call.callId),
+        'The host tool call was cancelled; its effects may be incomplete.',
+      );
+      call.controller.abort();
+    }
+  }
+
   private disposed = false;
 
   constructor(
@@ -481,7 +578,11 @@ class RuntimeThreadHandle
     private readonly onDispose: () => void,
     private readonly onDelete: () => Promise<void>,
     private readonly ephemeral = false,
-  ) {}
+  ) {
+    this.backgroundWorkRegistry = createCodexBackgroundWorkRegistry({
+      rootThreadId: () => (this.disposed ? undefined : this.threadId),
+    });
+  }
 
   /**
    * Unlike an interactive client, this handle cannot restore its thread on a
@@ -493,7 +594,13 @@ class RuntimeThreadHandle
   }
 
   hasActiveTurn(): boolean {
+    // Keep worker lifetime pinned until transcript finalization, even though
+    // terminalRead already disables new steering inputs.
     return this.activeTurn !== null;
+  }
+
+  hasLiveBackgroundWork(): boolean {
+    return !this.disposed && this.backgroundWorkRegistry.hasLiveWork();
   }
 
   getActiveTurnInterruptTarget(): {
@@ -506,12 +613,14 @@ class RuntimeThreadHandle
   }
 
   cancelPendingTurnStart(error: Error): void {
+    this.abortHostToolCalls();
     this.activeTurn?.hostToolController?.abort();
     this.activeTurn?.reject(error);
     this.activeTurn = null;
   }
 
   rejectActiveTurn(error: Error): void {
+    this.abortHostToolCalls();
     this.activeTurn?.hostToolController?.abort();
     this.activeTurn?.reject(error);
     this.activeTurn = null;
@@ -519,14 +628,40 @@ class RuntimeThreadHandle
 
   markProcessSuspended(): void {}
 
-  markProcessFailed(): void {}
+  markProcessFailed(): void {
+    this.backgroundWorkRegistry.retireEpoch();
+    this.abortHostToolCalls();
+    this.activeTurn?.hostToolController?.abort();
+  }
 
   handleConnectionNotification(
     method: string,
     notification: Record<string, unknown>,
+    transcriptDrain?: Promise<void>,
   ): void | Promise<void> {
+    if (!this.disposed) {
+      this.backgroundWorkRegistry.observe(method, notification.params);
+    }
     const params = readRecord(notification, 'params');
     if (!params) {
+      return;
+    }
+    if (method === 'serverRequest/resolved') {
+      const requestId = params.requestId;
+      if (typeof requestId === 'string' || typeof requestId === 'number') {
+        const call = this.hostToolCalls.get(requestId);
+        if (call && call.threadId === readString(params, 'threadId')) {
+          this.connection.completePendingServerRequest(this, requestId);
+          this.rememberStoppedHostTool(
+            this.hostToolKey(call.threadId, call.turnId, call.callId),
+            'The host tool call was cancelled; its effects may be incomplete.',
+          );
+          call.controller.abort();
+        }
+      }
+      return;
+    }
+    if (this.disposed) {
       return;
     }
     if (method === 'thread/started') {
@@ -539,6 +674,85 @@ class RuntimeThreadHandle
     const active = this.activeTurn;
     if (!active) {
       return;
+    }
+    const completedTurn =
+      method === 'turn/completed' ? readRecord(params, 'turn') : undefined;
+    const completedTurnId = completedTurn
+      ? readString(completedTurn, 'id')
+      : undefined;
+    const rootCompletion =
+      completedTurn !== undefined &&
+      readString(params, 'threadId') === this.threadId &&
+      (!active.turnId || !completedTurnId || active.turnId === completedTurnId);
+    const fatalError =
+      method === 'error' &&
+      Boolean(readRecord(params, 'error')) &&
+      params.willRetry !== true;
+    const terminalTurnId = completedTurnId ?? readString(params, 'turnId');
+    const rootTerminal =
+      rootCompletion ||
+      (fatalError &&
+        readString(params, 'threadId') === this.threadId &&
+        (!terminalTurnId ||
+          !active.turnId ||
+          terminalTurnId === active.turnId));
+    // Only the completion marks the turn terminal (steering, the post-interrupt
+    // deadline); a fatal error read here also stops the turn's host tools.
+    if (rootCompletion) active.terminalRead = true;
+    if (rootTerminal) {
+      this.abortHostToolCalls(this.threadId, terminalTurnId ?? active.turnId);
+      active.hostToolController?.abort();
+    }
+    if (transcriptDrain) {
+      if (rootCompletion) active.transcriptDraining = true;
+      // The connection hands `turn/completed` and `error` over as soon as they
+      // are read. Steering closes now, but this turn and its item accumulator
+      // stay alive until every older transcript receipt settles; handling the
+      // frame sooner would settle runTurn ahead of its last items.
+      return transcriptDrain.then(
+        () => {
+          if (this.disposed || this.activeTurn !== active) return;
+          if (rootCompletion) active.transcriptDraining = false;
+          return this.handleConnectionNotification(method, notification);
+        },
+        (error: unknown) => {
+          // A drain discarded with its worker is settled by the restart or
+          // recovery that discarded it, with that path's own error.
+          if (error instanceof TranscriptAdmissionDiscardedError) return;
+          active.reject(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          throw error;
+        },
+      );
+    }
+    if (rootTerminal) {
+      // Only after earlier item admissions drain, before committing terminal
+      // state, close rows whose provider never supplied their completion.
+      const fallback = this.closeStoppedHostToolRows(
+        active,
+        terminalTurnId ?? active.turnId,
+      );
+      if (fallback)
+        return fallback.then(() =>
+          this.handleConnectionNotification(method, notification),
+        );
+    }
+    if (
+      (method === 'item/started' || method === 'item/completed') &&
+      readString(params, 'threadId') === this.threadId
+    ) {
+      const item: unknown = params.item;
+      const turnId = readString(params, 'turnId');
+      if (turnId && isThreadItem(item) && item.type === 'dynamicToolCall') {
+        const key = this.hostToolKey(this.threadId, turnId, item.id);
+        if (this.stoppedHostToolRows.get(key)?.synthetic) return;
+        if (method === 'item/started') this.openHostToolRows.set(key, item);
+        else {
+          this.openHostToolRows.delete(key);
+          this.stoppedHostToolRows.delete(key);
+        }
+      }
     }
     const admission = active.onEvent?.({ method, params });
 
@@ -649,31 +863,62 @@ class RuntimeThreadHandle
     requestId: JsonRpcId,
     request: Record<string, unknown>,
   ): Promise<void> {
-    const dispatcher = this.activeTurn?.hostTools;
-    const result = dispatcher
-      ? await dispatcher.run(request)
-      : {
-          contentItems: [
-            {
-              type: 'inputText',
-              text: 'Dynamic tools are unavailable for this runtime policy',
-            },
-          ],
-          success: false,
-        };
-    if (!this.connection.completePendingServerRequest(this, requestId)) {
-      return;
-    }
-    this.connection.send({
-      id: requestId,
-      result,
+    const active = this.activeTurn;
+    const dispatcher = active?.hostTools;
+    const controller = new AbortController();
+    const params = readRecord(request, 'params');
+    const threadId = params ? (readString(params, 'threadId') ?? '') : '';
+    const turnId = params ? (readString(params, 'turnId') ?? '') : '';
+    const callId = params ? (readString(params, 'callId') ?? '') : '';
+    this.hostToolCalls.set(requestId, {
+      threadId,
+      turnId,
+      callId,
+      controller,
     });
+    try {
+      const result = dispatcher
+        ? await dispatcher.run(request, controller.signal)
+        : {
+            contentItems: [
+              {
+                type: 'inputText',
+                text: 'Dynamic tools are unavailable for this runtime policy',
+              },
+            ],
+            success: false,
+          };
+      if (!result.success) {
+        const content = result.contentItems.find(
+          (item) => item.type === 'inputText',
+        );
+        this.rememberStoppedHostTool(
+          this.hostToolKey(threadId, turnId, callId),
+          content?.type === 'inputText'
+            ? content.text
+            : 'The host tool call failed.',
+        );
+      }
+      if (
+        this.disposed ||
+        ((controller.signal.aborted ||
+          active?.hostToolController?.signal.aborted) &&
+          result.success)
+      )
+        return;
+      if (!this.connection.completePendingServerRequest(this, requestId))
+        return;
+      this.connection.send({ id: requestId, result });
+    } finally {
+      this.hostToolCalls.delete(requestId);
+    }
   }
 
   async handleApprovalRequest(
     requestId: JsonRpcId,
     method: string,
     request: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<void> {
     const active = this.activeTurn;
     if (
@@ -689,7 +934,7 @@ class RuntimeThreadHandle
           ? { permissions: {}, scope: 'turn' }
           : { decision: 'decline' };
       try {
-        result = await active.nativeApprovalPolicy(method, request);
+        result = await active.nativeApprovalPolicy(method, request, signal);
       } catch {
         /* Fail closed. */
       }
@@ -733,6 +978,7 @@ class RuntimeThreadHandle
     request: Record<string, unknown>,
     toolCall: CodexMcpToolCallContext,
     approvalKind: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     void request;
     const active = this.activeTurn;
@@ -740,13 +986,16 @@ class RuntimeThreadHandle
     let approved = false;
     if (policy) {
       try {
-        const evaluation = await policy.evaluate({
-          serverName: toolCall.serverName,
-          toolName: toolCall.toolName,
-          arguments: toolCall.arguments,
-          normalizedArguments: toolCall.normalizedArguments,
-          approvalKind,
-        });
+        const evaluation = await policy.evaluate(
+          {
+            serverName: toolCall.serverName,
+            toolName: toolCall.toolName,
+            arguments: toolCall.arguments,
+            normalizedArguments: toolCall.normalizedArguments,
+            approvalKind,
+          },
+          signal,
+        );
         approved =
           evaluation.approved &&
           (!evaluation.externalMutation || policy.allowExternalMutation);
@@ -785,8 +1034,8 @@ class RuntimeThreadHandle
       };
     }
 
-    let resolveCompleted!: (turn: Turn) => void;
-    let rejectCompleted!: (error: Error) => void;
+    let resolveCompleted: (turn: Turn) => void = () => undefined;
+    let rejectCompleted: (error: Error) => void = () => undefined;
     const completed = new Promise<Turn>((resolve, reject) => {
       resolveCompleted = resolve;
       rejectCompleted = reject;
@@ -810,6 +1059,7 @@ class RuntimeThreadHandle
         active.hostToolController.signal,
       );
     }
+    this.openHostToolRows.clear();
     this.activeTurn = active;
 
     let cancellationRequested = false;
@@ -819,7 +1069,11 @@ class RuntimeThreadHandle
       threadId: string;
       turnId: string;
     }): void => {
-      if (this.activeTurn !== active || cancelTerminalNotificationDeadline) {
+      if (
+        this.activeTurn !== active ||
+        active.terminalRead ||
+        cancelTerminalNotificationDeadline
+      ) {
         return;
       }
       // The terminal frame may already be read, or waiting in a paused
@@ -830,7 +1084,7 @@ class RuntimeThreadHandle
           this,
           TURN_TERMINAL_NOTIFICATION_GRACE_MS,
           (): void => {
-            if (this.activeTurn !== active) {
+            if (this.activeTurn !== active || active.terminalRead) {
               return;
             }
             const error = new Error(
@@ -842,7 +1096,7 @@ class RuntimeThreadHandle
         );
     };
     const onAbort = (): void => {
-      if (cancellationRequested) {
+      if (cancellationRequested || active.transcriptDraining) {
         return;
       }
       cancellationRequested = true;
@@ -906,12 +1160,15 @@ class RuntimeThreadHandle
           timeoutMs: startupTimeoutMs,
           signal: request.signal,
         },
-      ) as Promise<{ turn: Turn }>;
+      );
       const response = await Promise.race([
         pendingStart,
         completed.then(() => pendingStart),
       ]);
-      active.turnId = response.turn.id;
+      const responseTurn = isRecord(response) ? response.turn : undefined;
+      if (!isTurn(responseTurn))
+        throw new Error('Codex turn/start returned a malformed turn');
+      active.turnId = responseTurn.id;
       if (active.pendingTerminalTurn?.id === active.turnId) {
         const terminalTurn = active.pendingTerminalTurn;
         active.hostToolController?.abort();
@@ -1002,13 +1259,18 @@ class RuntimeThreadHandle
     attemptId: string,
     expectedTurnId?: string,
   ): Promise<ChatInputAdmission> {
-    const turnId = this.activeTurn?.turnId;
+    const turnId = this.activeTurn?.terminalRead
+      ? undefined
+      : this.activeTurn?.turnId;
     if (!turnId || (expectedTurnId && expectedTurnId !== turnId))
       return {
         kind: 'rejected',
         attemptId,
         reason: 'The active turn no longer accepts steering',
         fallback: 'ordinary',
+        refusal: chatInputRefusal(
+          turnId ? 'turn-id-mismatch' : 'not-steerable',
+        ),
       };
     try {
       await this.connection.request(
@@ -1023,29 +1285,27 @@ class RuntimeThreadHandle
       );
       return { kind: 'accepted', attemptId, providerTurnId: turnId };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message === 'no active turn to steer' ||
-        /^expected active turn id `[^`]+` but found `[^`]+`$/.test(message) ||
-        message === 'cannot steer a compact turn' ||
-        message === 'cannot steer a review turn'
-      )
-        return {
-          kind: 'rejected',
-          attemptId,
-          reason: 'The active turn no longer accepts steering',
-          fallback: 'ordinary',
-        };
-      return {
-        kind: 'unknown',
-        attemptId,
-        reason:
-          'Delivery was not confirmed. This message will not be resent automatically.',
-      };
+      const classified = classifyCodexSteerError(error);
+      return classified.kind === 'refusal'
+        ? {
+            kind: 'rejected',
+            attemptId,
+            reason: 'The active turn no longer accepts steering',
+            fallback: 'ordinary',
+            refusal: classified.refusal,
+          }
+        : {
+            kind: 'unknown',
+            attemptId,
+            reason:
+              'Delivery was not confirmed. This message will not be resent automatically.',
+            failure: classified.failure,
+          };
     }
   }
 
   async interrupt(): Promise<void> {
+    this.abortHostToolCalls();
     this.activeTurn?.hostToolController?.abort();
     const target = this.getActiveTurnInterruptTarget();
     if (!target) {
@@ -1122,6 +1382,8 @@ class RuntimeThreadHandle
       return;
     }
     this.disposed = true;
+    this.backgroundWorkRegistry.retireEpoch();
+    this.abortHostToolCalls();
     this.activeTurn?.hostToolController?.abort();
     this.connection.unregisterThread(this.threadId, this);
     this.pool.release(this.connection, this);
@@ -1355,6 +1617,9 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
     return {
       isOnlyOwner: (): boolean => connection.isOnlyOwner(owner),
       isInitialized: (): boolean => connection.isInitialized(),
+      ingestionLag: (): CodexIngestionLagSnapshot | undefined =>
+        connection.ingestionLag(owner),
+      harnessUserAgent: (): string | undefined => connection.harnessUserAgent(),
       ensureInitialized: (options): Promise<void> =>
         connection.ensureInitialized(options),
       // Only thread start and resume wait for the config read; every other

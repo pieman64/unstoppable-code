@@ -73,8 +73,6 @@ import { openSubagentChatPanel } from '@/lib/panels/subagent-panel-open';
 import { useRendererDiagnostics } from '@/lib/renderer-diagnostics';
 import { applyDisplayPreferences } from '@/lib/theme';
 import { useInAppNotificationPlacement } from '@/lib/useInAppNotificationPlacement';
-import { WatcherDeliveryDeduplicator } from '@/lib/watcherDeliveryDeduplicator';
-import { runWithWatcherDeliveryTimeout } from '@/lib/watcherDeliveryScheduler';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import {
   ensureArchivedContainersSubscription,
@@ -98,10 +96,7 @@ import {
   makeWorktreePanelKey,
 } from '@/stores/panelLayoutStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
-import {
-  APP_ADVISOR_PROJECT_ID,
-  type ChatWatcherFiredInfo,
-} from '@canopy/desktop-shared/types';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { SurfaceFindHost } from '@canopy/ui-app/find';
 import {
   AgentSentSenderOpenerProvider,
@@ -147,11 +142,6 @@ function resolveAppAdvisorFindFallback(): FindTarget | null {
 
 export function AppAdvisorWindowApp(): JSX.Element {
   const commandQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const watcherDeliveryDeduplicatorRef = useRef(
-    new WatcherDeliveryDeduplicator((request) =>
-      window.api.appAdvisor.acknowledgeWatcherMessageDelivery(request),
-    ),
-  );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Floating (early access), the page sits in a transparent view and the
@@ -470,40 +460,20 @@ export function AppAdvisorWindowApp(): JSX.Element {
   }, []);
 
   // Handle one-way commands from the main process (audit transcript
-  // follow-through, quick prompt send, watcher follow-up). Quick prompts are
-  // intentionally non-idempotent, while watcher retries are idempotent by
-  // delivery id. Distinct commands preserve their delivery order and are
-  // serialized in delivery order through a single in-renderer promise queue.
-  // `initializeScoped` is the first step of every command: it is idempotent,
-  // so commands queued during initialization still execute exactly once and
-  // in order after the scoped workspace is ready.
+  // follow-through and quick prompt send). A fired watcher is not one of
+  // them: main delivers it straight into the chat queue. Quick prompts are
+  // intentionally non-idempotent. Distinct commands preserve their delivery
+  // order through a single in-renderer promise queue. `initializeScoped` is
+  // the first step of every command: it is idempotent, so commands queued
+  // during initialization still execute exactly once and in order after the
+  // scoped workspace is ready.
   useEffect(() => {
     const off = window.api.appAdvisor.onWindowCommand((command) => {
-      if (
-        command.type === 'send_watcher_message' &&
-        !watcherDeliveryDeduplicatorRef.current.begin(command)
-      ) {
-        return;
-      }
       commandQueueRef.current = commandQueueRef.current
         .catch(() => undefined)
         .then(async (): Promise<void> => {
           const standaloneStore = useStandaloneChatStore.getState();
-          try {
-            await standaloneStore.initializeScoped(APP_ADVISOR_PROJECT_ID);
-          } catch (error) {
-            if (command.type === 'send_watcher_message') {
-              watcherDeliveryDeduplicatorRef.current.complete(command, {
-                ok: false,
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : 'Watcher message delivery failed.',
-              });
-              return;
-            }
-            throw error;
-          }
+          await standaloneStore.initializeScoped(APP_ADVISOR_PROJECT_ID);
           if (command.type === 'select_chat') {
             // Resolves the owning Work Entry through the Work Entries IPC and
             // selects entry + tab (archived chats open their transcript).
@@ -666,28 +636,6 @@ export function AppAdvisorWindowApp(): JSX.Element {
               });
             return;
           }
-          if (command.type === 'send_watcher_message') {
-            // Watcher follow-ups resolve the chat's Work Entry and send with
-            // an explicit target so the current selection (entry + chat)
-            // never changes. Delivery is acknowledged either way. The timeout
-            // keeps one stuck delivery from holding this ordered queue.
-            try {
-              await runWithWatcherDeliveryTimeout(() =>
-                sendWatcherMessageToEntryChat(command),
-              );
-              watcherDeliveryDeduplicatorRef.current.complete(command, {
-                ok: true,
-              });
-            } catch (error) {
-              watcherDeliveryDeduplicatorRef.current.complete(command, {
-                ok: false,
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : 'Watcher message delivery failed.',
-              });
-            }
-          }
         });
     });
     void window.api.appAdvisor
@@ -730,85 +678,5 @@ export function AppAdvisorWindowApp(): JSX.Element {
         <AppAdvisorSettingsModal onClose={(): void => setSettingsOpen(false)} />
       )}
     </div>
-  );
-}
-
-/**
- * Delivers a watcher follow-up into the target chat's Work Entry without
- * changing the selected entry/chat. The target entry's tab slice is loaded
- * on demand (the watcher-fired path can run before the user ever opened
- * that entry in this window). Resolution or tab lookup failures are reported
- * to the caller instead of silently redirecting the message to another chat.
- */
-async function sendWatcherMessageToEntryChat(command: {
-  chatId: string;
-  watcherId: string;
-  deliveryId: string;
-  text: string;
-  hiddenContextText?: string;
-  watcherFired?: ChatWatcherFiredInfo;
-}): Promise<void> {
-  const trimmed = command.text.trim();
-  if (trimmed.length === 0) return;
-
-  const resolved = await window.api.workEntries.resolveChat({
-    projectId: APP_ADVISOR_PROJECT_ID,
-    chatId: command.chatId,
-  });
-
-  const entryId = resolved.entryId;
-  if (entryId === null) {
-    throw new Error(
-      `Cannot deliver watcher message because App Advisor chat ${command.chatId} was not found.`,
-    );
-  }
-
-  const key = `${APP_ADVISOR_PROJECT_ID}/${entryId}`;
-  if (!useChatStore.getState().worktreeChats[key]?.tabs.length) {
-    await useChatStore
-      .getState()
-      .loadTabsForTarget(APP_ADVISOR_PROJECT_ID, entryId);
-  }
-  const entryChat = useChatStore.getState().worktreeChats[key];
-  const targetTab = entryChat?.tabs.find((tab) => tab.id === command.chatId);
-  if (!targetTab) {
-    throw new Error(
-      `Cannot deliver watcher message because App Advisor chat ${command.chatId} was not found in work entry ${entryId}.`,
-    );
-  }
-  if (targetTab.readOnly) {
-    throw new Error(
-      `Cannot deliver watcher message because App Advisor chat ${targetTab.id} is read-only.`,
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.debug(
-    `[app-advisor] delivering watcher message (watcherId=${command.watcherId}, chatId=${command.chatId}, entryId=${entryId})`,
-  );
-
-  const watcherHiddenText = command.hiddenContextText?.trim() ?? '';
-  await useChatStore.getState().sendMessage(
-    trimmed,
-    undefined,
-    {
-      projectId: APP_ADVISOR_PROJECT_ID,
-      worktreeId: entryId,
-      chatId: command.chatId,
-    },
-    undefined,
-    {
-      assistantMode: 'app-advisor',
-      ...(watcherHiddenText.length > 0
-        ? {
-            hiddenContext: {
-              kind: 'canopy-watcher-event',
-              text: watcherHiddenText,
-            },
-          }
-        : {}),
-      ...(command.watcherFired ? { watcherFired: command.watcherFired } : {}),
-      watcherDeliveryId: command.deliveryId,
-      throwOnDispatchFailure: true,
-    },
   );
 }

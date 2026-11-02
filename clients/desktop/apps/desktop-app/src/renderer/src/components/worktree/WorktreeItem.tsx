@@ -394,6 +394,8 @@ interface WorktreeItemProps {
   hasUnpushedCommits?: boolean;
   isSelected: boolean;
   isStreaming: boolean;
+  /** Live background tasks: the background spinner while nothing streams. */
+  backgroundTasks?: number;
   hasActiveSession: boolean;
   awaitingApproval: boolean;
   /** True when an interactive agent question is waiting for an answer. */
@@ -531,6 +533,7 @@ function WorktreeItemContent({
   hasUnpushedCommits,
   isSelected,
   isStreaming,
+  backgroundTasks = 0,
   hasActiveSession,
   awaitingApproval,
   hasPendingQuestion = false,
@@ -1768,7 +1771,7 @@ function WorktreeItemContent({
     if (onDispatchPipeline) {
       items.push({
         key: 'dispatch-pipeline',
-        label: 'Dispatch pipeline',
+        label: 'Dispatch workflow',
         icon: <PipelineIcon />,
         onSelect: (): void => onDispatchPipeline(worktree.id),
         testId: automationId('worktree-actions-menu-dispatch-pipeline'),
@@ -2460,6 +2463,7 @@ function WorktreeItemContent({
         statusModel={focusedRowStatus ? 'focused' : 'classic'}
         selected={isSelected}
         isStreaming={isStreaming}
+        backgroundTasks={backgroundTasks}
         isRunningRun={isRunningRun}
         isDiscovering={isDiscovering}
         pipelineStatus={sharedPipelineStatus}

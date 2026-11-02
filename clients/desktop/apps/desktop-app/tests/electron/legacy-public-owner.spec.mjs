@@ -7,6 +7,8 @@ test('an explicit Public update normalizes a legacy scoped Agent owner', async (
     await openLegacyPublicOwnerShare();
   try {
     await modal.getByTestId('share-agent-submit').click();
+    await expect(modal.getByTestId('share-agent-success')).toBeVisible();
+    await modal.getByTestId('share-agent-done').click();
     await expect(modal).toHaveCount(0);
     const requests = await electronApp.evaluate(
       () => globalThis.__legacyPublicOwnerRequests,

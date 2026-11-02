@@ -146,8 +146,9 @@ jest.mock('@canopy/desktop-shared/pipelines/config-paths', () => ({
   getOpenCodeRuntimeRootDir: () => '/fixture/runtime',
   getOpenCodeRuntimeStateDir: () => '/fixture/state',
 }));
+const mockReadProviderConfig = jest.fn(() => Promise.resolve({ native: true }));
 jest.mock('@canopy/desktop-shared/node/opencode/provider-config', () => ({
-  readOpenCodeProviderConfig: () => Promise.resolve({}),
+  readOpenCodeProviderConfig: () => mockReadProviderConfig(),
 }));
 jest.mock('@canopy/desktop-shared/node/opencode/runtime', () => ({
   startOpenCodeRuntime: (options: DiscoveryOptions) => mockStart(options),
@@ -285,6 +286,13 @@ it('disconnect aborts discovery and cannot publish stale enabled models', async 
   ).rejects.toThrow('Connect OpenCode');
 });
 
+it('asks to connect OpenCode in Settings, wherever the release puts setup', async () => {
+  mockPreferences.opencodeEnabled = false;
+  await expect(
+    openManagedOpenCodeRuntime({ signal: new AbortController().signal }),
+  ).rejects.toThrow(new Error('Connect OpenCode in Settings.'));
+});
+
 it('setup cancelled during discovery never turns on the preference', async () => {
   mockPreferences.opencodeEnabled = false;
   const abort = new AbortController();
@@ -345,6 +353,11 @@ it.each(['queued', 'committing'])(
 );
 
 it('successful setup publishes models after the enabled preference is committed', async () => {
+  mockPreferences.opencodeEnabled = false;
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
   mockUpdatePreferences
     .mockImplementationOnce(applyPreferences)
     .mockImplementationOnce(async (update, onCommitted) => {
@@ -358,6 +371,12 @@ it('successful setup publishes models after the enabled preference is committed'
   expect(getOpenCodeModelEntries()).toEqual([
     expect.objectContaining({ id: 'opencode:fixture%2Fmodel' }),
   ]);
+  expect(connection).toHaveBeenCalledWith({
+    provider: 'opencode',
+    connectionMethod: 'provider_runtime',
+    connectSource: 'in_app',
+  });
+  stop();
 });
 
 it('publishes connected availability for Portal without another status request', async () => {
@@ -527,6 +546,7 @@ it('checks a registered OpenCode Agent against its provider model', async () => 
       name: 'OpenCode Agent',
       baseModel: 'opencode:fixture%2Fmodel',
       instructions: '',
+      pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
       createdAt: '',
       updatedAt: '',
       available: true,
@@ -549,6 +569,7 @@ it.each([
       name: 'Stale',
       baseModel: 'opencode:fixture%2Fmissing',
       instructions: '',
+      pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
       createdAt: '',
       updatedAt: '',
       available: false,
@@ -558,6 +579,7 @@ it.each([
       name: 'Other',
       baseModel: 'claude-sonnet-4-6',
       instructions: '',
+      pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
       createdAt: '',
       updatedAt: '',
       available: true,
@@ -656,6 +678,21 @@ it.each(['cancel', 'unavailable'])(
   },
 );
 
+it('does not read ambient native provider configuration for an explicit host inference route', async () => {
+  mockReadProviderConfig.mockClear();
+  const options = {
+    signal: new AbortController().signal,
+    providerConfiguration: 'host-inference' as const,
+  };
+  const runtime = await openManagedOpenCodeRuntime(options);
+  try {
+    expect(mockReadProviderConfig).not.toHaveBeenCalled();
+    expect(runtime.providerConfig).toEqual({});
+  } finally {
+    await runtime.close();
+  }
+});
+
 const accountMetadata = {
   providers: [
     {
@@ -672,6 +709,328 @@ const accountMetadata = {
     },
   ],
 };
+
+it.each([
+  'needs-sign-in',
+  'removed',
+  'partial-needs-sign-in',
+  'partial-removed',
+])('does not report a connection when the account is %s', async (change) => {
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  releaseDiscovery?.();
+  const initialMetadata = {
+    providers: accountMetadata.providers.map((provider) => ({
+      ...provider,
+      accounts: change.startsWith('partial-')
+        ? [
+            ...provider.accounts,
+            { ...provider.accounts[0], label: 'Personal account' },
+          ]
+        : provider.accounts,
+    })),
+  };
+  mockReadMetadata.mockImplementation((url) =>
+    Promise.resolve(url === '/accounts' ? initialMetadata : undefined),
+  );
+  try {
+    await opencodeConnectionStatus();
+    await refreshOpenCodeAccounts(new AbortController().signal);
+    connection.mockClear();
+    const signedOutMetadata = {
+      providers: initialMetadata.providers.map((provider) => ({
+        ...provider,
+        accounts: provider.accounts.flatMap((account) =>
+          account.label === 'Personal account'
+            ? [account]
+            : change.endsWith('removed')
+              ? []
+              : [
+                  {
+                    ...account,
+                    needsSignIn: true,
+                  },
+                ],
+        ),
+      })),
+    };
+    mockReadMetadata.mockImplementation((url) =>
+      Promise.resolve(url === '/accounts' ? signedOutMetadata : undefined),
+    );
+    await refreshOpenCodeAccounts(new AbortController().signal);
+    await opencodeConnectionStatus();
+    expect(connection.mock.calls).toEqual(
+      change.startsWith('partial-')
+        ? [
+            [
+              {
+                provider: 'opencode',
+                connectionMethod: 'native_login',
+                connectSource: 'at_startup',
+              },
+            ],
+          ]
+        : [],
+    );
+    connection.mockClear();
+
+    mockReadMetadata.mockImplementation((url) =>
+      Promise.resolve(url === '/accounts' ? initialMetadata : undefined),
+    );
+    await refreshOpenCodeAccounts(new AbortController().signal);
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'opencode',
+          connectionMethod: 'native_login',
+          connectSource: 'external_change',
+        },
+      ],
+    ]);
+  } finally {
+    stop();
+  }
+});
+
+it('reports an actual runtime connection independently of account discovery', async () => {
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  try {
+    mockPreferences.opencodeEnabled = false;
+    await opencodeConnectionStatus();
+    mockPreferences.opencodeEnabled = true;
+    await opencodeConnectionStatus();
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'opencode',
+          connectionMethod: 'provider_runtime',
+          connectSource: 'external_change',
+        },
+      ],
+    ]);
+  } finally {
+    stop();
+  }
+});
+
+it('does not report a connection from a status read overtaken by disconnect', async () => {
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  let release: (installed: boolean) => void = () => undefined;
+  let started: () => void = () => undefined;
+  const pendingInstall = new Promise<boolean>((resolve) => {
+    release = resolve;
+  });
+  const installStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  try {
+    await opencodeConnectionStatus();
+    connection.mockClear();
+    mockIsInstalled.mockImplementationOnce(() => {
+      started();
+      return pendingInstall;
+    });
+    const pendingStatus = opencodeConnectionStatus();
+    await installStarted;
+    await disconnectOpenCode();
+    release(true);
+    await pendingStatus;
+    expect(connection).not.toHaveBeenCalled();
+    await opencodeConnectionStatus();
+    expect(connection).not.toHaveBeenCalled();
+  } finally {
+    release(true);
+    stop();
+  }
+});
+
+it.each(['disabled', 'enabled'])(
+  'retains committed setup when a status read starts during the %s preference phase',
+  async (phase) => {
+    const events = await import('../lib/provider-connection-events');
+    events.resetProviderConnectionEventsForTests();
+    const connection = jest.fn();
+    const stop = events.subscribeProviderConnections(connection);
+    let release: (installed: boolean) => void = () => undefined;
+    let installStarted: () => void = () => undefined;
+    const pendingInstall = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    const statusStarted = new Promise<void>((resolve) => {
+      installStarted = resolve;
+    });
+    let pendingStatus: ReturnType<typeof opencodeConnectionStatus> | undefined;
+    const startStatus = async () => {
+      mockIsInstalled.mockImplementationOnce(() => {
+        installStarted();
+        return pendingInstall;
+      });
+      pendingStatus = opencodeConnectionStatus();
+      await statusStarted;
+    };
+    mockPreferences.opencodeEnabled = false;
+    mockReadMetadata.mockImplementation((url) =>
+      Promise.resolve(url === '/accounts' ? accountMetadata : undefined),
+    );
+    if (phase === 'enabled') {
+      mockUpdatePreferences
+        .mockImplementationOnce(applyPreferences)
+        .mockImplementationOnce(async (update, onCommitted) => {
+          await applyPreferences(update, onCommitted);
+          await startStatus();
+        });
+    }
+    try {
+      const setup = connectOpenCode(
+        new AbortController().signal,
+        () => undefined,
+      );
+      await started;
+      if (phase === 'disabled') await startStatus();
+      releaseDiscovery?.();
+      await expect(setup).resolves.toMatchObject({
+        enabled: true,
+        phase: 'connected',
+      });
+      const accounts = peekOpenCodeAccounts();
+      expect(accounts).toMatchObject({ status: 'ready', ...accountMetadata });
+      const models = getOpenCodeModelEntries();
+      expect(models).toEqual([
+        expect.objectContaining({ id: 'opencode:fixture%2Fmodel' }),
+      ]);
+      const setupEvents = [
+        [
+          {
+            provider: 'opencode',
+            connectionMethod: 'native_login',
+            connectSource: 'in_app',
+          },
+        ],
+        [
+          {
+            provider: 'opencode',
+            connectionMethod: 'native_login',
+            connectSource: 'at_startup',
+          },
+        ],
+      ];
+      expect(connection.mock.calls).toEqual(setupEvents);
+
+      // Both a stale disabled preference and a stale missing installation must
+      // leave setup's runtime/account baselines intact after setup has finished.
+      release(phase === 'disabled');
+      await pendingStatus;
+      expect(peekOpenCodeRuntimeAvailability()).toBe(true);
+      expect(peekOpenCodeAccounts()).toEqual(accounts);
+      await expect(opencodeConnectionStatus()).resolves.toMatchObject({
+        enabled: true,
+        phase: 'connected',
+      });
+      await opencodeConnectionStatus();
+      expect(connection.mock.calls).toEqual(setupEvents);
+      await expect(
+        listOpenCodeModels(new AbortController().signal),
+      ).resolves.toEqual(models);
+      expect(mockStart).toHaveBeenCalledTimes(1);
+    } finally {
+      release(true);
+      releaseDiscovery?.();
+      await pendingStatus;
+      stop();
+    }
+  },
+);
+
+it.each(['oauth', 'key', 'env'])(
+  'reports setup once using the connected %s account method',
+  async (method) => {
+    const events = await import('../lib/provider-connection-events');
+    events.resetProviderConnectionEventsForTests();
+    const connection = jest.fn();
+    const stop = events.subscribeProviderConnections(connection);
+    const metadata = {
+      providers: accountMetadata.providers.map((provider) => ({
+        ...provider,
+        accounts: provider.accounts.map((account) => ({ ...account, method })),
+      })),
+    };
+    mockPreferences.opencodeEnabled = false;
+    mockReadMetadata.mockImplementation((url) =>
+      Promise.resolve(url === '/accounts' ? metadata : undefined),
+    );
+    releaseDiscovery?.();
+    try {
+      await connectOpenCode(new AbortController().signal, () => undefined);
+      await opencodeConnectionStatus();
+      await refreshOpenCodeAccounts(new AbortController().signal);
+      expect(connection.mock.calls).toEqual([
+        [
+          {
+            provider: 'opencode',
+            connectionMethod: method === 'oauth' ? 'native_login' : 'api_key',
+            connectSource: 'in_app',
+          },
+        ],
+        [
+          {
+            provider: 'opencode',
+            connectionMethod: method === 'oauth' ? 'native_login' : 'api_key',
+            connectSource: 'at_startup',
+          },
+        ],
+      ]);
+    } finally {
+      stop();
+    }
+  },
+);
+
+it('reports a new account even when another account is removed simultaneously', async () => {
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  releaseDiscovery?.();
+  mockReadMetadata.mockImplementation((url) =>
+    Promise.resolve(url === '/accounts' ? accountMetadata : undefined),
+  );
+  try {
+    await refreshOpenCodeAccounts(new AbortController().signal);
+    connection.mockClear();
+    const metadata = {
+      providers: accountMetadata.providers.map((provider) => ({
+        ...provider,
+        accounts: provider.accounts.map((account) => ({
+          ...account,
+          label: 'New account',
+        })),
+      })),
+    };
+    mockReadMetadata.mockImplementation((url) =>
+      Promise.resolve(url === '/accounts' ? metadata : undefined),
+    );
+    await refreshOpenCodeAccounts(new AbortController().signal);
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'opencode',
+          connectionMethod: 'native_login',
+          connectSource: 'external_change',
+        },
+      ],
+    ]);
+  } finally {
+    stop();
+  }
+});
 
 it('shares model discovery with account refresh and publishes only after teardown', async () => {
   mockReadMetadata.mockImplementation((url) =>
@@ -737,4 +1096,61 @@ it('makes account refresh available for a connected runtime without launching di
     providers: [],
   });
   expect(mockStart).not.toHaveBeenCalled();
+});
+
+it('does not count repeated setup of an already-connected runtime', async () => {
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  try {
+    await opencodeConnectionStatus();
+    connection.mockClear();
+    releaseDiscovery?.();
+    await connectOpenCode(new AbortController().signal, () => undefined);
+    await connectOpenCode(new AbortController().signal, () => undefined);
+    expect(connection).not.toHaveBeenCalled();
+  } finally {
+    stop();
+  }
+});
+
+it('reports a new authenticated account discovered by setup of an existing runtime', async () => {
+  const events = await import('../lib/provider-connection-events');
+  events.resetProviderConnectionEventsForTests();
+  const connection = jest.fn();
+  const stop = events.subscribeProviderConnections(connection);
+  releaseDiscovery?.();
+  mockReadMetadata.mockImplementation((url) =>
+    Promise.resolve(url === '/accounts' ? accountMetadata : undefined),
+  );
+  try {
+    await opencodeConnectionStatus();
+    await refreshOpenCodeAccounts(new AbortController().signal);
+    connection.mockClear();
+    const replacement = {
+      providers: accountMetadata.providers.map((provider) => ({
+        ...provider,
+        accounts: provider.accounts.map((account) => ({
+          ...account,
+          label: 'New account',
+        })),
+      })),
+    };
+    mockReadMetadata.mockImplementation((url) =>
+      Promise.resolve(url === '/accounts' ? replacement : undefined),
+    );
+    await connectOpenCode(new AbortController().signal, () => undefined);
+    expect(connection.mock.calls).toEqual([
+      [
+        {
+          provider: 'opencode',
+          connectionMethod: 'native_login',
+          connectSource: 'in_app',
+        },
+      ],
+    ]);
+  } finally {
+    stop();
+  }
 });

@@ -91,6 +91,8 @@ function observeEntry(
 ): void {
   if (entry.status !== 'running') return;
   if (!COUNTED_EVENT_TYPES.has(entry.eventType)) return;
+  // A wake is the chat's own turn, not new usage someone started.
+  if (entry.autonomous === true) return;
   if (current.seen.has(entry.id)) return;
 
   // Recorded before any await so a repeat emitted during owner resolution is

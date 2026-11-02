@@ -94,8 +94,9 @@ describe('capabilityTileModel', () => {
     };
     expect(capabilityTileModel(pipeline)).toMatchObject({
       iconKind: 'pipeline',
-      kindLabel: 'Pipeline',
+      kindLabel: 'Workflow',
       operationLabel: 'Created',
+      kindPhrase: 'Created workflow',
       summary: '2 jobs · 5 steps',
       state: { label: 'Disabled', tone: 'muted' },
     });
@@ -117,10 +118,17 @@ describe('capabilityTileModel', () => {
         skillName: 'review',
       },
     };
-    expect(capabilityTileModel(skill)).toMatchObject({
+    const skillModel = capabilityTileModel(skill);
+    expect(skillModel).toMatchObject({
       operationLabel: 'Updated',
-      summary: 'Installed skill',
+      kindPhrase: 'Updated skill',
     });
+    // No filler summary or source: the tile names the kind once.
+    expect(skillModel.summary).toBeUndefined();
+    expect(skillModel.sourceLabel).toBeUndefined();
+    expect(
+      capabilityTileModel({ ...skill, source: 'shared' }).sourceLabel,
+    ).toBe('Shared');
 
     const automation: AutomationArtifactReceiptV1 = {
       version: 1,
@@ -150,6 +158,7 @@ describe('capabilityTileModel', () => {
   it('shows run outcomes, including failures and skips', () => {
     expect(capabilityTileModel(automationRun())).toMatchObject({
       kindLabel: 'Automation run',
+      kindPhrase: 'Automation run',
       operationLabel: 'Triggered',
       summary: 'Manual run · 1 min 5 s',
       state: { label: 'Succeeded', tone: 'success' },
@@ -220,15 +229,31 @@ describe('capabilityTileModel', () => {
     expect(capabilityTileModel(agent)).toMatchObject({
       iconKind: 'agent',
       operationLabel: 'Imported',
+      kindPhrase: 'Imported agent',
       summary: 'Opus',
-      sourceLabel: 'Local',
     });
-    expect(capabilityTileModel(reference())).toMatchObject({
+    expect(capabilityTileModel(agent).sourceLabel).toBeUndefined();
+    const found = capabilityTileModel(reference());
+    expect(found).toMatchObject({
       kindLabel: 'Skill',
+      kindPhrase: 'Skill',
       operationLabel: 'Recommended',
-      state: { label: 'Installed', tone: 'success' },
+      state: { label: 'Installed', tone: 'muted' },
       reason: 'Matches your review request',
       external: false,
+    });
+    // "Installed" is the state; the matching source label is not repeated.
+    expect(found.sourceLabel).toBeUndefined();
+    expect(
+      capabilityTileModel(reference({ sourceLabel: 'Local' })).sourceLabel,
+    ).toBeUndefined();
+    expect(
+      capabilityTileModel(
+        reference({ state: 'available', sourceLabel: 'Shared' }),
+      ),
+    ).toMatchObject({
+      sourceLabel: 'Shared',
+      state: { label: 'Not installed', tone: 'muted' },
     });
     expect(
       capabilityTileModel(
@@ -240,6 +265,7 @@ describe('capabilityTileModel', () => {
       ),
     ).toMatchObject({
       kindLabel: 'MCP server',
+      kindPhrase: 'MCP server',
       operationLabel: 'Found',
       state: { label: 'Needs sign-in' },
     });
@@ -287,7 +313,7 @@ describe('capabilityTileModel', () => {
       kindLabel: 'Skill',
       name: 'superpowers:writing-plans',
       sourceLabel: 'Plugin',
-      state: { label: 'Installed', tone: 'success' },
+      state: { label: 'Installed', tone: 'muted' },
       external: false,
     });
     expect(model.summary).toBeUndefined();

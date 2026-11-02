@@ -187,6 +187,7 @@ export const HOSTED_SETTINGS_PAGE_ROUTES = Object.freeze({
   'account/security': 'app://settings/account/security',
   'account/billing': 'app://settings/account/billing',
   'account/labs': 'app://settings/account/labs',
+  'account/appearance': 'app://settings/account/appearance',
   'organizations/list': 'app://settings/organizations/list',
   'organization/feed': 'app://settings/organization/feed',
   'organization/statistics': 'app://settings/organization/statistics',

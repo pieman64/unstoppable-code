@@ -143,9 +143,7 @@ test('early access keeps each worktree layout mode', async () => {
     await app.openSettings();
     await app.openSettingsSection('experiments');
     const toggle = window.getByTestId('labs-experiment-toggle-minimal-layout');
-    await expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await toggle.click();
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(toggle).toHaveCount(0);
     await app.closeSettings();
     await app.openMainPage();
     await expectMode(window, 'advanced');

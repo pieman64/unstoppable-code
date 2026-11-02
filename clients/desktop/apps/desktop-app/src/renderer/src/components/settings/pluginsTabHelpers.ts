@@ -1,6 +1,7 @@
 import {
   CHAT_LABEL,
   CHAT_UNIT_LABEL_PLURAL,
+  ORCHESTRATOR_LABEL,
   WORKTREE_LABEL,
 } from '@canopy/protocol';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
@@ -34,14 +35,14 @@ export const DEFERRED_TOOLS_ROW_DESCRIPTORS: readonly DeferredToolsRowDescriptor
     },
     {
       field: 'deferredToolsAppAdvisorEnabled',
-      title: 'App Advisor',
-      helperText: 'Initial setting for new App Advisor chats.',
+      title: ORCHESTRATOR_LABEL,
+      helperText: `Initial setting for new ${ORCHESTRATOR_LABEL} chats.`,
       testId: 'settings-plugins-deferred-app-advisor',
     },
     {
       field: 'deferredToolsPipelineAssistantEnabled',
-      title: 'Pipeline Assistant',
-      helperText: 'Initial setting for new Pipeline Assistant chats.',
+      title: 'Workflow Assistant',
+      helperText: 'Initial setting for new Workflow Assistant chats.',
       testId: 'settings-plugins-deferred-pipeline-assistant',
     },
   ] as const;

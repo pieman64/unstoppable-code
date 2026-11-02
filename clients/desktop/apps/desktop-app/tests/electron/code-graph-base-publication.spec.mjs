@@ -6,6 +6,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { openProjectSettingsPage } from './projectSettingsDriver.mjs';
 
 // Publishing a default-branch base used to run SQLite's full integrity scan
 // twice on the Electron main thread; one scan of a 1.6 GB generation measured
@@ -80,7 +81,7 @@ test('Project Settings publishes a workspace code-graph base through worker fina
     await app.workspaceSettingsButton(WORKSPACE_NAME).click();
     const dialog = window.getByRole('dialog', { name: WORKSPACE_NAME });
     await expect(dialog).toBeVisible();
-    await dialog.getByRole('tab', { name: 'Code Graph' }).click();
+    await openProjectSettingsPage(app, 'code-graph');
 
     const panel = dialog.getByTestId('code-graph-summary');
     const build = dialog.getByTestId('code-graph-summary-build');

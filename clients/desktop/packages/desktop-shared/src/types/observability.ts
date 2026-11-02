@@ -514,6 +514,12 @@ export interface AgentAuditEntry {
   providerAccountEmail?: string;
   /** Raw provider plan/subscription type string, when attributed. */
   providerPlanType?: string;
+  /**
+   * True for the entry of a turn no one dispatched, such as a wake
+   * (turn-state phase 35d1). Product activity doesn't count it; usage and
+   * cost still do. Absent on dispatched turns and older entries.
+   */
+  autonomous?: true;
   /** How the run was paid for. Absent on older persisted entries. */
   billingBasis?: AgentAuditBillingBasis;
   /** The account-proxy accounts that served the run (CAN-4021). */
@@ -622,6 +628,8 @@ export interface AgentAuditTranscriptSyntheticPromptRecord {
   plan_mode: boolean;
   user_message_id?: string;
   steering?: { startsTurn: boolean; rootUserMessageId?: string };
+  /** Set for an internal row's prompt; transcript readers mark it hidden. */
+  canopy_hidden?: true;
 }
 
 export interface AgentAuditTranscriptSuccessResponse {
@@ -664,6 +672,15 @@ export interface ProviderCreditsSnapshot {
   expiresAt?: string;
 }
 
+/** Billing-period spend and cap, never a prepaid credit balance. Money is in major units. */
+export interface ProviderSpendSnapshot {
+  currency?: string;
+  used?: number;
+  /** Absent means no usable cap was reported; null is reserved for an explicit uncapped cap. */
+  limit?: number | null;
+  isEnabled?: boolean;
+}
+
 export interface ProviderRateLimitSnapshot {
   limitId?: string;
   limitName?: string;
@@ -671,6 +688,12 @@ export interface ProviderRateLimitSnapshot {
   primary?: ProviderRateLimitWindow;
   secondary?: ProviderRateLimitWindow;
   credits?: ProviderCreditsSnapshot;
+  spend?: ProviderSpendSnapshot;
+  /** Provider-reported applicability, rather than a label inferred by callers. */
+  scope?: {
+    model?: { id: string | null; displayName: string | null };
+    surface?: string | null;
+  };
 }
 
 /**
@@ -1438,6 +1461,16 @@ export interface DesktopInstrumentationInitFailureDiagnosticRequest {
 export interface PostHogSessionState {
   sessionId: string;
   revision: number;
+}
+
+/** How this launch relates to the install, from the host's local state. */
+export interface PostHogInstallLaunch {
+  /** The analytics identity was created now and no earlier install data exists. */
+  isFirstLaunch: boolean;
+  /** The analytics identity was created now over existing install data. */
+  isReinstall: boolean;
+  /** Observed desktop acceptance on this install; absent for unknown metadata. */
+  isInvitedInstall?: boolean;
 }
 
 /**

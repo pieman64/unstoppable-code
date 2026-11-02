@@ -178,11 +178,8 @@ export async function catchUpStaleChat(
       recording.changes = [];
       const generation = recording.generation;
       try {
-        await loadChatTranscriptPage(
-          target,
-          false,
-          undefined,
-          (current, page) => {
+        await loadChatTranscriptPage(target, false, undefined, {
+          catchUp: (current, page) => {
             if (recording.cancelled || generation !== recording.generation)
               throw new RestartCatchUp();
             const installed = installTranscriptPage(current, page, false);
@@ -206,7 +203,7 @@ export async function catchUpStaleChat(
             delete next.transcriptStale;
             return next;
           },
-        );
+        });
         if (!recording.cancelled) publish(target, idle);
         return;
       } catch (error) {

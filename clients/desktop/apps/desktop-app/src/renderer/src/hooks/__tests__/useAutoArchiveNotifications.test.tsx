@@ -83,7 +83,7 @@ describe('useAutoArchiveNotifications', () => {
         inactivityDays: 7,
         status: 'success',
         warnings: ['Browser cleanup failed'],
-      } as AutoArchiveNotification & { warnings: string[] }),
+      }),
     );
     expect(reconcileArchivedWorktreeMock).toHaveBeenCalledWith(
       'workspace-1',

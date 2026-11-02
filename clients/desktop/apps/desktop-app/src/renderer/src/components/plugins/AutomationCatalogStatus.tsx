@@ -1,9 +1,8 @@
 import type { JSX } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 import { brandText } from '@/lib/brand';
 import type { CuratedAutomationsController } from '../../hooks/useCuratedAutomations';
-import { BusyLabel } from '@canopy/ui-shared/components';
+import { BusyLabel, Button } from '@canopy/ui-shared/components';
 
 /** Mirrors the curated pipeline catalog's saved-copy notice. */
 function curatedAutomationStaleMessage(cloudDisplayName: string): string {
@@ -70,20 +69,19 @@ export function AutomationCatalogStatus({
       className="mt-6 flex flex-col items-start gap-4"
     >
       {hasMore && (
-        <button
-          type="button"
+        <Button
+          size="compact"
           data-testid="automation-catalog-load-more"
           disabled={loadingMore}
           onClick={() => {
             if (curatedHasMore) curated?.onLoadMore();
             if (sharedNextCursor !== null) onLoadMoreShared();
           }}
-          className={SECONDARY_ACTION_BUTTON_CLASS}
         >
           <BusyLabel busy={loadingMore === true}>
             Show more automations
           </BusyLabel>
-        </button>
+        </Button>
       )}
       {notice}
     </div>

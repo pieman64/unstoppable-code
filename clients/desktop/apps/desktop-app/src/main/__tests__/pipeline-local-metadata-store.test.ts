@@ -18,6 +18,7 @@ import {
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
+  setUserPipelineOwnerAutomation,
 } from '../pipelines/pipeline-local-metadata-store';
 
 const USER_LOCATOR = {
@@ -85,6 +86,34 @@ describe('pipeline local metadata store', () => {
     expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
       owner: 'personal',
     });
+  });
+
+  // CAN-4551: the pipeline a converted chat automation owns.
+  it('records the owning automation, and keeps it across agent author changes', () => {
+    recordUserPipelineOwner('pipeline-1', 'personal');
+    setUserPipelineOwnerAutomation('pipeline-1', 'automation-1');
+    setUserPipelineAgentAuthor('pipeline-1', AUTHOR);
+    setUserPipelineAgentAuthor('pipeline-1', null);
+    expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
+      owner: 'personal',
+      ownerAutomationId: 'automation-1',
+    });
+    setUserPipelineOwnerAutomation('pipeline-1', null);
+    expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
+      owner: 'personal',
+    });
+  });
+
+  it('drops a malformed owning automation', () => {
+    fs.mkdirSync(path.dirname(mockMetadataPath), { recursive: true });
+    fs.writeFileSync(
+      mockMetadataPath,
+      JSON.stringify({
+        version: 1,
+        entries: { 'stored:user:pipeline-1': { ownerAutomationId: 7 } },
+      }),
+    );
+    expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({});
   });
 
   it('does not create a file to clear a marker that was never set', () => {

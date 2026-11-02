@@ -1,3 +1,4 @@
+import type { SharedContainerReplicaRevisionSnapshot } from './replica/types';
 import type { ListSharedContainersResponse } from '@canopy/protocol';
 import type {
   ListSharedContainersWithMeRequest,
@@ -26,7 +27,7 @@ import {
 } from './transport';
 import type { SharedContainerRealtimeSubscription } from './realtime-subscription';
 import { cleanupSharedContainerRecipientViewState } from './recipient-view-state';
-import { ptyManager } from '../terminal/pty-manager';
+import { workerTerminal } from '../terminal/worker-terminal';
 import { stopWorktreeScripts } from '../services/scripts-service';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { removeSharedContainerRunEnvironment } from './run-env-store';
@@ -81,10 +82,10 @@ async function cleanupSharedContainerRuntime(
   containerId: string,
 ): Promise<void> {
   await withSharedContainerRunLifecycle(containerId, async () => {
-    ptyManager.killWorktreeTerminals(
-      SHARED_CONTAINER_VIEWER_PROJECT_ID,
-      containerId,
-    );
+    workerTerminal.killWorktree({
+      projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      worktreeId: containerId,
+    });
     await stopWorktreeScripts({
       projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
       worktreeId: containerId,
@@ -403,7 +404,10 @@ export class SharedContainerReconciliationService {
     containerId: string,
     organizationId: string | undefined,
     revisionId: string,
-    operation: (revisionRoot: string) => Promise<T>,
+    operation: (
+      revisionRoot: string,
+      revision: SharedContainerReplicaRevisionSnapshot,
+    ) => Promise<T>,
   ): Promise<T> {
     return this.manager.withReplicaReadGuard(
       containerId,

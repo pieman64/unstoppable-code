@@ -1,12 +1,35 @@
+import { TURN_OUTCOME_UNKNOWN_IMPACT } from './turn-outcome-label';
 import { useState, type JSX, type ReactNode } from 'react';
-import { MinusIcon, PlusIcon } from '../../icons';
-import { StepTenseProvider, useCleanChatLook } from '../chat-look';
+import {
+  readToolInterruption,
+  type ToolInterruption,
+} from '@canopy/protocol/portal';
+import { MinusIcon, PlusIcon, StopIcon } from '../../icons';
+import { ShieldIcon } from '../../icons/AppIcons';
+import {
+  StepTenseProvider,
+  useChatAppName,
+  useCleanChatLook,
+  type StepTense,
+} from '../chat-look';
 import {
   containsTensedVerb,
   hasTensedStepLabel,
+  isAskUserQuestionToolName,
   readableToolInput,
 } from './tool-display';
+import {
+  TOOL_APPROVAL_WAITING_LABEL,
+  useToolApprovalWait,
+} from './tool-approval-wait';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
+import {
+  classifyToolDenial,
+  stripHookErrorPrefix,
+  toolDenialDetail,
+  toolDenialHeading,
+  type ToolDenial,
+} from './tool-denial';
 import {
   getToolFamilyIcon,
   type PortalChatToolFamily,
@@ -19,12 +42,146 @@ const CLEAN_OUTPUT_CLASS =
 /**
  * Result shape carried by a tool call. Mirrors the desktop `ToolResult` shape
  * (output + isError) but uses the kind-based discriminator preferred by the
- * web portal so both sides can share this primitive.
+ * web portal so both sides can share this primitive. `blocked` is an error
+ * result recognized as an approval denial; `content` is display text, with
+ * any hook wrapper removed from errors. `interrupted` is a settled call with
+ * no recorded outcome; its explicit metadata outranks the error flag.
  */
-export interface ToolCallResult {
-  kind: 'text' | 'error';
-  content: string;
+export type ToolCallResult =
+  | { kind: 'text' | 'error'; content: string }
+  | { kind: 'blocked'; content: string; denial: ToolDenial }
+  | { kind: 'interrupted'; content: string; interruption: ToolInterruption };
+
+export type ToolCallStatus =
+  | 'pending'
+  | 'success'
+  | 'error'
+  | 'blocked'
+  | 'interrupted';
+
+/** Shown under an interrupted step; it never claims the call did or didn't run. */
+export const TOOL_INTERRUPTED_EXPLANATION =
+  'No result was recorded. Any changes this step made before it stopped are still in place.';
+
+/** A presentation-only result for a call whose owning turn has settled. */
+export function interruptedToolCallResult(
+  interruption: ToolInterruption = { reason: 'unknown', at: 0 },
+): ToolCallResult {
+  return {
+    kind: 'interrupted',
+    content: TOOL_INTERRUPTED_EXPLANATION,
+    interruption,
+  };
 }
+
+/** The interrupted row's detail; names the app only for a known restart. */
+export function toolInterruptionDetail(
+  interruption: ToolInterruption,
+  brandAppName: string | undefined,
+): string {
+  return interruption.reason === 'app_restart' && brandAppName
+    ? `Interrupted when ${brandAppName} closed`
+    : 'Interrupted';
+}
+
+/**
+ * Normalize a raw `{ output, isError }` result for display. Persisted output
+ * is untouched; only the returned display text drops the hook wrapper.
+ */
+export function toolCallResultFrom({
+  output,
+  isError,
+  interruption,
+}: {
+  output: string;
+  isError: boolean;
+  interruption?: ToolInterruption;
+}): ToolCallResult {
+  if (interruption) return interruptedToolCallResult(interruption);
+  if (!isError) return { kind: 'text', content: output };
+  const denial = classifyToolDenial(output);
+  if (denial != null) {
+    return { kind: 'blocked', content: denial.message, denial };
+  }
+  return { kind: 'error', content: stripHookErrorPrefix(output) };
+}
+
+/** The heading over a result's text: "Result", "Error", "Interrupted", or who blocked it. */
+export function toolCallResultHeading(result: ToolCallResult): string {
+  if (result.kind === 'blocked') return toolDenialHeading(result.denial);
+  if (result.kind === 'interrupted') return 'Interrupted';
+  return result.kind === 'error' ? 'Error' : 'Result';
+}
+
+/**
+ * A classic expanded panel's result section. Exported so host slots that
+ * replace the panel (WebFetch, SendMessage) show the same heading and text.
+ */
+export function ToolCallResultSection({
+  result,
+  children,
+}: {
+  result: ToolCallResult;
+  children?: ReactNode;
+}): JSX.Element {
+  // Clean rows stay colorless, including a host slot opened under one.
+  const clean = useCleanChatLook();
+  return (
+    <>
+      <div
+        className={`border-t px-2.5 py-1 text-3xs font-medium ${
+          result.kind === 'error' && !clean ? 'fg-destructive' : 'fg-secondary'
+        }`}
+        data-testid="tool-call-result-heading"
+      >
+        {toolCallResultHeading(result)}
+      </div>
+      {children ?? (
+        <pre
+          className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
+            result.kind === 'error' ? 'fg-destructive/80' : 'fg-secondary'
+          }`}
+        >
+          {result.content}
+        </pre>
+      )}
+      {result.kind === 'error' && (
+        <p
+          className="px-2.5 py-1 text-xs fg-secondary"
+          data-testid="tool-call-error-impact"
+        >
+          {TURN_OUTCOME_UNKNOWN_IMPACT}
+        </p>
+      )}
+    </>
+  );
+}
+
+function resolveToolCallStatus(
+  status: ToolCallStatus | undefined,
+  result: ToolCallResult | null | undefined,
+): ToolCallStatus {
+  if (result?.kind === 'blocked' && (status == null || status === 'error')) {
+    return 'blocked';
+  }
+  if (
+    result?.kind === 'interrupted' &&
+    (status == null || status === 'error')
+  ) {
+    return 'interrupted';
+  }
+  if (status != null) return status;
+  if (result == null) return 'pending';
+  return result.kind === 'error' ? 'error' : 'success';
+}
+
+const STATUS_TENSE: Record<ToolCallStatus, StepTense> = {
+  pending: 'running',
+  success: 'done',
+  error: 'failed',
+  blocked: 'blocked',
+  interrupted: 'interrupted',
+};
 
 /** Decode live objects and JSON-serialized persisted results for the same card. */
 export function readToolCallResult(value: unknown): ToolCallResult | null {
@@ -48,10 +205,15 @@ export function readToolCallResult(value: unknown): ToolCallResult | null {
           ? result.text
           : null;
   if (output === null) return null;
-  return {
-    kind: 'isError' in result && result.isError === true ? 'error' : 'text',
-    content: output,
-  };
+  const interruption =
+    'interruption' in result
+      ? readToolInterruption(result.interruption)
+      : undefined;
+  return toolCallResultFrom({
+    output,
+    isError: 'isError' in result && result.isError === true,
+    ...(interruption ? { interruption } : {}),
+  });
 }
 
 export interface ToolCallCardProps {
@@ -89,23 +251,45 @@ export interface ToolCallCardProps {
   /**
    * Tool execution status. Controls the pending spinner + error badge.
    * Defaults to `'success'` when `result` is set without `error`, `'error'`
-   * when the result is an error, and `'pending'` when no result is set.
+   * when the result is an error, `'blocked'` when it is a recognized
+   * approval denial, `'interrupted'` when it carries interruption metadata,
+   * and `'pending'` when no result is set. A blocked or interrupted result
+   * overrides an explicit `'error'`.
    */
-  status?: 'pending' | 'success' | 'error';
+  status?: ToolCallStatus;
+  /**
+   * Product name for a known restart's "Interrupted when … closed" detail.
+   * Defaults to the host's `ChatAppNameProvider` value.
+   */
+  brandAppName?: string;
   /** Whether the body starts collapsed. Defaults to `true`. */
   defaultCollapsed?: boolean;
   /** Reveal a search target without changing the saved collapse state. */
   forceExpanded?: boolean;
   /** Optional pending-spinner slot. Hosts pass their own animated dots. */
   pendingSpinner?: ReactNode;
+  /**
+   * Whether this pending call is held for the person's approval. Overrides
+   * the host's `ToolApprovalWaitProvider` either way; a settled status always
+   * wins over it. A waiting call says so ("Waiting to run …") instead of
+   * shimmering or spinning.
+   */
+  awaitingApproval?: boolean;
   /** Custom expanded-panel slot. When supplied, replaces input/result chrome. */
   expandedSlot?: ReactNode;
   /**
    * Test ID hook for automation. Independent of this hook, the card root
    * always exposes nonvisual `data-tool-name` (raw canonical tool name) and
-   * `data-tool-status` (`pending` | `success` | `error`) attributes.
+   * `data-tool-status` (`pending` | `success` | `error` | `blocked` |
+   * `interrupted`) attributes, plus `data-tool-interruption` when interrupted
+   * and `data-tool-approval="waiting"` while a pending call awaits approval.
    */
   dataTestId?: string;
+  /**
+   * The call's stable step identity, exposed as `data-tool-use-id` so a host
+   * can reveal and focus this row (a turn summary landing on a blocked step).
+   */
+  toolUseId?: string;
 }
 
 /**
@@ -123,11 +307,14 @@ export function ToolCallCard({
   input,
   result,
   status,
+  brandAppName,
   defaultCollapsed = true,
   forceExpanded = false,
   pendingSpinner,
+  awaitingApproval,
   expandedSlot,
   dataTestId,
+  toolUseId,
 }: ToolCallCardProps): JSX.Element {
   const [open, setIsOpen] = useState(!defaultCollapsed);
   const isOpen = forceExpanded || open;
@@ -135,15 +322,51 @@ export function ToolCallCard({
   const renderedIcon =
     icon ?? (toolFamily === 'canopy' && appIcon != null ? appIcon : <Icon />);
 
-  const resolvedStatus: 'pending' | 'success' | 'error' =
-    status ??
-    (result == null
-      ? 'pending'
-      : result.kind === 'error'
-        ? 'error'
-        : 'success');
-  const isPending = resolvedStatus === 'pending';
+  const resolvedStatus = resolveToolCallStatus(status, result);
+  const approvalWait = useToolApprovalWait();
+  // Only a call still pending can wait; a question waits on its own form.
+  const isWaiting =
+    resolvedStatus === 'pending' &&
+    !isAskUserQuestionToolName(toolName) &&
+    (awaitingApproval ??
+      approvalWait.isCallWaiting({
+        toolName,
+        ...(toolUseId !== undefined ? { toolUseId } : {}),
+        ...(input !== undefined ? { input } : {}),
+      }));
+  const isPending = resolvedStatus === 'pending' && !isWaiting;
   const isError = resolvedStatus === 'error';
+  const denial = result?.kind === 'blocked' ? result.denial : null;
+  const contextAppName = useChatAppName();
+  const isInterrupted = resolvedStatus === 'interrupted';
+  const interruption: ToolInterruption | null = isInterrupted
+    ? result?.kind === 'interrupted'
+      ? result.interruption
+      : { reason: 'unknown', at: 0 }
+    : null;
+  const interruptionDetail =
+    interruption != null ? (
+      <span data-testid="tool-call-interrupted">
+        {toolInterruptionDetail(interruption, brandAppName ?? contextAppName)}
+      </span>
+    ) : null;
+  const statusIcon =
+    denial != null ? (
+      <ShieldIcon />
+    ) : interruption != null ? (
+      <StopIcon aria-hidden="true" />
+    ) : (
+      renderedIcon
+    );
+  // The label on screen may carry the verb even when a host passes it
+  // ready-made without the input (large-output steps). Only failed and
+  // waiting rows ask, so a running row never resolves its label twice.
+  // A waiting row needs a verb actually present in its label; the default
+  // raw tool name still needs the secondary approval note.
+  const labelTensed =
+    (isError || isWaiting) &&
+    (containsTensedVerb(label) ||
+      (isError && hasTensedStepLabel(toolName, input ?? '')));
   // Clean chat look: the shared step row, with readable details when opened.
   const clean = useCleanChatLook();
   if (clean) {
@@ -152,23 +375,36 @@ export function ToolCallCard({
     return (
       <div
         data-testid={dataTestId}
+        data-tool-use-id={toolUseId}
         data-tool-name={toolName}
         data-tool-status={resolvedStatus}
+        data-tool-interruption={interruption?.reason}
+        data-tool-approval={isWaiting ? 'waiting' : undefined}
       >
         <StepTenseProvider
-          value={isPending ? 'running' : isError ? 'failed' : 'done'}
+          value={isWaiting ? 'waiting' : STATUS_TENSE[resolvedStatus]}
         >
           <StepRow
-            icon={renderedIcon}
+            icon={statusIcon}
+            step
             label={label ?? toolName}
-            running={isPending}
-            // The label on screen may carry the verb even when a host passes
-            // it ready-made without the input (large-output steps).
-            failed={
-              isError &&
-              !containsTensedVerb(label) &&
-              !hasTensedStepLabel(toolName, input ?? '')
+            detail={
+              denial != null ? (
+                <span data-testid="tool-call-blocked">
+                  {toolDenialDetail(denial)}
+                </span>
+              ) : isWaiting && !labelTensed ? (
+                // A label without a verb ("Fetch", an app tool) still says
+                // why it is not running.
+                <span data-testid="tool-call-waiting">
+                  {TOOL_APPROVAL_WAITING_LABEL}
+                </span>
+              ) : (
+                (interruptionDetail ?? undefined)
+              )
             }
+            running={isPending}
+            failed={isError && !labelTensed}
             expandable
             isOpen={isOpen}
             onToggle={(): void => setIsOpen((prev) => !prev)}
@@ -186,6 +422,14 @@ export function ToolCallCard({
                 )}
               </div>
             )}
+            {isError && expandedSlot == null && (
+              <p
+                className="text-xs fg-secondary"
+                data-testid="tool-call-error-impact"
+              >
+                {TURN_OUTCOME_UNKNOWN_IMPACT}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -195,13 +439,16 @@ export function ToolCallCard({
   return (
     <div
       data-testid={dataTestId}
+      data-tool-use-id={toolUseId}
       data-tool-name={toolName}
       data-tool-status={resolvedStatus}
+      data-tool-interruption={interruption?.reason}
+      data-tool-approval={isWaiting ? 'waiting' : undefined}
     >
       <button
         type="button"
         onClick={(): void => setIsOpen((prev) => !prev)}
-        className="group flex w-full items-center gap-2 py-1 text-xs fg-secondary transition"
+        className="group flex w-full items-center gap-2 py-1 text-xs fg-secondary transition-colors"
         aria-expanded={isOpen}
         data-tool-family={toolFamily ?? 'unknown'}
       >
@@ -215,15 +462,52 @@ export function ToolCallCard({
         */}
         <span
           className={`flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 ${
-            isError ? 'fg-destructive' : ''
+            isError
+              ? 'fg-destructive'
+              : denial != null
+                ? 'fg-attention'
+                : interruption != null
+                  ? 'fg-tertiary'
+                  : ''
           }`}
         >
-          <span className="flex group-hover:hidden">{renderedIcon}</span>
+          <span className="flex group-hover:hidden">{statusIcon}</span>
           <span className="hidden group-hover:flex">
             {isOpen ? <MinusIcon /> : <PlusIcon />}
           </span>
         </span>
         <span className="min-w-0 truncate">{label ?? toolName}</span>
+        {denial != null && (
+          <span
+            className="flex-shrink-0 fg-tertiary"
+            data-testid="tool-call-blocked"
+          >
+            {toolDenialHeading(denial)}
+          </span>
+        )}
+        {isError && denial == null && (
+          // In words, and kept while hovered: the icon's error tint swaps to
+          // +/− on hover, so it can't be the row's only signal.
+          <span
+            className="flex-shrink-0 fg-destructive"
+            data-testid="tool-call-error"
+          >
+            error
+          </span>
+        )}
+        {interruptionDetail != null && (
+          <span className="flex-shrink-0 fg-tertiary">
+            {interruptionDetail}
+          </span>
+        )}
+        {isWaiting && (
+          <span
+            className="flex-shrink-0 fg-tertiary"
+            data-testid="tool-call-waiting"
+          >
+            {TOOL_APPROVAL_WAITING_LABEL}
+          </span>
+        )}
         {isPending && pendingSpinner != null && (
           <span className="ml-1 inline-flex -translate-y-px flex-shrink-0 fg-accent">
             {pendingSpinner}
@@ -239,22 +523,7 @@ export function ToolCallCard({
                   {input}
                 </pre>
               )}
-              {result && (
-                <>
-                  <div className="border-t px-2.5 py-1 text-3xs font-medium fg-secondary">
-                    {result.kind === 'error' ? 'Error' : 'Result'}
-                  </div>
-                  <pre
-                    className={`max-h-75 overflow-auto whitespace-pre-wrap break-all px-2.5 py-2 text-xs ${
-                      result.kind === 'error'
-                        ? 'fg-destructive/80'
-                        : 'fg-secondary'
-                    }`}
-                  >
-                    {result.content}
-                  </pre>
-                </>
-              )}
+              {result && <ToolCallResultSection result={result} />}
             </>
           )}
         </div>

@@ -30,6 +30,7 @@ function preview(
         repoId: 'repo',
         repoName: 'Repo',
         repoPath: '/repo',
+        destinationWorkspaceName: 'Repo',
         removalMode,
         chats: emptySummary,
         pipelines: emptySummary,

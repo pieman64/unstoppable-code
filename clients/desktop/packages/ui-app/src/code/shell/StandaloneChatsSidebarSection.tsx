@@ -16,6 +16,7 @@ import {
 } from '@canopy/protocol/ui-labels';
 import type { PortalStandaloneWorkEntryFields } from '@canopy/protocol';
 import {
+  Dot,
   FloatingMenu,
   ActionMenuRowStyle,
   RailIconButton,
@@ -28,6 +29,7 @@ import {
   type WorktreeMenuItem,
   WorkEntryRowMenuItems,
   WorkspaceSectionHeader,
+  isSpaceNotificationMuted,
   type SpaceNotificationMenuChoice,
   type SpaceNotificationMenuState,
   type WorkEntryRowMenuContext,
@@ -57,6 +59,7 @@ import type {
   PortalRowBackend,
   PortalWorkspaceLayout,
 } from '@canopy/protocol/portal';
+import { withSelectionGroupItems } from './sidebar-selection-menu-items';
 import { compareWorkspaces } from './workspace-sections-model';
 import { workspaceLayout } from './worktree-status';
 import type { SidebarItemGroup } from '@canopy/protocol/sidebar';
@@ -71,6 +74,13 @@ import {
 } from './sidebar/sidebar-item-groups-model';
 import { workEntryRecencyMs } from './sidebar/sidebar-ordering';
 import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
+import {
+  SidebarSelectionRowsReporter,
+  workEntryRowKey,
+  workEntryRowMultiSelectProps,
+  type WorkEntryMultiSelectBinding,
+} from './sidebar/use-sidebar-work-entry-bulk';
+import type { SidebarSelectionRow } from './sidebar/sidebar-row-selection';
 
 export interface StandaloneChatsSidebarWorkspace {
   readonly localId?: string;
@@ -128,6 +138,11 @@ export interface StandaloneChatsSidebarChat extends PortalStandaloneWorkEntryFie
    */
   readonly hasActiveChat?: boolean;
   /**
+   * The chat's background tasks (D11). Drives the Chats section's background
+   * spinner while no turn runs (turn-state phase 41b).
+   */
+  readonly backgroundTasks?: number;
+  /**
    * The chat has output the user has not viewed. Drives the Chats section's
    * unread dot; the folder rows do not show it yet.
    */
@@ -173,6 +188,11 @@ export interface StandaloneChatsSidebarRowsState {
    * collapsed project keeps only its selected row.
    */
   readonly collapsed: boolean;
+  /**
+   * The bulk selection for Work Entry rows (CAN-3975); absent where the host
+   * wired no Work Entry removal, so its rows select nothing.
+   */
+  readonly workEntryMultiSelect?: WorkEntryMultiSelectBinding;
 }
 
 /**
@@ -195,8 +215,29 @@ export interface WorkEntryNotificationHandlers {
   ) => void;
 }
 
+/**
+ * A muted Work Entry hides its unread dot, on its row and in its group's
+ * rollup (CAN-4378). The chats keep their unread state.
+ */
+function isWorkEntrySpaceMuted(
+  notifications: WorkEntryNotificationHandlers | undefined,
+  row: {
+    readonly workEntryId: string;
+    readonly targetChat: { readonly projectLocalId: string };
+  },
+): boolean {
+  return isSpaceNotificationMuted(
+    notifications?.getState(row.targetChat.projectLocalId, row.workEntryId),
+  );
+}
+
 export interface StandaloneChatsSidebarSectionProps {
   readonly itemGroupCommands?: CodeSidebarItemGroupCommands;
+  /**
+   * The bulk selection for Work Entry rows (CAN-3975). The section reports
+   * the rows it renders and forwards this to host rows through `renderRows`.
+   */
+  readonly workEntryMultiSelect?: WorkEntryMultiSelectBinding;
   readonly onCreateInGroup?: (groupId: string) => void;
   readonly onGroupError?: (error: unknown) => void;
   readonly snapshot: StandaloneChatsSidebarSnapshot;
@@ -469,6 +510,7 @@ export function StandaloneChatsSidebarSection({
   onCreateInGroup,
   onGroupError,
   workEntryNotifications,
+  workEntryMultiSelect,
 }: StandaloneChatsSidebarSectionProps): JSX.Element | null {
   const [localExpanded, setLocalExpanded] = useState(true);
   const expanded = collapsed === undefined ? localExpanded : !collapsed;
@@ -600,6 +642,8 @@ export function StandaloneChatsSidebarSection({
         0,
       )
     : flatHiddenChatCount;
+  // The bulk selection's list for this section's Work Entry rows.
+  const selectionListId = workspace?.localId;
   const renderGroupRow = (
     id: string,
     menu: WorktreeMenuItem[] = [],
@@ -609,6 +653,8 @@ export function StandaloneChatsSidebarSection({
       <ChatsSectionWorkEntryRow
         row={row}
         menu={menu}
+        multiSelect={workEntryMultiSelect}
+        selectionListId={selectionListId}
         notifications={workEntryNotifications}
         notificationsSubmenu={compactDisclosure}
         selectedStandaloneChatId={selectedStandaloneChatId}
@@ -649,6 +695,45 @@ export function StandaloneChatsSidebarSection({
     listsNoneFoundWhenEmpty &&
     listedCount === 0 &&
     blocks.length === 0;
+
+  // The Work Entry rows this section renders, in order, for the bulk
+  // selection: rows hidden by the cap or inside a collapsed group are not
+  // rendered, so ranges and select-all never reach them.
+  const renderedWorkEntryRows =
+    workEntryMultiSelect === undefined ||
+    selectionListId === undefined ||
+    renderRows
+      ? []
+      : groupPresentation
+        ? expanded
+          ? cappedBlocks.visible.flatMap((block) =>
+              block.visibleItemIds.flatMap((id) => {
+                const row = workEntryRows.find(
+                  (candidate) => candidate.workEntryId === id,
+                );
+                return row ? [row] : [];
+              }),
+            )
+          : // Collapsed, the section still renders its selected row.
+            listedWorkEntryRows
+        : isChatsSection
+          ? listedWorkEntryRows
+          : [];
+  const selectionRows: SidebarSelectionRow[] =
+    selectionListId === undefined || workEntryMultiSelect === undefined
+      ? []
+      : renderedWorkEntryRows.map((row) => ({
+          key: workEntryRowKey(selectionListId, row.workEntryId),
+          kind: 'work-entry',
+          selectable:
+            row.hasWorkEntry &&
+            workEntryMultiSelect.isSelectable(selectionListId),
+          label: row.title.trim() ? row.title : row.targetChat.title,
+          projectName: workspace?.name ?? folderName,
+          open: row.chats.some(
+            (chat) => chat.localId === selectedStandaloneChatId,
+          ),
+        }));
 
   return (
     <div
@@ -858,6 +943,16 @@ export function StandaloneChatsSidebarSection({
           />
         </div>
       )}
+      {workEntryMultiSelect !== undefined &&
+        selectionListId !== undefined &&
+        // Host rows report themselves under the same list.
+        !renderRows && (
+          <SidebarSelectionRowsReporter
+            listId={selectionListId}
+            rows={selectionRows}
+            onRowsChange={workEntryMultiSelect.onRowsChange}
+          />
+        )}
       {isChatsSection && stickyHeader && (
         // The selected chat's pinned copy seats here, as the header's next
         // sibling, while the rail scrolls it away. Only a host rail pins, so
@@ -905,7 +1000,7 @@ export function StandaloneChatsSidebarSection({
             />
           )}
           {renderRows ? (
-            renderRows({ collapsed: !expanded })
+            renderRows({ collapsed: !expanded, workEntryMultiSelect })
           ) : groupPresentation && expanded ? (
             <div className="-ml-2 pl-2">
               <CodeSidebarItemGroups
@@ -916,6 +1011,16 @@ export function StandaloneChatsSidebarSection({
                 commands={itemGroupCommands}
                 unitLabel={{ singular: 'work entry', plural: 'work entries' }}
                 rowGap="thin"
+                selectionCount={workEntryMultiSelect?.selection.count}
+                isItemSelected={
+                  workEntryMultiSelect?.selection.active === true &&
+                  selectionListId !== undefined
+                    ? (id): boolean =>
+                        workEntryMultiSelect.selection.isSelected(
+                          workEntryRowKey(selectionListId, id),
+                        )
+                    : undefined
+                }
                 renderRow={renderGroupRow}
                 renderPreview={(id) => renderGroupRow(id)}
                 onCreate={(groupId) => onCreateInGroup?.(groupId)}
@@ -934,16 +1039,16 @@ export function StandaloneChatsSidebarSection({
                       )?.hasActiveChat,
                   ) ? (
                     <ThinkingSpinner tone="accent" />
-                  ) : block.units.some(
-                      (unit) =>
-                        workEntryRows.find(
-                          (row) => row.workEntryId === unit.rootId,
-                        )?.hasUnread,
-                    ) ? (
-                    <span
-                      aria-label="Unread work in group"
-                      className="h-1.5 w-1.5 rounded-full bg-accent"
-                    />
+                  ) : block.units.some((unit) => {
+                      const row = workEntryRows.find(
+                        (row) => row.workEntryId === unit.rootId,
+                      );
+                      return (
+                        row?.hasUnread === true &&
+                        !isWorkEntrySpaceMuted(workEntryNotifications, row)
+                      );
+                    }) ? (
+                    <Dot tone="unread" label="Unread work in group" />
                   ) : null
                 }
               />
@@ -953,6 +1058,8 @@ export function StandaloneChatsSidebarSection({
               <ChatsSectionWorkEntryRow
                 key={row.key}
                 row={row}
+                multiSelect={workEntryMultiSelect}
+                selectionListId={selectionListId}
                 selectedStandaloneChatId={selectedStandaloneChatId}
                 onSelectChat={onSelectChat}
                 touchTargets={touchTargets}
@@ -1064,6 +1171,10 @@ interface ChatsSectionWorkEntryRowProps {
   readonly touchTargets: boolean;
   readonly testIds: StandaloneChatsSidebarSectionTestIds | undefined;
   readonly menu?: readonly WorktreeMenuItem[];
+  /** The bulk selection; absent where the host wired no Work Entry removal. */
+  readonly multiSelect?: WorkEntryMultiSelectBinding;
+  /** The list the section reports this row under: its workspace. */
+  readonly selectionListId?: string;
   readonly notifications: WorkEntryNotificationHandlers | undefined;
   /** Early access: the notification choices sit in a "Notifications ›" submenu. */
   readonly notificationsSubmenu: boolean;
@@ -1127,6 +1238,8 @@ function ChatsSectionWorkEntryRow({
   touchTargets,
   testIds,
   menu = [],
+  multiSelect: multiSelectProp,
+  selectionListId,
   notifications,
   notificationsSubmenu,
   showActivityAge,
@@ -1139,14 +1252,57 @@ function ChatsSectionWorkEntryRow({
       : row.chats.find((chat) => chat.localId === selectedStandaloneChatId);
   const selected = selectedChat !== undefined;
   // The chat on screen is being read, so it does not count as unread even
-  // before the desktop's projection catches up.
-  const hasUnread = row.unreadChats.some(
-    (chat) => chat.localId !== selectedStandaloneChatId,
-  );
+  // before the desktop's projection catches up. A muted entry shows no dot.
+  const hasUnread =
+    !isWorkEntrySpaceMuted(notifications, row) &&
+    row.unreadChats.some((chat) => chat.localId !== selectedStandaloneChatId);
   const title = row.title.trim() ? row.title : row.targetChat.title;
   const workspaceLocalId = row.targetChat.projectLocalId;
   const offersNotifications =
     notifications?.getState(workspaceLocalId, row.workEntryId) !== undefined;
+  const rowTestId =
+    testIds?.workEntryRow?.(row.workEntryId) ??
+    `portal-chats-work-entry-${row.workEntryId}`;
+  const multiSelect =
+    selectionListId === undefined ? undefined : multiSelectProp;
+  const selectionKey = workEntryRowKey(
+    selectionListId ?? workspaceLocalId,
+    row.workEntryId,
+  );
+  const selectable =
+    multiSelect !== undefined &&
+    selectionListId !== undefined &&
+    row.hasWorkEntry &&
+    multiSelect.isSelectable(selectionListId);
+  const selectionMenu =
+    multiSelect === undefined
+      ? undefined
+      : multiSelect.menuItemsFor(selectionKey, {
+          toggleSelection: `${rowTestId}-toggle-selection`,
+          bulkPin: `${rowTestId}-bulk-pin`,
+          bulkDone: `${rowTestId}-bulk-done`,
+          bulkNotifications: `${rowTestId}-bulk-notifications`,
+          bulkArchive: `${rowTestId}-bulk-archive`,
+          bulkDelete: `${rowTestId}-bulk-delete`,
+          clearSelection: `${rowTestId}-clear-selection`,
+        });
+  // A row in a selection of 2 or more shows the selection's menu alone,
+  // with the group moves the list built for it.
+  const replaces = selectionMenu?.replacesMenu === true;
+  const rowMenu = replaces ? [] : menu;
+  const showsNotifications =
+    !replaces && notifications !== undefined && offersNotifications;
+  const selectionSource = replaces
+    ? withSelectionGroupItems(selectionMenu?.items ?? [], menu)
+    : (selectionMenu?.items ?? []);
+  // Select leads its own group, unless nothing precedes it.
+  const selectionItems = selectionSource.map((item, index) =>
+    index === 0 && rowMenu.length === 0 && !showsNotifications
+      ? { ...item, separatorBefore: false }
+      : item,
+  );
+  const hasMenu =
+    rowMenu.length > 0 || showsNotifications || selectionItems.length > 0;
   return (
     <SidebarRowFrame
       data-testid={testIds?.chatRow?.(row.targetChat.localId)}
@@ -1164,15 +1320,24 @@ function ChatsSectionWorkEntryRow({
             : undefined
         }
         title={title}
-        testId={
-          testIds?.workEntryRow?.(row.workEntryId) ??
-          `portal-chats-work-entry-${row.workEntryId}`
-        }
+        testId={rowTestId}
         entryId={row.workEntryId}
+        multiSelect={
+          multiSelect === undefined
+            ? undefined
+            : workEntryRowMultiSelectProps(
+                multiSelect,
+                selectionListId ?? workspaceLocalId,
+                selectionKey,
+                selectable,
+              )
+        }
+        removing={multiSelect?.isRemoving(selectionKey) === true}
         status={row.status}
         statusPlacement={statusPlacement}
         selected={selected}
         working={row.hasActiveChat}
+        backgroundTasks={row.backgroundTasks}
         hasUnread={hasUnread}
         pinnedToTop={row.pinned}
         // Desktop's Chats rows opt out of the selected-item pin: the header
@@ -1191,36 +1356,41 @@ function ChatsSectionWorkEntryRow({
           onSelectChat((selectedChat ?? row.targetChat).localId)
         }
         renderMenuItems={
-          menu.length || (notifications && offersNotifications)
-            ? (rowMenu): ReactNode => (
+          hasMenu
+            ? (menuContext): ReactNode => (
                 <>
-                  {menu.length > 0 && (
+                  {rowMenu.length > 0 && (
                     <WorktreeActionMenuItems
-                      items={menu}
+                      items={rowMenu}
                       onSelect={(item) => {
-                        rowMenu.close();
+                        menuContext.close();
                         item.onSelect?.();
                       }}
                     />
                   )}
-                  {notifications && offersNotifications && (
+                  {showsNotifications && notifications !== undefined && (
                     <WorkEntryNotificationMenuItems
-                      menu={rowMenu}
+                      menu={menuContext}
                       workspaceLocalId={workspaceLocalId}
                       workEntryId={row.workEntryId}
                       notifications={notifications}
                       submenu={notificationsSubmenu}
                     />
                   )}
+                  {selectionItems.length > 0 && (
+                    <WorktreeActionMenuItems
+                      items={selectionItems}
+                      onSelect={(item) => {
+                        menuContext.close();
+                        item.onSelect?.();
+                      }}
+                    />
+                  )}
                 </>
               )
             : undefined
         }
-        menuLabel={
-          menu.length || (notifications && offersNotifications)
-            ? title
-            : undefined
-        }
+        menuLabel={hasMenu ? title : undefined}
       />
     </SidebarRowFrame>
   );

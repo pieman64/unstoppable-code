@@ -131,7 +131,7 @@ function SharedContainerRunCommandRow({
         type="button"
         aria-expanded={expanded}
         data-testid={`shared-container-run-command-details-${command.name}`}
-        className="focus-ring -ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs fg-quaternary transition hover:fg-secondary"
+        className="focus-ring -ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs fg-quaternary transition-colors hover:fg-secondary"
         onClick={(): void => setExpanded((current) => !current)}
       >
         <ChevronRightIcon

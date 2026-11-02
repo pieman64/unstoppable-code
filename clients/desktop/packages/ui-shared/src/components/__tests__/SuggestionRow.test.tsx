@@ -11,7 +11,7 @@ describe('SuggestionRow', () => {
     );
     expect(markup).toContain('hover:bg-subtle');
     expect(markup).not.toContain('group-hover:');
-    expect(markup).not.toContain('pr-10');
+    expect(markup).not.toContain('pr-12');
   });
 
   it('shares its slot with a trailing control when asked', () => {
@@ -22,7 +22,19 @@ describe('SuggestionRow', () => {
         Import projects
       </SuggestionRow>,
     );
-    expect(markup).toContain('pr-10');
+    expect(markup).toContain('pr-12');
+    expect(markup).toContain('group-hover:bg-subtle');
+    expect(markup).not.toMatch(/(?<!group-)hover:bg-subtle/);
+  });
+
+  it('reserves room for a text action beside the dismiss control', () => {
+    const markup = renderToStaticMarkup(
+      <SuggestionRow icon={null} trailingControl="wide">
+        Resume Fix checkout
+      </SuggestionRow>,
+    );
+    expect(markup).toContain('pr-28');
+    expect(markup).not.toContain('pr-12');
     expect(markup).toContain('group-hover:bg-subtle');
     expect(markup).not.toMatch(/(?<!group-)hover:bg-subtle/);
   });

@@ -223,6 +223,12 @@ export function getAvailableModelHarnesses(
     source === 'ai-gateway' || source === 'ollama'
       ? ['claude', 'codex']
       : [native];
+  if (
+    source === 'ai-gateway' &&
+    catalog.openCodeGatewayModels?.includes(resolved)
+  ) {
+    choices.push('opencode');
+  }
   const cursorId = catalog.cursorModelMappings?.[resolved];
   return native !== 'cursor' &&
     cursorId &&
@@ -310,6 +316,13 @@ export function buildModelHarnessAssignmentSnapshot(
       configurable,
       overridden: explicit !== undefined,
       availableHarnesses,
+      ...(catalog.openCodeGatewayModels?.includes(modelId)
+        ? {
+            chatHarnesses: availableHarnesses.includes('opencode')
+              ? [...availableHarnesses]
+              : [...availableHarnesses, 'opencode'],
+          }
+        : {}),
     });
   }
   return {
@@ -372,6 +385,21 @@ export function applyModelHarnessOverrideMutation(input: {
   return { modelId, overrides: next };
 }
 
+function copyAssignment(
+  assignment: ModelHarnessAssignment,
+): ModelHarnessAssignment {
+  const { availableHarnesses, chatHarnesses, ...rest } = assignment;
+  return {
+    ...rest,
+    ...(Array.isArray(availableHarnesses)
+      ? { availableHarnesses: availableHarnesses.filter(isModelHarness) }
+      : {}),
+    ...(Array.isArray(chatHarnesses)
+      ? { chatHarnesses: chatHarnesses.filter(isModelHarness) }
+      : {}),
+  };
+}
+
 let hydratedAssignmentSnapshot: ModelHarnessAssignmentSnapshot = {
   revision: 0,
   assignments: [],
@@ -396,16 +424,14 @@ export function initModelHarnessAssignments(
           typeof assignment.configurable === 'boolean' &&
           typeof assignment.overridden === 'boolean',
       )
-      .map((assignment) => ({ ...assignment })),
+      .map(copyAssignment),
   };
 }
 
 export function getModelHarnessAssignmentSnapshot(): ModelHarnessAssignmentSnapshot {
   return {
     revision: hydratedAssignmentSnapshot.revision,
-    assignments: hydratedAssignmentSnapshot.assignments.map((assignment) => ({
-      ...assignment,
-    })),
+    assignments: hydratedAssignmentSnapshot.assignments.map(copyAssignment),
   };
 }
 
@@ -427,7 +453,7 @@ export function getHydratedModelHarnessAssignment(
   const assignment = hydratedAssignmentSnapshot.assignments.find(
     (candidate) => candidate.modelId === resolved,
   );
-  return assignment ? { ...assignment } : undefined;
+  return assignment ? copyAssignment(assignment) : undefined;
 }
 
 /**

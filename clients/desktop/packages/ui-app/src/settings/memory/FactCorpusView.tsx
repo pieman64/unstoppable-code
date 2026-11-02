@@ -1,5 +1,4 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import {
   useCallback,
@@ -18,12 +17,16 @@ import {
   type ExplorerRankedFact,
 } from '@canopy/protocol/settings/organization-memory';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
+  SegmentedControl,
   SettingsListSkeleton,
   Sheet,
   buttonClassName,
+  SettingsSelect,
+  type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { SettingsLink, useSettingsClient } from '../host';
 import { fetchMemoryFact, fetchMemoryFacts } from './api';
@@ -50,6 +53,19 @@ interface FactCorpusViewProps {
    */
   policiesHref: string | null;
 }
+
+const EVIDENCE_TYPE_OPTIONS: readonly SettingsSelectOption<EvidenceFilter>[] = [
+  { value: '', label: 'All evidence' },
+  { value: 'OBSERVED', label: 'Observed' },
+  { value: 'ASSERTED', label: 'Asserted' },
+  { value: 'INFERRED', label: 'Inferred' },
+];
+
+const LIVENESS_OPTIONS: readonly SettingsSelectOption<LivenessFilter>[] = [
+  { value: 'live', label: 'Live' },
+  { value: 'superseded', label: 'Superseded' },
+  { value: 'all', label: 'All' },
+];
 
 function isEvidenceFilter(value: string): value is EvidenceFilter {
   return value === '' || EXPLORER_EVIDENCE_TYPES.some((type) => type === value);
@@ -275,15 +291,11 @@ export function FactCorpusView({
     else void openFact(failed.factId);
   };
 
-  const onEvidenceTypeChange = (
-    event: ChangeEvent<HTMLSelectElement>,
-  ): void => {
-    const value = event.target.value;
+  const onEvidenceTypeChange = (value: string): void => {
     if (isEvidenceFilter(value)) setEvidenceType(value);
   };
 
-  const onLivenessChange = (event: ChangeEvent<HTMLSelectElement>): void => {
-    const value = event.target.value;
+  const onLivenessChange = (value: string): void => {
     if (isLivenessFilter(value)) setLiveness(value);
   };
 
@@ -340,7 +352,10 @@ export function FactCorpusView({
           policiesHref === null ? undefined : (
             <SettingsLink
               href={policiesHref}
-              className={buttonClassName({ variant: 'secondary' })}
+              className={buttonClassName({
+                variant: 'secondary',
+                size: 'compact',
+              })}
               data-testid="memory-facts-empty-policies"
             >
               Open Policies
@@ -353,27 +368,14 @@ export function FactCorpusView({
 
   return (
     <div className="space-y-4">
-      <div
-        className="flex w-fit rounded-lg border bg-card p-1"
-        role="group"
-        aria-label="Facts tab mode"
-      >
-        {MODES.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            aria-pressed={mode === item.key}
-            onClick={() => setMode(item.key)}
-            className={`rounded-md px-3 py-1.5 text-s font-medium ${
-              mode === item.key
-                ? 'bg-accent-subtle fg-accent'
-                : 'fg-secondary hover:bg-base hover:fg-primary'
-            }`}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        label="Facts tab mode"
+        semantics="toggle"
+        width="content"
+        value={mode}
+        onChange={setMode}
+        options={MODES.map((item) => ({ value: item.key, label: item.label }))}
+      />
 
       {mode === 'preview' ? (
         <RetrievalPreview orgId={orgId} />
@@ -389,36 +391,30 @@ export function FactCorpusView({
                 aria-label="Search organization memory"
                 className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
               />
-              <button
+              <Button
                 type="submit"
+                size="compact"
                 disabled={loading || query.trim().length === 0}
-                className="shrink-0 rounded-lg border bg-base px-4 py-2 text-s font-medium fg-primary hover:bg-card disabled:opacity-50"
+                className="self-center"
               >
                 Search
-              </button>
+              </Button>
             </form>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <SettingsControlSelect
+              <SettingsSelect
                 value={evidenceType}
-                onChange={onEvidenceTypeChange}
-                fill
+                onValueChange={onEvidenceTypeChange}
+                width="fill"
                 aria-label="Evidence type"
-              >
-                <option value="">All evidence</option>
-                <option value="OBSERVED">Observed</option>
-                <option value="ASSERTED">Asserted</option>
-                <option value="INFERRED">Inferred</option>
-              </SettingsControlSelect>
-              <SettingsControlSelect
+                options={EVIDENCE_TYPE_OPTIONS}
+              />
+              <SettingsSelect
                 value={liveness}
-                onChange={onLivenessChange}
-                fill
+                onValueChange={onLivenessChange}
+                width="fill"
                 aria-label="Fact liveness"
-              >
-                <option value="live">Live</option>
-                <option value="superseded">Superseded</option>
-                <option value="all">All</option>
-              </SettingsControlSelect>
+                options={LIVENESS_OPTIONS}
+              />
               <input
                 type="date"
                 value={from}
@@ -459,14 +455,13 @@ export function FactCorpusView({
             </div>
           )}
           {nextCursor !== null && submittedQuery.length === 0 && (
-            <button
-              type="button"
+            <Button
+              size="compact"
               disabled={loading}
               onClick={() => void loadMore()}
-              className="rounded-lg border bg-card px-4 py-2 text-s font-medium fg-primary hover:bg-base disabled:opacity-50"
             >
               {loading ? 'Loading…' : 'Load more'}
-            </button>
+            </Button>
           )}
           <Sheet
             side="right"

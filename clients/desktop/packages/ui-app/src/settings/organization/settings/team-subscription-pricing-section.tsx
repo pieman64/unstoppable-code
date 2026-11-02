@@ -1,7 +1,14 @@
 'use client';
-import { useCallback, useEffect, useState, type JSX } from 'react';
-import { CreditCard } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+  SETTINGS_CARD_TITLE_CLASS,
+  SETTINGS_CARD_SUBTITLE_CLASS,
+  SETTINGS_CARD_ROW_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
+import { useCallback, useEffect, useState, type JSX } from 'react';
+import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsFormSkeleton,
@@ -83,60 +90,54 @@ export function TeamSubscriptionPricingSection({
 
   return (
     <section
-      className="rounded-xl bg-card p-5 shadow-sm"
+      className={SETTINGS_CARD_CLASS}
       data-testid="team-subscription-pricing-section"
     >
-      <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-          <CreditCard size={18} />
-        </span>
-        <div className="flex-1">
-          <h2 className="text-m font-semibold fg-primary">
-            AI provider plan pricing
-          </h2>
-          <p className="mt-1 text-s fg-secondary">
-            Set the monthly price for each AI provider plan your team uses.
-            These prices drive the billed-cost and savings estimates on the
-            Statistics tab. We never show individual account emails.
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 className={SETTINGS_CARD_TITLE_CLASS}>AI provider plan pricing</h2>
+        <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
+          Set the monthly price for each AI provider plan your team uses. These
+          prices drive the billed-cost and savings estimates on the Statistics
+          tab. We never show individual account emails.
+        </p>
+      </div>
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <ErrorBanner
+          className="mt-3"
+          error={loadError}
+          onRetry={() => void loadPricing()}
+        />
+        <ErrorBanner className="mt-3" error={error} />
+
+        {loading ? (
+          <div className="mt-4">
+            <DelayedLoadingPlaceholder>
+              <SettingsFormSkeleton rows={2} />
+            </DelayedLoadingPlaceholder>
+          </div>
+        ) : loadError ? null : plans.length === 0 ? (
+          <p
+            className="mt-4 rounded-lg border border-dashed px-4 py-6 text-center text-s fg-secondary"
+            data-testid="subscription-pricing-empty"
+          >
+            No AI provider plans observed yet. Plans appear here once your team
+            drives agent work through an AI provider plan.
           </p>
-
-          <ErrorBanner
-            className="mt-3"
-            error={loadError}
-            onRetry={() => void loadPricing()}
-          />
-          <ErrorBanner className="mt-3" error={error} />
-
-          {loading ? (
-            <div className="mt-4">
-              <DelayedLoadingPlaceholder>
-                <SettingsFormSkeleton rows={2} />
-              </DelayedLoadingPlaceholder>
-            </div>
-          ) : loadError ? null : plans.length === 0 ? (
-            <p
-              className="mt-4 rounded-lg border border-dashed px-4 py-6 text-center text-s fg-secondary"
-              data-testid="subscription-pricing-empty"
-            >
-              No AI provider plans observed yet. Plans appear here once your
-              team drives agent work through an AI provider plan.
-            </p>
-          ) : (
-            <ul className="mt-4 flex flex-col divide-y overflow-hidden rounded-lg border">
-              {plans.map((plan) => (
-                <PlanRow
-                  key={plan.planKey}
-                  client={client}
-                  orgId={orgId}
-                  plan={plan}
-                  canEdit={canEdit}
-                  onSaved={applyResponse}
-                  onError={setError}
-                />
-              ))}
-            </ul>
-          )}
-        </div>
+        ) : (
+          <ul className="flex flex-col">
+            {plans.map((plan) => (
+              <PlanRow
+                key={plan.planKey}
+                client={client}
+                orgId={orgId}
+                plan={plan}
+                canEdit={canEdit}
+                onSaved={applyResponse}
+                onError={setError}
+              />
+            ))}
+          </ul>
+        )}
       </div>
     </section>
   );
@@ -216,7 +217,7 @@ function PlanRow({
 
   return (
     <li
-      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+      className={`${SETTINGS_CARD_ROW_CLASS} flex-wrap`}
       data-testid={`subscription-plan-row-${plan.planKey}`}
     >
       <div className="min-w-0">
@@ -256,25 +257,25 @@ function PlanRow({
         </div>
         {canEdit ? (
           <>
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
               disabled={saving}
               data-testid={`subscription-plan-price-save-${plan.planKey}`}
               onClick={handleSave}
-              className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:opacity-50"
             >
               Save
-            </button>
+            </Button>
             {plan.overrideMonthlyUsd !== null ? (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="compact"
                 disabled={saving}
                 data-testid={`subscription-plan-price-clear-${plan.planKey}`}
                 onClick={handleClear}
-                className="rounded-md border px-3 py-1.5 text-s font-medium fg-secondary transition-colors hover:fg-primary disabled:opacity-50"
               >
                 Clear
-              </button>
+              </Button>
             ) : null}
           </>
         ) : null}

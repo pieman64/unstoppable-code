@@ -1,6 +1,11 @@
 import { getChatQueueService } from '../services/chat-queue-service';
+import type { ChatQueueRevivalLease } from '../services/chat-queue-service';
 import { buildTrustedUserPromptEvent } from '../lib/chat-trusted-user-prompt';
-import { getOrCreateRoutedSession } from '../agents/session-event-router';
+import {
+  getOrCreateRoutedSession,
+  getTurnRootAcceptance,
+  isOwnedDelegationEvent,
+} from '../agents/session-event-router';
 import type { BrowserWindow } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import {
@@ -37,6 +42,7 @@ import { resolveLaneSubstitutedProviderType } from '../lib/lane-substituted-prov
 import { scheduleChatSummary } from '../lib/worktree-chat-turn';
 import {
   destroySession,
+  restrictSessionApprovalRules,
   getSessionExecutionHarness,
   shouldRecreateSessionOnNextTurn,
   isSessionAccountProxyRouted,
@@ -60,7 +66,8 @@ import { getPipelineEditorSystemPrompt } from './system-prompt';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { getChatStateService } from '../services/chat-state-service';
 import { logMainProcessError } from '../lib/main-process-logging';
-import { clampToLiveApprovalMode } from '../approvals/live-approval-modes';
+import { setLiveApprovalMode } from '../approvals/live-approval-modes';
+import { resolveChatTurnApprovalAuthority } from '../lib/chat-turn-approval-authority';
 import {
   readPersistedChatDispatchMetadata,
   type PersistedChatDispatchMetadata,
@@ -279,7 +286,7 @@ export async function dispatchPipelineEditorChatMessage(
         !(await readCursorAccount(AbortSignal.timeout(20_000)))
       )
         throw new Error(
-          'Connect Cursor in Settings to use Pipeline Assistant.',
+          'Connect Cursor in Settings to use Workflow Assistant.',
         );
     }
     if (
@@ -362,9 +369,11 @@ export async function dispatchPipelineEditorChatMessage(
       { thinkingLevel, modelConfig: request.modelConfig },
       preferences.providerModelConfigDefaults,
     );
+    const turnApproval = await resolveChatTurnApprovalAuthority(request);
     const chatStateService = getChatStateService();
     await chatStateService.ensureChatForTrustedSend({
       ...request,
+      approvalMode: turnApproval.chatApprovalMode,
       providerType,
       model: selectedModel,
       modelConfig,
@@ -406,6 +415,7 @@ export async function dispatchPipelineEditorChatMessage(
       });
     }
     let executionUserMessageId = request.userMessageId;
+    const rejectedRoutedRoots = new Map<string, ChatQueueRevivalLease>();
     const deliverProviderEvent = (data: unknown): void => {
       getObservabilityService().observeChatEvent(
         request.projectId,
@@ -462,11 +472,11 @@ export async function dispatchPipelineEditorChatMessage(
     };
     let providerEventCommitTail = Promise.resolve();
     let providerEventSequence = 0;
-    const sessionApprovalMode = clampToLiveApprovalMode(
+    setLiveApprovalMode(
       request.projectId,
       request.worktreeId,
       request.chatId,
-      request.approvalMode,
+      turnApproval.chatApprovalMode,
     );
     const session = await getOrCreateRoutedSession(
       {
@@ -475,8 +485,8 @@ export async function dispatchPipelineEditorChatMessage(
         worktreeId: request.worktreeId,
         chatId: request.chatId,
         planMode: false,
-        approvalMode: sessionApprovalMode,
-        sessionApprovalRules: request.sessionApprovalRules,
+        approvalMode: turnApproval.approvalMode,
+        sessionApprovalRules: turnApproval.sessionApprovalRules,
         thinkingLevel: modelConfig.thinkingLevel,
         modelConfig,
         model,
@@ -504,12 +514,78 @@ export async function dispatchPipelineEditorChatMessage(
         pipelineEditorRuntime,
       },
       (data: unknown, markPersistenceSettled?: () => void): Promise<void> => {
+        // Route acceptance is keyed by this original routed event object.
+        const turnRootAcceptance = getTurnRootAcceptance(data);
         const sequence = providerEventSequence;
         providerEventSequence += 1;
         providerEventCommitTail = providerEventCommitTail
           .then(async () => {
-            const outcome =
-              await chatStateService.ingestProviderEventWithOutcome({
+            const pickupRootUserMessageId =
+              isRecord(data) &&
+              data.type === 'canopy_input_delivery' &&
+              data.phase === 'picked-up' &&
+              data.startsTurn === true &&
+              typeof data.userMessageId === 'string'
+                ? data.userMessageId
+                : undefined;
+            const eventData = isRecord(data) ? data : undefined;
+            const taggedRootUserMessageId =
+              typeof eventData?.canopy_turn_user_message_id === 'string'
+                ? eventData.canopy_turn_user_message_id
+                : undefined;
+            const rejectedRootLease = taggedRootUserMessageId
+              ? rejectedRoutedRoots.get(taggedRootUserMessageId)
+              : undefined;
+            const isIdleStatusEvent =
+              eventData?.type === 'system' &&
+              eventData.subtype === 'status' &&
+              eventData.status === 'idle';
+            if (
+              isIdleStatusEvent &&
+              (rejectedRootLease !== undefined ||
+                (taggedRootUserMessageId === undefined &&
+                  rejectedRoutedRoots.size > 0))
+            ) {
+              // Idle is lifecycle-only for a rejected route. Let phase-13a
+              // reconciliation inspect provider liveness, but never persist
+              // an idle continuation under the prior execution root.
+              getChatQueueService().reconcileSessionActivity();
+              markPersistenceSettled?.();
+              return;
+            }
+            if (
+              pickupRootUserMessageId === undefined &&
+              rejectedRootLease !== undefined &&
+              !isOwnedDelegationEvent(data)
+            ) {
+              // Never canonicalize rejected-root output under the previous
+              // execution root. A tagged terminal retries cleanup using only
+              // the rejected route's exact lease and cannot release a newer
+              // same-id gate through the ordinary execution-root terminal.
+              // A delegate's snapshot keeps the tag of the turn that started
+              // it, so it is delivered even when that root was rejected.
+              if (isTerminalChatEventData(data)) {
+                getChatQueueService().rollbackTurnRevival(
+                  request,
+                  rejectedRootLease,
+                );
+              }
+              markPersistenceSettled?.();
+              return;
+            }
+            if (
+              pickupRootUserMessageId === undefined &&
+              isTerminalChatEventData(data) &&
+              taggedRootUserMessageId === undefined &&
+              rejectedRoutedRoots.size > 0
+            ) {
+              // Untagged terminals have no safe root owner while a rejected
+              // route is pending; never let one release the execution root.
+              markPersistenceSettled?.();
+              return;
+            }
+            const result = await chatStateService.ingestProviderEventWithResult(
+              {
                 projectId: request.projectId,
                 worktreeId: request.worktreeId,
                 chatId: request.chatId,
@@ -519,36 +595,55 @@ export async function dispatchPipelineEditorChatMessage(
                   : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
                 providerType,
                 turnUserMessageId: executionUserMessageId,
-              });
+              },
+            );
             markPersistenceSettled?.();
-            // Activity-only events carry no durable change but are live.
-            if (outcome === 'not-applied') return;
             if (
-              isRecord(data) &&
-              data.type === 'canopy_input_delivery' &&
-              data.phase === 'picked-up' &&
-              data.startsTurn === true &&
-              typeof data.userMessageId === 'string'
+              pickupRootUserMessageId !== undefined &&
+              turnRootAcceptance?.accepted === true &&
+              turnRootAcceptance.lease !== undefined
             ) {
-              let pickupAccepted: boolean;
-              if (data.turnRootAccepted === false) {
-                pickupAccepted = false;
-              } else if (data.turnRootAccepted === true) {
-                getChatQueueService().confirmTurnRevived(
+              const isCanonicalPickupAccepted =
+                result.pickup === 'accepted' ||
+                result.pickup === 'already-accepted';
+              if (isCanonicalPickupAccepted) {
+                const confirmed = getChatQueueService().confirmTurnRevival(
                   request,
-                  data.userMessageId,
+                  turnRootAcceptance.lease,
                 );
-                pickupAccepted = true;
+                if (confirmed) {
+                  executionUserMessageId = pickupRootUserMessageId;
+                  rejectedRoutedRoots.delete(pickupRootUserMessageId);
+                } else {
+                  getChatQueueService().rollbackTurnRevival(
+                    request,
+                    turnRootAcceptance.lease,
+                  );
+                  if (pickupRootUserMessageId !== executionUserMessageId) {
+                    rejectedRoutedRoots.set(
+                      pickupRootUserMessageId,
+                      turnRootAcceptance.lease,
+                    );
+                  }
+                }
+              } else if (pickupRootUserMessageId === executionUserMessageId) {
+                // Stop may make canonical pickup arbitration reject a retry
+                // for the currently executing root. Router arbitration can
+                // still have re-armed that same-root gate, so rejecting this
+                // attempt must not release it or stop its output.
               } else {
-                pickupAccepted = getChatQueueService().onTurnRevived(
+                getChatQueueService().rollbackTurnRevival(
                   request,
-                  data.userMessageId,
+                  turnRootAcceptance.lease,
                 );
-              }
-              if (pickupAccepted) {
-                executionUserMessageId = data.userMessageId;
+                rejectedRoutedRoots.set(
+                  pickupRootUserMessageId,
+                  turnRootAcceptance.lease,
+                );
               }
             }
+            // Activity-only events carry no durable change but are live.
+            if (result.outcome === 'not-applied') return;
             deliverProviderEvent(data);
           })
           .catch((error: unknown) => {
@@ -563,14 +658,17 @@ export async function dispatchPipelineEditorChatMessage(
       options.getMainWindow,
       {
         turnUserMessageId: executionUserMessageId,
-        acceptTurnRoot: async (turnUserMessageId): Promise<boolean> => {
+        acceptTurnRoot: async (turnUserMessageId) => {
           await providerEventCommitTail;
-          return getChatQueueService().onTurnRevived(
+          return getChatQueueService().acceptTurnRevival(
             request,
             turnUserMessageId,
           );
         },
         drainEventsBeforeRemoval: () => providerEventCommitTail,
+        onRemoved: (): void => {
+          rejectedRoutedRoots.clear();
+        },
       },
     );
 
@@ -671,15 +769,6 @@ export async function dispatchPipelineEditorChatMessage(
     }
 
     await session.setPlanMode(false);
-    const liveApprovalMode = clampToLiveApprovalMode(
-      request.projectId,
-      request.worktreeId,
-      request.chatId,
-      sessionApprovalMode,
-    );
-    if (liveApprovalMode) {
-      await session.setApprovalMode(liveApprovalMode);
-    }
     if (providerType === 'claude' && session.setRtkEnabled) {
       await session.setRtkEnabled(preferences.rtkEnabled);
     }
@@ -688,6 +777,23 @@ export async function dispatchPipelineEditorChatMessage(
         preferences.codexAppServerIdleTimeoutMinutes,
       );
     }
+    const liveApprovalAuthority = await resolveChatTurnApprovalAuthority(
+      request,
+      { checkAdmission: false },
+    );
+    restrictSessionApprovalRules(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+      liveApprovalAuthority.sessionApprovalRules,
+    );
+    setLiveApprovalMode(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+      liveApprovalAuthority.chatApprovalMode,
+    );
+    await session.setApprovalMode(liveApprovalAuthority.approvalMode);
     session.sendMessage(providerSubmittedText, {
       userMessageId: request.userMessageId,
     });

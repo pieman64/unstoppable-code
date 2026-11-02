@@ -61,13 +61,16 @@ describe('inset window layout cards', () => {
     (rule) => rule.declarations.get('background-color') === 'var(--bg-primary)',
   );
 
-  it('frames every card in the window: pages, Settings, loading, panels', () => {
+  // Settings frames its own card (see "frames Settings once" below). The
+  // retired Your plugins overlay no longer has one: management lives in the
+  // Customize page card (CAN-4267).
+  it('frames every card in the window: pages, loading, panels', () => {
     const selectors = cards.map((card) => card.selector).join('\n');
-    expect(cards).toHaveLength(4);
+    expect(cards).toHaveLength(3);
     expect(selectors).toContain("main[data-main-frame='card']");
-    expect(selectors).toContain('.settings-page-overlay');
     expect(selectors).toContain('[data-panel-grid-loading]');
     expect(selectors).toContain('.canopy-panel-group');
+    expect(selectors).not.toContain('plugins-management-content');
   });
 
   it('gives every card the same radius, fill and edge', () => {
@@ -101,7 +104,7 @@ describe('inset window layout cards', () => {
 
   it('frames Settings once: its page scroller is not a second card', () => {
     const settings = topLevelRules().filter((rule) =>
-      rule.selector.includes("[data-testid='settings-content']"),
+      rule.selector.includes('[data-settings-card]'),
     );
     const framed = settings.filter((rule) =>
       ['background-color', 'box-shadow', 'border-radius', 'margin'].some(
@@ -109,7 +112,7 @@ describe('inset window layout cards', () => {
       ),
     );
     expect(framed.map((rule) => rule.selector)).toEqual([
-      ".settings-page-overlay[data-settings-layout='inset'] [data-testid='settings-content']",
+      ".settings-page-overlay[data-settings-layout='inset'] [data-settings-card]",
     ]);
     expect(framed[0]?.declarations.get('box-shadow')).toBe(
       'var(--inset-card-shadow, var(--shadow-2xs))',
@@ -144,6 +147,54 @@ describe('inset window layout cards', () => {
     // Dark only, and never while the tab row hides its divider.
     expect(divider?.selector).toBe(
       ".dark [data-window-layout='inset'] .canopy-panel-group:not([data-title-edge='top']) > .canopy-panel-group-title",
+    );
+  });
+
+  it('defines one gap for the whole layout, Settings included', () => {
+    const gaps = topLevelRules()
+      .filter((rule) => rule.declarations.has('--inset-card-gap'))
+      .map((rule) => [
+        rule.selector,
+        rule.declarations.get('--inset-card-gap'),
+      ]);
+    expect(gaps).toEqual([
+      [
+        "[data-window-layout='inset'], .settings-page-overlay[data-settings-layout='inset']",
+        '6px',
+      ],
+    ]);
+    // The corners stay concentric with the window's: its radius minus the
+    // gap, never below the 6px floor every nested pane corner shares.
+    const radii = topLevelRules()
+      .filter((rule) => rule.declarations.has('--inset-card-radius'))
+      .map((rule) => rule.declarations.get('--inset-card-radius'));
+    expect(radii).toEqual([
+      'max( calc( var(--window-corner-radius, 16px) / var(--ui-zoom, 1) - var(--inset-card-gap) ), 6px )',
+    ]);
+  });
+
+  it('spaces every card from the window and its neighbours by that gap', () => {
+    const margins = topLevelRules()
+      .filter(
+        (rule) =>
+          (rule.selector.includes("[data-window-layout='inset']") ||
+            rule.selector.includes("[data-settings-layout='inset']")) &&
+          rule.declarations.has('margin'),
+      )
+      .map((rule) => rule.declarations.get('margin') ?? '');
+    expect(margins.length).toBeGreaterThanOrEqual(5);
+    for (const margin of margins) {
+      expect(margin).toContain('var(--inset-card-gap)');
+      // No card keeps a copy of the gap.
+      expect(margin).not.toMatch(/(^|\s)\d+px/);
+    }
+    const hidden = topLevelRules().find(
+      (rule) =>
+        rule.selector ===
+        "[data-window-layout='inset'][data-sidebar-hidden='true']",
+    );
+    expect(hidden?.declarations.get('--inset-card-edge-room')).toBe(
+      'var(--inset-card-gap)',
     );
   });
 

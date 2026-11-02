@@ -6,15 +6,21 @@ const readChatTabsFileMock = jest.fn();
 const isWorkEntryWorkspaceMock = jest.fn(() => false);
 
 jest.mock('../lib/workspace-persistence', () => ({
-  updateWorkspaceWorktree: updateWorkspaceWorktreeMock,
+  get updateWorkspaceWorktree(): typeof updateWorkspaceWorktreeMock {
+    return updateWorkspaceWorktreeMock;
+  },
 }));
 
 jest.mock('../lib/chat-tabs-reader', () => ({
-  readChatTabsFile: readChatTabsFileMock,
+  get readChatTabsFile(): typeof readChatTabsFileMock {
+    return readChatTabsFileMock;
+  },
 }));
 
 jest.mock('../lib/workspace-registry', () => ({
-  isWorkEntryWorkspace: isWorkEntryWorkspaceMock,
+  get isWorkEntryWorkspace(): typeof isWorkEntryWorkspaceMock {
+    return isWorkEntryWorkspaceMock;
+  },
 }));
 
 import type {
@@ -103,6 +109,25 @@ describe('deriveWorktreeChatBadgesSummary', () => {
     expect(summary.updatedAt).toBe('2026-07-17T12:00:00.000Z');
   });
 
+  it('flags manually unread chats only while they are unread', () => {
+    const summary = deriveWorktreeChatBadgesSummary(
+      makeFile([
+        makeTab('manual', { unread: true, unreadMarkedManually: true }),
+        makeTab('automatic', { unread: true }),
+        makeTab('stale', { unread: false, unreadMarkedManually: true }),
+      ]),
+    );
+    expect(
+      summary.unreadChats.map(({ chatId, markedUnread }) => ({
+        chatId,
+        markedUnread,
+      })),
+    ).toEqual([
+      { chatId: 'manual', markedUnread: true },
+      { chatId: 'automatic', markedUnread: undefined },
+    ]);
+  });
+
   it('names the worktree after its first chat', () => {
     const summary = deriveWorktreeChatBadgesSummary(
       makeFile([
@@ -139,7 +164,6 @@ describe('deriveWorktreeChatBadgesSummary', () => {
           requestId: 'r1',
           chatId: 'a',
           questions: [],
-          createdAt: '2026-07-17T00:00:00.000Z',
         },
       ],
     });
@@ -203,6 +227,16 @@ describe('chatBadgesSummariesEquivalent', () => {
     ).toBe(false);
   });
 
+  it('treats a manual unread mark replacing an automatic one as a change', () => {
+    const automatic = deriveWorktreeChatBadgesSummary(
+      makeFile([makeTab('a', { unread: true })]),
+    );
+    const manual = deriveWorktreeChatBadgesSummary(
+      makeFile([makeTab('a', { unread: true, unreadMarkedManually: true })]),
+    );
+    expect(chatBadgesSummariesEquivalent(automatic, manual)).toBe(false);
+  });
+
   it('ignores updatedAt but compares badge content', () => {
     const left = deriveWorktreeChatBadgesSummary(
       makeFile([makeTab('a', { unread: true })]),
@@ -224,7 +258,7 @@ describe('syncWorktreeChatBadgesFromWrite', () => {
   });
 
   it('updates the worktree entry when badges changed', () => {
-    syncWorktreeChatBadgesFromWrite(
+    void syncWorktreeChatBadgesFromWrite(
       'project-a',
       'wt-a',
       makeFile([makeTab('a', { unread: true })]),
@@ -254,11 +288,35 @@ describe('syncWorktreeChatBadgesFromWrite', () => {
 
   it('skips Work Entry projects entirely', () => {
     isWorkEntryWorkspaceMock.mockReturnValue(true);
-    syncWorktreeChatBadgesFromWrite(
+    void syncWorktreeChatBadgesFromWrite(
       'cowork-default',
       'home',
       makeFile([makeTab('a', { unread: true })]),
     );
+    expect(updateWorkspaceWorktreeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a transient write failure so the projection retries it', async () => {
+    updateWorkspaceWorktreeMock.mockRejectedValueOnce(
+      new Error('EIO: i/o error'),
+    );
+    await expect(
+      syncWorktreeChatBadgesFromWrite(
+        'project-a',
+        'wt-a',
+        makeFile([makeTab('a', { unread: true })]),
+      ),
+    ).rejects.toThrow('EIO');
+  });
+
+  it('settles for a target that can never record badges', async () => {
+    await expect(
+      syncWorktreeChatBadgesFromWrite(
+        'project-a',
+        'Not A Worktree',
+        makeFile([makeTab('a', { unread: true })]),
+      ),
+    ).resolves.toBeUndefined();
     expect(updateWorkspaceWorktreeMock).not.toHaveBeenCalled();
   });
 });

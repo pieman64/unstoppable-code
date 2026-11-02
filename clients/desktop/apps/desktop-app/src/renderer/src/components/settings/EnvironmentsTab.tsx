@@ -21,8 +21,18 @@ import {
   validateEnvironmentConfig,
 } from '@canopy/desktop-shared/lib/user-environment';
 import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
-import { Button, Notice } from '@canopy/ui-shared/components';
-import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  ErrorState,
+  Notice,
+  SearchField,
+  SettingsButtonRow,
+  SettingsSaveBar,
+  DialogFormField,
+  DialogModal,
+} from '@canopy/ui-shared/components';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   environmentEditorBaseline,
@@ -33,8 +43,11 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { brandText } from '@/lib/brand';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
-import { EnvironmentVariableEditor } from '@/components/environments/EnvironmentVariableEditor';
+import {
+  EnvironmentEncryptionStatusText,
+  EnvironmentEncryptionUnavailableNotice,
+  EnvironmentVariableEditor,
+} from '@/components/environments/EnvironmentVariableEditor';
 import { EnvironmentRuntimeSelect } from '@/components/environments/EnvironmentRuntimeSelect';
 import {
   EnvironmentUsageList,
@@ -56,12 +69,10 @@ import {
   makeUntitledEnvironmentId,
   sortEnvironments,
 } from '@/components/environments/environment-list-helpers';
-import { DialogModal } from '@/components/shared/DialogModal';
 import {
   SettingsGroup,
   SettingsPage,
   SettingsLoading,
-  SettingsPageMessage,
   SettingsRow,
   SettingsSection,
   SettingsTextField,
@@ -82,7 +93,6 @@ interface EditorValidation {
  * serves both views and edits survive moving between them.
  */
 export function EnvironmentsTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const data = useEnvironmentsStore((s) => s.data);
   const status = useEnvironmentsStore((s) => s.status);
   const error = useEnvironmentsStore((s) => s.error);
@@ -250,13 +260,6 @@ export function EnvironmentsTab(): JSX.Element {
       : openEnvironment?.id === validationEnvironment.id
         ? editorValidation.message
         : `${validationEnvironment.name}: ${editorValidation.message}`;
-
-  const handleSearchChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>): void => {
-      setSearchQuery(event.target.value);
-    },
-    [],
-  );
 
   const openDetail = useCallback(
     (id: string): void => {
@@ -501,21 +504,15 @@ export function EnvironmentsTab(): JSX.Element {
         {secureStorageFailure ? (
           storageNotice
         ) : status === 'error' ? (
-          <div className="flex flex-col items-start gap-3">
-            <SettingsPageMessage>
+          <ErrorState
+            message={
               <span data-testid="environments-error">
-                Unable to load environments.{error ? ` ${error}` : ''}
+                Couldn't load environments.{error ? ` ${error}` : ''}
               </span>
-            </SettingsPageMessage>
-            <Button
-              size={settingsButtonSize}
-              variant="secondary"
-              onClick={handleRetry}
-              data-testid="environments-retry"
-            >
-              Retry
-            </Button>
-          </div>
+            }
+            onRetry={handleRetry}
+            retryTestId="environments-retry"
+          />
         ) : (
           <SettingsLoading dataTestId="environments-loading" />
         )}
@@ -524,54 +521,56 @@ export function EnvironmentsTab(): JSX.Element {
   }
 
   const saveBar = (
-    <div
-      className="sticky bottom-0 z-10 -mx-8 flex items-center justify-between gap-4 border-t bg-base px-8 py-3"
-      data-testid="environments-save-bar"
-    >
-      <div className="min-w-0 text-xs fg-secondary">
-        {dirty && (
-          <span data-testid="environments-unsaved">Unsaved changes</span>
-        )}
-        {validationMessage !== null && (
-          <span
-            className="ml-2 fg-destructive"
-            data-testid="environments-validation"
+    <SettingsSaveBar
+      dataTestId="environments-save-bar"
+      status={
+        <>
+          {dirty && (
+            <span data-testid="environments-unsaved">Unsaved changes</span>
+          )}
+          {validationMessage !== null && (
+            <span
+              className="ml-2 fg-destructive"
+              data-testid="environments-validation"
+            >
+              {validationMessage}
+            </span>
+          )}
+        </>
+      }
+      actions={
+        <>
+          {saveStatus === 'saved' && (
+            <span
+              className="text-xs fg-secondary"
+              data-testid="environments-save-status"
+            >
+              Saved.
+            </span>
+          )}
+          {saveStatus === 'error' && !storageNoticeFailure && (
+            <Notice intent="attention" data-testid="environments-save-error">
+              {saveError ?? 'Could not save environment changes.'}
+            </Notice>
+          )}
+          <Button
+            size="compact"
+            variant="primary"
+            onClick={() => {
+              void handleSave();
+            }}
+            disabled={
+              saveStatus === 'saving' ||
+              validationMessage !== null ||
+              status === 'loading'
+            }
+            data-testid="environments-save"
           >
-            {validationMessage}
-          </span>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-3">
-        {saveStatus === 'saved' && (
-          <span
-            className="text-xs fg-secondary"
-            data-testid="environments-save-status"
-          >
-            Saved.
-          </span>
-        )}
-        {saveStatus === 'error' && !storageNoticeFailure && (
-          <Notice intent="attention" data-testid="environments-save-error">
-            {saveError ?? 'Could not save environment changes.'}
-          </Notice>
-        )}
-        <Button
-          size={settingsButtonSize}
-          variant="primary"
-          onClick={() => {
-            void handleSave();
-          }}
-          disabled={
-            saveStatus === 'saving' ||
-            validationMessage !== null ||
-            status === 'loading'
-          }
-          data-testid="environments-save"
-        >
-          {saveStatus === 'saving' ? 'Saving…' : 'Save changes'}
-        </Button>
-      </div>
-    </div>
+            {saveStatus === 'saving' ? 'Saving…' : 'Save changes'}
+          </Button>
+        </>
+      }
+    />
   );
 
   const modals = (
@@ -583,68 +582,50 @@ export function EnvironmentsTab(): JSX.Element {
           subtitle="Used when a project does not assign its own environment."
           maxWidth="md"
           dataTestId="environments-global-defaults-modal"
+          footer={
+            <Button
+              size="compact"
+              variant="secondary"
+              onClick={() => setGlobalDefaultsOpen(false)}
+              data-testid="environments-global-defaults-close"
+            >
+              Done
+            </Button>
+          }
         >
           <div
-            className="space-y-3 p-5"
+            className="flex flex-col gap-4 px-5 pt-5"
             data-testid="environments-global-runtimes"
           >
             {ENVIRONMENT_RUNTIMES.map((runtime) => (
-              <div key={runtime} className="space-y-1">
-                <label className="block text-xs font-medium fg-secondary">
-                  {ENVIRONMENT_RUNTIME_LABEL[runtime]}
-                </label>
+              <DialogFormField
+                key={runtime}
+                label={ENVIRONMENT_RUNTIME_LABEL[runtime]}
+              >
                 <EnvironmentRuntimeSelect
+                  variant="settings"
                   environments={sortedEnvironments}
                   value={data.globalRuntimes[runtime]}
                   onChange={(next) => handleGlobalRuntimeChange(runtime, next)}
                   testId={`environments-global-runtime-${runtime}`}
                   ariaLabel={`${ENVIRONMENT_RUNTIME_LABEL[runtime]} global default`}
                 />
-              </div>
+              </DialogFormField>
             ))}
-            <div className="flex items-center justify-end pt-2">
-              <Button
-                size={settingsButtonSize}
-                variant="secondary"
-                onClick={() => setGlobalDefaultsOpen(false)}
-                data-testid="environments-global-defaults-close"
-              >
-                Done
-              </Button>
-            </div>
           </div>
         </DialogModal>
       )}
       {pendingDeleteId && openEnvironment && (
-        <DialogModal
-          onClose={() => setPendingDeleteId(null)}
-          title="Delete environment"
-          maxWidth="sm"
-        >
-          <div className="space-y-4 p-5">
-            <p className="text-s fg-primary">
-              Delete {openEnvironment.name}? This cannot be undone.
-            </p>
-            <div className="flex items-center justify-end gap-3">
-              <Button
-                size={settingsButtonSize}
-                variant="secondary"
-                onClick={() => setPendingDeleteId(null)}
-                data-testid="environments-delete-cancel"
-              >
-                Cancel
-              </Button>
-              <Button
-                size={settingsButtonSize}
-                variant="destructive"
-                onClick={confirmDelete}
-                data-testid="environments-delete-confirm"
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </DialogModal>
+        <ConfirmDialog
+          title={`Delete environment “${openEnvironment.name}”?`}
+          message="This cannot be undone."
+          confirmLabel="Delete environment"
+          destructive
+          onConfirm={confirmDelete}
+          onCancel={() => setPendingDeleteId(null)}
+          confirmTestId="environments-delete-confirm"
+          cancelTestId="environments-delete-cancel"
+        />
       )}
     </>
   );
@@ -687,18 +668,34 @@ export function EnvironmentsTab(): JSX.Element {
           />
         </SettingsGroup>
 
-        <SettingsSection title="Environment variables">
-          <EnvironmentVariableEditor
-            key={openEnvironment.id}
-            variables={openEnvironment.variables}
-            uiMode={openEnvironment.uiMode}
-            encryptionAvailable={encryptionAvailable}
-            storageFailure={secureStorageFailure}
-            onVariablesChange={handleVariablesChange}
-            onUiModeChange={handleUiModeChange}
-            onValidationChange={handleValidationChange}
-            testId="environments-variable-editor"
-          />
+        <SettingsSection
+          title="Environment variables"
+          description={
+            !secureStorageFailure && encryptionAvailable ? (
+              <EnvironmentEncryptionStatusText />
+            ) : undefined
+          }
+        >
+          {!secureStorageFailure && !encryptionAvailable ? (
+            <EnvironmentEncryptionUnavailableNotice />
+          ) : null}
+          {/* The editor sits in the section's settings group, like the
+              Name and Inherits from rows above; its status line is the
+              section description, outside the card. */}
+          <SettingsGroup dataTestId="environments-variables-group">
+            <EnvironmentVariableEditor
+              encryptionStatus="host"
+              key={openEnvironment.id}
+              variables={openEnvironment.variables}
+              uiMode={openEnvironment.uiMode}
+              encryptionAvailable={encryptionAvailable}
+              storageFailure={secureStorageFailure}
+              onVariablesChange={handleVariablesChange}
+              onUiModeChange={handleUiModeChange}
+              onValidationChange={handleValidationChange}
+              testId="environments-variable-editor"
+            />
+          </SettingsGroup>
         </SettingsSection>
 
         <SettingsSection
@@ -740,7 +737,7 @@ export function EnvironmentsTab(): JSX.Element {
                 suppressed={deleteBlockedReason === null}
               >
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="destructive"
                   onClick={() => setPendingDeleteId(openEnvironment.id)}
                   disabled={deleteBlockedReason !== null}
@@ -765,14 +762,14 @@ export function EnvironmentsTab(): JSX.Element {
       description={
         <>
           Manage environment variables and assign them to {brandText.shortName},
-          Agent, and Pipeline runtimes.
+          Agent, and Workflow runtimes.
         </>
       }
       dataTestId={PAGE_TEST_ID}
       headerTrailing={
         <>
           <Button
-            size={settingsButtonSize}
+            size="compact"
             variant="secondary"
             onClick={() => setGlobalDefaultsOpen(true)}
             data-testid="environments-open-global-defaults"
@@ -780,7 +777,7 @@ export function EnvironmentsTab(): JSX.Element {
             Global runtime defaults
           </Button>
           <Button
-            size={settingsButtonSize}
+            size="compact"
             variant="primary"
             onClick={handleCreate}
             data-testid="environments-new-environment"
@@ -792,14 +789,14 @@ export function EnvironmentsTab(): JSX.Element {
     >
       {storageNotice}
       <SettingsSection>
-        <SettingsTextField
-          type="search"
-          width="full"
+        {/* A settings list's search: the 28px field, filling the column. */}
+        <SearchField
           value={searchQuery}
-          onChange={handleSearchChange}
+          onValueChange={setSearchQuery}
           placeholder="Search environments"
           aria-label="Search environments"
           data-testid="environments-search"
+          className="w-full"
         />
         <SettingsGroup dataTestId="environments-list">
           {data.environments.length === 0 ? (
@@ -856,39 +853,28 @@ function EnvironmentListRow({
     (candidate) => candidate.id === environment.parentId,
   );
   return (
-    <button
-      type="button"
+    <SettingsButtonRow
+      trailing="open"
       onClick={() => onOpen(environment.id)}
       data-testid={`environments-list-row-${environment.id}`}
-      className="focus-ring -mx-4 flex min-h-7 w-[calc(100%+2rem)] items-center justify-between gap-6 px-4 text-left transition-colors hover:bg-accent-subtle"
-    >
-      <span className="min-w-0 flex-1 space-y-0.5">
-        <span className="flex items-center gap-2">
-          <span className="truncate text-s font-medium fg-primary">
-            {environment.name}
-          </span>
-          {environment.isDefault && (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-3xs fg-secondary">
-              Default
-            </span>
-          )}
+      label={
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate">{environment.name}</span>
+          {environment.isDefault && <Badge>Default</Badge>}
         </span>
-        {parent && (
-          <span className="block text-xs fg-secondary">
-            Inherits {parent.name}
+      }
+      description={parent ? `Inherits ${parent.name}` : undefined}
+      meta={
+        <>
+          <UsageKindIndicators
+            environmentId={environment.id}
+            indicators={indicators}
+          />
+          <span className="text-xs fg-secondary">
+            {usageCount} {usageCount === 1 ? 'use' : 'uses'}
           </span>
-        )}
-      </span>
-      <span className="flex shrink-0 items-center gap-3">
-        <UsageKindIndicators
-          environmentId={environment.id}
-          indicators={indicators}
-        />
-        <span className="text-xs fg-secondary">
-          {usageCount} {usageCount === 1 ? 'use' : 'uses'}
-        </span>
-        <ChevronRightIcon className="fg-tertiary" aria-hidden={true} />
-      </span>
-    </button>
+        </>
+      }
+    />
   );
 }

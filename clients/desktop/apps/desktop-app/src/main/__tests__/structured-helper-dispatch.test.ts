@@ -1,4 +1,5 @@
 import type { ClaudeWorkerRunResult } from '../integration/claude-worker-session-service';
+import type { CodexSelectedCapabilityRoot } from '@canopy/desktop-shared/types';
 
 const runClaudeStructuredHelperQueryMock = jest.fn(() =>
   Promise.resolve({ value: { title: 'result' }, usage: {} }),
@@ -18,6 +19,7 @@ const runWorkerMock = jest.fn(
       finalText: '{"title":"result"}',
       result: { title: 'result' },
       usage: {},
+      transcript: [],
       transcriptJsonl: '',
     }),
 );
@@ -61,19 +63,29 @@ const startCodexThreadMock = jest.fn((request: unknown) => {
 });
 
 jest.mock('@canopy/desktop-shared/lib/structured-helper-query', () => ({
-  runClaudeStructuredHelperQuery: runClaudeStructuredHelperQueryMock,
+  get runClaudeStructuredHelperQuery(): typeof runClaudeStructuredHelperQueryMock {
+    return runClaudeStructuredHelperQueryMock;
+  },
   StructuredHelperQueryError: class StructuredHelperQueryError extends Error {},
 }));
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: readPreferencesFileMock,
+  get readPreferencesFile(): typeof readPreferencesFileMock {
+    return readPreferencesFileMock;
+  },
 }));
 jest.mock('../agents/claude-process-host-runner', () => ({
-  spawnClaudeCodeProcessOffMain: spawnClaudeCodeProcessOffMainMock,
+  get spawnClaudeCodeProcessOffMain(): typeof spawnClaudeCodeProcessOffMainMock {
+    return spawnClaudeCodeProcessOffMainMock;
+  },
 }));
 jest.mock('../integration/claude-worker-session-service', () => ({
   getClaudeWorkerSessionService: jest.fn(() => ({
-    runWorker: runWorkerMock,
-    cancel: cancelWorkerMock,
+    get runWorker(): typeof runWorkerMock {
+      return runWorkerMock;
+    },
+    get cancel(): typeof cancelWorkerMock {
+      return cancelWorkerMock;
+    },
   })),
 }));
 jest.mock('../codex/runtime-service', () => ({
@@ -81,7 +93,9 @@ jest.mock('../codex/runtime-service', () => ({
     startThread: typeof startCodexThreadMock;
     admin: () => { request: typeof readCodexConfigMock };
   } => ({
-    startThread: startCodexThreadMock,
+    get startThread(): typeof startCodexThreadMock {
+      return startCodexThreadMock;
+    },
     admin: () => ({ request: readCodexConfigMock }),
   }),
 }));
@@ -137,6 +151,7 @@ describe('structured helper dispatch', () => {
       systemPrompt: 'Return a title.',
       userMessage: 'Describe the change.',
       maxTurns: 1,
+      localMemoryEnabled: false,
       schema: { type: 'object' },
       isResult: (value): value is { title: string } =>
         typeof value === 'object' && value !== null && 'title' in value,
@@ -164,6 +179,7 @@ describe('structured helper dispatch', () => {
       systemPrompt: 'Return a title.',
       userMessage: 'Describe the change.',
       maxTurns: 1,
+      localMemoryEnabled: false,
       schema: { type: 'object' },
       isResult: (value): value is { title: string } =>
         typeof value === 'object' && value !== null && 'title' in value,
@@ -203,6 +219,7 @@ describe('structured helper dispatch', () => {
       systemPrompt: '',
       userMessage: '',
       maxTurns: 1,
+      localMemoryEnabled: false,
       schema,
       ...{ resultValidationSchema },
       isResult: (value): value is { title: string } =>
@@ -225,7 +242,9 @@ describe('structured helper dispatch', () => {
         sessionStarted: true,
         status: 'failure',
         finalText: '',
+        result: null,
         usage: { inputTokens: 9 },
+        transcript: [],
         transcriptJsonl: '',
         invalidOutput: true,
       });
@@ -240,6 +259,7 @@ describe('structured helper dispatch', () => {
         systemPrompt: '',
         userMessage: '',
         maxTurns: 1,
+        localMemoryEnabled: false,
         schema: { type: 'object' },
         ...(observeRejection ? { onResultRejected } : {}),
         isResult: (value): value is { title: string } =>
@@ -264,6 +284,7 @@ describe('structured helper dispatch', () => {
       systemPrompt: 'Return a title.',
       userMessage: 'Describe the change.',
       combinedPrompt: 'Return a title.\n\nDescribe the change.',
+      localMemoryEnabled: false,
       schema: {
         type: 'object',
         additionalProperties: false,
@@ -296,12 +317,25 @@ describe('structured helper dispatch', () => {
   });
 
   it('runs report-only Codex helpers with no project, network, MCP, or capability access', async () => {
+    const malformedCapabilityRoot: CodexSelectedCapabilityRoot = {
+      id: 'unsafe-root',
+      location: {
+        type: 'environment',
+        environmentId: 'test-environment',
+        path: '/host/secrets',
+      },
+    };
+    // Preserve the legacy malformed shape this test verifies is not granted.
+    Reflect.deleteProperty(malformedCapabilityRoot, 'location');
+    Reflect.set(malformedCapabilityRoot, 'path', '/host/secrets');
+    Reflect.set(malformedCapabilityRoot, 'kind', 'skill');
     await codexStructuredHelperRunner.run({
       repoPath: '/repo',
       model: 'gpt-5.5',
       systemPrompt: 'Return a title.',
       userMessage: 'Untrusted persisted content.',
       combinedPrompt: 'Untrusted persisted content.',
+      localMemoryEnabled: false,
       permissionMode: 'report-only',
       pluginRuntime: {
         claudePlugins: [],
@@ -309,13 +343,7 @@ describe('structured helper dispatch', () => {
         codexMcpServers: {
           unsafe: { command: 'unsafe-helper' },
         },
-        codexCapabilityRoots: [
-          {
-            id: 'unsafe-root',
-            path: '/host/secrets',
-            kind: 'skill',
-          },
-        ],
+        codexCapabilityRoots: [malformedCapabilityRoot],
       },
       codexConfigOverride: {
         'features.apps': true,
@@ -402,6 +430,7 @@ describe('structured helper dispatch', () => {
         systemPrompt: 'Return a title.',
         userMessage: 'Describe the change.',
         combinedPrompt: 'Describe the change.',
+        localMemoryEnabled: false,
         codexConfigOverride: { mcp_servers: mcpServers },
         schema: { type: 'object' },
         isResult: (value): value is { title: string } =>
@@ -423,6 +452,7 @@ describe('structured helper dispatch', () => {
       systemPrompt: 'Return a title.',
       userMessage: 'Describe the change.',
       combinedPrompt: 'Return a title.\n\nDescribe the change.',
+      localMemoryEnabled: false,
       schema: { type: 'object' },
       isResult: (value): value is { title: string } =>
         typeof value === 'object' && value !== null && 'title' in value,

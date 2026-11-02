@@ -11,11 +11,13 @@ import { seedMcpServers } from './seeders/seedMcpServers.mjs';
 
 // REG-3035: a curated server the catalog marks desktop only.
 //
-// 1. Its sign-in refuses the cloud's return address, so Add never starts a
-//    cloud account connection. It opens the device editor, which signs in on
-//    this device, with no "can't connect" notice, and saves a device server.
-// 2. A cloud connection made before the server was marked keeps Disconnect,
-//    labelled Desktop only, and offers no cloud Connect.
+// 1. Its sign-in refuses the cloud's return address, so setting it up never
+//    starts a cloud account connection. Its detail's Advanced configuration
+//    opens the device editor, which signs in on this device, with no "can't
+//    connect" notice, and saves a device server.
+// 2. A cloud connection made before the server was marked keeps Disconnect in
+//    the account connections table (Settings > MCP servers), labelled Desktop
+//    only, and offers no cloud Connect.
 // 3. Home's sign-in strip, for a task that attaches such a connection, points
 //    at adding the server on this device instead of starting a cloud sign-in.
 // 4. On the Plugins page, that old cloud connection never drives the card:
@@ -52,11 +54,12 @@ function seedCatalog(userDataDir) {
   });
 }
 
-async function launchWithAccountCloud(
-  userDataDir,
-  cloud,
-  { openMcpTab = true } = {},
-) {
+/**
+ * `open` picks where the test starts: `customize` is Customize > MCP servers,
+ * `account-panel` is Settings > MCP servers > Account connections (CAN-4267
+ * removed the Plugins management table both used to share).
+ */
+async function launchWithAccountCloud(userDataDir, cloud, { open } = {}) {
   const { electronApp } = await launchCanopy({
     userDataDir,
     viewportSize: { width: 1400, height: 900 },
@@ -75,15 +78,18 @@ async function launchWithAccountCloud(
     window.api.saveCanopyCloudApiKey({ apiKey: 'csk_account_mcp_fixture' }),
   );
   expect(signIn.status.authenticated, JSON.stringify(signIn.status)).toBe(true);
-  if (openMcpTab) {
+  if (open === 'customize') {
     await app.openPluginsPage();
     await app.openPluginsTab('mcp');
     await app.expectPluginsTab('mcp');
+  } else if (open === 'account-panel') {
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
   }
   return {
     electronApp,
     window,
-    panel: window.getByTestId('plugins-management-section-mcp'),
+    panel: window.getByTestId('settings-mcp-account-connections'),
   };
 }
 
@@ -97,18 +103,20 @@ test('Add puts a desktop-only server on this device instead of the cloud account
   seedCatalog(userDataDir);
   let electronApp;
   try {
-    const launched = await launchWithAccountCloud(userDataDir, cloud);
+    const launched = await launchWithAccountCloud(userDataDir, cloud, {
+      open: 'customize',
+    });
     electronApp = launched.electronApp;
-    const { window, panel } = launched;
+    const { window } = launched;
 
-    await panel.getByTestId('mcp-add-menu-trigger').click();
-    await window.getByTestId('mcp-add-browse').click();
-    await window
-      .getByTestId('mcp-browse-dialog')
-      .getByTestId('mcp-browse-card')
-      .filter({ hasText: 'Canva' })
-      .getByTestId('mcp-browse-card-add')
-      .click();
+    // CAN-4267: Browse is the catalog card on Customize. Its detail's
+    // Advanced configuration opens the same pre-filled device editor the old
+    // Browse dialog's Add did; the card's own Add is covered below.
+    await window.getByTestId('plugins-search').fill('Canva');
+    await window.getByTestId('plugins-entry-mcp-catalog:canva').click();
+    const detail = window.getByTestId('mcp-browse-detail');
+    await expect(detail).toBeVisible();
+    await window.getByTestId('plugin-advanced-configuration').click();
 
     // The device editor opens with nothing saying it can't connect.
     const dialog = window.getByRole('dialog', { name: 'New MCP server' });
@@ -116,7 +124,10 @@ test('Add puts a desktop-only server on this device instead of the cloud account
     await expect(
       dialog.getByTestId('mcp-server-provider-connector-notice'),
     ).toHaveCount(0);
-    await expect(panel.getByTestId('mcp-connect-notice')).toHaveCount(0);
+    await expect(
+      detail.getByTestId('mcp-browse-detail-provider-guidance'),
+    ).toHaveCount(0);
+    await expect(detail).not.toContainText(/Couldn.t connect/);
     await expect(dialog.getByTestId('mcp-cloud-local-reason')).toHaveText(
       'Desktop only. This server signs in on this device.',
     );
@@ -170,7 +181,9 @@ test('a cloud connection made before the server was marked desktop only keeps Di
   seedCatalog(userDataDir);
   let electronApp;
   try {
-    const launched = await launchWithAccountCloud(userDataDir, cloud);
+    const launched = await launchWithAccountCloud(userDataDir, cloud, {
+      open: 'account-panel',
+    });
     electronApp = launched.electronApp;
     const { panel } = launched;
 
@@ -227,9 +240,7 @@ test('Home points a desktop-only server at this device instead of a cloud sign-i
   seedCatalog(userDataDir);
   let electronApp;
   try {
-    const launched = await launchWithAccountCloud(userDataDir, cloud, {
-      openMcpTab: false,
-    });
+    const launched = await launchWithAccountCloud(userDataDir, cloud);
     electronApp = launched.electronApp;
     const { window } = launched;
     const app = new CanopyAppDriver(window);
@@ -285,9 +296,7 @@ test('the Plugins card adds the device server and keeps only Disconnect for an o
   seedCatalog(userDataDir);
   let electronApp;
   try {
-    const launched = await launchWithAccountCloud(userDataDir, cloud, {
-      openMcpTab: false,
-    });
+    const launched = await launchWithAccountCloud(userDataDir, cloud);
     electronApp = launched.electronApp;
     const { window } = launched;
     const app = new CanopyAppDriver(window);

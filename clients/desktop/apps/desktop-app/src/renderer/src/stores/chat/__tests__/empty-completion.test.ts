@@ -41,7 +41,9 @@ describe('buildEmptyCompletionRetryPrompt', () => {
         { type: 'text', text: 'Fix this' },
         {
           type: 'file_references',
-          references: [{ path: 'src/a.ts', name: 'a.ts' }],
+          references: [
+            { displayPath: 'src/a.ts', absolutePath: '/repo/src/a.ts' },
+          ],
         },
       ],
       attachmentPaths: ['/tmp/shot.png'],
@@ -49,7 +51,9 @@ describe('buildEmptyCompletionRetryPrompt', () => {
     });
     expect(buildEmptyCompletionRetryPrompt([message], 'u1')).toEqual({
       text: 'Fix this',
-      fileReferences: [{ path: 'src/a.ts', name: 'a.ts' }],
+      fileReferences: [
+        { displayPath: 'src/a.ts', absolutePath: '/repo/src/a.ts' },
+      ],
       attachmentPaths: ['/tmp/shot.png'],
       inputMode: 'voice',
     });

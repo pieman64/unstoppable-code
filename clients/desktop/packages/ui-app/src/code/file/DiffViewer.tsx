@@ -11,6 +11,7 @@ import {
   DiffBinaryState,
   DiffBoundNotice,
   DiffFileTree,
+  Button,
   DiffViewModeToggle,
   LoadingPlaceholder,
   useIsMobile,
@@ -176,8 +177,9 @@ export function DiffViewer({
         // fixed 256px file list, so the list folds away to a single control
         // that still shows the file count.
         <div className="flex shrink-0 flex-col items-center gap-1 border-r px-1 py-2">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            iconOnly
             onClick={(): void => setFilesCollapsed(false)}
             // The visible count beside this button is aria-hidden, so the
             // count has to ride on the accessible name or assistive tech
@@ -187,10 +189,9 @@ export function DiffViewer({
             }${filesTruncated ? '. Not every changed file is listed.' : ''}`}
             aria-expanded={false}
             data-testid="diff-viewer-files-expand"
-            className="focus-ring flex min-h-8 min-w-8 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
           >
             <FilesIcon />
-          </button>
+          </Button>
           <span className="text-3xs fg-secondary" aria-hidden="true">
             {fileCountLabel}
           </span>
@@ -198,16 +199,16 @@ export function DiffViewer({
       ) : (
         <div className="flex min-h-0 shrink-0 flex-col overflow-hidden">
           <div className="flex shrink-0 justify-end border-b border-r px-1 pt-1">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              iconOnly
               onClick={(): void => setFilesCollapsed(true)}
               aria-label="Hide changed files"
               aria-expanded={true}
               data-testid="diff-viewer-files-collapse"
-              className="focus-ring flex min-h-8 min-w-8 items-center justify-center rounded-md fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
             >
               <ChevronRightIcon className="rotate-180" />
-            </button>
+            </Button>
           </div>
           {filesTruncated ? (
             <DiffBoundNotice kind="truncated" className="m-2 shrink-0" />

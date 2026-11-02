@@ -19,8 +19,10 @@ import type {
   ChatWindowCommand,
   GitExecutableInstallProgress,
   GitExecutableStatus,
+  PreferencesLoadResult,
   PortalChatComposerCommandResult,
   PortalChatComposerRendererRequest,
+  WorkspaceContextState,
 } from '@canopy/desktop-shared/types';
 import { CONSENT_TOS_VERSION } from '@canopy/desktop-shared/constants/consent';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -38,6 +40,7 @@ import {
   openIntegrationSettings,
 } from '../lib/navigation/settings-destinations';
 import { useChatStore } from '../stores/chatStore';
+import { WATCHER_TERMINAL_ONLY_MESSAGE } from '../stores/chat/tab-utils';
 import type { ChatTab } from '../stores/chat/types';
 import { HEADER_STATES_PAGE_STORAGE_KEY } from '../components/sidebar/header-states-page-flag';
 import { useFeatureFlagsStore } from '../stores/featureFlagsStore';
@@ -47,6 +50,7 @@ import {
   makeTestLabsSnapshot,
   pageExperimentsOn,
 } from '@/test-utils/labsExperiments';
+import { makeTestPreferences } from '@/test-utils/preferences';
 import { initNavigationHistoryTracking } from '../stores/navigationHistoryStore';
 import { useNavigationStore } from '../stores/navigationStore';
 import { useProjectsStore } from '../stores/projectsStore';
@@ -267,35 +271,31 @@ jest.mock('../components/script-actions/ScriptActionsDesktopHost', () => ({
 // Every install starts the onboarding suggestions module, whose provider
 // probes need a fuller `window.api` than this suite stubs. The module is
 // covered by its own suites; keep it out of the feature-flag surface.
-jest.mock(
-  '../components/home/onboarding-suggestions/OnboardingSuggestionsRuntime',
-  () => ({
-    OnboardingSuggestionsRuntime: (): null => null,
-  }),
-);
 
 // No page is classified `blocked` today; a fixture classification keeps the
 // blocked path on <main> covered.
-jest.mock(
-  '@canopy/desktop-instrumentation/posthog-replay-surfaces',
-  (): typeof ReplaySurfaces => {
-    const actual: typeof ReplaySurfaces = jest.requireActual(
-      '@canopy/desktop-instrumentation/posthog-replay-surfaces',
-    );
-    return {
-      ...actual,
-      NAVIGATION_PAGE_REPLAY_PRIVACY: Object.freeze({
-        ...actual.NAVIGATION_PAGE_REPLAY_PRIVACY,
-        'header-states': 'blocked',
-      }),
-    };
-  },
-);
+jest.mock('@canopy/desktop-instrumentation/posthog-replay-surfaces', () => {
+  const actual: typeof ReplaySurfaces = jest.requireActual(
+    '@canopy/desktop-instrumentation/posthog-replay-surfaces',
+  );
+  return {
+    ...actual,
+    NAVIGATION_PAGE_REPLAY_PRIVACY: Object.freeze({
+      ...actual.NAVIGATION_PAGE_REPLAY_PRIVACY,
+      'header-states': 'blocked',
+    }),
+  };
+});
 jest.mock('../components/remote-access/RemoteAccessHost', () => ({
   RemoteAccessHost: (): JSX.Element => <div data-testid="remote-access-host" />,
 }));
 jest.mock('../components/github/GitHubConnectOfferHost', () => ({
   GitHubConnectOfferHost: (): null => null,
+}));
+// The host reads the onboarding tips client store, which main.tsx provides
+// through CanopyClientProvider; its own tests cover it.
+jest.mock('../components/release-highlights/ReleaseHighlightsHost', () => ({
+  ReleaseHighlightsHost: (): null => null,
 }));
 jest.mock('../hooks/usePipelineCompletionToasts', () => ({
   usePipelineCompletionToasts: jest.fn(),
@@ -349,16 +349,24 @@ jest.mock(
       undefined,
   }),
 );
-jest.mock('../stores/chatStore', (): typeof ChatStoreModule => {
+jest.mock('../stores/chatStore', () => {
   const actual = jest.requireActual<typeof ChatStoreModule>(
     '../stores/chatStore',
   );
-  return {
-    ...actual,
-    initializeVisibleContextSync: jest.fn<() => void, []>(
-      (): (() => void) => (): void => undefined,
-    ),
-  };
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      initializeVisibleContextSync: {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: jest.fn<() => void, []>(
+          (): (() => void) => (): void => undefined,
+        ),
+      },
+    },
+  );
 });
 jest.mock(
   '../lib/current-ui-state/initCurrentUiStateTracking',
@@ -488,15 +496,12 @@ function installWindowApi(): void {
       ReturnType<typeof window.api.loadPreferences>,
       Parameters<typeof window.api.loadPreferences>
     >()
-    .mockResolvedValue({
-      theme: 'system',
-      colorMode: 'system',
-      uiScale: 'medium',
-      osNotifications: {},
-      inAppNotifications: { placement: 'bottom-right' },
-      onboardingCompleted: ['v1'],
-      legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-    });
+    .mockResolvedValue(
+      makeTestPreferences({
+        onboardingCompleted: ['v1'],
+        legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+      }),
+    );
   acknowledgeWatcherMessageDeliveryMock = jest
     .fn<Promise<void>, [unknown]>()
     .mockResolvedValue(undefined);
@@ -765,6 +770,21 @@ function setPortalFlag(enabled: boolean): void {
   });
 }
 
+function setClaudeTuiChatsFlag(enabled: boolean): void {
+  const snapshot = useFeatureFlagsStore.getState().snapshot;
+  useFeatureFlagsStore.getState().setSnapshot({
+    ...snapshot,
+    values: {
+      ...snapshot.values,
+      [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key]: enabled,
+    },
+    status: 'ready',
+    initialized: true,
+    updatedAt: new Date().toISOString(),
+    error: null,
+  });
+}
+
 async function renderApp(): Promise<{
   container: HTMLElement;
   cleanup: () => void;
@@ -861,7 +881,7 @@ describe('App Canopy Portal feature flag gate', () => {
     try {
       act(() => {
         activationCampaignListener?.({
-          campaignId: 'getting-started-sequence',
+          campaignId: 'activation-first-task',
           destination: { kind: 'settings', section: 'account' },
         });
       });
@@ -870,7 +890,7 @@ describe('App Canopy Portal feature flag gate', () => {
 
       act(() => {
         activationCampaignListener?.({
-          campaignId: 'getting-started-sequence',
+          campaignId: 'activation-first-task',
           destination: {
             kind: 'settings',
             section: 'account',
@@ -883,7 +903,7 @@ describe('App Canopy Portal feature flag gate', () => {
 
       act(() => {
         activationCampaignListener?.({
-          campaignId: 'getting-started-sequence',
+          campaignId: 'activation-first-task',
           destination: { kind: 'settings', section: 'notifications' },
         });
       });
@@ -957,15 +977,12 @@ describe('App Canopy Portal feature flag gate', () => {
 
   it('marks the inset window layout independently of Early access', async () => {
     resetExperimentalFeaturesStoreForTest();
-    loadPreferencesMock.mockResolvedValue({
-      theme: 'system',
-      colorMode: 'system',
-      uiScale: 'medium',
-      osNotifications: {},
-      inAppNotifications: { placement: 'bottom-right' },
-      onboardingCompleted: ['v1'],
-      legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-    });
+    loadPreferencesMock.mockResolvedValue(
+      makeTestPreferences({
+        onboardingCompleted: ['v1'],
+        legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+      }),
+    );
     labsSnapshot = makeTestLabsSnapshot({
       earlyAccess: false,
       experiments: [
@@ -1020,6 +1037,28 @@ describe('App Canopy Portal feature flag gate', () => {
     }
   });
 
+  it('hides the main shell under a secondary page that covers the window', async () => {
+    useSidebarPageHandoffStore
+      .getState()
+      .setActive(true, { coversMainShell: true });
+
+    const rendered = await renderApp();
+    try {
+      const sidebarPage = rendered.container.querySelector(
+        '[data-testid="app-sidebar-page"]',
+      );
+      expect(sidebarPage?.hasAttribute('inert')).toBe(true);
+      const mainShell = rendered.container.querySelector(
+        '[data-testid="app-main-shell"]',
+      );
+      expect(mainShell?.hasAttribute('inert')).toBe(true);
+      expect(mainShell?.className).toContain('invisible');
+    } finally {
+      rendered.cleanup();
+      useSidebarPageHandoffStore.getState().setActive(false);
+    }
+  });
+
   it('applies the active page replay classification on <main> (CAN-3119)', async () => {
     const rendered = await renderApp();
     try {
@@ -1037,9 +1076,7 @@ describe('App Canopy Portal feature flag gate', () => {
         useNavigationStore.setState({ activePage: 'header-states' });
         await Promise.resolve();
       });
-      expect(
-        NAVIGATION_PAGE_REPLAY_PRIVACY['header-states'] === 'blocked',
-      ).toBe(true);
+      expect(NAVIGATION_PAGE_REPLAY_PRIVACY['header-states']).toBe('blocked');
       expect(main?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
       // The marker adds no layout of its own.
       expect(main?.className).toContain(
@@ -1263,10 +1300,12 @@ describe('App Canopy Portal feature flag gate', () => {
   });
 
   it('starts navigation history only after preferences restore the landing page', async () => {
-    let resolvePreferences: ((value: unknown) => void) | undefined;
+    let resolvePreferences:
+      | ((value: PreferencesLoadResult) => void)
+      | undefined;
     loadPreferencesMock.mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
+        new Promise<PreferencesLoadResult>((resolve) => {
           resolvePreferences = resolve;
         }),
     );
@@ -1276,15 +1315,12 @@ describe('App Canopy Portal feature flag gate', () => {
       expect(initNavigationHistoryTrackingMock).not.toHaveBeenCalled();
 
       await act(async () => {
-        resolvePreferences?.({
-          theme: 'system',
-          colorMode: 'system',
-          uiScale: 'medium',
-          osNotifications: {},
-          inAppNotifications: { placement: 'bottom-right' },
-          onboardingCompleted: ['v1'],
-          legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-        });
+        resolvePreferences?.(
+          makeTestPreferences({
+            onboardingCompleted: ['v1'],
+            legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+          }),
+        );
         await flushAsyncHandlerChain();
       });
 
@@ -1385,115 +1421,124 @@ describe('App Canopy Portal feature flag gate', () => {
     expect(refreshContext).not.toHaveBeenCalled();
   });
 
-  it('does not unlock startup work while Windows Git is still required', async () => {
-    Object.defineProperty(window, 'platform', {
-      configurable: true,
-      value: 'win32',
-    });
-    getGitExecutableStatusMock.mockResolvedValue(
-      makeGitStatus({ required: true, ready: false }),
-    );
-
-    const rendered = await renderApp();
-    try {
-      expect(getGitExecutableStatusMock).toHaveBeenCalledTimes(1);
-      expect(
-        rendered.container.querySelector(
-          '[data-testid="windows-git-required-screen"]',
-        ),
-      ).not.toBeNull();
-      expect(notifyStartupUnlockedMock).not.toHaveBeenCalled();
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it('keeps the remote file picker host mounted behind the Windows Git gate', async () => {
-    // A window showing another computer forwards the gate's Browse to that
-    // computer, which answers with a file picker this window must show.
-    Object.defineProperty(window, 'platform', {
-      configurable: true,
-      value: 'win32',
-    });
-    getGitExecutableStatusMock.mockResolvedValue(
-      makeGitStatus({ required: true, ready: false }),
-    );
-
-    const rendered = await renderApp();
-    try {
-      expect(
-        rendered.container.querySelector(
-          '[data-testid="windows-git-required-screen"]',
-        ),
-      ).not.toBeNull();
-      expect(
-        rendered.container.querySelector('[data-testid="remote-access-host"]'),
-      ).not.toBeNull();
-    } finally {
-      rendered.cleanup();
-    }
-  });
-
-  it('keeps startup locked after cloud sign-in until Windows Git is ready', async () => {
-    Object.defineProperty(window, 'platform', {
-      configurable: true,
-      value: 'win32',
-    });
-    useNavigationStore.setState({ canopyPortalOpen: false });
-    useFeatureFlagsStore.getState().setSnapshot({
-      ...getDefaultFeatureFlagSnapshot(),
-      values: {
-        ...getDefaultFeatureFlagSnapshot().values,
-        [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
-        [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]: false,
-        [CLIENT_FEATURE_FLAGS.canopyCloudSignInRequired.key]: true,
-        // Guest mode off so this test exercises the classic blocking gate.
-        [CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.key]: false,
-      },
-      status: 'ready',
-      initialized: true,
-      updatedAt: new Date().toISOString(),
-      error: null,
-    });
-    loadPreferencesMock.mockResolvedValue({
-      theme: 'system',
-      colorMode: 'system',
-      uiScale: 'medium',
-      osNotifications: {},
-      inAppNotifications: { placement: 'bottom-right' },
-      onboardingCompleted: [],
-      legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-    });
-    getGitExecutableStatusMock.mockResolvedValue(
-      makeGitStatus({ required: true, ready: false }),
-    );
-
-    const rendered = await renderApp();
-    try {
-      expect(getGitExecutableStatusMock).not.toHaveBeenCalled();
-      const connectButton = rendered.container.querySelector<HTMLButtonElement>(
-        '[data-testid="cloud-sign-in-gate"]',
-      );
-      expect(connectButton).not.toBeNull();
-
-      await act(async () => {
-        connectButton?.querySelector<HTMLButtonElement>('button')?.click();
-        await flushAsyncHandlerChain();
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        await flushAsyncHandlerChain();
+  it.each(['win32', 'linux'] as const)(
+    'does not unlock startup work while %s Git is still required',
+    async (platform) => {
+      Object.defineProperty(window, 'platform', {
+        configurable: true,
+        value: platform,
       });
+      getGitExecutableStatusMock.mockResolvedValue(
+        makeGitStatus({ required: true, ready: false }),
+      );
 
-      expect(getGitExecutableStatusMock).toHaveBeenCalledTimes(1);
-      expect(
-        rendered.container.querySelector(
-          '[data-testid="windows-git-required-screen"]',
-        ),
-      ).not.toBeNull();
-      expect(notifyStartupUnlockedMock).not.toHaveBeenCalled();
-    } finally {
-      rendered.cleanup();
-    }
-  });
+      const rendered = await renderApp();
+      try {
+        expect(getGitExecutableStatusMock).toHaveBeenCalledTimes(1);
+        expect(
+          rendered.container.querySelector(
+            `[data-testid="${platform === 'linux' ? 'linux' : 'windows'}-git-required-screen"]`,
+          ),
+        ).not.toBeNull();
+        expect(notifyStartupUnlockedMock).not.toHaveBeenCalled();
+      } finally {
+        rendered.cleanup();
+      }
+    },
+  );
+
+  it.each(['win32', 'linux'] as const)(
+    'keeps the remote file picker host mounted behind the %s Git gate',
+    async (platform) => {
+      // A window showing another computer forwards the gate's Browse to that
+      // computer, which answers with a file picker this window must show.
+      Object.defineProperty(window, 'platform', {
+        configurable: true,
+        value: platform,
+      });
+      getGitExecutableStatusMock.mockResolvedValue(
+        makeGitStatus({ required: true, ready: false }),
+      );
+
+      const rendered = await renderApp();
+      try {
+        expect(
+          rendered.container.querySelector(
+            `[data-testid="${platform === 'linux' ? 'linux' : 'windows'}-git-required-screen"]`,
+          ),
+        ).not.toBeNull();
+        expect(
+          rendered.container.querySelector(
+            '[data-testid="remote-access-host"]',
+          ),
+        ).not.toBeNull();
+      } finally {
+        rendered.cleanup();
+      }
+    },
+  );
+
+  it.each(['win32', 'linux'] as const)(
+    'keeps startup locked after cloud sign-in until %s Git is ready',
+    async (platform) => {
+      Object.defineProperty(window, 'platform', {
+        configurable: true,
+        value: platform,
+      });
+      useNavigationStore.setState({ canopyPortalOpen: false });
+      useFeatureFlagsStore.getState().setSnapshot({
+        ...getDefaultFeatureFlagSnapshot(),
+        values: {
+          ...getDefaultFeatureFlagSnapshot().values,
+          [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
+          [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]: false,
+          [CLIENT_FEATURE_FLAGS.canopyCloudSignInRequired.key]: true,
+          // Guest mode off so this test exercises the classic blocking gate.
+          [CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.key]: false,
+        },
+        status: 'ready',
+        initialized: true,
+        updatedAt: new Date().toISOString(),
+        error: null,
+      });
+      loadPreferencesMock.mockResolvedValue(
+        makeTestPreferences({
+          onboardingCompleted: [],
+          legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+        }),
+      );
+      getGitExecutableStatusMock.mockResolvedValue(
+        makeGitStatus({ required: true, ready: false }),
+      );
+
+      const rendered = await renderApp();
+      try {
+        expect(getGitExecutableStatusMock).not.toHaveBeenCalled();
+        const connectButton =
+          rendered.container.querySelector<HTMLButtonElement>(
+            '[data-testid="cloud-sign-in-gate"]',
+          );
+        expect(connectButton).not.toBeNull();
+
+        await act(async () => {
+          connectButton?.querySelector<HTMLButtonElement>('button')?.click();
+          await flushAsyncHandlerChain();
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await flushAsyncHandlerChain();
+        });
+
+        expect(getGitExecutableStatusMock).toHaveBeenCalledTimes(1);
+        expect(
+          rendered.container.querySelector(
+            `[data-testid="${platform === 'linux' ? 'linux' : 'windows'}-git-required-screen"]`,
+          ),
+        ).not.toBeNull();
+        expect(notifyStartupUnlockedMock).not.toHaveBeenCalled();
+      } finally {
+        rendered.cleanup();
+      }
+    },
+  );
 
   it('keeps the required sign-in wall mounted after the account event until the auth flow completes', async () => {
     useNavigationStore.setState({ canopyPortalOpen: false });
@@ -1728,18 +1773,15 @@ describe('App Canopy Portal feature flag gate', () => {
 
   it('opens the shell as a guest once consent has been recorded', async () => {
     useNavigationStore.setState({ canopyPortalOpen: false });
-    loadPreferencesMock.mockResolvedValue({
-      theme: 'system',
-      colorMode: 'system',
-      uiScale: 'medium',
-      osNotifications: {},
-      inAppNotifications: { placement: 'bottom-right' },
-      onboardingCompleted: ['v1'],
-      guestConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-      guestConsentTosVersion: '2026-07-06',
-      legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-      legalConsentTosVersion: '2026-07-06',
-    });
+    loadPreferencesMock.mockResolvedValue(
+      makeTestPreferences({
+        onboardingCompleted: ['v1'],
+        guestConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+        guestConsentTosVersion: '2026-07-06',
+        legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+        legalConsentTosVersion: '2026-07-06',
+      }),
+    );
     setGuestGateSnapshot();
 
     const rendered = await renderApp();
@@ -1753,6 +1795,7 @@ describe('App Canopy Portal feature flag gate', () => {
   });
 
   it('delivers main-window watcher commands without activating the destination worktree', async () => {
+    setClaudeTuiChatsFlag(true);
     let finishHydration: (() => void) | undefined;
     const hydrationWait = jest
       .spyOn(chatHydration, 'waitForWorktreeHydration')
@@ -1824,6 +1867,9 @@ describe('App Canopy Portal feature flag gate', () => {
             {
               id: 'watcher-tab',
               title: 'Watcher target',
+              model: 'claude-haiku-4-5-20251001',
+              providerType: 'claude',
+              interfaceMode: 'claude-code',
               messages: [],
               status: 'idle',
               error: null,
@@ -1972,7 +2018,234 @@ describe('App Canopy Portal feature flag gate', () => {
     }
   });
 
+  it('keeps missing, file, and read-only watcher destinations unavailable', async () => {
+    const originalLoadTabsForTarget = useChatStore.getState().loadTabsForTarget;
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const loadTabsForTarget = jest.fn<Promise<void>, unknown[]>(() =>
+      Promise.resolve(),
+    );
+    const sendMessage = jest.fn<Promise<void>, unknown[]>(() =>
+      Promise.resolve(),
+    );
+    useChatStore.setState({
+      loadTabsForTarget: loadTabsForTarget as never,
+      sendMessage: sendMessage as never,
+      worktreeChats: {
+        'project-target/worktree-target': {
+          activeTabId: 'readonly-tab',
+          tabs: [
+            {
+              id: 'readonly-tab',
+              title: 'Read-only target',
+              readOnly: true,
+              messages: [],
+              status: 'idle',
+              error: null,
+              createdAt: new Date().toISOString(),
+              queuedMessages: [],
+              planMode: false,
+              proposalMode: 'optional',
+              thinkingLevel: 'high',
+              modelConfig: { fastMode: false },
+            } as never,
+            {
+              id: 'file-tab',
+              title: 'File target',
+              kind: 'file',
+              messages: [],
+              status: 'idle',
+              error: null,
+              createdAt: new Date().toISOString(),
+              queuedMessages: [],
+              planMode: false,
+              proposalMode: 'optional',
+              thinkingLevel: 'high',
+              modelConfig: { fastMode: false },
+            } as never,
+          ],
+        },
+      },
+    });
+
+    const rendered = await renderApp();
+    try {
+      await act(async () => {
+        for (const chatId of ['missing-tab', 'file-tab', 'readonly-tab']) {
+          chatWindowCommandListener?.({
+            type: 'send_watcher_message',
+            projectId: 'project-target',
+            worktreeId: 'worktree-target',
+            chatId,
+            watcherId: `watcher-${chatId}`,
+            deliveryId: `delivery-${chatId}`,
+            text: 'Canopy watcher fired.',
+          });
+        }
+        await flushAsyncHandlerChain();
+      });
+
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledTimes(6);
+      for (const chatId of ['missing-tab', 'file-tab', 'readonly-tab']) {
+        expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
+          watcherId: `watcher-${chatId}`,
+          deliveryId: `delivery-${chatId}`,
+          stage: 'completed',
+          ok: false,
+          error: 'Watcher destination chat is not available.',
+        });
+      }
+    } finally {
+      act(() => {
+        useChatStore.setState({
+          loadTabsForTarget: originalLoadTabsForTarget,
+          sendMessage: originalSendMessage,
+        });
+      });
+      rendered.cleanup();
+    }
+  });
+
+  it('refuses watcher delivery to a native Claude chat', async () => {
+    setClaudeTuiChatsFlag(true);
+    const originalLoadTabsForTarget = useChatStore.getState().loadTabsForTarget;
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const sendMessage = jest.fn<Promise<void>, unknown[]>(() =>
+      Promise.resolve(),
+    );
+    useChatStore.setState({
+      loadTabsForTarget: jest.fn(() => Promise.resolve()),
+      sendMessage: sendMessage as never,
+      worktreeChats: {
+        'project-target/worktree-target': {
+          activeTabId: 'native-tab',
+          tabs: [
+            {
+              id: 'native-tab',
+              title: 'Native Claude target',
+              model: 'claude-haiku-4-5-20251001',
+              providerType: 'claude',
+              interfaceMode: 'canopy',
+              messages: [],
+              status: 'idle',
+              error: null,
+              createdAt: new Date().toISOString(),
+              queuedMessages: [],
+              planMode: false,
+              proposalMode: 'optional',
+              thinkingLevel: 'high',
+              modelConfig: { fastMode: false },
+            } as never,
+          ],
+        },
+      },
+    });
+
+    const rendered = await renderApp();
+    try {
+      await act(async () => {
+        chatWindowCommandListener?.({
+          type: 'send_watcher_message',
+          projectId: 'project-target',
+          worktreeId: 'worktree-target',
+          chatId: 'native-tab',
+          watcherId: 'watcher-native',
+          deliveryId: 'delivery-native',
+          text: 'Canopy watcher fired.',
+        });
+        await flushAsyncHandlerChain();
+      });
+
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
+        watcherId: 'watcher-native',
+        deliveryId: 'delivery-native',
+        stage: 'completed',
+        ok: false,
+        error: WATCHER_TERMINAL_ONLY_MESSAGE,
+      });
+    } finally {
+      act(() => {
+        useChatStore.setState({
+          loadTabsForTarget: originalLoadTabsForTarget,
+          sendMessage: originalSendMessage,
+        });
+      });
+      rendered.cleanup();
+    }
+  });
+
+  it('refuses a Claude terminal chat while the TUI chats feature flag is off', async () => {
+    setClaudeTuiChatsFlag(false);
+    const originalLoadTabsForTarget = useChatStore.getState().loadTabsForTarget;
+    const originalSendMessage = useChatStore.getState().sendMessage;
+    const sendMessage = jest.fn<Promise<void>, unknown[]>(() =>
+      Promise.resolve(),
+    );
+    useChatStore.setState({
+      loadTabsForTarget: jest.fn(() => Promise.resolve()),
+      sendMessage: sendMessage as never,
+      worktreeChats: {
+        'project-target/worktree-target': {
+          activeTabId: 'claude-terminal-tab',
+          tabs: [
+            {
+              id: 'claude-terminal-tab',
+              title: 'Claude terminal target',
+              model: 'claude-haiku-4-5-20251001',
+              providerType: 'claude',
+              interfaceMode: 'claude-code',
+              messages: [],
+              status: 'idle',
+              error: null,
+              createdAt: new Date().toISOString(),
+              queuedMessages: [],
+              planMode: false,
+              proposalMode: 'optional',
+              thinkingLevel: 'high',
+              modelConfig: { fastMode: false },
+            } as never,
+          ],
+        },
+      },
+    });
+
+    const rendered = await renderApp();
+    try {
+      await act(async () => {
+        chatWindowCommandListener?.({
+          type: 'send_watcher_message',
+          projectId: 'project-target',
+          worktreeId: 'worktree-target',
+          chatId: 'claude-terminal-tab',
+          watcherId: 'watcher-flag-off',
+          deliveryId: 'delivery-flag-off',
+          text: 'Canopy watcher fired.',
+        });
+        await flushAsyncHandlerChain();
+      });
+
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(acknowledgeWatcherMessageDeliveryMock).toHaveBeenCalledWith({
+        watcherId: 'watcher-flag-off',
+        deliveryId: 'delivery-flag-off',
+        stage: 'completed',
+        ok: false,
+        error: WATCHER_TERMINAL_ONLY_MESSAGE,
+      });
+    } finally {
+      act(() => {
+        useChatStore.setState({
+          loadTabsForTarget: originalLoadTabsForTarget,
+          sendMessage: originalSendMessage,
+        });
+      });
+      rendered.cleanup();
+    }
+  });
+
   it('deduplicates a retried main-window watcher delivery while the first send is pending', async () => {
+    setClaudeTuiChatsFlag(true);
     const originalLoadTabsForTarget = useChatStore.getState().loadTabsForTarget;
     const originalSendMessage = useChatStore.getState().sendMessage;
     let resolveSend: (() => void) | undefined;
@@ -1990,13 +2263,21 @@ describe('App Canopy Portal feature flag gate', () => {
       title: 'Watcher target',
       messages: [],
       status: 'streaming',
+      model: 'claude-haiku-4-5-20251001',
+      providerType: 'claude',
+      interfaceMode: 'claude-code',
       error: null,
       createdAt: new Date().toISOString(),
       queuedMessages: [],
       planMode: false,
       proposalMode: 'optional',
       thinkingLevel: 'high',
-      modelConfig: { fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
+      fastModeExplicit: false,
     };
     useChatStore.setState({
       loadTabsForTarget,
@@ -2065,7 +2346,7 @@ describe('App Canopy Portal feature flag gate', () => {
           },
         });
       }
-      return Promise.resolve();
+      return Promise.resolve(true);
     });
     useChatStore.setState({
       loadTabsForTarget: jest.fn(() => Promise.resolve()),
@@ -2083,7 +2364,11 @@ describe('App Canopy Portal feature flag gate', () => {
       proposalMode: 'optional',
       thinkingLevel: 'high',
       model: 'old-model',
-      modelConfig: { fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
     };
     useChatStore.setState({
@@ -2155,7 +2440,7 @@ describe('App Canopy Portal feature flag gate', () => {
                 },
               });
             }
-            resolve();
+            resolve(true);
           };
         }),
     );
@@ -2171,7 +2456,11 @@ describe('App Canopy Portal feature flag gate', () => {
       proposalMode: 'optional',
       thinkingLevel: 'high',
       model: 'old-model',
-      modelConfig: { fastMode: false },
+      modelConfig: {
+        thinkingLevel: 'high',
+        speed: 'standard',
+        fastMode: false,
+      },
       fastModeExplicit: false,
     };
 
@@ -2228,6 +2517,80 @@ describe('App Canopy Portal feature flag gate', () => {
       rendered.cleanup();
     }
   });
+
+  it.each([
+    { accepted: true, captured: 'opencode', ok: true },
+    { accepted: false, captured: 'opencode', ok: false },
+    { accepted: true, captured: 'claude', ok: false },
+  ] as const)(
+    'acknowledges same-model harness changes only after acceptance and matching state: %o',
+    async ({ accepted, captured, ok }) => {
+      const originalLoad = useChatStore.getState().loadTabsForTarget;
+      const originalSetModel = useChatStore.getState().setModelAndWait;
+      const setModelAndWait: typeof originalSetModel = jest.fn(() =>
+        Promise.resolve(accepted),
+      );
+      const tab: ChatTab = {
+        id: 'portal-tab',
+        title: 'Portal target',
+        messages: [],
+        status: 'idle',
+        error: null,
+        createdAt: new Date().toISOString(),
+        queuedMessages: [],
+        planMode: false,
+        proposalMode: 'optional',
+        thinkingLevel: 'high',
+        model: 'same-model',
+        modelConfig: {
+          thinkingLevel: 'high',
+          speed: 'standard',
+          fastMode: false,
+        },
+        fastModeExplicit: false,
+        executionHarness: captured,
+      };
+      useChatStore.setState({
+        loadTabsForTarget: jest.fn(() => Promise.resolve()),
+        setModelAndWait,
+        worktreeChats: {
+          'project-target/worktree-target': {
+            activeTabId: tab.id,
+            tabs: [tab],
+          },
+        },
+      });
+      const rendered = await renderApp();
+      try {
+        await act(async () => {
+          const command = {
+            projectId: 'project-target',
+            worktreeId: 'worktree-target',
+            chatId: tab.id,
+            kind: 'model' as const,
+            model: 'same-model',
+            executionHarness: 'opencode' as const,
+          };
+          portalComposerCommandListener?.({
+            requestId: 'same-model-harness',
+            command,
+          });
+          await flushAsyncHandlerChain();
+        });
+        expect(completePortalComposerCommandMock).toHaveBeenCalledWith(
+          expect.objectContaining({ requestId: 'same-model-harness', ok }),
+        );
+      } finally {
+        act(() =>
+          useChatStore.setState({
+            loadTabsForTarget: originalLoad,
+            setModelAndWait: originalSetModel,
+          }),
+        );
+        rendered.cleanup();
+      }
+    },
+  );
 
   describe('Portal legacy Fast commands on an Ultra fast chat', () => {
     const TARGET = {

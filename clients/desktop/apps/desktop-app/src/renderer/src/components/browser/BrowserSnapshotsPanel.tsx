@@ -6,7 +6,7 @@ import {
   type BrowserScreenshotEntry,
 } from '@/stores/browserStore';
 import { stageBrowserScreenshot } from '@/lib/browserChatStaging';
-import { Tooltip } from '@canopy/ui-shared';
+import { Button, Tooltip } from '@canopy/ui-shared';
 
 interface BrowserSnapshotsPanelProps {
   browserId: string;
@@ -63,26 +63,27 @@ export function BrowserSnapshotsPanel({
               (entry.attached ? (
                 <span className="shrink-0 text-2xs fg-secondary">Attached</span>
               ) : (
-                <button
-                  type="button"
+                <Button
+                  variant="ghost-quiet"
+                  size="compact"
                   onClick={(): void => {
                     void handleAttach(entry);
                   }}
-                  className="inline-flex shrink-0 items-center gap-1 rounded border bg-base/50 px-2 py-1 text-2xs hover:bg-base"
                 >
                   <ChatIcon width={12} height={12} />
                   <span>{CHAT_UNIT_LABEL}</span>
-                </button>
+                </Button>
               ))}
             <Tooltip label="Delete snapshot">
-              <button
-                type="button"
+              <Button
+                variant="ghost-quiet"
+                size="compact"
+                iconOnly
                 onClick={(): void => removeScreenshot(browserId, entry.id)}
                 aria-label="Delete snapshot"
-                className="inline-flex shrink-0 items-center rounded p-1 fg-secondary hover:bg-muted/40 hover:fg-primary"
               >
                 <TrashIcon width={13} height={13} />
-              </button>
+              </Button>
             </Tooltip>
           </li>
         ))}

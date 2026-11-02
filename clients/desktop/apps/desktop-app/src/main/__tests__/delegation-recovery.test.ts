@@ -9,10 +9,21 @@ import {
   hasDelegationRecoveryRecords,
   loadDelegationRecoveryMutations,
 } from '../agents/delegation/recovery';
+import * as mainProcessLogging from '../lib/main-process-logging';
 import { setDelegationActivity } from '../agents/delegation/activity';
 import type { StoredDelegation } from '@canopy/desktop-shared/node/delegation/broker';
+import type { DelegationReadMetadataSource } from '@canopy/desktop-shared/node/delegation/record-read-metadata';
+import { FixtureDelegationReadMetadata } from '@canopy/desktop-shared/node/delegation/testing/record-read-metadata-fixture';
 import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
 import type { ChatTabsFile } from '@canopy/desktop-shared/types';
+import type { PersistedChatBlock } from '@canopy/agent-transcript/types';
+import type {
+  CardStateV1,
+  PersistedToolOutputReference,
+} from '@canopy/protocol/canopy-core';
+import type { AgentDelegationTranscript } from '@canopy/protocol/delegation';
+import type { DelegationRecoveryLoaderOptions } from '../agents/delegation/record-reader-contract';
+import type { ArchivedChatsFile } from '@canopy/desktop-shared/types';
 import { routeFixture } from '../../../../../packages/desktop-shared/src/node/delegation/__tests__/fixtures';
 
 const record: StoredDelegation = {
@@ -88,6 +99,345 @@ const tabs: ChatTabsFile = {
     },
   ],
 };
+
+const streamMetadataFixture = new FixtureDelegationReadMetadata();
+streamMetadataFixture.stream('child', {
+  originAt: record.createdAt,
+  lastActivityAt: record.createdAt,
+});
+const streamReadMetadata = streamMetadataFixture.source;
+
+const archives: ArchivedChatsFile = { version: 1, archived: [] };
+
+function recoveredDelegationCard(
+  messages: ChatTabsFile['tabs'][number]['messages'],
+  runGeneration: number,
+): PersistedChatBlock | undefined {
+  return messages
+    .flatMap((message) => message.blocks)
+    .find(
+      (block) =>
+        block.type === 'delegated_agent_call' &&
+        block.runGeneration === runGeneration,
+    );
+}
+
+it('leaves the current stream generation untouched while recovering the legacy prefix unchanged', () => {
+  const prior: AgentDelegationTranscript = {
+    delegationId: 'child',
+    runGeneration: 1,
+    sequence: 2,
+    parentHarnessId: 'codex',
+    parentTurnId: 'u',
+    parentToolCallId: 'call',
+    createdAt: 90,
+    task: record.task,
+    snapshot: {
+      delegationId: 'child',
+      runGeneration: 1,
+      status: 'completed',
+      outputTruncated: false,
+      routeSnapshot: routeFixture(),
+      finalText: 'Legacy prefix result',
+    },
+    transcript: [],
+  };
+  const streamRecord: StoredDelegation = {
+    ...record,
+    state: { ...record.state, runGeneration: 2, status: 'running' },
+    launch: { ...record.launch, runGeneration: 2 },
+    history: [prior],
+  };
+  const scope = { projectId: 'p', worktreeId: 'w' };
+  const legacyResult = delegationRecoveryMutations(scope, tabs, archives, [
+    streamRecord,
+  ])[0];
+  if (legacyResult?.type !== 'messages.replaced')
+    throw new Error('Expected legacy recovery output');
+
+  const streamResult = delegationRecoveryMutations(
+    scope,
+    tabs,
+    archives,
+    [streamRecord],
+    streamReadMetadata,
+  )[0];
+  if (streamResult?.type !== 'messages.replaced')
+    throw new Error('Expected the legacy prefix to be recovered');
+
+  expect(recoveredDelegationCard(streamResult.messages, 1)).toEqual(
+    recoveredDelegationCard(legacyResult.messages, 1),
+  );
+  expect(recoveredDelegationCard(streamResult.messages, 2)).toBeUndefined();
+  expect(
+    delegationRecoveryMutations(
+      scope,
+      tabs,
+      archives,
+      [{ ...streamRecord, history: undefined }],
+      streamReadMetadata,
+    ),
+  ).toEqual([]);
+});
+
+it('preserves a raw stream card and its reference pairs while a legacy sibling changes', () => {
+  const previous: AgentDelegationTranscript = {
+    delegationId: 'child',
+    runGeneration: 1,
+    sequence: 1,
+    parentHarnessId: 'codex',
+    parentTurnId: 'u',
+    parentToolCallId: 'call',
+    createdAt: 90,
+    task: record.task,
+    snapshot: {
+      delegationId: 'child',
+      runGeneration: 1,
+      status: 'completed',
+      outputTruncated: false,
+      routeSnapshot: routeFixture(),
+      finalText: 'Previous legacy result',
+    },
+    transcript: [],
+  };
+  const recordWithHistory: StoredDelegation = {
+    ...record,
+    state: { ...record.state, runGeneration: 2 },
+    launch: { ...record.launch, runGeneration: 2 },
+    history: [previous],
+  };
+  const [initial] = delegationRecoveryMutations(
+    { projectId: 'p', worktreeId: 'w' },
+    tabs,
+    archives,
+    [recordWithHistory],
+  );
+  if (initial?.type !== 'messages.replaced')
+    throw new Error('Expected initial cards');
+  const currentCard = recoveredDelegationCard(initial.messages, 2);
+  if (currentCard?.type !== 'delegated_agent_call')
+    throw new Error('Expected current generation card');
+
+  const partialTextRef = {
+    version: 1,
+    artifactId: 'partial-stream-answer',
+    byteLength: 18,
+    sha256: 'a'.repeat(64),
+    encoding: 'utf-8',
+    mediaType: 'text/plain',
+  } satisfies PersistedToolOutputReference;
+  const finalTextRef = {
+    version: 1,
+    artifactId: 'final-stream-answer',
+    byteLength: 17,
+    sha256: 'b'.repeat(64),
+    encoding: 'utf-8',
+    mediaType: 'text/plain',
+  } satisfies PersistedToolOutputReference;
+  const cardState: CardStateV1 = {
+    version: 1,
+    status: 'completed',
+    resultIndex: 4,
+    error: null,
+    usage: null,
+    workspaceRevision: null,
+    workspaceDiscarded: false,
+    stopOutcome: null,
+    controlOutcome: null,
+    attribution: null,
+    capabilitySummary: null,
+    nestedChildSummary: null,
+    partialPreview: 'descriptor partial preview',
+    finalPreview: 'descriptor final preview',
+  };
+  const rawStreamCard = {
+    ...currentCard,
+    sequence: recordWithHistory.state.sequence,
+    status: 'running',
+    transcriptStore: 'chat-stream-v2',
+    partialTextRef,
+    finalTextRef,
+    cardState,
+  } satisfies typeof currentCard & {
+    transcriptStore: 'chat-stream-v2';
+    cardState: CardStateV1;
+  };
+  const beforeMessages = initial.messages.map((message) => ({
+    ...message,
+    blocks: message.blocks.map((block) =>
+      block.type === 'delegated_agent_call' && block.runGeneration === 2
+        ? rawStreamCard
+        : block,
+    ),
+  }));
+  const rawTabs: ChatTabsFile = {
+    ...tabs,
+    tabs: tabs.tabs.map((tab) => ({ ...tab, messages: beforeMessages })),
+  };
+  const changedPrevious = {
+    ...previous,
+    sequence: 2,
+    snapshot: {
+      ...previous.snapshot,
+      finalText: 'Changed legacy sibling result',
+    },
+  };
+  const changedRecord = { ...recordWithHistory, history: [changedPrevious] };
+
+  const [mutation] = delegationRecoveryMutations(
+    { projectId: 'p', worktreeId: 'w' },
+    rawTabs,
+    archives,
+    [changedRecord],
+    streamReadMetadata,
+  );
+  if (mutation?.type !== 'messages.replaced')
+    throw new Error('Expected changed legacy sibling');
+
+  expect(recoveredDelegationCard(mutation.messages, 1)).toMatchObject({
+    sequence: 2,
+    finalText: 'Changed legacy sibling result',
+  });
+  expect(JSON.stringify(recoveredDelegationCard(mutation.messages, 2))).toBe(
+    JSON.stringify(rawStreamCard),
+  );
+});
+
+it('validates metadata per record and skips malformed capsules without blocking legacy recovery', () => {
+  const invalid: StoredDelegation = {
+    ...record,
+    state: { ...record.state, delegationId: 'invalid-metadata' },
+    launch: { ...record.launch, delegationId: 'invalid-metadata' },
+  };
+  const invalidMetadataFixture = new FixtureDelegationReadMetadata();
+  invalidMetadataFixture.stream('invalid-metadata', {
+    originAt: invalid.createdAt,
+    lastActivityAt: invalid.createdAt,
+  });
+  const seen: string[] = [];
+  const source: DelegationReadMetadataSource = (candidate) => {
+    seen.push(candidate.state.delegationId);
+    const metadata = invalidMetadataFixture.source(candidate);
+    if (metadata !== undefined)
+      return {
+        ...metadata,
+        current: {
+          ...metadata.current,
+          target: {
+            ...metadata.current.target,
+            chatId: 'other-chat',
+          },
+        },
+      };
+    return undefined;
+  };
+  const warn = jest
+    .spyOn(mainProcessLogging, 'logMainProcessWarn')
+    .mockImplementation(() => undefined);
+  try {
+    const mutations = delegationRecoveryMutations(
+      { projectId: 'p', worktreeId: 'w' },
+      tabs,
+      archives,
+      [invalid, record],
+      source,
+    );
+    expect(seen).toEqual(['invalid-metadata', 'child']);
+    expect(mutations).toHaveLength(1);
+    if (mutations[0]?.type !== 'messages.replaced')
+      throw new Error('Expected legacy recovery to continue');
+    expect(recoveredDelegationCard(mutations[0].messages, 1)).toMatchObject({
+      delegationId: 'child',
+    });
+    expect(
+      mutations[0].messages.some((message) =>
+        message.blocks.some(
+          (block) =>
+            block.type === 'delegated_agent_call' &&
+            block.delegationId === 'invalid-metadata',
+        ),
+      ),
+    ).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('logs and skips a record when its metadata source throws while continuing with other records', () => {
+  const throwing: StoredDelegation = {
+    ...record,
+    state: { ...record.state, delegationId: 'throwing-metadata' },
+    launch: { ...record.launch, delegationId: 'throwing-metadata' },
+  };
+  const throwingMetadataFixture = new FixtureDelegationReadMetadata();
+  throwingMetadataFixture.stream('throwing-metadata', {
+    originAt: throwing.createdAt,
+    lastActivityAt: throwing.createdAt,
+  });
+  const source: DelegationReadMetadataSource = (candidate) => {
+    const metadata = throwingMetadataFixture.source(candidate);
+    if (metadata !== undefined) throw new Error('metadata source unavailable');
+    return metadata;
+  };
+  const warn = jest
+    .spyOn(mainProcessLogging, 'logMainProcessWarn')
+    .mockImplementation(() => undefined);
+  try {
+    const mutations = delegationRecoveryMutations(
+      { projectId: 'p', worktreeId: 'w' },
+      tabs,
+      archives,
+      [throwing, record],
+      source,
+    );
+    expect(mutations).toHaveLength(1);
+    if (mutations[0]?.type !== 'messages.replaced')
+      throw new Error('Expected legacy recovery to continue');
+    expect(
+      mutations[0].messages.some((message) =>
+        message.blocks.some(
+          (block) =>
+            block.type === 'delegated_agent_call' &&
+            block.delegationId === 'throwing-metadata',
+        ),
+      ),
+    ).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('accepts recovery loader options and supplies their metadata source to recovery', async () => {
+  mockStat.mockResolvedValueOnce(
+    await jest
+      .requireActual<typeof FsPromises>('node:fs/promises')
+      .stat(process.cwd()),
+  );
+  const load = jest
+    .spyOn(FileDelegationStorage.prototype, 'load')
+    .mockResolvedValueOnce([record]);
+  let received: StoredDelegation | undefined;
+  const readMetadata: DelegationReadMetadataSource = (candidate) => {
+    received = candidate;
+    return streamMetadataFixture.source(candidate);
+  };
+  const options: DelegationRecoveryLoaderOptions = { readMetadata };
+  try {
+    await expect(
+      loadDelegationRecoveryMutations(
+        { projectId: 'p', worktreeId: 'w' },
+        tabs,
+        archives,
+        options,
+      ),
+    ).resolves.toEqual([]);
+    expect(received).toBe(record);
+  } finally {
+    load.mockRestore();
+  }
+});
 
 it('keeps optional recovery preflight failures from blocking chat loading', async () => {
   const failure = Object.assign(new Error('registry unavailable'), {

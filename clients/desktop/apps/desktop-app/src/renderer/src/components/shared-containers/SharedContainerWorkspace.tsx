@@ -1,3 +1,4 @@
+import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
 /**
  * Shared-container recipient workspace.
  *
@@ -63,6 +64,7 @@ import {
   useSharedContainerReplicasStore,
 } from '@/stores/sharedContainerReplicasStore';
 import { SharedContainerForkModal } from './SharedContainerForkModal';
+import { forkRevisionFromReplica } from './useSharedContainerForkRevision';
 import { SharedContainerRunPanel } from './SharedContainerRunPanel';
 import { useSharedContainerRun } from './useSharedContainerRun';
 import { ViewOnlyPill } from './ViewOnlyPill';
@@ -131,6 +133,8 @@ export function SharedContainerWorkspace({
     runAllowed,
   );
   const containerId = viewerContainerId;
+  const filesGuestGate = useDesktopFilesGuestGate(containerId ?? undefined);
+  const filesAccountStatus = filesGuestGate.status;
   const layoutKey =
     containerId === null
       ? null
@@ -170,6 +174,8 @@ export function SharedContainerWorkspace({
   const loadedRevisionRef = useRef<{
     containerId: string;
     revisionId: string;
+    filesAccountStatus: 'loading' | 'guest' | 'signed-in';
+    filesGuestGate: typeof filesGuestGate;
   } | null>(null);
   useEffect(() => {
     if (containerId === null || readableRevisionId === null) {
@@ -180,11 +186,15 @@ export function SharedContainerWorkspace({
     loadedRevisionRef.current = {
       containerId,
       revisionId: readableRevisionId,
+      filesAccountStatus,
+      filesGuestGate,
     };
     if (
       previous === null ||
       previous.containerId !== containerId ||
-      previous.revisionId === readableRevisionId
+      (previous.revisionId === readableRevisionId &&
+        previous.filesAccountStatus === filesAccountStatus &&
+        previous.filesGuestGate === filesGuestGate)
     ) {
       return;
     }
@@ -200,9 +210,23 @@ export function SharedContainerWorkspace({
         : []),
       items.loadNotes(projectId, containerId),
       items.loadPrompts(projectId, containerId),
-      items.loadAttachments(projectId, containerId),
+      ...(filesAccountStatus === 'signed-in'
+        ? [
+            items.loadAttachments(
+              projectId,
+              containerId,
+              filesGuestGate.captureAccess(),
+            ),
+          ]
+        : []),
     ]);
-  }, [containerId, readableRevisionId, surfaceContainerType]);
+  }, [
+    containerId,
+    readableRevisionId,
+    surfaceContainerType,
+    filesGuestGate,
+    filesAccountStatus,
+  ]);
 
   // Hydrate the canonical terminal list before repairing a consented layout.
   // This preserves a live PTY when ordinary navigation remounts the viewer,
@@ -372,12 +396,16 @@ export function SharedContainerWorkspace({
         worktreeId={viewer.containerId}
       />
 
-      {forkOpen && readableRevisionId !== null && (
+      {/* Stays mounted when the replica stops being readable, so the dialog
+          can say so (and an in-flight copy keeps its dialog). Keyed by
+          container: switching shares starts a fresh review. */}
+      {forkOpen && (
         <SharedContainerForkModal
+          key={viewer.containerId}
           containerId={viewer.containerId}
           organizationId={viewer.organizationId}
           access={viewer.access ?? 'organization'}
-          revisionId={readableRevisionId}
+          revision={forkRevisionFromReplica(replica)}
           containerType={containerType}
           title={title}
           ownerName={ownerName}

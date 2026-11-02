@@ -166,6 +166,28 @@ describe('desktop instrumentation main user identity', () => {
     );
   });
 
+  it('does not pass a crash dump filter when no option is provided', () => {
+    const initConfig = datadogSdkMock.init.mock.calls[0]?.[0];
+
+    expect(initConfig).toBeDefined();
+    expect(initConfig).not.toHaveProperty('crashDumpFilter');
+  });
+
+  it('passes a configured crash dump filter to Electron RUM init', async () => {
+    jest.resetModules();
+    const sdkModule = await import('@datadog/electron-sdk');
+    setDatadogSdkMock(sdkModule);
+    const main = await import('../main');
+    const crashDumpFilter = (): Promise<'process' | 'discard'> =>
+      Promise.resolve('process');
+
+    await main.initializeDesktopInstrumentationMain({ crashDumpFilter });
+
+    expect(datadogSdkMock.init).toHaveBeenCalledWith(
+      expect.objectContaining({ crashDumpFilter }),
+    );
+  });
+
   it('applies a pre-init anon id to the SDK once init completes', async () => {
     jest.resetModules();
     const sdkModule = await import('@datadog/electron-sdk');
@@ -234,7 +256,7 @@ describe('desktop instrumentation session keepalive', () => {
 
     expect(notifyActivityMock).toHaveBeenCalledTimes(4);
 
-    const order = (fn: jest.Mock): number => {
+    const order = (fn: { mock: { invocationCallOrder: number[] } }): number => {
       const [first] = fn.mock.invocationCallOrder;
       if (first === undefined) {
         throw new Error('expected the mock to have been invoked');
@@ -393,6 +415,78 @@ describe('PostHog background client and session authority', () => {
     Object.assign(globalThis, { __CANOPY_POSTHOG_ENABLED__: false }),
   );
 
+  describe('desktop:app_start launch properties', () => {
+    const originalAppVersion: unknown = Reflect.get(
+      globalThis,
+      '__CANOPY_APP_VERSION__',
+    );
+    const originalReleaseFlavor: unknown = Reflect.get(
+      globalThis,
+      '__CANOPY_RELEASE_FLAVOR__',
+    );
+    afterEach(() =>
+      Object.assign(globalThis, {
+        __CANOPY_APP_VERSION__: originalAppVersion,
+        __CANOPY_RELEASE_FLAVOR__: originalReleaseFlavor,
+      }),
+    );
+
+    function startupProperties(): Record<string, unknown> | undefined {
+      const startupEvent = mockPostHogCapture.mock.calls[0]?.[0];
+      expect(startupEvent?.event).toBe('desktop:app_start');
+      return startupEvent?.properties;
+    }
+
+    it('stamps the release and install launch facts', async () => {
+      Object.assign(globalThis, {
+        __CANOPY_APP_VERSION__: '1.42.0',
+        __CANOPY_RELEASE_FLAVOR__: 'rc',
+      });
+      await main.initializePostHogMain(
+        () => Promise.resolve(posthogId),
+        undefined,
+        () =>
+          Promise.resolve({
+            isFirstLaunch: true,
+            isReinstall: false,
+            isInvitedInstall: false,
+          }),
+      );
+      expect(startupProperties()).toEqual(
+        expect.objectContaining({
+          app_version: '1.42.0',
+          release_channel: 'rc',
+          is_first_launch: true,
+          is_reinstall: false,
+          is_invited_install: false,
+        }),
+      );
+    });
+
+    it('still starts when install facts and build values are unavailable', async () => {
+      Object.assign(globalThis, {
+        __CANOPY_APP_VERSION__: '',
+        __CANOPY_RELEASE_FLAVOR__: 'unexpected',
+      });
+      await expect(
+        main.initializePostHogMain(
+          () => Promise.resolve(posthogId),
+          undefined,
+          () => Promise.reject(new Error('disk unavailable')),
+        ),
+      ).resolves.toEqual({ enabled: true, provider: 'posthog' });
+      const properties = startupProperties();
+      for (const key of [
+        'app_version',
+        'release_channel',
+        'is_first_launch',
+        'is_reinstall',
+      ]) {
+        expect(properties).not.toHaveProperty(key);
+      }
+    });
+  });
+
   it('uses the separate host identity and both privacy layers, overriding event-supplied session and identity', async () => {
     main.setDesktopInstrumentationUser(ANON_ID, 'private@example.test');
     await main.initializePostHogMain(() => Promise.resolve(posthogId));
@@ -459,6 +553,19 @@ describe('PostHog background client and session authority', () => {
     );
     await main.flushDesktopInstrumentation();
     expect(mockPostHogShutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('permits milestone claims only with an initialized eligible product client', async () => {
+    expect(main.isDesktopPostHogOperationCaptureEnabled()).toBe(false);
+    main.setDesktopPostHogOperationCaptureEnabled(true);
+    expect(main.isDesktopPostHogOperationCaptureEnabled()).toBe(false);
+    await main.initializePostHogMain(() => Promise.resolve(posthogId));
+    expect(main.isDesktopPostHogOperationCaptureEnabled()).toBe(true);
+    main.setDesktopPostHogOperationCaptureEnabled(false);
+    expect(main.isDesktopPostHogOperationCaptureEnabled()).toBe(false);
+    main.setDesktopPostHogOperationCaptureEnabled(true);
+    await main.flushDesktopInstrumentation();
+    expect(main.isDesktopPostHogOperationCaptureEnabled()).toBe(false);
   });
 
   it('publishes only the current domain when capture is enabled and clears the profile on sign-out', async () => {
@@ -875,6 +982,50 @@ describe('PostHog operation forwarding from the background process', () => {
     },
   );
 
+  it('forwards why a chat turn failed and who started it on chat:turn_end', () => {
+    main.failDesktopOperation('canopy.chat_turn', 'error', {
+      context: {
+        provider: 'codex',
+        failure_category: 'no_credits',
+        failure_detail: 'personal_wallet_empty',
+        sub_agent_failure_category: 'provider_quota',
+        trigger_type: 'user',
+      },
+    });
+
+    const captured = capturedEvents()[0];
+    expect(captured?.event).toBe('chat:turn_end');
+    expect(captured?.properties).toEqual(
+      expect.objectContaining({
+        status: 'failure',
+        failure_reason: 'error',
+        failure_category: 'no_credits',
+        failure_detail: 'personal_wallet_empty',
+        sub_agent_failure_category: 'provider_quota',
+        trigger_type: 'user',
+      }),
+    );
+  });
+
+  it('keeps chat turn properties off agent:task_end', () => {
+    main.failDesktopOperation('canopy.agent_task', 'error', {
+      context: {
+        provider: 'codex',
+        failure_category: 'no_credits',
+        failure_detail: 'personal_wallet_empty',
+        sub_agent_failure_category: 'provider_quota',
+        trigger_type: 'user',
+      },
+    });
+
+    const properties = capturedEvents()[0]?.properties;
+    expect(capturedEvents()[0]?.event).toBe('agent:task_end');
+    expect(properties).not.toHaveProperty('failure_category');
+    expect(properties).not.toHaveProperty('failure_detail');
+    expect(properties).not.toHaveProperty('sub_agent_failure_category');
+    expect(properties).not.toHaveProperty('trigger_type');
+  });
+
   // Release builds without Datadog secrets bundle an empty Datadog version,
   // and only internal builds bump the committed package.json version.
   it.each([
@@ -1021,6 +1172,33 @@ describe('PostHog operation forwarding from the background process', () => {
     main.setDesktopPostHogOperationCaptureEnabled(true);
     main.succeedDesktopOperation('canopy.chat_turn', { operationKey: 'on' });
     expect(capturedEvents()).toHaveLength(1);
+  });
+
+  it('drops pairing ends when capture withdrawal invalidated the eligible start', () => {
+    main.startDesktopOperation('canopy.remote_pairing', {
+      operationKey: 'withdrawn',
+    });
+    main.setDesktopPostHogOperationCaptureEnabled(false);
+    main.startDesktopOperation('canopy.remote_pairing', {
+      operationKey: 'disabled',
+    });
+    main.setDesktopPostHogOperationCaptureEnabled(true);
+    main.succeedDesktopOperation('canopy.remote_pairing', {
+      operationKey: 'withdrawn',
+    });
+    main.succeedDesktopOperation('canopy.remote_pairing', {
+      operationKey: 'disabled',
+    });
+    expect(capturedEvents()).toEqual([]);
+    main.startDesktopOperation('canopy.remote_pairing', {
+      operationKey: 'new',
+    });
+    main.succeedDesktopOperation('canopy.remote_pairing', {
+      operationKey: 'new',
+    });
+    expect(capturedEvents().map((event) => event.event)).toEqual([
+      'remote:pairing_end',
+    ]);
   });
 
   it('forwards operations when Datadog is disabled', async () => {

@@ -46,10 +46,11 @@ const failedSummary: ExecutionSummary = {
   pipeline_id: 'pipeline-1',
   pipeline_name: 'Build pipeline',
   status: 'failure',
+  status_reasons: [],
   started_at: '2026-05-19T00:00:00.000Z',
   completed_at: '2026-05-19T00:01:00.000Z',
   cwd: '/repo',
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };
@@ -59,8 +60,8 @@ const failedState: ExecutionState = {
   id: 'execution-1',
   pipeline_id: 'pipeline-1',
   pipeline_snapshot: {
-    id: 'pipeline-1',
     name: 'Build pipeline',
+    scope: ['directory'],
     jobs: {},
   },
   status: 'failure',
@@ -74,7 +75,7 @@ const failedState: ExecutionState = {
   cwd: '/repo',
   env: {},
   inputs: {},
-  event_name: 'manual',
+  event_name: 'dispatch',
   project_id: 'project',
   worktree_id: 'worktree',
 };

@@ -59,7 +59,10 @@ test('Cursor Claude model honors an explicit Claude harness selection before and
       );
     };
     await expectHarnessRecovery();
-    await f.window.getByTestId('model-recovery-cancel').click();
+    await f.window
+      .getByTestId('model-recovery-modal')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click();
     await panel.getByTestId('chat-model-picker').click();
     await f.window.getByTestId('chat-model-search').fill('Sonnet');
     await f.window
@@ -485,15 +488,13 @@ for (const harness of ['copilot', 'opencode', 'cursor']) {
           .fill('Use the chosen account.');
         await f.window.getByTestId('agent-model-submit').click();
         const agentId = `agent_model_${kind}_${harness}`;
-        await expect(
-          f.window.getByTestId(`plugins-entry-agent:local:${agentId}`),
-        ).toBeVisible();
+        // Saving opens the new agent's detail.
+        await f.driver.expectCreatedLocalAgentDetail(agentId);
         await expect
           .poll(() =>
             f.window.evaluate((key) => window.agents.get(key), agentId),
           )
           .toMatchObject({ baseModel: id });
-        await f.driver.openLocalAgentDetail(agentId);
         await f.window.getByTestId('local-agent-detail-edit').click();
         await f.window
           .getByTestId('agent-model-base-model')

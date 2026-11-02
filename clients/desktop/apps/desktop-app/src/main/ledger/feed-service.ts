@@ -6,25 +6,26 @@ import {
   type LedgerContainer,
   type LedgerEntriesSearchParams,
   type LedgerEntriesSearchResult,
-  type LedgerEntrySearchItem,
 } from '@canopy/protocol/canopy-core';
 import type {
   LedgerMirrorAudience,
-  LedgerMirrorEntry,
-  LedgerMirrorEntryResponse,
   LedgerMirrorSearchRequest,
 } from '@canopy/protocol/ledger-sync';
-import type {
-  LedgerFeedEntryRequest,
-  LedgerFeedFilters,
-  LedgerFeedNotice,
-  LedgerFeedPage,
-  LedgerFeedPeriod,
-  LedgerFeedRequest,
-  LedgerFeedRow,
-  LedgerViewEntry,
-  LedgerViewResult,
-  LedgerViewScope,
+import {
+  ledgerActorLabelFromMirror,
+  ledgerFeedRowFromMirror,
+  ledgerFeedSearchFilters,
+  ledgerMirrorHistoryRevision,
+  ledgerViewEntryFromMirror,
+  type LedgerFeedEntryRequest,
+  type LedgerFeedNotice,
+  type LedgerFeedPage,
+  type LedgerFeedRequest,
+  type LedgerFeedRow,
+  type LedgerFeedSearchFilters,
+  type LedgerViewEntry,
+  type LedgerViewResult,
+  type LedgerViewScope,
 } from '@canopy/protocol/ledger-view';
 import type { LedgerMirrorReader } from './feed-client';
 
@@ -56,14 +57,6 @@ export const LEDGER_FEED_CACHE_MAX = 50;
 const SESSIONS_MAX = 20;
 /** Stream reads one page may make before it settles for what it has. */
 const READS_PER_PAGE_MAX = 64;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const PERIOD_MS: { readonly [Period in LedgerFeedPeriod]: number | null } = {
-  any: null,
-  day: DAY_MS,
-  week: 7 * DAY_MS,
-  month: 30 * DAY_MS,
-};
 
 /** Who the Feed reads for. */
 export type LedgerFeedAccount =
@@ -104,8 +97,11 @@ export interface LedgerFeedServiceOptions {
   readonly readAccount: () => Promise<LedgerFeedAccount>;
   /** This device's scopes, retiring ones excluded. */
   readonly listScopes: () => Promise<readonly LedgerFeedLocalScope[]>;
-  /** The work scope that shows a container's Ledger. */
-  readonly viewScope: (container: LedgerContainer) => LedgerViewScope;
+  /** The work scope that shows a ledger. */
+  readonly viewScope: (
+    container: LedgerContainer,
+    ledgerId: string,
+  ) => LedgerViewScope;
   readonly mirror: LedgerMirrorReader;
   readonly now?: () => number;
   readonly newSessionId?: () => string;
@@ -257,66 +253,6 @@ function blockingStreams(
   );
 }
 
-function mirrorRow(entry: LedgerMirrorEntry): LedgerFeedRow {
-  const { ledgerId, scopeKind, scopeArchived, source, ...item } = entry;
-  const searchItem: LedgerEntrySearchItem = item;
-  return {
-    entry: searchItem,
-    ledgerId,
-    scopeKind,
-    scopeArchived,
-    origin:
-      source.kind === 'mine'
-        ? { kind: 'other_device', deviceLabel: source.deviceLabel }
-        : {
-            kind: 'teammate',
-            teammateName: source.teammateName,
-            organizationName: source.organizationName,
-          },
-  };
-}
-
-function withoutLedger(label: {
-  readonly actorId: string;
-  readonly kind: LedgerActorLabel['kind'];
-  readonly displayName: string;
-}): LedgerActorLabel {
-  return {
-    actorId: label.actorId,
-    kind: label.kind,
-    displayName: label.displayName,
-  };
-}
-
-/** The filters both the local and the mirror's search take. */
-interface SearchFilters {
-  readonly query?: string;
-  readonly types?: LedgerEntriesSearchParams['types'];
-  readonly statuses?: LedgerEntriesSearchParams['statuses'];
-  readonly owner?: 'self';
-  readonly author?: 'self';
-  readonly updatedAfter?: string;
-}
-
-function searchFilters(
-  query: string,
-  filters: LedgerFeedFilters,
-  now: number,
-): SearchFilters {
-  const trimmed = query.trim();
-  const period = PERIOD_MS[filters.period];
-  return {
-    ...(trimmed.length > 0 ? { query: trimmed } : {}),
-    ...(filters.types.length > 0 ? { types: [...filters.types] } : {}),
-    ...(filters.statuses.length > 0 ? { statuses: [...filters.statuses] } : {}),
-    ...(filters.owner === 'you' ? { owner: 'self' as const } : {}),
-    ...(filters.author === 'you' ? { author: 'self' as const } : {}),
-    ...(period === null
-      ? {}
-      : { updatedAfter: new Date(now - period).toISOString() }),
-  };
-}
-
 /** The cache's key for a first page: the query, its filters sorted. */
 function queryKey(request: LedgerFeedRequest): string {
   const { filters } = request;
@@ -429,14 +365,15 @@ export class LedgerFeedService {
     }
     let beforeRevision: number | undefined;
     if (request.historyCursor !== undefined) {
-      if (!/^[1-9][0-9]{0,8}$/.test(request.historyCursor)) {
+      const revision = ledgerMirrorHistoryRevision(request.historyCursor);
+      if (revision === null) {
         return {
           status: 'error',
           reason: 'INVALID_INPUT',
           message: 'Invalid history page.',
         };
       }
-      beforeRevision = Number(request.historyCursor);
+      beforeRevision = revision;
     }
     const read = await this.options.mirror.getEntry(
       request.entryId,
@@ -457,7 +394,7 @@ export class LedgerFeedService {
     if (!(await this.isSignedIn(accountKeyOf(account)))) {
       return ENTRY_NOT_AVAILABLE;
     }
-    return { status: 'ok', value: mirrorEntryView(read.value) };
+    return { status: 'ok', value: ledgerViewEntryFromMirror(read.value) };
   }
 
   /**
@@ -569,7 +506,11 @@ export class LedgerFeedService {
     account: Exclude<LedgerFeedAccount, { kind: 'unknown' }>,
     accountKey: string,
   ): Promise<FeedSession | null> {
-    const filters = searchFilters(request.query, request.filters, this.now());
+    const filters = ledgerFeedSearchFilters(
+      request.query,
+      request.filters,
+      this.now(),
+    );
     const localParams = LedgerEntriesSearchParamsSchema.safeParse({
       ...filters,
       sort: 'updated_desc',
@@ -635,7 +576,7 @@ export class LedgerFeedService {
     scope: LedgerFeedLocalScope,
     params: LedgerEntriesSearchParams,
   ): FeedStream {
-    const viewScope = this.options.viewScope(scope.container);
+    const viewScope = this.options.viewScope(scope.container, scope.ledgerId);
     return {
       buffer: [],
       cursor: null,
@@ -677,7 +618,7 @@ export class LedgerFeedService {
   /** A mirror search, read only as the account the search started with. */
   private mirrorStream(
     audience: LedgerMirrorAudience,
-    search: SearchFilters & {
+    search: LedgerFeedSearchFilters & {
       readonly includeArchived: boolean;
       readonly local: ReadonlySet<string>;
     },
@@ -710,8 +651,8 @@ export class LedgerFeedService {
           kind: 'page',
           rows: read.value.entries
             .filter((entry) => !local.has(entry.ledgerId))
-            .map(mirrorRow),
-          actors: read.value.actors.map(withoutLedger),
+            .map(ledgerFeedRowFromMirror),
+          actors: read.value.actors.map(ledgerActorLabelFromMirror),
           nextCursor: read.value.nextCursor,
           hasMore: read.value.hasMore,
           // Rows of this device's scopes count too: the stream is past them.
@@ -886,24 +827,4 @@ function actorsOf(
     }
   }
   return Array.from(labels.values());
-}
-
-/** A mirror entry as the read-only detail shows it. */
-function mirrorEntryView(response: LedgerMirrorEntryResponse): LedgerViewEntry {
-  return {
-    entry: {
-      entry: response.entry,
-      sourceAvailability: response.sourceAvailability,
-      history: {
-        mutations: response.history.mutations,
-        nextCursor:
-          response.history.nextBeforeRevision === null
-            ? null
-            : String(response.history.nextBeforeRevision),
-      },
-      actors: response.actors.map(withoutLedger),
-    },
-    // Another device's or a teammate's source never opens here.
-    source: { availability: response.sourceAvailability, target: null },
-  };
 }

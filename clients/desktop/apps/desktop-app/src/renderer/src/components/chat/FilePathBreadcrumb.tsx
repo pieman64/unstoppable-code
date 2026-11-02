@@ -23,12 +23,15 @@ import {
   ChevronRightIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { FolderIcon } from '@canopy/ui-shared/icons';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { isCoworkWorkspaceFileTreeRoot } from '@/components/activity/files-tree-tab-state';
 import { FileTypeIcon } from '@/components/shared/file-icons';
 import { AnchoredMenu } from '@/components/shared/AnchoredMenu';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { useChatStore } from '@/stores/chatStore';
 import {
   getDirectoryCacheKey,
+  getWorktreeCacheKey,
   isFileTreeCacheStale,
   useFileListStore,
 } from '@/stores/fileListStore';
@@ -135,7 +138,7 @@ function BreadcrumbDirectory({
                 data-entry-kind="directory"
                 data-relative-path={child.relativePath}
                 aria-expanded={expanded}
-                className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs fg-primary transition hover:bg-fg-primary/[0.06]"
+                className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs fg-primary transition-colors hover:bg-fg-primary/[0.06]"
                 style={{ paddingLeft: `${8 + depth * 14}px` }}
               >
                 {expanded ? (
@@ -171,7 +174,7 @@ function BreadcrumbDirectory({
             data-testid="file-breadcrumb-entry"
             data-entry-kind="file"
             data-relative-path={child.relativePath}
-            className={`flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs transition hover:bg-fg-primary/[0.06] ${
+            className={`flex w-full items-center gap-1.5 px-2 py-1 text-left text-xs transition-colors hover:bg-fg-primary/[0.06] ${
               highlighted ? 'bg-accent-subtle fg-primary' : 'fg-primary'
             }`}
             style={{ paddingLeft: `${8 + depth * 14 + 16}px` }}
@@ -197,6 +200,18 @@ export function FilePathBreadcrumb({
   relativePath,
   onOpenFile,
 }: FilePathBreadcrumbProps): JSX.Element {
+  // The viewer's resolved root can outlive its initial read. Subscribe to
+  // refreshed display metadata without reopening the file or changing paths.
+  const refreshedRoot = useFileListStore((state) =>
+    state.rootsCache[
+      getWorktreeCacheKey(projectId, worktreeId)
+    ]?.data.roots.find(
+      (candidate) =>
+        candidate.repoId === root.repoId &&
+        candidate.absolutePath === root.absolutePath,
+    ),
+  );
+  const rootName = refreshedRoot?.repoName ?? root.repoName;
   const openFileTab = useChatStore((s) => s.openFileTab);
   const [menu, setMenu] = useState<SegmentMenuState | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(
@@ -263,12 +278,17 @@ export function FilePathBreadcrumb({
       <button
         type="button"
         data-testid="file-breadcrumb-segment-root"
-        className="max-w-40 min-w-0 shrink-999 truncate rounded px-0.5 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+        className="max-w-40 min-w-0 shrink-999 truncate rounded px-0.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
         onClick={(event): void =>
           openSegmentMenu(0, event.currentTarget, '', null)
         }
       >
-        {root.repoName}
+        {isCoworkWorkspaceFileTreeRoot(root) ? (
+          // The Cowork root carries the user's project title.
+          <span className={REPLAY_MASK_CLASS}>{rootName}</span>
+        ) : (
+          rootName
+        )}
       </button>
       {folderParts.map((part, index) => (
         <span
@@ -279,7 +299,7 @@ export function FilePathBreadcrumb({
           <button
             type="button"
             data-testid={`file-breadcrumb-segment-${index}`}
-            className="max-w-40 min-w-0 shrink-999 truncate rounded px-0.5 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+            className="max-w-40 min-w-0 shrink-999 truncate rounded px-0.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
             onClick={(event): void =>
               openSegmentMenu(
                 index + 1,
@@ -297,7 +317,7 @@ export function FilePathBreadcrumb({
       <button
         type="button"
         data-testid="file-breadcrumb-segment-file"
-        className="min-w-0 max-w-64 shrink truncate rounded px-0.5 fg-primary transition hover:bg-fg-primary/[0.06]"
+        className="min-w-0 max-w-64 shrink truncate rounded px-0.5 fg-primary transition-colors hover:bg-fg-primary/[0.06]"
         title={fileName}
         onClick={(event): void =>
           openSegmentMenu(

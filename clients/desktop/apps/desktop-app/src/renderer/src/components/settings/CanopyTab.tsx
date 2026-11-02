@@ -1,7 +1,15 @@
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { ResetGettingStartedChecklistButton } from './ResetGettingStartedChecklistButton';
-import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
+import { ShowTipsAgainRow } from './ShowTipsAgainRow';
+import {
+  type JSX,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   type CliPathStatus,
   type DependencyVersions,
@@ -9,15 +17,27 @@ import {
   type TargetUpdateVersionItem,
   type UpdateState,
 } from '@canopy/desktop-shared/types';
+import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import { isCliPathManagementPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
   Button,
+  ConfirmDialog,
   Notice,
   NoticeButton,
   ToggleSwitch,
   BusyLabel,
+  DialogModal,
   LoadingIndicator,
 } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  PickerMenuOption,
+  PickerMenuOptionContent,
+  PickerMenuOptionDescription,
+  PickerMenuOptionLabel,
+  SearchField,
+} from '@canopy/ui-shared/components';
+import { HAIRLINE_INSET_RING_CLASS } from '@canopy/ui-shared/lib';
 import {
   ClaudeIcon,
   CodexIcon,
@@ -25,7 +45,6 @@ import {
   TerminalIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { AppLoadingScreen } from '@/components/onboarding/AppLoadingScreen';
-import { DialogModal } from '@/components/shared/DialogModal';
 import { ProfileRoleSection } from '@/components/settings/ProfileRoleSection';
 import { NavigationModeSection } from '@/components/settings/NavigationModeSection';
 import { LaunchAtLoginSection } from '@/components/settings/LaunchAtLoginSection';
@@ -44,7 +63,7 @@ import { useUpdateState } from '@/hooks/useUpdateState';
 import { formatVersionLabel } from '@/lib/version-label';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
-import { brandText } from '@/lib/brand';
+import { brand, brandText } from '@/lib/brand';
 import { openImportProjectsModal } from '@/stores/importProjectsModalStore';
 import { openRepoRulesModal } from '@/stores/repoRulesModalStore';
 import {
@@ -53,7 +72,6 @@ import {
 } from '@/stores/releaseHighlightsStore';
 import { resolveManualReleaseNotesEntry } from '@/lib/release-highlights/release-highlights';
 import { CODE_CHAT_DESTINATION_NOTE } from '@/components/import-projects/importProjectsCopy';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 function getManualUpdateStatus(
   updateState: UpdateState,
@@ -123,6 +141,8 @@ function getShellIntegrationSummary(status: CliPathStatus | null): string {
         : pt(uiText.shellIntegration.unsupportedPlatform);
     case 'missing':
       return pt(uiText.shellIntegration.missing);
+    case 'outdated':
+      return uiText.shellIntegration.outdated;
     case 'installed':
     case 'correct-symlink':
       return pt(uiText.shellIntegration.installed);
@@ -207,7 +227,7 @@ function DependenciesSection({
 }
 
 export function CanopyTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
+  const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
   const targetedUpdatesEnabled =
     __CANOPY_RELEASE_FLAVOR__ === 'internal' ||
     __CANOPY_RELEASE_FLAVOR__ === 'rc';
@@ -256,17 +276,30 @@ export function CanopyTab(): JSX.Element {
     useState<TargetUpdateVersionItem | null>(null);
   const [targetUpdatePending, setTargetUpdatePending] = useState(false);
 
+  const cliStatusRequest = useRef(0);
   const refreshCliStatus = useCallback(async (): Promise<void> => {
+    const request = ++cliStatusRequest.current;
     try {
       const nextStatus = await window.api.cli.getStatus();
-      setCliStatus(nextStatus);
+      if (request === cliStatusRequest.current) setCliStatus(nextStatus);
     } catch {
-      setCliMessage('Failed to check CLI integration status.');
+      if (request === cliStatusRequest.current) {
+        setCliMessage('Failed to check CLI integration status.');
+      }
     }
   }, []);
 
   useEffect(() => {
-    void refreshCliStatus();
+    const requests = cliStatusRequest;
+    const refresh = (): void => {
+      void refreshCliStatus();
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return (): void => {
+      window.removeEventListener('focus', refresh);
+      ++requests.current;
+    };
   }, [refreshCliStatus]);
 
   useEffect(() => {
@@ -357,7 +390,9 @@ export function CanopyTab(): JSX.Element {
           ? cliStatus.state === 'installed' ||
             cliStatus.state === 'correct-symlink'
             ? pt(uiText.shellIntegration.removeSuccess)
-            : pt(uiText.shellIntegration.addSuccess)
+            : cliStatus.state === 'outdated'
+              ? uiText.shellIntegration.updateSuccess
+              : pt(uiText.shellIntegration.addSuccess)
           : result.error,
       );
       await refreshCliStatus();
@@ -437,6 +472,7 @@ export function CanopyTab(): JSX.Element {
     cliStatus !== null &&
     supportsCliPathManagement &&
     (cliStatus.state === 'missing' ||
+      cliStatus.state === 'outdated' ||
       cliStatus.state === 'installed' ||
       cliStatus.state === 'correct-symlink');
   const isCliInstalled =
@@ -445,7 +481,9 @@ export function CanopyTab(): JSX.Element {
   const removedSuccessText = pt(uiText.shellIntegration.removeSuccess);
   const isCliSuccessMessage =
     cliMessage !== null &&
-    (cliMessage === addedSuccessText || cliMessage === removedSuccessText);
+    (cliMessage === addedSuccessText ||
+      cliMessage === removedSuccessText ||
+      cliMessage === uiText.shellIntegration.updateSuccess);
 
   useCurrentUiStateReporter(
     'settings.targetUpdate',
@@ -535,7 +573,7 @@ export function CanopyTab(): JSX.Element {
         dataTestId="settings-canopy-get-started"
       >
         <SettingsGroup>
-          <ResetGettingStartedChecklistButton />
+          <ShowTipsAgainRow />
           <SettingsRow
             label="Import projects"
             dataTestId="settings-canopy-import-projects"
@@ -548,7 +586,7 @@ export function CanopyTab(): JSX.Element {
             }
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 onClick={(): void => {
                   openImportProjectsModal({ source: 'settings' });
                 }}
@@ -569,7 +607,7 @@ export function CanopyTab(): JSX.Element {
             }
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 onClick={(): void => {
                   openRepoRulesModal({ source: 'settings' });
                 }}
@@ -585,60 +623,41 @@ export function CanopyTab(): JSX.Element {
       <RepeatTaskSuggestionsSection />
 
       {dataDirPromptOpen && dataDirStatus?.source === 'fallback' && (
-        <DialogModal
-          onClose={(): void => {
-            if (!dataDirPending) setDataDirPromptOpen(false);
-          }}
+        <ConfirmDialog
           title="Use primary data folder?"
-          titleId="settings-data-dir-confirm-title"
-          maxWidth="md"
-          headerBorder={false}
-          overlayClassName="z-modal"
-        >
-          <div className="space-y-3 px-5 pb-5">
-            <p className="text-s fg-secondary">
-              This creates a new default primary data folder at{' '}
-              <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-                {dataDirStatus.allCandidates[0]}
-              </code>
-              , then restarts {brandText.appName}.
-            </p>
-            <p className="text-s font-medium fg-primary">
-              Projects will not be transitioned.
-            </p>
-            <p className="text-xs fg-secondary">
-              Existing data will remain in{' '}
-              <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
-                {dataDirStatus.path}
-              </code>
-              .
-            </p>
-            {dataDirError && (
-              <p className="text-s fg-destructive">{dataDirError}</p>
-            )}
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                size={settingsButtonSize}
-                variant="ghost"
-                onClick={(): void => setDataDirPromptOpen(false)}
-                disabled={dataDirPending}
-              >
-                Cancel
-              </Button>
-              <Button
-                size={settingsButtonSize}
-                variant="warning"
-                onClick={(): void => {
-                  void handleCreatePrimaryDataDir();
-                }}
-                disabled={dataDirPending}
-                data-testid="settings-data-dir-confirm-create"
-              >
-                {dataDirPending ? 'Creating…' : 'Create and restart'}
-              </Button>
+          message={
+            <div className="space-y-3">
+              <p>
+                This creates a new default primary data folder at{' '}
+                <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
+                  {dataDirStatus.allCandidates[0]}
+                </code>
+                , then restarts {brandText.appName}.
+              </p>
+              <p className="font-medium fg-primary">
+                Projects will not be transitioned.
+              </p>
+              <p className="text-xs">
+                Existing data will remain in{' '}
+                <code className="rounded bg-secondary px-1.5 py-0.5 font-mono fg-primary">
+                  {dataDirStatus.path}
+                </code>
+                .
+              </p>
             </div>
-          </div>
-        </DialogModal>
+          }
+          confirmLabel="Create and restart"
+          busyLabel="Creating…"
+          busy={dataDirPending}
+          errorMessage={dataDirError}
+          onConfirm={(): void => {
+            void handleCreatePrimaryDataDir();
+          }}
+          onCancel={(): void => setDataDirPromptOpen(false)}
+          dataTestId="settings-data-dir-confirm-modal"
+          confirmTestId="settings-data-dir-confirm-create"
+          cancelTestId="settings-data-dir-confirm-cancel"
+        />
       )}
 
       {versionPickerOpen && targetedUpdatesEnabled && (
@@ -653,6 +672,17 @@ export function CanopyTab(): JSX.Element {
           titleId="settings-update-version-picker-title"
           maxWidth="lg"
           headerBorder={false}
+          footer={
+            <Button
+              size="compact"
+              variant="secondary"
+              onClick={(): void => setVersionPickerOpen(false)}
+              disabled={targetUpdatePending}
+              data-testid="settings-update-version-close"
+            >
+              Close
+            </Button>
+          }
           dataTestId="settings-update-version-picker-modal"
           overlayClassName="z-modal"
         >
@@ -667,15 +697,17 @@ export function CanopyTab(): JSX.Element {
                 void loadTargetVersions();
               }}
             >
-              <input
+              <SearchField
+                size="sm"
                 value={versionSearch}
-                onChange={(event): void => setVersionSearch(event.target.value)}
+                onValueChange={setVersionSearch}
                 placeholder="Search releases"
-                className="min-w-0 flex-1 rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none focus-ring"
+                aria-label="Search releases"
+                className="flex-1"
                 data-testid="settings-update-version-search-input"
               />
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 type="submit"
                 disabled={versionLoading}
                 data-testid="settings-update-version-search"
@@ -689,7 +721,7 @@ export function CanopyTab(): JSX.Element {
             )}
 
             <div
-              className="max-h-80 overflow-y-auto rounded-md border"
+              className={`max-h-80 overflow-y-auto rounded-lg p-1 ${HAIRLINE_INSET_RING_CLASS} ring-line-base`}
               data-testid="settings-update-version-list"
             >
               {versionItems.length === 0 && !versionLoading ? (
@@ -700,51 +732,45 @@ export function CanopyTab(): JSX.Element {
                   No matching releases.
                 </p>
               ) : (
-                <div className="divide-y">
-                  {versionItems.map((item) => (
-                    <button
-                      key={item.tag}
-                      type="button"
-                      onClick={(): void => handleSelectTargetVersion(item)}
-                      disabled={targetUpdatePending}
-                      className="focus-ring flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-                      data-testid="settings-update-version-option"
-                      data-tag={item.tag}
-                      data-relation={item.relation ?? 'upgrade'}
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-s font-medium fg-primary">
-                          {item.version}
-                        </span>
-                        <span className="block truncate text-xs fg-secondary">
-                          {item.tag}
-                          {item.releaseDate
-                            ? ` - ${new Date(item.releaseDate).toLocaleDateString()}`
-                            : ''}
-                        </span>
-                      </span>
-                      {item.relation && item.relation !== 'upgrade' && (
-                        <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${
-                            item.relation === 'downgrade'
-                              ? 'bg-warning-subtle fg-warning'
-                              : 'bg-secondary fg-secondary'
-                          }`}
-                        >
-                          {item.relation === 'downgrade'
-                            ? 'Downgrade'
-                            : 'Current'}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
+                versionItems.map((item) => (
+                  <PickerMenuOption
+                    key={item.tag}
+                    onClick={(): void => handleSelectTargetVersion(item)}
+                    disabled={targetUpdatePending}
+                    data-testid="settings-update-version-option"
+                    data-tag={item.tag}
+                    data-relation={item.relation ?? 'upgrade'}
+                  >
+                    <PickerMenuOptionContent>
+                      <PickerMenuOptionLabel>
+                        {item.version}
+                      </PickerMenuOptionLabel>
+                      <PickerMenuOptionDescription>
+                        {item.tag}
+                        {item.releaseDate
+                          ? ` - ${new Date(item.releaseDate).toLocaleDateString()}`
+                          : ''}
+                      </PickerMenuOptionDescription>
+                    </PickerMenuOptionContent>
+                    {item.relation && item.relation !== 'upgrade' && (
+                      <Badge
+                        tone={
+                          item.relation === 'downgrade' ? 'warning' : 'neutral'
+                        }
+                      >
+                        {item.relation === 'downgrade'
+                          ? 'Downgrade'
+                          : 'Current'}
+                      </Badge>
+                    )}
+                  </PickerMenuOption>
+                ))
               )}
             </div>
 
-            <div className="flex justify-between gap-3">
+            <div>
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 onClick={(): void => {
                   void loadTargetVersions({
                     cursor: versionCursor,
@@ -756,69 +782,33 @@ export function CanopyTab(): JSX.Element {
               >
                 <BusyLabel busy={versionLoading}>Load more</BusyLabel>
               </Button>
-              <Button
-                size={settingsButtonSize}
-                variant="ghost"
-                onClick={(): void => setVersionPickerOpen(false)}
-                disabled={targetUpdatePending}
-                data-testid="settings-update-version-close"
-              >
-                Close
-              </Button>
             </div>
           </div>
         </DialogModal>
       )}
 
       {selectedDowngrade && targetedUpdatesEnabled && (
-        <DialogModal
-          onClose={(): void => {
-            if (!targetUpdatePending) {
-              setSelectedDowngrade(null);
-            }
-          }}
+        <ConfirmDialog
           title="Install older version?"
-          titleId="settings-update-downgrade-title"
-          maxWidth="md"
-          headerBorder={false}
-          dataTestId="settings-update-downgrade-modal"
-          overlayClassName="z-modal"
-        >
-          <div
-            className="space-y-4 px-5 pb-5"
-            data-testid="settings-update-downgrade-confirmation"
-          >
-            <p className="text-s fg-secondary">
+          message={
+            <span data-testid="settings-update-downgrade-confirmation">
               Downgrading to {selectedDowngrade.version} may make{' '}
               {brandText.appName} unusable. Proceed at your own risk.
-            </p>
-            {versionError && (
-              <p className="text-s fg-destructive">{versionError}</p>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button
-                size={settingsButtonSize}
-                variant="ghost"
-                onClick={(): void => setSelectedDowngrade(null)}
-                disabled={targetUpdatePending}
-                data-testid="settings-update-downgrade-cancel"
-              >
-                Cancel
-              </Button>
-              <Button
-                size={settingsButtonSize}
-                variant="warning"
-                onClick={(): void => {
-                  void startTargetUpdate(selectedDowngrade);
-                }}
-                disabled={targetUpdatePending}
-                data-testid="settings-update-downgrade-proceed"
-              >
-                {targetUpdatePending ? 'Starting…' : 'Proceed'}
-              </Button>
-            </div>
-          </div>
-        </DialogModal>
+            </span>
+          }
+          confirmLabel="Install older version"
+          busyLabel="Starting…"
+          busy={targetUpdatePending}
+          errorMessage={versionError}
+          destructive
+          onConfirm={(): void => {
+            void startTargetUpdate(selectedDowngrade);
+          }}
+          onCancel={(): void => setSelectedDowngrade(null)}
+          dataTestId="settings-update-downgrade-modal"
+          confirmTestId="settings-update-downgrade-proceed"
+          cancelTestId="settings-update-downgrade-cancel"
+        />
       )}
 
       <SettingsSection title="System">
@@ -830,7 +820,7 @@ export function CanopyTab(): JSX.Element {
             dataTestId="settings-shell-integration"
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 onClick={() => {
                   void handleCliAction();
                 }}
@@ -840,10 +830,14 @@ export function CanopyTab(): JSX.Element {
                 {cliPending
                   ? isCliInstalled
                     ? 'Removing…'
-                    : 'Installing…'
+                    : cliStatus?.state === 'outdated'
+                      ? 'Updating…'
+                      : 'Installing…'
                   : isCliInstalled
                     ? pt(uiText.shellIntegration.removeButton)
-                    : pt(uiText.shellIntegration.addButton)}
+                    : cliStatus?.state === 'outdated'
+                      ? uiText.shellIntegration.updateButton
+                      : pt(uiText.shellIntegration.addButton)}
               </Button>
             }
           >
@@ -906,7 +900,7 @@ export function CanopyTab(): JSX.Element {
               <>
                 {targetedUpdatesEnabled && (
                   <Button
-                    size={settingsButtonSize}
+                    size="compact"
                     onClick={() => {
                       setVersionPickerOpen(true);
                     }}
@@ -919,7 +913,7 @@ export function CanopyTab(): JSX.Element {
                   </Button>
                 )}
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   onClick={() => {
                     setManualCheckRequested(true);
                     void window.api.update.checkForUpdates().catch(() => {
@@ -954,10 +948,10 @@ export function CanopyTab(): JSX.Element {
             )}
 
             {updateState.phase === 'available' && (
-              <p
+              <div
                 className={
                   window.platform === 'linux'
-                    ? 'text-xs fg-secondary select-text break-words'
+                    ? 'text-xs fg-secondary select-text break-words space-y-2'
                     : 'text-xs fg-secondary'
                 }
                 data-testid={
@@ -966,45 +960,65 @@ export function CanopyTab(): JSX.Element {
                     : undefined
                 }
               >
-                {window.platform === 'linux'
-                  ? (updateState.info?.manualDownload?.guidance ??
-                    'Check for updates again to get the official Linux download and checksum.')
-                  : 'Use “Update available” in the sidebar to start the download.'}
+                {window.platform === 'linux' &&
+                  updateState.info?.manualDownload &&
+                  linuxCopy.apt && (
+                    <div className="space-y-2">
+                      <p>{linuxCopy.apt.introduction}</p>
+                      <code
+                        className={`block font-mono ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                      >
+                        {linuxCopy.apt.command}
+                      </code>
+                      <p>{linuxCopy.apt.bootstrap}</p>
+                    </div>
+                  )}
+                <p>
+                  {window.platform === 'linux'
+                    ? (updateState.info?.manualDownload?.guidance ??
+                      'Check for updates again to get the official Linux download and checksum.')
+                    : 'Use “Update available” in the sidebar to start the download.'}
+                </p>
                 {window.platform === 'linux' &&
                   updateState.info?.manualDownload && (
-                    <code className="block font-mono select-text break-all">
-                      {updateState.info.manualDownload.checksum.algorithm}:{' '}
-                      {updateState.info.manualDownload.checksum.value}
-                    </code>
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="compact"
+                        data-testid="settings-linux-update-download"
+                        onClick={(): void => {
+                          const url = updateState.info?.manualDownload?.url;
+                          if (url)
+                            void window.api.browser
+                              .openExternal({ url })
+                              .catch(() => undefined);
+                        }}
+                      >
+                        {linuxCopy.downloadLabel}
+                      </Button>
+                      <code className="block font-mono select-text break-all">
+                        {updateState.info.manualDownload.checksum.algorithm}:{' '}
+                        {updateState.info.manualDownload.checksum.value}
+                      </code>
+                    </>
                   )}
-              </p>
+              </div>
             )}
-
-            {updateState.phase === 'downloaded' &&
-              window.platform !== 'linux' && (
-                <div className="space-y-2">
-                  <p className="text-xs fg-secondary">
-                    {updateState.installPending
-                      ? 'This update will install when all agents are idle.'
-                      : 'Restart now or install the update when all agents are idle.'}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
+          </SettingsRow>
+          {updateState.phase === 'downloaded' &&
+            window.platform !== 'linux' && (
+              <SettingsRow
+                label="Update ready"
+                dataTestId="settings-update-ready"
+                description={
+                  updateState.installPending
+                    ? 'This update will install when all agents are idle.'
+                    : 'Restart now or install the update when all agents are idle.'
+                }
+                control={
+                  <>
                     <Button
-                      size={settingsButtonSize}
-                      variant="primary"
-                      onClick={() => {
-                        void window.api.update.installUpdate().catch(() => {
-                          // Install failures are surfaced through the updater state.
-                        });
-                      }}
-                      data-testid="settings-update-install-now"
-                    >
-                      {updateState.installPending
-                        ? 'Restart now'
-                        : 'Restart to update'}
-                    </Button>
-                    <Button
-                      size={settingsButtonSize}
+                      size="compact"
                       onClick={() => {
                         const action = updateState.installPending
                           ? window.api.update.cancelScheduledUpdate()
@@ -1019,10 +1033,24 @@ export function CanopyTab(): JSX.Element {
                         ? 'Cancel scheduled update'
                         : 'Install when idle'}
                     </Button>
-                  </div>
-                </div>
-              )}
-          </SettingsRow>
+                    <Button
+                      size="compact"
+                      variant="primary"
+                      onClick={() => {
+                        void window.api.update.installUpdate().catch(() => {
+                          // Install failures are surfaced through the updater state.
+                        });
+                      }}
+                      data-testid="settings-update-install-now"
+                    >
+                      {updateState.installPending
+                        ? 'Restart now'
+                        : 'Restart to update'}
+                    </Button>
+                  </>
+                }
+              />
+            )}
           {releaseNotesEnabled && whatsNewEntry && (
             <SettingsRow
               label="What's new"

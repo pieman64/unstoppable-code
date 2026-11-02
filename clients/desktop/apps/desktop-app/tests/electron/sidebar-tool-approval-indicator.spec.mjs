@@ -79,11 +79,13 @@ test('a pending tool approval replaces the sidebar working spinner with the need
     // for, so the user can judge it without opening the worktree. Focus
     // rather than hover: the row's drag overlay sits above the status rail
     // and swallows pointer events, and the dot opens the popover on either.
+    // Home's Continue row also names the chat, so read the popover itself.
     await dot.focus();
-    const popover = window.getByText('Approval needed');
-    await expect(popover).toBeVisible({ timeout: 15_000 });
-    await expect(window.getByText('Approval Blocked')).toBeVisible();
-    await expect(window.getByText('npm run build')).toBeVisible();
+    const heading = window.getByText('Approval needed');
+    await expect(heading).toBeVisible({ timeout: 15_000 });
+    const popover = heading.locator('..');
+    await expect(popover.getByText('Approval Blocked')).toBeVisible();
+    await expect(popover.getByText('npm run build')).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

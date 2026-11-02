@@ -1,3 +1,4 @@
+import type { WebContents } from 'electron';
 import type * as NodeFs from 'node:fs';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
@@ -90,21 +91,29 @@ const WORKSPACE: LocalMemoryScopeRequest = {
   workspaceId: 'project-1',
 };
 
-function sender(id: number): {
-  id: number;
-  once: jest.Mock;
-  destroy: () => void;
-} {
+type Sender = WebContents & { destroy: () => void };
+
+const senderOnceMocks = new Map<
+  number,
+  jest.Mock<EventEmitter, [event: string, handler: () => void]>
+>();
+
+function sender(id: number): Sender {
   const emitter = new EventEmitter();
-  return {
+  const emitOnce = emitter.once.bind(emitter);
+  const once = jest.fn<EventEmitter, [event: string, handler: () => void]>(
+    (event, handler) => emitOnce(event, handler),
+  );
+  senderOnceMocks.set(id, once);
+  // These tests only exercise sender identity and destruction; the other
+  // Electron WebContents methods are unused by this event-emitter double.
+  return Object.assign(emitter, {
     id,
-    once: jest.fn((event: string, handler: () => void) =>
-      emitter.once(event, handler),
-    ),
+    once,
     destroy: (): void => {
       emitter.emit('destroyed');
     },
-  };
+  }) as unknown as Sender;
 }
 
 function watchedDirectories(): string[] {
@@ -414,7 +423,7 @@ describe('local memory change events', () => {
     watchLocalMemoryScope(USER, '/memory/user', renderer);
     watchLocalMemoryScope(WORKSPACE, '/memory/workspaces/project-1', renderer);
     watchLocalMemoryScope(WORKSPACE, '/memory/workspaces/project-1', sender(4));
-    expect(renderer.once).toHaveBeenCalledWith(
+    expect(senderOnceMocks.get(3)).toHaveBeenCalledWith(
       'destroyed',
       expect.any(Function),
     );

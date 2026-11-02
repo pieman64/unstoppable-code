@@ -44,6 +44,10 @@ test('App Advisor runs a Cursor chat with App Advisor tools behind the approval 
     const window = await launched.electronApp.firstWindow();
     const driver = new CanopyAppDriver(window);
     await driver.waitForShell({ timeout: 30_000 });
+    // Inspect individual steps while retaining the Clean chat look.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await driver.openSettings();
     await driver.openSettingsSection('experiments');
     await window.getByTestId('cursor-connect').click();
@@ -112,7 +116,11 @@ test('App Advisor runs a Cursor chat with App Advisor tools behind the approval 
 
     // The App Advisor tool call renders through the same display path as a
     // Claude App Advisor chat (raw name folded to the Claude MCP name).
-    await advisor.getByRole('button', { name: /^Agent steps:/ }).click();
+    const steps = advisor.getByRole('button', { name: /^Agent steps:/ });
+    if ((await steps.getAttribute('aria-expanded')) !== 'true') {
+      await steps.click();
+    }
+    await expect(steps).toHaveAttribute('aria-expanded', 'true');
     await expect(
       advisor
         .locator(

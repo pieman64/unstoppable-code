@@ -9,7 +9,6 @@ import type {
   PipelineExecutionInitiator,
   PipelinePreferenceLocator,
   PipelineRunTarget,
-  ResolvedPipelineExecutionTarget,
 } from '@canopy/desktop-shared/types/pipeline';
 import { listExecutionSummaries, loadExecutionState } from '../execution-state';
 import {
@@ -41,10 +40,7 @@ const AGENT_INITIATOR: PipelineExecutionInitiator = {
 };
 
 interface OwnershipCalls {
-  authorized: {
-    executionContext: string | undefined;
-    target: ResolvedPipelineExecutionTarget;
-  }[];
+  authorized: Parameters<PipelineOwnershipPort['authorizeTarget']>[0][];
   authorLookups: PipelinePreferenceLocator[];
 }
 
@@ -388,9 +384,12 @@ describe('run-pipeline ownership and run identity', () => {
     expect(rerun.agent_origin).toEqual(PARENT_CHAT);
 
     const summaries = await listExecutionSummaries(runtime.executionsDir);
+    const failedSummary = summaries.find((summary) => summary.id === failed.id);
+    expect(failedSummary?.execution_context).toBe('personal');
+    expect(failedSummary?.initiator).toEqual(AGENT_INITIATOR);
     expect(
-      summaries.find((summary) => summary.id === failed.id)?.execution_context,
-    ).toBe('personal');
+      summaries.find((summary) => summary.id === rerun.id)?.initiator,
+    ).toEqual(AGENT_INITIATOR);
   });
 
   it('keeps the source identity on resume', async () => {

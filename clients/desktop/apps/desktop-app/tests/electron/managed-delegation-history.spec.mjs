@@ -293,6 +293,9 @@ for (const parent of ['claude', 'codex'])
           const window = await electronApp.firstWindow(),
             app = new CanopyAppDriver(window);
           await app.waitForShell();
+          await window.evaluate(() =>
+            window.api.savePreferences({ chatDetail: 'detailed' }),
+          );
           await app.openMainPage();
           await app.selectWorktree(worktreeId);
           const verify = async () => {
@@ -332,7 +335,9 @@ for (const parent of ['claude', 'codex'])
                 card.getByText('Completed', { exact: true }),
               ).toHaveCount(0);
               await expect(
-                card.getByLabel('Thinking', { exact: true }),
+                card.locator(
+                  '[data-step-row-words].canopy-text-shimmer-strong',
+                ),
               ).toHaveCount(0);
             } else {
               await expect(card).toContainText(
@@ -416,9 +421,9 @@ for (const parent of ['claude', 'codex'])
               child === 'claude' &&
               status === 'completed'
             ) {
-              await expect(card.getByTestId('agent-block-shared')).toHaveClass(
-                /border-l-2/,
-              );
+              await expect(
+                card.getByTestId('agent-block-shared'),
+              ).toBeVisible();
               await window.evaluate(() => {
                 window.__delegationClipboardUnhandledRejections = 0;
                 window.addEventListener('unhandledrejection', (event) => {
@@ -471,6 +476,9 @@ for (const parent of ['claude', 'codex'])
           await verify();
           await window.reload();
           await app.waitForShell();
+          await window.evaluate(() =>
+            window.api.savePreferences({ chatDetail: 'detailed' }),
+          );
           await app.openMainPage();
           await app.selectWorktree(worktreeId);
           await verify();

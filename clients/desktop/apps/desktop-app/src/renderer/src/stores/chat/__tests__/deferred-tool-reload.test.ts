@@ -140,9 +140,9 @@ function makeTab(over: Partial<ChatTab> = {}): ChatTab {
     proposalMode: 'optional',
     thinkingLevel: 'high',
     modelConfig: {
-      provider: 'claude',
-      model: 'claude-sonnet-4-5-20250514',
       thinkingLevel: 'high',
+      speed: 'standard',
+      fastMode: false,
     },
     fastModeExplicit: false,
     ...over,

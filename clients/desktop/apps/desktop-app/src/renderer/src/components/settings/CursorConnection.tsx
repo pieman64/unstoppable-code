@@ -10,12 +10,11 @@ import type {
   CursorConnectionStatus,
 } from '@canopy/desktop-shared/types';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, ProviderStatusDot } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { GrokUnifyHint } from './GrokUnifyHint';
 import { ProviderCarryoverNote } from './ProviderCarryoverNote';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 /**
  * Only app-authored messages reach the alert. Anything carrying a filesystem
@@ -47,7 +46,6 @@ interface CursorConnectionProps {
 export function CursorConnection({
   placement = 'section',
 }: CursorConnectionProps = {}): JSX.Element | null {
-  const settingsButtonSize = useSettingsButtonSize();
   const [status, setStatus] = useState<CursorConnectionStatus | null>(null);
   // The subscription comes from the account-usage read the Usage page shares;
   // it is the same source the peer tiles' plan line draws on.
@@ -364,7 +362,7 @@ export function CursorConnection({
   // nothing yet, so the label never names an action the read may contradict.
   const action = settingUp ? (
     <Button
-      size={settingsButtonSize}
+      size="compact"
       data-testid="cursor-connect"
       disabled={busy}
       onClick={(): void => {
@@ -375,7 +373,7 @@ export function CursorConnection({
     </Button>
   ) : accountUnavailable ? (
     <Button
-      size={settingsButtonSize}
+      size="compact"
       data-testid="cursor-account-retry"
       disabled={busy}
       onClick={(): void => {
@@ -387,7 +385,7 @@ export function CursorConnection({
     </Button>
   ) : account === undefined ? null : (
     <Button
-      size={settingsButtonSize}
+      size="compact"
       data-testid="cursor-change-account"
       disabled={busy}
       // The visible line about this consequence was dropped for parity with
@@ -418,12 +416,9 @@ export function CursorConnection({
             aria-hidden
           />
           Cursor
-          <span
+          <ProviderStatusDot
             data-testid="cursor-connection-status-dot"
-            aria-hidden="true"
-            className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-              signedIn ? 'bg-success' : 'bg-destructive'
-            }`}
+            tone={signedIn ? 'connected' : 'failed'}
           />
         </span>
       }
@@ -470,23 +465,14 @@ export function CursorConnection({
               )}
             </span>
           )}
-          {/* Only under a signed-in account: a connected runtime with no
-              account is still asked to sign in, and the line must not read
-              as if that account's chats were ready. */}
-          {connected &&
-            !inProgress &&
-            account !== undefined &&
-            account !== null && (
-              <ProviderCarryoverNote provider="cursor" enabled />
-            )}
         </>
       }
       control={
         <>
           {inProgress && (
             <Button
-              size={settingsButtonSize}
-              variant="ghost"
+              size="compact"
+              variant="secondary"
               data-testid="cursor-connect-cancel"
               onClick={cancel}
             >
@@ -497,6 +483,14 @@ export function CursorConnection({
         </>
       }
     >
+      {/* Only under a signed-in account: a connected runtime with no account
+          is still asked to sign in, and the line must not read as if that
+          account's chats were ready. Detail under the row, so the row keeps
+          its subtitle short. */}
+      {connected &&
+        !inProgress &&
+        account !== undefined &&
+        account !== null && <ProviderCarryoverNote provider="cursor" enabled />}
       {/* The install pitch answers what Connect does. It is spent once the
           runtime is connected, and stays through setup so the download it
           names is the one in progress. */}

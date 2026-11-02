@@ -767,6 +767,29 @@ describe('standaloneChatStore work entries', () => {
     });
   });
 
+  it('refreshes an unread chat ref whose manual mark changed (CAN-4378)', async () => {
+    const ref = { chatId: 'chat-1', title: 'Chat', preview: 'Done' };
+    useStandaloneChatStore.setState({
+      initialized: true,
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      workEntries: [
+        makeEntry('entry-a', {
+          unreadChats: [{ ...ref, markedUnread: true }],
+        }),
+      ],
+    });
+    mockApi.workEntries.list.mockResolvedValue({
+      entries: [makeEntry('entry-a', { unreadChats: [ref] })],
+    });
+
+    await useStandaloneChatStore.getState().refreshWorkEntries();
+
+    expect(
+      useStandaloneChatStore.getState().workEntries[0].unreadChats?.[0]
+        ?.markedUnread,
+    ).toBeUndefined();
+  });
+
   it('keeps a saved layout customization visible in active and sidebar entries', () => {
     const entry = makeEntry('entry-a');
     useStandaloneChatStore.setState({
@@ -1061,10 +1084,12 @@ describe('standaloneChatStore work entries', () => {
     const initialize = jest.fn(async (): Promise<void> => {
       await pendingInitialize;
     });
-    const selectWorkEntry = jest.fn((entryId: string): Promise<void> => {
-      useStandaloneChatStore.setState({ activeWorkEntryId: entryId });
-      return Promise.resolve();
-    });
+    const selectWorkEntry = jest.fn<Promise<boolean>, [entryId: string]>(
+      (entryId: string): Promise<boolean> => {
+        useStandaloneChatStore.setState({ activeWorkEntryId: entryId });
+        return Promise.resolve(true);
+      },
+    );
     useStandaloneChatStore.setState({
       initialized: false,
       activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
@@ -1114,7 +1139,9 @@ describe('standaloneChatStore work entries', () => {
         selectedWorktree: { projectId, worktreeId: entryId },
       });
     });
-    const selectWorkEntry = jest.fn((): Promise<void> => Promise.resolve());
+    const selectWorkEntry = jest.fn<Promise<boolean>, [entryId: string]>(
+      (): Promise<boolean> => Promise.resolve(true),
+    );
     useStandaloneChatStore.setState({
       initialized: false,
       activeWorkEntryId: null,
@@ -1124,7 +1151,11 @@ describe('standaloneChatStore work entries', () => {
     });
     try {
       const opening = store.openWorkEntryFromSidebar(projectId, entryId);
-      expect(initialize).toHaveBeenCalledWith({ projectId, entryId });
+      expect(initialize).toHaveBeenCalledWith({
+        projectId,
+        entryId,
+        attentionLanding: true,
+      });
       store.cancelPendingWorkEntryNavigation();
       finishInitialize();
       await opening;
@@ -1160,6 +1191,11 @@ describe('standaloneChatStore work entries', () => {
       store.initialize(),
     ]);
 
+    expect(selectWorktreeMock).toHaveBeenCalledWith(
+      DEFAULT_COWORK_WORKSPACE_ID,
+      'entry-older',
+      { attentionLanding: true },
+    );
     expect(useStandaloneChatStore.getState().activeWorkEntryId).toBe(
       'entry-older',
     );
@@ -2377,6 +2413,157 @@ describe('standaloneChatStore work entries', () => {
     expect(
       ensureModelDefaultsLoadedMock.mock.invocationCallOrder[0],
     ).toBeLessThan(createTabWithIdMock.mock.invocationCallOrder[0]);
+  });
+
+  it('applies a scoped read to the inactive sidebar list after navigation', async () => {
+    const entry = makeEntry('entry-a');
+    let deliver:
+      | ((response: { entries: CoworkWorkEntryMeta[] }) => void)
+      | undefined;
+    mockApi.workEntries.list.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          deliver = resolve;
+        }),
+    );
+    useStandaloneChatStore.setState({
+      activeChatProjectId: DEFAULT_COWORK_WORKSPACE_ID,
+      workEntries: [entry],
+    });
+    const reading = useStandaloneChatStore
+      .getState()
+      .refreshWorkEntries(DEFAULT_COWORK_WORKSPACE_ID);
+    const other = makeEntry('other-active');
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'other-project',
+      workEntries: [other],
+    });
+    const updated = { ...entry, title: 'New title' };
+    deliver?.({ entries: [updated] });
+    await reading;
+    expect(useStandaloneChatStore.getState().workEntries).toEqual([other]);
+    expect(
+      useStandaloneChatStore.getState().sidebarEntriesByProject[
+        DEFAULT_COWORK_WORKSPACE_ID
+      ],
+    ).toEqual([updated]);
+  });
+
+  it.each([true, false])(
+    'keeps reconciled order when an older ordinary refresh arrives (active=%s)',
+    async (active) => {
+      const old = ['a', 'b', 'c'].map((id) => makeEntry(id));
+      const confirmed = [old[2], old[0], old[1]];
+      let release:
+        | ((response: { entries: CoworkWorkEntryMeta[] }) => void)
+        | undefined;
+      mockApi.workEntries.list
+        .mockResolvedValue({ entries: confirmed })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              release = resolve;
+            }),
+        );
+      useStandaloneChatStore.setState({
+        activeChatProjectId: active ? DEFAULT_COWORK_WORKSPACE_ID : 'other',
+        workEntries: active ? old : [makeEntry('unrelated')],
+        sidebarEntriesByProject: { [DEFAULT_COWORK_WORKSPACE_ID]: old },
+      });
+      const reading = useStandaloneChatStore
+        .getState()
+        .refreshWorkEntries(DEFAULT_COWORK_WORKSPACE_ID);
+      useStandaloneChatStore
+        .getState()
+        .applyWorkEntriesSnapshot(DEFAULT_COWORK_WORKSPACE_ID, confirmed);
+      release?.({ entries: old });
+      await reading;
+      const result = useStandaloneChatStore.getState();
+      expect(
+        active
+          ? result.workEntries
+          : result.sidebarEntriesByProject[DEFAULT_COWORK_WORKSPACE_ID],
+      ).toEqual(confirmed);
+      expect(mockApi.workEntries.list).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('keeps reconciled order when an older inactive sidebar load arrives', async () => {
+    const old = ['a', 'b', 'c'].map((id) => makeEntry(id));
+    const confirmed = [old[2], old[0], old[1]];
+    let release:
+      | ((response: { entries: CoworkWorkEntryMeta[] }) => void)
+      | undefined;
+    mockApi.workEntries.list
+      .mockResolvedValue({ entries: confirmed })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'other',
+      sidebarEntriesByProject: { [DEFAULT_COWORK_WORKSPACE_ID]: old },
+    });
+    const reading = useStandaloneChatStore
+      .getState()
+      .loadSidebarProjectEntries(DEFAULT_COWORK_WORKSPACE_ID);
+    useStandaloneChatStore
+      .getState()
+      .applyWorkEntriesSnapshot(DEFAULT_COWORK_WORKSPACE_ID, confirmed);
+    release?.({ entries: old });
+    await reading;
+    expect(
+      useStandaloneChatStore.getState().sidebarEntriesByProject[
+        DEFAULT_COWORK_WORKSPACE_ID
+      ],
+    ).toEqual(confirmed);
+  });
+
+  it('keeps a newer post-rename read when the older inactive response finishes first', async () => {
+    const old = makeEntry('entry-a', { title: 'Old' });
+    const updated = { ...old, title: 'New' };
+    let releaseOld:
+      | ((response: { entries: CoworkWorkEntryMeta[] }) => void)
+      | undefined;
+    let releaseNew:
+      | ((response: { entries: CoworkWorkEntryMeta[] }) => void)
+      | undefined;
+    mockApi.workEntries.list
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseOld = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseNew = resolve;
+          }),
+      )
+      .mockResolvedValue({ entries: [updated] });
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'other',
+      sidebarEntriesByProject: { [DEFAULT_COWORK_WORKSPACE_ID]: [old] },
+    });
+    const loading = useStandaloneChatStore
+      .getState()
+      .loadSidebarProjectEntries(DEFAULT_COWORK_WORKSPACE_ID);
+    const renaming = useStandaloneChatStore
+      .getState()
+      .renameWorkEntry(old.id, 'New', DEFAULT_COWORK_WORKSPACE_ID);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    releaseOld?.({ entries: [old] });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    releaseNew?.({ entries: [updated] });
+    await Promise.all([loading, renaming]);
+    expect(
+      useStandaloneChatStore.getState().sidebarEntriesByProject[
+        DEFAULT_COWORK_WORKSPACE_ID
+      ],
+    ).toEqual([updated]);
   });
 
   it('does not rewrite the entry list when a refresh returns identical metas', async () => {
@@ -4019,7 +4206,9 @@ describe('standaloneChatStore sidebar multi-project', () => {
     expect(useStandaloneChatStore.getState().activeWorkEntryId).toBe(
       'other-entry-1',
     );
-    expect(selectWorktreeMock).toHaveBeenCalledWith('other', 'other-entry-1');
+    expect(selectWorktreeMock).toHaveBeenCalledWith('other', 'other-entry-1', {
+      attentionLanding: true,
+    });
   });
 
   it('opens a legacy archived chat from the sidebar in the overlay', async () => {

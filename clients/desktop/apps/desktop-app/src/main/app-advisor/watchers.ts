@@ -45,7 +45,49 @@ import {
   writeCanonicalWatcherStore,
 } from './chat-watcher-storage';
 import { TranscriptReader } from '../project-discovery/reads/transcript';
+import {
+  GENERIC_MUTATION_PHASE,
+  recordForPurgedWorktree,
+  runWithChatWaitOperation,
+  startChatWaitOperation,
+  withinChatWaitPhase,
+  type ChatWaitOperation,
+  type ChatWaitScope,
+  type PurgedWorktreeRecorder,
+} from '../observability/chat-wait-diagnostics';
 import { finalVisibleAssistantMessage } from '../project-discovery/reads/last-message';
+
+/**
+ * A watcher operation is scoped to the chat that owns it: the destination
+ * chat, which also holds the watcher's worktree cleanup scope. A watched target
+ * in another worktree or chat never changes the scope.
+ */
+function watcherOwnerScope(
+  owner: Pick<
+    AppAdvisorWatcherDestination,
+    'projectId' | 'worktreeId' | 'chatId'
+  >,
+): ChatWaitScope {
+  return {
+    projectId: owner.projectId,
+    worktreeId: owner.worktreeId,
+    chatId: owner.chatId,
+  };
+}
+
+/** A mutation with no single owning chat, such as a fan-out across watchers. */
+const UNOWNED_WATCHER_MUTATION_SCOPE: ChatWaitScope = Object.freeze({});
+
+/** The watcher rows an owner lookup reads. */
+interface StoredWatcherRows {
+  readonly legacy: readonly AppAdvisorWatcher[];
+  readonly canonical: readonly unknown[];
+}
+
+/** An ID-only mutation's owner, resolved from `rows` or the cached stores. */
+interface StoredWatcherOwner {
+  readonly storedOwner: (rows?: StoredWatcherRows) => ChatWaitScope;
+}
 
 interface ChatWatcherRecord extends AppAdvisorWatcher {
   canonical?: CanonicalChatWatcherEntry;
@@ -91,6 +133,10 @@ import {
   WatcherRecipientNotReadyError,
 } from './local-watcher-scheduler';
 import {
+  currentLocalFenceHolder,
+  type LocalFenceHolder,
+} from './local-fence-holder';
+import {
   runWatcherCommand,
   readWatcherCommandResult,
 } from './local-watcher-command';
@@ -122,30 +168,20 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import type { ChatTurnStateChange } from '../services/chat-turn-state-handoff';
 import { BRAND } from '@canopy/brand/current';
 import {
   buildAgentWatcherFiredMessage,
   CHAT_WATCHER_DEFAULT_FOLLOW_UP_INSTRUCTION,
   stringifyAgentWatcherPayload,
 } from '@canopy/agent-actions/watchers/fired-message';
-import {
-  isDelegationStopReason,
-  type AgentDelegationStatus,
-  type AgentDelegationResult,
-  type AgentDelegationPhase,
-  type DelegateWatchEvent,
-  type DelegateWatchTarget,
-  type DelegationStopReason,
-  type WatchDelegatesRequest,
-  type WatchDelegatesValue,
-} from '@canopy/protocol/delegation';
-import type { DelegationParentContext } from '@canopy/desktop-shared/node/delegation/types';
-import {
-  delegationExitReason,
-  delegationPhase,
-  type StoredDelegateOutput,
-} from '@canopy/desktop-shared/node/delegation/broker';
+import { controlsForReplay } from '@canopy/desktop-shared/node/delegation/broker';
 import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
+import {
+  decodeLegacyDelegateWatcher,
+  type LegacyDelegateWatcherRow,
+} from './legacy-delegate-watchers';
+import type { LegacyDelegateWatcher } from '../agents/delegation/notice-migration';
 import {
   hasAnySelections,
   type ScheduledActivity,
@@ -189,6 +225,7 @@ import {
   type GitHubWorkflowDefinitionGraph,
   type GitHubWorkflowDefinitionSource,
   type GitHubWorkflowRunWatchProgress,
+  type GitHubPullRequestWatchProgress,
   type GitHubWorkflowWatcherEvent,
   type WatchGitHubItemsInput,
   type WatchGitHubItemsResult,
@@ -224,6 +261,7 @@ import {
   isPersistedGitHubPullRequestTarget,
   normalizeWatchGitHubItemsFamilyRequest,
   normalizeWatchGitHubItemsRequest,
+  type NormalizedWatchGitHubItemsRequest,
   type NormalizedWatchGitHubPullRequestsRequest,
   searchAppAdvisorWatchers,
 } from '@canopy/desktop-shared/lib/app-advisor-watchers';
@@ -248,9 +286,10 @@ import {
   getChatProjectsFilePath,
   getDataDir,
   getWorktreeDataDir,
-  getWorkspaceIndexFilePath,
-  getWorkspaceWorktreesFilePath,
 } from '../lib/paths';
+import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { reserveWorkspaceTargetRuntimeStarts } from '../lib/workspace-target-exclusion';
 import {
   listWorkEntries,
@@ -265,6 +304,7 @@ import {
   isCoworkWorkspace,
   isWorkEntryWorkspace,
 } from '../lib/workspace-registry';
+import { lastChatSendRunResult } from '../automations/pipeline-run-chat-sends';
 import {
   loadExecutionState,
   type ExecutionEvent,
@@ -303,6 +343,10 @@ import {
   automationDefinitionResource,
   isForeignAutomationDefinition,
 } from '../automations/activity-owner';
+import type {
+  WatcherChatDelivery,
+  WatcherChatDeliveryOutcome,
+} from '../services/watcher-chat-delivery';
 import {
   decideAppAdvisorAccessForCaller,
   onAppAdvisorProjectAgentAccessChange,
@@ -348,6 +392,9 @@ export interface AppAdvisorWatcherSurfaces {
   ) => Promise<AppAdvisorWindowState>;
   sendAppAdvisorWindowCommand: (command: AppAdvisorWindowCommand) => void;
   sendChatWindowCommand: (command: ChatWindowCommand) => boolean;
+  deliverWatcherMessage: (
+    delivery: WatcherChatDelivery,
+  ) => Promise<WatcherChatDeliveryOutcome>;
   onChange?: (watchers: AppAdvisorWatcherSummary[]) => void;
 }
 
@@ -431,7 +478,6 @@ export interface AppAdvisorAutomationRunEvent {
 
 type WatcherFiringEvent =
   | LocalWatcherEvent
-  | DelegateWatchEvent
   | AppAdvisorChatTerminalEvent
   | AppAdvisorNewChatStartedEvent
   | AppAdvisorHookTriggeredEvent
@@ -442,6 +488,34 @@ type AutomationRunCorrelation =
   AppAdvisorAutomationRunRuntimeState['pendingCorrelation'];
 
 type SetupWatcherEntry = SetupAppAdvisorWatchersInput['watchers'][number];
+
+function watcherWaitScope(target: unknown): ChatWaitScope {
+  if (!target || typeof target !== 'object') return {};
+  if ('botId' in target && typeof target.botId === 'string')
+    return {
+      botId: target.botId,
+      ...('taskId' in target && typeof target.taskId === 'string'
+        ? { taskId: target.taskId }
+        : {}),
+      ...('chatId' in target && typeof target.chatId === 'string'
+        ? { chatId: target.chatId }
+        : {}),
+    };
+  if ('projectId' in target && typeof target.projectId === 'string')
+    return {
+      projectId: target.projectId,
+      ...('taskId' in target && typeof target.taskId === 'string'
+        ? { taskId: target.taskId }
+        : {}),
+      ...('worktreeId' in target && typeof target.worktreeId === 'string'
+        ? { worktreeId: target.worktreeId }
+        : {}),
+      ...('chatId' in target && typeof target.chatId === 'string'
+        ? { chatId: target.chatId }
+        : {}),
+    };
+  return {};
+}
 
 type PipelineJobSummary = {
   total: number;
@@ -487,7 +561,31 @@ const WATCHER_DELIVERY_ACK_TIMEOUT_MS = 30_000;
 const WATCHER_DELIVERY_COMPLETION_ACK_TIMEOUT_MS = 30 * 60_000;
 const CHAT_WINDOW_DELIVERY_RETRY_DELAYS_MS = [100, 250];
 const GITHUB_DELIVERY_RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
+
+/** A watcher delivery outlived its deadline; the chat may still take it. */
+class WatcherDeliveryDeadlineError extends Error {}
+
+function withWatcherDeliveryDeadline<T>(
+  pending: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      onTimeout?.();
+      reject(new WatcherDeliveryDeadlineError(errorMessage));
+    }, timeoutMs);
+    timeout.unref?.();
+  });
+  return Promise.race([pending, deadline]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
 const PROCESS_STARTED_AT_MS = Date.now() - process.uptime() * 1000;
+
 const MAX_GITHUB_WORKFLOW_RUNS = 100;
 const GITHUB_PULL_REQUEST_SOURCE_FAILURE_MESSAGE =
   'GitHub pull request is no longer accessible.';
@@ -1068,6 +1166,8 @@ interface WatchersFileSnapshot {
   updatedAt: string;
   /** Validated rows as persisted; every read normalizes them again. */
   watchers: AppAdvisorWatcher[];
+  /** Opaque upgrade evidence, excluded from active reads and retention. */
+  legacyDelegateRows: unknown[];
 }
 
 function isMissingFileError(error: unknown): boolean {
@@ -1114,6 +1214,9 @@ function parseWatchersSnapshot(
       typeof parsed.updatedAt === 'string'
         ? parsed.updatedAt
         : new Date().toISOString(),
+    legacyDelegateRows: parsed.watchers.filter(
+      (raw) => decodeLegacyDelegateWatcher(raw) !== undefined,
+    ),
     // A store written before retention existed is bounded from its first
     // read; the next write persists the same rows.
     watchers: retainRecentCompletedWatchers(
@@ -1241,8 +1344,7 @@ function isVisibleWatcher(watcher: AppAdvisorWatcher): boolean {
   return (
     VISIBLE_STATUSES.has(watcher.status) &&
     !(
-      (watcher.runtimeState?.kind === 'local_watcher' ||
-        watcher.runtimeState?.kind === 'managed_delegation') &&
+      watcher.runtimeState?.kind === 'local_watcher' &&
       watcher.runtimeState.cancellationPending !== undefined
     )
   );
@@ -1332,14 +1434,9 @@ function isSameDestination(
 
 /**
  * The managed delegate that receives this watcher's notifications, if any.
- * Watch Delegates rows record a delegate recipient in their runtime state.
  */
 function recipientDelegationId(watcher: AppAdvisorWatcher): string | undefined {
-  if (watcher.destination.delegationId) return watcher.destination.delegationId;
-  return watcher.runtimeState?.kind === 'managed_delegation' &&
-    watcher.runtimeState.recipient.kind === 'delegate'
-    ? watcher.runtimeState.recipient.delegationId
-    : undefined;
+  return watcher.destination.delegationId;
 }
 
 /**
@@ -1359,10 +1456,7 @@ function ownerDelegate(
         description: watcher.destination.delegationDescription,
         depth: watcher.destination.delegationDepth,
       }
-    : watcher.runtimeState?.kind === 'managed_delegation' &&
-        watcher.runtimeState.recipient.kind === 'delegate'
-      ? watcher.runtimeState.recipient
-      : null;
+    : null;
   if (!recorded) return undefined;
   const description = optionalTrimmed(recorded.description);
   const depth = isIntegerInRange(recorded.depth, 1, Number.MAX_SAFE_INTEGER)
@@ -1379,7 +1473,15 @@ function ownerDelegate(
  * Agent tools supply only the subscribing chat's ids; name it from its tab so
  * the user's watcher list does not read "Untitled chat".
  */
-async function withDestinationChatTitle(
+function withDestinationChatTitle(
+  destination: AppAdvisorWatcherDestination,
+): Promise<AppAdvisorWatcherDestination> {
+  return withinChatWaitPhase('destination_resolution', () =>
+    readDestinationChatTitle(destination),
+  );
+}
+
+async function readDestinationChatTitle(
   destination: AppAdvisorWatcherDestination,
 ): Promise<AppAdvisorWatcherDestination> {
   if (
@@ -1468,6 +1570,21 @@ function localScopeKey(projectId: string, worktreeId: string): string {
   return JSON.stringify([projectId, worktreeId]);
 }
 
+/** The fence a release lifts: a workspace deletion's block or one scope key. */
+type LocalFence =
+  | { kind: 'workspace'; projectId: string }
+  | { kind: 'scope'; scopeKey: string };
+
+/** The watchers whose cancellation the fence under `key` holds. */
+function fenceWatchers(
+  fences: Map<string, Set<string>>,
+  key: string,
+): Set<string> {
+  const started = fences.get(key) ?? new Set<string>();
+  fences.set(key, started);
+  return started;
+}
+
 interface LocalWatcherScope {
   projectId: string;
   worktreeId: string;
@@ -1500,34 +1617,36 @@ function localWatcherMatchesScope(
   );
 }
 
-async function localWatcherScopeCreatedAt(
+function localWatcherScopeCreatedAt(
   scope: LocalWatcherScope,
 ): Promise<string | null> {
-  if (isWorkEntryWorkspace(scope.projectId)) {
-    return (
-      (await listWorkEntries(scope.projectId)).find(
-        (entry) => entry.id === scope.worktreeId,
-      )?.createdAt ?? null
-    );
-  }
-  return getWorkspaceWorktreeCreatedAt(scope.projectId, scope.worktreeId);
+  return withinChatWaitPhase('scope_resolution', async () => {
+    if (isWorkEntryWorkspace(scope.projectId)) {
+      return (
+        (await listWorkEntries(scope.projectId)).find(
+          (entry) => entry.id === scope.worktreeId,
+        )?.createdAt ?? null
+      );
+    }
+    return getWorkspaceWorktreeCreatedAt(scope.projectId, scope.worktreeId);
+  });
 }
 
-async function localWatcherScopeExists(
-  scope: LocalWatcherScope,
-): Promise<boolean> {
-  if (!isWorkEntryWorkspace(scope.projectId)) {
-    return isWorkspaceWorktreeCurrent(
-      scope.projectId,
-      scope.worktreeId,
-      scope.createdAt,
+function localWatcherScopeExists(scope: LocalWatcherScope): Promise<boolean> {
+  return withinChatWaitPhase('scope_resolution', async () => {
+    if (!isWorkEntryWorkspace(scope.projectId)) {
+      return isWorkspaceWorktreeCurrent(
+        scope.projectId,
+        scope.worktreeId,
+        scope.createdAt,
+      );
+    }
+    const createdAt = await localWatcherScopeCreatedAt(scope);
+    return (
+      createdAt !== null &&
+      (scope.createdAt === undefined || createdAt === scope.createdAt)
     );
-  }
-  const createdAt = await localWatcherScopeCreatedAt(scope);
-  return (
-    createdAt !== null &&
-    (scope.createdAt === undefined || createdAt === scope.createdAt)
-  );
+  });
 }
 
 function isKnownWatcherStatus(
@@ -1555,7 +1674,6 @@ function isKnownWatcherTrigger(
     value === 'automation_run' ||
     value === 'github_workflow_runs_changed' ||
     value === 'github_pull_requests_changed' ||
-    value === 'managed_delegation_completion' ||
     value === 'scheduled_wakeup' ||
     value === 'command_watch_resolved'
   );
@@ -2051,80 +2169,6 @@ function isLocalWatcherEvent(value: unknown): value is LocalWatcherEvent {
   );
 }
 
-function isDelegateWatchEvent(value: unknown): value is DelegateWatchEvent {
-  return (
-    isRecord(value) &&
-    nonBlank(value.watcherId) &&
-    (value.outcome === 'completed' || value.outcome === 'timeout') &&
-    (value.mode === 'any' || value.mode === 'all') &&
-    typeof value.deadlineAt === 'number' &&
-    Number.isSafeInteger(value.deadlineAt) &&
-    Array.isArray(value.targets) &&
-    value.targets.length >= 1 &&
-    value.targets.length <= 16 &&
-    value.targets.every(
-      (target) =>
-        isRecord(target) &&
-        nonBlank(target.delegationId) &&
-        isIntegerInRange(target.runGeneration, 1, Number.MAX_SAFE_INTEGER) &&
-        typeof target.status === 'string' &&
-        (target.resultIndex === null ||
-          isIntegerInRange(target.resultIndex, 1, Number.MAX_SAFE_INTEGER)) &&
-        (target.exitReason === undefined ||
-          isDelegationStopReason(target.exitReason)),
-    )
-  );
-}
-
-function isManagedDelegationRuntimeState(value: unknown): boolean {
-  if (
-    !isRecord(value) ||
-    value.kind !== 'managed_delegation' ||
-    !nonBlank(value.nextAttemptAt) ||
-    !Number.isFinite(Date.parse(value.nextAttemptAt)) ||
-    !nonBlank(value.requestHash) ||
-    !nonBlank(value.invocationKey) ||
-    !isRecord(value.recipient) ||
-    (value.recipient.kind !== 'root' && value.recipient.kind !== 'delegate') ||
-    (value.recipient.kind === 'delegate' &&
-      !nonBlank(value.recipient.delegationId)) ||
-    !Array.isArray(value.targets) ||
-    value.targets.length < 1 ||
-    value.targets.length > 16
-  )
-    return false;
-  if (
-    !value.targets.every(
-      (target) =>
-        isRecord(target) &&
-        nonBlank(target.delegationId) &&
-        isIntegerInRange(target.runGeneration, 1, Number.MAX_SAFE_INTEGER) &&
-        typeof target.status === 'string' &&
-        (target.resultIndex === null ||
-          isIntegerInRange(target.resultIndex, 1, Number.MAX_SAFE_INTEGER)) &&
-        (target.settledAt === undefined ||
-          (typeof target.settledAt === 'number' &&
-            Number.isSafeInteger(target.settledAt))),
-    )
-  )
-    return false;
-  return (
-    (value.cancellationPending === undefined ||
-      (isRecord(value.cancellationPending) &&
-        (value.cancellationPending.previousStatus === 'active' ||
-          value.cancellationPending.previousStatus === 'firing'))) &&
-    (value.pendingDelivery === undefined ||
-      (isRecord(value.pendingDelivery) &&
-        nonBlank(value.pendingDelivery.eventId) &&
-        isIntegerInRange(
-          value.pendingDelivery.attempts,
-          0,
-          Number.MAX_SAFE_INTEGER,
-        ) &&
-        isDelegateWatchEvent(value.pendingDelivery.event)))
-  );
-}
-
 interface PersistedGitHubWorkflowRunItem {
   kind: 'workflow_run';
   repository: string;
@@ -2319,12 +2363,6 @@ function isPersistedWatcher(value: unknown): value is AppAdvisorWatcher {
   )
     return false;
   const isGitHubTrigger = value.trigger === 'github_workflow_runs_changed';
-  if (value.trigger === 'managed_delegation_completion') {
-    return (
-      value.target.kind === 'managed_delegation' &&
-      isManagedDelegationRuntimeState(value.runtimeState)
-    );
-  }
   if (
     value.trigger === 'scheduled_wakeup' ||
     value.trigger === 'command_watch_resolved'
@@ -2529,11 +2567,52 @@ function githubRateLimitedUntilForSummary(
     : undefined;
 }
 
+/**
+ * Renderer-visible progress for a `github_pull_requests` watcher: each
+ * pull request's last snapshot, joined back to its target. Queue cursors,
+ * queued events and the delivery outbox stay behind.
+ */
+function githubPullRequestProgressForSummary(
+  watcher: AppAdvisorWatcher,
+): AppAdvisorWatcherSummary['githubPullRequestProgress'] {
+  if (
+    watcher.target.kind !== 'github_pull_requests' ||
+    watcher.runtimeState?.kind !== 'github_pull_requests'
+  ) {
+    return undefined;
+  }
+  const targetByKey = new Map(
+    watcher.target.items.map((item) => [githubPullRequestKey(item), item]),
+  );
+  const pullRequests: GitHubPullRequestWatchProgress[] = [];
+  for (const item of watcher.runtimeState.items) {
+    const target = targetByKey.get(item.key);
+    if (!target) continue;
+    const { last } = item;
+    pullRequests.push({
+      repository: target.repository,
+      number: target.number,
+      url: last.url,
+      ...(last.title ? { title: last.title } : {}),
+      state: last.state,
+      baseRefName: last.baseRefName,
+      queue: last.queue
+        ? { phase: last.queue.phase, position: last.queue.position }
+        : null,
+      observedAt: last.observedAt,
+      ...(item.settledAt ? { settledAt: item.settledAt } : {}),
+    });
+  }
+  return { pullRequests };
+}
+
 function toSummary(
   watcher: AppAdvisorWatcher,
   completedAt?: string,
 ): AppAdvisorWatcherSummary {
   const githubProgress = githubProgressForSummary(watcher);
+  const githubPullRequestProgress =
+    githubPullRequestProgressForSummary(watcher);
   const githubRateLimitedUntil = githubRateLimitedUntilForSummary(watcher);
   const owner = ownerDelegate(watcher);
   return {
@@ -2561,6 +2640,7 @@ function toSummary(
         }
       : {}),
     ...(githubProgress ? { githubProgress } : {}),
+    ...(githubPullRequestProgress ? { githubPullRequestProgress } : {}),
     ...(githubRateLimitedUntil ? { githubRateLimitedUntil } : {}),
   };
 }
@@ -2593,21 +2673,27 @@ function optionalTrimmed(value: unknown): string | undefined {
     : undefined;
 }
 
+const DISPLAY_METADATA_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-app-advisor-watchers',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.workspace.read', 'core.worktree.read'],
+};
+
+/** Best-effort display metadata through the W5 reads (CAN-5478). */
 async function readWorktreeDisplayMetadata(
   projectId: string,
   worktreeId: string,
 ): Promise<WorktreeDisplayMetadata> {
   const metadata: WorktreeDisplayMetadata = {};
   try {
-    const rawIndex = await readFile(getWorkspaceIndexFilePath(), 'utf8');
-    const parsed = JSON.parse(rawIndex) as {
-      version?: unknown;
-      workspaces?: Array<{ id?: unknown; name?: unknown }>;
-    };
-    const workspace = parsed.workspaces?.find(
-      (entry) => entry.id === projectId,
-    );
-    const workspaceName = optionalTrimmed(workspace?.name);
+    const { canonicalResult } =
+      await getDesktopCanopyRuntime().queryWorkspaceGetForLegacyIpc(
+        { workspaceId: projectId },
+        { caller: DISPLAY_METADATA_CALLER },
+      );
+    const workspaceName = optionalTrimmed(canonicalResult?.name);
     if (workspaceName) {
       metadata.workspaceName = workspaceName;
     }
@@ -2616,16 +2702,12 @@ async function readWorktreeDisplayMetadata(
   }
 
   try {
-    const rawWorktrees = await readFile(
-      getWorkspaceWorktreesFilePath(projectId),
-      'utf8',
-    );
-    const parsed = JSON.parse(rawWorktrees) as {
-      version?: unknown;
-      worktrees?: Array<{ id?: unknown; branchName?: unknown }>;
-    };
-    const worktree = parsed.worktrees?.find((entry) => entry.id === worktreeId);
-    const branchName = optionalTrimmed(worktree?.branchName);
+    const { legacyResult } =
+      await getDesktopCanopyRuntime().queryWorktreeGetForLegacyIpc(
+        { worktreeId, scope: { workspaceId: projectId } },
+        { caller: DISPLAY_METADATA_CALLER },
+      );
+    const branchName = optionalTrimmed(legacyResult.branchName);
     if (branchName) {
       metadata.worktreeBranchName = branchName;
     }
@@ -2714,9 +2796,6 @@ function buildDedupeKey(
       ...(notifyOn ? { notifyOn } : {}),
     });
   }
-  if (target.kind === 'managed_delegation') {
-    return JSON.stringify({ trigger, target, destination });
-  }
   if (target.kind === 'worktree_chat') {
     return JSON.stringify({
       ...destinationKey(destination),
@@ -2799,7 +2878,6 @@ function defaultLabel(
     return 'GitHub workflow runs';
   }
   if (target.kind === 'github_pull_requests') return 'GitHub pull requests';
-  if (target.kind === 'managed_delegation') return 'Delegate completion';
   const title = catalogEntryFor(trigger)?.title ?? trigger;
   if (target.kind === 'worktree_chat') {
     return `${title}: ${target.chatTitle?.trim() || target.chatId}`;
@@ -2845,9 +2923,6 @@ function validateRequiredTargetFields(
   }
   if (target.kind === 'github_pull_requests') {
     return 'GitHub pull request watchers must be created with WatchGitHubItems.';
-  }
-  if (target.kind === 'managed_delegation') {
-    return 'Managed delegation watchers must be created with Watch Delegates.';
   }
   if (target.kind === 'worktree_chat') {
     if (!nonBlank(target.projectId)) {
@@ -3054,20 +3129,20 @@ function validateWatcherInput(
 
   if (entry.target.kind === 'worktree_chat') {
     if (entry.target.projectId.trim() === APP_ADVISOR_PROJECT_ID) {
-      return 'Watchers cannot target App Advisor chats.';
+      return 'Watchers cannot target Orchestrator chats.';
     }
   } else if (
     entry.target.kind === 'worktree_chat_scope' &&
     entry.target.projectId.trim() === APP_ADVISOR_PROJECT_ID
   ) {
-    return 'Watchers cannot target App Advisor chats.';
+    return 'Watchers cannot target Orchestrator chats.';
   } else if (
     entry.target.kind !== 'automation' &&
     entry.target.kind !== 'scheduled_wakeup' &&
     entry.target.kind !== 'command_watch' &&
     entry.target.projectId.trim() === APP_ADVISOR_PROJECT_ID
   ) {
-    return 'Watchers cannot target App Advisor resources.';
+    return 'Watchers cannot target Orchestrator resources.';
   }
 
   if (
@@ -3527,8 +3602,12 @@ async function inheritedWatcherContext(
   destination: AppAdvisorWatcherDestination,
 ): Promise<string | undefined> {
   if (!backgroundExecutionContextEnabled()) return undefined;
-  const context = await resolveInheritedWatcherContext(target, destination);
-  await authorizeWatcherArming(target, destination, context);
+  const context = await withinChatWaitPhase('enrichment', () =>
+    resolveInheritedWatcherContext(target, destination),
+  );
+  await withinChatWaitPhase('authorization', () =>
+    authorizeWatcherArming(target, destination, context),
+  );
   return context;
 }
 
@@ -3705,8 +3784,6 @@ async function enrichWatcherTarget(
           : getHookTriggerDisplayName(target.triggerName)),
     };
   }
-
-  if (target.kind === 'managed_delegation') return target;
 
   const [worktree, state] = await Promise.all([
     readWorktreeDisplayMetadata(target.projectId, target.worktreeId),
@@ -4081,6 +4158,25 @@ async function automationCorrelationCanResume(
  * their completion arrives through the terminal service's chat terminal
  * events instead.
  */
+/**
+ * The chat a correlated pipeline sent to, once its execution has ended, as
+ * the run-result fields its completion event carries (CAN-5381).
+ */
+async function correlatedPipelineChatSend(
+  correlation: Partial<AutomationRunCorrelation>,
+): Promise<AutomationRunResult | undefined> {
+  if (!correlation.pipelineExecutionId) return undefined;
+  const state = await loadExecutionState(
+    correlation.pipelineExecutionId,
+    join(getDataDir(), 'pipeline-executions'),
+  );
+  if (!state || !isPipelineTerminalStatus(state.status)) return undefined;
+  const sent = lastChatSendRunResult(state);
+  return sent
+    ? { ...sent, pipelineExecutionId: correlation.pipelineExecutionId }
+    : undefined;
+}
+
 async function automationCorrelationAlreadyComplete(
   correlation: Omit<AutomationRunCorrelation, 'recordedAt'>,
 ): Promise<boolean> {
@@ -4163,7 +4259,7 @@ function automationRunFireNote(event: AppAdvisorAutomationRunEvent): string {
     event.dispatched?.appAdvisorChatId ||
     event.dispatched?.projectId === APP_ADVISOR_PROJECT_ID
   ) {
-    return 'The automation dispatched an App Advisor prompt; the watcher fired at dispatch because App Advisor chats emit no completion events.';
+    return 'The automation dispatched an Orchestrator prompt; the watcher fired at dispatch because Orchestrator chats emit no completion events.';
   }
   return 'The automation run completed without dispatching correlatable work.';
 }
@@ -4264,8 +4360,6 @@ function defaultFollowUpInstructionForTrigger(
       return 'Continue the task for which this wakeup was scheduled';
     case 'command_watch_resolved':
       return 'Review the command outcome and output; report failures and do not silently re-arm an exhausted or failed watcher';
-    case 'managed_delegation_completion':
-      return 'Use Get Delegate Output with a reported resultIndex to read the corresponding delegate result';
   }
 }
 
@@ -4694,6 +4788,32 @@ function buildGitHubWatcherFiredMessage(watcher: AppAdvisorWatcher): {
   throw new Error('GitHub watcher delivery state is malformed.');
 }
 
+/** A held completion waits this long after its chat goes idle, for a wake to start. */
+const COMPLETION_IDLE_SETTLE_MS = 3_000;
+
+function chatTurnKey(parts: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): string {
+  return JSON.stringify([parts.projectId, parts.worktreeId, parts.chatId]);
+}
+
+/** The dispatched turn a completion belongs to, when its dispatcher stamped one. */
+function completionTurnStamp(event: AppAdvisorChatTerminalEvent): string {
+  const stamp = event.data.canopy_turn_user_message_id;
+  return typeof stamp === 'string' ? stamp : '';
+}
+
+interface IdleCompletion {
+  /** False while the chat is busy, or for a completion already reported. */
+  fire: boolean;
+  /** Gives up this completion's once-per-turn claim when it doesn't fire. */
+  unclaim?: () => void;
+  /** Completions of other turns held while the chat was busy, newest first. */
+  earlier: AppAdvisorChatTerminalEvent[];
+}
+
 /**
  * One delivery staged for a chat while its watcher modal held its firing: a
  * raw chat-state or provider end (`completion`), a producer's canonical
@@ -4721,7 +4841,7 @@ interface HeldChatFiring {
 
 /**
  * Stages a delivery on a hold. A later representation of the same turn's end
- * replaces the earlier one in place, so the replay keeps arrival order.
+ * replaces the earlier one in place, keeping its arrival slot.
  */
 function stageHeldDelivery(
   held: HeldChatFiring,
@@ -4776,6 +4896,38 @@ interface CanonicalTerminalDispatch {
    * false to skip correlation. By default the terminal's legacy spelling.
    */
   automation?: AppAdvisorChatTerminalEvent | false;
+}
+
+/** Completion time first, so a `next` cursor binds the earliest end. */
+function compareCanonicalTerminals(
+  left: CanonicalChatTerminalEvent,
+  right: CanonicalChatTerminalEvent,
+): number {
+  return (
+    Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+    left.eventId.localeCompare(right.eventId)
+  );
+}
+
+/**
+ * A hold's replay order: arrival order, except that canonical terminals swap
+ * among their own slots into completion order, as an unheld flush sorts them.
+ * Raw completions and catch-ups keep their positions.
+ */
+function heldReplayOrder(held: HeldChatFiring): HeldChatDelivery[] {
+  const deliveries = Array.from(held.deliveries.values());
+  const slots: number[] = [];
+  const terminals: CanonicalChatTerminalEvent[] = [];
+  deliveries.forEach((delivery, index) => {
+    if (delivery.kind !== 'canonical_terminal') return;
+    slots.push(index);
+    terminals.push(delivery.event);
+  });
+  terminals.sort(compareCanonicalTerminals);
+  slots.forEach((slot, index) => {
+    deliveries[slot] = { kind: 'canonical_terminal', event: terminals[index] };
+  });
+  return deliveries;
 }
 
 function stageCanonicalTerminal(
@@ -4848,36 +5000,27 @@ function chatFiringHoldKey(parts: {
   return `worktree:${projectId}:${parts.worktreeId}:${parts.chatId}`;
 }
 
-function managedDelegationInvocationKey(
-  parent: DelegationParentContext,
-): string {
-  return JSON.stringify([
-    parent.harnessId,
-    parent.projectId,
-    parent.worktreeId,
-    parent.chatId,
-    parent.sessionKey,
-    parent.runtimeGeneration,
-    parent.turnId,
-    parent.toolCallId,
-  ]);
+// Registration cancellation is an admission guard, not persisted watcher state.
+function checkRegistrationSignal(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const error = new Error('Watcher registration was aborted.');
+    error.name = 'AbortError';
+    throw error;
+  }
 }
 
-function managedDelegationWatchSatisfied(watcher: AppAdvisorWatcher): boolean {
-  const state = watcher.runtimeState;
-  if (
-    watcher.target.kind !== 'managed_delegation' ||
-    state?.kind !== 'managed_delegation'
-  )
-    return false;
-  const managedTarget = watcher.target;
-  const settled = (target: (typeof state.targets)[number]): boolean =>
-    target.resultIndex !== null &&
-    target.settledAt !== undefined &&
-    target.settledAt <= managedTarget.deadlineAt;
-  return managedTarget.mode === 'any'
-    ? state.targets.some(settled)
-    : state.targets.every(settled);
+async function awaitRegistration<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  try {
+    const result = await operation;
+    checkRegistrationSignal(signal);
+    return result;
+  } catch (error) {
+    checkRegistrationSignal(signal);
+    throw error;
+  }
 }
 
 function isChatWatcher(watcher: AppAdvisorWatcher): boolean {
@@ -5247,7 +5390,118 @@ function unavailableSummary(
 class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private surfaces: AppAdvisorWatcherSurfaces | null = null;
   private writeQueue: Promise<unknown> = Promise.resolve();
+  private activeMutationWait: ChatWaitOperation | undefined;
+  private mutationQueueDepth = 0;
   private snapshot: WatchersFileSnapshot | null = null;
+
+  /** The stored rows as last loaded; an unloaded store contributes none. */
+  private cachedWatcherRows(): StoredWatcherRows {
+    const snapshot = this.snapshot;
+    const canonical = this.canonicalSnapshot;
+    return {
+      legacy:
+        snapshot?.path === getAppAdvisorWatchersFilePath()
+          ? snapshot.watchers
+          : [],
+      canonical: canonical?.path === canonicalStorePath() ? canonical.rows : [],
+    };
+  }
+
+  /**
+   * The owner scope of the stored watcher `match` selects, so a mutation that
+   * names only an ID is attributed from its queue wait on. A watcher's
+   * destination never changes, so an older load still names it; a watcher
+   * absent from `rows` stays unowned.
+   */
+  private storedWatcherOwnerScope(
+    match: (watcher: AppAdvisorWatcher) => boolean,
+    rows: StoredWatcherRows = this.cachedWatcherRows(),
+  ): ChatWaitScope {
+    const stored = rows.legacy.find(match);
+    if (stored) return watcherOwnerScope(stored.destination);
+    for (const row of rows.canonical) {
+      // A delivery authority receipt outlives its watcher row.
+      const watcher =
+        isRecord(row) && row.kind === 'chat_delivery_authority'
+          ? row.watcher
+          : row;
+      if (isPersistedWatcher(watcher) && match(watcher))
+        return watcherOwnerScope(watcher.destination);
+    }
+    return UNOWNED_WATCHER_MUTATION_SCOPE;
+  }
+
+  private storedWatcherOwner(
+    match: (watcher: AppAdvisorWatcher) => boolean,
+  ): StoredWatcherOwner {
+    return {
+      storedOwner: (rows) => this.storedWatcherOwnerScope(match, rows),
+    };
+  }
+
+  /** One read-only store load shared by every owner lookup in flight. */
+  private storedOwnerLookup: Promise<StoredWatcherRows | undefined> | null =
+    null;
+
+  /**
+   * Attributes `wait` from a fresh store load when the cached rows do not
+   * name its owner: the caches may be unloaded (a fresh process) or older
+   * than the file (another writer, or a load that landed after a write). The
+   * loads re-read only a store whose signature changed. The lookup reads
+   * outside the mutation queue, so a held mutation ahead of `wait` cannot
+   * delay it. It changes no watcher, and each cache it fills carries the
+   * signature it read, so a mutation's read still re-reads a changed store.
+   */
+  private attributeStoredWatcherOwner(
+    wait: ChatWaitOperation,
+    owner: StoredWatcherOwner,
+  ): void {
+    if (owner.storedOwner() !== UNOWNED_WATCHER_MUTATION_SCOPE) return;
+    this.storedOwnerLookup ??= Promise.all([
+      this.loadSnapshot(),
+      this.loadCanonicalRows(),
+    ])
+      .then(
+        ([snapshot, canonical]): StoredWatcherRows => ({
+          legacy: snapshot?.watchers ?? [],
+          canonical,
+        }),
+        (): undefined => undefined,
+      )
+      .finally(() => {
+        this.storedOwnerLookup = null;
+      });
+    void this.storedOwnerLookup
+      .then((rows) => {
+        if (rows) wait.attributeOwner(owner.storedOwner(rows));
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * A reservation's owner: its live entry, else its stored reservation row,
+   * which a restart's recovery has just read, else a watcher it created.
+   */
+  private inlineReservationOwner(reservationId: string): StoredWatcherOwner {
+    return {
+      storedOwner: (rows = this.cachedWatcherRows()): ChatWaitScope => {
+        const live = this.liveInlineReservations.get(reservationId);
+        if (live) return live;
+        for (const raw of rows.canonical) {
+          if (!isRecord(raw) || raw.reservationId !== reservationId) continue;
+          const parsed = inlineReservationSchema.safeParse(raw);
+          if (parsed.success) return watcherOwnerScope(parsed.data.destination);
+        }
+        return this.storedWatcherOwnerScope(
+          (watcher) =>
+            'inlineReservationId' in watcher &&
+            watcher.inlineReservationId === reservationId,
+          rows,
+        );
+      },
+    };
+  }
+
   private canonicalSnapshot: {
     path: string;
     signature: string;
@@ -5259,7 +5513,8 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   } | null = null;
   private pendingDeliveries = new Map<string, PendingWatcherDelivery>();
   private chatDeliveryTasks = new Set<Promise<void>>();
-  private liveInlineReservations = new Set<string>();
+  /** Each live reservation's owner scope, for its confirmation or cancel. */
+  private liveInlineReservations = new Map<string, ChatWaitScope>();
   /** Current-process proof only: an older binary cannot report its queue handoffs. */
   private unsubmittedChatDeliveries = new Set<string>();
   private githubDeliveriesInFlight = new Set<string>();
@@ -5267,28 +5522,44 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private configured = false;
   private blockedLocalScopes = new Set<string>();
   private blockedLocalWorkspaces = new Set<string>();
+  /** Per fenced workspace, the watchers whose cancellation its fence began. */
+  private localWorkspaceFenceWatchers = new Map<string, Set<string>>();
+  /** The same per fenced scope key, shared by every fence on that key. */
+  private localScopeFenceWatchers = new Map<string, Set<string>>();
+  /** Per blocked scope key, the operations holding its fence (CAN-4989). */
+  private localScopeFenceHolders = new Map<string, Set<LocalFenceHolder>>();
+  /** Advanced by shutdown, so a fence step queued before it raises no block. */
+  private localFenceEpoch = 0;
   private localScheduler = new LocalWatcherScheduler({
     list: async (): Promise<AppAdvisorWatcher[]> =>
       (await this.readFile()).watchers,
     update: (id, mutate): Promise<AppAdvisorWatcher | undefined> =>
-      this.enqueueMutation(async () => {
-        const file = await this.readFile();
-        const row = file.watchers.find((watcher) => watcher.id === id);
-        if (!row) return undefined;
-        const scope = persistedLocalWatcherScope(row);
-        if (
-          this.blockedLocalWorkspaces.has(scope.projectId) ||
-          this.blockedLocalScopes.has(
-            localScopeKey(scope.projectId, scope.worktreeId),
+      this.enqueueMutation(
+        async (wait) => {
+          const file = await this.readFile();
+          const row = file.watchers.find((watcher) => watcher.id === id);
+          if (!row) return undefined;
+          wait.attributeOwner(watcherOwnerScope(row.destination));
+          const scope = persistedLocalWatcherScope(row);
+          if (
+            this.blockedLocalWorkspaces.has(scope.projectId) ||
+            this.blockedLocalScopes.has(
+              localScopeKey(scope.projectId, scope.worktreeId),
+            )
           )
-        )
-          return undefined;
-        mutate(row);
-        row.updatedAt = new Date().toISOString();
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-        return row;
-      }),
+            return undefined;
+          mutate(row);
+          row.updatedAt = new Date().toISOString();
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+          return row;
+        },
+        undefined,
+        {
+          name: 'watcher.local_scheduler_update',
+          scope: this.storedWatcherOwner((watcher) => watcher.id === id),
+        },
+      ),
     deliver: (watcher, event, deliveryId): Promise<void> =>
       this.deliverWatcher(watcher, event, deliveryId),
     run: runWatcherCommand,
@@ -5308,10 +5579,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       watcher.target.kind !== 'command_watch' ||
       watcher.executionScope === undefined ||
       localWatcherScopeExists(watcher.executionScope),
-    evaluateManagedDelegation: (
-      watcher,
-    ): Promise<DelegateWatchEvent | undefined> =>
-      this.evaluateManagedDelegationWatcher(watcher),
     outputPath: async (watcher, attempt): Promise<string> => {
       const dir = join(
         getWorktreeAttachmentsDir(
@@ -5334,6 +5601,17 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
    * when firing is released. See {@link holdChatFiring}.
    */
   private heldChatTargets = new Map<string, HeldChatFiring>();
+  /** Completions of chats that still run a turn or background work, by turn stamp. */
+  private readonly busyChatCompletions = new Map<
+    string,
+    Map<string, AppAdvisorChatTerminalEvent>
+  >();
+  /** The last-ended turn each chat reported, and the turn stamps it carried. */
+  private readonly firedCompletions = new Map<
+    string,
+    { turnId: string; stamps: Set<string> }
+  >();
+  private stopObservingTurnState: (() => void) | undefined;
   /**
    * App Advisor destination chat ids observed at the last change
    * notification, so a mutation that REMOVES a chat's final watcher still
@@ -5403,7 +5681,15 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     }
   }
 
-  private async chatRowAccess(
+  private chatRowAccess(
+    watcher: ChatWatcherRecord,
+  ): Promise<Awaited<ReturnType<typeof decideChatWatcherAccess>>> {
+    return withinChatWaitPhase('authorization', () =>
+      this.decideChatRowAccess(watcher),
+    );
+  }
+
+  private async decideChatRowAccess(
     watcher: ChatWatcherRecord,
   ): Promise<Awaited<ReturnType<typeof decideChatWatcherAccess>>> {
     const event = watcher.pendingChatEvent;
@@ -5523,7 +5809,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         code: 'validation_failed',
         error: 'Invalid inline watcher reservation.',
       };
-    return this.enqueueMutation(async () => {
+    const enqueue = this.enqueueChatMutation({
+      name: 'watcher.reserve_inline_chat',
+      scope: watcherOwnerScope(destination),
+    });
+    return enqueue(async (wait) => {
+      wait.phase('storage');
       const file = await this.readFile();
       const reservationId = randomUUID();
       const receipts: WatcherReceipt[] = [];
@@ -5557,6 +5848,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         const entry = parsed.data;
         let target: ResolvedChatWatcherTarget;
         try {
+          wait.phase('resolution');
           target = await resolveChatWatcherTarget(entry);
         } catch {
           return {
@@ -5571,6 +5863,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             code: 'validation_failed',
             error: 'A chat watcher cannot watch itself.',
           };
+        wait.phase('authorization');
         const access = await decideChatWatcherAccess(
           trustedRecipient(destination),
           target,
@@ -5653,6 +5946,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           dedupeKey: key,
           createdByToolUseId: input.createdByToolUseId,
         };
+        wait.phase('enrichment');
         const executionContext = await inheritedWatcherContext(
           row.target,
           destination,
@@ -5664,6 +5958,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         receipts.push({ watcherId: row.id, disposition: 'created' });
       }
       for (const item of authorized) {
+        wait.phase('authorization');
         const fresh = await decideChatWatcherAccess(
           trustedRecipient(destination),
           item.target,
@@ -5692,8 +5987,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           receipts,
         },
       ];
+      wait.phase('storage');
       await this.writeFile(file);
-      this.liveInlineReservations.add(reservationId);
+      this.liveInlineReservations.set(
+        reservationId,
+        watcherOwnerScope(destination),
+      );
       this.notifyChange(file.watchers);
       return { ok: true, reservation: { reservationId, receipts } };
     });
@@ -5703,60 +6002,78 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     reservationId: string,
     acceptance: AgentSendAcceptanceFacts,
   ): Promise<WatcherReceipt[]> {
-    const confirmed = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const reservation = file.inlineReservations?.find(
-        (row) => row.reservationId === reservationId,
-      );
-      if (!reservation)
-        throw new Error('Inline watcher reservation was not found.');
-      if (acceptance.acceptedInputId !== reservation.acceptedInputId)
-        throw new Error(
-          'Inline watcher acceptance does not match the reserved input.',
+    const confirmed = await this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const reservation = file.inlineReservations?.find(
+          (row) => row.reservationId === reservationId,
         );
-      const events: CanonicalChatTerminalEvent[] = [];
-      // Keep the deferred event until the normal matcher durably creates its outbox.
-      for (const receipt of reservation.receipts) {
-        const row = file.watchers.find(
-          (candidate) => candidate.id === receipt.watcherId,
-        );
-        if (!row) continue;
-        delete row.inlineReservationId;
-        if (row.inlineDeferredTerminal) events.push(row.inlineDeferredTerminal);
-      }
-      reservation.state = 'confirmed';
-      await this.writeFile(file);
-      this.liveInlineReservations.delete(reservationId);
-      return { receipts: reservation.receipts, events };
-    });
+        if (!reservation)
+          throw new Error('Inline watcher reservation was not found.');
+        wait.attributeOwner(watcherOwnerScope(reservation.destination));
+        if (acceptance.acceptedInputId !== reservation.acceptedInputId)
+          throw new Error(
+            'Inline watcher acceptance does not match the reserved input.',
+          );
+        const events: CanonicalChatTerminalEvent[] = [];
+        // Keep the deferred event until the normal matcher durably creates its outbox.
+        for (const receipt of reservation.receipts) {
+          const row = file.watchers.find(
+            (candidate) => candidate.id === receipt.watcherId,
+          );
+          if (!row) continue;
+          delete row.inlineReservationId;
+          if (row.inlineDeferredTerminal)
+            events.push(row.inlineDeferredTerminal);
+        }
+        reservation.state = 'confirmed';
+        await this.writeFile(file);
+        this.liveInlineReservations.delete(reservationId);
+        return { receipts: reservation.receipts, events };
+      },
+      undefined,
+      {
+        name: 'watcher.confirm_inline_chat_watchers',
+        scope: this.inlineReservationOwner(reservationId),
+      },
+    );
     for (const event of confirmed.events)
       await this.handleCanonicalChatTerminalEvent(event);
     return confirmed.receipts;
   }
 
   async cancelInlineChatWatchers(reservationId: string): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const reservation = file.inlineReservations?.find(
-        (row) => row.reservationId === reservationId,
-      );
-      if (!reservation || reservation.state === 'confirmed') return;
-      const created = new Set(
-        reservation.receipts
-          .filter((row) => row.disposition === 'created')
-          .map((row) => row.watcherId),
-      );
-      file.watchers = file.watchers.filter(
-        (row) =>
-          !created.has(row.id) || row.inlineReservationId !== reservationId,
-      );
-      file.inlineReservations = file.inlineReservations?.filter(
-        (row) => row.reservationId !== reservationId,
-      );
-      await this.writeFile(file);
-      this.liveInlineReservations.delete(reservationId);
-      this.notifyChange(file.watchers);
-    });
+    await this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const reservation = file.inlineReservations?.find(
+          (row) => row.reservationId === reservationId,
+        );
+        if (reservation)
+          wait.attributeOwner(watcherOwnerScope(reservation.destination));
+        if (!reservation || reservation.state === 'confirmed') return;
+        const created = new Set(
+          reservation.receipts
+            .filter((row) => row.disposition === 'created')
+            .map((row) => row.watcherId),
+        );
+        file.watchers = file.watchers.filter(
+          (row) =>
+            !created.has(row.id) || row.inlineReservationId !== reservationId,
+        );
+        file.inlineReservations = file.inlineReservations?.filter(
+          (row) => row.reservationId !== reservationId,
+        );
+        await this.writeFile(file);
+        this.liveInlineReservations.delete(reservationId);
+        this.notifyChange(file.watchers);
+      },
+      undefined,
+      {
+        name: 'watcher.cancel_inline_chat_watchers',
+        scope: this.inlineReservationOwner(reservationId),
+      },
+    );
   }
 
   private async reconcileInlineChatReservations(
@@ -5879,7 +6196,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         code: 'invalid_arguments',
         error: 'Invalid watcher recipient or batch.',
       };
-    return this.enqueueMutation(async () => {
+    const enqueue = this.enqueueChatMutation({
+      name: 'watcher.setup_canonical_chat',
+      scope: watcherOwnerScope(destination),
+    });
+    return enqueue(async (wait) => {
+      wait.phase('storage');
       const file = await this.readFile();
       const prepared: Array<
         | {
@@ -5906,6 +6228,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             };
           entry = parsed.data;
           try {
+            wait.phase('resolution');
             target = await resolveChatWatcherTarget(entry);
           } catch {
             return {
@@ -5939,6 +6262,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             label: legacy.label ?? '',
           });
           if (!unresolved) {
+            wait.phase('resolution');
             const futureError =
               await validateWatcherTargetIsAwaitingFutureEvent(legacy);
             if (futureError)
@@ -5956,6 +6280,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             });
             continue;
           }
+          wait.phase('resolution');
           const resolved = await resolveLegacyChatWatcher(unresolved);
           if (!resolved.ok)
             return {
@@ -5977,6 +6302,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           target = resolved.target;
           legacyInput = legacy;
         }
+        wait.phase('authorization');
         const access = await decideChatWatcherAccess(
           trustedRecipient(destination),
           target,
@@ -6020,6 +6346,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             // so a turn already running at setup can still satisfy them.
             if (!legacyInput) observation = { mode: 'next', armedAt };
           } else {
+            wait.phase('resolution');
             const active = await activeChatInput(entry.target);
             const held = this.isChatTargetHeld(
               chatTransportTarget(entry, target),
@@ -6038,6 +6365,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
               ? { mode: 'current', boundInputId: active.inputId, armedAt }
               : { mode: 'next', armedAt };
           }
+          wait.phase('authorization');
           const fresh = await decideChatWatcherAccess(
             trustedRecipient(destination),
             target,
@@ -6110,6 +6438,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             dedupeKey: key,
             createdByToolUseId: input.createdByToolUseId,
           };
+          wait.phase('enrichment');
           const executionContext = await inheritedWatcherContext(
             row.target,
             destination,
@@ -6138,6 +6467,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
               !isSameRecipient(row, destination)
             )
               continue;
+            wait.phase('resolution');
             const resolved = await this.resolveChatRow(row);
             if (
               resolved.ok &&
@@ -6154,6 +6484,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             }
           }
         if (existing) {
+          wait.phase('response_projection');
           results.push({
             status: 'deduped',
             watcher: legacy
@@ -6203,12 +6534,14 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           dedupeKey: key,
           createdByToolUseId: input.createdByToolUseId,
         };
+        wait.phase('enrichment');
         const executionContext = await inheritedWatcherContext(
           row.target,
           destination,
         );
         if (executionContext !== undefined)
           row.executionContext = executionContext;
+        wait.phase('authorization');
         const fresh = await decideChatWatcherAccess(
           trustedRecipient(destination),
           target,
@@ -6224,6 +6557,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           };
         file.watchers.push(row);
         active.push(row);
+        wait.phase('response_projection');
         results.push({
           status: 'created',
           watcher: legacy
@@ -6241,6 +6575,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       }
       for (const item of prepared) {
         if (!('entry' in item)) continue;
+        wait.phase('authorization');
         const fresh = await decideChatWatcherAccess(
           trustedRecipient(destination),
           item.target,
@@ -6260,6 +6595,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             error: 'Watcher target is unavailable.',
           };
       }
+      wait.phase('storage');
       await this.writeFile(file);
       this.notifyChange(file.watchers);
       for (const result of results) {
@@ -6267,6 +6603,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           (candidate) => candidate.id === result.watcher.id,
         );
         if (!row || !isChatWatcher(row)) continue;
+        wait.phase('response_projection');
         result.watcher =
           'destination' in result.watcher
             ? ((
@@ -6352,19 +6689,39 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
 
   /** Release after queue consumption/discard, or proof that no queue accepted the input. */
   async releaseChatDeliveryAuthority(deliveryId: string): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const previous = await this.loadCanonicalRows();
-      const rows = releaseChatAuthorityReceipts(
-        previous,
-        new Set([deliveryId]),
-      );
-      if (rows.every((row, index) => row === previous[index])) return;
-      this.canonicalSnapshot = null;
-      await writeCanonicalWatcherStore(
-        canonicalStorePath(),
-        retainChatAuthorityReceipts(rows),
-      );
-    });
+    const owner = this.storedWatcherOwner(
+      (watcher) =>
+        watcher.pendingLocalDelivery?.deliveryId === deliveryId ||
+        ('chatDeliveryId' in watcher && watcher.chatDeliveryId === deliveryId),
+    );
+    await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage_read');
+        const previous = await this.loadCanonicalRows();
+        wait.attributeOwner(
+          owner.storedOwner({
+            legacy: this.cachedWatcherRows().legacy,
+            canonical: previous,
+          }),
+        );
+        const rows = releaseChatAuthorityReceipts(
+          previous,
+          new Set([deliveryId]),
+        );
+        if (rows.every((row, index) => row === previous[index])) return;
+        this.canonicalSnapshot = null;
+        wait.phase('persistence');
+        await writeCanonicalWatcherStore(
+          canonicalStorePath(),
+          retainChatAuthorityReceipts(rows),
+        );
+      },
+      undefined,
+      {
+        name: 'watcher.release_chat_delivery_authority',
+        scope: owner,
+      },
+    );
   }
 
   checkDeliveryIngress: WatcherDeliveryIngressCheck = async (
@@ -6376,9 +6733,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         candidate.pendingLocalDelivery?.deliveryId === deliveryId ||
         candidate.chatDeliveryId === deliveryId ||
         githubRuntimeStateOf(candidate)?.pendingDelivery?.eventId ===
-          deliveryId ||
-        (candidate.runtimeState?.kind === 'managed_delegation' &&
-          candidate.runtimeState.pendingDelivery?.eventId === deliveryId),
+          deliveryId,
     );
     if (!row) {
       const legacy = (await this.loadSnapshot())?.watchers ?? [];
@@ -6510,18 +6865,15 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       return [];
     }
     // Coalesce simultaneously observed terminals before claiming a `next`
-    // cursor, so timestamp ties use stable event identity, not call order.
+    // cursor, ordered by completion time with stable event identity for ties.
     return new Promise<Array<Promise<void>>>((resolve, reject) => {
       this.pendingCanonicalTerminals.push({ event, options, resolve, reject });
       if (!this.canonicalTerminalFlush) {
         this.canonicalTerminalFlush = Promise.resolve().then(async () => {
           const pending = this.pendingCanonicalTerminals
             .splice(0)
-            .sort(
-              (left, right) =>
-                Date.parse(left.event.sourceInputAcceptedAt) -
-                  Date.parse(right.event.sourceInputAcceptedAt) ||
-                left.event.eventId.localeCompare(right.event.eventId),
+            .sort((left, right) =>
+              compareCanonicalTerminals(left.event, right.event),
             );
           this.canonicalTerminalFlush = null;
           for (const item of pending) {
@@ -6550,26 +6902,34 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private async deferReservedInlineTerminal(
     event: CanonicalChatTerminalEvent,
   ): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      let changed = false;
-      for (const row of file.watchers) {
-        const binding = effectiveChatBinding(row);
-        if (
-          row.inlineReservationId &&
-          row.status === 'active' &&
-          rawChatAddressMatches(row, event.address) &&
-          !binding.blocked &&
-          binding.inputId !== undefined &&
-          terminalEndsInput(event, binding.inputId) &&
-          !row.inlineDeferredTerminal
-        ) {
-          row.inlineDeferredTerminal = event;
-          changed = true;
+    await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        let changed = false;
+        for (const row of file.watchers) {
+          const binding = effectiveChatBinding(row);
+          if (
+            row.inlineReservationId &&
+            row.status === 'active' &&
+            rawChatAddressMatches(row, event.address) &&
+            !binding.blocked &&
+            binding.inputId !== undefined &&
+            terminalEndsInput(event, binding.inputId) &&
+            !row.inlineDeferredTerminal
+          ) {
+            row.inlineDeferredTerminal = event;
+            changed = true;
+          }
         }
-      }
-      if (changed) await this.writeFile(file);
-    });
+        if (changed) await this.writeFile(file);
+      },
+      undefined,
+      {
+        name: 'watcher.defer_reserved_inline_terminal',
+        // An event subject: the chat that finished, not one watcher's owner.
+        scope: watcherWaitScope(event.address),
+      },
+    );
   }
 
   /** automation_run keeps its dispatch/completion compatibility behavior. */
@@ -6595,7 +6955,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     event: CanonicalChatEvent,
     options: CanonicalTerminalDispatch = {},
   ): Promise<Array<Promise<void>>> {
-    const deliveries = await this.enqueueMutation(async () => {
+    const enqueue = this.enqueueChatMutation({
+      name: `watcher.canonical_${event.kind}`,
+      scope: watcherWaitScope(event.address),
+    });
+    const deliveries = await enqueue(async (wait) => {
+      wait.phase('storage');
       const file = await this.readFile();
       const deliveries: ChatWatcherRecord[] = [];
       let changed = false;
@@ -6632,6 +6997,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             Date.parse(row.deniedChatEventsThrough)
         )
           continue;
+        wait.phase('resolution');
         const resolved = await this.resolveChatRow(row);
         if (
           !resolved.ok ||
@@ -6655,6 +7021,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
                 address: event.address,
               }
             : { kind: 'bot', address: event.address };
+        wait.phase('authorization');
         const access = await decideChatWatcherAccess(
           trustedRecipient(row.destination),
           eventTarget,
@@ -6687,16 +7054,11 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           } else {
             // An input that never ran concerns only what is bound to it.
             if (event.endReason !== undefined) continue;
-            // Pre-phase rows carry no cursor; like the previous binary they
-            // watch the first turn to end after setup, even one already
-            // running. Every cursor without a bound input, a dialog-held
-            // `current` one included, binds the first input accepted after
-            // arming.
+            // Unbound watches observe completion time, including inputs
+            // already running when armed, just like pre-phase cursorless rows.
             const legacyCursorless = !row.observation;
             const armedAt = row.observation?.armedAt ?? row.createdAt;
-            const boundaryTime = legacyCursorless
-              ? event.occurredAt
-              : event.sourceInputAcceptedAt;
+            const boundaryTime = event.occurredAt;
             if (
               !(legacyRaw && legacyCursorless) &&
               (!Number.isFinite(Date.parse(boundaryTime)) ||
@@ -6721,6 +7083,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           enrichment = 'unavailable';
         else if (event.kind === 'terminal') {
           try {
+            wait.phase('enrichment');
             if (!access.context)
               throw new Error('Authorized transcript context unavailable');
             const reader = new TranscriptReader(access.context);
@@ -6758,6 +7121,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             enrichment = 'unavailable';
           }
         }
+        wait.phase('authorization');
         const fresh = await decideChatWatcherAccess(
           trustedRecipient(row.destination),
           eventTarget,
@@ -6868,6 +7232,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         changed = true;
       }
       if (changed) {
+        wait.phase('storage');
         await this.writeFile(file);
         this.notifyChange(file.watchers);
       }
@@ -6915,16 +7280,23 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       !legacyWithoutEvidence &&
       (!recorded || !evidenceEqual(recorded, accessEvidence(access)))
     ) {
-      await this.enqueueMutation(async () => {
-        const file = await this.readFile();
-        const current = file.watchers.find(
-          (candidate) => candidate.id === row.id,
-        );
-        if (current && current.status === 'active') {
-          current.deniedChatEventsThrough = new Date().toISOString();
-          await this.writeFile(file);
-        }
-      });
+      await this.enqueueMutation(
+        async () => {
+          const file = await this.readFile();
+          const current = file.watchers.find(
+            (candidate) => candidate.id === row.id,
+          );
+          if (current && current.status === 'active') {
+            current.deniedChatEventsThrough = new Date().toISOString();
+            await this.writeFile(file);
+          }
+        },
+        undefined,
+        {
+          name: 'watcher.reconcile_canonical_chat_watcher',
+          scope: watcherOwnerScope(row.destination),
+        },
+      );
       return;
     }
     const evidence = recorded ?? accessEvidence(access);
@@ -7154,7 +7526,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
 
   configure(
     surfaces: AppAdvisorWatcherSurfaces,
-    options?: { deferStartupRecovery?: boolean },
+    options?: {
+      deferStartupRecovery?: boolean;
+    },
   ): void {
     if (this.surfaces !== surfaces) this.summaryNotificationGeneration += 1;
     this.surfaces = surfaces;
@@ -7234,31 +7608,38 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     previousContext: string;
     nextContext: string;
   }): Promise<string[]> {
-    return this.enqueueMutation(async (): Promise<string[]> => {
-      const file = await this.readFile();
-      const rebound: string[] = [];
-      const updatedAt = new Date().toISOString();
-      for (const watcher of file.watchers) {
-        if (
-          backgroundDestinationWorkspaceId(watcher.destination) !==
-          input.workspaceId
-        )
-          continue;
-        if (
-          watcher.executionContext !== undefined &&
-          watcher.executionContext !== input.previousContext
-        )
-          continue;
-        watcher.executionContext = input.nextContext;
-        watcher.updatedAt = updatedAt;
-        rebound.push(watcher.id);
-      }
-      if (rebound.length > 0) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return rebound;
-    });
+    return this.enqueueMutation(
+      async (): Promise<string[]> => {
+        const file = await this.readFile();
+        const rebound: string[] = [];
+        const updatedAt = new Date().toISOString();
+        for (const watcher of file.watchers) {
+          if (
+            backgroundDestinationWorkspaceId(watcher.destination) !==
+            input.workspaceId
+          )
+            continue;
+          if (
+            watcher.executionContext !== undefined &&
+            watcher.executionContext !== input.previousContext
+          )
+            continue;
+          watcher.executionContext = input.nextContext;
+          watcher.updatedAt = updatedAt;
+          rebound.push(watcher.id);
+        }
+        if (rebound.length > 0) {
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+        return rebound;
+      },
+      undefined,
+      {
+        name: 'watcher.rebind_workspace_execution_contexts',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      },
+    );
   }
 
   private async reconcileLocalWatchers(generation: number): Promise<void> {
@@ -7356,6 +7737,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
                 candidate.id === watcher.id &&
                 watcherMatchesPipelineEvent(candidate, event),
               event,
+              watcherOwnerScope(watcher.destination),
             );
           }
         }
@@ -7409,8 +7791,15 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       clearTimeout(timer);
     this.delegateDeliveryRetryTimers.clear();
     this.lastAppAdvisorDestinationChatIds = new Set();
+    this.busyChatCompletions.clear();
+    this.firedCompletions.clear();
+    this.stopObservingIdleChats();
     this.blockedLocalScopes.clear();
     this.blockedLocalWorkspaces.clear();
+    this.localWorkspaceFenceWatchers.clear();
+    this.localScopeFenceWatchers.clear();
+    this.localScopeFenceHolders.clear();
+    this.localFenceEpoch += 1;
     this.configured = false;
   }
 
@@ -7578,359 +7967,71 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     return fired;
   }
 
-  async createManagedDelegationWatcher(
-    parent: DelegationParentContext,
-    request: WatchDelegatesRequest,
-    targets: ReadonlyArray<
-      DelegateWatchTarget & {
-        status: AgentDelegationStatus;
-        resultIndex: number | null;
-        settledAt?: number;
-      }
-    >,
-    requestHash: string,
-  ): Promise<AgentDelegationResult<WatchDelegatesValue>> {
-    const invocationKey = managedDelegationInvocationKey(parent);
-    const result = await this.enqueueMutation(async () => {
-      if (
-        this.blockedLocalWorkspaces.has(parent.projectId) ||
-        this.blockedLocalScopes.has(
-          localScopeKey(parent.projectId, parent.worktreeId),
-        )
-      )
-        return {
-          ok: false as const,
-          error: {
-            code: 'parent_unavailable' as const,
-            message: 'This watcher recipient is being removed or archived.',
-            retryable: false,
-          },
-        };
-      const file = await this.readFile();
-      const prior = file.watchers.find(
-        (watcher) =>
-          watcher.runtimeState?.kind === 'managed_delegation' &&
-          watcher.runtimeState.invocationKey === invocationKey,
-      );
-      if (prior?.runtimeState?.kind === 'managed_delegation') {
-        if (prior.runtimeState.requestHash !== requestHash)
-          return {
-            ok: false as const,
-            error: {
-              code: 'invalid_request' as const,
-              message: 'A watcher call cannot change its arguments.',
-              retryable: false,
+  async listLegacyDelegateWatchers(scope: {
+    projectId: string;
+    worktreeId: string;
+  }): Promise<LegacyDelegateWatcher[]> {
+    return (await this.readLegacyDelegateRows()).flatMap((row) =>
+      row.projectId === scope.projectId && row.worktreeId === scope.worktreeId
+        ? [
+            {
+              id: row.id,
+              targets: row.targets,
+              delivered: row.status === 'fired',
             },
-          };
-        return {
-          ok: true as const,
-          value: {
-            watcherId: prior.id,
-            mode:
-              prior.target.kind === 'managed_delegation'
-                ? prior.target.mode
-                : request.mode,
-            deadlineAt:
-              prior.target.kind === 'managed_delegation'
-                ? prior.target.deadlineAt
-                : Date.now(),
-            targets: prior.runtimeState.targets.map(
-              ({ delegationId, runGeneration }) => ({
-                delegationId,
-                runGeneration,
-              }),
-            ),
-          },
-        };
-      }
-      const active = file.watchers.filter(
-        (watcher) => watcher.status === 'active' || watcher.status === 'firing',
-      );
-      const destination = await withDestinationChatTitle({
-        projectId: parent.projectId,
-        worktreeId: parent.worktreeId,
-        chatId: parent.chatId,
-      });
-      // A delegate's watches count against that delegate's own capacity.
-      const recipient = parent.parentDelegationId
-        ? { ...destination, delegationId: parent.parentDelegationId }
-        : destination;
-      if (
-        active.length >= 200 ||
-        active.filter((watcher) => isSameRecipient(watcher, recipient))
-          .length >= 25
-      )
-        return {
-          ok: false as const,
-          error: {
-            code: 'capacity_exceeded' as const,
-            message: 'The active watcher limit was reached.',
-            retryable: false,
-          },
-        };
-      const now = Date.now();
-      const watcherId = randomUUID();
-      const deadlineAt = now + request.timeoutMs;
-      const ownerDescription = optionalTrimmed(parent.parentDescription);
-      const row: AppAdvisorWatcher = {
-        version: 1,
-        id: watcherId,
-        trigger: 'managed_delegation_completion',
-        target: {
-          kind: 'managed_delegation',
-          projectId: parent.projectId,
-          worktreeId: parent.worktreeId,
-          mode: request.mode,
-          deadlineAt,
-          targetCount: targets.length,
-          recipient: parent.parentDelegationId ? 'delegate' : 'root',
-        },
-        destination,
-        status: 'active',
-        label: 'Delegate completion',
-        createdAt: new Date(now).toISOString(),
-        updatedAt: new Date(now).toISOString(),
-        createdByToolUseId: parent.toolCallId,
-        dedupeKey: invocationKey,
-        runtimeState: {
-          kind: 'managed_delegation',
-          // Perform one durable baseline check immediately after registration.
-          // This closes the capture/subscription race without introducing a
-          // polling loop; an unsatisfied check reschedules itself at deadline.
-          nextAttemptAt: new Date(now).toISOString(),
-          requestHash,
-          invocationKey,
-          recipient: parent.parentDelegationId
-            ? {
-                kind: 'delegate',
-                delegationId: parent.parentDelegationId,
-                ...(ownerDescription ? { description: ownerDescription } : {}),
-                // The caller's own depth: direct children are depth 1.
-                depth: parent.depth,
-              }
-            : { kind: 'root' },
-          targets: targets.map((target) => ({
-            delegationId: target.delegationId,
-            runGeneration: target.runGeneration,
-            status: target.status,
-            resultIndex: target.resultIndex,
-            ...(target.settledAt !== undefined
-              ? { settledAt: target.settledAt }
-              : {}),
-          })),
-        },
-      };
-      const executionContext = await inheritedWatcherContext(
-        row.target,
-        destination,
-      );
-      if (executionContext !== undefined)
-        row.executionContext = executionContext;
-      file.watchers.push(row);
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return {
-        ok: true as const,
-        value: {
-          watcherId,
-          mode: request.mode,
-          deadlineAt,
-          targets: targets.map(({ delegationId, runGeneration }) => ({
-            delegationId,
-            runGeneration,
-          })),
-        },
-      };
-    });
-    await this.localScheduler.rescan();
-    return result;
+          ]
+        : [],
+    );
   }
 
-  async handleManagedDelegationSettled(
-    scope: { projectId: string; worktreeId: string },
-    delegationId: string,
-    result: StoredDelegateOutput,
-  ): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      let changed = false;
-      for (const watcher of file.watchers) {
-        if (
-          (watcher.status !== 'active' && watcher.status !== 'firing') ||
-          watcher.target.kind !== 'managed_delegation' ||
-          watcher.target.projectId !== scope.projectId ||
-          watcher.target.worktreeId !== scope.worktreeId ||
-          watcher.runtimeState?.kind !== 'managed_delegation'
-        )
-          continue;
-        const target = watcher.runtimeState.targets.find(
-          (candidate) =>
-            candidate.delegationId === delegationId &&
-            candidate.runGeneration === result.runGeneration,
+  private async readLegacyDelegateRows(): Promise<LegacyDelegateWatcherRow[]> {
+    const [snapshot, sidecar] = await Promise.all([
+      this.loadSnapshot(),
+      this.loadCanonicalRows(),
+    ]);
+    return [
+      ...(snapshot?.legacyDelegateRows ?? []),
+      ...committedCanonicalRows(sidecar, snapshot?.watchers ?? []),
+    ].flatMap((raw) => {
+      const row = decodeLegacyDelegateWatcher(raw);
+      return row ? [row] : [];
+    });
+  }
+
+  async removeLegacyDelegateWatchers(ids: readonly string[]): Promise<void> {
+    const requestedIds = new Set(ids);
+    if (requestedIds.size === 0) return;
+    const removed = await this.enqueueMutation(
+      async () => {
+        const legacyRows = (await this.readLegacyDelegateRows()).filter((row) =>
+          requestedIds.has(row.id),
         );
-        if (!target) continue;
-        target.status = result.status;
-        if (result.settledAt <= watcher.target.deadlineAt) {
-          target.resultIndex = result.resultIndex;
-          target.settledAt = result.settledAt;
-        } else {
-          target.resultIndex = null;
-          delete target.settledAt;
-        }
-        if (
-          watcher.status === 'firing' &&
-          watcher.runtimeState.pendingDelivery?.event.outcome === 'timeout'
-        ) {
-          const completed = managedDelegationWatchSatisfied(watcher);
-          if (completed) watcher.target.outcome = 'completed';
-          const priorTargets =
-            watcher.runtimeState.pendingDelivery.event.targets;
-          watcher.runtimeState.pendingDelivery.event = {
-            ...watcher.runtimeState.pendingDelivery.event,
-            outcome: completed ? 'completed' : 'timeout',
-            targets: watcher.runtimeState.targets.map((entry) => {
-              const prior = priorTargets.find(
-                (candidate) =>
-                  candidate.delegationId === entry.delegationId &&
-                  candidate.runGeneration === entry.runGeneration,
-              );
-              const phase: AgentDelegationPhase | undefined =
-                entry === target ? 'idle' : prior?.phase;
-              // A content-free code only: never the stop's message or output.
-              const exitReason: DelegationStopReason | undefined =
-                entry === target ? result.stopReason : prior?.exitReason;
-              return {
-                delegationId: entry.delegationId,
-                runGeneration: entry.runGeneration,
-                status: entry.status,
-                resultIndex: entry.resultIndex,
-                ...(phase !== undefined ? { phase } : {}),
-                ...(exitReason !== undefined ? { exitReason } : {}),
-              };
-            }),
-          };
-        }
-        watcher.runtimeState.nextAttemptAt = new Date().toISOString();
-        watcher.updatedAt = new Date().toISOString();
-        changed = true;
+        if (legacyRows.length === 0) return [];
+        // Migration removal is silent: no cancellation or subscriber notification.
+        await this.writeFile(await this.readFile(), undefined, requestedIds);
+        return legacyRows;
+      },
+      undefined,
+      {
+        name: 'watcher.remove_legacy_delegate_watchers',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      },
+    );
+    for (const row of removed) {
+      this.clearDelegateDeliveryRetry(row.id);
+      this.cancelPendingDelivery(row.id);
+      for (const key of Array.from(this.localDeliveriesInFlight)) {
+        if (key.endsWith(`:${row.id}`))
+          this.localDeliveriesInFlight.delete(key);
       }
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
+      for (const deliveryId of [
+        row.pendingDelivery?.eventId,
+        row.pendingLocalDelivery?.deliveryId,
+        row.chatDeliveryId,
+      ]) {
+        if (deliveryId) this.unsubmittedChatDeliveries.delete(deliveryId);
       }
-    });
-    await this.localScheduler.rescan();
-  }
-
-  private async evaluateManagedDelegationWatcher(
-    watcher: AppAdvisorWatcher,
-  ): Promise<DelegateWatchEvent | undefined> {
-    if (
-      watcher.target.kind !== 'managed_delegation' ||
-      watcher.runtimeState?.kind !== 'managed_delegation'
-    )
-      return undefined;
-    let records: Awaited<ReturnType<FileDelegationStorage['load']>> = [];
-    try {
-      records = await new FileDelegationStorage(
-        join(
-          getWorktreeDataDir(
-            watcher.target.projectId,
-            watcher.target.worktreeId,
-          ),
-          'delegation',
-          'runs',
-        ),
-      ).load();
-    } catch (error) {
-      if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
     }
-    return this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const current = file.watchers.find((entry) => entry.id === watcher.id);
-      if (
-        !current ||
-        current.status !== 'active' ||
-        current.target.kind !== 'managed_delegation' ||
-        current.runtimeState?.kind !== 'managed_delegation'
-      )
-        return undefined;
-      const phaseByTarget = new Map<string, AgentDelegationPhase | undefined>();
-      const exitReasonByTarget = new Map<string, DelegationStopReason>();
-      for (const target of current.runtimeState.targets) {
-        const record = records.find(
-          (candidate) => candidate.state.delegationId === target.delegationId,
-        );
-        const result = record?.results?.find(
-          (candidate) => candidate.runGeneration === target.runGeneration,
-        );
-        if (result) {
-          target.status = result.status;
-          if (result.settledAt <= current.target.deadlineAt) {
-            target.resultIndex = result.resultIndex;
-            target.settledAt = result.settledAt;
-          } else {
-            target.resultIndex = null;
-            delete target.settledAt;
-          }
-        }
-        phaseByTarget.set(
-          `${target.delegationId}:${target.runGeneration}`,
-          result
-            ? 'idle'
-            : record && record.state.runGeneration === target.runGeneration
-              ? delegationPhase(record)
-              : undefined,
-        );
-        // Why a stopped run settled, so a watching parent learns an ancestor
-        // stopped it without reading output. A code only, never the message.
-        const exitReason =
-          result && record
-            ? delegationExitReason(record, target.runGeneration)
-            : undefined;
-        if (exitReason)
-          exitReasonByTarget.set(
-            `${target.delegationId}:${target.runGeneration}`,
-            exitReason,
-          );
-      }
-      const completed = managedDelegationWatchSatisfied(current);
-      const timedOut = Date.now() >= current.target.deadlineAt;
-      if (!completed && !timedOut) {
-        current.runtimeState.nextAttemptAt = new Date(
-          current.target.deadlineAt,
-        ).toISOString();
-        current.updatedAt = new Date().toISOString();
-        await this.writeFile(file);
-        return undefined;
-      }
-      const outcome = completed ? ('completed' as const) : ('timeout' as const);
-      current.target.outcome = outcome;
-      current.updatedAt = new Date().toISOString();
-      const event: DelegateWatchEvent = {
-        watcherId: current.id,
-        outcome,
-        mode: current.target.mode,
-        deadlineAt: current.target.deadlineAt,
-        targets: current.runtimeState.targets.map(
-          ({ delegationId, runGeneration, status, resultIndex }) => {
-            const key = `${delegationId}:${runGeneration}`;
-            const phase = phaseByTarget.get(key);
-            const exitReason = exitReasonByTarget.get(key);
-            return {
-              delegationId,
-              runGeneration,
-              status,
-              resultIndex,
-              ...(phase !== undefined ? { phase } : {}),
-              ...(exitReason !== undefined ? { exitReason } : {}),
-            };
-          },
-        ),
-      };
-      await this.writeFile(file);
-      return event;
-    });
   }
 
   async createLocalWatcher(
@@ -7939,159 +8040,209 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     toolUseId: string,
     followUpInstruction?: string,
     executionScope?: LocalWatcherScope,
+    context?: { signal?: AbortSignal },
   ): Promise<AppAdvisorWatcherSummary> {
+    checkRegistrationSignal(context?.signal);
     if (hasInvalidRecipient(destination))
       throw new Error('Watcher recipient is unavailable.');
-    destination = await withDestinationChatTitle(destination);
-    let persistedExecutionScope: AppAdvisorWatcher['executionScope'];
-    if (target.kind === 'command_watch' && executionScope) {
-      const currentCreatedAt = await localWatcherScopeCreatedAt(executionScope);
-      if (
-        currentCreatedAt === null ||
-        (executionScope.createdAt !== undefined &&
-          executionScope.createdAt !== currentCreatedAt)
-      ) {
-        throw new Error('The approved execution scope is no longer available.');
-      }
-      persistedExecutionScope = {
-        ...executionScope,
-        createdAt: currentCreatedAt,
-      };
-    }
-    const result = await this.enqueueMutation(async () => {
-      if (
-        persistedExecutionScope &&
-        !(await localWatcherScopeExists(persistedExecutionScope))
-      ) {
-        throw new Error('The approved execution scope is no longer available.');
-      }
-      const lifecycleScopes = persistedExecutionScope
-        ? [destination, persistedExecutionScope]
-        : [destination];
-      for (const scope of lifecycleScopes) {
-        if (
-          this.blockedLocalWorkspaces.has(scope.projectId) ||
-          this.blockedLocalScopes.has(
-            localScopeKey(scope.projectId, scope.worktreeId),
-          )
-        )
-          throw new Error('This scope is being removed or archived.');
-      }
-      const bounded = (value: number, min: number, max: number): boolean =>
-        Number.isInteger(value) && value >= min && value <= max;
-      if (target.kind === 'scheduled_wakeup') {
-        if (!bounded(target.delaySeconds, 60, 3600))
-          throw new Error('delaySeconds must be an integer from 60 to 3600.');
-        target = {
-          ...target,
-          scheduledFor: new Date(
-            Date.now() + target.delaySeconds * 1000,
-          ).toISOString(),
-        };
-      } else if (
-        !nonBlank(target.command) ||
-        Buffer.byteLength(target.command) > LOCAL_WATCHER_LIMITS.commandBytes ||
-        !nonBlank(target.cwd) ||
-        !bounded(target.intervalSeconds, 5, 3600) ||
-        !bounded(target.maxAttempts, 1, 100)
-      ) {
-        throw new Error(
-          'WatchCommand requires a command up to 16 KiB, intervalSeconds 5–3600, and maxAttempts 1–100.',
-        );
-      }
-      const file = await this.readFile();
-      const configurationKey = (
-        value: LocalWatcherTarget,
-        scope?: AppAdvisorWatcher['executionScope'],
-      ): string =>
-        JSON.stringify({
-          target:
-            value.kind === 'scheduled_wakeup'
-              ? { kind: value.kind, delaySeconds: value.delaySeconds }
-              : value,
-          executionScope: scope,
-        });
-      const existing = file.watchers.find(
-        (w) =>
-          w.createdByToolUseId === toolUseId &&
-          isSameRecipient(w, destination) &&
-          w.target.kind === target.kind,
-      );
-      if (existing) {
-        if (
-          (existing.target.kind !== 'scheduled_wakeup' &&
-            existing.target.kind !== 'command_watch') ||
-          configurationKey(existing.target, existing.executionScope) !==
-            configurationKey(target, persistedExecutionScope) ||
-          existing.followUpInstruction !== followUpInstruction
-        )
-          throw new Error(
-            'This tool call ID was already used with different watcher arguments.',
-          );
-        return toSummary(existing);
-      }
-      const active = file.watchers.filter(
-        (w) => w.status === 'active' || w.status === 'firing',
-      );
-      // Bind the destination chat's context; delivery re-authorizes with it.
-      const executionContext = await inheritedWatcherContext(
-        target,
-        destination,
-      );
-      const duplicate =
-        target.kind === 'command_watch'
-          ? active.find(
-              (w) =>
-                isSameRecipient(w, destination) &&
-                w.target.kind === 'command_watch' &&
-                configurationKey(w.target, w.executionScope) ===
-                  configurationKey(target, persistedExecutionScope) &&
-                w.followUpInstruction === followUpInstruction &&
-                w.executionContext === executionContext,
-            )
-          : undefined;
-      if (duplicate) return toSummary(duplicate);
-      if (
-        active.length >= 200 ||
-        active.filter((w) => isSameRecipient(w, destination)).length >= 25
-      )
-        throw new Error('Active watcher limit reached.');
-      const now = new Date().toISOString();
-      const trigger =
-        target.kind === 'scheduled_wakeup'
-          ? 'scheduled_wakeup'
-          : 'command_watch_resolved';
-      const row: AppAdvisorWatcher = {
-        version: 1,
-        id: randomUUID(),
-        trigger,
-        target,
-        destination,
-        status: 'active',
-        label: defaultLabel(trigger, target),
-        followUpInstruction,
-        createdAt: now,
-        updatedAt: now,
-        createdByToolUseId: toolUseId,
-        ...(persistedExecutionScope
-          ? { executionScope: persistedExecutionScope }
-          : {}),
-        ...(executionContext !== undefined ? { executionContext } : {}),
-        dedupeKey: buildDedupeKey(trigger, target, destination),
-        runtimeState: {
-          kind: 'local_watcher',
-          attempts: 0,
-          nextAttemptAt:
-            target.kind === 'scheduled_wakeup' ? target.scheduledFor : now,
-        },
-      };
-      file.watchers.push(row);
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return toSummary(row);
+    const wait = startChatWaitOperation({
+      name: 'watcher.create_local_watcher',
+      scope: watcherOwnerScope(destination),
+      queueDepth: this.mutationQueueDepth,
+      bounded: true,
+      recordEnd: true,
     });
-    await this.localScheduler.rescan();
-    return result;
+    let persistedExecutionScope: AppAdvisorWatcher['executionScope'];
+    try {
+      wait.phase('destination_resolution');
+      destination = await runWithChatWaitOperation(wait, () =>
+        awaitRegistration(
+          withDestinationChatTitle(destination),
+          context?.signal,
+        ),
+      );
+      if (target.kind === 'command_watch' && executionScope) {
+        wait.phase('scope_resolution');
+        const currentCreatedAt = await runWithChatWaitOperation(wait, () =>
+          awaitRegistration(
+            localWatcherScopeCreatedAt(executionScope),
+            context?.signal,
+          ),
+        );
+        if (
+          currentCreatedAt === null ||
+          (executionScope.createdAt !== undefined &&
+            executionScope.createdAt !== currentCreatedAt)
+        ) {
+          throw new Error(
+            'The approved execution scope is no longer available.',
+          );
+        }
+        persistedExecutionScope = {
+          ...executionScope,
+          createdAt: currentCreatedAt,
+        };
+      }
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+    const result = await this.enqueueMutation(
+      async () => {
+        if (
+          persistedExecutionScope &&
+          !(await awaitRegistration(
+            localWatcherScopeExists(persistedExecutionScope),
+            context?.signal,
+          ))
+        ) {
+          throw new Error(
+            'The approved execution scope is no longer available.',
+          );
+        }
+        const lifecycleScopes = persistedExecutionScope
+          ? [destination, persistedExecutionScope]
+          : [destination];
+        for (const scope of lifecycleScopes) {
+          if (
+            this.blockedLocalWorkspaces.has(scope.projectId) ||
+            this.blockedLocalScopes.has(
+              localScopeKey(scope.projectId, scope.worktreeId),
+            )
+          )
+            throw new Error('This scope is being removed or archived.');
+        }
+        const bounded = (value: number, min: number, max: number): boolean =>
+          Number.isInteger(value) && value >= min && value <= max;
+        if (target.kind === 'scheduled_wakeup') {
+          if (!bounded(target.delaySeconds, 60, 3600))
+            throw new Error('delaySeconds must be an integer from 60 to 3600.');
+          target = {
+            ...target,
+            scheduledFor: new Date(
+              Date.now() + target.delaySeconds * 1000,
+            ).toISOString(),
+          };
+        } else if (
+          !nonBlank(target.command) ||
+          Buffer.byteLength(target.command) >
+            LOCAL_WATCHER_LIMITS.commandBytes ||
+          !nonBlank(target.cwd) ||
+          !bounded(target.intervalSeconds, 5, 3600) ||
+          !bounded(target.maxAttempts, 1, 100)
+        ) {
+          throw new Error(
+            'WatchCommand requires a command up to 16 KiB, intervalSeconds 5–3600, and maxAttempts 1–100.',
+          );
+        }
+        const file = await awaitRegistration(this.readFile(), context?.signal);
+        const configurationKey = (
+          value: LocalWatcherTarget,
+          scope?: AppAdvisorWatcher['executionScope'],
+        ): string =>
+          JSON.stringify({
+            target:
+              value.kind === 'scheduled_wakeup'
+                ? { kind: value.kind, delaySeconds: value.delaySeconds }
+                : value,
+            executionScope: scope,
+          });
+        const existing = file.watchers.find(
+          (w) =>
+            w.createdByToolUseId === toolUseId &&
+            isSameRecipient(w, destination) &&
+            w.target.kind === target.kind,
+        );
+        if (existing) {
+          if (
+            (existing.target.kind !== 'scheduled_wakeup' &&
+              existing.target.kind !== 'command_watch') ||
+            configurationKey(existing.target, existing.executionScope) !==
+              configurationKey(target, persistedExecutionScope) ||
+            existing.followUpInstruction !== followUpInstruction
+          )
+            throw new Error(
+              'This tool call ID was already used with different watcher arguments.',
+            );
+          return toSummary(existing);
+        }
+        const active = file.watchers.filter(
+          (w) => w.status === 'active' || w.status === 'firing',
+        );
+        // Bind the destination chat's context; delivery re-authorizes with it.
+        const executionContext = await awaitRegistration(
+          inheritedWatcherContext(target, destination),
+          context?.signal,
+        );
+        const duplicate = active.find(
+          (w) =>
+            isSameRecipient(w, destination) &&
+            (w.target.kind === 'command_watch' ||
+              w.target.kind === 'scheduled_wakeup') &&
+            w.target.kind === target.kind &&
+            configurationKey(w.target, w.executionScope) ===
+              configurationKey(target, persistedExecutionScope) &&
+            w.followUpInstruction === followUpInstruction &&
+            (target.kind === 'scheduled_wakeup' ||
+              w.executionContext === executionContext),
+        );
+        if (duplicate) return toSummary(duplicate);
+        if (
+          active.length >= 200 ||
+          active.filter((w) => isSameRecipient(w, destination)).length >= 25
+        )
+          throw new Error('Active watcher limit reached.');
+        const now = new Date().toISOString();
+        const trigger =
+          target.kind === 'scheduled_wakeup'
+            ? 'scheduled_wakeup'
+            : 'command_watch_resolved';
+        const row: AppAdvisorWatcher = {
+          version: 1,
+          id: randomUUID(),
+          trigger,
+          target,
+          destination,
+          status: 'active',
+          label: defaultLabel(trigger, target),
+          followUpInstruction,
+          createdAt: now,
+          updatedAt: now,
+          createdByToolUseId: toolUseId,
+          ...(persistedExecutionScope
+            ? { executionScope: persistedExecutionScope }
+            : {}),
+          ...(executionContext !== undefined ? { executionContext } : {}),
+          dedupeKey: buildDedupeKey(trigger, target, destination),
+          runtimeState: {
+            kind: 'local_watcher',
+            attempts: 0,
+            nextAttemptAt:
+              target.kind === 'scheduled_wakeup' ? target.scheduledFor : now,
+          },
+        };
+        file.watchers.push(row);
+        await this.writeFile(file, context?.signal);
+        this.notifyChange(file.watchers);
+        return toSummary(row);
+      },
+      context?.signal,
+      {
+        name: 'watcher.create_local_watcher',
+        scope: watcherOwnerScope(destination),
+        finishOnSuccess: false,
+      },
+      wait,
+    );
+    try {
+      wait.phase('scheduler_rescan', this.mutationQueueDepth);
+      await this.localScheduler.rescan();
+      wait.finish('completed');
+      return result;
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
   }
 
   async captureLocalExecutionScope(
@@ -8104,49 +8255,139 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     return { ...scope, createdAt };
   }
 
+  /**
+   * Undoes only this scope key's fence (CAN-4987): watchers it did not start
+   * cancelling, or that another fence (including an in-flight deletion of this
+   * project) still holds, stay cancelled. While another operation also holds
+   * the key, this drops only the caller's hold (CAN-4989).
+   */
   async releaseLocalScopeFence(
     projectId: string,
     worktreeId: string,
   ): Promise<void> {
     const scopeKey = localScopeKey(projectId, worktreeId);
-    const restored = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      let changed = false;
-      for (const watcher of file.watchers) {
-        if (
-          localWatcherMatchesScope(watcher, projectId, worktreeId) &&
-          (watcher.runtimeState?.kind === 'local_watcher' ||
-            watcher.runtimeState?.kind === 'managed_delegation') &&
-          watcher.runtimeState.cancellationPending
-        ) {
-          delete watcher.runtimeState.cancellationPending;
-          watcher.updatedAt = new Date().toISOString();
-          changed = true;
+    const holder = currentLocalFenceHolder();
+    const restored = await this.enqueueMutation(
+      async () => {
+        const holders = this.localScopeFenceHolders.get(scopeKey);
+        if (holders && Array.from(holders).some((other) => other !== holder)) {
+          holders.delete(holder);
+          return false;
         }
-      }
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      this.blockedLocalScopes.delete(scopeKey);
-      return changed;
-    });
+        const changed = await this.restoreOwnLocalCancellations(
+          this.localScopeFenceWatchers.get(scopeKey),
+          { kind: 'scope', scopeKey },
+        );
+        // Kept until the store is written, as for the workspace fence below.
+        this.localScopeFenceWatchers.delete(scopeKey);
+        this.localScopeFenceHolders.delete(scopeKey);
+        this.blockedLocalScopes.delete(scopeKey);
+        return changed;
+      },
+      undefined,
+      {
+        name: 'watcher.release_local_scope_fence',
+        scope: { projectId, worktreeId },
+      },
+    );
     if (restored) await this.localScheduler.rescan();
   }
 
+  /**
+   * Undoes only this workspace's fence (CAN-4976): scope fences other
+   * operations hold stay up, and so do the cancellations of watchers they hold.
+   */
   async releaseLocalWorkspaceFence(projectId: string): Promise<void> {
-    for (const scope of Array.from(this.blockedLocalScopes)) {
-      const ids: unknown = JSON.parse(scope);
+    await this.enqueueMutation(
+      async () => {
+        await this.restoreOwnLocalCancellations(
+          this.localWorkspaceFenceWatchers.get(projectId),
+          { kind: 'workspace', projectId },
+        );
+        // Kept until the store is written, so a retry after a store failure
+        // still finds this fence's watchers and admission stays shut meanwhile.
+        this.localWorkspaceFenceWatchers.delete(projectId);
+        this.blockedLocalWorkspaces.delete(projectId);
+      },
+      undefined,
+      { name: 'watcher.release_local_workspace_fence', scope: { projectId } },
+    );
+    await this.localScheduler.rescan();
+  }
+
+  /** Runs inside a mutation; returns whether it restored any watcher. */
+  private async restoreOwnLocalCancellations(
+    started: Set<string> | undefined,
+    releasing: LocalFence,
+  ): Promise<boolean> {
+    if (!started?.size) return false;
+    const file = await this.readFile();
+    let changed = false;
+    for (const watcher of file.watchers) {
       if (
-        Array.isArray(ids) &&
-        ids[0] === projectId &&
-        typeof ids[1] === 'string'
+        started.has(watcher.id) &&
+        watcher.runtimeState?.kind === 'local_watcher' &&
+        watcher.runtimeState.cancellationPending &&
+        !this.handOffToAnotherLocalFence(watcher, releasing)
       ) {
-        await this.releaseLocalScopeFence(projectId, ids[1]);
+        delete watcher.runtimeState.cancellationPending;
+        watcher.updatedAt = new Date().toISOString();
+        changed = true;
       }
     }
-    this.blockedLocalWorkspaces.delete(projectId);
-    await this.localScheduler.rescan();
+    if (changed) {
+      await this.writeFile(file);
+      this.notifyChange(file.watchers);
+    }
+    return changed;
+  }
+
+  /**
+   * When another fence still holds the watcher, that fence takes over its
+   * cancellation, so the watcher returns only when that fence is released.
+   * Without `releasing`, as on a delete's rollback or at startup recovery,
+   * every live fence counts (CAN-4989).
+   */
+  private handOffToAnotherLocalFence(
+    watcher: AppAdvisorWatcher,
+    releasing?: LocalFence,
+  ): boolean {
+    for (const { projectId, worktreeId } of persistedLocalWatcherScopes(
+      watcher,
+    )) {
+      const scopeKey = localScopeKey(projectId, worktreeId);
+      if (
+        !(releasing?.kind === 'scope' && releasing.scopeKey === scopeKey) &&
+        this.blockedLocalScopes.has(scopeKey)
+      ) {
+        fenceWatchers(this.localScopeFenceWatchers, scopeKey).add(watcher.id);
+        return true;
+      }
+      if (
+        !(
+          releasing?.kind === 'workspace' && releasing.projectId === projectId
+        ) &&
+        this.blockedLocalWorkspaces.has(projectId)
+      ) {
+        fenceWatchers(this.localWorkspaceFenceWatchers, projectId).add(
+          watcher.id,
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Whether a live fence tracks the watcher's cancellation. */
+  private isHeldByLocalFence(watcher: AppAdvisorWatcher): boolean {
+    return persistedLocalWatcherScopes(watcher).some(
+      ({ projectId, worktreeId }) =>
+        this.localScopeFenceWatchers
+          .get(localScopeKey(projectId, worktreeId))
+          ?.has(watcher.id) === true ||
+        this.localWorkspaceFenceWatchers.get(projectId)?.has(watcher.id) ===
+          true,
+    );
   }
 
   async commitLocalScopeCancellation(
@@ -8154,167 +8395,290 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     worktreeId: string,
   ): Promise<void> {
     const scopeKey = localScopeKey(projectId, worktreeId);
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      // Delegate recipients live in this scope's delegation store, so their
-      // watchers of every kind end with it.
-      const retained = file.watchers.filter(
-        (watcher) =>
-          !(
-            (localWatcherMatchesScope(watcher, projectId, worktreeId) &&
-              (watcher.runtimeState?.kind === 'local_watcher' ||
-                watcher.runtimeState?.kind === 'managed_delegation') &&
-              watcher.runtimeState.cancellationPending !== undefined) ||
-            isLiveDelegateWatcherInScope(watcher, projectId, worktreeId)
-          ),
+    const holder = currentLocalFenceHolder();
+    // Every caller has already purged this worktree's diagnostics.
+    const diagnostics = recordForPurgedWorktree();
+    try {
+      await this.commitLocalScopeCancellationMutation(
+        projectId,
+        worktreeId,
+        diagnostics.record,
       );
-      if (retained.length !== file.watchers.length) {
-        file.watchers = retained;
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-    });
-    this.blockedLocalScopes.delete(scopeKey);
+      await this.removeLegacyDelegateWatchers(
+        (await this.readLegacyDelegateRows())
+          .filter(
+            (row) =>
+              row.projectId === projectId && row.worktreeId === worktreeId,
+          )
+          .map((row) => row.id),
+      );
+      // Another operation still removing this scope keeps admission shut.
+      const holders = this.localScopeFenceHolders.get(scopeKey);
+      holders?.delete(holder);
+      if (holders?.size) return;
+      this.blockedLocalScopes.delete(scopeKey);
+      this.localScopeFenceWatchers.delete(scopeKey);
+      this.localScopeFenceHolders.delete(scopeKey);
+    } finally {
+      // The fence never waits on this purge's observability writes.
+      await diagnostics.purge();
+    }
+  }
+
+  private async commitLocalScopeCancellationMutation(
+    projectId: string,
+    worktreeId: string,
+    record: PurgedWorktreeRecorder['record'],
+  ): Promise<void> {
+    await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        // Delegate recipients live in this scope's delegation store, so their
+        // watchers of every kind end with it.
+        const retained = file.watchers.filter(
+          (watcher) =>
+            !(
+              (localWatcherMatchesScope(watcher, projectId, worktreeId) &&
+                watcher.runtimeState?.kind === 'local_watcher' &&
+                watcher.runtimeState.cancellationPending !== undefined) ||
+              isLiveDelegateWatcherInScope(watcher, projectId, worktreeId)
+            ),
+        );
+        if (retained.length !== file.watchers.length) {
+          file.watchers = retained;
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+      },
+      undefined,
+      {
+        name: 'watcher.commit_local_scope_cancellation',
+        scope: { projectId, worktreeId },
+        record,
+      },
+    );
   }
 
   async commitLocalWorkspaceCancellation(projectId: string): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const retained = file.watchers.filter(
-        (watcher) =>
-          !(
-            (localWatcherMatchesScope(watcher, projectId) &&
-              (watcher.runtimeState?.kind === 'local_watcher' ||
-                watcher.runtimeState?.kind === 'managed_delegation') &&
-              watcher.runtimeState.cancellationPending !== undefined) ||
-            isLiveDelegateWatcherInScope(watcher, projectId)
-          ),
-      );
-      if (retained.length !== file.watchers.length) {
-        file.watchers = retained;
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-    });
+    await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        const retained = file.watchers.filter(
+          (watcher) =>
+            !(
+              (localWatcherMatchesScope(watcher, projectId) &&
+                watcher.runtimeState?.kind === 'local_watcher' &&
+                watcher.runtimeState.cancellationPending !== undefined) ||
+              isLiveDelegateWatcherInScope(watcher, projectId)
+            ),
+        );
+        if (retained.length !== file.watchers.length) {
+          file.watchers = retained;
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+      },
+      undefined,
+      {
+        name: 'watcher.commit_local_workspace_cancellation',
+        scope: { projectId },
+      },
+    );
+    await this.removeLegacyDelegateWatchers(
+      (await this.readLegacyDelegateRows())
+        .filter((row) => row.projectId === projectId)
+        .map((row) => row.id),
+    );
     for (const scope of Array.from(this.blockedLocalScopes)) {
       const ids: unknown = JSON.parse(scope);
-      if (Array.isArray(ids) && ids[0] === projectId)
+      if (Array.isArray(ids) && ids[0] === projectId) {
         this.blockedLocalScopes.delete(scope);
+        this.localScopeFenceWatchers.delete(scope);
+        this.localScopeFenceHolders.delete(scope);
+      }
     }
     this.blockedLocalWorkspaces.delete(projectId);
+    this.localWorkspaceFenceWatchers.delete(projectId);
   }
 
   private async restoreInterruptedLocalCancellations(): Promise<string[]> {
-    return this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      let changed = false;
-      const retained: AppAdvisorWatcher[] = [];
-      for (const watcher of file.watchers) {
-        if (
-          (watcher.runtimeState?.kind === 'local_watcher' ||
-            watcher.runtimeState?.kind === 'managed_delegation') &&
-          watcher.runtimeState.cancellationPending
-        ) {
-          const scopeExists = await localWatcherScopeExists(
-            watcher.runtimeState.kind === 'local_watcher'
-              ? (watcher.runtimeState.cancellationPending.scope ??
-                  persistedLocalWatcherScope(watcher))
-              : persistedLocalWatcherScope(watcher),
-          );
-          if (!scopeExists) {
+    return this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        let changed = false;
+        const retained: AppAdvisorWatcher[] = [];
+        for (const watcher of file.watchers) {
+          if (
+            watcher.runtimeState?.kind === 'local_watcher' &&
+            watcher.runtimeState.cancellationPending
+          ) {
+            // A fence raised before deferred recovery settles what it cancelled.
+            if (this.isHeldByLocalFence(watcher)) {
+              retained.push(watcher);
+              continue;
+            }
+            const scopeExists = await localWatcherScopeExists(
+              watcher.runtimeState.cancellationPending.scope ??
+                persistedLocalWatcherScope(watcher),
+            );
+            if (!scopeExists) {
+              changed = true;
+              continue;
+            }
+            // An earlier run's cancellation in a scope a fence now holds.
+            if (this.handOffToAnotherLocalFence(watcher)) {
+              retained.push(watcher);
+              continue;
+            }
+            delete watcher.runtimeState.cancellationPending;
+            watcher.updatedAt = new Date().toISOString();
             changed = true;
-            continue;
           }
-          delete watcher.runtimeState.cancellationPending;
-          watcher.updatedAt = new Date().toISOString();
-          changed = true;
+          retained.push(watcher);
         }
-        retained.push(watcher);
-      }
-      if (changed) {
-        file.watchers = retained;
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return (file.inlineReservations ?? [])
-        .filter((row) => row.state === 'pending')
-        .map((row) => row.reservationId);
-    });
+        if (changed) {
+          file.watchers = retained;
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+        return (file.inlineReservations ?? [])
+          .filter((row) => row.state === 'pending')
+          .map((row) => row.reservationId);
+      },
+      undefined,
+      {
+        name: 'watcher.restore_interrupted_local_cancellations',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+        recordEnd: false,
+      },
+    );
   }
 
   async cancelLocalWorkspace(projectId: string): Promise<void> {
+    const epoch = this.localFenceEpoch;
     this.blockedLocalWorkspaces.add(projectId);
     // Read behind earlier registrations so none can be missed by this sweep.
-    const scopes = await this.enqueueMutation(async () =>
-      Array.from(
-        new Set(
-          (await this.readFile()).watchers
-            .filter(
-              (row) =>
-                localWatcherMatchesScope(row, projectId) &&
-                (row.runtimeState?.kind === 'local_watcher' ||
-                  row.runtimeState?.kind === 'managed_delegation'),
-            )
-            .flatMap((row) =>
-              persistedLocalWatcherScopes(row)
-                .filter((scope) => scope.projectId === projectId)
-                .map((scope) => scope.worktreeId),
+    const { scopes, started } = await this.enqueueMutation(
+      async () => {
+        // Again in queue order, as for a scope fence.
+        const live = epoch === this.localFenceEpoch;
+        if (live) this.blockedLocalWorkspaces.add(projectId);
+        return {
+          started: live
+            ? fenceWatchers(this.localWorkspaceFenceWatchers, projectId)
+            : new Set<string>(),
+          scopes: Array.from(
+            new Set(
+              (await this.readFile()).watchers
+                .filter(
+                  (row) =>
+                    localWatcherMatchesScope(row, projectId) &&
+                    row.runtimeState?.kind === 'local_watcher',
+                )
+                .flatMap((row) =>
+                  persistedLocalWatcherScopes(row)
+                    .filter((scope) => scope.projectId === projectId)
+                    .map((scope) => scope.worktreeId),
+                ),
             ),
-        ),
-      ),
+          ),
+        };
+      },
+      undefined,
+      { name: 'watcher.cancel_local_workspace', scope: { projectId } },
     );
+    // The workspace block already refuses admission to every scope, so this
+    // takes no scope fences and its release cannot lift one another holds.
     await Promise.all(
-      scopes.map((worktreeId) => this.cancelLocalScope(projectId, worktreeId)),
+      scopes.map((worktreeId) =>
+        this.cancelLocalScopeWatchers(projectId, worktreeId, () => started),
+      ),
     );
   }
 
-  /** Fence admission, remove subscriptions, then await process termination before disk cleanup. */
+  /**
+   * Fence admission, remove subscriptions, then await process termination before disk cleanup.
+   * Fences on one scope key share its block and watcher set. One operation
+   * re-fences its scope in nested steps, so its first release or commit lifts
+   * them; another operation's hold on the key keeps them up (CAN-4989).
+   */
   async cancelLocalScope(projectId: string, worktreeId: string): Promise<void> {
     const scopeKey = localScopeKey(projectId, worktreeId);
-    this.blockedLocalScopes.add(scopeKey);
-    const ids = await this.enqueueMutation(async () => {
-      const cancellationCreatedAt = await localWatcherScopeCreatedAt({
-        projectId,
-        worktreeId,
-      });
-      const file = await this.readFile();
-      const removed = file.watchers.filter(
-        (w) =>
-          (w.runtimeState?.kind === 'local_watcher' ||
-            w.runtimeState?.kind === 'managed_delegation') &&
-          localWatcherMatchesScope(w, projectId, worktreeId) &&
-          (w.status === 'active' || w.status === 'firing'),
-      );
-      const ids = new Set(removed.map((w) => w.id));
-      for (const watcher of removed) {
-        if (
-          watcher.runtimeState?.kind === 'local_watcher' ||
-          watcher.runtimeState?.kind === 'managed_delegation'
-        ) {
-          watcher.runtimeState.cancellationPending ??=
-            watcher.runtimeState.kind === 'local_watcher'
-              ? {
-                  previousStatus:
-                    watcher.status === 'firing' ? 'firing' : 'active',
-                  scope: {
-                    projectId,
-                    worktreeId,
-                    createdAt: cancellationCreatedAt ?? undefined,
-                  },
-                }
-              : {
-                  previousStatus:
-                    watcher.status === 'firing' ? 'firing' : 'active',
-                };
-          watcher.updatedAt = new Date().toISOString();
-        }
-      }
-      if (ids.size) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return Array.from(ids);
+    const holder = currentLocalFenceHolder();
+    const epoch = this.localFenceEpoch;
+    this.holdLocalScopeFence(scopeKey, holder);
+    await this.cancelLocalScopeWatchers(projectId, worktreeId, () => {
+      // A shutdown since the call cleared every fence; this one stays down.
+      if (epoch !== this.localFenceEpoch) return new Set<string>();
+      // Again in queue order: a release or commit by this holder queued ahead
+      // of this fence has already lifted the block and dropped the set.
+      this.holdLocalScopeFence(scopeKey, holder);
+      return fenceWatchers(this.localScopeFenceWatchers, scopeKey);
     });
+  }
+
+  private holdLocalScopeFence(
+    scopeKey: string,
+    holder: LocalFenceHolder,
+  ): void {
+    this.blockedLocalScopes.add(scopeKey);
+    const holders =
+      this.localScopeFenceHolders.get(scopeKey) ?? new Set<LocalFenceHolder>();
+    holders.add(holder);
+    this.localScopeFenceHolders.set(scopeKey, holders);
+  }
+
+  /**
+   * `fence` runs first inside the mutation and returns the set that collects
+   * the watchers whose cancellation this call began.
+   */
+  private async cancelLocalScopeWatchers(
+    projectId: string,
+    worktreeId: string,
+    fence: () => Set<string>,
+  ): Promise<void> {
+    const ids = await this.enqueueMutation(
+      async () => {
+        const started = fence();
+        const cancellationCreatedAt = await localWatcherScopeCreatedAt({
+          projectId,
+          worktreeId,
+        });
+        const file = await this.readFile();
+        const removed = file.watchers.filter(
+          (w) =>
+            w.runtimeState?.kind === 'local_watcher' &&
+            localWatcherMatchesScope(w, projectId, worktreeId) &&
+            (w.status === 'active' || w.status === 'firing'),
+        );
+        const ids = new Set(removed.map((w) => w.id));
+        for (const watcher of removed) {
+          if (watcher.runtimeState?.kind === 'local_watcher') {
+            if (watcher.runtimeState.cancellationPending === undefined)
+              started.add(watcher.id);
+            watcher.runtimeState.cancellationPending ??= {
+              previousStatus: watcher.status === 'firing' ? 'firing' : 'active',
+              scope: {
+                projectId,
+                worktreeId,
+                createdAt: cancellationCreatedAt ?? undefined,
+              },
+            };
+            watcher.updatedAt = new Date().toISOString();
+          }
+        }
+        if (ids.size) {
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+        return Array.from(ids);
+      },
+      undefined,
+      {
+        name: 'watcher.cancel_local_scope_watchers',
+        scope: { projectId, worktreeId },
+      },
+    );
     for (const id of ids) this.cancelPendingDelivery(id);
     await Promise.all(ids.map((id) => this.localScheduler.cancel(id)));
     await this.localScheduler.rescan();
@@ -8379,411 +8743,469 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   async setup(
     input: SetupAppAdvisorWatchersInput,
     destination: AppAdvisorWatcherDestination,
-    context?: { toolUseId?: string },
+    context?: { toolUseId?: string; signal?: AbortSignal },
   ): Promise<SetupAppAdvisorWatchersResult> {
-    destination = await withDestinationChatTitle(destination);
-    return this.enqueueMutation(async () => {
-      if (input.watchers.length > 10) {
-        return {
-          ok: false,
-          error: 'A single setup call can create at most 10 watchers.',
-        };
-      }
-
-      for (let index = 0; index < input.watchers.length; index += 1) {
-        const error = validateWatcherInput(input.watchers[index], destination);
-        if (error) {
-          return { ok: false, error, rejectedIndex: index };
-        }
-      }
-
-      const chatMetadata = new Map<
-        number,
-        {
-          entry: CanonicalChatWatcherEntry;
-          target: ResolvedChatWatcherTarget;
-          observation?: ChatObservationCursor;
-          authority: ChatWatcherEvidence;
-        }
-      >();
-      for (const [index, entry] of Array.from(input.watchers.entries())) {
-        const legacy = legacyChatEntry({ ...entry, label: entry.label ?? '' });
-        if (!legacy) continue;
-        const resolved = await resolveLegacyChatWatcher(legacy);
-        if (!resolved.ok)
+    checkRegistrationSignal(context?.signal);
+    const wait = startChatWaitOperation({
+      name: 'watcher.setup',
+      scope: watcherOwnerScope(destination),
+      queueDepth: this.mutationQueueDepth,
+      bounded: true,
+      nativeTiming: true,
+      recordEnd: true,
+    });
+    wait.phase('destination_resolution');
+    try {
+      destination = await runWithChatWaitOperation(wait, () =>
+        awaitRegistration(
+          withDestinationChatTitle(destination),
+          context?.signal,
+        ),
+      );
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+    return this.enqueueMutation(
+      async (wait) => {
+        if (input.watchers.length > 10) {
           return {
             ok: false,
-            code:
-              resolved.reason === 'runtime_unavailable'
-                ? 'runtime_unavailable'
-                : 'not_found',
-            error: 'Watcher target was not found.',
-            rejectedIndex: index,
+            error: 'A single setup call can create at most 10 watchers.',
           };
-        const access = await decideChatWatcherAccess(
-          trustedRecipient(destination),
-          resolved.target,
-        );
-        if (!access.allowed)
-          return {
-            ok: false,
-            error:
-              access.reason === 'runtime_unavailable'
-                ? 'Watcher context is unavailable.'
-                : 'Watcher target was not found.',
-            rejectedIndex: index,
-          };
-        let observation: ChatObservationCursor | undefined;
-        if ('chatId' in resolved.entry.target) {
-          const armedAt = new Date().toISOString();
-          const explicitTurn = legacyTurnBinding(entry.target);
-          if (explicitTurn !== undefined)
-            // The caller named the turn (an inline write); mirror it.
-            observation = {
-              mode: 'current',
-              boundInputId: explicitTurn,
-              armedAt,
-            };
-          else if (entry.armForNextCompletion === true)
-            observation = undefined; // Legacy: first eligible completion, not next acceptance.
-          else {
-            const active = await activeChatInput(resolved.entry.target);
-            const hold = this.isChatTargetHeld(entry.target);
-            if (!isWatchableActiveInput(active) && !hold)
-              return {
-                ok: false,
-                error:
-                  'Watcher target chat is already idle or runtime_unavailable. Use armForNextCompletion.',
-                rejectedIndex: index,
-              };
-            // With no turn to select while the watcher dialog holds the
-            // chat, the watcher waits for the next eligible completion.
-            // Legacy callers did not select a root: keep completion-based
-            // semantics. Canonical setup retains its acceptance cursor.
-            observation = undefined;
-          }
         }
-        chatMetadata.set(index, {
-          entry: resolved.entry,
-          target: resolved.target,
-          observation,
-          authority: accessEvidence(access),
-        });
-      }
 
-      const reservedTargets = [];
-      let reservedDestinationOwner: string | null = null;
-      const reservedStandaloneOwners: Array<{
-        index: number;
-        projectId: string;
-        chatId: string;
-        entryId: string;
-      }> = [];
-      if (
-        destination.projectId === APP_ADVISOR_PROJECT_ID &&
-        destination.worktreeId === APP_ADVISOR_WORKTREE_ID
-      ) {
-        const owner = await resolveWorkEntryForChat(
-          destination.projectId,
-          destination.chatId,
-        );
-        if (!owner.entryId) {
-          return {
-            ok: false,
-            error: 'Watcher destination chat is unavailable.',
-          };
-        }
-        reservedTargets.push({
-          projectId: destination.projectId,
-          worktreeId: owner.entryId,
-        });
-        reservedDestinationOwner = owner.entryId;
-      } else {
-        reservedTargets.push({
-          projectId: destination.projectId,
-          worktreeId: destination.worktreeId,
-        });
-      }
-      for (let index = 0; index < input.watchers.length; index += 1) {
-        const entry = input.watchers[index];
-        const target = entry.target;
-        if (
-          target.kind === 'worktree_chat' ||
-          target.kind === 'worktree_chat_scope' ||
-          target.kind === 'worktree_pipeline' ||
-          target.kind === 'worktree_hook'
-        ) {
-          reservedTargets.push({
-            projectId: target.projectId,
-            worktreeId: target.worktreeId,
-          });
-        } else if (target.kind === 'standalone_chat') {
-          const owner = await resolveWorkEntryForChat(
-            target.projectId,
-            target.chatId,
-          );
-          if (owner.entryId) {
-            reservedTargets.push({
-              projectId: target.projectId,
-              worktreeId: owner.entryId,
-            });
-            reservedStandaloneOwners.push({
-              index,
-              projectId: target.projectId,
-              chatId: target.chatId,
-              entryId: owner.entryId,
-            });
-          } else if (isCoworkWorkspace(target.projectId)) {
-            return {
-              ok: false,
-              error: 'Watcher target chat is unavailable.',
-              rejectedIndex: index,
-            };
-          }
-        }
-      }
-      const releaseTargets =
-        reserveWorkspaceTargetRuntimeStarts(reservedTargets);
-      try {
-        if (reservedDestinationOwner) {
-          const currentOwner = await resolveWorkEntryForChat(
-            destination.projectId,
-            destination.chatId,
-          );
-          if (currentOwner.entryId !== reservedDestinationOwner) {
-            return {
-              ok: false,
-              error: 'Watcher destination chat is unavailable.',
-            };
-          }
-        }
-        for (const owner of reservedStandaloneOwners) {
-          const currentOwner = await resolveWorkEntryForChat(
-            owner.projectId,
-            owner.chatId,
-          );
-          if (currentOwner.entryId !== owner.entryId) {
-            return {
-              ok: false,
-              error: 'Watcher target chat is unavailable.',
-              rejectedIndex: owner.index,
-            };
-          }
-        }
         for (let index = 0; index < input.watchers.length; index += 1) {
-          // When a chat's watcher modal is open we hold its completion firing and
-          // replay it on close, so the user can add a watcher for that chat even
-          // after its turn has gone idle. Skip the "must be awaiting a future
-          // event" guard for a held chat target — the deferred completion (or the
-          // still-active turn) is exactly the future event it will fire on.
-          if (
-            chatMetadata.has(index) ||
-            this.isChatTargetHeld(input.watchers[index].target)
-          ) {
-            continue;
-          }
-          const error = await validateWatcherTargetIsAwaitingFutureEvent(
+          const error = validateWatcherInput(
             input.watchers[index],
+            destination,
           );
           if (error) {
             return { ok: false, error, rejectedIndex: index };
           }
         }
 
-        const entries = await Promise.all(
-          input.watchers.map(async (entry) => ({
+        const chatMetadata = new Map<
+          number,
+          {
+            entry: CanonicalChatWatcherEntry;
+            target: ResolvedChatWatcherTarget;
+            observation?: ChatObservationCursor;
+            authority: ChatWatcherEvidence;
+          }
+        >();
+        wait.phase('resolution');
+        for (const [index, entry] of Array.from(input.watchers.entries())) {
+          const legacy = legacyChatEntry({
             ...entry,
-            target: await enrichWatcherTarget(entry.target),
-          })),
-        );
+            label: entry.label ?? '',
+          });
+          if (!legacy) continue;
+          const resolved = await resolveLegacyChatWatcher(legacy);
+          if (!resolved.ok)
+            return {
+              ok: false,
+              code:
+                resolved.reason === 'runtime_unavailable'
+                  ? 'runtime_unavailable'
+                  : 'not_found',
+              error: 'Watcher target was not found.',
+              rejectedIndex: index,
+            };
+          wait.phase('authorization');
+          const access = await decideChatWatcherAccess(
+            trustedRecipient(destination),
+            resolved.target,
+          );
+          if (!access.allowed)
+            return {
+              ok: false,
+              error:
+                access.reason === 'runtime_unavailable'
+                  ? 'Watcher context is unavailable.'
+                  : 'Watcher target was not found.',
+              rejectedIndex: index,
+            };
+          let observation: ChatObservationCursor | undefined;
+          if ('chatId' in resolved.entry.target) {
+            const armedAt = new Date().toISOString();
+            const explicitTurn = legacyTurnBinding(entry.target);
+            if (explicitTurn !== undefined)
+              // The caller named the turn (an inline write); mirror it.
+              observation = {
+                mode: 'current',
+                boundInputId: explicitTurn,
+                armedAt,
+              };
+            else if (entry.armForNextCompletion === true)
+              observation = undefined; // Legacy: first eligible completion, not next acceptance.
+            else {
+              const active = await activeChatInput(resolved.entry.target);
+              const hold = this.isChatTargetHeld(entry.target);
+              if (!isWatchableActiveInput(active) && !hold)
+                return {
+                  ok: false,
+                  error:
+                    'Watcher target chat is already idle or runtime_unavailable. Use armForNextCompletion.',
+                  rejectedIndex: index,
+                };
+              // With no turn to select while the watcher dialog holds the
+              // chat, the watcher waits for the next eligible completion.
+              // Legacy callers did not select a root: keep completion-based
+              // semantics. Canonical setup retains its acceptance cursor.
+              observation = undefined;
+            }
+          }
+          chatMetadata.set(index, {
+            entry: resolved.entry,
+            target: resolved.target,
+            observation,
+            authority: accessEvidence(access),
+          });
+          wait.phase('resolution');
+        }
 
-        const file = await this.readFile();
-        const active = file.watchers.filter(
-          (watcher) =>
-            watcher.status === 'active' || watcher.status === 'firing',
-        );
-        const destinationActiveCount = active.filter((watcher) =>
-          isSameRecipient(watcher, destination),
-        ).length;
-        // Cap accounting must use the same equivalence relation as insertion:
-        // a canonical spelling and its legacy alias consume one slot.
-        const existingChatKeys: string[] = [];
-        for (const row of chatMetadata.size === 0 ? [] : active) {
-          if (!isSameRecipient(row, destination) || !isChatWatcher(row))
-            continue;
-          const resolved = await this.resolveChatRow(row);
-          if (resolved.ok)
-            existingChatKeys.push(
-              turnBoundEquivalenceKey(
-                canonicalChatWatcherEquivalenceKey(
-                  resolved.entry,
-                  recipientKey(destination),
-                ),
-                row.target,
-              ),
+        const reservedTargets = [];
+        let reservedDestinationOwner: string | null = null;
+        const reservedStandaloneOwners: Array<{
+          index: number;
+          projectId: string;
+          chatId: string;
+          entryId: string;
+        }> = [];
+        if (
+          destination.projectId === APP_ADVISOR_PROJECT_ID &&
+          destination.worktreeId === APP_ADVISOR_WORKTREE_ID
+        ) {
+          const owner = await awaitRegistration(
+            resolveWorkEntryForChat(destination.projectId, destination.chatId),
+            context?.signal,
+          );
+          if (!owner.entryId) {
+            return {
+              ok: false,
+              error: 'Watcher destination chat is unavailable.',
+            };
+          }
+          reservedTargets.push({
+            projectId: destination.projectId,
+            worktreeId: owner.entryId,
+          });
+          reservedDestinationOwner = owner.entryId;
+        } else {
+          reservedTargets.push({
+            projectId: destination.projectId,
+            worktreeId: destination.worktreeId,
+          });
+        }
+        for (let index = 0; index < input.watchers.length; index += 1) {
+          const entry = input.watchers[index];
+          const target = entry.target;
+          if (
+            target.kind === 'worktree_chat' ||
+            target.kind === 'worktree_chat_scope' ||
+            target.kind === 'worktree_pipeline' ||
+            target.kind === 'worktree_hook'
+          ) {
+            reservedTargets.push({
+              projectId: target.projectId,
+              worktreeId: target.worktreeId,
+            });
+          } else if (target.kind === 'standalone_chat') {
+            const owner = await awaitRegistration(
+              resolveWorkEntryForChat(target.projectId, target.chatId),
+              context?.signal,
             );
+            if (owner.entryId) {
+              reservedTargets.push({
+                projectId: target.projectId,
+                worktreeId: owner.entryId,
+              });
+              reservedStandaloneOwners.push({
+                index,
+                projectId: target.projectId,
+                chatId: target.chatId,
+                entryId: owner.entryId,
+              });
+            } else if (isCoworkWorkspace(target.projectId)) {
+              return {
+                ok: false,
+                error: 'Watcher target chat is unavailable.',
+                rejectedIndex: index,
+              };
+            }
+          }
         }
-        const chatEntryKeys = new Map<number, string>();
-        for (const [index, metadata] of Array.from(chatMetadata.entries())) {
-          const key = canonicalChatWatcherEquivalenceKey(
-            metadata.entry,
-            recipientKey(destination),
-          );
-          const legacyTarget = input.watchers[index]?.target;
-          chatEntryKeys.set(
-            index,
-            legacyTarget ? turnBoundEquivalenceKey(key, legacyTarget) : key,
-          );
-        }
-        const creationsNeeded = countNewWatchersForCap(
-          entries,
-          destination,
-          active,
-          { entries: chatEntryKeys, existing: existingChatKeys },
-        );
+        const releaseTargets =
+          reserveWorkspaceTargetRuntimeStarts(reservedTargets);
+        try {
+          if (reservedDestinationOwner) {
+            const currentOwner = await awaitRegistration(
+              resolveWorkEntryForChat(
+                destination.projectId,
+                destination.chatId,
+              ),
+              context?.signal,
+            );
+            if (currentOwner.entryId !== reservedDestinationOwner) {
+              return {
+                ok: false,
+                error: 'Watcher destination chat is unavailable.',
+              };
+            }
+          }
+          for (const owner of reservedStandaloneOwners) {
+            const currentOwner = await awaitRegistration(
+              resolveWorkEntryForChat(owner.projectId, owner.chatId),
+              context?.signal,
+            );
+            if (currentOwner.entryId !== owner.entryId) {
+              return {
+                ok: false,
+                error: 'Watcher target chat is unavailable.',
+                rejectedIndex: owner.index,
+              };
+            }
+          }
+          wait.phase('authorization');
+          for (let index = 0; index < input.watchers.length; index += 1) {
+            // When a chat's watcher modal is open we hold its completion firing and
+            // replay it on close, so the user can add a watcher for that chat even
+            // after its turn has gone idle. Skip the "must be awaiting a future
+            // event" guard for a held chat target — the deferred completion (or the
+            // still-active turn) is exactly the future event it will fire on.
+            if (
+              chatMetadata.has(index) ||
+              this.isChatTargetHeld(input.watchers[index].target)
+            ) {
+              continue;
+            }
+            const error = await awaitRegistration(
+              validateWatcherTargetIsAwaitingFutureEvent(input.watchers[index]),
+              context?.signal,
+            );
+            if (error) {
+              return { ok: false, error, rejectedIndex: index };
+            }
+          }
 
-        if (destinationActiveCount + creationsNeeded > 25) {
-          return {
-            ok: false,
-            error:
-              'This chat already has the maximum number of active watchers.',
-          };
-        }
-        if (active.length + creationsNeeded > 200) {
-          return {
-            ok: false,
-            error: `${BRAND.displayName} already has the maximum number of active watchers.`,
-          };
-        }
-
-        const now = new Date().toISOString();
-        const results: Extract<
-          SetupAppAdvisorWatchersResult,
-          { ok: true }
-        >['results'] = [];
-        let changed = false;
-
-        for (const [entryIndex, entry] of Array.from(entries.entries())) {
-          const metadata = chatMetadata.get(entryIndex);
-          const dedupeKey = buildDedupeKey(
-            entry.trigger,
-            entry.target,
-            destination,
+          wait.phase('enrichment');
+          const entries = await awaitRegistration(
+            Promise.all(
+              input.watchers.map(async (entry) => ({
+                ...entry,
+                target: await awaitRegistration(
+                  enrichWatcherTarget(entry.target),
+                  context?.signal,
+                ),
+              })),
+            ),
+            context?.signal,
           );
-          let canonicalExisting: ChatWatcherRecord | undefined;
-          if (metadata && entry.allowDuplicate !== true)
-            for (const row of active) {
-              if (!isSameRecipient(row, destination) || !isChatWatcher(row))
-                continue;
-              const resolved = await this.resolveChatRow(row);
-              if (
-                resolved.ok &&
+
+          wait.phase('storage');
+          const file = await awaitRegistration(
+            this.readFile(),
+            context?.signal,
+          );
+          const active = file.watchers.filter(
+            (watcher) =>
+              watcher.status === 'active' || watcher.status === 'firing',
+          );
+          const destinationActiveCount = active.filter((watcher) =>
+            isSameRecipient(watcher, destination),
+          ).length;
+          // Cap accounting must use the same equivalence relation as insertion:
+          // a canonical spelling and its legacy alias consume one slot.
+          const existingChatKeys: string[] = [];
+          for (const row of chatMetadata.size === 0 ? [] : active) {
+            if (!isSameRecipient(row, destination) || !isChatWatcher(row))
+              continue;
+            const resolved = await this.resolveChatRow(row);
+            if (resolved.ok)
+              existingChatKeys.push(
                 turnBoundEquivalenceKey(
                   canonicalChatWatcherEquivalenceKey(
                     resolved.entry,
                     recipientKey(destination),
                   ),
                   row.target,
-                ) ===
-                  turnBoundEquivalenceKey(
-                    canonicalChatWatcherEquivalenceKey(
-                      metadata.entry,
-                      recipientKey(destination),
-                    ),
-                    entry.target,
-                  )
-              ) {
-                canonicalExisting = row;
-                break;
-              }
-            }
-          const existing =
-            canonicalExisting ??
-            (entry.allowDuplicate === true
-              ? undefined
-              : active.find(
-                  (watcher) =>
-                    watcher.dedupeKey === dedupeKey &&
-                    watcherSatisfiesDedupe(watcher),
-                ));
-          if (existing) {
-            results.push({ status: 'deduped', watcher: toSummary(existing) });
-            continue;
+                ),
+              );
           }
-
-          const watcher: ChatWatcherRecord = {
-            ...(metadata
-              ? {
-                  canonical: canonicalFacts(metadata.entry),
-                  setupAuthority: metadata.authority,
-                  observation: metadata.observation,
-                }
-              : {}),
-            version: 1,
-            id: randomUUID(),
-            trigger: entry.trigger,
-            status: 'active',
-            label:
-              entry.label?.trim() || defaultLabel(entry.trigger, entry.target),
-            target: entry.target,
+          const chatEntryKeys = new Map<number, string>();
+          wait.phase('authorization');
+          for (const [index, metadata] of Array.from(chatMetadata.entries())) {
+            const key = canonicalChatWatcherEquivalenceKey(
+              metadata.entry,
+              recipientKey(destination),
+            );
+            const legacyTarget = input.watchers[index]?.target;
+            chatEntryKeys.set(
+              index,
+              legacyTarget ? turnBoundEquivalenceKey(key, legacyTarget) : key,
+            );
+          }
+          const creationsNeeded = countNewWatchersForCap(
+            entries,
             destination,
-            followUpInstruction: entry.followUpInstruction,
-            createdAt: now,
-            updatedAt: now,
-            dedupeKey,
-            createdByToolUseId: context?.toolUseId,
-          };
-          const executionContext = await inheritedWatcherContext(
-            watcher.target,
-            destination,
+            active,
+            { entries: chatEntryKeys, existing: existingChatKeys },
           );
-          if (executionContext !== undefined)
-            watcher.executionContext = executionContext;
-          file.watchers.push(watcher);
-          active.push(watcher);
-          results.push({ status: 'created', watcher: toSummary(watcher) });
-          changed = true;
-        }
 
-        // Arming may await inherited plugin/model authorization. Recheck the
-        // whole staged batch before either store is committed, not just the
-        // row most recently authorized.
-        for (const [index, metadata] of Array.from(chatMetadata.entries())) {
-          const fresh = await decideChatWatcherAccess(
-            trustedRecipient(destination),
-            metadata.target,
-          );
-          if (
-            !fresh.allowed ||
-            !evidenceEqual(metadata.authority, accessEvidence(fresh))
-          )
+          if (destinationActiveCount + creationsNeeded > 25) {
             return {
               ok: false,
-              error: 'Watcher context changed while arming.',
-              rejectedIndex: index,
+              error:
+                'This chat already has the maximum number of active watchers.',
             };
+          }
+          if (active.length + creationsNeeded > 200) {
+            return {
+              ok: false,
+              error: `${BRAND.displayName} already has the maximum number of active watchers.`,
+            };
+          }
+
+          const now = new Date().toISOString();
+          const results: Extract<
+            SetupAppAdvisorWatchersResult,
+            { ok: true }
+          >['results'] = [];
+          let changed = false;
+
+          for (const [entryIndex, entry] of Array.from(entries.entries())) {
+            const metadata = chatMetadata.get(entryIndex);
+            const dedupeKey = buildDedupeKey(
+              entry.trigger,
+              entry.target,
+              destination,
+            );
+            let canonicalExisting: ChatWatcherRecord | undefined;
+            if (metadata && entry.allowDuplicate !== true)
+              for (const row of active) {
+                if (!isSameRecipient(row, destination) || !isChatWatcher(row))
+                  continue;
+                const resolved = await this.resolveChatRow(row);
+                if (
+                  resolved.ok &&
+                  turnBoundEquivalenceKey(
+                    canonicalChatWatcherEquivalenceKey(
+                      resolved.entry,
+                      recipientKey(destination),
+                    ),
+                    row.target,
+                  ) ===
+                    turnBoundEquivalenceKey(
+                      canonicalChatWatcherEquivalenceKey(
+                        metadata.entry,
+                        recipientKey(destination),
+                      ),
+                      entry.target,
+                    )
+                ) {
+                  canonicalExisting = row;
+                  break;
+                }
+              }
+            const existing =
+              canonicalExisting ??
+              (entry.allowDuplicate === true
+                ? undefined
+                : active.find(
+                    (watcher) =>
+                      watcher.dedupeKey === dedupeKey &&
+                      watcherSatisfiesDedupe(watcher),
+                  ));
+            if (existing) {
+              results.push({ status: 'deduped', watcher: toSummary(existing) });
+              continue;
+            }
+
+            const watcher: ChatWatcherRecord = {
+              ...(metadata
+                ? {
+                    canonical: canonicalFacts(metadata.entry),
+                    setupAuthority: metadata.authority,
+                    observation: metadata.observation,
+                  }
+                : {}),
+              version: 1,
+              id: randomUUID(),
+              trigger: entry.trigger,
+              status: 'active',
+              label:
+                entry.label?.trim() ||
+                defaultLabel(entry.trigger, entry.target),
+              target: entry.target,
+              destination,
+              followUpInstruction: entry.followUpInstruction,
+              createdAt: now,
+              updatedAt: now,
+              dedupeKey,
+              createdByToolUseId: context?.toolUseId,
+            };
+            const executionContext = await awaitRegistration(
+              inheritedWatcherContext(watcher.target, destination),
+              context?.signal,
+            );
+            if (executionContext !== undefined)
+              watcher.executionContext = executionContext;
+            file.watchers.push(watcher);
+            active.push(watcher);
+            results.push({ status: 'created', watcher: toSummary(watcher) });
+            changed = true;
+          }
+
+          // Arming may await inherited plugin/model authorization. Recheck the
+          // whole staged batch before either store is committed, not just the
+          // row most recently authorized.
+          for (const [index, metadata] of Array.from(chatMetadata.entries())) {
+            const fresh = await decideChatWatcherAccess(
+              trustedRecipient(destination),
+              metadata.target,
+            );
+            if (
+              !fresh.allowed ||
+              !evidenceEqual(metadata.authority, accessEvidence(fresh))
+            )
+              return {
+                ok: false,
+                error: 'Watcher context changed while arming.',
+                rejectedIndex: index,
+              };
+          }
+          if (changed) {
+            wait.phase('persistence');
+            await this.writeFile(file, context?.signal);
+            this.notifyChange(file.watchers);
+          }
+          wait.phase('response_projection');
+          for (const result of results) {
+            const row = file.watchers.find(
+              (candidate) => candidate.id === result.watcher.id,
+            );
+            if (!row || !isChatWatcher(row)) continue;
+            result.watcher =
+              (
+                await this.addAdvisorAccessAvailability(
+                  [row],
+                  [toSummary(row)],
+                  {
+                    redact: true,
+                  },
+                )
+              )[0] ?? unavailableSummary(toSummary(row), 'runtime_unavailable');
+          }
+          return { ok: true, results };
+        } finally {
+          releaseTargets();
         }
-        if (changed) {
-          await this.writeFile(file);
-          this.notifyChange(file.watchers);
-        }
-        for (const result of results) {
-          const row = file.watchers.find(
-            (candidate) => candidate.id === result.watcher.id,
-          );
-          if (!row || !isChatWatcher(row)) continue;
-          result.watcher =
-            (
-              await this.addAdvisorAccessAvailability([row], [toSummary(row)], {
-                redact: true,
-              })
-            )[0] ?? unavailableSummary(toSummary(row), 'runtime_unavailable');
-        }
-        return { ok: true, results };
-      } finally {
-        releaseTargets();
-      }
-    });
+      },
+      context?.signal,
+      { name: 'watcher.setup', scope: watcherOwnerScope(destination) },
+      wait,
+    );
   }
 
   async watchGitHubItems(
@@ -8792,8 +9214,10 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     context?: {
       toolUseId?: string;
       repositoryCandidates?: readonly string[];
+      signal?: AbortSignal;
     },
   ): Promise<WatchGitHubItemsResult> {
+    checkRegistrationSignal(context?.signal);
     const request = normalizeWatchGitHubItemsFamilyRequest(input, {
       repositoryCandidates: context?.repositoryCandidates,
     });
@@ -8819,13 +9243,71 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         message: STANDALONE_SENTINEL_DESTINATION_ERROR,
       };
     }
-    destination = await withDestinationChatTitle(destination);
-    if (request.value.family === 'pull_request') {
-      return this.watchGitHubPullRequests(request.value, destination, context);
+    const wait = startChatWaitOperation({
+      name:
+        request.value.family === 'pull_request'
+          ? 'watcher.watch_git_hub_pull_requests'
+          : 'watcher.watch_git_hub_items',
+      scope: watcherOwnerScope(destination),
+      queueDepth: this.mutationQueueDepth,
+      bounded: true,
+      recordEnd: true,
+    });
+    try {
+      wait.phase('destination_resolution');
+      destination = await runWithChatWaitOperation(wait, () =>
+        awaitRegistration(
+          withDestinationChatTitle(destination),
+          context?.signal,
+        ),
+      );
+      const normalizedRequest = request.value;
+      if (normalizedRequest.family === 'pull_request') {
+        const result = await runWithChatWaitOperation(wait, () =>
+          this.watchGitHubPullRequests(
+            normalizedRequest,
+            destination,
+            context,
+            wait,
+          ),
+        );
+        wait.finish(result.ok ? 'completed' : 'failed');
+        return result;
+      }
+      const result = await runWithChatWaitOperation(wait, () =>
+        this.watchGitHubWorkflowRuns(
+          normalizedRequest,
+          destination,
+          context,
+          wait,
+        ),
+      );
+      wait.finish(result.ok ? 'completed' : 'failed');
+      return result;
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    } finally {
+      wait.finish('completed');
     }
+  }
+
+  private async watchGitHubWorkflowRuns(
+    request: NormalizedWatchGitHubItemsRequest,
+    destination: AppAdvisorWatcherDestination,
+    context:
+      | {
+          toolUseId?: string;
+          repositoryCandidates?: readonly string[];
+          signal?: AbortSignal;
+        }
+      | undefined,
+    wait: ChatWaitOperation,
+  ): Promise<WatchGitHubItemsResult> {
+    wait.phase('target_resolution');
     const preparedTargets = prepareGitHubWorkflowRunTargets({
-      items: request.value.items,
-      repository: request.value.repository,
+      items: request.items,
+      repository: request.repository,
       repositoryCandidates: context?.repositoryCandidates,
     });
     if (!preparedTargets.ok) return preparedTargets;
@@ -8833,13 +9315,17 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       ReturnType<typeof normalizeGitHubWorkflowRunTargets>
     >;
     try {
-      normalizedTargets = await normalizeGitHubWorkflowRunTargets({
-        items: request.value.items,
-        repository: request.value.repository,
-        repositoryCandidates: context?.repositoryCandidates,
-        resolveJob: resolveGitHubWorkflowRunJob,
-      });
+      normalizedTargets = await awaitRegistration(
+        normalizeGitHubWorkflowRunTargets({
+          items: request.items,
+          repository: request.repository,
+          repositoryCandidates: context?.repositoryCandidates,
+          resolveJob: resolveGitHubWorkflowRunJob,
+        }),
+        context?.signal,
+      );
     } catch (error) {
+      checkRegistrationSignal(context?.signal);
       const resolution =
         error instanceof GitHubWorkflowRunResolutionError ? error : null;
       const cause = resolution?.cause ?? error;
@@ -8880,7 +9366,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     if (!normalizedTargets.ok) return normalizedTargets;
     const normalized = {
       value: {
-        ...request.value,
+        ...request,
         items: normalizedTargets.targets,
       },
       sourceIndexByKey: normalizedTargets.sourceIndexByKey,
@@ -8901,7 +9387,10 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       destination,
     );
 
-    const existingFile = await this.readFile();
+    wait.phase('storage');
+    const existingFile = await runWithChatWaitOperation(wait, () =>
+      awaitRegistration(this.readFile(), context?.signal),
+    );
     const duplicate =
       normalized.value.allowDuplicate === true
         ? undefined
@@ -8939,14 +9428,18 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       const key = githubTargetKey(item);
       const itemIndex = normalized.sourceIndexByKey.get(key) ?? 0;
       try {
-        const result = await fetchGitHubWorkflowRun({
-          repository: item.repository,
-          runId: item.runId,
-          ...(item.requestedAttempt
-            ? { requestedAttempt: item.requestedAttempt }
-            : {}),
-          priority: 'interactive',
-        });
+        wait.phase('baseline_fetch');
+        const result = await awaitRegistration(
+          fetchGitHubWorkflowRun({
+            repository: item.repository,
+            runId: item.runId,
+            ...(item.requestedAttempt
+              ? { requestedAttempt: item.requestedAttempt }
+              : {}),
+            priority: 'interactive',
+          }),
+          context?.signal,
+        );
         if (
           result.snapshot.state.kind === 'terminal' ||
           (result.snapshot.state.kind === 'unsupported' &&
@@ -8968,31 +9461,42 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         // unreadable; a run-only watcher simply starts without a baseline and
         // picks the jobs up on its first successful poll.
         try {
-          const jobsResult = await fetchGitHubWorkflowRunJobs({
-            repository: item.repository,
-            runId: item.runId,
-            runAttempt: result.snapshot.runAttempt,
-            priority: 'interactive',
-          });
+          wait.phase('baseline_jobs');
+          const jobsResult = await awaitRegistration(
+            fetchGitHubWorkflowRunJobs({
+              repository: item.repository,
+              runId: item.runId,
+              runAttempt: result.snapshot.runAttempt,
+              priority: 'interactive',
+            }),
+            context?.signal,
+          );
           jobSnapshots.set(key, jobsResult.jobs);
         } catch (error) {
+          checkRegistrationSignal(context?.signal);
           if (normalized.value.notifyOn.jobConclusions.length > 0) throw error;
         }
         // The declared job graph is display-only, so it never blocks setup;
         // the observer keeps trying while the run is active.
         if (result.snapshot.definitionSource) {
           try {
-            const graph = await fetchGitHubWorkflowDefinitionGraph({
-              repository: item.repository,
-              source: result.snapshot.definitionSource,
-              priority: 'interactive',
-            });
+            wait.phase('baseline_definition');
+            const graph = await awaitRegistration(
+              fetchGitHubWorkflowDefinitionGraph({
+                repository: item.repository,
+                source: result.snapshot.definitionSource,
+                priority: 'interactive',
+              }),
+              context?.signal,
+            );
             if (graph) definitions.set(key, graph);
           } catch {
+            checkRegistrationSignal(context?.signal);
             // Best-effort.
           }
         }
       } catch (error) {
+        checkRegistrationSignal(context?.signal);
         if (error instanceof GitHubBrokerError) {
           if (error.code === 'not_authenticated') {
             return {
@@ -9098,91 +9602,105 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       },
     };
 
-    const result = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const existing =
-        normalized.value.allowDuplicate === true
-          ? undefined
-          : file.watchers.find(
-              (watcher) =>
-                (watcher.status === 'active' || watcher.status === 'firing') &&
-                watcher.dedupeKey === dedupeKey,
-            );
-      if (existing) {
+    const result = await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage');
+        const file = await awaitRegistration(this.readFile(), context?.signal);
+        const existing =
+          normalized.value.allowDuplicate === true
+            ? undefined
+            : file.watchers.find(
+                (watcher) =>
+                  (watcher.status === 'active' ||
+                    watcher.status === 'firing') &&
+                  watcher.dedupeKey === dedupeKey,
+              );
+        if (existing) {
+          return {
+            ok: true,
+            status: 'deduped',
+            watcherId: existing.id,
+            itemCount: normalized.value.items.length,
+            events: githubWatcherEventKinds(normalized.value.notifyOn),
+          } satisfies WatchGitHubItemsResult;
+        }
+        const revalidatedCapacityError = this.githubCapacityError(
+          file.watchers,
+          target,
+          destination,
+          normalized.value.allowDuplicate,
+        );
+        if (revalidatedCapacityError) return revalidatedCapacityError;
+
+        const now = new Date().toISOString();
+        const runtimeState: AppAdvisorGitHubWatcherRuntimeState = {
+          kind: 'github_workflow_runs',
+          items: normalized.value.items.map((item) => {
+            const key = githubTargetKey(item);
+            const snapshot = snapshots.get(key);
+            if (!snapshot) {
+              throw new Error('GitHub workflow run baseline is unavailable.');
+            }
+            const jobs = jobSnapshots.get(key);
+            const definition = definitions.get(key);
+            return {
+              key,
+              runAttempt: snapshot.runAttempt,
+              last: snapshot,
+              ...(jobs ? { jobs } : {}),
+              ...(definition ? { definition } : {}),
+            };
+          }),
+        };
+        const watcher: AppAdvisorWatcher = {
+          version: 1,
+          id: randomUUID(),
+          trigger: 'github_workflow_runs_changed',
+          status: 'active',
+          label: (
+            normalized.value.label?.trim() ||
+            defaultLabel('github_workflow_runs_changed', target)
+          ).slice(0, MAX_WATCHER_LABEL_LENGTH),
+          target,
+          destination,
+          followUpInstruction: optionalTrimmed(
+            normalized.value.followUpInstruction,
+          )?.slice(0, MAX_GITHUB_FOLLOW_UP_INSTRUCTION_LENGTH),
+          createdAt: now,
+          updatedAt: now,
+          dedupeKey,
+          createdByToolUseId: context?.toolUseId,
+          runtimeState,
+        };
+        wait.phase('authorization');
+        const executionContext = await awaitRegistration(
+          inheritedWatcherContext(watcher.target, destination),
+          context?.signal,
+        );
+        if (executionContext !== undefined)
+          watcher.executionContext = executionContext;
+        file.watchers.push(watcher);
+        wait.phase('persistence');
+        await this.writeFile(file, context?.signal);
+        this.notifyChange(file.watchers);
         return {
           ok: true,
-          status: 'deduped',
-          watcherId: existing.id,
+          status: 'created',
+          watcherId: watcher.id,
           itemCount: normalized.value.items.length,
           events: githubWatcherEventKinds(normalized.value.notifyOn),
         } satisfies WatchGitHubItemsResult;
-      }
-      const revalidatedCapacityError = this.githubCapacityError(
-        file.watchers,
-        target,
-        destination,
-        normalized.value.allowDuplicate,
-      );
-      if (revalidatedCapacityError) return revalidatedCapacityError;
-
-      const now = new Date().toISOString();
-      const runtimeState: AppAdvisorGitHubWatcherRuntimeState = {
-        kind: 'github_workflow_runs',
-        items: normalized.value.items.map((item) => {
-          const key = githubTargetKey(item);
-          const snapshot = snapshots.get(key);
-          if (!snapshot) {
-            throw new Error('GitHub workflow run baseline is unavailable.');
-          }
-          const jobs = jobSnapshots.get(key);
-          const definition = definitions.get(key);
-          return {
-            key,
-            runAttempt: snapshot.runAttempt,
-            last: snapshot,
-            ...(jobs ? { jobs } : {}),
-            ...(definition ? { definition } : {}),
-          };
-        }),
-      };
-      const watcher: AppAdvisorWatcher = {
-        version: 1,
-        id: randomUUID(),
-        trigger: 'github_workflow_runs_changed',
-        status: 'active',
-        label: (
-          normalized.value.label?.trim() ||
-          defaultLabel('github_workflow_runs_changed', target)
-        ).slice(0, MAX_WATCHER_LABEL_LENGTH),
-        target,
-        destination,
-        followUpInstruction: optionalTrimmed(
-          normalized.value.followUpInstruction,
-        )?.slice(0, MAX_GITHUB_FOLLOW_UP_INSTRUCTION_LENGTH),
-        createdAt: now,
-        updatedAt: now,
-        dedupeKey,
-        createdByToolUseId: context?.toolUseId,
-        runtimeState,
-      };
-      const executionContext = await inheritedWatcherContext(
-        watcher.target,
-        destination,
-      );
-      if (executionContext !== undefined)
-        watcher.executionContext = executionContext;
-      file.watchers.push(watcher);
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return {
-        ok: true,
-        status: 'created',
-        watcherId: watcher.id,
-        itemCount: normalized.value.items.length,
-        events: githubWatcherEventKinds(normalized.value.notifyOn),
-      } satisfies WatchGitHubItemsResult;
-    });
+      },
+      context?.signal,
+      {
+        name: 'watcher.watch_git_hub_items',
+        scope: watcherOwnerScope(destination),
+        finishOnSuccess: false,
+      },
+      wait,
+    );
     if (result.ok && result.status === 'created') {
+      wait.phase('observer_rescan', this.mutationQueueDepth);
       await getGitHubWorkflowRunObserver().rescan();
     }
     return result;
@@ -9196,8 +9714,10 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private async watchGitHubPullRequests(
     request: NormalizedWatchGitHubPullRequestsRequest,
     destination: AppAdvisorWatcherDestination,
-    context?: { toolUseId?: string },
+    context: { toolUseId?: string; signal?: AbortSignal } | undefined,
+    wait: ChatWaitOperation,
   ): Promise<WatchGitHubItemsResult> {
+    checkRegistrationSignal(context?.signal);
     const outcomes: GitHubPullRequestSetupOutcome[] = [];
     const watched: Array<{
       item: GitHubPullRequestTarget;
@@ -9208,13 +9728,18 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       const item = request.items[index];
       let read: Awaited<ReturnType<typeof readGitHubPullRequestForWatcher>>;
       try {
-        read = await readGitHubPullRequestForWatcher({
-          repository: item.repository,
-          number: item.number,
-          priority: 'interactive',
-          caller: 'pr-watcher-setup',
-        });
+        wait.phase('baseline_fetch');
+        read = await awaitRegistration(
+          readGitHubPullRequestForWatcher({
+            repository: item.repository,
+            number: item.number,
+            priority: 'interactive',
+            caller: 'pr-watcher-setup',
+          }),
+          context?.signal,
+        );
       } catch (error) {
+        checkRegistrationSignal(context?.signal);
         return githubPullRequestSetupError(error, index);
       }
       const outcome = githubPullRequestSetupOutcome(item, index, read.snapshot);
@@ -9247,8 +9772,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       destination,
     );
     const result = await this.enqueueMutation(
-      async (): Promise<WatchGitHubItemsResult> => {
-        const file = await this.readFile();
+      async (wait): Promise<WatchGitHubItemsResult> => {
+        wait.phase('storage');
+        const file = await awaitRegistration(this.readFile(), context?.signal);
         // Checked under the queue so concurrent registrations and deletions
         // are ordered with the lookup.
         const covering =
@@ -9349,14 +9875,16 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             }),
           },
         };
-        const executionContext = await inheritedWatcherContext(
-          watcher.target,
-          destination,
+        wait.phase('authorization');
+        const executionContext = await awaitRegistration(
+          inheritedWatcherContext(watcher.target, destination),
+          context?.signal,
         );
         if (executionContext !== undefined)
           watcher.executionContext = executionContext;
         file.watchers.push(watcher);
-        await this.writeFile(file);
+        wait.phase('persistence');
+        await this.writeFile(file, context?.signal);
         this.notifyChange(file.watchers);
         return {
           ok: true,
@@ -9367,8 +9895,16 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           items: outcomes,
         };
       },
+      context?.signal,
+      {
+        name: 'watcher.watch_git_hub_pull_requests',
+        scope: watcherOwnerScope(destination),
+        finishOnSuccess: false,
+      },
+      wait,
     );
     if (result.ok && result.status === 'created') {
+      wait.phase('observer_rescan', this.mutationQueueDepth);
       await getGitHubPullRequestObserver().rescan();
     }
     return result;
@@ -9493,296 +10029,331 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   async applyGitHubWorkflowObservation(
     observation: GitHubWorkflowRunObservation,
   ): Promise<void> {
-    const pendingWatcherIds = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const pendingIds: string[] = [];
-      let changed = false;
-      const now = new Date().toISOString();
+    const wait = startChatWaitOperation({
+      name: 'watcher.apply_git_hub_workflow_observation',
+      scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      queueDepth: this.mutationQueueDepth,
+      recordEnd: true,
+      bounded: true,
+    });
+    try {
+      await this.applyGitHubWorkflowObservationWithWait(observation, wait);
+      wait.finish('completed');
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+  }
 
-      for (const watcher of file.watchers) {
-        if (
-          watcher.status !== 'active' ||
-          watcher.target.kind !== 'github_workflow_runs' ||
-          watcher.runtimeState?.kind !== 'github_workflow_runs' ||
-          watcher.runtimeState.pendingDelivery
-        ) {
-          continue;
-        }
-        const runtimeState = watcher.runtimeState;
-        let watcherChanged = false;
-        const observationsByKey = new Map<
-          string,
-          (typeof observation.observations)[number]
-        >();
-        for (const entry of observation.observations) {
+  private async applyGitHubWorkflowObservationWithWait(
+    observation: GitHubWorkflowRunObservation,
+    wait: ChatWaitOperation,
+  ): Promise<void> {
+    const pendingWatcherIds = await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage');
+        const file = await this.readFile();
+        const pendingIds: string[] = [];
+        let changed = false;
+        const now = new Date().toISOString();
+
+        for (const watcher of file.watchers) {
           if (
-            entry.subscriberIds !== undefined &&
-            !entry.subscriberIds.includes(watcher.id)
+            watcher.status !== 'active' ||
+            watcher.target.kind !== 'github_workflow_runs' ||
+            watcher.runtimeState?.kind !== 'github_workflow_runs' ||
+            watcher.runtimeState.pendingDelivery
           ) {
             continue;
           }
-          if (entry.pinnedRunAttempt !== undefined) {
-            observationsByKey.set(
-              githubObservationKey({
-                ...entry,
-                pinnedRunAttempt: entry.pinnedRunAttempt,
-              }),
-              entry,
-            );
-            continue;
-          }
-          const targetKey = githubTargetKey(entry);
-          for (const runtimeItem of runtimeState.items) {
-            if (runtimeItem.key === targetKey) {
+          const runtimeState = watcher.runtimeState;
+          let watcherChanged = false;
+          const observationsByKey = new Map<
+            string,
+            (typeof observation.observations)[number]
+          >();
+          for (const entry of observation.observations) {
+            if (
+              entry.subscriberIds !== undefined &&
+              !entry.subscriberIds.includes(watcher.id)
+            ) {
+              continue;
+            }
+            if (entry.pinnedRunAttempt !== undefined) {
               observationsByKey.set(
-                githubRuntimeObservationKey(runtimeItem),
+                githubObservationKey({
+                  ...entry,
+                  pinnedRunAttempt: entry.pinnedRunAttempt,
+                }),
                 entry,
               );
+              continue;
+            }
+            const targetKey = githubTargetKey(entry);
+            for (const runtimeItem of runtimeState.items) {
+              if (runtimeItem.key === targetKey) {
+                observationsByKey.set(
+                  githubRuntimeObservationKey(runtimeItem),
+                  entry,
+                );
+              }
             }
           }
-        }
-        const hasSourceFailure = runtimeState.items.some(
-          (item) =>
-            observationsByKey.get(githubRuntimeObservationKey(item))?.kind ===
-            'source_failure',
-        );
-        if (hasSourceFailure) {
-          watcher.status = 'delivery_failed';
-          watcher.failureKind = 'source';
-          watcher.deliveryError =
-            'GitHub workflow run is no longer accessible.';
-          watcher.updatedAt = now;
-          changed = true;
-          continue;
-        }
-        const rateLimitedUntil = nextGitHubRateLimitedUntil(
-          Array.from(observationsByKey.values()),
-          runtimeState.rateLimitedUntil,
-        );
-        if (rateLimitedUntil !== runtimeState.rateLimitedUntil) {
-          if (rateLimitedUntil === undefined) {
-            delete runtimeState.rateLimitedUntil;
-          } else {
-            runtimeState.rateLimitedUntil = rateLimitedUntil;
-          }
-          changed = true;
-          watcherChanged = true;
-        }
-
-        const events: GitHubWorkflowWatcherEvent[] = [];
-        for (const runtimeItem of runtimeState.items) {
-          if (runtimeItem.settledAt) continue;
-          const observed = observationsByKey.get(
-            githubRuntimeObservationKey(runtimeItem),
+          const hasSourceFailure = runtimeState.items.some(
+            (item) =>
+              observationsByKey.get(githubRuntimeObservationKey(item))?.kind ===
+              'source_failure',
           );
-          if (!observed || observed.kind !== 'snapshot') continue;
-          const [repository, runId] = splitGitHubRuntimeKey(runtimeItem.key);
-          if (!repository || !runId) continue;
-          if (observed.snapshot.runAttempt < runtimeItem.runAttempt) continue;
-
-          if (observed.definition && runtimeItem.definition === undefined) {
-            runtimeItem.definition = observed.definition;
+          if (hasSourceFailure) {
+            watcher.status = 'delivery_failed';
+            watcher.failureKind = 'source';
+            watcher.deliveryError =
+              'GitHub workflow run is no longer accessible.';
+            watcher.updatedAt = now;
             changed = true;
-            watcherChanged = true;
+            continue;
           }
-          // Rows persisted before the source was captured only refresh
-          // `last` on a state change; keep the source so a restart can still
-          // read the definition.
-          if (
-            runtimeItem.last.definitionSource === undefined &&
-            observed.snapshot.definitionSource
-          ) {
-            runtimeItem.last = {
-              ...runtimeItem.last,
-              definitionSource: observed.snapshot.definitionSource,
-            };
+          const rateLimitedUntil = nextGitHubRateLimitedUntil(
+            Array.from(observationsByKey.values()),
+            runtimeState.rateLimitedUntil,
+          );
+          if (rateLimitedUntil !== runtimeState.rateLimitedUntil) {
+            if (rateLimitedUntil === undefined) {
+              delete runtimeState.rateLimitedUntil;
+            } else {
+              runtimeState.rateLimitedUntil = rateLimitedUntil;
+            }
             changed = true;
             watcherChanged = true;
           }
 
-          if (observed.jobs) {
-            const previousJobs = new Map(
-              (runtimeItem.jobs ?? []).map((job) => [job.jobId, job]),
+          const events: GitHubWorkflowWatcherEvent[] = [];
+          for (const runtimeItem of runtimeState.items) {
+            if (runtimeItem.settledAt) continue;
+            const observed = observationsByKey.get(
+              githubRuntimeObservationKey(runtimeItem),
             );
-            const mergedJobs = new Map(previousJobs);
-            let jobsChanged = false;
-            for (const job of observed.jobs) {
-              const previousJob = previousJobs.get(job.jobId);
-              if (
-                !previousJob ||
-                previousJob.name !== job.name ||
-                previousJob.status !== job.status ||
-                previousJob.conclusion !== job.conclusion ||
-                previousJob.htmlUrl !== job.htmlUrl ||
-                previousJob.createdAt !== job.createdAt ||
-                previousJob.startedAt !== job.startedAt ||
-                previousJob.completedAt !== job.completedAt
-              ) {
-                jobsChanged = true;
+            if (!observed || observed.kind !== 'snapshot') continue;
+            const [repository, runId] = splitGitHubRuntimeKey(runtimeItem.key);
+            if (!repository || !runId) continue;
+            if (observed.snapshot.runAttempt < runtimeItem.runAttempt) continue;
+
+            if (observed.definition && runtimeItem.definition === undefined) {
+              runtimeItem.definition = observed.definition;
+              changed = true;
+              watcherChanged = true;
+            }
+            // Rows persisted before the source was captured only refresh
+            // `last` on a state change; keep the source so a restart can still
+            // read the definition.
+            if (
+              runtimeItem.last.definitionSource === undefined &&
+              observed.snapshot.definitionSource
+            ) {
+              runtimeItem.last = {
+                ...runtimeItem.last,
+                definitionSource: observed.snapshot.definitionSource,
+              };
+              changed = true;
+              watcherChanged = true;
+            }
+
+            if (observed.jobs) {
+              const previousJobs = new Map(
+                (runtimeItem.jobs ?? []).map((job) => [job.jobId, job]),
+              );
+              const mergedJobs = new Map(previousJobs);
+              let jobsChanged = false;
+              for (const job of observed.jobs) {
+                const previousJob = previousJobs.get(job.jobId);
+                if (
+                  !previousJob ||
+                  previousJob.name !== job.name ||
+                  previousJob.status !== job.status ||
+                  previousJob.conclusion !== job.conclusion ||
+                  previousJob.htmlUrl !== job.htmlUrl ||
+                  previousJob.createdAt !== job.createdAt ||
+                  previousJob.startedAt !== job.startedAt ||
+                  previousJob.completedAt !== job.completedAt
+                ) {
+                  jobsChanged = true;
+                }
+                mergedJobs.set(job.jobId, job);
+                if (
+                  job.status === 'completed' &&
+                  job.conclusion !== null &&
+                  watcher.target.notifyOn.jobConclusions.includes(
+                    job.conclusion,
+                  ) &&
+                  (previousJob?.status !== 'completed' ||
+                    previousJob.conclusion !== job.conclusion)
+                ) {
+                  events.push({
+                    kind: 'workflow_job_completed',
+                    repository,
+                    runId,
+                    ...(observed.snapshot.workflowName
+                      ? { workflowName: observed.snapshot.workflowName }
+                      : {}),
+                    ...(observed.snapshot.runNumber !== undefined
+                      ? { runNumber: observed.snapshot.runNumber }
+                      : {}),
+                    runAttempt: runtimeItem.runAttempt,
+                    job: {
+                      id: job.jobId,
+                      name: job.name,
+                      conclusion: job.conclusion,
+                      url: job.htmlUrl,
+                    },
+                  });
+                }
               }
-              mergedJobs.set(job.jobId, job);
-              if (
-                job.status === 'completed' &&
-                job.conclusion !== null &&
-                watcher.target.notifyOn.jobConclusions.includes(
-                  job.conclusion,
-                ) &&
-                (previousJob?.status !== 'completed' ||
-                  previousJob.conclusion !== job.conclusion)
-              ) {
+              if (jobsChanged) {
+                runtimeItem.jobs = Array.from(mergedJobs.values()).sort(
+                  (left, right) =>
+                    BigInt(left.jobId) < BigInt(right.jobId)
+                      ? -1
+                      : BigInt(left.jobId) > BigInt(right.jobId)
+                        ? 1
+                        : 0,
+                );
+                changed = true;
+                watcherChanged = true;
+              }
+            }
+
+            const previous = runtimeItem.last.state;
+            let snapshot = observed.snapshot;
+            if (observed.snapshot.runAttempt > runtimeItem.runAttempt) {
+              snapshot = {
+                ...observed.snapshot,
+                runAttempt: runtimeItem.runAttempt,
+                state: {
+                  kind: 'unsupported',
+                  status: 'missed_terminal',
+                  conclusion: null,
+                  terminal: true,
+                },
+              };
+            }
+            if (!githubStatesEqual(previous, snapshot.state)) {
+              runtimeItem.last = {
+                ...snapshot,
+                ...(snapshot.workflowName
+                  ? {
+                      workflowName: snapshot.workflowName.slice(
+                        0,
+                        MAX_GITHUB_WORKFLOW_NAME_LENGTH,
+                      ),
+                    }
+                  : {}),
+              };
+              const terminal =
+                snapshot.state.kind === 'terminal' ||
+                (snapshot.state.kind === 'unsupported' &&
+                  snapshot.state.terminal);
+              if (terminal) runtimeItem.settledAt = snapshot.observedAt;
+              const selected =
+                (snapshot.state.kind === 'intermediate' &&
+                  watcher.target.notifyOn.statuses.includes(
+                    snapshot.state.status,
+                  )) ||
+                (snapshot.state.kind === 'terminal' &&
+                  watcher.target.notifyOn.conclusions.includes(
+                    snapshot.state.conclusion,
+                  ));
+              if (selected) {
                 events.push({
-                  kind: 'workflow_job_completed',
+                  kind: 'workflow_run_transition',
                   repository,
                   runId,
-                  ...(observed.snapshot.workflowName
-                    ? { workflowName: observed.snapshot.workflowName }
+                  ...(snapshot.workflowName
+                    ? { workflowName: snapshot.workflowName }
                     : {}),
-                  ...(observed.snapshot.runNumber !== undefined
-                    ? { runNumber: observed.snapshot.runNumber }
+                  ...(snapshot.runNumber !== undefined
+                    ? { runNumber: snapshot.runNumber }
                     : {}),
                   runAttempt: runtimeItem.runAttempt,
-                  job: {
-                    id: job.jobId,
-                    name: job.name,
-                    conclusion: job.conclusion,
-                    url: job.htmlUrl,
-                  },
+                  previous,
+                  current: snapshot.state,
+                  url: snapshot.htmlUrl,
                 });
               }
-            }
-            if (jobsChanged) {
-              runtimeItem.jobs = Array.from(mergedJobs.values()).sort(
-                (left, right) =>
-                  BigInt(left.jobId) < BigInt(right.jobId)
-                    ? -1
-                    : BigInt(left.jobId) > BigInt(right.jobId)
-                      ? 1
-                      : 0,
-              );
               changed = true;
               watcherChanged = true;
             }
           }
 
-          const previous = runtimeItem.last.state;
-          let snapshot = observed.snapshot;
-          if (observed.snapshot.runAttempt > runtimeItem.runAttempt) {
-            snapshot = {
-              ...observed.snapshot,
-              runAttempt: runtimeItem.runAttempt,
-              state: {
-                kind: 'unsupported',
-                status: 'missed_terminal',
-                conclusion: null,
-                terminal: true,
-              },
-            };
-          }
-          if (!githubStatesEqual(previous, snapshot.state)) {
-            runtimeItem.last = {
-              ...snapshot,
-              ...(snapshot.workflowName
-                ? {
-                    workflowName: snapshot.workflowName.slice(
-                      0,
-                      MAX_GITHUB_WORKFLOW_NAME_LENGTH,
-                    ),
-                  }
-                : {}),
-            };
-            const terminal =
-              snapshot.state.kind === 'terminal' ||
-              (snapshot.state.kind === 'unsupported' &&
-                snapshot.state.terminal);
-            if (terminal) runtimeItem.settledAt = snapshot.observedAt;
-            const selected =
-              (snapshot.state.kind === 'intermediate' &&
-                watcher.target.notifyOn.statuses.includes(
-                  snapshot.state.status,
-                )) ||
-              (snapshot.state.kind === 'terminal' &&
-                watcher.target.notifyOn.conclusions.includes(
-                  snapshot.state.conclusion,
-                ));
-            if (selected) {
-              events.push({
-                kind: 'workflow_run_transition',
-                repository,
-                runId,
-                ...(snapshot.workflowName
-                  ? { workflowName: snapshot.workflowName }
-                  : {}),
-                ...(snapshot.runNumber !== undefined
-                  ? { runNumber: snapshot.runNumber }
-                  : {}),
-                runAttempt: runtimeItem.runAttempt,
-                previous,
-                current: snapshot.state,
-                url: snapshot.htmlUrl,
-              });
-            }
+          const allSettled = runtimeState.items.every(
+            (item) => item.settledAt !== undefined,
+          );
+          const queuedEvents = [
+            ...(runtimeState.queuedEvents ?? []),
+            ...events,
+          ];
+          if (queuedEvents.length > MAX_GITHUB_QUEUED_EVENTS) {
+            watcher.status = 'delivery_failed';
+            watcher.failureKind = 'delivery';
+            watcher.deliveryError =
+              'Too many GitHub watcher updates accumulated before delivery.';
+            watcher.updatedAt = now;
             changed = true;
-            watcherChanged = true;
+            continue;
+          }
+          if (queuedEvents.length > 0) {
+            const deliveryEvents = queuedEvents.slice(
+              0,
+              MAX_GITHUB_EVENTS_PER_DELIVERY,
+            );
+            const remainingEvents = queuedEvents.slice(
+              MAX_GITHUB_EVENTS_PER_DELIVERY,
+            );
+            runtimeState.queuedEvents = remainingEvents;
+            runtimeState.consumeAfterQueuedDeliveries =
+              allSettled && remainingEvents.length > 0;
+            runtimeState.pendingDelivery = {
+              eventId: randomUUID(),
+              observedAt: now,
+              events: deliveryEvents,
+              consumeAfterDelivery: allSettled && remainingEvents.length === 0,
+              attempts: 0,
+              nextAttemptAt: now,
+            };
+            watcher.status = 'firing';
+            watcher.updatedAt = now;
+            delete watcher.deliveryError;
+            delete watcher.failureKind;
+            pendingIds.push(watcher.id);
+            changed = true;
+          } else if (allSettled) {
+            watcher.status = 'fired';
+            watcher.updatedAt = now;
+            watcher.firedAt = now;
+            delete watcher.deliveryError;
+            delete watcher.failureKind;
+            changed = true;
+          } else if (watcherChanged) {
+            watcher.updatedAt = now;
           }
         }
 
-        const allSettled = runtimeState.items.every(
-          (item) => item.settledAt !== undefined,
-        );
-        const queuedEvents = [...(runtimeState.queuedEvents ?? []), ...events];
-        if (queuedEvents.length > MAX_GITHUB_QUEUED_EVENTS) {
-          watcher.status = 'delivery_failed';
-          watcher.failureKind = 'delivery';
-          watcher.deliveryError =
-            'Too many GitHub watcher updates accumulated before delivery.';
-          watcher.updatedAt = now;
-          changed = true;
-          continue;
+        if (changed) {
+          wait.phase('persistence');
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
         }
-        if (queuedEvents.length > 0) {
-          const deliveryEvents = queuedEvents.slice(
-            0,
-            MAX_GITHUB_EVENTS_PER_DELIVERY,
-          );
-          const remainingEvents = queuedEvents.slice(
-            MAX_GITHUB_EVENTS_PER_DELIVERY,
-          );
-          runtimeState.queuedEvents = remainingEvents;
-          runtimeState.consumeAfterQueuedDeliveries =
-            allSettled && remainingEvents.length > 0;
-          runtimeState.pendingDelivery = {
-            eventId: randomUUID(),
-            observedAt: now,
-            events: deliveryEvents,
-            consumeAfterDelivery: allSettled && remainingEvents.length === 0,
-            attempts: 0,
-            nextAttemptAt: now,
-          };
-          watcher.status = 'firing';
-          watcher.updatedAt = now;
-          delete watcher.deliveryError;
-          delete watcher.failureKind;
-          pendingIds.push(watcher.id);
-          changed = true;
-        } else if (allSettled) {
-          watcher.status = 'fired';
-          watcher.updatedAt = now;
-          watcher.firedAt = now;
-          delete watcher.deliveryError;
-          delete watcher.failureKind;
-          changed = true;
-        } else if (watcherChanged) {
-          watcher.updatedAt = now;
-        }
-      }
+        return pendingIds;
+      },
+      undefined,
+      {
+        name: 'watcher.apply_git_hub_workflow_observation',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+        finishOnSuccess: false,
+      },
+      wait,
+    );
 
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return pendingIds;
-    });
-
+    wait.phase('pending_delivery');
     const deliveryStarts = pendingWatcherIds.map(
       (watcherId) =>
         new Promise<void>((resolve) => {
@@ -9790,6 +10361,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         }),
     );
     await Promise.all(deliveryStarts);
+    wait.phase('observer_rescan');
     await getGitHubWorkflowRunObserver().rescan();
   }
 
@@ -9836,90 +10408,127 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   async applyGitHubPullRequestObservation(
     observation: GitHubPullRequestObservation,
   ): Promise<void> {
-    const pendingWatcherIds = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const pendingIds: string[] = [];
-      let changed = false;
-      const now = new Date().toISOString();
-      for (const watcher of file.watchers) {
-        const state = watcher.runtimeState;
-        if (
-          watcher.status !== 'active' ||
-          watcher.target.kind !== 'github_pull_requests' ||
-          state?.kind !== 'github_pull_requests' ||
-          state.pendingDelivery
-        ) {
-          continue;
-        }
-        const observed = new Map(
-          observation.observations
-            .filter((entry) => entry.subscriberIds.includes(watcher.id))
-            .map((entry) => [githubPullRequestKey(entry), entry]),
-        );
-        // Settle siblings first so a same-cycle merge or close is still
-        // delivered before an inaccessible pull request fails the watcher.
-        // A batch of queue events alone does not consume the watcher.
-        const { events, changed: itemsChanged } = settleGitHubPullRequestItems(
-          state.items,
-          observed,
-          watcher.target.notifyOn,
-        );
-        const rateLimitedUntil = nextGitHubRateLimitedUntil(
-          Array.from(observed.values()),
-          state.rateLimitedUntil,
-        );
-        const pauseChanged = rateLimitedUntil !== state.rateLimitedUntil;
-        if (rateLimitedUntil === undefined) {
-          delete state.rateLimitedUntil;
-        } else {
-          state.rateLimitedUntil = rateLimitedUntil;
-        }
-        const watcherChanged = itemsChanged || pauseChanged;
-        const sourceFailed = state.items.some(
-          (item) =>
-            !item.settledAt &&
-            observed.get(item.key)?.kind === 'source_failure',
-        );
-        const queuedEvents = [...(state.queuedEvents ?? []), ...events];
-        if (sourceFailed && queuedEvents.length === 0) {
-          watcher.status = 'delivery_failed';
-          watcher.failureKind = 'source';
-          watcher.deliveryError = GITHUB_PULL_REQUEST_SOURCE_FAILURE_MESSAGE;
+    const wait = startChatWaitOperation({
+      name: 'watcher.apply_git_hub_pull_request_observation',
+      scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      queueDepth: this.mutationQueueDepth,
+      recordEnd: true,
+      bounded: true,
+    });
+    try {
+      await this.applyGitHubPullRequestObservationWithWait(observation, wait);
+      wait.finish('completed');
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+  }
+
+  private async applyGitHubPullRequestObservationWithWait(
+    observation: GitHubPullRequestObservation,
+    wait: ChatWaitOperation,
+  ): Promise<void> {
+    const pendingWatcherIds = await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage');
+        const file = await this.readFile();
+        const pendingIds: string[] = [];
+        let changed = false;
+        const now = new Date().toISOString();
+        for (const watcher of file.watchers) {
+          const state = watcher.runtimeState;
+          if (
+            watcher.status !== 'active' ||
+            watcher.target.kind !== 'github_pull_requests' ||
+            state?.kind !== 'github_pull_requests' ||
+            state.pendingDelivery
+          ) {
+            continue;
+          }
+          const observed = new Map(
+            observation.observations
+              .filter((entry) => entry.subscriberIds.includes(watcher.id))
+              .map((entry) => [githubPullRequestKey(entry), entry]),
+          );
+          // Settle siblings first so a same-cycle merge or close is still
+          // delivered before an inaccessible pull request fails the watcher.
+          // A batch of queue events alone does not consume the watcher.
+          const { events, changed: itemsChanged } =
+            settleGitHubPullRequestItems(
+              state.items,
+              observed,
+              watcher.target.notifyOn,
+            );
+          const rateLimitedUntil = nextGitHubRateLimitedUntil(
+            Array.from(observed.values()),
+            state.rateLimitedUntil,
+          );
+          const pauseChanged = rateLimitedUntil !== state.rateLimitedUntil;
+          if (rateLimitedUntil === undefined) {
+            delete state.rateLimitedUntil;
+          } else {
+            state.rateLimitedUntil = rateLimitedUntil;
+          }
+          const watcherChanged = itemsChanged || pauseChanged;
+          const sourceFailed = state.items.some(
+            (item) =>
+              !item.settledAt &&
+              observed.get(item.key)?.kind === 'source_failure',
+          );
+          const queuedEvents = [...(state.queuedEvents ?? []), ...events];
+          if (sourceFailed && queuedEvents.length === 0) {
+            watcher.status = 'delivery_failed';
+            watcher.failureKind = 'source';
+            watcher.deliveryError = GITHUB_PULL_REQUEST_SOURCE_FAILURE_MESSAGE;
+            watcher.updatedAt = now;
+            changed = true;
+            continue;
+          }
+          if (sourceFailed) {
+            state.sourceFailure = GITHUB_PULL_REQUEST_SOURCE_FAILURE_MESSAGE;
+          }
+          const allSettled =
+            sourceFailed ||
+            state.items.every((item) => item.settledAt !== undefined);
+          if (queuedEvents.length > 0) {
+            const batch = nextGitHubDeliveryBatch(
+              queuedEvents,
+              now,
+              allSettled,
+            );
+            state.queuedEvents = batch.remaining;
+            state.consumeAfterQueuedDeliveries =
+              allSettled && batch.remaining.length > 0;
+            state.pendingDelivery = batch.pending;
+            watcher.status = 'firing';
+            delete watcher.deliveryError;
+            delete watcher.failureKind;
+            pendingIds.push(watcher.id);
+          } else if (allSettled) {
+            watcher.status = 'fired';
+            watcher.firedAt = now;
+          } else if (!watcherChanged) {
+            continue;
+          }
           watcher.updatedAt = now;
           changed = true;
-          continue;
         }
-        if (sourceFailed) {
-          state.sourceFailure = GITHUB_PULL_REQUEST_SOURCE_FAILURE_MESSAGE;
+        if (changed) {
+          wait.phase('persistence');
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
         }
-        const allSettled =
-          sourceFailed ||
-          state.items.every((item) => item.settledAt !== undefined);
-        if (queuedEvents.length > 0) {
-          const batch = nextGitHubDeliveryBatch(queuedEvents, now, allSettled);
-          state.queuedEvents = batch.remaining;
-          state.consumeAfterQueuedDeliveries =
-            allSettled && batch.remaining.length > 0;
-          state.pendingDelivery = batch.pending;
-          watcher.status = 'firing';
-          delete watcher.deliveryError;
-          delete watcher.failureKind;
-          pendingIds.push(watcher.id);
-        } else if (allSettled) {
-          watcher.status = 'fired';
-          watcher.firedAt = now;
-        } else if (!watcherChanged) {
-          continue;
-        }
-        watcher.updatedAt = now;
-        changed = true;
-      }
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return pendingIds;
-    });
+        return pendingIds;
+      },
+      undefined,
+      {
+        name: 'watcher.apply_git_hub_pull_request_observation',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+        finishOnSuccess: false,
+      },
+      wait,
+    );
+    wait.phase('pending_delivery');
     await Promise.all(
       pendingWatcherIds.map(
         (watcherId) =>
@@ -9928,6 +10537,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           }),
       ),
     );
+    wait.phase('observer_rescan');
     await getGitHubPullRequestObserver().rescan();
   }
 
@@ -9935,14 +10545,44 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     id: string,
     options: DeleteWatcherOptions = {},
   ): Promise<boolean> {
-    const prepared = await this.enqueueMutation(async () => {
+    const owner = this.storedWatcherOwner((watcher) => watcher.id === id);
+    const wait = startChatWaitOperation({
+      name: 'watcher.delete_watcher',
+      scope: owner.storedOwner(),
+      queueDepth: this.mutationQueueDepth,
+      recordEnd: true,
+      bounded: true,
+    });
+    this.attributeStoredWatcherOwner(wait, owner);
+    try {
+      const result = await this.deleteWatcherWithWait(id, options, wait);
+      wait.finish('completed');
+      return result;
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+  }
+
+  private async deleteWatcherWithWait(
+    id: string,
+    options: DeleteWatcherOptions,
+    wait: ChatWaitOperation,
+  ): Promise<boolean> {
+    const prepared = await this.enqueueMutationStep(async (wait) => {
+      wait.phase('storage_read');
       const file = await this.readFile();
       const index = file.watchers.findIndex((watcher) => watcher.id === id);
+      if (index !== -1)
+        wait.phase(
+          'storage',
+          undefined,
+          watcherOwnerScope(file.watchers[index].destination),
+        );
       if (
         index === -1 ||
         file.watchers[index].status === 'firing' ||
-        ((file.watchers[index].runtimeState?.kind === 'local_watcher' ||
-          file.watchers[index].runtimeState?.kind === 'managed_delegation') &&
+        (file.watchers[index].runtimeState?.kind === 'local_watcher' &&
           file.watchers[index].runtimeState.cancellationPending !== undefined)
       ) {
         return { found: false, markedLocal: false };
@@ -9950,13 +10590,8 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       const watcher = file.watchers[index];
       const markedLocal =
         watcher.status === 'active' &&
-        (watcher.runtimeState?.kind === 'local_watcher' ||
-          watcher.runtimeState?.kind === 'managed_delegation');
-      if (
-        markedLocal &&
-        (watcher.runtimeState?.kind === 'local_watcher' ||
-          watcher.runtimeState?.kind === 'managed_delegation')
-      ) {
+        watcher.runtimeState?.kind === 'local_watcher';
+      if (markedLocal && watcher.runtimeState?.kind === 'local_watcher') {
         watcher.runtimeState.cancellationPending = {
           previousStatus: 'active',
         };
@@ -9965,27 +10600,36 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         this.notifyChange(file.watchers);
       }
       return { found: true, markedLocal };
-    });
+    }, wait);
 
     if (!prepared.found) return false;
     try {
+      wait.phase('scheduler_cancel');
       await this.localScheduler.cancel(id);
     } catch (error) {
       if (prepared.markedLocal) {
-        await this.enqueueMutation(async () => {
+        await this.enqueueMutationStep(async (wait) => {
+          wait.phase('storage_read');
           const file = await this.readFile();
           const watcher = file.watchers.find((row) => row.id === id);
+          if (watcher)
+            wait.phase(
+              'storage',
+              undefined,
+              watcherOwnerScope(watcher.destination),
+            );
           if (
-            (watcher?.runtimeState?.kind === 'local_watcher' ||
-              watcher?.runtimeState?.kind === 'managed_delegation') &&
-            watcher.runtimeState.cancellationPending
+            watcher?.runtimeState?.kind === 'local_watcher' &&
+            watcher.runtimeState.cancellationPending &&
+            !this.handOffToAnotherLocalFence(watcher)
           ) {
             delete watcher.runtimeState.cancellationPending;
             watcher.updatedAt = new Date().toISOString();
             await this.writeFile(file);
             this.notifyChange(file.watchers);
           }
-        });
+        }, wait);
+        wait.phase('scheduler_rescan');
         await this.localScheduler.rescan().catch(() => undefined);
       }
       throw error;
@@ -9993,30 +10637,44 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     let delegateNotice:
       | { watcher: AppAdvisorWatcher; delegationId: string }
       | undefined;
-    await this.enqueueMutation(async () => {
+    await this.enqueueMutationStep(async (wait) => {
+      wait.phase('storage_read');
       const file = await this.readFile();
       const index = file.watchers.findIndex((watcher) => watcher.id === id);
       if (index === -1) return;
+      wait.phase(
+        'storage',
+        undefined,
+        watcherOwnerScope(file.watchers[index].destination),
+      );
       if (options.notifySubscriber === true) {
         const watcher = file.watchers[index];
         const delegationId = recipientDelegationId(watcher);
         // A delegate subscriber is notified after the deletion commits; its
         // host delivery can wait on a run and must not hold this queue.
         if (delegationId) delegateNotice = { watcher, delegationId };
-        else await this.deliverDeletedWatcherNotification(watcher);
+        else {
+          wait.phase('subscriber_notification');
+          await this.deliverDeletedWatcherNotification(watcher);
+        }
       }
       file.watchers.splice(index, 1);
+      wait.phase('persistence');
       await this.writeFile(file);
+
       this.notifyChange(file.watchers);
-    });
+    }, wait);
     this.clearDelegateDeliveryRetry(id);
     if (delegateNotice)
       this.notifyDelegateOfDeletion(
         delegateNotice.watcher,
         delegateNotice.delegationId,
       );
+    wait.phase('scheduler_rescan');
     await this.localScheduler.rescan();
+    wait.phase('observer_rescan');
     await this.rescanGitHubObservers();
+    wait.phase('delivery_retry_schedule');
     await this.scheduleNextGitHubDeliveryRetry();
     return true;
   }
@@ -10031,62 +10689,97 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     input: DeleteWatchersInput,
     destination: AppAdvisorWatcherDestination,
   ): Promise<DeleteWatchersResult> {
-    const prepared = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      let changed = false;
-      const results: DeleteWatchersResult['results'] = [];
-      const cancellableIds: string[] = [];
-
-      for (const watcherId of input.watcherIds) {
-        const index = file.watchers.findIndex(
-          (watcher) =>
-            watcher.id === watcherId &&
-            isSameRecipient(watcher, destination) &&
-            nonBlank(watcher.createdByToolUseId),
-        );
-        if (index === -1) {
-          results.push({ watcherId, status: 'not_found' });
-          continue;
-        }
-
-        const watcher = file.watchers[index];
-        if (watcher.status === 'firing') {
-          results.push({ watcherId, status: 'busy' });
-          continue;
-        }
-        if (
-          watcher.status !== 'active' &&
-          watcher.status !== 'delivery_failed'
-        ) {
-          results.push({ watcherId, status: 'not_found' });
-          continue;
-        }
-
-        if (
-          watcher.runtimeState?.kind === 'local_watcher' ||
-          watcher.runtimeState?.kind === 'managed_delegation'
-        ) {
-          watcher.runtimeState.cancellationPending = {
-            previousStatus: 'active',
-          };
-          watcher.updatedAt = new Date().toISOString();
-          cancellableIds.push(watcherId);
-        } else {
-          file.watchers.splice(index, 1);
-        }
-        changed = true;
-        results.push({ watcherId, status: 'deleted' });
-      }
-
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return { results, cancellableIds, changed } as const;
+    const wait = startChatWaitOperation({
+      name: 'watcher.delete_agent_watchers',
+      scope: watcherOwnerScope(destination),
+      queueDepth: this.mutationQueueDepth,
+      recordEnd: true,
+      bounded: true,
     });
+    try {
+      const result = await this.deleteAgentWatchersWithWait(
+        input,
+        destination,
+        wait,
+      );
+      wait.finish('completed');
+      return result;
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+  }
+
+  private async deleteAgentWatchersWithWait(
+    input: DeleteWatchersInput,
+    destination: AppAdvisorWatcherDestination,
+    wait: ChatWaitOperation,
+  ): Promise<DeleteWatchersResult> {
+    const prepared = await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage');
+        const file = await this.readFile();
+        let changed = false;
+        const results: DeleteWatchersResult['results'] = [];
+        const cancellableIds: string[] = [];
+
+        for (const watcherId of input.watcherIds) {
+          const index = file.watchers.findIndex(
+            (watcher) =>
+              watcher.id === watcherId &&
+              isSameRecipient(watcher, destination) &&
+              nonBlank(watcher.createdByToolUseId),
+          );
+          if (index === -1) {
+            results.push({ watcherId, status: 'not_found' });
+            continue;
+          }
+
+          const watcher = file.watchers[index];
+          if (watcher.status === 'firing') {
+            results.push({ watcherId, status: 'busy' });
+            continue;
+          }
+          if (
+            watcher.status !== 'active' &&
+            watcher.status !== 'delivery_failed'
+          ) {
+            results.push({ watcherId, status: 'not_found' });
+            continue;
+          }
+
+          if (watcher.runtimeState?.kind === 'local_watcher') {
+            // A fence's cancellation record, if any, stays for its release.
+            watcher.runtimeState.cancellationPending ??= {
+              previousStatus: 'active',
+            };
+            watcher.updatedAt = new Date().toISOString();
+            cancellableIds.push(watcherId);
+          } else {
+            file.watchers.splice(index, 1);
+          }
+          changed = true;
+          results.push({ watcherId, status: 'deleted' });
+        }
+
+        if (changed) {
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+        return { results, cancellableIds, changed } as const;
+      },
+      undefined,
+      {
+        name: 'watcher.delete_agent_watchers',
+        scope: watcherOwnerScope(destination),
+        finishOnSuccess: false,
+      },
+      wait,
+    );
 
     let cancellationFailure: unknown;
     if (prepared.cancellableIds.length) {
+      wait.phase('scheduler_cancel');
       const cancellationResults = await Promise.allSettled(
         prepared.cancellableIds.map((id) => this.localScheduler.cancel(id)),
       );
@@ -10098,35 +10791,48 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           cancellationFailure ??= result.reason;
         }
       });
-      await this.enqueueMutation(async () => {
-        const file = await this.readFile();
-        let changed = false;
-        file.watchers = file.watchers.filter((watcher) => {
-          if (cancelledIds.has(watcher.id)) {
-            changed = true;
-            return false;
+      await this.enqueueMutation(
+        async (wait) => {
+          wait.phase('storage');
+          const file = await this.readFile();
+          let changed = false;
+          file.watchers = file.watchers.filter((watcher) => {
+            if (cancelledIds.has(watcher.id)) {
+              changed = true;
+              return false;
+            }
+            if (
+              prepared.cancellableIds.includes(watcher.id) &&
+              watcher.runtimeState?.kind === 'local_watcher' &&
+              watcher.runtimeState.cancellationPending &&
+              !this.handOffToAnotherLocalFence(watcher)
+            ) {
+              delete watcher.runtimeState.cancellationPending;
+              watcher.updatedAt = new Date().toISOString();
+              changed = true;
+            }
+            return true;
+          });
+          if (changed) {
+            await this.writeFile(file);
+            this.notifyChange(file.watchers);
           }
-          if (
-            prepared.cancellableIds.includes(watcher.id) &&
-            (watcher.runtimeState?.kind === 'local_watcher' ||
-              watcher.runtimeState?.kind === 'managed_delegation') &&
-            watcher.runtimeState.cancellationPending
-          ) {
-            delete watcher.runtimeState.cancellationPending;
-            watcher.updatedAt = new Date().toISOString();
-            changed = true;
-          }
-          return true;
-        });
-        if (changed) {
-          await this.writeFile(file);
-          this.notifyChange(file.watchers);
-        }
-      });
+        },
+        undefined,
+        {
+          name: 'watcher.delete_agent_watchers',
+          scope: watcherOwnerScope(destination),
+          finishOnSuccess: false,
+        },
+        wait,
+      );
+      wait.phase('scheduler_rescan');
       await this.localScheduler.rescan();
     }
     if (prepared.changed) {
+      wait.phase('observer_rescan');
       await this.rescanGitHubObservers();
+      wait.phase('delivery_retry_schedule');
       await this.scheduleNextGitHubDeliveryRetry();
     }
     if (cancellationFailure !== undefined) {
@@ -10151,43 +10857,76 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     },
     delegationIds?: ReadonlySet<string>,
   ): Promise<void> {
-    const cancellableIds = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const now = new Date().toISOString();
-      const cancellable: string[] = [];
-      let changed = false;
-      file.watchers = file.watchers.filter((watcher) => {
-        const recipient = recipientDelegationId(watcher);
-        if (
-          !isSameDestination(watcher, target) ||
-          recipient === undefined ||
-          (delegationIds !== undefined && !delegationIds.has(recipient)) ||
-          (watcher.status !== 'active' && watcher.status !== 'firing')
-        )
-          return true;
-        this.clearDelegateDeliveryRetry(watcher.id);
-        changed = true;
-        if (
-          watcher.runtimeState?.kind === 'local_watcher' ||
-          watcher.runtimeState?.kind === 'managed_delegation'
-        ) {
-          // Stop the scheduler's task before the row is removed.
-          watcher.runtimeState.cancellationPending ??= {
-            previousStatus: watcher.status === 'firing' ? 'firing' : 'active',
-          };
-          watcher.updatedAt = now;
-          cancellable.push(watcher.id);
-          return true;
-        }
-        return false;
-      });
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-      return cancellable;
+    const wait = startChatWaitOperation({
+      name: 'watcher.remove_delegate_watchers_for_chat',
+      scope: watcherOwnerScope(target),
+      queueDepth: this.mutationQueueDepth,
+      recordEnd: true,
+      bounded: true,
     });
+    try {
+      await this.removeDelegateWatchersForChatWithWait(
+        target,
+        delegationIds,
+        wait,
+      );
+      wait.finish('completed');
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+  }
+
+  private async removeDelegateWatchersForChatWithWait(
+    target: { projectId: string; worktreeId: string; chatId: string },
+    delegationIds: ReadonlySet<string> | undefined,
+    wait: ChatWaitOperation,
+  ): Promise<void> {
+    const cancellableIds = await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage');
+        const file = await this.readFile();
+        const now = new Date().toISOString();
+        const cancellable: string[] = [];
+        let changed = false;
+        file.watchers = file.watchers.filter((watcher) => {
+          const recipient = recipientDelegationId(watcher);
+          if (
+            !isSameDestination(watcher, target) ||
+            recipient === undefined ||
+            (delegationIds !== undefined && !delegationIds.has(recipient)) ||
+            (watcher.status !== 'active' && watcher.status !== 'firing')
+          )
+            return true;
+          this.clearDelegateDeliveryRetry(watcher.id);
+          changed = true;
+          if (watcher.runtimeState?.kind === 'local_watcher') {
+            // Stop the scheduler's task before the row is removed.
+            watcher.runtimeState.cancellationPending ??= {
+              previousStatus: watcher.status === 'firing' ? 'firing' : 'active',
+            };
+            watcher.updatedAt = now;
+            cancellable.push(watcher.id);
+            return true;
+          }
+          return false;
+        });
+        if (changed) {
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
+        }
+        return cancellable;
+      },
+      undefined,
+      {
+        name: 'watcher.remove_delegate_watchers_for_chat',
+        scope: watcherOwnerScope(target),
+        finishOnSuccess: false,
+      },
+      wait,
+    );
     for (const id of cancellableIds) this.cancelPendingDelivery(id);
+    wait.phase('scheduler_cancel');
     const outcomes = await Promise.allSettled(
       cancellableIds.map((id) => this.localScheduler.cancel(id)),
     );
@@ -10196,34 +10935,48 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         (_id, index) => outcomes[index]?.status === 'fulfilled',
       ),
     );
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      let changed = false;
-      file.watchers = file.watchers.filter((watcher) => {
-        if (cancelled.has(watcher.id)) {
-          changed = true;
-          return false;
+    await this.enqueueMutation(
+      async (wait) => {
+        wait.phase('storage');
+        const file = await this.readFile();
+        let changed = false;
+        file.watchers = file.watchers.filter((watcher) => {
+          if (cancelled.has(watcher.id)) {
+            changed = true;
+            return false;
+          }
+          // A task that could not be stopped stays scheduled and visible,
+          // unless a fence still holds it.
+          if (
+            cancellableIds.includes(watcher.id) &&
+            watcher.runtimeState?.kind === 'local_watcher' &&
+            watcher.runtimeState.cancellationPending &&
+            !this.handOffToAnotherLocalFence(watcher)
+          ) {
+            delete watcher.runtimeState.cancellationPending;
+            watcher.updatedAt = new Date().toISOString();
+            changed = true;
+          }
+          return true;
+        });
+        if (changed) {
+          await this.writeFile(file);
+          this.notifyChange(file.watchers);
         }
-        // A task that could not be stopped stays scheduled and visible.
-        if (
-          cancellableIds.includes(watcher.id) &&
-          (watcher.runtimeState?.kind === 'local_watcher' ||
-            watcher.runtimeState?.kind === 'managed_delegation') &&
-          watcher.runtimeState.cancellationPending
-        ) {
-          delete watcher.runtimeState.cancellationPending;
-          watcher.updatedAt = new Date().toISOString();
-          changed = true;
-        }
-        return true;
-      });
-      if (changed) {
-        await this.writeFile(file);
-        this.notifyChange(file.watchers);
-      }
-    });
+      },
+      undefined,
+      {
+        name: 'watcher.remove_delegate_watchers_for_chat',
+        scope: watcherOwnerScope(target),
+        finishOnSuccess: false,
+      },
+      wait,
+    );
+    wait.phase('scheduler_rescan');
     await this.localScheduler.rescan();
+    wait.phase('observer_rescan');
     await this.rescanGitHubObservers();
+    wait.phase('delivery_retry_schedule');
     await this.scheduleNextGitHubDeliveryRetry();
     const failure = outcomes.find(
       (outcome): outcome is PromiseRejectedResult =>
@@ -10246,11 +10999,31 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   async handleChatTerminalEvent(
     terminalEvent: AppAdvisorChatTerminalEvent,
   ): Promise<void> {
+    const held = this.heldChatTargets.get(chatFiringHoldKey(terminalEvent));
+    if (held) {
+      // The chat's watcher modal is open — it is a staging area. Its replay
+      // when the modal closes settles and reports this completion.
+      stageHeldDelivery(held, { kind: 'completion', event: terminalEvent });
+      return;
+    }
+    const idle = await this.settleChatCompletion(terminalEvent);
+    if (idle.fire) await this.reportChatCompletion(terminalEvent, idle.unclaim);
+    // Turns that completed while the chat was busy report after the latest.
+    for (const earlier of idle.earlier)
+      await this.handleChatTerminalEvent(earlier);
+  }
+
+  private async reportChatCompletion(
+    terminalEvent: AppAdvisorChatTerminalEvent,
+    unclaim: (() => void) | undefined,
+  ): Promise<void> {
     const event = await this.withResumedTurns(terminalEvent);
     await this.deliverChatEventUnlessHeld(
       event,
       (held, staged) => {
         stageHeldDelivery(held, { kind: 'completion', event: staged });
+        // Its replay when the modal closes reports this completion.
+        unclaim?.();
       },
       // Chat watchers read their report on the authorized path, and
       // automation correlations read theirs once one matches.
@@ -10408,6 +11181,87 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     await deliver(enriched);
   }
 
+  /**
+   * Under canonical root turns a chat reports its completion once, when it
+   * goes idle. While a turn or background work still runs, each turn's latest
+   * completion is held, since an automation run matches its own turn, and a
+   * late terminal for a turn already reported is dropped. Chats without
+   * canonical turn state report every terminal, as before.
+   */
+  private async settleChatCompletion(
+    event: AppAdvisorChatTerminalEvent,
+  ): Promise<IdleCompletion> {
+    // Lazy to avoid the watcher and chat-state-service initialization cycle.
+    const { getChatStateService } =
+      await import('../services/chat-state-service');
+    const chatState = getChatStateService();
+    const turn = chatState.getTurnState(event);
+    if (!turn) return { fire: true, earlier: [] };
+    const key = chatTurnKey(event);
+    const stamp = completionTurnStamp(event);
+    const held =
+      this.busyChatCompletions.get(key) ??
+      new Map<string, AppAdvisorChatTerminalEvent>();
+    held.delete(stamp);
+    if (turn.phase !== 'idle') {
+      held.set(stamp, event);
+      this.busyChatCompletions.set(key, held);
+      this.stopObservingTurnState ??= chatState.onTurnStateChange((change) =>
+        this.releaseWhenIdle(change),
+      );
+      return { fire: false, earlier: [] };
+    }
+    this.busyChatCompletions.delete(key);
+    this.stopObservingIdleChats();
+    const earlier = Array.from(held.values()).reverse();
+    const turnId = turn.lastEnded?.id;
+    if (turnId === undefined) return { fire: true, earlier };
+    const fired = this.firedCompletions.get(key);
+    if (fired?.turnId === turnId && fired.stamps.has(stamp))
+      return { fire: false, earlier };
+    const claim =
+      fired?.turnId === turnId ? fired : { turnId, stamps: new Set<string>() };
+    claim.stamps.add(stamp);
+    this.firedCompletions.set(key, claim);
+    return {
+      fire: true,
+      unclaim: (): void => {
+        claim.stamps.delete(stamp);
+      },
+      earlier,
+    };
+  }
+
+  /** A wake can start right after background work ends, so idle settles first. */
+  private releaseWhenIdle(change: ChatTurnStateChange): void {
+    const key = chatTurnKey(change.scope);
+    if (
+      !this.busyChatCompletions.has(key) ||
+      !change.effects.some((effect) => effect.type === 'chat.idle')
+    )
+      return;
+    const timer = setTimeout(() => {
+      const held = Array.from(
+        this.busyChatCompletions.get(key)?.values() ?? [],
+      );
+      const latest = held[held.length - 1];
+      if (latest)
+        void this.handleChatTerminalEvent(latest).catch((error: unknown) => {
+          logMainProcessWarn(
+            '[app-advisor-watchers] Failed to report an idle chat completion:',
+            error,
+          );
+        });
+    }, COMPLETION_IDLE_SETTLE_MS);
+    timer.unref?.();
+  }
+
+  private stopObservingIdleChats(): void {
+    if (this.busyChatCompletions.size > 0) return;
+    this.stopObservingTurnState?.();
+    this.stopObservingTurnState = undefined;
+  }
+
   private async legacyEventTarget(event: {
     projectId: string;
     worktreeId: string;
@@ -10452,7 +11306,8 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
    * Mark a chat's watcher-management modal as closed and fire on close. Clearing
    * the hold lets future completions fire normally; every completion that
    * arrived while the modal was open was deferred, so replay them now, in
-   * arrival order — this is the "send only after the modal closes with the
+   * arrival order with canonical terminals in completion order (see
+   * `heldReplayOrder`) — this is the "send only after the modal closes with the
    * confirmed watcher set" behavior. Each replays through the shared delivery
    * path, so a watcher bound to a turn meets that turn's own completion.
    * Deferred settled-turn catch-ups run again too, against the watchers as
@@ -10466,7 +11321,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     const held = this.heldChatTargets.get(key);
     this.heldChatTargets.delete(key);
     if (!held) return;
-    for (const delivery of Array.from(held.deliveries.values())) {
+    for (const delivery of heldReplayOrder(held)) {
       if (delivery.kind === 'completion') {
         await this.handleChatTerminalEvent(delivery.event);
       } else if (delivery.kind === 'canonical_terminal') {
@@ -10505,23 +11360,35 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     id: string,
     followUpInstruction: string | undefined,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    return this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const watcher = file.watchers.find((entry) => entry.id === id);
-      if (!watcher) {
-        return { ok: false, error: 'Watcher not found.' };
-      }
-      if (watcher.status === 'firing') {
-        return { ok: false, error: 'Watcher is currently firing.' };
-      }
-      const trimmed = followUpInstruction?.trim();
-      watcher.followUpInstruction =
-        trimmed && trimmed.length > 0 ? trimmed : undefined;
-      watcher.updatedAt = new Date().toISOString();
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return { ok: true };
-    });
+    return this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const watcher = file.watchers.find((entry) => entry.id === id);
+        if (!watcher) {
+          return { ok: false, error: 'Watcher not found.' };
+        }
+        wait.phase(
+          'storage',
+          undefined,
+          watcherOwnerScope(watcher.destination),
+        );
+        if (watcher.status === 'firing') {
+          return { ok: false, error: 'Watcher is currently firing.' };
+        }
+        const trimmed = followUpInstruction?.trim();
+        watcher.followUpInstruction =
+          trimmed && trimmed.length > 0 ? trimmed : undefined;
+        watcher.updatedAt = new Date().toISOString();
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+        return { ok: true };
+      },
+      undefined,
+      {
+        name: 'watcher.update_watcher_follow_up',
+        scope: this.storedWatcherOwner((watcher) => watcher.id === id),
+      },
+    );
   }
 
   async handleNewChatStartedEvent(
@@ -10555,13 +11422,18 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     await this.fireMatchingWatchers(
       (watcher) => watcherMatchesPipelineEvent(watcher, event),
       event,
+      // An execution event names no worktree; its watchers may be anywhere.
+      UNOWNED_WATCHER_MUTATION_SCOPE,
     );
     // Automation correlations fire on terminal transitions only; pause
     // notifications are deliberately not forwarded to automation watchers.
     if (!isPipelinePauseEvent(event)) {
+      // CAN-5381: the chat the pipeline sent to rides on the delivered event.
+      const sent = lastChatSendRunResult(event.state);
       await this.fireCorrelatedAutomationWatchers(
         (correlation) => correlationMatchesPipelineEvent(correlation, event),
         event,
+        sent ? { ...sent, pipelineExecutionId: event.executionId } : undefined,
       );
     }
   }
@@ -10570,6 +11442,8 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     return this.fireMatchingWatchers(
       (watcher) => watcherMatchesHookEvent(watcher, event),
       event,
+      // A hook fires in one worktree, its subject.
+      { projectId: event.projectId, worktreeId: event.worktreeId },
     );
   }
 
@@ -10621,72 +11495,80 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     if (options?.recoveringDispatch && correlation?.chat) {
       delete correlation.chat.turnUserMessageId;
     }
-    const toFire = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const now = new Date().toISOString();
-      const candidates = file.watchers.filter(
-        (watcher) =>
-          watcher.status === 'active' &&
-          watcher.trigger === 'automation_run' &&
-          watcher.target.kind === 'automation' &&
-          equalTrimmed(watcher.target.automationId, event.activityId) &&
-          isUnseenAutomationRun(watcher, event) &&
-          watcher.runtimeState === undefined &&
-          (restrictToWatcherIds === undefined ||
-            restrictToWatcherIds.has(watcher.id)),
-      );
-      if (candidates.length === 0) return { fired: [], correlated: [] };
-      const matching: AppAdvisorWatcher[] = [];
-      const advisorPromptWatcherIds = new Set<string>();
-      let withheld = false;
-      for (const watcher of candidates) {
-        const access = await this.appAdvisorPromptAccess(watcher, event);
-        if (access && !access.allowed) {
-          markAutomationRunWithheld(watcher, event.completedAt);
-          withheld = true;
-        } else {
-          if (access) advisorPromptWatcherIds.add(watcher.id);
-          matching.push(watcher);
-        }
-      }
-      if (matching.length === 0) {
-        if (withheld) {
-          await this.writeFile(file);
-          this.notifyChange(file.watchers);
-        }
-        return { fired: [], correlated: [] };
-      }
-      const fired: AppAdvisorWatcher[] = [];
-      const correlated: AppAdvisorWatcher[] = [];
-      for (const watcher of matching) {
-        if (
-          backgroundExecutionContextEnabled() &&
-          event.executionContext !== undefined
-        )
-          watcher.executionContext = event.executionContext;
-        if (correlation) {
-          watcher.runtimeState = {
-            kind: 'automation_run',
-            pendingCorrelation: { ...correlation, recordedAt: now },
-          };
-          correlated.push({ ...watcher });
-        } else {
-          watcher.pendingLocalDelivery = createLocalDelivery(watcher, {
-            ...event,
-            note: options?.restartRecoveryNote ?? automationRunFireNote(event),
-          });
-          if (advisorPromptWatcherIds.has(watcher.id)) {
-            markAppAdvisorPromptDelivery(watcher);
+    const toFire = await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        const now = new Date().toISOString();
+        const candidates = file.watchers.filter(
+          (watcher) =>
+            watcher.status === 'active' &&
+            watcher.trigger === 'automation_run' &&
+            watcher.target.kind === 'automation' &&
+            equalTrimmed(watcher.target.automationId, event.activityId) &&
+            isUnseenAutomationRun(watcher, event) &&
+            watcher.runtimeState === undefined &&
+            (restrictToWatcherIds === undefined ||
+              restrictToWatcherIds.has(watcher.id)),
+        );
+        if (candidates.length === 0) return { fired: [], correlated: [] };
+        const matching: AppAdvisorWatcher[] = [];
+        const advisorPromptWatcherIds = new Set<string>();
+        let withheld = false;
+        for (const watcher of candidates) {
+          const access = await this.appAdvisorPromptAccess(watcher, event);
+          if (access && !access.allowed) {
+            markAutomationRunWithheld(watcher, event.completedAt);
+            withheld = true;
+          } else {
+            if (access) advisorPromptWatcherIds.add(watcher.id);
+            matching.push(watcher);
           }
-          watcher.status = 'firing';
-          fired.push({ ...watcher });
         }
-        watcher.updatedAt = now;
-      }
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return { fired, correlated };
-    });
+        if (matching.length === 0) {
+          if (withheld) {
+            await this.writeFile(file);
+            this.notifyChange(file.watchers);
+          }
+          return { fired: [], correlated: [] };
+        }
+        const fired: AppAdvisorWatcher[] = [];
+        const correlated: AppAdvisorWatcher[] = [];
+        for (const watcher of matching) {
+          if (
+            backgroundExecutionContextEnabled() &&
+            event.executionContext !== undefined
+          )
+            watcher.executionContext = event.executionContext;
+          if (correlation) {
+            watcher.runtimeState = {
+              kind: 'automation_run',
+              pendingCorrelation: { ...correlation, recordedAt: now },
+            };
+            correlated.push({ ...watcher });
+          } else {
+            watcher.pendingLocalDelivery = createLocalDelivery(watcher, {
+              ...event,
+              note:
+                options?.restartRecoveryNote ?? automationRunFireNote(event),
+            });
+            if (advisorPromptWatcherIds.has(watcher.id)) {
+              markAppAdvisorPromptDelivery(watcher);
+            }
+            watcher.status = 'firing';
+            fired.push({ ...watcher });
+          }
+          watcher.updatedAt = now;
+        }
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+        return { fired, correlated };
+      },
+      undefined,
+      {
+        name: 'watcher.handle_automation_run_event',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      },
+    );
     for (const watcher of toFire.fired) {
       await this.deliverWatcher(watcher, {
         ...event,
@@ -10704,6 +11586,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         await this.fireAutomationWatchersByIds(
           toFire.correlated.map((watcher) => watcher.id),
           'The dispatched work had already completed when the automation run was recorded.',
+          await correlatedPipelineChatSend(correlation),
         );
       }
     }
@@ -10717,61 +11600,77 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private async fireAutomationWatchersByIds(
     watcherIds: string[],
     note: string,
+    dispatched?: AutomationRunResult,
   ): Promise<void> {
     const ids = new Set(watcherIds);
-    const matched = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const now = new Date().toISOString();
-      const candidates = file.watchers.filter(
-        (watcher) =>
-          ids.has(watcher.id) &&
-          watcher.status === 'active' &&
-          watcher.trigger === 'automation_run',
-      );
-      if (candidates.length === 0) return [];
-      const watchers: AppAdvisorWatcher[] = [];
-      const advisorPromptWatcherIds = new Set<string>();
-      let withheld = false;
-      for (const watcher of candidates) {
-        const access = await this.appAdvisorPromptAccess(watcher);
-        if (access && !access.allowed) {
-          markAutomationRunWithheld(watcher);
-          withheld = true;
-        } else {
-          if (access) advisorPromptWatcherIds.add(watcher.id);
-          watchers.push(watcher);
-        }
-      }
-      if (watchers.length === 0) {
-        if (withheld) {
-          await this.writeFile(file);
-          this.notifyChange(file.watchers);
-        }
-        return [];
-      }
-      for (const watcher of watchers) {
-        watcher.pendingLocalDelivery = createLocalDelivery(
-          watcher,
-          this.buildAutomationCompletionEvent(watcher, note),
-          watcher.runtimeState?.kind === 'automation_run'
-            ? watcher.runtimeState.pendingCorrelation.pipelineExecutionId
-            : undefined,
+    const build = (watcher: AppAdvisorWatcher): AppAdvisorAutomationRunEvent =>
+      this.buildAutomationCompletionEvent(watcher, note, undefined, dispatched);
+    // One event per watcher: classified, queued and delivered the same.
+    const events = new Map<string, AppAdvisorAutomationRunEvent>();
+    const eventFor = (
+      watcher: AppAdvisorWatcher,
+    ): AppAdvisorAutomationRunEvent => events.get(watcher.id) ?? build(watcher);
+    const matched = await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        const now = new Date().toISOString();
+        const candidates = file.watchers.filter(
+          (watcher) =>
+            ids.has(watcher.id) &&
+            watcher.status === 'active' &&
+            watcher.trigger === 'automation_run',
         );
-        if (advisorPromptWatcherIds.has(watcher.id)) {
-          markAppAdvisorPromptDelivery(watcher);
+        if (candidates.length === 0) return [];
+        const watchers: AppAdvisorWatcher[] = [];
+        const advisorPromptWatcherIds = new Set<string>();
+        let withheld = false;
+        for (const watcher of candidates) {
+          // Classify against the event delivered, so a chat it names in the
+          // Orchestrator is checked here and kept on the outbox for replays.
+          const event = build(watcher);
+          events.set(watcher.id, event);
+          const access = await this.appAdvisorPromptAccess(watcher, event);
+          if (access && !access.allowed) {
+            markAutomationRunWithheld(watcher);
+            withheld = true;
+          } else {
+            if (access) advisorPromptWatcherIds.add(watcher.id);
+            watchers.push(watcher);
+          }
         }
-        watcher.status = 'firing';
-        watcher.updatedAt = now;
-      }
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return watchers.map((watcher) => ({ ...watcher }));
-    });
+        if (watchers.length === 0) {
+          if (withheld) {
+            await this.writeFile(file);
+            this.notifyChange(file.watchers);
+          }
+          return [];
+        }
+        for (const watcher of watchers) {
+          watcher.pendingLocalDelivery = createLocalDelivery(
+            watcher,
+            eventFor(watcher),
+            watcher.runtimeState?.kind === 'automation_run'
+              ? watcher.runtimeState.pendingCorrelation.pipelineExecutionId
+              : undefined,
+          );
+          if (advisorPromptWatcherIds.has(watcher.id)) {
+            markAppAdvisorPromptDelivery(watcher);
+          }
+          watcher.status = 'firing';
+          watcher.updatedAt = now;
+        }
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+        return watchers.map((watcher) => ({ ...watcher }));
+      },
+      undefined,
+      {
+        name: 'watcher.fire_automation_watchers_by_ids',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      },
+    );
     for (const watcher of matched) {
-      await this.deliverWatcher(
-        watcher,
-        this.buildAutomationCompletionEvent(watcher, note),
-      );
+      await this.deliverWatcher(watcher, eventFor(watcher));
     }
   }
 
@@ -10784,69 +11683,82 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   private async fireCorrelatedAutomationWatchers(
     matches: (correlation: AutomationRunCorrelation) => boolean,
     completion: WatcherFiringEvent,
+    dispatched?: AutomationRunResult,
   ): Promise<void> {
-    const matched = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const now = new Date().toISOString();
-      const candidates = file.watchers.filter(
-        (watcher) =>
-          watcher.status === 'active' &&
-          watcher.trigger === 'automation_run' &&
-          watcher.runtimeState?.kind === 'automation_run' &&
-          matches(watcher.runtimeState.pendingCorrelation),
-      );
-      if (candidates.length === 0) return [];
-      const watchers: AppAdvisorWatcher[] = [];
-      const advisorPromptWatcherIds = new Set<string>();
-      let withheld = false;
-      for (const watcher of candidates) {
-        const access = await this.appAdvisorPromptAccess(watcher);
-        if (access && !access.allowed) {
-          markAutomationRunWithheld(watcher);
-          withheld = true;
-        } else {
-          if (access) advisorPromptWatcherIds.add(watcher.id);
-          watchers.push(watcher);
-        }
-      }
-      if (watchers.length === 0) {
-        if (withheld) {
-          await this.writeFile(file);
-          this.notifyChange(file.watchers);
-        }
-        return [];
-      }
-      for (const watcher of watchers) {
-        watcher.pendingLocalDelivery = createLocalDelivery(
-          watcher,
-          this.buildAutomationCompletionEvent(
-            watcher,
-            'The automation run succeeded and its dispatched work has completed.',
-            sanitizeWatcherEvent(completion),
-          ),
-          watcher.runtimeState?.kind === 'automation_run'
-            ? watcher.runtimeState.pendingCorrelation.pipelineExecutionId
-            : undefined,
-        );
-        if (advisorPromptWatcherIds.has(watcher.id)) {
-          markAppAdvisorPromptDelivery(watcher);
-        }
-        watcher.status = 'firing';
-        watcher.updatedAt = now;
-      }
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return watchers.map((watcher) => ({ ...watcher }));
-    });
-    for (const watcher of matched) {
-      await this.deliverWatcher(
+    const build = (watcher: AppAdvisorWatcher): AppAdvisorAutomationRunEvent =>
+      this.buildAutomationCompletionEvent(
         watcher,
-        this.buildAutomationCompletionEvent(
-          watcher,
-          'The automation run succeeded and its dispatched work has completed.',
-          sanitizeWatcherEvent(completion),
-        ),
+        'The automation run succeeded and its dispatched work has completed.',
+        sanitizeWatcherEvent(completion),
+        dispatched,
       );
+    // One event per watcher: classified, queued and delivered the same.
+    const events = new Map<string, AppAdvisorAutomationRunEvent>();
+    const eventFor = (
+      watcher: AppAdvisorWatcher,
+    ): AppAdvisorAutomationRunEvent => events.get(watcher.id) ?? build(watcher);
+    const matched = await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        const now = new Date().toISOString();
+        const candidates = file.watchers.filter(
+          (watcher) =>
+            watcher.status === 'active' &&
+            watcher.trigger === 'automation_run' &&
+            watcher.runtimeState?.kind === 'automation_run' &&
+            matches(watcher.runtimeState.pendingCorrelation),
+        );
+        if (candidates.length === 0) return [];
+        const watchers: AppAdvisorWatcher[] = [];
+        const advisorPromptWatcherIds = new Set<string>();
+        let withheld = false;
+        for (const watcher of candidates) {
+          // Classify against the event delivered, so a chat it names in the
+          // Orchestrator is checked here and kept on the outbox for replays.
+          const event = build(watcher);
+          events.set(watcher.id, event);
+          const access = await this.appAdvisorPromptAccess(watcher, event);
+          if (access && !access.allowed) {
+            markAutomationRunWithheld(watcher);
+            withheld = true;
+          } else {
+            if (access) advisorPromptWatcherIds.add(watcher.id);
+            watchers.push(watcher);
+          }
+        }
+        if (watchers.length === 0) {
+          if (withheld) {
+            await this.writeFile(file);
+            this.notifyChange(file.watchers);
+          }
+          return [];
+        }
+        for (const watcher of watchers) {
+          watcher.pendingLocalDelivery = createLocalDelivery(
+            watcher,
+            eventFor(watcher),
+            watcher.runtimeState?.kind === 'automation_run'
+              ? watcher.runtimeState.pendingCorrelation.pipelineExecutionId
+              : undefined,
+          );
+          if (advisorPromptWatcherIds.has(watcher.id)) {
+            markAppAdvisorPromptDelivery(watcher);
+          }
+          watcher.status = 'firing';
+          watcher.updatedAt = now;
+        }
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+        return watchers.map((watcher) => ({ ...watcher }));
+      },
+      undefined,
+      {
+        name: 'watcher.fire_correlated_automation_watchers',
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+      },
+    );
+    for (const watcher of matched) {
+      await this.deliverWatcher(watcher, eventFor(watcher));
     }
   }
 
@@ -10854,6 +11766,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     watcher: AppAdvisorWatcher,
     note: string,
     completion?: unknown,
+    dispatched?: AutomationRunResult,
   ): AppAdvisorAutomationRunEvent {
     const correlation =
       watcher.runtimeState?.kind === 'automation_run'
@@ -10871,6 +11784,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       runId: correlation?.runId ?? '',
       manual: correlation?.manual ?? false,
       status: 'success',
+      ...(dispatched ? { dispatched } : {}),
       completedAt: new Date().toISOString(),
       note,
       ...(completion !== undefined ? { completion } : {}),
@@ -10902,26 +11816,34 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           // thread. The pre-restart turn id must not strand this correlation.
           if (watcher.runtimeState.pendingCorrelation.chat?.turnUserMessageId) {
             const runId = watcher.runtimeState.pendingCorrelation.runId;
-            await this.enqueueMutation(async () => {
-              if (
-                !this.configured ||
-                generation !== this.configurationGeneration
-              )
-                return;
-              const file = await this.readFile();
-              const current = file.watchers.find(
-                (entry) => entry.id === watcher.id && entry.status === 'active',
-              );
-              if (
-                current?.runtimeState?.kind !== 'automation_run' ||
-                current.runtimeState.pendingCorrelation.runId !== runId
-              )
-                return;
-              if (current.runtimeState.pendingCorrelation.chat)
-                delete current.runtimeState.pendingCorrelation.chat
-                  .turnUserMessageId;
-              await this.writeFile(file);
-            });
+            await this.enqueueMutation(
+              async () => {
+                if (
+                  !this.configured ||
+                  generation !== this.configurationGeneration
+                )
+                  return;
+                const file = await this.readFile();
+                const current = file.watchers.find(
+                  (entry) =>
+                    entry.id === watcher.id && entry.status === 'active',
+                );
+                if (
+                  current?.runtimeState?.kind !== 'automation_run' ||
+                  current.runtimeState.pendingCorrelation.runId !== runId
+                )
+                  return;
+                if (current.runtimeState.pendingCorrelation.chat)
+                  delete current.runtimeState.pendingCorrelation.chat
+                    .turnUserMessageId;
+                await this.writeFile(file);
+              },
+              undefined,
+              {
+                name: 'watcher.resolve_prior_process_automation_correlations',
+                scope: watcherOwnerScope(watcher.destination),
+              },
+            );
           }
           continue;
         }
@@ -10930,6 +11852,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         await this.fireAutomationWatchersByIds(
           [watcher.id],
           'The app restarted. The dispatched work has completed or its saved target is no longer available. Check the saved outcome before taking further action.',
+          await correlatedPipelineChatSend(
+            watcher.runtimeState.pendingCorrelation,
+          ),
         );
       } catch (error) {
         logMainProcessError(
@@ -11128,7 +12053,16 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     );
   }
 
-  private async appAdvisorPromptAccess(
+  private appAdvisorPromptAccess(
+    watcher: AppAdvisorWatcher,
+    event?: AppAdvisorAutomationRunEvent,
+  ): Promise<AppAdvisorAccessDecision | null> {
+    return withinChatWaitPhase('authorization', () =>
+      this.decideAppAdvisorPromptAccess(watcher, event),
+    );
+  }
+
+  private async decideAppAdvisorPromptAccess(
     watcher: AppAdvisorWatcher,
     event?: AppAdvisorAutomationRunEvent,
   ): Promise<AppAdvisorAccessDecision | null> {
@@ -11167,52 +12101,70 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   ): Promise<void> {
     this.cancelPendingDelivery(watcherId);
     this.clearDelegateDeliveryRetry(watcherId);
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const watcher = file.watchers.find((entry) => entry.id === watcherId);
-      if (
-        !watcher ||
-        watcher.trigger !== 'automation_run' ||
-        watcher.target.kind !== 'automation' ||
-        watcher.status === 'fired' ||
-        watcher.status === 'delivery_failed'
-      )
-        return;
-      markAutomationRunWithheld(watcher, completedAt);
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-    });
+    await this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const watcher = file.watchers.find((entry) => entry.id === watcherId);
+        if (watcher)
+          wait.attributeOwner(watcherOwnerScope(watcher.destination));
+        if (
+          !watcher ||
+          watcher.trigger !== 'automation_run' ||
+          watcher.target.kind !== 'automation' ||
+          watcher.status === 'fired' ||
+          watcher.status === 'delivery_failed'
+        )
+          return;
+        markAutomationRunWithheld(watcher, completedAt);
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+      },
+      undefined,
+      {
+        name: 'watcher.withhold_automation_run_watcher',
+        scope: this.storedWatcherOwner((watcher) => watcher.id === watcherId),
+      },
+    );
   }
 
+  /** `scope` is the owner of a single watcher, or a fan-out's subject. */
   private async fireMatchingWatchers(
     predicate: (watcher: AppAdvisorWatcher) => boolean,
     event: WatcherFiringEvent,
+    scope: ChatWaitScope,
   ): Promise<void> {
-    const matched = await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const now = new Date().toISOString();
-      const watchers = file.watchers.filter(
-        (watcher) =>
-          watcher.status === 'active' &&
-          !watcher.pendingLocalDelivery &&
-          predicate(watcher) &&
-          (!isExecutionEvent(event) ||
-            !isPipelinePauseEvent(event) ||
-            watcher.observedPipelinePauses?.[event.executionId] !==
-              pipelineTransitionKey(event)),
-      );
-      if (watchers.length === 0) {
-        return [];
-      }
-      for (const watcher of watchers) {
-        watcher.pendingLocalDelivery = createLocalDelivery(watcher, event);
-        watcher.status = 'firing';
-        watcher.updatedAt = now;
-      }
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-      return watchers.map((watcher) => ({ ...watcher }));
-    });
+    const matched = await this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        const now = new Date().toISOString();
+        const watchers = file.watchers.filter(
+          (watcher) =>
+            watcher.status === 'active' &&
+            !watcher.pendingLocalDelivery &&
+            predicate(watcher) &&
+            (!isExecutionEvent(event) ||
+              !isPipelinePauseEvent(event) ||
+              watcher.observedPipelinePauses?.[event.executionId] !==
+                pipelineTransitionKey(event)),
+        );
+        if (watchers.length === 0) {
+          return [];
+        }
+        for (const watcher of watchers) {
+          watcher.pendingLocalDelivery = createLocalDelivery(watcher, event);
+          watcher.status = 'firing';
+          watcher.updatedAt = now;
+        }
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+        return watchers.map((watcher) => ({ ...watcher }));
+      },
+      undefined,
+      {
+        name: 'watcher.fire_matching_watchers',
+        scope,
+      },
+    );
 
     for (const watcher of matched) {
       await this.deliverWatcher(watcher, event);
@@ -11225,22 +12177,29 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     alreadyQueued = false,
   ): Promise<boolean> {
     if (!isChatWatcher(watcher)) return true;
-    return this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const row = file.watchers.find((entry) => entry.id === watcher.id);
-      if (
-        !row ||
-        row.status !== 'firing' ||
-        row.pendingLocalDelivery?.deliveryId !== deliveryId
-      )
-        return false;
-      if (!alreadyQueued && !(await this.chatRowAccess(row)).allowed) {
-        this.scheduleCanonicalDeliveryRetry();
-        return false;
-      }
-      this.unsubmittedChatDeliveries.delete(deliveryId);
-      return true;
-    });
+    return this.enqueueMutation(
+      async () => {
+        const file = await this.readFile();
+        const row = file.watchers.find((entry) => entry.id === watcher.id);
+        if (
+          !row ||
+          row.status !== 'firing' ||
+          row.pendingLocalDelivery?.deliveryId !== deliveryId
+        )
+          return false;
+        if (!alreadyQueued && !(await this.chatRowAccess(row)).allowed) {
+          this.scheduleCanonicalDeliveryRetry();
+          return false;
+        }
+        this.unsubmittedChatDeliveries.delete(deliveryId);
+        return true;
+      },
+      undefined,
+      {
+        name: 'watcher.prepare_chat_delivery_for_queue',
+        scope: watcherOwnerScope(watcher.destination),
+      },
+    );
   }
 
   private async deliverWatcher(
@@ -11294,7 +12253,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         replay &&
         !event &&
         !stableDeliveryId &&
-        watcher.runtimeState?.kind !== 'managed_delegation' &&
         (await this.replayedDeliveryWasCommitted(watcher, replay.deliveryId))
       ) {
         if (!this.configured || generation !== this.configurationGeneration)
@@ -11312,36 +12270,26 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       );
       return;
     }
-    if (
-      stableDeliveryId &&
-      watcher.runtimeState?.kind === 'managed_delegation'
-    ) {
-      const latest = await this.enqueueMutation(async () => {
-        const file = await this.readFile();
-        return file.watchers.find((entry) => entry.id === watcher.id);
-      });
-      if (
-        !latest ||
-        latest.runtimeState?.kind !== 'managed_delegation' ||
-        latest.runtimeState.pendingDelivery?.eventId !== stableDeliveryId
-      )
-        return;
-      watcher = latest;
-      event = latest.runtimeState.pendingDelivery.event;
-    }
     if (!watcher.pendingLocalDelivery && !stableDeliveryId) {
       if (!event || !decideWatcherEvent(event).deliver) return;
-      watcher = await this.enqueueMutation(async () => {
-        const file = await this.readFile();
-        const stored = file.watchers.find((entry) => entry.id === watcher.id);
-        if (!stored) return watcher;
-        if (!stored.pendingLocalDelivery) {
-          stored.pendingLocalDelivery = createLocalDelivery(stored, event);
-          if (initialAdvisorAccess) markAppAdvisorPromptDelivery(stored);
-        }
-        await this.writeFile(file);
-        return { ...stored };
-      });
+      watcher = await this.enqueueMutation(
+        async () => {
+          const file = await this.readFile();
+          const stored = file.watchers.find((entry) => entry.id === watcher.id);
+          if (!stored) return watcher;
+          if (!stored.pendingLocalDelivery) {
+            stored.pendingLocalDelivery = createLocalDelivery(stored, event);
+            if (initialAdvisorAccess) markAppAdvisorPromptDelivery(stored);
+          }
+          await this.writeFile(file);
+          return { ...stored };
+        },
+        undefined,
+        {
+          name: 'watcher.deliver_watcher',
+          scope: watcherOwnerScope(watcher.destination),
+        },
+      );
     }
     const pending = watcher.pendingLocalDelivery;
     if (!this.configured || generation !== this.configurationGeneration) return;
@@ -11369,51 +12317,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       isChatWatcher(watcher) && !this.unsubmittedChatDeliveries.has(deliveryId);
     let queueMayHaveAccepted = priorQueueHandoff;
     try {
-      if (
-        watcher.runtimeState?.kind === 'managed_delegation' &&
-        watcher.runtimeState.recipient.kind === 'delegate'
-      ) {
-        if (backgroundExecutionContextEnabled())
-          await authorizeWatcherDelivery(watcher);
-        // Defer the local delegation service to break its watcher registration cycle.
-        // Verified in build:mac: Vite folds this local import into the packaged main bundle.
-        const { deliverManagedDelegationWatcherToChild } =
-          await import('../agents/delegation/service');
-        let delivery: Promise<void> | undefined;
-        await this.enqueueMutation(async () => {
-          const file = await this.readFile();
-          const latest = file.watchers.find((entry) => entry.id === watcher.id);
-          if (
-            !latest ||
-            latest.target.kind !== 'managed_delegation' ||
-            latest.runtimeState?.kind !== 'managed_delegation' ||
-            latest.runtimeState.pendingDelivery?.eventId !== deliveryId ||
-            latest.runtimeState.recipient.kind !== 'delegate'
-          )
-            throw new Error('Managed delegation watcher delivery changed.');
-          const currentMessage = buildFiredMessage({
-            watcher: latest,
-            event: latest.runtimeState.pendingDelivery.event,
-          });
-          delivery = deliverManagedDelegationWatcherToChild(
-            {
-              projectId: latest.target.projectId,
-              worktreeId: latest.target.worktreeId,
-            },
-            latest.runtimeState.recipient.delegationId,
-            currentMessage.hiddenContextText,
-            deliveryId,
-          );
-        });
-        if (!delivery)
-          throw new Error('Managed delegation watcher delivery changed.');
-        try {
-          await delivery;
-        } catch (error) {
-          throw await this.classifyDelegateDeliveryFailure(watcher, error);
-        }
-        return;
-      }
       const delegationId = watcher.destination.delegationId;
       if (delegationId) {
         // A delegate recipient receives the fired message as a host message:
@@ -11485,7 +12388,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         pending &&
         !event &&
         !stableDeliveryId &&
-        watcher.runtimeState?.kind !== 'managed_delegation' &&
         (await this.replayedDeliveryWasCommitted(watcher, deliveryId))
       ) {
         if (!this.configured || generation !== this.configurationGeneration)
@@ -11504,110 +12406,47 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         throw new Error('App Advisor watcher service is not configured.');
       }
       await authorizeWatcherDelivery(watcher);
-      const ackPromise = this.waitForWatcherDelivery(watcher.id, deliveryId);
-      if (isAppAdvisorDestination(watcher.destination)) {
-        const resolution = await resolveWorkEntryForChat(
-          APP_ADVISOR_PROJECT_ID,
-          watcher.destination.chatId,
-        );
-        if (!resolution.entryId) {
+      // Recheck access at the last boundary before the chat takes the input.
+      if (isChatWatcher(watcher)) {
+        const fresh = await this.chatRowAccess(watcher);
+        if (!fresh.allowed) {
           this.cancelPendingDelivery(watcher.id);
-          throw new Error(
-            `App Advisor watcher destination chat ${watcher.destination.chatId} is unavailable.`,
-          );
-        }
-        await this.surfaces.ensureAppAdvisorWindow();
-        if (isChatWatcher(watcher)) {
-          const fresh = await this.chatRowAccess(watcher);
-          if (!fresh.allowed) {
-            this.cancelPendingDelivery(watcher.id);
-            this.scheduleCanonicalDeliveryRetry();
-            return;
-          }
-        }
-        if (!(await this.prepareChatDeliveryForQueue(watcher, deliveryId))) {
-          this.cancelPendingDelivery(watcher.id);
+          this.scheduleCanonicalDeliveryRetry();
           return;
         }
-        queueMayHaveAccepted = true;
-        try {
-          this.surfaces.sendAppAdvisorWindowCommand({
-            type: 'send_watcher_message',
-            chatId: watcher.destination.chatId,
-            watcherId: watcher.id,
-            deliveryId,
-            text: message.text,
-            hiddenContextText: message.hiddenContextText,
-            watcherFired,
-          });
-        } catch (error) {
+      }
+      if (initialAdvisorAccess) {
+        const access = await this.appAdvisorPromptAccess(
+          watcher,
+          automationEvent,
+        );
+        if (access && !access.allowed) {
           this.cancelPendingDelivery(watcher.id);
-          throw error;
-        }
-      } else {
-        const command = {
-          type: 'send_watcher_message',
-          projectId: watcher.destination.projectId,
-          worktreeId: watcher.destination.worktreeId,
-          chatId: watcher.destination.chatId,
-          watcherId: watcher.id,
-          deliveryId,
-          text: message.text,
-          hiddenContextText: message.hiddenContextText,
-          watcherFired,
-        } satisfies ChatWindowCommand;
-        let accessWithheld = false;
-        queueMayHaveAccepted = true;
-        const delivered =
-          stableDeliveryId &&
-          watcher.runtimeState?.kind === 'managed_delegation'
-            ? await this.sendManagedDelegationWatcherWithRetry(
-                watcher.id,
-                stableDeliveryId,
-              )
-            : await this.sendChatWindowCommandWithRetry(
-                command,
-                isChatWatcher(watcher) || initialAdvisorAccess
-                  ? async (): Promise<boolean> => {
-                      if (isChatWatcher(watcher)) {
-                        const fresh = await this.chatRowAccess(watcher);
-                        if (!fresh.allowed) {
-                          accessWithheld = true;
-                          this.cancelPendingDelivery(watcher.id);
-                          this.scheduleCanonicalDeliveryRetry();
-                          return false;
-                        }
-                      }
-                      const access = await this.appAdvisorPromptAccess(
-                        watcher,
-                        automationEvent,
-                      );
-                      if (access && !access.allowed) {
-                        accessWithheld = true;
-                        await this.withholdAutomationRunWatcher(
-                          watcher.id,
-                          automationEvent?.completedAt,
-                        );
-                        return false;
-                      }
-                      return this.prepareChatDeliveryForQueue(
-                        watcher,
-                        deliveryId,
-                      );
-                    }
-                  : undefined,
-              );
-        if (accessWithheld) return;
-        if (!delivered) {
-          queueMayHaveAccepted = priorQueueHandoff;
-          this.cancelPendingDelivery(watcher.id);
-          throw new Error('Main window is not available.');
+          await this.withholdAutomationRunWatcher(
+            watcher.id,
+            automationEvent?.completedAt,
+          );
+          return;
         }
       }
-      const ack = await ackPromise;
-      if (!ack.ok) {
-        queueMayHaveAccepted = ack.queueOutcome === 'unknown';
-        throw new Error(ack.error ?? 'Watcher message delivery failed.');
+      if (!(await this.prepareChatDeliveryForQueue(watcher, deliveryId))) {
+        this.cancelPendingDelivery(watcher.id);
+        return;
+      }
+      queueMayHaveAccepted = true;
+      try {
+        await this.deliverWatcherMessageToChat(
+          watcher,
+          message,
+          deliveryId,
+          watcherFired,
+        );
+      } catch (error) {
+        // Main delivers in process: an outright failure never reached the
+        // chat's queue, but one past its deadline still may.
+        if (!(error instanceof WatcherDeliveryDeadlineError))
+          queueMayHaveAccepted = priorQueueHandoff;
+        throw error;
       }
       if (!this.configured || generation !== this.configurationGeneration)
         return;
@@ -11667,10 +12506,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         const hash = createHash('sha256')
           .update(watcher.pendingLocalDelivery?.hiddenContextText ?? '')
           .digest('hex');
-        return [
-          ...(record?.controls ?? []),
-          ...(record?.control ? [record.control] : []),
-        ].some(
+        return (record ? controlsForReplay(record) : []).some(
           (control) =>
             control.operationId === deliveryId && control.requestHash === hash,
         );
@@ -11743,17 +12579,24 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         await authorizeWatcherDelivery(watcher);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await this.enqueueMutation(async () => {
-          const currentFile = await this.readFile();
-          const current = currentFile.watchers.find(
-            (entry) => entry.id === watcherId,
-          );
-          const currentState = githubRuntimeStateOf(current);
-          if (currentState?.pendingDelivery?.eventId === pending.eventId) {
-            delete currentState.pendingDelivery;
-            await this.writeFile(currentFile);
-          }
-        });
+        await this.enqueueMutation(
+          async () => {
+            const currentFile = await this.readFile();
+            const current = currentFile.watchers.find(
+              (entry) => entry.id === watcherId,
+            );
+            const currentState = githubRuntimeStateOf(current);
+            if (currentState?.pendingDelivery?.eventId === pending.eventId) {
+              delete currentState.pendingDelivery;
+              await this.writeFile(currentFile);
+            }
+          },
+          undefined,
+          {
+            name: 'watcher.deliver_pending_git_hub_watcher',
+            scope: watcherOwnerScope(watcher.destination),
+          },
+        );
         // A settled pull request is never observed again, so its dropped
         // event could not be rebuilt: fail the watcher instead of resuming.
         if (
@@ -11788,127 +12631,98 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           }
           const message = buildGitHubWatcherFiredMessage(watcher);
           const watcherFired = { kind: describeWatcherFiredKind(watcher) };
-          const deliveryId = pending.eventId;
-          const ackPromise = this.waitForWatcherDelivery(
-            watcher.id,
-            deliveryId,
-          );
-          if (isAppAdvisorDestination(watcher.destination)) {
-            await this.surfaces.ensureAppAdvisorWindow();
-            try {
-              this.surfaces.sendAppAdvisorWindowCommand({
-                type: 'send_watcher_message',
-                chatId: watcher.destination.chatId,
-                watcherId: watcher.id,
-                deliveryId,
-                text: message.text,
-                hiddenContextText: message.hiddenContextText,
-                watcherFired,
-              });
-            } catch (error) {
-              this.cancelPendingDelivery(watcher.id);
-              throw error;
-            }
-          } else {
-            const delivered = await this.sendChatWindowCommandWithRetry({
-              type: 'send_watcher_message',
-              projectId: watcher.destination.projectId,
-              worktreeId: watcher.destination.worktreeId,
-              chatId: watcher.destination.chatId,
-              watcherId: watcher.id,
-              deliveryId,
-              text: message.text,
-              hiddenContextText: message.hiddenContextText,
-              watcherFired,
-            });
-            if (!delivered) {
-              this.cancelPendingDelivery(watcher.id);
-              throw new Error('Main window is not available.');
-            }
-          }
           markDeliveryStarted();
-          const ack = await ackPromise;
-          if (!ack.ok) {
-            throw new Error(ack.error ?? 'Watcher message delivery failed.');
-          }
+          await this.deliverWatcherMessageToChat(
+            watcher,
+            message,
+            pending.eventId,
+            watcherFired,
+          );
         }
       } catch (error) {
         recipientNotReady = error instanceof WatcherRecipientNotReadyError;
         deliveryError = error instanceof Error ? error.message : String(error);
       }
 
-      await this.enqueueMutation(async () => {
-        const currentFile = await this.readFile();
-        const current = currentFile.watchers.find(
-          (entry) => entry.id === watcherId,
-        );
-        const currentState = githubRuntimeStateOf(current);
-        if (
-          !current ||
-          !currentState?.pendingDelivery ||
-          currentState.pendingDelivery.eventId !== pending.eventId
-        ) {
-          return;
-        }
-        const currentPending = currentState.pendingDelivery;
-        const now = new Date().toISOString();
-        if (!deliveryError) {
-          const consume =
-            currentPending.consumeAfterDelivery ||
-            currentState.consumeAfterQueuedDeliveries === true;
-          delete currentState.pendingDelivery;
-          delete current.deliveryError;
-          delete current.failureKind;
-          current.updatedAt = now;
-          if (promoteQueuedGitHubEvents(currentState, now, consume)) {
-            current.status = 'firing';
-            deliverAgain = true;
-          } else if (
-            consume &&
-            currentState.kind === 'github_pull_requests' &&
-            currentState.sourceFailure
-          ) {
-            delete currentState.consumeAfterQueuedDeliveries;
-            current.status = 'delivery_failed';
-            current.failureKind = 'source';
-            current.deliveryError = currentState.sourceFailure;
-          } else if (consume) {
-            delete currentState.consumeAfterQueuedDeliveries;
-            current.status = 'fired';
-            current.firedAt = now;
-          } else {
-            delete currentState.consumeAfterQueuedDeliveries;
-            current.status = 'active';
-            delete current.firedAt;
-          }
-        } else if (recipientNotReady) {
-          // A retained delegate that is not loaded keeps its retry budget.
-          current.status = 'firing';
-          current.updatedAt = now;
-          currentPending.nextAttemptAt = new Date(
-            Date.now() + DELEGATE_RECIPIENT_RETRY_MS,
-          ).toISOString();
-        } else {
-          currentPending.attempts += 1;
-          current.updatedAt = now;
+      await this.enqueueMutation(
+        async () => {
+          const currentFile = await this.readFile();
+          const current = currentFile.watchers.find(
+            (entry) => entry.id === watcherId,
+          );
+          const currentState = githubRuntimeStateOf(current);
           if (
-            currentPending.attempts <= GITHUB_DELIVERY_RETRY_DELAYS_MS.length
+            !current ||
+            !currentState?.pendingDelivery ||
+            currentState.pendingDelivery.eventId !== pending.eventId
           ) {
+            return;
+          }
+          const currentPending = currentState.pendingDelivery;
+          const now = new Date().toISOString();
+          if (!deliveryError) {
+            const consume =
+              currentPending.consumeAfterDelivery ||
+              currentState.consumeAfterQueuedDeliveries === true;
+            delete currentState.pendingDelivery;
+            delete current.deliveryError;
+            delete current.failureKind;
+            current.updatedAt = now;
+            if (promoteQueuedGitHubEvents(currentState, now, consume)) {
+              current.status = 'firing';
+              deliverAgain = true;
+            } else if (
+              consume &&
+              currentState.kind === 'github_pull_requests' &&
+              currentState.sourceFailure
+            ) {
+              delete currentState.consumeAfterQueuedDeliveries;
+              current.status = 'delivery_failed';
+              current.failureKind = 'source';
+              current.deliveryError = currentState.sourceFailure;
+            } else if (consume) {
+              delete currentState.consumeAfterQueuedDeliveries;
+              current.status = 'fired';
+              current.firedAt = now;
+            } else {
+              delete currentState.consumeAfterQueuedDeliveries;
+              current.status = 'active';
+              delete current.firedAt;
+            }
+          } else if (recipientNotReady) {
+            // A retained delegate that is not loaded keeps its retry budget.
             current.status = 'firing';
+            current.updatedAt = now;
             currentPending.nextAttemptAt = new Date(
-              Date.now() +
-                GITHUB_DELIVERY_RETRY_DELAYS_MS[currentPending.attempts - 1],
+              Date.now() + DELEGATE_RECIPIENT_RETRY_MS,
             ).toISOString();
           } else {
-            current.status = 'delivery_failed';
-            current.failureKind = 'delivery';
-            current.deliveryError = deliveryError;
-            current.firedAt = now;
+            currentPending.attempts += 1;
+            current.updatedAt = now;
+            if (
+              currentPending.attempts <= GITHUB_DELIVERY_RETRY_DELAYS_MS.length
+            ) {
+              current.status = 'firing';
+              currentPending.nextAttemptAt = new Date(
+                Date.now() +
+                  GITHUB_DELIVERY_RETRY_DELAYS_MS[currentPending.attempts - 1],
+              ).toISOString();
+            } else {
+              current.status = 'delivery_failed';
+              current.failureKind = 'delivery';
+              current.deliveryError = deliveryError;
+              current.firedAt = now;
+            }
           }
-        }
-        await this.writeFile(currentFile);
-        this.notifyChange(currentFile.watchers);
-      });
+          await this.writeFile(currentFile);
+          this.notifyChange(currentFile.watchers);
+        },
+        undefined,
+        {
+          name: 'watcher.deliver_pending_git_hub_watcher',
+          scope: watcherOwnerScope(watcher.destination),
+        },
+      );
     } finally {
       markDeliveryStarted();
       this.githubDeliveriesInFlight.delete(watcherId);
@@ -11965,79 +12779,120 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   ): Promise<void> {
     if (isChatWatcher(watcher) && !(await this.chatRowAccess(watcher)).allowed)
       return;
-    if (!this.surfaces) {
-      throw new Error('App Advisor watcher service is not configured.');
-    }
     await authorizeWatcherDelivery(watcher);
+    // Access can be revoked while root authorization runs.
+    if (isChatWatcher(watcher) && !(await this.chatRowAccess(watcher)).allowed)
+      return;
     const message = buildDeletedMessage(watcher);
-    const deliveryId = randomUUID();
-    const ackPromise = this.waitForWatcherDelivery(
-      watcher.id,
-      deliveryId,
+    await this.deliverWatcherMessageToChat(
+      watcher,
+      message,
+      randomUUID(),
+      undefined,
       WATCHER_DELIVERY_ACK_TIMEOUT_MS,
     );
-    if (isAppAdvisorDestination(watcher.destination)) {
-      const resolution = await resolveWorkEntryForChat(
-        APP_ADVISOR_PROJECT_ID,
-        watcher.destination.chatId,
-      );
-      if (!resolution.entryId) {
-        this.cancelPendingDelivery(watcher.id);
-        throw new Error(
-          `App Advisor watcher destination chat ${watcher.destination.chatId} is unavailable.`,
-        );
-      }
-      await this.surfaces.ensureAppAdvisorWindow();
-      if (
-        isChatWatcher(watcher) &&
-        !(await this.chatRowAccess(watcher)).allowed
-      ) {
-        this.cancelPendingDelivery(watcher.id);
-        return;
-      }
-      try {
-        this.surfaces.sendAppAdvisorWindowCommand({
-          type: 'send_watcher_message',
-          chatId: watcher.destination.chatId,
-          watcherId: watcher.id,
-          deliveryId,
-          text: message.text,
-          hiddenContextText: message.hiddenContextText,
-        });
-      } catch (error) {
-        this.cancelPendingDelivery(watcher.id);
-        throw error;
-      }
-    } else {
-      let withheld = false;
-      const delivered = await this.sendChatWindowCommandWithRetry(
-        {
-          type: 'send_watcher_message',
-          projectId: watcher.destination.projectId,
-          worktreeId: watcher.destination.worktreeId,
-          chatId: watcher.destination.chatId,
-          watcherId: watcher.id,
-          deliveryId,
-          text: message.text,
-          hiddenContextText: message.hiddenContextText,
-        },
-        isChatWatcher(watcher)
-          ? async (): Promise<boolean> => {
-              withheld = !(await this.chatRowAccess(watcher)).allowed;
-              return !withheld;
-            }
-          : undefined,
-      );
-      if (!delivered) {
-        this.cancelPendingDelivery(watcher.id);
-        if (withheld) return;
-        throw new Error('Main window is not available.');
-      }
+  }
+
+  private async deliverWatcherMessageToChat(
+    watcher: AppAdvisorWatcher,
+    message: { text: string; hiddenContextText: string },
+    deliveryId: string,
+    watcherFired?: { kind: string },
+    timeoutMs = WATCHER_DELIVERY_COMPLETION_ACK_TIMEOUT_MS,
+    sendTerminalPresenterWithRetry?: (
+      command: ChatWindowCommand,
+    ) => Promise<boolean>,
+  ): Promise<WatcherChatDeliveryOutcome> {
+    const surfaces = this.surfaces;
+    if (!surfaces) {
+      throw new Error('App Advisor watcher service is not configured.');
     }
 
-    const ack = await ackPromise;
-    if (!ack.ok) {
-      throw new Error(ack.error ?? 'Watcher message delivery failed.');
+    let deadlineExpired = false;
+    const delivery = (async (): Promise<WatcherChatDeliveryOutcome> => {
+      let worktreeId = watcher.destination.worktreeId;
+      if (isAppAdvisorDestination(watcher.destination)) {
+        const resolution = await resolveWorkEntryForChat(
+          APP_ADVISOR_PROJECT_ID,
+          watcher.destination.chatId,
+        );
+        if (!resolution.entryId) {
+          throw new Error(
+            `Orchestrator watcher destination chat ${watcher.destination.chatId} is unavailable.`,
+          );
+        }
+        worktreeId = resolution.entryId;
+      }
+
+      if (deadlineExpired) {
+        throw new Error('Watcher message delivery timed out.');
+      }
+
+      const result = await surfaces.deliverWatcherMessage({
+        projectId: watcher.destination.projectId,
+        worktreeId,
+        chatId: watcher.destination.chatId,
+        watcherId: watcher.id,
+        deliveryId,
+        text: message.text,
+        hiddenContextText: message.hiddenContextText,
+        ...(watcherFired ? { watcherFired } : {}),
+      });
+      if (result !== 'terminal_presenter') return result;
+      if (isAppAdvisorDestination(watcher.destination)) {
+        throw new Error(
+          'App Advisor watcher delivery cannot use the terminal presenter.',
+        );
+      }
+      if (deadlineExpired) {
+        throw new Error('Watcher message delivery timed out.');
+      }
+
+      const command: ChatWindowCommand = {
+        type: 'send_watcher_message',
+        projectId: watcher.destination.projectId,
+        worktreeId: watcher.destination.worktreeId,
+        chatId: watcher.destination.chatId,
+        watcherId: watcher.id,
+        deliveryId,
+        text: message.text,
+        hiddenContextText: message.hiddenContextText,
+        ...(watcherFired ? { watcherFired } : {}),
+      };
+      const ackPromise = this.waitForWatcherDelivery(
+        watcher.id,
+        deliveryId,
+        timeoutMs,
+      );
+      const sent = await (sendTerminalPresenterWithRetry
+        ? sendTerminalPresenterWithRetry(command)
+        : this.sendChatWindowCommandWithRetry(command));
+      if (!sent) {
+        this.cancelPendingDelivery(watcher.id);
+        throw new Error('Main window is not available.');
+      }
+      const ack = await ackPromise;
+      if (!ack.ok) {
+        throw new Error(ack.error ?? 'Watcher message delivery failed.');
+      }
+      return 'submitted';
+    })();
+
+    try {
+      return await withWatcherDeliveryDeadline(
+        delivery,
+        timeoutMs,
+        timeoutMs === WATCHER_DELIVERY_ACK_TIMEOUT_MS
+          ? 'Timed out waiting for watcher message delivery completion.'
+          : 'Watcher message delivery timed out.',
+        () => {
+          deadlineExpired = true;
+          this.cancelPendingDelivery(watcher.id);
+        },
+      );
+    } catch (error) {
+      this.cancelPendingDelivery(watcher.id);
+      throw error;
     }
   }
 
@@ -12071,48 +12926,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     }
   }
 
-  private async sendManagedDelegationWatcherWithRetry(
-    watcherId: string,
-    deliveryId: string,
-  ): Promise<boolean> {
-    for (let attempt = 0; ; attempt += 1) {
-      const delivered = await this.enqueueMutation(async () => {
-        const file = await this.readFile();
-        const watcher = file.watchers.find((entry) => entry.id === watcherId);
-        if (
-          !watcher ||
-          watcher.runtimeState?.kind !== 'managed_delegation' ||
-          watcher.runtimeState.pendingDelivery?.eventId !== deliveryId ||
-          isAppAdvisorDestination(watcher.destination)
-        )
-          throw new Error('Managed delegation watcher delivery changed.');
-        const event = watcher.runtimeState.pendingDelivery.event;
-        const message = buildFiredMessage({ watcher, event });
-        return (
-          this.surfaces?.sendChatWindowCommand({
-            type: 'send_watcher_message',
-            projectId: watcher.destination.projectId,
-            worktreeId: watcher.destination.worktreeId,
-            chatId: watcher.destination.chatId,
-            watcherId,
-            deliveryId,
-            text: message.text,
-            hiddenContextText: message.hiddenContextText,
-            watcherFired: { kind: describeWatcherFiredKind(watcher) },
-          }) === true
-        );
-      });
-      if (delivered) return true;
-      const delayMs = CHAT_WINDOW_DELIVERY_RETRY_DELAYS_MS[attempt];
-      if (delayMs === undefined) return false;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-
   /**
-   * Deliver a watcher message to its managed delegate through the host
-   * message path that nested Watch Delegates notifications use: it steers the
-   * delegate's active run or starts a follow-up run, idempotently per
+   * Deliver an ordinary watcher's message through its managed delegate's host
+   * message path: steer the active run or start a follow-up, idempotently per
    * delivery id.
    */
   private async deliverToDelegateRecipient(
@@ -12122,8 +12938,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     deliveryId: string,
     beforeDelivery?: () => Promise<boolean>,
   ): Promise<boolean> {
-    // Same deferred import as the Watch Delegates branch: it breaks the
-    // delegation service's watcher registration cycle.
+    // Defer this import to break the delegation service's watcher cycle.
     const { deliverManagedDelegationWatcherToChild } =
       await import('../agents/delegation/service');
     if (beforeDelivery && !(await beforeDelivery())) return false;
@@ -12292,58 +13107,74 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   }
 
   private async markDelivered(id: string): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const watcher = file.watchers.find((entry) => entry.id === id);
-      if (!watcher) {
-        return;
-      }
-      const now = new Date().toISOString();
-      if (isChatWatcher(watcher) && watcher.pendingLocalDelivery)
-        watcher.chatDeliveryId ??= watcher.pendingLocalDelivery.deliveryId;
-      delete watcher.pendingLocalDelivery;
-      watcher.status = 'fired';
-      watcher.updatedAt = now;
-      watcher.firedAt = now;
-      delete watcher.deliveryError;
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-    });
+    await this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const watcher = file.watchers.find((entry) => entry.id === id);
+        if (!watcher) {
+          return;
+        }
+        wait.attributeOwner(watcherOwnerScope(watcher.destination));
+        const now = new Date().toISOString();
+        if (isChatWatcher(watcher) && watcher.pendingLocalDelivery)
+          watcher.chatDeliveryId ??= watcher.pendingLocalDelivery.deliveryId;
+        delete watcher.pendingLocalDelivery;
+        watcher.status = 'fired';
+        watcher.updatedAt = now;
+        watcher.firedAt = now;
+        delete watcher.deliveryError;
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+      },
+      undefined,
+      {
+        name: 'watcher.mark_delivered',
+        scope: this.storedWatcherOwner((watcher) => watcher.id === id),
+      },
+    );
   }
 
   private async markActiveAfterDelivery(
     id: string,
     deliveryError?: string,
   ): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const watcher = file.watchers.find((entry) => entry.id === id);
-      if (!watcher) {
-        return;
-      }
-      const now = new Date().toISOString();
-      const pending = watcher.pendingLocalDelivery;
-      if (!deliveryError && pending) {
-        if (pending.pipelineTransitionKey && pending.pipelineExecutionId) {
-          const executionId = pending.pipelineExecutionId;
-          watcher.observedPipelinePauses = {
-            ...watcher.observedPipelinePauses,
-            [executionId]: pending.pipelineTransitionKey,
-          };
+    await this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const watcher = file.watchers.find((entry) => entry.id === id);
+        if (!watcher) {
+          return;
         }
-      }
-      delete watcher.pendingLocalDelivery;
-      watcher.status = 'active';
-      watcher.updatedAt = now;
-      delete watcher.firedAt;
-      if (deliveryError) {
-        watcher.deliveryError = deliveryError;
-      } else {
-        delete watcher.deliveryError;
-      }
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-    });
+        wait.attributeOwner(watcherOwnerScope(watcher.destination));
+        const now = new Date().toISOString();
+        const pending = watcher.pendingLocalDelivery;
+        if (!deliveryError && pending) {
+          if (pending.pipelineTransitionKey && pending.pipelineExecutionId) {
+            const executionId = pending.pipelineExecutionId;
+            watcher.observedPipelinePauses = {
+              ...watcher.observedPipelinePauses,
+              [executionId]: pending.pipelineTransitionKey,
+            };
+          }
+        }
+        delete watcher.pendingLocalDelivery;
+        watcher.status = 'active';
+        watcher.updatedAt = now;
+        delete watcher.firedAt;
+        if (deliveryError) {
+          watcher.deliveryError = deliveryError;
+        } else {
+          delete watcher.deliveryError;
+        }
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+      },
+      undefined,
+      {
+        name: 'watcher.mark_active_after_delivery',
+        scope: this.storedWatcherOwner((watcher) => watcher.id === id),
+      },
+    );
   }
 
   private waitForWatcherDelivery(
@@ -12395,22 +13226,30 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     id: string,
     deliveryError: string,
   ): Promise<void> {
-    await this.enqueueMutation(async () => {
-      const file = await this.readFile();
-      const watcher = file.watchers.find((entry) => entry.id === id);
-      if (!watcher) {
-        return;
-      }
-      const now = new Date().toISOString();
-      // delivery_failed is terminal: nothing may replay its delivery later.
-      delete watcher.pendingLocalDelivery;
-      watcher.status = 'delivery_failed';
-      watcher.updatedAt = now;
-      watcher.firedAt = now;
-      watcher.deliveryError = deliveryError;
-      await this.writeFile(file);
-      this.notifyChange(file.watchers);
-    });
+    await this.enqueueMutation(
+      async (wait) => {
+        const file = await this.readFile();
+        const watcher = file.watchers.find((entry) => entry.id === id);
+        if (!watcher) {
+          return;
+        }
+        wait.attributeOwner(watcherOwnerScope(watcher.destination));
+        const now = new Date().toISOString();
+        // delivery_failed is terminal: nothing may replay its delivery later.
+        delete watcher.pendingLocalDelivery;
+        watcher.status = 'delivery_failed';
+        watcher.updatedAt = now;
+        watcher.firedAt = now;
+        watcher.deliveryError = deliveryError;
+        await this.writeFile(file);
+        this.notifyChange(file.watchers);
+      },
+      undefined,
+      {
+        name: 'watcher.mark_delivery_failed',
+        scope: this.storedWatcherOwner((watcher) => watcher.id === id),
+      },
+    );
   }
 
   private notifyChange(watchers: AppAdvisorWatcher[]): void {
@@ -12571,6 +13410,18 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       return watcher;
     }
 
+    // Main-owned delivery promises have a 30-minute completion bound and do
+    // not use the terminal-presenter acknowledgement record below. A stale
+    // persisted updatedAt must not make an active generation look interrupted
+    // while that promise is still pending (notably for managed ROOT fires).
+    if (
+      this.localDeliveriesInFlight.has(
+        `${this.configurationGeneration}:${watcher.id}`,
+      )
+    ) {
+      return watcher;
+    }
+
     const updatedAtMs = Date.parse(watcher.updatedAt);
     const firingAgeMs = Number.isFinite(updatedAtMs)
       ? Date.now() - updatedAtMs
@@ -12676,7 +13527,11 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   }
 
   /** A private copy of the store that a mutation may edit and write back. */
-  private async readFile(): Promise<AppAdvisorWatchersFile> {
+  private readFile(): Promise<AppAdvisorWatchersFile> {
+    return withinChatWaitPhase('storage_read', () => this.readStoreCopy());
+  }
+
+  private async readStoreCopy(): Promise<AppAdvisorWatchersFile> {
     const [snapshot, sidecar] = await Promise.all([
       this.loadSnapshot(),
       this.loadCanonicalRows(),
@@ -12712,11 +13567,33 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     ]).map((row) => this.normalizePersistedWatcher(row));
   }
 
-  private async writeFile(file: AppAdvisorWatchersFile): Promise<void> {
+  private writeFile(
+    file: AppAdvisorWatchersFile,
+    signal?: AbortSignal,
+    removedLegacyDelegateIds?: ReadonlySet<string>,
+  ): Promise<void> {
+    return withinChatWaitPhase('persistence', () =>
+      this.writeStoreCopy(file, signal, removedLegacyDelegateIds),
+    );
+  }
+
+  private async writeStoreCopy(
+    file: AppAdvisorWatchersFile,
+    signal?: AbortSignal,
+    removedLegacyDelegateIds: ReadonlySet<string> = new Set(),
+  ): Promise<void> {
+    checkRegistrationSignal(signal);
     const filePath = getAppAdvisorWatchersFilePath();
     const dir = dirname(filePath);
     await mkdir(dir, { recursive: true });
-    const previousLegacy = (await this.loadSnapshot())?.watchers ?? [];
+    const snapshot = await this.loadSnapshot();
+    const previousLegacy = snapshot?.watchers ?? [];
+    const rawLegacyDelegates = (snapshot?.legacyDelegateRows ?? []).filter(
+      (raw) =>
+        !removedLegacyDelegateIds.has(
+          decodeLegacyDelegateWatcher(raw)?.id ?? '',
+        ),
+    );
     const previousSidecar = committedCanonicalRows(
       await this.loadCanonicalRows(),
       previousLegacy,
@@ -12742,6 +13619,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       newLegacy.length && newCanonical.length ? randomUUID() : undefined;
     const newLegacyIds = new Set(newLegacy.map((row) => row.id));
     const newCanonicalIds = new Set(newCanonical.map((row) => row.id));
+    checkRegistrationSignal(signal);
     const updatedFile: AppAdvisorWatchersFile = {
       version: 1,
       updatedAt: new Date().toISOString(),
@@ -12756,6 +13634,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     const opaqueSidecar = previousSidecar.filter(
       (row) =>
         !isPersistedWatcher(row) &&
+        !removedLegacyDelegateIds.has(
+          decodeLegacyDelegateWatcher(row)?.id ?? '',
+        ) &&
         !inlineReservationSchema.safeParse(row).success,
     );
     const receiptIds = new Set(
@@ -12881,7 +13762,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     ];
     this.canonicalSnapshot = null;
     await writeCanonicalWatcherStore(canonicalStorePath(), sidecarRows);
-    const serialized = `${JSON.stringify(updatedFile)}\n`;
+    const serialized = `${JSON.stringify({ ...updatedFile, watchers: [...updatedFile.watchers, ...rawLegacyDelegates] })}\n`;
     const tempPath = join(
       dir,
       `.app-advisor-watchers-${process.pid}-${randomUUID()}.tmp`,
@@ -12890,11 +13771,14 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     try {
       const handle = await open(tempPath, 'wx', 0o600);
       try {
+        checkRegistrationSignal(signal);
         await handle.writeFile(serialized, 'utf8');
+        checkRegistrationSignal(signal);
         await handle.sync();
       } finally {
         await handle.close();
       }
+      checkRegistrationSignal(signal);
       await rename(tempPath, filePath);
       renamed = true;
       await fsyncDirectory(dir);
@@ -12927,8 +13811,110 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         : parseWatchersSnapshot(filePath, signature, serialized);
   }
 
-  private enqueueMutation<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.writeQueue.then(fn, fn);
+  private enqueueChatMutation(diagnostics: {
+    name: string;
+    scope: ChatWaitScope;
+  }): <T>(fn: (wait: ChatWaitOperation) => Promise<T>) => Promise<T> {
+    return <T>(fn: (wait: ChatWaitOperation) => Promise<T>): Promise<T> =>
+      this.enqueueMutation(fn, undefined, {
+        ...diagnostics,
+        nativeTiming: false,
+      });
+  }
+
+  /** One queued step of an operation that `wait` already names and scopes. */
+  private enqueueMutationStep<T>(
+    fn: (wait: ChatWaitOperation) => Promise<T>,
+    wait: ChatWaitOperation,
+  ): Promise<T> {
+    return this.enqueueMutation(
+      fn,
+      undefined,
+      {
+        name: wait.name,
+        scope: UNOWNED_WATCHER_MUTATION_SCOPE,
+        finishOnSuccess: false,
+      },
+      wait,
+    );
+  }
+
+  private startMutationWait(
+    diagnostics:
+      | {
+          name: string;
+          scope: ChatWaitScope | StoredWatcherOwner;
+          nativeTiming?: boolean;
+          recordEnd?: boolean;
+          record?: PurgedWorktreeRecorder['record'];
+        }
+      | undefined,
+  ): ChatWaitOperation {
+    const owner = diagnostics?.scope ?? UNOWNED_WATCHER_MUTATION_SCOPE;
+    const wait = startChatWaitOperation({
+      name: diagnostics?.name ?? 'watcher.internal_mutation',
+      scope: 'storedOwner' in owner ? owner.storedOwner() : owner,
+      queueDepth: this.mutationQueueDepth,
+      recordEnd:
+        diagnostics?.recordEnd ??
+        (diagnostics?.nativeTiming !== false && diagnostics !== undefined),
+      bounded: true,
+      nativeTiming:
+        diagnostics?.nativeTiming !== false && diagnostics !== undefined,
+      stallTimer: diagnostics !== undefined,
+      record: diagnostics?.record,
+    });
+    if ('storedOwner' in owner) this.attributeStoredWatcherOwner(wait, owner);
+    return wait;
+  }
+
+  private enqueueMutation<T>(
+    fn: (wait: ChatWaitOperation) => Promise<T>,
+    signal: AbortSignal | undefined,
+    diagnostics: {
+      name: string;
+      scope: ChatWaitScope | StoredWatcherOwner;
+      nativeTiming?: boolean;
+      recordEnd?: boolean;
+      finishOnSuccess?: boolean;
+      record?: PurgedWorktreeRecorder['record'];
+    },
+    existingWait?: ChatWaitOperation,
+  ): Promise<T>;
+  private enqueueMutation<T>(
+    fn: (wait: ChatWaitOperation) => Promise<T>,
+    signal?: AbortSignal,
+    diagnostics?: {
+      name: string;
+      scope: ChatWaitScope | StoredWatcherOwner;
+      nativeTiming?: boolean;
+      recordEnd?: boolean;
+      finishOnSuccess?: boolean;
+      record?: PurgedWorktreeRecorder['record'];
+    },
+    existingWait?: ChatWaitOperation,
+  ): Promise<T> {
+    const wait = existingWait ?? this.startMutationWait(diagnostics);
+    this.mutationQueueDepth += 1;
+    wait.enterQueue(this.mutationQueueDepth - 1, () => this.activeMutationWait);
+    const run = async (): Promise<T> => {
+      wait.phase(GENERIC_MUTATION_PHASE, this.mutationQueueDepth);
+      this.activeMutationWait = wait;
+      try {
+        checkRegistrationSignal(signal);
+        const result = await runWithChatWaitOperation(wait, () => fn(wait));
+        if (diagnostics?.finishOnSuccess !== false) wait.finish('completed');
+        return result;
+      } catch (error) {
+        wait.finish('failed');
+        throw error;
+      } finally {
+        if (this.activeMutationWait === wait)
+          this.activeMutationWait = undefined;
+        this.mutationQueueDepth -= 1;
+      }
+    };
+    const next = this.writeQueue.then(run, run);
     this.writeQueue = next.catch(() => undefined);
     return next;
   }

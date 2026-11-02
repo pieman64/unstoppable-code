@@ -72,6 +72,31 @@ export function readLegacyUsageLimitBannerFields(raw: unknown): {
   return { banner, dismissedKey };
 }
 
+/** Persisted extension fields only, never a spread of renderer runtime state.
+ * Reference extensions use the Ref/Refs suffix and remain opaque here. Neither
+ * projection changes blocks or their bodies, so the references remain coherent.
+ */
+export function persistedRowExtensionFields(
+  row: object,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(row).filter(
+      ([key]) =>
+        key.endsWith('Ref') ||
+        key.endsWith('Refs') ||
+        [
+          'delegationSequence',
+          'delegationAuthor',
+          'delegationDelivery',
+          'delegationSegment',
+          'itemRevision',
+          'final',
+          'truncated',
+        ].includes(key),
+    ),
+  );
+}
+
 /**
  * Hydrate a single persisted tab into a live ChatTab.
  *
@@ -119,14 +144,22 @@ export function hydratePersistedChatTab(
     pt.aiCreditsRouted ??
     (pt.aiCreditsRouting?.active === true ||
       (validModel !== undefined && isGatewayOnlyModel(validModel)));
-  const usage = normalizePersistedUsage(pt.usage, validModel, aiCreditsRouted);
+  const usage = normalizePersistedUsage(
+    pt.usage,
+    validModel,
+    aiCreditsRouted,
+    pt.executionHarness ??
+      (pt.providerType === 'opencode' ? 'opencode' : undefined),
+  );
 
   // Restore providerType from persisted data; derive from model if absent
   const providerType: AgentProviderType | undefined =
     pt.providerType ??
     (validModel ? getProviderForModel(validModel) : undefined);
   const executionHarness =
-    pt.messages.length > 0
+    (pt.transcript?.messageCount ??
+      pt.transcript?.committedMessageCount ??
+      pt.messages.length) > 0 || pt.executionHarnessExplicitlyChosen === true
       ? (pt.executionHarness ??
         inferLegacyExecutionHarness({
           model: validModel,
@@ -208,6 +241,7 @@ export function hydratePersistedChatTab(
     ...(pt.fileViewMode ? { fileViewMode: pt.fileViewMode } : {}),
     ...(pt.description ? { description: pt.description } : {}),
     messages: persistedMessages.map((msg) => ({
+      ...persistedRowExtensionFields(msg),
       id: msg.id,
       role: msg.role,
       ...(msg.hidden ? { hidden: true } : {}),
@@ -252,6 +286,9 @@ export function hydratePersistedChatTab(
     ...(validModel ? { model: validModel } : {}),
     ...(providerType ? { providerType } : {}),
     ...(executionHarness ? { executionHarness } : {}),
+    ...(pt.executionHarnessExplicitlyChosen === true
+      ? { executionHarnessExplicitlyChosen: true }
+      : {}),
     ...(pt.pendingPlanExit ? { pendingPlanExit: pt.pendingPlanExit } : {}),
     ...(pt.trackedPlanId ? { trackedPlanId: pt.trackedPlanId } : {}),
     ...(pt.trackedPlanSource

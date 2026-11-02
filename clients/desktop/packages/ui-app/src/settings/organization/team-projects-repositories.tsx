@@ -7,6 +7,7 @@ import {
   DialogModal,
   LoadingButton,
   Notice,
+  SearchField,
   SettingsListSkeleton,
 } from '@canopy/ui-shared/components';
 import type { OrgProjectDetail } from '@canopy/protocol/org-projects';
@@ -27,11 +28,7 @@ import {
   requestFailure,
   type RequestFailure,
 } from './team-projects-create-dialog';
-import {
-  matchesProjectSearch,
-  RepositoryLabel,
-  SearchField,
-} from './team-projects-display';
+import { matchesProjectSearch, RepositoryLabel } from './team-projects-display';
 
 interface TeamProjectsRepositoriesProps {
   orgId: string;
@@ -261,18 +258,20 @@ export function TeamProjectsRepositories({
           Projects you created stay as they are.
         </p>
         <SearchField
-          label="Search repositories"
+          ref={searchRef}
+          aria-label="Search repositories"
+          placeholder="Search repositories"
           data-testid="team-projects-repositories-search"
-          inputRef={searchRef}
           value={query}
-          onChange={setQuery}
+          onValueChange={setQuery}
+          className="w-full max-w-sm"
         />
         {hideError && <RequestNotice failure={hideError} orgId={orgId} />}
         {listError && <RequestNotice failure={listError} orgId={orgId} />}
         {listError && repositories.length === 0 && (
           <Button
             size="compact"
-            variant="ghost"
+            variant="secondary"
             disabled={loading}
             onClick={(): void => loadFirstPage()}
           >
@@ -346,6 +345,9 @@ export function TeamProjectsRepositories({
         )}
         {nextCursor && (
           <LoadingButton
+            variant="secondary"
+            size="compact"
+            className="self-start"
             data-testid="team-projects-repositories-load-more"
             loading={loading}
             disabled={disabled}

@@ -13,8 +13,9 @@ export interface SourceInfoButtonProps {
 }
 
 /**
- * Info-icon button revealed on hover/focus inside an entry row (Scripts,
- * Hooks, …). Pure display: parent owns the modal/popover dispatch.
+ * Info-icon button inside an entry row (Scripts, Hooks, …), revealed on
+ * hover/focus and always visible on coarse pointers. Pure display: parent
+ * owns the modal/popover dispatch.
  */
 export function SourceInfoButton({
   onClick,
@@ -31,7 +32,7 @@ export function SourceInfoButton({
           event.stopPropagation();
           onClick();
         }}
-        className="focus-ring shrink-0 rounded p-0.5 fg-secondary opacity-0 transition hover:fg-primary/80 focus:opacity-100 group-hover:opacity-100"
+        className="focus-ring shrink-0 rounded p-0.5 fg-secondary opacity-0 transition-opacity hover:fg-primary/80 focus:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100"
         aria-label={ariaLabel}
       >
         <InfoIcon />

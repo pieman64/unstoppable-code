@@ -29,7 +29,7 @@ export interface RemoteRelay extends RelayTransport {
 /** The socket surface the relay client needs; tests supply a fake. */
 export interface RelaySocket {
   readonly bufferedAmount: number;
-  transmit(data: string | Uint8Array): void;
+  transmit(data: string | Uint8Array<ArrayBuffer>): void;
   close(): void;
 }
 
@@ -172,7 +172,7 @@ export class RelayClient implements RelayTransport {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private readyTimer: ReturnType<typeof setTimeout> | null = null;
   private drainTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly outbound: Uint8Array[] = [];
+  private readonly outbound: Uint8Array<ArrayBuffer>[] = [];
   private outboundBytes = 0;
   private attempt = 0;
   private generation = 0;

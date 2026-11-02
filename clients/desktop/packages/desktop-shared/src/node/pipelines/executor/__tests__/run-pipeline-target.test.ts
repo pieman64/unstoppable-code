@@ -247,7 +247,7 @@ describe('nested pipeline resource authorization', () => {
   it('does not fall through to a stored or file resource after a host denial', async () => {
     const { resolveChildPipeline } = await import('../child-pipeline-resolver');
     const authorize = jest.fn(() =>
-      Promise.reject(new Error('Pipeline unavailable (context-mismatch)')),
+      Promise.reject(new Error('Workflow unavailable (context-mismatch)')),
     );
     await expect(
       resolveChildPipeline({

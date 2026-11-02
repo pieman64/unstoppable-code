@@ -20,6 +20,10 @@ import {
 } from '@/stores/sharedContainerReplicasStore';
 import { SharedContainerForkModal } from './SharedContainerForkModal';
 import { useSharedContainerRecipientActions } from './useSharedContainerRecipientActions';
+import {
+  readForkRevision,
+  useSharedContainerForkRevision,
+} from './useSharedContainerForkRevision';
 
 /**
  * Action menu for an accepted share: on its sidebar row, where it is revealed
@@ -36,14 +40,12 @@ export function SharedContainerRecipientActionsMenu({
   const [open, setOpen] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [forking, setForking] = useState(false);
-  // Revision id of a replica that is readable right now, or null. Fetched when
-  // the menu opens rather than held in the store: the store only tracks the
-  // mounted viewer's replica, and a row's replica can be mid-promotion, so a
-  // stale "available" would offer a fork over a borrowed checkout that main
-  // would then refuse.
-  const [forkableRevisionId, setForkableRevisionId] = useState<string | null>(
-    null,
-  );
+  // Whether a replica is readable right now, deciding if the menu offers a
+  // copy. Fetched when the menu opens rather than held in the store: the store
+  // only tracks the mounted viewer's replica, and a row's replica can be
+  // mid-promotion, so a stale "available" would offer a fork over a borrowed
+  // checkout that main would then refuse.
+  const [forkable, setForkable] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const actions = useSharedContainerRecipientActions(
     entry.container.id,
@@ -61,24 +63,17 @@ export function SharedContainerRecipientActionsMenu({
   useEffect(() => {
     if (!open) return;
     let canceled = false;
-    setForkableRevisionId(null);
-    void window.api.sharedContainers
-      .getReplicaState({ containerId })
-      .then((replica) => {
-        if (canceled) return;
-        setForkableRevisionId(
-          replica?.status === 'available' || replica?.status === 'pinned'
-            ? replica.revisionId
-            : null,
-        );
-      })
-      .catch(() => {
-        if (!canceled) setForkableRevisionId(null);
-      });
+    setForkable(false);
+    void readForkRevision(containerId).then((revision) => {
+      if (!canceled) setForkable(revision.status === 'available');
+    });
     return (): void => {
       canceled = true;
     };
   }, [containerId, open]);
+  // The revision the dialog reviews is resolved when it opens, not when the
+  // menu did, and follows main's updates while it is open.
+  const forkRevision = useSharedContainerForkRevision(containerId, forking);
 
   return (
     <>
@@ -110,7 +105,7 @@ export function SharedContainerRecipientActionsMenu({
         className="w-40"
       >
         <ActionMenuRowStyle>
-          {forkableRevisionId !== null && (
+          {forkable && (
             <>
               <DropdownMenuItem
                 data-testid={`${testIdPrefix}-fork`}
@@ -146,12 +141,12 @@ export function SharedContainerRecipientActionsMenu({
           </DropdownMenuItem>
         </ActionMenuRowStyle>
       </AnchoredMenu>
-      {forking && forkableRevisionId !== null && (
+      {forking && (
         <SharedContainerForkModal
           containerId={entry.container.id}
           organizationId={entry.organizationId}
           access={entry.access ?? 'organization'}
-          revisionId={forkableRevisionId}
+          revision={forkRevision}
           containerType={entry.container.containerType}
           title={entry.container.title}
           ownerName={entry.ownerName}

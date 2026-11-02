@@ -138,6 +138,12 @@ describe('product activity reporter', () => {
 
   // Automation, hook, and Remote Control turns carry no marker of their own:
   // they arrive as ordinary chat audit entries, so they count like any other.
+  it("doesn't count an autonomous turn's entry, such as a wake", async () => {
+    emit([auditEntry({ id: 'wake-turn', autonomous: true })]);
+    await settle();
+    expect(reportMock).not.toHaveBeenCalled();
+  });
+
   it('counts an automation-started turn', async () => {
     emit([
       auditEntry({

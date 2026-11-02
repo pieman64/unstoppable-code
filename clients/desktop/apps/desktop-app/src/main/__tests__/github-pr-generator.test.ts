@@ -57,8 +57,9 @@ jest.mock('../codex/runtime-service', () => ({
 }));
 
 jest.mock('../lib/user-environment-runtime', () => ({
-  resolveCodexRuntimeEnvironmentProfile:
-    mockResolveCodexRuntimeEnvironmentProfile,
+  get resolveCodexRuntimeEnvironmentProfile(): typeof mockResolveCodexRuntimeEnvironmentProfile {
+    return mockResolveCodexRuntimeEnvironmentProfile;
+  },
 }));
 
 jest.mock('../lib/helper-plugin-resolution', () => ({
@@ -121,6 +122,18 @@ const mockedRunWithOptionalHelperPlugins = jest.mocked(
   runWithOptionalHelperPlugins,
 );
 
+type PreferencesFixture = Awaited<ReturnType<typeof readPreferencesFile>>;
+
+function preferencesWithCanopyMode(
+  canopyBackgroundProcessesMode: PreferencesFixture['canopyBackgroundProcessesMode'],
+): PreferencesFixture {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<PreferencesFixture> = {
+    canopyBackgroundProcessesMode,
+  };
+  return preferences as PreferencesFixture;
+}
+
 initClaudeModels([{ id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' }]);
 initCodexModels([{ id: 'gpt-5.5', label: 'GPT 5.5' }]);
 
@@ -164,6 +177,8 @@ describe('generatePrContent', () => {
       diff: 'diff',
       commitLog: 'change',
       model: 'gpt-5.5',
+      instructions: '',
+      instructionMode: 'append',
       abortController: controller,
     }).then(
       () => {
@@ -190,14 +205,13 @@ describe('generatePrContent', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedReadFile.mockRejectedValue(new Error('ENOENT'));
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'canopy',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      preferencesWithCanopyMode('canopy'),
+    );
     mockedRunWithOptionalHelperPlugins.mockImplementation((_, run) =>
       run({
         claudePlugins: [],
         claudeMcpServers: {},
-        codexProcessEnv: {},
         codexCapabilityRoots: [],
         codexMcpServers: {},
       }),
@@ -555,7 +569,7 @@ describe('generatePrContent', () => {
   });
 
   it('fails fast when the Claude SDK stream throws', async () => {
-    async function* throwingStream(): ReturnType<typeof claudeQuery> {
+    async function* throwingStream(): AsyncGenerator<unknown, void, unknown> {
       await Promise.resolve();
       const shouldThrow = true;
       if (shouldThrow) {
@@ -564,7 +578,8 @@ describe('generatePrContent', () => {
       yield undefined;
     }
 
-    mockedClaudeQuery.mockReturnValueOnce(throwingStream());
+    // @ts-expect-error The async iterator is the only Claude SDK surface used here.
+    mockedClaudeQuery.mockImplementationOnce(() => throwingStream());
 
     await expect(
       generatePrContent({
@@ -639,9 +654,9 @@ describe('generatePrContent', () => {
   });
 
   it('fails fast when terminal-mode Claude worker fails', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'terminal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      preferencesWithCanopyMode('terminal'),
+    );
     mockRunWorker.mockResolvedValueOnce({
       workerId: 'worker-1',
       sessionId: 'session-1',
@@ -685,9 +700,9 @@ describe('generatePrContent', () => {
   it('retries a classified transient terminal worker failure', async () => {
     jest.useFakeTimers();
     try {
-      mockedReadPreferencesFile.mockResolvedValue({
-        canopyBackgroundProcessesMode: 'terminal',
-      });
+      mockedReadPreferencesFile.mockResolvedValue(
+        preferencesWithCanopyMode('terminal'),
+      );
       mockRunWorker
         .mockResolvedValueOnce({
           workerId: 'worker-1',
@@ -757,9 +772,9 @@ describe('generatePrContent', () => {
   });
 
   it('uses the interrupted worker status instead of partial final text', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'terminal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(
+      preferencesWithCanopyMode('terminal'),
+    );
     mockRunWorker.mockResolvedValueOnce({
       workerId: 'worker-1',
       sessionId: 'session-1',
@@ -803,7 +818,6 @@ describe('generatePrContent', () => {
         claudeMcpServers: {
           helper: { type: 'stdio', command: 'helper-mcp' },
         },
-        codexProcessEnv: {},
         codexCapabilityRoots: [],
         codexMcpServers: {},
       }),
@@ -869,7 +883,6 @@ describe('generatePrContent', () => {
       run({
         claudePlugins: [],
         claudeMcpServers: {},
-        codexProcessEnv: { CANOPY_TEST_PROFILE: 'pr-plugin' },
         codexCapabilityRoots: [],
         codexMcpServers: {},
       }),

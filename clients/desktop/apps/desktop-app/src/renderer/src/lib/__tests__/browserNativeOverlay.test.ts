@@ -201,7 +201,7 @@ describe('hasBrowserNativeViewOverlay', () => {
         x: 150,
         y: 150,
         toJSON: () => ({}),
-      } as DOMRect);
+      });
 
     expect(
       hasBrowserNativeViewOverlay(document, {
@@ -224,7 +224,7 @@ describe('hasBrowserNativeViewOverlay', () => {
       x: 50,
       y: 50,
       toJSON: () => ({}),
-    } as DOMRect);
+    });
 
     expect(
       hasBrowserNativeViewOverlay(document, {

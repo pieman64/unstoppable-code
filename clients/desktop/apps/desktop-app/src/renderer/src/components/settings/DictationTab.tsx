@@ -20,7 +20,6 @@ import {
   SettingsRow,
   SettingsSection,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const ENABLE_TOGGLE_ID = 'settings-dictation-enabled-toggle';
 
@@ -42,7 +41,6 @@ function savePreference(patch: Partial<PreferencesData>): void {
 }
 
 export function DictationTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [enabled, setEnabled] = useState(DEFAULT_VOICE_DICTATION_ENABLED);
   const [support, setSupport] = useState<SupportState>({ status: 'checking' });
   const [mic, setMic] = useState<MicState>({ status: 'checking' });
@@ -178,7 +176,7 @@ export function DictationTab(): JSX.Element {
             description={<SupportStatus state={support} />}
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 onClick={(): void => void handleRecheck()}
                 disabled={
@@ -212,7 +210,7 @@ export function DictationTab(): JSX.Element {
             description="Shows the macOS prompts for access not requested yet."
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 onClick={(): void => void handleRequestAccess()}
                 disabled={requestingAccess}
@@ -260,10 +258,9 @@ function OpenSystemSettingsButton({
   pane: string;
   onClick: () => void;
 }): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   return (
     <Button
-      size={settingsButtonSize}
+      size="compact"
       variant="secondary"
       onClick={onClick}
       aria-label={`Open System Settings for ${pane}`}

@@ -22,8 +22,12 @@ jest.mock('../../agents/work-owner', () => ({
 }));
 
 const mockAddTerminalEventListener = jest.fn();
-jest.mock('../../terminal/pty-manager', () => ({
-  ptyManager: { addEventListener: mockAddTerminalEventListener },
+jest.mock('../../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    get addEventListener(): typeof mockAddTerminalEventListener {
+      return mockAddTerminalEventListener;
+    },
+  },
 }));
 
 const mockReadChatTabsFile = jest.fn();

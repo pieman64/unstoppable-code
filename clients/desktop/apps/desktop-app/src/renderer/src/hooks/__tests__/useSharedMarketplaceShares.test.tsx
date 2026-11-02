@@ -18,6 +18,8 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 function account(capabilities: string[]): CanopyCloudAccountPublicState {
   return {
     hasApiKey: true,
+    authMode: 'oauth',
+    credentialSource: 'oauth_desktop',
     storageAvailable: true,
     capabilities,
     account: {

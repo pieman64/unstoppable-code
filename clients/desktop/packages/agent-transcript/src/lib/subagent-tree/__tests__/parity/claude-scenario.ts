@@ -77,7 +77,12 @@ interface ClaudeTurn {
   readonly steps: readonly ClaudeStep[];
 }
 
-const MODEL = { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' } as const;
+/** The model every agent runs on, and the label each host's catalog gives it. */
+export const CLAUDE_PARITY_MODEL = {
+  id: 'claude-sonnet-4-5',
+  label: 'Claude Sonnet 4.5',
+} as const;
+const MODEL = CLAUDE_PARITY_MODEL;
 
 /**
  * A parent splits work across two foreground subagents, one of which spawns a
@@ -402,6 +407,12 @@ export function claudeDesktopEvents(): readonly DesktopRecordedEvent[] {
           role: 'assistant',
           model: MODEL.id,
           content,
+          usage: {
+            input_tokens: 1200,
+            output_tokens: 80,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
         },
       },
     });
@@ -687,7 +698,7 @@ function taskRow(
     outputTail: null,
     error:
       terminal && failed
-        ? { code: 'subagent_failed', message: agentOutcomeText(agent) }
+        ? { code: 'CLAUDE_TASK_FAILED', message: agentOutcomeText(agent) }
         : null,
   };
 }
@@ -754,13 +765,6 @@ export function claudeCloudRecording(): CloudRecording {
       blocks: [],
     };
     builders.set(sourceKey, builder);
-    if (scope !== null)
-      emit(
-        at,
-        'message.start',
-        { taskId: scope.taskId, sourceKey, role: 'assistant' },
-        scope.taskId,
-      );
     return builder;
   };
   const scopedPayload = (scope: Scope): Record<string, unknown> =>
@@ -847,16 +851,29 @@ export function claudeCloudRecording(): CloudRecording {
       contentBlocks: builder.blocks,
     });
     const taskId = builder.row.taskId;
+    // A task message (REG-3095) carries its blocks and stored row id.
     emit(
       at,
       'message.finish',
-      {
-        sourceKey,
-        ...(taskId === undefined ? {} : { taskId }),
-        ...(text.length > 0 ? { finalMessage: { content: text } } : {}),
-      },
+      taskId === undefined
+        ? {
+            sourceKey,
+            ...(text.length > 0 ? { finalMessage: { content: text } } : {}),
+          }
+        : {
+            taskId,
+            sourceKey,
+            turnSourceKey: sourceKey.slice(0, sourceKey.indexOf(':task:')),
+            finalMessage: { content: text, contentBlocks: builder.blocks },
+            messageId: builder.row.id,
+          },
       taskId,
     );
+  };
+  /** Core posts each task's message when the root turn's stream closes. */
+  const finishTaskMessages = (at: number): void => {
+    for (const [sourceKey, builder] of Array.from(builders.entries()))
+      if (builder.row.taskId !== undefined) finishMessage(at, sourceKey);
   };
 
   for (const { at, event } of claudeTimeline()) {
@@ -880,6 +897,7 @@ export function claudeCloudRecording(): CloudRecording {
         builderFor(at, null);
         break;
       case 'turn-end':
+        finishTaskMessages(at);
         finishMessage(at, turnSourceKey(event.turn));
         break;
       case 'text': {
@@ -949,13 +967,25 @@ export function claudeCloudRecording(): CloudRecording {
         );
         break;
       case 'agent-settle':
-        finishMessage(at, sourceKeyOf(event.agent));
         upsert(
           at,
           { kind: 'agent', agent: event.agent },
           event.scope,
           event.agent.outcome.status,
         );
+        if (event.agent.outcome.status === 'failed')
+          emit(
+            at,
+            'harness.event',
+            {
+              kind: 'task_error',
+              taskId: event.agent.taskId,
+              sourceKey: sourceKeyOf(event.agent),
+              errorCode: 'CLAUDE_TASK_FAILED',
+              errorMessage: event.agent.outcome.error,
+            },
+            event.agent.taskId,
+          );
         if (!event.agent.background)
           toolResult(
             at,

@@ -65,6 +65,22 @@ describe('QueuedMessageBubble double-click to edit', () => {
     expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
+  it('opens the editor from inside the setup quote', () => {
+    const onEdit = jest.fn();
+    render(
+      { id: 'q1', text: 'queued text', setup: { startedAtMs: 0 } },
+      onEdit,
+    );
+    const quote = container.querySelector(
+      '[data-testid="queued-message-setup-quote"]',
+    );
+    expect(quote?.contains(text())).toBe(true);
+
+    doubleClick(text());
+
+    expect(onEdit).toHaveBeenCalledTimes(1);
+  });
+
   it('does not edit a locked message', () => {
     const onEdit = jest.fn();
     render({ id: 'q1', text: 'queued text', editLocked: true }, onEdit);

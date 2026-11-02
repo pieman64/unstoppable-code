@@ -128,7 +128,7 @@ export interface PromotionRetryOptions {
 const MAX_PROMOTION_RETRY_DELAY_MS = 30 * 60 * 1000;
 
 /**
- * A failed promotion leaves the scope version 2. It is tried again at a
+ * A failed promotion leaves the selected format authoritative. It is tried again at a
  * later idle point, only after scope activity (a commit) since the last
  * failure, once an exponential backoff has passed, and at most `limit`
  * times, so a persistent failure such as a full disk never loops.
@@ -156,6 +156,11 @@ export class PromotionRetry {
   /** A commit after the last failure. */
   public activity(): void {
     if (this.failures > 0) this.active = true;
+  }
+
+  /** First attempt, or an activity-gated retry whose backoff has elapsed. */
+  public canAttempt(now: number = Date.now()): boolean {
+    return this.failures === 0 || this.due(now);
   }
 
   public due(now: number = Date.now()): boolean {

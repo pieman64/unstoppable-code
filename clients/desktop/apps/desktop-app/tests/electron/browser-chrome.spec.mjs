@@ -290,6 +290,7 @@ async function captureWorktreeArchiveFailure({
 
 const PAGE_ONE_TITLE = 'Canopy Browser Page One';
 const PAGE_TWO_TITLE = 'Canopy Browser Page Two';
+const LINK_TEST_TITLE = 'Link test';
 const DIALOG_PAGE_TITLE = 'Canopy Browser Dialog Page';
 const LOCAL_FILE_HOME_TITLE = 'Local file fixture home';
 const LOCAL_FILE_NEIGHBOUR_TITLE = 'Local file fixture neighbour';
@@ -314,6 +315,20 @@ function startLocalPages() {
       response.end(
         `<!doctype html><html><head><title>${PAGE_TWO_TITLE}</title><link rel="icon" href="/favicon-two.svg"></head><body style="background:#00f"><h1>two</h1></body></html>`,
       );
+      return;
+    }
+    // The CAN-4831 report's page, with its links pointed at page two.
+    if (request.url === '/link-test') {
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      response.end(`<!doctype html>
+        <html lang="en">
+          <head><meta charset="utf-8"><title>${LINK_TEST_TITLE}</title></head>
+          <body>
+            <h1>Link test</h1>
+            <p><a id="same-tab" href="/two" target="_self">Open in the same tab</a></p>
+            <p><a id="new-tab" href="/two" target="_blank" rel="noopener noreferrer">Open in a new tab</a></p>
+          </body>
+        </html>`);
       return;
     }
     if (request.url === '/dialog') {
@@ -545,7 +560,7 @@ async function browserPanels(window) {
 async function addBrowserPanel(window, groupId) {
   const before = await browserPanels(window);
   const beforeIds = new Set(before.map((panel) => panel.panelId));
-  await window.getByTestId(`panel-add-panel-${groupId}`).click();
+  await window.getByTestId(`panel-add-tab-${groupId}`).click();
   const addMenu = window.getByTestId('panel-add-menu');
   await expect(addMenu).toBeVisible();
   const browserRow = window.getByTestId('panel-add-menu-item-browser');
@@ -765,15 +780,56 @@ async function dispatchAdvisorActionWhileClickingBrowser(
 
 test.describe('repeatable Browser panels (one session per panel)', () => {
   for (const finalSnapshot of [false, true]) {
-    test(`worktree return recreates released browsers${finalSnapshot ? ' after a final snapshot' : ''}`, async () => {
+    test(`worktree return recreates browsers evicted from the warm budget${finalSnapshot ? ' after a final snapshot' : ''}`, async () => {
       test.setTimeout(120_000);
       const pages = await startLocalPages();
+      const fixtureApps = [
+        'ts-pnpm-vite',
+        'python-fastapi-uv',
+        'ts-npm-next',
+        'ts-yarn-cli',
+        'go-cli',
+      ];
       const launched = await seedPanelWorktree({
-        apps: ['ts-pnpm-vite', 'python-fastapi-uv'],
+        apps: fixtureApps,
+        onBeforeLaunch: ({ userDataDir, workspaceIds }) => {
+          // Every visited workspace needs the Advanced terminal group used
+          // to create its live browser, not the default Minimal drawer.
+          for (const workspaceId of workspaceIds.slice(1)) {
+            const dataDir = path.join(
+              userDataDir,
+              'workspaces',
+              workspaceId,
+              'worktree-data',
+              'demo-main',
+            );
+            mkdirSync(dataDir, { recursive: true });
+            writeFileSync(
+              path.join(dataDir, 'panel-layout-mode.json'),
+              JSON.stringify({ version: 1, mode: 'advanced' }),
+            );
+          }
+        },
       });
       const { electronApp, window, userDataDir } = launched;
       const pageUrl = `http://127.0.0.1:${pages.port}/one`;
+      const worktreeRow = (appId) =>
+        window.locator(
+          `[data-testid="worktree-row"][data-project-id="demo-${appId}"][data-worktree-id="demo-main"]`,
+        );
+      const selectFixtureWorktree = async (appId) => {
+        const row = worktreeRow(appId);
+        await row.evaluate((element) => element.click());
+        await expect(
+          window.locator('[data-sidebar-selected-item]').filter({ has: row }),
+        ).toHaveCount(1);
+        await expect(window.getByTestId('panel-grid-root')).toBeVisible();
+        await expect(
+          window.getByTestId('panel-add-tab-group-terminal'),
+        ).toBeVisible();
+      };
       try {
+        await selectFixtureWorktree(fixtureApps[0]);
         const browser = await addBrowserPanel(window, 'group-terminal');
         await navigatePane(window, browser.browserId, pageUrl);
         await expect
@@ -818,11 +874,13 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
           { browserId: browser.browserId, pageUrl, finalSnapshot },
         );
 
-        const rows = window.locator(
-          '[data-testid="worktree-row"][data-worktree-id="demo-main"]',
-        );
-        await expect(rows).toHaveCount(2);
-        await rows.nth(1).evaluate((element) => element.click());
+        // Leaving a worktree now keeps its views warm. Visit four others to
+        // exercise real disposal through the three-worktree retention budget.
+        let other;
+        for (const appId of fixtureApps.slice(1)) {
+          await selectFixtureWorktree(appId);
+          other = await addBrowserPanel(window, 'group-terminal');
+        }
         await expect(
           window.getByTestId(`browser-pane-${browser.browserId}`),
         ).toHaveCount(0);
@@ -841,7 +899,6 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
 
         // Give the other project's own browser a live page. Returning must
         // preserve the first tab's exact identity and recreate its native view.
-        const other = await addBrowserPanel(window, 'group-terminal');
         await navigatePane(
           window,
           other.browserId,
@@ -853,12 +910,13 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
         await electronApp.evaluate(() =>
           globalThis.__CANOPY_E2E_BROWSER_CREATE_GATE__({ kind: 'arm' }),
         );
-        await rows.nth(0).evaluate((element) => element.click());
+        await selectFixtureWorktree(fixtureApps[0]);
         const pane = window.getByTestId(`browser-pane-${browser.browserId}`);
         await expect(pane).toBeVisible();
-        await expect(pane.getByTestId('browser-url-input')).toHaveValue(
-          pageUrl,
-        );
+        const address = pane.getByTestId('browser-url-input');
+        await address.focus();
+        await expect(address).toHaveValue(pageUrl);
+        await address.blur();
         await expect
           .poll(() =>
             electronApp.evaluate(() =>
@@ -927,7 +985,10 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
           browserViewByTitle(launched.electronApp, LOCAL_FILE_HOME_TITLE),
         )
         .toBeTruthy();
-      await expect(pane.getByTestId('browser-url-input')).toHaveValue(indexUrl);
+      const address = pane.getByTestId('browser-url-input');
+      await address.focus();
+      await expect(address).toHaveValue(indexUrl);
+      await address.blur();
 
       // One inspect proves the classic script, image, and stylesheet all
       // loaded from relative file paths.
@@ -1036,6 +1097,140 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
         .toBeTruthy();
     } finally {
       await closeCanopy(launched.electronApp, launched.userDataDir);
+    }
+  });
+
+  test('target="_blank" links open one new tab and target="_self" links stay in theirs', async () => {
+    test.setTimeout(120_000);
+    const pages = await startLocalPages();
+    const { electronApp, userDataDir, window } = await seedPanelWorktree();
+    const linkTestUrl = `http://127.0.0.1:${pages.port}/link-test`;
+    const pageTwoUrl = `http://127.0.0.1:${pages.port}/two`;
+    const openPages = () =>
+      electronApp.evaluate(
+        ({ webContents }, urls) => {
+          const all = webContents
+            .getAllWebContents()
+            .map((entry) => entry.getURL());
+          return urls.map((url) => all.filter((entry) => entry === url).length);
+        },
+        [linkTestUrl, pageTwoUrl],
+      );
+    // A user's click: a page-side click with a user gesture, not a browser
+    // action, which would count as an agent's and open its tab behind.
+    const clickLink = (pageUrl, locator) =>
+      electronApp.evaluate(
+        ({ webContents }, input) =>
+          webContents
+            .getAllWebContents()
+            .find((entry) => entry.getURL() === input.pageUrl)
+            ?.executeJavaScript(
+              `document.querySelector(${JSON.stringify(input.locator)}).click()`,
+              true,
+            ),
+        { pageUrl, locator },
+      );
+    try {
+      const browser = await addBrowserPanel(window, 'group-chat');
+      const pane = window.getByTestId(`browser-pane-${browser.browserId}`);
+
+      // The control: target="_self" navigates its own tab.
+      await navigatePane(window, browser.browserId, linkTestUrl);
+      await expect
+        .poll(() => browserViewByTitle(electronApp, LINK_TEST_TITLE))
+        .toBeTruthy();
+      await clickLink(linkTestUrl, '#same-tab');
+      await expect(pane.getByTestId('browser-url-input')).toHaveValue(
+        pageTwoUrl,
+      );
+      await expect.poll(openPages).toEqual([0, 1]);
+      expect(await browserPanels(window)).toHaveLength(1);
+
+      // target="_blank" with rel="noopener noreferrer" opens exactly one new
+      // tab and leaves the test page in its own tab.
+      await navigatePane(window, browser.browserId, linkTestUrl);
+      await expect.poll(openPages).toEqual([1, 0]);
+      await clickLink(linkTestUrl, '#new-tab');
+      await expect
+        .poll(async () => (await browserPanels(window)).length)
+        .toBe(2);
+      const opened = (await browserPanels(window)).find(
+        (panel) => panel.browserId !== browser.browserId,
+      );
+      expect(opened?.browserId).toBeTruthy();
+      // The new tab is selected, and the only page-two view is its own.
+      await expect(
+        window.getByTestId(`browser-pane-${opened.browserId}`),
+      ).toBeVisible();
+      await expect.poll(openPages).toEqual([1, 1]);
+      // The new tab is its own session: the page has no opener to reach.
+      const opener = await electronApp.evaluate(({ webContents }, url) => {
+        const contents = webContents
+          .getAllWebContents()
+          .find((entry) => entry.getURL() === url);
+        return contents?.executeJavaScript('window.opener === null');
+      }, pageTwoUrl);
+      expect(opener).toBe(true);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+      await pages.close();
+    }
+  });
+
+  test('the memory report overlay hides an open Browser view as Settings does', async () => {
+    test.setTimeout(240_000);
+    const pages = await startLocalPages();
+    const { electronApp, userDataDir, window } = await seedPanelWorktree();
+
+    try {
+      const app = new CanopyAppDriver(window);
+      const first = await addBrowserPanel(window, 'group-terminal');
+      await navigatePane(
+        window,
+        first.browserId,
+        `http://127.0.0.1:${pages.port}/one`,
+      );
+      const pageVisible = async () =>
+        (await browserVisibilityByTitle(electronApp)).first;
+      await expect.poll(pageVisible, { timeout: 30_000 }).toBe(true);
+
+      await app.openSettings();
+      await expect.poll(pageVisible).toBe(false);
+      await app.openSettingsSection('performance');
+      const diagnosticsSwitch = window.getByTestId(
+        'settings-memory-diagnostics',
+      );
+      await diagnosticsSwitch.scrollIntoViewIfNeeded();
+      await diagnosticsSwitch.click();
+      await expect(diagnosticsSwitch).toHaveAttribute('aria-checked', 'true');
+      await expect(
+        window.getByTestId('settings-create-memory-report'),
+      ).toBeEnabled();
+      await app.closeSettings();
+      await expect.poll(pageVisible).toBe(true);
+
+      await window.getByTestId('sidebar-resource-diagnostics-pill').click();
+      await window
+        .getByTestId('resource-diagnostics-popover-create-report')
+        .click();
+      await expect(
+        window.getByTestId('settings-memory-report-dialog'),
+      ).toBeVisible();
+      await window.getByTestId('settings-memory-report-confirm').click();
+      await expect(window.getByTestId('memory-report-overlay')).toContainText(
+        'Generating…',
+      );
+      await expect.poll(pageVisible).toBe(false);
+      await expect(window.getByTestId('memory-report-saved')).toBeVisible({
+        timeout: 120_000,
+      });
+      expect(await pageVisible()).toBe(false);
+      await window.getByTestId('memory-report-done').click();
+      await expect(window.getByTestId('memory-report-overlay')).toBeHidden();
+      await expect.poll(pageVisible).toBe(true);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+      await pages.close();
     }
   });
 
@@ -1973,16 +2168,17 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
         window.getByTestId(`browser-pane-${second.browserId}`),
       ).toBeVisible();
       await expect(window.getByTestId('browser-bar')).toHaveCount(2);
-      await expect(
-        window
-          .getByTestId(`browser-pane-${first.browserId}`)
-          .getByTestId('browser-url-input'),
-      ).toHaveValue(pageOneUrl);
-      await expect(
-        window
-          .getByTestId(`browser-pane-${second.browserId}`)
-          .getByTestId('browser-url-input'),
-      ).toHaveValue(pageTwoUrl);
+      for (const [browserId, url] of [
+        [first.browserId, pageOneUrl],
+        [second.browserId, pageTwoUrl],
+      ]) {
+        const address = window
+          .getByTestId(`browser-pane-${browserId}`)
+          .getByTestId('browser-url-input');
+        await address.focus();
+        await expect(address).toHaveValue(url);
+        await address.blur();
+      }
 
       // The two native views have independent non-overlapping bounds.
       await expect
@@ -2113,6 +2309,11 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
 
       // A plain floating surface (no marker, no role) blocks the pane it
       // overlaps too: any design-system floating layer counts by default.
+      const pageBox = await window
+        .getByTestId(`browser-pane-${first.browserId}`)
+        .getByTestId('browser-page-area')
+        .boundingBox();
+      expect(pageBox).toBeTruthy();
       await window.evaluate((box) => {
         const popover = document.createElement('div');
         popover.id = 'browser-unmarked-popover-e2e';
@@ -2124,7 +2325,7 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
           height: '40px',
         });
         document.body.appendChild(popover);
-      }, firstBox);
+      }, pageBox);
       await expect
         .poll(() => browserVisibilityByTitle(electronApp))
         .toEqual({ first: false, second: true });
@@ -2178,11 +2379,20 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
         secondArranged.groupId,
       );
       await expect
-        .poll(
-          async () =>
-            (await browserViewByTitle(electronApp, PAGE_ONE_TITLE))?.bounds,
-        )
-        .toEqual(beforeCollapse);
+        .poll(async () => {
+          const restored = (
+            await browserViewByTitle(electronApp, PAGE_ONE_TITLE)
+          )?.bounds;
+          if (!restored) return Infinity;
+          return Math.max(
+            ...['x', 'y', 'width', 'height'].map((key) =>
+              Math.abs(restored[key] - beforeCollapse[key]),
+            ),
+          );
+        })
+        // Grid restoration can round a fractional split by one CSS pixel.
+        .toBeLessThanOrEqual(1);
+      await expectNativeViewCoversPane(first.browserId, PAGE_ONE_TITLE, 1);
 
       // App-level navigation keeps MainPage mounted, but both native views
       // must hide while another page or Settings is on screen. Exercise both
@@ -3162,6 +3372,12 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
       // browser-event subscription. A link originating there stays in that
       // window's selected work entry instead of timing out to the OS fallback.
       const advisor = await app.openAppAdvisorWindow(launched.electronApp);
+      // Expansion mounts navigation before the full grid finishes hydration.
+      await expect(advisor.getByTestId('panel-grid-loading')).toHaveCount(0);
+      await expect(advisor.getByTestId('panel-grid-root')).toBeVisible();
+      await expect(
+        advisor.locator('[data-testid="panel-content-chat"]:visible'),
+      ).toBeVisible();
       await clickAppLink(advisor, `http://127.0.0.1:${pages.port}/two`);
       await expect(
         advisor.locator('[data-testid^="browser-pane-"]').first(),
@@ -4182,10 +4398,12 @@ async function selectLegacyReviewOwner(fixture) {
 async function addLegacyReviewBrowser(surface, ownerKind) {
   await expect(surface.getByTestId('panel-grid-root')).toBeVisible();
   const groupId = ownerKind === 'worktree' ? 'group-terminal' : 'group-chat';
-  await surface.getByTestId(`panel-add-panel-${groupId}`).click();
+  // A quiet worktree restores its saved Browser group, so the seeded saved
+  // browser can show beside the one this adds; the added pane is the other.
+  await surface.getByTestId(`panel-add-tab-${groupId}`).click();
   await surface.getByTestId('panel-add-menu-item-browser').click();
   const pane = surface.locator(
-    '[data-testid="browser-panel-surface"][data-browser-id]:visible',
+    '[data-testid="browser-panel-surface"][data-browser-id]:not([data-browser-id="legacy-review-saved"]):visible',
   );
   await expect(pane).toHaveCount(1);
   const browserId = await pane.getAttribute('data-browser-id');
@@ -4257,7 +4475,7 @@ for (const ownerKind of ['worktree', 'cowork', 'advisor']) {
         await surface.getByTestId('worktree-actions-menu-button').click();
         await surface.getByTestId('worktree-actions-menu-archive').click();
         const dialog = surface.getByRole('dialog', {
-          name: 'Archive worktree?',
+          name: /^Archive worktree/,
         });
         await dialog.getByTestId('worktree-removal-preserve-branch').click();
         await expect(row).toHaveCount(0, { timeout: 60_000 });
@@ -4302,15 +4520,10 @@ for (const ownerKind of ['worktree', 'cowork', 'advisor']) {
         await row.hover();
         await surface.getByTestId(`${id}-menu`).click();
         await surface.getByTestId(`${id}-delete`).click();
-        if (ownerKind === 'advisor')
-          await row
-            .getByRole('button', { name: 'Delete?', exact: true })
-            .click();
-        else
-          await surface
-            .getByTestId(`${id}-delete-dialog`)
-            .getByTestId(`${id}-confirm-delete`)
-            .click();
+        await surface
+          .getByTestId(`${id}-delete-dialog`)
+          .getByTestId(`${id}-confirm-delete`)
+          .click();
         await expect(row).toHaveCount(0, { timeout: 30_000 });
       }
       await testInfo.attach('retirement-before-restart', {
@@ -4463,7 +4676,7 @@ for (const ownerKind of ['worktree', 'cowork', 'advisor']) {
         await surface.getByTestId('worktree-actions-menu-button').click();
         await surface.getByTestId('worktree-actions-menu-archive').click();
         const dialog = surface.getByRole('dialog', {
-          name: 'Archive worktree?',
+          name: /^Archive worktree/,
         });
         await dialog.getByTestId('worktree-removal-preserve-branch').click();
       } else {
@@ -4476,15 +4689,10 @@ for (const ownerKind of ['worktree', 'cowork', 'advisor']) {
         await row.hover();
         await surface.getByTestId(`${id}-menu`).click();
         await surface.getByTestId(`${id}-delete`).click();
-        if (ownerKind === 'advisor')
-          await row
-            .getByRole('button', { name: 'Delete?', exact: true })
-            .click();
-        else
-          await surface
-            .getByTestId(`${id}-delete-dialog`)
-            .getByTestId(`${id}-confirm-delete`)
-            .click();
+        await surface
+          .getByTestId(`${id}-delete-dialog`)
+          .getByTestId(`${id}-confirm-delete`)
+          .click();
         if (ownerKind === 'cowork') coworkRetirementConfirmed = true;
       }
       await expect

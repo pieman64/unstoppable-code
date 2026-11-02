@@ -13,6 +13,15 @@ import {
   projectStoredDelegationSnapshot,
   type StoredDelegation,
 } from '@canopy/desktop-shared/node/delegation/broker';
+import {
+  legacyCurrentTranscript,
+  legacyPrefixView,
+} from '@canopy/desktop-shared/node/delegation/record-v3';
+import {
+  readDelegationRecordMetadata,
+  type DelegationReadMetadataSource,
+  type DelegationRecordReadMetadata,
+} from '@canopy/desktop-shared/node/delegation/record-read-metadata';
 import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
 import type {
   ArchivedChatsFile,
@@ -22,6 +31,7 @@ import type {
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import { getWorktreeDataDir } from '../../lib/paths';
+import type { DelegationRecoveryLoaderOptions } from './record-reader-contract';
 
 export function delegationTranscriptHasRetainedAnchor(
   messages: readonly PersistedChatMessage[],
@@ -50,7 +60,33 @@ export function delegationRecoveryMutations(
   tabs: ChatTabsFile,
   archives: ArchivedChatsFile,
   records: readonly StoredDelegation[],
+  readMetadata?: DelegationReadMetadataSource,
 ): ChatCoreMutation[] {
+  const scopedRecords: Array<{
+    record: StoredDelegation;
+    readMetadata?: DelegationRecordReadMetadata;
+  }> = [];
+  for (const record of records) {
+    if (
+      record.parent.projectId !== scope.projectId ||
+      record.parent.worktreeId !== scope.worktreeId
+    )
+      continue;
+    try {
+      const recordMetadata = readMetadata
+        ? readDelegationRecordMetadata(readMetadata, record)
+        : undefined;
+      scopedRecords.push({
+        record,
+        ...(recordMetadata ? { readMetadata: recordMetadata } : {}),
+      });
+    } catch (error) {
+      logMainProcessWarn(
+        '[delegation] Unable to validate retained child transcript read metadata',
+        error,
+      );
+    }
+  }
   const recover = (tab: PersistedChatTab): PersistedChatTab => {
     if (tab.kind === 'file') return tab;
     let state = {
@@ -59,13 +95,9 @@ export function delegationRecoveryMutations(
       error: null,
       planMode: false,
     };
-    for (const record of records) {
-      if (
-        record.parent.projectId !== scope.projectId ||
-        record.parent.worktreeId !== scope.worktreeId ||
-        record.parent.chatId !== tab.id
-      )
-        continue;
+    for (const entry of scopedRecords) {
+      const { record, readMetadata: recordReadMetadata } = entry;
+      if (record.parent.chatId !== tab.id) continue;
       const recordedTurnId =
         record.parent.userMessageId ?? record.parent.turnId;
       const toolIndex = tab.messages.findIndex((message) =>
@@ -121,7 +153,7 @@ export function delegationRecoveryMutations(
               transcript: [],
             }
           : delegation;
-      for (const prior of record.history ?? []) {
+      for (const prior of legacyPrefixView(record).history ?? []) {
         if (!delegationTranscriptHasRetainedAnchor(tab.messages, prior))
           continue;
         const recovered = applyDelegationTranscriptEvent(state, {
@@ -130,6 +162,10 @@ export function delegationRecoveryMutations(
         });
         state = { ...state, messages: recovered.messages };
       }
+      // A stream-backed current generation has no recovery-owned outcome. Its
+      // legacy prefix above remains recoverable, but startup must not invent a
+      // new interruption or cancellation for the stream generation.
+      if (recordReadMetadata?.current.store === 'stream') continue;
       const snapshot = {
         ...projectStoredDelegationSnapshot(record),
         approvalPending: false,
@@ -178,7 +214,7 @@ export function delegationRecoveryMutations(
           parentTurnId: parentTurnId ?? recordedTurnId,
           parentToolCallId: record.parent.toolCallId,
           task: record.task,
-          transcript: record.state.transcript ?? [],
+          transcript: legacyCurrentTranscript(record),
           snapshot: recoveredSnapshot,
         }),
       });
@@ -214,6 +250,7 @@ export async function loadDelegationRecoveryMutations(
   scope: { projectId: string; worktreeId: string },
   tabs: ChatTabsFile,
   archives: ArchivedChatsFile,
+  options?: DelegationRecoveryLoaderOptions,
 ): Promise<ChatCoreMutation[]> {
   try {
     const directory = path.join(
@@ -228,6 +265,7 @@ export async function loadDelegationRecoveryMutations(
       tabs,
       archives,
       records.filter((record) => !hasLiveDelegations(record.parent.sessionKey)),
+      options?.readMetadata,
     );
   } catch (error) {
     if (

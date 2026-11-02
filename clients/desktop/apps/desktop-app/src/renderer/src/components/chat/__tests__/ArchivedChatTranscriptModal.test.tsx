@@ -1,10 +1,12 @@
 /**
  * @jest-environment jsdom
  */
+import type * as UiSharedComponents from '@canopy/ui-shared/components';
 import { act, type JSX, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   ArchivedChatSummary,
+  CanopyApi,
   PersistedChatTab,
   SharedRunMetadata,
 } from '@canopy/desktop-shared/types';
@@ -50,6 +52,9 @@ jest.mock('@/hooks/useTranscriptSearch', () => ({
   }),
 }));
 jest.mock('@canopy/ui-shared/components', () => ({
+  Button: jest.requireActual<typeof UiSharedComponents>(
+    '@canopy/ui-shared/components',
+  ).Button,
   DialogModal: ({
     headerActions,
     children,
@@ -77,15 +82,19 @@ const SUMMARY = {
   chatId: 'chat-1',
   title: 'Archived session',
   turnCount: 1,
+  archivedAt: '2026-09-25T00:00:00.000Z',
+  createdAt: '2026-09-24T00:00:00.000Z',
   restorable: true,
-} as ArchivedChatSummary;
+  unread: false,
+} satisfies ArchivedChatSummary;
 
 const TAB = {
   id: 'chat-1',
   title: 'Archived session',
   messages: [],
+  createdAt: '2026-09-24T00:00:00.000Z',
   sharedRun: EXISTING_SHARE,
-} as PersistedChatTab;
+} satisfies PersistedChatTab;
 
 describe('ArchivedChatTranscriptModal', () => {
   let container: HTMLDivElement;
@@ -96,11 +105,15 @@ describe('ArchivedChatTranscriptModal', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    window.api = {
+    const partialApi: Partial<CanopyApi> = {};
+    Object.assign(partialApi, {
       chat: {
         readArchive: jest.fn().mockResolvedValue({ tab: TAB }),
       },
-    } as typeof window.api;
+    });
+    // This surface only calls chat.readArchive; the remaining CanopyApi methods
+    // are intentionally absent from the test double.
+    window.api = partialApi as CanopyApi;
   });
 
   afterEach(() => {

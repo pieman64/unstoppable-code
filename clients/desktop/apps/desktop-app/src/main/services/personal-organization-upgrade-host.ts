@@ -17,6 +17,7 @@ import {
 import { createOrgProjectMigrationPassStore } from '../lib/org-project-migration-passes';
 import {
   createPersonalOrganizationUpgradeService,
+  isBoundPortalSessionCurrent,
   type UpgradeWorkspace,
   type UpgradeIdentity,
   type PersonalOrganizationUpgradeService,
@@ -39,6 +40,10 @@ import { reprobeAndApplyCanopyCloudEnforcedSettings } from '../ipc/settings';
 import { getObservabilityService } from '../observability';
 import { isMovablePersonalProject } from './org-project-auto-conversion';
 import { sendToAllWindows } from '../lib/window-send';
+import {
+  recordInviteSendTelemetry,
+  recordOrganizationCreateTelemetry,
+} from '../lib/desktop-telemetry';
 
 let service:
   | ReturnType<typeof createPersonalOrganizationUpgradeService>
@@ -59,14 +64,8 @@ async function identity(): Promise<UpgradeIdentity> {
 export function getPersonalOrganizationUpgradeService(): PersonalOrganizationUpgradeService {
   service ??= createPersonalOrganizationUpgradeService({
     identity,
-    sessionCurrent: (sessionId) => {
-      const state = getCanopyPortalState();
-      return (
-        state.sessionId === sessionId &&
-        state.status === 'active' &&
-        state.connectionStatus === 'active'
-      );
-    },
+    sessionCurrent: (sessionId) =>
+      isBoundPortalSessionCurrent(getCanopyPortalState(), sessionId),
     destination: async (organizationId, captured) => {
       const policy = await readPersonalProjectConversionPolicy(
         captured.accountId,
@@ -125,6 +124,14 @@ export function getPersonalOrganizationUpgradeService(): PersonalOrganizationUpg
     },
     promote: (request, captured) =>
       promotePersonalOrganization(request, captured.credentials),
+    onPromotion: (result) => {
+      if (!result.alreadyUpgraded)
+        recordOrganizationCreateTelemetry({
+          creationMethod: 'promote_personal',
+          inviteIncluded: false,
+          projectCount: 0,
+        });
+    },
     suppress: async (organizationId) => {
       const now = new Date().toISOString();
       await createOrgProjectMigrationPassStore(
@@ -175,6 +182,14 @@ export function getPersonalOrganizationUpgradeService(): PersonalOrganizationUpg
     },
     invite: (organizationId, request, captured) =>
       inviteToOrganization(organizationId, request, captured.credentials),
+    onInvite: (result) =>
+      recordInviteSendTelemetry({
+        inviteType: 'organization',
+        inviteId: result.inviteId,
+        recipientKind: 'email',
+        sendSurface: 'invite_dialog',
+        delivery: result.status,
+      }),
     inviteStatus: (organizationId, email, captured) =>
       readOrganizationInvitationStatus(
         organizationId,

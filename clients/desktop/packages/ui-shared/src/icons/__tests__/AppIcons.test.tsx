@@ -3,6 +3,7 @@ import { renderToString } from 'react-dom/server';
 import { buildSync } from 'esbuild';
 import * as AppIcons from '../AppIcons';
 import {
+  AgentAssistantIcon,
   AllModelsFilledIcon,
   AllModelsIcon,
   AppAdvisorIcon,
@@ -103,6 +104,14 @@ const MOBILE_ONLY_KEYS = [
   'untrash',
 ];
 
+/**
+ * Manifest keys deliberately left unbound because `AppIcons` ships with every
+ * route: their single page imports the logo component directly. The External
+ * agents setup marks would otherwise add ~10.7 KB gzip of first-load JS to
+ * each route.
+ */
+const PAGE_LOCAL_KEYS = ['hermesAgent', 'metaMuse', 'openclaw', 'opencode'];
+
 interface ManifestEntry {
   source: string;
   name: string;
@@ -202,7 +211,12 @@ describe('App icons', () => {
       .map(([key]) => key);
     // A key whose artwork another key already renders is bound too.
     expect(
-      unbound.filter((key) => MOBILE_ONLY_KEYS.includes(key)).sort(),
+      unbound
+        .filter(
+          (key) =>
+            MOBILE_ONLY_KEYS.includes(key) || PAGE_LOCAL_KEYS.includes(key),
+        )
+        .sort(),
     ).toEqual(unbound.sort());
   });
 
@@ -299,13 +313,18 @@ describe('App icons', () => {
   it.each([
     ['plugins', PluginsIcon, 'puzzle'],
     ['Customize', CustomizeIcon, 'briefcase'],
-    ['App Advisor', AppAdvisorIcon, 'bot'],
+    ['Orchestrator', AppAdvisorIcon, 'orbit'],
+    ['other assistants', AgentAssistantIcon, 'bot'],
     ['preferences', SettingsIcon, 'settings'],
     ['bug reports', BugReportIcon, 'bug'],
     ['warnings', WarningIcon, 'triangle-alert'],
     ['feedback', RaisedHandIcon, 'hand'],
   ])('binds %s to its Lucide glyph', (_label, Icon, glyph) => {
     expect(glyphOf(renderToString(<Icon />))).toBe(glyph);
+  });
+
+  it('keeps the assistant bot apart from the Orchestrator orbit', () => {
+    expect(AgentAssistantIcon).not.toBe(AppAdvisorIcon);
   });
 
   it.each([

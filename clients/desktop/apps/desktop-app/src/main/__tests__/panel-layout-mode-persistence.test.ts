@@ -3,9 +3,15 @@ const initializePanelLayoutModeFileMock = jest.fn();
 const savePanelLayoutModeFileMock = jest.fn();
 
 jest.mock('@canopy/desktop-shared/node/lib/panel-layout-mode', () => ({
-  readPanelLayoutModeFile: readPanelLayoutModeFileMock,
-  initializePanelLayoutModeFile: initializePanelLayoutModeFileMock,
-  savePanelLayoutModeFile: savePanelLayoutModeFileMock,
+  get readPanelLayoutModeFile(): typeof readPanelLayoutModeFileMock {
+    return readPanelLayoutModeFileMock;
+  },
+  get initializePanelLayoutModeFile(): typeof initializePanelLayoutModeFileMock {
+    return initializePanelLayoutModeFileMock;
+  },
+  get savePanelLayoutModeFile(): typeof savePanelLayoutModeFileMock {
+    return savePanelLayoutModeFileMock;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({

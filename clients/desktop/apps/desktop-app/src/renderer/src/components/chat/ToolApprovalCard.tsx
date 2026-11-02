@@ -1,4 +1,15 @@
-import { memo, useCallback, useRef, useState, type JSX } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent,
+  type Ref,
+} from 'react';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
@@ -7,17 +18,24 @@ import {
   FloatingMenu,
 } from '@canopy/ui-shared';
 import {
+  type ActionMenuItem,
   ActionMenuItems,
   ActionMenuRowStyle,
-  type ActionMenuItem,
+  approvalFileChangeExpansionCopy,
+  ApprovalFileChangePreview,
+  Button,
+  TextArea,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useChatStore } from '@/stores/chatStore';
+import { isMacPlatform } from '@/lib/keyboardShortcuts';
 import type {
   ApprovalRequestEvent,
   ApprovalPromptDecision,
   ApprovalRuleTarget,
 } from '@canopy/desktop-shared/types';
+import type { ApprovalContentModalContent } from './ApprovalContentModal';
 import { formatTransferBytes } from '../browser/browserTransferFormat';
 import { ApprovalContentModal } from './ApprovalContentModal';
 import {
@@ -38,14 +56,55 @@ export interface ToolApprovalCardProps {
     requestId: string,
     decision: ApprovalPromptDecision,
   ) => Promise<void>;
+  /**
+   * Lets a host move focus into the card (CAN-4997). The chat dock uses it
+   * to hand focus between successive approvals; Settings leaves it unset, so
+   * the card never takes focus on its own.
+   */
+  focusHandleRef?: Ref<ToolApprovalCardHandle>;
+}
+
+export interface ToolApprovalCardHandle {
+  /**
+   * Focuses the primary action (Allow once, or Choose file(s)… for a
+   * browser file request), or the labelled card when it is unavailable.
+   */
+  focusPrimaryAction: () => void;
+}
+
+/** The reason draft and its disclosure belong to one request. */
+interface ReasonDraft {
+  requestId: string;
+  open: boolean;
+  text: string;
+}
+
+/**
+ * Cmd+Enter on macOS, Ctrl+Enter elsewhere, with no other modifier. IME
+ * composition and key repeat never submit.
+ */
+function isReasonSubmitChord(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+): boolean {
+  if (event.key !== 'Enter') return false;
+  if (event.nativeEvent.isComposing || event.repeat) return false;
+  if (event.shiftKey || event.altKey) return false;
+  return isMacPlatform()
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
 }
 
 /** What the full-content modal shows when opened from the card or a menu. */
 interface FullContentView {
   title: string;
   subtitle?: string;
-  content: string;
+  content: ApprovalContentModalContent;
 }
+
+type FileWriteDetails = Extract<
+  ApprovalRequestEvent['details'],
+  { kind: 'file-write' }
+>;
 
 /** Copy for the one payload field per request kind that can grow unbounded. */
 interface ApprovalContentCopy {
@@ -56,13 +115,12 @@ interface ApprovalContentCopy {
 }
 
 const APPROVAL_CONTENT_COPY: Record<
-  'command' | 'mcp' | 'tool' | 'file-write',
+  'command' | 'mcp' | 'tool',
   ApprovalContentCopy
 > = {
   command: { viewFull: 'View full command', title: 'Full command' },
   mcp: { viewFull: 'View full parameters', title: 'Full parameters' },
   tool: { viewFull: 'View full input', title: 'Full input' },
-  'file-write': { viewFull: 'View full path', title: 'Full path' },
 };
 
 const RULE_TARGET_VIEW_TITLE = 'Rule target';
@@ -126,14 +184,120 @@ function ApprovalContentPreview({
           type="button"
           data-testid="tool-approval-content-view-full"
           onClick={(): void =>
-            onViewFull({ title: copy.title, content: content })
+            onViewFull({
+              title: copy.title,
+              content: { kind: 'text', text: content },
+            })
           }
-          className="mt-1 text-2xs fg-accent underline-offset-2 transition hover:underline"
+          className="mt-1 text-2xs fg-accent underline-offset-2 transition-colors hover:underline"
         >
           {copy.viewFull}
         </button>
       )}
     </>
+  );
+}
+
+/**
+ * The file a write targets, on one truncated line (CAN-5165). The host
+ * projects a worktree-relative `displayPath` when the path is inside the
+ * working directory; otherwise the provider path shows as supplied. The
+ * complete path is in the tooltip and, for keyboard and touch, in the inline
+ * disclosure the same control toggles.
+ */
+function ApprovalFileTarget({
+  path,
+  displayPath,
+}: {
+  path: string;
+  displayPath: string | undefined;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const fullPathId = useId();
+  return (
+    <div className="min-w-0">
+      <Tooltip
+        label={<span className={POSTHOG_REPLAY_BLOCK_CLASS}>{path}</span>}
+        contentClassName="max-w-96 break-all"
+        className="max-w-full"
+        allowShrink
+        delay="long"
+      >
+        <button
+          type="button"
+          data-testid="tool-approval-file-target"
+          aria-expanded={open}
+          aria-controls={open ? fullPathId : undefined}
+          onClick={(): void => setOpen((value) => !value)}
+          className="flex min-w-0 max-w-full items-center gap-1 rounded bg-fg-primary/[0.06] px-1.5 py-0.5 text-left font-mono text-2xs fg-primary/80 transition-colors hover:bg-fg-primary/[0.1]"
+        >
+          <span
+            data-testid="tool-approval-file-target-label"
+            className="min-w-0 truncate whitespace-nowrap"
+          >
+            {displayPath ?? path}
+          </span>
+          <span
+            aria-hidden="true"
+            className={`shrink-0 fg-secondary transition-transform ${open ? 'rotate-180' : ''}`}
+          >
+            <AppCatalogChevronDownMediumIcon size={14} />
+          </span>
+        </button>
+      </Tooltip>
+      {open && (
+        <div
+          id={fullPathId}
+          data-testid="tool-approval-file-target-full"
+          className="mt-1 select-text whitespace-pre-wrap break-all font-mono text-2xs fg-secondary"
+        >
+          {path}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileWriteDetailsView({
+  details,
+  onViewFull,
+}: {
+  details: FileWriteDetails;
+  onViewFull: (view: FullContentView) => void;
+}): JSX.Element {
+  const { change, path } = details;
+  // A projected relative path stands in for the absolute one in the card
+  // body, so the modal's subtitle is the only place the latter repeats.
+  const viewChange =
+    change === undefined
+      ? undefined
+      : (): void =>
+          onViewFull({
+            title: approvalFileChangeExpansionCopy(change.truncated === true)
+              .title,
+            subtitle: path,
+            content: { kind: 'change', change },
+          });
+  return (
+    <div
+      className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1.5 min-w-0 text-xs fg-primary/80`}
+    >
+      {path && (
+        <ApprovalFileTarget path={path} displayPath={details.displayPath} />
+      )}
+      {change && (
+        <div className={path ? 'mt-1.5' : undefined}>
+          <ApprovalFileChangePreview
+            change={change}
+            mode="compact"
+            onExpand={viewChange}
+          />
+        </div>
+      )}
+      {details.reason && (
+        <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
+      )}
+    </div>
   );
 }
 
@@ -167,22 +331,7 @@ function ApprovalDetails({
         </div>
       );
     case 'file-write':
-      return (
-        <div
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1.5 text-xs fg-primary/80`}
-        >
-          {details.path && (
-            <ApprovalContentPreview
-              content={details.path}
-              copy={APPROVAL_CONTENT_COPY['file-write']}
-              onViewFull={onViewFull}
-            />
-          )}
-          {details.reason && (
-            <div className="mt-1 text-2xs fg-secondary">{details.reason}</div>
-          )}
-        </div>
-      );
+      return <FileWriteDetailsView details={details} onViewFull={onViewFull} />;
     case 'mcp':
       return (
         <div
@@ -343,29 +492,102 @@ function ApprovalMenuTargetHeader({
   );
 }
 
-function ChevronIcon(): JSX.Element {
-  return (
-    <AppCatalogChevronDownMediumIcon
-      aria-hidden="true"
-      width="10"
-      height="10"
-    />
-  );
-}
-
 export const ToolApprovalCard = memo(function ToolApprovalCard({
   pending,
   onRespond,
+  focusHandleRef,
 }: ToolApprovalCardProps): JSX.Element {
   const respondInChat = useChatStore((s) => s.respondToApproval);
-  const respondToApproval = onRespond ?? respondInChat;
+  const respondWith = onRespond ?? respondInChat;
+  /**
+   * One response at a time. A repeated click or chord while the first is in
+   * flight is ignored; a failed response leaves the card for a retry. The
+   * buttons are not disabled meanwhile, because disabling the focused one
+   * would drop focus to the body.
+   */
+  const respondingRef = useRef(false);
+  const respondToApproval = useCallback(
+    async (
+      requestId: string,
+      decision: ApprovalPromptDecision,
+    ): Promise<void> => {
+      if (respondingRef.current) return;
+      respondingRef.current = true;
+      try {
+        await respondWith(requestId, decision);
+      } finally {
+        respondingRef.current = false;
+      }
+    },
+    [respondWith],
+  );
 
   const [allowMenuOpen, setAllowMenuOpen] = useState(false);
   const [denyMenuOpen, setDenyMenuOpen] = useState(false);
-  const [reasonOpen, setReasonOpen] = useState(false);
-  const [reason, setReason] = useState('');
-  const [fullView, setFullView] = useState<FullContentView | null>(null);
+  // Keyed by request, like the full view below, so a reason typed for one
+  // request never carries over to the next.
+  const [reasonDraft, setReasonDraft] = useState<ReasonDraft | null>(null);
+  const ownReasonDraft =
+    reasonDraft?.requestId === pending.requestId ? reasonDraft : null;
+  const reasonOpen = ownReasonDraft?.open ?? false;
+  const reason = ownReasonDraft?.text ?? '';
+  const setReason = useCallback(
+    (text: string): void =>
+      setReasonDraft({ requestId: pending.requestId, open: true, text }),
+    [pending.requestId],
+  );
+  const titleId = useId();
+  const descriptionId = useId();
+  const reasonId = useId();
+  const reasonToggleRef = useRef<HTMLButtonElement>(null);
+  const reasonFieldRef = useRef<HTMLTextAreaElement>(null);
+  const primaryActionRef = useRef<HTMLButtonElement>(null);
+  /** Where focus goes after the reason field opens or closes. */
+  const reasonFocusRef = useRef<'field' | 'toggle' | null>(null);
+  // Keyed by request so a card reused for the next request never shows the
+  // previous request's content.
+  const [openView, setOpenView] = useState<{
+    requestId: string;
+    view: FullContentView;
+  } | null>(null);
+  const fullView =
+    openView?.requestId === pending.requestId ? openView.view : null;
+  const setFullView = useCallback(
+    (view: FullContentView): void =>
+      setOpenView({ requestId: pending.requestId, view }),
+    [pending.requestId],
+  );
   const cardRef = useRef<HTMLDivElement>(null);
+  useImperativeHandle(
+    focusHandleRef,
+    (): ToolApprovalCardHandle => ({
+      focusPrimaryAction: (): void => {
+        const primary = primaryActionRef.current;
+        if (primary && !primary.disabled && primary.isConnected) {
+          primary.focus();
+          return;
+        }
+        cardRef.current?.focus();
+      },
+    }),
+    [],
+  );
+
+  const toggleReason = useCallback((): void => {
+    reasonFocusRef.current = reasonOpen ? 'toggle' : 'field';
+    setReasonDraft({
+      requestId: pending.requestId,
+      open: !reasonOpen,
+      text: reason,
+    });
+  }, [pending.requestId, reason, reasonOpen]);
+
+  useEffect(() => {
+    const target = reasonFocusRef.current;
+    reasonFocusRef.current = null;
+    if (target === 'field') reasonFieldRef.current?.focus();
+    else if (target === 'toggle') reasonToggleRef.current?.focus();
+  }, [reasonOpen]);
   /**
    * The Allow/Deny button cluster. Passed to both menus as their outside-press
    * boundary so a click on "Allow once" or "Deny" while a menu is open still
@@ -379,7 +601,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
   const target = pending.suggestedTarget;
   const targetLabel = target ? describeApprovalTarget(target) : undefined;
 
-  const closeFullView = useCallback((): void => setFullView(null), []);
+  const closeFullView = useCallback((): void => setOpenView(null), []);
 
   const toggleAllowMenu = useCallback((): void => {
     setDenyMenuOpen(false);
@@ -398,9 +620,9 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
     setFullView({
       title: RULE_TARGET_VIEW_TITLE,
       subtitle: RULE_TARGET_VIEW_SUBTITLE,
-      content: targetLabel,
+      content: { kind: 'text', text: targetLabel },
     });
-  }, [targetLabel]);
+  }, [setFullView, targetLabel]);
 
   const allowOnce = useCallback((): void => {
     void respondToApproval(pending.requestId, {
@@ -429,6 +651,18 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       ...(reason.trim() ? { message: reason.trim() } : {}),
     });
   }, [pending.requestId, reason, respondToApproval]);
+
+  // Cmd/Ctrl+Enter denies once with the reason. The chord stops here so it
+  // never reaches the composer's own send shortcut.
+  const onReasonKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+      if (!isReasonSubmitChord(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      denyOnce();
+    },
+    [denyOnce],
+  );
 
   const denyScoped = useCallback(
     (scope: 'project' | 'global'): void => {
@@ -506,11 +740,16 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
     <div
       ref={cardRef}
       data-testid="tool-approval-card"
+      role="group"
+      aria-labelledby={titleId}
+      aria-describedby={pending.description ? descriptionId : undefined}
       tabIndex={-1}
       className="rounded-lg border border-line-attention/30 bg-warning/[0.06] px-4 py-3"
     >
       <div className="flex items-center gap-1.5">
-        <div className="text-sm font-medium fg-primary">{pending.title}</div>
+        <div id={titleId} className="text-sm font-medium fg-primary">
+          {pending.title}
+        </div>
         {pending.subagentId && (
           <span
             data-testid="tool-approval-subagent-badge"
@@ -522,6 +761,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       </div>
       {pending.description && (
         <div
+          id={descriptionId}
           className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-0.5 text-xs fg-secondary`}
         >
           {pending.description}
@@ -532,32 +772,33 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       {pending.details.kind === 'browser-file-request' ? (
         // The user picks the files, so there is no rule to remember.
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
+            ref={primaryActionRef}
             onClick={allowOnce}
             data-testid="tool-approval-choose-files"
-            className="rounded bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent transition hover:bg-accent-subtle/80"
           >
             {pending.details.multiple ? 'Choose files…' : 'Choose file…'}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="compact"
             onClick={denyOnce}
             data-testid="tool-approval-decline-files"
-            className="rounded px-3 py-1.5 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary/80"
           >
             Decline
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <div ref={actionsRef} className="flex flex-wrap items-center gap-2">
             <div className="relative flex">
               <button
+                ref={primaryActionRef}
                 type="button"
                 onClick={allowOnce}
                 data-testid="tool-approval-allow"
-                className="rounded-l bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent transition hover:bg-accent-subtle/80"
+                className="rounded-l bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent transition-colors hover:bg-accent-subtle/80"
               >
                 Allow once
               </button>
@@ -568,9 +809,9 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                 aria-expanded={allowMenuOpen}
                 aria-label="More allow options"
                 onClick={toggleAllowMenu}
-                className="rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent transition hover:bg-accent-subtle/80"
+                className="rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent transition-colors hover:bg-accent-subtle/80"
               >
-                <ChevronIcon />
+                <AppCatalogChevronDownMediumIcon size={14} />
               </button>
               {/* Portaled and collision-clamped: the card sits at the bottom of
               the window, so an in-card popover opening downward ran behind
@@ -617,7 +858,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                 type="button"
                 onClick={denyOnce}
                 data-testid="tool-approval-deny"
-                className="rounded-l px-3 py-1.5 text-xs fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary/80"
+                className="rounded-l px-3 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80"
               >
                 Deny
               </button>
@@ -628,9 +869,9 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
                 aria-expanded={denyMenuOpen}
                 aria-label="More deny options"
                 onClick={toggleDenyMenu}
-                className="rounded-r px-1.5 py-1.5 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary/80"
+                className="rounded-r px-1.5 py-1.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80"
               >
-                <ChevronIcon />
+                <AppCatalogChevronDownMediumIcon size={14} />
               </button>
               <FloatingMenu
                 open={denyMenuOpen}
@@ -667,9 +908,13 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
           </div>
 
           <button
+            ref={reasonToggleRef}
             type="button"
-            onClick={(): void => setReasonOpen((open) => !open)}
-            className="text-2xs fg-secondary underline-offset-2 transition hover:fg-primary/80 hover:underline"
+            data-testid="tool-approval-reason-toggle"
+            aria-expanded={reasonOpen}
+            aria-controls={reasonOpen ? reasonId : undefined}
+            onClick={toggleReason}
+            className="rounded px-1.5 py-1 text-2xs fg-secondary underline-offset-2 transition-colors hover:fg-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-line-accent"
           >
             {reasonOpen ? 'Hide reason' : 'Add a reason'}
           </button>
@@ -677,13 +922,26 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       )}
 
       {reasonOpen && (
-        <textarea
-          value={reason}
-          onChange={(e): void => setReason(e.target.value)}
-          placeholder="Explain why (included in the response to the agent)…"
-          rows={2}
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-2 w-full resize-y rounded border bg-fg-primary/[0.04] px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary outline-none focus:border-line-accent/40`}
-        />
+        <div className="mt-2">
+          <label
+            htmlFor={reasonId}
+            className="mb-1 block text-2xs font-medium fg-secondary"
+          >
+            Reason for denying
+          </label>
+          <div className={POSTHOG_REPLAY_BLOCK_CLASS}>
+            <TextArea
+              ref={reasonFieldRef}
+              id={reasonId}
+              data-testid="tool-approval-reason"
+              value={reason}
+              onChange={(e): void => setReason(e.target.value)}
+              onKeyDown={onReasonKeyDown}
+              placeholder="Included in the response to the agent…"
+              rows={2}
+            />
+          </div>
+        </div>
       )}
 
       {fullView && (

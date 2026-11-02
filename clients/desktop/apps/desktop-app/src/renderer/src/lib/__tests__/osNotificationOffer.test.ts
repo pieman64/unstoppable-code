@@ -33,6 +33,7 @@ const preferences: OsNotificationPreferences = {
     pipeline: true,
     terminal: true,
     runComment: true,
+    activation: true,
   },
   categorySounds: {
     chat: 'Default',
@@ -44,6 +45,7 @@ const preferences: OsNotificationPreferences = {
     pipeline: 'Default',
     terminal: 'Default',
     runComment: 'Default',
+    activation: 'Default',
   },
 };
 

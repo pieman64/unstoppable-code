@@ -19,6 +19,8 @@ import {
   UsageIndicator,
   type UsageIndicatorUsage,
   buildPlanModeChip,
+  ComposerSendButton,
+  defaultChatPlaceholder,
 } from '@canopy/ui-shared';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import {
@@ -39,7 +41,6 @@ import { DICTATION_SHORTCUT_LABEL } from '@/lib/keyboardShortcuts';
 import type { EditorSelectionContext } from '@/lib/editorSelectionContext';
 import { ApprovalModePicker } from '@/components/chat/ApprovalModePicker';
 import { AttachmentPillCarousel } from '@/components/chat/AttachmentPillCarousel';
-import { ComposerSendButton } from '@/components/chat/ComposerSendButton';
 import {
   PLAN_APPROVAL_BOX_CLASS,
   PLAN_APPROVAL_EDITOR_CONTAINER_CLASS,
@@ -96,7 +97,7 @@ export const GALLERY_FILE_CONTENTS: Readonly<Record<string, string>> = {
     'const LATENCY_MS = 200;\nexport function startMockServer(): void {}\n',
 };
 
-const DEFAULT_PLACEHOLDER = '@ to mention, / skills and commands';
+const DEFAULT_PLACEHOLDER = defaultChatPlaceholder(true, true);
 /** The gallery's "now", so the scheduled chip reads "Tomorrow 9:00 AM". */
 const GALLERY_NOW = new Date(2026, 9, 2, 11, 20);
 const DEFAULT_MODEL = 'opus[1m]';
@@ -251,6 +252,8 @@ interface ComposerStateSpec {
   readonly planReady?: boolean;
   /** The prompt was closed: Plan's chip reads "Plan ready". */
   readonly planReadyClosed?: boolean;
+  /** Comments on the waiting plan the agent has not received. */
+  readonly planUnsentComments?: number;
   /** A question waits: the box asks it (a chat-playground preset id). */
   readonly question?: string;
   /** The question prompt was closed: the chip beside + reads "Question". */
@@ -463,6 +466,7 @@ function GalleryComposer({
         pending={pending}
         armed={spec.stopArmed === true}
         shortcutReady
+        dataTestId="chat-stop-generation"
       />
     </>
   ) : questionCard && question.skips(text) ? (
@@ -701,13 +705,21 @@ function GalleryComposer({
                 testId: `gallery-${spec.id}-plan-implement`,
               },
               {
-                label: 'Run it as a pipeline',
+                label: 'Run it as a workflow',
                 onSelect: (): void => {},
                 testId: `gallery-${spec.id}-plan-pipeline`,
               },
             ]}
             onOpenPlan={(): void => {}}
             onClose={(): void => {}}
+            {...(spec.planUnsentComments !== undefined
+              ? {
+                  unsentComments: {
+                    count: spec.planUnsentComments,
+                    onSend: (): void => {},
+                  },
+                }
+              : {})}
           >
             {composerEditor}
             {composerControls}
@@ -1068,6 +1080,13 @@ const SECTIONS: readonly GallerySection[] = [
         planMode: true,
         planReady: true,
         text: 'Keep the retry, but cap it at three attempts',
+      },
+      {
+        id: 'plan-ready-unsent-comments',
+        title: 'Plan ready, comments not sent',
+        planMode: true,
+        planReady: true,
+        planUnsentComments: 2,
       },
       {
         id: 'plan-ready-closed',

@@ -19,7 +19,8 @@
  *   turn or replaying the journal.
  */
 import type { PersistedChatMessage } from '@canopy/desktop-shared/types';
-import { isActiveEffect, type DeltaJournalCommitRecord } from './format';
+import { isActiveEffect } from './format';
+import { primaryEffects, type JournalCommit } from './replay';
 
 /**
  * During a turn, the journal may hold this many times the journaled active
@@ -78,7 +79,7 @@ export interface ActiveTurnDelta {
  * newest, so a reader that keeps up touches only the records it missed.
  */
 export function activeTurnDelta(
-  records: readonly DeltaJournalCommitRecord[],
+  records: readonly JournalCommit[],
   chatId: string,
   since: number,
   current: {
@@ -93,8 +94,9 @@ export function activeTurnDelta(
   let reached = since === current.transcriptRevision;
   for (let index = records.length - 1; index >= 0 && !reached; index -= 1) {
     const record = records[index];
-    for (let at = record.transcripts.length - 1; at >= 0; at -= 1) {
-      const effect = record.transcripts[at];
+    const effects = primaryEffects(record);
+    for (let at = effects.length - 1; at >= 0; at -= 1) {
+      const effect = effects[at];
       if (effect.chatId !== chatId) continue;
       if (!isActiveEffect(effect) || effect.transcriptRevision === undefined)
         return undefined;

@@ -1,18 +1,26 @@
 jest.mock('../installed-items/installed-item-events', () => ({
   notifyInstalledItemsChanged: jest.fn(),
 }));
+import { notifyInstalledItemsChanged } from '../installed-items/installed-item-events';
 import { subscribeDesktopInventoryChanges } from '../services/desktop-inventory-sync-signals';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import type * as AccountConnectionsModule from '../canopy-cloud/mcp-connections';
-jest.mock('../canopy-cloud/mcp-connections', (): object => ({
-  __esModule: true,
-  ...jest.requireActual<typeof AccountConnectionsModule>(
+import type * as ServerRefRewriteModule from '../mcp/server-ref-rewrite';
+jest.mock('../canopy-cloud/mcp-connections', (): object => {
+  const actual = jest.requireActual<typeof AccountConnectionsModule>(
     '../canopy-cloud/mcp-connections',
-  ),
-  listAccountMcpConnections: jest.fn(),
-  findAccountMcpConnection: jest.fn(),
-  invalidateAccountMcpConnections: jest.fn(),
-}));
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      __esModule: { value: true, enumerable: true },
+      listAccountMcpConnections: { value: jest.fn(), enumerable: true },
+      findAccountMcpConnection: { value: jest.fn(), enumerable: true },
+      invalidateAccountMcpConnections: { value: jest.fn(), enumerable: true },
+    },
+  );
+});
 import {
   invalidateAccountMcpConnections,
   listAccountMcpConnections,
@@ -29,6 +37,7 @@ import type * as NodeCrypto from 'node:crypto';
 import type * as NodeChildProcess from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import type { CuratedMcpServerListResponse } from '@canopy/protocol/mcp-catalog';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
 import type {
   McpServerData,
   McpServerFile,
@@ -62,7 +71,9 @@ jest.mock('node:dns/promises', () => ({
   lookup: jest.fn(() => Promise.resolve([{ address: '8.8.8.8', family: 4 }])),
 }));
 jest.mock('../mcp/pinned-http-fetch', () => ({
-  fetchPinnedHttpResponse: mockPinnedHttpFetch,
+  get fetchPinnedHttpResponse(): typeof mockPinnedHttpFetch {
+    return mockPinnedHttpFetch;
+  },
 }));
 
 jest.mock('node:fs/promises');
@@ -87,7 +98,9 @@ jest.mock('../lib/open-external', () => ({
 }));
 
 jest.mock('../lib/window-send', () => ({
-  sendToAllWindows: mockSendToAllWindows,
+  get sendToAllWindows(): typeof mockSendToAllWindows {
+    return mockSendToAllWindows;
+  },
 }));
 jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(() => Promise.resolve({ mcpProxyPort: 37645 })),
@@ -117,19 +130,45 @@ const mockProxyUpdatePort = jest.fn(() => Promise.resolve());
 const mockRefreshCodexSessionsAfterMcpOAuth = jest.fn(() => Promise.resolve());
 jest.mock('../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: jest.fn(() => ({
-    ensureStarted: mockProxyEnsureStarted,
-    registerRoute: mockProxyRegisterRoute,
-    unregisterRoute: mockProxyUnregisterRoute,
-    getPort: mockProxyGetPort,
-    getProxyUrl: mockProxyGetProxyUrl,
-    setBroadcastHandlers: mockProxySetBroadcastHandlers,
-    setWindowAccessor: mockProxySetWindowAccessor,
-    setPreferredPort: mockProxySetPreferredPort,
-    refreshPreferredPortStatus: mockProxyRefreshPreferredPortStatus,
-    assertPortAvailable: mockProxyAssertPortAvailable,
-    getState: mockProxyGetState,
-    isRunning: mockProxyIsRunning,
-    updatePort: mockProxyUpdatePort,
+    get ensureStarted(): typeof mockProxyEnsureStarted {
+      return mockProxyEnsureStarted;
+    },
+    get registerRoute(): typeof mockProxyRegisterRoute {
+      return mockProxyRegisterRoute;
+    },
+    get unregisterRoute(): typeof mockProxyUnregisterRoute {
+      return mockProxyUnregisterRoute;
+    },
+    get getPort(): typeof mockProxyGetPort {
+      return mockProxyGetPort;
+    },
+    get getProxyUrl(): typeof mockProxyGetProxyUrl {
+      return mockProxyGetProxyUrl;
+    },
+    get setBroadcastHandlers(): typeof mockProxySetBroadcastHandlers {
+      return mockProxySetBroadcastHandlers;
+    },
+    get setWindowAccessor(): typeof mockProxySetWindowAccessor {
+      return mockProxySetWindowAccessor;
+    },
+    get setPreferredPort(): typeof mockProxySetPreferredPort {
+      return mockProxySetPreferredPort;
+    },
+    get refreshPreferredPortStatus(): typeof mockProxyRefreshPreferredPortStatus {
+      return mockProxyRefreshPreferredPortStatus;
+    },
+    get assertPortAvailable(): typeof mockProxyAssertPortAvailable {
+      return mockProxyAssertPortAvailable;
+    },
+    get getState(): typeof mockProxyGetState {
+      return mockProxyGetState;
+    },
+    get isRunning(): typeof mockProxyIsRunning {
+      return mockProxyIsRunning;
+    },
+    get updatePort(): typeof mockProxyUpdatePort {
+      return mockProxyUpdatePort;
+    },
   })),
 }));
 type McpOAuthSettledListener = (event: {
@@ -149,7 +188,9 @@ jest.mock('../mcp/oauth-client', () => ({
   ): void => mockSetMcpOAuthSettledListener(listener),
 }));
 jest.mock('../agents/session-manager', () => ({
-  refreshCodexSessionsAfterMcpOAuth: mockRefreshCodexSessionsAfterMcpOAuth,
+  get refreshCodexSessionsAfterMcpOAuth(): typeof mockRefreshCodexSessionsAfterMcpOAuth {
+    return mockRefreshCodexSessionsAfterMcpOAuth;
+  },
 }));
 const mockResumeChatsAfterMcpOAuthSuccess = jest.fn<
   Promise<string[]>,
@@ -168,11 +209,12 @@ jest.mock('../mcp/oauth-token-store', () => ({
 }));
 const mockListCuratedMcpServers = jest.fn<
   Promise<CuratedMcpServerListResponse>,
-  []
+  [now?: Date]
 >(() => Promise.resolve({ version: 1, servers: [] }));
 jest.mock('../mcp/curated-catalog', () => ({
-  listCuratedMcpServers: (...args: unknown[]): Promise<unknown> =>
-    mockListCuratedMcpServers(...args),
+  get listCuratedMcpServers(): typeof mockListCuratedMcpServers {
+    return mockListCuratedMcpServers;
+  },
   refreshCuratedMcpServers: jest.fn(() =>
     Promise.resolve({ version: 1, servers: [] }),
   ),
@@ -180,12 +222,14 @@ jest.mock('../mcp/curated-catalog', () => ({
 jest.mock('../mcp/remote-image-cache', () => ({
   resolveRemoteImageDataUrl: jest.fn(() => Promise.resolve(null)),
 }));
-const mockRewriteMcpServerRefs = jest.fn(() =>
-  Promise.resolve({ globalDefaults: true, workspaces: 1, chats: 2 }),
-);
+const mockRewriteMcpServerRefs = jest.fn<
+  ReturnType<typeof ServerRefRewriteModule.rewriteMcpServerRefs>,
+  Parameters<typeof ServerRefRewriteModule.rewriteMcpServerRefs>
+>(() => Promise.resolve({ globalDefaults: true, workspaces: 1, chats: 2 }));
 jest.mock('../mcp/server-ref-rewrite', () => ({
-  rewriteMcpServerRefs: (...args: unknown[]): Promise<unknown> =>
-    mockRewriteMcpServerRefs(...args),
+  get rewriteMcpServerRefs(): typeof mockRewriteMcpServerRefs {
+    return mockRewriteMcpServerRefs;
+  },
 }));
 jest.mock('../plugins/mcp-inventory', () => ({
   listDetectedMcpServersForSelections: jest.fn(() =>
@@ -195,11 +239,11 @@ jest.mock('../plugins/mcp-inventory', () => ({
 const mockSpawn = jest.fn();
 jest.mock('child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: mockSpawn,
+  spawn: (...args: unknown[]): unknown => mockSpawn(...args),
   execFile: jest.fn(),
 }));
 
-import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, unlink } from 'node:fs/promises';
 import { ChildProcess } from 'child_process';
 import { openExternalGuarded } from '../lib/open-external';
 import { registerIpcHandler } from '../ipc/register';
@@ -213,6 +257,9 @@ import {
   registerMcpServerHandlers,
   testMcpServerConnection,
   saveMcpServer,
+  rewriteMcpServerRefsOutcome,
+  setInstalledMcpConfigEnabled,
+  deleteMcpServer,
   isCommandSafe,
   areArgsSafe,
   toIndexEntry,
@@ -225,6 +272,14 @@ import {
 
 import * as accountConnections from '../canopy-cloud/mcp-connections';
 import * as toolDiscovery from '../mcp/tool-discovery';
+
+function partialPreferences(
+  preferences: Partial<PreferencesData>,
+): PreferencesData {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  return preferences as PreferencesData;
+}
+
 const mockedReadFile = jest.mocked(readFile);
 const mockedWriteFile = jest.mocked(writeFile);
 const mockedMkdir = jest.mocked(mkdir);
@@ -318,6 +373,48 @@ function makeServerFileJson(
   return JSON.stringify({ version, server });
 }
 
+function missingFile(): Promise<never> {
+  return Promise.reject(
+    Object.assign(new Error('missing'), { code: 'ENOENT' }),
+  );
+}
+
+/** Index reads return `index`; server reads return a listed server or ENOENT. */
+function mockMcpFiles(
+  index: string | undefined,
+  servers: McpServerData[] = [],
+): void {
+  mockedReadFile.mockImplementation((path): Promise<string> => {
+    if (typeof path !== 'string') return missingFile();
+    if (path.endsWith('index.json'))
+      return index === undefined ? missingFile() : Promise.resolve(index);
+    const server = servers.find((candidate) =>
+      path.endsWith(`server-${candidate.definition.id}.json`),
+    );
+    return server ? Promise.resolve(makeServerFileJson(server)) : missingFile();
+  });
+}
+
+/** In-memory MCP directory: reads see earlier writes; absent paths are ENOENT. */
+function useMcpDisk(initial: Record<string, string> = {}): Map<string, string> {
+  const files = new Map(Object.entries(initial));
+  mockedReadFile.mockImplementation((path): Promise<string> => {
+    const text = typeof path === 'string' ? files.get(path) : undefined;
+    return text === undefined ? missingFile() : Promise.resolve(text);
+  });
+  mockedWriteFile.mockImplementation((path, data): Promise<void> => {
+    if (typeof path !== 'string' || typeof data !== 'string')
+      throw new Error('Expected a JSON text write');
+    files.set(path, data);
+    return Promise.resolve();
+  });
+  return files;
+}
+
+const MOCK_INDEX_PATH = '/mock/mcp-servers/index.json';
+const mockServerPath = (id: string): string =>
+  `/mock/mcp-servers/server-${id}.json`;
+
 function toMcpFrame(message: Record<string, unknown>): string {
   const payload = JSON.stringify(message);
   return `Content-Length: ${String(Buffer.byteLength(payload, 'utf8'))}\r\n\r\n${payload}`;
@@ -359,8 +456,330 @@ beforeEach(() => {
   mockProxyIsRunning.mockReturnValue(false);
   mockProxyUpdatePort.mockResolvedValue(undefined);
   mockedStartMcpOAuthFlow.mockResolvedValue({ status: 'started' });
+  jest.mocked(readdir).mockResolvedValue([]);
   clearMcpServerHealthCache();
   registerMcpServerHandlers(() => null);
+});
+
+describe('device config write coordination', () => {
+  it('holds the server lease until every initiated token clear settles, without blocking another server', async () => {
+    const first = makeServer({
+      configs: [makeConfig({ id: 'cfg-a' }), makeConfig({ id: 'cfg-b' })],
+    });
+    const other = makeServer({ definition: { id: 'bbb-222' } });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let index = makeIndexFileJson([toIndexEntry(first)]);
+    mockedReadFile.mockImplementation((path) =>
+      path === MOCK_INDEX_PATH
+        ? Promise.resolve(index)
+        : path === mockServerPath(first.definition.id)
+          ? Promise.resolve(makeServerFileJson(first))
+          : missingFile(),
+    );
+    mockedWriteFile.mockImplementation((path, data) => {
+      if (typeof path === 'string' && path.endsWith('index.json')) {
+        if (typeof data !== 'string')
+          throw new Error('Expected index JSON text');
+        index = data;
+      }
+      return Promise.resolve();
+    });
+    jest
+      .mocked(clearMcpOAuthToken)
+      .mockRejectedValueOnce(new Error('cleanup failed'))
+      .mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+      });
+    const deletion = deleteMcpServer(first.definition.id);
+    const failure = expect(deletion).rejects.toThrow('cleanup failed');
+    await entered.promise;
+    const enabling = setInstalledMcpConfigEnabled(
+      first.definition.id,
+      'cfg-a',
+      false,
+    );
+    try {
+      await saveMcpServer(other);
+      expect(
+        mockedWriteFile.mock.calls.some(
+          ([path]) =>
+            typeof path === 'string' &&
+            path.endsWith(`server-${first.definition.id}.json`),
+        ),
+      ).toBe(false);
+      expect(mockedUnlink).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+    }
+    await Promise.all([failure, enabling]);
+    expect(mockedUnlink).not.toHaveBeenCalled();
+  });
+
+  it('does not reject an applied save when installed-item notification throws', async () => {
+    mockMcpFiles(makeIndexFileJson([]));
+    mockedWriteFile.mockResolvedValue(undefined);
+    jest.mocked(notifyInstalledItemsChanged).mockImplementationOnce(() => {
+      throw new Error('listener failed');
+    });
+    await expect(saveMcpServer(makeServer())).resolves.toMatchObject({
+      version: 1,
+    });
+    expect(mockedWriteFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('leases an allocated id before catalog loading and treats its next save as an update', async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<CuratedMcpServerListResponse>();
+    mockListCuratedMcpServers.mockImplementationOnce(async () => {
+      entered.resolve();
+      return release.promise;
+    });
+    useMcpDisk({ [MOCK_INDEX_PATH]: makeIndexFileJson([]) });
+    const server = makeServer({
+      definition: {
+        id: '',
+        type: 'http',
+        url: 'https://example.test',
+        curated: { key: 'example' },
+      },
+    });
+    const creating = saveMcpServer(server);
+    await entered.promise;
+    const updating = saveMcpServer({
+      ...server,
+      definition: {
+        ...server.definition,
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      },
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockedWriteFile).not.toHaveBeenCalled();
+    } finally {
+      release.resolve({ version: 1, servers: [] });
+    }
+    const [created, updated] = await Promise.all([creating, updating]);
+    expect(created.server.definition.httpAuthHandler).toBe('canopy');
+    expect(updated.server.definition.httpAuthHandler).toBeUndefined();
+  });
+
+  it('does not hold the disk queue while catalog inputs are pending', async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<CuratedMcpServerListResponse>();
+    mockListCuratedMcpServers.mockImplementationOnce(async () => {
+      entered.resolve();
+      return release.promise;
+    });
+    mockMcpFiles(makeIndexFileJson([]));
+    mockedWriteFile.mockResolvedValue(undefined);
+    const waiting = saveMcpServer(
+      makeServer({
+        definition: {
+          id: 'aaa-111',
+          type: 'http',
+          url: 'https://example.test',
+          curated: { key: 'example' },
+        },
+      }),
+    );
+    await entered.promise;
+    try {
+      await saveMcpServer(makeServer({ definition: { id: 'bbb-222' } }));
+    } finally {
+      release.resolve({ version: 1, servers: [] });
+    }
+    await waiting;
+  });
+
+  it.each(['save', 'delete', 'backfill'] as const)(
+    'preserves another server during an overlapping %s',
+    async (operation): Promise<void> => {
+      const first = makeServer({ definition: { id: 'aaa-111' } });
+      const second = makeServer({
+        definition: {
+          id: 'bbb-222',
+          type: 'http',
+          url: 'https://example.test/mcp',
+        },
+      });
+      const secondEntry = toIndexEntry(second);
+      delete secondEntry.urlHost;
+      delete secondEntry.urlScheme;
+      let index = makeIndexFileJson([secondEntry]);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      mockedReadFile.mockImplementation((path) =>
+        path === MOCK_INDEX_PATH
+          ? Promise.resolve(index)
+          : path === mockServerPath(second.definition.id)
+            ? Promise.resolve(makeServerFileJson(second))
+            : missingFile(),
+      );
+      mockedWriteFile.mockImplementation(async (path, data) => {
+        if (typeof path === 'string' && path.endsWith('server-aaa-111.json')) {
+          entered.resolve();
+          await release.promise;
+        }
+        if (typeof path === 'string' && path.endsWith('index.json')) {
+          if (typeof data !== 'string')
+            throw new Error('Expected index JSON text');
+          index = data;
+        }
+      });
+      mockedUnlink.mockResolvedValue(undefined);
+      const saving = saveMcpServer(first);
+      await entered.promise;
+      const overlapping =
+        operation === 'save'
+          ? saveMcpServer({
+              ...second,
+              definition: { ...second.definition, name: 'Updated' },
+            })
+          : operation === 'delete'
+            ? deleteMcpServer(second.definition.id)
+            : getHandler(MCP_SERVER_CHANNELS.LOAD_INDEX)();
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      } finally {
+        release.resolve();
+      }
+      await Promise.all([saving, overlapping]);
+      const stored: unknown = JSON.parse(index);
+      expect(isMcpServersIndexFile(stored)).toBe(true);
+      if (!isMcpServersIndexFile(stored)) throw new Error('Invalid test index');
+      expect(
+        stored.servers.find((entry) => entry.id === first.definition.id),
+      ).toBeDefined();
+      const other = stored.servers.find(
+        (entry) => entry.id === second.definition.id,
+      );
+      if (operation === 'delete') expect(other).toBeUndefined();
+      else if (operation === 'save') expect(other?.name).toBe('Updated');
+      else expect(other?.urlHost).toBe('example.test');
+    },
+  );
+});
+
+// CAN-5513 (CAN-4486 A2): mutations read strict state; display keeps its fallback.
+describe('strict device config mutations', () => {
+  const server = makeServer({ definition: { id: 'aaa-111' } });
+  const damagedIndex = makeIndexFileJson([
+    toIndexEntry(server),
+    toIndexEntry(server),
+  ]);
+
+  it.each([
+    ['damaged', '{bad'],
+    ['unsupported', makeIndexFileJson([], 2)],
+    ['duplicate-id', damagedIndex],
+  ])('refuses to replace a %s index on save', async (_case, index) => {
+    const files = useMcpDisk({ [MOCK_INDEX_PATH]: index });
+    await expect(saveMcpServer(server)).rejects.toThrow('The MCP server list');
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(files.get(MOCK_INDEX_PATH)).toBe(index);
+  });
+
+  it('keeps unknown server and index fields through a renderer save', async () => {
+    const files = useMcpDisk({
+      [MOCK_INDEX_PATH]: JSON.stringify({
+        version: 1,
+        servers: [{ ...toIndexEntry(server), rowNote: 'keep' }],
+      }),
+      [mockServerPath('aaa-111')]: JSON.stringify({
+        version: 1,
+        envelopeNote: 'keep',
+        server: { ...server, serverNote: 'keep' },
+      }),
+    });
+    await saveMcpServer({
+      ...server,
+      definition: { ...server.definition, name: 'Renamed' },
+    });
+    expect(files.get(mockServerPath('aaa-111'))).toContain('"envelopeNote"');
+    expect(files.get(mockServerPath('aaa-111'))).toContain('"serverNote"');
+    expect(files.get(MOCK_INDEX_PATH)).toContain('"rowNote"');
+    expect(files.get(MOCK_INDEX_PATH)).toContain('"Renamed"');
+  });
+
+  it('skips the write when the config already has the requested state', async () => {
+    useMcpDisk({
+      [MOCK_INDEX_PATH]: makeIndexFileJson([toIndexEntry(server)]),
+      [mockServerPath('aaa-111')]: makeServerFileJson(server),
+    });
+    await expect(
+      setInstalledMcpConfigEnabled('aaa-111', 'c0f1-0001', true),
+    ).resolves.toMatchObject({ server: { configs: [{ enabled: true }] } });
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('applies an enable queued behind an in-flight disable', async () => {
+    const files = useMcpDisk({
+      [MOCK_INDEX_PATH]: makeIndexFileJson([toIndexEntry(server)]),
+      [mockServerPath('aaa-111')]: makeServerFileJson(server),
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const write = mockedWriteFile.getMockImplementation();
+    mockedWriteFile.mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      await write?.(...args);
+    });
+    const disabling = setInstalledMcpConfigEnabled(
+      'aaa-111',
+      'c0f1-0001',
+      false,
+    );
+    await entered.promise;
+    // The file still says enabled; only the queued setter sees the disable.
+    const enabling = setInstalledMcpConfigEnabled('aaa-111', 'c0f1-0001', true);
+    release.resolve();
+    await Promise.all([disabling, enabling]);
+    const stored: unknown = JSON.parse(
+      files.get(mockServerPath('aaa-111')) ?? '',
+    );
+    expect(stored).toMatchObject({
+      server: { configs: [{ id: 'c0f1-0001', enabled: true }] },
+    });
+    expect(mockedWriteFile).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    ['damaged server file', '{bad', 'McpConfigStateError'],
+    ['missing server file', undefined, 'McpConfigNotFoundError'],
+  ])('refuses enable for a %s', async (_case, contents, name) => {
+    useMcpDisk({
+      [MOCK_INDEX_PATH]: makeIndexFileJson([toIndexEntry(server)]),
+      ...(contents === undefined
+        ? {}
+        : { [mockServerPath('aaa-111')]: contents }),
+    });
+    await expect(
+      setInstalledMcpConfigEnabled('aaa-111', 'c0f1-0001', false),
+    ).rejects.toMatchObject({ name });
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('displays a refused index without backfilling it', async () => {
+    const http = makeServer({
+      definition: { id: 'aaa-111', type: 'http', url: 'https://x.test/mcp' },
+    });
+    const legacy = toIndexEntry(http);
+    delete legacy.urlHost;
+    delete legacy.urlScheme;
+    const index = makeIndexFileJson([legacy, legacy]);
+    const files = useMcpDisk({
+      [MOCK_INDEX_PATH]: index,
+      [mockServerPath('aaa-111')]: makeServerFileJson(http),
+    });
+    await expect(
+      getHandler(MCP_SERVER_CHANNELS.LOAD_INDEX)(),
+    ).resolves.toMatchObject({ servers: [legacy, legacy] });
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(files.get(MOCK_INDEX_PATH)).toBe(index);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1129,10 +1548,12 @@ describe('load server handler', () => {
 
 describe('save server handler', () => {
   it('persists the account binding while inheriting the global account handler', async (): Promise<void> => {
-    jest.mocked(readPreferencesFile).mockResolvedValueOnce({
-      mcpProxyPort: 37645,
-      mcpHttpAuthDefaultHandler: 'account',
-    });
+    jest.mocked(readPreferencesFile).mockResolvedValueOnce(
+      partialPreferences({
+        mcpProxyPort: 37645,
+        mcpHttpAuthDefaultHandler: 'account',
+      }),
+    );
     const server = makeServer({
       definition: {
         type: 'http',
@@ -1140,7 +1561,7 @@ describe('save server handler', () => {
         url: 'https://custom.example.test',
       },
     });
-    mockedReadFile.mockResolvedValue(makeIndexFileJson([]));
+    mockMcpFiles(makeIndexFileJson([]));
     await getHandler('mcp-servers:save-server')(
       {},
       {
@@ -1174,8 +1595,9 @@ describe('save server handler', () => {
         authHandler: 'account' as const,
         accountConnectionId: 'a1111111-1111-4111-8111-111111111111',
       };
-      mockedReadFile.mockResolvedValue(
+      mockMcpFiles(
         makeIndexFileJson([{ ...toIndexEntry(server), ...routing }]),
+        [server],
       );
       await getHandler('mcp-servers:save-server')(
         {},
@@ -1220,7 +1642,7 @@ describe('save server handler', () => {
       },
     });
     const handler = getHandler('mcp-servers:save-server');
-    mockedReadFile.mockResolvedValue(makeIndexFileJson([]));
+    mockMcpFiles(makeIndexFileJson([]));
     await handler({}, { ...server, accountConnectionId });
     const indexWrite = mockedWriteFile.mock.calls.find(
       ([path]): boolean =>
@@ -1232,7 +1654,7 @@ describe('save server handler', () => {
     );
     expect(indexWrite?.[1]).toContain('"scope": "account"');
     mockedWriteFile.mockClear();
-    mockedReadFile.mockResolvedValue(
+    mockMcpFiles(
       makeIndexFileJson([
         {
           ...toIndexEntry(server),
@@ -1241,6 +1663,7 @@ describe('save server handler', () => {
           accountConnectionId,
         },
       ]),
+      [server],
     );
     await handler({}, server);
     const updated = mockedWriteFile.mock.calls.find(
@@ -1266,18 +1689,8 @@ describe('save server handler', () => {
         },
       },
     });
-    let storedIndex = makeIndexFileJson([]);
-    mockedReadFile.mockImplementation(
-      (): Promise<string> => Promise.resolve(storedIndex),
-    );
-    mockedWriteFile.mockImplementation((path, data): Promise<void> => {
-      if (typeof path === 'string' && path.endsWith('index.json')) {
-        if (typeof data !== 'string')
-          throw new Error('Expected index JSON text');
-        storedIndex = data;
-      }
-      return Promise.resolve();
-    });
+    const files = useMcpDisk({ [MOCK_INDEX_PATH]: makeIndexFileJson([]) });
+    const storedIndex = (): string => files.get(MOCK_INDEX_PATH) ?? '';
     try {
       const handler = getHandler('mcp-servers:save-server');
       await handler(
@@ -1287,7 +1700,7 @@ describe('save server handler', () => {
           accountConnectionId: 'a1111111-1111-4111-8111-111111111111',
         },
       );
-      expect(storedIndex).toContain('"scope": "account"');
+      expect(storedIndex()).toContain('"scope": "account"');
       const defaultServer = makeServer({
         definition: {
           ...server.definition,
@@ -1296,7 +1709,7 @@ describe('save server handler', () => {
         },
       });
       await handler({}, { ...defaultServer, accountRouting: 'clear' });
-      const index: unknown = JSON.parse(storedIndex);
+      const index: unknown = JSON.parse(storedIndex());
       if (!isMcpServersIndexFile(index)) throw new Error('Invalid saved index');
       const entry = index.servers[0];
       expect(entry).toBeDefined();
@@ -1321,7 +1734,7 @@ describe('save server handler', () => {
     'rejects invalid account connection id %s before writing',
     async (accountConnectionId): Promise<void> => {
       const handler = getHandler('mcp-servers:save-server');
-      mockedReadFile.mockResolvedValue(makeIndexFileJson([]));
+      mockMcpFiles(makeIndexFileJson([]));
       await expect(
         handler(
           {},
@@ -1345,8 +1758,7 @@ describe('save server handler', () => {
   beforeEach(() => {
     mockedMkdir.mockResolvedValue(undefined);
     mockedWriteFile.mockResolvedValue(undefined);
-    // readIndex during save — return empty index by default
-    mockedReadFile.mockResolvedValue(makeIndexFileJson([]));
+    mockMcpFiles(makeIndexFileJson([]));
   });
 
   it('saves a server and updates the index', async () => {
@@ -1515,7 +1927,7 @@ describe('save server handler', () => {
         httpAuthHandler: undefined,
       },
     });
-    mockedReadFile.mockResolvedValue(makeIndexFileJson([toIndexEntry(server)]));
+    mockMcpFiles(makeIndexFileJson([toIndexEntry(server)]), [server]);
 
     const result = await getHandler('mcp-servers:save-server')({}, server);
 
@@ -1710,7 +2122,7 @@ describe('save server handler', () => {
       configs: [],
       updatedAt: '2025-01-01T00:00:00Z',
     };
-    mockedReadFile.mockResolvedValue(makeIndexFileJson([existingEntry]));
+    mockMcpFiles(makeIndexFileJson([existingEntry]));
 
     const server = makeServer({
       definition: { id: 'aaa-bbb-111', name: 'New Name' },
@@ -2892,6 +3304,75 @@ describe('account connection IPC validation', (): void => {
       expect(mockRewriteMcpServerRefs).not.toHaveBeenCalled();
     },
   );
+  it('rethrows the original local rewrite failure without invoking the writer twice', async () => {
+    const error = new Error('original rewrite failure');
+    mockRewriteMcpServerRefs.mockRejectedValueOnce(error);
+    await expect(
+      getHandler(MCP_SERVER_CHANNELS.REWRITE_REFS)(
+        {},
+        {
+          from: [{ serverId: 'aaa' }],
+          to: { serverId: 'bbb', configId: 'cfg' },
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(mockRewriteMcpServerRefs).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveProperty('details');
+  });
+
+  it('keeps a successful legacy result even when internal result validation fails', async () => {
+    const value = { globalDefaults: false, workspaces: 0, chats: -1 };
+    mockRewriteMcpServerRefs.mockResolvedValueOnce(value);
+    await expect(
+      getHandler(MCP_SERVER_CHANNELS.REWRITE_REFS)(
+        {},
+        {
+          from: [{ serverId: 'aaa' }],
+          to: { serverId: 'bbb', configId: 'cfg' },
+        },
+      ),
+    ).resolves.toBe(value);
+    expect(mockRewriteMcpServerRefs).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not misclassify an unexpected parser failure as invalid input', async () => {
+    const error = new Error('unexpected getter');
+    const input = {
+      get from(): never {
+        throw error;
+      },
+    };
+    expect(await rewriteMcpServerRefsOutcome(input)).toMatchObject({
+      ok: false,
+      legacyError: error,
+      error: { kind: 'internal' },
+    });
+    expect(mockRewriteMcpServerRefs).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ from: [], to: { serverId: 'a', configId: 'b' } }, 'invalidRef'],
+    [
+      {
+        from: [{ serverId: 'aaa' }],
+        to: { serverId: 'bbb', configId: 'b' },
+        retire: { serverId: 'ccc', fingerprint: 'x' },
+      },
+      'retireNotRewritten',
+    ],
+  ])('represents invalid input without effects', async (request, code) => {
+    expect(await rewriteMcpServerRefsOutcome(request)).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'invalid_argument',
+        code: `core.catalog.mcpServer.${code}`,
+        details: { phase: 'validation', effects: 'none' },
+        retry: { kind: 'never' },
+      },
+    });
+    expect(mockRewriteMcpServerRefs).not.toHaveBeenCalled();
+  });
+
   describe('retiring the device server the refs moved off (REG-3052)', () => {
     const deviceId = 'aaa-bbb-111';
     const request = {
@@ -2915,11 +3396,11 @@ describe('account connection IPC validation', (): void => {
       mockedUnlink.mockResolvedValue(undefined);
       mockedReadFile.mockImplementation(
         (path): Promise<string> =>
-          Promise.resolve(
-            typeof path === 'string' && path.includes('index.json')
-              ? makeIndexFileJson([])
-              : makeServerFileJson(onDisk),
-          ),
+          path === MOCK_INDEX_PATH
+            ? Promise.resolve(makeIndexFileJson([]))
+            : path === mockServerPath(deviceId)
+              ? Promise.resolve(makeServerFileJson(onDisk))
+              : missingFile(),
       );
     });
 
@@ -2951,6 +3432,225 @@ describe('account connection IPC validation', (): void => {
       expect(mockRewriteMcpServerRefs.mock.invocationCallOrder[0]).toBeLessThan(
         mockedUnlink.mock.invocationCallOrder[0],
       );
+    });
+
+    it('preserves rewritten counters when the second retirement guard declines removal', async () => {
+      const expected = await fingerprint();
+      mockRewriteMcpServerRefs.mockImplementationOnce(() => {
+        onDisk = {
+          ...onDisk,
+          configs: [...onDisk.configs, makeConfig({ id: 'cfg-b' })],
+        };
+        return Promise.resolve({
+          globalDefaults: true,
+          workspaces: 1,
+          chats: 2,
+        });
+      });
+      expect(
+        await rewriteMcpServerRefsOutcome({
+          ...request,
+          retire: { serverId: deviceId, fingerprint: expected },
+        }),
+      ).toEqual({
+        ok: true,
+        value: {
+          globalDefaults: true,
+          workspaces: 1,
+          chats: 2,
+          retired: 'changed',
+        },
+      });
+      expect(mockedUnlink).not.toHaveBeenCalled();
+    });
+
+    it('keeps the existing successful deletion outcome when unlink reports ENOENT', async () => {
+      const expected = await fingerprint();
+      mockedUnlink.mockRejectedValueOnce(
+        Object.assign(new Error('already absent'), { code: 'ENOENT' }),
+      );
+      expect(
+        await rewriteMcpServerRefsOutcome({
+          ...request,
+          retire: { serverId: deviceId, fingerprint: expected },
+        }),
+      ).toMatchObject({
+        ok: true,
+        value: { retired: 'removed' },
+      });
+    });
+
+    it('keeps same-target retirement: zero rewrite counters still allow deletion', async () => {
+      const expected = await fingerprint();
+      mockRewriteMcpServerRefs.mockResolvedValueOnce({
+        globalDefaults: false,
+        workspaces: 0,
+        chats: 0,
+      });
+      const sameTarget = {
+        from: request.from,
+        to: request.from[0],
+        retire: { serverId: deviceId, fingerprint: expected },
+      };
+      await expect(rewriteMcpServerRefsOutcome(sameTarget)).resolves.toEqual({
+        ok: true,
+        value: {
+          globalDefaults: false,
+          workspaces: 0,
+          chats: 0,
+          retired: 'removed',
+        },
+      });
+      expect(mockRewriteMcpServerRefs).toHaveBeenCalledTimes(1);
+      expect(mockedUnlink).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps deletion-read fallback and classifies an unexpected malformed index as internal', async () => {
+      const expected = await fingerprint();
+      let serverReads = 0;
+      mockedReadFile.mockImplementation((path): Promise<string> => {
+        if (path === `/mock/mcp-servers/server-${deviceId}.json`) {
+          serverReads += 1;
+          return serverReads === 3
+            ? Promise.reject(
+                Object.assign(new Error('unreadable server'), { code: 'EIO' }),
+              )
+            : Promise.resolve(makeServerFileJson(onDisk));
+        }
+        return Promise.resolve(
+          JSON.stringify({ version: 1, servers: [{ id: deviceId }] }),
+        );
+      });
+      const outcome = await rewriteMcpServerRefsOutcome({
+        ...request,
+        retire: { serverId: deviceId, fingerprint: expected },
+      });
+      expect(outcome).toMatchObject({
+        ok: false,
+        error: {
+          kind: 'internal',
+          details: { phase: 'retirementRead', effects: 'unknown' },
+        },
+      });
+      expect(mockRewriteMcpServerRefs).toHaveBeenCalledTimes(1);
+      expect(clearMcpOAuthToken).not.toHaveBeenCalled();
+      expect(mockedUnlink).not.toHaveBeenCalled();
+    });
+
+    it.each(['tokenClear', 'serverUnlink', 'indexUpdate'])(
+      'classifies %s failure without replaying the rewrite',
+      async (phase) => {
+        const expected = await fingerprint();
+        const error = Object.assign(new Error('private disk path'), {
+          code: 'EIO',
+        });
+        if (phase === 'tokenClear')
+          jest.mocked(clearMcpOAuthToken).mockRejectedValueOnce(error);
+        if (phase === 'serverUnlink') mockedUnlink.mockRejectedValueOnce(error);
+        if (phase === 'indexUpdate')
+          mockedWriteFile.mockRejectedValueOnce(error);
+        const outcome = await rewriteMcpServerRefsOutcome({
+          ...request,
+          retire: { serverId: deviceId, fingerprint: expected },
+        });
+        expect(outcome).toMatchObject({
+          ok: false,
+          legacyError: error,
+          error: {
+            kind: 'unavailable',
+            code: 'core.catalog.mcpServer.retirementFailed',
+            details: { phase, effects: 'unknown' },
+            retry: { kind: 'never' },
+          },
+        });
+        expect(JSON.stringify(outcome.ok ? null : outcome.error)).not.toContain(
+          'private disk path',
+        );
+        expect(mockRewriteMcpServerRefs).toHaveBeenCalledTimes(1);
+        expect(mockedUnlink).toHaveBeenCalledTimes(
+          phase === 'tokenClear' ? 0 : 1,
+        );
+      },
+    );
+
+    it('classifies an unlink failure queued behind another server save', async () => {
+      const expected = await fingerprint();
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      mockedWriteFile.mockImplementation(async (path) => {
+        if (typeof path === 'string' && path.endsWith('server-bbb-222.json')) {
+          entered.resolve();
+          await release.promise;
+        }
+      });
+      mockedUnlink.mockRejectedValueOnce(
+        Object.assign(new Error('disk'), { code: 'EIO' }),
+      );
+      const otherSave = saveMcpServer(
+        makeServer({ definition: { id: 'bbb-222' } }),
+      );
+      await entered.promise;
+      const outcome = rewriteMcpServerRefsOutcome({
+        ...request,
+        retire: { serverId: deviceId, fingerprint: expected },
+      });
+      try {
+        for (
+          let i = 0;
+          i < 20 && !jest.mocked(clearMcpOAuthToken).mock.calls.length;
+          i += 1
+        )
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(clearMcpOAuthToken).toHaveBeenCalled();
+        expect(mockedUnlink).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+      }
+      await otherSave;
+      expect(await outcome).toMatchObject({
+        ok: false,
+        error: {
+          code: 'core.catalog.mcpServer.retirementFailed',
+          details: { phase: 'serverUnlink' },
+        },
+      });
+    });
+
+    // CAN-4486 A1: the lease stays held until every initiated clear settles.
+    it('returns a rejected token clear only after another initiated clear settles', async () => {
+      onDisk.configs.push(makeConfig({ id: 'cfg-b' }));
+      const expected = await fingerprint();
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      jest
+        .mocked(clearMcpOAuthToken)
+        .mockRejectedValueOnce(
+          Object.assign(new Error('disk'), { code: 'EIO' }),
+        )
+        .mockImplementationOnce(async () => {
+          started.resolve();
+          await release.promise;
+        });
+      let returned = false;
+      const outcome = rewriteMcpServerRefsOutcome({
+        ...request,
+        retire: { serverId: deviceId, fingerprint: expected },
+      }).finally(() => {
+        returned = true;
+      });
+      try {
+        await started.promise;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(returned).toBe(false);
+      } finally {
+        release.resolve();
+      }
+      expect(await outcome).toMatchObject({
+        ok: false,
+        error: { details: { phase: 'tokenClear', effects: 'unknown' } },
+      });
+      expect(mockedUnlink).not.toHaveBeenCalled();
     });
 
     it('moves nothing and keeps the server when its file changed', async (): Promise<void> => {
@@ -3066,10 +3766,12 @@ describe('account connection IPC validation', (): void => {
         ...onDisk,
         definition: { ...onDisk.definition, httpAuthHandler: undefined },
       };
-      jest.mocked(readPreferencesFile).mockResolvedValue({
-        mcpProxyPort: 37645,
-        mcpHttpAuthDefaultHandler: 'provider',
-      });
+      jest.mocked(readPreferencesFile).mockResolvedValue(
+        partialPreferences({
+          mcpProxyPort: 37645,
+          mcpHttpAuthDefaultHandler: 'provider',
+        }),
+      );
       try {
         const expected = await fingerprint();
         await expect(
@@ -3086,7 +3788,7 @@ describe('account connection IPC validation', (): void => {
       } finally {
         jest
           .mocked(readPreferencesFile)
-          .mockResolvedValue({ mcpProxyPort: 37645 });
+          .mockResolvedValue(partialPreferences({ mcpProxyPort: 37645 }));
       }
     });
 

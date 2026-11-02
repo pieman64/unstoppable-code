@@ -18,7 +18,10 @@ const CHAT_INPUT_SOURCE = readFileSync(
 );
 // The trailing send / stop / run control lives in its own component.
 const SEND_BUTTON_SOURCE = readFileSync(
-  join(__dirname, '..', 'ComposerSendButton.tsx'),
+  join(
+    __dirname,
+    '../../../../../../../../packages/ui-shared/src/components/ComposerSendButton.tsx',
+  ),
   'utf8',
 );
 // Its terminal run button is the shared one in ui-shared.
@@ -30,6 +33,7 @@ const TERMINAL_MODE_SOURCE = readFileSync(
   'utf8',
 );
 // So does the scheduled-send chip beside +.
+
 const SCHEDULED_CHIP_SOURCE = readFileSync(
   join(__dirname, '..', 'ScheduledSendChip.tsx'),
   'utf8',
@@ -54,6 +58,7 @@ describe('ChatInput native title attributes', () => {
     expect(nativeButtonTitles(CHAT_INPUT_SOURCE)).toEqual([]);
     expect(nativeButtonTitles(SEND_BUTTON_SOURCE)).toEqual([]);
     expect(nativeButtonTitles(TERMINAL_MODE_SOURCE)).toEqual([]);
+
     expect(nativeButtonTitles(SCHEDULED_CHIP_SOURCE)).toEqual([]);
   });
 
@@ -67,6 +72,7 @@ describe('ChatInput native title attributes', () => {
     expect(TERMINAL_MODE_SOURCE).toContain('Run terminal command');
     expect(TERMINAL_MODE_SOURCE).toMatch(/<Tooltip\b/);
     expect(SEND_BUTTON_SOURCE).toMatch(/<Tooltip\b/);
+
     expect(SCHEDULED_CHIP_SOURCE).toMatch(/<RichHoverTooltip\b/);
     expect(SCHEDULED_CHIP_SOURCE).toContain('Click to change.');
   });

@@ -51,6 +51,6 @@ describe('AppAdvisorQuickPromptModal session-replay privacy', () => {
     expect(
       card?.querySelector('[data-testid="app-advisor-quick-prompt-header"]')
         ?.textContent,
-    ).toBe('App Advisor');
+    ).toBe('Orchestrator');
   });
 });

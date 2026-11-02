@@ -1449,3 +1449,123 @@ test('CAN-3734: a republished legacy code prompt requires Cowork re-selection an
     await closeCanopy(electronApp, userDataDir);
   }
 });
+
+/** A v6 pipeline share that runs at `target` with an inline pipeline. */
+function pipelineTargetFixtureDocument(target, scope) {
+  const rawPipeline = `name: Destination fixture\non: dispatch\nscope: ${scope}\njobs: {}\n`;
+  return {
+    ...fixtureDocument(),
+    version: 6,
+    name: `Pipeline ${target.kind} fixture`,
+    action: {
+      ...fixtureDocument().action,
+      target,
+      pipeline: {
+        source: 'inline',
+        name: 'Destination fixture',
+        rawPipeline,
+        pipelineContentHash: createHash('sha256')
+          .update(rawPipeline)
+          .digest('hex'),
+      },
+      inputKeys: [],
+    },
+  };
+}
+
+test('CAN-4550: a v6 pipeline share with no project installs without a project picker', async () => {
+  const userDataDir = makeUserDataDir();
+  seedAutomationTargetProjects(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openAutomationsPage();
+    await injectFixture(
+      window,
+      pipelineTargetFixtureDocument({ kind: 'global' }, 'global'),
+    );
+    const modal = window.getByTestId('install-shared-automation-modal');
+    await expect(modal).toBeVisible();
+    await expect(modal.getByTestId('install-automation-workspace')).toHaveCount(
+      0,
+    );
+    await expect(
+      modal.getByTestId('install-automation-cowork-project'),
+    ).toHaveCount(0);
+    await expect(modal.getByTestId('install-automation-task')).toHaveCount(0);
+    const submit = modal.getByTestId('install-automation-submit');
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(modal).toBeHidden();
+
+    await expect
+      .poll(() => readPersistedActivitiesIfAny(userDataDir).length)
+      .toBe(1);
+    const [activity] = readPersistedActivities(userDataDir);
+    expect(activity).toMatchObject({
+      enabled: true,
+      action: { type: 'worktree_pipeline', target: { kind: 'global' } },
+      installedFrom: { remoteId: REMOTE_ID, contentHash: NEW_HASH },
+    });
+    expect(activity.action).not.toHaveProperty('workspaceId');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('CAN-4550: a v6 pipeline share for an existing task requires a task before install', async () => {
+  const userDataDir = makeUserDataDir();
+  seedAutomationTargetProjects(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openAutomationsPage();
+    await injectFixture(
+      window,
+      pipelineTargetFixtureDocument({ kind: 'task' }, 'directory'),
+    );
+    const modal = window.getByTestId('install-shared-automation-modal');
+    await expect(modal).toBeVisible();
+    const submit = modal.getByTestId('install-automation-submit');
+    // No task picker until a project is chosen; then it asks for a task.
+    await expect(modal.getByTestId('install-automation-task')).toHaveCount(0);
+    await expect(submit).toBeDisabled();
+    await modal
+      .getByTestId('install-automation-workspace')
+      .selectOption('demo-ts-pnpm-vite');
+    const task = modal.getByTestId('install-automation-task');
+    await expect(task).toBeVisible();
+    await expect(submit).toBeDisabled();
+    await expect(
+      modal.getByTestId('install-automation-submit-reason'),
+    ).toHaveText('Pick a task to run the workflow in.');
+    expect(readPersistedActivitiesIfAny(userDataDir)).toEqual([]);
+
+    await task.click();
+    const options = window.getByRole('listbox').getByRole('option');
+    await expect(options).toHaveCount(1);
+    await options.first().click();
+    await expect(submit).toBeEnabled();
+    await submit.click();
+    await expect(modal).toBeHidden();
+
+    await expect
+      .poll(() => readPersistedActivitiesIfAny(userDataDir).length)
+      .toBe(1);
+    const [activity] = readPersistedActivities(userDataDir);
+    expect(activity).toMatchObject({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'demo-ts-pnpm-vite',
+        target: { kind: 'task', taskId: 'demo-main' },
+      },
+      installedFrom: { remoteId: REMOTE_ID, contentHash: NEW_HASH },
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});

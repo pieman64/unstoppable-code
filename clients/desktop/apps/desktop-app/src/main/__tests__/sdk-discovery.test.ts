@@ -39,10 +39,14 @@ const mockInterrupt = jest.fn();
 const mockSpawnClaudeCodeProcessOffMain = jest.fn();
 
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: mockQuery,
+  get query(): typeof mockQuery {
+    return mockQuery;
+  },
 }));
 jest.mock('../agents/claude-process-host-runner', () => ({
-  spawnClaudeCodeProcessOffMain: mockSpawnClaudeCodeProcessOffMain,
+  get spawnClaudeCodeProcessOffMain(): typeof mockSpawnClaudeCodeProcessOffMain {
+    return mockSpawnClaudeCodeProcessOffMain;
+  },
 }));
 // Local memory is opt-in (CAN-1969); resolve synchronously (no fs I/O).
 // Default off; individual tests flip the mock to assert suppression.

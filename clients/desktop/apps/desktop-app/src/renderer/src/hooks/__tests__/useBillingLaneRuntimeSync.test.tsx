@@ -18,10 +18,26 @@ import {
   getRendererGuestPrincipal,
   isRendererGuestPrincipalHydrated,
   getRendererBillingLaneFactsVersion,
+  getRendererCodexAccountModels,
   resetRendererBillingLaneForTests,
   subscribeRendererBillingLaneFacts,
 } from '@/stores/billingLaneRuntime';
-import { useBillingLaneRuntimeSync } from '../useBillingLaneRuntimeSync';
+import {
+  CODEX_ACCOUNT_MODELS,
+  clearCodexAccountModels,
+} from '@canopy/desktop-shared/types';
+import type {
+  CodexSpeedCatalog,
+  CodexSpeedCatalogModel,
+} from '@canopy/desktop-shared/types/codex-speed-capabilities';
+import {
+  resetCodexSpeedStoreForTests,
+  useCodexSpeedStore,
+} from '@/stores/codexSpeedStore';
+import {
+  codexAccountModelIdsFromCatalog,
+  useBillingLaneRuntimeSync,
+} from '../useBillingLaneRuntimeSync';
 import { invalidateClaudeAuthStatusCache } from '../useClaudeAuthStatus';
 import { invalidateCodexAuthStatusCache } from '../useCodexAuthStatus';
 import { invalidateAiCreditsAvailabilityCache } from '../useAiCreditsAvailability';
@@ -56,6 +72,15 @@ const proxyWithClaudeAccount: AccountProxyStatus = {
   routeClaude: true,
   routeCodex: true,
   refreshedAt: 1,
+  local: {
+    phase: 'not-installed',
+    version: null,
+    install: null,
+    port: null,
+    startWithApp: true,
+    message: null,
+  },
+  signIn: null,
 };
 
 const syncActiveEmptyTabToDefaults = jest.fn(() => Promise.resolve());
@@ -482,6 +507,222 @@ describe('useBillingLaneRuntimeSync', () => {
       signIn({ access: 'unlocked', guest: true });
       await mountAndSettle();
       expect(getRendererGuestPrincipal()).toBe(true);
+    });
+  });
+
+  describe('Codex account models (CAN-4716)', () => {
+    function catalogModel(
+      id: string,
+      extra: Partial<CodexSpeedCatalogModel> = {},
+    ): CodexSpeedCatalogModel {
+      return { id, model: id, tiers: null, source: 'unknown', ...extra };
+    }
+
+    function readyCatalog(
+      models: CodexSpeedCatalogModel[],
+      generation = 1,
+    ): CodexSpeedCatalog {
+      return {
+        generation,
+        status: 'ready',
+        fetchedAt: 1,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+        truncated: false,
+        models,
+        denials: [],
+      };
+    }
+
+    let pushCatalog: (catalog: CodexSpeedCatalog) => void = () => undefined;
+    const readCapabilities = jest.fn<Promise<CodexSpeedCatalog>, []>();
+
+    beforeEach(() => {
+      resetCodexSpeedStoreForTests();
+      readCapabilities.mockResolvedValue(
+        readyCatalog([
+          catalogModel('codex-luna'),
+          catalogModel('codex-hidden', { hidden: true }),
+          catalogModel('acct-only', { displayName: 'Account only' }),
+        ]),
+      );
+      Object.assign(window.api, {
+        codexSpeed: {
+          readCapabilities,
+          setActive: jest.fn(() => Promise.resolve()),
+          onChanged: (
+            listener: (catalog: CodexSpeedCatalog) => void,
+          ): (() => void) => {
+            pushCatalog = listener;
+            return (): void => {
+              pushCatalog = (): void => undefined;
+            };
+          },
+        },
+      });
+    });
+
+    afterEach(() => {
+      act(() => {
+        resetCodexSpeedStoreForTests();
+      });
+      clearCodexAccountModels();
+    });
+
+    it('builds the id set from non-hidden entries only', () => {
+      expect(codexAccountModelIdsFromCatalog(null)).toBeNull();
+      expect(
+        codexAccountModelIdsFromCatalog(
+          readyCatalog([catalogModel('only-hidden', { hidden: true })]),
+        ),
+      ).toBeNull();
+      expect(
+        codexAccountModelIdsFromCatalog({
+          ...readyCatalog([catalogModel('a')]),
+          status: 'unknown',
+        }),
+      ).toBeNull();
+      expect(
+        codexAccountModelIdsFromCatalog({
+          ...readyCatalog([catalogModel('a')]),
+          truncated: true,
+        }),
+      ).toBeNull();
+      expect(
+        codexAccountModelIdsFromCatalog(
+          readyCatalog([
+            { ...catalogModel('slug'), id: 'entry-id' },
+            catalogModel('hidden', { hidden: true }),
+          ]),
+        ),
+      ).toEqual(new Set(['entry-id', 'slug']));
+    });
+
+    it('never reads the account list while Codex is signed out', async () => {
+      await mount();
+
+      expect(readCapabilities).not.toHaveBeenCalled();
+      expect(getRendererCodexAccountModels()).toBeNull();
+    });
+
+    it('reads once on sign-in, registers account-only models, and re-stamps', async () => {
+      getCodexAuthStatusMock.mockResolvedValue(signedIn('codex@example.com'));
+      await mount();
+      await act(async () => {
+        await flushAsyncEffects();
+      });
+
+      expect(readCapabilities).toHaveBeenCalledTimes(1);
+      expect(getRendererCodexAccountModels()).toEqual(
+        new Set(['codex-luna', 'acct-only']),
+      );
+      expect(CODEX_ACCOUNT_MODELS).toContain('acct-only');
+      expect(CODEX_ACCOUNT_MODELS).not.toContain('codex-hidden');
+      expect(syncActiveEmptyTabToDefaults).toHaveBeenCalled();
+    });
+
+    it('clears the list and account-only models when main reports unknown', async () => {
+      getCodexAuthStatusMock.mockResolvedValue(signedIn('codex@example.com'));
+      await mount();
+      await act(async () => {
+        await flushAsyncEffects();
+      });
+      expect(CODEX_ACCOUNT_MODELS).toContain('acct-only');
+      syncActiveEmptyTabToDefaults.mockClear();
+
+      await act(async () => {
+        pushCatalog({
+          ...readyCatalog([], 2),
+          status: 'unknown',
+          fetchedAt: null,
+          expiresAt: null,
+        });
+        await flushAsyncEffects();
+      });
+
+      expect(getRendererCodexAccountModels()).toBeNull();
+      expect(CODEX_ACCOUNT_MODELS).toEqual([]);
+      expect(syncActiveEmptyTabToDefaults).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a catalog mirrored before this sign-in until its own read settles', async () => {
+      // A previous account's list is still mirrored (its invalidation was
+      // missed while signed out).
+      act(() => {
+        useCodexSpeedStore
+          .getState()
+          .applyCatalog(readyCatalog([catalogModel('old-account-only')]));
+      });
+      let settle: (catalog: CodexSpeedCatalog) => void = () => undefined;
+      readCapabilities.mockReturnValueOnce(
+        new Promise<CodexSpeedCatalog>((resolve) => {
+          settle = resolve;
+        }),
+      );
+      getCodexAuthStatusMock.mockResolvedValue(signedIn('codex@example.com'));
+      await mount();
+      await act(async () => {
+        await flushAsyncEffects();
+      });
+
+      expect(readCapabilities).toHaveBeenCalledTimes(1);
+      expect(getRendererCodexAccountModels()).toBeNull();
+      expect(CODEX_ACCOUNT_MODELS).toEqual([]);
+
+      await act(async () => {
+        settle(readyCatalog([catalogModel('acct-only')], 2));
+        await flushAsyncEffects();
+      });
+      expect(getRendererCodexAccountModels()).toEqual(new Set(['acct-only']));
+      expect(CODEX_ACCOUNT_MODELS).toEqual(['acct-only']);
+    });
+
+    it('registers no account-only models from a truncated catalog', async () => {
+      readCapabilities.mockResolvedValue({
+        ...readyCatalog([catalogModel('acct-only')]),
+        truncated: true,
+      });
+      getCodexAuthStatusMock.mockResolvedValue(signedIn('codex@example.com'));
+      await mount();
+      await act(async () => {
+        await flushAsyncEffects();
+      });
+
+      expect(getRendererCodexAccountModels()).toBeNull();
+      expect(CODEX_ACCOUNT_MODELS).toEqual([]);
+    });
+
+    it('reads again once per new account generation while signed in', async () => {
+      getCodexAuthStatusMock.mockResolvedValue(signedIn('codex@example.com'));
+      await mount();
+      await act(async () => {
+        await flushAsyncEffects();
+      });
+      expect(readCapabilities).toHaveBeenCalledTimes(1);
+
+      // An in-session invalidation (account updated, runtime replaced).
+      readCapabilities.mockResolvedValueOnce(
+        readyCatalog([catalogModel('codex-luna')], 2),
+      );
+      const unknownCatalog = (generation: number): CodexSpeedCatalog => ({
+        ...readyCatalog([], generation),
+        status: 'unknown',
+        fetchedAt: null,
+        expiresAt: null,
+      });
+      await act(async () => {
+        pushCatalog(unknownCatalog(2));
+        await flushAsyncEffects();
+      });
+
+      expect(readCapabilities).toHaveBeenCalledTimes(2);
+      expect(getRendererCodexAccountModels()).toEqual(new Set(['codex-luna']));
+
+      // A failed read in the same generation does not read again.
+      await act(async () => {
+        pushCatalog({ ...unknownCatalog(2), fetchedAt: 5 });
+        await flushAsyncEffects();
+      });
+      expect(readCapabilities).toHaveBeenCalledTimes(2);
     });
   });
 });

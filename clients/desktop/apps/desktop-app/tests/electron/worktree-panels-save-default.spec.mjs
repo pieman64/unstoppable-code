@@ -54,15 +54,10 @@ test('save layout as default persists a templatized default file', async () => {
 
     // Activity cards bind stable section ids, so they are portable across code
     // worktrees and must survive the default-layout transform.
-    // #2441 (dea4ad40cd) split the affordance: `panel-add-panel-${groupId}`
-    // owns the panel catalog, while the `+` `panel-add-tab-${groupId}`
-    // control creates a chat directly (PanelGridSurface
-    // `onAddTabClick: handleAddChatTab`). That commit updated
-    // worktree-panels-tabs and browser-chrome but missed this spec, so the
-    // old `+` click opened no menu at all.
+    // The graduated tab-strip + opens the shared panel catalog.
     for (const sectionId of ['pull-request', 'pipeline-runs']) {
       await window
-        .getByTestId(`panel-add-panel-${DEFAULT_GROUP_IDS.activity}`)
+        .getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.activity}`)
         .click();
       await expect(window.getByTestId('panel-add-menu')).toBeVisible();
       await window

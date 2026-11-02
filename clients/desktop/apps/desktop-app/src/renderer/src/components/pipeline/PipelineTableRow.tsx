@@ -1,4 +1,4 @@
-import { type JSX, useId, useState } from 'react';
+import { type JSX, useState } from 'react';
 import type {
   PipelineExecutionScope,
   PipelineInfo,
@@ -28,7 +28,11 @@ import { readPipelineInfoScopes } from '@/lib/pipelineExecutionScope';
 import { resolveSharedPipelineUrl } from '@/lib/share-links';
 import { pipelineSharePath } from '@canopy/protocol/pipelines';
 import { useClipboardCopy } from '@/hooks/useClipboardCopy';
-import { TableActionButton, TableActionsCell } from '@canopy/ui-shared';
+import {
+  ActionTooltip,
+  TableActionButton,
+  TableActionsCell,
+} from '@canopy/ui-shared';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 
 function ExecutionScopeBadge({
@@ -37,33 +41,17 @@ function ExecutionScopeBadge({
   scope: PipelineExecutionScope;
 }): JSX.Element {
   const meta = PIPELINE_EXECUTION_SCOPE_META[scope];
-  const tooltipId = useId();
 
   return (
-    <span className="relative inline-flex group/scope">
+    <ActionTooltip title={meta.label} description={meta.description}>
       <button
         type="button"
-        aria-describedby={tooltipId}
         aria-label={`${meta.label}: ${meta.description}`}
         className={`focus-ring ${PIPELINE_EXECUTION_SCOPE_BADGE_CLASS}`}
       >
         {meta.label}
       </button>
-      <span
-        id={tooltipId}
-        role="tooltip"
-        className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5
-          hidden group-hover/scope:flex group-focus-within/scope:flex flex-col items-center
-          w-max max-w-48 px-2.5 py-1.5 rounded-md
-          bg-popover shadow-tooltip fg-primary
-          z-dropdown"
-      >
-        <span className="text-2xs font-medium leading-tight">{meta.label}</span>
-        <span className="text-3xs fg-secondary leading-snug mt-0.5">
-          {meta.description}
-        </span>
-      </span>
-    </span>
+    </ActionTooltip>
   );
 }
 
@@ -258,13 +246,13 @@ export function PipelineTableRow({
           }}
         >
           {/* The accessible name states the action the next click performs
-              ("Disable pipeline" while enabled), so `aria-pressed` is
+              ("Disable workflow" while enabled), so `aria-pressed` is
               deliberately NOT set here: pairing a state-flipping name with a
-              pressed state announces "Disable pipeline, toggle button, pressed",
+              pressed state announces "Disable workflow, toggle button, pressed",
               which contradicts itself. Use `ariaPressed` on this primitive only
               with a name that stays constant across states. */}
           <TableActionButton
-            label={enabled ? 'Disable pipeline' : 'Enable pipeline'}
+            label={enabled ? 'Disable workflow' : 'Enable workflow'}
             onClick={(): void => {
               void handleToggleEnabled();
             }}

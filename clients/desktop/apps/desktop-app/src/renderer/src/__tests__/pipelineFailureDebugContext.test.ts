@@ -49,6 +49,7 @@ function createState(): ExecutionState {
     pipeline_id: 'pipeline-debug',
     pipeline_snapshot: {
       name: 'Debug Pipeline',
+      scope: ['directory'],
       jobs: {
         build: {
           name: 'Build job',

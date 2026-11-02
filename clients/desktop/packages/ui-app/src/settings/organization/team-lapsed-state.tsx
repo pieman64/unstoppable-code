@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import { EmptyState } from '@canopy/ui-shared/components';
+import { EmptyState, buttonClassName } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import type { OrgTeamsLapseReason } from '@canopy/protocol/settings';
 import { formatPlanDateUtc } from '@canopy/protocol/settings/plan-display';
@@ -112,7 +112,10 @@ export function TeamLapsedState({
             <SettingsLink
               href={organizationBillingPath(orgId)}
               data-testid="team-lapsed-billing-cta"
-              className="shrink-0 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary"
+              className={buttonClassName({
+                variant: 'secondary',
+                size: 'compact',
+              })}
             >
               Go to billing
             </SettingsLink>

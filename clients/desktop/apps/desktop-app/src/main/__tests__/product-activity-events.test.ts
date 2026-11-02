@@ -16,7 +16,11 @@ const resolveCredentialsMock = jest.fn<
 const getVersionMock = jest.fn<string, []>();
 
 jest.mock('electron', () => ({
-  app: { getVersion: getVersionMock },
+  app: {
+    get getVersion(): typeof getVersionMock {
+      return getVersionMock;
+    },
+  },
 }));
 
 jest.mock('../canopy-cloud/client', () => {
@@ -25,8 +29,12 @@ jest.mock('../canopy-cloud/client', () => {
   );
   return {
     CanopyCloudClientError: actual.CanopyCloudClientError,
-    requestCanopyCloudJson: requestJsonMock,
-    resolveCanopyCloudCredentialContext: resolveCredentialsMock,
+    get requestCanopyCloudJson(): typeof requestJsonMock {
+      return requestJsonMock;
+    },
+    get resolveCanopyCloudCredentialContext(): typeof resolveCredentialsMock {
+      return resolveCredentialsMock;
+    },
   };
 });
 

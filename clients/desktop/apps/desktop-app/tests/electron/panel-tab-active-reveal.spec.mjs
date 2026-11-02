@@ -1,12 +1,9 @@
 // PR #2447 — active panel tabs remain visible without forcing fitting-strip
 // rectangle measurements.
 //
-// The performance change skips expensive tab/strip getBoundingClientRect()
-// reads when the strip fits. Its overflow state is observer-backed, so the
-// regression fix also checks current scroll metrics synchronously before a
-// reveal. This spec creates enough chat tabs through the real add-tab control to
-// overflow a group, switches between the first and last tabs through the E2E
-// panel API, and asserts both are revealed.
+// Filled tabs shrink to 96px, then scroll to keep the active tab visible.
+// Create multiple chats through the Add menu, then switch between the first
+// and last tabs and assert that the active tab stays inside the strip.
 //
 // Run after building the corresponding implementation:
 //   pnpm run test:electron:built panel-tab-active-reveal.spec.mjs --reporter=line
@@ -45,7 +42,7 @@ async function expectTabWithinStrip(strip, tab) {
     .toBe(true);
 }
 
-test('active tab is revealed across an overflowing panel strip', async () => {
+test('first and last active tabs stay visible in the filled panel strip', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await seedPanelWorktree();
 
@@ -67,6 +64,7 @@ test('active tab is revealed across an overflowing panel strip', async () => {
 
     for (let index = 0; index < ADDED_CHAT_COUNT; index += 1) {
       await window.getByTestId('panel-add-tab-group-chat').click();
+      await window.getByTestId('panel-add-menu-item-new-chat').click();
       await expect.poll(chatPanelCount).toBe(initialChatPanelCount + index + 1);
     }
 

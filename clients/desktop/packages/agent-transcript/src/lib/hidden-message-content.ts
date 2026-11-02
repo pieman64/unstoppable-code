@@ -36,6 +36,7 @@ const SUBORDINATE_REQUEST_PATTERN =
   /<subordinate_request>([\s\S]*?)<\/subordinate_request>/i;
 const SUBORDINATE_SENDER_PATTERN =
   /A managed subordinate \((.*?)\) requested steering/;
+const DELEGATION_FINISHED_WATCHER_KIND = 'Delegate finished';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -65,6 +66,9 @@ function payloadLabel(
  * payload, so they are named by their label.
  */
 function watcherKind(payload: Record<string, unknown> | undefined): string {
+  if (payload?.['kind'] === 'delegation_finished') {
+    return DELEGATION_FINISHED_WATCHER_KIND;
+  }
   const target = payload?.['target'];
   if (isRecord(target) && target['kind'] === 'managed_delegation') {
     return target['outcome'] === 'timeout'

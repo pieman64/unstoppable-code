@@ -712,9 +712,9 @@ describe('TeamModelPolicySection', () => {
 
     billingFailure = false;
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
-    await clickEl(retry ?? null, 'Retry');
+    await clickEl(retry ?? null, 'Try again');
 
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(find('enforce-member-model-policy-checkbox')).not.toBeNull();

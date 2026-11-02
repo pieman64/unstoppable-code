@@ -1,13 +1,21 @@
 import { recordAutomationCreatedProject } from '@/stores/automationInstallContinuationStore';
-import { useHomeComposerStore } from '@/stores/homeComposerStore';
+import {
+  useHomeComposerStore,
+  type HomeWorkspaceSelectionReason,
+} from '@/stores/homeComposerStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 
 export function navigateAfterRepositoryWorkspaceCreated(
   workspaceId: string,
+  reason?: HomeWorkspaceSelectionReason,
 ): void {
   const homeComposer = useHomeComposerStore.getState();
-  homeComposer.selectWorkspace(workspaceId);
+  if (reason) {
+    homeComposer.selectWorkspace(workspaceId, { reason });
+  } else {
+    homeComposer.selectWorkspace(workspaceId);
+  }
   if (homeComposer.pendingCreateFromReference) {
     return;
   }

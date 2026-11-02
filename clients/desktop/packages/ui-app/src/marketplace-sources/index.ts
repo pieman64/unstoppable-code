@@ -6,3 +6,4 @@ export * from './MarketplaceSourcesList';
 export * from './MarketplaceSourceDetail';
 export * from './MarketplaceSourceStatusNotice';
 export * from './MarketplaceSourceRemoveDialog';
+export * from './MarketplaceSourceAddDialog';

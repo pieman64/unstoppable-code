@@ -58,7 +58,7 @@ function readModels(metadata: Record<string, unknown>, file: string): string[] {
     )
   ) {
     return fail(
-      'Use single-line provider models or pipeline aliases, not raw agent_model_ IDs',
+      'Use single-line provider models or workflow aliases, not raw agent_model_ IDs',
     );
   }
   return models.map((model) => model.trim());

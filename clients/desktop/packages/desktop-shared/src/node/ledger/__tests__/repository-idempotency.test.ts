@@ -7,6 +7,8 @@ import type {
 
 import {
   AUTHORITY_ID,
+  PERSONAL_OWNER,
+  readGlobalBindings,
   worktreeContainer,
   addInput,
   captureLedgerError,
@@ -271,6 +273,48 @@ describe('LedgerRepository idempotency and atomicity (T06)', () => {
       }),
     );
     expect(context.repository.getStorageCounts()).toEqual(counts);
+  });
+
+  it('rolls back a failed global binding completely, binding nothing', () => {
+    const counts = context.repository.getStorageCounts();
+    context.faults.failNext('bindGlobalScope');
+    expect(
+      captureLedgerError(() =>
+        context.repository.bindGlobalScope({
+          authorityId: AUTHORITY_ID,
+          owner: PERSONAL_OWNER,
+          accountId: 'account-1',
+        }),
+      ).reason,
+    ).toBe('STORAGE_UNAVAILABLE');
+    expect(context.repository.getStorageCounts()).toEqual(counts);
+    expect(
+      context.repository.findGlobalScope({
+        owner: PERSONAL_OWNER,
+        accountId: 'account-1',
+      }),
+    ).toBeNull();
+
+    // The next attempt mints the one binding, with its registration event.
+    const bound = context.repository.bindGlobalScope({
+      authorityId: AUTHORITY_ID,
+      owner: PERSONAL_OWNER,
+      accountId: 'account-1',
+    });
+    expect(bound.created).toBe(true);
+    expect(context.repository.getStorageCounts()).toEqual({
+      ...counts,
+      scopes: counts.scopes + 1,
+      outbox: counts.outbox + 1,
+    });
+    context.repository.close();
+    expect(readGlobalBindings(context.databasePath)).toEqual([
+      {
+        ownerKey: 'personal',
+        accountKey: 'account:account-1',
+        ledgerId: bound.scope.scope.ledgerId,
+      },
+    ]);
   });
 
   it('writes one contiguous outbox event per accepted change', () => {

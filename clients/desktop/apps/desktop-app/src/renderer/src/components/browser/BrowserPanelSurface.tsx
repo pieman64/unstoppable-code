@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared';
 import { LoadingSpinner } from '@/components/shared/loading';
 import {
   forgetWarmBrowserWorktree,
@@ -17,7 +18,7 @@ import { ensureLabsExperimentsSubscription } from '@/stores/labsExperimentsStore
 import { useSurfaceFindStore } from '@/stores/surfaceFindStore';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { BrowserPane } from './BrowserPane';
-import { RefreshIcon } from './icons';
+import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 export interface BrowserPanelSurfaceProps {
   projectId: string;
@@ -174,15 +175,16 @@ export function BrowserPanelSurface({
       >
         <div className="font-medium fg-primary">Unable to open Browser</div>
         <div>Browser state could not be restored.</div>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
+          className="mt-1"
           onClick={handleRetry}
           disabled={retrying}
-          className="mt-1 flex items-center gap-1 rounded border bg-base/50 px-2 py-1 text-xs fg-primary hover:bg-base disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <RefreshIcon />
+          <RefreshIcon size={14} />
           Retry
-        </button>
+        </Button>
       </div>
     );
   } else if (snapshot !== undefined) {

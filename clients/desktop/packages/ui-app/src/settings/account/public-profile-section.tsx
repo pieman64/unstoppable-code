@@ -1,5 +1,10 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
+import {
+  Button,
+  buttonClassName,
+  SettingsSelect,
+  ToggleSwitch,
+} from '@canopy/ui-shared/components';
 
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import {
@@ -7,7 +12,6 @@ import {
   ExternalLink,
   Globe,
   Pencil,
-  Sparkles,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   PROFILE_PUBLIC_PATH,
@@ -46,44 +50,6 @@ interface PublicProfileSectionProps {
   displayName: string;
   /** Signed-in user's avatar URL, or null for an initial placeholder. */
   avatarUrl: string | null;
-}
-
-/** Accessible on/off switch matching the app's toggle pattern. */
-function ToggleSwitch({
-  checked,
-  disabled,
-  label,
-  onChange,
-  dataTestId,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  label: string;
-  onChange: (next: boolean) => void;
-  dataTestId?: string;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      data-testid={dataTestId}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-        checked
-          ? 'bg-accent hover:bg-accent/90'
-          : 'bg-fg-secondary/30 hover:bg-fg-secondary/45'
-      }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-card shadow-sm transition-transform ${
-          checked ? 'translate-x-6' : 'translate-x-1'
-        }`}
-      />
-    </button>
-  );
 }
 
 /** Editable draft of the profile form fields, diffed against saved settings. */
@@ -262,14 +228,14 @@ export function PublicProfileSection({
       className="flex flex-col gap-6"
       data-testid="account-public-profile-section"
     >
-      {/* Text action above the card, right-aligned (MUI text-button style).
-          Hidden with the rest of the editor while unpublished — the public page
-          is unreachable in that state. */}
+      {/* The capsule link above the card, right-aligned. Hidden with the rest
+          of the editor while unpublished — the public page is unreachable in
+          that state. */}
       {enabled && (
         <div className="-mb-3 flex justify-end">
           <SettingsLink
             href={PROFILE_PUBLIC_PATH(claimedUsername)}
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-s font-medium fg-accent transition-colors hover:bg-secondary"
+            className={buttonClassName({ size: 'compact' })}
             data-testid="public-profile-view-link"
           >
             <ExternalLink size={14} aria-hidden="true" />
@@ -283,7 +249,6 @@ export function PublicProfileSection({
           Titled "Basic info" rather than "Public profile" — the page header above
           already says Public profile, so repeating it here says nothing. */}
       <SettingsCard
-        icon={<Globe size={18} />}
         title="Basic info"
         subtitle="Your name, picture, and handle as they appear to anyone who visits your profile."
         testId="public-profile-header-card"
@@ -328,16 +293,17 @@ export function PublicProfileSection({
                   >
                     @{claimedUsername}
                   </span>
-                  <button
-                    type="button"
+                  <Button
+                    size="compact"
+                    variant="ghost"
+                    iconOnly
                     onClick={() => setShowUsernameEdit(true)}
                     aria-label="Change username"
                     title="Change username"
-                    className="shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
                     data-testid="public-profile-change-username"
                   >
-                    <Pencil size={13} aria-hidden="true" />
-                  </button>
+                    <Pencil size={14} aria-hidden="true" />
+                  </Button>
                 </p>
               )}
             </div>
@@ -378,7 +344,6 @@ export function PublicProfileSection({
               content" names what the card holds; "Edit profile" restated the
               tab. */}
           <SettingsCard
-            icon={<Pencil size={18} />}
             title="Shared content"
             subtitle="Your bio, links, and other content visitors can see."
             testId="public-profile-edit-card"
@@ -405,7 +370,7 @@ export function PublicProfileSection({
                   }
                   rows={3}
                   placeholder="Tell people what you build."
-                  className="rounded-md border bg-card px-3 py-2 text-s fg-primary transition focus:border-line-accent/50 focus:outline-none focus:ring-1 focus:ring-line-accent/30"
+                  className="rounded-md border bg-card px-3 py-2 text-s fg-primary transition-colors focus:border-line-accent/50 focus:outline-none focus:ring-1 focus:ring-line-accent/30"
                   data-testid="public-profile-bio-input"
                 />
                 <span className="self-end text-xs fg-secondary">
@@ -458,15 +423,14 @@ export function PublicProfileSection({
                     Saved
                   </span>
                 )}
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={() => void saveDraft()}
                   disabled={!dirty || editor.busy}
-                  className="rounded-md bg-accent px-4 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   data-testid="public-profile-save"
                 >
                   {editor.busy ? 'Saving…' : 'Save changes'}
-                </button>
+                </Button>
               </div>
             </div>
           </SettingsCard>
@@ -474,9 +438,8 @@ export function PublicProfileSection({
           {/* Featured work: published-only listing + search picker (scales to
           thousands of sources — see PublishedArtifactsManager). */}
           <SettingsCard
-            icon={<Sparkles size={18} />}
             title="Featured work"
-            subtitle="Skills, runs, plans, and pipelines you choose to showcase. Each is a point-in-time snapshot."
+            subtitle="Skills, runs, plans, and workflows you choose to showcase. Each is a point-in-time snapshot."
             testId="public-profile-featured-card"
           >
             <PublishedArtifactsManager />
@@ -577,7 +540,7 @@ function UsernameField({
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           {/* The "@" is a read-only prefix inside the field; the wrapper carries
               the border/background/focus ring and the input sits borderless. */}
-          <div className="flex items-center rounded-md border bg-card px-3 transition focus-within:border-line-accent/50 focus-within:ring-1 focus-within:ring-line-accent/30">
+          <div className="flex items-center rounded-md border bg-card px-3 transition-colors focus-within:border-line-accent/50 focus-within:ring-1 focus-within:ring-line-accent/30">
             <span
               className="select-none text-s fg-secondary"
               aria-hidden="true"
@@ -618,24 +581,22 @@ function UsernameField({
               </p>
             )}
         </div>
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={() => onClaim(value)}
           disabled={!canClaim}
-          className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           data-testid="public-profile-username-claim"
         >
           {ctaLabel ?? (currentUsername ? 'Change' : 'Claim')}
-        </button>
+        </Button>
         {onCancel && (
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onCancel}
-            className="rounded-md px-2 py-2 text-s font-medium fg-secondary transition-colors hover:fg-primary"
             data-testid="public-profile-username-cancel"
           >
             Cancel
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -686,15 +647,14 @@ function SocialLinksField({
                   <span className="sr-only">{meta.label}</span>
                   <span className="truncate">{link.url}</span>
                 </span>
-                <button
-                  type="button"
+                <Button
+                  size="compact"
                   onClick={() =>
                     onChange(links.filter((l) => l.platform !== link.platform))
                   }
-                  className="shrink-0 text-xs fg-secondary hover:fg-destructive"
                 >
                   Remove
-                </button>
+                </Button>
               </li>
             );
           })}
@@ -703,23 +663,20 @@ function SocialLinksField({
       {links.length < PUBLIC_PROFILE_MAX_LINKS &&
         availablePlatforms.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
-            <SettingsControlSelect
-              value={platform}
-              onChange={(e) => {
-                const next = e.target.value;
+            <SettingsSelect
+              value={platform || null}
+              placeholder="Platform…"
+              onValueChange={(next) => {
                 setPlatform(
                   PROFILE_SOCIAL_PLATFORMS.find((p) => p === next) ?? '',
                 );
               }}
               aria-label="Link platform"
-            >
-              <option value="">Platform…</option>
-              {availablePlatforms.map((p) => (
-                <option key={p} value={p}>
-                  {platformMeta(p).label}
-                </option>
-              ))}
-            </SettingsControlSelect>
+              options={availablePlatforms.map((p) => ({
+                value: p,
+                label: platformMeta(p).label,
+              }))}
+            />
             <input
               type="url"
               value={url}
@@ -728,14 +685,13 @@ function SocialLinksField({
               className="min-w-0 flex-1 rounded-md border bg-card px-3 py-2 text-s fg-primary"
               aria-label="Link URL"
             />
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={addLink}
               disabled={!platform || !url}
-              className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:opacity-50"
             >
               Add
-            </button>
+            </Button>
           </div>
         )}
     </div>

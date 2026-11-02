@@ -59,13 +59,10 @@ jest.mock('../lib/code-graph-base-store', () => ({
   copyCompatibleCodeGraphBaseForSeed: (): Promise<null> =>
     Promise.resolve(null),
 }));
-jest.mock(
-  '@canopy/desktop-shared/node/code-graph/languages/custom-config',
-  () => ({
-    fingerprintCustomLanguageInputs: (): Promise<unknown> =>
-      Promise.resolve({ value: 'languages' }),
-  }),
-);
+jest.mock('@canopy/code-graph/languages/custom-config', () => ({
+  fingerprintCustomLanguageInputs: (): Promise<unknown> =>
+    Promise.resolve({ value: 'languages' }),
+}));
 jest.mock('@canopy/desktop-shared/node/code-graph/service', () => ({
   getCodeGraphWorktreeService: (): unknown => ({
     withWorktreeClosed: (

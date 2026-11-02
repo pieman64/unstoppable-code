@@ -58,7 +58,9 @@ describe('LabsSettingsSection', () => {
       withPort({ rows: [ROW], error: null, onToggle }),
     );
     const section = container.querySelector('section');
-    expect(section?.className).toContain('rounded-xl');
+    // A text-only heading over a grouped box, not a medallion card.
+    expect(section?.querySelector('h2')).toBeInstanceOf(Element);
+    expect(section?.className).not.toContain('rounded-xl');
     expect(container.textContent).toContain('Clean chat');
     const toggle = container.querySelector<HTMLButtonElement>(
       '[data-testid="labs-experiment-toggle-clean-chat"]',

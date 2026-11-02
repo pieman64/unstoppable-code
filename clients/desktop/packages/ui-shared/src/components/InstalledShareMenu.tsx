@@ -7,6 +7,7 @@ import {
   ActionMenuRowStyle,
   type ActionMenuItem,
 } from './ActionMenuItems';
+import { Button } from './Button';
 import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
 
@@ -104,9 +105,11 @@ export function InstalledShareMenu({
 
   return (
     <div className="relative inline-flex shrink-0">
-      <button
+      <Button
         ref={kebabRef}
-        type="button"
+        variant="secondary"
+        size="lg"
+        iconOnly
         data-testid={ids.kebab}
         aria-label="More actions"
         aria-expanded={open}
@@ -116,10 +119,9 @@ export function InstalledShareMenu({
         onClick={(): void => {
           setOpen((value) => !value);
         }}
-        className="focus-ring inline-flex shrink-0 items-center justify-center rounded-lg border p-2.5 fg-secondary hover:fg-primary hover:bg-secondary disabled:opacity-60"
       >
         <MoreHorizontalIcon width={16} height={16} aria-hidden />
-      </button>
+      </Button>
       <FloatingMenu
         id={menuId}
         open={open}

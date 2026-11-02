@@ -5,22 +5,30 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
+import {
+  injectChatEvent,
+  publishTurnLifecycle,
+  seedWorktreeChat,
+  turnEventInjector,
+} from './seeders/index.mjs';
 
 /**
  * CAN-4274: show only the three most recent agent steps while a turn runs.
  *
- * The setting lives in Settings → Labs, is off by default and does not
- * need Early access. With it on, a running turn's newest run of steps shows
- * its last three steps under the run's summary row; the oldest drops off as a
- * new step arrives. The row opens to every step, live, and closes back to the
- * window. Agent text shows in full and compresses the steps before it; when
- * the turn finishes every run is one compressed row that still opens. Turning
- * the setting off brings back one row per step.
+ * Chat detail "Recent" (Settings → Display → Appearance) is the default. A
+ * running turn's newest run of steps shows its last three steps; with more
+ * than three, a closed line above them counts only the earlier steps, so the
+ * running step is not said twice. The oldest step drops behind the line as a
+ * new one arrives. The line opens to every step, live, and closes back to the
+ * window. Agent text shows in full and folds the steps before it into one
+ * line; when the turn finishes every run is one line that still opens.
+ * Choosing "Detailed" brings back one row per step.
  *
  * Determinism: no live agent and no network. Every provider event goes
  * through the E2E chat-event ingress, which commits through main exactly as a
- * real provider session does.
+ * real provider session does. The turn's start and root-result end are
+ * published as a Claude session's lifecycle receipts, which alone start and
+ * end a canonical root turn (turn-state phase 35c5d).
  */
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
@@ -56,7 +64,7 @@ function results(...ids) {
   };
 }
 
-test('the live step window shows the newest three steps and follows its setting', async () => {
+test('Recent chat detail shows the newest three steps and follows its setting', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-live-step-window-'),
@@ -79,21 +87,19 @@ test('the live step window shows the newest three steps and follows its setting'
 
     const saved = () =>
       window.evaluate(() =>
-        window.api
-          .loadPreferences()
-          .then((prefs) => prefs.chatLiveStepWindowEnabled),
+        window.api.loadPreferences().then((prefs) => prefs.chatDetail),
       );
-    expect(await saved()).toBe(false);
+    expect(await saved()).toBe('recent');
 
-    // Off by default; switching it on saves the preference.
+    // Recent is the default, and Settings shows it chosen.
     await app.openSettings();
-    await app.openSettingsSection('experiments');
-    const toggle = window.getByTestId('chat-live-step-window-toggle');
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
-    await expect(toggle).toBeEnabled();
-    await toggle.click();
-    await expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await expect.poll(saved).toBe(true);
+    await app.openSettingsSection('display');
+    const detailRow = window.getByTestId('settings-chat-detail-row');
+    await detailRow.scrollIntoViewIfNeeded();
+    await expect(detailRow.getByTestId('chat-detail-recent')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
 
     await app.closeSettings();
     await app.openMainPage();
@@ -103,15 +109,13 @@ test('the live step window shows the newest three steps and follows its setting'
     );
     await expect(panel).toBeVisible();
 
-    const inject = (data) =>
-      injectChatEvent(electronApp, {
-        projectId: WORKSPACE_ID,
-        worktreeId: WORKTREE_ID,
-        chatId: CHAT_ID,
-        providerType: 'claude',
-        turnUserMessageId: TURN_ID,
-        data: { ...data, canopy_turn_user_message_id: TURN_ID },
-      });
+    const turn = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CHAT_ID,
+      turnUserMessageId: TURN_ID,
+    };
+    const inject = turnEventInjector(electronApp, turn);
 
     await injectChatEvent(electronApp, {
       projectId: WORKSPACE_ID,
@@ -119,7 +123,7 @@ test('the live step window shows the newest three steps and follows its setting'
       chatId: CHAT_ID,
       data: {
         type: 'claude_terminal_transcript_sync',
-        importedEventCount: 2,
+        importedEventCount: 1,
         messages: [
           {
             id: TURN_ID,
@@ -127,31 +131,30 @@ test('the live step window shows the newest three steps and follows its setting'
             timestamp: TURN_STARTED_AT,
             blocks: [{ type: 'text', text: 'Why is the tooltip stale?' }],
           },
-          {
-            id: `${TURN_ID}-timer`,
-            role: 'system',
-            timestamp: TURN_STARTED_AT + 1_000,
-            blocks: [
-              {
-                type: 'turn_timer',
-                startedAt: TURN_STARTED_AT,
-                completedAt: null,
-              },
-            ],
-          },
         ],
       },
+    });
+    await publishTurnLifecycle(electronApp, {
+      ...turn,
+      phase: 'start',
+      atMs: TURN_STARTED_AT,
     });
     await expect(panel.getByText('Why is the tooltip stale?')).toBeVisible({
       timeout: 30_000,
     });
 
-    const groups = panel.getByTestId('chat-tool-step-group');
+    // Step lines in the transcript; the row under a reply holds the live
+    // "Thinking" line, which is not one of them.
+    const groups = panel.locator(
+      '[data-testid="chat-tool-step-group"]:not([data-testid="turn-timer"] *)',
+    );
     const live = panel.getByTestId('chat-tool-step-live');
     const liveCalls = live.getByTestId('chat-tool-call');
     const callRows = panel.getByTestId('chat-tool-call');
+    const summary = groups.first().getByTestId('chat-tool-step-summary');
 
-    // A thought and two reads in one message: three steps, all shown.
+    // A thought and two reads in one message: three steps, all shown, with
+    // no line above them.
     await inject(
       assistant('step-think-1', [
         { type: 'thinking', thinking: 'The indicator reads a cached value.' },
@@ -164,21 +167,28 @@ test('the live step window shows the newest three steps and follows its setting'
       ]),
     );
     await inject(results('read-1', 'read-2'));
-    await expect(groups).toHaveCount(1);
-    await expect(live.getByText('Thinking')).toBeVisible();
+    await expect(live).toHaveCount(1);
+    // The thought is done once the reads start, so its row says so.
+    await expect(live.getByText('Thought')).toBeVisible();
     await expect(liveCalls).toHaveCount(2);
+    await expect(groups).toHaveCount(0);
 
-    // Each new step drops the oldest one.
+    // Each new step drops the oldest one behind a line that counts only the
+    // steps it holds; the running step is not repeated there.
     await inject(assistant('step-read-3', [readCall('read-3', 'tooltip.ts')]));
+    await expect(groups).toHaveCount(1);
+    await expect(groups.first()).not.toHaveAttribute('data-live', '');
+    await expect(summary).toHaveText('Thought');
     await expect(live.getByText('Thinking')).toHaveCount(0);
     await expect(liveCalls).toHaveCount(3);
     await inject(results('read-3'));
     await inject(assistant('step-read-4', [readCall('read-4', 'cache.ts')]));
     await expect(liveCalls).toHaveCount(3);
+    await expect(summary).toHaveText('Read 1 file');
     await expect(live.getByText('WakeLockIndicator.tsx')).toHaveCount(0);
     await expect(live.getByText('cache.ts')).toBeVisible();
 
-    // The row opens to every step and keeps following the turn.
+    // The line opens to every step and keeps following the turn.
     const row = groups.first().getByRole('button').first();
     await expect(row).toHaveAttribute('aria-expanded', 'false');
     await row.click();
@@ -193,20 +203,18 @@ test('the live step window shows the newest three steps and follows its setting'
     await expect(callRows).toHaveCount(3);
     await inject(results('read-5'));
 
-    // Agent text shows in full and compresses the steps before it.
+    // Agent text shows in full and folds the steps before it into one line.
     const message = 'Let me check where the cache is filled.';
     await inject(assistant('step-text', [{ type: 'text', text: message }]));
     await expect(panel.getByText(message)).toBeVisible();
     await expect(live).toHaveCount(0);
     await expect(callRows).toHaveCount(0);
-    await expect(
-      groups.first().getByTestId('chat-tool-step-summary'),
-    ).toHaveText('Thought, read 5 files');
+    await expect(summary).toHaveText('Read 5 files');
 
-    // A new window starts below the message.
+    // A new window starts below the message, with no line of its own yet.
     await inject(assistant('step-read-6', [readCall('read-6', 'boot.ts')]));
-    await expect(groups).toHaveCount(2);
     await expect(liveCalls).toHaveCount(1);
+    await expect(groups).toHaveCount(1);
     await inject(results('read-6'));
 
     // A provider may emit thinking and text in one source message. Search
@@ -220,7 +228,7 @@ test('the live step window shows the newest three steps and follows its setting'
       ]),
     );
 
-    // Finishing the turn compresses every run; each still opens.
+    // Finishing the turn folds every run into a line; each still opens.
     await inject(
       assistant('step-answer', [
         { type: 'text', text: 'The tooltip is cached on start.' },
@@ -234,9 +242,14 @@ test('the live step window shows the newest three steps and follows its setting'
     await expect(
       panel.getByText('The tooltip is cached on start.'),
     ).toBeVisible();
-    const agentSteps = panel.getByRole('button', { name: /^Agent steps:/ });
+    const agentSteps = panel
+      .getByTestId('turn-work-header')
+      .getByRole('button', { name: /^Agent steps/ });
     await expect(agentSteps).toBeVisible({ timeout: 30_000 });
-    await agentSteps.click();
+    // A turn watched while it ran stays open when it finishes.
+    if ((await agentSteps.getAttribute('aria-expanded')) === 'false') {
+      await agentSteps.click();
+    }
     await expect(groups).toHaveCount(2);
     await expect(live).toHaveCount(0);
     await expect(callRows).toHaveCount(0);
@@ -289,9 +302,9 @@ test('the live step window shows the newest three steps and follows its setting'
     await searchBar.getByRole('textbox').press('Escape');
     await expect(searchBar).toBeHidden();
 
-    // Turning the setting off, from anywhere, brings back one row per step.
+    // Choosing Detailed, from anywhere, brings back one row per step.
     await window.evaluate(() =>
-      window.api.savePreferences({ chatLiveStepWindowEnabled: false }),
+      window.api.savePreferences({ chatDetail: 'detailed' }),
     );
     await expect(groups).toHaveCount(0);
     await expect(callRows).toHaveCount(6);

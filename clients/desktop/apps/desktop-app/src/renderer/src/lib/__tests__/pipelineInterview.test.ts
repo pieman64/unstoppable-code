@@ -39,7 +39,7 @@ describe('startPipelineInterviewChat (CAN-3487)', () => {
     await expect(startPipelineInterviewChat()).resolves.toBe(true);
 
     expect(PIPELINE_INTERVIEW_PROMPT).toMatch(
-      /^Interview me to help me build a pipeline/,
+      /^Interview me to help me build a workflow/,
     );
     expect(createStandaloneChatWithMessage).toHaveBeenCalledWith({
       message: PIPELINE_INTERVIEW_PROMPT,

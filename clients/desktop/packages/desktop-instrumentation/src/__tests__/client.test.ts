@@ -27,7 +27,10 @@ const sessionBridge = {
   report: jest.fn(),
   subscribe: jest.fn(() => jest.fn()),
 };
-const mockPostHogOnSessionId = jest.fn(() => jest.fn());
+const mockPostHogOnSessionId = jest.fn<
+  jest.Mock,
+  [listener: (sessionId: string, windowId?: string) => void]
+>(() => jest.fn());
 const mockPostHogSetSessionId = jest.fn(() => true);
 const mockPostHogOptIn = jest.fn();
 const mockPostHogOptOut = jest.fn();
@@ -429,6 +432,7 @@ describe('PostHog browser initialization', () => {
     if (typeof beforeSend !== 'function')
       throw new Error('Expected before_send');
     const event = {
+      uuid: 'event-id',
       event: 'safe_event',
       properties: { distinct_id: posthogId, email_domain: 'spoof.test' },
       $set: {
@@ -509,6 +513,7 @@ describe('PostHog browser initialization', () => {
       throw new Error('Expected before_send');
     expect(
       beforeSend({
+        uuid: 'event-id',
         event: 'safe_event',
         properties: { distinct_id: posthogId },
       })?.properties.email_domain,
@@ -542,8 +547,17 @@ describe('PostHog browser initialization', () => {
       recordBody: false,
       maskCapturedNetworkRequestFn: anyFunction,
     });
-    expect(options.maskInputFn()).toBe('********');
-    const mask = options.maskCapturedNetworkRequestFn;
+    if (typeof options.maskInputFn !== 'function') {
+      throw new Error('Expected input masker');
+    }
+    expect(options.maskInputFn('private input')).toBe('********');
+    // Exercise the intentionally sparse and adversarial recorder inputs accepted
+    // by our generic implementation, beyond the SDK's full-request signature.
+    const mask = options.maskCapturedNetworkRequestFn as <
+      T extends { name?: string; url?: string },
+    >(
+      request: T,
+    ) => T | null;
     expect(mask({ name: 'file:///Users/private/app/index.html' })).toEqual({
       name: 'app://main/home',
     });
@@ -574,7 +588,7 @@ describe('PostHog browser initialization', () => {
     });
     expect(
       mask({
-        get name() {
+        get name(): string {
           throw new Error('unsafe getter');
         },
       }),
@@ -1403,7 +1417,7 @@ describe('PostHog screen tracking lifecycle', () => {
       await import('../client/posthog-screen-tracking');
     const routes = createRouteSource('app://main/home');
     const pageLifecycle = new EventTarget();
-    let adopted: (() => void) | undefined;
+    let adopted: ((sessionId: string) => void) | undefined;
     const unsubscribeAdopted = jest.fn();
     const sdk = {
       capture: jest.fn(),
@@ -1446,7 +1460,7 @@ describe('PostHog screen tracking lifecycle', () => {
       sdk.capture.mock.invocationCallOrder[2],
     );
 
-    adopted?.();
+    adopted?.('adopted-session');
     expect(sdk.register_for_session).toHaveBeenLastCalledWith(display);
     expect(sdk.register_for_session).toHaveBeenCalledTimes(3);
     pageLifecycle.dispatchEvent(new Event('pagehide'));
@@ -1470,7 +1484,10 @@ describe('PostHog screen tracking lifecycle', () => {
     const routes = createRouteSource('app://main/home');
     const order: string[] = [];
     const sdk = {
-      capture: jest.fn((event: string) => order.push(event)),
+      capture: jest.fn((event: string) => {
+        order.push(event);
+        return undefined;
+      }),
       register_for_session: jest.fn(),
       unregister_for_session: jest.fn(),
     };
@@ -1865,9 +1882,12 @@ describe('PostHog runtime session and transport policy', () => {
     controller.update({ captureEnabled: true, sessionReplaySampleRate: 25 });
     expectPublishedRate(0.25);
     expect(mockPostHogRemoteConfig).toHaveBeenCalledTimes(configCount + 1);
-    expect(mockPostHogSetConfig.mock.invocationCallOrder.at(-1)).toBeLessThan(
-      mockPostHogRemoteConfig.mock.invocationCallOrder.at(-1),
-    );
+    const configOrder = mockPostHogSetConfig.mock.invocationCallOrder.at(-1);
+    const remoteOrder = mockPostHogRemoteConfig.mock.invocationCallOrder.at(-1);
+    if (configOrder === undefined || remoteOrder === undefined) {
+      throw new Error('Expected configuration calls');
+    }
+    expect(configOrder).toBeLessThan(remoteOrder);
     adopted?.('main-adopted-session');
     expect(mockPostHogRemoteConfig).toHaveBeenCalledTimes(configCount + 1);
     controller.dispose();
@@ -2027,20 +2047,20 @@ describe('PostHog operation forwarding from app windows', () => {
   it('sends status, duration, the window surface, and the sanitized context', async () => {
     await initialize('app-advisor');
     jest.useFakeTimers({ now: 1_000 });
-    client.startClientOperation('canopy.home_onboarding_suggestions', {
+    client.startClientOperation('canopy.suggested_prompt', {
       context: { action: 'cta_click' },
     });
     jest.setSystemTime(1_040);
-    client.succeedClientOperation('canopy.home_onboarding_suggestions', {
-      context: { action: 'cta_click', entry: '/Users/private/notes' },
+    client.succeedClientOperation('canopy.suggested_prompt', {
+      context: { action: 'cta_click', suggestion_id: '/Users/private/notes' },
     });
 
     expect(operationEvents()).toEqual([
       [
-        'home:onboarding_suggestion_update',
+        'chat:suggested_prompt_update',
         {
           action: 'cta_click',
-          entry: '<user-home>/notes',
+          suggestion_id: '<user-home>/notes',
           status: 'success',
           duration_ms: 40,
           surface: 'app-advisor',
@@ -2097,6 +2117,28 @@ describe('PostHog operation forwarding from app windows', () => {
     expect(event?.[1]).not.toHaveProperty('app_version');
   });
 
+  it('keeps plan hint placement separate from the window surface and drops prompt text', async () => {
+    await initialize();
+    client.succeedClientOperation('canopy.home_onboarding_suggestions', {
+      context: {
+        action: 'shown',
+        entry: 'plan-mode-hint',
+        surface: 'home',
+        prompt: 'private text',
+      },
+    });
+    expect(operationEvents()[0]?.[0]).toBe('home:onboarding_suggestion_update');
+    expect(operationEvents()[0]?.[1]).toEqual(
+      expect.objectContaining({
+        action: 'shown',
+        entry: 'plan-mode-hint',
+        composer_surface: 'home',
+        surface: 'main',
+      }),
+    );
+    expect(operationEvents()[0]?.[1]).not.toHaveProperty('prompt');
+  });
+
   it('keeps the suggested prompt placement separate from the window surface', async () => {
     await initialize();
     client.startClientOperation('canopy.suggested_prompt', {
@@ -2124,6 +2166,37 @@ describe('PostHog operation forwarding from app windows', () => {
     expect(mockSucceedFeatureOperation).toHaveBeenCalledTimes(1);
   });
 
+  it('drops import ends without an eligible start, including across capture withdrawal', async () => {
+    await initialize();
+    client.startClientOperation('canopy.first_run_import', {
+      operationKey: 'withdrawn',
+    });
+    changeFlags?.({ captureEnabled: false, sessionReplaySampleRate: 0 });
+    client.startClientOperation('canopy.project_import', {
+      operationKey: 'disabled',
+    });
+    changeFlags?.({ captureEnabled: true, sessionReplaySampleRate: 0 });
+    client.succeedClientOperation('canopy.first_run_import', {
+      operationKey: 'withdrawn',
+    });
+    client.succeedClientOperation('canopy.project_import', {
+      operationKey: 'disabled',
+    });
+    client.succeedClientOperation('canopy.project_import', {
+      operationKey: 'unstarted',
+    });
+    expect(operationEvents()).toEqual([]);
+    client.startClientOperation('canopy.project_import', {
+      operationKey: 'retry',
+    });
+    client.succeedClientOperation('canopy.project_import', {
+      operationKey: 'retry',
+    });
+    expect(operationEvents().map(([event]) => event)).toEqual([
+      'projects:import_end',
+    ]);
+  });
+
   it('delivers operations that finish while PostHog is initializing', async () => {
     let resolveId: ((id: string) => void) | undefined;
     const initializing = client.initializeDesktopInstrumentationClient({
@@ -2136,7 +2209,7 @@ describe('PostHog operation forwarding from app windows', () => {
       posthogFlags: enabledPostHogFlags,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    client.succeedClientOperation('canopy.home_onboarding_suggestions', {
+    client.succeedClientOperation('canopy.suggested_prompt', {
       context: { action: 'impression' },
     });
     expect(operationEvents()).toEqual([]);
@@ -2146,7 +2219,7 @@ describe('PostHog operation forwarding from app windows', () => {
 
     expect(operationEvents()).toEqual([
       [
-        'home:onboarding_suggestion_update',
+        'chat:suggested_prompt_update',
         expect.objectContaining({ action: 'impression', status: 'success' }),
       ],
     ]);

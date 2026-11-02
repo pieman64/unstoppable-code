@@ -68,6 +68,73 @@ function seedConnectorCatalog(userDataDir) {
     }),
   );
 }
+
+test('provider-connected MCP stays fixed Active through the desktop inventory seam (CAN-5272)', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-provider-active-'),
+  );
+  seedConnectorCatalog(userDataDir);
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    // Existing provider-read IPC seam: deterministic connected data without a
+    // real provider login. The renderer still builds the integration row.
+    await electronApp.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('mcp-servers:list-provider-connectors');
+      ipcMain.handle('mcp-servers:list-provider-connectors', () => [
+        {
+          provider: 'claude',
+          connectors: [
+            {
+              name: 'claude.ai Gmail',
+              displayName: 'Gmail',
+              connected: true,
+              status: 'connected',
+            },
+          ],
+        },
+      ]);
+    });
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openPluginsPage();
+    await window.getByTestId('plugins-search').fill('Gmail');
+    const row = window.getByTestId('customize-row-mcp-catalog:gmail-gmailmcp');
+    const picker = window.getByTestId(
+      'plugins-entry-status-mcp-catalog:gmail-gmailmcp',
+    );
+    await expect(row).toBeVisible();
+    await expect(picker).toHaveAttribute('data-status', 'active');
+    await expect(picker).toHaveAttribute('aria-disabled', 'true');
+    await expect(
+      window.getByTestId('plugins-surface-mcp-catalog:gmail-gmailmcp'),
+    ).toBeVisible();
+    await expect(
+      window.getByTestId('plugins-entry-mcp-catalog:gmail-gmailmcp'),
+    ).toHaveCount(0);
+    const filter = window.getByTestId('customize-installed-status-filter');
+    await filter.click();
+    await window
+      .getByTestId('customize-installed-status-filter-option-active')
+      .click();
+    await expect(row).toBeVisible();
+    await expect(window.getByTestId('customize-section-browse')).toHaveCount(0);
+    await picker.focus();
+    await window.keyboard.press('Enter');
+    await expect(
+      window.getByTestId(
+        'plugins-entry-status-mcp-catalog:gmail-gmailmcp-menu',
+      ),
+    ).toHaveCount(0);
+    await filter.click();
+    await window
+      .getByTestId('customize-installed-status-filter-option-available')
+      .click();
+    await expect(row).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
 for (const [key, name] of [
   ['gmail-gmailmcp', 'Gmail'],
   ['google-calendar-calendarmcp', 'Google Calendar'],

@@ -6,6 +6,7 @@ import {
 } from '@canopy/ui-app/subagents';
 import type { AgentSentReceivingContext } from '@canopy/ui-shared';
 import { ChatBlockRenderer } from '@/components/chat/ChatBlockRenderer';
+import { getDisplayBlockKey } from '@/components/chat/display-block-keys';
 import type { SubagentChatTranscriptItem } from '@canopy/agent-transcript';
 
 interface SubagentChatTranscriptProps {
@@ -29,7 +30,7 @@ export const SubagentChatTranscript = memo(function SubagentChatTranscript({
       <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex flex-col gap-2`}>
         {item.blocks.map((block, index) => (
           <ChatBlockRenderer
-            key={`${item.key}-${index}`}
+            key={`${item.key}:${getDisplayBlockKey(block, index)}`}
             block={block}
             streaming={streaming}
             originChatTabId={originChatTabId}

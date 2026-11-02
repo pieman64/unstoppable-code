@@ -13,10 +13,17 @@ import {
   publishSharedContainerRevision,
   pruneSharedContainerPublishStaging,
   sanitizeSharedContainerTitle,
+  type PreparedSharedContainerCapabilityPackage,
+  type PublishSharedContainerRevisionDependencies,
 } from '../shared-containers/publish/pipeline';
+import type {
+  SharedContainerRevisionDetail,
+  SharedContainerRevisionPackage,
+} from '@canopy/protocol/shared-containers';
 import { getSharedContainerPublishStagingRootDir } from '../lib/paths';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { SharedContainerPublishRefusalError } from '../shared-containers/publish/errors';
+import legacyRevision from '../../../../../packages/protocol/src/__fixtures__/legacy-shares/shared-container/revision-detail.2026-10-21.json';
 import { ReadStream } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -46,21 +53,803 @@ import {
 describe('Cowork shared-container publisher pipeline', () => {
   afterEach(() => jest.restoreAllMocks());
 
+  type PackageDependencies = jest.Mocked<
+    PublishSharedContainerRevisionDependencies<Record<string, never>>
+  > & {
+    prepareCapabilityPackage: jest.MockedFunction<
+      NonNullable<
+        PublishSharedContainerRevisionDependencies<
+          Record<string, never>
+        >['prepareCapabilityPackage']
+      >
+    >;
+    fetchRevision: jest.MockedFunction<
+      NonNullable<
+        PublishSharedContainerRevisionDependencies<
+          Record<string, never>
+        >['fetchRevision']
+      >
+    >;
+  };
+  type PackageCommit = Extract<
+    PreparedSharedContainerCapabilityPackage,
+    { state: 'ready' }
+  >['commit'];
+  function revisionDetail(
+    id: string,
+    overrides: Partial<SharedContainerRevisionDetail> = {},
+  ): SharedContainerRevisionDetail {
+    return {
+      id,
+      revision: 1,
+      schemaVersion: 4,
+      sourceDeviceId: 'device-1',
+      artifactObjectKey: `containers/container-1/revisions/${id}/artifact-1`,
+      artifactHash: `sha256:${'0'.repeat(64)}`,
+      artifactSizeBytes: '0',
+      artifacts: [],
+      createdAt: '2026-10-21T20:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function requireArtifactBytes(
+    artifact: ReturnType<typeof buildCoworkRevisionArtifacts>[number],
+  ): Buffer {
+    if (artifact.bytes === undefined) {
+      throw new Error(`Missing bytes for ${artifact.path}`);
+    }
+    return artifact.bytes;
+  }
+
+  function packagePublisher(): {
+    target: {
+      projectId: string;
+      worktreeId: string;
+      containerId: string;
+      containerType: 'COWORK_WORK_ENTRY';
+    };
+    summary: SharedContainerRevisionPackage;
+    deps: PackageDependencies;
+    commitPackage: jest.MockedFunction<PackageCommit>;
+    record(): SharedContainerPublicationRecord | null;
+    seed(next: SharedContainerPublicationRecord): void;
+  } {
+    const target = {
+      projectId: 'package-scope',
+      worktreeId: 'entry',
+      containerId: 'container',
+      containerType: 'COWORK_WORK_ENTRY' as const,
+    };
+    const summary: SharedContainerRevisionPackage = {
+      digest: `pp:v1:${'a'.repeat(43)}`,
+      counts: { skills: 1, pipelines: 0, agents: 0, automations: 0, hooks: 0 },
+      executableFiles: [],
+    };
+    let record: SharedContainerPublicationRecord | null = null;
+    let request: SharedContainerStageRevisionRequest | undefined;
+    const store = publicationState.getSharedContainerPublicationStateStore();
+    jest.spyOn(store, 'get').mockImplementation(() => Promise.resolve(record));
+    jest.spyOn(store, 'set').mockImplementation((next) => {
+      record = next;
+      return Promise.resolve(next);
+    });
+    const commitPackage = jest.fn<
+      ReturnType<PackageCommit>,
+      Parameters<PackageCommit>
+    >(() =>
+      Promise.resolve({
+        capabilityPackage: { version: 1 as const, digest: summary.digest },
+        committedPackageUploadId: 'package-upload',
+      }),
+    );
+    const deps: PackageDependencies = {
+      buildInventory: jest.fn<
+        ReturnType<PackageDependencies['buildInventory']>,
+        Parameters<PackageDependencies['buildInventory']>
+      >(() => Promise.resolve({})),
+      buildArtifacts: jest.fn<
+        ReturnType<PackageDependencies['buildArtifacts']>,
+        Parameters<PackageDependencies['buildArtifacts']>
+      >(() => []),
+      validateArtifacts: jest.fn(
+        (
+          _artifacts: unknown,
+          _organization: unknown,
+          sourceDeviceId: string,
+          idempotencyKey: string,
+          parentRevisionId?: string,
+        ) => ({
+          title: 'entry',
+          artifacts: [],
+          schemaVersion: 4,
+          sourceDeviceId,
+          idempotencyKey,
+          ...(parentRevisionId ? { parentRevisionId } : {}),
+        }),
+      ),
+      readScope: jest.fn().mockResolvedValue({ includedPaths: [] }),
+      readDeviceId: jest.fn(() => Promise.resolve('device')),
+      stage: jest.fn(
+        (_id: string, next: SharedContainerStageRevisionRequest) => {
+          request = next;
+          return Promise.resolve({
+            stagingSessionId: next.idempotencyKey,
+            revisionId: 'revision',
+            uploadTargets: [],
+          });
+        },
+      ),
+      upload: jest.fn().mockResolvedValue(undefined),
+      commit: jest.fn().mockImplementation(() =>
+        Promise.resolve({
+          revision: {
+            ...revisionDetail('revision'),
+            ...(request?.capabilityPackage || request?.carryParentPackage
+              ? { package: summary }
+              : {}),
+          },
+        }),
+      ),
+      fetchRevision: jest.fn().mockResolvedValue({
+        revision: {
+          ...revisionDetail('parent'),
+          package: summary,
+        },
+      }),
+      prepareCapabilityPackage: jest.fn<
+        ReturnType<
+          NonNullable<PackageDependencies['prepareCapabilityPackage']>
+        >,
+        Parameters<NonNullable<PackageDependencies['prepareCapabilityPackage']>>
+      >(() =>
+        Promise.resolve({
+          state: 'ready',
+          summary,
+          commit: commitPackage,
+        }),
+      ),
+    };
+    return {
+      target,
+      summary,
+      deps,
+      commitPackage,
+      record: (): SharedContainerPublicationRecord | null => record,
+      seed: (next: SharedContainerPublicationRecord): void => {
+        record = next;
+      },
+    };
+  }
+
+  it('carries only the selected parent package and uploads once if that carry is unavailable', async () => {
+    const h = packagePublisher();
+    h.seed({
+      ...h.target,
+      status: 'published',
+      revisionId: 'parent',
+      publishedPackageDigest: h.summary.digest,
+      updatedAt: '2026-10-21T19:00:00.000Z',
+    });
+    h.deps.stage.mockRejectedValueOnce(
+      new CanopyCloudClientError(
+        'http-error',
+        'Parent package unavailable',
+        422,
+        'shared_container_parent_package_unavailable',
+      ),
+    );
+    await expect(
+      publishSharedContainerRevision(h.target, h.deps),
+    ).resolves.toMatchObject({
+      publishedPackageDigest: h.summary.digest,
+    });
+    const first = h.deps.stage.mock.calls[0]?.[1];
+    const second = h.deps.stage.mock.calls[1]?.[1];
+    expect(first).toMatchObject({
+      parentRevisionId: 'parent',
+      carryParentPackage: true,
+    });
+    expect(second).toMatchObject({
+      capabilityPackage: { digest: h.summary.digest },
+      committedPackageUploadId: 'package-upload',
+    });
+    expect(second).not.toHaveProperty('carryParentPackage');
+    expect(second?.idempotencyKey).not.toBe(first?.idempotencyKey);
+    expect(h.commitPackage).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes package-free with recovery pending when a refused carry cannot be replaced by an upload', async () => {
+    const h = packagePublisher();
+    h.seed({
+      ...h.target,
+      status: 'published',
+      revisionId: 'parent',
+      publishedPackageDigest: h.summary.digest,
+      updatedAt: '2026-10-21T19:00:00.000Z',
+    });
+    h.deps.stage.mockRejectedValueOnce(
+      new CanopyCloudClientError(
+        'http-error',
+        'Parent package unavailable',
+        422,
+        'shared_container_parent_package_unavailable',
+      ),
+    );
+    h.commitPackage.mockRejectedValueOnce(
+      new Error('Package upload unavailable'),
+    );
+    await expect(
+      publishSharedContainerRevision(h.target, h.deps),
+    ).resolves.toMatchObject({
+      status: 'published',
+      revisionId: 'revision',
+      packageRecoveryPending: true,
+      packageRecoveryAttempts: 1,
+    });
+    // The server refused the carry, so the revision claims no package.
+    expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+    expect(h.commitPackage).toHaveBeenCalledTimes(1);
+    expect(h.deps.stage).toHaveBeenCalledTimes(2);
+    const first = h.deps.stage.mock.calls[0]?.[1];
+    const second = h.deps.stage.mock.calls[1]?.[1];
+    expect(first).toMatchObject({
+      parentRevisionId: 'parent',
+      carryParentPackage: true,
+    });
+    // A refused carry is never requested again, and nothing was uploaded.
+    expect(second).not.toHaveProperty('carryParentPackage');
+    expect(second).not.toHaveProperty('capabilityPackage');
+    expect(second).not.toHaveProperty('committedPackageUploadId');
+    expect(second?.idempotencyKey).not.toBe(first?.idempotencyKey);
+    expect(h.deps.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not trust a historical local digest when the actual parent has no package', async () => {
+    const h = packagePublisher();
+    h.seed({
+      ...h.target,
+      status: 'published',
+      revisionId: 'parent',
+      publishedPackageDigest: h.summary.digest,
+      updatedAt: '2026-10-21T19:00:00.000Z',
+    });
+    h.deps.fetchRevision.mockResolvedValueOnce({
+      revision: revisionDetail('parent'),
+    });
+    await publishSharedContainerRevision(h.target, h.deps);
+    expect(h.commitPackage).toHaveBeenCalledTimes(1);
+    expect(h.deps.stage.mock.calls[0]?.[1]).not.toHaveProperty(
+      'carryParentPackage',
+    );
+  });
+
+  it('publishes package-free on analysis failure without recording the intended digest or repeating degraded revisions', async () => {
+    const h = packagePublisher();
+    h.deps.prepareCapabilityPackage.mockResolvedValue({ state: 'failed' });
+    await expect(
+      publishSharedContainerRevision(h.target, h.deps),
+    ).resolves.toMatchObject({
+      status: 'published',
+      packageRecoveryPending: true,
+    });
+    expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+    await publishSharedContainerRevision(h.target, h.deps);
+    expect(h.deps.stage).toHaveBeenCalledTimes(1);
+    expect(h.commitPackage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the published package when analysis fails and nothing else changed', async () => {
+    const h = packagePublisher();
+    await publishSharedContainerRevision(h.target, h.deps);
+    expect(h.record()).toMatchObject({
+      publishedPackageDigest: h.summary.digest,
+    });
+    h.deps.prepareCapabilityPackage.mockResolvedValue({ state: 'failed' });
+    await expect(
+      publishSharedContainerRevision(h.target, h.deps),
+    ).resolves.toMatchObject({
+      status: 'published',
+      publishedPackageDigest: h.summary.digest,
+      packageRecoveryPending: true,
+      packageRecoveryAttempts: 1,
+    });
+    expect(h.deps.stage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the published package when a changed package cannot be uploaded and nothing else changed', async () => {
+    const h = packagePublisher();
+    await publishSharedContainerRevision(h.target, h.deps);
+    const changed: SharedContainerRevisionPackage = {
+      ...h.summary,
+      digest: `pp:v1:${'c'.repeat(43)}`,
+    };
+    h.deps.prepareCapabilityPackage.mockResolvedValue({
+      state: 'ready',
+      summary: changed,
+      commit: () => Promise.reject(new Error('Package upload unavailable')),
+    });
+    await expect(
+      publishSharedContainerRevision(h.target, h.deps),
+    ).resolves.toMatchObject({
+      status: 'published',
+      publishedPackageDigest: h.summary.digest,
+      packageRecoveryPending: true,
+    });
+    expect(h.deps.stage).toHaveBeenCalledTimes(1);
+  });
+
+  describe('changed artifacts without a new package', () => {
+    function seedChangedArtifacts(
+      h: ReturnType<typeof packagePublisher>,
+    ): void {
+      h.seed({
+        ...h.target,
+        status: 'published',
+        revisionId: 'parent',
+        // Not this publish's artifact fingerprint: the artifacts changed.
+        publishedContentHash: 'sha256:earlier-artifacts',
+        publishedPackageDigest: h.summary.digest,
+        updatedAt: '2026-10-21T19:00:00.000Z',
+      });
+    }
+
+    it('carries the parent package when analysis fails', async () => {
+      const h = packagePublisher();
+      seedChangedArtifacts(h);
+      h.deps.prepareCapabilityPackage.mockResolvedValue({ state: 'failed' });
+      await expect(
+        publishSharedContainerRevision(h.target, h.deps),
+      ).resolves.toMatchObject({
+        status: 'published',
+        publishedPackageDigest: h.summary.digest,
+        packageRecoveryPending: true,
+        packageRecoveryAttempts: 1,
+      });
+      expect(h.deps.stage).toHaveBeenCalledTimes(1);
+      expect(h.deps.stage.mock.calls[0]?.[1]).toMatchObject({
+        parentRevisionId: 'parent',
+        carryParentPackage: true,
+      });
+      expect(h.deps.stage.mock.calls[0]?.[1]).not.toHaveProperty(
+        'capabilityPackage',
+      );
+      expect(h.commitPackage).not.toHaveBeenCalled();
+
+      // A repeated failure finds the carried revision and stages nothing.
+      h.deps.fetchRevision.mockResolvedValue({
+        revision: revisionDetail('revision', { package: h.summary }),
+      });
+      await expect(
+        publishSharedContainerRevision(h.target, h.deps),
+      ).resolves.toMatchObject({
+        publishedPackageDigest: h.summary.digest,
+        packageRecoveryPending: true,
+        packageRecoveryAttempts: 2,
+      });
+      expect(h.deps.stage).toHaveBeenCalledTimes(1);
+    });
+
+    it('carries the parent package when a new package cannot be uploaded', async () => {
+      const h = packagePublisher();
+      seedChangedArtifacts(h);
+      const changed: SharedContainerRevisionPackage = {
+        ...h.summary,
+        digest: `pp:v1:${'c'.repeat(43)}`,
+      };
+      const commit = jest.fn<
+        ReturnType<PackageCommit>,
+        Parameters<PackageCommit>
+      >(() => Promise.reject(new Error('Package upload unavailable')));
+      h.deps.prepareCapabilityPackage.mockResolvedValue({
+        state: 'ready',
+        summary: changed,
+        commit,
+      });
+      await expect(
+        publishSharedContainerRevision(h.target, h.deps),
+      ).resolves.toMatchObject({
+        status: 'published',
+        publishedPackageDigest: h.summary.digest,
+        packageRecoveryPending: true,
+      });
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(h.deps.stage).toHaveBeenCalledTimes(1);
+      expect(h.deps.stage.mock.calls[0]?.[1]).toMatchObject({
+        carryParentPackage: true,
+      });
+    });
+
+    it('carries the parent package when an expired upload cannot be replaced', async () => {
+      const h = packagePublisher();
+      seedChangedArtifacts(h);
+      const changed: SharedContainerRevisionPackage = {
+        ...h.summary,
+        digest: `pp:v1:${'c'.repeat(43)}`,
+      };
+      const commit = jest
+        .fn<ReturnType<PackageCommit>, Parameters<PackageCommit>>()
+        .mockResolvedValueOnce({
+          capabilityPackage: { version: 1, digest: changed.digest },
+          committedPackageUploadId: 'expired-upload',
+        })
+        .mockRejectedValue(new Error('Package upload unavailable'));
+      h.deps.prepareCapabilityPackage.mockResolvedValue({
+        state: 'ready',
+        summary: changed,
+        commit,
+      });
+      h.deps.stage.mockRejectedValueOnce(
+        new CanopyCloudClientError(
+          'http-error',
+          'Expired upload',
+          422,
+          'shared_container_package_upload_expired',
+        ),
+      );
+      await expect(
+        publishSharedContainerRevision(h.target, h.deps),
+      ).resolves.toMatchObject({
+        publishedPackageDigest: h.summary.digest,
+        packageRecoveryPending: true,
+      });
+      expect(commit).toHaveBeenCalledTimes(2);
+      expect(h.deps.stage).toHaveBeenCalledTimes(2);
+      expect(h.deps.stage.mock.calls[1]?.[1]).toMatchObject({
+        carryParentPackage: true,
+      });
+    });
+
+    it('stays package-free when the parent has no package', async () => {
+      const h = packagePublisher();
+      seedChangedArtifacts(h);
+      h.deps.fetchRevision.mockResolvedValue({
+        revision: revisionDetail('parent'),
+      });
+      h.deps.prepareCapabilityPackage.mockResolvedValue({ state: 'failed' });
+      await expect(
+        publishSharedContainerRevision(h.target, h.deps),
+      ).resolves.toMatchObject({ packageRecoveryPending: true });
+      expect(h.deps.stage).toHaveBeenCalledTimes(1);
+      expect(h.deps.stage.mock.calls[0]?.[1]).not.toHaveProperty(
+        'carryParentPackage',
+      );
+      expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+    });
+
+    it('drops the package when the capabilities are gone', async () => {
+      const h = packagePublisher();
+      seedChangedArtifacts(h);
+      h.deps.prepareCapabilityPackage.mockResolvedValue({ state: 'empty' });
+      await publishSharedContainerRevision(h.target, h.deps);
+      expect(h.deps.stage).toHaveBeenCalledTimes(1);
+      expect(h.deps.stage.mock.calls[0]?.[1]).not.toHaveProperty(
+        'carryParentPackage',
+      );
+      expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+      expect(h.record()).not.toHaveProperty('packageRecoveryPending', true);
+    });
+  });
+
+  it('keeps recovery pending when a legacy commit omits the requested package', async () => {
+    const h = packagePublisher();
+    const commit = h.deps.commit.getMockImplementation();
+    if (!commit) throw new Error('Missing commit implementation');
+    h.deps.commit.mockImplementation(async (...args) => {
+      const committed = await commit(...args);
+      return {
+        ...committed,
+        revision: { ...committed.revision, package: undefined },
+      };
+    });
+    await expect(
+      publishSharedContainerRevision(h.target, h.deps),
+    ).resolves.toMatchObject({
+      packageRecoveryPending: true,
+      packageRecoveryAttempts: 1,
+    });
+    expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+  });
+
+  it('advances the recovery budget when a previously pending preparation provider is absent', async () => {
+    const h = packagePublisher();
+    h.deps.prepareCapabilityPackage.mockResolvedValue({ state: 'failed' });
+    await publishSharedContainerRevision(h.target, h.deps);
+    await expect(
+      publishSharedContainerRevision(h.target, {
+        ...h.deps,
+        prepareCapabilityPackage: undefined,
+      }),
+    ).resolves.toMatchObject({
+      packageRecoveryPending: true,
+      packageRecoveryAttempts: 2,
+    });
+    expect(h.deps.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['upload', 'compatibility'])(
+    'does not publish repeated degraded revisions after a %s failure',
+    async (failure) => {
+      const h = packagePublisher();
+      if (failure === 'upload') {
+        h.commitPackage.mockRejectedValue(
+          new Error('Package upload unavailable'),
+        );
+      } else {
+        const stage = h.deps.stage.getMockImplementation();
+        if (!stage) throw new Error('Missing stage implementation');
+        h.deps.stage.mockImplementation((id, request, signal) =>
+          request.capabilityPackage
+            ? Promise.reject(
+                new CanopyCloudClientError(
+                  'http-error',
+                  'Unknown package field',
+                  400,
+                ),
+              )
+            : stage(id, request, signal),
+        );
+      }
+      await publishSharedContainerRevision(h.target, h.deps);
+      h.deps.fetchRevision.mockResolvedValue({
+        revision: revisionDetail('revision'),
+      });
+      await publishSharedContainerRevision(h.target, h.deps);
+      expect(h.deps.commit).toHaveBeenCalledTimes(1);
+      expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+      expect(h.record()).toMatchObject({ packageRecoveryPending: true });
+    },
+  );
+
+  it.each([false, true])(
+    'does not swallow authorization errors during package upload (wrapped=%s)',
+    async (wrapped) => {
+      const h = packagePublisher();
+      const refusal = new CanopyCloudClientError(
+        'http-error',
+        'Forbidden',
+        403,
+      );
+      const error = wrapped
+        ? new Error('Upload failed', { cause: refusal })
+        : refusal;
+      h.commitPackage.mockRejectedValueOnce(error);
+      await expect(
+        publishSharedContainerRevision(h.target, h.deps),
+      ).rejects.toBe(error);
+      expect(h.deps.stage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('bounds cold analysis and leaves package recovery pending without blocking publication', async () => {
+    jest.useFakeTimers();
+    try {
+      const h = packagePublisher();
+      const signals: AbortSignal[] = [];
+      h.deps.prepareCapabilityPackage.mockImplementation(
+        ({ signal }) =>
+          new Promise((resolve) => {
+            signals.push(signal);
+            signal.addEventListener(
+              'abort',
+              () => resolve({ state: 'failed' }),
+              { once: true },
+            );
+          }),
+      );
+      const pending = publishSharedContainerRevision(h.target, h.deps);
+      await jest.advanceTimersByTimeAsync(10_001);
+      await expect(pending).resolves.toMatchObject({
+        status: 'published',
+        packageRecoveryPending: true,
+      });
+      expect(signals[0]?.aborted).toBe(true);
+      expect(h.commitPackage).not.toHaveBeenCalled();
+      expect(h.deps.stage.mock.calls[0]?.[1]).not.toHaveProperty(
+        'capabilityPackage',
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('aborts a package upload without late staging or publication writes', async () => {
+    jest.useFakeTimers();
+    try {
+      const h = packagePublisher();
+      const controller = new AbortController();
+      h.commitPackage.mockImplementation(
+        (signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              'abort',
+              () => reject(new Error('Upload cancelled')),
+              { once: true },
+            );
+          }),
+      );
+      const pending = publishSharedContainerRevision(h.target, {
+        ...h.deps,
+        signal: controller.signal,
+      });
+      const rejected = expect(pending).rejects.toThrow();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(h.commitPackage).toHaveBeenCalledTimes(1);
+      controller.abort();
+      await rejected;
+      expect(h.deps.stage).not.toHaveBeenCalled();
+      expect(h.record()).toBeNull();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('recommits only a recognized expired package upload, once, with a new stage identity', async () => {
+    const h = packagePublisher();
+    h.deps.stage.mockRejectedValueOnce(
+      new CanopyCloudClientError(
+        'http-error',
+        'Expired upload',
+        422,
+        'shared_container_package_upload_expired',
+      ),
+    );
+    await publishSharedContainerRevision(h.target, h.deps);
+    expect(h.commitPackage).toHaveBeenCalledTimes(2);
+    expect(h.deps.stage.mock.calls[1]?.[1].idempotencyKey).not.toBe(
+      h.deps.stage.mock.calls[0]?.[1].idempotencyKey,
+    );
+  });
+
+  it('falls back once for legacy stage validation without retrying uploads or hiding artifact errors', async () => {
+    const h = packagePublisher();
+    h.deps.stage.mockRejectedValueOnce(
+      new CanopyCloudClientError('http-error', 'Invalid body', 400),
+    );
+    await publishSharedContainerRevision(h.target, h.deps);
+    expect(h.commitPackage).toHaveBeenCalledTimes(1);
+    expect(h.deps.stage.mock.calls[1]?.[1]).not.toHaveProperty(
+      'capabilityPackage',
+    );
+    expect(h.record()).not.toHaveProperty('publishedPackageDigest');
+    expect(h.record()).toMatchObject({ packageRecoveryPending: true });
+    expect(h.deps.stage).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes capability-only changes and uploads nothing for an unchanged package', async () => {
+    const target = {
+      projectId: 'package-project',
+      worktreeId: 'package-entry',
+      containerId: 'package-container',
+      containerType: 'COWORK_WORK_ENTRY' as const,
+    };
+    let record: SharedContainerPublicationRecord | null = null;
+    const store = publicationState.getSharedContainerPublicationStateStore();
+    jest.spyOn(store, 'get').mockImplementation(() => Promise.resolve(record));
+    jest.spyOn(store, 'set').mockImplementation((next) => {
+      record = next;
+      return Promise.resolve(next);
+    });
+    let summary: SharedContainerRevisionPackage = {
+      digest: `pp:v1:${'a'.repeat(43)}`,
+      counts: { skills: 1, pipelines: 0, agents: 0, automations: 0, hooks: 0 },
+      executableFiles: [],
+    };
+    const commitPackage = jest.fn(() =>
+      Promise.resolve({
+        capabilityPackage: { version: 1 as const, digest: summary.digest },
+        committedPackageUploadId: 'package-upload',
+      }),
+    );
+    const stage = jest.fn(
+      (_id: string, request: SharedContainerStageRevisionRequest) =>
+        Promise.resolve({
+          stagingSessionId: request.idempotencyKey,
+          revisionId: 'revision-package',
+          uploadTargets: request.artifacts.map((artifact) => ({
+            artifactId: artifact.artifactId,
+            target: {
+              url: 'https://uploads.example.test/artifact',
+              method: 'PUT' as const,
+              headers: {},
+              expiresAt: '2026-10-21T23:00:00.000Z',
+            },
+            key: {
+              scheme: 'AES_256_GCM_CHUNKED_V1' as const,
+              dataKey: Buffer.alloc(32, 1).toString('base64'),
+              aad: artifact.artifactId,
+            },
+          })),
+        }),
+    );
+    const deps = {
+      buildInventory: (): Promise<
+        Awaited<ReturnType<typeof buildCoworkPublishInventory>>
+      > =>
+        Promise.resolve({
+          chats: [],
+          attachments: [],
+          notes: [],
+          prompts: [],
+          files: [],
+        }),
+      buildArtifacts: buildCoworkRevisionArtifacts,
+      readScope: jest.fn().mockResolvedValue({ includedPaths: [] }),
+      readDeviceId: (): Promise<string> => Promise.resolve('device-package'),
+      stage,
+      upload: jest.fn().mockResolvedValue(undefined),
+      commit: jest.fn().mockImplementation(() =>
+        Promise.resolve({
+          revision: {
+            id: 'revision-package',
+            revision: stage.mock.calls.length,
+            createdAt: '2026-10-21T20:00:00.000Z',
+            package: summary,
+          },
+        }),
+      ),
+      prepareCapabilityPackage: jest.fn(() =>
+        Promise.resolve({
+          state: 'ready' as const,
+          summary,
+          commit: commitPackage,
+        }),
+      ),
+    };
+    await expect(
+      publishSharedContainerRevision(target, deps),
+    ).resolves.toMatchObject({
+      publishedPackageDigest: summary.digest,
+    });
+    expect(stage.mock.calls[0]?.[1]).toMatchObject({
+      capabilityPackage: { version: 1, digest: summary.digest },
+      committedPackageUploadId: 'package-upload',
+    });
+    await publishSharedContainerRevision(target, deps);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(commitPackage).toHaveBeenCalledTimes(1);
+    summary = { ...summary, digest: `pp:v1:${'b'.repeat(43)}` };
+    await expect(
+      publishSharedContainerRevision(target, deps),
+    ).resolves.toMatchObject({
+      publishedPackageDigest: summary.digest,
+    });
+    expect(stage).toHaveBeenCalledTimes(2);
+    expect(commitPackage).toHaveBeenCalledTimes(2);
+  });
+
   it('emits walked Cowork files by default and omits exactly the excluded path', async () => {
     const dependencies: CoworkPublishInventoryDependencies = {
       readChatTabs: () =>
         Promise.resolve({
           version: 1,
-          activeTabId: null,
+          activeTabId: '',
           tabs: [],
         }),
       listAttachments: () => Promise.resolve([]),
       listNotes: () => Promise.resolve([]),
       readNote: (_projectId, id) =>
-        Promise.resolve({ meta: { id, title: id }, content: '' }),
+        Promise.resolve({
+          meta: {
+            id,
+            title: id,
+            createdAt: '2026-08-30T12:00:00.000Z',
+            updatedAt: '2026-08-30T12:00:00.000Z',
+          },
+          content: '',
+        }),
       listPrompts: () => Promise.resolve([]),
       readPrompt: (_projectId, id) =>
-        Promise.resolve({ meta: { id, title: id }, content: '' }),
+        Promise.resolve({
+          meta: {
+            id,
+            title: id,
+            createdAt: '2026-08-30T12:00:00.000Z',
+            updatedAt: '2026-08-30T12:00:00.000Z',
+          },
+          content: '',
+        }),
       listCoworkCandidateFiles: () =>
         Promise.resolve({
           paths: ['hello.md', 'nested/second.txt'],
@@ -96,7 +885,9 @@ describe('Cowork shared-container publisher pipeline', () => {
         (artifact) => artifact.path === 'container.json',
       );
       if (!layoutArtifact) throw new Error('Missing Cowork layout artifact');
-      return JSON.parse(layoutArtifact.bytes.toString('utf8')) as {
+      return JSON.parse(
+        requireArtifactBytes(layoutArtifact).toString('utf8'),
+      ) as {
         schemaVersion: number;
         files: Array<{ path: string }>;
         startPage?: unknown;
@@ -140,7 +931,7 @@ describe('Cowork shared-container publisher pipeline', () => {
     }).find((artifact) => artifact.path === 'container.json');
     if (!webPageArtifact) throw new Error('Missing Cowork layout artifact');
     const webPageLayout: unknown = JSON.parse(
-      webPageArtifact.bytes.toString('utf8'),
+      requireArtifactBytes(webPageArtifact).toString('utf8'),
     );
     expect(webPageLayout).toMatchObject({
       schemaVersion: 5,
@@ -153,6 +944,30 @@ describe('Cowork shared-container publisher pipeline', () => {
 
   it('publishes a structural chat envelope and round-trips every Cowork artifact through the replica', async () => {
     const ownerAttachmentPath = '/Users/owner/private/image.png';
+    const legacyToolUseInput = {
+      path: '/Users/owner/workspace/secrets.txt',
+      '/Users/owner/workspace/keyed.txt': 'keyed path',
+      items: Array.from({ length: 25 }, (_, index) => `item-${index}`),
+      nested: {
+        command:
+          'cat /Users/owner/workspace/secrets.txt from C:\\Users\\owner\\project',
+        url: 'file:///Users/owner/workspace/nested-url.txt',
+        level1: { level2: { level3: 'preserved' } },
+      },
+    };
+    const legacyToolUseBlock = {
+      type: 'tool_use',
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      input: '',
+    } satisfies {
+      type: 'tool_use';
+      toolUseId: string;
+      toolName: string;
+      input: string;
+    };
+    // Keep the historical structured input: the publisher must still scrub it.
+    Reflect.set(legacyToolUseBlock, 'input', legacyToolUseInput);
     const artifacts = buildCoworkRevisionArtifacts(
       {
         chats: [
@@ -190,28 +1005,11 @@ describe('Cowork shared-container publisher pipeline', () => {
                       },
                     ],
                   },
-                  {
-                    type: 'tool_use',
-                    toolUseId: 'tool-1',
-                    toolName: 'Read',
-                    input: {
-                      path: '/Users/owner/workspace/secrets.txt',
-                      '/Users/owner/workspace/keyed.txt': 'keyed path',
-                      items: Array.from(
-                        { length: 25 },
-                        (_, index) => `item-${index}`,
-                      ),
-                      nested: {
-                        command:
-                          'cat /Users/owner/workspace/secrets.txt from C:\\Users\\owner\\project',
-                        url: 'file:///Users/owner/workspace/nested-url.txt',
-                        level1: { level2: { level3: 'preserved' } },
-                      },
-                    },
-                  },
+                  legacyToolUseBlock,
                   {
                     type: 'tool_result',
                     toolUseId: 'tool-1',
+                    toolName: 'Read',
                     output:
                       'Read /Users/owner/workspace/secrets.txt from C:\\Users\\owner\\project',
                     isError: false,
@@ -231,13 +1029,23 @@ describe('Cowork shared-container publisher pipeline', () => {
         ],
         notes: [
           {
-            meta: { id: 'note-1', title: 'Selected note' },
+            meta: {
+              id: 'note-1',
+              title: 'Selected note',
+              createdAt: '2026-08-30T12:00:00.000Z',
+              updatedAt: '2026-08-30T12:00:00.000Z',
+            },
             content: '# Selected note\n',
           },
         ],
         prompts: [
           {
-            meta: { id: 'prompt-1', title: 'Selected prompt' },
+            meta: {
+              id: 'prompt-1',
+              title: 'Selected prompt',
+              createdAt: '2026-08-30T12:00:00.000Z',
+              updatedAt: '2026-08-30T12:00:00.000Z',
+            },
             content: '# Selected prompt\n',
           },
         ],
@@ -258,9 +1066,11 @@ describe('Cowork shared-container publisher pipeline', () => {
     expect(chatArtifact).toBeDefined();
     if (!layoutArtifact || !chatArtifact) throw new Error('Missing artifact');
     const layoutValue: unknown = JSON.parse(
-      layoutArtifact.bytes.toString('utf8'),
+      requireArtifactBytes(layoutArtifact).toString('utf8'),
     );
-    const chatValue: unknown = JSON.parse(chatArtifact.bytes.toString('utf8'));
+    const chatValue: unknown = JSON.parse(
+      requireArtifactBytes(chatArtifact).toString('utf8'),
+    );
     expect(isSharedContainerRevisionLayout(layoutValue)).toBe(true);
     expect(isSharedContainerPublishedChat(chatValue)).toBe(true);
     if (
@@ -294,7 +1104,15 @@ describe('Cowork shared-container publisher pipeline', () => {
     const publishedToolPart = chat.messages[0].parts?.find(
       (part) => part.kind === 'tool_use',
     );
-    expect(publishedToolPart?.data.input).toMatchObject({
+    const publishedToolData: unknown = publishedToolPart?.data;
+    if (
+      typeof publishedToolData !== 'object' ||
+      publishedToolData === null ||
+      !('input' in publishedToolData)
+    ) {
+      throw new Error('Publisher omitted the tool input');
+    }
+    expect(publishedToolData.input).toMatchObject({
       items: Array.from({ length: 25 }, (_, index) => `item-${index}`),
       nested: {
         level1: { level2: { level3: 'preserved' } },
@@ -306,9 +1124,13 @@ describe('Cowork shared-container publisher pipeline', () => {
 
     const fixture = await buildSharedContainerReplicaFixture({
       layout,
-      plaintextArtifacts: artifacts.filter(
-        (artifact) => artifact.path !== 'container.json',
-      ),
+      plaintextArtifacts: artifacts
+        .filter((artifact) => artifact.path !== 'container.json')
+        .map((artifact) => ({
+          artifactId: artifact.artifactId,
+          path: artifact.path,
+          bytes: requireArtifactBytes(artifact),
+        })),
     });
     const root = await mkdtemp(join(tmpdir(), 'cowork-publish-roundtrip-'));
     const manager = new SharedContainerReplicaManager({
@@ -340,7 +1162,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       readFile(join(content, 'attachments', 'image.png'), 'utf8'),
     ).resolves.toBe('image');
     const allPlaintext = artifacts
-      .map((artifact) => artifact.bytes.toString('utf8'))
+      .map((artifact) => requireArtifactBytes(artifact).toString('utf8'))
       .join('\n');
     expect(allPlaintext).not.toContain('sdkSessionId');
     expect(allPlaintext).not.toContain('/Users/owner');
@@ -613,7 +1435,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       files: [],
     });
     const serialized = artifacts
-      .map((artifact) => artifact.bytes.toString('utf8'))
+      .map((artifact) => requireArtifactBytes(artifact).toString('utf8'))
       .join('\n');
     expect(serialized).not.toContain('/Users/owner/private');
     const layoutArtifact = artifacts.find(
@@ -621,7 +1443,7 @@ describe('Cowork shared-container publisher pipeline', () => {
     );
     if (!layoutArtifact) throw new Error('Missing container.json');
     const layoutValue: unknown = JSON.parse(
-      layoutArtifact.bytes.toString('utf8'),
+      requireArtifactBytes(layoutArtifact).toString('utf8'),
     );
     expect(isSharedContainerRevisionLayout(layoutValue)).toBe(true);
     if (!isSharedContainerRevisionLayout(layoutValue)) {
@@ -665,7 +1487,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       (artifact) => artifact.path === 'chats/chat-1.json',
     );
     if (!chatArtifact) throw new Error('Missing chat artifact');
-    const serialized = chatArtifact.bytes.toString('utf8');
+    const serialized = requireArtifactBytes(chatArtifact).toString('utf8');
     expect(serialized).not.toContain('My Project');
     expect(serialized).not.toContain('secrets.txt');
     expect(serialized).not.toContain('credentials.json');
@@ -718,7 +1540,7 @@ describe('Cowork shared-container publisher pipeline', () => {
     );
     if (!layoutArtifact) throw new Error('Missing container.json');
     const layoutValue: unknown = JSON.parse(
-      layoutArtifact.bytes.toString('utf8'),
+      requireArtifactBytes(layoutArtifact).toString('utf8'),
     );
     if (!isSharedContainerRevisionLayout(layoutValue)) {
       throw new Error('Publisher emitted an invalid layout');
@@ -738,9 +1560,13 @@ describe('Cowork shared-container publisher pipeline', () => {
 
     const fixture = await buildSharedContainerReplicaFixture({
       layout: layoutValue,
-      plaintextArtifacts: artifacts.filter(
-        (artifact) => artifact.path !== 'container.json',
-      ),
+      plaintextArtifacts: artifacts
+        .filter((artifact) => artifact.path !== 'container.json')
+        .map((artifact) => ({
+          artifactId: artifact.artifactId,
+          path: artifact.path,
+          bytes: requireArtifactBytes(artifact),
+        })),
     });
     const root = await mkdtemp(join(tmpdir(), 'cowork-duplicate-attachment-'));
     const manager = new SharedContainerReplicaManager({
@@ -827,7 +1653,12 @@ describe('Cowork shared-container publisher pipeline', () => {
       attachments: [],
       notes: [
         {
-          meta: { id: 'note-1', title: 'Note' },
+          meta: {
+            id: 'note-1',
+            title: 'Note',
+            createdAt: '2026-08-30T12:00:00.000Z',
+            updatedAt: '2026-08-30T12:00:00.000Z',
+          },
           source: {
             sizeBytes: noteBytes.byteLength,
             hash: noteHash,
@@ -837,7 +1668,12 @@ describe('Cowork shared-container publisher pipeline', () => {
       ],
       prompts: [
         {
-          meta: { id: 'prompt-1', title: 'Prompt' },
+          meta: {
+            id: 'prompt-1',
+            title: 'Prompt',
+            createdAt: '2026-08-30T12:00:00.000Z',
+            updatedAt: '2026-08-30T12:00:00.000Z',
+          },
           source: {
             sizeBytes: promptBytes.byteLength,
             hash: promptHash,
@@ -902,7 +1738,12 @@ describe('Cowork shared-container publisher pipeline', () => {
           ],
           notes: [
             {
-              meta: { id: 'note-1', title: 'Selected note' },
+              meta: {
+                id: 'note-1',
+                title: 'Selected note',
+                createdAt: '2026-08-30T12:00:00.000Z',
+                updatedAt: '2026-08-30T12:00:00.000Z',
+              },
               content: '# Selected note\n',
             },
           ],
@@ -926,7 +1767,7 @@ describe('Cowork shared-container publisher pipeline', () => {
     expect(second).toEqual(first);
   });
 
-  it('reuses and carries unchanged parent artifacts without uploading them', async () => {
+  it('reads the retained legacy parent fixture and carries unchanged artifacts without uploading them', async () => {
     const target = {
       projectId: 'project-1',
       worktreeId: 'entry-1',
@@ -967,7 +1808,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       ...target,
       status: 'published',
       revision: 1,
-      revisionId: 'revision-1',
+      revisionId: legacyRevision.id,
       publishedAt: '2026-09-01T00:00:00.000Z',
       updatedAt: '2026-09-01T00:00:00.000Z',
       publishedContentHash: 'sha256:stale',
@@ -1006,8 +1847,10 @@ describe('Cowork shared-container publisher pipeline', () => {
     );
     const upload = jest.fn().mockResolvedValue(undefined);
 
-    await publishSharedContainerRevision(target, {
-      buildInventory: jest.fn().mockResolvedValue(inventory),
+    const dependencies: PublishSharedContainerRevisionDependencies<
+      typeof inventory
+    > = {
+      buildInventory: () => Promise.resolve(inventory),
       buildArtifacts: (candidate, seed, title) =>
         buildCoworkRevisionArtifacts(candidate, seed, title),
       validateArtifacts: validateCoworkRevisionForStage,
@@ -1019,19 +1862,18 @@ describe('Cowork shared-container publisher pipeline', () => {
       stage,
       upload,
       commit: jest.fn().mockResolvedValue({
-        revision: {
-          id: 'revision-2',
-          revision: 2,
-          createdAt: '2026-09-01T01:00:00.000Z',
-        },
+        revision: revisionDetail('revision-2', { revision: 2 }),
       }),
       fetchRevision: jest.fn().mockResolvedValue({
-        revision: { id: 'revision-1', artifacts: parentDetails },
+        revision: { ...legacyRevision, artifacts: parentDetails },
       }),
       readDeviceId: jest.fn().mockResolvedValue('device-1'),
-    });
+    };
+    await publishSharedContainerRevision(target, dependencies);
 
     const request = stage.mock.calls[0]?.[1];
+    expect(request?.parentRevisionId).toBe(legacyRevision.id);
+    expect(request).not.toHaveProperty('capabilityPackage');
     const stableParent = parentDetails.find(
       (artifact) =>
         artifact.path ===
@@ -1170,7 +2012,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       },
     );
     const commit = jest.fn(
-      (_containerId: string, _org: string, sessionId: string) => {
+      (_containerId: string, _org: string | undefined, sessionId: string) => {
         const declared = sessionArtifactIds.get(sessionId) ?? [];
         if (!declared.every((artifactId) => uploaded.has(artifactId))) {
           return Promise.reject(
@@ -1182,11 +2024,7 @@ describe('Cowork shared-container publisher pipeline', () => {
           );
         }
         return Promise.resolve({
-          revision: {
-            id: 'revision-2',
-            revision: 2,
-            createdAt: '2026-09-01T01:00:00.000Z',
-          },
+          revision: revisionDetail('revision-2', { revision: 2 }),
         });
       },
     );
@@ -1213,7 +2051,9 @@ describe('Cowork shared-container publisher pipeline', () => {
       fetchRevision: jest.fn((_containerId: string, revisionId: string) =>
         revisionId === 'revision-1'
           ? Promise.resolve({
-              revision: { id: 'revision-1', artifacts: parentDetails },
+              revision: revisionDetail('revision-1', {
+                artifacts: parentDetails,
+              }),
             })
           : Promise.reject(
               new CanopyCloudClientError(
@@ -1283,11 +2123,7 @@ describe('Cowork shared-container publisher pipeline', () => {
         }),
     );
     const commit = jest.fn().mockResolvedValue({
-      revision: {
-        id: 'revision-1',
-        revision: 1,
-        createdAt: '2026-09-01T01:00:00.000Z',
-      },
+      revision: revisionDetail('revision-1'),
     });
     const dependencies = {
       buildInventory: jest.fn().mockResolvedValue(inventory),
@@ -1366,11 +2202,9 @@ describe('Cowork shared-container publisher pipeline', () => {
     );
     const commit = jest.fn(() =>
       Promise.resolve({
-        revision: {
-          id: `revision-${stagedTitles.length}`,
+        revision: revisionDetail(`revision-${stagedTitles.length}`, {
           revision: stagedTitles.length,
-          createdAt: '2026-09-01T01:00:00.000Z',
-        },
+        }),
       }),
     );
     // The list title is server-visible state that no artifact hash covers: the
@@ -1425,7 +2259,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       ...target,
       containerId: 'container-2',
       containerType: 'COWORK_WORK_ENTRY',
-      status: 'idle',
+      status: 'not-published',
       updatedAt: '2026-09-01T04:00:00.000Z',
     };
     let state: SharedContainerPublicationRecord | null = null;
@@ -1481,7 +2315,7 @@ describe('Cowork shared-container publisher pipeline', () => {
       ...target,
       containerId: 'container-2',
       containerType: 'COWORK_WORK_ENTRY',
-      status: 'idle',
+      status: 'not-published',
       updatedAt: '2026-09-01T04:00:00.000Z',
     };
     let state: SharedContainerPublicationRecord | null = null;

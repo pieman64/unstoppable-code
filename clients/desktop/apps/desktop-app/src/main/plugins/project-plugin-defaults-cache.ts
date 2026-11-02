@@ -124,11 +124,35 @@ function recordServed(
   );
 }
 
+/**
+ * Configs whose layer may change with no refresh (CAN-4417), each with the
+ * request for its reconcile, which must not wait on the read.
+ */
+const unsettled = new Map<string, () => void>();
+
+/**
+ * Until {@link projectPluginLayerSettled}, reads of the config skip the
+ * cache, and one that finds a layer other than one served since the last
+ * advance requests `reconcile`.
+ */
+export function projectPluginLayerUnsettled(
+  configPath: string,
+  reconcile: () => void,
+): void {
+  unsettled.set(configPath, reconcile);
+  cache.delete(configPath);
+}
+
+export function projectPluginLayerSettled(configPath: string): void {
+  unsettled.delete(configPath);
+}
+
 export function readThroughProjectPluginDefaults(
   configPath: string,
   load: () => Promise<ProjectPluginDefaultsRead>,
 ): Promise<ProjectPluginDefaults> {
-  const cached = cache.get(configPath);
+  const reconcile = unsettled.get(configPath);
+  const cached = reconcile ? undefined : cache.get(configPath);
   if (cached) return cached;
   const startedAt = advances.get(configPath) ?? 0;
   const record = (defaults: ProjectPluginDefaults | 'mixed'): void => {
@@ -136,11 +160,19 @@ export function readThroughProjectPluginDefaults(
       recordServed(configPath, defaults);
   };
   const pending = load().then(({ defaults, cacheable }) => {
+    const before = served.get(configPath);
     record(defaults);
+    if (
+      reconcile &&
+      cacheable &&
+      before !== undefined &&
+      (before === 'mixed' || projectPluginLayerChanged(before, defaults))
+    )
+      reconcile();
     if (!cacheable) forget(configPath, pending);
     return defaults;
   });
-  cache.set(configPath, pending);
+  if (!reconcile) cache.set(configPath, pending);
   track(
     readsInFlight,
     configPath,

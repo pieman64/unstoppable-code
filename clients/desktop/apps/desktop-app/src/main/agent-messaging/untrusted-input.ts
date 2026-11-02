@@ -1,9 +1,17 @@
 const FORBIDDEN_CHAT_INPUT_FIELDS = [
   'userMessageSource',
+  'autoResume',
+  'resumesInterruptedTurn',
+  'resumesUserMessageId',
+  'interruptedTurns',
   'agentSent',
   'agentSenderProvenance',
   'agentSendSetup',
   'agentSteeringActor',
+  'delegationNoticeBatchId',
+  'watcherPartSnapshots',
+  'turnOverride',
+  'automationDispatch',
 ] as const;
 
 const AGENT_SENDER_CONTEXT_KIND = 'agent-sender-context';
@@ -33,7 +41,8 @@ function inspectAuthoritativeFields(value: Record<string, unknown>): void {
 }
 
 /**
- * Reject main-authored attribution only at authoritative chat input locations.
+ * Reject main-authored attribution and delivery identity only at authoritative
+ * chat input locations.
  * This deliberately does not recursively inspect arbitrary JSON (for example,
  * tool-result blocks, attachment metadata, or body data), where these property
  * names may be ordinary user content.

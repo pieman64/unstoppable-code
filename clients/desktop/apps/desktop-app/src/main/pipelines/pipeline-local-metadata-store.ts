@@ -18,6 +18,12 @@ export interface PipelineLocalMetadata {
   /** Serialized owner (`personal` / `org:<uuid>`). */
   owner?: string;
   agentAuthor?: PipelineAgentAuthor;
+  /**
+   * The automation this pipeline was generated for, which deletes it with
+   * itself (CAN-4551, the Workflows plan's `workflow.owner`). A marker whose
+   * automation is gone, or no longer runs this pipeline, is stale and ignored.
+   */
+  ownerAutomationId?: string;
 }
 
 interface PipelineLocalMetadataFile {
@@ -65,6 +71,8 @@ function normalizeEntry(value: unknown): PipelineLocalMetadata {
     const recordedAt = nonEmptyString(value.agentAuthor.recordedAt);
     if (chat && recordedAt) entry.agentAuthor = { chat, recordedAt };
   }
+  const ownerAutomationId = nonEmptyString(value.ownerAutomationId);
+  if (ownerAutomationId) entry.ownerAutomationId = ownerAutomationId;
   return entry;
 }
 
@@ -219,7 +227,30 @@ export function setUserPipelineAgentAuthor(
   updateUserPipelineEntry(pipelineId, (entry) => ({
     ...(entry.owner === undefined ? {} : { owner: entry.owner }),
     ...(author ? { agentAuthor: author } : {}),
+    ...(entry.ownerAutomationId === undefined
+      ? {}
+      : { ownerAutomationId: entry.ownerAutomationId }),
   }));
+}
+
+/** `null` clears the owning automation (CAN-4551). */
+export function setUserPipelineOwnerAutomation(
+  pipelineId: string,
+  automationId: string | null,
+): void {
+  const key = userPipelineKey(pipelineId);
+  if (
+    automationId === null &&
+    !readMetadataFile().entries[key]?.ownerAutomationId
+  )
+    return;
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { ownerAutomationId, ...rest } = entry;
+    void ownerAutomationId;
+    return automationId === null
+      ? rest
+      : { ...rest, ownerAutomationId: automationId };
+  });
 }
 
 export function deleteUserPipelineLocalMetadata(pipelineId: string): void {

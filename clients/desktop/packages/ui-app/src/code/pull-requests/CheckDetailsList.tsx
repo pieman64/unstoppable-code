@@ -115,7 +115,7 @@ export function CheckDetailsList({
                 href={check.detailsUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="shrink-0 fg-secondary transition hover:fg-primary"
+                className="shrink-0 fg-secondary transition-colors hover:fg-primary"
               >
                 view &rarr;
               </a>

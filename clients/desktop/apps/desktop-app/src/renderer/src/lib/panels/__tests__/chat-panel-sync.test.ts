@@ -1,4 +1,9 @@
 /** @jest-environment jsdom */
+import {
+  beginWorktreeEntry,
+  settleWorktreeEntry,
+  getWorktreeEntry,
+} from '@/stores/chat/attention-landing-intent';
 
 /**
  * Chat ⇄ panel sync bridge — exercised against the REAL chat and panel
@@ -10,10 +15,10 @@
  * persistence) into jsdom.
  */
 import { useChatStore, type ChatTab } from '@/stores/chatStore';
+import { registerPendingTabCreation } from '@/stores/chat/pending-tab-creation';
 import {
   findPanelByInstanceKey,
   makeAuxPanelLayoutKey,
-  setPanelLayoutChatGroup,
   setPanelLayoutFixedTopology,
   usePanelLayoutStore,
   type DefaultLayoutDescriptor,
@@ -32,23 +37,26 @@ import {
   openContentPanel,
   placeFilePanelsBesideChat,
   placeOrRevealContentPanel,
-  refuseFullNewChatRow,
   registerChatPanelSyncOwner,
   requestFilePanelPlacementAsSibling,
   requestFilePanelPlacementBesideChat,
   resetChatPanelSyncForTests,
 } from '../chat-panel-sync';
 import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
-import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
 import {
   resetDelegationActivityStoreForTests,
   useDelegationActivityStore,
 } from '@/stores/delegationActivityStore';
-import { useGitHubStore } from '@/stores/githubStore';
 import {
-  MAX_TABS_PER_GROUP,
-  PANEL_TAB_ROW_FULL_NOTE,
-} from '@canopy/ui-shared/panels';
+  BACKGROUND_BLOCKS_CLOSE_NOTICE,
+  DELEGATES_BLOCK_CLOSE_NOTICE,
+} from '@/stores/chat/close-guard';
+import {
+  resetLiveBackgroundTaskStoreForTests,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import { STANDALONE_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { ensureWorktreePanelLayout } from '../persistence-bridge';
 import { pipelineExecutionPanelSeed } from '../pipeline-execution-panel-identity';
 
@@ -76,7 +84,7 @@ function makeChatTab(overrides: Partial<ChatTab> = {}): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
     model: 'claude-sonnet-4-5-20250514',
     providerType: 'claude',
@@ -570,15 +578,10 @@ describe('placeOrRevealContentPanel (pipeline runs)', () => {
   });
 });
 
-describe('tab row limit', () => {
-  /** Fills `group-chat` with terminal tabs until it holds the maximum. */
-  function fillChatRow(): void {
-    let index = 0;
-    while (
-      panelStore().layouts[KEY].groups['group-chat'].tabs.length <
-      MAX_TABS_PER_GROUP
-    ) {
-      index += 1;
+describe('crowded tab row', () => {
+  test('a chat arriving for a row with 20+ tabs joins that row', () => {
+    initAll([makeChatTab()], 'chat-1');
+    for (let index = 1; index <= 20; index += 1) {
       expect(
         panelStore().addTab(KEY, 'group-chat', 'terminal', {
           instance: { terminalId: `filler-${index}` },
@@ -586,129 +589,8 @@ describe('tab row limit', () => {
         }),
       ).not.toBeNull();
     }
-  }
-
-  // The limit is on only while early access shows the non-scrolling tabs.
-  beforeEach(() => {
-    panelStore().setTabRowLimit(MAX_TABS_PER_GROUP);
-  });
-
-  afterEach(() => {
-    panelStore().setTabRowLimit(null);
-    useGitHubStore.setState({ toasts: [] });
-  });
-
-  test('a chat arriving for a full row opens in a new row beside it', () => {
-    initAll([makeChatTab()], 'chat-1');
-    fillChatRow();
-
-    setChatState(
-      [makeChatTab(), makeChatTab({ id: 'chat-new', title: 'New' })],
-      'chat-new',
-    );
-    flushChatPanelSyncForTests();
-
-    const location = findPanelByInstanceKey(KEY, 'chat:chat-new');
-    expect(location).not.toBeNull();
-    expect(location?.groupId).not.toBe('group-chat');
-    expect(panelStore().layouts[KEY].groups['group-chat'].tabs).toHaveLength(
-      MAX_TABS_PER_GROUP,
-    );
-  });
-
-  test('a chat arriving for a full row of a fixed layout still gets a tab there', () => {
-    initAll([makeChatTab()], 'chat-1');
-    fillChatRow();
-    // Minimal mode's fixed layout cannot split a new row beside it.
-    setPanelLayoutFixedTopology(KEY, true);
-    try {
-      setChatState(
-        [makeChatTab(), makeChatTab({ id: 'chat-new', title: 'New' })],
-        'chat-new',
-      );
-      flushChatPanelSyncForTests();
-
-      expect(findPanelByInstanceKey(KEY, 'chat:chat-new')?.groupId).toBe(
-        'group-chat',
-      );
-      expect(panelStore().layouts[KEY].groups['group-chat'].tabs).toHaveLength(
-        MAX_TABS_PER_GROUP + 1,
-      );
-    } finally {
-      setPanelLayoutFixedTopology(KEY, false);
-    }
-  });
-
-  test('chats arriving for a full restricted chat group open no new rows', () => {
-    initAll([makeChatTab()], 'chat-1');
-    fillChatRow();
     const groupsBefore = Object.keys(panelStore().layouts[KEY].groups);
-    setPanelLayoutChatGroup('group-chat');
-    try {
-      setChatState(
-        [makeChatTab(), makeChatTab({ id: 'chat-new', title: 'New' })],
-        'chat-new',
-      );
-      flushChatPanelSyncForTests();
-      setChatState(
-        [
-          makeChatTab(),
-          makeChatTab({ id: 'chat-new', title: 'New' }),
-          makeChatTab({ id: 'chat-next', title: 'Next' }),
-        ],
-        'chat-next',
-      );
-      flushChatPanelSyncForTests();
 
-      const layout = panelStore().layouts[KEY];
-      expect(Object.keys(layout.groups)).toEqual(groupsBefore);
-      expect(findPanelByInstanceKey(KEY, 'chat:chat-new')?.groupId).toBe(
-        'group-chat',
-      );
-      expect(findPanelByInstanceKey(KEY, 'chat:chat-next')?.groupId).toBe(
-        'group-chat',
-      );
-    } finally {
-      setPanelLayoutChatGroup(null);
-    }
-  });
-
-  test('a new chat without a target row is refused with a note while that row is full', () => {
-    initAll([makeChatTab()], 'chat-1');
-    expect(refuseFullNewChatRow(KEY)).toBe(false);
-    expect(useGitHubStore.getState().toasts).toHaveLength(0);
-
-    fillChatRow();
-
-    expect(refuseFullNewChatRow(KEY)).toBe(true);
-    expect(refuseFullNewChatRow(KEY)).toBe(true);
-    expect(
-      useGitHubStore
-        .getState()
-        .toasts.filter((toast) => toast.message === PANEL_TAB_ROW_FULL_NOTE),
-    ).toHaveLength(1);
-  });
-
-  test('a new chat is checked against the restricted chat group, not the last used row', () => {
-    initAll([makeChatTab()], 'chat-1');
-    fillChatRow();
-    setPanelLayoutChatGroup('group-terminal');
-    try {
-      // The full row is the most recently used one, but the chat would land
-      // in the chat group, which has room.
-      expect(refuseFullNewChatRow(KEY)).toBe(false);
-      expect(useGitHubStore.getState().toasts).toHaveLength(0);
-    } finally {
-      setPanelLayoutChatGroup(null);
-    }
-  });
-
-  test('without the limit a chat joins the row however many tabs it holds', () => {
-    panelStore().setTabRowLimit(null);
-    initAll([makeChatTab()], 'chat-1');
-    fillChatRow();
-
-    expect(refuseFullNewChatRow(KEY)).toBe(false);
     setChatState(
       [makeChatTab(), makeChatTab({ id: 'chat-new', title: 'New' })],
       'chat-new',
@@ -718,6 +600,7 @@ describe('tab row limit', () => {
     expect(findPanelByInstanceKey(KEY, 'chat:chat-new')?.groupId).toBe(
       'group-chat',
     );
+    expect(Object.keys(panelStore().layouts[KEY].groups)).toEqual(groupsBefore);
   });
 });
 
@@ -1940,6 +1823,55 @@ describe('chat → panels', () => {
       'panel-chat-1',
     );
   });
+
+  test('hydration keeps a restored Browser selected over the chat-active file in its group', () => {
+    // A chat-origin file shares the Browser's side group. The user last
+    // selected the Browser tab, which the chat side cannot record, so the
+    // chat-side active tab is still that file when the layout is restored.
+    setChatState([makeChatTab(), makeFileTab()], 'file-1');
+    panelStore().initializeLayout(KEY, DEFAULT_LIKE_LAYOUT);
+    panelStore().addTab(KEY, 'group-chat', 'chat', {
+      panelId: 'panel-chat-1',
+      title: 'Chat One',
+      instance: { chatTabId: 'chat-1' },
+    });
+    const sideGroupId = panelStore().splitGroup(KEY, 'group-chat', 'right');
+    expect(sideGroupId).not.toBeNull();
+    if (sideGroupId === null) return;
+    panelStore().addTab(KEY, sideGroupId, 'browser', {
+      panelId: 'panel-browser-1',
+      title: 'Browser',
+      instance: { browserId: 'browser-1' },
+    });
+    panelStore().addTab(KEY, sideGroupId, 'file-diff', {
+      panelId: 'panel-file-1',
+      title: 'a.ts',
+      instance: { fileTabId: 'file-1' },
+    });
+    panelStore().selectTab(KEY, sideGroupId, 'panel-browser-1');
+
+    initChatPanelSync();
+    flushChatPanelSyncForTests();
+
+    const layout = panelStore().layouts[KEY];
+    expect(layout.groups[sideGroupId].activePanelId).toBe('panel-browser-1');
+    expect(layout.activeGroupId).toBe(sideGroupId);
+    expect(switchTabMock).not.toHaveBeenCalled();
+
+    // An explicit chat-side change still reveals the file.
+    const wc = useChatStore.getState().worktreeChats[KEY];
+    useChatStore.setState({
+      worktreeChats: { [KEY]: { ...wc, activeTabId: 'chat-1' } },
+    });
+    flushChatPanelSyncForTests();
+    useChatStore.setState({
+      worktreeChats: { [KEY]: { ...wc, activeTabId: 'file-1' } },
+    });
+    flushChatPanelSyncForTests();
+    expect(panelStore().layouts[KEY].groups[sideGroupId].activePanelId).toBe(
+      'panel-file-1',
+    );
+  });
 });
 
 describe('panel → chat file-tab close', () => {
@@ -2183,9 +2115,9 @@ describe('panels → chat', () => {
   test('a replaced last chat is not re-materialized while its async close is pending', () => {
     // Model the real store's behaviour: a chat with history archives over an
     // async IPC round-trip, so `closeTab` does not remove the tab synchronously.
-    let resolveClose: (() => void) | null = null;
+    const closeControl: { resolve: (() => void) | null } = { resolve: null };
     const deferredCloseTab = jest.fn((tabId: string): void => {
-      resolveClose = (): void => {
+      closeControl.resolve = (): void => {
         useChatStore.setState((state) => {
           const wc = state.worktreeChats[KEY];
           if (!wc) return state;
@@ -2242,8 +2174,10 @@ describe('panels → chat', () => {
 
     // Once the archive resolves the old chat leaves the store and the guard is
     // pruned; nothing re-appears.
-    if (resolveClose === null) throw new Error('expected a deferred close');
-    resolveClose();
+    if (closeControl.resolve === null) {
+      throw new Error('expected a deferred close');
+    }
+    closeControl.resolve();
     flushChatPanelSyncForTests();
     expect(
       useChatStore.getState().worktreeChats[KEY].tabs.map((tab) => tab.id),
@@ -2275,7 +2209,18 @@ describe('panels → chat', () => {
       containerSize: { width: 1200, height: 800 },
     };
     setChatState(
-      [makeChatTab({ messages: [{ role: 'user', content: 'Hi' }] })],
+      [
+        makeChatTab({
+          messages: [
+            {
+              id: 'user-1',
+              role: 'user',
+              blocks: [{ type: 'text', text: 'Hi' }],
+              timestamp: 1,
+            },
+          ],
+        }),
+      ],
       'chat-1',
     );
     panelStore().initializeLayout(KEY, layout);
@@ -2596,7 +2541,7 @@ describe('panels → chat', () => {
 
 describe('busy chat panel closes', () => {
   const DELEGATES_NOTICE =
-    'Delegates are still running. Stop them in Agent activity to close this chat.';
+    'Delegates are still running. Open background work and stop them to close this chat.';
   const originalAddToast = useGitHubStore.getState().addToast;
   const addToastMock = jest.fn();
 
@@ -2628,6 +2573,16 @@ describe('busy chat panel closes', () => {
     });
   }
 
+  function setLiveProviderTask(chatId: string, taskType: string): void {
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+      chatId,
+      sessionActive: true,
+      liveTasks: [{ taskId: `${chatId}-task`, taskType }],
+    });
+  }
+
   /** chat-1 and chat-2 share the chat group beside a terminal group. */
   function initTwoChats(chat1: ChatTab): void {
     setChatState(
@@ -2642,10 +2597,12 @@ describe('busy chat panel closes', () => {
 
   beforeEach(() => {
     useGitHubStore.setState({ toasts: [], addToast: addToastMock });
+    resetLiveBackgroundTaskStoreForTests();
   });
 
   afterEach(() => {
     resetDelegationActivityStoreForTests();
+    resetLiveBackgroundTaskStoreForTests();
     useGitHubStore.setState({ addToast: originalAddToast });
     addToastMock.mockReset();
   });
@@ -2674,6 +2631,43 @@ describe('busy chat panel closes', () => {
       projectId: PROJECT_ID,
       worktreeId: WORKTREE_ID,
     });
+  });
+
+  test('the panel × refuses an idle chat with a live provider agent before removing its panel', () => {
+    initTwoChats(makeChatTab());
+    setLiveProviderTask('chat-1', 'local_agent');
+
+    closePanelTab(KEY, 'group-chat', 'panel-chat-1');
+    flushChatPanelSyncForTests();
+
+    expect(closeTabMock).not.toHaveBeenCalled();
+    expect(groupChatTabIds()).toEqual(['chat-1', 'chat-2']);
+    expect(addToastMock).toHaveBeenCalledTimes(1);
+    expect(addToastMock).toHaveBeenCalledWith(
+      BACKGROUND_BLOCKS_CLOSE_NOTICE,
+      'info',
+      undefined,
+      expect.objectContaining({ forceInApp: true }),
+    );
+  });
+
+  test('multi-panel close shows one delegate-priority notice for provider and delegate blockers', () => {
+    initTwoChats(makeChatTab());
+    setLiveProviderTask('chat-1', 'local_agent');
+    setLiveDelegates('chat-2', 1);
+
+    closePanelTabs(KEY, 'group-chat', ['panel-chat-1', 'panel-chat-chat-2']);
+    flushChatPanelSyncForTests();
+
+    expect(closeTabMock).not.toHaveBeenCalled();
+    expect(groupChatTabIds()).toEqual(['chat-1', 'chat-2']);
+    expect(addToastMock).toHaveBeenCalledTimes(1);
+    expect(addToastMock).toHaveBeenCalledWith(
+      DELEGATES_BLOCK_CLOSE_NOTICE,
+      'info',
+      undefined,
+      expect.objectContaining({ forceInApp: true }),
+    );
   });
 
   test('the panel × refuses a streaming chat before removing its panel', () => {
@@ -3226,4 +3220,867 @@ describe('openContentPanel', () => {
     expect(ensureWorktreePanelLayout).toHaveBeenCalledWith(KEY);
     expect(result).toEqual({ status: 'unavailable' });
   });
+});
+
+/**
+ * CAN-4789: Cowork Advanced layout keeps the conversation visible. Every
+ * activating file open lands in one documents group beside the anchor chat,
+ * and the anchor chat stays selected in its own group.
+ */
+describe('Cowork documents-group placement (CAN-4789)', () => {
+  const CW_WORKTREE_ID = 'cowork-entry-1';
+  const CW_KEY = `${STANDALONE_CHAT_PROJECT_ID}/${CW_WORKTREE_ID}`;
+  const COWORK_LAYOUT: DefaultLayoutDescriptor = {
+    orientation: 'horizontal',
+    groups: [
+      { groupId: 'group-chat' },
+      {
+        kind: 'terminal',
+        groupId: 'group-terminal',
+        panelId: 'panel-terminal',
+      },
+    ],
+    containerSize: { width: 1600, height: 800 },
+  };
+
+  function cwChats(): { tabs: ChatTab[]; activeTabId: string } {
+    return useChatStore.getState().worktreeChats[CW_KEY];
+  }
+
+  function cwSetChats(tabs: ChatTab[], activeTabId: string): void {
+    useChatStore.setState({
+      selectedWorktree: {
+        projectId: STANDALONE_CHAT_PROJECT_ID,
+        worktreeId: CW_WORKTREE_ID,
+      },
+      worktreeChats: { [CW_KEY]: { tabs, activeTabId } },
+    });
+  }
+
+  function cwInit(tabs: ChatTab[], activeTabId: string): void {
+    cwSetChats(tabs, activeTabId);
+    panelStore().initializeLayout(CW_KEY, COWORK_LAYOUT);
+    initChatPanelSync();
+    flushChatPanelSyncForTests();
+  }
+
+  /** Opens a file tab the way `openFileTab` does: added and made active. */
+  function cwOpen(file: ChatTab, activate = true): void {
+    const wc = cwChats();
+    const exists = wc.tabs.some((tab) => tab.id === file.id);
+    cwSetChats(
+      exists ? wc.tabs : [...wc.tabs, file],
+      activate ? file.id : wc.activeTabId,
+    );
+    flushChatPanelSyncForTests();
+  }
+
+  function cwLocation(instanceKey: string): PanelInstanceLocation | null {
+    return findPanelByInstanceKey(CW_KEY, instanceKey);
+  }
+
+  function cwGroup(groupId: string): {
+    tabs: ReadonlyArray<{
+      panelId: string;
+      kind: string;
+      instance?: Readonly<Record<string, string>>;
+    }>;
+    activePanelId: string | null;
+  } {
+    return panelStore().layouts[CW_KEY].groups[groupId];
+  }
+
+  /** The chat-tab id shown (selected) in a group, or `null`. */
+  function selectedChatIn(groupId: string): string | null {
+    const group = cwGroup(groupId);
+    const active = group.tabs.find(
+      (tab) => tab.panelId === group.activePanelId,
+    );
+    return active?.kind === 'chat'
+      ? (active.instance?.chatTabId ?? null)
+      : null;
+  }
+
+  function fileGroupId(fileTabId: string): string | undefined {
+    return cwLocation(`file-diff:${fileTabId}`)?.groupId;
+  }
+
+  function filePanelCount(fileTabId: string): number {
+    return Object.values(panelStore().layouts[CW_KEY].groups)
+      .flatMap((group) => group.tabs)
+      .filter((tab) => tab.instance?.fileTabId === fileTabId).length;
+  }
+
+  function fileTab(id: string): ChatTab {
+    return makeFileTab({ id, title: `${id}.md`, filePath: `/tmp/${id}.md` });
+  }
+
+  /**
+   * A saved layout from before the fix: chat-1 and a legacy file share the
+   * chat group. `legacySelected` leaves the file covering the chat.
+   */
+  function cwInitLegacy(legacySelected: boolean): void {
+    cwSetChats([makeChatTab(), fileTab('file-legacy')], 'chat-1');
+    panelStore().initializeLayout(CW_KEY, COWORK_LAYOUT);
+    panelStore().addTab(CW_KEY, 'group-chat', 'chat', {
+      panelId: 'panel-chat-chat-1',
+      instance: { chatTabId: 'chat-1' },
+    });
+    panelStore().addTab(CW_KEY, 'group-chat', 'file-diff', {
+      panelId: 'panel-file-file-legacy',
+      instance: { fileTabId: 'file-legacy' },
+      activate: false,
+    });
+    initChatPanelSync();
+    flushChatPanelSyncForTests();
+    if (legacySelected) {
+      panelStore().selectTab(CW_KEY, 'group-chat', 'panel-file-file-legacy');
+      flushChatPanelSyncForTests();
+    }
+  }
+
+  afterEach(() => {
+    setPanelLayoutFixedTopology(CW_KEY, false);
+    useGitHubStore.setState({ toasts: [] });
+  });
+
+  test('origin-less, hinted, and batch opens share one documents group while the chat stays selected', () => {
+    cwInit([makeChatTab()], 'chat-1');
+
+    // File tree / Cmd+P: no origin hint.
+    cwOpen(fileTab('file-1'));
+    const documentsGroupId = fileGroupId('file-1');
+    expect(documentsGroupId).toBeDefined();
+    expect(documentsGroupId).not.toBe('group-chat');
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(documentsGroupId);
+    expect(cwGroup(documentsGroupId ?? '').activePanelId).toBe(
+      cwLocation('file-diff:file-1')?.panelId,
+    );
+
+    // Inline mention / markdown link: a beside-chat hint.
+    requestFilePanelPlacementBesideChat('file-2', 'chat-1');
+    cwOpen(fileTab('file-2'));
+    expect(fileGroupId('file-2')).toBe(documentsGroupId);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+
+    // Created files chip: the ShowFiles batch.
+    const wc = cwChats();
+    cwSetChats([...wc.tabs, fileTab('file-3')], wc.activeTabId);
+    expect(
+      placeFilePanelsBesideChat(
+        STANDALONE_CHAT_PROJECT_ID,
+        CW_WORKTREE_ID,
+        ['file-3'],
+        'chat-1',
+      ),
+    ).toBe(documentsGroupId);
+    flushChatPanelSyncForTests();
+    expect(fileGroupId('file-3')).toBe(documentsGroupId);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(cwGroup('group-chat').tabs.map((tab) => tab.kind)).toEqual(['chat']);
+
+    // Reopening through a mention neither duplicates nor moves anything.
+    requestFilePanelPlacementBesideChat('file-1', 'chat-1');
+    cwOpen(fileTab('file-1'));
+    expect(filePanelCount('file-1')).toBe(1);
+    expect(fileGroupId('file-1')).toBe(documentsGroupId);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(documentsGroupId);
+
+    // Repeated reconciliation is idempotent.
+    const settled = panelStore().layouts[CW_KEY].groups;
+    flushChatPanelSyncForTests();
+    initChatPanelSync();
+    flushChatPanelSyncForTests();
+    expect(panelStore().layouts[CW_KEY].groups).toEqual(settled);
+  });
+
+  test('reopening a legacy file from the chat group moves it beside the chat without duplicating it', () => {
+    cwInitLegacy(false);
+    expect(fileGroupId('file-legacy')).toBe('group-chat');
+
+    cwOpen(fileTab('file-legacy'));
+
+    expect(filePanelCount('file-legacy')).toBe(1);
+    expect(fileGroupId('file-legacy')).not.toBe('group-chat');
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(
+      fileGroupId('file-legacy'),
+    );
+  });
+
+  test('a stale file-sibling hint never routes a new file into the chat group', () => {
+    cwInitLegacy(false);
+
+    requestFilePanelPlacementAsSibling('file-new', 'file-legacy');
+    cwOpen(fileTab('file-new'));
+
+    expect(fileGroupId('file-new')).not.toBe('group-chat');
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+  });
+
+  test('a file-sibling hint inside the documents group stays beside its origin', () => {
+    cwInit([makeChatTab()], 'chat-1');
+    cwOpen(fileTab('file-1'));
+    cwOpen(fileTab('file-2'));
+    const documentsGroupId = fileGroupId('file-1');
+
+    requestFilePanelPlacementAsSibling('file-3', 'file-1');
+    cwOpen(fileTab('file-3'));
+
+    expect(fileGroupId('file-3')).toBe(documentsGroupId);
+    expect(
+      cwGroup(documentsGroupId ?? '').tabs.map(
+        (tab) => tab.instance?.fileTabId,
+      ),
+    ).toEqual(['file-1', 'file-3', 'file-2']);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+  });
+
+  test('a chip open restores a chat hidden by an unrelated legacy file', () => {
+    cwInitLegacy(true);
+    expect(selectedChatIn('group-chat')).toBeNull();
+
+    const wc = cwChats();
+    cwSetChats([...wc.tabs, fileTab('file-new')], wc.activeTabId);
+    const documentsGroupId = placeFilePanelsBesideChat(
+      STANDALONE_CHAT_PROJECT_ID,
+      CW_WORKTREE_ID,
+      ['file-new'],
+      'chat-1',
+    );
+    flushChatPanelSyncForTests();
+
+    expect(documentsGroupId).not.toBeNull();
+    expect(documentsGroupId).not.toBe('group-chat');
+    expect(fileGroupId('file-new')).toBe(documentsGroupId);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    // The unrelated legacy file is not migrated in bulk.
+    expect(fileGroupId('file-legacy')).toBe('group-chat');
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(documentsGroupId);
+  });
+
+  test('anchors to a live explicit origin, else the last active chat', () => {
+    cwSetChats(
+      [
+        makeChatTab(),
+        makeChatTab({ id: 'chat-2', title: 'Chat Two' }),
+        fileTab('legacy-1'),
+        fileTab('legacy-2'),
+      ],
+      'chat-1',
+    );
+    panelStore().initializeLayout(CW_KEY, {
+      orientation: 'horizontal',
+      groups: [
+        {
+          kind: 'chat',
+          groupId: 'group-chat',
+          panelId: 'panel-chat-chat-1',
+          instance: { chatTabId: 'chat-1' },
+        },
+        {
+          kind: 'chat',
+          groupId: 'group-chat-2',
+          panelId: 'panel-chat-chat-2',
+          instance: { chatTabId: 'chat-2' },
+        },
+      ],
+      containerSize: { width: 1600, height: 800 },
+    });
+    for (const [groupId, fileTabId] of [
+      ['group-chat', 'legacy-1'],
+      ['group-chat-2', 'legacy-2'],
+    ] as const) {
+      panelStore().addTab(CW_KEY, groupId, 'file-diff', {
+        panelId: `panel-file-${fileTabId}`,
+        instance: { fileTabId },
+        activate: false,
+      });
+    }
+    initChatPanelSync();
+    flushChatPanelSyncForTests();
+    // Cover both chats with their legacy files; chat-1 was last active.
+    panelStore().selectTab(CW_KEY, 'group-chat-2', 'panel-file-legacy-2');
+    panelStore().selectTab(CW_KEY, 'group-chat', 'panel-file-legacy-1');
+    flushChatPanelSyncForTests();
+    expect(selectedChatIn('group-chat')).toBeNull();
+    expect(selectedChatIn('group-chat-2')).toBeNull();
+
+    // A stale origin falls back to the last active chat.
+    requestFilePanelPlacementBesideChat('file-1', 'chat-gone');
+    cwOpen(fileTab('file-1'));
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(selectedChatIn('group-chat-2')).toBeNull();
+    expect(['group-chat', 'group-chat-2']).not.toContain(fileGroupId('file-1'));
+
+    // A live explicit origin wins over the last active chat.
+    requestFilePanelPlacementBesideChat('file-2', 'chat-2');
+    cwOpen(fileTab('file-2'));
+    expect(selectedChatIn('group-chat-2')).toBe('chat-2');
+    expect(['group-chat', 'group-chat-2']).not.toContain(fileGroupId('file-2'));
+  });
+
+  test('background opens use the documents group without moving selection or focus', () => {
+    cwInit([makeChatTab()], 'chat-1');
+    const focusedGroupId = panelStore().layouts[CW_KEY].activeGroupId;
+    expect(focusedGroupId).toBe('group-chat');
+
+    cwOpen(fileTab('file-1'), false);
+    const documentsGroupId = fileGroupId('file-1');
+    expect(documentsGroupId).toBeDefined();
+    expect(documentsGroupId).not.toBe('group-chat');
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(focusedGroupId);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(cwChats().activeTabId).toBe('chat-1');
+
+    cwOpen(fileTab('file-2'), false);
+    expect(fileGroupId('file-2')).toBe(documentsGroupId);
+    expect(cwGroup(documentsGroupId ?? '').activePanelId).toBe(
+      cwLocation('file-diff:file-1')?.panelId,
+    );
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(focusedGroupId);
+    expect(cwChats().activeTabId).toBe('chat-1');
+  });
+
+  test.each([false, true])(
+    'background creation preserves the focused right rail in every publication (maximized=%s)',
+    (maximized) => {
+      cwInit([makeChatTab()], 'chat-1');
+      panelStore().focusGroup(CW_KEY, 'group-terminal');
+      if (maximized) panelStore().maximizeGroup(CW_KEY, 'group-terminal', true);
+      flushChatPanelSyncForTests();
+      const before = panelStore().layouts[CW_KEY];
+      const changed: boolean[] = [];
+      const unsubscribe = usePanelLayoutStore.subscribe((state) => {
+        const layout = state.layouts[CW_KEY];
+        changed.push(
+          layout.activeGroupId !== before.activeGroupId ||
+            JSON.stringify(layout.mruGroupIds) !==
+              JSON.stringify(before.mruGroupIds) ||
+            layout.maximizedGroupId !== before.maximizedGroupId ||
+            layout.groups['group-terminal'].collapsed !== undefined ||
+            layout.groups['group-chat'].activePanelId !==
+              before.groups['group-chat'].activePanelId,
+        );
+      });
+      try {
+        cwOpen(fileTab('background-new'), false);
+        expect(cwLocation('file-diff:background-new')).not.toBeNull();
+        expect(changed).not.toContain(true);
+        expect(
+          panelStore().layouts[CW_KEY].groups['group-terminal'].collapsed,
+        ).toBeUndefined();
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
+  test('a refused documents group never falls back into the chat group', () => {
+    cwInit([makeChatTab()], 'chat-1');
+    useGitHubStore.setState({ toasts: [] });
+    setPanelLayoutFixedTopology(CW_KEY, true);
+
+    cwOpen(fileTab('file-1'));
+
+    expect(cwLocation('file-diff:file-1')).toBeNull();
+    expect(cwGroup('group-chat').tabs.map((tab) => tab.kind)).toEqual(['chat']);
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(closeTabMock).toHaveBeenCalledWith('file-1', {
+      projectId: STANDALONE_CHAT_PROJECT_ID,
+      worktreeId: CW_WORKTREE_ID,
+    });
+    expect(cwChats().tabs.map((tab) => tab.id)).toEqual(['chat-1']);
+
+    // Nothing lingers: once space exists, the next open places normally.
+    setPanelLayoutFixedTopology(CW_KEY, false);
+    cwOpen(fileTab('file-1'));
+    expect(fileGroupId('file-1')).not.toBe('group-chat');
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+  });
+
+  test('an origin-less reopen of the already-active legacy file repairs its placement', () => {
+    cwInitLegacy(true);
+    expect(selectedChatIn('group-chat')).toBeNull();
+    useChatStore.getState().openFileTab({
+      absolutePath: '/tmp/file-legacy.md',
+      filename: 'file-legacy.md',
+    });
+    flushChatPanelSyncForTests();
+    expect(fileGroupId('file-legacy')).not.toBe('group-chat');
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+  });
+
+  test('an explicit hint restores its anchor even when the file is already active', () => {
+    cwInit([makeChatTab(), makeChatTab({ id: 'chat-2' })], 'chat-1');
+    cwOpen(fileTab('file-1'));
+    panelStore().selectTab(CW_KEY, 'group-chat', 'panel-chat-chat-2', {
+      focus: false,
+    });
+    flushChatPanelSyncForTests();
+    expect(selectedChatIn('group-chat')).toBe('chat-2');
+    requestFilePanelPlacementBesideChat('file-1', 'chat-1');
+    cwOpen(fileTab('file-1'));
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+    expect(panelStore().layouts[CW_KEY].activeGroupId).toBe(
+      fileGroupId('file-1'),
+    );
+  });
+
+  test('origin-less opens follow the last active chat into its auxiliary layout', () => {
+    cwInit([makeChatTab()], 'chat-1');
+    const auxKey = makeAuxPanelLayoutKey(CW_KEY, 'cowork-chat');
+    expect(
+      panelStore().extractGroupToLayout(CW_KEY, 'group-chat', auxKey),
+    ).toBe(true);
+    flushChatPanelSyncForTests();
+
+    cwOpen(fileTab('aux-file'));
+
+    expect(cwLocation('file-diff:aux-file')?.layoutKey).toBe(auxKey);
+    expect(
+      panelStore().layouts[auxKey].groups['group-chat'].activePanelId,
+    ).toBe('panel-chat-chat-1');
+  });
+
+  test('background ShowFiles registers its explicit origin before reconciliation', async () => {
+    cwInit([makeChatTab()], 'chat-1');
+    const auxKey = makeAuxPanelLayoutKey(CW_KEY, 'cowork-origin');
+    panelStore().initializeLayout(auxKey, {
+      orientation: 'horizontal',
+      groups: [
+        {
+          groupId: 'group-origin',
+          kind: 'chat',
+          panelId: 'panel-chat-chat-2',
+          instance: { chatTabId: 'chat-2' },
+        },
+      ],
+      containerSize: { width: 1200, height: 800 },
+    });
+    cwSetChats([makeChatTab(), makeChatTab({ id: 'chat-2' })], 'chat-1');
+    flushChatPanelSyncForTests();
+    const mainBefore = panelStore().layouts[CW_KEY];
+    const originalApi = window.api;
+    window.api = {
+      ...originalApi,
+      getFileTreeRoots: jest.fn().mockResolvedValue({
+        roots: [{ absolutePath: '/tmp', repoId: 'repo-1', name: 'tmp' }],
+      }),
+      readFileContent: jest.fn().mockResolvedValue({
+        kind: 'text',
+        filename: 'origin.txt',
+        content: 'text',
+        sizeBytes: 4,
+        truncated: false,
+        modifiedAtMs: 1,
+      }),
+    };
+    try {
+      const { showFilesInRenderer } = await import('../../show-files');
+      const result = await showFilesInRenderer(
+        {
+          target: {
+            projectId: STANDALONE_CHAT_PROJECT_ID,
+            worktreeId: CW_WORKTREE_ID,
+          },
+          origin: {
+            projectId: STANDALONE_CHAT_PROJECT_ID,
+            worktreeId: CW_WORKTREE_ID,
+            chatTabId: 'chat-2',
+          },
+          intent: 'agent',
+          presentation: 'background',
+          files: [{ path: 'origin.txt' }],
+        },
+        'main',
+      );
+      const file = cwChats().tabs.find(
+        (tab) => tab.filePath === '/tmp/origin.txt',
+      );
+      expect(result).toMatchObject({ opened: 1, failed: 0, activated: false });
+      expect(cwLocation(`file-diff:${file?.id}`)?.layoutKey).toBe(auxKey);
+      expect(panelStore().layouts[CW_KEY]).toEqual(mainBefore);
+      expect(panelStore().layouts[auxKey].activeGroupId).toBe('group-origin');
+    } finally {
+      window.api = originalApi;
+    }
+  });
+
+  test('activating an auxiliary file focuses its owning document and window', async () => {
+    cwInit([makeChatTab()], 'chat-1');
+    const auxKey = makeAuxPanelLayoutKey(CW_KEY, 'cowork-focus');
+    expect(
+      panelStore().extractGroupToLayout(CW_KEY, 'group-chat', auxKey),
+    ).toBe(true);
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const childWindow = frame.contentWindow;
+    if (childWindow === null) throw new Error('Expected a child window');
+    const focus = jest
+      .spyOn(childWindow, 'focus')
+      .mockImplementation((): void => undefined);
+    usePanelWindowsStore.setState({
+      auxWindows: {
+        'cowork-focus': {
+          auxWindowId: 'cowork-focus',
+          worktreeKey: CW_KEY,
+          layoutKey: auxKey,
+          sourceGroupId: 'group-chat',
+          childWindow,
+          status: 'open',
+          focusOnOpen: false,
+        },
+      },
+    });
+    try {
+      requestFilePanelPlacementBesideChat('aux-focus-file', 'chat-1');
+      cwOpen(fileTab('aux-focus-file'));
+      const location = cwLocation('file-diff:aux-focus-file');
+      expect(location?.layoutKey).toBe(auxKey);
+      // Panel content is created in the opener realm, then adopted by the child.
+      const group = document.createElement('div');
+      group.dataset.testid = `panel-group-${location?.groupId}`;
+      const tab = document.createElement('button');
+      tab.setAttribute('role', 'tab');
+      tab.tabIndex = 0;
+      group.appendChild(tab);
+      childWindow.document.body.appendChild(group);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(childWindow.document.activeElement).toBe(tab);
+      expect(focus).toHaveBeenCalled();
+    } finally {
+      usePanelWindowsStore.setState({ auxWindows: {} });
+      frame.remove();
+    }
+  });
+
+  test.each(['foreground', 'background'] as const)(
+    '%s agent ShowFiles repairs an inactive legacy file after acknowledgement',
+    async (presentation) => {
+      cwInitLegacy(false);
+      cwOpen(fileTab('document'));
+      const documentsGroupId = fileGroupId('document');
+      cwSetChats(cwChats().tabs, 'chat-1');
+      flushChatPanelSyncForTests();
+      const before = panelStore().layouts[CW_KEY];
+      const selectionChanges: boolean[] = [];
+      const unsubscribe = usePanelLayoutStore.subscribe((state) => {
+        const layout = state.layouts[CW_KEY];
+        selectionChanges.push(
+          layout.activeGroupId !== before.activeGroupId ||
+            layout.groups['group-chat'].activePanelId !==
+              before.groups['group-chat'].activePanelId ||
+            layout.groups[documentsGroupId ?? ''].activePanelId !==
+              before.groups[documentsGroupId ?? ''].activePanelId,
+        );
+      });
+      const originalApi = window.api;
+      window.api = {
+        ...originalApi,
+        getFileTreeRoots: jest.fn().mockResolvedValue({
+          roots: [{ absolutePath: '/tmp', repoId: 'repo-1', name: 'tmp' }],
+        }),
+        readFileContent: jest.fn().mockResolvedValue({
+          kind: 'text',
+          filename: 'file-legacy.md',
+          content: 'text',
+          sizeBytes: 4,
+          truncated: false,
+          modifiedAtMs: 1,
+        }),
+      };
+      try {
+        const { showFilesInRenderer } = await import('../../show-files');
+        const result = await showFilesInRenderer(
+          {
+            target: {
+              projectId: STANDALONE_CHAT_PROJECT_ID,
+              worktreeId: CW_WORKTREE_ID,
+            },
+            origin: {
+              projectId: STANDALONE_CHAT_PROJECT_ID,
+              worktreeId: CW_WORKTREE_ID,
+              chatTabId: 'chat-1',
+            },
+            intent: 'agent',
+            presentation,
+            files: [{ path: 'file-legacy.md' }],
+          },
+          'main',
+        );
+        flushChatPanelSyncForTests();
+        expect(result).toMatchObject({
+          opened: 1,
+          failed: 0,
+          activated: presentation === 'foreground',
+        });
+        expect(cwLocation('file-diff:file-legacy')).toMatchObject({
+          groupId: documentsGroupId,
+          panelId: 'panel-file-file-legacy',
+        });
+        expect(cwGroup(documentsGroupId ?? '').tabs).toHaveLength(2);
+        expect(selectedChatIn('group-chat')).toBe('chat-1');
+        if (presentation === 'background')
+          expect(selectionChanges).not.toContain(true);
+      } finally {
+        unsubscribe();
+        window.api = originalApi;
+      }
+    },
+  );
+
+  test('ShowFiles cancels a new tab if selection changes while reading before creation settles', async () => {
+    cwInit([makeChatTab()], 'chat-1');
+    let acknowledge: (result: 'accepted') => void = (): void => {};
+    const creation = new Promise<'accepted'>((resolve) => {
+      acknowledge = resolve;
+    });
+    let markCreated: () => void = (): void => {};
+    const created = new Promise<void>((resolve) => {
+      markCreated = resolve;
+    });
+    const originalOpenFileTab = useChatStore.getState().openFileTab;
+    let createdTabId: string | null = null;
+    useChatStore.setState({
+      openFileTab: (...args) => {
+        createdTabId = originalOpenFileTab(...args);
+        if (createdTabId !== null)
+          registerPendingTabCreation(
+            STANDALONE_CHAT_PROJECT_ID,
+            CW_WORKTREE_ID,
+            createdTabId,
+            creation,
+          );
+        markCreated();
+        return createdTabId;
+      },
+    });
+    let finishRead: () => void = (): void => {};
+    const fileRead = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
+    let markReading: () => void = (): void => {};
+    const reading = new Promise<void>((resolve) => {
+      markReading = resolve;
+    });
+    const originalApi = window.api;
+    window.api = {
+      ...originalApi,
+      getFileTreeRoots: jest.fn().mockResolvedValue({
+        roots: [{ absolutePath: '/tmp', repoId: 'repo-1', name: 'tmp' }],
+      }),
+      readFileContent: jest.fn().mockImplementation(async () => {
+        markReading();
+        await fileRead;
+        return {
+          kind: 'text',
+          filename: 'pending.txt',
+          content: 'text',
+          sizeBytes: 4,
+          truncated: false,
+          modifiedAtMs: 1,
+        };
+      }),
+    };
+    try {
+      const { showFilesInRenderer } = await import('../../show-files');
+      const pending = showFilesInRenderer(
+        {
+          target: {
+            projectId: STANDALONE_CHAT_PROJECT_ID,
+            worktreeId: CW_WORKTREE_ID,
+          },
+          origin: {
+            projectId: STANDALONE_CHAT_PROJECT_ID,
+            worktreeId: CW_WORKTREE_ID,
+            chatTabId: 'chat-1',
+          },
+          intent: 'agent',
+          presentation: 'background',
+          files: [{ path: 'pending.txt' }],
+        },
+        'main',
+      );
+      await reading;
+      useChatStore.setState({
+        selectedWorktree: { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      });
+      finishRead();
+      await created;
+      acknowledge('accepted');
+      expect(await pending).toMatchObject({
+        opened: 0,
+        failed: 1,
+        activated: false,
+      });
+      expect(cwChats().tabs.some((tab) => tab.id === createdTabId)).toBe(false);
+      expect(useChatStore.getState().selectedWorktree).toEqual({
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+      });
+      useChatStore.setState({
+        selectedWorktree: {
+          projectId: STANDALONE_CHAT_PROJECT_ID,
+          worktreeId: CW_WORKTREE_ID,
+        },
+      });
+      flushChatPanelSyncForTests();
+      expect(cwLocation(`file-diff:${createdTabId}`)).toBeNull();
+    } finally {
+      finishRead();
+      acknowledge('accepted');
+      useChatStore.setState({ openFileTab: originalOpenFileTab });
+      window.api = originalApi;
+    }
+  });
+
+  test('closing the documents group lets the next open recreate it', () => {
+    cwInit([makeChatTab()], 'chat-1');
+    cwOpen(fileTab('file-1'));
+    const documentsGroupId = fileGroupId('file-1');
+    expect(documentsGroupId).toBeDefined();
+
+    closePanelGroup(CW_KEY, documentsGroupId ?? '');
+    flushChatPanelSyncForTests();
+    expect(cwLocation('file-diff:file-1')).toBeNull();
+
+    cwOpen(fileTab('file-2'));
+    expect(fileGroupId('file-2')).toBeDefined();
+    expect(fileGroupId('file-2')).not.toBe('group-chat');
+    expect(selectedChatIn('group-chat')).toBe('chat-1');
+  });
+
+  test('a chat awaiting its panel is materialized before the file it anchors', () => {
+    cwInit([], '');
+
+    cwSetChats([fileTab('file-1'), makeChatTab()], 'file-1');
+    flushChatPanelSyncForTests();
+
+    const chatGroupId = cwLocation('chat:chat-1')?.groupId;
+    expect(chatGroupId).toBeDefined();
+    expect(fileGroupId('file-1')).toBeDefined();
+    expect(fileGroupId('file-1')).not.toBe(chatGroupId);
+    expect(selectedChatIn(chatGroupId ?? '')).toBe('chat-1');
+  });
+
+  test('without a chat panel the existing placement applies', () => {
+    cwInit([fileTab('file-1')], 'file-1');
+
+    expect(fileGroupId('file-1')).toBe('group-chat');
+    expect(Object.keys(panelStore().layouts[CW_KEY].groups)).toEqual(
+      expect.arrayContaining(['group-chat', 'group-terminal']),
+    );
+    expect(Object.keys(panelStore().layouts[CW_KEY].groups)).toHaveLength(2);
+  });
+
+  test('Cowork Minimal layout keeps routing files to its Side Panel', () => {
+    cwSetChats([makeChatTab()], 'chat-1');
+    panelStore().initializeLayout(CW_KEY, MINIMAL_LIKE_LAYOUT);
+    useWorkspaceLayoutModeStore.setState({
+      entries: {
+        [CW_KEY]: { mode: 'minimal', status: 'ready', requestId: 1 },
+      },
+    });
+    initChatPanelSync();
+    flushChatPanelSyncForTests();
+
+    cwOpen(fileTab('file-1'));
+
+    expect(cwLocation('file-diff:file-1')).toMatchObject({
+      layoutKey: CW_KEY,
+      groupId: 'group-extras',
+    });
+  });
+});
+
+test('attention landing focuses its visible chat group on the first restored-layout sweep', () => {
+  setChatState(
+    [makeChatTab(), makeChatTab({ id: 'chat-question' })],
+    'chat-question',
+  );
+  panelStore().initializeLayout(KEY, DEFAULT_LIKE_LAYOUT);
+  panelStore().addTab(KEY, 'group-chat', 'chat', {
+    panelId: 'panel-chat-chat-question',
+    instance: { chatTabId: 'chat-question' },
+  });
+  panelStore().addTab(KEY, 'group-chat', 'chat', {
+    panelId: 'panel-chat-chat-1',
+    instance: { chatTabId: 'chat-1' },
+  });
+  panelStore().focusGroup(KEY, 'group-terminal');
+  beginWorktreeEntry(KEY, true);
+  const intent = getWorktreeEntry(KEY);
+  if (!intent) throw new Error('Expected entry');
+  settleWorktreeEntry(intent, 'chat-1', {
+    tabId: 'chat-question',
+    attended: true,
+  });
+  initChatPanelSync();
+  flushChatPanelSyncForTests();
+  const location = findPanelByInstanceKey(KEY, 'chat:chat-question');
+  expect(location).not.toBeNull();
+  expect(panelStore().layouts[KEY]?.activeGroupId).toBe(location?.groupId);
+  expect(
+    panelStore().layouts[KEY]?.groups[location?.groupId ?? '']?.activePanelId,
+  ).toBe(location?.panelId);
+});
+
+test('a quiet attention entry keeps the restored panel selection', () => {
+  // Nothing needs attention, so the landing keeps the persisted chat tab.
+  // The restored Browser in the chat group and the focused terminal group
+  // must survive the first sweep instead of being covered by the chat.
+  setChatState([makeChatTab()], 'chat-1');
+  panelStore().initializeLayout(KEY, DEFAULT_LIKE_LAYOUT);
+  panelStore().addTab(KEY, 'group-chat', 'chat', {
+    panelId: 'panel-chat-1',
+    title: 'Chat One',
+    instance: { chatTabId: 'chat-1' },
+  });
+  panelStore().addTab(KEY, 'group-chat', 'browser', {
+    panelId: 'panel-browser-1',
+    title: 'Browser',
+    instance: { browserId: 'browser-1' },
+  });
+  panelStore().selectTab(KEY, 'group-chat', 'panel-browser-1');
+  panelStore().focusGroup(KEY, 'group-terminal');
+  beginWorktreeEntry(KEY, true);
+  const intent = getWorktreeEntry(KEY);
+  if (!intent) throw new Error('Expected entry');
+  settleWorktreeEntry(intent, 'chat-1', { tabId: null, attended: false });
+  initChatPanelSync();
+  flushChatPanelSyncForTests();
+  const layout = panelStore().layouts[KEY];
+  expect(layout?.activeGroupId).toBe('group-terminal');
+  expect(layout?.groups['group-chat']?.activePanelId).toBe('panel-browser-1');
+});
+
+test('an attention entry on an already-waiting active chat reveals it over a restored Browser', () => {
+  // Landing keeps the active chat because it is the attention target, so the
+  // first sweep must still select it over the Browser and focus its group.
+  setChatState([makeChatTab()], 'chat-1');
+  panelStore().initializeLayout(KEY, DEFAULT_LIKE_LAYOUT);
+  panelStore().addTab(KEY, 'group-chat', 'chat', {
+    panelId: 'panel-chat-1',
+    title: 'Chat One',
+    instance: { chatTabId: 'chat-1' },
+  });
+  panelStore().addTab(KEY, 'group-chat', 'browser', {
+    panelId: 'panel-browser-1',
+    title: 'Browser',
+    instance: { browserId: 'browser-1' },
+  });
+  panelStore().selectTab(KEY, 'group-chat', 'panel-browser-1');
+  panelStore().focusGroup(KEY, 'group-terminal');
+  beginWorktreeEntry(KEY, true);
+  const intent = getWorktreeEntry(KEY);
+  if (!intent) throw new Error('Expected entry');
+  settleWorktreeEntry(intent, 'chat-1', { tabId: null, attended: true });
+  initChatPanelSync();
+  flushChatPanelSyncForTests();
+  const layout = panelStore().layouts[KEY];
+  expect(layout?.activeGroupId).toBe('group-chat');
+  expect(layout?.groups['group-chat']?.activePanelId).toBe('panel-chat-1');
 });

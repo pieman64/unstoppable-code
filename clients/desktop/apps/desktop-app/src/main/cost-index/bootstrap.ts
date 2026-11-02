@@ -1,11 +1,16 @@
-import { setAuditDayPruneGuard } from '../observability/audit-stream-hooks';
+import {
+  setAuditDayPruneGuard,
+  type AuditDayFileIdentity,
+} from '../observability/audit-stream-hooks';
 
 /** Registration only: no files, timers' callbacks, or services run on startup. */
 export function registerCostRetentionGuard(): void {
-  setAuditDayPruneGuard(async (dayFilename): Promise<boolean> => {
-    const { getDesktopCostIndexStore } = await import('./service');
-    return getDesktopCostIndexStore().catchUpAndSealDay(dayFilename);
-  });
+  setAuditDayPruneGuard(
+    async (dayFilename): Promise<AuditDayFileIdentity | null> => {
+      const { getDesktopCostIndexStore } = await import('./service');
+      return getDesktopCostIndexStore().catchUpAndSealDay(dayFilename);
+    },
+  );
 }
 
 /** Loading the projection graph is deferred too, not just its first scan. */

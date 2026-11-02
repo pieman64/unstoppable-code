@@ -59,7 +59,7 @@ function account(
       : {}),
     hasApiKey: true,
     authMode: 'oauth',
-    credentialSource: 'oauth',
+    credentialSource: 'oauth_desktop',
     capabilities: [],
     storageAvailable: true,
     orgBillingStates,

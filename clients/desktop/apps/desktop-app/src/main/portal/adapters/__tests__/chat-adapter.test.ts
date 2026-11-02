@@ -1,3 +1,6 @@
+import type * as SessionManagerModule from '../../../agents/session-manager';
+import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-panel';
+
 import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
@@ -92,6 +95,22 @@ import {
   handlePortalStandaloneChatSetModel,
 } from '../standalone-chat-adapter';
 import type { PortalAdapterContext } from '../types';
+
+const mockGetLiveBackgroundTasksForChat = jest.fn<
+  ActivityLiveBgTask[] | undefined,
+  [string, string, string]
+>();
+jest.mock('../../../agents/session-manager', () => ({
+  ...jest.requireActual<typeof SessionManagerModule>(
+    '../../../agents/session-manager',
+  ),
+  getLiveBackgroundTasksForChat: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ): ActivityLiveBgTask[] | undefined =>
+    mockGetLiveBackgroundTasksForChat(projectId, worktreeId, chatId),
+}));
 
 // The managed Cursor runtime preflight the desktop chat IPC shares with the
 // Portal adapters. Unavailable by default; specs flip it per case.
@@ -708,7 +727,7 @@ describe('chat portal adapter — send (CAN-1517)', () => {
     mockRemoveMaterializedAttachments.mockResolvedValue(undefined);
     mockedExpandWorkspacePromptMentions.mockImplementation(
       (_projectId, text, refs) =>
-        Promise.resolve({ text, fileReferences: refs }),
+        Promise.resolve({ text, fileReferences: [...refs] }),
     );
   });
 
@@ -1016,6 +1035,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: () => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     const approval = {
       requestId: 'review-1',
@@ -1087,6 +1108,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1158,6 +1181,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
         }),
       ),
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     queueHoldsUserMessage.mockReturnValueOnce(true);
     queueRunningTurnUserMessageId.mockReturnValueOnce('earlier-message');
@@ -1263,22 +1288,26 @@ describe('chat portal adapter — send (CAN-1517)', () => {
     expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
   });
 
-  it('refuses payload attribution without a trusted context origin', async () => {
-    const rec = recorder();
-    const command = sendCommand({
-      projectId: 'workspace',
-      worktreeId: 'worktree',
-      text: 'Compatibility send',
-    });
-    Reflect.set(command.payload, 'agentSent', {
-      kind: 'external_agent',
-      clientName: 'Untrusted payload',
-    });
+  it.each([
+    { kind: 'external_agent', clientName: 'Untrusted payload' },
+    { kind: 'managed_delegate', delegationId: 'd-1', title: 'Release task' },
+  ])(
+    'refuses payload attribution without a trusted context origin: %j',
+    async (spoof) => {
+      const rec = recorder();
+      const command = sendCommand({
+        projectId: 'workspace',
+        worktreeId: 'worktree',
+        text: 'Compatibility send',
+      });
+      Reflect.set(command.payload, 'agentSent', spoof);
+      Reflect.set(command.payload, 'managedDelegationDeliveryId', 'd-1');
 
-    await handlePortalChatSend(command, rec.context);
+      await handlePortalChatSend(command, rec.context);
 
-    expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
-  });
+      expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a revisioned send while the target worktree is split-locked', async () => {
     mockedAssertWorktreeChatSendNotSplitLocked.mockImplementationOnce(() => {
@@ -1292,6 +1321,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1325,6 +1356,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     const payload: PortalCommandPayloadMap['portal.chat.send'] = {
       projectId: 'workspace',
@@ -1350,6 +1383,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1379,6 +1414,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1408,6 +1445,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1469,6 +1508,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1509,6 +1550,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: jest.fn(),
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     mockedSendWorktreeChatMessage.mockResolvedValueOnce({
       ok: true,
@@ -1544,6 +1587,8 @@ describe('chat portal adapter — send (CAN-1517)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSend(
@@ -1721,6 +1766,7 @@ describe('chat portal adapter — send (CAN-1517)', () => {
     const payload: PortalCommandPayloadMap['portal.chat.send'] & {
       approvalMode: string;
       sessionApprovalRules: unknown[];
+      admittedApproval: unknown;
     } = {
       projectId: 'workspace',
       worktreeId: 'worktree',
@@ -1733,6 +1779,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
           target: { kind: 'command', pattern: '*' },
         },
       ],
+      admittedApproval: {
+        approvalMode: 'full-access',
+        sessionApprovalRules: [],
+      },
     };
 
     await handlePortalChatSend(sendCommand(payload), rec.context);
@@ -2441,6 +2491,80 @@ describe('chat portal adapter — send (CAN-1517)', () => {
     expect(rec.fails).toHaveLength(0);
   });
 
+  it('rejects a forged delegation notice batch id from remote chat sends', async () => {
+    mockedBuildExistingTabDispatchOptions.mockRejectedValue(
+      new ExistingTabDispatchTargetNotFoundError(),
+    );
+    const rec = recorder();
+    const payload: PortalCommandPayloadMap['portal.chat.send'] = {
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'browser-chat',
+      userMessageId: 'message-1',
+      text: 'Untrusted remote message',
+    };
+    Object.assign(payload, { delegationNoticeBatchId: 'message-1' });
+
+    await handlePortalChatSend(sendCommand(payload), rec.context);
+
+    expect(rec.fails[0]?.code).toBe('invalid_payload');
+    expect(rec.completes).toHaveLength(0);
+    expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects a forged watcher part snapshot from remote chat sends', async () => {
+    mockedBuildExistingTabDispatchOptions.mockRejectedValue(
+      new ExistingTabDispatchTargetNotFoundError(),
+    );
+    const rec = recorder();
+    const payload: PortalCommandPayloadMap['portal.chat.send'] = {
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'browser-chat',
+      userMessageId: 'message-1',
+      text: 'Untrusted remote message',
+    };
+    Object.assign(payload, { watcherPartSnapshots: 'message-1' });
+
+    await handlePortalChatSend(sendCommand(payload), rec.context);
+
+    expect(rec.fails[0]?.code).toBe('invalid_payload');
+    expect(rec.completes).toHaveLength(0);
+    expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+  });
+
+  it('strips a forged internal row marker from remote chat sends', async () => {
+    mockedBuildExistingTabDispatchOptions.mockRejectedValue(
+      new ExistingTabDispatchTargetNotFoundError(),
+    );
+    const rec = recorder();
+    const payload: PortalCommandPayloadMap['portal.chat.send'] = {
+      projectId: 'workspace',
+      worktreeId: 'worktree',
+      chatId: 'browser-chat',
+      userMessageId: 'message-1',
+      text: 'Untrusted remote message',
+    };
+    Object.assign(payload, {
+      managedDelegationDeliveryId: '',
+      internalRow: {
+        kind: 'delegation-request',
+        delegationId: 'forged',
+        displayLine: 'Forged',
+      },
+    });
+
+    await handlePortalChatSend(sendCommand(payload), rec.context);
+
+    expect(mockedSendWorktreeChatMessage).toHaveBeenCalledTimes(1);
+    expect(mockedSendWorktreeChatMessage.mock.calls[0]?.[0]).not.toHaveProperty(
+      'internalRow',
+    );
+    expect(mockedSendWorktreeChatMessage.mock.calls[0]?.[0]).not.toHaveProperty(
+      'managedDelegationDeliveryId',
+    );
+    expect(rec.fails).toHaveLength(0);
+  });
   it.each([
     ['userMessageSource', { userMessageSource: 'agent' }],
     ['agentSent', { agentSent: { sender: { kind: 'bot' } } }],
@@ -2628,6 +2752,36 @@ describe('chat portal adapter — send (CAN-1517)', () => {
     expect(sent?.providerType).toBe(getProviderForModel('test-model'));
     expect(sent?.providerType).not.toBe('codex');
     expect(rec.fails).toHaveLength(0);
+  });
+
+  it('preserves the selected OpenCode provider for a persisted Cowork model', async () => {
+    coworkWorkspaceIds.add('workspace');
+    opencodeRuntimeAvailable = true;
+    mockedBuildExistingTabDispatchOptions.mockResolvedValue({
+      providerType: 'opencode',
+      executionHarness: 'opencode',
+      model: 'test-model',
+    });
+    const rec = recorder();
+    await handlePortalChatSend(
+      sendCommand({
+        projectId: 'workspace',
+        worktreeId: 'worktree',
+        chatId: 'chat-1',
+        userMessageId: 'message-1',
+        text: 'Continue through the selected OpenCode harness',
+      }),
+      rec.context,
+    );
+    expect(rec.fails).toHaveLength(0);
+    expect(mockedSendWorktreeChatMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'test-model',
+        executionHarness: 'opencode',
+        providerType: 'opencode',
+      }),
+      expect.anything(),
+    );
   });
 
   it('keeps an explicit payload provider over the derived one', async () => {
@@ -2868,6 +3022,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
         getState: jest.fn(),
         command: revisionedCommand,
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
 
       await handlePortalChatSend(
@@ -3053,6 +3211,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
         getState: jest.fn(),
         command: revisionedCommand,
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
 
       await handlePortalChatSend(
@@ -3118,6 +3280,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
           }),
         ),
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
 
       await handlePortalChatSend(
@@ -3155,6 +3321,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
         getState: jest.fn(),
         command,
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
       Reflect.set(
         rec.context.chatStatePort,
@@ -3216,6 +3386,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
           }),
         ),
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
 
       await handlePortalChatSend(
@@ -3254,6 +3428,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
         getCommandReceipt,
         command: jest.fn(() => Promise.reject(new Error('connection lost'))),
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
 
       await handlePortalChatSend(
@@ -3294,6 +3472,10 @@ describe('chat portal adapter — send (CAN-1517)', () => {
         getCommandReceipt,
         command: jest.fn(() => Promise.reject(new Error('connection lost'))),
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
 
       await handlePortalChatSend(
@@ -3537,6 +3719,8 @@ describe('chat portal adapter — queue edit', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatQueueEdit(
@@ -3582,6 +3766,7 @@ describe('chat portal adapter — queue edit', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: () => (): void => {},
+      readVisual: jest.fn(),
     };
     const runtime = createDesktopRuntime({ chatCommandPort: port });
     rec.context.chatStatePort = port;
@@ -3733,6 +3918,10 @@ describe('chat portal adapter — queue edit', () => {
       getState: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      getTranscriptPage: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     await handlePortalChatQueueSteer(
       {
@@ -3775,6 +3964,10 @@ describe('chat portal adapter — queue edit', () => {
       getState: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      getTranscriptPage: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     await handlePortalChatInputDelivery(
       {
@@ -3819,6 +4012,10 @@ describe('chat portal adapter — queue edit', () => {
       getState: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      getTranscriptPage: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatInputDelivery(
@@ -3974,6 +4171,8 @@ describe('chat portal adapter — question mutations', () => {
       readToolOutput: jest.fn(),
       command: jest.fn(),
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     };
     Reflect.set(rec.context, 'origin', sender);
     rec.context.chatStatePort = chatStatePort;
@@ -4202,6 +4401,9 @@ describe('chat portal adapter — question mutations', () => {
 });
 
 describe('chat portal adapter — composer setters (CAN-1217)', () => {
+  afterEach(() => {
+    initModelHarnessAssignments({ revision: 0, assignments: [] });
+  });
   beforeAll(() => {
     // set_model validates against the runtime model registry via
     // resolveKnownModel, so register a known model for the happy path.
@@ -4240,6 +4442,8 @@ describe('chat portal adapter — composer setters (CAN-1217)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSetModel(
@@ -4324,6 +4528,8 @@ describe('chat portal adapter — composer setters (CAN-1217)', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatSetModel(
@@ -4472,6 +4678,74 @@ describe('chat portal adapter — composer setters (CAN-1217)', () => {
     expect(rec.completes).toHaveLength(1);
     expect(rec.fails).toHaveLength(0);
   });
+
+  it.each([true, false])(
+    'negotiates an advertised OpenCode choice before renderer dispatch (connected: %s)',
+    async (connected) => {
+      opencodeRuntimeAvailable = connected;
+      initModelHarnessAssignments({
+        revision: 1,
+        assignments: [
+          {
+            modelId: 'test-model',
+            source: 'claude-managed',
+            harness: 'claude',
+            defaultHarness: 'claude',
+            configurable: false,
+            overridden: false,
+            availableHarnesses: ['claude'],
+            chatHarnesses: ['claude', 'opencode'],
+          },
+        ],
+      });
+      const rec = recorder();
+      const payload = {
+        projectId: 'ws',
+        worktreeId: 'wt',
+        chatId: 'chat',
+        model: 'test-model',
+        executionHarness: 'opencode' as const,
+      };
+      await handlePortalChatSetModel(setModelCommand(payload), rec.context);
+      if (connected) {
+        expectRequested({
+          requestId: 'cmd-model',
+          command: { ...payload, kind: 'model' },
+        });
+        expect(rec.completes).toHaveLength(1);
+        expect(rec.fails).toHaveLength(0);
+      } else {
+        expect(mockedRequest).not.toHaveBeenCalled();
+        expect(rec.fails).toEqual([
+          expect.objectContaining({
+            code: 'invalid_payload',
+            message: 'Connect OpenCode in the desktop app to use it here.',
+          }),
+        ]);
+      }
+    },
+  );
+
+  it.each(['opencode', 'unrecognized-runtime'])(
+    'rejects a choice not advertised for this model: %s',
+    async (harness) => {
+      opencodeRuntimeAvailable = true;
+      const rec = recorder();
+      const payload = {
+        projectId: 'ws',
+        worktreeId: 'wt',
+        chatId: 'chat',
+        model: 'test-model',
+      };
+      Reflect.set(payload, 'executionHarness', harness);
+      await handlePortalChatSetModel(setModelCommand(payload), rec.context);
+      expect(mockedRequest).not.toHaveBeenCalled();
+      expect(rec.completes).toHaveLength(0);
+      expect(rec.fails).toEqual([
+        expect.objectContaining({ code: 'invalid_payload' }),
+      ]);
+    },
+  );
 
   it('completes a valid set_model after its renderer acknowledgement', async () => {
     blockedModelIds.add('some-other-model');
@@ -5155,6 +5429,10 @@ describe('chat portal adapter — composer setters (CAN-1217)', () => {
       getState,
       command,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      getTranscriptPage: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     return { rec, command, getState };
   }
@@ -5380,6 +5658,10 @@ describe('chat portal adapter — create tab (CAN-1233)', () => {
         getState: jest.fn(),
         command,
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        getTranscriptPage: jest.fn(),
+        readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
       await handlePortalChatCreateTab(
         createTabCommand({
@@ -5521,6 +5803,10 @@ describe('chat portal adapter — create tab (CAN-1233)', () => {
       getState: jest.fn(),
       command,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      getTranscriptPage: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     await handlePortalChatCreateTab(
       createTabCommand({
@@ -5552,6 +5838,10 @@ describe('chat portal adapter — create tab (CAN-1233)', () => {
       getState: jest.fn(),
       command,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      getTranscriptPage: jest.fn(),
+      readToolOutput: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     return { rec, command };
   }
@@ -5842,6 +6132,8 @@ describe('chat portal adapter — create tab (CAN-1233)', () => {
         },
       ),
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
     const target = { projectId: 'ws', worktreeId: 'wt', chatId: 'new-chat' };
 
@@ -5898,6 +6190,7 @@ describe('chat portal adapter — close tab', () => {
   beforeEach(() => {
     mockedSend.mockReset();
     mockedSend.mockReturnValue({ delivered: true });
+    mockGetLiveBackgroundTasksForChat.mockReset();
   });
 
   function closeTabCommand(
@@ -5986,6 +6279,8 @@ describe('chat portal adapter — close tab', () => {
         readToolOutput: jest.fn(),
         command: revisionedCommand,
         subscribe: (): (() => void) => (): void => {},
+        searchTranscript: jest.fn(),
+        readVisual: jest.fn(),
       } satisfies ChatStateCommandPort;
       const routedCommand = jest.fn(() =>
         Promise.resolve({
@@ -6049,7 +6344,14 @@ describe('chat portal adapter — close tab', () => {
           projectId: 'ws',
           worktreeId: 'wt',
           chatId: 'chat-1',
-          queue: [{ id: 'queued-1', text: 'wait' }],
+          queue: [
+            {
+              id: 'queued-1',
+              text: 'wait',
+              origin: 'portal' as const,
+              enqueuedAtMs: 0,
+            },
+          ],
         },
       ],
     },
@@ -6085,6 +6387,8 @@ describe('chat portal adapter — close tab', () => {
       readToolOutput: jest.fn(),
       command: revisionedCommand,
       subscribe: (): (() => void) => (): void => {},
+      searchTranscript: jest.fn(),
+      readVisual: jest.fn(),
     } satisfies ChatStateCommandPort;
 
     await handlePortalChatCloseTab(
@@ -6112,6 +6416,8 @@ describe('chat portal adapter — close tab', () => {
           readToolOutput: jest.fn(),
           command: revisionedCommand,
           subscribe: (): (() => void) => (): void => {},
+          searchTranscript: jest.fn(),
+          readVisual: jest.fn(),
         } satisfies ChatStateCommandPort;
       setDelegationActivity('portal-close-owner', 'ws/wt/chat-1', 0, 1);
       try {
@@ -6134,6 +6440,140 @@ describe('chat portal adapter — close tab', () => {
         code: 'conflict',
         message: 'Delegates are still running in this chat. Stop them first.',
       });
+    },
+  );
+
+  it.each(
+    [
+      { taskType: 'local_agent', taskName: 'a provider agent' },
+      { taskType: 'local_workflow', taskName: 'a provider workflow' },
+    ].flatMap(({ taskType, taskName }) => [
+      { taskType, taskName, surface: 'canonical', withPort: true },
+      { taskType, taskName, surface: 'fallback', withPort: false },
+    ]),
+  )(
+    'rejects a $surface close while $taskName is live before routing side effects',
+    async ({ taskType, withPort }) => {
+      const rec = recorder();
+      const revisionedCommand = jest.fn();
+      const getState = jest.fn(() =>
+        Promise.reject(new Error('background-work guard should run first')),
+      );
+      if (withPort)
+        rec.context.chatStatePort = {
+          getState,
+          getTranscriptPage: jest.fn(),
+          readToolOutput: jest.fn(),
+          command: revisionedCommand,
+          subscribe: (): (() => void) => (): void => {},
+          searchTranscript: jest.fn(),
+          readVisual: jest.fn(),
+        } satisfies ChatStateCommandPort;
+      const fail = jest.fn<
+        ReturnType<PortalAdapterContext['fail']>,
+        Parameters<PortalAdapterContext['fail']>
+      >();
+      rec.context.fail = fail;
+      mockGetLiveBackgroundTasksForChat.mockReturnValue([
+        { taskId: 'provider-task', taskType, status: 'running' },
+      ]);
+      const command = closeTabCommand({
+        projectId: 'ws',
+        worktreeId: 'wt',
+        chatId: 'chat-1',
+      });
+
+      await handlePortalChatCloseTab(command, rec.context);
+
+      expect(fail).toHaveBeenCalledWith(
+        command,
+        'conflict',
+        'Background agents or workflows are still running in this chat. Stop them first.',
+        true,
+      );
+      expect(getState).not.toHaveBeenCalled();
+      expect(revisionedCommand).not.toHaveBeenCalled();
+      expect(mockedSend).not.toHaveBeenCalled();
+      expect(rec.completes).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    { taskType: 'local_bash', taskName: 'a shell' },
+    { taskType: 'mcp_task', taskName: 'an MCP task' },
+    { taskType: undefined, taskName: 'an untyped task' },
+  ])('allows fallback close while $taskName is live', async ({ taskType }) => {
+    const rec = recorder();
+    mockGetLiveBackgroundTasksForChat.mockReturnValue([
+      {
+        taskId: 'nonblocking-task',
+        ...(taskType !== undefined ? { taskType } : {}),
+        status: 'running',
+      },
+    ]);
+
+    await handlePortalChatCloseTab(
+      closeTabCommand({
+        projectId: 'ws',
+        worktreeId: 'wt',
+        chatId: 'chat-1',
+      }),
+      rec.context,
+    );
+
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+    expect(rec.completes).toHaveLength(1);
+    expect(rec.fails).toHaveLength(0);
+  });
+
+  it.each([
+    { surface: 'canonical', withPort: true },
+    { surface: 'fallback', withPort: false },
+  ])(
+    'preserves delegate refusal copy and precedence on the $surface route',
+    async ({ withPort }) => {
+      const rec = recorder();
+      const fail = jest.fn<
+        ReturnType<PortalAdapterContext['fail']>,
+        Parameters<PortalAdapterContext['fail']>
+      >();
+      rec.context.fail = fail;
+      if (withPort) {
+        rec.context.chatStatePort = {
+          getState: jest.fn(() =>
+            Promise.reject(new Error('delegate guard should run first')),
+          ),
+          getTranscriptPage: jest.fn(),
+          readToolOutput: jest.fn(),
+          command: jest.fn(),
+          subscribe: (): (() => void) => (): void => {},
+          searchTranscript: jest.fn(),
+          readVisual: jest.fn(),
+        } satisfies ChatStateCommandPort;
+      }
+      mockGetLiveBackgroundTasksForChat.mockReturnValue([
+        { taskId: 'provider-task', taskType: 'local_agent', status: 'running' },
+      ]);
+      setDelegationActivity('portal-close-priority', 'ws/wt/chat-1', 0, 1);
+      const command = closeTabCommand({
+        projectId: 'ws',
+        worktreeId: 'wt',
+        chatId: 'chat-1',
+      });
+      try {
+        await handlePortalChatCloseTab(command, rec.context);
+      } finally {
+        setDelegationActivity('portal-close-priority', 'ws/wt/chat-1', 0);
+      }
+
+      expect(fail).toHaveBeenCalledWith(
+        command,
+        'conflict',
+        'Delegates are still running in this chat. Stop them first.',
+        true,
+      );
+      expect(mockedSend).not.toHaveBeenCalled();
+      expect(rec.completes).toHaveLength(0);
     },
   );
 

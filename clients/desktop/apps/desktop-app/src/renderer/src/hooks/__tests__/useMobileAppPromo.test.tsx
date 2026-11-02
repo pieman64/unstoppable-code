@@ -1,12 +1,10 @@
 /** @jest-environment jsdom */
 
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  CanopyApi,
-  CanopyCloudAccountPublicState,
-} from '@canopy/desktop-shared/types';
+import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types';
 import { useMobileAppPromo } from '../useMobileAppPromo';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -31,7 +29,12 @@ const connectedAccount: CanopyCloudAccountPublicState = {
   authMode: 'api_key',
   credentialSource: 'manual',
   capabilities: [],
-  account: { email: 'dev@example.com' },
+  account: {
+    id: 'user-1',
+    name: 'Dev',
+    email: 'dev@example.com',
+    role: 'DEVELOPER',
+  },
   storageAvailable: true,
 };
 
@@ -47,6 +50,7 @@ describe('useMobileAppPromo', () => {
         type="button"
         data-testid={name}
         data-visible={String(promo.showPromotional)}
+        data-permanent={String(promo.showPermanent)}
         onClick={promo.snooze}
       >
         {name}
@@ -64,7 +68,7 @@ describe('useMobileAppPromo', () => {
         loadCanopyCloudAccount: jest.fn().mockResolvedValue(connectedAccount),
         loadPreferences: jest.fn().mockResolvedValue({}),
         savePreferences,
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 
@@ -73,6 +77,38 @@ describe('useMobileAppPromo', () => {
     container.remove();
     Reflect.deleteProperty(window, 'api');
     jest.clearAllMocks();
+  });
+
+  it('does not restore eligibility from an old account read after sign-out', async () => {
+    let resolveOld:
+      | ((state: CanopyCloudAccountPublicState) => void)
+      | undefined;
+    const load = jest.spyOn(window.api, 'loadCanopyCloudAccount');
+    load.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    load.mockResolvedValueOnce({ ...connectedAccount, hasApiKey: false });
+    await act(async () => {
+      root.render(<Surface name="offer" />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      resolveOld?.(connectedAccount);
+      await Promise.resolve();
+    });
+    expect(
+      container
+        .querySelector('[data-testid="offer"]')
+        ?.getAttribute('data-permanent'),
+    ).toBe('false');
+    load.mockRestore();
   });
 
   it('one dismissal immediately quiets both independently mounted surfaces', async () => {

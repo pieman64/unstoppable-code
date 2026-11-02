@@ -7,6 +7,7 @@ import {
   type JSX,
 } from 'react';
 import type { MergePrVerifiedRepo } from '@canopy/desktop-shared/types/github';
+import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
 
@@ -222,37 +223,37 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
         )}
       </div>
       <div className="flex items-center justify-end gap-2 border-t p-4">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           onClick={onClose}
           disabled={isSubmitting}
-          className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80 disabled:opacity-60"
         >
           Cancel
-        </button>
+        </Button>
         {checkFailed ? (
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={onRetry}
             data-testid="pr-merge-multi-repo-retry"
-            className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
           >
             Retry
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="compact"
             onClick={handleConfirm}
             disabled={isChecking || isSubmitting || selected.size === 0}
             data-testid="pr-merge-multi-repo-confirm"
-            className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90 disabled:opacity-60"
           >
             {isChecking
               ? 'Checking…'
               : isSubmitting
                 ? 'Merging…'
                 : `Merge ${selected.size} ${selected.size === 1 ? 'PR' : 'PRs'}`}
-          </button>
+          </Button>
         )}
       </div>
     </DialogModal>

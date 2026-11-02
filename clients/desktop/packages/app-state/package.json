@@ -14,12 +14,17 @@
     "./script-actions": "./src/script-actions/index.ts",
     "./cost": "./src/cost/index.ts",
     "./billing": "./src/billing.ts",
-    "./settings": "./src/settings/index.ts"
+    "./settings": "./src/settings/index.ts",
+    "./lifecycle-journal": "./src/lifecycle-journal/index.ts",
+    "./worktree-discard": "./src/worktree-discard/index.ts",
+    "./conversation": "./src/conversation/index.ts",
+    "./conversation/conformance": "./src/conversation/conformance.ts"
   },
   "dependencies": {
     "@canopy/app-core": "workspace:*",
-    "zustand": "^5.0.11",
-    "@canopy/protocol": "workspace:*"
+    "@canopy/protocol": "workspace:*",
+    "node-diff3": "3.2.1",
+    "zustand": "^5.0.11"
   },
   "peerDependencies": {
     "react": ">=18"

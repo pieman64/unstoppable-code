@@ -7,11 +7,16 @@ import {
   type ComponentPropsWithoutRef,
 } from 'react';
 import { LightbulbIcon } from '../icons/AppIcons';
+import { ChatToolStepGroup } from './ChatToolStepGroup';
 import { useCleanChatLook } from './chat-look';
 import { ChatCopyAction } from './chat/ChatCopyAction';
-import { StepRow } from './chat/StepRow';
+import { PlanCopyAction, type PlanCopyState } from './chat/PlanCopyAction';
+import type { TurnCompletionStatus } from './chat/turn-completion-status';
 import { Tooltip } from './Tooltip';
-import { formatCompletionTimestamp } from '../lib/format-completion-timestamp';
+import {
+  completionStampTooltip,
+  formatCompletionTimestamp,
+} from '../lib/format-completion-timestamp';
 
 export interface TurnTimerProps {
   /** Epoch ms when the turn started. When omitted, no elapsed time is
@@ -26,6 +31,14 @@ export interface TurnTimerProps {
   resumedAt?: number | null;
   /** Total completed pause time from previous pause/resume cycles. */
   accumulatedPausedDurationMs?: number;
+  /**
+   * The host shows a request waiting on the user for this unfinished turn
+   * (desktop: a pending tool approval for the turn's chat). Pauses the timer
+   * in the same render as that request, before its committed pause arrives.
+   * `false` never overrides a pause the timer's own fields record, and a
+   * finished turn ignores it.
+   */
+  waitingForUser?: boolean;
   /** Force a live ticking timer. Defaults to true when `finishedAt` is
    * not set. The web portal may pass `isStreaming=false` even without a
    * finish timestamp to render the simple "Working..." pill. */
@@ -36,6 +49,15 @@ export interface TurnTimerProps {
    * should pass content that is appropriate while the timer is still running.
    */
   trailing?: ReactNode;
+  /**
+   * Clean chat look: while the turn runs, the row holds this live line
+   * ("Thinking") instead of its actions, which the host shows in the turn's
+   * header. The row keeps its height from the first frame to the last, so
+   * the reply above never moves when the turn finishes. Pass `null` while a
+   * step line above already says what the turn is doing; left out, a running
+   * row says "Thinking" (or the working label) on its own.
+   */
+  liveLine?: ReactNode;
   /**
    * Optional override for the spinner rendered while the timer is live.
    * When omitted, no spinner is rendered. The desktop and web call sites
@@ -54,6 +76,12 @@ export interface TurnTimerProps {
    * actions.
    */
   copyText?: string;
+  /**
+   * The finished turn proposes a plan: its Copy plan action replaces the
+   * reply's Copy, in the same place, and stays in view while the plan's
+   * Markdown is unavailable (CAN-5354).
+   */
+  planCopy?: PlanCopyState;
   /**
    * Clean chat look: the "…" menu (a {@link TurnMoreMenu}) with the turn's
    * less-used actions, after the inline icons.
@@ -97,13 +125,11 @@ export interface TurnTimerProps {
    * or completed.
    */
   workingLabel?: string;
-  /** Outcome shown once the turn has stopped. */
-  completionStatus?: 'complete' | 'failed' | 'cancelled';
   /**
-   * Clean chat look only: a step on screen already shimmers what the turn is
-   * doing, so the row drops its own live status.
+   * Outcome shown once the turn has stopped; resolve it with
+   * `resolveTurnCompletionStatus`.
    */
-  liveStatusShown?: boolean;
+  completionStatus?: TurnCompletionStatus;
 }
 
 /**
@@ -126,6 +152,14 @@ export interface TurnTimerProps {
  * - `pointer-coarse` / `hover:none`: touch and other no-hover devices keep
  *   the row visible, since nothing there could reveal it.
  */
+/** The footer's first word for each way a turn ends. */
+const TURN_COMPLETION_LABELS: Record<TurnCompletionStatus, string> = {
+  complete: 'Completed',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+  interrupted: 'Interrupted',
+};
+
 const ROW_REVEAL_CLASSNAME =
   'opacity-0 group-hover/turn:opacity-100 group-data-[hover]/turn:opacity-100 group-focus-within/turn:opacity-100 group-data-[focus-within]/footer:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100';
 
@@ -199,13 +233,11 @@ const FOCUS_RECHECK_EVENTS = [
  * is removed by width: border colors are inert here (CAN-2734).
  */
 /**
- * The clean chat look's footer controls: every action button in the row the
- * same 24px quiet square with a 14px icon in the row's text ink (thumbs,
- * copy, fork, branch, share, watch, auto-archive, comments), darker on hover.
- * Pressed and attention states keep their own styling, as above.
+ * The clean chat look's footer controls (copy, fork, "•••", thumbs) are the
+ * shared ghost `Button`, which owns their 28px capsule, ink, hover and focus;
+ * the row only keeps their icons at 14px.
  */
-const CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME =
-  '[&_button]:size-6 [&_button]:rounded-md [&_button]:ring-0 [&_button:not([aria-pressed=true]):not([data-attention])]:border-0 [&_button:not([aria-pressed=true]):not([data-attention])]:bg-transparent [&_button:not([aria-pressed=true]):not([data-attention])]:fg-secondary [&_button:not(:disabled):hover]:fg-primary [&_button:not(:disabled):hover:not(:active)]:bg-fg-primary/[0.06] [&_button:not(:disabled):active]:bg-fg-primary/[0.08] [&_svg]:size-3.5 pointer-coarse:[&_button]:size-11';
+const CLEAN_TURN_FOOTER_CONTROLS_CLASSNAME = '[&_svg]:size-3.5';
 
 const TURN_FOOTER_CONTROLS_CLASSNAME =
   'pointer-fine:[&_button:not([data-attention])]:size-5 [&_button]:rounded [&_button]:ring-0 [&_button:not([aria-pressed=true]):not([data-attention])]:border-0 [&_button:not([aria-pressed=true]):not([data-attention])]:bg-transparent [&_button:not([aria-pressed=true]):not([data-attention])]:fg-quaternary [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):hover]:fg-secondary [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):hover:not(:active)]:bg-fg-primary/[0.04] [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):active]:fg-secondary [&_button:not([aria-pressed=true]):not([data-attention]):not(:disabled):active]:bg-fg-primary/[0.08] pointer-fine:[&_svg]:size-3';
@@ -297,7 +329,17 @@ export function getElapsedSecond(
   resumedAt?: number | null,
   accumulatedPausedDurationMs?: number,
 ): number | null {
-  if (startedAt == null) return null;
+  if (
+    startedAt == null ||
+    [
+      startedAt,
+      finishedAt,
+      pausedAt,
+      resumedAt,
+      accumulatedPausedDurationMs,
+    ].some((value) => value != null && !Number.isFinite(value))
+  )
+    return null;
   const endAt = finishedAt ?? Date.now();
   const completedPauseMs =
     typeof accumulatedPausedDurationMs === 'number'
@@ -359,8 +401,50 @@ function useCompletionStampLabel(timestamp: number | null): string | null {
 }
 
 /**
+ * Whether an unfinished turn is paused: its own fields record an open pause,
+ * or the host shows a request waiting on the user. A finished turn never is.
+ */
+export function isTurnTimerPaused({
+  finishedAt,
+  pausedAt,
+  resumedAt,
+  waitingForUser,
+}: {
+  finishedAt?: number | null;
+  pausedAt?: number | null;
+  resumedAt?: number | null;
+  waitingForUser?: boolean;
+}): boolean {
+  return (
+    finishedAt == null &&
+    ((pausedAt != null && resumedAt == null) || waitingForUser === true)
+  );
+}
+
+/** The completed pause time the timer's own fields record. */
+function completedPauseMs(
+  startedAt: number,
+  pausedAt: number | null | undefined,
+  resumedAt: number | null | undefined,
+  accumulatedPausedDurationMs: number | undefined,
+): number {
+  if (typeof accumulatedPausedDurationMs === 'number')
+    return Math.max(0, accumulatedPausedDurationMs);
+  return pausedAt != null && resumedAt != null
+    ? Math.max(0, resumedAt - Math.max(startedAt, pausedAt))
+    : 0;
+}
+
+/**
  * A turn's elapsed whole seconds, minus pauses, ticking once a second while
  * `live`. Null without a start time.
+ *
+ * While the host waits on the user before the turn's own pause is recorded,
+ * the wait starts at a boundary captured once for that turn's uninterrupted
+ * wait: rerenders and replaced timer objects never move it. The recorded
+ * pause replaces it once it arrives, so the wait is subtracted once; a pause
+ * recorded slightly earlier than the boundary may correct the time a little.
+ * The boundary is presentation only and resets with the turn's start.
  */
 export function useTurnElapsedSecond({
   startedAt,
@@ -368,6 +452,7 @@ export function useTurnElapsedSecond({
   pausedAt,
   resumedAt,
   accumulatedPausedDurationMs,
+  waitingForUser = false,
   live,
 }: {
   startedAt?: number;
@@ -375,8 +460,18 @@ export function useTurnElapsedSecond({
   pausedAt?: number | null;
   resumedAt?: number | null;
   accumulatedPausedDurationMs?: number;
+  waitingForUser?: boolean;
   live: boolean;
 }): number | null {
+  // The host waits before the timer's own fields record a pause.
+  const hostWaitOnly =
+    waitingForUser &&
+    startedAt != null &&
+    finishedAt == null &&
+    !(pausedAt != null && resumedAt == null);
+  const waitBoundaryRef = useRef<{ startedAt: number; atMs: number } | null>(
+    null,
+  );
   const [displayedSecond, setDisplayedSecond] = useState(() =>
     getElapsedSecond(
       startedAt,
@@ -399,12 +494,44 @@ export function useTurnElapsedSecond({
       intervalRef.current = null;
     }
 
+    let effectivePausedAt = pausedAt;
+    let effectiveResumedAt = resumedAt;
+    let effectivePausedDurationMs = accumulatedPausedDurationMs;
+    if (hostWaitOnly && startedAt != null) {
+      let boundary =
+        waitBoundaryRef.current?.startedAt === startedAt
+          ? waitBoundaryRef.current.atMs
+          : Date.now();
+      // Delivery may skip the open pause and bring its closed interval while
+      // the host still waits. Move past that interval before deducting its
+      // committed duration, so the provisional endpoint does not count it twice.
+      if (
+        pausedAt != null &&
+        resumedAt != null &&
+        pausedAt <= boundary &&
+        resumedAt > boundary
+      ) {
+        boundary = resumedAt;
+      }
+      waitBoundaryRef.current = { startedAt, atMs: boundary };
+      effectivePausedDurationMs = completedPauseMs(
+        startedAt,
+        pausedAt,
+        resumedAt,
+        accumulatedPausedDurationMs,
+      );
+      effectivePausedAt = boundary;
+      effectiveResumedAt = null;
+    } else {
+      waitBoundaryRef.current = null;
+    }
+
     const initial = getElapsedSecond(
       startedAt,
-      live ? null : (finishedAt ?? pausedAt),
-      pausedAt,
-      resumedAt,
-      accumulatedPausedDurationMs,
+      live ? null : (finishedAt ?? effectivePausedAt),
+      effectivePausedAt,
+      effectiveResumedAt,
+      effectivePausedDurationMs,
     );
     if (displayedSecondRef.current !== initial) {
       displayedSecondRef.current = initial;
@@ -436,6 +563,7 @@ export function useTurnElapsedSecond({
   }, [
     accumulatedPausedDurationMs,
     finishedAt,
+    hostWaitOnly,
     live,
     pausedAt,
     resumedAt,
@@ -445,7 +573,10 @@ export function useTurnElapsedSecond({
   return displayedSecond;
 }
 
-function formatElapsed(seconds: number): string {
+/** A paused turn's status label, before its elapsed time. */
+export const TURN_WAITING_LABEL = 'Waiting for you';
+
+export function formatTurnElapsed(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const remaining = seconds % 60;
@@ -453,17 +584,6 @@ function formatElapsed(seconds: number): string {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`;
   }
   return `${minutes}:${String(remaining).padStart(2, '0')}`;
-}
-
-/** "Oct 21, 2026, 4:05 PM": the full date the clean look's time shows on hover. */
-function formatFullTimestamp(timestampMs: number): string {
-  return new Date(timestampMs).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
 }
 
 /**
@@ -479,11 +599,14 @@ export function TurnTimer({
   pausedAt,
   resumedAt,
   accumulatedPausedDurationMs,
+  waitingForUser,
   isStreaming,
   trailing,
+  liveLine,
   spinner,
   stampAccessory,
   copyText,
+  planCopy,
   moreMenu,
   modelLabel,
   alwaysVisible = false,
@@ -491,16 +614,20 @@ export function TurnTimer({
   hostTurnGap = false,
   workingLabel,
   completionStatus = 'complete',
-  liveStatusShown = false,
 }: TurnTimerProps): JSX.Element {
   // Clean chat look: the turn's header owns the elapsed time ("Working for
-  // 28s"), so this row only shimmers what the turn is doing while no step
-  // on screen does, and keeps its stamp and actions.
+  // 28s") and the transcript's live line what the turn is doing, so this
+  // row keeps only its stamp and actions.
   const clean = useCleanChatLook();
-  const resolvedWorkingLabel =
-    workingLabel ?? (clean ? 'Thinking' : 'Working…');
-  const paused = finishedAt == null && pausedAt != null && resumedAt == null;
+  const resolvedWorkingLabel = workingLabel ?? 'Working…';
+  const paused = isTurnTimerPaused({
+    finishedAt,
+    pausedAt,
+    resumedAt,
+    waitingForUser,
+  });
   const live =
+    finishedAt == null &&
     !paused &&
     (isStreaming === undefined ? finishedAt == null : isStreaming === true);
   const displayedSecond = useTurnElapsedSecond({
@@ -509,25 +636,25 @@ export function TurnTimer({
     pausedAt,
     resumedAt,
     accumulatedPausedDurationMs,
+    waitingForUser,
     live,
   });
 
-  const completionLabel =
-    completionStatus === 'failed'
-      ? 'Failed'
-      : completionStatus === 'cancelled'
-        ? 'Cancelled'
-        : 'Completed';
+  const completionLabel = TURN_COMPLETION_LABELS[completionStatus];
   let label: string;
   if (displayedSecond != null) {
-    const formatted = formatElapsed(displayedSecond);
+    const formatted = formatTurnElapsed(displayedSecond);
     label = live
       ? `${resolvedWorkingLabel} ${formatted}`
       : paused
-        ? `Paused at ${formatted}`
+        ? `${TURN_WAITING_LABEL} · ${formatted}`
         : `${completionLabel} ${completionStatus === 'complete' ? 'in' : 'after'} ${formatted}`;
   } else {
-    label = live ? resolvedWorkingLabel : paused ? 'Paused' : completionLabel;
+    label = live
+      ? resolvedWorkingLabel
+      : paused
+        ? TURN_WAITING_LABEL
+        : completionLabel;
   }
 
   const state: 'live' | 'paused' | 'completed' = live
@@ -547,21 +674,62 @@ export function TurnTimer({
   // the delimiter between turns; everything else fades in on turn hover or
   // focus. Opacity only, so the row never changes height.
   // A running turn keeps its controls (watch, fork, auto-archive) in view,
-  // so an armed watcher or auto-archive is always visible.
+  // so an armed watcher or auto-archive is always visible. Clean chat look:
+  // the reply row is always in view, in its quiet ink.
   const reveal = turnFooterRevealClassName(
     state === 'completed',
     completionStatus,
-    alwaysVisible,
+    alwaysVisible || clean,
   );
   const replyToCopy =
     state === 'completed' && copyText !== undefined && copyText.trim() !== ''
       ? copyText
       : undefined;
+  // A plan turn keeps exactly one copy action: its plan's.
+  const copyAction =
+    state !== 'completed' ? undefined : planCopy !== undefined ? (
+      <PlanCopyAction
+        state={planCopy}
+        appearance="footer"
+        dataTestId="turn-copy-plan"
+      />
+    ) : replyToCopy !== undefined ? (
+      <ChatCopyAction text={replyToCopy} dataTestId="turn-copy-message" />
+    ) : undefined;
   // Clean chat look: a finished turn's row drops "Completed in …", but a
-  // failed or cancelled turn keeps its outcome so it never reads as done.
+  // failed, cancelled or interrupted turn keeps its outcome so it never
+  // reads as done.
   const cleanOutcomeShown =
     clean && state === 'completed' && completionStatus !== 'complete';
-  const showLabel = !clean || (live && !liveStatusShown) || cleanOutcomeShown;
+  // The running turn's live line in the transcript says what it is doing,
+  // so this row never does: it only holds the turn's actions, in place.
+  const showLabel = !clean || cleanOutcomeShown;
+
+  if (clean && state !== 'completed') {
+    // Clean chat look, running or paused: the row is the live line's slot,
+    // the same height with or without it. The line brings its own inset. A
+    // paused turn is not working, so it holds no live line.
+    return (
+      <TurnFooterRow
+        hostTurnGap={hostTurnGap}
+        data-testid="turn-timer"
+        data-state={state}
+      >
+        {state !== 'live' ? null : liveLine === undefined ? (
+          <ChatToolStepGroup
+            summary=""
+            inset={inset}
+            live={{
+              label: workingLabel ?? 'Thinking',
+              icon: <LightbulbIcon />,
+            }}
+          />
+        ) : (
+          liveLine
+        )}
+      </TurnFooterRow>
+    );
+  }
 
   return (
     <TurnFooterRow
@@ -581,9 +749,7 @@ export function TurnTimer({
       )}
       {/* Classic look: Copy sits with the stamp and thumbs, outside the
           hover reveal, so every finished reply can be kept at a glance. */}
-      {!clean && replyToCopy !== undefined && (
-        <ChatCopyAction text={replyToCopy} dataTestId="turn-copy-message" />
-      )}
+      {!clean && copyAction}
       {!clean && stampAccessory != null && (
         <span
           data-testid="turn-timer-stamp-accessory"
@@ -602,15 +768,6 @@ export function TurnTimer({
           {label}
         </span>
       )}
-      {showLabel && clean && !cleanOutcomeShown && (
-        <StepRow
-          icon={<LightbulbIcon />}
-          label={
-            <span data-testid="turn-timer-label">{resolvedWorkingLabel}</span>
-          }
-          running
-        />
-      )}
       {showLabel && !clean && (
         <span
           data-testid="turn-timer-label"
@@ -625,29 +782,24 @@ export function TurnTimer({
           {trailing}
         </span>
       )}
-      {/* Clean chat look: Copy stays visible. Fork, "•••", thumbs and time
-          reveal on hover/focus for historical turns; the row keeps its
-          existing order and spacing. */}
+      {/* Clean chat look: Copy, Fork, "•••" for the rest, the thumbs, then
+          the time, all in one quiet gray, the icons 2px apart; always in
+          view, never only on hover. */}
       {clean &&
-        (replyToCopy !== undefined ||
+        (copyAction !== undefined ||
           stampAccessory != null ||
           trailing != null ||
           moreMenu != null) && (
           <span
             data-testid="turn-actions"
-            // Leading the row, the first icon (not its 24px button) lines up
+            // Leading the row, the first icon (not its 28px button) lines up
             // with the reply's text.
-            className={`flex items-center gap-0.5 ${showLabel ? '' : '-ml-1.25'}`}
+            className={`flex items-center gap-0.5${showLabel ? '' : ' -ml-1.75'}`}
           >
-            {replyToCopy !== undefined && (
-              <ChatCopyAction
-                text={replyToCopy}
-                dataTestId="turn-copy-message"
-              />
-            )}
+            {copyAction}
             <span
               data-testid="turn-actions-reveal"
-              className={`flex items-center gap-0.5 ${reveal}`}
+              className={`flex items-center gap-0.5${reveal ? ` ${reveal}` : ''}`}
             >
               {trailing}
               {moreMenu}
@@ -662,22 +814,29 @@ export function TurnTimer({
             </span>
           </span>
         )}
-      {clean && relativeLabel != null && completedAtMs != null && (
-        <Tooltip
-          label={
-            modelLabel === undefined
-              ? formatFullTimestamp(completedAtMs)
-              : `${formatFullTimestamp(completedAtMs)} · ${modelLabel}`
-          }
-        >
-          <span
-            data-testid="turn-timer-relative"
-            className={`ml-1 shrink-0 whitespace-nowrap tabular-nums ${reveal}`}
-          >
-            {relativeLabel}
-          </span>
-        </Tooltip>
-      )}
+      {clean &&
+        relativeLabel != null &&
+        completedAtMs != null &&
+        ((): JSX.Element => {
+          const stamp = (
+            <span
+              data-testid="turn-timer-relative"
+              // The small caption style and a quieter ink than the reply,
+              // brightening while the turn is hovered or focused.
+              className={`ml-1 shrink-0 whitespace-nowrap text-2xs tabular-nums fg-tertiary group-hover/turn:fg-secondary group-focus-within/turn:fg-secondary ${reveal}`}
+            >
+              {relativeLabel}
+            </span>
+          );
+          // Only what the stamp doesn't already say: the exact time behind
+          // "5m ago", the model. Never the stamp again.
+          const hover = completionStampTooltip(completedAtMs, modelLabel);
+          return hover === undefined ? (
+            stamp
+          ) : (
+            <Tooltip label={hover}>{stamp}</Tooltip>
+          );
+        })()}
     </TurnFooterRow>
   );
 }

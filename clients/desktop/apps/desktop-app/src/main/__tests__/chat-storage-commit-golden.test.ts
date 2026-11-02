@@ -258,21 +258,23 @@ describe('chat storage commit golden', () => {
       } = {},
     ): Promise<void> => {
       mutationOrdinal += 1;
+      // Retain the legacy input key order covered by the byte-for-byte golden.
+      const commandResult = options.receipt
+        ? ({
+            commandId: `command-${mutationOrdinal}`,
+            revision: 0,
+            outcome: 'applied' as const,
+            entityId: 'sibling',
+          } satisfies NonNullable<
+            Parameters<ChatStateV2Backend['transact']>[1]['commandResult']
+          > & { revision: number })
+        : undefined;
       await backend.transact((current) => build(current), {
         source: 'automation',
         mutationId: `mutation-${mutationOrdinal}`,
         ...(options.chatIds ? { chatIds: options.chatIds } : {}),
         ...(options.fullTranscript ? { fullTranscript: true } : {}),
-        ...(options.receipt
-          ? {
-              commandResult: {
-                commandId: `command-${mutationOrdinal}`,
-                revision: 0,
-                outcome: 'applied' as const,
-                entityId: 'sibling',
-              },
-            }
-          : {}),
+        ...(commandResult ? { commandResult } : {}),
       });
       await step(label);
     };

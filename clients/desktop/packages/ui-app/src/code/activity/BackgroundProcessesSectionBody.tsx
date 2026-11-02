@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type JSX, type KeyboardEvent } from 'react';
+import type { BackgroundTaskStopRequest } from '@canopy/app-core';
 import type {
   BackgroundTask,
   BackgroundTaskStatus,
@@ -12,11 +13,15 @@ import {
 } from '@canopy/ui-shared/lib';
 import { ChevronIcon, WorkflowIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { TaskStopAction } from './TaskStopAction';
 
 export interface BackgroundProcessesSectionBodyProps {
   readonly tasks: readonly BackgroundTask[];
-  readonly stoppingTaskId: string | null;
-  readonly onStop?: (task: BackgroundTask) => void;
+  /** Where a task's Stop is sent; absent, or null for a task, means no Stop. */
+  readonly stopTarget?: (
+    task: BackgroundTask,
+  ) => BackgroundTaskStopRequest | null;
+  readonly onStopError?: (error: unknown) => void;
   readonly onOpenDetail: (task: BackgroundTask) => void;
 }
 
@@ -33,10 +38,52 @@ function getMutedStatusClassName(status: BackgroundTaskStatus): string {
   }
 }
 
+/** Names what a background task's Stop ends; the card and its detail share it. */
+export function backgroundTaskStopAccessibleLabel(
+  kind: BackgroundTask['kind'],
+): string {
+  switch (kind) {
+    case 'agent':
+      return 'Stop agent';
+    case 'workflow':
+      return 'Stop workflow';
+    case 'bash':
+      return 'Stop shell command';
+    case 'task':
+      return 'Stop task';
+  }
+}
+
+function RowStop({
+  task,
+  stopTarget,
+  onStopError,
+}: {
+  readonly task: BackgroundTask;
+  readonly stopTarget: (
+    task: BackgroundTask,
+  ) => BackgroundTaskStopRequest | null;
+  readonly onStopError?: (error: unknown) => void;
+}): JSX.Element | null {
+  const target = stopTarget(task);
+  if (!target) return null;
+  return (
+    <span className="shrink-0">
+      <TaskStopAction
+        target={target}
+        live={!isTerminalStatus(task.status)}
+        accessibleLabel={backgroundTaskStopAccessibleLabel(task.kind)}
+        dataTestId="activity-bg-stop"
+        onError={onStopError}
+      />
+    </span>
+  );
+}
+
 export function BackgroundProcessesSectionBody({
   tasks,
-  stoppingTaskId,
-  onStop,
+  stopTarget,
+  onStopError,
   onOpenDetail,
 }: BackgroundProcessesSectionBodyProps): JSX.Element | null {
   const [stoppedExpanded, setStoppedExpanded] = useState(false);
@@ -73,7 +120,7 @@ export function BackgroundProcessesSectionBody({
           key={process.id}
           role="button"
           tabIndex={0}
-          className="cursor-pointer space-y-3 rounded-lg border bg-fg-primary/[0.03] px-3 py-3 transition hover:bg-fg-primary/[0.05]"
+          className="cursor-pointer space-y-3 rounded-lg border bg-fg-primary/[0.03] px-3 py-3 transition-colors hover:bg-fg-primary/[0.05]"
           onClick={(): void => onOpenDetail(process)}
           onKeyDown={(event): void => handleKeyDown(event, process)}
           data-testid="activity-bg-item"
@@ -119,19 +166,12 @@ export function BackgroundProcessesSectionBody({
               )}
             </div>
 
-            {onStop && process.canStop && (
-              <button
-                type="button"
-                onClick={(event): void => {
-                  event.stopPropagation();
-                  onStop(process);
-                }}
-                disabled={stoppingTaskId === process.id}
-                className="focus-ring shrink-0 rounded-md border border-line-destructive px-2.5 py-1.5 text-2xs font-medium fg-destructive transition hover:bg-destructive-subtle disabled:cursor-wait disabled:opacity-60"
-                data-testid="activity-bg-stop"
-              >
-                {stoppingTaskId === process.id ? 'Stopping…' : 'Stop'}
-              </button>
+            {stopTarget && process.canStop && (
+              <RowStop
+                task={process}
+                stopTarget={stopTarget}
+                onStopError={onStopError}
+              />
             )}
           </div>
 
@@ -148,7 +188,7 @@ export function BackgroundProcessesSectionBody({
             type="button"
             aria-expanded={stoppedExpanded}
             onClick={(): void => setStoppedExpanded((previous) => !previous)}
-            className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition hover:fg-secondary"
+            className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
             data-testid="activity-bg-stopped-toggle"
           >
             <ChevronIcon open={stoppedExpanded} />
@@ -162,7 +202,7 @@ export function BackgroundProcessesSectionBody({
                   key={process.id}
                   role="button"
                   tabIndex={0}
-                  className="cursor-pointer overflow-hidden rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition hover:bg-fg-primary/[0.03]"
+                  className="cursor-pointer overflow-hidden rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:bg-fg-primary/[0.03]"
                   onClick={(): void => onOpenDetail(process)}
                   onKeyDown={(event): void => handleKeyDown(event, process)}
                   data-testid="activity-bg-item"

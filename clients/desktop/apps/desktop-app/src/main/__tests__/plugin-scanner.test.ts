@@ -73,7 +73,8 @@ function setupMocks(): void {
     };
   });
 
-  (fs.realpathSync as jest.Mock).mockImplementation((raw: string) => {
+  jest.mocked(fs.realpathSync).mockImplementation((link: fs.PathLike) => {
+    const raw = String(link);
     const p = resolveLinks(raw);
     if (p in mockFiles || mockDirs.has(p)) return p;
     const err = new Error(`ENOENT: no such file or directory, lstat '${raw}'`);
@@ -748,9 +749,9 @@ describe('scanPluginDetails', () => {
         }),
       );
 
-      const manifest: PluginManifest = {
-        hooks: [42 as unknown as string, 'valid.json'],
-      };
+      const manifest = {
+        hooks: [42, 'valid.json'],
+      } as PluginManifest;
       const result = scanPluginDetails(PLUGIN_DIR, manifest);
 
       expect(result.hooks).toHaveLength(1);
@@ -1003,9 +1004,9 @@ describe('scanPluginDetails', () => {
         }),
       );
 
-      const manifest: PluginManifest = {
-        mcpServers: [123 as unknown as string, 'valid-mcp.json'],
-      };
+      const manifest = {
+        mcpServers: [123, 'valid-mcp.json'],
+      } as PluginManifest;
       const result = scanPluginDetails(PLUGIN_DIR, manifest);
 
       expect(result.mcpServers).toHaveLength(1);
@@ -1253,9 +1254,9 @@ describe('scanPluginDetails', () => {
         }),
       );
 
-      const manifest: PluginManifest = {
-        lspServers: [null as unknown as string, 'valid-lsp.json'],
-      };
+      const manifest = {
+        lspServers: [null, 'valid-lsp.json'],
+      } as PluginManifest;
       const result = scanPluginDetails(PLUGIN_DIR, manifest);
 
       expect(result.lspServers).toHaveLength(1);

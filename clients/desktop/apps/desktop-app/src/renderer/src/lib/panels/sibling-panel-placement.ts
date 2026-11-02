@@ -5,6 +5,9 @@ export {
   createChatSiblingGroupToRight,
   pickContentTargetGroupId,
   pickReusableChatSiblingGroupId,
+  resolveChatPanelAnchor,
   rollbackCreatedChatSiblingGroup,
+  type ChatPanelAnchor,
   type CreatedChatSiblingGroup,
+  type FilePanelPlacementPolicy,
 } from '@canopy/ui-app/panel-layout-store';

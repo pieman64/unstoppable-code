@@ -5,6 +5,12 @@
  * realm) still qualify.
  */
 
+import { isMacPlatform } from '@canopy/ui-shared/lib/shortcut-platform';
+
+// One platform check for matching and hint display, owned by the shared
+// shortcut registry.
+export { isMacPlatform };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -45,30 +51,6 @@ export function readTargetOwnerDocument(
   value: EventTarget | null,
 ): Document | null {
   return hasOwnerDocument(value) ? value.ownerDocument : null;
-}
-
-interface UserAgentDataLike {
-  platform?: string;
-}
-
-interface NavigatorWithUserAgentData extends Navigator {
-  userAgentData?: UserAgentDataLike;
-}
-
-function readUserAgentDataPlatform(nav: Navigator): string | undefined {
-  const navigatorWithUserAgentData: NavigatorWithUserAgentData = nav;
-  const platform = navigatorWithUserAgentData.userAgentData?.platform;
-  return typeof platform === 'string' ? platform : undefined;
-}
-
-export function isMacPlatform(): boolean {
-  if (typeof navigator === 'undefined') {
-    return false;
-  }
-
-  const platform =
-    readUserAgentDataPlatform(navigator) ?? navigator.platform ?? '';
-  return platform.toLowerCase().includes('mac');
 }
 
 export interface ShortcutEventLike {

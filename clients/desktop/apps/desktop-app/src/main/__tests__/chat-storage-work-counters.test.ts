@@ -41,6 +41,56 @@ import { fsyncDirectory } from '../lib/fsync-directory';
 const SCOPE = '/data/workspaces/w1/chat-storage-v2/scope-1';
 
 describe('chat storage write counters', () => {
+  it('classifies both physical delta-journal generations as journal work', () => {
+    expect(classifyChatStorageFile(`${SCOPE}/delta-journal.log`)).toBe(
+      'deltaJournal',
+    );
+    expect(classifyChatStorageFile(`${SCOPE}/delta-journal-v2.log`)).toBe(
+      'deltaJournal',
+    );
+  });
+  it('separates child stream writes without changing legacy or primary classes', () => {
+    const child = `${SCOPE}/transcripts/delegations/parent/v2/${'a'.repeat(64)}`;
+    const cases: Array<[string, string]> = [
+      [`${child}/transcript.jsonl`, 'childTranscript'],
+      [`${child}/transcript.active.json`, 'childActiveSidecar'],
+      [`${child}/transcript.abc.append.tmp`, 'childAppendStaging'],
+      [`${child}/descriptor.json`, 'childStreamMetadata'],
+      [`${child}/descriptor.json.checkpoint`, 'childStreamMetadata'],
+      [`${child}/transcript.sequence-index.json`, 'childMessageIndex'],
+      [`${child}/transcript.index.json`, 'childMessageIndex'],
+      [
+        `${child}/transcript.index.json.0f8fad5b-d9cb-469f-a165-70867728950e.tmp`,
+        'childMessageIndex',
+      ],
+      [`${child}/transcript.turns.json`, 'childMessageIndex'],
+      [
+        `${child}/transcript.sequence-index.json.0f8fad5b-d9cb-469f-a165-70867728950e.tmp`,
+        'childMessageIndex',
+      ],
+      [`${child}/message-index/row.json`, 'childMessageIndex'],
+      [
+        `${SCOPE}/transcripts/delegations/parent/v2/registry.jsonl`,
+        'childStreamMetadata',
+      ],
+      [
+        `${SCOPE}/transcripts/delegations/parent/v2/registry.index.json`,
+        'childStreamMetadata',
+      ],
+      [
+        `${SCOPE}/transcripts/delegations/stream-catalog.json`,
+        'childStreamMetadata',
+      ],
+      [
+        `${SCOPE}/transcripts/delegations/stream-catalog.json.checkpoint`,
+        'childStreamMetadata',
+      ],
+      [`${SCOPE}/transcripts/delegations/parent/legacy.jsonl`, 'delegationLog'],
+      [`${SCOPE}/transcripts/parent.active.json`, 'activeSidecar'],
+    ];
+    for (const [path, expected] of cases)
+      expect(classifyChatStorageFile(path)).toBe(expected);
+  });
   beforeEach(() => {
     writes.length = 0;
     syncs.length = 0;

@@ -1,3 +1,8 @@
+import {
+  Button,
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@canopy/ui-shared/components';
 import { useId, useRef, type JSX, type ReactNode } from 'react';
 import {
   FloatingPickerMenu,
@@ -39,6 +44,11 @@ export const HOOK_SETTINGS_ICON: ReactNode = (
   <AppCatalogLink width="14" height="14" />
 );
 
+const SOURCE_LOCAL_OPTIONS: readonly SegmentedControlOption<SettingsScope>[] = [
+  { value: 'source', label: 'Source controlled' },
+  { value: 'local', label: 'Local override' },
+];
+
 interface SourceLocalToggleProps {
   /** Active mode — drives which segment renders with the active background. */
   mode: SettingsScope;
@@ -59,26 +69,14 @@ export function SourceLocalToggle({
 }: SourceLocalToggleProps): JSX.Element {
   return (
     <div className="mb-4 flex min-w-0 items-center gap-3">
-      <div className="inline-flex shrink-0 rounded-lg border bg-secondary p-0.5">
-        <button
-          type="button"
-          className={`focus-ring rounded-md px-3 py-1.5 text-xs font-medium ${
-            mode === 'source' ? 'bg-card fg-primary' : 'fg-secondary'
-          }`}
-          onClick={() => onChange('source')}
-        >
-          Source controlled
-        </button>
-        <button
-          type="button"
-          className={`focus-ring rounded-md px-3 py-1.5 text-xs font-medium ${
-            mode === 'local' ? 'bg-card fg-primary' : 'fg-secondary'
-          }`}
-          onClick={() => onChange('local')}
-        >
-          Local override
-        </button>
-      </div>
+      <SegmentedControl<SettingsScope>
+        label="Settings source"
+        value={mode}
+        width="content"
+        shape="capsule"
+        options={SOURCE_LOCAL_OPTIONS}
+        onChange={onChange}
+      />
       {trailing}
     </div>
   );
@@ -137,14 +135,14 @@ export function SaveLocalButton({
   onClick,
 }: SaveLocalButtonProps): JSX.Element {
   return (
-    <button
-      type="button"
+    <Button
+      variant="primary"
+      size="compact"
       onClick={onClick}
       disabled={disabled}
-      className="focus-ring rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60"
     >
       {isSaving ? 'Saving…' : 'Save local'}
-    </button>
+    </Button>
   );
 }
 
@@ -560,17 +558,22 @@ interface SettingsTeardownFailureDialogProps {
   onRetryDelete: () => Promise<void>;
   onRetryingChange: (retrying: boolean) => void;
   onErrorChange: (error: TeardownFailedError | null) => void;
+  /** Shows any other failure, such as a source admission refusal (CAN-5333). */
+  onFailure: (message: string) => void;
 }
 
+const DELETE_WORKTREE_FAILED = "Couldn't delete the worktree. Try again.";
+
 /**
- * Wraps `TeardownFailureDialog` with the retry/force/cancel wiring previously
+ * Wraps `TeardownFailureDialog` with the retry/without-teardown/cancel wiring previously
  * duplicated across the project- and workspace-settings modals. Behavior:
  * - Retry: marks `isRetrying`, clears the active error, archives the worktree,
  *   then invokes `onRetryDelete`. If archiving raises another
  *   `TeardownFailedError` the new error is surfaced via `onErrorChange`.
- * - Force delete: clears the active error, force-archives the worktree, then
- *   invokes `onRetryDelete`.
+ * - Delete without teardown: clears the active error, archives the worktree
+ *   without its teardown script, then invokes `onRetryDelete`.
  * - Cancel: clears the active error.
+ * Any other failure goes to `onFailure`.
  */
 export function SettingsTeardownFailureDialog({
   error,
@@ -580,10 +583,23 @@ export function SettingsTeardownFailureDialog({
   onRetryDelete,
   onRetryingChange,
   onErrorChange,
+  onFailure,
 }: SettingsTeardownFailureDialogProps): JSX.Element | null {
   if (!error) {
     return null;
   }
+
+  const reportFailure = (cause: unknown): void => {
+    if (cause instanceof TeardownFailedError) {
+      onErrorChange(cause);
+      return;
+    }
+    onFailure(
+      cause instanceof Error && cause.message.trim() !== ''
+        ? cause.message
+        : DELETE_WORKTREE_FAILED,
+    );
+  };
 
   return (
     <TeardownFailureDialog
@@ -594,18 +610,14 @@ export function SettingsTeardownFailureDialog({
         onErrorChange(null);
         void archiveWorktree(error.projectId, error.worktreeId)
           .then(() => onRetryDelete())
-          .catch((cause: unknown) => {
-            if (cause instanceof TeardownFailedError) {
-              onErrorChange(cause);
-            }
-          })
+          .catch(reportFailure)
           .finally(() => onRetryingChange(false));
       }}
-      onForceDelete={(): void => {
+      onSkipTeardown={(): void => {
         onErrorChange(null);
-        void forceArchiveWorktree(error.projectId, error.worktreeId).then(() =>
-          onRetryDelete(),
-        );
+        void forceArchiveWorktree(error.projectId, error.worktreeId)
+          .then(() => onRetryDelete())
+          .catch(reportFailure);
       }}
       onCancel={(): void => onErrorChange(null)}
     />

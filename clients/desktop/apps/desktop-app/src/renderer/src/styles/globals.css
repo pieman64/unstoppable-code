@@ -7,12 +7,29 @@
 @import '@canopy/ui-shared/styles/canopy-tokens.css';
 @import '@canopy/ui-shared/styles/panels.css';
 @import '@canopy/ui-shared/styles/toast-stack.css';
+@import '@canopy/ui-shared/styles/streaming-text.css';
 @plugin "@tailwindcss/typography";
 
 /* Every top-level page reserves the same scrollbar width, whether or not its
  * current tab overflows, so shared centered containers never change geometry. */
 .page-scroll-gutter {
   scrollbar-gutter: stable;
+}
+
+/* A scrolling list inside a page keeps its rows' trailing edge in place
+ * when its rows start or stop overflowing (the first-run Projects list). */
+.list-scroll-gutter {
+  scrollbar-gutter: stable;
+}
+
+/* At high UI scale the first-run column can be narrower than an action's
+ * label. Let those labels wrap and grow their buttons; choice controls
+ * (such as the credits switch) keep their own geometry. */
+.first-run-import-page button:not([role]) {
+  max-width: 100%;
+  height: auto;
+  min-height: 1.75rem;
+  max-height: none;
 }
 
 /* Keep the Marketplace scrollbar below the pinned titlebar without
@@ -291,11 +308,12 @@ body[data-app-advisor-floating] {
   background-color: transparent;
 }
 
-/* Early access inset layout (`data-window-layout='inset'` on the app window,
- * set from App.tsx). The sidebar and the worktree/chat top bar sit on the
- * window material; the work area below them is one card inset 4px from the
- * window's right and bottom edges. Inside the card the base surface resolves
- * to the card surface, so panel groups and pages need no per-surface rules. */
+/* Inset layout (`data-window-layout='inset'` on the app window, set from
+ * App.tsx). The sidebar and the worktree/chat top bar sit on the window
+ * material; the work area below them is cards inset from the window's right
+ * and bottom edges by `--inset-card-gap`. Inside a card the base surface
+ * resolves to the card surface, so panel groups and pages need no
+ * per-surface rules. */
 [data-window-layout='inset'] [data-testid='app-main-shell'],
 [data-window-layout='inset'] [data-testid='worktree-part'],
 [data-window-layout='inset'] [data-testid='page-chat'] > section,
@@ -369,13 +387,25 @@ body[data-app-advisor-floating] {
   pointer-events: none;
 }
 
-/* Concentric with the OS window corner: its radius (window points, from
- * lib/windowCornerRadius.ts, divided by the interface zoom) minus the 4px
- * inset. 12px when the OS radius is unknown; never fully square. */
-[data-window-layout='inset'] {
+/* The one gap of the inset layout: between the cards and the window's right
+ * and bottom edges, between neighbouring cards, and on the left with the
+ * sidebar hidden. Every margin and offset in the layout derives from it.
+ * Settings (which carries its own flag) shares it.
+ *
+ * The card radius is concentric with the OS window corner: its radius
+ * (window points, from lib/windowCornerRadius.ts, divided by the interface
+ * zoom) minus that gap. 10px when the OS radius is unknown; never below the
+ * 6px floor every nested pane corner shares (panels.css
+ * `--canopy-panel-corner-floor`). */
+[data-window-layout='inset'],
+.settings-page-overlay[data-settings-layout='inset'] {
+  --inset-card-gap: 6px;
   --inset-card-radius: max(
-    calc(var(--window-corner-radius, 16px) / var(--ui-zoom, 1) - 4px),
-    4px
+    calc(
+      var(--window-corner-radius, 16px) / var(--ui-zoom, 1) -
+        var(--inset-card-gap)
+    ),
+    6px
   );
 }
 
@@ -403,14 +433,14 @@ body[data-app-advisor-floating] {
 }
 
 /* With the sidebar hidden nothing sits beside the cards, so their left edge
- * keeps the window's 4px inset, as the right and bottom edges do. (The
- * sidebar's hover preview floats over the page and changes nothing here.) */
+ * keeps the window's gap, as the right and bottom edges do. (The sidebar's
+ * hover preview floats over the page and changes nothing here.) */
 [data-window-layout='inset'][data-sidebar-hidden='true'] {
-  --inset-card-edge-room: 4px;
+  --inset-card-edge-room: var(--inset-card-gap);
 }
 
-/* Settings and Your plugins bring their own sidebar, which is never hidden:
- * their card always sits against it. */
+/* Settings brings its own sidebar, which is never hidden: its card always
+ * sits against it. */
 [data-window-layout='inset'][data-sidebar-hidden='true']
   .settings-page-overlay {
   --inset-card-edge-room: var(--border-hairline);
@@ -455,19 +485,25 @@ body[data-app-advisor-floating] {
   --canopy-sash-hover-size: 8px;
 }
 
+/* Over an in-app browser page the handle is drawn by its copy in the
+ * above-browser layer (`data-canopy-above-browser`), which cannot be hovered:
+ * `[data-above-browser-hover]` stands in for `:hover` there. */
+
 [data-window-layout='inset'] .canopy-sash::before {
   transition: none;
 }
 
 [data-window-layout='inset'] .canopy-sash:hover,
 [data-window-layout='inset'] .canopy-sash.hover,
-[data-window-layout='inset'] .canopy-sash.active {
+[data-window-layout='inset'] .canopy-sash.active,
+[data-window-layout='inset'] .canopy-sash[data-above-browser-hover] {
   z-index: 50; /* z-exception: a shown resize handle overhangs the cards */
 }
 
 [data-window-layout='inset'] .canopy-sash:hover::before,
 [data-window-layout='inset'] .canopy-sash.hover::before,
-[data-window-layout='inset'] .canopy-sash.active::before {
+[data-window-layout='inset'] .canopy-sash.active::before,
+[data-window-layout='inset'] .canopy-sash[data-above-browser-hover]::before {
   background: var(--fg-emphasis);
   box-shadow: var(--shadow-xl);
 }
@@ -500,23 +536,15 @@ body[data-app-advisor-floating] {
   overflow-clip-margin: 4px;
 }
 
-/* Settings (outside the app window element, so it carries its own flag):
- * its page is one card like the main window's, under the window's empty 46px
- * top row and 4px from the window's right and bottom edges. The nav beside it
- * has no edge line, like the main sidebar. */
-.settings-page-overlay[data-settings-layout='inset'] {
-  --inset-card-radius: max(
-    calc(var(--window-corner-radius, 16px) / var(--ui-zoom, 1) - 4px),
-    4px
-  );
-}
-
-.settings-page-overlay[data-settings-layout='inset']
-  [data-testid='settings-content'] {
+/* Settings and project settings (outside the app window element, so they
+ * carry their own flag): the page is one card like the main window's, under
+ * the window's empty 46px top row and one gap from the window's right and
+ * bottom edges. The nav beside it has no edge line, like the main sidebar. */
+.settings-page-overlay[data-settings-layout='inset'] [data-settings-card] {
   --bg-base: var(--bg-primary);
   /* One hairline of room on the left so the card's edge is not clipped
    * against the nav. */
-  margin: 0 4px 4px var(--border-hairline);
+  margin: 0 var(--inset-card-gap) var(--inset-card-gap) var(--border-hairline);
   overflow: hidden;
   border-radius: var(--inset-card-radius);
   background-color: var(--bg-primary);
@@ -536,45 +564,18 @@ body[data-app-advisor-floating] {
     )
   ) {
   --bg-base: var(--bg-primary);
-  margin: 0 4px 4px var(--inset-card-edge-room);
+  margin: 0 var(--inset-card-gap) var(--inset-card-gap)
+    var(--inset-card-edge-room);
   border-radius: var(--inset-card-radius);
   background-color: var(--bg-primary);
   box-shadow: var(--inset-card-shadow);
-}
-
-/* Your plugins covers the window with its own sidebar and page. The page is
- * one card in the main window's frame: under its 40px drag row plus 6px (the
- * window's 46px top row), 4px from the right and bottom edges. Its shared
- * heading brings 16px, so the card adds 40px to seat it 56px under the card's
- * top edge, like every other page. */
-/* Around that card, the page shows the window material (the sidebar and
- * titlebar surface), as Settings does, not its own base: otherwise the drag
- * row above the card reads as a separate band. */
-[data-window-layout='inset']
-  .settings-page-overlay
-  [data-testid='plugins-management-content'] {
-  background-color: transparent;
-}
-
-[data-window-layout='inset']
-  .settings-page-overlay
-  [data-testid='plugins-management-content']
-  > .page-scroll-gutter {
-  --bg-base: var(--bg-primary);
-  margin: 6px 4px 4px var(--inset-card-edge-room);
-  padding-top: 40px;
-  border-radius: var(--inset-card-radius);
-  background-color: var(--bg-primary);
-  box-shadow: var(--inset-card-shadow);
-  -webkit-mask-image: none;
-  mask-image: none;
 }
 
 /* Settings pages bring 32px above their heading; 24px more seats it 56px
- * under the card's top edge too. The card itself is the rule above
+ * under the card's top edge. The card itself is the rule above
  * (`[data-settings-layout='inset']`). */
 .settings-page-overlay[data-settings-layout='inset']
-  [data-testid='settings-content']
+  [data-settings-card]
   > .page-scroll-gutter {
   padding-top: 24px;
 }
@@ -591,17 +592,19 @@ body[data-app-advisor-floating] {
     :has(.canopy-panel-group, .canopy-panel-collapsed-bar)
   ) {
   --bg-base: var(--bg-primary);
-  margin: 0 4px 4px var(--inset-card-edge-room);
+  margin: 0 var(--inset-card-gap) var(--inset-card-gap)
+    var(--inset-card-edge-room);
   border-radius: var(--inset-card-radius);
   background-color: var(--bg-primary);
   box-shadow: var(--inset-card-shadow);
 }
 
 /* Under a top bar, every panel group (chat, Side Panel, bottom panel) is its
- * own card, 4px apart. Each group keeps a 2px margin inside its grid cell, so
- * neighbours sit 4px apart; the grid itself reaches 2px past the sidebar and
- * the top bar and stops 2px short of the window's right and bottom edges, so
- * the outer cards line up with them exactly and sit 4px from the window. */
+ * own card, one gap apart. Each group keeps half the gap as a margin inside
+ * its grid cell, so neighbours sit one gap apart; the grid itself reaches half
+ * a gap past the sidebar and the top bar and stops half a gap short of the
+ * window's right and bottom edges, so the outer cards line up with them
+ * exactly and sit one gap from the window. */
 [data-window-layout='inset']
   main[data-main-frame='split']
   [data-testid='panel-grid-root'] {
@@ -609,7 +612,9 @@ body[data-app-advisor-floating] {
   /* The grid host is `width: 100%`; as a stretched flex item it fills the
    * width minus its margins instead. */
   width: auto;
-  margin: -2px 2px 2px calc(var(--inset-card-edge-room) - 2px);
+  margin: calc(var(--inset-card-gap) / -2) calc(var(--inset-card-gap) / 2)
+    calc(var(--inset-card-gap) / 2)
+    calc(var(--inset-card-edge-room) - var(--inset-card-gap) / 2);
 }
 
 [data-window-layout='inset']
@@ -619,9 +624,9 @@ body[data-app-advisor-floating] {
     .canopy-panel-group,
     .canopy-panel-collapsed-bar:not(.canopy-panel-group *)
   ) {
-  width: calc(100% - 4px);
-  height: calc(100% - 4px);
-  margin: 2px;
+  width: calc(100% - var(--inset-card-gap));
+  height: calc(100% - var(--inset-card-gap));
+  margin: calc(var(--inset-card-gap) / 2);
   border-radius: var(--inset-card-radius);
   background-color: var(--bg-primary);
   box-shadow: var(--inset-card-shadow);
@@ -697,11 +702,11 @@ body[data-app-advisor-floating] {
   scrollbar-gutter: stable both-edges;
 }
 
-/* A page's heading keeps 16px under the page's own 40px bar instead of 48px:
+/* A page's header keeps 16px under the page's own 40px bar instead of 48px:
  * its card already starts below the window's empty 46px top row, so the full
  * gap left the title floating far below the card's top edge. Category and
  * detail headings under a breadcrumb bar move up by the same amount. */
-[data-window-layout='inset'] [data-testid='page-heading'] {
+[data-window-layout='inset'] [data-testid='page-header'][data-inset='page'] {
   padding-top: 16px;
 }
 
@@ -733,7 +738,7 @@ body[data-app-advisor-floating] {
   content: '';
   position: absolute;
   top: calc(46px + var(--inset-card-radius));
-  bottom: calc(4px + var(--inset-card-radius));
+  bottom: calc(var(--inset-card-gap) + var(--inset-card-radius));
   left: 50%;
   width: var(--border-hairline);
   background-image: linear-gradient(
@@ -1036,53 +1041,6 @@ tr:has(td[data-review-selected]) td:first-child {
   }
 }
 
-/* Home onboarding suggestions (Getting started module): a queue row that
- * backfills into a freed slot slides up into place. Applied only to entries
- * that were not rendered on the previous pass, so initial mounts stay
- * still. */
-@keyframes onboarding-suggestion-enter {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.onboarding-suggestion-enter {
-  animation: onboarding-suggestion-enter 0.24s cubic-bezier(0.16, 1, 0.3, 1)
-    both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .onboarding-suggestion-enter {
-    animation: none;
-  }
-}
-
-/* The add-repo spotlight overlay fades in as one unit (scrim + hint card)
- * instead of popping. */
-@keyframes onboarding-spotlight-fade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-.onboarding-spotlight-fade {
-  animation: onboarding-spotlight-fade 0.18s ease-out both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .onboarding-spotlight-fade {
-    animation: none;
-  }
-}
-
 @keyframes workspace-highlight-pulse {
   0% {
     outline-color: transparent;
@@ -1270,16 +1228,21 @@ body[data-sidebar-menu-open] .sidebar-resizable-surface * {
   transition: opacity 200ms ease-out !important;
 }
 
+/* The 6px thumb grows to 8px from its right edge by `scale`, not `width`, so
+ * the motion runs on the compositor; its hovered corner is narrowed to 3px
+ * across first, so the scaled thumb lands on a true 4px round end. */
 [data-sidebar-scrollbar-thumb],
 [data-overlay-scrollbar-thumb] {
+  transform-origin: right center;
   transition:
-    width 250ms ease-out,
+    scale 250ms ease-out,
     background-color 250ms ease-out !important;
 }
 
 [data-sidebar-scrollbar]:hover [data-sidebar-scrollbar-thumb],
 [data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {
-  width: 8px;
+  scale: calc(8 / 6) 1;
+  border-radius: 3px / 4px;
   background-color: var(--fg-secondary);
 }
 
@@ -1291,7 +1254,8 @@ body[data-sidebar-menu-open] .sidebar-resizable-surface * {
 :root[data-scrollbars='always']
   [data-overlay-scrollbar]:hover
   [data-overlay-scrollbar-thumb] {
-  width: var(--canopy-scrollbar-thumb-size);
+  scale: none;
+  border-radius: var(--radius-full);
 }
 
 /* The workspace rows' icon→chevron disclosure swap is the other intentional
@@ -1378,16 +1342,6 @@ body[data-sidebar-menu-open] .sidebar-resizable-surface * {
 .settings-content-scroll-mask {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2.5rem);
   mask-image: linear-gradient(to bottom, transparent 0, black 2.5rem);
-}
-
-/* Settings selects nothing on drag (`select-none` on the overlay), except
- * what the user types and the values they may copy: paths, commands, codes.
- * In the base layer so an element's own `select-*` utility still wins. */
-@layer base {
-  .settings-page-overlay
-    :where(input, textarea, [contenteditable='true'], code, pre, .font-mono) {
-    user-select: text;
-  }
 }
 
 /* Scroll-written mask stops, registered so they do NOT inherit.

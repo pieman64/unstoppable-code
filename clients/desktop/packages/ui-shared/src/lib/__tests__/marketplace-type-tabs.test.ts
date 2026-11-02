@@ -2,13 +2,13 @@ import {
   isMarketplaceSourcesTab,
   MARKETPLACE_TYPE_TABS,
   marketplaceEntityTypeLabel,
-  marketplaceKindToneClass,
   marketplaceKindFilterForEntryKind,
   marketplaceTypeTabs,
   marketplaceTabKinds,
   marketplaceTabForKind,
   marketplaceEntryInTab,
   normalizeMarketplaceNavigation,
+  marketplaceManagementDestination,
 } from '../marketplace-type-tabs';
 
 describe('marketplace entity types (CAN-3484)', () => {
@@ -98,15 +98,46 @@ it('keeps Sources outside catalog tab membership and gates its visibility', () =
   expect(marketplaceEntryInTab({ kind: 'plugin' }, 'sources')).toBe(false);
 });
 
-describe('Customize type label tints (CAN-4261)', () => {
-  it('gives each kind one muted ink, with workflows sharing one', () => {
-    expect(marketplaceKindToneClass('skill')).toBe('fg-kind-skill');
-    expect(marketplaceKindToneClass('pipeline')).toBe('fg-kind-workflow');
-    expect(marketplaceKindToneClass('automation')).toBe('fg-kind-workflow');
-    expect(marketplaceKindToneClass('plugin')).toBe('fg-kind-plugin');
-    expect(marketplaceKindToneClass('app')).toBe('fg-kind-mcp');
-    expect(marketplaceKindToneClass('collection')).toBe('fg-kind-collection');
-    expect(marketplaceKindToneClass('agent')).toBe('fg-kind-agent');
-    expect(marketplaceKindToneClass('blueprint')).toBe('fg-kind-template');
+describe('legacy Customize destinations (CAN-4267)', () => {
+  it.each([
+    ['installed', 'all'],
+    ['skills', 'skill'],
+    ['mcp', 'app'],
+    ['collections', 'collection'],
+    ['bundles', 'collection'],
+    ['marketplace', 'sources'],
+    ['marketplaces', 'sources'],
+    ['invalid', 'all'],
+    [undefined, 'all'],
+  ])('normalizes %s to %s', (section, tab) => {
+    expect(marketplaceManagementDestination(section)).toEqual({
+      query: '',
+      tab,
+      ...(tab === 'sources'
+        ? {}
+        : { focusSection: 'installed', installedExpanded: true }),
+    });
+  });
+  it('retains Active filtering separately from transient Installed focus', () => {
+    expect(
+      marketplaceManagementDestination('installed', 'active'),
+    ).toMatchObject({
+      installedStatusFilter: 'active',
+      focusSection: 'installed',
+      installedExpanded: true,
+    });
+    expect(normalizeMarketplaceNavigation('skill', 'installed')).toEqual({
+      tab: 'skill',
+      focusSection: 'installed',
+    });
+  });
+  it('carries any installed status to the destination (CAN-4838)', () => {
+    expect(
+      marketplaceManagementDestination('installed', 'disabled'),
+    ).toMatchObject({
+      installedStatusFilter: 'disabled',
+      focusSection: 'installed',
+      installedExpanded: true,
+    });
   });
 });

@@ -138,7 +138,9 @@ describe('collectChatVisualOwners', () => {
   ): PortalChatMessage {
     return {
       messageId,
+      chatId: 'c1',
       role: 'assistant',
+      status: 'complete',
       text: '',
       createdAtMs: 0,
       parts,

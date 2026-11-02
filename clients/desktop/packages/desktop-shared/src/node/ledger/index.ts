@@ -7,7 +7,10 @@
  * literal search, signed cursors and the typed store error.
  */
 export { LedgerRepository } from './repository';
-export { LEDGER_ACTOR_ORIGIN_KEY_MAX_CODE_POINTS } from './registrations';
+export {
+  LEDGER_ACTOR_ORIGIN_KEY_MAX_CODE_POINTS,
+  ledgerGlobalAccountKey,
+} from './registrations';
 export {
   LedgerStoreError,
   isLedgerStoreError,
@@ -42,6 +45,7 @@ export {
   canPurgeLedgerScope,
   canRebindLedgerScope,
   canTransitionLedgerScope,
+  hasLedgerContainerLifecycle,
   isLedgerScopeLifecycleState,
   isLedgerScopeWritable,
   ledgerScopeLifecycleRejection,
@@ -63,9 +67,11 @@ export {
   type LedgerAcknowledgeOutboxInput,
   type LedgerActorRecord,
   type LedgerAddEntryInput,
+  type LedgerBindGlobalScopeInput,
   type LedgerBindScopeInput,
   type LedgerBindScopeResult,
   type LedgerCommitHookContext,
+  type LedgerFindGlobalScopeInput,
   type LedgerFindScopeInput,
   type LedgerGetEntryInput,
   type LedgerListChangesInput,

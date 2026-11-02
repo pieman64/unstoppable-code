@@ -260,22 +260,29 @@ describe('AccountPanel / SecurityPanel', () => {
     ).toBeNull();
   });
 
-  it('gives the account cards the shared settings-card shell', async () => {
-    // Same shell the org settings subtabs and the account Billing tab use, so
-    // an Account card never reads as a level below its Billing counterpart.
+  it('draws the account as one Profile section of grouped rows', async () => {
+    // The same text-only heading and grouped box every settings page uses.
     installClient(makeResponse());
     await renderAccount();
 
-    for (const testId of [
-      'account-profile-section',
-      'account-basics-section',
-    ]) {
-      expectSettingsCardShell(container, testId);
-    }
-    for (const title of ['Basic info', 'Contact information']) {
-      expectSettingsCardHeading(container, title);
-    }
-    // The bordered, unmedallioned shell these cards used to carry.
+    expectSettingsCardShell(container, 'account-profile-section');
+    expectSettingsCardHeading(container, 'Profile');
+    const section = container.querySelector(
+      '[data-testid="account-profile-section"]',
+    );
+    // Photo, Name, Email and Role are rows in the one box.
+    const rows = Array.from(
+      section?.querySelectorAll('.settings-card-row') ?? [],
+    );
+    expect(rows).toHaveLength(4);
+    ['Photo', 'Name', 'Email', 'Role'].forEach((label, index) => {
+      expect(rows[index]?.textContent?.startsWith(label)).toBe(true);
+    });
+    expect(
+      container
+        .querySelector('[data-testid="profile-name-input"]')
+        ?.getAttribute('value'),
+    ).toBe('Ada Lovelace');
     expectNoLegacyCardShell(container);
   });
 
@@ -322,7 +329,7 @@ describe('AccountPanel / SecurityPanel', () => {
     await renderAndLoad();
 
     // The auth-sources failure surfaces its error state...
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     // ...but the API keys section is rendered outside that status gate.
     const apiKeysSection = container.querySelector(
       '[data-testid="account-api-keys-section"]',
@@ -628,11 +635,11 @@ describe('AccountPanel / SecurityPanel', () => {
     });
     await renderAndLoad();
 
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
 
     failing = false;
-    await clickButtonAsync('Retry');
+    await clickButtonAsync('Try again');
 
     expect(inputsFor('account.security.authSources')).toHaveLength(2);
     expect(container.textContent).toContain('Sign-in methods');
@@ -972,21 +979,21 @@ describe('AccountPanel / SecurityPanel', () => {
     await renderAccount();
 
     const email = container.querySelector('[data-testid="account-email"]');
-    expect(email?.className).toBe('text-s fg-primary dd-privacy-hidden');
+    expect(email?.classList.contains('dd-privacy-hidden')).toBe(true);
     expect(
       container
-        .querySelector('[data-testid="profile-name"]')
-        ?.classList.contains('dd-privacy-hidden'),
-    ).toBe(true);
+        .querySelector('[data-testid="profile-name-input"]')
+        ?.closest('.dd-privacy-hidden'),
+    ).toBeInstanceOf(HTMLElement);
   });
 
   it('adds no class token when the host records no replay', async () => {
     installClient(makeResponse());
     await renderAccount();
 
-    expect(
-      container.querySelector('[data-testid="account-email"]')?.className,
-    ).toBe('text-s fg-primary');
+    const email = container.querySelector('[data-testid="account-email"]');
+    expect(email?.className).not.toContain('dd-privacy-hidden');
+    expect(email?.className.split(' ')).toContain('truncate');
   });
 
   it('reenables the idle 2FA action after disabling succeeds', async () => {

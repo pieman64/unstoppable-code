@@ -1,3 +1,4 @@
+import { assertOpenCodeSelectionAvailable } from '../opencode/selection';
 import {
   recordPresentationTurn,
   resolvePresentationSource,
@@ -6,12 +7,19 @@ import {
   presentationChatKey,
 } from '../canopy-tools/presentation-state';
 import { browserHandoffs } from '../browser/browser-handoffs';
-import { assertOpenCodeModelAvailable } from '../opencode/connection';
 import { chatAgentSent } from '@canopy/protocol/portal/external-agent-sender';
 import { assertCopilotModelAvailable } from '../copilot/connection';
 import { isCopilotRuntimeAvailable } from '../copilot/runtime-availability';
 import { getChatQueueService } from '../services/chat-queue-service';
-import { getOrCreateRoutedSession } from '../agents/session-event-router';
+import type { ChatQueueRevivalLease } from '../services/chat-queue-service';
+import {
+  activatePendingTurnRoute,
+  getLiveRoutedSession,
+  getOrCreateRoutedSession,
+  getTurnRootAcceptance,
+  isOwnedDelegationEvent,
+  parkBehindWake,
+} from '../agents/session-event-router';
 import type { BrowserWindow } from 'electron';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -24,6 +32,7 @@ import {
   resolveModelAlias,
   resolveProviderModelConfig,
   type AgentProviderType,
+  type ApprovalMode,
   type ChatModel,
   type ChatSendMessageRequest,
   type ChatSendMessageDisposition,
@@ -34,12 +43,14 @@ import {
 } from '@canopy/desktop-shared/types';
 import { codexServiceTierForModelConfig } from '@canopy/desktop-shared/lib/codex-model-config';
 import { applyAgentSessionCodexSpeed } from '@canopy/desktop-shared/lib/codex-speed';
+import { turnSessionApprovalRules } from '@canopy/desktop-shared/lib/send-approval-narrowing';
 import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
 } from '@canopy/desktop-shared/lib/global-instructions';
 import { validateId } from '../lib/validation';
 import { buildSubmittedMessageText } from '../lib/chat-submitted-message';
+import { recordChatEventDropped } from '../lib/chat-event-drop-diagnostics';
 import { getAppAdvisorHomeDir } from '../lib/paths';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
@@ -48,6 +59,7 @@ import { claudeContinuationSession } from '../lib/claude-fork-continuation';
 import { scheduleChatSummary } from '../lib/worktree-chat-turn';
 import {
   destroySession,
+  restrictSessionApprovalRules,
   getActiveSessionInfos,
   getSessionGlobalInstructionsSnapshot,
   shouldRecreateSessionOnNextTurn,
@@ -82,10 +94,8 @@ import {
   isCanopyPortalActive,
 } from '../portal/portal-event-bus';
 import {
-  createPortalTurnTimer,
   isTerminalRuntimeChatEvent,
   runtimeChatEventToPortalMessage,
-  type PortalTurnTimer,
 } from '../services/chat-transcript-projector';
 import { resolveAgentAttachmentsDir } from '../lib/agent-attachments';
 import { ensureAppAdvisorHomeScaffold } from '../lib/app-advisor-workspace';
@@ -103,11 +113,23 @@ import {
 } from '../services/active-chat-input';
 import { getAppAdvisorWatcherService } from './watchers';
 import {
+  consumeDispatchAuthorization,
+  wakeParkingOutcome,
+  type AuthorizedChatDispatch,
+} from '../services/chat-dispatch-authorization';
+import { reservePromptBindingSlot } from '../services/chat-turn-binding-slots';
+import {
+  classifyProviderRunEvent,
+  copyProviderRunProvenance,
+  getProviderRunDescriptor,
+} from '../lib/provider-run-reconciliation';
+import {
   claudeForkSessionIdFromInit,
   consumePersistedClaudeForkSessionMarker,
 } from '../lib/claude-fork-session-marker';
 import { logMainProcessError } from '../lib/main-process-logging';
-import { clampToLiveApprovalMode } from '../approvals/live-approval-modes';
+import { setLiveApprovalMode } from '../approvals/live-approval-modes';
+import { resolveChatTurnApprovalAuthority } from '../lib/chat-turn-approval-authority';
 import {
   readPersistedChatDispatchMetadata,
   type PersistedChatDispatchMetadata,
@@ -122,18 +144,10 @@ import {
 const lastAssistantPortalMessages = new Map<string, PortalChatMessage>();
 
 /**
- * Live portal turn timer per chat, keyed by chatId. App Advisor has no desktop
- * renderer persisting a timer row for portal consumption, so this path owns the
- * synthetic `${userMessageId}:turn-timer` system frames the browser's store
- * uses as its turn lifecycle signal (the worktree portal path's
- * `createPortalTurnTimer` pattern) — without them a live App Advisor turn never
- * terminates browser-side even though the desktop is idle.
- *
- * Created at dispatch, superseded by a new visible user turn, and normally
- * cleared on terminal runtime events. A deferred-tools intermediate terminal
- * event retains it until the continuation finishes or the reload fails.
+ * Visible turns started per chat (sends and starting pickups), so a delayed
+ * synthetic cancel can tell a newer turn began before it projected a frame.
  */
-const portalTurnTimers = new Map<string, PortalTurnTimer>();
+const portalTurnEpochs = new Map<string, number>();
 
 type AdvisorChatObservation = {
   address: CanonicalChatAddress;
@@ -175,7 +189,11 @@ async function captureAdvisorChatObservation(
   }
 }
 
-function completePortalTimerForReloadOutcome(
+function bumpPortalTurnEpoch(chatId: string): void {
+  portalTurnEpochs.set(chatId, (portalTurnEpochs.get(chatId) ?? 0) + 1);
+}
+
+function clearPortalFrameForReloadOutcome(
   event: DeferredToolsReloadEvent,
 ): void {
   if (
@@ -184,28 +202,10 @@ function completePortalTimerForReloadOutcome(
   ) {
     return;
   }
-  const { chatId } = event.scope;
-  const turnTimer = portalTurnTimers.get(chatId);
-  if (turnTimer && isCanopyPortalActive()) {
-    const completedTimer = turnTimer.completeForEvent({
-      type: 'result',
-      is_error: true,
-      result: event.error?.message ?? 'Deferred-tools reload failed.',
-    });
-    if (completedTimer) {
-      enqueuePortalEvent(
-        createPortalEvent('portal.app_advisor.event', {
-          chatId,
-          message: completedTimer,
-        }),
-      );
-    }
-  }
-  lastAssistantPortalMessages.delete(chatId);
-  portalTurnTimers.delete(chatId);
+  lastAssistantPortalMessages.delete(event.scope.chatId);
 }
 
-deferredToolsReloadCoordinator.subscribe(completePortalTimerForReloadOutcome);
+deferredToolsReloadCoordinator.subscribe(clearPortalFrameForReloadOutcome);
 
 type AppAdvisorChatDispatchRequest = ChatSendMessageRequest & {
   /**
@@ -247,7 +247,6 @@ function sendAppAdvisorChatEvent(
     providerType?: AgentProviderType;
     model?: ChatModel;
     fallbackMessageId?: string;
-    preservePortalTimerForDeferredReload?: boolean;
   },
 ): void {
   const payload = {
@@ -267,32 +266,16 @@ function sendAppAdvisorChatEvent(
     payload,
   );
   const isTerminalEvent = isTerminalRuntimeChatEvent(data);
-  const preservePortalTimerForDeferredReload =
-    isTerminalEvent &&
-    (context?.preservePortalTimerForDeferredReload ??
-      deferredToolsReloadCoordinator.hasActiveReload({
-        projectId,
-        worktreeId,
-        chatId,
-      }));
 
   // Mirror the turn onto a connected portal session (CAN-2565). The payload
   // deliberately carries no scope/workspace routing — the server pins the
   // `app_advisor` scope from the event type, so a desktop cannot mislabel it.
   if (isCanopyPortalActive()) {
-    const turnTimer = portalTurnTimers.get(chatId);
     const emitPortalMessage = (message: PortalChatMessage): void => {
       enqueuePortalEvent(
         createPortalEvent('portal.app_advisor.event', { chatId, message }),
       );
     };
-    // Same update order as the worktree portal path's onChatEvent: raw-event
-    // timer updates (Codex ask-user pause/resume), then the projected message
-    // and its part-driven timer updates, then the terminal completion frame.
-    const eventTimerUpdate = turnTimer?.updateForEvent(data) ?? null;
-    if (eventTimerUpdate) {
-      emitPortalMessage(eventTimerUpdate);
-    }
     const message = runtimeChatEventToPortalMessage({
       scope: 'app_advisor',
       chatId,
@@ -311,19 +294,6 @@ function sendAppAdvisorChatEvent(
         lastAssistantPortalMessages.set(chatId, message);
       }
       emitPortalMessage(message);
-      const messageTimerUpdate = turnTimer?.updateForMessage(message) ?? null;
-      if (messageTimerUpdate) {
-        emitPortalMessage(messageTimerUpdate);
-      }
-    }
-    // Terminal runtime events — including the synthetic cancel `result` from
-    // emitAppAdvisorSyntheticResultEvent — finalize the live timer; the
-    // browser's store ends its turn lifecycle on this terminal frame.
-    const completedTimer = preservePortalTimerForDeferredReload
-      ? null
-      : (turnTimer?.completeForEvent(data) ?? null);
-    if (completedTimer) {
-      emitPortalMessage(completedTimer);
     }
   }
   if (isTerminalEvent) {
@@ -333,14 +303,6 @@ function sendAppAdvisorChatEvent(
     // prior turn's frame re-emitted, and cancelling while disconnected must
     // not strand the entry.
     lastAssistantPortalMessages.delete(chatId);
-    // A deferred-tools reload emits an intermediate terminal event before its
-    // hidden continuation starts. Keep the same live timer across that seam
-    // so Portal retains its working indicator and Stop control. The resumed
-    // request's real terminal event consumes it after the coordinator leaves
-    // the active-reload state.
-    if (!preservePortalTimerForDeferredReload) {
-      portalTurnTimers.delete(chatId);
-    }
   }
 
   if (!mainDelivery.delivered && !appAdvisorDelivery.delivered) {
@@ -391,6 +353,7 @@ function buildDeferredToolsReloadMetadata(
   };
 }
 
+/** Mirrors the worktree builder in services/chat-service.ts. */
 function buildPersistedAppAdvisorUserMessage(
   request: ChatSendMessageRequest,
   timestamp: number,
@@ -410,13 +373,11 @@ function buildPersistedAppAdvisorUserMessage(
         : []),
       { type: 'text', text: request.text },
     ],
-    ...(request.attachmentPaths?.length
-      ? { attachmentPaths: request.attachmentPaths }
-      : {}),
+    attachmentPaths: request.attachmentPaths,
     ...(request.attachmentPromptContexts?.length
       ? { attachmentPromptContexts: request.attachmentPromptContexts }
       : {}),
-    ...(request.inputMode ? { inputMode: request.inputMode } : {}),
+    inputMode: request.inputMode ?? 'typed',
     ...(request.watcherFired ? { watcherFired: request.watcherFired } : {}),
     // A message an external MCP agent sent stays the person's own.
     ...(chatAgentSent(request.agentSent)
@@ -434,6 +395,8 @@ export async function dispatchAppAdvisorChatMessage(
     toolSurfaces: AppAdvisorToolRuntimeSurfaces;
     /** Trusted host signal; never part of the portable request. */
     onTurnAccepted?: () => void;
+    /** Host-only queue admission capability, consumed before any start effect. */
+    authorization?: AuthorizedChatDispatch;
     admissionSignal?: AbortSignal;
   },
 ): Promise<ChatSendMessageDisposition> {
@@ -464,6 +427,13 @@ export async function dispatchAppAdvisorChatMessage(
   if (!entryIds.includes(request.worktreeId)) {
     throw new Error(`Unknown App Advisor Work Entry ${request.worktreeId}.`);
   }
+  // A Stop or newer dispatch since admission makes this attempt stale.
+  consumeDispatchAuthorization(options.authorization, {
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    chatId: request.chatId,
+    userMessageId: request.userMessageId,
+  });
   const resourceGuard =
     await getResourceMonitorService().reserveChatTurnStart();
   try {
@@ -531,9 +501,12 @@ export async function dispatchAppAdvisorChatMessage(
       selectedProviderType === 'copilot' &&
       !(await isCopilotRuntimeAvailable())
     )
-      throw new Error('Connect Copilot in Settings > Labs.');
+      throw new Error('Connect Copilot in Settings.');
     if (selectedProviderType === 'opencode')
-      await assertOpenCodeModelAvailable(selectedModel);
+      await assertOpenCodeSelectionAvailable({
+        model: selectedModel,
+        session: request,
+      });
     if (selectedProviderType === 'copilot')
       await assertCopilotModelAvailable(selectedModel);
     if (switchesActiveSessionProvider) {
@@ -664,12 +637,20 @@ export async function dispatchAppAdvisorChatMessage(
       );
     }
 
-    const sessionApprovalMode = clampToLiveApprovalMode(
-      request.projectId,
-      request.worktreeId,
-      request.chatId,
-      request.approvalMode,
-    );
+    const turnApproval = await resolveChatTurnApprovalAuthority(request);
+    let toolApprovalMode = turnApproval.approvalMode;
+    const toolApprovalContext = {
+      providerType,
+      get approvalMode(): ApprovalMode {
+        // Warm sessions retain this runtime, not the next dispatch's context.
+        return (
+          toolApprovalSession?.getAppliedApprovalMode?.() ?? toolApprovalMode
+        );
+      },
+      sessionApprovalRules: turnApproval.sessionApprovalRules,
+      pluginSelections,
+      deferredToolsAllowed,
+    };
     const appAdvisorRuntime = createAppAdvisorToolRuntime(
       options.toolSurfaces,
       {
@@ -677,16 +658,11 @@ export async function dispatchAppAdvisorChatMessage(
         worktreeId: request.worktreeId,
         chatId: request.chatId,
       },
-      {
-        providerType,
-        approvalMode: sessionApprovalMode,
-        sessionApprovalRules: request.sessionApprovalRules,
-        pluginSelections,
-        deferredToolsAllowed,
-      },
+      toolApprovalContext,
     );
     const toolProfileHash = stableHash({
       mode: 'app-advisor',
+      approvalMode: turnApproval.approvalMode,
       providerType,
       model,
       thinkingLevel,
@@ -716,6 +692,7 @@ export async function dispatchAppAdvisorChatMessage(
     // Trusted send's atomic compare-and-create has no chat command equivalent in Phase 0A.
     await chatStateService.ensureChatForTrustedSend({
       ...request,
+      approvalMode: turnApproval.chatApprovalMode,
       providerType,
       model: selectedModel,
       executionHarness,
@@ -771,6 +748,10 @@ export async function dispatchAppAdvisorChatMessage(
       });
     }
     let executionUserMessageId = request.userMessageId;
+    const rejectedTurnRoots = new Map<
+      string,
+      ChatQueueRevivalLease | undefined
+    >();
     let codexRootThreadId = request.sdkSessionId;
     let eventCommitTail = Promise.resolve();
     const retainedObservation = advisorChatObservations.get(request.chatId);
@@ -794,6 +775,13 @@ export async function dispatchAppAdvisorChatMessage(
     // later frames (such as Claude's command lifecycle) must not reopen it.
     let continuationSettled = false;
     let eventSequence = 0;
+    const sessionBeforeDispatch = getLiveRoutedSession(request);
+    setLiveApprovalMode(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+      turnApproval.chatApprovalMode,
+    );
     const session = await getOrCreateRoutedSession(
       {
         cwd,
@@ -801,8 +789,8 @@ export async function dispatchAppAdvisorChatMessage(
         worktreeId: request.worktreeId,
         chatId: request.chatId,
         planMode: false,
-        approvalMode: sessionApprovalMode,
-        sessionApprovalRules: request.sessionApprovalRules,
+        approvalMode: turnApproval.approvalMode,
+        sessionApprovalRules: turnApproval.sessionApprovalRules,
         thinkingLevel: modelConfig.thinkingLevel,
         modelConfig,
         model,
@@ -857,12 +845,19 @@ export async function dispatchAppAdvisorChatMessage(
         appAdvisorRuntime,
       },
       (data: unknown, markPersistenceSettled?: () => void): Promise<void> => {
-        codexRootThreadId = readCodexRootThreadId(data) ?? codexRootThreadId;
+        const receiptClassification = classifyProviderRunEvent(data, {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          chatId: request.chatId,
+        });
+        const isLateAtReceipt = receiptClassification.kind !== 'ordinary';
+        // Router acceptance metadata is held against the original routed event.
+        // A deferred-tools continuation clone below cannot carry that metadata.
+        const turnRootAcceptance = getTurnRootAcceptance(data);
+        if (!isLateAtReceipt) {
+          codexRootThreadId = readCodexRootThreadId(data) ?? codexRootThreadId;
+        }
         const occurredAt = new Date(Date.now()).toISOString();
-        const isRootTerminal = isRootTerminalChatEventData(
-          data,
-          codexRootThreadId,
-        );
         let pickupObservation:
           | Promise<AdvisorChatObservation | undefined>
           | undefined;
@@ -879,9 +874,10 @@ export async function dispatchAppAdvisorChatMessage(
             captureAdvisorChatObservation(request, data.userMessageId);
           inputObservations.set(data.userMessageId, pickupObservation);
         }
-        const forkSessionId = request.claudeForkSession
-          ? claudeForkSessionIdFromInit(data)
-          : null;
+        const forkSessionId =
+          !isLateAtReceipt && request.claudeForkSession
+            ? claudeForkSessionIdFromInit(data)
+            : null;
         if (forkSessionId) {
           void consumePersistedClaudeForkSessionMarker({
             workspaceId: request.projectId,
@@ -894,6 +890,7 @@ export async function dispatchAppAdvisorChatMessage(
         // coordinator can finish starting the continuation while this event
         // waits for disk, but the old terminal must still keep its timer open.
         const preservePortalTimerForDeferredReload =
+          !isLateAtReceipt &&
           isTerminalRuntimeChatEvent(data) &&
           deferredToolsReloadCoordinator.hasActiveReload({
             projectId: request.projectId,
@@ -903,78 +900,187 @@ export async function dispatchAppAdvisorChatMessage(
         const providerEvent =
           isDeferredToolsReloadContinuation &&
           !continuationSettled &&
-          isRecord(data)
-            ? { ...data, canopy_turn_revival: true }
+          isRecord(data) &&
+          !isLateAtReceipt
+            ? copyProviderRunProvenance(data, {
+                ...data,
+                canopy_turn_revival: true,
+              })
             : data;
         if (
+          !isLateAtReceipt &&
           isDeferredToolsReloadContinuation &&
           isRootTerminalChatEventData(data, codexRootThreadId)
         ) {
           continuationSettled = true;
         }
+        const eventData = isRecord(providerEvent) ? providerEvent : null;
+        const isStartingPickup = Boolean(
+          eventData &&
+          eventData.type === 'canopy_input_delivery' &&
+          eventData.phase === 'picked-up' &&
+          eventData.startsTurn === true &&
+          typeof eventData.userMessageId === 'string',
+        );
+        // At receipt, before the commit tail: a cancel still awaiting its
+        // lookup must already see that a newer turn began.
+        if (isStartingPickup) bumpPortalTurnEpoch(request.chatId);
         const sequence = eventSequence;
         eventSequence += 1;
         eventCommitTail = eventCommitTail
-          .then(() =>
-            chatStateService.ingestProviderEventWithOutcome({
-              projectId: request.projectId,
-              worktreeId: request.worktreeId,
-              chatId: request.chatId,
-              data: providerEvent,
-              mutationId: request.deferredToolsReloadRequestId
-                ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
-                : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
-              providerType,
-              turnUserMessageId: executionUserMessageId,
-            }),
-          )
-          .then(async (outcome) => {
-            markPersistenceSettled?.();
-            // Activity-only events carry no durable change but are live.
-            if (outcome === 'not-applied') return;
+          .then(async () => {
+            const providerRunClassification = classifyProviderRunEvent(
+              providerEvent,
+              {
+                projectId: request.projectId,
+                worktreeId: request.worktreeId,
+                chatId: request.chatId,
+              },
+            );
+            if (providerRunClassification.kind === 'reject') {
+              const descriptor = getProviderRunDescriptor(providerEvent);
+              recordChatEventDropped({
+                projectId: request.projectId,
+                worktreeId: request.worktreeId,
+                chatId: request.chatId,
+                providerType,
+                gate: 'canonical_admission_rejected',
+                reason: providerRunClassification.reason,
+                data: providerEvent,
+                turnUserMessageId:
+                  descriptor?.executionUserMessageId ?? executionUserMessageId,
+              });
+              markPersistenceSettled?.();
+              return;
+            }
+            if (providerRunClassification.kind === 'transcript_only') {
+              await chatStateService.ingestProviderEventWithResult({
+                projectId: request.projectId,
+                worktreeId: request.worktreeId,
+                chatId: request.chatId,
+                data: providerEvent,
+                mutationId: request.deferredToolsReloadRequestId
+                  ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
+                  : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
+                providerType,
+                turnUserMessageId:
+                  providerRunClassification.run.executionUserMessageId,
+              });
+              markPersistenceSettled?.();
+              return;
+            }
+            const taggedRootId =
+              eventData &&
+              typeof eventData.canopy_turn_user_message_id === 'string'
+                ? eventData.canopy_turn_user_message_id
+                : undefined;
+            const isIdleStatusEvent =
+              eventData?.type === 'system' &&
+              eventData.subtype === 'status' &&
+              eventData.status === 'idle';
+            // A delegate's snapshot keeps the tag of the turn that started
+            // it, so it is delivered even when that root was rejected.
             if (
-              isRecord(providerEvent) &&
-              providerEvent.type === 'canopy_input_delivery' &&
-              providerEvent.phase === 'picked-up' &&
-              providerEvent.startsTurn === true &&
-              typeof providerEvent.userMessageId === 'string'
+              taggedRootId &&
+              rejectedTurnRoots.has(taggedRootId) &&
+              !isStartingPickup &&
+              !isOwnedDelegationEvent(eventData)
             ) {
-              let pickupAccepted: boolean;
-              if (providerEvent.turnRootAccepted === false) {
-                pickupAccepted = false;
-              } else if (providerEvent.turnRootAccepted === true) {
-                getChatQueueService().confirmTurnRevived(
+              const rejectedLease = rejectedTurnRoots.get(taggedRootId);
+              if (
+                rejectedLease &&
+                isRootTerminalChatEventData(eventData, codexRootThreadId)
+              ) {
+                // Retry cleanup only with the exact rejected lease. A newer
+                // same-id acceptance has a different epoch and is untouched.
+                getChatQueueService().rollbackTurnRevival(
                   request,
-                  providerEvent.userMessageId,
+                  rejectedLease,
                 );
-                pickupAccepted = true;
-              } else {
-                pickupAccepted = getChatQueueService().onTurnRevived(
+              }
+              if (isIdleStatusEvent) {
+                // Idle is lifecycle-only for a rejected root. Session activity
+                // listeners also reconcile, but wake reconciliation here when
+                // this tagged provider frame is the only idle signal.
+                getChatQueueService().reconcileSessionActivity();
+              }
+              markPersistenceSettled?.();
+              return;
+            }
+
+            const ingestResult =
+              await chatStateService.ingestProviderEventWithResult({
+                projectId: request.projectId,
+                worktreeId: request.worktreeId,
+                chatId: request.chatId,
+                data: providerEvent,
+                mutationId: request.deferredToolsReloadRequestId
+                  ? `${request.chatId}:${request.userMessageId}:deferred-reload:${request.deferredToolsReloadRequestId}:provider:${sequence}`
+                  : `${request.chatId}:${request.userMessageId}:provider:${sequence}`,
+                providerType,
+                turnUserMessageId: executionUserMessageId,
+              });
+            markPersistenceSettled?.();
+            if (
+              isStartingPickup &&
+              eventData &&
+              typeof eventData.userMessageId === 'string' &&
+              turnRootAcceptance?.accepted === true &&
+              turnRootAcceptance.lease
+            ) {
+              const pickupRootId = eventData.userMessageId;
+              const isCurrentExecutionRoot =
+                pickupRootId === executionUserMessageId;
+              if (
+                ingestResult.pickup === 'accepted' ||
+                ingestResult.pickup === 'already-accepted'
+              ) {
+                const confirmed = getChatQueueService().confirmTurnRevival(
                   request,
-                  providerEvent.userMessageId,
+                  turnRootAcceptance.lease,
                 );
-              }
-              if (pickupAccepted) {
-                executionUserMessageId = providerEvent.userMessageId;
-                observation = await pickupObservation;
-                if (observation)
-                  advisorChatObservations.set(request.chatId, observation);
-                // The input-delivery coordinator installed this root's trusted
-                // source; never inherit it from this older dispatch closure.
-              }
-              if (pickupAccepted && isCanopyPortalActive()) {
-                const turnTimer = createPortalTurnTimer({
-                  chatId: request.chatId,
-                  userMessageId: executionUserMessageId,
-                });
-                portalTurnTimers.set(request.chatId, turnTimer);
-                enqueuePortalEvent(
-                  createPortalEvent('portal.app_advisor.event', {
-                    chatId: request.chatId,
-                    message: turnTimer.startMessage,
-                  }),
+                if (confirmed) {
+                  if (!isCurrentExecutionRoot) {
+                    executionUserMessageId = pickupRootId;
+                  }
+                  rejectedTurnRoots.delete(pickupRootId);
+                  observation = await pickupObservation;
+                  if (observation)
+                    advisorChatObservations.set(request.chatId, observation);
+                } else if (!isCurrentExecutionRoot) {
+                  getChatQueueService().rollbackTurnRevival(
+                    request,
+                    turnRootAcceptance.lease,
+                  );
+                  if (!rejectedTurnRoots.has(pickupRootId)) {
+                    rejectedTurnRoots.set(
+                      pickupRootId,
+                      turnRootAcceptance.lease,
+                    );
+                  }
+                } else {
+                  getChatQueueService().rollbackTurnRevival(
+                    request,
+                    turnRootAcceptance.lease,
+                  );
+                }
+              } else if (!isCurrentExecutionRoot) {
+                getChatQueueService().rollbackTurnRevival(
+                  request,
+                  turnRootAcceptance.lease,
                 );
+                if (!rejectedTurnRoots.has(pickupRootId)) {
+                  rejectedTurnRoots.set(pickupRootId, turnRootAcceptance.lease);
+                }
               }
+            }
+            // A router refusal remains a false-stamped presentation event even
+            // when canonical pickup observation rejects it. Other rejected
+            // provider events must not be observed or delivered.
+            const routerRefusal =
+              isStartingPickup && turnRootAcceptance?.accepted === false;
+            if (ingestResult.outcome === 'not-applied' && !routerRefusal) {
+              return;
             }
             getObservabilityService().observeChatEvent(
               request.projectId,
@@ -992,15 +1098,16 @@ export async function dispatchAppAdvisorChatMessage(
               {
                 providerType,
                 model,
-                preservePortalTimerForDeferredReload,
                 // Same synthetic-id convention as the worktree portal path
                 // so provider events without their own message id still land
                 // on a stable per-turn assistant row.
                 fallbackMessageId: `${executionUserMessageId}:assistant`,
               },
             );
-            const eventData = isRecord(providerEvent) ? providerEvent : null;
-            if (eventData && isRootTerminal) {
+            if (
+              eventData &&
+              isRootTerminalChatEventData(eventData, codexRootThreadId)
+            ) {
               if (preservePortalTimerForDeferredReload) {
                 return;
               }
@@ -1039,7 +1146,7 @@ export async function dispatchAppAdvisorChatMessage(
               // pickup must not steal this terminal while disk is blocked.
               const terminalObservation = observation;
               if (
-                outcome === 'applied' &&
+                ingestResult.outcome === 'applied' &&
                 terminalObservation &&
                 terminalObservation.sourceInputId === executionUserMessageId &&
                 !settledInputs.has(executionUserMessageId)
@@ -1084,9 +1191,17 @@ export async function dispatchAppAdvisorChatMessage(
       () => options.getAppAdvisorWindow() ?? options.getMainWindow(),
       {
         turnUserMessageId: executionUserMessageId,
-        acceptTurnRoot: async (turnUserMessageId): Promise<boolean> => {
+        // An admitted dispatch is a pending destination, so a wake already
+        // running keeps its output (as on the worktree path).
+        ...(options.authorization
+          ? {
+              dispatchOwner: options.authorization.dispatchOwner,
+              operationEpoch: options.authorization.operationEpoch,
+            }
+          : {}),
+        acceptTurnRoot: async (turnUserMessageId) => {
           await eventCommitTail;
-          return getChatQueueService().onTurnRevived(
+          return getChatQueueService().acceptTurnRevival(
             request,
             turnUserMessageId,
           );
@@ -1094,6 +1209,7 @@ export async function dispatchAppAdvisorChatMessage(
         drainEventsBeforeRemoval: () => eventCommitTail,
       },
     );
+    const toolApprovalSession = session;
     const authoritativeGlobalInstructionsSnapshot =
       getSessionGlobalInstructionsSnapshot(
         request.projectId,
@@ -1126,41 +1242,73 @@ export async function dispatchAppAdvisorChatMessage(
       async (reloadRequest) => {
         reloadRequest.signal.throwIfAborted();
         const continuationOrigin = capturePresentationTurn(presentationOrigin);
-        await getChatStateService().runWithScopeActivity(
-          {
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-          },
-          () =>
-            dispatchAppAdvisorChatMessage(
-              {
-                ...request,
-                userMessageId: reloadRequest.userMessageId,
-                text: reloadRequest.continuationText,
-                ...claudeContinuationSession(request, {
-                  requestedSessionId: reloadRequest.sdkSessionId,
-                  providerSessionId: session.getProviderSessionId?.(),
-                }),
-                providerType: reloadRequest.providerType ?? providerType,
-                pluginSelections:
-                  reloadRequest.pluginSelections ?? pluginSelections,
-                hiddenContext: undefined,
-                agentSent: undefined,
-                agentSenderProvenance: undefined,
-                fileReferences: undefined,
-                attachmentPaths: undefined,
-                attachmentPromptContexts: undefined,
-                deferredToolsReloadEnabledResources:
-                  reloadRequest.enabledResources,
-                deferredToolsReloadRequestId: reloadRequest.requestId,
-                initiationSource:
-                  continuationOrigin?.turnId === reloadRequest.userMessageId
-                    ? continuationOrigin.source
-                    : undefined,
-              },
-              options,
-            ),
-        );
+        // This turn consumed its capability. The continuation is admitted
+        // through the hold the reload took at its interruption, once its
+        // predecessor's end commits.
+        const admission =
+          await getChatQueueService().admitDirectDispatchWhenAllowed(
+            {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId: request.chatId,
+            },
+            reloadRequest.userMessageId,
+            reloadRequest.signal,
+            reloadRequest.requestId,
+          );
+        reloadRequest.signal.throwIfAborted();
+        if (!admission)
+          throw new Error('The reload could not continue this chat.');
+        const {
+          authorization: _consumedAuthorization,
+          ...continuationOptions
+        } = options;
+        void _consumedAuthorization;
+        try {
+          await getChatStateService().runWithScopeActivity(
+            {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+            },
+            () =>
+              dispatchAppAdvisorChatMessage(
+                {
+                  ...request,
+                  userMessageId: reloadRequest.userMessageId,
+                  text: reloadRequest.continuationText,
+                  ...claudeContinuationSession(request, {
+                    requestedSessionId: reloadRequest.sdkSessionId,
+                    providerSessionId: session.getProviderSessionId?.(),
+                  }),
+                  providerType: reloadRequest.providerType ?? providerType,
+                  pluginSelections:
+                    reloadRequest.pluginSelections ?? pluginSelections,
+                  hiddenContext: undefined,
+                  agentSent: undefined,
+                  agentSenderProvenance: undefined,
+                  fileReferences: undefined,
+                  attachmentPaths: undefined,
+                  attachmentPromptContexts: undefined,
+                  deferredToolsReloadEnabledResources:
+                    reloadRequest.enabledResources,
+                  deferredToolsReloadRequestId: reloadRequest.requestId,
+                  initiationSource:
+                    continuationOrigin?.turnId === reloadRequest.userMessageId
+                      ? continuationOrigin.source
+                      : undefined,
+                },
+                {
+                  ...continuationOptions,
+                  ...(admission.authorization
+                    ? { authorization: admission.authorization }
+                    : {}),
+                },
+              ),
+          );
+        } catch (error) {
+          admission.release();
+          throw error;
+        }
         if (reloadRequest.signal.aborted) {
           await destroySession(
             request.projectId,
@@ -1177,6 +1325,15 @@ export async function dispatchAppAdvisorChatMessage(
     // receive Ultra fast rejects the send here instead of running at another
     // speed; the in-session admission runs again right before `turn/start`.
     await applyAgentSessionCodexSpeed(session, modelConfig.speed);
+    // A wake that started while the prompt was prepared keeps the foreground,
+    // and the prompt parks behind it (contracts §3), before its audit turn.
+    // A wake needs an earlier turn on this session, as on the worktree path.
+    const parkingOwner =
+      executionHarness === 'codex' || session === sessionBeforeDispatch
+        ? options.authorization
+        : undefined;
+    const parkedEarly = parkingOwner && wakeParkingOutcome(parkingOwner);
+    if (parkedEarly) await parkBehindWake(request, parkedEarly);
 
     if (deferredToolsReloadEnabledResources) {
       getObservabilityService().recordInjectedPromptForOpenChatTurn(
@@ -1229,15 +1386,6 @@ export async function dispatchAppAdvisorChatMessage(
     }
 
     await session.setPlanMode(false);
-    const liveApprovalMode = clampToLiveApprovalMode(
-      request.projectId,
-      request.worktreeId,
-      request.chatId,
-      sessionApprovalMode,
-    );
-    if (liveApprovalMode) {
-      await session.setApprovalMode(liveApprovalMode);
-    }
     if (
       (providerType === 'claude' ||
         providerType === 'cursor' ||
@@ -1252,6 +1400,19 @@ export async function dispatchAppAdvisorChatMessage(
         preferences.codexAppServerIdleTimeoutMinutes,
       );
     }
+    // The last check comes before the Portal frames and the accepted record:
+    // a re-dispatch of an accepted prompt would not send it again.
+    const parked = parkingOwner && wakeParkingOutcome(parkingOwner);
+    if (parked) {
+      if (!deferredToolsReloadEnabledResources)
+        getObservabilityService().completeChatTurn(
+          request.projectId,
+          request.worktreeId,
+          request.chatId,
+          'interrupted',
+        );
+      await parkBehindWake(request, parked);
+    }
     // Single choke point for renderer- and portal-originated sends, so the
     // user message reaches a connected portal exactly once regardless of
     // origin (CAN-2565). Emitted only once every validation/session step has
@@ -1260,13 +1421,6 @@ export async function dispatchAppAdvisorChatMessage(
     // failure transition. Deferred-tools reload continuations are excluded:
     // their continuation text is an injected prompt the desktop transcript
     // never renders as a user bubble, so the portal must not either.
-    // A new visible turn supersedes any prior turn's live timer — a stale
-    // still-open timer must not be terminalized by the wrong turn's events.
-    // A deferred-tools continuation instead reuses the original visible
-    // turn's timer so Portal stays active without another user message.
-    if (!isDeferredToolsReloadContinuation) {
-      portalTurnTimers.delete(request.chatId);
-    }
     if (isCanopyPortalActive() && !isDeferredToolsReloadContinuation) {
       enqueuePortalEvent(
         createPortalEvent('portal.app_advisor.event', {
@@ -1282,47 +1436,14 @@ export async function dispatchAppAdvisorChatMessage(
           },
         }),
       );
-      // App Advisor has no desktop renderer creating the turn-timer row a
-      // portal transcript needs, so this path owns it (the worktree portal
-      // pattern): a streaming start frame now — the browser's authoritative
-      // "agent is working" signal — finalized from the seam on the terminal
-      // runtime event. Without the terminal frame the browser kept the
-      // spinner and Stop button forever after the turn completed.
-      const turnTimer = createPortalTurnTimer({
-        chatId: request.chatId,
-        userMessageId: request.userMessageId,
-      });
-      portalTurnTimers.set(request.chatId, turnTimer);
-      enqueuePortalEvent(
-        createPortalEvent('portal.app_advisor.event', {
-          chatId: request.chatId,
-          message: turnTimer.startMessage,
-        }),
-      );
-    } else if (
-      isCanopyPortalActive() &&
-      !portalTurnTimers.has(request.chatId)
-    ) {
-      // Defensive recovery for a continuation whose intermediate terminal
-      // event raced ahead of the active-reload marker. Reopen the same stable
-      // timer id, but never duplicate the original user frame.
-      const turnTimer = createPortalTurnTimer({
-        chatId: request.chatId,
-        userMessageId: request.userMessageId,
-      });
-      portalTurnTimers.set(request.chatId, turnTimer);
-      enqueuePortalEvent(
-        createPortalEvent('portal.app_advisor.event', {
-          chatId: request.chatId,
-          message: turnTimer.startMessage,
-        }),
-      );
+      // Canonical turn state publishes committed timer rows to the portal.
     }
     // A new visible turn supersedes any prior turn's remembered assistant
     // frame — a cancel racing this dispatch must not re-key 'cancelled' onto
     // the previous turn's content.
     lastAssistantPortalMessages.delete(request.chatId);
     if (!isDeferredToolsReloadContinuation) {
+      bumpPortalTurnEpoch(request.chatId);
       const occurredAt = new Date(Date.now()).toISOString();
       observation = await captureAdvisorChatObservation(
         request,
@@ -1377,7 +1498,45 @@ export async function dispatchAppAdvisorChatMessage(
         }
       }
     }
+    const liveApprovalAuthority = await resolveChatTurnApprovalAuthority(
+      request,
+      { checkAdmission: false },
+    );
+    restrictSessionApprovalRules(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+      liveApprovalAuthority.sessionApprovalRules,
+    );
+    // Provider sessions and retained Advisor runtimes share this array.
+    const narrowedToolRules = turnSessionApprovalRules(
+      toolApprovalContext.sessionApprovalRules,
+      undefined,
+      liveApprovalAuthority.sessionApprovalRules,
+    );
+    toolApprovalContext.sessionApprovalRules.splice(
+      0,
+      toolApprovalContext.sessionApprovalRules.length,
+      ...narrowedToolRules,
+    );
+    toolApprovalMode = liveApprovalAuthority.approvalMode;
+    setLiveApprovalMode(
+      request.projectId,
+      request.worktreeId,
+      request.chatId,
+      liveApprovalAuthority.chatApprovalMode,
+    );
+    await session.setApprovalMode(liveApprovalAuthority.approvalMode);
     options.admissionSignal?.throwIfAborted();
+    // The destination activates at the send for every provider: a Claude
+    // start carries no binding receipt, and a Codex start forks from it.
+    if (options.authorization)
+      activatePendingTurnRoute(
+        request,
+        options.authorization.dispatchOwner,
+        options.authorization.operationEpoch,
+      );
+    reservePromptBindingSlot(request, request.userMessageId);
     recordPresentationTurn(
       presentationChatKey(presentationOrigin),
       request.userMessageId,
@@ -1416,6 +1575,35 @@ export async function dispatchAppAdvisorChatMessage(
   }
 }
 
+/** Whether the turn a Stop captured still owns this chat's portal frame and timer. */
+export interface AppAdvisorSyntheticResultFence {
+  readonly isCurrent: () => boolean;
+}
+
+export interface AppAdvisorSyntheticResultOptions {
+  readonly fence: AppAdvisorSyntheticResultFence;
+  /** The stopped turn; tags the synthetic result so it cannot settle a newer turn. */
+  readonly userMessageId?: string;
+  /** Caller's session check, for a newer send or wake that projected nothing yet. */
+  readonly isCurrent?: () => boolean;
+}
+
+/**
+ * Capture synchronously, before any await. A newer turn, or any newer frame,
+ * counts as a replacement of the stopped turn.
+ */
+export function captureAppAdvisorSyntheticResultFence(
+  chatId: string,
+): AppAdvisorSyntheticResultFence {
+  const frame = lastAssistantPortalMessages.get(chatId);
+  const epoch = portalTurnEpochs.get(chatId);
+  return {
+    isCurrent: (): boolean =>
+      portalTurnEpochs.get(chatId) === epoch &&
+      lastAssistantPortalMessages.get(chatId) === frame,
+  };
+}
+
 /**
  * Fan out the synthetic un-stream event a cancel needs (CAN-2565). Provider
  * cancellation is authoritative in the session manager, but the renderer's
@@ -1441,12 +1629,20 @@ export async function dispatchAppAdvisorChatMessage(
 export async function emitAppAdvisorSyntheticResultEvent(
   chatId: string,
   surfaces: AppAdvisorToolRuntimeSurfaces,
+  options?: AppAdvisorSyntheticResultOptions,
 ): Promise<void> {
+  const fence = options?.fence ?? captureAppAdvisorSyntheticResultFence(chatId);
   const { entryId } = await resolveWorkEntryForChat(
     APP_ADVISOR_PROJECT_ID,
     chatId,
   );
   if (!entryId) {
+    return;
+  }
+  // A real terminal or a newer turn replaced the stopped turn while the lookup
+  // awaited; its frame and timer are no longer this cancel's to close. Nothing
+  // async runs between this check and the fan-out below.
+  if (!fence.isCurrent() || options?.isCurrent?.() === false) {
     return;
   }
   // Captured BEFORE the fan-out: the synthetic result is a terminal event,
@@ -1458,7 +1654,14 @@ export async function emitAppAdvisorSyntheticResultEvent(
     APP_ADVISOR_PROJECT_ID,
     entryId,
     chatId,
-    { type: 'result', is_error: false, result: 'Cancelled' },
+    {
+      type: 'result',
+      is_error: false,
+      result: 'Cancelled',
+      ...(options?.userMessageId
+        ? { canopy_turn_user_message_id: options.userMessageId }
+        : {}),
+    },
   );
   if (!isCanopyPortalActive()) {
     return;

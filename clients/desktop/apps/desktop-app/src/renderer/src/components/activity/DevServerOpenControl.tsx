@@ -10,7 +10,7 @@ import { useCloseOnOutsideMouseDown } from '@/hooks/useCloseOnOutsideMouseDown';
 import type { DevServerHit } from '@/lib/scriptDevServerDetection';
 import { GlobeIcon } from '@canopy/ui-shared/icons';
 import { DropdownMenuSurface } from '@canopy/ui-shared';
-import { ActionMenuRowStyle } from '@canopy/ui-shared/components';
+import { ActionMenuRowStyle, Button } from '@canopy/ui-shared/components';
 import { DevServerMenuItem } from './DevServerMenuItem';
 import {
   getDevServerOpenAriaLabel,
@@ -23,12 +23,6 @@ interface DevServerOpenControlProps {
   hits: DevServerHit[];
   /** Worktree context used to route `in-app` opens to the Browser tab. */
   context: DevServerOpenContext;
-  /**
-   * Optional compact styling — used in the live activity ribbon where the
-   * control sits next to the Stop button and needs to stay visually small.
-   * The modal variant defaults to the non-compact rendering.
-   */
-  compact?: boolean;
 }
 
 /**
@@ -44,7 +38,6 @@ interface DevServerOpenControlProps {
 export function DevServerOpenControl({
   hits,
   context,
-  compact,
 }: DevServerOpenControlProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -77,37 +70,35 @@ export function DevServerOpenControl({
     return <></>;
   }
 
-  const sizeClass = compact ? 'px-2 py-0.5 text-2xs' : 'px-2.5 py-1 text-xs';
-
   if (hits.length === 1) {
     const [hit] = hits;
     return (
-      <button
-        type="button"
+      <Button
+        variant="ghost-accent"
+        size="compact"
         onClick={(): void => openDevServerHit(hit, context)}
         aria-label={getDevServerOpenAriaLabel(hit)}
-        className={`focus-ring inline-flex items-center gap-1 rounded-md font-medium fg-accent transition hover:bg-accent-subtle ${sizeClass}`}
       >
         <GlobeIcon className="h-3.5 w-3.5" aria-hidden="true" />
         {getDevServerOpenButtonText(hit)}
-      </button>
+      </Button>
     );
   }
 
   return (
     <div className="relative inline-flex">
-      <button
+      <Button
         ref={triggerRef}
-        type="button"
+        variant="ghost-accent"
+        size="compact"
         onClick={(): void => setMenuOpen((prev) => !prev)}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-controls={menuOpen ? menuId : undefined}
-        className={`focus-ring inline-flex items-center gap-1 rounded-md font-medium fg-accent transition hover:bg-accent-subtle ${sizeClass}`}
       >
         <GlobeIcon className="h-3.5 w-3.5" aria-hidden="true" />
         Open ({hits.length})
-      </button>
+      </Button>
       {menuOpen && (
         <DropdownMenuSurface
           ref={menuRef}

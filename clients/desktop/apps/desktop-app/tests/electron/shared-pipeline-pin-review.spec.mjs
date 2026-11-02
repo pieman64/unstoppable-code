@@ -246,7 +246,7 @@ test('publisher confirms before saving a shared pipeline used by a pinned automa
     const dialog = window.getByTestId('shared-pipeline-save-impact-dialog');
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText(
-      'People using this pipeline in their automations will need to approve your changes before they run again.',
+      'People using this workflow in their automations will need to approve your changes before they run again.',
     );
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).toBeHidden();

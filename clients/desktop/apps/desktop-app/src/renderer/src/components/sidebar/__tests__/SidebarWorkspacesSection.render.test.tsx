@@ -32,6 +32,10 @@ import {
   resetDelegationActivityStoreForTests,
   useDelegationActivityStore,
 } from '@/stores/delegationActivityStore';
+import {
+  resetLiveBackgroundTaskStoreForTests,
+  useLiveBackgroundTaskStore,
+} from '@/stores/liveBackgroundTaskStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useBranchFromStore } from '@/stores/branchFromStore';
@@ -43,9 +47,10 @@ import {
   sharedWorktreeKey,
   useSharedContainersStore,
 } from '@/stores/sharedContainersStore';
-import * as WorkEntryListItemModule from '../../standalone-chat/WorkEntryListItem';
+import * as WorkEntryRemovalLabelsModule from '@canopy/ui-app/code/shell/work-entry-removal-labels';
 import { SidebarWorkspacesSection } from '../SidebarWorkspacesSection';
 import { SidebarCoworkWorkspaceRow } from '../SidebarCoworkWorkspaceRow';
+import type { WorkEntryMultiSelectBinding } from '@canopy/ui-app/sidebar';
 
 const mockUseSortableRegistration = jest.fn();
 
@@ -185,7 +190,7 @@ function makeChatTab(id: string): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
   };
 }
@@ -346,6 +351,7 @@ describe('SidebarWorkspacesSection', () => {
       pendingPlanExits: {},
     });
     useActivityStore.setState({ trackedPlans: {} });
+    resetLiveBackgroundTaskStoreForTests();
     useStandaloneChatStore.setState({
       chatProjectsLoaded: true,
       initialized: true,
@@ -999,21 +1005,33 @@ describe('SidebarWorkspacesSection', () => {
     );
     expect(workspacesLabel).not.toBeUndefined();
     expect(workspacesChevron).not.toBeNull();
-    expect(workspacesLabel?.className).toContain('fg-quaternary');
-    expect(workspacesLabel?.className).toContain(
+    expect(workspacesChevron).not.toBeUndefined();
+    if (
+      workspacesLabel === undefined ||
+      workspacesChevron === null ||
+      workspacesChevron === undefined
+    ) {
+      throw new Error('Expected the Projects label and chevron');
+    }
+    expect(workspacesLabel.className).toContain('fg-quaternary');
+    expect(workspacesLabel.className).toContain(
       'group-hover/workspaces:fg-secondary',
     );
     expect(
-      workspacesLabel?.compareDocumentPosition(workspacesChevron) &
+      workspacesLabel.compareDocumentPosition(workspacesChevron) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(workspacesChevron?.className.baseVal).toContain('h-4 w-4');
-    expect(workspacesChevron?.className.baseVal).toContain('opacity-0');
-    expect(workspacesChevron?.className.baseVal).toContain('fg-quaternary');
-    expect(workspacesChevron?.className.baseVal).toContain(
+    expect(workspacesChevron.getAttribute('class') ?? '').toContain('h-4 w-4');
+    expect(workspacesChevron.getAttribute('class') ?? '').toContain(
+      'opacity-0',
+    );
+    expect(workspacesChevron.getAttribute('class') ?? '').toContain(
+      'fg-quaternary',
+    );
+    expect(workspacesChevron.getAttribute('class') ?? '').toContain(
       'group-hover/workspaces:fg-secondary',
     );
-    expect(workspacesChevron?.className.baseVal).toContain(
+    expect(workspacesChevron.getAttribute('class') ?? '').toContain(
       'group-hover/workspaces:opacity-100',
     );
 
@@ -1173,9 +1191,12 @@ describe('SidebarWorkspacesSection', () => {
     expect(
       moreLead?.querySelector('[data-testid="sidebar-more-stub"]'),
     ).not.toBeNull();
+    if (moreLead === null || stickyGroup === null) {
+      throw new Error('Expected the More lead and sticky group');
+    }
     expect(
       Boolean(
-        moreLead?.compareDocumentPosition(stickyGroup as Node) &
+        moreLead.compareDocumentPosition(stickyGroup) &
         Node.DOCUMENT_POSITION_FOLLOWING,
       ),
     ).toBe(true);
@@ -2342,8 +2363,11 @@ describe('SidebarWorkspacesSection', () => {
     expect(
       settingsButton?.parentElement?.parentElement?.parentElement?.className,
     ).toContain('gap-0.5');
+    if (settingsButton === null || newChatButton === null) {
+      throw new Error('Expected cowork Settings and New chat buttons');
+    }
     expect(
-      settingsButton?.compareDocumentPosition(newChatButton) &
+      settingsButton.compareDocumentPosition(newChatButton) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
@@ -2728,7 +2752,7 @@ describe('SidebarWorkspacesSection', () => {
       })),
     });
     const tooltipSpy = jest.spyOn(
-      WorkEntryListItemModule,
+      WorkEntryRemovalLabelsModule,
       'deleteRetentionTooltip',
     );
     const { container, root } = await renderSection();
@@ -2981,7 +3005,7 @@ describe('SidebarWorkspacesSection', () => {
           '[data-testid="sidebar-work-entry-entry-order-archive"]',
         )
         ?.getAttribute('title'),
-    ).toBe(WorkEntryListItemModule.ARCHIVE_TOOLTIP);
+    ).toBe(WorkEntryRemovalLabelsModule.ARCHIVE_TOOLTIP);
 
     // Pressing the trigger again closes the menu.
     await act(async () => {
@@ -2992,6 +3016,134 @@ describe('SidebarWorkspacesSection', () => {
       document.querySelector(
         '[data-testid="sidebar-work-entry-entry-order-menu-popover"]',
       ),
+    ).toBeNull();
+
+    unmountSection(root, container);
+  });
+
+  it('adds the bulk selection to a work-entry menu, or replaces it for a selection of 2 or more', async () => {
+    const item = makeCoworkProject('cowork-target', 0);
+    useProjectsStore.setState({ projects: [item] });
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'cowork-target',
+      workEntries: [
+        {
+          id: 'e1',
+          title: 'Selectable',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastMessageAt: '2026-01-01T00:01:00.000Z',
+          chatCount: 1,
+        },
+      ],
+    });
+    installWindowApi();
+    const onRowsChange = jest.fn();
+    const binding = (replacesMenu: boolean): WorkEntryMultiSelectBinding => ({
+      selection: {
+        keys: new Set(),
+        kind: undefined,
+        active: false,
+        count: 0,
+        isSelected: () => false,
+        toggle: jest.fn(),
+        selectRange: jest.fn(),
+        selectAllInList: jest.fn(),
+        clear: jest.fn(),
+        replace: jest.fn(),
+      },
+      onRowsChange,
+      escapeClears: true,
+      isRemoving: () => false,
+      rowMenuFor: () => undefined,
+      menuItemsFor: (_key, testIds) => ({
+        items: [
+          {
+            key: replacesMenu ? 'bulk-archive' : 'toggle-selection',
+            label: replacesMenu ? 'Archive 2 chats' : 'Select',
+            onSelect: jest.fn(),
+            icon: 'archive',
+            testId: replacesMenu
+              ? testIds?.bulkArchive
+              : testIds?.toggleSelection,
+          },
+        ],
+        replacesMenu,
+      }),
+      isSelectable: () => true,
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const render = async (replacesMenu: boolean): Promise<void> => {
+      await act(async () => {
+        root.render(
+          <CanopyClientProvider client={createFakeClient().client}>
+            {item.type === 'cowork' ? (
+              <SidebarCoworkWorkspaceRow
+                item={item}
+                disableDrag
+                workEntryMultiSelect={binding(replacesMenu)}
+              />
+            ) : null}
+          </CanopyClientProvider>,
+        );
+        await Promise.resolve();
+      });
+    };
+    const openMenu = async (): Promise<HTMLElement | null> => {
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-e1-menu"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      return document.querySelector<HTMLElement>(
+        '[data-testid="sidebar-work-entry-e1-menu-popover"]',
+      );
+    };
+
+    await render(false);
+    expect(
+      container
+        .querySelector('[data-testid="sidebar-work-entry-e1"]')
+        ?.hasAttribute('data-worktree-selection-row'),
+    ).toBe(true);
+    expect(onRowsChange).toHaveBeenLastCalledWith(
+      new Map([
+        [
+          'cowork-target',
+          [
+            expect.objectContaining({
+              key: 'work-entry:cowork-target/e1',
+              kind: 'work-entry',
+              selectable: true,
+            }),
+          ],
+        ],
+      ]),
+    );
+    let popover = await openMenu();
+    expect(
+      popover?.querySelector(
+        '[data-testid="sidebar-work-entry-e1-toggle-selection"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      popover?.querySelector('[data-testid="sidebar-work-entry-e1-rename"]'),
+    ).not.toBeNull();
+    await openMenu();
+
+    await render(true);
+    popover = await openMenu();
+    expect(
+      popover?.querySelector(
+        '[data-testid="sidebar-work-entry-e1-bulk-archive"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      popover?.querySelector('[data-testid="sidebar-work-entry-e1-rename"]'),
     ).toBeNull();
 
     unmountSection(root, container);
@@ -3233,7 +3385,7 @@ describe('SidebarWorkspacesSection', () => {
     unmountSection(root, container);
   });
 
-  it('shows a cowork entry with live delegates as working and blocks its removal', async () => {
+  it('shows a cowork entry with only live delegates as background work and blocks its removal', async () => {
     useProjectsStore.setState({
       projects: [makeCoworkProject('cowork-target', 0)],
     });
@@ -3257,14 +3409,30 @@ describe('SidebarWorkspacesSection', () => {
       live: 1,
       queued: 0,
     });
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'cowork-target',
+      worktreeId: 'entry-delegates',
+      chatId: 'chat-root',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'provider-task', taskType: 'local_agent' }],
+    });
 
     const { container, root } = await renderSection();
     try {
+      // A running turn would draw the accent spinner; background work alone
+      // draws the neutral one, counting the delegate and the provider task.
       expect(
         container.querySelector(
           '[data-testid="sidebar-work-entry-entry-delegates-thinking"]',
         ),
-      ).not.toBeNull();
+      ).toBeNull();
+      expect(
+        container
+          .querySelector(
+            '[data-testid="sidebar-work-entry-entry-delegates-background"]',
+          )
+          ?.getAttribute('aria-label'),
+      ).toBe('2 background tasks running');
       const deleteButton = container.querySelector<HTMLButtonElement>(
         '[data-testid="sidebar-work-entry-entry-delegates-delete-button"]',
       );
@@ -3311,6 +3479,13 @@ describe('SidebarWorkspacesSection', () => {
           live: 0,
           queued: 0,
         });
+        useLiveBackgroundTaskStore.getState().applyPush({
+          projectId: 'cowork-target',
+          worktreeId: 'entry-delegates',
+          chatId: 'chat-root',
+          sessionActive: false,
+          liveTasks: [],
+        });
         await Promise.resolve();
       });
       expect(
@@ -3320,12 +3495,328 @@ describe('SidebarWorkspacesSection', () => {
       ).toBe(false);
       expect(
         container.querySelector(
-          '[data-testid="sidebar-work-entry-entry-delegates-thinking"]',
+          '[data-testid="sidebar-work-entry-entry-delegates-background"]',
         ),
       ).toBeNull();
     } finally {
       unmountSection(root, container);
       resetDelegationActivityStoreForTests();
+    }
+  });
+
+  it.each(['local_agent', 'local_workflow'] as const)(
+    'blocks cowork removal for live %s work and shows it as background work',
+    async (taskType) => {
+      useProjectsStore.setState({
+        projects: [makeCoworkProject('cowork-target', 0)],
+      });
+      useStandaloneChatStore.setState({
+        activeChatProjectId: 'cowork-target',
+        workEntries: [
+          {
+            id: 'entry-background',
+            title: 'Background work',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            lastMessageAt: '2026-01-01T00:01:00.000Z',
+            chatCount: 1,
+          },
+        ],
+      });
+      useLiveBackgroundTaskStore.getState().applyPush({
+        projectId: 'cowork-target',
+        worktreeId: 'entry-background',
+        chatId: 'chat-root',
+        sessionActive: true,
+        liveTasks: [{ taskId: 'provider-task', taskType }],
+      });
+
+      const { container, root } = await renderSection();
+      try {
+        expect(
+          container.querySelector(
+            '[data-testid="sidebar-work-entry-entry-background-thinking"]',
+          ),
+        ).toBeNull();
+        expect(
+          container
+            .querySelector(
+              '[data-testid="sidebar-work-entry-entry-background-background"]',
+            )
+            ?.getAttribute('aria-label'),
+        ).toBe('1 background task running');
+        const deleteButton = container.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-work-entry-entry-background-delete-button"]',
+        );
+        expect(deleteButton?.disabled).toBe(true);
+        act(() => {
+          deleteButton?.parentElement?.dispatchEvent(
+            new MouseEvent('mouseover', { bubbles: true }),
+          );
+        });
+        expect(
+          document.body.querySelector('[role="tooltip"]')?.textContent,
+        ).toBe(
+          'Background agents or workflows are still running here. Stop them first.',
+        );
+
+        await act(async () => {
+          container
+            .querySelector<HTMLButtonElement>(
+              '[data-testid="sidebar-work-entry-entry-background-menu"]',
+            )
+            ?.click();
+          await Promise.resolve();
+        });
+        const archiveItem = document.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-work-entry-entry-background-archive"]',
+        );
+        const deleteItem = document.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-work-entry-entry-background-delete"]',
+        );
+        expect(archiveItem?.disabled).toBe(true);
+        expect(deleteItem?.disabled).toBe(true);
+        expect(archiveItem?.title).toBe(
+          'Background agents or workflows are still running here. Stop them first.',
+        );
+        expect(deleteItem?.title).toBe(
+          'Background agents or workflows are still running here. Stop them first.',
+        );
+      } finally {
+        unmountSection(root, container);
+      }
+    },
+  );
+
+  it('does not block cowork removal for shell-only provider work', async () => {
+    useProjectsStore.setState({
+      projects: [makeCoworkProject('cowork-target', 0)],
+    });
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'cowork-target',
+      workEntries: [
+        {
+          id: 'entry-shell',
+          title: 'Shell work',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastMessageAt: '2026-01-01T00:01:00.000Z',
+          chatCount: 1,
+        },
+      ],
+    });
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'cowork-target',
+      worktreeId: 'entry-shell',
+      chatId: 'chat-root',
+      sessionActive: true,
+      liveTasks: [{ taskId: 'shell-task', taskType: 'local_bash' }],
+    });
+
+    const { container, root } = await renderSection();
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-work-entry-entry-shell-delete-button"]',
+        )?.disabled,
+      ).toBe(false);
+    } finally {
+      unmountSection(root, container);
+    }
+  });
+
+  it('re-checks an unvisited cowork entry before confirming removal', async () => {
+    useProjectsStore.setState({
+      projects: [makeCoworkProject('cowork-target', 0)],
+    });
+    const deleteWorkEntry = jest.fn().mockResolvedValue(undefined);
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'cowork-target',
+      workEntries: [
+        {
+          id: 'entry-unvisited',
+          title: 'Unvisited entry',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastMessageAt: '2026-01-01T00:01:00.000Z',
+          chatCount: 1,
+        },
+      ],
+      deleteWorkEntry,
+    });
+    let resolveSnapshot:
+      | ((snapshot: {
+          chats: {
+            'chat-root': {
+              sessionActive: true;
+              liveTasks: [{ taskId: string; taskType: 'local_agent' }];
+            };
+          };
+        }) => void)
+      | undefined;
+    const listLiveBgTasks = jest.fn(
+      () =>
+        new Promise<{
+          chats: {
+            'chat-root': {
+              sessionActive: true;
+              liveTasks: [{ taskId: string; taskType: 'local_agent' }];
+            };
+          };
+        }>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+
+    const { container, root } = await renderSection();
+    const existingApi = window.api;
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...existingApi,
+        activity: { ...existingApi.activity, listLiveBgTasks },
+      },
+    });
+    try {
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-entry-unvisited-menu"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-entry-unvisited-delete"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      expect(listLiveBgTasks).toHaveBeenCalledWith({
+        projectId: 'cowork-target',
+        worktreeId: 'entry-unvisited',
+      });
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-entry-unvisited-confirm-delete"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      expect(
+        document.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-work-entry-entry-unvisited-confirm-delete"]',
+        )?.disabled,
+      ).toBe(true);
+      await act(async () => {
+        resolveSnapshot?.({
+          chats: {
+            'chat-root': {
+              sessionActive: true,
+              liveTasks: [{ taskId: 'agent-task', taskType: 'local_agent' }],
+            },
+          },
+        });
+        await Promise.resolve();
+      });
+
+      expect(deleteWorkEntry).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        'Background agents or workflows are still running here. Stop them first.',
+      );
+    } finally {
+      unmountSection(root, container);
+    }
+  });
+
+  it('does not remove a cowork entry when its confirmation is cancelled during the re-check', async () => {
+    useProjectsStore.setState({
+      projects: [makeCoworkProject('cowork-target', 0)],
+    });
+    const deleteWorkEntry = jest.fn().mockResolvedValue(undefined);
+    useStandaloneChatStore.setState({
+      activeChatProjectId: 'cowork-target',
+      workEntries: [
+        {
+          id: 'entry-unvisited',
+          title: 'Unvisited entry',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastMessageAt: '2026-01-01T00:01:00.000Z',
+          chatCount: 1,
+        },
+      ],
+      deleteWorkEntry,
+    });
+    let resolveSnapshot:
+      | ((snapshot: { chats: Record<string, never> }) => void)
+      | undefined;
+    const listLiveBgTasks = jest.fn(
+      () =>
+        new Promise<{ chats: Record<string, never> }>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+
+    const { container, root } = await renderSection();
+    const existingApi = window.api;
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...existingApi,
+        activity: { ...existingApi.activity, listLiveBgTasks },
+      },
+    });
+    try {
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-entry-unvisited-menu"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-entry-unvisited-delete"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        document
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-work-entry-entry-unvisited-confirm-delete"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+      // The shared confirmation's Cancel (its esc chip is part of its text).
+      const cancel =
+        document.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-work-entry-entry-unvisited-delete-dialog"] [data-testid="confirm-dialog-cancel"]',
+        ) ?? undefined;
+      expect(cancel).toBeDefined();
+      // The chat title is masked in session replay.
+      expect(
+        document.querySelector(
+          '[data-testid="sidebar-work-entry-entry-unvisited-delete-dialog"] h2 .ph-mask',
+        )?.textContent,
+      ).toBe('Unvisited entry');
+      await act(async () => {
+        cancel?.click();
+        await Promise.resolve();
+      });
+      // The idle snapshot arrives after the user already backed out.
+      await act(async () => {
+        resolveSnapshot?.({ chats: {} });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(deleteWorkEntry).not.toHaveBeenCalled();
+    } finally {
+      unmountSection(root, container);
     }
   });
 
@@ -3402,12 +3893,12 @@ describe('SidebarWorkspacesSection', () => {
       ),
     ).not.toBeNull();
 
+    // The shared confirmation's Cancel (its esc chip is part of its text).
+    const cancelButton = document.querySelector<HTMLButtonElement>(
+      '[data-testid="sidebar-work-entry-entry-menu-delete-dialog"] [data-testid="confirm-dialog-cancel"]',
+    );
+    expect(cancelButton).toBeInstanceOf(HTMLButtonElement);
     await act(async () => {
-      const cancelButton = Array.from(
-        document.querySelectorAll<HTMLButtonElement>(
-          '[data-testid="sidebar-work-entry-entry-menu-delete-dialog"] button',
-        ),
-      ).find((button) => button.textContent?.trim() === 'Cancel');
       cancelButton?.click();
       menuButton?.click();
       await Promise.resolve();
@@ -3439,11 +3930,14 @@ describe('SidebarWorkspacesSection', () => {
     expect(renameInput?.value).toBe('New Chat');
     if (renameInput) {
       await act(async () => {
-        const valueSetter = Object.getOwnPropertyDescriptor(
+        const descriptor = Object.getOwnPropertyDescriptor(
           HTMLInputElement.prototype,
           'value',
-        )?.set.bind(renameInput);
-        valueSetter?.('');
+        );
+        if (descriptor?.set === undefined) {
+          throw new Error('Expected the input value setter');
+        }
+        descriptor.set.call(renameInput, '');
         renameInput.dispatchEvent(new Event('input', { bubbles: true }));
         await Promise.resolve();
       });
@@ -3540,9 +4034,11 @@ describe('SidebarWorkspacesSection', () => {
     );
     expect(doneGlyph).not.toBeNull();
     expect(doneGlyph?.getAttribute('aria-label')).toBe('Done');
-    // Same done vocabulary as a code worktree row: the purple circled
-    // checkmark in the LEADING slot, and no title dimming.
-    expect(doneGlyph?.className).toContain('fg-purple');
+    // Same done vocabulary as a code worktree row: the shared Done status
+    // glyph (the green circled check) in the LEADING slot, no title dimming.
+    expect(
+      doneGlyph?.querySelector('[data-status-glyph="done"]')?.className,
+    ).toContain('fg-success-strong');
     expect(
       doneGlyph?.closest(
         '[data-testid="sidebar-work-entry-entry-done-leading-slot"]',
@@ -3738,7 +4234,9 @@ describe('SidebarWorkspacesSection', () => {
     // Delete keeps the worktree for the retention window; its dialog commits
     // through Preserve local or Delete local (Archive has its own menu item
     // and dialog).
-    expect(confirmDialog?.textContent).toContain('Delete worktree?');
+    expect(confirmDialog?.textContent).toContain(
+      'Delete worktree “feature/sidebar-active-state”?',
+    );
     const preserveBranchItem = document.querySelector<HTMLButtonElement>(
       '[data-testid="worktree-removal-preserve-branch"]',
     );

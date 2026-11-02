@@ -1,5 +1,7 @@
 import type { SessionConfig } from '@github/copilot-sdk';
 import { cursorCanopyMcpServerNames } from '@canopy/desktop-shared/lib/cursor-mcp-tool-call';
+import { COPILOT_BUILTIN_MCP_SERVERS } from '@canopy/desktop-shared/node/copilot/session-policy';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -39,10 +41,22 @@ export function buildCopilotMcpServers(input: {
     names.ui,
     cursorCanopyMcpServerNames('app-advisor').main,
   ]);
+  // Sessions disable the runtime's built-ins by name, so a selected server
+  // sharing one could never run and might be mistaken for the built-in.
+  // Leave it out rather than fail the turn: plugins can supply these names.
+  // The app's own names above stay fatal, since they would shadow app tools.
+  const builtIn = new Set<string>(COPILOT_BUILTIN_MCP_SERVERS);
   for (const [name, raw] of Object.entries(input.definitions)) {
     if (reserved.has(name))
       throw new Error(`MCP server ${name} uses a reserved name.`);
     if (!record(raw) || raw.enabled === false) continue;
+    if (builtIn.has(name)) {
+      logMainProcessWarn(
+        '[copilot-mcp-servers]',
+        `Skipped MCP server ${name}: Copilot reserves this name for a built-in server.`,
+      );
+      continue;
+    }
     const tools = Array.isArray(raw.allowedTools)
       ? raw.allowedTools.filter(
           (tool): tool is string => typeof tool === 'string',

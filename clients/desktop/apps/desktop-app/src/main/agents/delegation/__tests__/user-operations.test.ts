@@ -1,10 +1,34 @@
+import { registerManagedDelegationHandlers } from '../../../ipc/managed-delegation';
+import { registerIpcHandler } from '../../../ipc/register';
+import { dispatchDelegationReadAction } from '../../../app-advisor/delegation-read-actions';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type {
+  ChildStreamCompatibilityPageRequest,
+  ChildStreamCompatibilityPageReply,
+} from '../record-reader-contract';
+jest.mock('../../../ipc/register', () => ({ registerIpcHandler: jest.fn() }));
+const mockCompatibilityPage = jest.fn<
+  Promise<ChildStreamCompatibilityPageReply>,
+  [unknown, ChildStreamCompatibilityPageRequest]
+>();
+import { FixtureDelegationReadMetadata } from '@canopy/desktop-shared/node/delegation/testing/record-read-metadata-fixture';
+import { createDelegationRunState } from '@canopy/desktop-shared/node/delegation/lifecycle';
+import type { StoredDelegation } from '@canopy/desktop-shared/node/delegation/broker';
+import type {
+  DelegationRecordReader,
+  ResolvedDelegationGeneration,
+} from '../record-reader-contract';
+import { UnsupportedDelegationRecordReader } from '../record-reader';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
 import { AgentDelegationBroker } from '@canopy/desktop-shared/node/delegation/broker';
-import { FileDelegationStorage } from '@canopy/desktop-shared/node/delegation/storage';
+import {
+  FileDelegationStorage,
+  FileManagedDelegationMessageStorage,
+} from '@canopy/desktop-shared/node/delegation/storage';
 import {
   baseTask,
   createBrokerHarness,
@@ -15,6 +39,7 @@ import {
 } from '@canopy/desktop-shared/node/delegation/__tests__/broker-harness';
 import { routeFixture } from '@canopy/desktop-shared/node/delegation/__tests__/fixtures';
 import {
+  configureManagedDelegationReaders,
   createManagedDelegationSession,
   messageManagedDelegationForUser,
   readManagedDelegationRootsForUser,
@@ -29,12 +54,23 @@ jest.mock('../../../lib/paths', () => ({
   getWorktreeDataDir: (projectId: string, worktreeId: string): string =>
     path.join(mockDataRoot, projectId, worktreeId),
 }));
+// A slow watcher mutation records a chat-wait diagnostic; keep it from
+// starting the real observability flush against the tiny paths mock above.
+jest.mock('../../../observability', () => ({
+  getObservabilityService: (): object => ({
+    recordSessionDiagnostic: jest.fn(),
+  }),
+}));
 jest.mock('../../../lib/canopy-cloud-account-store', () => ({
   loadCanopyCloudAccount: (): Promise<null> => Promise.resolve(null),
   subscribeCanopyCloudAccountChanges: (): (() => void) => () => undefined,
 }));
 jest.mock('../../../services/chat-state-service', () => ({
-  getChatStateService: (): { subscribe: () => () => void } => ({
+  getChatStateService: (): {
+    subscribe: () => () => void;
+    childStreamCompatibilityPage: typeof mockCompatibilityPage;
+  } => ({
+    childStreamCompatibilityPage: mockCompatibilityPage,
     subscribe: (): (() => void) => () => undefined,
   }),
 }));
@@ -55,7 +91,6 @@ describe('managed delegation viewer user operations', () => {
   });
 
   afterAll(async () => {
-    await shutdownManagedDelegations();
     await rm(directory, { recursive: true, force: true });
   });
 
@@ -795,6 +830,643 @@ describe('managed delegation viewer user operations', () => {
       ).toBe(false);
     } finally {
       jest.restoreAllMocks();
+    }
+  });
+});
+
+describe('stream-backed host readers', () => {
+  let temporary: string;
+  beforeAll(async () => {
+    temporary = await mkdtemp(path.join(os.tmpdir(), 'stream-host-readers-'));
+    mockDataRoot = temporary;
+  });
+  afterAll(async () => {
+    await shutdownManagedDelegations();
+    await rm(temporary, { recursive: true, force: true });
+  });
+  const target = {
+    projectId: 'stream-project',
+    worktreeId: 'worktree',
+    chatId: 'chat',
+  };
+  const record: StoredDelegation = {
+    version: 1,
+    depth: 1,
+    parent: { ...rootParent, ...target },
+    task: baseTask,
+    callKey: 'stream-call',
+    requestHash: 'a'.repeat(64),
+    createdAt: 10,
+    state: createDelegationRunState('stream-delegate', 1),
+    launch: {
+      version: 1,
+      delegationId: 'stream-delegate',
+      launchKey: 'stream-call',
+      runGeneration: 1,
+      phase: 'settled',
+      terminalStatus: 'completed',
+    },
+    delivery: { status: 'unclaimed' },
+  };
+  const metadata = new FixtureDelegationReadMetadata();
+  metadata.stream('stream-delegate', { originAt: 5, lastActivityAt: 123 });
+
+  function pageHandler(request: unknown): Promise<unknown> {
+    registerManagedDelegationHandlers();
+    const handler = jest
+      .mocked(registerIpcHandler)
+      .mock.calls.find(
+        ([channel]) => channel === IPC_CHANNELS.managedDelegationTranscriptPage,
+      )?.[1];
+    if (!handler) throw new Error('Missing transcript handler');
+    return Promise.resolve(
+      Reflect.apply(handler, undefined, [undefined, request]),
+    );
+  }
+
+  function headerFixture(): Exclude<
+    ResolvedDelegationGeneration,
+    { kind: 'legacy' | 'content_unavailable' }
+  > {
+    const identity = {
+      kind: 'delegation' as const,
+      chatId: target.chatId,
+      delegationId: record.state.delegationId,
+      runGeneration: 1,
+    };
+    return {
+      kind: 'stream',
+      runGeneration: 1,
+      target: identity,
+      entry: {
+        ...identity,
+        version: 1,
+        kind: 'generation',
+        createdAt: 10,
+        store: 'stream',
+        origin: { kind: 'launch' },
+        executionMode: 'background',
+      },
+      status: 'completed',
+      stream: {
+        target: identity,
+        status: 'settled',
+        streamRevision: 17,
+        openedAt: 10,
+        latestRowTimestamp: 20,
+      },
+      result: null,
+      task: {
+        description: 'Own task',
+        prompt: 'Canonical task',
+        executionMode: 'background',
+      },
+      snapshot: {
+        delegationId: identity.delegationId,
+        status: 'completed',
+        runGeneration: 1,
+        resultIndex: 2,
+        outputTruncated: false,
+      },
+    };
+  }
+
+  it('maps canonical snapshots and exact envelope budget to the stored page facade', async () => {
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'loadOne')
+      .mockResolvedValue(record);
+    const reader = new UnsupportedDelegationRecordReader();
+    const header = headerFixture();
+    const resolveHeader = jest
+      .spyOn(reader, 'resolveGenerationHeader')
+      .mockResolvedValue(header);
+    const restore = configureManagedDelegationReaders({
+      readMetadata: metadata.source,
+      reader,
+    });
+    mockCompatibilityPage.mockResolvedValue({
+      ok: true,
+      items: [],
+      hasMore: false,
+      streamRevision: 17,
+      readRevision: 16,
+    });
+    try {
+      const result = await readManagedDelegationTranscriptForUser({
+        ...target,
+        delegationId: record.state.delegationId,
+      });
+      expect(result).toEqual({
+        ok: true,
+        snapshot: header.snapshot,
+        task: header.task,
+        runGeneration: 1,
+        revision: 17,
+        items: [],
+        hasMore: false,
+      });
+      expect(mockCompatibilityPage).toHaveBeenLastCalledWith(
+        { projectId: target.projectId, worktreeId: target.worktreeId },
+        expect.objectContaining({
+          encodedBudget:
+            4 * 1024 * 1024 -
+            (Buffer.byteLength(JSON.stringify(result), 'utf8') - 2),
+        }),
+      );
+      mockCompatibilityPage.mockClear();
+      await expect(
+        readManagedDelegationTranscriptForUser({
+          ...target,
+          delegationId: record.state.delegationId,
+          sinceRevision: 17,
+        }),
+      ).resolves.toMatchObject({ unchanged: true, revision: 17 });
+      expect(mockCompatibilityPage).not.toHaveBeenCalled();
+      resolveHeader.mockResolvedValue({ ...header, stream: null });
+      await expect(
+        pageHandler({ ...target, delegationId: record.state.delegationId }),
+      ).resolves.toMatchObject({ ok: true, items: [], hasMore: false });
+      expect(mockCompatibilityPage).not.toHaveBeenCalled();
+      resolveHeader.mockResolvedValue({
+        ...header,
+        task: { ...header.task, prompt: 'x'.repeat(4 * 1024 * 1024) },
+      });
+      await expect(
+        pageHandler({ ...target, delegationId: record.state.delegationId }),
+      ).resolves.toMatchObject({ ok: false, code: 'failed' });
+      expect(mockCompatibilityPage).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      load.mockRestore();
+    }
+  });
+
+  it.each([
+    'not_found',
+    'unauthorized',
+    'stale_identity',
+    'conflict',
+    'corruption',
+    'unsupported_format',
+    'storage_failure',
+  ] as const)(
+    'B8 maps %s through real IPC and Advisor wrappers',
+    async (code) => {
+      const load = jest
+        .spyOn(FileDelegationStorage.prototype, 'loadOne')
+        .mockResolvedValue(record);
+      const reader = new UnsupportedDelegationRecordReader();
+      jest.spyOn(reader, 'resolveGenerationHeader').mockResolvedValue({
+        kind: 'content_unavailable',
+        runGeneration: 1,
+        target: headerFixture().target,
+        failure: { code, message: '/private/detail', retryable: false },
+      });
+      const restore = configureManagedDelegationReaders({
+        readMetadata: metadata.source,
+        reader,
+      });
+      const request = { ...target, delegationId: record.state.delegationId };
+      try {
+        await expect(pageHandler(request)).resolves.toMatchObject({
+          ok: false,
+          code: ['not_found', 'unauthorized'].includes(code)
+            ? 'not_found'
+            : 'failed',
+        });
+        await expect(
+          dispatchDelegationReadAction({
+            type: 'delegation.transcript',
+            ...request,
+          }),
+        ).resolves.toMatchObject({
+          ok: false,
+          error: { code: 'invalid_target' },
+        });
+      } finally {
+        restore();
+        load.mockRestore();
+      }
+    },
+  );
+
+  it('B8 checks malformed requests and ownership before a bad capsule through real wrappers', async () => {
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'loadOne')
+      .mockResolvedValue(record);
+    const source = jest.fn(() => {
+      throw new Error('capsule inspected');
+    });
+    const restore = configureManagedDelegationReaders({ readMetadata: source });
+    const request = { ...target, delegationId: record.state.delegationId };
+    try {
+      await expect(
+        pageHandler({ ...request, beforeSequence: -1 }),
+      ).resolves.toMatchObject({ code: 'invalid_request' });
+      await expect(
+        dispatchDelegationReadAction({
+          type: 'delegation.transcript',
+          ...request,
+          beforeSequence: -1,
+        }),
+      ).resolves.toMatchObject({ error: { code: 'invalid_target' } });
+      await expect(
+        pageHandler({ ...request, chatId: 'foreign' }),
+      ).resolves.toMatchObject({ code: 'not_found' });
+      await expect(
+        dispatchDelegationReadAction({
+          type: 'delegation.transcript',
+          ...request,
+          chatId: 'foreign',
+        }),
+      ).resolves.toMatchObject({ error: { code: 'invalid_target' } });
+      expect(source).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      load.mockRestore();
+    }
+    const bad = configureManagedDelegationReaders({
+      readMetadata: (value) => ({
+        originAt: 2,
+        lastActivityAt: 1,
+        current: {
+          store: 'stream',
+          target: {
+            kind: 'delegation',
+            chatId: value.parent.chatId,
+            delegationId: value.state.delegationId,
+            runGeneration: value.state.runGeneration,
+          },
+        },
+      }),
+    });
+    const own = jest
+      .spyOn(FileDelegationStorage.prototype, 'loadOne')
+      .mockResolvedValue(record);
+    try {
+      await expect(pageHandler(request)).resolves.toMatchObject({
+        ok: false,
+        code: 'failed',
+      });
+      await expect(
+        dispatchDelegationReadAction({
+          type: 'delegation.transcript',
+          ...request,
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'execution_failed' },
+      });
+    } finally {
+      bad();
+      own.mockRestore();
+    }
+  });
+
+  it('lists a generation absent from history with its own card task and B2 snapshot', async () => {
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'load')
+      .mockResolvedValue([record]);
+    const generation: ResolvedDelegationGeneration = {
+      kind: 'stream',
+      runGeneration: 2,
+      target: {
+        kind: 'delegation',
+        chatId: 'chat',
+        delegationId: 'stream-delegate',
+        runGeneration: 2,
+      },
+      entry: {
+        version: 1,
+        kind: 'generation',
+        runGeneration: 2,
+        chatId: 'chat',
+        delegationId: 'stream-delegate',
+        store: 'stream',
+        createdAt: 20,
+        origin: { kind: 'follow_up' },
+        executionMode: 'background',
+      },
+      stream: null,
+      result: null,
+      status: 'interrupted',
+      snapshot: {
+        delegationId: 'stream-delegate',
+        runGeneration: 2,
+        status: 'interrupted',
+        outputTruncated: false,
+      },
+      task: {
+        description: 'Own card',
+        prompt: 'Historical task',
+        executionMode: 'background',
+      },
+      startedAt: 21,
+      finishedAt: 25,
+    };
+    const reader: DelegationRecordReader =
+      new UnsupportedDelegationRecordReader();
+    const list = jest
+      .spyOn(reader, 'resolveGenerationList')
+      .mockResolvedValue([generation]);
+    const restore = configureManagedDelegationReaders({
+      readMetadata: metadata.source,
+      reader,
+    });
+    try {
+      expect(await readManagedDelegationTreeForUser(target)).toEqual([
+        expect.objectContaining({
+          snapshot: generation.snapshot,
+          description: 'Own card',
+          prompt: 'Historical task',
+          runGeneration: 2,
+          runStartedAt: 21,
+          runSettledAt: 25,
+        }),
+      ]);
+      expect(list).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+      load.mockRestore();
+    }
+  });
+
+  it('roots never touch transcript item getters', async () => {
+    const poisonous = { ...record, state: { ...record.state } };
+    Object.defineProperty(poisonous.state, 'transcript', {
+      get: () => {
+        throw new Error('answer body accessed');
+      },
+    });
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'load')
+      .mockResolvedValue([poisonous]);
+    const reader: DelegationRecordReader =
+      new UnsupportedDelegationRecordReader();
+    const activity = jest
+      .spyOn(reader, 'resolveActivity')
+      .mockResolvedValue(456);
+    const restore = configureManagedDelegationReaders({
+      readMetadata: metadata.source,
+      reader,
+    });
+    try {
+      await expect(readManagedDelegationRootsForUser(target)).resolves.toEqual([
+        { chatId: 'chat', total: 1, live: 0, lastActivityAt: 456 },
+      ]);
+      expect(activity).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+      load.mockRestore();
+    }
+  });
+  it('keeps a pending stream codec after a crash and never looks up or delivers again', async () => {
+    const request = {
+      ...target,
+      delegationId: record.state.delegationId,
+      operation: 'follow_up' as const,
+      operationId: randomUUID(),
+      message: 'Continue',
+    };
+    const requestHash = createHash('sha256')
+      .update(
+        JSON.stringify([
+          request.projectId,
+          request.worktreeId,
+          request.chatId,
+          request.delegationId,
+          request.operation,
+          request.message,
+        ]),
+      )
+      .digest('hex');
+    const storage = new FileManagedDelegationMessageStorage(
+      path.join(
+        mockDataRoot,
+        target.projectId,
+        target.worktreeId,
+        'delegation',
+        'user-messages',
+      ),
+    );
+    await storage.commit({
+      version: 2,
+      codec: 'stream',
+      operationId: request.operationId,
+      requestHash,
+      status: 'pending',
+    });
+    const source = jest.fn(() => {
+      throw new Error('must not reselect codec');
+    });
+    const restore = configureManagedDelegationReaders({ readMetadata: source });
+    const load = jest.spyOn(FileDelegationStorage.prototype, 'loadOne');
+    const message = jest.spyOn(AgentDelegationBroker.prototype, 'message');
+    try {
+      const first = await messageManagedDelegationForUser(request);
+      expect(first).toMatchObject({ ok: false, code: 'busy' });
+      expect(await storage.load(request.operationId)).toMatchObject({
+        version: 2,
+        codec: 'stream',
+        status: 'complete',
+        result: first,
+      });
+      await expect(messageManagedDelegationForUser(request)).resolves.toEqual(
+        first,
+      );
+      expect(source).not.toHaveBeenCalled();
+      expect(load).not.toHaveBeenCalled();
+      expect(message).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      load.mockRestore();
+      message.mockRestore();
+    }
+  });
+
+  it('offline source records keep legacy validation, receipt consumption and post-pending failures', async () => {
+    const request = {
+      ...target,
+      delegationId: record.state.delegationId,
+      operation: 'follow_up' as const,
+      operationId: randomUUID(),
+      message: 'Continue',
+    };
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'loadOne')
+      .mockResolvedValue(record);
+    const commit = jest.spyOn(
+      FileManagedDelegationMessageStorage.prototype,
+      'commit',
+    );
+    const source = jest.fn(() => {
+      throw new Error('must not preflight an offline record');
+    });
+    const restore = configureManagedDelegationReaders({ readMetadata: source });
+    try {
+      await expect(
+        messageManagedDelegationForUser({ ...request, message: '' }),
+      ).resolves.toEqual({
+        ok: false,
+        code: 'invalid_request',
+        error: 'A non-empty message of at most 32768 characters is required.',
+      });
+      expect(load).not.toHaveBeenCalled();
+      await expect(
+        messageManagedDelegationForUser({
+          ...request,
+          operationId: randomUUID(),
+          chatId: 'foreign',
+        }),
+      ).resolves.toMatchObject({ ok: false, code: 'not_found' });
+      await expect(
+        messageManagedDelegationForUser({
+          ...request,
+          operationId: randomUUID(),
+        }),
+      ).resolves.toMatchObject({ ok: false, code: 'parent_unavailable' });
+      load.mockRejectedValueOnce(new Error('unavailable'));
+      await expect(
+        messageManagedDelegationForUser({
+          ...request,
+          operationId: randomUUID(),
+        }),
+      ).resolves.toMatchObject({ ok: false, code: 'failed' });
+      expect(source).not.toHaveBeenCalled();
+      expect(commit).toHaveBeenCalledTimes(8);
+      for (const [receipt] of commit.mock.calls)
+        expect(receipt).not.toHaveProperty('codec');
+    } finally {
+      restore();
+      load.mockRestore();
+      commit.mockRestore();
+    }
+  });
+
+  it('retains a stream pending receipt when complete commit fails, and retries without delivery', async () => {
+    const request = {
+      ...target,
+      delegationId: record.state.delegationId,
+      operation: 'follow_up' as const,
+      operationId: randomUUID(),
+      message: 'Continue',
+    };
+    const requestHash = createHash('sha256')
+      .update(
+        JSON.stringify([
+          request.projectId,
+          request.worktreeId,
+          request.chatId,
+          request.delegationId,
+          request.operation,
+          request.message,
+        ]),
+      )
+      .digest('hex');
+    const storage = new FileManagedDelegationMessageStorage(
+      path.join(
+        mockDataRoot,
+        target.projectId,
+        target.worktreeId,
+        'delegation',
+        'user-messages',
+      ),
+    );
+    await storage.commit({
+      version: 2,
+      codec: 'stream',
+      operationId: request.operationId,
+      requestHash,
+      status: 'pending',
+    });
+    const commit = jest
+      .spyOn(FileManagedDelegationMessageStorage.prototype, 'commit')
+      .mockRejectedValueOnce(new Error('disk failure'));
+    const first = await messageManagedDelegationForUser(request);
+    expect(first).toMatchObject({ ok: false, code: 'busy' });
+    commit.mockRestore();
+    expect(await storage.load(request.operationId)).toMatchObject({
+      version: 2,
+      status: 'pending',
+    });
+    await expect(messageManagedDelegationForUser(request)).resolves.toEqual(
+      first,
+    );
+    expect(await storage.load(request.operationId)).toMatchObject({
+      version: 2,
+      status: 'complete',
+    });
+  });
+
+  it('bounds a stream receipt to 64 KiB and replays the exact first reply after restart', async () => {
+    const load = jest
+      .spyOn(FileDelegationStorage.prototype, 'loadOne')
+      .mockResolvedValue(record);
+    const session = await createManagedDelegationSession({
+      harness: 'claude',
+      sessionKey: 'stream-project/worktree/chat',
+      currentOptions: () => ({ ...target, cwd: '/test/worktree' }),
+      currentTurn: () => 'turn',
+      getWindow: () => null,
+    });
+    const store = jest
+      .spyOn(AgentDelegationBroker.prototype, 'recordStore')
+      .mockReturnValue('stream');
+    let raceRestore: (() => void) | undefined;
+    const message = jest
+      .spyOn(AgentDelegationBroker.prototype, 'message')
+      .mockImplementation(() => {
+        raceRestore = configureManagedDelegationReaders({});
+        return Promise.resolve({
+          ok: true,
+          value: {
+            delegationId: 'stream-delegate',
+            status: 'completed',
+            outputTruncated: false,
+            finalText: 'x'.repeat(256 * 1024),
+          },
+        });
+      });
+    const restore = configureManagedDelegationReaders({
+      readMetadata: metadata.source,
+    });
+    const request = {
+      ...target,
+      delegationId: 'stream-delegate',
+      operation: 'follow_up' as const,
+      operationId: randomUUID(),
+      message: 'Continue',
+    };
+    try {
+      const first = await messageManagedDelegationForUser(request);
+      const bytes = await readFile(
+        path.join(
+          mockDataRoot,
+          target.projectId,
+          target.worktreeId,
+          'delegation',
+          'user-messages',
+          `${createHash('sha256').update(request.operationId).digest('hex')}.json`,
+        ),
+      );
+      expect(bytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+      expect(JSON.parse(bytes.toString())).toMatchObject({
+        version: 2,
+        codec: 'stream',
+      });
+      session.detach();
+      await shutdownManagedDelegations();
+      await expect(messageManagedDelegationForUser(request)).resolves.toEqual(
+        first,
+      );
+      expect(message).toHaveBeenCalledTimes(1);
+    } finally {
+      raceRestore?.();
+      restore();
+      load.mockRestore();
+      store.mockRestore();
+      message.mockRestore();
+      session.detach();
     }
   });
 });

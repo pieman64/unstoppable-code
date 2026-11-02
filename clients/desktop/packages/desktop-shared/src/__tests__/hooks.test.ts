@@ -326,7 +326,7 @@ describe('normalizeHookValue', () => {
       ultraAction?.type === 'pipeline'
         ? pipelineHookUnsupportedSpeedError(ultraAction)
         : undefined,
-    ).toContain('Ultra fast');
+    ).toBe('Workflow hooks do not support Ultra fast. Choose Regular or Fast.');
     expect(
       fastAction?.type === 'pipeline'
         ? pipelineHookUnsupportedSpeedError(fastAction)
@@ -467,7 +467,7 @@ describe('normalizeHookValue', () => {
   });
 
   it('preserves curated pipeline hook references', () => {
-    const action = {
+    const action: HookAction = {
       type: 'pipeline',
       source: 'curated',
       id: 'curated:review',
@@ -809,9 +809,9 @@ describe('hook action labels', () => {
       source: 'bundled',
       id: 'code-review',
     };
-    expect(getHookActionLabel(bundled)).toBe('Pipeline: bundled/code-review');
+    expect(getHookActionLabel(bundled)).toBe('Workflow: bundled/code-review');
     expect(getHookActionLogLabel(bundled)).toBe(
-      'Pipeline action (bundled/code-review)',
+      'Workflow action (bundled/code-review)',
     );
 
     const local: HookAction = {
@@ -819,9 +819,9 @@ describe('hook action labels', () => {
       source: 'local',
       id: 'my-pipeline',
     };
-    expect(getHookActionLabel(local)).toBe('Pipeline: local/my-pipeline');
+    expect(getHookActionLabel(local)).toBe('Workflow: local/my-pipeline');
     expect(getHookActionLogLabel(local)).toBe(
-      'Pipeline action (local/my-pipeline)',
+      'Workflow action (local/my-pipeline)',
     );
 
     const project: HookAction = {
@@ -830,10 +830,10 @@ describe('hook action labels', () => {
       id: 'ci/review.yaml',
     };
     expect(getHookActionLabel(project)).toBe(
-      'Pipeline: project/ci/review.yaml',
+      'Workflow: project/ci/review.yaml',
     );
     expect(getHookActionLogLabel(project)).toBe(
-      'Pipeline action (project/ci/review.yaml)',
+      'Workflow action (project/ci/review.yaml)',
     );
   });
 });

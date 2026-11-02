@@ -46,7 +46,7 @@ import {
   readCodexMarketplaceInstallMetadata,
   uninstallCodexPlugin,
 } from '../plugins/codex-marketplace-service';
-import { loadSkills, removeSkill } from '../skills/skill-service';
+import { loadSkills, removeSkillForContext } from '../skills/skill-service';
 import { isBuiltinSourceId } from '../skills/paths';
 import { filterStoredSkillContexts } from '../skills/skill-install-context';
 import {
@@ -406,7 +406,10 @@ export const installedItemService = createInstalledItemStatusService({
         return;
       }
       case 'skill': {
-        const outcome = removeSkill(ref.sourceId, ref.skillName);
+        const outcome = await removeSkillForContext(
+          ref.sourceId,
+          ref.skillName,
+        );
         if (!outcome.success) throw new Error(outcome.error);
         return;
       }

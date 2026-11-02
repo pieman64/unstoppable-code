@@ -146,6 +146,8 @@ interface RegistryState {
   groups: SidebarItemGroup[];
   order: string[];
   sortMode: 'manual' | 'last-updated';
+  /** Branch-stack units with one more item unstacked from its base. */
+  unstack?: (itemId: string) => string[][];
 }
 
 function orderedRows<T extends { id: string }>(
@@ -211,6 +213,7 @@ async function registryTransaction<T>(
   const apply = async (
     items: readonly (WorktreeData | CoworkWorkEntryData)[],
     units: string[][],
+    unstack?: RegistryState['unstack'],
   ): Promise<string[]> => {
     const inventory = sidebarGroupInventory(
       items,
@@ -226,6 +229,7 @@ async function registryTransaction<T>(
       groups,
       order: items.map((item) => item.id),
       sortMode: resolved.sortMode,
+      ...(unstack ? { unstack } : {}),
     };
     // A newly empty header keeps its position among existing empty headers.
     state.groups = navOrderedGroups(state);
@@ -241,17 +245,20 @@ async function registryTransaction<T>(
           previousCount,
         );
     }
-    const written = normalizeSidebarItemGroups(state.groups, inventory);
+    // The operation may have unstacked its item, changing units and inventory.
+    const written = normalizeSidebarItemGroups(state.groups, state.inventory);
     const order =
       mutate && state.sortMode === 'manual'
-        ? normalizeGroupedOrder(state.order, written, { stackUnits: units })
+        ? normalizeGroupedOrder(state.order, written, {
+            stackUnits: state.units,
+          })
         : state.order;
     pending = {
       groups: anchorKeptSidebarItemGroups(written, order, {
-        stackUnits: units,
-        ineligibleItemIds: inventory.ineligibleItemIds,
+        stackUnits: state.units,
+        ineligibleItemIds: state.inventory.ineligibleItemIds,
       }),
-      inventory,
+      inventory: state.inventory,
     };
     return order;
   };
@@ -281,14 +288,25 @@ async function registryTransaction<T>(
       workspaceId: resolved.workspaceId,
       decide: async (worktrees) => {
         const preferences = await readPreferencesFile();
-        const order = await apply(
-          worktrees,
+        const ungroupItemIds = new Set<string>();
+        const stackUnits = (): string[][] =>
           sidebarGroupStackUnits(
-            worktrees,
+            worktrees.map((item) =>
+              ungroupItemIds.has(item.id)
+                ? { ...item, branchGroupingOverride: 'ungroup' as const }
+                : item,
+            ),
             preferences.groupChildBranchesWithBase,
-          ),
-        );
-        return { order, commitMembership: afterWrite };
+          );
+        const order = await apply(worktrees, stackUnits(), (itemId) => {
+          ungroupItemIds.add(itemId);
+          return stackUnits();
+        });
+        return {
+          order,
+          commitMembership: afterWrite,
+          ungroupItemIds: Array.from(ungroupItemIds),
+        };
       },
     });
   }
@@ -310,7 +328,26 @@ function requireGroup(
   return group;
 }
 
-function requireItem(state: RegistryState, itemId: string): string[] {
+/**
+ * A branch-stack child joining a group is first unstacked from its base, as
+ * "Unstack from base" does, and carries its own descendants with it.
+ */
+function requireItem(
+  state: RegistryState,
+  itemId: string,
+  joinsGroup = false,
+): string[] {
+  if (
+    joinsGroup &&
+    state.unstack &&
+    state.units.some((unit) => unit.indexOf(itemId) > 0)
+  ) {
+    state.units = state.unstack(itemId);
+    state.inventory = sidebarGroupInventory(
+      state.items,
+      state.units.flatMap((unit) => unit.slice(1)),
+    );
+  }
   if (
     !state.inventory.liveItemIds.includes(itemId) ||
     state.inventory.ineligibleItemIds?.includes(itemId)
@@ -480,7 +517,7 @@ export const sidebarItemGroupsService = {
   create: async (input: unknown): Promise<SidebarItemGroup> => {
     const request = createSchema.parse(input);
     return transaction(request.scope, true, (state) => {
-      requireItem(state, request.itemId);
+      requireItem(state, request.itemId, true);
       state.groups = normalizeSidebarItemGroups(
         state.groups.map((group) => ({
           ...group,
@@ -546,7 +583,7 @@ export const sidebarItemGroupsService = {
     const name = normalizeSidebarItemGroupName(request.name);
     if (!name) throw new Error('Sidebar item group name is required');
     return transaction(request.scope, true, (state) => {
-      const moving = requireItem(state, request.itemId);
+      const moving = requireItem(state, request.itemId, true);
       // Duplicate names resolve to the group the nav and pickers show first.
       let target = findSidebarItemGroupByName(navOrderedGroups(state), name);
       const created = !target;
@@ -621,7 +658,11 @@ export const sidebarItemGroupsService = {
   moveItem: async (input: unknown): Promise<void> => {
     const request = moveItemSchema.parse(input);
     await transaction(request.scope, true, (state) => {
-      const moving = requireItem(state, request.itemId);
+      const moving = requireItem(
+        state,
+        request.itemId,
+        request.groupId !== null,
+      );
       const target =
         request.groupId === null
           ? undefined

@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { Button } from './Button';
 
 export interface RunningProcessCardProps {
   dataTestId?: string;
@@ -56,15 +57,15 @@ export function RunningProcessCard({
         <div className="flex items-center gap-2">
           {actionSlot}
           {onStop && (
-            <button
-              type="button"
+            <Button
+              variant="ghost-destructive"
+              size="compact"
               onClick={onStop}
               disabled={stopDisabled}
               data-testid={stopDataTestId}
-              className="focus-ring rounded-md px-2 py-0.5 text-2xs font-medium fg-destructive transition hover:bg-destructive-subtle disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
             >
               {stopLabel}
-            </button>
+            </Button>
           )}
         </div>
       </div>

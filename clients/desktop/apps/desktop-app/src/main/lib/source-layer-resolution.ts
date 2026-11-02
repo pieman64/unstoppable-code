@@ -1,22 +1,19 @@
 import type {
   CanopyJsonRepoEntry,
   CanopyJsonFile,
-  HookSourceLayer,
-  ScriptSourceLayer,
   WorkspaceConfigFile,
   WorkspaceRepoData,
 } from '@canopy/desktop-shared/types';
-import type { HookAction } from '@canopy/desktop-shared/hooks';
-import type { ScriptValue } from '@canopy/desktop-shared/scripts';
-import { isScriptDefinition } from '@canopy/desktop-shared/scripts';
 import { getManifestRepoById, readCanopyJson } from './canopy-json';
 import { getBaselineReadPath } from './repo-shadow';
 import { readWorkspaceConfig } from './workspace-persistence';
 
-type SourceLayerStatus = 'active' | 'disabled' | 'overridden' | 'absent';
-
-interface MutableSourceLayer {
-  status: SourceLayerStatus;
+/** The workspace has no repository with this id. */
+export class WorkspaceRepoNotFoundError extends Error {
+  constructor(workspaceId: string, repoId: string) {
+    super(`Repo ${repoId} not found in project ${workspaceId}`);
+    this.name = 'WorkspaceRepoNotFoundError';
+  }
 }
 
 export interface WorkspaceRepoLayerPaths {
@@ -42,7 +39,7 @@ export async function readWorkspaceRepoLayerContext(
     paths?.localConfig ?? (await readWorkspaceConfig(workspaceId));
   const repo = localConfig.repos.find((candidate) => candidate.id === repoId);
   if (!repo) {
-    throw new Error(`Repo ${repoId} not found in project ${workspaceId}`);
+    throw new WorkspaceRepoNotFoundError(workspaceId, repoId);
   }
 
   const repoPath = paths?.repoPath ?? repo.repoPath;
@@ -61,87 +58,6 @@ export async function readWorkspaceRepoLayerContext(
     repoManifest,
     workspaceManifestRepo,
   };
-}
-
-export function buildScriptSourceLayer(
-  sourceKey: string,
-  sourceLabel: string,
-  scripts: Record<string, ScriptValue | undefined> | undefined,
-  scriptName: string,
-): ScriptSourceLayer | null {
-  if (!scripts || !(scriptName in scripts)) {
-    return null;
-  }
-
-  const value = scripts[scriptName];
-  if (value === null) {
-    return { sourceKey, sourceLabel, command: null, status: 'disabled' };
-  }
-
-  if (typeof value === 'string') {
-    return { sourceKey, sourceLabel, command: value, status: 'active' };
-  }
-
-  if (isScriptDefinition(value)) {
-    // ScriptSourceLayer intentionally stays string-only; per-script timeouts
-    // are surfaced through dedicated settings UI, not the source-info layers.
-    return {
-      sourceKey,
-      sourceLabel,
-      command: value.command,
-      status: 'active',
-    };
-  }
-
-  return null;
-}
-
-export function buildHookSourceLayer(
-  sourceKey: string,
-  sourceLabel: string,
-  hooks: Record<string, HookAction[] | null | undefined> | undefined,
-  triggerName: string,
-): HookSourceLayer | null {
-  if (!hooks || !(triggerName in hooks)) {
-    return null;
-  }
-
-  const actions = hooks[triggerName];
-  if (actions === null) {
-    return {
-      sourceKey,
-      sourceLabel,
-      actions: null,
-      status: 'disabled',
-    };
-  }
-  if (Array.isArray(actions)) {
-    return {
-      sourceKey,
-      sourceLabel,
-      actions,
-      status: 'active',
-    };
-  }
-
-  return null;
-}
-
-export function assignEffectiveSourceLayerStatus<
-  TLayer extends MutableSourceLayer,
->(layers: TLayer[]): void {
-  let resolved = false;
-  for (const layer of layers) {
-    if (resolved) {
-      if (layer.status === 'active') {
-        layer.status = 'overridden';
-      }
-      continue;
-    }
-    if (layer.status === 'active' || layer.status === 'disabled') {
-      resolved = true;
-    }
-  }
 }
 
 export async function readWorkspaceCanopyManifest(

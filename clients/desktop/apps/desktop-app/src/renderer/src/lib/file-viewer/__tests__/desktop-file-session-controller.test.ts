@@ -1,11 +1,12 @@
-import type {
-  CanopyCapabilities,
-  CanopyClient,
-  CommandMap,
-  CommandName,
-  QueryMap,
-  QueryName,
-  Unsubscribe,
+import {
+  FileSaveConflictError,
+  type CanopyCapabilities,
+  type CanopyClient,
+  type CommandMap,
+  type CommandName,
+  type QueryMap,
+  type QueryName,
+  type Unsubscribe,
 } from '@canopy/app-core';
 import type { PortalFilePreview } from '@canopy/protocol/portal';
 import {
@@ -43,6 +44,8 @@ interface Harness {
   commandResponders: CommandResponders;
   saveCommands: Array<CommandMap['file.save']['args']>;
   savesCommitted: Array<{ projectId: string; worktreeId: string }>;
+  /** Replace what later `file.read` queries return. */
+  setRead: (next: PortalFilePreview) => void;
   detach: () => void;
 }
 
@@ -73,11 +76,12 @@ const REQUEST = {
 function createHarness(): Harness {
   const commandResponders: CommandResponders = {};
   const saveCommands: Array<CommandMap['file.save']['args']> = [];
+  let readPreview = preview();
   const client: CanopyClient = {
     capabilities: DESKTOP_CAPS,
     query<K extends QueryName>(name: K): Promise<QueryMap[K]['result']> {
       if (name === 'file.read') {
-        return Promise.resolve(preview() as QueryMap[K]['result']);
+        return Promise.resolve(readPreview as QueryMap[K]['result']);
       }
       return Promise.reject(new Error(`no query responder for ${name}`));
     },
@@ -115,6 +119,9 @@ function createHarness(): Harness {
     commandResponders,
     saveCommands,
     savesCommitted,
+    setRead: (next): void => {
+      readPreview = next;
+    },
     detach,
   };
 }
@@ -401,6 +408,149 @@ describe('desktopFileSessionController: autosave', () => {
     h.detach();
   });
 
+  it('stops at a save conflict once without taking focus or retrying', async () => {
+    const h = createHarness();
+    h.commandResponders['file.save'] = (): Promise<PortalFilePreview> =>
+      Promise.reject(new FileSaveConflictError());
+    h.controller.setAutoSaveEnabled(true);
+    const key = await openAndEdit(h, 'tab-1');
+    h.setRead(
+      preview({
+        content: 'theirs',
+        version: 'v2',
+        modifiedAt: '2026-07-01T00:00:05.000Z',
+      }),
+    );
+
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS);
+    expect(h.saveCommands).toHaveLength(1);
+    expect(h.controller.getSession('tab-1')?.saveConflict).toMatchObject({
+      reason: 'overlap',
+      origin: 'autosave',
+      focusRequest: 0,
+    });
+
+    // Typing keeps the conflict and schedules nothing.
+    h.store.getState().updateContent(key, 'edited more');
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS * 5);
+    expect(h.saveCommands).toHaveLength(1);
+
+    // Re-enabling Auto Save does not retry a pending conflict either.
+    h.controller.setAutoSaveEnabled(false);
+    h.controller.setAutoSaveEnabled(true);
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS * 2);
+    expect(h.saveCommands).toHaveLength(1);
+    expect(h.savesCommitted).toHaveLength(0);
+    h.detach();
+  });
+
+  it.each(['ours', 'theirs'] as const)(
+    'settles autosave after choosing %s in a pre-save comparison',
+    async (choice) => {
+      const h = createHarness();
+      h.commandResponders['file.save'] = (args): Promise<PortalFilePreview> =>
+        Promise.resolve(preview({ content: args.content, version: 'v3' }));
+      h.controller.setAutoSaveEnabled(true);
+      const key = await openAndEdit(h, 'tab-1');
+      h.setRead(preview({ content: 'theirs', version: 'v2' }));
+      await h.store.getState().refreshFile(key);
+      const comparison = h.store.getState().files[key]?.overlap;
+      expect(comparison).toBeDefined();
+      if (!comparison) throw new Error('Expected a pre-save comparison');
+      expect(h.controller.getSession('tab-1')?.saveConflict).toBeNull();
+
+      // Let the queued debounce expire while choices still pause autosave.
+      await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS * 3);
+      expect(h.saveCommands).toHaveLength(0);
+      h.store.getState().chooseOverlapVersion(key, comparison.token, 0, choice);
+      expect(h.controller.getSession('tab-1')?.overlap).toBeNull();
+      expect(h.controller.getSession('tab-1')?.content).toBe(
+        choice === 'ours' ? 'edited' : 'theirs',
+      );
+      expect(h.controller.isDirty('tab-1')).toBe(choice === 'ours');
+
+      await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS * 3);
+      expect(h.saveCommands).toEqual(
+        choice === 'ours'
+          ? [
+              expect.objectContaining({
+                content: 'edited',
+                expectedVersion: 'v2',
+              }),
+            ]
+          : [],
+      );
+      expect(h.controller.isDirty('tab-1')).toBe(false);
+      h.detach();
+    },
+  );
+
+  it('resumes autosave when a newer version removes a deferred overlap', async () => {
+    const h = createHarness();
+    h.commandResponders['file.save'] = (args): Promise<PortalFilePreview> =>
+      Promise.resolve(preview({ content: args.content, version: 'v4' }));
+    h.controller.setAutoSaveEnabled(true);
+    const key = await openAndEdit(h, 'tab-1');
+    h.setRead(preview({ content: 'theirs', version: 'v2' }));
+    await h.store.getState().refreshFile(key);
+    expect(h.controller.getSession('tab-1')?.overlap).toBeTruthy();
+    h.store.getState().dismissExternalChange(key);
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS * 3);
+    expect(h.saveCommands).toHaveLength(0);
+
+    // Reverting the disk wording eliminates the overlap without changing ours.
+    h.setRead(preview({ content: 'disk', version: 'v3' }));
+    await h.store.getState().refreshFile(key);
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS * 3);
+    expect(h.saveCommands).toEqual([
+      expect.objectContaining({ content: 'edited', expectedVersion: 'v3' }),
+    ]);
+    expect(h.controller.isDirty('tab-1')).toBe(false);
+    h.detach();
+  });
+
+  it('resumes autosave after resolution leaves newer edits dirty', async () => {
+    const h = createHarness();
+    let overwrite: (value: PortalFilePreview) => void = () => undefined;
+    h.commandResponders['file.save'] = (args): Promise<PortalFilePreview> =>
+      args.expectedVersion === 'v1'
+        ? Promise.reject(new FileSaveConflictError())
+        : args.expectedVersion === 'v2'
+          ? new Promise((resolve) => {
+              overwrite = resolve;
+            })
+          : Promise.resolve(preview({ content: args.content, version: 'v4' }));
+    h.controller.setAutoSaveEnabled(true);
+    const key = await openAndEdit(h, 'tab-1');
+    h.setRead(
+      preview({
+        content: 'theirs',
+        version: 'v2',
+        modifiedAt: '2026-07-01T00:00:05.000Z',
+      }),
+    );
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS);
+
+    const saveMine = h.store.getState().overwriteWithEdits(key);
+    h.store.getState().updateContent(key, 'typed during overwrite');
+    overwrite(
+      preview({
+        content: 'edited',
+        version: 'v3',
+        modifiedAt: '2026-07-01T00:00:06.000Z',
+      }),
+    );
+    await saveMine;
+    expect(h.controller.getSession('tab-1')?.saveConflict).toBeNull();
+    expect(h.controller.isDirty('tab-1')).toBe(true);
+
+    await jest.advanceTimersByTimeAsync(AUTO_SAVE_DEBOUNCE_MS);
+    expect(h.saveCommands).toHaveLength(3);
+    expect(h.saveCommands[2]?.content).toBe('typed during overwrite');
+    expect(h.controller.isDirty('tab-1')).toBe(false);
+    h.detach();
+  });
+
   it('enabling Auto Save schedules already-dirty registered sessions', async () => {
     const h = createHarness();
     h.commandResponders['file.save'] = (): Promise<PortalFilePreview> =>
@@ -463,5 +613,32 @@ describe('desktopFileSessionController: reference counting and cleanup', () => {
     expect(h.controller.getFileKey('tab-1')).toBeNull();
 
     jest.useRealTimers();
+  });
+});
+
+describe('desktopFileSessionController: refreshTab', () => {
+  it('checks the tab session against disk without changing the active file', async () => {
+    const h = createHarness();
+    const other = { ...REQUEST, relativePath: 'src/b.ts' };
+    const key = h.controller.registerTab('tab-1', REQUEST);
+    await h.store.getState().openFile(REQUEST);
+    h.controller.registerTab('tab-2', other);
+    await h.store.getState().openFile(other);
+    const refreshFile = jest.fn((): Promise<void> => Promise.resolve());
+    h.store.setState({ refreshFile });
+
+    h.controller.refreshTab('tab-1');
+    h.controller.refreshTab('unknown-tab');
+
+    expect(refreshFile.mock.calls).toEqual([[key]]);
+    expect(h.store.getState().activeFileKey).toBe(fileViewerKey(other));
+    h.detach();
+  });
+
+  it('is a no-op after the store detaches', () => {
+    const h = createHarness();
+    h.controller.registerTab('tab-1', REQUEST);
+    h.detach();
+    expect(() => h.controller.refreshTab('tab-1')).not.toThrow();
   });
 });

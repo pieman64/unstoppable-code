@@ -1,9 +1,6 @@
 const mockReadFile = jest.fn<Promise<string>, [string, string?]>();
-const mockReaddir = jest.fn<Promise<string[]>, [string]>();
 const mockAppendFile = jest.fn<Promise<void>, [string, string]>();
 const mockMkdir = jest.fn<Promise<void>, [string, { recursive?: boolean }?]>();
-const mockRename = jest.fn<Promise<void>, [string, string]>();
-const mockRm = jest.fn<Promise<void>, [string, { recursive?: boolean }?]>();
 const mockStat = jest.fn<Promise<{ size: number }>, [string]>();
 const mockWriteFile = jest.fn<Promise<void>, [string, string]>();
 const mockReadPreferencesFile = jest.fn();
@@ -11,14 +8,24 @@ const mockCheckClaudeAuthStatusObserved = jest.fn();
 const mockWarmProviderAccountIdentity = jest.fn();
 
 jest.mock('node:fs/promises', () => ({
-  appendFile: mockAppendFile,
-  mkdir: mockMkdir,
-  readFile: mockReadFile,
-  readdir: mockReaddir,
-  rename: mockRename,
-  rm: mockRm,
-  stat: mockStat,
-  writeFile: mockWriteFile,
+  get appendFile(): typeof mockAppendFile {
+    return mockAppendFile;
+  },
+  get mkdir(): typeof mockMkdir {
+    return mockMkdir;
+  },
+  get readFile(): typeof mockReadFile {
+    return mockReadFile;
+  },
+  readdir: jest.fn(),
+  rename: jest.fn(),
+  rm: jest.fn(),
+  get stat(): typeof mockStat {
+    return mockStat;
+  },
+  get writeFile(): typeof mockWriteFile {
+    return mockWriteFile;
+  },
 }));
 
 jest.mock('../../lib/paths', () => ({
@@ -46,14 +53,20 @@ jest.mock('../../lib/paths', () => ({
 }));
 
 jest.mock('../../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
 jest.mock('../../auth/provider-auth-state', () => ({
-  checkClaudeAuthStatusObserved: mockCheckClaudeAuthStatusObserved,
+  get checkClaudeAuthStatusObserved(): typeof mockCheckClaudeAuthStatusObserved {
+    return mockCheckClaudeAuthStatusObserved;
+  },
   peekProviderAccountIdentity: (): null => null,
   peekProviderBillingAccountKind: (): 'api_key' => 'api_key',
-  warmProviderAccountIdentity: mockWarmProviderAccountIdentity,
+  get warmProviderAccountIdentity(): typeof mockWarmProviderAccountIdentity {
+    return mockWarmProviderAccountIdentity;
+  },
 }));
 
 jest.mock('../../feature-flags', () => ({
@@ -91,9 +104,18 @@ jest.mock('../../openai-pricing/pricing-client', () => ({
 }));
 
 import type { AgentAuditEntry } from '@canopy/desktop-shared/types/observability';
+import {
+  readdir as readdirModuleMock,
+  rename as renameModuleMock,
+  rm as rmModuleMock,
+} from 'node:fs/promises';
 import { ClaudeTaskUsageTracker } from '../capture-fields';
 import { ObservabilityService } from '../service';
 import { setExperimentalFeaturesEnabled } from '../../lib/experimental-features';
+
+const mockReaddir = jest.mocked(readdirModuleMock);
+const mockRename = jest.mocked(renameModuleMock);
+const mockRm = jest.mocked(rmModuleMock);
 
 function createEntry(id = 'entry-1'): AgentAuditEntry {
   return {

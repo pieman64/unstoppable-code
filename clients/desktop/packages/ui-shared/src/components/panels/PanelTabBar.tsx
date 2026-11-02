@@ -2,24 +2,40 @@ import {
   createContext,
   memo,
   useContext,
+  useId,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
+  type HTMLAttributes,
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type NamedExoticComponent,
   type ReactNode,
 } from 'react';
-import { CloseMediumIcon, PinIcon } from '../../icons/AppIcons';
+import {
+  CloseMediumIcon,
+  PinIcon,
+  QuestionMarkIcon,
+} from '../../icons/AppIcons';
 import { DragAndDropObserver } from '../../panels/dnd-observer';
+import { SIDEBAR_INDICATOR_COLORS } from '../../lib/operational-status-colors';
 import { useHorizontalOverflowScroll } from '../../lib/useHorizontalOverflowScroll';
 import type { PanelDropEdge, PanelTabModel } from '../../panels/registry-types';
+import { AgentStateGlyph } from '../AgentStateGlyph';
 import { RichHoverTooltip } from '../RichHoverTooltip';
+import { ThinkingSpinner } from '../ThinkingSpinner';
 import { Tooltip } from '../Tooltip';
 import { PanelAddTabButton } from './PanelAddTabButton';
+import {
+  edgeHintClearance,
+  PanelTabEdgeHints,
+  useHiddenBusyTabs,
+} from './PanelTabEdgeHints';
+import { PanelTabListButton, useInPanelTabList } from './PanelTabListButton';
+import { usePanelTabStripState } from './usePanelTabStripState';
 import {
   clearPanelTabDrag,
   hasActivePanelTabDrag,
@@ -45,11 +61,6 @@ export interface PanelTabBarAddTab {
   quickAdd?: { label: string; onQuickAdd: (groupId: string) => void };
   /** Suppresses the direct primary action when this group is not eligible. */
   hidePrimary?: boolean;
-  /**
-   * Set when the group is full (it holds the most tabs a row takes): every
-   * add affordance renders disabled and explains why with this note.
-   */
-  fullNote?: string;
   /**
    * Optional second affordance rendered right after the `+`: opens the
    * app-supplied add-panel menu. Hosts whose `+` performs a direct action
@@ -162,6 +173,10 @@ export interface PanelTabBarProps {
    * `fill` styles reserve the box only while the slot has content.
    */
   renderTabTrailing?: (tab: PanelTabModel) => ReactNode;
+  /** Spoken status for icon-only tabs whose explicit title masks descendants. */
+  renderTabAccessibleStatus?: (tab: PanelTabModel) => ReactNode;
+  /** Persistent attention remains visible when a fill tab shrinks to its icon. */
+  renderTabAttention?: (tab: PanelTabModel) => ReactNode;
   /**
    * Optional plain-string title resolver used for the native hover tooltip
    * and the close button's accessible name. Apps provide it so those strings
@@ -182,8 +197,8 @@ export interface PanelTabBarProps {
    * Optional per-tab hover CARD: a preview of what a background tab holds.
    * A non-null result replaces that tab's native `title` tooltip (and any
    * {@link renderTabTooltip}) with a card that opens after the pointer rests
-   * on the label, hanging under the whole tab. Never asked for the active
-   * tab, whose content is already on screen, or for pinned tabs, which keep
+   * on the tab, including its close button, hanging below it. Never asked for
+   * the active tab, whose content is already on screen, or pinned tabs, which keep
    * their own tooltip. The content mounts only while the card is open.
    */
   renderTabHoverCard?: (tab: PanelTabModel) => ReactNode | null;
@@ -219,126 +234,6 @@ export const PANEL_TAB_BUSY_ATTRIBUTE = 'data-panel-tab-busy';
 
 const PanelTabStyleContext = createContext<PanelTabStyle>('classic');
 
-/** A fill tile's floor while every tile fits at it (panels.css). */
-const FILL_TILE_FLOOR_PX = 20;
-/** The narrowest fill tile that still shows its whole 14px icon. */
-const FILL_ICON_PX = 14;
-/** The gap between fill tiles while they fit at their floor. */
-const FILL_TILE_GAP_PX = 4;
-/** A pinned fill tile at rest: square, as wide as the 28px tile is tall. */
-const FILL_PINNED_TILE_PX = 28;
-
-/**
- * The narrowest a selected fill tab gets while the row has room for it: the
- * line's insets, the tab number, and about eight characters of title, wider
- * than the 79px at which its close button still shows on hover.
- */
-const FILL_ACTIVE_TILE_FLOOR_PX = 96;
-
-/**
- * Sizes crowded fill tiles so every tab stays in the row. The selected tab
- * (when unpinned) is served first: it keeps up to 96px, as long as the
- * others can still show their icons. The others then get 20px tiles with
- * 4px gaps while they all fit; then narrower tiles, down to their 14px icon;
- * then narrower gaps, down to none; and only then tiles narrower than their
- * icon. Pinned tiles stay square until the others are down to their icons.
- * Written as CSS variables on the bar (with the pinned count and the pinned
- * tiles' floor, for the pinned strip's own floor), so a resize costs no
- * render.
- */
-function applyFillTileFloor(
-  bar: HTMLElement,
-  pinnedCount: number,
-  unpinnedCount: number,
-  activeUnpinned: boolean,
-): void {
-  const view = bar.ownerDocument.defaultView;
-  const barStyle = view?.getComputedStyle(bar);
-  // Unset or unparsable lengths count as 0.
-  const length = (value: string | undefined): number =>
-    Number.parseFloat(value ?? '') || 0;
-  // The row's width for tiles and the gaps between them. Fractional, unlike
-  // `clientWidth`, so the room is never overstated by rounding.
-  let room =
-    bar.getBoundingClientRect().width -
-    length(barStyle?.paddingLeft) -
-    length(barStyle?.paddingRight);
-  for (const child of Array.from(bar.children)) {
-    if (child.classList.contains('canopy-panel-tab-strip-wrap')) {
-      // Each strip's own end padding.
-      const strip = child.querySelector('.canopy-panel-tab-strip');
-      const stripStyle =
-        strip === null ? undefined : view?.getComputedStyle(strip);
-      room -=
-        length(stripStyle?.paddingLeft) + length(stripStyle?.paddingRight);
-      continue;
-    }
-    // The pinned divider and the add-tab button keep their size.
-    const style = view?.getComputedStyle(child);
-    room -=
-      child.getBoundingClientRect().width +
-      length(style?.marginLeft) +
-      length(style?.marginRight);
-  }
-  // Pinned tiles stay square (as wide as the 28px tile is tall) while the
-  // other tabs can still show whole icons and gaps beside them; they then
-  // leave the row and the others share what is left. A row too crowded for
-  // that shrinks them with the rest.
-  const pinnedSquare =
-    pinnedCount > 0 &&
-    room -
-      FILL_PINNED_TILE_PX * pinnedCount -
-      FILL_TILE_GAP_PX * (pinnedCount - 1) >=
-      FILL_ICON_PX * unpinnedCount +
-        FILL_TILE_GAP_PX * Math.max(0, unpinnedCount - 1);
-  if (pinnedSquare) {
-    room -=
-      FILL_PINNED_TILE_PX * pinnedCount + FILL_TILE_GAP_PX * (pinnedCount - 1);
-  }
-  const sharingPinned = pinnedSquare ? 0 : pinnedCount;
-  const tiles = sharingPinned + unpinnedCount;
-  const gaps = Math.max(0, sharingPinned - 1) + Math.max(0, unpinnedCount - 1);
-  const reservesActive = activeUnpinned && unpinnedCount > 0;
-  const others = reservesActive ? tiles - 1 : tiles;
-  // The selected tab's share, while the others keep whole icons and gaps:
-  // never more than 96px (it is a floor, not a width), and never less than
-  // an even share of a crowded row.
-  const activeFloor = reservesActive
-    ? Math.min(
-        FILL_ACTIVE_TILE_FLOOR_PX,
-        Math.max(
-          room - FILL_TILE_GAP_PX * gaps - FILL_ICON_PX * others,
-          (room - FILL_TILE_GAP_PX * gaps) / tiles,
-          0,
-        ),
-      )
-    : FILL_ACTIVE_TILE_FLOOR_PX;
-  const othersRoom = reservesActive ? room - activeFloor : room;
-  let gap = FILL_TILE_GAP_PX;
-  let floor = FILL_TILE_FLOOR_PX;
-  if (others > 0) {
-    floor = (othersRoom - gap * gaps) / others;
-    if (floor < FILL_ICON_PX && gaps > 0) {
-      gap = Math.min(
-        FILL_TILE_GAP_PX,
-        Math.max(0, (othersRoom - FILL_ICON_PX * others) / gaps),
-      );
-      floor = (othersRoom - gap * gaps) / others;
-    }
-    floor = Math.min(FILL_TILE_FLOOR_PX, Math.max(0, floor));
-  }
-  // Rounded down, so rounding never pushes the last tile out of the row.
-  const px = (value: number): string => `${Math.floor(value * 100) / 100}px`;
-  bar.style.setProperty('--canopy-panel-tab-floor', px(floor));
-  bar.style.setProperty('--canopy-panel-tab-active-floor', px(activeFloor));
-  bar.style.setProperty('--canopy-panel-tab-gap', px(gap));
-  bar.style.setProperty('--canopy-panel-pinned-count', String(pinnedCount));
-  bar.style.setProperty(
-    '--canopy-panel-pinned-floor',
-    px(pinnedSquare ? FILL_PINNED_TILE_PX : floor),
-  );
-}
-
 /**
  * The style of the tab bar rendering the caller: app-supplied tab renderers
  * (icon, trailing) read it to match the bar they sit in. Anywhere outside a
@@ -352,8 +247,8 @@ const PanelTabPositionContext = createContext<number | null>(null);
 
 /**
  * The 1-based place of the tab whose icon is rendering, counted across its
- * strip (fill tabs only). A strip holds at most `MAX_TABS_PER_GROUP` (20)
- * tabs, so this runs 1 to 20. `null` outside a fill tab's icon slot.
+ * strip (fill tabs, and their rows in the ⌄ list). `null` outside a fill
+ * tab's icon slot.
  */
 export function usePanelTabPosition(): number | null {
   return useContext(PanelTabPositionContext);
@@ -362,8 +257,8 @@ export function usePanelTabPosition(): number | null {
 /**
  * A tab's place in its strip, drawn in the icon slot in the title's own font
  * and size, a step quieter (tertiary ink). Centered in a fixed 16px square
- * that fits up to "20" at 13px (a strip holds at most 20 tabs), so the label
- * never moves; the digits keep the font's own proportional widths.
+ * that fits two digits at 13px, so the label never moves; the digits keep the
+ * font's own proportional widths.
  */
 export function PanelTabNumber({
   position,
@@ -376,6 +271,127 @@ export function PanelTabNumber({
       data-testid="panel-tab-number"
     >
       {position}
+    </span>
+  );
+}
+
+/**
+ * A chat tab's glyph in a fill tab bar: while the chat works, the accent
+ * spinner, marked busy so the bar withholds its close button; otherwise the
+ * tab's number. Desktop and web chat tabs both draw it, so a crowded row reads
+ * the same on each. Extra props (unread hooks, test ids) land on the wrapper.
+ */
+export function PanelFillChatTabGlyph({
+  busy,
+  ...props
+}: {
+  readonly busy: boolean;
+} & HTMLAttributes<HTMLSpanElement>): JSX.Element | null {
+  const position = usePanelTabPosition();
+  const inList = useInPanelTabList();
+  if (busy && inList && position !== null) {
+    // In the ⌄ list the row keeps its number; the spinner goes to the row's
+    // right-hand status slot (panels.css places it), still marked busy.
+    return (
+      <span className="inline-flex shrink-0 items-center" {...props}>
+        <PanelTabNumber position={position} />
+        <span
+          className="canopy-panel-tab-list-busy"
+          {...{ [PANEL_TAB_BUSY_ATTRIBUTE]: 'true' }}
+        >
+          <ThinkingSpinner sizePx={10} tone="accent" className="shrink-0" />
+        </span>
+      </span>
+    );
+  }
+  if (busy) {
+    return (
+      <span
+        className="inline-flex shrink-0 items-center"
+        {...{ [PANEL_TAB_BUSY_ATTRIBUTE]: 'true' }}
+        {...props}
+      >
+        <ThinkingSpinner
+          // A little under the 12px provider glyph it stands for: the dense
+          // dot grid reads heavier than a line glyph at the same size. It
+          // centers in the fixed 14px icon slot, so the label never moves.
+          sizePx={10}
+          // The accent, as the sidebar's running worktree spinner uses: the
+          // same "agent working here" signal in the theme's own colour.
+          tone="accent"
+          // Lifted onto the tab number's center in panels.css.
+          className="shrink-0"
+        />
+      </span>
+    );
+  }
+  if (position === null) return null;
+  return (
+    <span className="inline-flex shrink-0 items-center" {...props}>
+      <PanelTabNumber position={position} />
+    </span>
+  );
+}
+
+/**
+ * A chat tab whose agent runs only background work: the quiet spinner
+ * (turn-state D15), at the fill bar's 10px or the classic tab's 12px. Work
+ * that blocks close keeps the busy marker that withholds the hover close.
+ * Desktop and web chat tabs both draw it; each host decides when (no turn
+ * running, nothing waiting on the user) and whether the work blocks close.
+ */
+export function PanelChatTabBackgroundGlyph({
+  backgroundTasks,
+  fill,
+  unread = false,
+  blocksClose = false,
+  ...props
+}: {
+  readonly backgroundTasks: number;
+  readonly fill: boolean;
+  /** Classic tabs carry unread on the spinner; fill tabs show it on the right. */
+  readonly unread?: boolean;
+  readonly blocksClose?: boolean;
+} & HTMLAttributes<HTMLSpanElement>): JSX.Element {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center"
+      {...(blocksClose ? { [PANEL_TAB_BUSY_ATTRIBUTE]: 'true' } : {})}
+      {...props}
+    >
+      <AgentStateGlyph
+        state="background"
+        backgroundTasks={backgroundTasks}
+        sizePx={fill ? 10 : 12}
+        unread={!fill && unread}
+      />
+    </span>
+  );
+}
+
+/**
+ * Marks a chat tab whose agent is waiting on an unanswered question: the
+ * sidebar row's question glyph in the same needs-input orange, so the tab
+ * that holds the question reads like the row that reported it. Hosts decide
+ * whether a question waits (desktop: an unanswered pending question; web: an
+ * unanswered summary entry) and place it: a classic tab's leading slot, a
+ * fill tab's right side. The glyph takes the compact 14px icon tier, which
+ * fills the tab's icon slot and matches the close button it sits beside.
+ */
+export function PanelChatTabQuestionMarker({
+  chatId,
+}: {
+  readonly chatId: string;
+}): JSX.Element {
+  return (
+    <span
+      role="img"
+      aria-label="Question waiting"
+      title="Question waiting"
+      data-testid={`panel-tab-question-${chatId}`}
+      className={`inline-flex shrink-0 items-center justify-center ${SIDEBAR_INDICATOR_COLORS.warning}`}
+    >
+      <QuestionMarkIcon size={14} aria-hidden="true" />
     </span>
   );
 }
@@ -420,13 +436,18 @@ function scrollTabIntoView(
   const tabRect = tab.getBoundingClientRect();
   const tabLeft = tabRect.left - containerRect.left + container.scrollLeft;
   const tabRight = tabLeft + tabRect.width;
-  const visibleLeft = container.scrollLeft;
-  const visibleRight = visibleLeft + container.clientWidth;
+  // Clear of any "N running" hint on either edge, so the tab is not left
+  // under it. (Hints only show where they leave room for the tab; see
+  // PanelTabEdgeHints.)
+  const startInset = edgeHintClearance(container, 'start');
+  const endInset = edgeHintClearance(container, 'end');
+  const visibleLeft = container.scrollLeft + startInset;
+  const visibleRight = container.scrollLeft + container.clientWidth - endInset;
 
   if (tabLeft < visibleLeft) {
-    container.scrollLeft = tabLeft;
+    container.scrollLeft = tabLeft - startInset;
   } else if (tabRight > visibleRight) {
-    container.scrollLeft = tabRight - container.clientWidth;
+    container.scrollLeft = tabRight - container.clientWidth + endInset;
   }
 }
 
@@ -445,50 +466,41 @@ interface TabStripDndSnapshot {
   canMovePanelHere?: (panelId: string, targetGroupId: string) => boolean;
 }
 
-/** How long the pointer rests on a tab's label before its hover card opens. */
-const TAB_HOVER_CARD_OPEN_DELAY_MS = 500;
 /** The card hangs this far under the tab. */
 const TAB_HOVER_CARD_GAP_PX = 8;
 
-/** The card is placed against the whole tab, not just its label. */
-function tabAroundLabel(trigger: HTMLElement): Element | null {
-  return trigger.closest('[role="tab"]');
+/** The preview follows the whole tab, including its close button. */
+function tabInsideTrigger(trigger: HTMLElement): Element | null {
+  return trigger.querySelector('[role="tab"]');
 }
 
-/**
- * A tab's label with its hover card: no native `title`, and a card that hangs
- * under the whole tab with their left edges lined up (or right edges, near
- * the window's right edge). The sidebar worktree card's delay and surface.
- * The trigger mounts its controller only once the pointer arrives, so a strip
- * of tabs costs nothing until one is hovered.
- */
-function PanelTabTitleWithHoverCard({
+function PanelTabWithHoverCard({
   panelId,
   card,
   children,
 }: {
   panelId: string;
   card: ReactNode;
-  children: ReactNode;
+  children: JSX.Element;
 }): JSX.Element {
   return (
-    <span className="canopy-panel-tab-title">
-      <RichHoverTooltip
-        content={card}
-        dataTestId={`panel-tab-hover-card-${panelId}`}
-        deferUntilInteraction
-        openDelay={TAB_HOVER_CARD_OPEN_DELAY_MS}
-        elevation="menu"
-        surfacePadding="compact"
-        surfaceClassName="w-70"
-        triggerWrapperClassName="min-w-0 max-w-full"
-        placement="below-start"
-        placementGap={TAB_HOVER_CARD_GAP_PX}
-        getPlacementAnchor={tabAroundLabel}
-      >
-        <span className="truncate">{children}</span>
-      </RichHoverTooltip>
-    </span>
+    <RichHoverTooltip
+      content={card}
+      suppressed={card === null}
+      dataTestId={`panel-tab-hover-card-${panelId}`}
+      deferUntilInteraction
+      handoffMotion="slide"
+      elevation="menu"
+      surfacePadding="compact"
+      surfaceClassName="w-70"
+      triggerDisplay="contents"
+      placement="below-start"
+      placementGap={TAB_HOVER_CARD_GAP_PX}
+      getPlacementAnchor={tabInsideTrigger}
+      aboveBrowser
+    >
+      {children}
+    </RichHoverTooltip>
   );
 }
 
@@ -497,14 +509,17 @@ function PanelTabTitleWithHoverCard({
  * ArrowLeft/ArrowRight move focus between tabs (wrapping), Enter/Space
  * select the focused tab.
  *
- * Classic tabs ({@link PanelTabStyle}): overflowing tabs scroll horizontally
- * (CSS, hidden scrollbar): vertical mouse-wheel deltas pan the strip, and the
- * active tab is kept scrolled into view on selection/insertion (both
- * ChatTabBar conventions); there is no overflow menu yet.
+ * Overflowing tabs scroll horizontally (CSS, hidden scrollbar): vertical
+ * mouse-wheel deltas pan the strip, and the active tab is kept scrolled into
+ * view on selection/insertion (both ChatTabBar conventions). A running tab
+ * scrolled out of view leaves a quiet dot at that edge
+ * ({@link PanelTabEdgeHints}), and the ⌄ button after the strip lists every
+ * tab ({@link PanelTabListButton}).
  *
  * Fill tabs: unpinned tabs hug their content while they fit; then the active
  * tab keeps its content width and the others share the rest, Chrome-style
- * (panels.css). The strip never scrolls, so every tab is always in view.
+ * (panels.css), down to a square tile that shows only the tab's number or
+ * status glyph. Past that the strip scrolls.
  * Closing a tab with the pointer holds the remaining unpinned tabs at their
  * widths until the pointer leaves the strip, so the next tab's close button
  * lands under the pointer, as in Chrome.
@@ -543,6 +558,8 @@ function PanelTabBarComponent({
   renderTabIcon,
   renderTabLabel,
   renderTabTrailing,
+  renderTabAccessibleStatus,
+  renderTabAttention,
   getTabTitle,
   renderTabTooltip,
   renderTabHoverCard,
@@ -550,6 +567,7 @@ function PanelTabBarComponent({
   tabStyle = 'classic',
   onTabContextMenu,
 }: PanelTabBarProps): JSX.Element {
+  const statusIdPrefix = useId();
   const fill = tabStyle === 'fill';
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
   const tabElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -560,56 +578,105 @@ function PanelTabBarComponent({
   // regardless of which strip a tab renders in.
   const pinnedScroll = useHorizontalOverflowScroll<HTMLDivElement>();
   const unpinnedScroll = useHorizontalOverflowScroll<HTMLDivElement>();
-  // Fill strips never scroll, so they take plain refs and the scroll hooks
-  // never attach to them (no wheel panning, no overflow observers).
-  const pinnedFillRef = useRef<HTMLDivElement>(null);
-  const unpinnedFillRef = useRef<HTMLDivElement>(null);
-  const pinnedStripRef = fill ? pinnedFillRef : pinnedScroll.ref;
-  const unpinnedStripRef = fill ? unpinnedFillRef : unpinnedScroll.ref;
+  const pinnedStripRef = pinnedScroll.ref;
+  const unpinnedStripRef = unpinnedScroll.ref;
+  // Running tabs scrolled out of the unpinned strip, for its edge hints.
+  const hiddenRunning = useHiddenBusyTabs(
+    unpinnedScroll.ref,
+    unpinnedScroll.hasOverflow,
+    PANEL_TAB_BUSY_ATTRIBUTE,
+  );
+  // The pinned strip scrolls too (it is capped), with its own hints.
+  const hiddenPinnedRunning = useHiddenBusyTabs(
+    pinnedScroll.ref,
+    pinnedScroll.hasOverflow,
+    PANEL_TAB_BUSY_ATTRIBUTE,
+  );
+  // Which edges show a hint, so a hint moving from one edge to the other
+  // (the same count) still re-reveals the selected tab. Fill strips draw no
+  // "N running" hints: ⌄ and its list carry what scrolled out of view.
+  const hintEdges = fill
+    ? '0000'
+    : [
+        hiddenPinnedRunning.start,
+        hiddenPinnedRunning.end,
+        hiddenRunning.start,
+        hiddenRunning.end,
+      ]
+        .map((list) => (list.length > 0 ? '1' : '0'))
+        .join('');
+  // Fill strips show ⌄ only once the tabs no longer fit, with a dot while an
+  // unread tab is out of view.
+  const listRootRef = useRef<HTMLDivElement>(null);
+  const stripState = usePanelTabStripState(
+    unpinnedScroll.ref,
+    pinnedScroll.ref,
+    listRootRef,
+    fill,
+    tabs.some((tab) => tab.pinned === true),
+  );
+  // Whether the user has moved the strip themselves (wheel, drag, touch,
+  // keys, or a hint's click) since the selected tab last changed.
+  const userScrolledRef = useRef(false);
+  // The pinned strip mounts only once a tab is pinned.
+  const anyPinned = tabs.some((tab) => tab.pinned === true);
+  const lastActivePanelIdRef = useRef(activePanelId);
+  useEffect(() => {
+    // Both strips (pinned and unpinned) and their hints and thumbs.
+    const wraps = [pinnedScroll.ref, unpinnedScroll.ref]
+      .map((ref) => ref.current?.parentElement)
+      .filter((wrap): wrap is HTMLElement => wrap != null);
+    const mark = (): void => {
+      userScrolledRef.current = true;
+    };
+    const events = ['wheel', 'pointerdown', 'touchstart', 'keydown'] as const;
+    // Capture phase: the scrollbar thumb stops its own pointerdown from
+    // bubbling, and a thumb drag is a user scroll too.
+    for (const wrap of wraps) {
+      for (const name of events) {
+        wrap.addEventListener(name, mark, { passive: true, capture: true });
+      }
+    }
+    return (): void => {
+      for (const wrap of wraps) {
+        for (const name of events) {
+          wrap.removeEventListener(name, mark, { capture: true });
+        }
+      }
+    };
+  }, [pinnedScroll.ref, unpinnedScroll.ref, anyPinned]);
+  // A hint appears (and publishes its width, in its own layout effect)
+  // after the selected tab was first scrolled into view. If the hint now
+  // covers part of that tab, bring it clear. Not once the user has moved
+  // the strip themselves, so their scroll is never pulled back, and not for
+  // a tab scrolled fully out of view.
+  useLayoutEffect(() => {
+    if (lastActivePanelIdRef.current !== activePanelId) {
+      lastActivePanelIdRef.current = activePanelId;
+      userScrolledRef.current = false;
+    }
+    if (!hintEdges.includes('1')) return;
+    if (userScrolledRef.current) return;
+    const tab =
+      activePanelId === null
+        ? undefined
+        : tabElementsRef.current.get(activePanelId);
+    // Whichever strip the selected tab is in.
+    const strip = tab?.closest<HTMLDivElement>('.canopy-panel-tab-strip');
+    if (!strip || !tab) return;
+    const box = strip.getBoundingClientRect();
+    const rect = tab.getBoundingClientRect();
+    if (rect.right <= box.left || rect.left >= box.right) return;
+    scrollTabIntoView(strip, tab);
+  }, [hintEdges, activePanelId]);
 
   const pinnedTabs = tabs.filter((tab) => tab.pinned === true);
   const unpinnedTabs = tabs.filter((tab) => tab.pinned !== true);
   const hasPinnedStrip = pinnedTabs.length > 0;
   const pinnedCount = pinnedTabs.length;
-  const unpinnedCount = unpinnedTabs.length;
-  const activeUnpinned = unpinnedTabs.some(
-    (tab) => tab.panelId === activePanelId,
-  );
 
-  // Fill tiles shrink below their 20px floor when that is what it takes for
-  // every tab to stay in the row (see `applyFillTileFloor`). The add button
-  // takes room too, so its presence is a dependency.
+  // The bar itself: live reorder measures the title row from it.
   const barRef = useRef<HTMLDivElement>(null);
-  const hasAddTab = addTab !== undefined;
-  useLayoutEffect(() => {
-    const bar = barRef.current;
-    if (!fill || bar === null) {
-      return undefined;
-    }
-    const update = (): void =>
-      applyFillTileFloor(bar, pinnedCount, unpinnedCount, activeUnpinned);
-    update();
-    const view = bar.ownerDocument.defaultView;
-    const observer =
-      view && 'ResizeObserver' in view ? new view.ResizeObserver(update) : null;
-    observer?.observe(bar);
-    // The add-tab control and the pinned divider take room inside the bar:
-    // one can grow (the quick-add button appears beside `+` when a browser
-    // or terminal tab is selected) without the bar resizing.
-    for (const child of Array.from(bar.children)) {
-      if (!child.classList.contains('canopy-panel-tab-strip-wrap')) {
-        observer?.observe(child);
-      }
-    }
-    return (): void => {
-      observer?.disconnect();
-      bar.style.removeProperty('--canopy-panel-tab-floor');
-      bar.style.removeProperty('--canopy-panel-tab-active-floor');
-      bar.style.removeProperty('--canopy-panel-tab-gap');
-      bar.style.removeProperty('--canopy-panel-pinned-count');
-      bar.style.removeProperty('--canopy-panel-pinned-floor');
-    };
-  }, [fill, pinnedCount, unpinnedCount, activeUnpinned, hasAddTab]);
 
   // Drag state: which of OUR tabs is being dragged (styling only), and where
   // the insertion indicator sits (an index into `tabs`, `tabs.length` = end).
@@ -783,8 +850,7 @@ function PanelTabBarComponent({
   // laid out yet (0 width — `scrollTabIntoView` would compute a garbage offset
   // from a zero-size container).
   const revealActiveTab = (): boolean => {
-    // Fill strips never scroll: every tab is already in view.
-    if (fill || activePanelId === null) {
+    if (activePanelId === null) {
       return true;
     }
 
@@ -846,10 +912,16 @@ function PanelTabBarComponent({
   // synchronous layout effect covers the common case where the strip is
   // already laid out (tab selection/insertion), so the reveal lands before
   // paint with no flash.
+  // Pinning or unpinning the selected tab moves it to the other strip,
+  // where it has to be revealed again.
+  const activeIsPinned = tabs.some(
+    (tab) => tab.panelId === activePanelId && tab.pinned === true,
+  );
   useLayoutEffect(() => {
     layoutRevealSettledRef.current = revealActiveTab();
   }, [
     activePanelId,
+    activeIsPinned,
     tabs.length,
     fill,
     pinnedScroll.hasOverflow,
@@ -857,6 +929,17 @@ function PanelTabBarComponent({
     unpinnedScroll.hasOverflow,
     unpinnedScroll.ref,
   ]);
+
+  // A strip that still overflows but changes width (a split dragged
+  // narrower) can leave the selected tab off screen: bring it back, unless
+  // the user has moved the strip themselves since it was selected.
+  const unpinnedWidth = hiddenRunning.width;
+  const pinnedWidth = hiddenPinnedRunning.width;
+  useLayoutEffect(() => {
+    if (userScrolledRef.current) return;
+    revealActiveTab();
+    // Only on a width change; selection and insertion are handled above.
+  }, [unpinnedWidth, pinnedWidth]);
 
   // Post-paint fallback for worktree navigation: the grid host sizes each
   // group's leaf (and thus its tab strip) in its OWN layout effect, which React
@@ -873,6 +956,7 @@ function PanelTabBarComponent({
     }
   }, [
     activePanelId,
+    activeIsPinned,
     tabs.length,
     fill,
     pinnedScroll.hasOverflow,
@@ -1046,9 +1130,13 @@ function PanelTabBarComponent({
             (panels.css). Tooltips follow the classic label's rules. */}
         <span className="canopy-panel-tab-label">
           {hoverCard !== null ? (
-            <PanelTabTitleWithHoverCard panelId={tab.panelId} card={hoverCard}>
-              {renderTabLabel ? renderTabLabel(tab) : tab.title}
-            </PanelTabTitleWithHoverCard>
+            <span className="canopy-panel-tab-title">
+              <span className="relative inline-flex w-full min-w-0">
+                <span className="truncate">
+                  {renderTabLabel ? renderTabLabel(tab) : tab.title}
+                </span>
+              </span>
+            </span>
           ) : customTooltip !== null ? (
             // The trigger wrapper must shrink with the label (and grow from
             // its content, so the tab still hugs it), or a long title is cut
@@ -1136,6 +1224,11 @@ function PanelTabBarComponent({
         // Icon-only pinned tabs have no visible text, so the title has to come
         // through as an accessible name.
         aria-label={tabIsPinned ? title : undefined}
+        aria-describedby={
+          tabIsPinned && renderTabAccessibleStatus
+            ? `${statusIdPrefix}-${tab.panelId}`
+            : undefined
+        }
         tabIndex={tab.panelId === rovingPanelId ? 0 : -1}
         draggable={draggable}
         ref={(element): void => {
@@ -1206,6 +1299,16 @@ function PanelTabBarComponent({
           handleTabDragEnd();
         }}
       >
+        {fill && renderTabAttention ? (
+          <span className="canopy-panel-tab-attention">
+            {renderTabAttention(tab)}
+          </span>
+        ) : null}
+        {tabIsPinned && renderTabAccessibleStatus ? (
+          <span className="sr-only" id={`${statusIdPrefix}-${tab.panelId}`}>
+            {renderTabAccessibleStatus(tab)}
+          </span>
+        ) : null}
         {fill ? (
           renderFillTabContent(tab, {
             icon,
@@ -1242,12 +1345,13 @@ function PanelTabBarComponent({
               non-interactive label span (never the whole tab) so no
               interactive control nests inside the trigger. */}
               {hoverCard !== null ? (
-                <PanelTabTitleWithHoverCard
-                  panelId={tab.panelId}
-                  card={hoverCard}
-                >
-                  {renderTabLabel ? renderTabLabel(tab) : tab.title}
-                </PanelTabTitleWithHoverCard>
+                <span className="canopy-panel-tab-title">
+                  <span className="relative inline-flex w-full min-w-0">
+                    <span className="truncate">
+                      {renderTabLabel ? renderTabLabel(tab) : tab.title}
+                    </span>
+                  </span>
+                </span>
               ) : customTooltip !== null ? (
                 <Tooltip placement="top" label={customTooltip}>
                   <span className="canopy-panel-tab-title">
@@ -1269,7 +1373,7 @@ function PanelTabBarComponent({
               // keeps its geometry while gaining an instant tooltip instead
               // of the laggy native `title`.
               <span className="canopy-panel-tab-close-slot inline-flex">
-                <Tooltip label={`Close ${title}`}>
+                <Tooltip label={`Close ${title}`} disabled={hoverCard !== null}>
                   <button
                     type="button"
                     className="canopy-panel-tab-close"
@@ -1293,6 +1397,20 @@ function PanelTabBarComponent({
         )}
       </div>
     );
+
+    // Keep the wrapper stable when selecting a previewed tab, so the tab's
+    // DOM node and keyboard focus survive the active/background transition.
+    if (!tabIsPinned && renderTabHoverCard) {
+      return (
+        <PanelTabWithHoverCard
+          key={tab.panelId}
+          panelId={tab.panelId}
+          card={hoverCard}
+        >
+          {tabElement}
+        </PanelTabWithHoverCard>
+      );
+    }
 
     if (!tabIsPinned) {
       return tabElement;
@@ -1338,7 +1456,7 @@ function PanelTabBarComponent({
       >
         {hasPinnedStrip ? (
           <div className="canopy-panel-tab-strip-wrap canopy-panel-tab-strip-wrap-pinned">
-            {fill ? null : (
+            {
               <>
                 <div
                   className="canopy-scroll-fade canopy-scroll-fade-start"
@@ -1358,7 +1476,7 @@ function PanelTabBarComponent({
                   aria-hidden="true"
                 />
               </>
-            )}
+            }
             <div
               ref={pinnedStripRef}
               className="canopy-panel-tab-strip"
@@ -1369,13 +1487,21 @@ function PanelTabBarComponent({
             >
               {pinnedTabs.map((tab) => renderTab(tab))}
             </div>
+            {/* Pinned tiles are 28px squares; the hints leave room for one. */}
+            {fill ? null : (
+              <PanelTabEdgeHints
+                hidden={hiddenPinnedRunning}
+                minTabWidth={28}
+                testIdPrefix="panel-tab-edge-hint-pinned"
+              />
+            )}
           </div>
         ) : null}
         {hasPinnedStrip && unpinnedTabs.length > 0 ? (
           <div className="canopy-panel-tab-pinned-divider" aria-hidden="true" />
         ) : null}
         <div className="canopy-panel-tab-strip-wrap canopy-panel-tab-strip-wrap-unpinned">
-          {fill ? null : (
+          {
             <>
               <div
                 className="canopy-scroll-fade canopy-scroll-fade-start"
@@ -1392,10 +1518,21 @@ function PanelTabBarComponent({
                 className="canopy-scroll-thumb"
                 data-overflow={unpinnedScroll.hasOverflow}
                 data-revealed={unpinnedScroll.isScrollbarRevealed}
+                data-active={unpinnedScroll.isScrollbarActive}
                 aria-hidden="true"
               />
+              {/* Fill rows: the thin line's hover and drag zone. */}
+              {fill ? (
+                <div
+                  ref={unpinnedScroll.trackRef}
+                  className="canopy-scroll-track"
+                  data-overflow={unpinnedScroll.hasOverflow}
+                  data-testid={`panel-tab-scroll-track-${groupId}`}
+                  aria-hidden="true"
+                />
+              ) : null}
             </>
-          )}
+          }
           <div
             ref={unpinnedStripRef}
             className="canopy-panel-tab-strip"
@@ -1405,9 +1542,59 @@ function PanelTabBarComponent({
           >
             {unpinnedTabs.map((tab) => renderTab(tab))}
           </div>
+          {/* The selected tab keeps a 96px floor; the hints leave it room. */}
+          {fill ? null : (
+            <PanelTabEdgeHints hidden={hiddenRunning} minTabWidth={96} />
+          )}
         </div>
         {addTab ? (
           <PanelAddTabButton groupId={groupId} addTab={addTab} />
+        ) : null}
+        {tabs.length > 0 ? (
+          <PanelTabListButton
+            rootRef={listRootRef}
+            hidden={fill && !stripState.crowded}
+            unreadOutOfView={fill && stripState.unreadOutOfView}
+            groupId={groupId}
+            tabs={tabs}
+            activePanelId={activePanelId}
+            onSelectTab={(listGroupId, panelId): void => {
+              onSelectTab(listGroupId, panelId);
+              // A pick always shows the tab, even the current one scrolled
+              // out of view (no selection change would reveal it).
+              userScrolledRef.current = false;
+              const tab = tabElementsRef.current.get(panelId);
+              const tabStrip = tab?.closest<HTMLDivElement>(
+                '.canopy-panel-tab-strip',
+              );
+              if (tab && tabStrip) scrollTabIntoView(tabStrip, tab);
+              // ⌄ hides once the list closes in a row that fits, so focus
+              // moves to the picked tab rather than to a hidden button.
+              if (fill && !stripState.crowded) {
+                tab?.focus({ preventScroll: true });
+              }
+            }}
+            onCloseTab={onCloseTab}
+            {...(canCloseTab ? { canCloseTab } : {})}
+            renderIcon={(tab, position): ReactNode => (
+              // Drawn as the strip draws it: the same style and number.
+              <PanelTabStyleProvider value={tabStyle}>
+                <PanelTabPositionContext.Provider value={position}>
+                  {renderTabIcon?.(tab) ?? null}
+                </PanelTabPositionContext.Provider>
+              </PanelTabStyleProvider>
+            )}
+            renderLabel={(tab): ReactNode =>
+              renderTabLabel ? renderTabLabel(tab) : tab.title
+            }
+            renderTrailing={(tab): ReactNode => (
+              <>
+                {fill ? renderTabAttention?.(tab) : null}
+                {renderTabTrailing?.(tab)}
+              </>
+            )}
+            getTitle={(tab): string => getTabTitle?.(tab) ?? tab.title}
+          />
         ) : null}
       </div>
     </PanelTabStyleProvider>

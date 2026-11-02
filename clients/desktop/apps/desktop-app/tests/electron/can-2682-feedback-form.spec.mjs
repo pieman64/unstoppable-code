@@ -224,3 +224,110 @@ test('submits and shows the restructured success state', async () => {
     await closeCanopy(electronApp, userDataDir);
   }
 });
+
+// Keep real submit/prepare handlers; inject only Node I/O and record the wire
+// payload. The mock server has no upload URL: this proves report creation and
+// responsiveness, while unit coverage proves attachment delivery orchestration.
+for (const scenario of ['idea', 'bug', 'mutable', 'preparation-failure']) {
+  test(`diagnostics submission survives ${scenario}`, async () => {
+    const { electronApp, userDataDir } = await launchCanopy();
+    try {
+      await electronApp.evaluate(
+        async ({ app }, { root, scenario }) => {
+          const io = process.getBuiltinModule('fs/promises');
+          const { syncBuiltinESMExports } = process.getBuiltinModule('module');
+          const path = process.getBuiltinModule('path');
+          const temp = path.join(root, 'feedback-temp');
+          await io.mkdir(temp, { recursive: true });
+          app.setPath('temp', temp);
+          const source = path.join(
+            root,
+            'agent-observability',
+            'diagnostics',
+            'app-events',
+            'can-4563.jsonl',
+          );
+          await io.mkdir(path.dirname(source), { recursive: true });
+          await io.writeFile(source, 'original diagnostic bytes');
+          const originalLstat = io.lstat;
+          const originalOpen = io.open;
+          let mutated = false;
+          globalThis.__feedbackEvidence = { payloads: [], mutated: false };
+          io.lstat = async (...args) => {
+            const stats = await originalLstat(...args);
+            if (scenario === 'mutable' && args[0] === source && !mutated) {
+              mutated = true;
+              globalThis.__feedbackEvidence.mutated = true;
+              await io.writeFile(source, 'short');
+            }
+            return stats;
+          };
+          io.open = async (...args) => {
+            if (
+              scenario === 'preparation-failure' &&
+              String(args[0]).startsWith(temp + path.sep)
+            ) {
+              throw Object.assign(new Error('injected output failure'), {
+                code: 'EIO',
+              });
+            }
+            return originalOpen(...args);
+          };
+          syncBuiltinESMExports();
+          const originalFetch = globalThis.fetch;
+          globalThis.fetch = async (url, init) => {
+            if (String(url).endsWith('/api/v1/feedback/reports')) {
+              globalThis.__feedbackEvidence.payloads.push(
+                JSON.parse(init.body),
+              );
+            }
+            return originalFetch(url, init);
+          };
+          globalThis.__restoreFeedbackInjection = () => {
+            io.lstat = originalLstat;
+            io.open = originalOpen;
+            syncBuiltinESMExports();
+            globalThis.fetch = originalFetch;
+          };
+        },
+        { root: userDataDir, scenario },
+      );
+      const window = await electronApp.firstWindow();
+      const driver = new CanopyAppDriver(window);
+      await driver.waitForShell({ timeout: 30000 });
+      await connectMockCloudAccount(window, 'csk_feedback_diagnostics_e2e');
+      const modal = await openFeedbackModal(window);
+      if (scenario === 'bug')
+        await modal.getByTestId('feedback-modal-type-bug').click();
+      await expect(
+        modal.getByTestId('feedback-modal-include-diagnostics'),
+      ).toBeChecked();
+      await modal
+        .getByTestId('feedback-modal-description')
+        .fill(`CAN-4563 ${scenario}`);
+      await modal.getByTestId('feedback-modal-submit').click();
+      await expect(modal.getByTestId('feedback-modal-success')).toBeVisible({
+        timeout: 30000,
+      });
+      const evidence = await electronApp.evaluate(
+        () => globalThis.__feedbackEvidence,
+      );
+      expect(evidence.payloads).toHaveLength(1);
+      expect(evidence.payloads[0].attachDiagnostics).toBe(
+        scenario !== 'preparation-failure',
+      );
+      if (scenario === 'mutable') expect(evidence.mutated).toBe(true);
+      if (scenario === 'preparation-failure')
+        expect(evidence.payloads[0]).not.toHaveProperty('diagnosticsSizeBytes');
+      await modal.getByTestId('feedback-modal-done').click();
+      await expect(window.getByTestId('feedback-modal')).toHaveCount(0);
+      await openFeedbackModal(window);
+      await window.getByTestId('feedback-modal-cancel').click();
+    } finally {
+      await electronApp
+        .evaluate(() => globalThis.__restoreFeedbackInjection?.())
+        .catch(() => {});
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}

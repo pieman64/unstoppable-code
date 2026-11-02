@@ -345,6 +345,69 @@ describe('project sections model', () => {
     );
   });
 
+  it("masks only a muted space's blue-dot sources (CAN-4378)", () => {
+    const unread = worktree('row', 'workspace', {
+      hasUnread: true,
+      pipelineStatus: 'unseen',
+    });
+    expect(projectWorktreeRuntime(unread, { spaceMuted: true })).toMatchObject({
+      uiStatus: 'idle',
+      hasUnread: undefined,
+      pipelineStatus: undefined,
+    });
+    expect(projectWorktreeRuntime(unread)).toMatchObject({
+      uiStatus: 'unread',
+      hasUnread: true,
+      pipelineStatus: 'unseen',
+    });
+    expect(
+      projectWorktreeRuntime(unread, { spaceMuted: false }).hasUnread,
+    ).toBe(true);
+
+    // Orange, red and live work are not routine activity: they pass through.
+    expect(
+      projectWorktreeRuntime(
+        worktree('row', 'workspace', {
+          hasUnread: true,
+          isStreaming: true,
+          awaitingApproval: true,
+          pipelineStatus: 'unseen-failure',
+        }),
+        { spaceMuted: true, hasPendingQuestion: true },
+      ),
+    ).toMatchObject({
+      uiStatus: 'working',
+      hasUnread: undefined,
+      isStreaming: true,
+      awaitingApproval: true,
+      hasPendingQuestion: true,
+      pipelineStatus: 'unseen-failure',
+    });
+    for (const pipelineStatus of ['running', 'paused'] as const) {
+      expect(
+        projectWorktreeRuntime(
+          worktree('row', 'workspace', { pipelineStatus }),
+          {
+            spaceMuted: true,
+          },
+        ).pipelineStatus,
+      ).toBe(pipelineStatus);
+    }
+    expect(
+      projectWorktreeRuntime(
+        worktree('row', 'workspace', { pipelineStatus: 'paused' }),
+        { spaceMuted: true },
+      ).uiStatus,
+    ).toBe('planning');
+  });
+
+  it("carries a worktree's background count to its row (turn-state phase 41f)", () => {
+    expect(
+      projectWorktreeRuntime({ ...worktree('row'), backgroundTasks: 2 })
+        .backgroundTasks,
+    ).toBe(2);
+  });
+
   it.each([
     ['explicit done', 'done', 'open', true],
     ['legacy omitted status with merged PRs', undefined, 'merged', true],
@@ -361,16 +424,21 @@ describe('project sections model', () => {
               repos: [
                 {
                   repoId: 'repo',
+                  repoName: 'repo',
                   status: {
                     state: prState,
                     prNumber: 1,
+                    prUrl: 'https://github.com/example/repo/pull/1',
                     title: 'PR',
                     checkStatus: 'passing',
                     reviewStatus: 'approved',
                     hasConflicts: false,
+                    commentCount: 0,
+                    updatedAt: '2026-10-06T00:00:00.000Z',
                   },
                 },
               ],
+              lastCheckedAt: '2026-10-06T00:00:00.000Z',
             },
           }),
         ),

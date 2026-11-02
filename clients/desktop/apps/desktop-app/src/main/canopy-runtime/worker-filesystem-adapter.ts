@@ -35,7 +35,7 @@ type WorkerFilesystemHandlerMap = Pick<
   'worker.filesystem.roots.list' | 'worker.filesystem.directory.list'
 >;
 
-function requireDesktopScope(scope: CanopyWorkspaceScope): {
+export function requireDesktopScope(scope: CanopyWorkspaceScope): {
   projectId: string;
   worktreeId: string;
 } {

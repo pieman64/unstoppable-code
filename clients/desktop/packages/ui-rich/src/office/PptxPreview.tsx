@@ -95,6 +95,7 @@ export function PptxPreview({
       <div
         className="min-h-0 flex-1 overflow-auto bg-secondary"
         data-testid="pptx-slides"
+        data-selectable
         aria-label={`Slides in ${fileName}`}
         tabIndex={0}
       >
@@ -126,6 +127,20 @@ export function PptxPreview({
 interface SlideGeometry {
   readonly width: number;
   readonly height: number;
+}
+
+/** Office's solid fills are resolved to hex or rgba by the parser. Match
+ * selection to the document's own surface, independent of app appearance. */
+function slideSelectionSurface(background = '#ffffff'): 'paper' | 'dark' {
+  const hex = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(background);
+  const channels = hex ?? /^rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/.exec(background);
+  if (!channels) return 'paper';
+  const radix = hex ? 16 : 10;
+  const channel = (index: number): number =>
+    Number.parseInt(channels[index] ?? '0', radix);
+  const brightness =
+    (channel(1) * 299 + channel(2) * 587 + channel(3) * 114) / 1000;
+  return brightness >= 128 ? 'paper' : 'dark';
 }
 
 function SlideSection({
@@ -170,6 +185,7 @@ function SlideSection({
       <div
         className="relative w-full overflow-hidden border"
         data-testid="pptx-slide-canvas"
+        data-selection-surface={slideSelectionSurface(slide.background)}
         style={{
           aspectRatio: `${width} / ${height}`,
           containerType: 'inline-size',

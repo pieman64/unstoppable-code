@@ -10,6 +10,3 @@
  */
 export const SETTINGS_CHECK_INPUT_CLASS_NAME =
   'size-4 shrink-0 cursor-pointer accent-accent disabled:cursor-not-allowed disabled:opacity-50';
-
-/** Standard compact width for dropdowns in Settings rows. */
-export const SETTINGS_DROPDOWN_WIDTH_CLASS_NAME = 'w-36';

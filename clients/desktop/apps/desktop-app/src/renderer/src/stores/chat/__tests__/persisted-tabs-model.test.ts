@@ -31,6 +31,7 @@ beforeAll(() => {
       {
         modelId: 'native-with-gateway',
         gatewayId: 'anthropic/native-with-gateway',
+        family: 'anthropic',
         recommendedHarness: 'claude',
         gatewayOnly: false,
         contextWindow: 100_000,
@@ -53,6 +54,18 @@ const makePersistedTab = (
 });
 
 describe('Claude Terminal watcher correlation persistence', () => {
+  it('keeps the canonical accepted-turn anchor when hydrating completion evidence (CAN-4958)', () => {
+    const persisted = makePersistedTab({
+      lastAcceptedUserMessageId: 'finished',
+      turnEnds: { finished: { outcome: 'completed', endedAt: 1000 } },
+    });
+    expect(fromPersistedTab(persisted).lastAcceptedUserMessageId).toBe(
+      'finished',
+    );
+    expect(
+      fromPersistedTab(makePersistedTab()).lastAcceptedUserMessageId,
+    ).toBeUndefined();
+  });
   it('retains main-owned terminal outcomes across hydration and compatibility projection', () => {
     const persisted = makePersistedTab({
       turnEnds: { finished: { outcome: 'failed', endedAt: 1000 } },
@@ -65,6 +78,17 @@ describe('Claude Terminal watcher correlation persistence', () => {
     expect(toPersistedTab(hydrated).unacceptedTurnEnds).toEqual(
       persisted.unacceptedTurnEnds,
     );
+  });
+  it('hydrates main-owned restart evidence so an interrupted turn never reads as completed (CAN-5178)', () => {
+    const persisted = makePersistedTab({
+      interruptedTurns: { cut: {}, resumed: { resumedBy: 'next' } },
+    });
+    expect(fromPersistedTab(persisted).interruptedTurns).toEqual(
+      persisted.interruptedTurns,
+    );
+    expect(
+      fromPersistedTab(makePersistedTab()).interruptedTurns,
+    ).toBeUndefined();
   });
   it('round-trips outstanding watcher correlations across renderer hydration', () => {
     const persisted = makePersistedTab();
@@ -562,7 +586,11 @@ describe('AI Credits route outcome persistence', () => {
     const hydrated = fromPersistedTab(
       makePersistedTab({
         model: 'native-with-gateway',
-        aiCreditsRouting: { active: true, activatedAt: '2026-08-04T12:00:00Z' },
+        aiCreditsRouting: {
+          active: true,
+          scope: 'session',
+          activatedAt: Date.parse('2026-08-04T12:00:00Z'),
+        },
         aiCreditsRouted: false,
         usage,
       }),
@@ -584,13 +612,13 @@ describe('organization memory persistence', () => {
             id: 'message-1',
             role: 'user',
             blocks: [{ type: 'text', text: 'question' }],
-            timestamp: '2026-07-23T00:00:00.000Z',
+            timestamp: 1,
           },
           {
             id: 'assistant-1',
             role: 'assistant',
             blocks: [{ type: 'text', text: 'answer' }],
-            timestamp: '2026-07-23T00:00:01.000Z',
+            timestamp: 2,
           },
         ],
       }),
@@ -706,7 +734,7 @@ describe('agent artifact carry persistence', () => {
           id: 'message-1',
           role: 'user',
           blocks: [{ type: 'text', text: 'run it' }],
-          timestamp: '2026-08-04T20:00:00.000Z',
+          timestamp: 1,
         },
       ],
     });

@@ -7,19 +7,24 @@ import type {
   ExecutionSummary,
   PipelineInfo,
 } from '@canopy/desktop-shared/types/pipeline';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { pipelineSharePath } from '@canopy/protocol/pipelines';
-import { describeFiveFieldCron } from '@canopy/ui-shared/lib';
+import {
+  describeFiveFieldCron,
+  type WorkflowLastRunState,
+} from '@canopy/ui-shared/lib';
 import {
   describePipelineTriggers,
   describeRunUnavailable,
   describeStepCount,
   formatOneTimeTrigger,
-  type WorkflowLastRunState,
+  pipelineTriggerKinds,
   type WorkflowLibraryAction,
   type WorkflowLibraryRow,
   type WorkflowLibrarySource,
   type WorkflowStepGlyph,
   type WorkflowTriggerKind,
+  withoutAutomationOwnedPipelines,
 } from '@canopy/ui-app/workflows';
 import { automationLibraryKey } from './run-feed';
 import { automationProjectId } from './schedule-filter';
@@ -58,6 +63,11 @@ export interface LibraryProjectionInput {
   readonly recentRuns: readonly ScheduledActivityRun[];
   /** User, project, built-in and shared pipelines the page lists. */
   readonly pipelines: readonly PipelineInfo[];
+  /**
+   * User pipelines an automation in any context owns (CAN-4551), as main
+   * confirmed them; each folds into its automation's row.
+   */
+  readonly ownedPipelineIds?: ReadonlySet<string>;
   /** The existing pipeline enable toggle's state, keyed by pipeline id. */
   readonly disabledPipelineIds: ReadonlySet<string>;
   /** Every retained execution, for a pipeline's Last run. */
@@ -128,18 +138,6 @@ function sharedByLabel(sharer: LibrarySharer | undefined): string {
   return sharer ? `Shared by ${sharer.name}` : 'Shared';
 }
 
-function pipelineTriggers(
-  pipeline: PipelineInfo,
-): readonly WorkflowTriggerKind[] {
-  const triggers: WorkflowTriggerKind[] = [];
-  const types = pipeline.triggerTypes ?? [];
-  if (types.includes('dispatch')) triggers.push('manual');
-  if (types.includes('plan_ready')) triggers.push('plan-approved');
-  if (types.includes('task_ready')) triggers.push('task-ready');
-  // A pipeline that declares no trigger is started by hand.
-  return triggers.length === 0 ? ['manual'] : triggers;
-}
-
 function pipelineSource(pipeline: PipelineInfo): WorkflowLibrarySource {
   switch (pipeline.source) {
     case 'user':
@@ -160,7 +158,7 @@ function pipelineSharer(pipeline: PipelineInfo): LibrarySharer | undefined {
   return { name: owner.name, isPerson: owner.type === 'user' };
 }
 
-function executionLastRunState(
+export function executionLastRunState(
   status: ExecutionSummary['status'],
 ): WorkflowLastRunState {
   switch (status) {
@@ -176,7 +174,7 @@ function executionLastRunState(
 }
 
 /** Newest top-level execution per pipeline id. */
-function latestExecutions(
+export function latestExecutions(
   executions: readonly ExecutionSummary[],
 ): ReadonlyMap<string, ExecutionSummary> {
   const latest = new Map<string, ExecutionSummary>();
@@ -234,7 +232,7 @@ function projectPipelineRow(
   input: LibraryProjectionInput,
   latest: ReadonlyMap<string, ExecutionSummary>,
 ): WorkflowLibraryRow {
-  const triggers = pipelineTriggers(pipeline);
+  const triggers = pipelineTriggerKinds(pipeline.triggerTypes ?? []);
   const manual = triggers.includes('manual');
   const source = pipelineSource(pipeline);
   const steps = input.pipelineSteps?.(pipeline);
@@ -326,7 +324,7 @@ function automationChain(
     case 'app_advisor_prompt':
       return {
         steps: ['advisor'],
-        summary: 'Ask Advisor',
+        summary: `Ask ${ORCHESTRATOR_LABEL}`,
         missingPipeline: false,
       };
     case 'standalone_prompt':
@@ -383,9 +381,9 @@ function automationAttention(
   input: LibraryProjectionInput,
 ): string | undefined {
   if (activity.sharedPipelineReview) {
-    return 'Review needed: the shared pipeline changed';
+    return 'Review needed: the shared workflow changed';
   }
-  if (chain.missingPipeline) return 'The pipeline it runs is missing';
+  if (chain.missingPipeline) return 'The workflow it runs is missing';
   const unavailable = input.targetUnavailable?.(activity);
   if (unavailable) return unavailable;
   if (activity.failureCount === 1) return 'The last run failed';
@@ -417,6 +415,24 @@ export function automationTrigger(
         ? activity.schedule.runAt
         : formatOneTimeTrigger(runAt, locale),
   };
+}
+
+/** A compact schedule for Customize rows; the Library keeps the full text. */
+export function compactAutomationTrigger(
+  trigger: ReturnType<typeof automationTrigger>,
+): string {
+  if (trigger.kind === 'once') {
+    return `Once · ${trigger.text.replace(' at ', ', ')}`;
+  }
+  const weekday = /^Every weekday at (.+)$/.exec(trigger.text);
+  if (weekday?.[1]) return `Weekdays · ${weekday[1]}`;
+  const daily = /^Every day at (.+)$/.exec(trigger.text);
+  if (daily?.[1]) return `Daily · ${daily[1]}`;
+  const weekly = /^Every ([A-Z][a-z]+) at (.+)$/.exec(trigger.text);
+  if (weekly?.[1] && weekly[2]) {
+    return `Weekly · ${weekly[1].slice(0, 3)} ${weekly[2]}`;
+  }
+  return trigger.text;
 }
 
 function projectAutomationRow(
@@ -489,10 +505,10 @@ function sharedAutomationGlyph(
 
 const SHARED_AUTOMATION_SUMMARIES: Readonly<Record<WorkflowStepGlyph, string>> =
   {
-    advisor: 'Ask Advisor',
+    advisor: `Ask ${ORCHESTRATOR_LABEL}`,
     chat: 'Start chat',
     message: 'Send message',
-    pipeline: 'Run a pipeline',
+    pipeline: 'Run a workflow',
     gate: '',
     agent: '',
     script: '',
@@ -551,8 +567,9 @@ export function projectLibraryRows(
     ...input.sharedAutomations
       .filter((share) => !installedRemoteIds.has(share.remoteId))
       .map((share) => projectSharedAutomationRow(share, input)),
-    ...input.pipelines.map((pipeline) =>
-      projectPipelineRow(pipeline, input, latest),
-    ),
+    ...withoutAutomationOwnedPipelines(
+      input.pipelines,
+      input.ownedPipelineIds ?? new Set(),
+    ).map((pipeline) => projectPipelineRow(pipeline, input, latest)),
   ];
 }

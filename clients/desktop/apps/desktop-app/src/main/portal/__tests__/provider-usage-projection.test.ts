@@ -51,7 +51,9 @@ jest.mock('../../observability', (): unknown => ({
 // async and non-refreshing for Portal projection, while the listener mocks
 // provide routing/account-list change notifications.
 jest.mock('../../account-proxy/service', (): unknown => ({
-  getAccountProxyStatus: mockGetAccountProxyStatus,
+  get getAccountProxyStatus(): typeof mockGetAccountProxyStatus {
+    return mockGetAccountProxyStatus;
+  },
   onAccountProxyInventoryChanged: (listener: () => void): (() => void) => {
     mockAccountProxyListeners.add(listener);
     return (): void => {
@@ -60,7 +62,9 @@ jest.mock('../../account-proxy/service', (): unknown => ({
   },
 }));
 jest.mock('../../agents/ai-credits-routing', (): unknown => ({
-  isAiCreditsChosenOverAccountProxy: mockIsAiCreditsChosenOverAccountProxy,
+  get isAiCreditsChosenOverAccountProxy(): typeof mockIsAiCreditsChosenOverAccountProxy {
+    return mockIsAiCreditsChosenOverAccountProxy;
+  },
   subscribeAiCreditsRoutingModeChanges: (
     listener: () => void,
   ): (() => void) => {
@@ -144,8 +148,6 @@ function proxyAccount(
     Pick<ProxyAccountFixture, 'authIndex' | 'provider'>,
 ): ProxyAccountFixture {
   return {
-    authIndex: input.authIndex,
-    provider: input.provider,
     label: '',
     source: 'sign-in',
     fileName: null,
@@ -286,7 +288,7 @@ describe('projectPortalProviderUsage (CAN-3635)', () => {
             {
               limitId: 'extra_usage',
               limitName: 'Extra usage',
-              credits: { usedUsd: 0 },
+              spend: { currency: 'USD', used: 0, isEnabled: true },
             },
           ],
         },
@@ -298,7 +300,7 @@ describe('projectPortalProviderUsage (CAN-3635)', () => {
       {
         id: 'extra_usage-primary',
         label: 'Extra usage',
-        credits: { unit: 'usd', spent: 0 },
+        spend: { currency: 'USD', used: 0, isEnabled: true },
       },
     ]);
   });
@@ -1481,7 +1483,7 @@ describe('handlePortalProviderUsageRefresh account-proxy routing', () => {
   it('keeps Copilot refresh on its native usage path', async () => {
     mockGetAccountProxyStatus.mockResolvedValue(accountProxyUsage());
     const request = command('copilot');
-    const context = adapterContext();
+    const { context } = adapterContext();
 
     handlePortalProviderUsageRefresh(request, context);
     await flushProviderUsageProjection();

@@ -20,9 +20,15 @@ const mockReadFile = jest.fn(
 const mockMkdir = jest.fn((): Promise<void> => Promise.resolve());
 
 jest.mock('node:fs/promises', () => ({
-  mkdir: mockMkdir,
-  readFile: mockReadFile,
-  writeFile: mockWriteFile,
+  get mkdir(): typeof mockMkdir {
+    return mockMkdir;
+  },
+  get readFile(): typeof mockReadFile {
+    return mockReadFile;
+  },
+  get writeFile(): typeof mockWriteFile {
+    return mockWriteFile;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({

@@ -2,7 +2,17 @@ import type { JSX, ReactNode } from 'react';
 import type { ShareAudience } from '@canopy/protocol/sharing';
 import { CheckIcon } from '../icons/CheckIcon';
 import { MagnifyingGlassIcon } from '../icons/MagnifyingGlassIcon';
+import {
+  type SelectableShareAudience,
+  shareAudienceLabel,
+} from '../lib/share-audience-label';
 import { DisplayAvatar } from './DisplayAvatar';
+import { Tooltip, type TooltipLink } from './Tooltip';
+
+export {
+  type SelectableShareAudience,
+  shareAudienceLabel,
+} from '../lib/share-audience-label';
 
 /**
  * The one set of scope and target controls every share surface renders —
@@ -46,6 +56,24 @@ export interface ShareScopeOptionProps<T extends string> {
   dataTestId?: string;
   /** Id of the sentence that explains this option, e.g. why it is disabled. */
   describedBy?: string;
+  /**
+   * Why this option can't be picked yet. The option stays visible and
+   * focusable but unavailable (`aria-disabled`), and the reason shows in its
+   * tooltip.
+   */
+  unavailable?: ShareScopeUnavailableReason;
+}
+
+/** Tooltip content for an option the account can't use yet. */
+export interface ShareScopeUnavailableReason {
+  readonly label: string;
+  /**
+   * A next step, e.g. creating a team, offered under the reason. An in-app
+   * step also runs when the option itself is activated.
+   */
+  readonly action?: TooltipLink;
+  /** Test id for the reason sentence. */
+  readonly testId?: string;
 }
 
 export function ShareScopeOption<T extends string>({
@@ -56,25 +84,51 @@ export function ShareScopeOption<T extends string>({
   disabled,
   dataTestId,
   describedBy,
+  unavailable,
 }: ShareScopeOptionProps<T>): JSX.Element {
   const active = value === current;
-  return (
+  // `aria-disabled` rather than `disabled` when there is a reason to show: a
+  // disabled button swallows the pointer events its tooltip needs and leaves
+  // the tab order.
+  const explained = unavailable !== undefined && !disabled;
+  const option = (
     <button
       type="button"
       role="radio"
       aria-checked={active}
       disabled={disabled}
+      {...(explained ? { 'aria-disabled': true } : {})}
       aria-describedby={describedBy}
-      onClick={() => onSelect(value)}
+      onClick={() => {
+        if (!explained) {
+          onSelect(value);
+          return;
+        }
+        // The tooltip is portaled outside the dialog's focus trap and has no
+        // hover on touch, so activating the option runs its in-app next step.
+        const action = unavailable?.action;
+        if (action !== undefined && 'onClick' in action) action.onClick();
+      }}
       data-testid={dataTestId}
-      className={`focus-ring rounded-md px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`focus-ring rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${
         active
           ? 'bg-accent-subtle fg-accent ring-1 ring-line-accent/40'
-          : 'fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary'
+          : `fg-secondary ${explained ? '' : 'hover:bg-fg-primary/[0.06] hover:fg-primary'}`
       }`}
     >
       {label}
     </button>
+  );
+  if (!explained) return option;
+  return (
+    <Tooltip
+      label={<span data-testid={unavailable.testId}>{unavailable.label}</span>}
+      {...(unavailable.action !== undefined
+        ? { link: unavailable.action }
+        : {})}
+    >
+      {option}
+    </Tooltip>
   );
 }
 
@@ -85,6 +139,11 @@ export interface ShareScopeSelectorOption<T extends string> {
   readonly disabled?: boolean;
   /** Id of the sentence that explains this option. */
   readonly describedBy?: string;
+  /**
+   * Why a disabled option can't be picked yet, shown in its tooltip. The
+   * option then stays focusable so the reason is reachable by keyboard.
+   */
+  readonly unavailable?: ShareScopeUnavailableReason;
 }
 
 export interface ShareScopeSelectorProps<T extends string> {
@@ -132,9 +191,15 @@ export function ShareScopeSelector<T extends string>({
             value={option.value}
             current={value}
             onSelect={onChange}
-            disabled={disabled || option.disabled === true}
+            disabled={
+              disabled ||
+              (option.disabled === true && option.unavailable === undefined)
+            }
             {...(option.describedBy !== undefined
               ? { describedBy: option.describedBy }
+              : {})}
+            {...(option.disabled === true && option.unavailable !== undefined
+              ? { unavailable: option.unavailable }
               : {})}
             dataTestId={
               dataTestId === undefined
@@ -149,31 +214,12 @@ export function ShareScopeSelector<T extends string>({
   );
 }
 
-/**
- * An audience an author can pick. `private` stays a protocol storage value
- * (a public share is stored as private plus a public link), but it is never
- * offered as a choice.
- */
-export type SelectableShareAudience = Exclude<ShareAudience, 'private'>;
-
-/** Fixed label for each audience; every share surface reads the same. */
-const SHARE_AUDIENCE_LABELS: Record<SelectableShareAudience, string> = {
-  team: 'Team',
-  organization: 'Organization',
-  public: 'Public',
-};
-
 /** Fixed display order; `offered` only filters it. */
 const SHARE_AUDIENCE_ORDER: readonly SelectableShareAudience[] = [
   'team',
   'organization',
   'public',
 ];
-
-/** The label a share surface shows for an audience. */
-export function shareAudienceLabel(audience: SelectableShareAudience): string {
-  return SHARE_AUDIENCE_LABELS[audience];
-}
 
 export interface ShareAudienceSelectorProps {
   /** Audiences this resource offers. Order is fixed; this only filters. */
@@ -205,6 +251,14 @@ export interface ShareAudienceSelectorProps {
   keepDisabledVisible?: boolean;
   /** Id of the sentence that explains an option, keyed by audience. */
   optionDescribedBy?: Partial<Record<ShareAudience, string>>;
+  /**
+   * Why an unavailable audience can't be picked yet, keyed by audience, shown
+   * in a tooltip on its disabled pill. The reason's test id is
+   * `${dataTestId}-${audience}-reason`.
+   */
+  unavailableReasons?: Partial<
+    Record<ShareAudience, Omit<ShareScopeUnavailableReason, 'testId'>>
+  >;
 }
 
 /**
@@ -229,6 +283,7 @@ export function ShareAudienceSelector({
   dataTestId,
   keepDisabledVisible = false,
   optionDescribedBy,
+  unavailableReasons,
 }: ShareAudienceSelectorProps): JSX.Element | null {
   const options = SHARE_AUDIENCE_ORDER.filter((audience) =>
     offered.includes(audience),
@@ -257,16 +312,33 @@ export function ShareAudienceSelector({
       disabled={disabled}
       options={options.map((audience) => ({
         value: audience,
-        label: SHARE_AUDIENCE_LABELS[audience],
+        label: shareAudienceLabel(audience),
         disabled: availability[audience] === false,
         ...(optionDescribedBy?.[audience] !== undefined
           ? { describedBy: optionDescribedBy[audience] }
+          : {}),
+        ...(unavailableReasons?.[audience] !== undefined
+          ? {
+              unavailable: {
+                ...unavailableReasons[audience],
+                ...(dataTestId !== undefined
+                  ? { testId: `${dataTestId}-${audience}-reason` }
+                  : {}),
+              },
+            }
           : {}),
       }))}
       dataTestId={dataTestId}
     >
       {description !== undefined && description !== '' && (
-        <p className="mt-2 text-xs fg-secondary">{description}</p>
+        <p
+          className="mt-2 text-xs fg-secondary"
+          data-testid={
+            dataTestId === undefined ? undefined : `${dataTestId}-description`
+          }
+        >
+          {description}
+        </p>
       )}
       {upgradeHint !== undefined && upgradeHint !== '' && (
         <p
@@ -407,7 +479,7 @@ export function SharedTargetPicker<T>({
                       ? undefined
                       : `${dataTestId}-option-${key}`
                   }
-                  className={`focus-ring flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  className={`focus-ring flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                     selected
                       ? 'bg-accent-subtle ring-1 ring-line-accent/40'
                       : 'hover:bg-fg-primary/[0.06]'
@@ -552,7 +624,7 @@ function SelectionIndicator({ selected }: { selected: boolean }): JSX.Element {
       aria-hidden="true"
       data-selected={selected ? 'true' : 'false'}
       data-testid="shared-target-picker-selection-indicator"
-      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition ${
+      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors ${
         selected ? 'bg-accent fg-emphasis' : 'ring-1 ring-line-selected/40'
       }`}
     >

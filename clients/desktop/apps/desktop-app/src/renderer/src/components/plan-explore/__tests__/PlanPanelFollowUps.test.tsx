@@ -7,6 +7,10 @@ import type {
   TrackedPlanData,
   TrackedPlanFileVisibilityRequest,
 } from '@canopy/desktop-shared/types';
+import type {
+  ExecutionSummary,
+  PipelineData,
+} from '@canopy/desktop-shared/types/pipeline';
 import type { PlanReadyPipelineModalOnRun } from '@/components/chat/PlanReadyPipelineModal';
 
 // The follow-up actions of a Plan panel's header (Share, the plan_ready
@@ -19,8 +23,18 @@ jest.mock('@/components/chat/PlanReadyPipelineModal', () => ({
   }: {
     onRun: PlanReadyPipelineModalOnRun;
   }): JSX.Element => {
-    const pipeline = {
-      info: { id: 'pipeline-1', source: 'bundled' },
+    const pipeline: PipelineData = {
+      info: {
+        id: 'pipeline-1',
+        name: 'Pipeline',
+        filename: 'pipeline-1.yaml',
+        description: '',
+        icon: '',
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+        source: 'bundled',
+        readonly: true,
+      },
       content: { name: 'Pipeline', on: 'plan_ready', jobs: {} },
     };
     const context = {
@@ -72,6 +86,11 @@ jest.mock('@/components/plan-explore/lazyPlanVisualizer', () => ({
 }));
 jest.mock('@/lib/panels/persistence-bridge', () => ({
   ensureWorktreePanelLayout: jest.fn(),
+}));
+const openPipelineExecutionFromUiMock = jest.fn();
+jest.mock('@/lib/panels/open-pipeline-execution', () => ({
+  openPipelineExecutionFromUi: (...args: unknown[]): unknown =>
+    openPipelineExecutionFromUiMock(...args),
 }));
 
 import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
@@ -184,7 +203,8 @@ function chatTab(id: string): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
   };
 }
 
@@ -277,7 +297,9 @@ beforeEach(() => {
   executeMock = jest
     .fn<Promise<ExecuteResult>, [unknown, Record<string, unknown>]>()
     .mockResolvedValue({ success: true, data: {} });
-  updateMock = jest.fn().mockResolvedValue(undefined);
+  updateMock = jest
+    .fn()
+    .mockResolvedValue(makePlan({ reviewStatus: 'approved' }));
   shareTrackedPlanMock = jest.fn().mockResolvedValue(makePlan());
   loadTrackedPlansMock = jest.fn().mockResolvedValue(undefined);
   addToastMock = jest.fn();
@@ -381,8 +403,11 @@ describe('Plan panel share', () => {
       const item = query(`plan-panel-execute-${action}`);
       expect(item instanceof HTMLButtonElement && item.disabled).toBe(true);
     }
-    const copy = query('plan-panel-execute-copy');
+    // Copy plan stays available beside Share, outside the Execute menu.
+    expect(query('plan-panel-execute-copy')).toBeNull();
+    const copy = query('plan-panel-copy');
     expect(copy instanceof HTMLButtonElement && !copy.disabled).toBe(true);
+    expect(copy?.getAttribute('aria-disabled')).toBeNull();
   });
 
   it('enables sharing on the latest revision', async () => {
@@ -455,6 +480,36 @@ describe('Plan panel share', () => {
 });
 
 describe('Plan panel plan_ready pipeline', () => {
+  it('closes a successful launch after refresh failure and offers a refresh-only retry', async () => {
+    const recovery: { retry?: () => void } = {};
+    addToastMock.mockImplementation(
+      (_message: string, _type: string, retry?: () => void): void => {
+        recovery.retry = retry;
+      },
+    );
+    loadTrackedPlansMock
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(undefined);
+    renderPanel();
+    await flush();
+    await startPlanReadyRun('mock-plan-ready-run');
+    expect(query('mock-plan-ready-modal')).toBeNull();
+    expect(addToastMock).toHaveBeenCalledWith(
+      expect.stringContaining('refresh'),
+      'error',
+      expect.any(Function),
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+      }),
+    );
+    const retry = recovery.retry;
+    if (retry === undefined) throw new Error('Missing refresh recovery');
+    retry();
+    await flush();
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(loadTrackedPlansMock).toHaveBeenCalledTimes(2);
+  });
   it('forwards configured plan_ready inputs', async () => {
     renderPanel();
     await flush();
@@ -692,5 +747,321 @@ describe('Plan panel Implement', () => {
     ).toHaveLength(1);
     send.settle();
     await flush();
+  });
+});
+
+describe('Plan panel linked runs', () => {
+  function runSummary(id: string, startedAt: string): ExecutionSummary {
+    return {
+      id,
+      pipeline_id: 'pipeline-1',
+      pipeline_name: `Pipeline ${id}`,
+      status: 'success',
+      status_reasons: [],
+      started_at: startedAt,
+      cwd: '/repo',
+      planId: 'plan-1',
+    };
+  }
+
+  function linkedEntry(name: string): HTMLButtonElement | undefined {
+    return Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.startsWith(name));
+  }
+
+  it('shows when each run with a known start was dispatched', async () => {
+    seedPlan(makePlan({ linkedExecutionIds: ['run-1', 'run-2'] }));
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-1', '2026-06-03T01:00:00.000Z')],
+    });
+    renderPanel();
+    await flush();
+
+    await click('plan-panel-executions');
+
+    const loaded = linkedEntry('Pipeline run-1');
+    expect(loaded?.textContent).toContain('Dispatched');
+    expect(loaded?.querySelector('time')?.dateTime).toBe(
+      '2026-06-03T01:00:00.000Z',
+    );
+    const unknown = linkedEntry('run-2');
+    expect(unknown).not.toBeUndefined();
+    expect(unknown?.textContent).not.toContain('Dispatched');
+    expect(unknown?.querySelector('time')).toBeNull();
+  });
+
+  it('omits the time for a run whose start is not reported yet', async () => {
+    seedPlan(makePlan({ linkedExecutionIds: ['run-1', 'run-2'] }));
+    usePipelineRunsStore.setState({
+      summaries: [
+        runSummary('run-1', '2026-06-03T01:00:00.000Z'),
+        runSummary('run-2', ''),
+      ],
+    });
+    renderPanel();
+    await flush();
+
+    await click('plan-panel-executions');
+
+    const pending = linkedEntry('Pipeline run-2');
+    expect(pending?.textContent).toContain('success');
+    expect(pending?.textContent).not.toContain('Dispatched');
+    expect(pending?.querySelector('time')).toBeNull();
+  });
+});
+
+describe('Plan panel status (CAN-5166)', () => {
+  function runSummary(
+    id: string,
+    status: ExecutionSummary['status'],
+    startedAt = '2026-06-03T01:00:00.000Z',
+  ): ExecutionSummary {
+    return {
+      id,
+      pipeline_id: 'pipeline-1',
+      pipeline_name: `Pipeline ${id}`,
+      status,
+      status_reasons: [],
+      started_at: startedAt,
+      cwd: '/repo',
+      planId: 'plan-1',
+    };
+  }
+
+  function executeIsPrimary(): boolean {
+    return (
+      query('plan-panel-execute')?.className.includes('bg-accent') ?? false
+    );
+  }
+
+  beforeEach(() => {
+    openPipelineExecutionFromUiMock.mockReset();
+  });
+
+  it('keeps Pending with primary Execute', async () => {
+    renderPanel();
+    await flush();
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Pending');
+    expect(executeIsPrimary()).toBe(true);
+    expect(query('plan-panel-status-note')).toBeNull();
+  });
+
+  it('shows Approved with secondary Execute and a View chat link to the tracking chat', async () => {
+    seedPlan(makePlan({ reviewStatus: 'approved' }));
+    useChatStore.setState({
+      worktreeChats: {
+        [KEY]: {
+          tabs: [{ ...chatTab('owning-chat'), trackedPlanId: 'plan-1' }],
+          activeTabId: 'owning-chat',
+        },
+      },
+    });
+    renderPanel();
+    await flush();
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+    expect(executeIsPrimary()).toBe(false);
+    expect(query('plan-panel-execute')).not.toHaveProperty('disabled', true);
+
+    await click('plan-panel-status-note-chat');
+    expect(usePanelLayoutStore.getState().layouts[KEY].activeGroupId).toBe(
+      'group-chat',
+    );
+  });
+
+  it.each(['idle', 'error', 'streaming'] as const)(
+    'does not claim implementation from a %s chat with unrelated replies',
+    async (status) => {
+      seedPlan(makePlan({ reviewStatus: 'approved' }));
+      useChatStore.setState({
+        worktreeChats: {
+          [KEY]: {
+            tabs: [
+              {
+                ...chatTab('owning-chat'),
+                trackedPlanId: 'plan-1',
+                status,
+                messages: [
+                  {
+                    id: 'unrelated-reply',
+                    role: 'assistant',
+                    blocks: [
+                      { type: 'text', text: 'An unrelated later answer.' },
+                    ],
+                    timestamp: 1,
+                  },
+                ],
+              },
+            ],
+            activeTabId: 'owning-chat',
+          },
+        },
+      });
+      renderPanel();
+      await flush();
+
+      expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+    },
+  );
+
+  it.each(['pending', 'running', 'paused'] as const)(
+    'shows Implementing for a %s linked run and opens it from View run',
+    async (status) => {
+      seedPlan(makePlan({ reviewStatus: 'approved' }));
+      usePipelineRunsStore.setState({
+        summaries: [runSummary('run-1', status)],
+      });
+      renderPanel();
+      await flush();
+
+      expect(query('plan-panel-status-badge')?.textContent).toBe(
+        'Implementing',
+      );
+      expect(executeIsPrimary()).toBe(false);
+      await click('plan-panel-status-note-run');
+      expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: 'run-1' }),
+      );
+    },
+  );
+
+  it.each([
+    ['failure', 'success', 'Approved'],
+    ['success', 'failure', 'Implemented'],
+  ] as const)(
+    'uses the root %s outcome instead of its nested %s outcome',
+    async (rootStatus, childStatus, expectedLabel) => {
+      seedPlan(
+        makePlan({
+          reviewStatus: 'approved',
+          linkedExecutionIds: ['root-run', 'child-run'],
+        }),
+      );
+      usePipelineRunsStore.setState({
+        summaries: [
+          runSummary('root-run', rootStatus),
+          {
+            ...runSummary('child-run', childStatus, '2026-06-03T02:00:00.000Z'),
+            parent_execution_id: 'root-run',
+          },
+        ],
+      });
+      renderPanel();
+      await flush();
+
+      expect(query('plan-panel-status-badge')?.textContent).toBe(expectedLabel);
+      expect(query('plan-panel-status-note-outcome')?.textContent ?? null).toBe(
+        rootStatus === 'failure' ? 'Workflow failed·View run' : null,
+      );
+      await click(
+        rootStatus === 'failure'
+          ? 'plan-panel-status-note-run-outcome'
+          : 'plan-panel-status-note-run',
+      );
+      expect(openPipelineExecutionFromUiMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ executionId: 'root-run' }),
+      );
+    },
+  );
+
+  it('shows Implemented for a successful run and reports a later failed retry', async () => {
+    seedPlan(makePlan({ reviewStatus: 'approved' }));
+    usePipelineRunsStore.setState({
+      summaries: [
+        runSummary('run-ok', 'success', '2026-06-03T01:00:00.000Z'),
+        runSummary('run-retry', 'failure', '2026-06-03T02:00:00.000Z'),
+      ],
+    });
+    renderPanel();
+    await flush();
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Implemented');
+    expect(query('plan-panel-status-note-outcome')?.textContent).toBe(
+      'Workflow failed·View run',
+    );
+    await click('plan-panel-status-note-run-outcome');
+    expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'run-retry' }),
+    );
+    await click('plan-panel-status-note-run');
+    expect(openPipelineExecutionFromUiMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ executionId: 'run-ok' }),
+    );
+  });
+
+  it('keeps Approved for a cancelled run on the current revision', async () => {
+    seedPlan(makePlan({ reviewStatus: 'approved' }));
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-1', 'cancelled')],
+    });
+    renderPanel();
+    await flush();
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+    expect(query('plan-panel-status-note-outcome')?.textContent).toBe(
+      'Workflow cancelled·View run',
+    );
+  });
+
+  it('ignores a successful run that started before the current revision', async () => {
+    seedPlan(makePlan({ reviewStatus: 'approved' }));
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-1', 'success', '2026-06-01T12:00:00.000Z')],
+    });
+    renderPanel();
+    await flush();
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+  });
+
+  it('returns to Approved when run evidence unloads or revision metadata is unavailable', async () => {
+    seedPlan(makePlan({ reviewStatus: 'approved' }));
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-1', 'success')],
+    });
+    renderPanel();
+    await flush();
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Implemented');
+    act(() => {
+      usePipelineRunsStore.setState({ summaries: [] });
+    });
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+    act(() => {
+      seedPlan(makePlan({ reviewStatus: 'approved', revisions: [] }));
+      usePipelineRunsStore.setState({
+        summaries: [runSummary('run-1', 'success')],
+      });
+    });
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+  });
+
+  it('keeps Dismissed with secondary Execute despite a linked run', async () => {
+    seedPlan(makePlan({ reviewStatus: 'dismissed' }));
+    usePipelineRunsStore.setState({
+      summaries: [runSummary('run-1', 'running')],
+    });
+    renderPanel();
+    await flush();
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Dismissed');
+    expect(executeIsPrimary()).toBe(false);
+    expect(query('plan-panel-status-note')).toBeNull();
+  });
+
+  it('moves the status off Pending as soon as the store records the approval', async () => {
+    renderPanel();
+    await flush();
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Pending');
+
+    act(() => {
+      useActivityStore
+        .getState()
+        .commitTrackedPlanUpdate(makePlan({ reviewStatus: 'approved' }));
+    });
+
+    expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+    expect(executeIsPrimary()).toBe(false);
   });
 });

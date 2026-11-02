@@ -1,0 +1,1355 @@
+{
+  "automatic-worktree-build-class": {
+    "agent, graph completed": "agent",
+    "agent, no completed graph": "agent",
+    "automatic, graph completed": "worktree",
+    "automatic, no completed graph": "first-build"
+  },
+  "class-order": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "running-refresh",
+        "options": {}
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "priority": "background"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "received": "running-agent",
+        "options": {}
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 2,
+        "priority": "lowered"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 3,
+        "received": "agent",
+        "options": {}
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 3,
+        "priority": "lowered"
+      },
+      {
+        "step": 12,
+        "t": 500,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 12,
+        "t": 500,
+        "process": 4,
+        "received": "first",
+        "options": {}
+      },
+      {
+        "step": 12,
+        "t": 500,
+        "process": 4,
+        "priority": "background"
+      },
+      {
+        "step": 15,
+        "t": 1000,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 15,
+        "t": 1000,
+        "process": 5,
+        "received": "refresh",
+        "options": {}
+      },
+      {
+        "step": 15,
+        "t": 1000,
+        "process": 5,
+        "priority": "background"
+      },
+      {
+        "step": 17,
+        "t": 1500,
+        "process": 6,
+        "fork": true
+      },
+      {
+        "step": 17,
+        "t": 1500,
+        "process": 6,
+        "received": "maintenance",
+        "options": {}
+      },
+      {
+        "step": 17,
+        "t": 1500,
+        "process": 6,
+        "priority": "background"
+      },
+      {
+        "step": 20,
+        "t": 1500,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 20,
+        "t": 1500,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 20,
+        "t": 1500,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 20,
+        "t": 1500,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 20,
+        "t": 1500,
+        "process": 5,
+        "exited": 0
+      },
+      {
+        "step": 20,
+        "t": 1500,
+        "process": 6,
+        "exited": 0
+      }
+    ],
+    "builds": [
+      {
+        "step": 8,
+        "t": 0,
+        "build": "running-agent",
+        "resolved": "ok"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "build": "running-refresh",
+        "resolved": "ok"
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "build": "agent",
+        "resolved": "ok"
+      },
+      {
+        "step": 14,
+        "t": 500,
+        "build": "first",
+        "resolved": "ok"
+      },
+      {
+        "step": 16,
+        "t": 1000,
+        "build": "refresh",
+        "resolved": "ok"
+      },
+      {
+        "step": 18,
+        "t": 1500,
+        "build": "maintenance",
+        "resolved": "ok"
+      }
+    ],
+    "queue": [
+      {
+        "step": 7,
+        "t": 0,
+        "snapshot": [
+          {
+            "label": "running-refresh",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "running-agent",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "agent",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "maintenance",
+            "status": "queued",
+            "scope": "workspace-shadow",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "snapshot": [
+          {
+            "label": "agent",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "maintenance",
+            "status": "queued",
+            "scope": "workspace-shadow",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      },
+      {
+        "step": 19,
+        "t": 1500,
+        "snapshot": []
+      }
+    ]
+  },
+  "first-build-aging": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "running",
+        "options": {}
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "priority": "background"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 1,
+        "kill": true
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      }
+    ],
+    "builds": [
+      {
+        "step": 10,
+        "t": 0,
+        "build": "first-1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "first-2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "first-3",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "refresh-1",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "first-4",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "first-5",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "refresh-2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "running",
+        "rejected": "canceled"
+      }
+    ],
+    "queue": [
+      {
+        "step": 9,
+        "t": 0,
+        "snapshot": [
+          {
+            "label": "running",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first-1",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first-2",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first-3",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh-1",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first-4",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first-5",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh-2",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      }
+    ]
+  },
+  "single-flight-promotion": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "running",
+        "options": {}
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "priority": "background"
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "received": "other-refresh",
+        "options": {}
+      },
+      {
+        "step": 7,
+        "t": 0,
+        "process": 2,
+        "priority": "lowered"
+      },
+      {
+        "step": 11,
+        "t": 500,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 11,
+        "t": 500,
+        "process": 3,
+        "received": "first",
+        "options": {}
+      },
+      {
+        "step": 11,
+        "t": 500,
+        "process": 3,
+        "priority": "background"
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 14,
+        "t": 500,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 14,
+        "t": 500,
+        "process": 2,
+        "exited": 0
+      }
+    ],
+    "builds": [
+      {
+        "step": 9,
+        "t": 0,
+        "build": "other-refresh",
+        "resolved": "ok"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "build": "other-as-agent",
+        "resolved": "ok"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "build": "running",
+        "resolved": "ok"
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "build": "refresh",
+        "rejected": "canceled"
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "build": "refresh-as-first",
+        "rejected": "canceled"
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "build": "first",
+        "rejected": "canceled"
+      }
+    ],
+    "queue": [
+      {
+        "step": 6,
+        "t": 0,
+        "snapshot": [
+          {
+            "label": "running",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "other-refresh",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "snapshot": [
+          {
+            "label": "running",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "other-refresh",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "first",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      },
+      {
+        "step": 12,
+        "t": 500,
+        "snapshot": [
+          {
+            "label": "first",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "refresh",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      }
+    ]
+  },
+  "stronger-request-follows-running-build": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "k",
+        "options": {}
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "priority": "background"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 1,
+        "priority": "left-background"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 2,
+        "received": "k",
+        "options": {
+          "computeDerived": true,
+          "verifyContent": true,
+          "forceReparse": true
+        }
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "process": 2,
+        "priority": "lowered"
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 3,
+        "received": "q",
+        "options": {
+          "computeDerived": true,
+          "verifyContent": true
+        }
+      },
+      {
+        "step": 8,
+        "t": 0,
+        "process": 3,
+        "priority": "lowered"
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 1,
+        "exited": 0
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 10,
+        "t": 0,
+        "process": 3,
+        "exited": 0
+      }
+    ],
+    "builds": [
+      {
+        "step": 5,
+        "t": 0,
+        "build": "plain",
+        "resolved": "ok"
+      },
+      {
+        "step": 5,
+        "t": 0,
+        "build": "same",
+        "resolved": "ok"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "build": "verify",
+        "resolved": "ok"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "build": "reparse",
+        "resolved": "ok"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "build": "queued-plain",
+        "resolved": "failed",
+        "message": "The fixture build failed."
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "build": "queued-verify",
+        "resolved": "failed",
+        "message": "The fixture build failed."
+      }
+    ],
+    "queue": []
+  },
+  "user-reorder": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "running",
+        "options": {}
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "priority": "background"
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 2,
+        "received": "late-agent",
+        "options": {}
+      },
+      {
+        "step": 9,
+        "t": 0,
+        "process": 2,
+        "priority": "lowered"
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "process": 3,
+        "received": "c",
+        "options": {}
+      },
+      {
+        "step": 13,
+        "t": 500,
+        "process": 3,
+        "priority": "background"
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 16,
+        "t": 500,
+        "process": 1,
+        "exited": 0
+      }
+    ],
+    "builds": [
+      {
+        "step": 12,
+        "t": 0,
+        "build": "running",
+        "resolved": "ok"
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "build": "a",
+        "rejected": "canceled"
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "build": "b",
+        "rejected": "canceled"
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "build": "late-first",
+        "rejected": "canceled"
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "build": "c",
+        "rejected": "canceled"
+      },
+      {
+        "step": 15,
+        "t": 500,
+        "build": "late-agent",
+        "rejected": "canceled"
+      }
+    ],
+    "queue": [
+      {
+        "step": 5,
+        "reorder": [
+          "c",
+          "a",
+          "b"
+        ],
+        "result": {
+          "ok": false,
+          "code": "conflict",
+          "message": "The generation queue changed. Reload it and try again.",
+          "snapshot": [
+            {
+              "label": "running",
+              "status": "running",
+              "scope": "worktree",
+              "reorderable": false,
+              "workspaceIds": [],
+              "trigger": "golden"
+            },
+            {
+              "label": "b",
+              "status": "queued",
+              "scope": "worktree",
+              "reorderable": true,
+              "workspaceIds": [],
+              "trigger": "golden"
+            },
+            {
+              "label": "a",
+              "status": "queued",
+              "scope": "worktree",
+              "reorderable": true,
+              "workspaceIds": [],
+              "trigger": "golden"
+            },
+            {
+              "label": "c",
+              "status": "queued",
+              "scope": "workspace-shadow",
+              "reorderable": true,
+              "workspaceIds": [],
+              "trigger": "golden"
+            }
+          ]
+        }
+      },
+      {
+        "step": 6,
+        "reorder": [
+          "c",
+          "a"
+        ],
+        "result": {
+          "ok": false,
+          "code": "invalid-request",
+          "message": "The reorder must contain every queued generation exactly once."
+        }
+      },
+      {
+        "step": 7,
+        "reorder": [
+          "c",
+          "a",
+          "z"
+        ],
+        "result": {
+          "ok": false,
+          "code": "invalid-request",
+          "message": "The reorder contains an unknown or non-queued generation."
+        }
+      },
+      {
+        "step": 8,
+        "reorder": [
+          "c",
+          "a",
+          "b"
+        ],
+        "result": [
+          {
+            "label": "running",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "c",
+            "status": "queued",
+            "scope": "workspace-shadow",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "a",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "b",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      },
+      {
+        "step": 11,
+        "t": 0,
+        "snapshot": [
+          {
+            "label": "running",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "late-agent",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "c",
+            "status": "queued",
+            "scope": "workspace-shadow",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "a",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "b",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "late-first",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      },
+      {
+        "step": 14,
+        "t": 500,
+        "snapshot": [
+          {
+            "label": "late-agent",
+            "status": "running",
+            "scope": "worktree",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "c",
+            "status": "running",
+            "scope": "workspace-shadow",
+            "reorderable": false,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "a",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "b",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          },
+          {
+            "label": "late-first",
+            "status": "queued",
+            "scope": "worktree",
+            "reorderable": true,
+            "workspaceIds": [],
+            "trigger": "golden"
+          }
+        ]
+      }
+    ]
+  },
+  "failures-cancellation-and-teardown": {
+    "processes": [
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "fork": true
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "received": "crash",
+        "options": {}
+      },
+      {
+        "step": 1,
+        "t": 0,
+        "process": 1,
+        "priority": "lowered"
+      },
+      {
+        "step": 2,
+        "t": 0,
+        "process": 1,
+        "exited": 1
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "fork": true
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "received": "timeout",
+        "options": {}
+      },
+      {
+        "step": 3,
+        "t": 0,
+        "process": 2,
+        "priority": "lowered"
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 3,
+        "fork": true
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 3,
+        "received": "queued",
+        "options": {}
+      },
+      {
+        "step": 4,
+        "t": 0,
+        "process": 3,
+        "priority": "background"
+      },
+      {
+        "step": 8,
+        "t": 1800000,
+        "process": 2,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 1800000,
+        "process": 3,
+        "kill": true
+      },
+      {
+        "step": 8,
+        "t": 1800000,
+        "process": 2,
+        "exited": 0
+      },
+      {
+        "step": 8,
+        "t": 1800000,
+        "process": 3,
+        "exited": 0
+      },
+      {
+        "step": 11,
+        "t": 1800000,
+        "process": 4,
+        "fork": true
+      },
+      {
+        "step": 11,
+        "t": 1800000,
+        "process": 4,
+        "received": "running-cancel",
+        "options": {}
+      },
+      {
+        "step": 11,
+        "t": 1800000,
+        "process": 4,
+        "priority": "lowered"
+      },
+      {
+        "step": 12,
+        "t": 1800000,
+        "process": 4,
+        "kill": true
+      },
+      {
+        "step": 12,
+        "t": 1800000,
+        "process": 4,
+        "exited": 0
+      },
+      {
+        "step": 15,
+        "t": 1800000,
+        "process": 5,
+        "fork": true
+      },
+      {
+        "step": 15,
+        "t": 1800000,
+        "process": 5,
+        "received": "after-teardown",
+        "options": {}
+      },
+      {
+        "step": 15,
+        "t": 1800000,
+        "process": 5,
+        "priority": "lowered"
+      },
+      {
+        "step": 17,
+        "t": 1800000,
+        "process": 5,
+        "exited": 0
+      }
+    ],
+    "builds": [
+      {
+        "step": 2,
+        "t": 0,
+        "build": "crash",
+        "rejected": "worker-exit"
+      },
+      {
+        "step": 6,
+        "t": 0,
+        "build": "queued-2",
+        "rejected": "canceled"
+      },
+      {
+        "step": 8,
+        "t": 1800000,
+        "build": "timeout",
+        "rejected": "timeout"
+      },
+      {
+        "step": 8,
+        "t": 1800000,
+        "build": "queued",
+        "rejected": "timeout"
+      },
+      {
+        "step": 10,
+        "t": 1800000,
+        "build": "unavailable",
+        "rejected": "unavailable"
+      },
+      {
+        "step": 12,
+        "t": 1800000,
+        "build": "running-cancel",
+        "rejected": "canceled"
+      },
+      {
+        "step": 14,
+        "t": 1800000,
+        "build": "last",
+        "rejected": "canceled"
+      },
+      {
+        "step": 16,
+        "t": 1800000,
+        "build": "after-teardown",
+        "resolved": "ok"
+      }
+    ],
+    "queue": []
+  }
+}

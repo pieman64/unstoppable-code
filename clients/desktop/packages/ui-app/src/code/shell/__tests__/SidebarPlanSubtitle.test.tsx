@@ -47,17 +47,17 @@ describe('SidebarPlanSubtitle', () => {
     ).toBeNull();
   });
 
-  it('outlines the trial pill with the shared one-pixel hairline', () => {
+  it('draws the trial pill as the shared warning badge, never the accent', () => {
     act(() => {
       root.render(<SidebarPlanSubtitle label="Business" trial />);
     });
     const pill = container.querySelector<HTMLElement>(
       '[data-testid="sidebar-subscription-trial-pill"]',
     );
-    expect(pill?.className).toContain(
-      'ring-[length:var(--border-hairline)] ring-inset',
-    );
-    expect(pill?.className).not.toContain('ring-1');
+    expect(pill?.className).toContain('h-4.5');
+    expect(pill?.className).toContain('rounded-full');
+    expect(pill?.className).toContain('bg-warning-subtle fg-warning-strong');
+    expect(pill?.className).not.toMatch(/accent|ring-/);
   });
 
   it('adds the trial pill and says so in the accessible name', () => {

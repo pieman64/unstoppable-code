@@ -345,6 +345,10 @@ test.describe('foreground Claude lifecycle responsiveness', () => {
       );
       await expect(panel).toBeVisible({ timeout: 30_000 });
       let composer = panel.getByRole('textbox').first();
+      // The prelude seam arms the chat's next SDK query. Stop interrupts the
+      // native query and keeps it (turn-state phase 32), so the replacement
+      // below streams into this first query rather than starting another.
+      await armClaudeQueryPrelude(firstLaunch.electronApp, scope);
       await composer.fill(
         `[${PRELUDE_CONVERSATION_MARKER}] [Canopy-Mock-Request:${PRELUDE_FIRST_REQUEST_TAG}] begin cancellable work`,
       );
@@ -362,7 +366,6 @@ test.describe('foreground Claude lifecycle responsiveness', () => {
         .poll(() => activeTurnCount(window), { timeout: 30_000 })
         .toBe(0);
 
-      await armClaudeQueryPrelude(firstLaunch.electronApp, scope);
       await composer.fill(
         `[${PRELUDE_CONVERSATION_MARKER}] [Canopy-Mock-Request:${PRELUDE_REPLACEMENT_REQUEST_TAG}] finish the replacement request`,
       );
@@ -403,11 +406,7 @@ test.describe('foreground Claude lifecycle responsiveness', () => {
             readClaudeQueryPreludeState(firstLaunch.electronApp, scope),
           { timeout: 60_000 },
         )
-        .toMatchObject({
-          consumedArmCount: 1,
-          preludeEmittedCount: 1,
-          promptConsumedCount: 1,
-        });
+        .toMatchObject({ consumedArmCount: 1, preludeEmittedCount: 1 });
       await expect(panel.getByText('Script Output').first()).toBeVisible({
         timeout: 90_000,
       });
@@ -417,6 +416,11 @@ test.describe('foreground Claude lifecycle responsiveness', () => {
       await expect(panel.getByText(PRELUDE_QUEUED_OUTPUT).first()).toBeVisible({
         timeout: 90_000,
       });
+      // That one query consumed the first, replacement and queued prompts.
+      expect(
+        (await readClaudeQueryPreludeState(firstLaunch.electronApp, scope))
+          .promptConsumedCount,
+      ).toBe(3);
       await expect
         .poll(() => scenarioLlmRequestCount(PRELUDE_CONVERSATION_MARKER), {
           timeout: 30_000,

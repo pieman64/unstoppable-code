@@ -40,7 +40,7 @@ export const botDispatchJsonSchema: AgentActionFamilyJsonSchema = {
       ['bots.send_message'],
       ['botId', 'taskId', 'chatId', 'text'],
     ),
-    requireFieldsFor(['bots.create_task'], ['botId', 'initialMessage']),
+    requireFieldsFor(['bots.create_task'], ['botId']),
     requireFieldsFor(
       ['bots.create_task_chat'],
       ['botId', 'taskId', 'initialMessage'],

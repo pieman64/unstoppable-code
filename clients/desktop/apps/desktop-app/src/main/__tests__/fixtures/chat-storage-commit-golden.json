@@ -8,15 +8,15 @@
     },
     {
       "path": "chat-storage-v2/scope.staging-<uuid>/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 543,
-      "sha256": "c999c03663c2c13f2d66e434f9f5fce8ecead6c3f4c0716de47df0c72d7fb6a5",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":3,\"committedByteLength\":443,\"committedDigest\":\"5f69e17933ac47a22ef1e74ec3dd2852c6f371ff41ee4659b2e72a31e0530cdc\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1e+21,\"lastMessageId\":\"m2\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"a6917b969039934a97f8ab27f051ac275c7d88a0238802f7b00a49d377d67e0b\"}"
+      "bytes": 692,
+      "sha256": "ac12d8ac5d90bce3cc2dc42b5d193b6a3f7de3e3c725d949e579ac373bdf525f",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":3,\"committedByteLength\":443,\"committedDigest\":\"5f69e17933ac47a22ef1e74ec3dd2852c6f371ff41ee4659b2e72a31e0530cdc\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"m0\",\"ordinal\":0,\"offset\":0},\"version\":1,\"messageCount\":3},\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1e+21,\"lastMessageId\":\"m2\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"4514b1987df03fe805349a8d39b5ae5cbe01440635f064f63c5fa05721bc6c0d\"}"
     },
     {
       "path": "chat-storage-v2/scope.staging-<uuid>/transcripts/chat.turns.json.<uuid>.tmp",
-      "bytes": 793,
-      "sha256": "cb16457d446f3d9662883f64ededc1f154ef830d7ea8f2fe67a7d1f190943988",
-      "text": "{\"version\":5,\"committedByteLength\":443,\"committedMessageCount\":3,\"turns\":[{\"id\":\"m0\",\"start\":0,\"end\":3,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"m1\",\"m2\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"m0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1e+21,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1,2]}],\"checksum\":\"767e5b2a5e2cac91b0482f79e0fc9326bd44fd0efaae845a86210fae1582fce1\"}"
+      "bytes": 868,
+      "sha256": "efc093dd3ea9c4d5982c516817f4abee685e78268b9eda895b52b183d334fa79",
+      "text": "{\"version\":10,\"committedByteLength\":443,\"committedMessageCount\":3,\"turns\":[{\"id\":\"m0\",\"start\":0,\"end\":3,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"m1\",\"m2\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"m0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1e+21,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1,2]}],\"checksum\":\"8dfda7edd7207e7478886f5868d6c3e14b4653829adece7cdb955f02b9bb6cd0\"}"
     },
     {
       "path": "chat-storage-v2/scope.staging-<uuid>/transcripts/sibling.<uuid>.rewrite.tmp",
@@ -26,15 +26,15 @@
     },
     {
       "path": "chat-storage-v2/scope.staging-<uuid>/transcripts/sibling.index.json.<uuid>.tmp",
-      "bytes": 492,
-      "sha256": "c624d0d26f7cdb25e5967821e97974914385e7afbcd5360bfebcf9008e484d08",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"checksum\":\"2d9dd460c98cfbc2ac270672833a70ee16ab379076783dc7dc2da503b02e09a0\"}"
+      "bytes": 641,
+      "sha256": "ab518a43097ae24b83818cb4eca1f2382f369fce7c201d6cd7bcfd02567400a0",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"s0\",\"ordinal\":0,\"offset\":0},\"version\":1,\"messageCount\":1},\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"checksum\":\"f8a7a9f387afd321f248024be7cc8036135dfc8a364be1f8ae6fb92204ddc548\"}"
     },
     {
       "path": "chat-storage-v2/scope.staging-<uuid>/transcripts/sibling.turns.json.<uuid>.tmp",
-      "bytes": 648,
-      "sha256": "28fda318120c843076f38fa18f0b8976e87b409274804d7cce19fa82c6d921c6",
-      "text": "{\"version\":5,\"committedByteLength\":84,\"committedMessageCount\":1,\"turns\":[{\"id\":\"s0\",\"start\":0,\"end\":1,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[],\"files\":[],\"frame\":[0],\"retained\":[0]}],\"checksum\":\"00b613e57b6839998480e4c4ef1b8a45ace53c90d39c1ca8f6f1025e8860386c\"}"
+      "bytes": 723,
+      "sha256": "f64e592fbdfadd73997c1577d0162747204dbb2bb8a2fcc31f9bd2bb84395a36",
+      "text": "{\"version\":10,\"committedByteLength\":84,\"committedMessageCount\":1,\"turns\":[{\"id\":\"s0\",\"start\":0,\"end\":1,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[],\"files\":[],\"frame\":[0],\"retained\":[0]}],\"checksum\":\"7774acd0cb4ef156bc735124cdf3de562a105653f4fb0072dd9f1bbc38f236ba\"}"
     },
     {
       "path": "chat-storage-v2/scope.staging-<uuid>/live-index.json.<uuid>.tmp",
@@ -98,9 +98,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 536,
-      "sha256": "00ea4f4552cc7547eba1bf4e641bc60be4788920ceefdd051dbace6feca250a2",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":1,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"a1a5befeee447e0b62597ee7223de23cd44e0bfc2252e1c88cf6a5e87f0da3c2\"}"
+      "bytes": 687,
+      "sha256": "d074887ab9ea8908793f4672c99ac494741602313ba18d30eb7d67788c5cd97d",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":1,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"p1\",\"ordinal\":3,\"offset\":443},\"version\":1,\"messageCount\":4},\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"ce08a9a9826b186efe6a5ca7d7a63344a9b1699e20feba00c7c02aa012f1b24f\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -146,9 +146,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 535,
-      "sha256": "1dc09fe34685ac35c86a43b4f569c88918f9950ebf2deb8b5dec0e7138028311",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":2,\"hasActiveSidecar\":true,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"e399876d4e5350f4fdefd2bd00c1b160077f61c21919d6e53385c04474184007\"}"
+      "bytes": 686,
+      "sha256": "7f1fae543189f49bd68e5a476212add394f20f90d2ecf60a856a44b6ce652efd",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":2,\"hasActiveSidecar\":true,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"p1\",\"ordinal\":3,\"offset\":443},\"version\":1,\"messageCount\":4},\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"4236ae6db704d740891782f230bab63677b397be54734640a43fdc4d8d98d267\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -192,9 +192,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 535,
-      "sha256": "9eff3b731be3b3513619b5569b9e25a2ef9af6b3cd6ee64822c313e99d27e682",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":3,\"hasActiveSidecar\":true,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"e23609d49fdab24da662a39914d287232288e01cde1189c8461e49ae7a5b5ae2\"}"
+      "bytes": 686,
+      "sha256": "6e2f75a825c72ef6258df8ed45b5b9748ef32d0afb4d03130e42ebe6a2b3eabc",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":3,\"hasActiveSidecar\":true,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"p1\",\"ordinal\":3,\"offset\":443},\"version\":1,\"messageCount\":4},\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"7dd81514446cd5d6ec873f888a8cc8126a0dbe8510d67a221bf1ec28a351774d\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -238,9 +238,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 535,
-      "sha256": "854958e4290e625235b3f5987782b9c7f9d49c5799864e56976bcc17973d9fc2",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":4,\"hasActiveSidecar\":true,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"48b116b9548f4310747389d4f25d093153b3ccd06757568222878e5274bd8ea7\"}"
+      "bytes": 686,
+      "sha256": "8991e780b189295ad95d0a22fd8df0cd0a2c0ddbe69986ec1fcb60c54f12ee23",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":4,\"committedByteLength\":529,\"committedDigest\":\"5d760a926b20cddca6ea532eb012b54cb271857d120dcf2024561f3f847f6d02\",\"transcriptRevision\":4,\"hasActiveSidecar\":true,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"p1\",\"ordinal\":3,\"offset\":443},\"version\":1,\"messageCount\":4},\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"p1\",\"lastMessageRole\":\"user\",\"userMessageCount\":2,\"lastAssistantPreview\":\"large timestamp\",\"checksum\":\"d0645777c57ca25d7ee054f5124515c5fd88b3177c94a19ef659b4d0cf4fb3ac\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -289,9 +289,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 761,
-      "sha256": "0670fd185aa0d8607be2503183dce87e62470049b77de73e93ff9f2a19fdb9fc",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173013,\"committedDigest\":\"030dc15f4bde591c583a37f407b82a00ec58d872fa04a5660cf11783175e4155\",\"transcriptRevision\":5,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"2a13e81c29b1fa6921af19e7efafee60eccaf514832ba79360bafa1ebbea3906\"}"
+      "bytes": 981,
+      "sha256": "c25a59bbbcaf3a9cbf2f7513877657ec82b2d1cbb916c47dc7510db8f77f8f2c",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173013,\"committedDigest\":\"030dc15f4bde591c583a37f407b82a00ec58d872fa04a5660cf11783175e4155\",\"transcriptRevision\":5,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[{\"toolUseId\":\"t1-tool\",\"row\":{\"id\":\"t1\",\"ordinal\":5,\"offset\":103191}}],\"boundary\":{\"id\":\"p1\",\"ordinal\":3,\"offset\":443},\"version\":1,\"messageCount\":6},\"latestHuman\":{\"ordinal\":3,\"offset\":443},\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"15cb1ec8753e8507a3d56d150185339de8a60a2b80c44c9ef1a0a33d94ad5382\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -361,9 +361,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/fresh.index.json.<uuid>.tmp",
-      "bytes": 324,
-      "sha256": "0a84d58dae49633bf6a25dd1f764ddf62e85534e2a55961debd986fbc5ff760a",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":0,\"committedByteLength\":0,\"committedDigest\":\"8f2ac5b0c0baabb7b81429c7a92ee35f4ed889d4e6414b1efc025b7acaeb10d0\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[],\"checksum\":\"076deb713e221c065d937f61e58a9ca0c944ac462f86ae6bc28a67ff41d6b11c\"}"
+      "bytes": 427,
+      "sha256": "f9184f3b7eb8bd1fc607d0530734b0d92dfc7031f4303c2f2c54198eb80db453",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":0,\"committedByteLength\":0,\"committedDigest\":\"8f2ac5b0c0baabb7b81429c7a92ee35f4ed889d4e6414b1efc025b7acaeb10d0\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[],\"reducerFrame\":{\"version\":1,\"messageCount\":0,\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[]},\"checksum\":\"1e5a7f9734bf8e2079278616ee35a862699a936cad41ab9d5681f3e819d04bdf\"}"
     },
     {
       "path": "chat-storage-v2/scope/transcripts/fresh.<uuid>.append.tmp",
@@ -379,9 +379,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/fresh.index.json.<uuid>.tmp",
-      "bytes": 538,
-      "sha256": "5a7d7edbe2e910f2ef14cd9d18d01f986c18acab4da3c9b225b5cf1059d398ea",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":178,\"committedDigest\":\"a05456854ebc69ed7d864532b7fe6d9622fa51942bcf19fac3ca47908a38d1e1\",\"transcriptRevision\":1,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"f1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"nested empties\",\"checksum\":\"6c18b46dfa590d1e68bebbb1cb02c851e8719769bd92b34cd5f0761c9f51a502\"}"
+      "bytes": 687,
+      "sha256": "fbd240268fdaddc6def2a954817ab8c527cff641a010ccce9b0db270ba6db3e7",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":178,\"committedDigest\":\"a05456854ebc69ed7d864532b7fe6d9622fa51942bcf19fac3ca47908a38d1e1\",\"transcriptRevision\":1,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"f0\",\"ordinal\":0,\"offset\":0},\"version\":1,\"messageCount\":2},\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"f1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"nested empties\",\"checksum\":\"e6ac7d631d8002858a3a934ff93713cbb5ad5c67cec0ec6d699f3d0b4bffb045\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -409,9 +409,9 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/fresh.turns.json.<uuid>.tmp",
-      "bytes": 782,
-      "sha256": "57e417eddc2209196ac9cbbfb752e3c06fae00fb1d6fbbf48c2a561bac9fded8",
-      "text": "{\"version\":5,\"committedByteLength\":178,\"committedMessageCount\":2,\"turns\":[{\"id\":\"f0\",\"start\":0,\"end\":2,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"f1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"f0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1]}],\"checksum\":\"e16c44b20992f527520f646e94b09db0bd6fa98b15bf73d9af4c04b9a2515a60\"}"
+      "bytes": 857,
+      "sha256": "ac6a81f835a6b5da8eb2c14afbb65a6ae4af69310a9831ba7666aecebc10791e",
+      "text": "{\"version\":10,\"committedByteLength\":178,\"committedMessageCount\":2,\"turns\":[{\"id\":\"f0\",\"start\":0,\"end\":2,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"f1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"f0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1]}],\"checksum\":\"5284d44389173f4929ca96e222ee09024784134945c9af6aaceeac3ad06ce388\"}"
     },
     {
       "path": "chat-storage-v2/scope/pending-transcripts/<uuid>/0.jsonl",
@@ -431,15 +431,15 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 761,
-      "sha256": "fa5b90d69d991251e55dc7f28c9a76af41874a37d361bcb619dfd07ee87d5ce3",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":2,\"offset\":342},\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"772de9109dda5cc2b4d8f993dc0e75ebebc1d2e5b368fc5cdcde364bc33b98e1\"}"
+      "bytes": 981,
+      "sha256": "a647bbb8b57233b82ee3aaa60d3e465a8764de68af748d8390338c9f9b38474b",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[{\"toolUseId\":\"t1-tool\",\"row\":{\"id\":\"t1\",\"ordinal\":4,\"offset\":103090}}],\"boundary\":{\"id\":\"p1\",\"ordinal\":2,\"offset\":342},\"version\":1,\"messageCount\":5},\"latestHuman\":{\"ordinal\":2,\"offset\":342},\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"3b6b028f4ae4ee82586253fcf5aac25272fc86ac7ad8f769e4263a15c47ad70a\"}"
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.turns.json.<uuid>.tmp",
-      "bytes": 1412,
-      "sha256": "0cb4df324fa8529d7e25efec8699a6791ff8ab485b9f6574e1941e28a70fe109",
-      "text": "{\"version\":5,\"committedByteLength\":172912,\"committedMessageCount\":5,\"turns\":[{\"id\":\"m0\",\"start\":0,\"end\":2,\"complete\":true,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"m1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"m0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":1}]},\"retained\":[0,1]},{\"id\":\"p1\",\"start\":2,\"end\":5,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"a1\"],\"files\":[],\"frame\":[2],\"frameTimer\":{\"id\":\"p1-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":2,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[2,3,4]}],\"checksum\":\"f029448bf0abe4defc10fc89d26745dee510d3dc5bc9646f300dda1f4afaabd7\"}"
+      "bytes": 1561,
+      "sha256": "b4879c3144987d70e71827e67ec4a98cedf72d1c8599bea65acb4ad3edd3c4d9",
+      "text": "{\"version\":10,\"committedByteLength\":172912,\"committedMessageCount\":5,\"turns\":[{\"id\":\"m0\",\"start\":0,\"end\":2,\"complete\":true,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"m1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"m0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":1}]},\"retained\":[0,1]},{\"id\":\"p1\",\"start\":2,\"end\":5,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"a1\"],\"files\":[],\"frame\":[2],\"frameTimer\":{\"id\":\"p1-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":2,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[2,3,4]}],\"checksum\":\"915bae28761a4d05c16891af5a443a9cd1ac684308fd98fdb6c4c8393b6165f6\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
@@ -539,9 +539,9 @@
     },
     {
       "path": "chat-storage-v2/scope/metadata-journal.jsonl.<uuid>.tmp",
-      "bytes": 2642,
-      "sha256": "4f08c6c28f8265eaec7edfc3410f2f3ae9833ee203b2f1ad3aeeae9215a66a8c",
-      "text": "{\"v\":2,\"transactionId\":\"<uuid>\",\"expectedRevision\":10,\"indexes\":{\"live\":{\"activeTabId\":\"imported\",\"version\":2,\"revision\":11,\"tabs\":[{\"id\":\"chat\",\"title\":\"chat\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":5}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]},\"archive\":{\"version\":2,\"revision\":11,\"archived\":[{\"tab\":{\"id\":\"sibling\",\"title\":\"Sibling ✓\",\"createdAt\":\"2026-09-05\",\"unread\":true,\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"messageCount\":1}},\"archivedAt\":\"2026-09-30\",\"turnCount\":1}]},\"recovery\":{\"receipts\":[{\"commandId\":\"command-6\",\"revision\":6,\"outcome\":\"applied\",\"entityId\":\"sibling\"}],\"mutationIds\":[\"mutation-1\",\"mutation-2\",\"mutation-3\",\"mutation-4\",\"mutation-5\",\"mutation-6\",\"mutation-7\",\"mutation-8\",\"mutation-9\",\"mutation-10\",\"import-1\"],\"removedTabIds\":[\"sibling\",\"fresh\"],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[\"m2\"],\"version\":2,\"removedMessageKeys\":[\"[\\\"chat\\\",\\\"m2\\\"]\"]}},\"writes\":[{\"chatId\":\"imported\",\"kind\":\"replace\",\"create\":true,\"count\":2,\"sha256\":\"50fca334babf75735fc0786d267d85a52af065ba1ee574834f28dd8d92e2a4e7\"}]}\n"
+      "bytes": 2837,
+      "sha256": "e021fc77d36b821312023bb9d3be648d511d14f2bbc03ecf1bbdb5bdb80201e9",
+      "text": "{\"v\":2,\"transactionId\":\"<uuid>\",\"expectedRevision\":10,\"indexes\":{\"live\":{\"activeTabId\":\"imported\",\"version\":2,\"revision\":11,\"tabs\":[{\"id\":\"chat\",\"title\":\"chat\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":5}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"imported\":{\"status\":\"idle\",\"queuedMessageIds\":[],\"turn\":{\"phase\":\"idle\",\"decisionPending\":false,\"catchingUp\":false,\"endedTurnIds\":[],\"background\":{\"native\":[],\"managed\":{\"live\":0,\"queued\":0}}}},\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]},\"archive\":{\"version\":2,\"revision\":11,\"archived\":[{\"tab\":{\"id\":\"sibling\",\"title\":\"Sibling ✓\",\"createdAt\":\"2026-09-05\",\"unread\":true,\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"messageCount\":1}},\"archivedAt\":\"2026-09-30\",\"turnCount\":1}]},\"recovery\":{\"receipts\":[{\"commandId\":\"command-6\",\"revision\":6,\"outcome\":\"applied\",\"entityId\":\"sibling\"}],\"mutationIds\":[\"mutation-1\",\"mutation-2\",\"mutation-3\",\"mutation-4\",\"mutation-5\",\"mutation-6\",\"mutation-7\",\"mutation-8\",\"mutation-9\",\"mutation-10\",\"import-1\"],\"removedTabIds\":[\"sibling\",\"fresh\"],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[\"m2\"],\"version\":2,\"removedMessageKeys\":[\"[\\\"chat\\\",\\\"m2\\\"]\"]}},\"writes\":[{\"chatId\":\"imported\",\"kind\":\"replace\",\"create\":true,\"count\":2,\"sha256\":\"50fca334babf75735fc0786d267d85a52af065ba1ee574834f28dd8d92e2a4e7\"}]}\n"
     },
     {
       "path": "chat-storage-v2/scope/transcripts/imported.<uuid>.rewrite.tmp",
@@ -551,21 +551,21 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/imported.index.json.<uuid>.tmp",
-      "bytes": 689,
-      "sha256": "178ab584d1310d201c5b0144c881965bf7a6a4665704a1185caacabd9ed6edaf",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"checksum\":\"ca25fdd9ac4855476ccfa25a115382fa6b4ee928de327d077498f451f3c08685\"}"
+      "bytes": 838,
+      "sha256": "901cc45c14c5bb3856bc6a894cfde9b3b5a18b9dbe19246987f89a9107a9ab74",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"i0\",\"ordinal\":0,\"offset\":0},\"version\":1,\"messageCount\":2},\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"checksum\":\"aa169b5afb32c92ed9291995ae834940e3d2fe4ec27e478dc540768200c08a88\"}"
     },
     {
       "path": "chat-storage-v2/scope/transcripts/imported.turns.json.<uuid>.tmp",
-      "bytes": 782,
-      "sha256": "5fe32d5a4c7be17be498d3ea3fbef37338c775f2f72ba818bf7ac9f468397cb2",
-      "text": "{\"version\":5,\"committedByteLength\":352,\"committedMessageCount\":2,\"turns\":[{\"id\":\"i0\",\"start\":0,\"end\":2,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"i1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"i0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1]}],\"checksum\":\"fd7172aa5c6e2d5505c377dee0f2cc27699e1494c7b7416cdde734599f4b2e5e\"}"
+      "bytes": 857,
+      "sha256": "b1ef33dad6c2e689637f9b8f97e28f798c4606b4c72f6e4813e2e67eb3e6cc06",
+      "text": "{\"version\":10,\"committedByteLength\":352,\"committedMessageCount\":2,\"turns\":[{\"id\":\"i0\",\"start\":0,\"end\":2,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"i1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"i0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1]}],\"checksum\":\"33015468bd9c56764e75e58716346365c43b09c8e26022a57aeaf1bba1eea49a\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
-      "bytes": 1444,
-      "sha256": "e0e67060d2863857de046247d285a2305a309e2cae00aadbe0ac18736f6abed0",
-      "text": "{\"activeTabId\":\"imported\",\"version\":2,\"revision\":11,\"tabs\":[{\"id\":\"chat\",\"title\":\"chat\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":5}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]}"
+      "bytes": 1639,
+      "sha256": "a559dd3427cdb42a3cd603ee075ed9eede603c315cf3bbf8314975cbc4b9397f",
+      "text": "{\"activeTabId\":\"imported\",\"version\":2,\"revision\":11,\"tabs\":[{\"id\":\"chat\",\"title\":\"chat\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":5}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"imported\":{\"status\":\"idle\",\"queuedMessageIds\":[],\"turn\":{\"phase\":\"idle\",\"decisionPending\":false,\"catchingUp\":false,\"endedTurnIds\":[],\"background\":{\"native\":[],\"managed\":{\"live\":0,\"queued\":0}}}},\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]}"
     },
     {
       "path": "chat-storage-v2/scope/archive-index.json.<uuid>.tmp",
@@ -593,9 +593,9 @@
     },
     {
       "path": "chat-storage-v2/scope/metadata-journal.jsonl.<uuid>.tmp",
-      "bytes": 2650,
-      "sha256": "4c12d5285ba5a51a13889545bda2e24e308ec6d52af4ae91dbcad98e310b7969",
-      "text": "{\"v\":2,\"transactionId\":\"<uuid>\",\"expectedRevision\":11,\"indexes\":{\"live\":{\"activeTabId\":\"imported\",\"version\":2,\"revision\":12,\"tabs\":[{\"id\":\"chat\",\"title\":\"Recovered title\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":5}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]},\"archive\":{\"version\":2,\"revision\":12,\"archived\":[{\"tab\":{\"id\":\"sibling\",\"title\":\"Sibling ✓\",\"createdAt\":\"2026-09-05\",\"unread\":true,\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"messageCount\":1}},\"archivedAt\":\"2026-09-30\",\"turnCount\":1}]},\"recovery\":{\"receipts\":[{\"commandId\":\"command-6\",\"revision\":6,\"outcome\":\"applied\",\"entityId\":\"sibling\"}],\"mutationIds\":[\"mutation-1\",\"mutation-2\",\"mutation-3\",\"mutation-4\",\"mutation-5\",\"mutation-6\",\"mutation-7\",\"mutation-8\",\"mutation-9\",\"mutation-10\",\"import-1\"],\"removedTabIds\":[\"sibling\",\"fresh\"],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[\"m2\"],\"version\":2,\"removedMessageKeys\":[\"[\\\"chat\\\",\\\"m2\\\"]\"]}},\"writes\":[{\"chatId\":\"chat\",\"kind\":\"append\",\"create\":false,\"count\":1,\"sha256\":\"0a558e46763f7e5870036c1a9152066fa6b67aa3e6220a984e5e554beda4a102\"}]}\n"
+      "bytes": 2845,
+      "sha256": "64a1d9617254c9a677a659208e00d15cf9974a275c08afcfcd90944e4f6beab6",
+      "text": "{\"v\":2,\"transactionId\":\"<uuid>\",\"expectedRevision\":11,\"indexes\":{\"live\":{\"activeTabId\":\"imported\",\"version\":2,\"revision\":12,\"tabs\":[{\"id\":\"chat\",\"title\":\"Recovered title\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":5,\"committedByteLength\":172912,\"committedDigest\":\"a53b7e89b1dfe4145c6d3a0501c1adc49ed6154cde4963b151746b65776a278e\",\"transcriptRevision\":8,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":2,\"lastMessageId\":\"t1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":2,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":5}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"imported\":{\"status\":\"idle\",\"queuedMessageIds\":[],\"turn\":{\"phase\":\"idle\",\"decisionPending\":false,\"catchingUp\":false,\"endedTurnIds\":[],\"background\":{\"native\":[],\"managed\":{\"live\":0,\"queued\":0}}}},\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]},\"archive\":{\"version\":2,\"revision\":12,\"archived\":[{\"tab\":{\"id\":\"sibling\",\"title\":\"Sibling ✓\",\"createdAt\":\"2026-09-05\",\"unread\":true,\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"messageCount\":1}},\"archivedAt\":\"2026-09-30\",\"turnCount\":1}]},\"recovery\":{\"receipts\":[{\"commandId\":\"command-6\",\"revision\":6,\"outcome\":\"applied\",\"entityId\":\"sibling\"}],\"mutationIds\":[\"mutation-1\",\"mutation-2\",\"mutation-3\",\"mutation-4\",\"mutation-5\",\"mutation-6\",\"mutation-7\",\"mutation-8\",\"mutation-9\",\"mutation-10\",\"import-1\"],\"removedTabIds\":[\"sibling\",\"fresh\"],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[\"m2\"],\"version\":2,\"removedMessageKeys\":[\"[\\\"chat\\\",\\\"m2\\\"]\"]}},\"writes\":[{\"chatId\":\"chat\",\"kind\":\"append\",\"create\":false,\"count\":1,\"sha256\":\"0a558e46763f7e5870036c1a9152066fa6b67aa3e6220a984e5e554beda4a102\"}]}\n"
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.<uuid>.append.tmp",
@@ -611,15 +611,15 @@
     },
     {
       "path": "chat-storage-v2/scope/transcripts/chat.index.json.<uuid>.tmp",
-      "bytes": 759,
-      "sha256": "862e62a209f4bf414fa4d830c5ac3d41e3fd0d07d0f21d30ef4ca52327f68310",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":5,\"offset\":172912},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"65d4904b4874a3e80cbf5d1c0e9d728a3938f82f3bd55562ebd804164785ffd9\"}"
+      "bytes": 913,
+      "sha256": "899bbc287ca70730f5c9244dac551c27db8abd98e296eb21e5a018a8841efa7e",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"r1\",\"ordinal\":5,\"offset\":172912},\"version\":1,\"messageCount\":6},\"latestHuman\":{\"ordinal\":5,\"offset\":172912},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"8b5b3a8da8b29905101604886169078a35da63aacd4e66c1b63e7a242bf82293\"}"
     },
     {
       "path": "chat-storage-v2/scope/live-index.json.<uuid>.tmp",
-      "bytes": 1450,
-      "sha256": "51d927c9cedbe11f237d26d1e8c6f1b8578b4aad36efa83943068135296318ac",
-      "text": "{\"activeTabId\":\"imported\",\"version\":2,\"revision\":12,\"tabs\":[{\"id\":\"chat\",\"title\":\"Recovered title\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":6}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]}"
+      "bytes": 1645,
+      "sha256": "9bc7301256ed7fb2814a569e8002bab5490279eb861bf6254633eb60b63d7c35",
+      "text": "{\"activeTabId\":\"imported\",\"version\":2,\"revision\":12,\"tabs\":[{\"id\":\"chat\",\"title\":\"Recovered title\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":6}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"imported\":{\"status\":\"idle\",\"queuedMessageIds\":[],\"turn\":{\"phase\":\"idle\",\"decisionPending\":false,\"catchingUp\":false,\"endedTurnIds\":[],\"background\":{\"native\":[],\"managed\":{\"live\":0,\"queued\":0}}}},\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]}"
     },
     {
       "path": "chat-storage-v2/scope/archive-index.json.<uuid>.tmp",
@@ -907,59 +907,59 @@
   "steps": [
     {
       "label": "migrated",
-      "tree": "5171a015702e380bedc76436c32f1d041d8e945c80ce5443c14edab59073f3fb"
+      "tree": "c5385643cbf52f7cd5ff3bd4d56b9375fc96382b46d3843fad51d4f9949513ee"
     },
     {
       "label": "prompt appended while streaming",
-      "tree": "e52c6949fdeb8b035dbf03fc1ad1a236f4775aa63a69977d06551e16908167b4"
+      "tree": "0a52b1aacb9c0cd26099a4c1678bf047b7f2aa0be4227b6dc8eefd775e3a17cd"
     },
     {
       "label": "active reply",
-      "tree": "99305605533d1cc75da849f07fd81e5dc892e7061bbf2e4435616f44cd5bdc05"
+      "tree": "1d8c141e68ea45141d9b6851a58af41d0865fb761192c4dbcbe407d98a2cc950"
     },
     {
       "label": "active reply grows past the native threshold",
-      "tree": "97b56fcd083a7f211517425b6debbf092965390f3964ea600cbf0fe3ff2ff43e"
+      "tree": "21b86651210a10fc510336f7c53ba495c10d8a13321b05bf681d831b3443b246"
     },
     {
       "label": "externalized tool output",
-      "tree": "e8690139fb510bc8489edab4afaf425cc6417210b7cc68d5899d8e4cc108f05d"
+      "tree": "037aa8bb9135fdea447fd7fac101b00c48cad6813d931b87ff298821e4cc45b4"
     },
     {
       "label": "turn finalized",
-      "tree": "5872d1f556016326334c02e9e14569ef8182e0416cdc09b1740a965993efa593"
+      "tree": "80cd2b8f605aafbf177ce4f1e8629b46da7ccfd50f0e4f5ad0e24d389d9e8e4e"
     },
     {
       "label": "metadata-only commit with a receipt",
-      "tree": "934cab8136c46b7ba75ba023d9a7dd12a08fdd88b932f385d3909ab6be57b91e"
+      "tree": "ce571f14e782c7723063084610e1ebf4ad033f7703dbd62cc3cfa87405b0139d"
     },
     {
       "label": "new chat with a transcript",
-      "tree": "7946d1e8094355bf28f9b4fd05e789d3abcb4818d2c5526508709bb4c447c80e"
+      "tree": "b5c0ba5c2e4d52e58f2ef5b70aed29345f85ea37d3c35f3f37bae25350f26f11"
     },
     {
       "label": "committed message removed",
-      "tree": "710b53fa22f42493782c430db1edd0afb03ae861157856bee2fc8a75129cf117"
+      "tree": "b7137e3ab15c70ff38a3bcc9b27b8d48cea24a3ad1e230978f8c1bb7392f92ae"
     },
     {
       "label": "chat archived",
-      "tree": "98166178b1acdca3af612125de22c83d071bdf27f638529eeaadf27efa82066e"
+      "tree": "298214fef645f7bf4d29f91b8eccdeaa74fa5ce9ad12c9782ef1218ecfcbe980"
     },
     {
       "label": "chat deleted",
-      "tree": "9b077f123ba02b73990cc6fbb1524465a6fecde11ab4cb61fded5ea57ed0115b"
+      "tree": "0b614a43f2de3289d4b74e8f5ef4046717356e3ae289c1acbea40a5442de3f17"
     },
     {
       "label": "merged import",
-      "tree": "1a3f3f26e0c61e46dcaaf9850ecaad8a0dc55838e88ec84d112e605eb8e75cbd"
+      "tree": "0a11498dbdfc02caa0470a742cd24c7fbc9f3e79e1ab7658189b95dc4c26592b"
     },
     {
       "label": "journal published, apply interrupted",
-      "tree": "eb6b9668c65ab222c5bf6692d3ca373b7e1c8e0626145dcd994dd2c1658b1929"
+      "tree": "b370b33ac60380f68d3b05fdd9177e790f183db6e5d60ca6e4bfd8e3de81f572"
     },
     {
       "label": "recovered",
-      "tree": "6e9cb3f299ea5bc64512bbf491daad79fb2af1cd74cfcf22e56986658208bea9"
+      "tree": "99899b9764414468532b77472b2a726e934203190125e2f152ae62cb894e747c"
     }
   ],
   "tree": {
@@ -969,9 +969,9 @@
       "text": "{\"version\":2,\"revision\":12,\"archived\":[{\"tab\":{\"id\":\"sibling\",\"title\":\"Sibling ✓\",\"createdAt\":\"2026-09-05\",\"unread\":true,\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"messageCount\":1}},\"archivedAt\":\"2026-09-30\",\"turnCount\":1}]}"
     },
     "chat-storage-v2/scope/live-index.json": {
-      "bytes": 1450,
-      "sha256": "51d927c9cedbe11f237d26d1e8c6f1b8578b4aad36efa83943068135296318ac",
-      "text": "{\"activeTabId\":\"imported\",\"version\":2,\"revision\":12,\"tabs\":[{\"id\":\"chat\",\"title\":\"Recovered title\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":6}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]}"
+      "bytes": 1645,
+      "sha256": "9bc7301256ed7fb2814a569e8002bab5490279eb861bf6254633eb60b63d7c35",
+      "text": "{\"activeTabId\":\"imported\",\"version\":2,\"revision\":12,\"tabs\":[{\"id\":\"chat\",\"title\":\"Recovered title\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"messageCount\":6}},{\"id\":\"imported\",\"title\":\"imported\",\"createdAt\":\"2026-09-05\",\"transcript\":{\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"messageCount\":2}}],\"runtimeByChatId\":{\"imported\":{\"status\":\"idle\",\"queuedMessageIds\":[],\"turn\":{\"phase\":\"idle\",\"decisionPending\":false,\"catchingUp\":false,\"endedTurnIds\":[],\"background\":{\"native\":[],\"managed\":{\"live\":0,\"queued\":0}}}},\"chat\":{\"status\":\"idle\",\"queuedMessageIds\":[]}},\"pendingQuestions\":[]}"
     },
     "chat-storage-v2/scope/metadata-journal.jsonl": {
       "bytes": 0,
@@ -984,23 +984,23 @@
       "text": "{\"receipts\":[{\"commandId\":\"command-6\",\"revision\":6,\"outcome\":\"applied\",\"entityId\":\"sibling\"}],\"mutationIds\":[\"mutation-1\",\"mutation-2\",\"mutation-3\",\"mutation-4\",\"mutation-5\",\"mutation-6\",\"mutation-7\",\"mutation-8\",\"mutation-9\",\"mutation-10\",\"import-1\"],\"removedTabIds\":[\"sibling\",\"fresh\"],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[\"m2\"],\"version\":2,\"removedMessageKeys\":[\"[\\\"chat\\\",\\\"m2\\\"]\"]}"
     },
     "chat-storage-v2/scope/transcripts/chat.index.json": {
-      "bytes": 759,
-      "sha256": "862e62a209f4bf414fa4d830c5ac3d41e3fd0d07d0f21d30ef4ca52327f68310",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":5,\"offset\":172912},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"65d4904b4874a3e80cbf5d1c0e9d728a3938f82f3bd55562ebd804164785ffd9\"}"
+      "bytes": 913,
+      "sha256": "899bbc287ca70730f5c9244dac551c27db8abd98e296eb21e5a018a8841efa7e",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":6,\"committedByteLength\":173002,\"committedDigest\":\"44c7c4e3c98ed7c12c5f27e3483a473c805624168c760b3164d0a765b16eff8e\",\"transcriptRevision\":9,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"r1\",\"ordinal\":5,\"offset\":172912},\"version\":1,\"messageCount\":6},\"latestHuman\":{\"ordinal\":5,\"offset\":172912},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"r1\",\"lastMessageRole\":\"user\",\"userMessageCount\":3,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del  long streamed reply 🌲 long streamed reply 🌲 long streamed rep\",\"checksum\":\"8b5b3a8da8b29905101604886169078a35da63aacd4e66c1b63e7a242bf82293\"}"
     },
     "chat-storage-v2/scope/transcripts/chat.jsonl": {
       "bytes": 173002,
       "sha256": "06fbb575336eb4cb16afe6077dd3db939615b3a75a9b8ec313712cd73c36b9a4"
     },
     "chat-storage-v2/scope/transcripts/chat.turns.json": {
-      "bytes": 1412,
-      "sha256": "0cb4df324fa8529d7e25efec8699a6791ff8ab485b9f6574e1941e28a70fe109",
-      "text": "{\"version\":5,\"committedByteLength\":172912,\"committedMessageCount\":5,\"turns\":[{\"id\":\"m0\",\"start\":0,\"end\":2,\"complete\":true,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"m1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"m0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":1}]},\"retained\":[0,1]},{\"id\":\"p1\",\"start\":2,\"end\":5,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"a1\"],\"files\":[],\"frame\":[2],\"frameTimer\":{\"id\":\"p1-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":2,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[2,3,4]}],\"checksum\":\"f029448bf0abe4defc10fc89d26745dee510d3dc5bc9646f300dda1f4afaabd7\"}"
+      "bytes": 1561,
+      "sha256": "b4879c3144987d70e71827e67ec4a98cedf72d1c8599bea65acb4ad3edd3c4d9",
+      "text": "{\"version\":10,\"committedByteLength\":172912,\"committedMessageCount\":5,\"turns\":[{\"id\":\"m0\",\"start\":0,\"end\":2,\"complete\":true,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"m1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"m0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":1}]},\"retained\":[0,1]},{\"id\":\"p1\",\"start\":2,\"end\":5,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"a1\"],\"files\":[],\"frame\":[2],\"frameTimer\":{\"id\":\"p1-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":2,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[2,3,4]}],\"checksum\":\"915bae28761a4d05c16891af5a443a9cd1ac684308fd98fdb6c4c8393b6165f6\"}"
     },
     "chat-storage-v2/scope/transcripts/imported.index.json": {
-      "bytes": 689,
-      "sha256": "178ab584d1310d201c5b0144c881965bf7a6a4665704a1185caacabd9ed6edaf",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"checksum\":\"ca25fdd9ac4855476ccfa25a115382fa6b4ee928de327d077498f451f3c08685\"}"
+      "bytes": 838,
+      "sha256": "901cc45c14c5bb3856bc6a894cfde9b3b5a18b9dbe19246987f89a9107a9ab74",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":2,\"committedByteLength\":352,\"committedDigest\":\"1c753307548d002c9cc1078cf57ffcdea23a35fcb1c8fae6669fff60fb2724a5\",\"transcriptRevision\":11,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"i0\",\"ordinal\":0,\"offset\":0},\"version\":1,\"messageCount\":2},\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"i1\",\"lastMessageRole\":\"assistant\",\"userMessageCount\":1,\"lastAssistantPreview\":\"quote \\\" backslash \\\\ tab newline nul \\u0000 bell \\u0007 line-sep para-sep emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \",\"checksum\":\"aa169b5afb32c92ed9291995ae834940e3d2fe4ec27e478dc540768200c08a88\"}"
     },
     "chat-storage-v2/scope/transcripts/imported.jsonl": {
       "bytes": 352,
@@ -1008,9 +1008,9 @@
       "text": "{\"id\":\"i0\",\"role\":\"user\",\"timestamp\":1,\"blocks\":[{\"type\":\"text\",\"text\":\"imported prompt\"}]}\n{\"id\":\"i1\",\"role\":\"assistant\",\"timestamp\":1,\"blocks\":[{\"type\":\"text\",\"text\":\"quote \\\" backslash \\\\ tab \\t newline \\n nul \\u0000 bell \\u0007 line-sep   para-sep   emoji 🌲👩‍💻 cjk 漢字 accent é lone-high \\ud800 lone-low \\udc00 slash / del \"}]}\n"
     },
     "chat-storage-v2/scope/transcripts/imported.turns.json": {
-      "bytes": 782,
-      "sha256": "5fe32d5a4c7be17be498d3ea3fbef37338c775f2f72ba818bf7ac9f468397cb2",
-      "text": "{\"version\":5,\"committedByteLength\":352,\"committedMessageCount\":2,\"turns\":[{\"id\":\"i0\",\"start\":0,\"end\":2,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[\"i1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"i0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1]}],\"checksum\":\"fd7172aa5c6e2d5505c377dee0f2cc27699e1494c7b7416cdde734599f4b2e5e\"}"
+      "bytes": 857,
+      "sha256": "b1ef33dad6c2e689637f9b8f97e28f798c4606b4c72f6e4813e2e67eb3e6cc06",
+      "text": "{\"version\":10,\"committedByteLength\":352,\"committedMessageCount\":2,\"turns\":[{\"id\":\"i0\",\"start\":0,\"end\":2,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[\"i1\"],\"files\":[],\"frame\":[0],\"frameTimer\":{\"id\":\"i0-implicit-turn-timer\",\"role\":\"system\",\"timestamp\":1,\"blocks\":[{\"type\":\"turn_timer\",\"completedAt\":null}]},\"retained\":[0,1]}],\"checksum\":\"33015468bd9c56764e75e58716346365c43b09c8e26022a57aeaf1bba1eea49a\"}"
     },
     "chat-storage-v2/scope/transcripts/message-index/chat/628b49d96dcde97a430dd4f597705899e09a968f793491e4b704cae33a40dc02.json": {
       "bytes": 135,
@@ -1058,9 +1058,9 @@
       "text": "{\"version\":1,\"messageId\":\"s0\",\"offset\":0,\"end\":84,\"digest\":\"8ac639d1782705130c6ee9e722c9e66bea2a525316c35856d4ee112a98b18ce7\"}"
     },
     "chat-storage-v2/scope/transcripts/sibling.index.json": {
-      "bytes": 492,
-      "sha256": "c624d0d26f7cdb25e5967821e97974914385e7afbcd5360bfebcf9008e484d08",
-      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"checksum\":\"2d9dd460c98cfbc2ac270672833a70ee16ab379076783dc7dc2da503b02e09a0\"}"
+      "bytes": 641,
+      "sha256": "ab518a43097ae24b83818cb4eca1f2382f369fce7c201d6cd7bcfd02567400a0",
+      "text": "{\"version\":3,\"format\":\"complete-message-jsonl-v1\",\"committedMessageCount\":1,\"committedByteLength\":84,\"committedDigest\":\"d6543df398d92ccc5dd5feb778629b3e6cb815acf41a8c8f363a57b9f1208f9d\",\"transcriptRevision\":0,\"hasActiveSidecar\":false,\"offsets\":[{\"ordinal\":0,\"offset\":0}],\"reducerFrame\":{\"timers\":[],\"cards\":[],\"toolUses\":[],\"pendingResults\":[],\"boundary\":{\"id\":\"s0\",\"ordinal\":0,\"offset\":0},\"version\":1,\"messageCount\":1},\"latestHuman\":{\"ordinal\":0,\"offset\":0},\"firstMessageAt\":1,\"lastMessageAt\":1,\"lastMessageId\":\"s0\",\"lastMessageRole\":\"user\",\"userMessageCount\":1,\"checksum\":\"f8a7a9f387afd321f248024be7cc8036135dfc8a364be1f8ae6fb92204ddc548\"}"
     },
     "chat-storage-v2/scope/transcripts/sibling.jsonl": {
       "bytes": 84,
@@ -1068,9 +1068,9 @@
       "text": "{\"id\":\"s0\",\"role\":\"user\",\"timestamp\":1,\"blocks\":[{\"type\":\"text\",\"text\":\"sibling\"}]}\n"
     },
     "chat-storage-v2/scope/transcripts/sibling.turns.json": {
-      "bytes": 648,
-      "sha256": "28fda318120c843076f38fa18f0b8976e87b409274804d7cce19fa82c6d921c6",
-      "text": "{\"version\":5,\"committedByteLength\":84,\"committedMessageCount\":1,\"turns\":[{\"id\":\"s0\",\"start\":0,\"end\":1,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"finalMessageIds\":[],\"files\":[],\"frame\":[0],\"retained\":[0]}],\"checksum\":\"00b613e57b6839998480e4c4ef1b8a45ace53c90d39c1ca8f6f1025e8860386c\"}"
+      "bytes": 723,
+      "sha256": "f64e592fbdfadd73997c1577d0162747204dbb2bb8a2fcc31f9bd2bb84395a36",
+      "text": "{\"version\":10,\"committedByteLength\":84,\"committedMessageCount\":1,\"turns\":[{\"id\":\"s0\",\"start\":0,\"end\":1,\"complete\":false,\"summary\":{\"messages\":0,\"thinking\":0,\"bash\":0,\"read\":0,\"readLines\":0,\"writeEdit\":0,\"plan\":0,\"fileEdit\":0,\"fileAdd\":0,\"fileDelete\":0,\"search\":0,\"grep\":0,\"web\":0,\"agent\":0,\"workflow\":0,\"tasks\":0,\"taskStop\":0,\"skills\":0,\"monitor\":0,\"claude\":0,\"scheduleWakeup\":0,\"askUser\":0,\"scriptOutput\":0,\"watcher\":0,\"canopy\":0,\"graph\":0,\"appAdvisor\":0,\"pipelineEditor\":0,\"computerUse\":0,\"mcp\":0,\"other\":0},\"outcomes\":{\"blocked\":0,\"failed\":0,\"interrupted\":0},\"deniedToolUseIds\":[],\"finalMessageIds\":[],\"files\":[],\"frame\":[0],\"retained\":[0]}],\"checksum\":\"7774acd0cb4ef156bc735124cdf3de562a105653f4fb0072dd9f1bbc38f236ba\"}"
     },
     "chat-storage-v2/scope/transcripts/tool-output/chat/sha256-v1-4cbeb572a5fc8a07c4b62274b6db56a9ea13e09479704f7e20602a4dddc09fc0.txt": {
       "bytes": 102000,

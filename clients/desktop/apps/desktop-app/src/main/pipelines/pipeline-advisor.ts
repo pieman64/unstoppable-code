@@ -64,7 +64,7 @@ const MIN_AGENT_STEP_REMAINING_MS = 30_000;
 const MIN_UTILITY_STEP_REMAINING_MS = 2_000;
 const MAX_HEURISTIC_ETA_MS = 24 * 60 * 60_000;
 const MODEL_BLOCKED_MESSAGE =
-  'Pipeline Advisor was skipped: this model is blocked by your organization policy.';
+  'Workflow Advisor was skipped: this model is blocked by your organization policy.';
 
 export interface WatchPipelineExecutionForAdvisorOptions {
   handle: ExecutionHandle;
@@ -149,7 +149,7 @@ export class PipelineAdvisorService {
         isTerminalPipelineStatus(existingStatus) &&
         !isTerminalPipelineStatus(nextStatus)
       ) {
-        this.interruptActive(existing, 'Pipeline Advisor interrupted by retry');
+        this.interruptActive(existing, 'Workflow Advisor interrupted by retry');
       } else {
         return;
       }
@@ -294,8 +294,8 @@ export class PipelineAdvisorService {
   shutdown(reason: 'app-quit' | 'fatal-exit' = 'app-quit'): void {
     const message =
       reason === 'app-quit'
-        ? 'Pipeline Advisor interrupted by app shutdown'
-        : 'Pipeline Advisor interrupted by fatal exit';
+        ? 'Workflow Advisor interrupted by app shutdown'
+        : 'Workflow Advisor interrupted by fatal exit';
     for (const active of Array.from(this.active.values())) {
       this.interruptActive(active, message);
     }
@@ -383,7 +383,7 @@ export class PipelineAdvisorService {
       const resolvedHarness = getExecutionHarnessForModel(model);
       if (resolvedHarness !== 'claude' && resolvedHarness !== 'codex') {
         throw new Error(
-          `Configured Pipeline Advisor model has no execution harness: ${model}`,
+          `Configured Workflow Advisor model has no execution harness: ${model}`,
         );
       }
       snapshot = {
@@ -948,7 +948,7 @@ function createAuditEntry(args: {
     provider: configuredProvider,
     modelSource: getModelSource(args.snapshot.model),
     executionHarness: args.snapshot.provider,
-    label: 'Pipeline Advisor',
+    label: 'Workflow Advisor',
     startedAt: args.startedAt,
     model: args.snapshot.model,
     serviceTier:

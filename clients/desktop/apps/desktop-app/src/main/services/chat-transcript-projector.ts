@@ -18,11 +18,9 @@ export {
 } from '@canopy/desktop-shared/portal/persisted-chat-projection';
 export {
   createCursorAssistantPatchProjector,
-  createPortalTurnTimer,
   isCursorAssistantPatchEvent,
   isTerminalRuntimeChatEvent,
+  projectCanonicalPortalTurnTimers,
   runtimeChatEventToPortalMessage,
-  turnTimerEndReason,
   type CursorAssistantPatchProjector,
-  type PortalTurnTimer,
 } from '@canopy/desktop-shared/portal/runtime-chat-projection';

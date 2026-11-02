@@ -105,7 +105,11 @@ const marketplace: MarketplaceInfo = {
 test('enumerates a usable inline marketplace plugin without installing or offering source deletion', async () => {
   jest.mocked(loadMarketplacesCacheOnly).mockResolvedValue({
     success: true,
-    data: { marketplaces: [marketplace] },
+    data: {
+      version: 2,
+      lastRefreshed: '2026-01-01T00:00:00.000Z',
+      marketplaces: [marketplace],
+    },
   });
   jest.mocked(resolvePluginInfoPath).mockResolvedValue('/market/inline');
   const snapshot = await installedItemService.listStatus();
@@ -134,7 +138,11 @@ describe('account MCP connections', () => {
   beforeEach(() => {
     jest.mocked(loadMarketplacesCacheOnly).mockResolvedValue({
       success: true,
-      data: { marketplaces: [] },
+      data: {
+        version: 2,
+        lastRefreshed: '2026-01-01T00:00:00.000Z',
+        marketplaces: [],
+      },
     });
     jest.mocked(accountMcpConnectionsEnabled).mockReturnValue(true);
     jest.mocked(accountMcpConnectionsEditable).mockResolvedValue(false);

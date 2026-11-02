@@ -5,6 +5,7 @@ import {
   brandEnvCandidates,
   brandEnvName,
 } from '@canopy/desktop-shared/brand/env';
+import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 
 // Local memory is opt-in (CAN-1969); default off so the settings file omits
 // the native-memory suppression key. Tests flip the mock to assert it.
@@ -173,6 +174,14 @@ describe('claude-terminal-settings', () => {
     const warnSpy = jest
       .spyOn(console, 'warn')
       .mockImplementation(() => undefined);
+    const legacyPluginSelections: ChatTabPluginSelections = {
+      collectionIds: [],
+      bundleIds: [],
+      skillRefs: [],
+      pluginRefs: [{ marketplaceId: 'marketplace', pluginName: 'plugin' }],
+    };
+    // Keep this pre-collectionIds fixture shape to exercise legacy bundle input.
+    Reflect.deleteProperty(legacyPluginSelections, 'collectionIds');
 
     const config = await buildClaudeTerminalLaunchConfig({
       projectId: 'p',
@@ -189,11 +198,7 @@ describe('claude-terminal-settings', () => {
       thinkingLevel: 'medium',
       systemPromptAppend: 'system append',
       initialPrompt: 'Review failures',
-      pluginSelections: {
-        bundleIds: [],
-        skillRefs: [],
-        pluginRefs: [{ marketplaceId: 'marketplace', pluginName: 'plugin' }],
-      },
+      pluginSelections: legacyPluginSelections,
     });
 
     expect(config.executable).toBe('/bin/claude');

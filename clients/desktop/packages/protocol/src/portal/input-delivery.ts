@@ -19,6 +19,17 @@ export interface ChatWatcherFiredInfo {
   }>;
 }
 
+/** A send made by a pipeline run or an automation, not by an agent chat. */
+export interface ChatAgentSentPipelineSender {
+  kind: 'pipeline';
+  /** A pipeline step's send. All three are present together, or none is. */
+  executionId?: string;
+  pipelineId?: string;
+  stepId?: string;
+  /** The automation that started the run, or that sent directly. */
+  automationId?: string;
+}
+
 /** Display-only attribution for a user message accepted from another agent. */
 export interface ChatAgentSentInfo {
   sender:
@@ -34,10 +45,15 @@ export interface ChatAgentSentInfo {
         botId: string;
         taskId: string;
         chatId: string;
-      };
-  /** Sender chat title captured when the message was accepted. */
+      }
+    | ChatAgentSentPipelineSender;
+  /**
+   * Sender chat title captured when the message was accepted. For a pipeline
+   * sender, the automation name when `automationId` is set, otherwise the
+   * pipeline name.
+   */
   chatTitle: string;
-  /** Sender project name captured when the message was accepted. */
+  /** Sender project name captured when the message was accepted; '' for a pipeline sender. */
   projectLabel: string;
 }
 
@@ -50,6 +66,152 @@ export interface ChatSteeringCapabilities {
   interrupt: boolean;
 }
 
+/** Why an attempt ended without confirmation. */
+export type ChatInputDeliveryFailureClass = 'timeout' | 'transport' | 'restart';
+
+/**
+ * Every code an unconfirmed attempt can carry, with its class and fixed
+ * summary. Metadata names a code from this table and never carries provider,
+ * error or payload text.
+ */
+export const CHAT_INPUT_DELIVERY_FAILURES = {
+  'delivery-deadline': {
+    class: 'timeout',
+    summary:
+      'The provider did not confirm the message before the delivery deadline.',
+  },
+  'steer-timeout': {
+    class: 'timeout',
+    summary: 'The provider did not answer the steering request in time.',
+  },
+  'enqueue-failed': {
+    class: 'transport',
+    summary: 'The message could not be handed to the provider.',
+  },
+  'transport-error': {
+    class: 'transport',
+    summary: 'The provider request failed before the message was confirmed.',
+  },
+  'handoff-error': {
+    class: 'transport',
+    summary: 'Canopy could not hand the message to the provider.',
+  },
+  'duplicate-attempt': {
+    class: 'transport',
+    summary: 'This submission identity was already used.',
+  },
+  'session-ended': {
+    class: 'restart',
+    summary: 'The provider session ended before the message was confirmed.',
+  },
+  'process-exit': {
+    class: 'restart',
+    summary: 'The provider process exited before the message was confirmed.',
+  },
+  'host-restart': {
+    class: 'restart',
+    summary: 'Canopy restarted before the message was confirmed.',
+  },
+  stopped: {
+    class: 'restart',
+    summary: 'The turn was stopped before the message was confirmed.',
+  },
+} as const satisfies Record<
+  string,
+  { readonly class: ChatInputDeliveryFailureClass; readonly summary: string }
+>;
+
+export type ChatInputDeliveryFailureCode =
+  keyof typeof CHAT_INPUT_DELIVERY_FAILURES;
+
+/** Payload-free detail of an unconfirmed attempt; see the table above. */
+export interface ChatInputDeliveryFailure {
+  class: ChatInputDeliveryFailureClass;
+  code: ChatInputDeliveryFailureCode;
+  summary: string;
+}
+
+/**
+ * Every refusal a provider or the host can prove, with its fixed summary.
+ * Codex refusals are normalized from its `turn/steer` errors, so a variable
+ * part (such as a turn id) never reaches the code or summary.
+ */
+export const CHAT_INPUT_REFUSALS = {
+  'steering-unavailable': 'Steering is unavailable for this session.',
+  'delivery-backlog': 'Too many messages are awaiting delivery confirmation.',
+  'turn-ended': 'The turn ended before the message was taken.',
+  'handoff-interrupted': 'The submission was interrupted before the handoff.',
+  'not-correlated': 'The session cannot correlate this message.',
+  'session-not-steerable': 'The active session no longer accepts steering.',
+  'not-steerable': 'The active turn no longer accepts steering.',
+  'no-active-turn': 'There is no active turn to steer.',
+  'turn-id-mismatch': 'The active turn changed before the message arrived.',
+  'compact-turn': 'A compaction turn cannot be steered.',
+  'review-turn': 'A review turn cannot be steered.',
+  'output-schema-mismatch': 'The active turn uses a different output schema.',
+  'empty-expected-turn-id': 'The steering request named no active turn.',
+  'empty-input': 'The steering request had no input.',
+} as const satisfies Record<string, string>;
+
+export type ChatInputRefusalCode = keyof typeof CHAT_INPUT_REFUSALS;
+
+/** A provider's proven refusal; see the table above. */
+export interface ChatInputRefusal {
+  code: ChatInputRefusalCode;
+  summary: string;
+}
+
+function isFailureCode(value: unknown): value is ChatInputDeliveryFailureCode {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(CHAT_INPUT_DELIVERY_FAILURES, value)
+  );
+}
+
+function isRefusalCode(value: unknown): value is ChatInputRefusalCode {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(CHAT_INPUT_REFUSALS, value)
+  );
+}
+
+/** The failure metadata for a code. */
+export function chatInputDeliveryFailure(
+  code: ChatInputDeliveryFailureCode,
+): ChatInputDeliveryFailure {
+  const entry = CHAT_INPUT_DELIVERY_FAILURES[code];
+  return { class: entry.class, code, summary: entry.summary };
+}
+
+/** The refusal metadata for a code. */
+export function chatInputRefusal(code: ChatInputRefusalCode): ChatInputRefusal {
+  return { code, summary: CHAT_INPUT_REFUSALS[code] };
+}
+
+/**
+ * The canonical failure for untrusted metadata: rebuilt from its code alone,
+ * so an incoming class or summary is never kept. `undefined` for anything
+ * that names no known code.
+ */
+export function readChatInputDeliveryFailure(
+  value: unknown,
+): ChatInputDeliveryFailure | undefined {
+  if (typeof value !== 'object' || value === null || !('code' in value))
+    return undefined;
+  return isFailureCode(value.code)
+    ? chatInputDeliveryFailure(value.code)
+    : undefined;
+}
+
+/** {@link readChatInputDeliveryFailure} for refusals. */
+export function readChatInputRefusal(
+  value: unknown,
+): ChatInputRefusal | undefined {
+  if (typeof value !== 'object' || value === null || !('code' in value))
+    return undefined;
+  return isRefusalCode(value.code) ? chatInputRefusal(value.code) : undefined;
+}
+
 export type ChatInputAdmission =
   | { kind: 'accepted'; attemptId: string; providerTurnId?: string }
   | {
@@ -58,6 +220,10 @@ export type ChatInputAdmission =
       reason: string;
       /** The provider proved that no input was accepted, so ordinary dispatch is safe. */
       fallback?: 'ordinary';
+      /** `rejected`: the provider's normalized refusal. */
+      refusal?: ChatInputRefusal;
+      /** `unknown`: why delivery could not be confirmed. */
+      failure?: ChatInputDeliveryFailure;
     };
 
 export type ChatInputWithdrawal =
@@ -78,6 +244,8 @@ export interface ChatInputDeliveryEvent {
   userMessageId?: string;
   /** Host arbitration result for a pickup that attempted to start a turn. */
   turnRootAccepted?: boolean;
+  /** Phase `unknown` only: why delivery could not be confirmed. */
+  failure?: ChatInputDeliveryFailure;
 }
 
 export type ChatInputDeliveryState =
@@ -109,6 +277,11 @@ export interface ChatInputAttempt<Payload = unknown> {
   providerTurnId?: string;
   itemId?: string;
   rootUserMessageId?: string;
+  /**
+   * The provider session (Claude SDK session id, Codex thread id) and, for
+   * Codex, the turn this steer could land in; recorded before provider I/O.
+   */
+  target?: { sessionId: string; turnId?: string };
   turnOutcome?: 'completed' | 'failed' | 'cancelled' | 'interrupted';
   turnSettledAt?: number;
 }
@@ -131,6 +304,16 @@ export interface ChatInputDeliveryRow<Payload = { text: string }> {
   reason?: string;
   /** User hid this delivery notice; attempt evidence and deduplication remain authoritative. */
   dismissedAt?: number;
+  /**
+   * A generated row cancelled for the ordinary fallback still owes one return
+   * to the queue. Applies only while that attempt is current and unchanged in
+   * this ledger epoch (`validOrdinaryContinuation`).
+   */
+  ordinaryContinuation?: { attemptId: string; epoch: number };
+  /** Restored for ordinary delivery only: never steered again. */
+  ordinaryOnly?: true;
+  /** Provider history showed this attempt was never delivered. */
+  notDelivered?: { attemptId: string; at: number };
 }
 
 export interface ChatInputDeliveryLedger<Payload = { text: string }> {
@@ -164,6 +347,10 @@ export interface ChatInputDeliveryView {
   agentSent?: ChatAgentSentInfo;
   attachmentCount: number;
   canWithdraw: boolean;
+  /** A cancelled row whose current attempt provider history proved undelivered. */
+  notDelivered?: boolean;
+  /** Watcher, automation or async-answer input rather than a typed message. */
+  generated?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -198,7 +385,7 @@ export function parseChatWatcherFiredInfo(
 
 /**
  * Copy only the public agent-sender attribution. Unknown display metadata is
- * ignored; malformed or mixed project/bot variants are rejected.
+ * ignored; malformed or mixed project/bot/pipeline variants are rejected.
  */
 export function parseChatAgentSentInfo(
   value: unknown,
@@ -255,7 +442,51 @@ export function parseChatAgentSentInfo(
     };
   }
 
+  if (sender.kind === 'pipeline') {
+    const pipelineSender = parsePipelineSender(sender);
+    if (!pipelineSender) return undefined;
+    return {
+      sender: pipelineSender,
+      chatTitle: value.chatTitle,
+      projectLabel: value.projectLabel,
+    };
+  }
+
   return undefined;
+}
+
+function parsePipelineSender(
+  sender: Record<string, unknown>,
+): ChatAgentSentPipelineSender | undefined {
+  if (
+    'projectId' in sender ||
+    'projectType' in sender ||
+    'botId' in sender ||
+    'taskId' in sender ||
+    'chatId' in sender
+  )
+    return undefined;
+  const { executionId, pipelineId, stepId, automationId } = sender;
+  const step =
+    isNonBlankString(executionId) &&
+    isNonBlankString(pipelineId) &&
+    isNonBlankString(stepId)
+      ? { executionId, pipelineId, stepId }
+      : undefined;
+  const namesStep =
+    'executionId' in sender || 'pipelineId' in sender || 'stepId' in sender;
+  const namesAutomation = 'automationId' in sender;
+  if (
+    (namesStep && !step) ||
+    (namesAutomation && !isNonBlankString(automationId)) ||
+    (!step && !namesAutomation)
+  )
+    return undefined;
+  return {
+    kind: 'pipeline',
+    ...step,
+    ...(isNonBlankString(automationId) ? { automationId } : {}),
+  };
 }
 
 function isChatInputDeliveryState(
@@ -317,6 +548,8 @@ export function parseInputDeliveryViews(
         ...(row.editResubmits !== undefined
           ? { editResubmits: row.editResubmits }
           : {}),
+        ...(row.notDelivered === true ? { notDelivered: true } : {}),
+        ...(row.generated === true ? { generated: true } : {}),
       };
     });
 }

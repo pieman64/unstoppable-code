@@ -97,6 +97,7 @@ export function HeadlineCards({
                 >
                   <button
                     type="button"
+                    data-settings-control="disclosure"
                     aria-label={`What does ${card.label} mean?`}
                     className="shrink-0 fg-secondary/60 transition-colors hover:fg-primary"
                     data-testid={`usage-card-${card.key}-info`}

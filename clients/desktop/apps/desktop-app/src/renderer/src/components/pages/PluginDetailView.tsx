@@ -1,4 +1,10 @@
-import { pluginDisplayName, Notice } from '@canopy/ui-shared';
+import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
+import {
+  pluginDisplayName,
+  Notice,
+  type UnifiedEntryAlternative,
+  type UnifiedEntryBundledServerRow,
+} from '@canopy/ui-shared';
 import {
   type JSX,
   type ReactNode,
@@ -23,56 +29,48 @@ import type {
   MarketplaceInfo,
   PluginInfo,
 } from '@canopy/desktop-shared/types/plugins';
-import { cursorPluginFacetSupport } from '@canopy/desktop-shared/lib/cursor-capabilities';
+import {
+  offeredPluginHarnesses,
+  pluginHarnessRows,
+  type PluginHarnessId,
+  type PluginHarnessRow,
+} from '@canopy/plugin-interop/harness-support';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { brandText } from '@/lib/brand';
 import {
   applyCodexCompatDisabledToMarketplaceCaches,
   marketplaceSourceOperations,
 } from '@/hooks/useMarketplaceList';
 import { useShareAccess } from '@/hooks/useShareAccess';
+import { usePluginMcpServerHealth } from '@/hooks/usePluginMcpServerHealth';
 import { computePluginShareableRef } from '@/hooks/useUnifiedTableData';
 import { SharePluginModal } from '@/components/plugins/SharePluginModal';
 import { pluginNeedsInstall } from '../../lib/pluginInstallStatus';
 import type { MarketplaceShareAction } from '@canopy/ui-shared/lib';
 import { formatDate } from '../../lib/format';
-import { PluginHarnessStatus } from '../plugins/PluginHarnessStatus';
-import { pluginHarnessSupport } from '../../lib/tryItRuntime';
 
 function resultError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-interface InstalledPluginHarnessesProps {
-  plugin: PluginInfo;
-}
-
-/**
- * Where an installed plugin runs inside the app. Its MCP servers sign in from
- * a chat's MCP Servers panel once a chat uses the plugin, not from here.
- */
-function InstalledPluginHarnesses({
-  plugin,
-}: InstalledPluginHarnessesProps): JSX.Element {
-  // The Cursor row follows the resolver's rule, not a local reading of it:
-  // the facet a Cursor session reads (Claude first, else native Codex) and
-  // whether that facet carries an MCP server, skill, or command it loads.
-  const cursor = cursorPluginFacetSupport(plugin.facets);
-  return (
-    <PluginHarnessStatus
-      installed
-      providerInstallation={
-        plugin.globalInstallStatus
-          ? {
-              claude: plugin.globalInstallStatus.claude?.installed ?? false,
-              codex: plugin.globalInstallStatus.codex?.installed ?? false,
-              cursor:
-                plugin.globalInstallStatus[cursor.provider]?.installed ?? false,
-            }
-          : undefined
-      }
-      support={pluginHarnessSupport(plugin)}
-    />
-  );
+/** Harness rows for an installed plugin, through the shared row rule. */
+function installedPluginHarnessRows(
+  plugin: PluginInfo,
+  harnesses: readonly PluginHarnessId[],
+): PluginHarnessRow[] {
+  return pluginHarnessRows({
+    harnesses,
+    providerSupport: plugin.providerSupport,
+    codexCompatDisabled: plugin.codexCompatDisabled,
+    facets: plugin.facets,
+    installed: plugin.globalInstallStatus
+      ? {
+          claude: plugin.globalInstallStatus.claude?.installed ?? false,
+          codex: plugin.globalInstallStatus.codex?.installed ?? false,
+        }
+      : true,
+  });
 }
 
 /** Desktop IPC adapter for the browser-safe shared full-plugin composition. */
@@ -82,18 +80,29 @@ export function PluginDetailView({
   onBack,
   onPluginUpdated,
   relatedContent,
+  statusContent,
+  sharedContent,
   headerActions,
   headerIcon,
   autoInstall = false,
   shareAction,
+  mcpTarget,
   renderPrimaryAction,
+  alternatives,
+  onOpenEntryId,
+  bundledServerRows,
 }: {
+  mcpTarget?: PluginMcpNavigationTarget;
   plugin: PluginInfo;
   marketplace: MarketplaceInfo;
   /** Omitted on a page, whose breadcrumb is the way back (CAN-4261). */
   onBack?: () => void;
   onPluginUpdated: (updated: PluginInfo) => void;
   relatedContent?: ReactNode;
+  /** The installed-item Status row, right under the plugin's metadata. */
+  statusContent?: ReactNode;
+  /** The owner's "Shared by you" section, after the install area. */
+  sharedContent?: ReactNode;
   headerActions?: ReactNode;
   headerIcon?: ReactNode;
   /** Install right away, for the Marketplace's Add. Nothing signs in here. */
@@ -108,6 +117,11 @@ export function PluginDetailView({
     onInstall: () => void;
     busy: boolean;
   }) => ReactNode;
+  /** The same app from other catalogs (CAN-3653). */
+  alternatives?: readonly UnifiedEntryAlternative[];
+  onOpenEntryId?: (entryId: string) => void;
+  /** Installed MCP rows hidden behind this plugin; each opens its settings. */
+  bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
 }): JSX.Element {
   const [shareOpen, setShareOpen] = useState(false);
   const [compatibilityError, setCompatibilityError] = useState('');
@@ -117,6 +131,26 @@ export function PluginDetailView({
     [marketplace, plugin],
   );
   const needsInstall = pluginNeedsInstall(plugin);
+  const mcpServerHealth = usePluginMcpServerHealth(bundledServerRows);
+  // List only the harnesses this build offers; the gates are its own flags.
+  const cursorEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key),
+  );
+  const copilotEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key),
+  );
+  const opencodeEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
+  );
+  const harnesses = useMemo(
+    () =>
+      offeredPluginHarnesses({
+        cursor: cursorEnabled,
+        copilot: copilotEnabled,
+        opencode: opencodeEnabled,
+      }),
+    [cursorEnabled, copilotEnabled, opencodeEnabled],
+  );
   const autoInstallStarted = useRef(false);
   const onPluginUpdatedRef = useRef(onPluginUpdated);
   onPluginUpdatedRef.current = onPluginUpdated;
@@ -307,6 +341,7 @@ export function PluginDetailView({
     <>
       <PluginDetailHost
         plugin={plugin}
+        mcpTarget={mcpTarget}
         onBack={onBack}
         loadDetail={(): Promise<PluginInfo> => Promise.resolve(plugin)}
         readComponent={readComponent}
@@ -316,11 +351,20 @@ export function PluginDetailView({
         relatedContent={relatedContent}
         headerActions={headerActions}
         renderPrimaryAction={renderPrimaryAction}
+        alternatives={alternatives}
+        onOpenEntryId={onOpenEntryId}
+        bundledServerRows={bundledServerRows}
+        mcpServerHealth={mcpServerHealth}
         headerIcon={headerIcon}
-        connectionContent={
-          !needsInstall ? (
-            <InstalledPluginHarnesses plugin={plugin} />
-          ) : undefined
+        statusContent={statusContent}
+        sharedContent={sharedContent}
+        // Where an installed plugin runs: every offered harness, signed in or not.
+        // Its MCP servers sign in from a chat's MCP Servers panel once a chat
+        // uses the plugin, not here.
+        harnessRows={
+          !needsInstall
+            ? installedPluginHarnessRows(plugin, harnesses)
+            : undefined
         }
         needsInstall={needsInstall}
         loading={autoInstalling}

@@ -25,7 +25,11 @@ const access: ExternalAgentAccess = {
   disabledTools: [],
   enabledDefaultOff: [],
   organizations: { mode: 'all', organizationIds: [] },
-  remotes: { mode: 'all', remoteIds: [] },
+  hosts: {
+    managed: false,
+    connected: { mode: 'all', remoteIds: [] },
+    exposeNames: false,
+  },
 };
 
 const summary: ExternalAgentConnectionSummary = {
@@ -43,6 +47,7 @@ const summary: ExternalAgentConnectionSummary = {
     destructive: [],
     organizations: 'all',
     desktops: null,
+    managed: null,
   },
 };
 
@@ -78,6 +83,7 @@ function createDetail(
       pipeline: 'act',
     },
     waiting: [],
+    textContentCompatibility: false,
     ...overrides,
   };
 }
@@ -289,6 +295,7 @@ describe('createExternalAgentStore', () => {
     const desktops: ExternalAgentDesktop[] = [
       {
         remoteId: 'c0ffee00-0000-4000-8000-000000000001',
+        hostCode: 'HOST-001',
         name: 'Work desktop',
         hostname: 'work.example',
         connection: 'active',
@@ -327,6 +334,7 @@ describe('createExternalAgentStore', () => {
     const desktops: ExternalAgentDesktop[] = [
       {
         remoteId: 'c0ffee00-0000-4000-8000-000000000002',
+        hostCode: 'HOST-001',
         name: 'Home desktop',
         hostname: null,
         connection: 'inactive',
@@ -368,6 +376,7 @@ describe('createExternalAgentStore', () => {
     const newer: ExternalAgentDesktop[] = [
       {
         remoteId: 'c0ffee00-0000-4000-8000-000000000003',
+        hostCode: 'HOST-001',
         name: 'New desktop',
         hostname: null,
         connection: 'reconnecting',
@@ -412,6 +421,7 @@ describe('createExternalAgentStore', () => {
     const desktops: ExternalAgentDesktop[] = [
       {
         remoteId: 'c0ffee00-0000-4000-8000-000000000004',
+        hostCode: 'HOST-001',
         name: 'Work desktop',
         hostname: null,
         connection: 'active',

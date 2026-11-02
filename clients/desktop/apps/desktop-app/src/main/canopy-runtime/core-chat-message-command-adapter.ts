@@ -212,6 +212,19 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
     },
     toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
   },
+  'chat.move_queued_message': {
+    instruction: 'core.chat.queue.entry.update',
+    toParams: (command, request) => {
+      const move = requireCommand(command, 'chat.move_queued_message');
+      return {
+        ...baseParams(request),
+        chatId: move.chatId,
+        entryId: move.queuedMessageId,
+        mutation: { kind: 'move', beforeEntryId: move.beforeQueuedMessageId },
+      };
+    },
+    toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
+  },
   'chat.force_queued_message': {
     instruction: 'core.chat.queue.entry.force',
     toParams: (command, request) => {
@@ -225,6 +238,35 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
     toLegacyResult: (result) => CoreChatCommandReceiptSchema.parse(result),
   },
 };
+
+function queueUpdateCommand(
+  params: CanopyInstructionParams<'core.chat.queue.entry.update'>,
+): ChatCommand {
+  const { mutation } = params;
+  switch (mutation.kind) {
+    case 'steer':
+      return {
+        type: 'chat.steer_queued_message',
+        chatId: params.chatId,
+        queuedMessageId: params.entryId,
+      };
+    case 'move':
+      return {
+        type: 'chat.move_queued_message',
+        chatId: params.chatId,
+        queuedMessageId: params.entryId,
+        beforeQueuedMessageId: mutation.beforeEntryId,
+      };
+    case 'edit':
+      return {
+        type: 'chat.edit_queued_message',
+        chatId: params.chatId,
+        queuedMessageId: params.entryId,
+        text: mutation.text,
+        ...(mutation.inputMode ? { inputMode: mutation.inputMode } : {}),
+      };
+  }
+}
 
 type MessageHandlers = Pick<
   CanopyInstructionHandlerMap<CanopyHandlerContext>,
@@ -359,21 +401,7 @@ export function createCoreChatMessageAdapter(
       invoke(
         'core.chat.queue.entry.update',
         params,
-        params.mutation.kind === 'steer'
-          ? {
-              type: 'chat.steer_queued_message',
-              chatId: params.chatId,
-              queuedMessageId: params.entryId,
-            }
-          : {
-              type: 'chat.edit_queued_message',
-              chatId: params.chatId,
-              queuedMessageId: params.entryId,
-              text: params.mutation.text,
-              ...(params.mutation.inputMode
-                ? { inputMode: params.mutation.inputMode }
-                : {}),
-            },
+        queueUpdateCommand(params),
         context,
       ),
     'core.chat.queue.entry.force': (params, context) =>

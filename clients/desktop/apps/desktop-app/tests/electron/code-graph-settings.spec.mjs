@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { projectSettingsNav } from './projectSettingsDriver.mjs';
 
 const WORKSPACE_NAME = 'TypeScript pnpm Vite';
 // Catalog glyph shared by every Code Graph surface: `GraphIcon` from both
@@ -108,7 +109,7 @@ test('project settings Code Graph tab uses the code graph icon and links to its 
       .filter({ has: window.locator('#project-settings-title') });
     await expect(dialog).toBeVisible();
 
-    const codeGraphTab = dialog.getByRole('tab', { name: 'Code Graph' });
+    const codeGraphTab = projectSettingsNav(app, 'code-graph');
     await expect(codeGraphTab.locator(CODE_GRAPH_GLYPH)).toHaveCount(1);
     await codeGraphTab.click();
 

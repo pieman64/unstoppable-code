@@ -22,6 +22,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { CanopyPortalModal } from '@/components/portal/CanopyPortalModal';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
+import { makeTestPreferences } from '@/test-utils/preferences';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -102,6 +103,7 @@ function buildState(overrides: Partial<CanopyPortalState>): CanopyPortalState {
     pairingCode: null,
     pairingCodeExpiresAt: null,
     machineName: null,
+    hostCode: null,
     activatedAt: null,
     lastSeenAt: null,
     lastErrorAt: null,
@@ -112,15 +114,26 @@ function buildState(overrides: Partial<CanopyPortalState>): CanopyPortalState {
 
 function installApi(account: CanopyCloudAccountPublicState | null): void {
   const api: Partial<CanopyApi> = {
-    loadCanopyCloudAccount: () => Promise.resolve(account),
+    loadCanopyCloudAccount: () =>
+      Promise.resolve(
+        account ??
+          baseAccount({
+            hasApiKey: false,
+            authMode: null,
+            credentialSource: null,
+            account: undefined,
+          }),
+      ),
     getCanopyCloudBaseUrl: () => Promise.resolve(null),
-    loadPreferences: () => Promise.resolve({}),
+    loadPreferences: () => Promise.resolve(makeTestPreferences()),
     loadCanopyCloudMobileActivation: () =>
       Promise.resolve({ hasMobileActivation: false, resolved: true }),
     canopyPortal: {
       getState: () => Promise.resolve(buildState({})),
       start: () => Promise.resolve({ state: buildState({}) }),
       stop: () => Promise.resolve({ state: buildState({}) }),
+      regeneratePairingCode: () => Promise.resolve({ state: buildState({}) }),
+      cancelPairingCode: () => Promise.resolve({ state: buildState({}) }),
       onStateChanged: (): (() => void) => () => undefined,
     },
   };

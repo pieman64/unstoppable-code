@@ -115,7 +115,7 @@ export function SearchableSelect({
           aria-haspopup="listbox"
           aria-expanded={open}
           data-testid={testId}
-          className="focus-ring flex w-full items-center justify-between gap-2 rounded-md border bg-base px-2.5 py-1.5 text-left text-s fg-primary transition hover:bg-fg-primary/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+          className="focus-ring flex w-full items-center justify-between gap-2 rounded-md border bg-base px-2.5 py-1.5 text-left text-s fg-primary transition-colors hover:bg-fg-primary/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selected?.badge}
@@ -185,7 +185,7 @@ export function SearchableSelect({
                       onChange('');
                       setOpen(false);
                     }}
-                    className={`flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-secondary ${
+                    className={`flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
                       value === '' ? 'bg-secondary' : ''
                     }`}
                   >
@@ -217,7 +217,7 @@ export function SearchableSelect({
                           onChange(option.id);
                           setOpen(false);
                         }}
-                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-secondary ${
+                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
                           isSelected ? 'bg-secondary' : ''
                         }`}
                       >

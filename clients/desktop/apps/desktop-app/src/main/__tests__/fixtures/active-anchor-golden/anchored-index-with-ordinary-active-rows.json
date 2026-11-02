@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "format": "complete-message-jsonl-v1",
+  "committedMessageCount": 0,
+  "committedByteLength": 0,
+  "committedDigest": "8f2ac5b0c0baabb7b81429c7a92ee35f4ed889d4e6414b1efc025b7acaeb10d0",
+  "transcriptRevision": 0,
+  "hasActiveSidecar": true,
+  "hasOrdinaryActiveRows": true,
+  "offsets": [],
+  "checksum": "d414267818dc8ca38c40c8433b5dd4c9e167669e813c582d6757cf91a2828468"
+}

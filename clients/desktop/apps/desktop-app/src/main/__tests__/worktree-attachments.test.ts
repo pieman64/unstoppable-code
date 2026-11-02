@@ -6,13 +6,20 @@
 // original underscore sentinel ('__home_draft__') was rejected at the IPC
 // boundary before anything was written.
 
-const showOpenDialogMock = jest.fn(() =>
-  Promise.resolve({ canceled: true, filePaths: [] }),
-);
+const showOpenDialogMock = jest.fn<
+  Promise<{ canceled: boolean; filePaths: string[] }>,
+  [window?: unknown, options?: unknown]
+>(() => Promise.resolve({ canceled: true, filePaths: [] }));
 const fromWebContentsMock = jest.fn<unknown, [unknown]>();
+type ImportHandler = (
+  event: unknown,
+  request: WorktreeImportAttachmentsRequest,
+) => Promise<WorktreeImportAttachmentsResponse>;
 jest.mock('electron', () => ({
   dialog: {
-    showOpenDialog: (...args: unknown[]): unknown =>
+    showOpenDialog: (
+      ...args: [window?: unknown, options?: unknown]
+    ): Promise<{ canceled: boolean; filePaths: string[] }> =>
       showOpenDialogMock(...args),
   },
   BrowserWindow: {
@@ -21,16 +28,10 @@ jest.mock('electron', () => ({
   },
 }));
 
-const registeredHandlers = new Map<
-  string,
-  (event: unknown, ...args: unknown[]) => unknown
->();
+const registeredHandlers = new Map<string, ImportHandler>();
 jest.mock('../ipc/register', () => ({
-  registerIpcHandler: jest.fn(
-    (
-      channel: string,
-      handler: (event: unknown, ...args: unknown[]) => unknown,
-    ) => {
+  registerIpcHandler: jest.fn<void, [string, ImportHandler]>(
+    (channel, handler): void => {
       registeredHandlers.set(channel, handler);
     },
   ),
@@ -44,17 +45,38 @@ import {
   type WorktreeImportAttachmentsRequest,
   type WorktreeImportAttachmentsResponse,
 } from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { registerWorktreeAttachmentHandlers } from '../ipc/worktree-attachments';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../canopy-runtime/desktop-runtime';
+
+// CAN-4105: the attachment channels project core.workspace.item.*, so each
+// test registers them over a real desktop runtime on its temporary data root.
+let runtime: DesktopCanopyDispatcher | null = null;
+function attachmentRuntime(): {
+  dispatcher: DesktopCanopyDispatcher;
+  resolveCaller: () => CanopyCallerDescriptor;
+} {
+  const created = createDesktopRuntime();
+  runtime = created;
+  return {
+    dispatcher: created,
+    resolveCaller: (): CanopyCallerDescriptor => ({
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'electron-web-contents:1',
+      authorityId: 'local-desktop',
+      interfaceKind: 'desktop',
+      grants: [],
+    }),
+  };
+}
 
 // Keep in sync with HOME_DRAFT_WORKTREE_ID in
 // apps/desktop-app/src/renderer/src/stores/homeComposerStore.ts (main tests
 // do not import renderer modules).
 const HOME_DRAFT_WORKTREE_ID = 'home-draft';
-
-type ImportHandler = (
-  event: unknown,
-  request: WorktreeImportAttachmentsRequest,
-) => Promise<WorktreeImportAttachmentsResponse>;
 
 function getImportHandler(): ImportHandler {
   const handler = registeredHandlers.get(
@@ -78,10 +100,12 @@ describe('worktree attachment import handler', () => {
     tempDataDir = mkdtempSync(join(tmpdir(), 'canopy-attachments-data-'));
     tempSourceDir = mkdtempSync(join(tmpdir(), 'canopy-attachments-src-'));
     process.env.CANOPY_DATA_DIR = tempDataDir;
-    registerWorktreeAttachmentHandlers();
+    registerWorktreeAttachmentHandlers(attachmentRuntime());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await runtime?.shutdown();
+    runtime = null;
     if (originalCanopyDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
     } else {

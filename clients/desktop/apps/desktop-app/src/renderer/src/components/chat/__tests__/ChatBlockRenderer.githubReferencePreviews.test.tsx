@@ -30,6 +30,7 @@ jest.mock('../AgentBlock', () => ({
 
 import { createRoot, type Root } from 'react-dom/client';
 import type { CanopyClient } from '@canopy/app-core';
+import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-client';
 import { CanopyClientProvider } from '@canopy/app-state';
 import type {
   GitHubPreviewTarget,
@@ -47,7 +48,8 @@ import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeat
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const query = jest.fn<Promise<unknown>, [string, unknown?]>();
+const fakeClient = createFakeClient();
+const query = fakeClient.query;
 const client: CanopyClient = {
   capabilities: {
     localExecution: true,
@@ -58,10 +60,11 @@ const client: CanopyClient = {
     pipelines: 'execute',
     routing: 'in-memory',
     referencePreviews: true,
+    overviewNotifications: false,
   },
   query,
-  command: jest.fn(),
-  subscribe: () => () => undefined,
+  command: fakeClient.command,
+  subscribe: fakeClient.client.subscribe.bind(fakeClient.client),
 };
 
 const WORKTREE_A: ChatMarkdownFileTarget = {
@@ -119,7 +122,9 @@ const referenceTexts = (): string[] =>
   references().map((node) => node.textContent ?? '');
 
 const calls = (name: string): unknown[][] =>
-  query.mock.calls.filter(([called]) => called === name);
+  query.mock.calls
+    .map((call: unknown[]) => call)
+    .filter(([called]) => called === name);
 
 const originKey = (origin: unknown): string => {
   if (typeof origin !== 'object' || origin === null) return '';

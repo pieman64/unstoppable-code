@@ -18,8 +18,15 @@ const event = (chatId: string, data: unknown): ChatEvent => ({
   data,
 });
 
+type ChatInterestCase = [
+  name: string,
+  declaration: ChatInterestDeclaration | undefined,
+  message: ChatEvent,
+  expected: boolean,
+];
+
 describe('raw chat event interest', () => {
-  it.each([
+  const cases: ChatInterestCase[] = [
     ['undeclared', undefined, event('y', codexUpdate), false],
     ['focused', interest, event('x', codexUpdate), false],
     ['warm', { focused: [], warm: [y] }, event('y', codexUpdate), false],
@@ -75,13 +82,17 @@ describe('raw chat event interest', () => {
       { type: 'codex', event: { type: 'item.started' } },
       { type: 'codex', event: { type: 'item.completed' } },
       { type: 'codex', event: { type: 'turn.completed' } },
-    ].map((data) => [
-      `always delivered ${String(data.type)} ${'event' in data ? String(data.event.type) : ''}`,
-      interest,
-      event('y', data),
-      false,
-    ]),
-  ])('%s', (_name, declaration, message, expected) => {
+    ].map(
+      (data): ChatInterestCase => [
+        `always delivered ${String(data.type)} ${'event' in data ? String(data.event?.type) : ''}`,
+        interest,
+        event('y', data),
+        false,
+      ],
+    ),
+  ];
+
+  it.each(cases)('%s', (_name, declaration, message, expected) => {
     expect(
       shouldDropChatEvent(
         declaration ? chatInterestKeys(declaration) : undefined,

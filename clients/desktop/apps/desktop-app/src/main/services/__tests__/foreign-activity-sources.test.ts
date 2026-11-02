@@ -64,7 +64,7 @@ function pipeline(
       version: 10,
       id,
       pipeline_id: 'pipeline',
-      pipeline_snapshot: { name: 'Test', jobs: {} },
+      pipeline_snapshot: { name: 'Test', scope: ['directory'], jobs: {} },
       status,
       jobs: {},
       job_definitions: {},
@@ -77,6 +77,7 @@ function pipeline(
       env: {},
       inputs: {},
       status_reasons: [],
+      pending_pauses: [],
     },
   };
 }

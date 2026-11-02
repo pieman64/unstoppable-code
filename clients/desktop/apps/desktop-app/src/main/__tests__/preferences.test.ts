@@ -1,8 +1,16 @@
 import type * as DataSharingOptInAuthorityModule from '../lib/data-sharing-opt-in-authority';
 import type * as AtomicFileModule from '../lib/atomic-file';
-import { writeFileAtomically } from '../lib/atomic-file';
+import {
+  createDirectoryDurably,
+  renameWithRetry,
+  writeFileAtomically,
+} from '../lib/atomic-file';
 import { DataSharingOptInError } from '../lib/data-sharing-opt-in-authority';
 import { personalCatalogPreferenceChanged } from '../services/personal-catalog-sync-host';
+import { notifyManagedDelegationLifetimePreferencesChanged } from '../agents/delegation/lifetime-status';
+jest.mock('../agents/delegation/lifetime-status', () => ({
+  notifyManagedDelegationLifetimePreferencesChanged: jest.fn(),
+}));
 jest.mock('../services/personal-catalog-sync-host', () => ({
   personalCatalogPreferenceChanged: jest.fn(),
 }));
@@ -15,10 +23,29 @@ import type {
   PreferencesLoadResult,
   ThinkingLevel,
 } from '@canopy/desktop-shared/types';
+import type { ResolvedCanopyDataDir } from '@canopy/protocol/brand';
 import type { Stats } from 'node:fs';
 import { statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { brandEnvName } from '@canopy/desktop-shared/brand/env';
+import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
+import { RemoteHostSession } from '../remote-control/host/host-session';
+import { RemoteUploadStore } from '../remote-control/host/uploads';
+import {
+  REMOTE_METHODS,
+  type HelloResult,
+} from '../remote-control/remote-protocol';
+import { RpcPeer } from '../remote-control/transport/rpc-peer';
+import {
+  FakeBridge,
+  FakeMainWindow,
+  TEST_VERSION,
+} from '../remote-control/__tests__/host-fakes';
+import { InMemoryRelayHub } from '../remote-control/__tests__/in-memory-relay';
+import {
+  createTestDevice,
+  openControlSession,
+} from '../remote-control/__tests__/session-pair';
 import {
   DEFAULT_SIDEBAR_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -39,7 +66,9 @@ import {
 
 const mockRevokeOpenCodeRuntimes = jest.fn(async () => {});
 jest.mock('../opencode/connection', () => ({
-  revokeOpenCodeRuntimes: mockRevokeOpenCodeRuntimes,
+  get revokeOpenCodeRuntimes(): typeof mockRevokeOpenCodeRuntimes {
+    return mockRevokeOpenCodeRuntimes;
+  },
 }));
 const mockInvalidateCursorModels = jest.fn(() => Promise.resolve());
 const mockRefreshCursorRuntimeAvailability = jest.fn(() =>
@@ -54,16 +83,24 @@ const mockBroadcastModelRegistryUpdated = jest.fn();
 // Connect/Disconnect coverage of the same contract.
 const mockNotifyPortalStructureChanged = jest.fn();
 jest.mock('../cursor/models', () => ({
-  invalidateCursorModels: mockInvalidateCursorModels,
+  get invalidateCursorModels(): typeof mockInvalidateCursorModels {
+    return mockInvalidateCursorModels;
+  },
 }));
 jest.mock('../cursor/runtime-availability', () => ({
-  refreshCursorRuntimeAvailability: mockRefreshCursorRuntimeAvailability,
+  get refreshCursorRuntimeAvailability(): typeof mockRefreshCursorRuntimeAvailability {
+    return mockRefreshCursorRuntimeAvailability;
+  },
 }));
 jest.mock('../models/model-registry', () => ({
-  broadcastModelRegistryUpdated: mockBroadcastModelRegistryUpdated,
+  get broadcastModelRegistryUpdated(): typeof mockBroadcastModelRegistryUpdated {
+    return mockBroadcastModelRegistryUpdated;
+  },
 }));
 jest.mock('../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: mockNotifyPortalStructureChanged,
+  get notifyPortalStructureChanged(): typeof mockNotifyPortalStructureChanged {
+    return mockNotifyPortalStructureChanged;
+  },
 }));
 
 function initializeTestModelRegistries(): void {
@@ -84,7 +121,6 @@ function initializeTestModelRegistries(): void {
     [
       {
         id: 'deepseek-v4-pro',
-        gatewayId: 'deepseek/deepseek-v4-pro',
         family: 'deepseek',
         label: 'DeepSeek V4 Pro',
         recommendedHarness: 'codex',
@@ -132,8 +168,10 @@ function initializeTestModelRegistries(): void {
 initializeTestModelRegistries();
 
 jest.mock('node:fs/promises');
+// Folder durability runs on real folders in atomic-file-durability.test.ts.
 jest.mock('../lib/atomic-file', () => ({
   ...jest.requireActual<typeof AtomicFileModule>('../lib/atomic-file'),
+  createDirectoryDurably: jest.fn(),
   writeFileAtomically: jest.fn(),
 }));
 jest.mock('../lib/paths', () => ({
@@ -144,17 +182,31 @@ jest.mock('../lib/paths', () => ({
 const mockPrimaryDataDir = '/mock/home/.testbrand';
 const mockFallbackDataDir = '/mock/home/.canopy';
 const mockGetPrimaryBrandDataDir = jest.fn(() => mockPrimaryDataDir);
-const mockGetResolvedCanopyDataDir = jest.fn(() => ({
+const mockGetResolvedCanopyDataDir = jest.fn<ResolvedCanopyDataDir, []>(() => ({
   path: mockFallbackDataDir,
-  source: 'fallback' as const,
+  source: 'fallback',
   allCandidates: [mockPrimaryDataDir, mockFallbackDataDir],
 }));
 const mockResetResolvedCanopyDataDirCache = jest.fn();
 jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
   DATA_DIR_ADOPTION_MARKER_FILENAME: 'data-dir-adopted.json',
-  getPrimaryBrandDataDir: mockGetPrimaryBrandDataDir,
-  getResolvedCanopyDataDir: mockGetResolvedCanopyDataDir,
-  resetResolvedCanopyDataDirCache: mockResetResolvedCanopyDataDirCache,
+  get getPrimaryBrandDataDir(): typeof mockGetPrimaryBrandDataDir {
+    return mockGetPrimaryBrandDataDir;
+  },
+  get getResolvedCanopyDataDir(): typeof mockGetResolvedCanopyDataDir {
+    return mockGetResolvedCanopyDataDir;
+  },
+  get resetResolvedCanopyDataDirCache(): typeof mockResetResolvedCanopyDataDirCache {
+    return mockResetResolvedCanopyDataDirCache;
+  },
+}));
+// This suite automocks node:fs/promises, which real registration needs.
+const mockRegisterDesktopW5Root = jest
+  .fn<Promise<{ kind: 'admitted' }>, [string]>()
+  .mockResolvedValue({ kind: 'admitted' });
+jest.mock('../lib/w5-host-admission', () => ({
+  registerDesktopW5Root: (dataRoot: string): unknown =>
+    mockRegisterDesktopW5Root(dataRoot),
 }));
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
@@ -167,7 +219,9 @@ jest.mock('../lib/desktop-telemetry', () => ({
 }));
 const enqueueManualLocalMemoryImportBatchMock = jest.fn();
 jest.mock('../memory/local/import/import-job', () => ({
-  enqueueManualLocalMemoryImportBatch: enqueueManualLocalMemoryImportBatchMock,
+  get enqueueManualLocalMemoryImportBatch(): typeof enqueueManualLocalMemoryImportBatchMock {
+    return enqueueManualLocalMemoryImportBatchMock;
+  },
 }));
 const mockSharingRefresh = jest.fn(() => Promise.resolve());
 const mockOptInAuthority = jest.fn();
@@ -205,20 +259,30 @@ jest.mock('../browser/default-browser-registration', () => ({
 }));
 const syncOnboardingProfilePreferencesMock = jest.fn(() => Promise.resolve());
 jest.mock('../services/onboarding-profile-sync-service', () => ({
-  syncOnboardingProfilePreferences: syncOnboardingProfilePreferencesMock,
+  get syncOnboardingProfilePreferences(): typeof syncOnboardingProfilePreferencesMock {
+    return syncOnboardingProfilePreferencesMock;
+  },
 }));
 const setRetentionDaysMock = jest.fn();
 const updateCodexSessionIdleTimeoutMinutesMock = jest.fn();
+const updateClaudeSessionIdleTimeoutMinutesMock = jest.fn();
 const updateCodexRuntimeIdleTimeoutMinutesMock = jest.fn();
 const markCodexSessionsForNextTurnRecreationMock = jest.fn();
 const mockMarkManagedDelegation = jest.fn();
 const mockUpdateManagedDelegationMaxConcurrent = jest.fn();
+const mockUpdateManagedDelegationLifetimeLimit = jest.fn<void, [number]>();
 const mockUpdateManagedDelegationPolicy = jest.fn(() => Promise.resolve());
 jest.mock('../agents/delegation/service', () => ({
-  updateManagedDelegationPolicy: mockUpdateManagedDelegationPolicy,
+  get updateManagedDelegationPolicy(): typeof mockUpdateManagedDelegationPolicy {
+    return mockUpdateManagedDelegationPolicy;
+  },
   updateManagedDelegationMaxDepth: jest.fn(),
-  updateManagedDelegationMaxConcurrent:
-    mockUpdateManagedDelegationMaxConcurrent,
+  get updateManagedDelegationMaxConcurrent(): typeof mockUpdateManagedDelegationMaxConcurrent {
+    return mockUpdateManagedDelegationMaxConcurrent;
+  },
+  get updateManagedDelegationLifetimeLimit(): typeof mockUpdateManagedDelegationLifetimeLimit {
+    return mockUpdateManagedDelegationLifetimeLimit;
+  },
 }));
 const wakeLockSetEnabledMock = jest.fn();
 const globalWithOllamaFlag = globalThis as typeof globalThis & {
@@ -231,11 +295,18 @@ jest.mock('../observability', () => ({
   })),
 }));
 jest.mock('../agents/session-manager', () => ({
-  markManagedDelegationSessionsForNextTurnRecreation: mockMarkManagedDelegation,
-  markCodexSessionsForNextTurnRecreation:
-    markCodexSessionsForNextTurnRecreationMock,
-  updateCodexSessionIdleTimeoutMinutes:
-    updateCodexSessionIdleTimeoutMinutesMock,
+  get markManagedDelegationSessionsForNextTurnRecreation(): typeof mockMarkManagedDelegation {
+    return mockMarkManagedDelegation;
+  },
+  get markCodexSessionsForNextTurnRecreation(): typeof markCodexSessionsForNextTurnRecreationMock {
+    return markCodexSessionsForNextTurnRecreationMock;
+  },
+  get updateCodexSessionIdleTimeoutMinutes(): typeof updateCodexSessionIdleTimeoutMinutesMock {
+    return updateCodexSessionIdleTimeoutMinutesMock;
+  },
+  get updateClaudeSessionIdleTimeoutMinutes(): typeof updateClaudeSessionIdleTimeoutMinutesMock {
+    return updateClaudeSessionIdleTimeoutMinutesMock;
+  },
 }));
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
@@ -253,9 +324,15 @@ const proxyAssertPortAvailableMock = jest.fn<Promise<void>, [number]>(() =>
 );
 jest.mock('../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: jest.fn(() => ({
-    isRunning: proxyIsRunningMock,
-    updatePort: proxyUpdatePortMock,
-    assertPortAvailable: proxyAssertPortAvailableMock,
+    get isRunning(): typeof proxyIsRunningMock {
+      return proxyIsRunningMock;
+    },
+    get updatePort(): typeof proxyUpdatePortMock {
+      return proxyUpdatePortMock;
+    },
+    get assertPortAvailable(): typeof proxyAssertPortAvailableMock {
+      return proxyAssertPortAvailableMock;
+    },
   })),
 }));
 const mockRefreshCatalogAgentDefaults = jest.fn<Promise<void>, [unknown]>(() =>
@@ -267,13 +344,17 @@ jest.mock('../agents/agent-default-model', () => ({
 }));
 jest.mock('../power/wake-lock-service', () => ({
   getWakeLockService: jest.fn(() => ({
-    setEnabled: wakeLockSetEnabledMock,
+    get setEnabled(): typeof wakeLockSetEnabledMock {
+      return wakeLockSetEnabledMock;
+    },
   })),
 }));
 const memoryDiagnosticsSetEnabledMock = jest.fn();
 jest.mock('../memory-diagnostics', () => ({
   getMemoryDiagnosticsService: jest.fn(() => ({
-    setEnabled: memoryDiagnosticsSetEnabledMock,
+    get setEnabled(): typeof memoryDiagnosticsSetEnabledMock {
+      return memoryDiagnosticsSetEnabledMock;
+    },
   })),
 }));
 let cachedCodeGraphPreferences: CodeGraphPreferences = {
@@ -305,8 +386,7 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   repeatTaskAutomationSuggestionsEnabled: true,
   skillSuggestionsEnabled: true,
   rendererCodeCacheSchemeEnabled: false,
-  chatLiveStepWindowEnabled: false,
-  chatGroupToolCallsEnabled: false,
+  chatDetail: 'recent',
   remoteControlEnabled: true,
   codeGraph: {
     mode: 'enabled',
@@ -370,6 +450,7 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   },
   globalApprovalRules: [],
   approvalsUpgradeNoticeDismissed: false,
+  onboardingTipsDismissed: {},
   summaryModel: 'gpt-6-luna' as const,
   summaryModelSetByUser: false,
   summaryThinkingLevel: 'off' as const,
@@ -478,6 +559,7 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   autoRetryTransientErrorsPipelines: true,
   scriptTimeoutMinutes: 5,
   codexAppServerIdleTimeoutMinutes: 10,
+  claudeSessionIdleTimeoutMinutes: 10,
   defaultChatInterfaceMode: 'canopy' as const,
   defaultStandaloneChatInterfaceMode: 'canopy' as const,
   defaultAppAdvisorInterfaceMode: 'canopy' as const,
@@ -495,6 +577,7 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   memoryDiagnosticsEnabled: false,
   keepSystemAwakeWhileAgentsActive: true,
   managedDelegationMaxDepth: 1,
+  managedDelegationLifetimeLimit: 512,
   managedDelegationMaxConcurrent: 5,
   codexMultiAgentWorktreeChatsEnabled: false,
   codexMultiAgentStandaloneChatsEnabled: false,
@@ -519,6 +602,7 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   sidebarAppearance: 'translucent' as const,
   worktreeDiffStatsStyle: 'short' as const,
   scrollbarBehavior: 'system' as const,
+  singleDollarMath: true,
   linearChatEnrichmentMode: 'replace' as const,
   githubChatEnrichmentMode: 'hover' as const,
   uiScale: 100,
@@ -591,7 +675,6 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   activationQuietHours: { enabled: true, startHour: 22, endHour: 8 },
   promotionalNotifications: {
     enabled: true,
-    gettingStarted: true,
     arbitrary: true,
   },
   mcpHttpAuthDefaultHandler: 'canopy' as const,
@@ -608,6 +691,7 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   autoDownloadUpdates: true,
   showDiagnosticsPill: true,
   onboardingCompleted: [] as string[],
+  planModeHint: { version: 1, generation: 0 },
   releaseHighlightsLastSeenVersion: null,
   guestSessionCount: 0,
   guestUpgradeNudgeLastShownSessionCount: 0,
@@ -623,6 +707,14 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   telemetrySharingPromptSeen: false,
   gitExecutablePath: '',
 };
+
+function getDefaultOsNotifications(): NonNullable<
+  PreferencesData['osNotifications']
+> {
+  const defaults = NEW_DEFAULTS.osNotifications;
+  if (!defaults) throw new Error('Expected OS notification defaults');
+  return defaults;
+}
 
 import {
   mkdir,
@@ -656,6 +748,7 @@ import {
   invalidateRendererPreferencesCache,
   invalidateRendererRuntimePreferencesCache,
   normalizePreferences,
+  readLatestPreferencesFile,
   readLocalMemoryEnabledPreference,
   readPreferencesFile,
   readPreferencesFileDetailed,
@@ -682,6 +775,38 @@ const mockedRecordOnboardingProfileTelemetry = jest.mocked(
   recordOnboardingProfileTelemetry,
 );
 
+// The shared writer's own install and flush are covered in desktop-shared;
+// this suite observes what preferences writes through the mocked fs. The
+// generation record (CAN-5154) is covered by the real-file recovery suites,
+// so it stays out of these write counts.
+let installCount = 0;
+async function installThroughMockedFs(
+  path: string,
+  data: string | Uint8Array,
+  options?: AtomicFileModule.AtomicFileWriteOptions,
+): Promise<void> {
+  if (basename(path) === 'preferences.generation.json') return;
+  installCount += 1;
+  const temp = join(dirname(path), `.${basename(path)}.${installCount}.tmp`);
+  await writeFile(temp, data, {
+    encoding: options?.encoding,
+    mode: options?.mode,
+  });
+  await renameWithRetry(temp, path);
+}
+// Derived files are joined onto the mocked primary's folder.
+const escapeRegExp = (text: string): string =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const PREFERENCES_WRITE = {
+  encoding: 'utf8',
+  durable: true,
+  admittedWriter: {
+    namespace: 'preferences',
+    writer: 'electron_main',
+    module: 'main/lib/preferences-store',
+  },
+};
+
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 let loadHandler: HandlerFn;
 let acknowledgeLoadErrorHandler: HandlerFn;
@@ -692,12 +817,17 @@ let saveHandler: HandlerFn;
 let setPipelineDisabledHandler: HandlerFn;
 let setApprovalDefaultHandler: HandlerFn;
 
+// Last-good refreshes outlive a save; keep them out of the next test's mocks.
+afterEach(() => flushPreferencesWrites());
+
 beforeEach(() => {
   globalWithOllamaFlag.__CANOPY_OLLAMA_ENABLED__ = true;
   initializeTestModelRegistries();
   jest.clearAllMocks();
+  mockedWriteFileAtomically.mockImplementation(installThroughMockedFs);
   setRetentionDaysMock.mockReset();
   updateCodexSessionIdleTimeoutMinutesMock.mockReset();
+  updateClaudeSessionIdleTimeoutMinutesMock.mockReset();
   updateCodexRuntimeIdleTimeoutMinutesMock.mockReset();
   markCodexSessionsForNextTurnRecreationMock.mockReset();
   syncOnboardingProfilePreferencesMock.mockReset().mockResolvedValue();
@@ -783,7 +913,10 @@ function findRegisteredHandler(channel: string): HandlerFn {
   if (typeof handler !== 'function') {
     throw new Error(`Expected registered handler for ${channel}`);
   }
-  return handler;
+  return (...args: unknown[]): Promise<unknown> => {
+    const result: unknown = Reflect.apply(handler, undefined, args);
+    return Promise.resolve(result);
+  };
 }
 
 function createMockStats(mode: number): Stats {
@@ -979,7 +1112,7 @@ describe('normalizePreferences', () => {
       expect(
         normalizePreferences({
           mergeQueueAgentHandling: 'sometimes',
-        } as never).mergeQueueAgentHandling,
+        }).mergeQueueAgentHandling,
       ).toBe('when_hook_absent');
     });
   });
@@ -1186,7 +1319,6 @@ describe('normalizePreferences', () => {
     it('defaults every toggle on for a fresh install', () => {
       expect(normalizePreferences({}).promotionalNotifications).toEqual({
         enabled: true,
-        gettingStarted: true,
         arbitrary: true,
       });
     });
@@ -1200,7 +1332,6 @@ describe('normalizePreferences', () => {
       };
       expect(normalizePreferences(legacy).promotionalNotifications).toEqual({
         enabled: true,
-        gettingStarted: false,
         arbitrary: false,
       });
     });
@@ -1210,13 +1341,11 @@ describe('normalizePreferences', () => {
         osNotifications: { categories: { activation: false } },
         promotionalNotifications: {
           enabled: false,
-          gettingStarted: true,
           arbitrary: true,
         },
       };
       expect(normalizePreferences(saved).promotionalNotifications).toEqual({
         enabled: false,
-        gettingStarted: true,
         arbitrary: true,
       });
     });
@@ -1434,52 +1563,53 @@ describe('normalizePreferences', () => {
     });
   });
 
-  describe('chatGroupToolCallsEnabled', () => {
-    it('defaults to off, so every tool call shows as its own row', () => {
-      expect(normalizePreferences({}).chatGroupToolCallsEnabled).toBe(false);
-      expect(normalizePreferences(undefined).chatGroupToolCallsEnabled).toBe(
-        false,
-      );
-      expect(DEFAULT_PREFERENCES.chatGroupToolCallsEnabled).toBe(false);
+  describe('chatDetail', () => {
+    it('defaults to recent', () => {
+      expect(normalizePreferences({}).chatDetail).toBe('recent');
+      expect(normalizePreferences(undefined).chatDetail).toBe('recent');
+      expect(DEFAULT_PREFERENCES.chatDetail).toBe('recent');
     });
 
-    it('is on only for an explicit true, apart from the live step window', () => {
-      const on = normalizePreferences({ chatGroupToolCallsEnabled: true });
-      expect(on.chatGroupToolCallsEnabled).toBe(true);
-      expect(on.chatLiveStepWindowEnabled).toBe(false);
-      for (const value of [false, 'true', 1, null, {}]) {
-        const invalid: Record<string, unknown> = {
-          chatGroupToolCallsEnabled: value,
-        };
-        expect(normalizePreferences(invalid).chatGroupToolCallsEnabled).toBe(
-          false,
+    it('keeps a saved level and reads anything else as the default', () => {
+      for (const level of ['detailed', 'recent', 'compact'] as const) {
+        expect(normalizePreferences({ chatDetail: level }).chatDetail).toBe(
+          level,
         );
       }
-    });
-  });
-
-  describe('chatLiveStepWindowEnabled', () => {
-    it('defaults to off, independent of Early access', () => {
-      expect(normalizePreferences({}).chatLiveStepWindowEnabled).toBe(false);
-      expect(normalizePreferences(undefined).chatLiveStepWindowEnabled).toBe(
-        false,
-      );
-      expect(DEFAULT_PREFERENCES.chatLiveStepWindowEnabled).toBe(false);
+      for (const value of ['verbose', '', 1, null, {}]) {
+        const invalid: Record<string, unknown> = { chatDetail: value };
+        expect(normalizePreferences(invalid).chatDetail).toBe('recent');
+      }
     });
 
-    it('is on only for an explicit true', () => {
+    it('moves the retired switches over once', () => {
+      const migrated = (legacy: Record<string, unknown>): unknown =>
+        normalizePreferences(legacy).chatDetail;
+      // "Show only recent steps" already folded every run.
+      expect(migrated({ chatLiveStepWindowEnabled: true })).toBe('recent');
       expect(
-        normalizePreferences({ chatLiveStepWindowEnabled: true })
-          .chatLiveStepWindowEnabled,
-      ).toBe(true);
-      for (const value of [false, null, 'true', 1, {}]) {
-        const invalid: Record<string, unknown> = {
-          chatLiveStepWindowEnabled: value,
-        };
-        expect(normalizePreferences(invalid).chatLiveStepWindowEnabled).toBe(
-          false,
-        );
-      }
+        migrated({
+          chatLiveStepWindowEnabled: true,
+          chatGroupToolCallsEnabled: true,
+        }),
+      ).toBe('recent');
+      expect(migrated({ chatGroupToolCallsEnabled: true })).toBe('compact');
+      expect(
+        migrated({
+          chatLiveStepWindowEnabled: false,
+          chatGroupToolCallsEnabled: false,
+        }),
+      ).toBe('recent');
+      // A saved level wins over the old switches.
+      expect(
+        migrated({ chatDetail: 'detailed', chatGroupToolCallsEnabled: true }),
+      ).toBe('detailed');
+      // The old keys are not carried forward.
+      const normalized: Record<string, unknown> = {
+        ...normalizePreferences({ chatGroupToolCallsEnabled: true }),
+      };
+      expect(normalized).not.toHaveProperty('chatGroupToolCallsEnabled');
+      expect(normalized).not.toHaveProperty('chatLiveStepWindowEnabled');
     });
   });
 
@@ -1584,21 +1714,12 @@ describe('normalizePreferences', () => {
     ).toBeUndefined();
   });
 
-  it('passes through a non-empty home onboarding dismissal timestamp only', () => {
+  it('drops the retired Home dismissal', () => {
     expect(
       normalizePreferences({
         homeOnboardingDismissedAt: '2026-08-24T12:00:00.000Z',
-      }).homeOnboardingDismissedAt,
-    ).toBe('2026-08-24T12:00:00.000Z');
-    expect(
-      normalizePreferences({ homeOnboardingDismissedAt: '   ' })
-        .homeOnboardingDismissedAt,
-    ).toBeUndefined();
-    expect(
-      normalizePreferences({
-        homeOnboardingDismissedAt: 123 as unknown as string,
-      }).homeOnboardingDismissedAt,
-    ).toBeUndefined();
+      }),
+    ).not.toHaveProperty('homeOnboardingDismissedAt');
   });
 
   it('normalizes the multi-select profileRoles list', () => {
@@ -1621,150 +1742,51 @@ describe('normalizePreferences', () => {
     ).toBeUndefined();
   });
 
-  describe('home onboarding suggestions state', () => {
-    it('retains a long-lived history and advanced suggestions across normalization', () => {
-      const at = '2026-09-08T12:00:00.000Z';
-      const entries = Object.fromEntries(
-        Array.from({ length: 120 }, (_, index) => [
-          `plugin:catalog/tool-${index}`,
-          { completedAt: at },
-        ]),
-      );
-      entries['advanced:project'] = { completedAt: at };
-      entries.notifications = { completedAt: at };
-      const normalized = normalizePreferences({
-        homeOnboardingSuggestions: { startedAt: at, entries },
-      }).homeOnboardingSuggestions;
-      expect(normalized?.entries).toEqual(entries);
-    });
-    it('drops a record left by the removed tour step', () => {
-      const at = '2026-09-08T12:00:00.000Z';
-      const normalized = normalizePreferences({
+  describe('legacy Home state retirement', () => {
+    it.each([undefined, null, [], 'bad', { entries: null }, { entries: [] }])(
+      'ignores malformed state: %p',
+      (value) => {
+        const preferences = normalizePreferences({
+          homeOnboardingSuggestions: value,
+          mobileInstallCueSnoozedUntil: '2026-10-28T00:00:00.000Z',
+          profileRoles: ['designer'],
+        });
+        expect(preferences.homeOnboardingSuggestions).toBeUndefined();
+        expect(preferences.profileRoles).toEqual(['designer']);
+        expect(preferences.mobileInstallCueSnoozedUntil).toBe(
+          '2026-10-28T00:00:00.000Z',
+        );
+      },
+    );
+    it('converts the earliest valid notification answer without a checklist cohort', () => {
+      const preferences = normalizePreferences({
         homeOnboardingSuggestions: {
-          startedAt: at,
-          entries: { tour: { completedAt: at }, github: { completedAt: at } },
-        },
-      }).homeOnboardingSuggestions;
-      expect(normalized?.entries).toEqual({ github: { completedAt: at } });
-    });
-
-    it('is absent by default and for malformed values', () => {
-      expect(
-        normalizePreferences({}).homeOnboardingSuggestions,
-      ).toBeUndefined();
-      expect(
-        normalizePreferences({
-          homeOnboardingSuggestions: 'nope' as unknown as Record<
-            string,
-            unknown
-          >,
-        }).homeOnboardingSuggestions,
-      ).toBeUndefined();
-      expect(
-        normalizePreferences({
-          // startedAt is required — a state without it is discarded.
-          homeOnboardingSuggestions: { entries: {} } as unknown as Record<
-            string,
-            unknown
-          >,
-        }).homeOnboardingSuggestions,
-      ).toBeUndefined();
-    });
-
-    it('passes through a valid state and filters unknown entry ids and fields', () => {
-      const normalized = normalizePreferences({
-        homeOnboardingSuggestions: {
-          startedAt: '2026-08-27T00:00:00.000Z',
-          retiredAt: '2026-08-28T00:00:00.000Z',
           entries: {
-            github: {
-              dismissedAt: '2026-08-27T01:00:00.000Z',
-              latchedSteps: ['try', 42, 'try'],
+            notifications: {
+              completedAt: '2026-10-20T00:00:00.000Z',
+              dismissedAt: '2026-10-19T00:00:00.000Z',
             },
-            linear: { completedAt: '2026-08-27T02:00:00.000Z' },
-            automation: { completedAt: '2026-08-27T03:00:00.000Z' },
-            'not-a-real-entry': { dismissedAt: 'x' },
-            agents: 'nope',
           },
-        } as unknown as Record<string, unknown>,
-      }).homeOnboardingSuggestions;
-      expect(normalized).toEqual({
-        startedAt: '2026-08-27T00:00:00.000Z',
-        retiredAt: '2026-08-28T00:00:00.000Z',
-        entries: {
-          github: {
-            dismissedAt: '2026-08-27T01:00:00.000Z',
-            latchedSteps: ['try'],
-          },
-          linear: { completedAt: '2026-08-27T02:00:00.000Z' },
         },
       });
-      expect(normalized?.entries).not.toHaveProperty('automation');
+      expect(preferences.osNotificationOfferAnsweredAt).toBe(
+        '2026-10-19T00:00:00.000Z',
+      );
+      expect(preferences.homeOnboardingSuggestions).toBeUndefined();
     });
-
-    it('keeps dynamic plugin-suggestion entry ids', () => {
-      const normalized = normalizePreferences({
+    it('keeps only #5222 migration inputs, even without startedAt', () => {
+      const at = '2026-10-20T00:00:00.000Z';
+      const preferences = normalizePreferences({
         homeOnboardingSuggestions: {
-          startedAt: '2026-08-27T00:00:00.000Z',
           entries: {
-            'agent-connections': { completedAt: '2026-08-27T01:00:00.000Z' },
-            'plugin:curated/notion': {
-              dismissedAt: '2026-08-27T02:00:00.000Z',
-            },
-            'unprefixed/notion': { dismissedAt: 'x' },
+            'plan-mode': { completedAt: at },
+            github: { completedAt: at },
+            'plugin:x': { completedAt: at },
           },
-        } as unknown as Record<string, unknown>,
-      }).homeOnboardingSuggestions;
-      expect(normalized?.entries).toEqual({
-        'agent-connections': { completedAt: '2026-08-27T01:00:00.000Z' },
-        'plugin:curated/notion': {
-          dismissedAt: '2026-08-27T02:00:00.000Z',
         },
       });
-    });
-
-    it('caps runaway entry counts and latched-step lists', () => {
-      const rawEntries: Record<string, unknown> = {
-        // First key so the entry cap cannot slice it away — this is the
-        // entry that carries the oversized latchedSteps list.
-        github: {
-          dismissedAt: '2026-08-27T01:00:00.000Z',
-          latchedSteps: Array.from({ length: 40 }, (_, i) => `step-${i}`),
-        },
-      };
-      for (let index = 0; index < 10_020; index += 1) {
-        rawEntries[`plugin:flood/${index}`] = { dismissedAt: '2026-08-27' };
-      }
-      const normalized = normalizePreferences({
-        homeOnboardingSuggestions: {
-          startedAt: '2026-08-27T00:00:00.000Z',
-          entries: rawEntries,
-        } as unknown as Record<string, unknown>,
-      }).homeOnboardingSuggestions;
-      expect(Object.keys(normalized?.entries ?? {}).length).toBeLessThanOrEqual(
-        10_000,
-      );
-      const kept = Object.values(normalized?.entries ?? {});
-      for (const entry of kept) {
-        expect((entry.latchedSteps ?? []).length).toBeLessThanOrEqual(10);
-      }
-    });
-
-    it('drops blank timestamps inside entries but keeps the entry', () => {
-      const normalized = normalizePreferences({
-        homeOnboardingSuggestions: {
-          startedAt: '2026-08-27T00:00:00.000Z',
-          retiredAt: '   ',
-          entries: {
-            github: { dismissedAt: '   ', latchedSteps: ['try'] },
-          },
-        } as unknown as Record<string, unknown>,
-      }).homeOnboardingSuggestions;
-      expect(normalized).toEqual({
-        startedAt: '2026-08-27T00:00:00.000Z',
-        entries: {
-          github: { latchedSteps: ['try'] },
-        },
+      expect(preferences.homeOnboardingSuggestions?.entries).toEqual({
+        'plan-mode': { completedAt: at },
       });
     });
   });
@@ -1866,6 +1888,8 @@ describe('normalizePreferences', () => {
     it('preserves restrictive access preferences when recovering last-good data', async () => {
       mockedReadFile.mockImplementation((filePath) => {
         const path = readFileMockPath(filePath);
+        if (path.endsWith('preferences.generation.json'))
+          return Promise.reject(createEnoentError());
         if (path.endsWith('preferences.last-good.json')) {
           return Promise.resolve(
             makePrefsFile({
@@ -2097,11 +2121,8 @@ describe('normalizePreferences', () => {
       const input: Record<string, unknown> = {
         defaultStartupPage: 'worktrees',
       };
-      const preferences = normalizePreferences(input) as Record<
-        string,
-        unknown
-      >;
-      expect(preferences.defaultStartupPage).toBeUndefined();
+      const preferences = normalizePreferences(input);
+      expect(Reflect.get(preferences, 'defaultStartupPage')).toBeUndefined();
       expect(preferences.lastActiveContext).toBeNull();
     });
   });
@@ -2615,7 +2636,7 @@ describe('normalizePreferences', () => {
           plans: 42,
           // metadata intentionally omitted
         },
-      } as unknown as Partial<PreferencesData>);
+      });
       expect(result.telemetrySharing).toEqual({
         transcripts: 'off',
         plans: 'off',
@@ -2628,7 +2649,7 @@ describe('normalizePreferences', () => {
     it('coerces a non-object telemetrySharing value to all off', () => {
       const result = normalizePreferences({
         telemetrySharing: 'nope',
-      } as unknown as Partial<PreferencesData>);
+      });
       expect(result.telemetrySharing).toEqual({
         transcripts: 'off',
         plans: 'off',
@@ -2650,7 +2671,7 @@ describe('normalizePreferences', () => {
           plans: 'private',
           metadata: 'organization',
         },
-      } as unknown as Partial<PreferencesData>);
+      });
       expect(result.telemetrySharing.summaries).toBe('organization');
       expect(result.telemetrySharing).toEqual({
         transcripts: 'off',
@@ -2667,7 +2688,7 @@ describe('normalizePreferences', () => {
           plans: 'off',
           metadata: 'team',
         },
-      } as unknown as Partial<PreferencesData>);
+      });
       expect(result.telemetrySharing.summaries).toBe('team');
     });
 
@@ -2690,7 +2711,7 @@ describe('normalizePreferences', () => {
           plans: 'private',
           metadata: 'public',
         },
-      } as unknown as Partial<PreferencesData>);
+      });
       expect(result.telemetrySharing.summaries).toBe('off');
     });
 
@@ -2707,7 +2728,7 @@ describe('normalizePreferences', () => {
     it('coerces a non-boolean telemetrySharingPromptSeen to the default', () => {
       const result = normalizePreferences({
         telemetrySharingPromptSeen: 'yes',
-      } as unknown as Partial<PreferencesData>);
+      });
       expect(result.telemetrySharingPromptSeen).toBe(false);
     });
 
@@ -2725,7 +2746,7 @@ describe('normalizePreferences', () => {
       expect(
         normalizePreferences({
           telemetrySharingTier: 'trial',
-        } as unknown as Partial<PreferencesData>).telemetrySharingTier,
+        }).telemetrySharingTier,
       ).toBeUndefined();
     });
   });
@@ -3031,7 +3052,7 @@ describe('normalizePreferences', () => {
 
 describe('registerPreferenceHandlers', () => {
   it('registers preference handlers', () => {
-    expect(mockedRegisterIpcHandler).toHaveBeenCalledTimes(10);
+    expect(mockedRegisterIpcHandler).toHaveBeenCalledTimes(11);
     expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
       'preferences:load',
       expect.any(Function),
@@ -3061,6 +3082,10 @@ describe('registerPreferenceHandlers', () => {
       expect.any(Function),
     );
     expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
+      'preferences:update-onboarding-tips',
+      expect.any(Function),
+    );
+    expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
       'preferences:set-approval-default',
       expect.any(Function),
     );
@@ -3084,6 +3109,8 @@ describe('create primary data-dir handler', () => {
 
     const result = await createPrimaryDataDirHandler();
 
+    // The primary root joins the W5 host cohort before its seed (CAN-3797).
+    expect(mockRegisterDesktopW5Root).toHaveBeenCalledWith(mockPrimaryDataDir);
     expect(mockedMkdir).toHaveBeenCalledWith(mockPrimaryWorkspacesDir, {
       recursive: true,
     });
@@ -3298,6 +3325,7 @@ describe('load handler', () => {
       sidebarCollapsed: true,
     }));
     expect(updated).toMatchObject(saved);
+    await flushPreferencesWrites();
     expect(findPreferencesWriteContent()).toContain('gpt-future-default');
     expect(findLastGoodWriteContent()).toContain('gpt-future-default');
   });
@@ -3436,6 +3464,7 @@ describe('load handler', () => {
         saved,
       );
       await updatePreferencesFile(() => ({ sidebarCollapsed: true }));
+      await flushPreferencesWrites();
       for (const [, contents] of mockedWriteFile.mock.calls) {
         if (typeof contents !== 'string') {
           throw new Error('Expected serialized preferences');
@@ -3525,6 +3554,7 @@ describe('load handler', () => {
         sidebarCollapsed: true,
       }));
       expect(result).toMatchObject({ ...saved, sidebarCollapsed: true });
+      await flushPreferencesWrites();
       const writes = mockedWriteFile.mock.calls.map(([, contents]) => {
         if (typeof contents !== 'string') {
           throw new Error('Expected serialized preferences');
@@ -3662,7 +3692,7 @@ describe('load handler', () => {
     });
   });
 
-  it('backs up and resets preferences when an existing file cannot be read', async () => {
+  it('preserves preferences without backup or default writes when an existing file cannot be read', async () => {
     const error = new Error('EACCES');
     Object.defineProperty(error, 'code', { value: 'EACCES' });
     mockedReadFile.mockRejectedValue(error);
@@ -3678,12 +3708,9 @@ describe('load handler', () => {
     });
     expect(result.__error?.reason).toBe('read');
     expect(result.__error?.code).toBe('EACCES');
-    expect(findBackupWriteContent()).toEqual(
-      expect.stringContaining('"originalContentUnavailable": true'),
-    );
-    expect(findPreferencesWriteContent()).toEqual(
-      expect.stringContaining('"preferences"'),
-    );
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(findPreferencesWriteContent()).toBeNull();
+    expect(findLastGoodWriteContent()).toBeNull();
   });
 
   it('returns normalized preferences for valid v1 file', async () => {
@@ -3963,7 +3990,7 @@ describe('load handler', () => {
     'rejects invalid Codex concurrency preference %s',
     async (value) => {
       mockedReadFile.mockResolvedValue(
-        makePrefsFile({ codexMaxConcurrentSubagents: value }),
+        makeRawPrefsFile({ codexMaxConcurrentSubagents: value }),
       );
       expect(
         expectPreferencesData(await loadHandler()).codexMaxConcurrentSubagents,
@@ -4274,7 +4301,7 @@ describe('load handler', () => {
         runComment: true,
         activation: true,
       },
-      categorySounds: NEW_DEFAULTS.osNotifications.categorySounds,
+      categorySounds: getDefaultOsNotifications().categorySounds,
     });
   });
 
@@ -4420,8 +4447,8 @@ describe('load handler', () => {
       enabled: true,
       skipWhenFocused: false,
       defaultSound: 'System',
-      categories: NEW_DEFAULTS.osNotifications.categories,
-      categorySounds: NEW_DEFAULTS.osNotifications.categorySounds,
+      categories: getDefaultOsNotifications().categories,
+      categorySounds: getDefaultOsNotifications().categorySounds,
     });
   });
 
@@ -4442,17 +4469,9 @@ describe('load handler', () => {
       sidebarCollapsed: false,
     });
     expect(result.__error?.reason).toBe('version');
-    expect(findBackupWriteContent()).toEqual(
-      expect.stringContaining('"__error"'),
-    );
-    expect(findBackupWriteContent()).toEqual(
-      expect.stringContaining(
-        `"rawContent": ${JSON.stringify(rawPreferences)}`,
-      ),
-    );
-    expect(findPreferencesWriteContent()).toEqual(
-      expect.stringContaining('"preferences"'),
-    );
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(findPreferencesWriteContent()).toBeNull();
+    expect(findLastGoodWriteContent()).toBeNull();
   });
 
   it('clamps worktreePanelPercent below 20 to 20', async () => {
@@ -4629,14 +4648,9 @@ describe('load handler', () => {
       sidebarCollapsed: false,
     });
     expect(result.__error?.reason).toBe('parse');
-    const backupContent = findBackupWriteContent();
-    expect(backupContent).toEqual(expect.stringContaining('"reason": "parse"'));
-    expect(backupContent).toEqual(
-      expect.stringContaining('not valid json {{{'),
-    );
-    expect(findPreferencesWriteContent()).toEqual(
-      expect.stringContaining('"preferences"'),
-    );
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(findPreferencesWriteContent()).toBeNull();
+    expect(findLastGoodWriteContent()).toBeNull();
   });
 
   it('recovers a malformed top-level preferences container from last-good', async () => {
@@ -4674,6 +4688,8 @@ describe('load handler', () => {
   it('restores from last-good preferences when the current file is invalid', async () => {
     mockedReadFile.mockImplementation((filePath) => {
       const path = readFileMockPath(filePath);
+      if (path.endsWith('preferences.generation.json'))
+        return Promise.reject(createEnoentError());
       if (path.endsWith('preferences.last-good.json')) {
         return Promise.resolve(
           makePrefsFile({ worktreePanelPercent: 44, sidebarCollapsed: true }),
@@ -4695,9 +4711,24 @@ describe('load handler', () => {
     expect(findPreferencesWriteContent()).toEqual(
       expect.stringContaining('"worktreePanelPercent": 44'),
     );
-    expect(findLastGoodWriteContent()).toEqual(
-      expect.stringContaining('"worktreePanelPercent": 44'),
-    );
+    expect(findLastGoodWriteContent()).toBeNull();
+    // The evidence backup is durable before the primary is replaced.
+    expect(mockedWriteFileAtomically.mock.calls).toEqual([
+      [
+        expect.stringMatching(
+          new RegExp(
+            `^${escapeRegExp(join('/mock/userData', 'preferences.backup-'))}.+\\.json$`,
+          ),
+        ),
+        expect.any(String),
+        { ...PREFERENCES_WRITE, mode: undefined },
+      ],
+      [
+        '/mock/userData/preferences.json',
+        expect.any(String),
+        { ...PREFERENCES_WRITE, mode: undefined },
+      ],
+    ]);
   });
 
   it('restores missing preferences from the last-good file', async () => {
@@ -4750,7 +4781,7 @@ describe('load handler', () => {
     expect(findBackupWriteContent()).toBeNull();
   });
 
-  it('captures empty raw content when an existing preferences file is empty', async () => {
+  it('preserves empty primary evidence without a usable recovery source', async () => {
     mockedReadFile.mockResolvedValue('');
     mockedMkdir.mockResolvedValue(undefined);
     mockedWriteFile.mockResolvedValue(undefined);
@@ -4758,9 +4789,8 @@ describe('load handler', () => {
     const result = (await loadHandler()) as PreferencesLoadResult;
 
     expect(result.__error?.reason).toBe('parse');
-    expect(findBackupWriteContent()).toEqual(
-      expect.stringContaining('"rawContent": ""'),
-    );
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    expect(findBackupWriteContent()).toBeNull();
   });
 
   it('reports recovery errors until the renderer acknowledges them', async () => {
@@ -5516,6 +5546,37 @@ describe('load handler', () => {
     expect(result.codexAppServerIdleTimeoutMinutes).toBe(120);
   });
 
+  it.each([
+    [undefined, 10],
+    [12.6, 13],
+    [0, 1],
+    [999, 120],
+  ])(
+    'normalizes claudeSessionIdleTimeoutMinutes %p to %p',
+    async (stored, expected) => {
+      mockedReadFile.mockResolvedValue(
+        makePrefsFile({ claudeSessionIdleTimeoutMinutes: stored }),
+      );
+
+      const result = (await loadHandler()) as PreferencesData;
+
+      expect(result.claudeSessionIdleTimeoutMinutes).toBe(expected);
+    },
+  );
+
+  it('defaults a non-numeric claudeSessionIdleTimeoutMinutes to 10', async () => {
+    mockedReadFile.mockResolvedValue(
+      JSON.stringify({
+        version: 1,
+        preferences: { claudeSessionIdleTimeoutMinutes: '15' },
+      }),
+    );
+
+    const result = (await loadHandler()) as PreferencesData;
+
+    expect(result.claudeSessionIdleTimeoutMinutes).toBe(10);
+  });
+
   it('defaults missing or invalid sidebar appearance to translucent', async () => {
     mockedReadFile.mockResolvedValue(makePrefsFile({}));
 
@@ -5602,6 +5663,24 @@ describe('load handler', () => {
       );
     },
   );
+
+  it('defaults missing or invalid dollar-sign math to on (CAN-5124)', async () => {
+    mockedReadFile.mockResolvedValue(
+      makeRawPrefsFile({ singleDollarMath: 'no' }),
+    );
+    expect(expectPreferencesData(await loadHandler()).singleDollarMath).toBe(
+      true,
+    );
+  });
+
+  it('keeps an explicit dollar-sign math choice (CAN-5124)', async () => {
+    mockedReadFile.mockResolvedValue(
+      makePrefsFile({ singleDollarMath: false }),
+    );
+    expect(expectPreferencesData(await loadHandler()).singleDollarMath).toBe(
+      false,
+    );
+  });
 
   it('defaults chat enrichment to Linear Replace and GitHub Hover', async () => {
     mockedReadFile.mockResolvedValue(makePrefsFile({}));
@@ -5794,7 +5873,7 @@ describe('load handler', () => {
 
   it('falls back to the default terminal drawer tab when the saved tab id is unknown', async () => {
     mockedReadFile.mockResolvedValue(
-      makePrefsFile({ terminalDrawerActiveTabId: 'logs' }),
+      makeRawPrefsFile({ terminalDrawerActiveTabId: 'logs' }),
     );
 
     const result = (await loadHandler()) as PreferencesData;
@@ -6184,6 +6263,53 @@ describe('memoryDiagnosticsEnabled preference', () => {
     expect(memoryDiagnosticsSetEnabledMock).toHaveBeenCalledWith(true);
   });
 
+  it('a stalled save never broadcasts over a later onboarding tip dismissal (CAN-4904)', async () => {
+    let persisted = makePrefsFile({});
+    mockedReadFile.mockImplementation(() => Promise.resolve(persisted));
+    mockedMkdir.mockResolvedValue(undefined);
+    mockedWriteFile.mockImplementation((_filePath, data) => {
+      if (typeof data === 'string') persisted = data;
+      return Promise.resolve();
+    });
+    const windows = jest
+      .spyOn(BrowserWindow, 'getAllWindows')
+      .mockReturnValue([new BrowserWindow()]);
+    let releaseSave: () => void = () => undefined;
+    syncOnboardingProfilePreferencesMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        }),
+    );
+    try {
+      // A renderer save commits, then stalls in its post-commit profile sync.
+      const save = saveHandler({}, { colorMode: 'dark' });
+      for (
+        let attempt = 0;
+        attempt < 100 &&
+        syncOnboardingProfilePreferencesMock.mock.calls.length < 1;
+        attempt += 1
+      ) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      await findRegisteredHandler('preferences:update-onboarding-tips')(
+        {},
+        { action: 'dismiss', tipId: 'workflows' },
+      );
+      releaseSave();
+      await save;
+      const synced = mockedSendToWindow.mock.calls.filter(
+        ([, channel]) => channel === 'preferences:synced',
+      );
+      const last = synced.at(-1)?.[2];
+      expect(
+        expectPreferencesData(last).onboardingTipsDismissed.workflows,
+      ).toEqual(expect.any(String));
+    } finally {
+      windows.mockRestore();
+    }
+  });
+
   it('applies overlapping saves in commit order', async () => {
     mockedReadFile.mockResolvedValue(makePrefsFile({}));
     mockedMkdir.mockResolvedValue(undefined);
@@ -6218,7 +6344,38 @@ describe('memoryDiagnosticsEnabled preference', () => {
 });
 
 describe('save handler', () => {
-  it('persists the live step window preference on and back off, keeping other preferences', async () => {
+  it.each([true, false])(
+    'A3: ignores global approval rules in a generic save (stored grant: %s)',
+    async (storedGrant) => {
+      const rule = {
+        id: 'R',
+        behavior: 'allow' as const,
+        origin: 'prompt' as const,
+        createdAt: '2026-10-27T00:00:00.000Z',
+        target: { kind: 'file-write' as const, path: 'allowed/**' },
+      };
+      const rules = storedGrant ? [rule] : [];
+      mockedReadFile.mockResolvedValue(
+        makePrefsFile({ globalApprovalRules: rules }),
+      );
+      const result = expectPreferencesData(
+        await saveHandler(
+          {},
+          {
+            globalApprovalRules: storedGrant ? [] : [rule],
+            sidebarCollapsed: true,
+          },
+        ),
+      );
+      expect(result.globalApprovalRules).toEqual(rules);
+      expect(result.sidebarCollapsed).toBe(true);
+      expect(JSON.parse(findPreferencesWriteContent() ?? '{}')).toMatchObject({
+        preferences: { globalApprovalRules: rules, sidebarCollapsed: true },
+      });
+    },
+  );
+
+  it('persists a chat detail change and back, keeping other preferences', async () => {
     mockedMkdir.mockResolvedValue(undefined);
     mockedWriteFile.mockResolvedValue(undefined);
     const windows = jest
@@ -6229,9 +6386,9 @@ describe('save handler', () => {
         makePrefsFile({ colorMode: 'dark', worktreePanelPercent: 40 }),
       );
       const enabled = expectPreferencesData(
-        await saveHandler({}, { chatLiveStepWindowEnabled: true }),
+        await saveHandler({}, { chatDetail: 'compact' }),
       );
-      expect(enabled.chatLiveStepWindowEnabled).toBe(true);
+      expect(enabled.chatDetail).toBe('compact');
       const enabledWrite = findPreferencesWriteContent();
       if (enabledWrite === null) {
         throw new Error('Expected preferences write content.');
@@ -6239,7 +6396,7 @@ describe('save handler', () => {
       expect(
         (JSON.parse(enabledWrite) as PreferencesFile).preferences,
       ).toMatchObject({
-        chatLiveStepWindowEnabled: true,
+        chatDetail: 'compact',
         colorMode: 'dark',
         worktreePanelPercent: 40,
       });
@@ -6249,9 +6406,9 @@ describe('save handler', () => {
       mockedSendToWindow.mockClear();
       mockedReadFile.mockResolvedValue(enabledWrite);
       const disabled = expectPreferencesData(
-        await saveHandler({}, { chatLiveStepWindowEnabled: false }),
+        await saveHandler({}, { chatDetail: 'detailed' }),
       );
-      expect(disabled.chatLiveStepWindowEnabled).toBe(false);
+      expect(disabled.chatDetail).toBe('detailed');
       expect(disabled.colorMode).toBe('dark');
       const disabledWrite = findPreferencesWriteContent();
       if (disabledWrite === null) {
@@ -6260,14 +6417,14 @@ describe('save handler', () => {
       expect(
         (JSON.parse(disabledWrite) as PreferencesFile).preferences,
       ).toMatchObject({
-        chatLiveStepWindowEnabled: false,
+        chatDetail: 'detailed',
         colorMode: 'dark',
         worktreePanelPercent: 40,
       });
       expect(mockedSendToWindow).toHaveBeenCalledWith(
         expect.anything(),
         'preferences:synced',
-        expect.objectContaining({ chatLiveStepWindowEnabled: false }),
+        expect.objectContaining({ chatDetail: 'detailed' }),
       );
     } finally {
       windows.mockRestore();
@@ -7057,11 +7214,10 @@ describe('save handler', () => {
         return Promise.resolve();
       });
       nativeTheme.themeSource = colorMode === 'light' ? 'dark' : 'light';
-      let nativeThemeSourceAtBroadcast:
-        | typeof nativeTheme.themeSource
-        | undefined;
+      let nativeThemeSourceAtBroadcast: 'dark' | 'light' | 'system' | undefined;
       mockedSendToWindow.mockImplementation(() => {
         nativeThemeSourceAtBroadcast = nativeTheme.themeSource;
+        return true;
       });
       const getAllWindowsSpy = jest
         .spyOn(BrowserWindow, 'getAllWindows')
@@ -7251,6 +7407,7 @@ describe('save handler', () => {
     await updatePreferencesFile(() => ({ opencodeEnabled: false }));
     await updatePreferencesFile(() => ({ opencodeEnabled: true }));
     expect(getOpenCodeEnabledRevision()).toBe(committedRevision + 2);
+    await flushPreferencesWrites();
     mockedWriteFile.mockRejectedValueOnce(new Error('write failed'));
     await expect(
       updatePreferencesFile(() => ({ opencodeEnabled: false })),
@@ -7299,6 +7456,53 @@ describe('save handler', () => {
       'mkt-1/plugin-one',
       'mkt-2/plugin-two',
     ]);
+  });
+
+  it('merges concurrent onboarding tip dismissals inside the write queue (CAN-4904)', async () => {
+    const updateOnboardingTips = findRegisteredHandler(
+      'preferences:update-onboarding-tips',
+    );
+    let persisted = makePrefsFile({
+      onboardingTipsDismissed: { 'worktree-chat': '2026-10-24T08:00:00.000Z' },
+    });
+    mockedReadFile.mockImplementation(() => Promise.resolve(persisted));
+    mockedMkdir.mockResolvedValue(undefined);
+    mockedWriteFile.mockImplementation((_filePath, data) => {
+      if (typeof data === 'string') {
+        persisted = data;
+      }
+      return Promise.resolve();
+    });
+
+    await Promise.all([
+      updateOnboardingTips({}, { action: 'dismiss', tipId: 'workflows' }),
+      updateOnboardingTips(
+        {},
+        {
+          action: 'dismiss',
+          tipId: 'workflows-schedule',
+        },
+      ),
+    ]);
+
+    const written = expectPreferencesData(
+      (JSON.parse(persisted) as PreferencesFile).preferences,
+    );
+    expect(Object.keys(written.onboardingTipsDismissed).sort()).toEqual([
+      'workflows',
+      'workflows-schedule',
+      'worktree-chat',
+    ]);
+    expect(written.onboardingTipsDismissed['worktree-chat']).toBe(
+      '2026-10-24T08:00:00.000Z',
+    );
+
+    await expect(
+      updateOnboardingTips({}, { action: 'reset' }),
+    ).resolves.toEqual({ dismissed: {} });
+    await expect(
+      updateOnboardingTips({}, { action: 'dismiss', tipId: 'nope' }),
+    ).rejects.toThrow('Invalid onboarding tip update.');
   });
 
   it('merges concurrent disabled-pipeline preference updates atomically', async () => {
@@ -7387,6 +7591,112 @@ describe('save handler', () => {
 
     expect(mockedReadFile).not.toHaveBeenCalled();
     expect(mockedWriteFile).not.toHaveBeenCalled();
+  });
+
+  // CAN-4880 (D9): main's Copilot connection owns the flag and the account
+  // pin. A renderer or remote save never sets either of them.
+  describe('Copilot connection ownership', () => {
+    const pinnedAccount = { host: 'https://github.com', login: 'octocat' };
+
+    function persistPreferences(preferences: Partial<PreferencesData>): void {
+      let persisted = makePrefsFile(preferences);
+      mockedReadFile.mockImplementation(() => Promise.resolve(persisted));
+      mockedMkdir.mockResolvedValue(undefined);
+      mockedWriteFile.mockImplementation((_path, data) => {
+        if (typeof data === 'string') persisted = data;
+        return Promise.resolve();
+      });
+    }
+
+    it('rejects a Copilot account pin before reading or writing', async () => {
+      persistPreferences({ copilotEnabled: true });
+      for (const copilotAccount of [pinnedAccount, null, undefined]) {
+        await expect(
+          saveHandler({}, { copilotAccount, theme: 'ocean' }),
+        ).rejects.toThrow(/Copilot account/);
+      }
+      expect(mockedReadFile).not.toHaveBeenCalled();
+      expect(mockedWriteFile).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])(
+      'keeps the stored Copilot flag (%s) and saves the rest',
+      async (stored) => {
+        persistPreferences({
+          copilotEnabled: stored,
+          copilotAccount: stored ? pinnedAccount : undefined,
+          theme: 'default',
+        });
+        const saved = expectPreferencesData(
+          await saveHandler({}, { copilotEnabled: !stored, theme: 'ocean' }),
+        );
+        expect(saved).toMatchObject({ copilotEnabled: stored, theme: 'ocean' });
+        const persisted = await readPreferencesFile();
+        expect(persisted).toMatchObject({
+          copilotEnabled: stored,
+          theme: 'ocean',
+        });
+        expect(persisted.copilotAccount).toEqual(
+          stored ? pinnedAccount : undefined,
+        );
+      },
+    );
+
+    it('applies the same rules to a save a remote controller tunnels here', async () => {
+      persistPreferences({ copilotEnabled: false, theme: 'default' });
+      const hub = new InMemoryRelayHub();
+      const { initiator, responder } = await openControlSession(
+        createTestDevice(hub, 'controller'),
+        createTestDevice(hub, 'host'),
+      );
+      const bridges: FakeBridge[] = [];
+      new RemoteHostSession({
+        session: responder,
+        // The hidden bridge window re-invokes each tunneled call on its own
+        // IPC; this bridge hands it to the handler registered for it.
+        createBridge: (): Promise<FakeBridge> => {
+          const bridge = new FakeBridge();
+          bridge.handler = (channel, args): Promise<unknown> =>
+            findRegisteredHandler(channel)({}, ...args);
+          bridges.push(bridge);
+          return Promise.resolve(bridge);
+        },
+        mainWindowPushes: new FakeMainWindow(),
+        uploads: new RemoteUploadStore('/mock/remote-uploads'),
+        readFile: (): Promise<never> => Promise.reject(new Error('unused')),
+        disposition: getRemoteChannelDisposition,
+        isAuthorized: (): boolean => true,
+        version: TEST_VERSION,
+        hello: (): Pick<HelloResult, 'name' | 'platform'> => ({
+          name: 'host',
+          platform: 'darwin',
+        }),
+        onClose: (): void => undefined,
+      });
+      const controller = new RpcPeer(initiator, {
+        onRequest: (): Promise<never> => Promise.reject(new Error('unused')),
+        onEvent: (): void => undefined,
+      });
+      await controller.request(REMOTE_METHODS.hello, { version: TEST_VERSION });
+      const save = (patch: Partial<PreferencesData>): Promise<unknown> =>
+        controller.request(REMOTE_METHODS.invoke, {
+          channel: 'preferences:save',
+          args: [patch],
+        });
+
+      await expect(
+        save({ copilotAccount: pinnedAccount, theme: 'ocean' }),
+      ).rejects.toThrow(/Copilot account/);
+      await save({ copilotEnabled: true, theme: 'ocean' });
+
+      expect(bridges.flatMap((bridge) => bridge.invocations)).toHaveLength(2);
+      const persisted = await readPreferencesFile();
+      expect(persisted).toMatchObject({
+        copilotEnabled: false,
+        theme: 'ocean',
+      });
+      expect(persisted.copilotAccount).toBeUndefined();
+    });
   });
 
   it('writes only the changed approval surface, preserving the others on disk', async () => {
@@ -7482,6 +7792,7 @@ describe('save handler', () => {
         'preferences:synced',
         result,
       );
+      await flushPreferencesWrites();
       expect(
         mockedRename.mock.calls.some(
           ([, target]) => target === '/mock/userData/preferences.json',
@@ -7864,6 +8175,157 @@ describe('save handler', () => {
     expect(flushed).toBe(true);
   });
 
+  describe('last-good refresh', () => {
+    const MAIN = '/mock/userData/preferences.json';
+    const LAST_GOOD = join('/mock/userData', 'preferences.last-good.json');
+    const settle = async (): Promise<void> => {
+      for (let turn = 0; turn < 10; turn += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+    const panelPercent = (data: string | Uint8Array): unknown =>
+      Reflect.get(
+        Object(Reflect.get(Object(JSON.parse(String(data))), 'preferences')),
+        'worktreePanelPercent',
+      );
+
+    let persisted: string;
+    let lastGoodWrites: unknown[];
+    let lastGoodHolds: Array<() => void>;
+    let activeLastGoodWrites: number;
+    let maxActiveLastGoodWrites: number;
+
+    beforeEach(() => {
+      persisted = makePrefsFile({});
+      lastGoodWrites = [];
+      lastGoodHolds = [];
+      activeLastGoodWrites = 0;
+      maxActiveLastGoodWrites = 0;
+      mockedReadFile.mockImplementation(() => Promise.resolve(persisted));
+      mockedMkdir.mockResolvedValue(undefined);
+      mockedWriteFileAtomically.mockImplementation(async (path, data) => {
+        if (path === MAIN) {
+          persisted = String(data);
+          return;
+        }
+        if (path !== LAST_GOOD) return;
+        activeLastGoodWrites += 1;
+        maxActiveLastGoodWrites = Math.max(
+          maxActiveLastGoodWrites,
+          activeLastGoodWrites,
+        );
+        lastGoodWrites.push(panelPercent(data));
+        await new Promise<void>((resolve) => lastGoodHolds.push(resolve));
+        activeLastGoodWrites -= 1;
+      });
+    });
+
+    it('acknowledges a save and queued readers once main is durable; only the flush waits for last-good', async () => {
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 41 }));
+      await expect(readPreferencesFileDetailed()).resolves.toMatchObject({
+        authority: 'ok',
+        preferences: { worktreePanelPercent: 41 },
+      });
+      await settle();
+      expect(lastGoodWrites).toEqual([41]);
+
+      let flushed = false;
+      const flush = flushPreferencesWrites().then(() => {
+        flushed = true;
+      });
+      await settle();
+      expect(flushed).toBe(false);
+      lastGoodHolds.shift()?.();
+      await flush;
+      expect(flushed).toBe(true);
+    });
+
+    it('refreshes last-good one write at a time, skipping to the latest confirmed state', async () => {
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 41 }));
+      await settle();
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 42 }));
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 43 }));
+      await settle();
+      expect(lastGoodWrites).toEqual([41]);
+
+      lastGoodHolds.shift()?.();
+      await settle();
+      // 42 was superseded while 41 was being written; 43 never lands first.
+      expect(lastGoodWrites).toEqual([41, 43]);
+      lastGoodHolds.shift()?.();
+      await flushPreferencesWrites();
+      expect(lastGoodWrites).toEqual([41, 43]);
+      expect(maxActiveLastGoodWrites).toBe(1);
+    });
+
+    it('writes last-good from the bytes main confirmed, not the shared in-memory state', async () => {
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 41 }));
+      await settle();
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 42 }));
+      const confirmed = persisted;
+      // A reader holding the served object changes it before 42's refresh.
+      const latest = await readLatestPreferencesFile();
+      latest.worktreePanelPercent = 99;
+
+      lastGoodHolds.shift()?.();
+      await settle();
+      lastGoodHolds.shift()?.();
+      await flushPreferencesWrites();
+      expect(lastGoodWrites).toEqual([41, 42]);
+      expect(
+        mockedWriteFileAtomically.mock.calls
+          .filter(([path]) => path === LAST_GOOD)
+          .at(-1)?.[1],
+      ).toBe(confirmed);
+    });
+
+    it('also flushes a save acknowledged while the flush waits for last-good', async () => {
+      await updatePreferencesFile(() => ({ worktreePanelPercent: 41 }));
+      let flushed = false;
+      const flush = flushPreferencesWrites().then(() => {
+        flushed = true;
+      });
+      await settle();
+      let releaseMain: () => void = () => undefined;
+      const writeMain = mockedWriteFileAtomically.getMockImplementation();
+      mockedWriteFileAtomically.mockImplementationOnce(async (...args) => {
+        await new Promise<void>((resolve) => {
+          releaseMain = resolve;
+        });
+        return writeMain?.(...args);
+      });
+      const save = updatePreferencesFile(() => ({ worktreePanelPercent: 42 }));
+      await settle();
+      lastGoodHolds.shift()?.();
+      await settle();
+      expect(flushed).toBe(false);
+
+      releaseMain();
+      await save;
+      await settle();
+      expect(flushed).toBe(false);
+      lastGoodHolds.shift()?.();
+      await flush;
+      expect(lastGoodWrites).toEqual([41, 42]);
+    });
+
+    it('never refreshes last-good from a save whose main write failed', async () => {
+      const failure = new Error('disk full');
+      mockedWriteFileAtomically.mockImplementation((path) =>
+        path === MAIN ? Promise.reject(failure) : Promise.resolve(),
+      );
+
+      await expect(
+        updatePreferencesFile(() => ({ worktreePanelPercent: 41 })),
+      ).rejects.toBe(failure);
+      await flushPreferencesWrites();
+
+      expect(
+        mockedWriteFileAtomically.mock.calls.map(([path]) => path),
+      ).toEqual([join('/mock/userData', 'preferences.generation.json'), MAIN]);
+    });
+  });
+
   it('creates directory before writing', async () => {
     mockedReadFile.mockRejectedValue(new Error('ENOENT'));
     mockedMkdir.mockResolvedValue(undefined);
@@ -7871,8 +8333,9 @@ describe('save handler', () => {
 
     await saveHandler({}, { worktreePanelPercent: 50 });
 
-    expect(mockedMkdir).toHaveBeenCalledWith('/mock/userData', {
-      recursive: true,
+    // Preferences sit in the data root itself.
+    expect(createDirectoryDurably).toHaveBeenCalledWith('/mock/userData', {
+      dataRoot: '/mock/userData',
     });
   });
 
@@ -7919,6 +8382,7 @@ describe('save handler', () => {
     const expected = JSON.stringify(
       {
         version: 1,
+        generation: 1,
         preferences: {
           cursorEnabled: false,
           copilotEnabled: false,
@@ -8000,6 +8464,7 @@ describe('save handler', () => {
           },
           globalApprovalRules: [],
           approvalsUpgradeNoticeDismissed: false,
+          onboardingTipsDismissed: {},
           summaryModel: 'gpt-6-luna',
           summaryModelSetByUser: false,
           summaryThinkingLevel: 'off',
@@ -8035,7 +8500,6 @@ describe('save handler', () => {
           },
           pipelineAdvisorEnabled: true,
           orgMemoryInjectionEnabled: true,
-          orgProjectCloneProtocol: 'https',
           localMemoryEnabled: true,
           localMemoryEnabledSetByUser: false,
           localMemoryModel: 'gpt-6.1-sol',
@@ -8120,6 +8584,7 @@ describe('save handler', () => {
           autoRetryTransientErrorsPipelines: true,
           scriptTimeoutMinutes: 5,
           codexAppServerIdleTimeoutMinutes: 10,
+          claudeSessionIdleTimeoutMinutes: 10,
           defaultChatInterfaceMode: 'canopy',
           defaultStandaloneChatInterfaceMode: 'canopy',
           defaultAppAdvisorInterfaceMode: 'canopy',
@@ -8138,6 +8603,7 @@ describe('save handler', () => {
           keepSystemAwakeWhileAgentsActive: true,
           managedDelegationMaxDepth: 1,
           managedDelegationMaxConcurrent: 5,
+          managedDelegationLifetimeLimit: 512,
           codexMultiAgentWorktreeChatsEnabled: false,
           codexMultiAgentStandaloneChatsEnabled: false,
           codexMaxConcurrentSubagents: null,
@@ -8161,6 +8627,7 @@ describe('save handler', () => {
           sidebarAppearance: 'translucent',
           worktreeDiffStatsStyle: 'short',
           scrollbarBehavior: 'system',
+          singleDollarMath: true,
           linearChatEnrichmentMode: 'replace',
           githubChatEnrichmentMode: 'hover',
           uiScale: 100,
@@ -8168,8 +8635,7 @@ describe('save handler', () => {
           repeatTaskAutomationSuggestionsEnabled: true,
           skillSuggestionsEnabled: true,
           rendererCodeCacheSchemeEnabled: false,
-          chatLiveStepWindowEnabled: false,
-          chatGroupToolCallsEnabled: false,
+          chatDetail: 'recent',
           remoteControlEnabled: true,
           windowBounds: null,
           windowMaximized: false,
@@ -8240,7 +8706,6 @@ describe('save handler', () => {
           activationQuietHours: { enabled: true, startHour: 22, endHour: 8 },
           promotionalNotifications: {
             enabled: true,
-            gettingStarted: true,
             arbitrary: true,
           },
           mcpHttpAuthDefaultHandler: 'canopy',
@@ -8255,12 +8720,12 @@ describe('save handler', () => {
           fileLabels: [],
           changedFilesHiddenLabelIds: [],
           autoDownloadUpdates: true,
-          memoryDiagnosticsEnabled: false,
           showDiagnosticsPill: true,
           onboardingCompleted: [],
           releaseHighlightsLastSeenVersion: null,
           guestSessionCount: 0,
           guestUpgradeNudgeLastShownSessionCount: 0,
+          planModeHint: { version: 1, generation: 0 },
           personalWorkspaceCatalogSync: 'off',
           personalCatalogOfferSeen: false,
           personalCatalogNotice: null,
@@ -8299,35 +8764,31 @@ describe('save handler', () => {
 
     await saveHandler({}, { sidebarCollapsed: true });
 
-    expect(mockedWriteFile).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /^\/mock\/userData\/\.preferences\.json\.\d+\.\d+-\d+\.tmp$/,
-      ),
+    expect(mockedWriteFileAtomically).toHaveBeenCalledWith(
+      '/mock/userData/preferences.json',
       expect.any(String),
-      expect.objectContaining({
-        encoding: 'utf8',
-        mode: 0o600,
-      }),
+      { ...PREFERENCES_WRITE, mode: 0o600 },
     );
   });
 
-  it('falls back to defaults when existing file is unreadable', async () => {
+  it('refuses a save without writing defaults when existing file is unreadable', async () => {
     mockedReadFile.mockRejectedValue(new Error('EACCES'));
     mockedMkdir.mockResolvedValue(undefined);
     mockedWriteFile.mockResolvedValue(undefined);
 
-    const result = await saveHandler({}, { sidebarCollapsed: true });
-
-    expect(result).toMatchObject({
-      ...NEW_DEFAULTS,
-      worktreePanelPercent: 32,
-      sidebarCollapsed: true,
+    await expect(
+      saveHandler({}, { sidebarCollapsed: true }),
+    ).rejects.toMatchObject({
+      code: 'PREFERENCES_RECOVERY_REQUIRED',
     });
+    expect(mockedWriteFile).not.toHaveBeenCalled();
   });
 
   it('merges saves with last-good preferences when the current file is corrupt', async () => {
     mockedReadFile.mockImplementation((filePath) => {
       const path = readFileMockPath(filePath);
+      if (path.endsWith('preferences.generation.json'))
+        return Promise.reject(createEnoentError());
       if (path.endsWith('preferences.last-good.json')) {
         return Promise.resolve(
           makePrefsFile({ worktreePanelPercent: 52, sidebarCollapsed: false }),
@@ -8377,22 +8838,25 @@ describe('save handler', () => {
 
     await saveHandler({}, { worktreePanelPercent: 40 });
 
-    expect(mockedWriteFile).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /^\/mock\/userData\/\.preferences\.json\.\d+\.\d+-\d+\.tmp$/,
-      ),
-      expect.any(String),
-      expect.objectContaining({
-        encoding: 'utf8',
-        mode: undefined,
-      }),
-    );
-    expect(mockedRename).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /^\/mock\/userData\/\.preferences\.json\.\d+\.\d+-\d+\.tmp$/,
-      ),
-      '/mock/userData/preferences.json',
-    );
+    // The generation record, main, then last-good: durable writes by the
+    // admitted module.
+    expect(mockedWriteFileAtomically.mock.calls).toEqual([
+      [
+        join('/mock/userData', 'preferences.generation.json'),
+        JSON.stringify({ version: 1, generation: 1 }),
+        { ...PREFERENCES_WRITE, mode: undefined },
+      ],
+      [
+        '/mock/userData/preferences.json',
+        expect.any(String),
+        { ...PREFERENCES_WRITE, mode: undefined },
+      ],
+      [
+        join('/mock/userData', 'preferences.last-good.json'),
+        expect.any(String),
+        { ...PREFERENCES_WRITE, mode: undefined },
+      ],
+    ]);
   });
 
   it('partial save merges per-provider model/thinking fields correctly', async () => {
@@ -8747,6 +9211,42 @@ describe('save handler', () => {
     );
   });
 
+  it('normalizes claudeSessionIdleTimeoutMinutes and updates existing sessions', async () => {
+    mockedReadFile.mockRejectedValue(new Error('ENOENT'));
+    mockedMkdir.mockResolvedValue(undefined);
+    mockedWriteFile.mockResolvedValue(undefined);
+
+    const result = (await saveHandler(
+      {},
+      { claudeSessionIdleTimeoutMinutes: 0.4 },
+    )) as PreferencesData;
+
+    expect(result.claudeSessionIdleTimeoutMinutes).toBe(1);
+    expect(result.codexAppServerIdleTimeoutMinutes).toBe(10);
+    expect(updateClaudeSessionIdleTimeoutMinutesMock).toHaveBeenCalledWith(1);
+    expect(updateCodexSessionIdleTimeoutMinutesMock).toHaveBeenCalledWith(10);
+
+    const writtenContent = JSON.parse(
+      mockedWriteFile.mock.calls[0][1] as string,
+    ) as PreferencesFile;
+    expect(writtenContent.preferences.claudeSessionIdleTimeoutMinutes).toBe(1);
+  });
+
+  it('defaults claudeSessionIdleTimeoutMinutes to 10 and clamps it to 120', async () => {
+    mockedReadFile.mockRejectedValue(new Error('ENOENT'));
+    mockedMkdir.mockResolvedValue(undefined);
+    mockedWriteFile.mockResolvedValue(undefined);
+
+    const defaults = (await saveHandler({}, {})) as PreferencesData;
+    expect(defaults.claudeSessionIdleTimeoutMinutes).toBe(10);
+
+    const clamped = (await saveHandler(
+      {},
+      { claudeSessionIdleTimeoutMinutes: 500 },
+    )) as PreferencesData;
+    expect(clamped.claudeSessionIdleTimeoutMinutes).toBe(120);
+  });
+
   it('marks worktree Codex sessions for recreation when worktree multi-agent preference is saved', async () => {
     mockedReadFile.mockRejectedValue(new Error('ENOENT'));
     mockedMkdir.mockResolvedValue(undefined);
@@ -8947,6 +9447,79 @@ it('preserves an unset managed delegation preference without changing explicit O
   ).toBe('off');
 });
 
+it('normalizes managed delegation lifetime limits to the shipped default', () => {
+  expect(normalizePreferences({}).managedDelegationLifetimeLimit).toBe(512);
+  expect(
+    normalizePreferences({ managedDelegationLifetimeLimit: 512 })
+      .managedDelegationLifetimeLimit,
+  ).toBe(512);
+
+  for (const value of [undefined, null, 0, -1, 513, 1024, 1.5, '512']) {
+    expect(
+      normalizePreferences({ managedDelegationLifetimeLimit: value })
+        .managedDelegationLifetimeLimit,
+    ).toBe(512);
+  }
+});
+
+it('loads a saved lifetime limit and normalizes values above the shipped cap', async () => {
+  mockedReadFile.mockResolvedValue(
+    makePrefsFile({ managedDelegationLifetimeLimit: 512 }),
+  );
+  expect(
+    expectPreferencesData(await loadHandler()).managedDelegationLifetimeLimit,
+  ).toBe(512);
+
+  mockedReadFile.mockResolvedValue(
+    makeRawPrefsFile({ managedDelegationLifetimeLimit: 1024 }),
+  );
+  expect(
+    expectPreferencesData(await loadHandler()).managedDelegationLifetimeLimit,
+  ).toBe(512);
+});
+
+it('updates active lifetime policy only after the preference is committed', async () => {
+  mockedReadFile.mockRejectedValue(createEnoentError());
+  mockedMkdir.mockResolvedValue(undefined);
+  mockedWriteFile.mockResolvedValue(undefined);
+  mockedRename.mockResolvedValue(undefined);
+  mockUpdateManagedDelegationLifetimeLimit.mockImplementation(() => {
+    expect(mockedRename).toHaveBeenCalled();
+  });
+  jest
+    .mocked(notifyManagedDelegationLifetimePreferencesChanged)
+    .mockImplementation(() => {
+      expect(mockedRename).toHaveBeenCalled();
+      expect(mockUpdateManagedDelegationLifetimeLimit).toHaveBeenCalledWith(
+        512,
+      );
+    });
+
+  const saved = expectPreferencesData(
+    await saveHandler({}, { managedDelegationLifetimeLimit: 512 }),
+  );
+
+  expect(saved.managedDelegationLifetimeLimit).toBe(512);
+  expect(mockUpdateManagedDelegationLifetimeLimit).toHaveBeenCalledWith(512);
+  expect(
+    notifyManagedDelegationLifetimePreferencesChanged,
+  ).toHaveBeenCalledTimes(1);
+});
+
+it('does not update active lifetime policy when saving preferences fails', async () => {
+  mockedReadFile.mockRejectedValue(createEnoentError());
+  mockedMkdir.mockResolvedValue(undefined);
+  mockedWriteFile.mockRejectedValueOnce(new Error('disk full'));
+
+  await expect(
+    saveHandler({}, { managedDelegationLifetimeLimit: 512 }),
+  ).rejects.toThrow('disk full');
+  expect(mockUpdateManagedDelegationLifetimeLimit).not.toHaveBeenCalled();
+  expect(
+    notifyManagedDelegationLifetimePreferencesChanged,
+  ).not.toHaveBeenCalled();
+});
+
 it('ignores the retired development variable when reporting the default to the renderer', async () => {
   const key = brandEnvName('DEVELOPMENT_DELEGATION');
   const previous = process.env[key];
@@ -9081,20 +9654,6 @@ describe('authoritative preference reads for Personal catalog cleanup', (): void
       expect(mockedWriteFile).not.toHaveBeenCalled();
     },
   );
-});
-
-describe('home onboarding suggestions blueprint entries (CAN-3032)', () => {
-  it('keeps per-project blueprint checklist progress across normalization', () => {
-    const at = '2026-10-01T12:00:00.000Z';
-    const entries = {
-      'blueprint:marketing-1:plugin:builtin-git': { completedAt: at },
-      'blueprint:marketing-1:prompt:ws-1': { dismissedAt: at },
-    };
-    const normalized = normalizePreferences({
-      homeOnboardingSuggestions: { startedAt: at, entries },
-    }).homeOnboardingSuggestions;
-    expect(normalized?.entries).toEqual(entries);
-  });
 });
 
 describe('feature sharing opt-in (CAN-3383)', () => {
@@ -9303,8 +9862,9 @@ describe('feature sharing opt-in (CAN-3383)', () => {
     const result = findRegisteredHandler(
       'telemetry-sharing:enable-for-feature',
     )({}, request);
+    // A save reads its generation record (CAN-5154) before main's rename.
     for (let attempt = 0; attempt < 20 && !finishCommit; attempt++)
-      await Promise.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
     expect(finishCommit).toEqual(expect.any(Function));
     expect(mockedSendToWindow).not.toHaveBeenCalled();
     finishCommit?.();
@@ -9446,5 +10006,74 @@ describe('feature sharing opt-in (CAN-3383)', () => {
         },
       }).dataSharingOptInHints,
     ).toEqual({ statistics: { dismissedAt: '2026-10-05T16:00:00.000Z' } });
+  });
+});
+
+describe('CAN-4010 legacy preference saves', () => {
+  const answerAt = '2026-10-19T00:00:00.000Z';
+  const planAt = '2026-10-20T00:00:00.000Z';
+  const source = {
+    colorMode: 'dark',
+    homeOnboardingSuggestions: {
+      entries: {
+        notifications: { dismissedAt: answerAt },
+        'plan-mode': { completedAt: planAt },
+        github: { completedAt: planAt },
+      },
+    },
+  };
+  it('derives answers without a migration write and retries a failed ordinary commit', async () => {
+    mockedReadFile.mockResolvedValue(makeRawPrefsFile(source));
+    mockedMkdir.mockResolvedValue(undefined);
+    mockedWriteFile.mockResolvedValue(undefined);
+    mockedRename.mockRejectedValueOnce(new Error('commit failed'));
+    const loaded = await readPreferencesFile();
+    expect(loaded.osNotificationOfferAnsweredAt).toBe(answerAt);
+    expect(mockedWriteFile).not.toHaveBeenCalled();
+    await expect(
+      updatePreferencesFile(() => ({ sidebarCollapsed: true })),
+    ).rejects.toThrow('commit failed');
+    const saved = await updatePreferencesFile(() => ({
+      sidebarCollapsed: true,
+      homeOnboardingSuggestions: undefined,
+    }));
+    expect(saved.osNotificationOfferAnsweredAt).toBe(answerAt);
+    expect(saved.homeOnboardingSuggestions?.entries).toEqual({
+      'plan-mode': { completedAt: planAt },
+    });
+    expect(saved.colorMode).toBe('dark');
+  });
+  it('serializes unrelated saves without losing notification or sibling history', async () => {
+    let persisted = makeRawPrefsFile(source);
+    mockedReadFile.mockImplementation(() => Promise.resolve(persisted));
+    mockedMkdir.mockResolvedValue(undefined);
+    let pending = '';
+    mockedWriteFile.mockImplementation((_path, data) => {
+      if (typeof data === 'string') pending = data;
+      return Promise.resolve();
+    });
+    mockedRename.mockImplementation(() => {
+      persisted = pending;
+      return Promise.resolve();
+    });
+    await Promise.all([
+      updatePreferencesFile(() => ({ sidebarCollapsed: true })),
+      updatePreferencesFile(() => ({ colorMode: 'light' })),
+    ]);
+    const file: unknown = JSON.parse(persisted);
+    expect(file).toHaveProperty(
+      'preferences',
+      expect.objectContaining({
+        sidebarCollapsed: true,
+        colorMode: 'light',
+        osNotificationOfferAnsweredAt: answerAt,
+      }),
+    );
+    expect(file).toHaveProperty(
+      'preferences.homeOnboardingSuggestions.entries',
+      {
+        'plan-mode': { completedAt: planAt },
+      },
+    );
   });
 });

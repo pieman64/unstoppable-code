@@ -1,53 +1,43 @@
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
+import { useChatDetailPreference } from '@/stores/chatDetailStore';
+import { brand } from '@/lib/brand';
 import {
-  ChatLookProvider,
+  StandardPresentationProvider,
+  ChatAppNameProvider,
+  ChatDetailProvider,
   ContextMenuPlacementProvider,
   IconStyleProvider,
   LoadingIndicatorStyleProvider,
-  PrHoverCardsProvider,
-  SpinnerStyleProvider,
-  SubagentsViewProvider,
-  TooltipStackingProvider,
+  HostTooltipProvider,
 } from '@canopy/ui-shared/components';
 import { PanelTabLiveReorderContext } from '@canopy/ui-shared/components/panels/panel-tab-live-reorder-context';
 import { usePanelTabLiveReorder } from '@canopy/ui-shared/components/panels/use-panel-tab-live-reorder';
 import type { JSX, ReactNode } from 'react';
 
-/**
- * Comet spinners, the Subagents view, the clean chat look and Pull request
- * cards follow their independent Labs choices. Providers stay
- * mounted while their values change; the other presentation styles are standard. Live tab reorder
- * is supplied once; only filled panel tabs use it.
- */
+/** Standard presentation for every desktop window; chat detail follows Appearance. */
 export function EarlyAccessUiProviders({
   children,
 }: {
   readonly children: ReactNode;
 }): JSX.Element {
-  const comet = useLabsExperimentEnabled('comet-spinners');
-  const subagentsView = useLabsExperimentEnabled('subagents-view');
-  const cleanChat = useLabsExperimentEnabled('clean-chat');
-  const prHoverCards = useLabsExperimentEnabled('pr-hover-cards');
+  const chatDetail = useChatDetailPreference();
 
   return (
     <PanelTabLiveReorderContext.Provider value={usePanelTabLiveReorder}>
-      <SpinnerStyleProvider value={comet ? 'comet' : 'dots'}>
+      <StandardPresentationProvider>
         <ContextMenuPlacementProvider value="cursor">
-          <TooltipStackingProvider value={'single'}>
+          <HostTooltipProvider stacking={'single'}>
             <LoadingIndicatorStyleProvider value={'spinner'}>
               <IconStyleProvider value={'central'}>
-                <SubagentsViewProvider value={subagentsView}>
-                  <ChatLookProvider value={cleanChat ? 'clean' : 'classic'}>
-                    <PrHoverCardsProvider value={prHoverCards}>
-                      {children}
-                    </PrHoverCardsProvider>
-                  </ChatLookProvider>
-                </SubagentsViewProvider>
+                <ChatDetailProvider value={chatDetail}>
+                  <ChatAppNameProvider value={brand.displayName}>
+                    {children}
+                  </ChatAppNameProvider>
+                </ChatDetailProvider>
               </IconStyleProvider>
             </LoadingIndicatorStyleProvider>
-          </TooltipStackingProvider>
+          </HostTooltipProvider>
         </ContextMenuPlacementProvider>
-      </SpinnerStyleProvider>
+      </StandardPresentationProvider>
     </PanelTabLiveReorderContext.Provider>
   );
 }

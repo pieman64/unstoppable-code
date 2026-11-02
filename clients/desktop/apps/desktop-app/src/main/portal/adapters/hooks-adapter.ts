@@ -15,6 +15,8 @@ import {
 import { logMainProcessError } from '../../lib/main-process-logging';
 import { createFeatureUpsertEvent } from '../portal-feature-events';
 import { PortalServiceError } from '../../services/portal-service-error';
+import { createPortalCaller } from '../portal-caller';
+import { getCanopyPortalState } from '../portal-session-manager';
 import type { PortalAdapterContext } from './types';
 import { failServiceError, isRecord } from './validation';
 
@@ -167,9 +169,14 @@ export async function handlePortalHookSourceInfo(
     return;
   }
   try {
+    const sessionId = getCanopyPortalState().sessionId;
+    if (!sessionId) throw new Error('Portal session is not active.');
     context.complete(
       command,
-      await getHookSourceInfo(command.payload as HookSourceInfoRequest),
+      await getHookSourceInfo(
+        command.payload as HookSourceInfoRequest,
+        createPortalCaller({ sessionId }, []),
+      ),
     );
   } catch (error) {
     failServiceError(command, context, error);

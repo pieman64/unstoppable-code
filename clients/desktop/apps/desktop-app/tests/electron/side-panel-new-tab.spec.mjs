@@ -1,8 +1,8 @@
 // Early access: the Minimal Side Panel is never tabless. It starts with a New
 // tab that lists what can be opened; choosing a surface replaces the New tab,
 // closing the Side Panel's last tab hides it (with a New tab back inside),
-// and the Side Panel's `+` opens another. With early access off, the Minimal Side Panel keeps
-// develop's Activity and File explorer tabs, which do not close.
+// and the Side Panel's `+` opens another. With early access off, the Minimal
+// Side Panel starts with Activity and File explorer; filled tabs can close.
 //
 // Run after building the implementation:
 //   pnpm run test:electron:built side-panel-new-tab.spec.mjs --reporter=line
@@ -89,6 +89,11 @@ test('early access fills the Minimal Side Panel with a New tab that lists what t
     const picker = group.getByTestId('new-tab-picker');
     await expect(picker).toBeVisible();
     await expect(picker).toContainText('Open…');
+    const automationsIcon = picker
+      .getByTestId('side-panel-empty-item-automations')
+      .locator('svg');
+    await expect(automationsIcon).toHaveCSS('width', '14px');
+    await expect(automationsIcon).toHaveCSS('height', '14px');
 
     // Choosing a surface replaces the New tab.
     await picker.getByTestId('side-panel-empty-item-file-explorer').click();
@@ -122,19 +127,17 @@ test('early access fills the Minimal Side Panel with a New tab that lists what t
   }
 });
 
-test('with early access off the Minimal Side Panel keeps Activity and File explorer', async () => {
+test('the graduated Minimal Side Panel starts empty without early access', async () => {
   const { launched, userDataDir, window, group } = await openSidePanel({
     earlyAccess: false,
   });
   try {
-    await expect
-      .poll(() => sidePanelKinds(window))
-      .toEqual(['activity-section', 'file-explorer']);
-    await expect(group.getByTestId('new-tab-picker')).toHaveCount(0);
-    await expect(group.getByTestId('side-panel-empty-state')).toHaveCount(0);
-    await expect(
-      window.getByTestId('panel-tab-close-panel-file-explorer'),
-    ).toHaveCount(0);
+    await expect.poll(() => sidePanelKinds(window)).toEqual(['new-tab']);
+    const picker = group.getByTestId('new-tab-picker');
+    await expect(picker).toBeVisible();
+    await picker.getByTestId('side-panel-empty-item-file-explorer').click();
+    await expect.poll(() => sidePanelKinds(window)).toEqual(['file-explorer']);
+    await expect(picker).toHaveCount(0);
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }

@@ -15,6 +15,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { openProjectSettingsPage } from './projectSettingsDriver.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKSPACE_NAME = 'TypeScript pnpm Vite';
@@ -25,7 +26,7 @@ const AGENT_CHECK_OUTPUT = 'agent-check-ok';
 const AGENT_SLOW_COMMAND =
   "printf 'agent-slow-started\\n'; sleep 8; printf 'agent-slow-done\\n'";
 
-function seedInteractiveScript(userDataDir) {
+function seedInteractiveScript(userDataDir, { layoutMode = 'minimal' } = {}) {
   seedDemoWorkspaces({
     userDataDir,
     apps: ['ts-pnpm-vite'],
@@ -59,8 +60,62 @@ function seedInteractiveScript(userDataDir) {
   mkdirSync(worktreeDataDir, { recursive: true });
   writeFileSync(
     path.join(worktreeDataDir, 'panel-layout-mode.json'),
-    JSON.stringify({ version: 1, mode: 'minimal' }),
+    JSON.stringify({ version: 1, mode: layoutMode }),
     'utf8',
+  );
+  // Preserve an existing Activity rail for script execution coverage.
+  writeFileSync(
+    path.join(worktreeDataDir, 'panel-layout.json'),
+    JSON.stringify({
+      version: 1,
+      grid: {
+        orientation: 0,
+        width: 1280,
+        height: 800,
+        root: {
+          type: 'branch',
+          size: 800,
+          children: [
+            {
+              type: 'branch',
+              size: 600,
+              children: [
+                {
+                  type: 'leaf',
+                  groupId: 'group-chat',
+                  size: 960,
+                  panels: [],
+                  activePanelId: null,
+                },
+                {
+                  type: 'leaf',
+                  groupId: 'group-extras',
+                  size: 320,
+                  panels: [
+                    {
+                      panelId: 'panel-activity',
+                      kind: 'activity-section',
+                    },
+                  ],
+                  activePanelId: 'panel-activity',
+                  collapsed: { edge: 'right', expandedSize: 320, auto: true },
+                },
+              ],
+            },
+            {
+              type: 'leaf',
+              groupId: 'group-terminal',
+              size: 200,
+              panels: [{ panelId: 'panel-terminal', kind: 'terminal' }],
+              activePanelId: 'panel-terminal',
+              collapsed: { edge: 'bottom', expandedSize: 200 },
+            },
+          ],
+        },
+      },
+      activeGroupId: 'group-chat',
+      mostRecentActiveGroupIds: ['group-chat'],
+    }),
   );
 }
 
@@ -121,6 +176,83 @@ async function scriptsSection(window) {
   if (await expand.count()) await expand.first().click();
   return section;
 }
+
+test('script source info preserves fine-pointer reveal and activates on a coarse pointer', async () => {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-electron-source-info-pointer-'),
+  );
+  // Scripts lives in the advanced Activity rail. Minimal starts with an
+  // empty Side Panel, so merely opening that panel does not mount Scripts.
+  seedInteractiveScript(userDataDir, { layoutMode: 'advanced' });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  let cdp;
+
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const section = await scriptsSection(window);
+    const row = section
+      .getByTestId('activity-scripts-entry')
+      .filter({ hasText: 'Wizard' });
+    const info = row.getByRole('button', { name: 'Source info for Wizard' });
+
+    await window.mouse.move(0, 0);
+    await window.evaluate(() => document.activeElement?.blur());
+    expect(
+      await window.evaluate(() => matchMedia('(pointer: fine)').matches),
+    ).toBe(true);
+    await expect(info).toHaveCSS('opacity', '0');
+    await row.hover();
+    await expect(info).toHaveCSS('opacity', '1');
+    await window.mouse.move(0, 0);
+    await info.focus();
+    await expect(info).toHaveCSS('opacity', '1');
+    await info.blur();
+    await expect(info).toHaveCSS('opacity', '0');
+
+    cdp = await window.context().newCDPSession(window);
+    await cdp.send('Emulation.setTouchEmulationEnabled', {
+      enabled: true,
+      maxTouchPoints: 1,
+    });
+    await expect
+      .poll(() =>
+        window.evaluate(() => matchMedia('(pointer: coarse)').matches),
+      )
+      .toBe(true);
+    await expect(info).toHaveCSS('opacity', '1');
+    const bounds = await info.boundingBox();
+    expect(bounds).not.toBeNull();
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [
+        { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+      ],
+    });
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: [],
+    });
+    const dialog = window.getByRole('dialog', { name: 'Wizard', exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Interactive terminal');
+    await expect(window.getByTestId('terminal-pane')).toHaveCount(0);
+  } finally {
+    try {
+      if (cdp) {
+        await cdp.send('Emulation.setTouchEmulationEnabled', {
+          enabled: false,
+        });
+        await cdp.detach();
+      }
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  }
+});
 
 test('interactive script settings, activity affordance, and terminal execution', async () => {
   test.setTimeout(150_000);
@@ -195,7 +327,9 @@ test('interactive script settings, activity affordance, and terminal execution',
     await app.workspaceSettingsButton(WORKSPACE_NAME).click();
     const settings = window.getByRole('dialog', { name: WORKSPACE_NAME });
     await expect(settings).toBeVisible();
-    await settings.getByRole('tab', { name: 'Scripts' }).click();
+    // Each script opens its editor in place from its row.
+    await openProjectSettingsPage(app, 'scripts');
+    await settings.getByTestId('project-settings-script-edit-wizard').click();
     const wizardTextarea = settings.locator('textarea');
     const wizardIndex = await wizardTextarea.evaluateAll(
       (nodes, command) => nodes.findIndex((node) => node.value === command),
@@ -216,6 +350,7 @@ test('interactive script settings, activity affordance, and terminal execution',
     // The timeout control is a Background-only affordance.
     await expect(editor.getByText('Timeout', { exact: true })).toHaveCount(0);
 
+    await settings.getByTestId('project-settings-script-edit-teardown').click();
     const teardownIndex = await wizardTextarea.evaluateAll((nodes) =>
       nodes.findIndex((node) => node.value === "printf 'teardown output\\n'"),
     );
@@ -249,7 +384,7 @@ test('interactive script settings, activity affordance, and terminal execution',
     await expect(lockedTooltip).toHaveText(
       'Teardown scripts can only be run as background commands.',
     );
-    await settings.getByRole('button', { name: 'Close' }).click();
+    await settings.getByTestId('project-settings-back').click();
 
     await run.click();
     await section.getByRole('button', { name: 'Confirm' }).click();

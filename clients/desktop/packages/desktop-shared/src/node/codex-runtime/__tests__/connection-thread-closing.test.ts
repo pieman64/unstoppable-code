@@ -15,7 +15,9 @@ const spawnMock = jest.fn<
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn(): typeof spawnMock {
+    return spawnMock;
+  },
 }));
 
 // Fake PIDs must never reach the host's process-group signal path.
@@ -106,7 +108,7 @@ function parseClientMessage(line: string): Record<string, unknown> {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('Expected a Codex client protocol message object');
   }
-  return parsed;
+  return Object.fromEntries(Object.entries(parsed));
 }
 
 function resumeRequests(proc: MockChildProcess): Record<string, unknown>[] {

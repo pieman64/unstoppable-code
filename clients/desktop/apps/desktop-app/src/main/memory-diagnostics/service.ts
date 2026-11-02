@@ -30,6 +30,12 @@ import type {
   MemoryReportSummary,
 } from '@canopy/desktop-shared/types';
 import type { Session as InspectorSession } from 'node:inspector';
+import {
+  captureNativeMemory,
+  NATIVE_DUMP_WAIT_MS,
+  NativeMemoryTraceCleanupError,
+  type NativeMemorySummary,
+} from './native-memory';
 
 const AUTO_DUMP_INTERVAL_MS = 15_000;
 const AUTO_DUMP_MIN_INTERVAL_MS = 5 * 60 * 1000;
@@ -80,6 +86,51 @@ interface MemoryDiagnosticsMeasurements {
   readonly rendererMemoryEstimate: RendererMemoryEstimate;
 }
 
+interface RendererHeapUsage {
+  readonly usedSize: number;
+  readonly totalSize: number;
+  readonly embedderHeapUsedSize?: number;
+  readonly backingStorageSize?: number;
+}
+
+interface RendererDomCounters {
+  readonly documents: number;
+  readonly nodes: number;
+  readonly jsEventListeners: number;
+}
+
+type RendererStatisticsUnavailableReason =
+  | 'debugger-attached'
+  | 'attach-failed'
+  | 'command-failed'
+  | 'timeout'
+  | 'invalid-result';
+
+type RendererStatistics =
+  | {
+      readonly heapUsage: RendererHeapUsage;
+      readonly domCounters: RendererDomCounters;
+    }
+  | {
+      readonly statisticsUnavailableReason: RendererStatisticsUnavailableReason;
+    };
+
+interface RendererSnapshotSummary {
+  readonly label: string;
+  readonly processId: number | null;
+  readonly fileName: string;
+  readonly heapUsage?: RendererHeapUsage;
+  readonly domCounters?: RendererDomCounters;
+  readonly statisticsUnavailableReason?: RendererStatisticsUnavailableReason;
+}
+
+interface MemoryDiagnosticsProcessHistory {
+  readonly reportsWrittenBefore: number;
+  readonly automaticDumpsWrittenBefore: number;
+  readonly mainSnapshotsWrittenBefore: number;
+  readonly processUptimeSeconds: number;
+}
+
 interface MemoryDiagnosticsSummaryFile {
   readonly version: 1;
   readonly reportId: string;
@@ -99,11 +150,10 @@ interface MemoryDiagnosticsSummaryFile {
   readonly heapSpaceStatistics: readonly HeapSpaceInfo[];
   readonly appMetrics: readonly ProcessMetric[];
   readonly rendererMemoryEstimate: RendererMemoryEstimate;
-  readonly rendererSnapshots: readonly {
-    readonly label: string;
-    readonly processId: number | null;
-    readonly fileName: string;
-  }[];
+  readonly rendererSnapshots: readonly RendererSnapshotSummary[];
+  readonly processHistory?: MemoryDiagnosticsProcessHistory;
+  /** Manual reports only: one Chromium memory-infra dump, before any snapshot. */
+  readonly nativeMemory?: NativeMemorySummary;
   readonly sampling: {
     readonly active: boolean;
     readonly included: boolean;
@@ -128,6 +178,142 @@ function isInspectorProfileResult(
     typeof value.profile === 'object' &&
     value.profile !== null
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isRendererHeapUsage(value: unknown): value is RendererHeapUsage {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeFiniteNumber(value.usedSize) ||
+    !isNonNegativeFiniteNumber(value.totalSize)
+  ) {
+    return false;
+  }
+
+  if (
+    value.embedderHeapUsedSize !== undefined &&
+    !isNonNegativeFiniteNumber(value.embedderHeapUsedSize)
+  ) {
+    return false;
+  }
+  if (
+    value.backingStorageSize !== undefined &&
+    !isNonNegativeFiniteNumber(value.backingStorageSize)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isRendererDomCounters(value: unknown): value is RendererDomCounters {
+  return (
+    isRecord(value) &&
+    isNonNegativeFiniteNumber(value.documents) &&
+    isNonNegativeFiniteNumber(value.nodes) &&
+    isNonNegativeFiniteNumber(value.jsEventListeners)
+  );
+}
+
+function sendRendererCommandWithTimeout(
+  debuggerClient: WebContents['debugger'],
+  method: string,
+  timeoutError: Error,
+): Promise<unknown> {
+  const timeoutSignal = AbortSignal.timeout(5_000);
+  const commandPromise: Promise<unknown> = debuggerClient.sendCommand(method);
+  let rejectOnTimeout: (() => void) | undefined;
+  const timeoutPromise: Promise<never> = new Promise<never>(
+    (_resolve, reject) => {
+      rejectOnTimeout = (): void => reject(timeoutError);
+      timeoutSignal.addEventListener('abort', rejectOnTimeout, { once: true });
+      if (timeoutSignal.aborted) {
+        rejectOnTimeout();
+      }
+    },
+  );
+
+  return Promise.race([commandPromise, timeoutPromise]).finally((): void => {
+    if (rejectOnTimeout !== undefined) {
+      timeoutSignal.removeEventListener('abort', rejectOnTimeout);
+    }
+  });
+}
+
+async function readRendererStatistics(
+  debuggerClient: WebContents['debugger'],
+): Promise<RendererStatistics> {
+  let debuggerAttached: boolean;
+  try {
+    debuggerAttached = debuggerClient.isAttached();
+  } catch {
+    return { statisticsUnavailableReason: 'command-failed' };
+  }
+  if (debuggerAttached) {
+    return { statisticsUnavailableReason: 'debugger-attached' };
+  }
+
+  const timeoutError = new Error('Renderer statistics command timed out.');
+  let commandStage = false;
+  try {
+    debuggerClient.attach('1.3');
+    commandStage = true;
+    const heapUsage: unknown = await sendRendererCommandWithTimeout(
+      debuggerClient,
+      'Runtime.getHeapUsage',
+      timeoutError,
+    );
+    const domCounters: unknown = await sendRendererCommandWithTimeout(
+      debuggerClient,
+      'Memory.getDOMCounters',
+      timeoutError,
+    );
+    if (
+      !isRendererHeapUsage(heapUsage) ||
+      !isRendererDomCounters(domCounters)
+    ) {
+      return { statisticsUnavailableReason: 'invalid-result' };
+    }
+    const normalizedHeapUsage: RendererHeapUsage = {
+      usedSize: heapUsage.usedSize,
+      totalSize: heapUsage.totalSize,
+      ...(heapUsage.embedderHeapUsedSize === undefined
+        ? {}
+        : { embedderHeapUsedSize: heapUsage.embedderHeapUsedSize }),
+      ...(heapUsage.backingStorageSize === undefined
+        ? {}
+        : { backingStorageSize: heapUsage.backingStorageSize }),
+    };
+    const normalizedDomCounters: RendererDomCounters = {
+      documents: domCounters.documents,
+      nodes: domCounters.nodes,
+      jsEventListeners: domCounters.jsEventListeners,
+    };
+    return {
+      heapUsage: normalizedHeapUsage,
+      domCounters: normalizedDomCounters,
+    };
+  } catch (error: unknown) {
+    if (!commandStage) {
+      return { statisticsUnavailableReason: 'attach-failed' };
+    }
+    return {
+      statisticsUnavailableReason:
+        error === timeoutError ? 'timeout' : 'command-failed',
+    };
+  } finally {
+    try {
+      debuggerClient.detach();
+    } catch {
+      // Detach must not prevent the renderer snapshot from being written.
+    }
+  }
 }
 
 function inspectorCommand(
@@ -157,6 +343,37 @@ function errorMessage(error: unknown, fallback: string): string {
     return fallback;
   }
   return error.message.slice(0, 240);
+}
+
+/**
+ * A failed capture records why and never fails the report, except a raw trace
+ * that could not be deleted: that fails the report and removes its folder.
+ */
+async function readNativeMemory(
+  tracePath: string,
+  appMetrics: readonly ProcessMetric[],
+): Promise<NativeMemorySummary> {
+  const startedAt = Date.now();
+  try {
+    return await captureNativeMemory(
+      tracePath,
+      appMetrics,
+      NATIVE_DUMP_WAIT_MS,
+    );
+  } catch (error) {
+    if (error instanceof NativeMemoryTraceCleanupError) throw error;
+    logMainProcessError('Memory report native memory capture failed', error);
+    return {
+      captured: false,
+      unavailableReason: errorMessage(
+        error,
+        'The native memory trace could not be recorded.',
+      ),
+      durationMs: Date.now() - startedAt,
+      processes: [],
+      missingProcessIds: [],
+    };
+  }
 }
 
 function isWithinDirectory(directory: string, candidate: string): boolean {
@@ -343,9 +560,11 @@ function estimatedReportSeconds(
     return 0;
   }
   const totalBytes = mainHeapUsedBytes + rendererBytes;
-  return Math.max(
-    1,
-    Math.ceil((totalBytes / GIBIBYTE_BYTES) * ESTIMATED_SECONDS_PER_GIBIBYTE),
+  return (
+    Math.max(
+      1,
+      Math.ceil((totalBytes / GIBIBYTE_BYTES) * ESTIMATED_SECONDS_PER_GIBIBYTE),
+    ) + Math.ceil(NATIVE_DUMP_WAIT_MS / 1000)
   );
 }
 
@@ -609,6 +828,9 @@ class MemoryDiagnosticsServiceImpl {
   private reportInProgress = false;
   private lastReport: MemoryReportSummary | null = null;
   private lastAutomaticDumpAt = 0;
+  private reportsWritten = 0;
+  private automaticDumpsWritten = 0;
+  private mainSnapshotsWritten = 0;
   private generation = 0;
   private timer: NodeJS.Timeout | null = null;
   private samplingSession: InspectorSession | null = null;
@@ -616,6 +838,22 @@ class MemoryDiagnosticsServiceImpl {
   private writeQueue: Promise<void> = Promise.resolve();
 
   public constructor(private readonly host: MemoryDiagnosticsHost) {}
+
+  private getProcessHistory(): MemoryDiagnosticsProcessHistory {
+    return {
+      reportsWrittenBefore: this.reportsWritten,
+      automaticDumpsWrittenBefore: this.automaticDumpsWritten,
+      mainSnapshotsWrittenBefore: this.mainSnapshotsWritten,
+      processUptimeSeconds: Math.round(process.uptime()),
+    };
+  }
+
+  private recordSuccessfulReport(kind: MemoryReportKind): void {
+    this.reportsWritten += 1;
+    if (kind === 'auto') {
+      this.automaticDumpsWritten += 1;
+    }
+  }
 
   public setEnabled(enabled: boolean): void {
     if (this.disposed || this.enabled === enabled) {
@@ -835,7 +1073,8 @@ class MemoryDiagnosticsServiceImpl {
     let profilerEnabled = false;
     let samplingStarted = false;
     try {
-      const inspectorModule = await import('node:inspector');
+      // Packaged main runs as bytecode through vm.Script without a dynamic import callback, so getBuiltinModule keeps inspector loading lazy without import() failing.
+      const inspectorModule = process.getBuiltinModule('node:inspector');
       if (!this.isCurrentGeneration(generation)) {
         return;
       }
@@ -1050,6 +1289,7 @@ class MemoryDiagnosticsServiceImpl {
           appMetrics: measurements.appMetrics,
           rendererMemoryEstimate: measurements.rendererMemoryEstimate,
           rendererSnapshots: [],
+          processHistory: this.getProcessHistory(),
           sampling: {
             active: this.samplingActive,
             included: profileContents !== null,
@@ -1076,6 +1316,7 @@ class MemoryDiagnosticsServiceImpl {
         profileContents !== null,
       );
       await pruneOutputDirectories(root, 'auto', AUTO_DUMP_RETENTION_COUNT);
+      this.recordSuccessfulReport('auto');
       this.lastReport = report;
     } catch (error) {
       logMainProcessError(
@@ -1117,8 +1358,14 @@ class MemoryDiagnosticsServiceImpl {
 
       const createdAtMs = Date.now();
       const createdAt = new Date(createdAtMs).toISOString();
+      const processHistory = this.getProcessHistory();
       directory = await createOutputDirectory(root, 'report');
       const summaryPath = safeDirectChild(directory.path, 'summary.json');
+      // Before any snapshot, whose own allocations would skew the numbers.
+      const nativeMemory = await readNativeMemory(
+        safeDirectChild(directory.path, 'native-memory.trace.json'),
+        measurements.appMetrics,
+      );
       const profileContents = await this.enqueueSampling(() =>
         this.readSamplingProfile(),
       );
@@ -1129,11 +1376,7 @@ class MemoryDiagnosticsServiceImpl {
         );
       }
 
-      const rendererSnapshots: {
-        label: string;
-        processId: number | null;
-        fileName: string;
-      }[] = [];
+      const rendererSnapshots: RendererSnapshotSummary[] = [];
       const rendererLabelCounts = new Map<string, number>();
       const initialSummary = this.makeSummaryWithoutReport(
         directory,
@@ -1141,7 +1384,9 @@ class MemoryDiagnosticsServiceImpl {
         createdAt,
         measurements,
         rendererSnapshots,
+        processHistory,
         profileContents !== null,
+        nativeMemory,
       );
       await writeJsonFile(summaryPath, {
         ...initialSummary,
@@ -1166,6 +1411,9 @@ class MemoryDiagnosticsServiceImpl {
           duplicateCount === 0 ? '' : `-${duplicateCount + 1}`;
         const fileName = `renderer-${renderer.label}${labelSuffix}.heapsnapshot`;
         const snapshotPath = safeDirectChild(directory.path, fileName);
+        const rendererStatistics = await readRendererStatistics(
+          renderer.webContents.debugger,
+        );
         await renderer.webContents.takeHeapSnapshot(snapshotPath);
         ensurePrivateRegularFile(snapshotPath);
         await chmod(snapshotPath, FILE_MODE);
@@ -1173,6 +1421,7 @@ class MemoryDiagnosticsServiceImpl {
           label: renderer.label,
           processId: renderer.processId,
           fileName,
+          ...rendererStatistics,
         });
       }
 
@@ -1196,6 +1445,8 @@ class MemoryDiagnosticsServiceImpl {
         'main.heapsnapshot',
       );
       const writtenSnapshotPath = writeHeapSnapshot(mainSnapshotPath);
+      // Even a report that later fails has left V8's main snapshot pages behind.
+      this.mainSnapshotsWritten += 1;
       if (resolve(writtenSnapshotPath) !== resolve(mainSnapshotPath)) {
         throw new Error(
           'V8 wrote the main snapshot outside the report directory.',
@@ -1210,7 +1461,9 @@ class MemoryDiagnosticsServiceImpl {
         createdAt,
         measurements,
         rendererSnapshots,
+        processHistory,
         profileContents !== null,
+        nativeMemory,
       );
       const report = await finalizeSummaryFile(
         directory.path,
@@ -1220,6 +1473,7 @@ class MemoryDiagnosticsServiceImpl {
         profileContents !== null,
       );
       await pruneOutputDirectories(root, 'report', REPORT_RETENTION_COUNT);
+      this.recordSuccessfulReport('report');
       this.lastReport = report;
       return { ok: true, report };
     } catch (error) {
@@ -1243,12 +1497,10 @@ class MemoryDiagnosticsServiceImpl {
     kind: MemoryReportKind,
     createdAt: string,
     measurements: MemoryDiagnosticsMeasurements,
-    rendererSnapshots: readonly {
-      readonly label: string;
-      readonly processId: number | null;
-      readonly fileName: string;
-    }[],
+    rendererSnapshots: readonly RendererSnapshotSummary[],
+    processHistory: MemoryDiagnosticsProcessHistory,
     samplingIncluded: boolean,
+    nativeMemory?: NativeMemorySummary,
   ): Omit<MemoryDiagnosticsSummaryFile, 'report'> {
     return {
       version: 1,
@@ -1270,6 +1522,8 @@ class MemoryDiagnosticsServiceImpl {
       appMetrics: measurements.appMetrics,
       rendererMemoryEstimate: measurements.rendererMemoryEstimate,
       rendererSnapshots,
+      processHistory,
+      ...(nativeMemory ? { nativeMemory } : {}),
       sampling: {
         active: this.samplingActive,
         included: samplingIncluded,

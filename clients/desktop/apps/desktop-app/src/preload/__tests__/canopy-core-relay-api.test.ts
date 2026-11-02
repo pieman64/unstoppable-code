@@ -172,6 +172,41 @@ describe('createCanopyCoreRelayApi', () => {
     });
   });
 
+  it('never directs a same-key replay of an entry delete, copy or move, which retain no outcome', async () => {
+    const invoke = jest.fn(() => Promise.reject(new Error('IPC closed')));
+    const api = createCanopyCoreRelayApi({ invoke });
+    for (const operation of ['delete', 'copy', 'move'])
+      await expect(
+        api.invoke({
+          kind: 'request',
+          method: `worker.filesystem.entry.${operation}`,
+          params: { _meta: { idempotencyKey: `${operation}-key` } },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable', retry: { kind: 'never' } },
+      });
+  });
+
+  it('never directs a same-key replay of a file write or folder create, which retain no outcome', async () => {
+    const invoke = jest.fn(() => Promise.reject(new Error('IPC closed')));
+    const api = createCanopyCoreRelayApi({ invoke });
+    for (const method of [
+      'worker.filesystem.file.write',
+      'worker.filesystem.directory.create',
+    ])
+      await expect(
+        api.invoke({
+          kind: 'request',
+          method,
+          params: { _meta: { idempotencyKey: `${method}-key` } },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable', retry: { kind: 'never' } },
+      });
+  });
+
   it('imports nothing from the main process', () => {
     const source = readFileSync(
       join(__dirname, '../api/canopy-core-relay-api.ts'),

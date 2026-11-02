@@ -14,9 +14,12 @@ import type {
 } from '@canopy/desktop-shared/types/account-proxy';
 import type { CostChatRow } from '@canopy/protocol/cost-view';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
-import type * as LabsExperimentsStore from '@/stores/labsExperimentsStore';
 import { invalidateAiCreditsUsageCache } from '@/hooks/useAiCreditsUsage';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  resetRendererBillingLaneForTests,
+  setRendererBillingLaneAvailability,
+} from '@/stores/billingLaneRuntime';
 import {
   PROXY_USAGE_EXPANDED_STORAGE_KEY,
   useProxyUsageExpandedStore,
@@ -24,21 +27,6 @@ import {
 import { UsageIndicator } from '../UsageIndicator';
 
 const mockOpenSessionBreakdownPanel = jest.fn();
-let mockProxyAccountCards = false;
-
-jest.mock('@/stores/labsExperimentsStore', () => {
-  const actual = jest.requireActual<typeof LabsExperimentsStore>(
-    '@/stores/labsExperimentsStore',
-  );
-  return {
-    ...actual,
-    useLabsExperimentEnabled: (id: string): boolean =>
-      id === 'proxy-account-cards'
-        ? mockProxyAccountCards
-        : actual.useLabsExperimentEnabled(id),
-  };
-});
-
 jest.mock('@/lib/cost/open-cost-panels', () => ({
   openSessionBreakdownPanel: (...args: unknown[]): unknown =>
     mockOpenSessionBreakdownPanel(...args),
@@ -258,12 +246,12 @@ describe('UsageIndicator cost preview', () => {
     useNavigationStore.setState({ navigate: originalNavigate });
     useAccountProxyStore.setState({ status: null });
     invalidateAiCreditsUsageCache();
-    mockProxyAccountCards = false;
     window.localStorage.clear();
     useProxyUsageExpandedStore.setState({
       expanded: {},
       sectionCollapsed: false,
     });
+    resetRendererBillingLaneForTests();
   });
 
   it('reads the stored chat row only when opened and links to its breakdown', async () => {
@@ -401,6 +389,13 @@ describe('UsageIndicator cost preview', () => {
     });
     renderUsage(contextTarget);
     await openPopover();
+    act(() => {
+      document.body
+        .querySelectorAll<HTMLButtonElement>(
+          '[data-testid="usage-indicator-account-toggle"]',
+        )
+        .forEach((button) => button.click());
+    });
 
     const section = document.body.querySelector(
       '[data-testid="usage-indicator-proxy-accounts"]',
@@ -408,11 +403,11 @@ describe('UsageIndicator cost preview', () => {
     expect(section).not.toBeNull();
     const text = section?.textContent ?? '';
     expect(text).toContain('sam@example.com');
-    expect(text).toContain('Via account proxy · 75% of turns · ≈ $0.31');
+    expect(text).toContain('75% of turns');
     expect(text).toContain('5-hour limit');
     // An account the last list did not name keeps a generic name.
     expect(text).toContain('Codex account');
-    expect(text).toContain('Via account proxy · 25% of turns · ≈ $0.10');
+    expect(text).toContain('25% of turns');
     await act(async () => {
       section
         ?.querySelector<HTMLButtonElement>('button[aria-label^="Manage"]')
@@ -426,7 +421,11 @@ describe('UsageIndicator cost preview', () => {
     useAccountProxyStore.setState({ status: PROXY_STATUS });
     installCostApi();
     installSessionAccounts([]);
-    const readStatus = jest.spyOn(window.api.accountProxy, 'status');
+    const accountProxyApi = window.api.accountProxy;
+    if (accountProxyApi === undefined) {
+      throw new Error('The account proxy API was not installed');
+    }
+    const readStatus = jest.spyOn(accountProxyApi, 'status');
     renderUsage(contextTarget, true);
     expect(readStatus).not.toHaveBeenCalledWith({
       refresh: true,
@@ -539,6 +538,13 @@ describe('UsageIndicator cost preview', () => {
     installSessionAccounts([]);
     renderUsage(contextTarget, true, 'claude');
     await openPopover();
+    act(() => {
+      document.body
+        .querySelectorAll<HTMLButtonElement>(
+          '[data-testid="usage-indicator-account-toggle"]',
+        )
+        .forEach((button) => button.click());
+    });
 
     const section = document.body.querySelector(
       '[data-testid="usage-indicator-proxy-accounts"]',
@@ -552,7 +558,6 @@ describe('UsageIndicator cost preview', () => {
     expect(accountSummary?.textContent).toContain('42%');
     expect(accountSummary?.textContent).toContain('Spent $1.25');
     expect(accountSummary?.textContent).toContain('$8.75 of $10.00 left');
-    expect(status?.textContent?.startsWith('Via account proxy')).toBe(true);
     expect(status?.textContent).toContain(
       'Check your connection, then try reaching Claude again.',
     );
@@ -569,14 +574,7 @@ describe('UsageIndicator cost preview', () => {
     expect(codexSummary?.textContent).toContain('5-hour window');
     expect(codexSummary?.textContent).toContain('22%');
     expect(codexSummary?.textContent).toContain('12,500 credits left');
-    expect(
-      codexSummary
-        ?.querySelector('[role="status"]')
-        ?.textContent?.startsWith('Via account proxy'),
-    ).toBe(true);
-    expect(
-      codexSummary?.querySelector('[role="status"]')?.textContent,
-    ).toContain('Updated ');
+    expect(codexSummary?.querySelector('[role="status"]')).toBeNull();
   });
 
   it('names the account the proxy uses before any turn is recorded', async () => {
@@ -588,7 +586,7 @@ describe('UsageIndicator cost preview', () => {
 
     const text = proxySectionText();
     expect(text).toContain('sam@example.com');
-    expect(text).toContain('Via account proxy');
+    expect(text).toContain('Proxy accounts');
     expect(text).toContain('5-hour limit');
     expect(document.body.textContent).not.toContain('Sign in');
   });
@@ -648,10 +646,8 @@ describe('UsageIndicator cost preview', () => {
       ),
       (element) => element.textContent,
     );
-    expect(labels).toEqual(['(ops@example.com)', '(sam@example.com)']);
-    expect(proxySectionText()).toContain(
-      'Via account proxy · 100% of turns · ≈ $0.20',
-    );
+    expect(labels).toEqual(['ops@example.com', 'sam@example.com']);
+    expect(proxySectionText()).toContain('100% of turns');
   });
 
   it('keeps the session account on the connection it was recorded under', async () => {
@@ -709,9 +705,9 @@ describe('UsageIndicator cost preview', () => {
       ),
       (element) => element.textContent,
     );
-    expect(labels).toEqual(['(sam@example.com)']);
+    expect(labels).toEqual(['sam@example.com']);
     const text = proxySectionText();
-    expect(text).toContain('Via account proxy · 100% of turns · ≈ $0.20');
+    expect(text).toContain('100% of turns');
     expect(text).not.toContain('ops@example.com');
     expect(text).not.toContain('5-hour limit');
   });
@@ -752,7 +748,7 @@ describe('UsageIndicator cost preview', () => {
       ),
       (element) => element.textContent,
     );
-    expect(labels).toEqual(['(sam@example.com)']);
+    expect(labels).toEqual(['sam@example.com']);
   });
 
   it('asks for an account when the proxy has none for the chat', async () => {
@@ -948,10 +944,6 @@ describe('UsageIndicator cost preview', () => {
       });
     }
 
-    beforeEach(() => {
-      mockProxyAccountCards = true;
-    });
-
     it('lists each account as a folded card under one Proxy accounts row', async () => {
       const openSettings = jest.fn();
       useNavigationStore.setState({ openSettings });
@@ -1093,6 +1085,117 @@ describe('UsageIndicator cost preview', () => {
       );
       expect(cards()).toHaveLength(0);
       expect(useProxyUsageExpandedStore.getState().sectionCollapsed).toBe(true);
+    });
+  });
+
+  describe('credits-only billing (CAN-5028)', () => {
+    const CREDITS_ONLY = {
+      claudeNativeAuth: false,
+      codexNativeAuth: false,
+      creditsEligible: true,
+    } as const;
+
+    function renderBilled(aiCreditsBilled: boolean): void {
+      act(() => {
+        root.render(
+          <UsageIndicator
+            usage={{ ...BASE_USAGE, totalCostUsd: 0.4 }}
+            isCodex
+            providerType="codex"
+            contextTarget={contextTarget}
+            aiCreditsBilled={aiCreditsBilled}
+          />,
+        );
+      });
+    }
+
+    async function expandContext(): Promise<void> {
+      await act(async () => {
+        document.body
+          .querySelector<HTMLButtonElement>(
+            '[data-testid="usage-indicator-context"]',
+          )
+          ?.click();
+        await Promise.resolve();
+      });
+    }
+
+    function costRow(): Element | null {
+      return document.body.querySelector(
+        '[data-testid="usage-indicator-cost"]',
+      );
+    }
+
+    it('hides every USD figure and skips the cost read for a credits-billed chat', async () => {
+      setRendererBillingLaneAvailability(CREDITS_ONLY);
+      const { getChat } = installCostApi();
+      renderBilled(true);
+      await openPopover();
+
+      expect(getChat).not.toHaveBeenCalled();
+      expect(costRow()).toBeNull();
+      expect(
+        document.body.querySelector(
+          '[data-testid="usage-indicator-see-details"]',
+        ),
+      ).toBeNull();
+      await expandContext();
+      const details =
+        document.body.querySelector('[data-testid="usage-indicator-details"]')
+          ?.textContent ?? '';
+      expect(details).toContain('Turns');
+      expect(details).not.toContain('Cost');
+    });
+
+    it('keeps cost for a chat in the same account that bills elsewhere', async () => {
+      setRendererBillingLaneAvailability(CREDITS_ONLY);
+      installCostApi();
+      renderBilled(false);
+      await openPopover();
+
+      expect(costRow()).not.toBeNull();
+    });
+
+    it('keeps cost and the breakdown link for a subscriber', async () => {
+      setRendererBillingLaneAvailability({
+        ...CREDITS_ONLY,
+        claudeNativeAuth: true,
+      });
+      installCostApi();
+      renderBilled(true);
+      await openPopover();
+
+      expect(costRow()).not.toBeNull();
+      expect(
+        document.body.querySelector(
+          '[data-testid="usage-indicator-see-details"]',
+        ),
+      ).not.toBeNull();
+    });
+
+    it('keeps cost while the account facts are unknown', async () => {
+      installCostApi();
+      renderBilled(true);
+      await openPopover();
+
+      expect(costRow()).not.toBeNull();
+    });
+
+    it('drops cost in place when the facts settle as credits-only', async () => {
+      installCostApi();
+      renderBilled(true);
+      await openPopover();
+      expect(costRow()).not.toBeNull();
+
+      await act(async () => {
+        setRendererBillingLaneAvailability(CREDITS_ONLY);
+        await Promise.resolve();
+      });
+
+      expect(
+        document.body.querySelector('[data-testid="usage-indicator-popover"]'),
+      ).not.toBeNull();
+      expect(costRow()).toBeNull();
     });
   });
 });

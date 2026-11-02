@@ -3,6 +3,7 @@ jest.mock('@electron-toolkit/utils', () => ({
 }));
 
 import * as fs from 'node:fs';
+import { promises as fsPromises } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -35,6 +36,7 @@ describe('execution-state', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -125,6 +127,374 @@ describe('execution-state', () => {
     Object.assign(record, value);
     return record;
   }
+
+  describe('snapshot installation', () => {
+    const targetName = 'execution-1.json';
+
+    function namedSnapshot(
+      state: ExecutionState,
+      name: string,
+    ): ExecutionState {
+      return {
+        ...state,
+        pipeline_snapshot: { ...state.pipeline_snapshot, name },
+      };
+    }
+
+    function gate(): { reached: Promise<void>; release: () => void } {
+      let release = (): void => {};
+      const reached = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { reached, release };
+    }
+
+    it('keeps overlapping saves independent until each complete snapshot is installed', async () => {
+      const initial = makeState();
+      await saveExecutionState(initial, tempDir);
+      const target = path.join(tempDir, targetName);
+      const initialBytes = fs.readFileSync(target, 'utf8');
+      const first = namedSnapshot(initial, 'first snapshot');
+      const second = namedSnapshot(initial, 'second, longer snapshot');
+      const staged = gate();
+      const proceed = gate();
+      const rename = fsPromises.rename;
+      const sources: string[] = [];
+      const stagedBytes: string[] = [];
+      jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation(async (source, dest) => {
+          sources.push(String(source));
+          stagedBytes.push(fs.readFileSync(source, 'utf8'));
+          if (sources.length === 1) {
+            staged.release();
+            await proceed.reached;
+          }
+          await rename(source, dest);
+        });
+
+      const firstSave = saveExecutionState(first, tempDir);
+      // Settle the held writer before cleanup, including on assertion failure.
+      const firstResult = Promise.allSettled([firstSave]);
+      try {
+        await Promise.race([staged.reached, firstSave]);
+        expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+        await saveExecutionState(second, tempDir);
+        expect(fs.readFileSync(target, 'utf8')).toBe(stagedBytes[1]);
+        expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
+          pipeline_snapshot: { name: second.pipeline_snapshot.name },
+        });
+        expect(new Set(sources).size).toBe(2);
+        expect(
+          fs.readdirSync(tempDir).filter((name) => name.endsWith('.tmp')),
+        ).toHaveLength(1);
+      } finally {
+        proceed.release();
+        await firstResult;
+      }
+      await expect(firstSave).resolves.toBeUndefined();
+      expect(fs.readFileSync(target, 'utf8')).toBe(stagedBytes[0]);
+      expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
+        pipeline_snapshot: { name: first.pipeline_snapshot.name },
+      });
+      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+    });
+
+    it('preserves a newer checkpoint when a held writer later fails replacement', async () => {
+      const initial = makeState();
+      await saveExecutionState(initial, tempDir);
+      const target = path.join(tempDir, targetName);
+      const staged = gate();
+      const proceed = gate();
+      const rename = fsPromises.rename;
+      const failure = Object.assign(new Error('replacement failed'), {
+        code: 'EEXIST',
+      });
+      const renameSpy = jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementationOnce(async () => {
+          staged.release();
+          await proceed.reached;
+          throw failure;
+        })
+        .mockImplementation(rename);
+      const unlink = jest.spyOn(fsPromises, 'unlink');
+
+      const firstSave = saveExecutionState(
+        namedSnapshot(initial, 'stale'),
+        tempDir,
+      );
+      const firstResult = Promise.allSettled([firstSave]);
+      let committedBytes = '';
+      try {
+        await Promise.race([staged.reached, firstSave]);
+        await saveExecutionState(namedSnapshot(initial, 'newer'), tempDir);
+        committedBytes = fs.readFileSync(target, 'utf8');
+      } finally {
+        proceed.release();
+        await firstResult;
+      }
+
+      await expect(firstSave).rejects.toBe(failure);
+      expect(renameSpy).toHaveBeenCalledTimes(2);
+      expect(unlink).not.toHaveBeenCalledWith(target);
+      expect(fs.readFileSync(target, 'utf8')).toBe(committedBytes);
+      expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
+        pipeline_snapshot: { name: 'newer' },
+      });
+      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+    });
+
+    it('does not let a failed overlapping save clean up another writer’s staged snapshot', async () => {
+      const initial = makeState();
+      await saveExecutionState(initial, tempDir);
+      const target = path.join(tempDir, targetName);
+      const initialBytes = fs.readFileSync(target, 'utf8');
+      const staged = gate();
+      const proceed = gate();
+      const rename = fsPromises.rename;
+      const failure = Object.assign(new Error('replacement failed'), {
+        code: 'EIO',
+      });
+      let attempts = 0;
+      jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementation(async (source, dest) => {
+          attempts += 1;
+          if (attempts !== 1) throw failure;
+          staged.release();
+          await proceed.reached;
+          await rename(source, dest);
+        });
+
+      const firstSave = saveExecutionState(
+        namedSnapshot(initial, 'survivor'),
+        tempDir,
+      );
+      const firstResult = Promise.allSettled([firstSave]);
+      try {
+        await Promise.race([staged.reached, firstSave]);
+        await expect(
+          saveExecutionState(namedSnapshot(initial, 'failed'), tempDir),
+        ).rejects.toBe(failure);
+        expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+      } finally {
+        proceed.release();
+        await firstResult;
+      }
+      await expect(firstSave).resolves.toBeUndefined();
+      expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
+        pipeline_snapshot: { name: 'survivor' },
+      });
+      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+    });
+
+    it.each(['EEXIST', 'EIO', 'EPERM', 'EACCES', 'EBUSY'])(
+      'preserves the last checkpoint when replacement persistently fails with %s',
+      async (code) => {
+        const initial = makeState();
+        await saveExecutionState(initial, tempDir);
+        const target = path.join(tempDir, targetName);
+        const initialBytes = fs.readFileSync(target, 'utf8');
+        const failure = Object.assign(new Error('replacement failed'), {
+          code,
+        });
+        const rename = jest
+          .spyOn(fsPromises, 'rename')
+          .mockRejectedValue(failure);
+        const unlink = jest.spyOn(fsPromises, 'unlink');
+
+        await expect(
+          saveExecutionState(namedSnapshot(initial, 'replacement'), tempDir),
+        ).rejects.toBe(failure);
+
+        expect(unlink).not.toHaveBeenCalledWith(target);
+        expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+        expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+        expect(rename).toHaveBeenCalledTimes(
+          ['EPERM', 'EACCES', 'EBUSY'].includes(code) ? 6 : 1,
+        );
+      },
+    );
+
+    it.each(['EPERM', 'EACCES', 'EBUSY'])(
+      'retries transient %s without removing the existing checkpoint',
+      async (code) => {
+        const initial = makeState();
+        await saveExecutionState(initial, tempDir);
+        const target = path.join(tempDir, targetName);
+        const initialBytes = fs.readFileSync(target, 'utf8');
+        const rename = fsPromises.rename;
+        const renameSpy = jest
+          .spyOn(fsPromises, 'rename')
+          .mockImplementationOnce(() => {
+            expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+            return Promise.reject(
+              Object.assign(new Error('temporarily locked'), { code }),
+            );
+          })
+          .mockImplementation(async (source, dest) => {
+            expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+            await rename(source, dest);
+          });
+        const unlink = jest.spyOn(fsPromises, 'unlink');
+
+        await saveExecutionState(
+          namedSnapshot(initial, 'replacement'),
+          tempDir,
+        );
+
+        expect(renameSpy).toHaveBeenCalledTimes(2);
+        expect(unlink).not.toHaveBeenCalledWith(target);
+        expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
+          pipeline_snapshot: { name: 'replacement' },
+        });
+        expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      },
+    );
+
+    it.each(['writeFile', 'close'] as const)(
+      'preserves the checkpoint and removes staging when %s fails',
+      async (method) => {
+        const initial = makeState();
+        await saveExecutionState(initial, tempDir);
+        const target = path.join(tempDir, targetName);
+        const initialBytes = fs.readFileSync(target, 'utf8');
+        const failure = new Error('staging failed');
+        const open = fsPromises.open;
+        jest.spyOn(fsPromises, 'open').mockImplementation(async (...args) => {
+          const handle = await open(...args);
+          if (method === 'writeFile') {
+            const writeFile = handle.writeFile.bind(handle);
+            jest.spyOn(handle, 'writeFile').mockImplementationOnce(async () => {
+              await writeFile('{"incomplete":', 'utf8');
+              throw failure;
+            });
+          } else {
+            jest.spyOn(handle, 'close').mockRejectedValueOnce(failure);
+          }
+          return handle;
+        });
+        const rename = jest.spyOn(fsPromises, 'rename');
+
+        await expect(
+          saveExecutionState(namedSnapshot(initial, 'replacement'), tempDir),
+        ).rejects.toBe(failure);
+
+        expect(rename).not.toHaveBeenCalled();
+        expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+        expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+      },
+    );
+
+    it('preserves the non-fsync durability policy', async () => {
+      const open = fsPromises.open;
+      const sync = jest.fn().mockRejectedValue(new Error('unexpected fsync'));
+      const openSpy = jest
+        .spyOn(fsPromises, 'open')
+        .mockImplementation(async (...args) => {
+          const handle = await open(...args);
+          jest.spyOn(handle, 'sync').mockImplementation(sync);
+          return handle;
+        });
+
+      await saveExecutionState(makeState(), tempDir);
+
+      expect(openSpy).toHaveBeenCalledTimes(1);
+      expect(openSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/\.execution-1\.json\..+\.tmp$/),
+        'wx',
+        undefined,
+      );
+      expect(sync).not.toHaveBeenCalled();
+      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+    });
+
+    it('preserves the checkpoint when staging cannot be opened', async () => {
+      const initial = makeState();
+      await saveExecutionState(initial, tempDir);
+      const target = path.join(tempDir, targetName);
+      const initialBytes = fs.readFileSync(target, 'utf8');
+      const failure = Object.assign(new Error('cannot create staging'), {
+        code: 'EACCES',
+      });
+      jest.spyOn(fsPromises, 'open').mockRejectedValue(failure);
+      const rename = jest.spyOn(fsPromises, 'rename');
+
+      await expect(
+        saveExecutionState(namedSnapshot(initial, 'replacement'), tempDir),
+      ).rejects.toBe(failure);
+
+      expect(rename).not.toHaveBeenCalled();
+      expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+      expect(fs.readdirSync(tempDir)).toEqual([targetName]);
+    });
+
+    it('retains the install error when staging cleanup also fails, then allows a fresh save', async () => {
+      const initial = makeState();
+      await saveExecutionState(initial, tempDir);
+      const target = path.join(tempDir, targetName);
+      const initialBytes = fs.readFileSync(target, 'utf8');
+      const failure = Object.assign(new Error('replacement failed'), {
+        code: 'EIO',
+      });
+      jest.spyOn(fsPromises, 'rename').mockRejectedValueOnce(failure);
+      jest
+        .spyOn(fsPromises, 'unlink')
+        .mockRejectedValueOnce(new Error('cleanup failed'));
+
+      await expect(
+        saveExecutionState(namedSnapshot(initial, 'failed'), tempDir),
+      ).rejects.toBe(failure);
+      expect(fs.readFileSync(target, 'utf8')).toBe(initialBytes);
+      const stagedFiles = fs
+        .readdirSync(tempDir)
+        .filter((name) => name.endsWith('.tmp'));
+      expect(stagedFiles).toHaveLength(1);
+      const orphan = path.join(tempDir, stagedFiles[0]);
+      const orphanBytes = fs.readFileSync(orphan, 'utf8');
+
+      await saveExecutionState(namedSnapshot(initial, 'recovered'), tempDir);
+
+      expect(fs.readFileSync(orphan, 'utf8')).toBe(orphanBytes);
+      expect(await loadExecutionState(initial.id, tempDir)).toMatchObject({
+        pipeline_snapshot: { name: 'recovered' },
+      });
+      expect(await listExecutionSummaries(tempDir)).toMatchObject([
+        { id: initial.id, pipeline_name: 'recovered' },
+      ]);
+      expect(fs.readdirSync(tempDir).sort()).toEqual(
+        [...stagedFiles, targetName].sort(),
+      );
+    });
+
+    it('does not overwrite or clean up a stale legacy temporary file', async () => {
+      const stalePath = path.join(tempDir, targetName + '.tmp');
+      fs.writeFileSync(stalePath, 'unclaimed staging data');
+
+      await saveExecutionState(makeState(), tempDir);
+
+      expect(fs.readFileSync(stalePath, 'utf8')).toBe('unclaimed staging data');
+      expect(await loadExecutionState('execution-1', tempDir)).toMatchObject({
+        id: 'execution-1',
+      });
+      expect(fs.readdirSync(tempDir).sort()).toEqual([
+        targetName,
+        targetName + '.tmp',
+      ]);
+    });
+
+    it('leaves no snapshot or temporary file when the first installation fails', async () => {
+      const failure = Object.assign(new Error('replacement failed'), {
+        code: 'EIO',
+      });
+      jest.spyOn(fsPromises, 'rename').mockRejectedValue(failure);
+      await expect(saveExecutionState(makeState(), tempDir)).rejects.toBe(
+        failure,
+      );
+      expect(fs.readdirSync(tempDir)).toEqual([]);
+    });
+  });
 
   it('round-trips execution state and lists summaries', async () => {
     const state = makeState();
@@ -357,14 +727,14 @@ describe('execution-state', () => {
       await saveExecution('execution-c');
       await listExecutionSummaries(tempDir);
 
-      await saveExecutionState({ ...changed, status: 'completed' }, tempDir);
+      await saveExecutionState({ ...changed, status: 'success' }, tempDir);
       const readSpy = jest.spyOn(fs.promises, 'readFile');
       try {
         const summaries = await listExecutionSummaries(tempDir);
         expect(stateReads(readSpy)).toEqual(['execution-b.json']);
         expect(
           summaries.find((summary) => summary.id === 'execution-b')?.status,
-        ).toBe('completed');
+        ).toBe('success');
       } finally {
         readSpy.mockRestore();
       }
@@ -393,7 +763,7 @@ describe('execution-state', () => {
       await saveExecution('execution-1');
       const [first] = await listExecutionSummaries(tempDir);
       if (!first) throw new Error('expected one summary');
-      first.status = 'failed';
+      first.status = 'failure';
       first.status_reasons.push({
         id: 'caller-added',
         kind: 'app_shutdown',

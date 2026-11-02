@@ -92,7 +92,7 @@ export function SubagentWorktreeDetails({
           )}
         </p>
         {state.onRetry ? (
-          <Button size="control" variant="secondary" onClick={state.onRetry}>
+          <Button size="compact" variant="secondary" onClick={state.onRetry}>
             {SUBAGENTS_RETRY_LABEL}
           </Button>
         ) : null}
@@ -165,7 +165,7 @@ export function SubagentWorktreeDetails({
       </p>
       {onShowChanges ? (
         <div>
-          <Button size="control" variant="secondary" onClick={onShowChanges}>
+          <Button size="compact" variant="secondary" onClick={onShowChanges}>
             {SUBAGENT_SHOW_CHANGES_LABEL}
           </Button>
         </div>

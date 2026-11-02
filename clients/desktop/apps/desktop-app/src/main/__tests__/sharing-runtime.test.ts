@@ -8,7 +8,9 @@ const mockRequest = jest.fn<
   [AppAdvisorRendererToolRequest, AppAdvisorRendererToolSurfaces]
 >();
 jest.mock('../ipc/app-advisor', () => ({
-  requestAppAdvisorRendererTool: mockRequest,
+  get requestAppAdvisorRendererTool(): typeof mockRequest {
+    return mockRequest;
+  },
 }));
 import { openShareDialog } from '../canopy-tools/sharing-runtime';
 const runtime = {

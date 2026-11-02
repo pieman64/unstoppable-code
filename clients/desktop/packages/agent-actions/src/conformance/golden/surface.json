@@ -13,6 +13,9 @@
       "chat.create",
       "chat.send_message",
       "models.list",
+      "chat.transcript.page",
+      "chat.content.read",
+      "chat.transcript.blocks.page",
       "experiments.set_enabled",
       "settings.open"
     ],
@@ -41,7 +44,7 @@
           },
           "actionType": {
             "type": "string",
-            "description": "Optional exact action type: workspace.get, worktree.list, chat.list, chat.get, chat.create, chat.send_message, models.list, experiments.set_enabled, or settings.open."
+            "description": "Optional exact action type: workspace.get, worktree.list, chat.list, chat.get, chat.create, chat.send_message, models.list, chat.transcript.page, chat.content.read, chat.transcript.blocks.page, experiments.set_enabled, or settings.open."
           },
           "limit": {
             "type": "integer",
@@ -56,7 +59,7 @@
     {
       "key": "dispatch_action",
       "name": "DispatchAction",
-      "description": "Dispatch a typed Conformance Host action. Actions run in the current project; the scope is applied server-side, so do not provide projectId or worktreeId. Supports workspace.get, worktree.list, chat.list, chat.get, chat.create, chat.send_message, models.list, experiments.set_enabled, and settings.open.",
+      "description": "Dispatch a typed Conformance Host action. Actions run in the current project; the scope is applied server-side, so do not provide projectId or worktreeId. Supports workspace.get, worktree.list, chat.list, chat.get, chat.create, chat.send_message, models.list, chat.transcript.page, chat.content.read, chat.transcript.blocks.page, experiments.set_enabled, and settings.open.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -75,12 +78,13 @@
                   "chat.create",
                   "chat.send_message",
                   "models.list",
+                  "chat.transcript.page",
+                  "chat.content.read",
+                  "chat.transcript.blocks.page",
                   "experiments.set_enabled",
                   "settings.open"
                 ]
               },
-              "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
-              "cursor": { "type": "string", "minLength": 1, "maxLength": 2048 },
               "inWorktreeId": {
                 "type": "string",
                 "minLength": 1,
@@ -132,6 +136,102 @@
                   "additionalProperties": false
                 }
               },
+              "target": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": { "type": "string", "const": "primary" },
+                      "chatId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      }
+                    },
+                    "required": ["kind", "chatId"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": { "type": "string", "const": "delegation" },
+                      "chatId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "delegationId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "runGeneration": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "chatId",
+                      "delegationId",
+                      "runGeneration"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "messageId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "blockOrdinal": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "field": {
+                "type": "string",
+                "enum": ["output", "input", "text", "partialText", "finalText"]
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "fieldSource": {
+                "default": "logical",
+                "type": "string",
+                "enum": ["stored", "logical"]
+              },
+              "limit": {
+                "anyOf": [
+                  { "type": "integer", "minimum": 1, "maximum": 100 },
+                  {
+                    "anyOf": [
+                      {
+                        "default": 16384,
+                        "type": "integer",
+                        "minimum": 4,
+                        "maximum": 65536
+                      },
+                      {
+                        "default": 16,
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 512
+                      }
+                    ]
+                  }
+                ]
+              },
+              "firstBlockOrdinal": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "cursor": { "type": "string", "minLength": 1, "maxLength": 2048 },
               "experimentId": {
                 "type": "string",
                 "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
@@ -139,7 +239,7 @@
               "enabled": { "type": "boolean" },
               "destination": {
                 "type": "object",
-                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.",
+                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, security, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings.",
                 "properties": {
                   "scope": {
                     "type": "string",
@@ -161,6 +261,7 @@
                       "security",
                       "billing",
                       "labs",
+                      "appearance",
                       "feed",
                       "statistics",
                       "members",
@@ -235,6 +336,254 @@
                   "required": ["type"]
                 },
                 "then": { "required": ["chatId", "message"] }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "chat.transcript.page" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "chat.transcript.page"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": { "type": "string", "const": "delegation" },
+                        "chatId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "delegationId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "runGeneration": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "chatId",
+                        "delegationId",
+                        "runGeneration"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    }
+                  },
+                  "required": ["type", "target"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "if": {
+                  "properties": { "type": { "const": "chat.content.read" } },
+                  "required": ["type"]
+                },
+                "then": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string", "const": "chat.content.read" },
+                    "target": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": { "type": "string", "const": "primary" },
+                            "chatId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "required": ["kind", "chatId"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": { "type": "string", "const": "delegation" },
+                            "chatId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "delegationId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "runGeneration": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "chatId",
+                            "delegationId",
+                            "runGeneration"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "messageId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "blockOrdinal": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "field": {
+                      "type": "string",
+                      "enum": [
+                        "output",
+                        "input",
+                        "text",
+                        "partialText",
+                        "finalText"
+                      ]
+                    },
+                    "offset": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "fieldSource": {
+                      "default": "logical",
+                      "type": "string",
+                      "enum": ["stored", "logical"]
+                    },
+                    "limit": {
+                      "default": 16384,
+                      "type": "integer",
+                      "minimum": 4,
+                      "maximum": 65536
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "target",
+                    "messageId",
+                    "blockOrdinal",
+                    "field",
+                    "offset"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": { "const": "chat.transcript.blocks.page" }
+                  },
+                  "required": ["type"]
+                },
+                "then": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "chat.transcript.blocks.page"
+                    },
+                    "target": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": { "type": "string", "const": "primary" },
+                            "chatId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            }
+                          },
+                          "required": ["kind", "chatId"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": { "type": "string", "const": "delegation" },
+                            "chatId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "delegationId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "runGeneration": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "chatId",
+                            "delegationId",
+                            "runGeneration"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "messageId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "firstBlockOrdinal": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048
+                    },
+                    "limit": {
+                      "default": 16,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 512
+                    }
+                  },
+                  "required": ["type", "target", "messageId"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": { "const": "chat.transcript.blocks.page" }
+                  },
+                  "required": ["type"]
+                },
+                "then": {
+                  "not": { "required": ["cursor", "firstBlockOrdinal"] }
+                }
               },
               {
                 "if": {

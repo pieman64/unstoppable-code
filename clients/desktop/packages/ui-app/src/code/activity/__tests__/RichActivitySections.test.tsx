@@ -10,11 +10,7 @@ import {
   buildDagInputs,
   toDagJobStatus,
 } from '../sections/PipelineRunsSection';
-import {
-  PlansSection,
-  copyPlanToClipboard,
-  stripPlanTitleLine,
-} from '../sections/PlansSection';
+import { PlansSection, stripPlanTitleLine } from '../sections/PlansSection';
 import {
   RepoGroupedItemListSection,
   groupByRepo,
@@ -22,6 +18,18 @@ import {
 } from '../sections/RepoGroupedItemListSection';
 
 describe('rich activity sections', () => {
+  it('keeps an unloaded plan Copy visible with an accessible reason beside Load', () => {
+    const html = renderToString(
+      <PlansSection
+        plans={[{ localId: 'unloaded', title: 'Plan', status: 'pending' }]}
+        onGetPlan={(): void => undefined}
+      />,
+    );
+    expect(html).toContain('activity-plan-copy-unloaded');
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('aria-describedby=');
+    expect(html).toContain('Load');
+  });
   it('keeps Cursor plan execution unavailable on the paired host', () => {
     const html = renderToString(
       <PlansSection
@@ -41,6 +49,126 @@ describe('rich activity sections', () => {
     expect(html).not.toContain('activity-plan-send-cursor-plan');
     expect(html).not.toContain('activity-plan-pipeline-cursor-plan');
     expect(html).toContain('activity-plan-copy-cursor-plan');
+  });
+
+  it.each([
+    ['pending', 'Pending', 'warning'],
+    ['approved', 'Approved', 'success'],
+    ['dismissed', 'Dismissed', 'neutral'],
+    ['archived', 'Archived', 'neutral'],
+  ])(
+    'shows the stored %s review status as the shared badge',
+    (reviewStatus, label, tone) => {
+      const html = renderToString(
+        <PlansSection
+          plans={[
+            {
+              localId: 'plan',
+              title: 'Plan',
+              content: '# Plan',
+              status: 'draft',
+              reviewStatus,
+            },
+          ]}
+          onImplementPlan={(): void => undefined}
+        />,
+      );
+      expect(html).toMatch(
+        new RegExp(
+          `data-testid="activity-plan-status-plan"[^>]*data-badge-tone="${tone}"[^>]*>${label}<`,
+        ),
+      );
+      // Web has no execution evidence, so it never shows derived states.
+      expect(html).not.toContain('Implementing');
+      expect(html).not.toContain('Implemented');
+    },
+  );
+
+  it('renders no status badge for a plan without a review status', () => {
+    const html = renderToString(
+      <PlansSection
+        plans={[{ localId: 'plan', title: 'Plan', status: 'draft' }]}
+      />,
+    );
+    expect(html).not.toContain('activity-plan-status-plan');
+  });
+
+  it.each(['pending', 'approved', 'dismissed'])(
+    'renders the stored %s status from a Portal list summary before details load',
+    (status) => {
+      const html = renderToString(
+        <PlansSection
+          plans={[{ localId: 'summary', title: 'Plan', status }]}
+        />,
+      );
+      expect(html).toContain('data-testid="activity-plan-status-summary"');
+      expect(html).toContain(
+        `>${status.charAt(0).toUpperCase() + status.slice(1)}<`,
+      );
+      expect(html).not.toContain(`>${status}<`);
+    },
+  );
+
+  it('shows the review once when the detail also carries its summary status', () => {
+    const html = renderToString(
+      <PlansSection
+        plans={[
+          {
+            localId: 'detail',
+            title: 'Plan',
+            status: 'approved',
+            reviewStatus: 'approved',
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain('>Approved<');
+    expect(html).not.toContain('>approved<');
+  });
+
+  it('explains where plans come from when empty, without an import', () => {
+    const html = renderToString(<PlansSection plans={[]} />);
+    expect(html).toContain('data-testid="activity-plans-empty"');
+    expect(html).toContain('Plans your agent writes appear here.');
+    expect(html).not.toContain('Import a Markdown plan');
+    expect(html).not.toContain('activity-plans-empty-import');
+  });
+
+  it('offers the import in the empty state when the host can import', () => {
+    const html = renderToString(
+      <PlansSection plans={[]} onImportPlan={(): void => undefined} />,
+    );
+    expect(html).toContain(
+      'Import a Markdown plan to review it, comment on it, and hand it to an agent.',
+    );
+    expect(html).toContain('data-testid="activity-plans-empty-import"');
+    expect(html).toContain('Import plan');
+  });
+
+  it('names the source file of an imported plan instead of the source word', () => {
+    const html = renderToString(
+      <PlansSection
+        plans={[
+          {
+            localId: 'imported',
+            title: 'Rollout',
+            source: 'imported',
+            sourceFilePath: 'docs/rollout.md',
+            status: 'pending',
+          },
+          {
+            localId: 'legacy',
+            title: 'Legacy',
+            source: 'imported',
+            status: 'pending',
+          },
+        ]}
+      />,
+    );
+    expect(html.match(/data-testid="plan-provenance"/g)).toHaveLength(1);
+    expect(html).toContain('Imported · docs/rollout.md');
+    // An older desktop sends no path, so the card keeps the bare source word.
+    expect(html).toMatch(/>imported<\/span>/);
   });
 
   it('maps pipeline job statuses and builds DAG progress metadata', () => {
@@ -96,12 +224,7 @@ describe('rich activity sections', () => {
     expect(html).not.toContain('pipeline-run-row-done');
   });
 
-  it('renders plan markdown actions and copies through the browser clipboard', async () => {
-    const writeText = jest.fn<Promise<void>, [string]>().mockResolvedValue();
-    Object.defineProperty(globalThis, 'navigator', {
-      configurable: true,
-      value: { clipboard: { writeText } },
-    });
+  it('renders plan markdown actions with the shared Copy plan', () => {
     const plan: PortalPlan = {
       localId: 'plan',
       title: 'Plan',
@@ -112,10 +235,12 @@ describe('rich activity sections', () => {
       <PlansSection plans={[plan]} onImplementPlan={(): void => undefined} />,
     );
     expect(html).toContain('activity-plan-body-plan');
-    expect(html).toContain('activity-plan-copy-plan');
     expect(html).toContain('activity-plan-send-plan');
-    await copyPlanToClipboard(plan.content ?? '');
-    expect(writeText).toHaveBeenCalledWith(plan.content);
+    // The shared action desktop's plan controls use too (CAN-5354); its
+    // clipboard behavior is covered by `PlanCopyAction`'s own suite.
+    expect(html).toMatch(
+      /aria-label="Copy plan"[^>]*data-testid="activity-plan-copy-plan"[^>]*data-state="ready"/,
+    );
   });
 
   it('groups repoless entries first and repo entries behind named headers', () => {

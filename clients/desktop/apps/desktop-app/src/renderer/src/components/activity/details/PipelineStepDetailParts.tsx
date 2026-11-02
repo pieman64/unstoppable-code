@@ -10,8 +10,9 @@ import type {
   StepResult,
 } from '@canopy/desktop-shared/types/pipeline';
 import { PipelineTimer } from '../PipelineTimer';
-import { DetailChevronIcon } from './DetailChevronIcon';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { SegmentedControl } from '@canopy/ui-shared/components';
 
 /**
  * Shared step-detail building blocks for the pipeline execution details modal.
@@ -121,7 +122,7 @@ export function DetailSection({
           onClick={(): void => setOpen((prev) => !prev)}
           className="focus-ring flex min-w-0 flex-1 items-center gap-1.5 text-xs font-medium fg-secondary transition-colors hover:fg-secondary"
         >
-          <DetailChevronIcon open={open} />
+          <ChevronIcon open={open} />
           {title}
         </button>
         {headerAction ? (
@@ -136,12 +137,6 @@ export function DetailSection({
 }
 
 type ShellCommandViewMode = 'resolved' | 'template';
-
-function shellCommandViewClassName(active: boolean): string {
-  return `rounded px-1.5 py-0.5 transition ${
-    active ? 'bg-base fg-primary' : 'fg-secondary hover:fg-primary'
-  }`;
-}
 
 export function ShellCommandContent({
   step,
@@ -176,32 +171,17 @@ export function ShellCommandContent({
         <div className="text-2xs font-medium fg-secondary">Shell</div>
         <div className="flex items-center gap-2">
           {hasDistinctResolvedRun && (
-            <div
-              role="group"
-              aria-label="Shell command source"
-              className="flex rounded border bg-fg-primary/[0.04] p-0.5 text-2xs"
-            >
-              <button
-                type="button"
-                aria-pressed={effectiveViewMode === 'resolved'}
-                onClick={(): void => setViewMode('resolved')}
-                className={shellCommandViewClassName(
-                  effectiveViewMode === 'resolved',
-                )}
-              >
-                Interpolated
-              </button>
-              <button
-                type="button"
-                aria-pressed={effectiveViewMode === 'template'}
-                onClick={(): void => setViewMode('template')}
-                className={shellCommandViewClassName(
-                  effectiveViewMode === 'template',
-                )}
-              >
-                Template
-              </button>
-            </div>
+            <SegmentedControl
+              label="Shell command source"
+              shape="capsule"
+              width="content"
+              value={effectiveViewMode}
+              onChange={setViewMode}
+              options={[
+                { value: 'resolved', label: 'Interpolated' },
+                { value: 'template', label: 'Template' },
+              ]}
+            />
           )}
           <div className="rounded border bg-fg-primary/[0.04] px-1.5 py-0.5 font-mono text-2xs fg-primary/70">
             {step.shell}

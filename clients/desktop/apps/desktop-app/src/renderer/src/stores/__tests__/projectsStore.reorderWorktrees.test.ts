@@ -54,6 +54,7 @@ const mockLoadProjects = jest.fn();
 const mockSaveProjects = jest.fn().mockResolvedValue(undefined);
 const mockSetWorktreeBranchGrouping = jest.fn().mockResolvedValue(undefined);
 const mockSetWorktreePinned = jest.fn().mockResolvedValue(undefined);
+const mockSetWorktreeHidden = jest.fn().mockResolvedValue(undefined);
 const mockUpdateWorkspaceMetadata = jest.fn().mockResolvedValue(undefined);
 
 beforeAll(() => {
@@ -66,6 +67,7 @@ beforeAll(() => {
         loadProjects: mockLoadProjects,
         setWorktreeBranchGrouping: mockSetWorktreeBranchGrouping,
         setWorktreePinned: mockSetWorktreePinned,
+        setWorktreeHidden: mockSetWorktreeHidden,
         updateWorkspaceMetadata: mockUpdateWorkspaceMetadata,
       },
     },
@@ -332,6 +334,37 @@ describe('projectsStore sidebar pinning and ordering', () => {
       lastTouchedAt: '2026-09-16T12:00:00.000Z',
     });
     expect(worktree?.pinned).toBeUndefined();
+  });
+
+  it('rolls back each rejected hide when several run at once', async () => {
+    useProjectsStore.setState({
+      projects: [
+        makeProject([makeWorktree('worktree-a'), makeWorktree('worktree-b')]),
+      ],
+    });
+    const rejects: ((reason?: unknown) => void)[] = [];
+    mockSetWorktreeHidden.mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejects.push(reject);
+        }),
+    );
+
+    // A selection's Hide starts every row's hide before any settles.
+    const hides = ['worktree-a', 'worktree-b'].map((id) =>
+      useProjectsStore.getState().setWorktreeHidden(PROJECT_ID, id, true),
+    );
+    for (const reject of rejects) reject(new Error('write failed'));
+    await Promise.all(hides);
+    mockSetWorktreeHidden.mockReset().mockResolvedValue(undefined);
+
+    const project = useProjectsStore.getState().projects[0];
+    const worktrees =
+      project?.type === 'cowork' ? [] : (project?.worktrees ?? []);
+    expect(worktrees.map((worktree) => worktree.hidden)).toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 
   it('rolls back a rejected workspace pin without discarding concurrent metadata', async () => {

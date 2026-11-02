@@ -62,6 +62,37 @@ jest.mock('@/components/shared/ConfigurationChatComposer', () => {
   };
 });
 
+// The picker is covered by its own suite; this stand-in shows where it would
+// discover project pipelines.
+jest.mock('@/components/activity/PipelineTriggerModal', () => {
+  const react: typeof ReactModule = jest.requireActual('react');
+  return {
+    ...jest.requireActual<Record<string, unknown>>(
+      '@/components/activity/PipelineTriggerModal',
+    ),
+    PipelineTriggerModal: (props: {
+      cwd?: string;
+      repoChoices?: ReadonlyArray<{ repoId: string }>;
+      onRepoChange?: (repoId: string | undefined) => void;
+    }): ReactElement =>
+      react.createElement(
+        'div',
+        {
+          'data-testid': 'pipeline-picker-stub',
+          'data-cwd': props.cwd ?? '',
+          'data-repo-ids': (props.repoChoices ?? [])
+            .map((choice) => choice.repoId)
+            .join(','),
+        },
+        react.createElement('button', {
+          type: 'button',
+          'data-testid': 'pipeline-picker-stub-choose-repo-b',
+          onClick: () => props.onRepoChange?.('repo-b'),
+        }),
+      ),
+  };
+});
+
 interface Report {
   state: FormState;
   meta: ActivityFormChangeMeta;
@@ -101,6 +132,12 @@ function Host({
       ))}
     </>
   );
+}
+
+function activityLabeled(label: string): ScheduledActivity {
+  const entry = ACTIVITIES.find(([candidate]) => candidate === label);
+  if (!entry) throw new Error(`No activity labeled ${label}`);
+  return entry[1];
 }
 
 async function flush(): Promise<void> {
@@ -247,7 +284,7 @@ const ACTIVITIES: Array<[string, ScheduledActivity]> = [
         worktreeId: 'base-worktree',
         chatId: 'chat-1',
         prompt: 'Keep going',
-        thinking: 'medium',
+        modelConfig: { thinkingLevel: 'medium' },
       },
     }),
   ],
@@ -287,6 +324,45 @@ const ACTIVITIES: Array<[string, ScheduledActivity]> = [
         provider: 'claude',
         purpose: 'usage_limit_resume',
         pipelineName: 'Release',
+      },
+    }),
+  ],
+  [
+    'pipeline with no project',
+    activity({
+      executionContext: 'personal',
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'review',
+        pipelineName: 'Review',
+        pipelineSource: 'user',
+      },
+    }),
+  ],
+  [
+    'pipeline in an existing task',
+    activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'workspace-1',
+        target: { kind: 'task', taskId: 'base-worktree' },
+        pipelineId: 'review',
+        pipelineName: 'Review',
+        pipelineSource: 'user',
+      },
+    }),
+  ],
+  [
+    'pipeline in a cowork project folder',
+    activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'cowork-1',
+        target: { kind: 'project' },
+        pipelineId: 'review',
+        pipelineName: 'Review',
+        pipelineSource: 'user',
       },
     }),
   ],
@@ -567,5 +643,287 @@ describe('ActivityFormBody: submit', () => {
       await handleRef.current?.submit();
     });
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe('ActivityFormBody: pipeline destinations', () => {
+  async function mountWithAvailability(initial: FormState): Promise<jest.Mock> {
+    const availability = jest.fn();
+    act(() => {
+      root.render(
+        <ActivityFormBody
+          state={initial}
+          saving={false}
+          projects={useProjectsStore.getState().projects}
+          onChange={jest.fn()}
+          onSubmitAvailabilityChange={availability}
+        />,
+      );
+    });
+    await flush();
+    return availability;
+  }
+
+  it('hides the project field and enables the picker with no project', async () => {
+    await mount(automationDraftFromSeed(), ['all']);
+    expect(
+      byTestId('automations-form-action-type-global')?.getAttribute(
+        'aria-checked',
+      ),
+    ).toBe('true');
+    expect(byTestId('automations-form-workspace')).toBeNull();
+    expect(byTestId('automations-form-pipeline-target')).toBeNull();
+    expect(byTestId('automations-form-global-owner')?.textContent).toContain(
+      'Owner: Personal',
+    );
+    const picker = byTestId('automations-form-pipeline');
+    expect(picker).toBeInstanceOf(HTMLButtonElement);
+    expect(picker?.hasAttribute('disabled')).toBe(false);
+    expect(picker?.textContent).toBe('Select workflow');
+  });
+
+  it('offers new worktree, existing worktree, and project folder on a code project', async () => {
+    await mount(activityToFormState(activityLabeled('worktree pipeline')), [
+      'all',
+    ]);
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLInputElement>(
+          '[data-testid^="automations-form-pipeline-run-in-"]',
+        ),
+      ).map((radio) => [radio.value, radio.checked]),
+    ).toEqual([
+      ['new_worktree', true],
+      ['task', false],
+      ['project', false],
+    ]);
+    expect(byTestId('automations-form-base-worktree')).not.toBeNull();
+  });
+
+  it('enables the picker for the project folder of a code project with no worktrees', async () => {
+    useProjectsStore.setState({
+      projects: [
+        {
+          id: 'repo-2',
+          name: 'Repo',
+          type: 'single-repo',
+          repoPath: '/repos/repo-2',
+          worktrees: [],
+        },
+      ],
+    } as unknown as Parameters<typeof useProjectsStore.setState>[0]);
+    const projectFolder = activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'repo-2',
+        target: { kind: 'project' },
+        pipelineId: 'review',
+      },
+    });
+    await mount(activityToFormState(projectFolder), ['all']);
+    expect(
+      byTestId('automations-form-pipeline')?.hasAttribute('disabled'),
+    ).toBe(false);
+    expect(window.api.getWorktreePath).not.toHaveBeenCalled();
+  });
+
+  it("discovers a multi-repo project folder's pipelines in its selected repository", async () => {
+    useProjectsStore.setState({
+      projects: [
+        {
+          id: 'multi-1',
+          name: 'Multi',
+          type: 'multi-repo',
+          sourceRepoPath: '/repos/root',
+          repos: [{ id: 'repo-a', name: 'a', repoPath: '/repos/a' }],
+          worktrees: [],
+        },
+      ],
+    } as unknown as Parameters<typeof useProjectsStore.setState>[0]);
+    const projectFolder = activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'multi-1',
+        target: { kind: 'project' },
+        repoId: 'repo-a',
+        pipelineId: 'review',
+      },
+    });
+    await mount(activityToFormState(projectFolder), ['all']);
+    const picker = byTestId('automations-form-pipeline');
+    if (!(picker instanceof HTMLButtonElement)) throw new Error('No picker');
+    act(() => {
+      picker.click();
+    });
+    expect(byTestId('pipeline-picker-stub')?.getAttribute('data-cwd')).toBe(
+      '/repos/a',
+    );
+  });
+
+  it.each([
+    ['without a source root', undefined, 'repo-a,repo-b'],
+    ['with a source root', '/repos/root', '__workspace_root__,repo-a,repo-b'],
+  ])(
+    "offers a multi-repo project folder's repositories with no worktrees, %s",
+    async (_label, sourceRepoPath, repoIds) => {
+      useProjectsStore.setState({
+        projects: [
+          {
+            id: 'multi-1',
+            name: 'Multi',
+            type: 'multi-repo',
+            ...(sourceRepoPath ? { sourceRepoPath } : {}),
+            repos: [
+              { id: 'repo-a', name: 'a', repoPath: '/repos/a' },
+              { id: 'repo-b', name: 'b', repoPath: '/repos/b' },
+            ],
+            worktrees: [],
+          },
+        ],
+      } as unknown as Parameters<typeof useProjectsStore.setState>[0]);
+      const projectFolder = activity({
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: 'multi-1',
+          target: { kind: 'project' },
+          pipelineId: 'review',
+        },
+      });
+      await mount(activityToFormState(projectFolder), ['all']);
+      const picker = byTestId('automations-form-pipeline');
+      if (!(picker instanceof HTMLButtonElement)) throw new Error('No picker');
+      expect(picker.hasAttribute('disabled')).toBe(false);
+      act(() => {
+        picker.click();
+      });
+      expect(
+        byTestId('pipeline-picker-stub')?.getAttribute('data-repo-ids'),
+      ).toBe(repoIds);
+      expect(window.api.listWorktreeRepoEntries).not.toHaveBeenCalled();
+    },
+  );
+
+  it("discovers a multi-repo project folder's pipelines in the repository chosen in the picker", async () => {
+    useProjectsStore.setState({
+      projects: [
+        {
+          id: 'multi-1',
+          name: 'Multi',
+          type: 'multi-repo',
+          repos: [
+            { id: 'repo-a', name: 'a', repoPath: '/repos/a' },
+            { id: 'repo-b', name: 'b', repoPath: '/repos/b' },
+          ],
+          worktrees: [],
+        },
+      ],
+    } as unknown as Parameters<typeof useProjectsStore.setState>[0]);
+    const projectFolder = activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'multi-1',
+        target: { kind: 'project' },
+        pipelineId: 'review',
+      },
+    });
+    await mount(activityToFormState(projectFolder), ['all']);
+    const picker = byTestId('automations-form-pipeline');
+    if (!(picker instanceof HTMLButtonElement)) throw new Error('No picker');
+    act(() => {
+      picker.click();
+    });
+    // With no saved repository and no source root, the first repository is
+    // the one the picker preselects and main can run in.
+    expect(byTestId('pipeline-picker-stub')?.getAttribute('data-cwd')).toBe(
+      '/repos/a',
+    );
+    act(() => {
+      byTestId('pipeline-picker-stub-choose-repo-b')?.click();
+    });
+    expect(byTestId('pipeline-picker-stub')?.getAttribute('data-cwd')).toBe(
+      '/repos/b',
+    );
+  });
+
+  it('waits for a task before discovering pipelines for an existing task', async () => {
+    const task = activityToFormState(
+      activity({
+        action: {
+          type: 'worktree_pipeline',
+          workspaceId: 'workspace-1',
+          target: { kind: 'task', taskId: 'base-worktree' },
+          pipelineId: 'review',
+        },
+      }),
+    );
+    await mount({ ...task, pipelineTaskId: '' }, ['all']);
+    expect(
+      byTestId('automations-form-pipeline')?.hasAttribute('disabled'),
+    ).toBe(true);
+    expect(window.api.getWorktreePath).not.toHaveBeenCalled();
+  });
+
+  it('offers the project folder and an existing task on a cowork project', async () => {
+    const legacyCowork = activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'cowork-1',
+        pipelineId: 'review',
+      },
+    });
+    await mount(activityToFormState(legacyCowork), ['all']);
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLInputElement>(
+          '[data-testid^="automations-form-pipeline-run-in-"]',
+        ),
+      ).map((radio) => [radio.value, radio.checked]),
+    ).toEqual([
+      ['project', true],
+      ['task', false],
+    ]);
+    expect(
+      byTestId('automations-form-pipeline-project-helper')?.textContent,
+    ).toBe('Runs in the project folder without creating a task.');
+    expect(byTestId('automations-form-base-worktree')).toBeNull();
+  });
+
+  it('lists cowork Work Entries for an existing task', async () => {
+    const coworkTask = activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'cowork-1',
+        target: { kind: 'task', taskId: 'entry-1' },
+        pipelineId: 'review',
+      },
+    });
+    await mount(activityToFormState(coworkTask), ['all']);
+    expect(byTestId('automations-form-task')?.textContent).toContain('Entry');
+    expect(byTestId('automations-form-task-stale')).toBeNull();
+  });
+
+  it('blocks save while the selected task is no longer available', async () => {
+    const staleTask = activity({
+      action: {
+        type: 'worktree_pipeline',
+        workspaceId: 'workspace-1',
+        target: { kind: 'task', taskId: 'removed-worktree' },
+        pipelineId: 'review',
+      },
+    });
+    const availability = await mountWithAvailability(
+      activityToFormState(staleTask),
+    );
+    expect(byTestId('automations-form-task-stale')?.textContent).toBe(
+      'This task is no longer available. Choose another task.',
+    );
+    expect(availability).toHaveBeenLastCalledWith(false);
+  });
+
+  it('blocks save while the pipeline cannot be verified for no project', async () => {
+    const availability = await mountWithAvailability(
+      activityToFormState(activityLabeled('pipeline with no project')),
+    );
+    expect(availability).toHaveBeenLastCalledWith(false);
   });
 });

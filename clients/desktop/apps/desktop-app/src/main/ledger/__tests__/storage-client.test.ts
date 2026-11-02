@@ -6,7 +6,9 @@ import { dirname, join, resolve } from 'node:path';
 import {
   LedgerRepository,
   type LedgerActorRecord,
+  type LedgerBindGlobalScopeInput,
   type LedgerBindScopeInput,
+  type LedgerFindGlobalScopeInput,
   type LedgerRegisterActorInput,
   type LedgerScopeRecord,
   type LedgerStorageCounts,
@@ -540,6 +542,95 @@ describe('createWorkerLedgerStoreClient', () => {
     expect(startedWorkers).toHaveLength(1);
   });
 
+  it('round-trips the global scope methods through the worker', async () => {
+    const client = createWorkerLedgerStoreClient(createHost());
+    const authorityId = await client.getAuthorityId();
+    const personal = { kind: 'personal' } as const;
+    const bindInput: LedgerBindGlobalScopeInput = {
+      authorityId,
+      owner: personal,
+      accountId: 'guest-account',
+    };
+
+    const bound = await client.bindGlobalScope(bindInput);
+    expect(bound).toMatchObject({
+      created: true,
+      scope: {
+        scope: { authorityId, container: { kind: 'global', owner: personal } },
+        accountId: 'guest-account',
+        lifecycleState: 'active',
+      },
+    });
+    const ledgerId = bound.scope.scope.ledgerId;
+    await expect(client.bindGlobalScope(bindInput)).resolves.toEqual({
+      scope: bound.scope,
+      created: false,
+    });
+    await expect(
+      client.findGlobalScope({ owner: personal, accountId: 'guest-account' }),
+    ).resolves.toEqual(bound.scope);
+    await expect(
+      client.findGlobalScope({ owner: personal, accountId: null }),
+    ).resolves.toBeNull();
+    await expect(
+      client.findScope({
+        container: bound.scope.scope.container,
+        containerCreatedAt: bound.scope.containerCreatedAt,
+      }),
+    ).resolves.toEqual(bound.scope);
+    await expect(client.listScopes()).resolves.toEqual([bound.scope]);
+
+    // Only the binding mints a global Ledger, and it has no lifecycle.
+    expect(
+      await hostError(
+        client.bindScope({
+          authorityId,
+          container: bound.scope.scope.container,
+          containerCreatedAt: CONTAINER_CREATED_AT,
+          accountId: 'guest-account',
+        }),
+      ),
+    ).toMatchObject({
+      reason: 'INVALID_INPUT',
+      details: { reason: 'INVALID_INPUT', field: 'container.kind' },
+    });
+    for (const refused of [
+      client.setScopeLifecycle({ ledgerId, state: 'archived' }),
+      client.purgeScope(ledgerId),
+    ]) {
+      expect(await hostError(refused)).toMatchObject({
+        reason: 'FORBIDDEN',
+        details: { reason: 'FORBIDDEN', field: 'container.kind' },
+      });
+    }
+    expect(
+      await hostError(
+        client.bindGlobalScope({
+          ...bindInput,
+          owner: { kind: 'organization', organizationId: 'not-a-uuid' },
+        }),
+      ),
+    ).toMatchObject({
+      reason: 'INVALID_INPUT',
+      details: { field: 'owner.organizationId' },
+    });
+
+    // A guest merge moves the binding with the account.
+    await expect(
+      client.rebindAccount({
+        fromAccountId: 'guest-account',
+        toAccountId: 'real-account',
+      }),
+    ).resolves.toEqual({ rebound: 1 });
+    await expect(
+      client.findGlobalScope({ owner: personal, accountId: 'real-account' }),
+    ).resolves.toEqual({ ...bound.scope, accountId: 'real-account' });
+    await expect(
+      client.findGlobalScope({ owner: personal, accountId: 'guest-account' }),
+    ).resolves.toBeNull();
+    expect(startedWorkers).toHaveLength(1);
+  });
+
   it('keeps the authority ID and data across a host shutdown and a fresh host', async () => {
     const dbPath = databasePath();
     const first = createHost(dbPath);
@@ -978,6 +1069,64 @@ describe('createWorkerLedgerStoreClient result validation', () => {
       ['rebindScope', [rebind]],
       ['purgeScope', [ledgerId]],
     ]);
+    expect(startedWorkers).toHaveLength(0);
+  });
+
+  it('sends the global scope calls as their positional arguments', async () => {
+    const globalScope: LedgerScopeRecord = {
+      ...scope,
+      scope: {
+        ...scope.scope,
+        container: {
+          kind: 'global',
+          owner: {
+            kind: 'organization',
+            organizationId: '00000000-0000-4000-8000-00000000a001',
+          },
+        },
+      },
+    };
+    const { client, call } = scriptedClient({
+      scope: globalScope,
+      created: true,
+    });
+    const bind: LedgerBindGlobalScopeInput = {
+      authorityId,
+      owner: { kind: 'personal' },
+      accountId: 'account-1',
+    };
+    const find: LedgerFindGlobalScopeInput = {
+      owner: { kind: 'personal' },
+      accountId: null,
+    };
+
+    const bound = await client.bindGlobalScope(bind);
+    expect(bound).toEqual({ scope: globalScope, created: true });
+    expect(bound.scope).not.toBe(globalScope);
+    call.mockResolvedValue(globalScope);
+    await expect(client.findGlobalScope(find)).resolves.toEqual(globalScope);
+    call.mockResolvedValue(null);
+    await expect(client.findGlobalScope(find)).resolves.toBeNull();
+
+    expect(call.mock.calls).toEqual([
+      ['bindGlobalScope', [bind]],
+      ['findGlobalScope', [find]],
+      ['findGlobalScope', [find]],
+    ]);
+    // A global container whose owner is malformed is not a scope.
+    call.mockResolvedValue({
+      ...globalScope,
+      scope: {
+        ...globalScope.scope,
+        container: { kind: 'global', owner: { kind: 'team' } },
+      },
+    });
+    await expect(
+      hostError(client.findGlobalScope(find)),
+    ).resolves.toMatchObject({
+      reason: 'INTERNAL',
+      details: { method: 'findGlobalScope' },
+    });
     expect(startedWorkers).toHaveLength(0);
   });
 

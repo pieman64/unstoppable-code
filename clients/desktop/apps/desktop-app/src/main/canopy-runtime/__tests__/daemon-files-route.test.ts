@@ -83,6 +83,29 @@ async function rewriteWorkspace(
   await writeJson(path, change({ ...document }));
 }
 
+async function renameCowork(name: string): Promise<void> {
+  const path = join(h.dataRoot, 'workspaces', 'index.json');
+  const document: unknown = JSON.parse(await readFile(path, 'utf8'));
+  if (
+    typeof document !== 'object' ||
+    document === null ||
+    !('workspaces' in document) ||
+    !Array.isArray(document.workspaces)
+  )
+    throw new Error('Expected workspace index');
+  await writeJson(path, {
+    ...document,
+    workspaces: document.workspaces.map((entry: unknown) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      'id' in entry &&
+      entry.id === 'cowork'
+        ? { ...entry, name }
+        : entry,
+    ),
+  });
+}
+
 async function touchWorktreeRecord(
   workspaceId: string,
   createdAt: string,
@@ -1295,6 +1318,55 @@ describe('directory entry order', () => {
 });
 
 describe('races and the one bounded retry', () => {
+  it('refreshes the named Cowork root through both readers and its legacy alias', async () => {
+    h = await createRouteHarness();
+    for (const name of ['Vendor Spend Q3 / 支出 🌳', 'Renamed Q4']) {
+      await renameCowork(name);
+      const direct = await listFileTreeRoots({
+        projectId: 'cowork',
+        worktreeId: 'home',
+      });
+      expect(direct.roots[0]?.repoName).toBe(name);
+      for (const scope of [
+        COWORK_HOME,
+        { workspaceId: STANDALONE_CHAT_PROJECT_ID, worktreeId: 'cowork' },
+      ]) {
+        const routed = await h.roots(scope, sender());
+        expect(routed.legacyResult).toEqual(direct);
+        expect(routed.canonicalResult.roots[0]?.name).toBe(name);
+      }
+    }
+    expect(h.direct.roots).not.toHaveBeenCalled();
+  });
+
+  it('retries a Cowork rename between daemon reply and local projection', async () => {
+    h = await createRouteHarness();
+    await renameCowork('Vendor Spend Q3');
+    h.daemon.afterReply = async (_record, attempt): Promise<void> => {
+      if (attempt === 1) await renameCowork('Renamed Q4');
+    };
+    const result = await h.roots(COWORK_HOME, sender());
+    expect(result.legacyResult.roots[0]?.repoName).toBe('Renamed Q4');
+    expect(h.daemon.queries).toHaveLength(2);
+    expect(h.direct.roots).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed conflict when Cowork metadata keeps changing', async () => {
+    h = await createRouteHarness();
+    let revision = 0;
+    h.daemon.afterReply = async (): Promise<void> => {
+      await renameCowork(`Renamed ${++revision}`);
+    };
+    await expect(
+      rejection(h.roots(COWORK_HOME, sender())),
+    ).resolves.toMatchObject({
+      kind: 'conflict',
+      code: 'worker.filesystem.roots.revisionConflict',
+    });
+    expect(h.daemon.queries).toHaveLength(2);
+    expect(h.direct.roots).not.toHaveBeenCalled();
+  });
+
   it('retries once when the catalog changes between the reply and the guard', async () => {
     h = await createRouteHarness();
     resetWorkCounters();

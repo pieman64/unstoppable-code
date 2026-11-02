@@ -55,6 +55,12 @@ export const settingsOrganizationBootstrapSchema = z.looseObject({
   projectsEnabled: z.boolean(),
   canViewUsageStats: z.boolean(),
   freeAccess: z.boolean(),
+  /**
+   * The GitHub App is connected. A lapsed organization keeps Integrations on
+   * the rail only to disconnect it. Absent from servers before this field;
+   * hosts then treat the state as unknown.
+   */
+  githubConnected: z.boolean().optional(),
   lapse: settingsOrganizationLapseSchema.nullable(),
 });
 

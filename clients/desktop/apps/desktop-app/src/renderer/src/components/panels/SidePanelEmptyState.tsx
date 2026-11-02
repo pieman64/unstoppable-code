@@ -4,7 +4,11 @@ import {
   PanelEmptyGroupCatalog,
   type PanelEmptyGroupCatalogEntry,
 } from '@canopy/ui-shared/components/panels';
-import { FilesIcon, TerminalIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  AutomationsIcon,
+  FilesIcon,
+  TerminalIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import type { PanelEmptyGroupActions } from '@canopy/ui-app/panel-grid-surface';
 import { addEmptyFileTabPanelToGroup } from '@/lib/panels/addChatPanel';
 import {
@@ -15,7 +19,6 @@ import {
   createBrowserPanel,
   createTerminalPanel,
 } from '@/lib/panels/panel-creation-actions';
-import { openReplacingTab } from '@/lib/panels/tab-row-limit';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
 
 export interface PanelSurfacePickerProps {
@@ -25,12 +28,6 @@ export interface PanelSurfacePickerProps {
   readonly addTab: PanelEmptyGroupActions['addTab'];
   /** Runs after a surface opened (a new tab closes itself here). */
   readonly onOpened?: () => void;
-  /**
-   * The tab the chosen surface replaces (the New tab showing this picker).
-   * It does not count toward a full tab row, since it closes once the
-   * surface opens.
-   */
-  readonly replacesPanelId?: string;
   /** Kinds this surface cannot host (read-only scopes, popouts). */
   readonly excludeKinds?: readonly PanelKind[];
   readonly testId?: string;
@@ -48,14 +45,9 @@ export function PanelSurfacePicker({
   groupId,
   addTab,
   onOpened,
-  replacesPanelId,
   excludeKinds,
   testId = 'side-panel-empty-state',
 }: PanelSurfacePickerProps): JSX.Element {
-  const replacing = <T,>(open: () => T): T =>
-    replacesPanelId === undefined
-      ? open()
-      : openReplacingTab(replacesPanelId, open);
   // Re-read the catalog when the layout changes: a surface already open
   // elsewhere in the worktree drops out of the list.
   usePanelLayoutStore((state) => state.layouts[worktreeKey]);
@@ -64,7 +56,7 @@ export function PanelSurfacePicker({
   const create = (kind: PanelKind, run: () => Promise<boolean>): void => {
     if (busy !== null) return;
     setBusy(kind);
-    void replacing(run)
+    void run()
       .then((opened) => {
         if (opened) onOpened?.();
       })
@@ -122,10 +114,7 @@ export function PanelSurfacePicker({
       testId: 'side-panel-empty-item-file',
       disabled: busy !== null,
       onActivate: (): void => {
-        if (
-          replacing(() => addEmptyFileTabPanelToGroup(worktreeKey, groupId)) !==
-          null
-        ) {
+        if (addEmptyFileTabPanelToGroup(worktreeKey, groupId) !== null) {
           onOpened?.();
         }
       },
@@ -163,7 +152,10 @@ export function PanelSurfacePicker({
   if (usage !== undefined) entries.push(row('usage', usage, 'Usage'));
   const automations = firstOf('automations');
   if (automations !== undefined) {
-    entries.push(row('automations', automations, 'Automations'));
+    entries.push({
+      ...row('automations', automations, 'Automations'),
+      icon: <AutomationsIcon size={14} />,
+    });
   }
 
   return (

@@ -1,5 +1,11 @@
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
-import type { RemoteHostConnectionStatus } from '@canopy/desktop-shared/types';
+import type {
+  CheckWorktreeRemovalAdmissionResponse,
+  RemoteHostConnectionStatus,
+} from '@canopy/desktop-shared/types';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import { FileSaveConflictError } from '@canopy/protocol/file-save-conflict';
+import { restoreFileImageSaveError } from '@canopy/protocol/file-image-save';
 import {
   compatibleRemoteVersions,
   describeHostVersionMismatch,
@@ -12,6 +18,7 @@ import {
   FileReadResultSchema,
   HelloResultSchema,
   InvokeParamsSchema,
+  isRemoteChannelUnavailableError,
   REMOTE_PROTOCOL_MISMATCH_CODE,
   REMOTE_EVENTS,
   REMOTE_METHODS,
@@ -205,13 +212,41 @@ export class RemoteHostConnection {
   ): Promise<unknown> {
     const rpc = await this.ensure();
     // No deadline: local IPC has none, and a dropped session rejects.
-    return rpc.request(
-      REMOTE_METHODS.invoke,
-      surface === 'main' ? { channel, args } : { channel, args, surface },
-      {
-        timeoutMs: null,
-      },
-    );
+    try {
+      return await rpc.request(
+        REMOTE_METHODS.invoke,
+        surface === 'main' ? { channel, args } : { channel, args, surface },
+        { timeoutMs: null },
+      );
+    } catch (error) {
+      // The host bridge already carries Electron's named rejection in the
+      // existing RPC message. Restore that identity before this computer's
+      // IPC wraps it again; no wire change or message-copy matching is needed.
+      if (
+        channel === IPC_CHANNELS.fileSaveContent &&
+        error instanceof RpcRemoteError
+      ) {
+        const imageSaveError = restoreFileImageSaveError(error);
+        if (imageSaveError) throw imageSaveError;
+        const conflict =
+          /^Error invoking remote method 'file:save-content': FileSaveConflictError: ([\s\S]*)$/.exec(
+            error.message,
+          );
+        if (conflict) throw new FileSaveConflictError(conflict[1]);
+      }
+      // A host release without this read-only pre-check keeps the earlier
+      // removal order: its own archive admission, where present, still runs.
+      if (
+        channel === IPC_CHANNELS.worktreeCheckRemovalAdmission &&
+        isRemoteChannelUnavailableError(error)
+      ) {
+        const unchecked: CheckWorktreeRemovalAdmissionResponse = {
+          status: 'unchecked',
+        };
+        return unchecked;
+      }
+      throw error;
+    }
   }
 
   post(

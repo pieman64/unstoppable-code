@@ -184,7 +184,7 @@ it('loads content only for the selected key and checks its exact bytes', async (
   );
   mockRequest.mockResolvedValue({ ...fixture(), rawPipeline: 'tampered' });
   await expect(getCuratedPipeline('reviewed-workflow')).rejects.toThrow(
-    'verification',
+    'Curated workflow content failed verification. Refresh the catalog and try again.',
   );
   expect(mockSave).not.toHaveBeenCalled();
 });
@@ -196,7 +196,9 @@ it('rejects stale reviewed hashes before writing anything', async () => {
       key: 'reviewed-workflow',
       expectedContentHash: 'a'.repeat(64),
     }),
-  ).rejects.toThrow('changed');
+  ).rejects.toThrow(
+    'This curated workflow changed. Refresh its preview before adding it.',
+  );
   expect(mockSave).not.toHaveBeenCalled();
 });
 
@@ -640,7 +642,9 @@ it('rejects authoritative retirement and access revocation instead of using a ca
   mockRequest.mockResolvedValue({ version: 1, data: [], nextCursor: null });
   await expect(
     getManagedCuratedPipeline('curated:reviewed-workflow'),
-  ).rejects.toThrow('no longer available');
+  ).rejects.toThrow(
+    'This curated workflow is no longer available. Refresh the workflow list.',
+  );
   expect(await readFile(first.info.filePath ?? '', 'utf8')).toEqual(
     current.rawPipeline,
   );

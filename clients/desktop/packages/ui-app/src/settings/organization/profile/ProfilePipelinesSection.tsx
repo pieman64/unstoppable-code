@@ -3,6 +3,7 @@
 import type { JSX } from 'react';
 import { Workflow } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   LoadingSpinner,
@@ -66,7 +67,7 @@ export function ProfilePipelinesSection({
             )}
             data-testid="profile-pipelines-empty"
           >
-            {memberName} hasn&apos;t shared any pipelines with this team yet.
+            {memberName} hasn&apos;t shared any workflows with this team yet.
           </p>
         )}
       </div>
@@ -108,12 +109,11 @@ export function ProfilePipelinesSection({
 
       {hasMore && (
         <div className="flex justify-center py-2">
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={() => void loadMore()}
             disabled={loadingMore}
             data-testid="profile-pipelines-load-more"
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loadingMore ? (
               <>
@@ -123,7 +123,7 @@ export function ProfilePipelinesSection({
             ) : (
               'Load more'
             )}
-          </button>
+          </Button>
         </div>
       )}
     </div>

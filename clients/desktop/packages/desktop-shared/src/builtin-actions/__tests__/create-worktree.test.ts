@@ -17,6 +17,7 @@ import {
   createSingleRepoWorktree,
   getWorktreeCliRecord,
 } from '../../node/lib/worktree-service';
+import { emptyCreateWorktreeOutputs } from '../../pipelines/host-create-worktree';
 import { runCreateWorktreeAction } from '../create-worktree/runner';
 
 const mockedGetWorkspaceItem = jest.mocked(getWorkspaceItem);
@@ -53,7 +54,12 @@ describe('create-worktree action', () => {
       branchName: 'feature/x',
       createdAt: '2026-06-20T12:00:00.000Z',
       path: path.join(tempDir, 'worktrees', 'feature-x'),
-      stats: { insertions: 0, deletions: 0 },
+      stats: {
+        projectId: 'project-id',
+        worktreeId: 'feature-x',
+        insertions: 0,
+        deletions: 0,
+      },
     });
   });
 
@@ -94,11 +100,16 @@ describe('create-worktree action', () => {
     expect(mockedGetWorktreeCliRecord).toHaveBeenCalledWith('ws1', 'feature-x');
 
     expect(readOutputs(outputFile)).toEqual({
-      worktree_id: 'feature-x',
+      ...emptyCreateWorktreeOutputs(),
+      project_id: 'ws1',
       workspace_id: 'ws1',
+      task_id: 'feature-x',
+      worktree_id: 'feature-x',
       path: path.join(tempDir, 'worktrees', 'feature-x'),
       branch_name: 'feature/x',
       created_at: '2026-06-20T12:00:00.000Z',
+      setup_state: 'skipped',
+      failure_reason: '',
     });
   });
 
@@ -132,10 +143,51 @@ describe('create-worktree action', () => {
     expect(mockedCreateMultiRepoWorktree).not.toHaveBeenCalled();
   });
 
-  it('rejects missing workspace_id and invalid boolean inputs', async () => {
+  it('accepts project_id in place of workspace_id', async () => {
+    mockedGetWorkspaceItem.mockResolvedValue({
+      id: 'ws1',
+      type: 'single-repo',
+      name: 'Workspace',
+    } as never);
+    mockedCreateSingleRepoWorktree.mockResolvedValue({
+      id: 'feature-x',
+      branchName: 'feature/x',
+      createdAt: '2026-06-20T12:00:00.000Z',
+    });
+
+    await runCreateWorktreeAction({
+      CANOPY_OUTPUT: outputFile,
+      INPUT_PROJECT_ID: 'ws1',
+      INPUT_WORKTREE_SETUP: 'skip',
+    });
+
+    expect(mockedGetWorkspaceItem).toHaveBeenCalledWith('ws1');
+    expect(mockedCreateSingleRepoWorktree).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      branchName: undefined,
+      baseBranch: undefined,
+      startPostCreateSetup: false,
+    });
+    expect(readOutputs(outputFile)).toMatchObject({
+      project_id: 'ws1',
+      workspace_id: 'ws1',
+      task_id: 'feature-x',
+      worktree_id: 'feature-x',
+      failure_reason: '',
+    });
+  });
+
+  it('rejects invalid inputs with validation_failed before any read', async () => {
     await expect(
       runCreateWorktreeAction({ CANOPY_OUTPUT: outputFile }),
-    ).rejects.toThrow('create-worktree requires input "workspace_id"');
+    ).rejects.toThrow(
+      'create-worktree requires "project_id" or "workspace_id"',
+    );
+    expect(readOutputs(outputFile)).toMatchObject({
+      failure_reason: 'validation_failed',
+      task_id: '',
+      grouped: 'false',
+    });
 
     await expect(
       runCreateWorktreeAction({
@@ -144,5 +196,83 @@ describe('create-worktree action', () => {
         INPUT_REPAIR: 'yes',
       }),
     ).rejects.toThrow('create-worktree input "repair" must be true or false');
+    await expect(
+      runCreateWorktreeAction({
+        CANOPY_OUTPUT: outputFile,
+        INPUT_WORKSPACE_ID: '../ws1',
+      }),
+    ).rejects.toThrow(
+      'create-worktree "workspace_id" must be lowercase alphanumeric with hyphens',
+    );
+    expect(mockedGetWorkspaceItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['existing_branch', { INPUT_EXISTING_BRANCH: 'release' }],
+    ['base_task_id', { INPUT_BASE_TASK_ID: 'wt-1' }],
+    ['base_worktree_id', { INPUT_BASE_WORKTREE_ID: 'wt-1' }],
+    ['group', { INPUT_GROUP: 'Reviews' }],
+    ['worktree_setup', { INPUT_WORKTREE_SETUP: 'run' }],
+    ['worktree_setup', { INPUT_WORKTREE_SETUP: 'run_and_wait' }],
+  ])(
+    'refuses %s with needs_desktop before reading the workspace',
+    async (input, extra) => {
+      await expect(
+        runCreateWorktreeAction({
+          CANOPY_OUTPUT: outputFile,
+          INPUT_WORKSPACE_ID: 'ws1',
+          ...extra,
+        }),
+      ).rejects.toThrow(`create-worktree "${input}" needs the desktop app.`);
+      expect(readOutputs(outputFile)).toMatchObject({
+        failure_reason: 'needs_desktop',
+        task_id: '',
+      });
+      expect(mockedGetWorkspaceItem).not.toHaveBeenCalled();
+      expect(mockedCreateSingleRepoWorktree).not.toHaveBeenCalled();
+      expect(mockedCreateMultiRepoWorktree).not.toHaveBeenCalled();
+    },
+  );
+
+  it('names the first desktop-only input in the documented order', async () => {
+    await expect(
+      runCreateWorktreeAction({
+        CANOPY_OUTPUT: outputFile,
+        INPUT_WORKSPACE_ID: 'ws1',
+        INPUT_WORKTREE_SETUP: 'run',
+        INPUT_GROUP: 'Reviews',
+        INPUT_BASE_TASK_ID: 'wt-1',
+      }),
+    ).rejects.toThrow('create-worktree "base_task_id" needs the desktop app.');
+    await expect(
+      runCreateWorktreeAction({
+        CANOPY_OUTPUT: outputFile,
+        INPUT_WORKSPACE_ID: 'ws1',
+        INPUT_WORKTREE_SETUP: 'run',
+        INPUT_GROUP: 'Reviews',
+      }),
+    ).rejects.toThrow('create-worktree "group" needs the desktop app.');
+  });
+
+  it('refuses a cowork project with unsupported_action', async () => {
+    mockedGetWorkspaceItem.mockResolvedValue({
+      id: 'ws1',
+      type: 'cowork',
+      name: 'Workspace',
+    } as never);
+
+    await expect(
+      runCreateWorktreeAction({
+        CANOPY_OUTPUT: outputFile,
+        INPUT_WORKSPACE_ID: 'ws1',
+      }),
+    ).rejects.toThrow(
+      "Project `ws1` doesn't support worktrees. Use create-project-entry.",
+    );
+    expect(readOutputs(outputFile)).toMatchObject({
+      failure_reason: 'unsupported_action',
+    });
+    expect(mockedCreateSingleRepoWorktree).not.toHaveBeenCalled();
+    expect(mockedCreateMultiRepoWorktree).not.toHaveBeenCalled();
   });
 });

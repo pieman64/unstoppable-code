@@ -1,4 +1,7 @@
 /** Browser-safe definitions for serializable settings navigation props. */
+import type { SettingsOrganizationRole } from './bootstrap';
+import type { OrganizationSettingsSubtab } from './routes';
+
 export interface AccountSettingsNavFlags {
   billingEnabled: boolean;
   digestsEnabled: boolean;
@@ -13,6 +16,11 @@ export interface AccountSettingsNavFlags {
    * desktop keeps Labs in its own Settings, so absent hides the item.
    */
   labsEnabled?: boolean;
+  /**
+   * The Appearance page (chat detail) is listed. Web only: desktop sets
+   * chat detail under Display → Appearance, so absent hides the item.
+   */
+  appearanceEnabled?: boolean;
   /**
    * Free app access is on (CAN-3926). The Billing item keeps its route and
    * key but is named "AI Credits", for what it still sells. Optional so a
@@ -66,10 +74,52 @@ export interface OrganizationSettingsNavModel {
   visibleTabs: OrganizationSettingsNavTab[];
   disabledTabs: OrganizationSettingsNavTab[];
   billingNeedsAttention: boolean;
+  /**
+   * The viewer's role, for the scope picker's subtitle. Optional so a host
+   * that has not read it yet still draws the rail.
+   */
+  viewerRole?: SettingsOrganizationRole;
+  /** The organization's logo, for the scope picker. */
+  logoUrl?: string | null;
+  /** The viewer's Personal organization, which has no Settings pages. */
+  isPersonal?: boolean;
+  /**
+   * The Settings pages (General, Policies, Integrations, Usage, Billing)
+   * this viewer gets, from `visibleOrganizationSettingsSubtabs`. Each is its
+   * own rail row. Absent means unknown: the rail shows one Settings row.
+   */
+  settingsSubtabs?: OrganizationSettingsSubtab[];
+}
+
+/**
+ * One scope the settings rail can switch to: an organization the viewer
+ * belongs to. The viewer's own account is always a scope too.
+ */
+export interface SettingsNavOrganizationScope {
+  id: string;
+  name: string;
+  logoUrl: string | null;
+  role: SettingsOrganizationRole;
+  isPersonal: boolean;
 }
 
 export interface SettingsNavModel {
   account: AccountSettingsNavFlags;
   adminVisible: boolean;
   organization: OrganizationSettingsNavModel | null;
+  /**
+   * The organizations the viewer belongs to, in server order, for the rail's
+   * scope picker. Never use the order to pick a default organization.
+   * Absent while unknown: the picker lists the browsed organization only.
+   */
+  organizations?: SettingsNavOrganizationScope[];
+  /** The signed-in viewer, for the scope picker's account row. */
+  viewer?: SettingsNavViewer;
+}
+
+/** Who the account scope belongs to. */
+export interface SettingsNavViewer {
+  name: string | null;
+  email: string;
+  image: string | null;
 }

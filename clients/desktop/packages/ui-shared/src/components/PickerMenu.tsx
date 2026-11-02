@@ -97,6 +97,14 @@ export type PickerTriggerVariant = 'capsule' | 'field';
 
 export interface PickerTriggerProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: PickerTriggerVariant;
+  /**
+   * `compact` is a 28px capsule, for a trigger that shares a row with the
+   * 28px `SegmentedControl` (the Subagents toolbar's Levels picker). `page`
+   * is the quiet 28px dropdown of a page search row (`PageSearchRow`): no
+   * fill or edge until hovered or open, 12px before its label and 8px after
+   * its chevron (the chevron's own whitespace balances the pill).
+   */
+  size?: 'default' | 'compact' | 'page';
   /** Set a branch or path value in the mono face. */
   mono?: boolean;
   /**
@@ -139,12 +147,23 @@ const PICKER_TRIGGER_WRAPPER_HOVERS: Record<PickerTriggerVariant, string> = {
 
 const PICKER_TRIGGER_SHELLS: Record<PickerTriggerVariant, string> = {
   capsule:
-    'h-8 gap-1 rounded-full border-0 bg-transparent px-2.5 text-xs transition-colors hover:bg-subtle hover:fg-primary disabled:hover:bg-transparent disabled:hover:fg-secondary',
+    'gap-1 rounded-full border-0 bg-transparent px-2.5 transition-colors hover:bg-subtle hover:fg-primary disabled:hover:bg-transparent disabled:hover:fg-secondary',
   // The shared field look (`TextInput`, `Select`): the 1px `shadow-field` edge
   // on a transparent fill, 8px radius. It stays 32px tall because its callers
   // sit in 32px rows (the PR status bar, worktree settings).
   field:
     'h-8 gap-2 rounded-lg bg-transparent px-2 text-s shadow-field transition-[box-shadow,background-color] hover:bg-subtle disabled:hover:bg-transparent',
+};
+
+// A field stays 32px (see above); a capsule is 32px or the compact 28px,
+// in the small text.
+const PICKER_TRIGGER_HEIGHTS: Record<
+  NonNullable<PickerTriggerProps['size']>,
+  string
+> = {
+  default: 'h-8 text-xs',
+  compact: 'h-7 text-xs',
+  page: 'h-7 pl-3 pr-2 text-xs aria-expanded:bg-subtle',
 };
 
 // A field focuses like the shared fields: the neutral edge and halo replace
@@ -170,6 +189,7 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
       className = '',
       type = 'button',
       variant = 'capsule',
+      size = 'default',
       mono = false,
       tone = 'default',
       labelOnly = false,
@@ -185,15 +205,15 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
         {...props}
         ref={ref}
         type={type}
-        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${PICKER_TRIGGER_SHELLS[variant]}${
-          variant !== 'capsule'
+        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : ''} ${PICKER_TRIGGER_SHELLS[variant]}${
+          variant !== 'capsule' || size === 'page'
             ? ''
             : labelOnly
               ? ' pl-3.5'
               : textLead
                 ? ' pl-3'
                 : ''
-        }${variant === 'capsule' && textTrail ? ' pr-3' : ''}${wrapperHover ? PICKER_TRIGGER_WRAPPER_HOVERS[variant] : ''} ${tone === 'secondary' ? 'fg-secondary' : PICKER_TRIGGER_INKS[variant]}${mono ? ' font-mono' : ''} ${className}`}
+        }${variant === 'capsule' && size !== 'page' && textTrail ? ' pr-3' : ''}${wrapperHover ? PICKER_TRIGGER_WRAPPER_HOVERS[variant] : ''} ${tone === 'secondary' ? 'fg-secondary' : PICKER_TRIGGER_INKS[variant]}${mono ? ' font-mono' : ''} ${className}`}
       />
     );
   },
@@ -262,13 +282,14 @@ function usePickerMenuTextClassName(): 'text-xs' | 'text-s' {
 export const PickerMenuSearchInput = forwardRef<
   HTMLInputElement,
   InputHTMLAttributes<HTMLInputElement> & {
-    /** Renders a clear button while the field has a value. */
+    /**
+     * Renders the shared muted clear button while the field has a value. The
+     * browser's own clear control never shows (canopy-tokens-core.css).
+     */
     onClear?: () => void;
-    /** Hide the browser's own clear control when the host owns that spot. */
-    hideNativeClear?: boolean;
   }
 >(function PickerMenuSearchInput(
-  { className = '', type = 'text', onClear, hideNativeClear = false, ...props },
+  { className = '', type = 'text', onClear, ...props },
   ref,
 ): JSX.Element {
   const textClassName = usePickerMenuTextClassName();
@@ -286,7 +307,7 @@ export const PickerMenuSearchInput = forwardRef<
         {...props}
         ref={ref}
         type={type}
-        className={`min-w-0 flex-1 border-0 bg-transparent ${textClassName} outline-none fg-primary placeholder:fg-tertiary ${onClear || hideNativeClear ? '[&::-webkit-search-cancel-button]:appearance-none' : ''} ${className}`}
+        className={`min-w-0 flex-1 border-0 bg-transparent ${textClassName} outline-none fg-primary placeholder:fg-tertiary ${className}`}
       />
       {onClear && props.value ? (
         <Button

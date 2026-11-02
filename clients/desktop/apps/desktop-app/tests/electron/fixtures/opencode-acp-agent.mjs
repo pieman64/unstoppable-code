@@ -70,14 +70,20 @@ const saveDatabase = (value) => {
 };
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT);
 const scopedProvider = config.provider?.pipeline?.models?.only;
+const managedProvider = config.provider?.['canopy-inference'];
 const presentationModels = [];
-const availableModels = [
-  ...presentationModels,
-  { value: 'fixture/model', name: 'Fixture model' },
-  ...(scopedProvider
-    ? [{ value: 'pipeline/only', name: 'Pipeline-only model' }]
-    : []),
-];
+const availableModels = managedProvider
+  ? Object.keys(managedProvider.models).map((id) => ({
+      value: `canopy-inference/${id}`,
+      name: id,
+    }))
+  : [
+      ...presentationModels,
+      { value: 'fixture/model', name: 'Fixture model' },
+      ...(scopedProvider
+        ? [{ value: 'pipeline/only', name: 'Pipeline-only model' }]
+        : []),
+    ];
 let plugin;
 async function loadPlugin() {
   plugin ??= await loadOpenCodeV2FixturePlugin(config, {
@@ -102,6 +108,12 @@ async function loadPlugin() {
         }
       : {}),
     models: [
+      ...Object.entries(managedProvider?.models ?? {}).map(([id, model]) => ({
+        ...model,
+        providerID: 'canopy-inference',
+        id,
+        variants: Object.keys(model.variants ?? {}).map((id) => ({ id })),
+      })),
       {
         providerID: 'fixture',
         id: 'model',
@@ -127,7 +139,7 @@ const error = (id, code = -32602) =>
       error: { code, message: 'fixture error' },
     }) + '\n',
   );
-let selected = 'fixture/model';
+let selected = config.model ?? 'fixture/model';
 let effort = 'medium';
 let sessionId = 'opencode-fixture';
 let held;
@@ -246,6 +258,8 @@ const appTool = async (name, args, serverName) => {
     const listed = client
       ? await client.listTools()
       : await rpc('tools/list', {});
+    if (listed.tools.some((tool) => tool.name === 'WatchDelegates'))
+      throw new Error('Fresh tool list includes WatchDelegates');
     if (name === 'VERIFY_COWORK_ACTION_CONTRACT') {
       const schema = listed.tools.find(
         (tool) => tool.name === 'DispatchAction',
@@ -458,6 +472,56 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       continue;
     }
     let result = `OpenCode fixture reply ${turns}.`;
+    if (
+      managedProvider &&
+      process.env.OPENCODE_FIXTURE_MANAGED_INFERENCE === '1'
+    ) {
+      const messages = managedProvider.npm === '@ai-sdk/anthropic';
+      const model = selected.slice('canopy-inference/'.length);
+      const response = await fetch(
+        `${managedProvider.options.baseURL}${messages ? '/messages' : '/responses'}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer canopy-loopback-broker',
+            ...managedProvider.options.headers,
+          },
+          body: JSON.stringify(
+            messages
+              ? {
+                  model,
+                  max_tokens: 1024,
+                  messages: [{ role: 'user', content: text }],
+                  stream: true,
+                }
+              : {
+                  model,
+                  input: [
+                    { role: 'user', content: [{ type: 'input_text', text }] },
+                  ],
+                  stream: true,
+                },
+          ),
+        },
+      );
+      if (!response.ok)
+        throw new Error(
+          `Managed OpenCode fixture request failed (${response.status})`,
+        );
+      const body = await response.json();
+      const output = messages
+        ? body.content
+        : body.output?.flatMap((item) => item.content ?? []);
+      const textOutput = output
+        ?.filter((item) => item.type === 'text' || item.type === 'output_text')
+        .map((item) => item.text)
+        .join('');
+      if (!textOutput)
+        throw new Error('Managed OpenCode fixture received no inference text');
+      result = `OpenCode managed ${model}: ${textOutput}`;
+    }
+
     if (process.env.OPENCODE_FIXTURE_VISIBLE_FORK === '1') {
       if (text.includes('FORK_CONTEXT_CHECK')) {
         result =
@@ -727,11 +791,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       if (!response.ok) throw new Error(JSON.stringify(response));
       saved.delegationId = response.value.delegationId;
       await writeFile(savedFile, JSON.stringify(saved));
-      await appTool('WatchDelegates', {
-        delegationIds: [saved.delegationId],
-        mode: 'all',
-        timeoutMs: 60000,
-      });
+      // Completion notices are automatic; no watch call.
       result = 'Waiting for delegated evidence.';
     } else if (saved.delegationId) {
       result = `Integrated OpenCode child: ${await appTool('GetDelegateOutput', { delegationId: saved.delegationId })}`;

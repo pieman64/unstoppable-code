@@ -1,20 +1,23 @@
-import * as path from 'node:path';
+import { totalmem } from 'node:os';
 import { getResolvedGitExecutableForSpawn } from '../lib/git-executable';
-import { utilityProcess, type UtilityProcess } from 'electron';
+import type { ExecutionHostProcess } from '@canopy/desktop-shared/node/execution-host/port';
+import { getExecutionHostPort } from '../execution-host/utility-process-host';
+import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
 import type { CodeGraphRepositoryInput } from '@canopy/desktop-shared/types/code-graph';
+import type {
+  CodeGraphFingerprintWorkerRequest,
+  CodeGraphFingerprintWorkerResponse,
+} from '@canopy/code-graph/host/fingerprint-host';
 import { getCodeGraphGenerationTimeoutMs } from '../lib/code-graph-availability';
 import {
   leaveBackgroundProcessPolicy,
   lowerSpawnedProcessPriority,
 } from '../lib/background-process';
 
-export interface CodeGraphFingerprintWorkerRequest {
-  repositories: readonly CodeGraphRepositoryInput[];
-}
-
-export type CodeGraphFingerprintWorkerResponse =
-  | { ok: true; fingerprint: string }
-  | { ok: false; message: string };
+export type {
+  CodeGraphFingerprintWorkerRequest,
+  CodeGraphFingerprintWorkerResponse,
+} from '@canopy/code-graph/host/fingerprint-host';
 
 export type CodeGraphFingerprintWorkerErrorReason =
   | 'timeout'
@@ -40,7 +43,7 @@ interface FingerprintRecord {
   promise: Promise<CodeGraphFingerprintWorkerResponse>;
   resolve: (response: CodeGraphFingerprintWorkerResponse) => void;
   reject: (error: CodeGraphFingerprintWorkerError) => void;
-  child: UtilityProcess | null;
+  child: ExecutionHostProcess | null;
   watchdog: NodeJS.Timeout | null;
   settled: boolean;
   /** Scheduler fingerprints have no waiting caller; see `startRecord`. */
@@ -62,13 +65,9 @@ const EXIT_WAIT_FALLBACK_MS = 2_000;
 const records = new Map<string, FingerprintRecord>();
 const queue: FingerprintRecord[] = [];
 const active = new Set<FingerprintRecord>();
-const liveChildren = new Set<UtilityProcess>();
+const liveChildren = new Set<ExecutionHostProcess>();
 const pendingExitWaits = new Map<string, Promise<void>>();
 let shuttingDown = false;
-
-function workerEntryPath(): string {
-  return path.join(__dirname, WORKER_ENTRY_FILENAME);
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -128,13 +127,17 @@ function rejectRecord(
 
 async function startRecord(record: FingerprintRecord): Promise<void> {
   active.add(record);
-  let child: UtilityProcess;
+  let child: ExecutionHostProcess;
   try {
     const gitExecutable = await getResolvedGitExecutableForSpawn();
     if (record.settled) return;
-    child = utilityProcess.fork(workerEntryPath(), [], {
+    child = getExecutionHostPort().launch({
+      entry: WORKER_ENTRY_FILENAME,
       serviceName: WORKER_SERVICE_NAME,
-      env: { ...process.env, CANOPY_GIT_EXECUTABLE: gitExecutable },
+      budget: codeGraphHostBudget('fingerprint', {
+        totalMemoryBytes: totalmem(),
+      }),
+      env: { CANOPY_GIT_EXECUTABLE: gitExecutable },
     });
   } catch (error) {
     rejectRecord(
@@ -151,6 +154,15 @@ async function startRecord(record: FingerprintRecord): Promise<void> {
   // Hashing dirty files and running Git is disk-heavy. The pid only exists
   // once Electron emits `spawn`.
   child.once('spawn', () => {
+    // Settled before launch: the kill then reached nothing, so land it now.
+    if (record.settled) {
+      try {
+        child.kill();
+      } catch {
+        // The worker may already have exited.
+      }
+      return;
+    }
     if (typeof child.pid === 'number') {
       lowerSpawnedProcessPriority(child.pid, {
         background: record.background,
@@ -280,7 +292,7 @@ export function runCodeGraphWorkerFingerprint(
   return promise;
 }
 
-function waitForChildExit(child: UtilityProcess): Promise<void> {
+function waitForChildExit(child: ExecutionHostProcess): Promise<void> {
   if (!liveChildren.has(child)) return Promise.resolve();
   return new Promise((resolve) => {
     const fallback = setTimeout(resolve, EXIT_WAIT_FALLBACK_MS);
@@ -292,7 +304,10 @@ function waitForChildExit(child: UtilityProcess): Promise<void> {
   });
 }
 
-function registerExitWait(key: string, child: UtilityProcess): Promise<void> {
+function registerExitWait(
+  key: string,
+  child: ExecutionHostProcess,
+): Promise<void> {
   const previous = pendingExitWaits.get(key);
   const current = waitForChildExit(child);
   const combined =

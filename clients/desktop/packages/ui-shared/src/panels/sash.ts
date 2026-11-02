@@ -25,6 +25,7 @@ import {
   type EventLike,
   stopEvent,
 } from './dom';
+import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { Emitter, type Event } from './emitter';
 import { getWindow, scheduleWindowTimeout } from './window-registry';
 
@@ -578,6 +579,9 @@ export class Sash extends Disposable {
 
     this.el = container.ownerDocument.createElement('div');
     this.el.classList.add('canopy-sash');
+    // A hovered or dragged sash's handle overhangs onto the views beside it,
+    // which may be an in-app browser page; draw it above the page there.
+    this.el.setAttribute(ABOVE_BROWSER_ATTRIBUTE, 'hover');
     container.appendChild(this.el);
 
     if (options.orthogonalEdge) {

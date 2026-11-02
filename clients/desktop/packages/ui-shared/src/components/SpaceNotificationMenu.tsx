@@ -127,6 +127,19 @@ export function spaceNotificationMenuChoices(
   });
 }
 
+/**
+ * Whether a space's acknowledged choice is Mute, exactly when the menu shows
+ * Mute checked. A save in flight to Mute does not count, and an unknown
+ * selection (a first read still loading or failed) is never muted.
+ */
+export function isSpaceNotificationMuted(
+  state: SpaceNotificationMenuState | undefined,
+): boolean {
+  if (!state) return false;
+  const known = state.selectionKnown ?? state.status !== 'loading';
+  return known && state.override === 'mute';
+}
+
 /** The check-slot icon: a check, a spinner for the pending save, or none. */
 export function SpaceNotificationMenuRowIcon({
   row,

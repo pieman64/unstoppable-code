@@ -6,6 +6,11 @@ import type {
   PersistedChatMessage,
   PersistedChatTab,
 } from '@canopy/desktop-shared/types';
+import {
+  hydrateChatTurnState,
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { ChatTranscriptLog } from '../lib/chat-transcript-log';
 import { migrateLegacyChatScope } from '../lib/legacy-chat-migration';
@@ -16,6 +21,30 @@ const message = (id: string, text = id): PersistedChatMessage => ({
   timestamp: 1,
   blocks: [{ type: 'text', text }],
 });
+
+function openPersistedTurn(): ReturnType<typeof serializeChatTurnState> {
+  const turn = hydrateChatTurnState({
+    phase: 'foreground',
+    decisionPending: false,
+    catchingUp: false,
+    current: {
+      id: 'legacy-idle-open-turn',
+      origin: 'user',
+      startedAtMs: 100,
+      pauses: [
+        {
+          ownerKind: 'question',
+          ownerId: 'open-question',
+          startedAtMs: 150,
+        },
+      ],
+    },
+    endedTurnIds: [],
+    background: { native: [], managed: { live: 0, queued: 0 } },
+  });
+  if (!turn) throw new Error('Invalid legacy open turn fixture');
+  return serializeChatTurnState(turn);
+}
 const tab = (
   id: string,
   messages: PersistedChatMessage[] = [],
@@ -146,6 +175,64 @@ describe('actual v1 scope migration', () => {
       });
     },
   );
+
+  it('initializes persisted turn state for a legacy live chat without a runtime field', async () => {
+    await json(paths.tabs, {
+      version: 1,
+      revision: 0,
+      tabs: [tab('live')],
+      activeTabId: 'live',
+    });
+    await migrateLegacyChatScope(store, paths);
+
+    const indexes = await store.indexes();
+    expect(indexes.live.runtimeByChatId.live?.turn).toEqual(
+      serializeChatTurnState(initialChatTurnState()),
+    );
+  });
+
+  it('settles reducer-only open turn owners when a legacy runtime is idle', async () => {
+    await json(paths.tabs, {
+      version: 1,
+      revision: 0,
+      tabs: [tab('live')],
+      activeTabId: 'live',
+    });
+    await journal([
+      record(1, [
+        {
+          type: 'runtime.patched',
+          chatId: 'live',
+          runtime: {
+            status: 'idle',
+            queuedMessageIds: [],
+            turn: openPersistedTurn(),
+          },
+        },
+      ]),
+    ]);
+
+    await migrateLegacyChatScope(store, paths);
+
+    const runtime = (await store.indexes()).live.runtimeByChatId.live;
+    expect(runtime?.status).toBe('interrupted');
+    expect(runtime?.turn?.current).toBeUndefined();
+    expect(runtime?.turn?.lastEnded).toMatchObject({
+      id: 'legacy-idle-open-turn',
+      outcome: 'cancelled',
+      terminalReason: 'restart',
+      pauses: [
+        {
+          ownerKind: 'question',
+          ownerId: 'open-question',
+          startedAtMs: 150,
+        },
+      ],
+    });
+    const pauseEndedAt = runtime?.turn?.lastEnded?.pauses[0]?.endedAtMs;
+    expect(typeof pauseEndedAt).toBe('number');
+    expect(pauseEndedAt).toBeGreaterThanOrEqual(150);
+  });
 
   it('recovers a valid backup, replays sorted journal revisions and retains receipts/tombstones', async () => {
     await json(paths.tabs, { broken: true });
@@ -631,6 +718,11 @@ describe('actual v1 scope migration', () => {
       status: 'interrupted',
       queuedMessageIds: [],
     });
+    expect(
+      (await store.indexes()).live.tabs.find(
+        (candidate) => candidate.id === 'live',
+      )?.interruptedTurns,
+    ).toEqual({ human: {} });
     expect(
       (await store.indexes()).live.runtimeByChatId.live.activeTurn,
     ).toBeUndefined();

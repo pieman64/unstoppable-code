@@ -8,7 +8,15 @@ const check = jest.fn<
 >();
 const context = {
   cwd: '/workspace',
-  approval: { check, setMode: jest.fn(), dispose: jest.fn() },
+  approval: {
+    check,
+    setMode: jest.fn(),
+    reevaluatePendingApprovals: jest.fn<
+      Promise<void>,
+      Parameters<ApprovalSessionHandle['reevaluatePendingApprovals']>
+    >(),
+    dispose: jest.fn(),
+  },
   planMode: false,
   signal: new AbortController().signal,
   toolUseId: 'search',
@@ -22,6 +30,60 @@ const input = {
 beforeEach(() => {
   check.mockReset();
   check.mockResolvedValue({ decision: 'allow' });
+});
+test.each([
+  [
+    'edit',
+    { filePath: 'a', oldString: 'old', newString: 'new' },
+    { kind: 'edit', oldText: 'old', newText: 'new' },
+  ],
+  [
+    'write',
+    { filePath: 'a', content: 'x'.repeat(20_001) },
+    { kind: 'write', content: 'x'.repeat(20_000), truncated: true },
+  ],
+])(
+  'native %s passes bounded request content to shared approval',
+  async (toolName, toolArgs, change) => {
+    expect(
+      await authorizeOpenCodeNativeTool(
+        { ...input, toolName, toolArgs },
+        context,
+      ),
+    ).toEqual({ decision: 'allow' });
+    expect(check).toHaveBeenCalledWith(
+      { kind: 'file-write', path: '/workspace/a' },
+      expect.objectContaining({
+        details: {
+          kind: 'file-write',
+          path: '/workspace/a',
+          displayPath: 'a',
+          change,
+        },
+      }),
+    );
+  },
+);
+test('patch approvals stay path-only instead of showing synthetic empty Write content', async () => {
+  expect(
+    await authorizeOpenCodeNativeTool(
+      {
+        ...input,
+        toolName: 'apply_patch',
+        toolArgs: {
+          patchText:
+            '*** Begin Patch\n*** Update File: a\n@@\n-old\n+new\n*** End Patch',
+        },
+      },
+      context,
+    ),
+  ).toEqual({ decision: 'allow' });
+  expect(check).toHaveBeenCalledWith(
+    { kind: 'file-write', path: '/workspace/a' },
+    expect.objectContaining({
+      details: { kind: 'file-write', path: '/workspace/a', displayPath: 'a' },
+    }),
+  );
 });
 test('native websearch reaches shared broad network approval in Full Access', async () => {
   check.mockImplementation((request) => {

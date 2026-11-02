@@ -30,7 +30,11 @@ async function innerBoxes(window) {
     Object.fromEntries(
       [...document.querySelectorAll('[data-testid^="panel-group-inner-"]')].map(
         (element) => {
-          const { x, y, width, height } = element.getBoundingClientRect();
+          // Collapse and sash geometry use the allocated cell, outside the
+          // inset card margins introduced by the graduated window layout.
+          const { x, y, width, height } = element
+            .closest('.canopy-panel-leaf')
+            .getBoundingClientRect();
           return [
             element
               .getAttribute('data-testid')
@@ -351,7 +355,7 @@ test('collapsed bar keeps working controls: add + overflow menu, and maximize ex
 
     // The add-panel button and overflow menu stay reachable while collapsed.
     await expect(
-      window.getByTestId(`panel-add-panel-${DEFAULT_GROUP_IDS.activity}`),
+      window.getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.activity}`),
     ).toBeVisible();
     const menu = window.getByTestId(
       `panel-group-menu-${DEFAULT_GROUP_IDS.activity}`,
@@ -447,7 +451,11 @@ test('recursive branch collapse leaves one expanded panel and restores a selecte
       await window.getByTestId(`panel-group-collapse-inner-${id}`).click();
     const column = window.getByTestId('panel-branch-bar-inner-E');
     await expect(column).toBeVisible();
-    expect((await column.boundingBox()).width).toBe(48);
+    expect(
+      await column.evaluate(
+        (element) => element.parentElement.getBoundingClientRect().width,
+      ),
+    ).toBe(48);
     const after = await innerBoxes(window);
     for (const id of ['A', 'B', 'C', 'D']) expectBox(after[id], before[id]);
     for (const id of ['H', 'I'])
@@ -458,7 +466,11 @@ test('recursive branch collapse leaves one expanded panel and restores a selecte
       await window.getByTestId(`panel-group-collapse-inner-${id}`).click();
     const row = window.getByTestId('panel-branch-bar-inner-B');
     await expect(row).toBeVisible();
-    expect((await row.boundingBox()).height).toBe(48);
+    expect(
+      await row.evaluate(
+        (element) => element.parentElement.getBoundingClientRect().height,
+      ),
+    ).toBe(48);
     await window.getByTestId('panel-group-collapse-inner-D').click();
     await expect(row).toHaveAttribute('data-edge', 'right');
     for (const id of ['H', 'I'])
@@ -564,9 +576,9 @@ test('maximize fills the grid beside an unrelated compact branch', async () => {
     const gridBox = await window.getByTestId('panel-grid-root').boundingBox();
     const groupBox = await window
       .getByTestId('panel-group-inner-A')
+      .locator('xpath=..')
       .boundingBox();
-    expect(groupBox.width).toBeGreaterThanOrEqual(gridBox.width - 4);
-    expect(groupBox.height).toBeGreaterThanOrEqual(gridBox.height - 4);
+    expectBox(groupBox, gridBox);
 
     await window.getByTestId('panel-group-restore-inner-A').click();
     await expect(window.getByTestId('panel-branch-bar-inner-E')).toBeVisible();
@@ -657,9 +669,7 @@ for (const legacy of [false, true]) {
         await second.window.getByTestId('panel-group-collapse-inner-H').click();
       await second.window.getByTestId('panel-branch-expand-inner-I').click();
       await second.window.getByTestId('panel-group-expand-inner-H').click();
-      const after = await innerBoxes(second.window);
-      expectBox(after.H, before.H);
-      expectBox(after.I, before.I);
+      await expectInnerBoxesRestored(second.window, before, ['H', 'I']);
     } finally {
       await closeCanopy(second.electronApp, userDataDir);
     }

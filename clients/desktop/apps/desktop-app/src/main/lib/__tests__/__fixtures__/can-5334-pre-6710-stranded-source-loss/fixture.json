@@ -1,0 +1,307 @@
+{
+  "generatedFrom": {
+    "revision": "e353a287bd",
+    "test": "apps/desktop-app/src/main/lib/__tests__/w5-workspace-deletion-records.test.ts",
+    "scenario": "residual: with the source gone for good, archiving the live worktree first leaves a worktree journal that keeps refusing the deletion (characterization)",
+    "dumpedAt": "the end of that test, after its last assertion"
+  },
+  "pathToken": "<FIXTURE_DIR>",
+  "layout": [
+    {
+      "path": "data",
+      "kind": "directory"
+    },
+    {
+      "path": "data/preferences.json",
+      "kind": "file",
+      "size": 11288,
+      "omitted": "app preferences the scenario never reads"
+    },
+    {
+      "path": "data/preferences.last-good.json",
+      "kind": "file",
+      "size": 11288,
+      "omitted": "app preferences the scenario never reads"
+    },
+    {
+      "path": "data/w5",
+      "kind": "directory"
+    },
+    {
+      "path": "data/w5/destructive-lifecycles",
+      "kind": "directory"
+    },
+    {
+      "path": "data/w5/destructive-lifecycles/8f8d4ff9229baec4ecfec53faa11f16e9f058b036faa65f5d3d5a600ac1249cc.json",
+      "kind": "file",
+      "size": 661
+    },
+    {
+      "path": "data/workspaces",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/.w5-incarnation",
+      "kind": "file",
+      "size": 36
+    },
+    {
+      "path": "data/workspaces/a/archived-containers",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-manifests",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-manifests/one.json",
+      "kind": "file",
+      "size": 206
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/archive-index.json",
+      "kind": "file",
+      "size": 40
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/live-index.json",
+      "kind": "file",
+      "size": 74
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/metadata-journal.jsonl",
+      "kind": "file",
+      "size": 0
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/recovery-index.json",
+      "kind": "file",
+      "size": 114
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/git-state.staged.json",
+      "kind": "file",
+      "size": 66
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-manifests",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-manifests/one.json",
+      "kind": "file",
+      "size": 459
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/archive-index.json",
+      "kind": "file",
+      "size": 40
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/delta-journal.log",
+      "kind": "file",
+      "size": 171
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/live-index.json",
+      "kind": "file",
+      "size": 74
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/metadata-journal.jsonl",
+      "kind": "file",
+      "size": 0
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/recovery-index.json",
+      "kind": "file",
+      "size": 114
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/transcripts",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/workspace.json",
+      "kind": "file",
+      "size": 190
+    },
+    {
+      "path": "data/workspaces/a/worktrees",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/worktrees/one",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/a/worktrees/one/.git",
+      "kind": "file",
+      "size": 135
+    },
+    {
+      "path": "data/workspaces/a/worktrees.json",
+      "kind": "file",
+      "size": 172
+    },
+    {
+      "path": "data/workspaces/b",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/b/workspace.json",
+      "kind": "file",
+      "size": 189,
+      "omitted": "other projects of the shared fixture; the test builds its own"
+    },
+    {
+      "path": "data/workspaces/b/worktrees.json",
+      "kind": "file",
+      "size": 51,
+      "omitted": "other projects of the shared fixture; the test builds its own"
+    },
+    {
+      "path": "data/workspaces/c",
+      "kind": "directory"
+    },
+    {
+      "path": "data/workspaces/c/workspace.json",
+      "kind": "file",
+      "size": 40,
+      "omitted": "other projects of the shared fixture; the test builds its own"
+    },
+    {
+      "path": "data/workspaces/index.json",
+      "kind": "file",
+      "size": 304,
+      "omitted": "other projects of the shared fixture; the test builds its own"
+    },
+    {
+      "path": "w5",
+      "kind": "directory"
+    },
+    {
+      "path": "w5/commit-log.sqlite",
+      "kind": "file",
+      "size": 4096,
+      "omitted": "the commit-log host database; the stranded archive committed nothing, and each test starts its own host"
+    },
+    {
+      "path": "w5/commit-log.sqlite-wal",
+      "kind": "file",
+      "size": 70072,
+      "omitted": "the commit-log host database; the stranded archive committed nothing, and each test starts its own host"
+    }
+  ],
+  "files": [
+    {
+      "path": "data/w5/destructive-lifecycles/8f8d4ff9229baec4ecfec53faa11f16e9f058b036faa65f5d3d5a600ac1249cc.json",
+      "encoding": "utf8",
+      "content": "{\"version\":1,\"operationId\":\"7c715161-5b9e-488e-bf4b-c637127b47e6\",\"operation\":\"worktree-archive\",\"workspaceId\":\"a\",\"worktreeId\":\"one\",\"createdAt\":\"2026-10-29T05:52:14.168Z\",\"directoryIdentity\":\"16777230:518579768:1793253138585.4377:55d8731a-9db8-4d38-9525-9f754c833302\",\"state\":\"recovery-required\",\"steps\":[{\"phase\":\"live-state-teardown\",\"state\":\"done\"},{\"phase\":\"retained-payload-capture\",\"state\":\"done\"},{\"phase\":\"git-capture\",\"state\":\"pending\"}],\"ownedPaths\":[{\"path\":\"<FIXTURE_DIR>/data/workspaces/a/worktrees/one\",\"identity\":\"16777230:518579854:1793253138732.6646\"}]}"
+    },
+    {
+      "path": "data/workspaces/a/.w5-incarnation",
+      "encoding": "utf8",
+      "content": "55d8731a-9db8-4d38-9525-9f754c833302"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-manifests/one.json",
+      "encoding": "utf8",
+      "content": "{\"version\":2,\"scopeId\":\"one\",\"migrationId\":\"dd90e47e-130c-400d-b7eb-988d6483d47e\",\"sourceRevision\":0,\"sourceDigest\":\"da428abe267720f3fbc6702fa07f5f0d1429bc450a9daeecb37e7273e5ac645a\",\"cleanupComplete\":true}"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/archive-index.json",
+      "encoding": "utf8",
+      "content": "{\"version\":2,\"revision\":0,\"archived\":[]}"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/live-index.json",
+      "encoding": "utf8",
+      "content": "{\"activeTabId\":\"\",\"runtimeByChatId\":{},\"version\":2,\"revision\":0,\"tabs\":[]}"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/metadata-journal.jsonl",
+      "encoding": "utf8",
+      "content": ""
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/chat-storage-v2/one/recovery-index.json",
+      "encoding": "utf8",
+      "content": "{\"receipts\":[],\"mutationIds\":[],\"removedTabIds\":[],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[],\"version\":2}"
+    },
+    {
+      "path": "data/workspaces/a/archived-containers/one/git-state.staged.json",
+      "encoding": "utf8",
+      "content": "{\n  \"version\": 1,\n  \"status\": \"capturing\",\n  \"repositories\": []\n}\n"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-manifests/one.json",
+      "encoding": "utf8",
+      "content": "{\"version\":3,\"scopeId\":\"one\",\"migrationId\":\"cc46d945-3c1c-4a8a-a32d-c853dfa6891d\",\"sourceRevision\":0,\"sourceDigest\":\"8ac33246aec1f8177f2e717841c76e2cbe3e459a3bf242357a1f4549f8308abf\",\"cleanupComplete\":true,\"journal\":\"chat-delta-journal-v1\",\"demotesTo\":{\"version\":2,\"scopeId\":\"one\",\"migrationId\":\"a5b0b058-4e50-4d73-9941-70d89d81ad0b\",\"sourceRevision\":0,\"sourceDigest\":\"8ac33246aec1f8177f2e717841c76e2cbe3e459a3bf242357a1f4549f8308abf\",\"cleanupComplete\":true}}"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/archive-index.json",
+      "encoding": "utf8",
+      "content": "{\"version\":2,\"revision\":0,\"archived\":[]}"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/delta-journal.log",
+      "encoding": "base64",
+      "content": "Q0RKMYMAAAC0jogqGLr/sR2wA6uakSp7GSmFthHFi/hcHJw9D1kei3sidHlwZSI6InNlZ21lbnQiLCJ2IjoxLCJzY29wZUlkIjoib25lIiwiYmFzZVJldmlzaW9uIjowLCJwcmV2IjoiNjlkYWQ4Yjg5ZDIyMzQyYzU1NWQ1YWU0Mzc2NWVlZGNiMmU0MDkzYTk1OTc1OWFhZjIyMTNjODFhZGZiNTE5YyJ9"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/live-index.json",
+      "encoding": "utf8",
+      "content": "{\"activeTabId\":\"\",\"runtimeByChatId\":{},\"version\":2,\"revision\":0,\"tabs\":[]}"
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/metadata-journal.jsonl",
+      "encoding": "utf8",
+      "content": ""
+    },
+    {
+      "path": "data/workspaces/a/chat-storage-v2/one/recovery-index.json",
+      "encoding": "utf8",
+      "content": "{\"receipts\":[],\"mutationIds\":[],\"removedTabIds\":[],\"removedArchiveEntryIds\":[],\"removedMessageIds\":[],\"version\":2}"
+    },
+    {
+      "path": "data/workspaces/a/workspace.json",
+      "encoding": "utf8",
+      "content": "{\"version\":1,\"type\":\"single-repo\",\"repoPath\":\"<FIXTURE_DIR>/repo\",\"repos\":[],\"itemSortMode\":\"manual\"}"
+    },
+    {
+      "path": "data/workspaces/a/worktrees/one/.git",
+      "encoding": "utf8",
+      "content": "gitdir: <FIXTURE_DIR>/repo/.git/worktrees/one\n"
+    },
+    {
+      "path": "data/workspaces/a/worktrees.json",
+      "encoding": "utf8",
+      "content": "{\"version\":1,\"worktrees\":[{\"id\":\"one\",\"branchName\":\"old\",\"createdAt\":\"2026-10-29T05:52:14.168Z\"},{\"id\":\"two\",\"branchName\":\"second\",\"createdAt\":\"2026-10-29T05:52:14.168Z\"}]}"
+    }
+  ]
+}

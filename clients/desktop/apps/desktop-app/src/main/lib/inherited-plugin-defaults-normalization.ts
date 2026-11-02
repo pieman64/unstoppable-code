@@ -24,6 +24,7 @@ import {
   hasPersistedPreferencesFile,
   readPreferencesFileDetailed,
 } from './preferences-store';
+import { inMcpRefRewritePhase } from '../mcp/server-ref-rewrite-outcome';
 
 function needsNormalization(tab: {
   kind?: unknown;
@@ -131,7 +132,12 @@ async function readInheritedGlobalLayer(): Promise<
     authority === 'unreadable' ||
     (authority === 'absent' && (await hasPersistedPreferencesFile()))
   )
-    throw new Error('Could not read the global plugin defaults');
+    return inMcpRefRewritePhase(
+      'normalization',
+      () =>
+        Promise.reject(new Error('Could not read the global plugin defaults')),
+      'rewriteFailed',
+    );
   return preferences.globalPluginSelections
     ? normalizePluginSelections(preferences.globalPluginSelections)
     : undefined;
@@ -194,9 +200,12 @@ export async function normalizeWorkspaceChatsForInheritedPluginDefaults(
         (): null => null,
       );
       if (index && !index.tabs.some(needsNormalization)) continue;
-      await getChatStateService().updateCompatibilityTabs(
-        { projectId: workspaceId, worktreeId: scopeId },
-        (tabsFile) => normalizeTabsFile(tabsFile, previousDefaults, inherited),
+      await inMcpRefRewritePhase('normalization', () =>
+        getChatStateService().updateCompatibilityTabs(
+          { projectId: workspaceId, worktreeId: scopeId },
+          (tabsFile) =>
+            normalizeTabsFile(tabsFile, previousDefaults, inherited),
+        ),
       );
     } catch (error) {
       failedScopes += 1;

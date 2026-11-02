@@ -101,11 +101,17 @@ export function deriveExistingShare(
   if (scope === 'private' && !hasPublicLink) return undefined;
   const target = ownerTarget(facts.owner, personalOrganizationId);
   const targetAudience = ownerAudience(facts.owner);
+  // A host may still hold the public URL after Remove public link cleared its
+  // public share; the dialog stays open, so it must not offer the dead link.
+  const link =
+    facts.link && (facts.link.kind !== 'public' || hasPublicLink)
+      ? facts.link
+      : undefined;
   return {
     audience: hasPublicLink ? 'public' : scope,
     ...(target && targetAudience ? { target, targetAudience } : {}),
     ...(facts.publicShare?.upToDate === false ? { publicLinkStale: true } : {}),
-    ...(facts.link ? { link: facts.link } : {}),
+    ...(link ? { link } : {}),
   };
 }
 

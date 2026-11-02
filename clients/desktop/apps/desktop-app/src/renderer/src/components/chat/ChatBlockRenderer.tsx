@@ -1,4 +1,13 @@
-import { useDelegatedAgentTranscript } from './delegated-agent-transcript';
+import {
+  DelegationTranscriptSourceContext,
+  transcriptReadSource,
+  useDelegatedAgentTranscript,
+  useDelegationStreamHint,
+} from './delegated-agent-transcript';
+import {
+  renderDelegationChildRows,
+  renderDelegationChildBlock,
+} from './delegation-child-row-renderer';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import { ClaudeAiCreditsFallbackError } from './ClaudeAiCreditsFallbackError';
 import { codexAgentState } from './agent-block-state';
@@ -18,6 +27,13 @@ import {
 import {
   DelegatedAgentCard,
   AccountProxySwitchLine,
+  AnsweredQuestionsBlock,
+  ApprovalSafetyDeniedNotice,
+  askUserQuestionCount,
+  askUserQuestionRowLabel,
+  resolveAskUserQuestionPresentation,
+  type AnsweredQuestionDisplay,
+  type AskUserQuestionResultEvidence,
   CompactionInfoBlock,
   compactionHeadline,
   DEFAULT_MARKDOWN_OVERRIDES,
@@ -27,13 +43,14 @@ import {
   markdownTableCellProps,
   Notice,
   ChatAppNote,
+  copyTextToClipboard,
   useCleanChatLook,
+  useSmoothStreaming,
   withSoftLineBreaks,
   type MarkdownOverrides,
 } from '@canopy/ui-shared/components';
 import type { PendingQuestion } from '@/stores/chatStore';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
-import { AnsweredQuestionsBlock } from './AnsweredQuestionsBlock';
 import { parseAnsweredQuestions } from './answered-questions';
 import { AgentBlock } from './AgentBlock';
 import { WorkflowBlock } from './WorkflowBlock';
@@ -45,7 +62,7 @@ import { TurnTimer } from './TurnTimer';
 import type { DisplayBlock } from './types';
 import { HookInfoBanner } from './HookInfoBanner';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
-import { findPendingAskUserQuestion } from './ask-user-pending-match';
+import { findAskUserQuestionRecordState } from './ask-user-pending-match';
 import { SkillIcon } from '@canopy/ui-shared/icons';
 import {
   TimeFliesIcon as AppCatalogTimeFliesIcon,
@@ -76,7 +93,12 @@ import {
 import { PluginMention } from './PluginMention';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { ChatMarkdownLink } from './ChatMarkdownLink';
-import { GitHubReferencePreview, LinearReferencePreview } from '@canopy/ui-app';
+import {
+  DelegationChildPages,
+  GitHubReferencePreview,
+  isStreamBackedDelegation,
+  LinearReferencePreview,
+} from '@canopy/ui-app';
 import {
   gitHubReferenceFromHref,
   gitHubReferenceLabel,
@@ -98,6 +120,8 @@ import {
 import { isSafeCodexInlineImage } from '@canopy/agent-transcript/lib/codex-tool-images';
 import { AuthRecoveryCard } from './AuthRecoveryCard';
 import { CanopyProxyErrorNotice } from './CanopyProxyErrorNotice';
+import { AiCreditsStopLine } from '@canopy/ui-shared/components';
+import { CodexAccountModelNoticeAction } from './CodexAccountModelNoticeAction';
 import { APPROVAL_MODE_PROSE_LABELS } from './approval-mode-labels';
 import {
   getHarnessConnectionProvider,
@@ -116,14 +140,15 @@ import { useSubagentOpenChatCallback } from '@/components/subagents/subagent-ent
 /**
  * Conservative fast path for the common one-line prose blocks that Markdown
  * renders as a single paragraph. Anything with block syntax, inline emphasis,
- * links/autolinks, escapes, HTML, entities, or line breaks stays on the full
- * parser. Mention and file-path decoration is applied separately below.
+ * links/autolinks, math dollars, escapes, HTML, entities, or line breaks stays
+ * on the full parser. Mention and file-path decoration is applied separately
+ * below.
  */
 function canRenderAsPlainParagraph(text: string): boolean {
   if (
     text.trim().length === 0 ||
     /[\r\n\\&*_`[\]<>#~|]/.test(text) ||
-    text.includes('$$') ||
+    text.includes('$') ||
     /^(?: {4,}| {0,3}\t)/.test(text)
   ) {
     return false;
@@ -691,6 +716,13 @@ const MARKDOWN_OPTIONS = markdownOptions(MARKDOWN_COMPONENTS, {
 });
 
 const EMPTY_PENDING: PendingQuestion[] = [];
+const EMPTY_WAITING_DELEGATIONS: ReadonlySet<string> = new Set();
+
+/** Delegations whose request to this chat still waits in its queue. */
+// eslint-disable-next-line react-refresh/only-export-components -- The parent message list owns this provider.
+export const WaitingDelegationsContext = createContext<ReadonlySet<string>>(
+  EMPTY_WAITING_DELEGATIONS,
+);
 
 type BuiltinGhChatKind = Extract<
   DisplayBlock,
@@ -736,7 +768,7 @@ function builtinGhChatBannerCopy(
 }
 
 function copyNativeSessionId(id: string): void {
-  void navigator.clipboard.writeText(id).catch(() => undefined);
+  void copyTextToClipboard(id);
 }
 
 /**
@@ -754,7 +786,10 @@ const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
   // A logged card's progress and children come from its live snapshots or
   // its delegate log rather than from committed child rows.
   const block = useDelegatedAgentTranscript(committed);
+  const hint = useDelegationStreamHint(block);
+  const source = useContext(DelegationTranscriptSourceContext);
   const stopControls = useContext(ManagedDelegationStopContext);
+  const waitingDelegations = useContext(WaitingDelegationsContext);
   const target = stopControls?.target;
   const delegationId = block.delegationId;
   const onOpenChat = useSubagentOpenChatCallback(
@@ -796,16 +831,33 @@ const DelegatedAgentCallCard = memo(function DelegatedAgentCallCard({
       hasLiveDescendants={
         stopControls?.withLiveDescendants.has(delegationId) ?? false
       }
+      waitingOnParent={waitingDelegations.has(delegationId)}
     >
-      {block.subBlocks
-        .filter(
-          (child) =>
-            !(
-              child.type === 'text' &&
-              child.text.trim() === block.finalText?.trim()
-            ),
-        )
-        .map((child, i) => renderSubBlock(child, i))}
+      {isStreamBackedDelegation(block.transcriptStore) ? (
+        <DelegationChildPages
+          {...(source ? { source: transcriptReadSource(source) } : {})}
+          delegationId={block.delegationId}
+          runGeneration={block.runGeneration}
+          hint={hint}
+          renderRows={(entries) =>
+            renderDelegationChildRows(entries, block, renderSubBlock)
+          }
+          v2Available={true}
+          renderBlock={(entry, row) =>
+            renderDelegationChildBlock(entry, row, renderSubBlock)
+          }
+        />
+      ) : (
+        block.subBlocks
+          .filter(
+            (child) =>
+              !(
+                child.type === 'text' &&
+                child.text.trim() === block.finalText?.trim()
+              ),
+          )
+          .map((child, i) => renderSubBlock(child, i))
+      )}
     </DelegatedAgentCard>
   );
 });
@@ -871,6 +923,12 @@ function TranscriptProse({
   linear,
   github,
 }: TranscriptProseProps): JSX.Element {
+  // Smooth streaming (Labs) paces text inside `Markdown`, so a block that
+  // mounts streaming with it on stays on that path, even as plain prose,
+  // until it unmounts; switching paths at the end would cut its last words
+  // short. Decided at mount, like `Markdown`'s own choice.
+  const smoothStreaming = useSmoothStreaming();
+  const [smoothStreamed] = useState(() => streaming && smoothStreaming);
   const mentionDecorators = useMemo(
     (): MentionDecorators => ({
       invocableIndex: invocableMentionIndex,
@@ -891,7 +949,7 @@ function TranscriptProse({
   );
   return (
     <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5">
-      {canRenderAsPlainParagraph(text) ? (
+      {!smoothStreamed && canRenderAsPlainParagraph(text) ? (
         <p>
           {decorateMentionChildren(
             text,
@@ -920,6 +978,28 @@ function TranscriptProse({
         </MentionDecoratorsContext.Provider>
       )}
     </div>
+  );
+}
+
+/**
+ * Smooth-streamed prose: one component whether or not the block has settled,
+ * decorating what its candidates allow once it has.
+ */
+function SmoothTranscriptProse({
+  linearCandidates,
+  githubCandidates,
+  ...props
+}: TranscriptProseProps & {
+  linearCandidates: LinearCandidates | null;
+  githubCandidates: GitHubCandidates | null;
+}): JSX.Element {
+  const target = useContext(ChatMarkdownFileTargetContext);
+  return (
+    <TranscriptProse
+      {...props}
+      linear={useLinearDecoration(linearCandidates)}
+      github={useGitHubDecoration(githubCandidates, target)}
+    />
   );
 }
 
@@ -973,6 +1053,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
   preserveLineBreaks = false,
   progressiveMarkdown = false,
   settled = !streaming,
+  turnSettled = false,
 }: {
   block: DisplayBlock;
   streaming?: boolean;
@@ -1006,8 +1087,20 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
    * `!streaming`; a streaming turn's earlier blocks pass `true`.
    */
   settled?: boolean;
+  /**
+   * The owning turn is authoritatively settled, so a tool call with no
+   * result renders interrupted rather than pending.
+   */
+  turnSettled?: boolean;
 }): JSX.Element | null {
   const cleanChatLook = useCleanChatLook();
+  // Smooth streaming (Labs): a text block that mounts streaming with it on
+  // renders through one component for its lifetime, so settling (a later
+  // block arriving) never re-mounts it and restarts or cuts its reveal.
+  const smoothStreaming = useSmoothStreaming();
+  const [smoothTextBlock] = useState(
+    () => block.type === 'text' && streaming && smoothStreaming,
+  );
   const textMarkdownOptions = preserveLineBreaks
     ? MENTION_MARKDOWN_OPTIONS_WITH_LINE_BREAKS
     : MENTION_MARKDOWN_OPTIONS;
@@ -1051,15 +1144,19 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
 
   if (block.type === 'tool_use' && block.result?.fullOutputRef) {
     return (
-      <ToolCallBlock
-        originChatTabId={originChatTabId}
-        originMessageId={originMessageId}
-        toolName={block.toolName}
-        input={block.input}
-        result={block.result}
-        resolvedRecipient={block.resolvedRecipient}
-        isCodeReviewChat={isCodeReviewChat}
-      />
+      <>
+        <ToolCallBlock
+          originChatTabId={originChatTabId}
+          originMessageId={originMessageId}
+          toolName={block.toolName}
+          toolUseId={block.toolUseId}
+          input={block.input}
+          result={block.result}
+          resolvedRecipient={block.resolvedRecipient}
+          isCodeReviewChat={isCodeReviewChat}
+        />
+        <ChatVisualResult result={block.result} variant="inline" />
+      </>
     );
   }
   switch (block.type) {
@@ -1083,28 +1180,35 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       }
       if (block.asyncQuestionAnswer) {
         const { answers } = block.asyncQuestionAnswer;
+        const displayAnswers: AnsweredQuestionDisplay[] = answers.map(
+          (answer) => ({
+            question: answer.question,
+            answer: answer.selectedOptions.join(', '),
+            ...(answer.freeformText ? { additional: answer.freeformText } : {}),
+          }),
+        );
         return (
           <>
-            <ToolCallBlock
-              originChatTabId={originChatTabId}
-              originMessageId={originMessageId}
-              toolName="AskUserQuestion"
-              input={JSON.stringify({
-                questions: answers.map((answer) => ({
-                  question: answer.question,
-                })),
-              })}
-              result={{ output: block.text, isError: false }}
-            />
-            <AnsweredQuestionsBlock
-              answers={answers.map((answer) => ({
-                question: answer.question,
-                answer: answer.selectedOptions.join(', '),
-                ...(answer.freeformText
-                  ? { additional: answer.freeformText }
-                  : {}),
-              }))}
-            />
+            {/* Clean chat look: the answers card says it all; the question
+                step itself folds into the work line before it. */}
+            {!cleanChatLook && (
+              <ToolCallBlock
+                originChatTabId={originChatTabId}
+                originMessageId={originMessageId}
+                toolName="AskUserQuestion"
+                input={JSON.stringify({
+                  questions: answers.map((answer) => ({
+                    question: answer.question,
+                  })),
+                })}
+                result={{ output: block.text, isError: false }}
+                label={askUserQuestionRowLabel({
+                  count: answers.length,
+                  answers: displayAnswers,
+                })}
+              />
+            )}
+            <AnsweredQuestionsBlock answers={displayAnswers} />
           </>
         );
       }
@@ -1130,12 +1234,32 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       const text = stripAgentCitations
         ? stripProposedPlanEnvelope(stripOpaqueAgentCitationMarkers(block.text))
         : block.text;
+      // A Codex turn the ChatGPT account was refused for its model (CAN-4716).
+      // Structured, validated data stamped from the terminal event (or restored
+      // from a Portal part or import), so not gated on `isSystemMessage`; the
+      // raw `Error:` text is not rendered for it. The action re-checks live
+      // tab state before it resends.
+      if (block.modelAccessFailure) {
+        return (
+          <CodexAccountModelNoticeAction
+            failure={block.modelAccessFailure}
+            originChatTabId={originChatTabId}
+            sourceText={block.text}
+          />
+        );
+      }
       // Checked BEFORE the harness-connection check: a structured AI Credits
       // proxy failure gets its own notice, and its `credentials_unavailable`
       // case must not fall through to a provider sign-in CTA. A body without
       // the proxy marker parses to `null` and keeps today's rendering, so this
       // is the single switch between the two paths.
       const proxyError = isSystemMessage ? parseCanopyProxyError(text) : null;
+      // Nothing could pay for the message (CAN-5160). The composer's No
+      // billing source banner is where the user chooses how to pay, so the
+      // transcript only says why the chat stopped.
+      if (proxyError?.code === 'no_billing_source') {
+        return <AiCreditsStopLine />;
+      }
       if (proxyError) {
         return (
           <CanopyProxyErrorNotice
@@ -1191,6 +1315,15 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         linear: null,
         github: null,
       };
+      if (smoothTextBlock) {
+        return (
+          <SmoothTranscriptProse
+            {...proseProps}
+            linearCandidates={linearCandidates}
+            githubCandidates={githubCandidates}
+          />
+        );
+      }
       if (linearCandidates) {
         return (
           <LinearTranscriptProse
@@ -1251,8 +1384,10 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
               originChatTabId={originChatTabId}
               originMessageId={originMessageId}
               toolName={block.toolName}
+              toolUseId={block.toolUseId}
               input={block.input}
               result={block.result}
+              turnSettled={turnSettled}
             />
           );
         }
@@ -1287,55 +1422,80 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       }
 
       if (isAskUserQuestionToolName(block.toolName)) {
-        // Hybrid matching (Frontend plan §F3.1):
-        //   1. Prefer exact `toolUseId` match when the block carries one and
-        //      at least one un-answered PendingQuestion in this chat has the
-        //      same `toolUseId`. Deterministic path for Codex dynamic
-        //      (`canopy_ask_user_question`) and Codex built-in
-        //      (`request_user_input`).
-        //   2. Fall back to the existing "first un-answered pending
-        //      question" heuristic for the Claude MCP path, which cannot
-        //      supply a `toolUseId` (the Claude Agent SDK `tool()` handler's
-        //      `extra` arg does not expose the transcript `tool_use_id`).
-        const pending = findPendingAskUserQuestion(
-          chatPendingQuestions,
-          block.toolName,
-          block.toolUseId,
-        );
-        if (!block.result && pending) {
-          return null;
-        }
-        if (!block.result) {
-          return (
-            <div className="flex items-center gap-1.5 py-1 text-xs fg-secondary">
-              <ThinkingSpinner tone="accent" />
-              <span>Preparing question…</span>
-            </div>
-          );
-        }
-        // Answered (non-error) questions keep the standard collapsed
-        // "User Questions" tool row and append the user's answers below it as
-        // inline user-style answer bubbles. Errors (dismissed / window
-        // unavailable) fall through to the standard tool-call display below.
-        if (!block.result.isError) {
-          const answered = parseAnsweredQuestions(
+        // The shared resolver owns precedence between the tool result and the
+        // chat's question record (see `ask-user-question-presentation.ts`).
+        // A restored question whose turn ended can lack a result, or carry a
+        // synthetic `Cancelled` one; its answered record still settles it.
+        const resultAnswers =
+          block.result && !block.result.isError
+            ? parseAnsweredQuestions(block.input, block.result.output)
+            : null;
+        const resultEvidence: AskUserQuestionResultEvidence = !block.result
+          ? { kind: 'none' }
+          : block.result.isError
+            ? { kind: 'error' }
+            : resultAnswers && resultAnswers.length > 0
+              ? { kind: 'answers', answers: resultAnswers }
+              : { kind: 'other' };
+        const presentation = resolveAskUserQuestionPresentation(
+          resultEvidence,
+          findAskUserQuestionRecordState(
+            chatPendingQuestions,
+            block.toolName,
+            block.toolUseId,
             block.input,
-            block.result.output,
-          );
-          if (answered && answered.length > 0) {
+          ),
+        );
+        switch (presentation.kind) {
+          case 'awaiting':
+            // The composer owns the unanswered prompt.
+            return null;
+          case 'preparing':
+            return (
+              <div
+                className="flex items-center gap-1.5 py-1 text-xs fg-secondary"
+                data-testid="ask-user-question-preparing"
+              >
+                <ThinkingSpinner tone="accent" />
+                <span>Preparing question…</span>
+              </div>
+            );
+          case 'answered':
             return (
               <>
-                <ToolCallBlock
-                  originChatTabId={originChatTabId}
-                  originMessageId={originMessageId}
-                  toolName={block.toolName}
-                  input={block.input}
-                  result={block.result}
-                />
-                <AnsweredQuestionsBlock answers={answered} />
+                {!cleanChatLook && (
+                  <ToolCallBlock
+                    originChatTabId={originChatTabId}
+                    originMessageId={originMessageId}
+                    toolName={block.toolName}
+                    toolUseId={block.toolUseId}
+                    input={block.input}
+                    result={block.result}
+                    label={askUserQuestionRowLabel({
+                      count: askUserQuestionCount(block.input),
+                      answers: presentation.answers,
+                    })}
+                    status={presentation.status}
+                  />
+                )}
+                <AnsweredQuestionsBlock answers={presentation.answers} />
               </>
             );
-          }
+          case 'settled':
+            return (
+              <ToolCallBlock
+                originChatTabId={originChatTabId}
+                originMessageId={originMessageId}
+                toolName={block.toolName}
+                toolUseId={block.toolUseId}
+                input={block.input}
+                result={block.result}
+                status={presentation.status}
+              />
+            );
+          case 'result':
+            // Errors and other results use the generic tool row below.
+            break;
         }
       }
 
@@ -1345,10 +1505,12 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
             originChatTabId={originChatTabId}
             originMessageId={originMessageId}
             toolName={block.toolName}
+            toolUseId={block.toolUseId}
             input={block.input}
             result={block.result}
             resolvedRecipient={block.resolvedRecipient}
             isCodeReviewChat={isCodeReviewChat}
+            turnSettled={turnSettled}
           />
           <ChatVisualResult result={block.result} variant="inline" />
         </>
@@ -1377,6 +1539,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
           taskOutputResult={block.taskOutputResult}
           subBlocks={block.subBlocks}
           usage={block.usage}
+          nativeTaskStop
           renderSubBlock={renderSubBlock}
         />
       );
@@ -1384,6 +1547,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
     case 'workflow':
       return (
         <WorkflowBlock
+          toolUseId={block.toolUseId}
           workflowName={block.workflowName}
           summary={block.summary}
           runId={block.runId}
@@ -1435,6 +1599,10 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
           alwaysVisible
         />
       );
+
+    case 'wake_boundary':
+      // `ChatMessageItem` renders a wake's head row, with its turn link.
+      return null;
 
     case 'hook_info':
       return (
@@ -1523,22 +1691,21 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
       );
     }
 
-    case 'pending_setup_info': {
-      const localTime = new Date(block.timestamp).toLocaleTimeString([], {
-        hour: 'numeric',
-        minute: '2-digit',
-      });
+    case 'pending_setup_info':
+      // Older persisted transcripts still contain this supported legacy
+      // block. It read as a setup error, so it is no longer shown; the queued
+      // bubble explains a setup wait while it happens.
+      return null;
+
+    case 'approval_safety_denied_info':
+      // Placed after its denied tool row by `placeSafetyDenialReceipts`;
+      // unmatched receipts render where they were committed.
       return (
-        <div className="flex items-center gap-2 rounded-lg border bg-fg-primary/[0.03] px-3 py-1.5 text-xs fg-secondary">
-          <AppCatalogTimeFliesIcon
-            width="14"
-            height="14"
-            className="flex-shrink-0"
-          />
-          <span>Chat initiated before project setup at {localTime}</span>
-        </div>
+        <ApprovalSafetyDeniedNotice
+          reason={block.reason}
+          command={block.command}
+        />
       );
-    }
 
     // A pending approval card was released without a click because the user
     // widened the chat's approval mode while it was on screen (CAN-3083).

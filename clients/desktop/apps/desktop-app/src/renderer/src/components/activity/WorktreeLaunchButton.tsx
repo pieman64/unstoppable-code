@@ -13,8 +13,11 @@
  */
 import { useCallback, useMemo, type JSX } from 'react';
 import type { ScriptRunResponse } from '@canopy/desktop-shared/types';
-import { ExecutionActionButton, Tooltip } from '@canopy/ui-shared/components';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
+import {
+  ExecutionActionButton,
+  HeaderActionButton,
+  Tooltip,
+} from '@canopy/ui-shared/components';
 import { RocketLaunchIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -256,22 +259,21 @@ export function WorktreeLaunchButton({
       {showRunButton &&
         (onLaunch === undefined && (isRunning || isStopping) ? (
           <Tooltip label={isStopping ? 'Stopping scripts' : 'Stop scripts'}>
-            <button
-              type="button"
+            <HeaderActionButton
+              tone="destructive"
               onClick={handleStop}
               disabled={isStopping}
               // Same ghost shell as the header's other actions (Create PR,
               // Merge, Commit & Push), toned with the failed-status token —
               // this was the last header control on hardcoded palette colors
               // (rose-500) and a bordered/filled body.
-              className={`electron-no-drag focus-ring flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal transition-colors ${OPERATIONAL_STATUS_COLORS.failed.foreground} ${OPERATIONAL_STATUS_COLORS.failed.hoverBackground}`}
               aria-label={isStopping ? 'Stopping scripts' : 'Stop scripts'}
             >
               {/* mr-1 + the shell's 6px gap = the header's 10px spinner-to-label
                   rhythm. */}
               <LoadingSpinner className="mr-1" />
               {isStopping ? 'Stopping' : 'Stop'}
-            </button>
+            </HeaderActionButton>
           </Tooltip>
         ) : (
           // Icon-only below 640px of bar width, so the label has to live in

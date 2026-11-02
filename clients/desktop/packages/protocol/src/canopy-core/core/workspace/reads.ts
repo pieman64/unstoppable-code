@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { hasHostAbsolutePath } from './host-paths';
+import { hasHostAbsolutePath, isHostAbsolutePath } from './host-paths';
 import { CanopyWorkspaceScopeSchema } from '../../common';
 import {
   CanopyErrorPayloadSchema,
@@ -9,6 +9,75 @@ import {
 
 const id = z.string().min(1).max(512);
 const timestamp = z.iso.datetime({ offset: true });
+
+// The typed fields use the `core.workspace.update` patch's value schemas, so a
+// read value echoed back as an edit is accepted (W5a2, decision B3).
+const CORE_WORKSPACE_ACTIVITY_SECTION_IDS = [
+  'plugins',
+  'summary',
+  'changed-files',
+  'pull-request',
+  'background-processes',
+  'plans',
+  'pipeline-runs',
+  'cost',
+  'scripts',
+  'hooks',
+  'terminals',
+  'todo',
+  'mcp-servers',
+  'notes',
+  'prompts',
+  'attachments',
+  'memory',
+] as const;
+
+const CoreWorkspaceActivitySectionOrderSchema = z
+  .array(z.enum(CORE_WORKSPACE_ACTIVITY_SECTION_IDS))
+  .max(CORE_WORKSPACE_ACTIVITY_SECTION_IDS.length)
+  .refine((ids) => new Set(ids).size === ids.length, 'Duplicate section id');
+
+/**
+ * The desktop's stored start page path rule (`isSafePortableRelativePath`),
+ * and never a spelling the result's host path refusal would reject.
+ */
+function isPortableRelativePath(path: string): boolean {
+  return (
+    !isHostAbsolutePath(path) &&
+    !path.includes('\\') &&
+    !/^[A-Za-z]:/.test(path) &&
+    path
+      .split('/')
+      .every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+  );
+}
+
+/** `inherit`: no machine-local override; `null`: explicitly disabled. */
+const CoreWorkspaceStartPageSchema = z.union([
+  z.strictObject({
+    kind: z.literal('file'),
+    repoId: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+    path: z
+      .string()
+      .min(1)
+      .max(4096)
+      .regex(/\S/)
+      .refine(isPortableRelativePath, 'Not a portable relative path'),
+  }),
+  z.strictObject({
+    kind: z.literal('url'),
+    url: z
+      .url({ protocol: /^https?$/ })
+      .max(4096)
+      // The patch's case-sensitive `^https?://` pattern.
+      .refine((url) => /^https?:\/\/\S*$/.test(url), 'Not an http(s) URL'),
+  }),
+  z.strictObject({ kind: z.literal('inherit') }),
+  z.null(),
+]);
 
 export const CoreWorkspaceSchema = z
   .object({
@@ -27,7 +96,18 @@ export const CoreWorkspaceSchema = z
         })
         .catchall(CanopyJsonValueSchema),
     ),
+    // Retained empty for compatibility; the typed fields below replace it.
     settings: z.object({}).catchall(CanopyJsonValueSchema),
+    color: z
+      .string()
+      .regex(/^#[0-9A-Fa-f]{6}$/)
+      .optional(),
+    pinned: z.boolean().optional(),
+    collapsed: z.boolean().optional(),
+    itemSortMode: z.enum(['manual', 'last-updated']).optional(),
+    activitySectionOrder: CoreWorkspaceActivitySectionOrderSchema.optional(),
+    alwaysShow: z.boolean().optional(),
+    startPage: CoreWorkspaceStartPageSchema.optional(),
   })
   .catchall(CanopyJsonValueSchema)
   .refine(
@@ -53,6 +133,9 @@ export const CoreWorkspaceListResultSchema = z
   .object({
     items: z.array(CoreWorkspaceSchema).max(500),
     nextCursor: z.string().max(2048).nullable(),
+    // The `workspaces` collection's membership and order, not its items'
+    // contents; only on a complete, verified listing (CAN-5319).
+    collectionRevision: z.number().int().nonnegative().optional(),
   })
   .catchall(CanopyJsonValueSchema);
 export const CoreWorkspaceGetResultSchema = CoreWorkspaceSchema;

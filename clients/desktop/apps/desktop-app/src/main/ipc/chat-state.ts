@@ -33,6 +33,7 @@ import {
   type ChatToolOutputCancelRequest,
   type ChatToolOutputRequest,
   type ChatToolOutputResponse,
+  type AgentProviderType,
 } from '@canopy/desktop-shared/types';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import {
@@ -45,6 +46,7 @@ import {
 } from '@canopy/agent-transcript/lib/visual-ref';
 import { serializeAgentArtifactReceipt } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { isApprovalMode } from '@canopy/desktop-shared/lib/approval-engine';
+import { isModelHarness } from '@canopy/desktop-shared/model-harnesses';
 import {
   codexSpeedFastMode,
   isCodexSpeed,
@@ -475,7 +477,6 @@ const PATCH_KEYS = new Set([
   'modelSelectionMode',
   'modelExplicitlyChosen',
   'billingExplicitlyChosen',
-  'approvalMode',
   'sdkSessionId',
   'globalInstructionsSnapshot',
   'modelConfig',
@@ -574,8 +575,9 @@ const COMMAND_KEYS: Record<ChatCommand['type'], ReadonlySet<string>> = {
     'settings',
     'notice',
   ]),
+  'chat.set_approval_mode': new Set(['type', 'tabId', 'approvalMode']),
   'chat.mark_read': new Set(['type', 'chatId']),
-  'chat.mark_unread': new Set(['type', 'chatId']),
+  'chat.mark_unread': new Set(['type', 'chatId', 'manual']),
   'chat.dismiss_attention': new Set(['type', 'chatId', 'attentionVersion']),
   'chat.send_message': new Set([
     'type',
@@ -614,6 +616,12 @@ const COMMAND_KEYS: Record<ChatCommand['type'], ReadonlySet<string>> = {
     'fileReferences',
     'attachmentPaths',
     'attachmentPromptContexts',
+  ]),
+  'chat.move_queued_message': new Set([
+    'type',
+    'chatId',
+    'queuedMessageId',
+    'beforeQueuedMessageId',
   ]),
   'chat.cancel_queued_message': new Set(['type', 'chatId', 'queuedMessageId']),
   'chat.force_queued_message': new Set(['type', 'chatId', 'queuedMessageId']),
@@ -999,6 +1007,130 @@ function isValidatedChatCommand(value: unknown): value is ChatCommand {
   );
 }
 
+const TURN_OVERRIDE_KEYS: ReadonlySet<string> = new Set([
+  'version',
+  'model',
+  'providerType',
+  'executionHarness',
+  'resetRuntime',
+  'modelConfig',
+  'planMode',
+  'approvalMode',
+  'pluginSelections',
+]);
+
+// Keyed by the union, so adding a provider fails to compile until it is listed.
+const PROVIDER_TYPE_KEYS: Record<AgentProviderType, true> = {
+  claude: true,
+  codex: true,
+  ollama: true,
+  cursor: true,
+  copilot: true,
+  opencode: true,
+};
+const PROVIDER_TYPES: ReadonlySet<unknown> = new Set(
+  Object.keys(PROVIDER_TYPE_KEYS),
+);
+
+/** The main-only per-turn override's exact shape; main resolved its values. */
+function validateTurnOverride(value: unknown): void {
+  if (!isRecord(value) || value.version !== 1)
+    failInvalidRequest('command.turnOverride is malformed.');
+  assertExactKeys(value, TURN_OVERRIDE_KEYS, 'command.turnOverride');
+  if (value.model !== undefined)
+    readBoundedString(value.model, 'command.turnOverride.model');
+  if (
+    value.providerType !== undefined &&
+    !PROVIDER_TYPES.has(value.providerType)
+  )
+    failInvalidRequest('command.turnOverride.providerType is unsupported.');
+  if (
+    value.executionHarness !== undefined &&
+    !isModelHarness(value.executionHarness)
+  )
+    failInvalidRequest('command.turnOverride.executionHarness is unsupported.');
+  if (value.resetRuntime !== undefined && value.resetRuntime !== true)
+    failInvalidRequest('command.turnOverride.resetRuntime is unsupported.');
+  if (value.modelConfig !== undefined) {
+    if (!isRecord(value.modelConfig))
+      failInvalidRequest('command.turnOverride.modelConfig must be an object.');
+    assertExactKeys(
+      value.modelConfig,
+      MODEL_CONFIG_KEYS,
+      'command.turnOverride.modelConfig',
+    );
+    if (
+      value.modelConfig.thinkingLevel !== undefined &&
+      (typeof value.modelConfig.thinkingLevel !== 'string' ||
+        !isThinkingLevel(value.modelConfig.thinkingLevel))
+    )
+      failInvalidRequest(
+        'command.turnOverride.modelConfig.thinkingLevel is unsupported.',
+      );
+    readOptionalBoolean(
+      value.modelConfig.fastMode,
+      'command.turnOverride.modelConfig.fastMode',
+    );
+    validateCodexSpeedFields(
+      value.modelConfig,
+      'command.turnOverride.modelConfig',
+    );
+  }
+  readOptionalBoolean(value.planMode, 'command.turnOverride.planMode');
+  if (value.approvalMode !== undefined && !isApprovalMode(value.approvalMode))
+    failInvalidRequest('command.turnOverride.approvalMode is unsupported.');
+  if (
+    value.pluginSelections !== undefined &&
+    !isChatTabPluginSelections(value.pluginSelections)
+  )
+    failInvalidRequest('command.turnOverride.pluginSelections is malformed.');
+}
+
+const AUTOMATION_DISPATCH_KEYS: ReadonlySet<string> = new Set([
+  'version',
+  'automationName',
+  'executionContext',
+  'presentation',
+  'packageOverlay',
+]);
+
+/** The main-only automation send block's exact shape (CAN-4549). */
+function validateAutomationDispatch(value: unknown): void {
+  if (!isRecord(value) || value.version !== 1)
+    failInvalidRequest('command.automationDispatch is malformed.');
+  assertExactKeys(
+    value,
+    AUTOMATION_DISPATCH_KEYS,
+    'command.automationDispatch',
+  );
+  readBoundedString(
+    value.automationName,
+    'command.automationDispatch.automationName',
+    { allowEmpty: true },
+  );
+  if (value.executionContext !== undefined)
+    readBoundedString(
+      value.executionContext,
+      'command.automationDispatch.executionContext',
+    );
+  if (
+    value.presentation !== 'foreground' &&
+    value.presentation !== 'background'
+  )
+    failInvalidRequest(
+      'command.automationDispatch.presentation is unsupported.',
+    );
+  if (
+    value.packageOverlay !== undefined &&
+    (!isRecord(value.packageOverlay) ||
+      typeof value.packageOverlay.packageDigest !== 'string' ||
+      !Array.isArray(value.packageOverlay.resources))
+  )
+    failInvalidRequest(
+      'command.automationDispatch.packageOverlay is malformed.',
+    );
+}
+
 function validateCommand(
   command: JsonRecord,
   allowMainOnlyFields: boolean,
@@ -1008,6 +1140,10 @@ function validateCommand(
     failInvalidRequest('command.type is unsupported.');
   }
   const commandType = type;
+  // Only main may order a durable approval-mode change against live runtimes.
+  if (commandType === 'chat.set_approval_mode' && !allowMainOnlyFields) {
+    failInvalidRequest('command.type chat.set_approval_mode is main-only.');
+  }
   assertExactKeys(
     command,
     commandType === 'chat.send_message' && allowMainOnlyFields
@@ -1017,6 +1153,8 @@ function validateCommand(
           'agentSenderProvenance',
           'hiddenContext',
           'agentSendSetup',
+          'turnOverride',
+          'automationDispatch',
         ])
       : commandType === 'chat.set_model' && allowMainOnlyFields
         ? new Set([
@@ -1035,6 +1173,7 @@ function validateCommand(
     'chat.close_tab': ['tabId'],
     'chat.patch_tab_settings': ['tabId'],
     'chat.set_model': ['tabId'],
+    'chat.set_approval_mode': ['tabId'],
     'chat.mark_read': ['chatId'],
     'chat.mark_unread': ['chatId'],
     'chat.dismiss_attention': ['chatId'],
@@ -1045,6 +1184,7 @@ function validateCommand(
       'turnTimerMessageId',
     ],
     'chat.edit_queued_message': ['chatId', 'queuedMessageId'],
+    'chat.move_queued_message': ['chatId', 'queuedMessageId'],
     'chat.cancel_queued_message': ['chatId', 'queuedMessageId'],
     'chat.force_queued_message': ['chatId', 'queuedMessageId'],
     'chat.steer_queued_message': ['chatId', 'queuedMessageId'],
@@ -1078,6 +1218,19 @@ function validateCommand(
   }
   if (commandType === 'chat.reorder_tabs') {
     readIdArray(command.tabIds, 'command.tabIds');
+  }
+  // A null anchor moves the entry to the tail; absence is not a tail move.
+  if (
+    commandType === 'chat.move_queued_message' &&
+    command.beforeQueuedMessageId !== null
+  ) {
+    readId(command.beforeQueuedMessageId, 'command.beforeQueuedMessageId');
+  }
+  if (
+    commandType === 'chat.set_approval_mode' &&
+    !isApprovalMode(command.approvalMode)
+  ) {
+    failInvalidRequest('command.approvalMode is unsupported.');
   }
   if (commandType === 'chat.input_delivery_action') {
     if (
@@ -1324,6 +1477,40 @@ function validateCommand(
           'command.hiddenContext',
         );
       }
+      if (command.turnOverride !== undefined) {
+        // Only a pipeline send may carry per-turn settings (D2).
+        if (
+          !hasMetadata ||
+          parseChatAgentSentInfo(command.agentSent)?.sender.kind !==
+            'pipeline' ||
+          parseAgentSenderProvenance(command.agentSenderProvenance)?.sender
+            .kind !== 'pipeline'
+        )
+          failInvalidRequest(
+            'A turn override needs pipeline send attribution.',
+          );
+        validateTurnOverride(command.turnOverride);
+      }
+      if (command.automationDispatch !== undefined) {
+        // An automation's own send (CAN-4549), or a step in a run an
+        // automation started (CAN-4551): the sender names the automation.
+        const sent = parseChatAgentSentInfo(command.agentSent)?.sender;
+        const evidence = parseAgentSenderProvenance(
+          command.agentSenderProvenance,
+        )?.sender;
+        if (
+          !hasMetadata ||
+          sent?.kind !== 'pipeline' ||
+          sent.automationId === undefined ||
+          evidence?.kind !== 'pipeline' ||
+          evidence.automationId !== sent.automationId ||
+          evidence.executionId !== sent.executionId
+        )
+          failInvalidRequest(
+            'An automation dispatch needs automation send attribution.',
+          );
+        validateAutomationDispatch(command.automationDispatch);
+      }
       if (command.agentSendSetup !== undefined) {
         if (
           !hasMetadata ||
@@ -1498,12 +1685,6 @@ function validateCommand(
       );
     }
     if (
-      command.patch.approvalMode !== undefined &&
-      !isApprovalMode(command.patch.approvalMode)
-    ) {
-      failInvalidRequest('command.patch.approvalMode is unsupported.');
-    }
-    if (
       command.patch.sdkSessionId !== undefined &&
       command.patch.sdkSessionId !== null
     ) {
@@ -1574,6 +1755,7 @@ function validateCommand(
     }
     if (
       command.patch.fileViewMode !== undefined &&
+      command.patch.fileViewMode !== null &&
       command.patch.fileViewMode !== 'raw' &&
       command.patch.fileViewMode !== 'preview' &&
       command.patch.fileViewMode !== 'table' &&
@@ -1980,6 +2162,11 @@ function validateCommand(
       command.mode !== 'discard'
     ) {
       failInvalidRequest('command.mode is unsupported.');
+    }
+  }
+  if (commandType === 'chat.mark_unread') {
+    if (command.manual !== undefined && command.manual !== true) {
+      failInvalidRequest('command.manual must be true when present.');
     }
   }
   if (commandType === 'chat.dismiss_attention') {

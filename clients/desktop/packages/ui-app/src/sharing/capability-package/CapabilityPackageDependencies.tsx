@@ -5,6 +5,8 @@ import {
   listCapabilityPackageExecutablePaths,
 } from '@canopy/protocol/pipelines';
 import { useId, useState, type JSX, type ReactNode } from 'react';
+import { Button, RichHoverTooltip } from '@canopy/ui-shared/components';
+import { QuestionMarkIcon } from '@canopy/ui-shared/icons';
 import {
   formatPipelinePackageExecutableFiles,
   formatPipelinePackageFileSummary,
@@ -17,7 +19,11 @@ import type {
   PipelinePackageAnalysisSummary,
   PipelinePackageEnvironmentRequirement,
   PipelinePackageInvocationDismissal,
+  PipelinePackagePackagedPipeline,
+  PipelinePackageReferenceDismissal,
   PipelinePackageResource,
+  PipelinePackageWithheldFile,
+  PipelinePackageWithheldReason,
 } from '@canopy/protocol/pipelines';
 import {
   computeRequiredResourceIds,
@@ -29,11 +35,11 @@ import { CapabilityPackageProblems } from './CapabilityPackageProblems';
 /**
  * Publisher-facing dependency review for a self-contained capability share.
  * The shared share dialog renders it for every resource: a summary row of
- * what the share includes, collapsed by default, that expands into the
- * analyzed member closure that will be copied into the package, the
- * recipient environment requirements that will NOT be copied, and any
- * blockers. Blockers always render above the summary, so collapsing never
- * hides why Share is unavailable.
+ * what the share includes, with a help icon whose tooltip names what is
+ * copied, what recipients set up themselves, and what is never included.
+ * Only when the publisher has optional files to opt in to does the row offer
+ * a disclosure into the analyzed member closure. Blockers always render
+ * above the summary, so collapsing never hides why Share is unavailable.
  *
  * Display + selection only: it never reads dependency bytes (the main process
  * keeps them) and never decides whether the share is allowed — the hosting
@@ -47,8 +53,29 @@ const LOADING_LABEL = 'Checking included files…';
 const REVALIDATING_LABEL = 'Rechecking included files…';
 const ANALYSIS_FAILURE_LABEL = "Couldn't check the included files. Try again.";
 const RETRY_LABEL = 'Try again';
-const SHOW_DETAILS_LABEL = 'Show details';
-const HIDE_DETAILS_LABEL = 'Hide details';
+const PIPELINES_HEADING = 'Pipelines';
+const PIPELINES_HELPER =
+  'Recipients get their own copy of each pipeline when they install.';
+const ACTION_PIPELINE_LABEL = 'Runs this automation';
+const SUGGESTED_PIPELINE_HINT = 'The prompt mentions it by name';
+const ADD_PIPELINE_LABEL = 'Add a pipeline';
+const ADD_PIPELINE_PLACEHOLDER = 'Add a pipeline…';
+const ADD_PIPELINE_FAILED_LABEL = "Couldn't add the pipeline. Try again.";
+const WITHHELD_HEADING = 'Left out of this share';
+const WITHHELD_HELPER =
+  'These files stay on this computer. Recipients start without them.';
+const WITHHELD_REASON_LABELS: Record<PipelinePackageWithheldReason, string> = {
+  denied_name: 'Credential file',
+  git_directory: 'Git folder',
+  symlink: 'Symbolic link',
+  suspected_secret: 'May contain a secret',
+  missing_optional_asset: 'Folder not found',
+};
+const CHOOSE_FILES_LABEL = 'Choose files';
+const HIDE_FILES_LABEL = 'Hide files';
+const HELP_LABEL = 'About included files';
+/** Names a tooltip line lists before folding the rest into `and N more`. */
+const HELP_NAMES_SHOWN = 5;
 /** A failure reason is diagnostic text from the host; keep it to a line or two. */
 const MAX_ERROR_REASON_LENGTH = 240;
 
@@ -104,6 +131,20 @@ interface CapabilityPackageDependenciesProps {
   dismissedInvocations?: readonly PipelinePackageInvocationDismissal[];
   onDismissInvocation?: (dismissal: PipelinePackageInvocationDismissal) => void;
   onRestoreInvocation?: (dismissal: PipelinePackageInvocationDismissal) => void;
+  /** Pipeline references the publisher left out, as echoed by main. */
+  dismissedReferences?: readonly PipelinePackageReferenceDismissal[];
+  onDismissReference?: (dismissal: PipelinePackageReferenceDismissal) => void;
+  onRestoreReference?: (dismissal: PipelinePackageReferenceDismissal) => void;
+  /** Keys of the optional packaged pipelines that ship. */
+  selectedPipelineKeys?: readonly string[];
+  /** Absent when the host offers no optional pipelines. */
+  onTogglePipeline?: (key: string) => void;
+  /**
+   * Pipelines the author can add to the share by hand. The host saves the
+   * choice with the item (an automation's pipeline list) and analyzes again;
+   * a rejected promise shows its message beside the control.
+   */
+  pipelineAdd?: CapabilityPackagePipelineAdd;
   /**
    * Turn one manifest binding into a location label, or `null` to omit it.
    * Formatting a location is the host's job — the component must not know
@@ -128,6 +169,19 @@ interface CapabilityPackageDependenciesProps {
   fixWithAIFailed?: boolean;
 }
 
+/** A pipeline an "Add pipeline" control offers. */
+export interface CapabilityPackageAddablePipeline {
+  id: string;
+  /** Its packaged pipeline key, so one already in the share is not offered. */
+  key: string;
+  name: string;
+}
+
+export interface CapabilityPackagePipelineAdd {
+  options: readonly CapabilityPackageAddablePipeline[];
+  onAdd: (id: string) => Promise<void>;
+}
+
 const DEFAULT_BINDING_LABEL = (binding: {
   jobId: string;
   stepId: string;
@@ -145,6 +199,129 @@ function plural(count: number, singular: string, pluralForm: string): string {
   return `${String(count)} ${count === 1 ? singular : pluralForm}`;
 }
 
+/** `a, b, c, d, e, and 3 more` — a tooltip list kept to one short line. */
+function cappedList(names: readonly string[]): string {
+  const shown = names.slice(0, HELP_NAMES_SHOWN).join(', ');
+  const hidden = names.length - HELP_NAMES_SHOWN;
+  return hidden > 0 ? `${shown}, and ${String(hidden)} more` : shown;
+}
+
+/**
+ * The lines behind the summary's help icon: what is copied, what recipients
+ * set up, what stays private, and what is never included. Lists are capped so
+ * a large closure still reads as a tooltip.
+ */
+function includedHelpLines({
+  mode,
+  subjectLabel,
+  includedResources,
+  requirements,
+  keptPrivateLabels,
+}: {
+  mode: 'package' | 'reference';
+  subjectLabel: string;
+  includedResources: readonly PipelinePackageResource[];
+  requirements: readonly PipelinePackageEnvironmentRequirement[];
+  keptPrivateLabels: readonly string[];
+}): string[] {
+  const copied =
+    mode === 'reference'
+      ? []
+      : groupCapabilityPackageProviderTwins(includedResources).flatMap(
+          (group) => (group[0] ? [group[0].displayName] : []),
+        );
+  const lines = [
+    mode === 'reference'
+      ? 'Only a reference is shared. No files are copied.'
+      : copied.length === 0
+        ? `Only the ${subjectLabel} definition is shared.`
+        : `Copied into this share: ${cappedList(copied)}.`,
+  ];
+  const executableFiles =
+    mode === 'reference'
+      ? null
+      : formatPipelinePackageExecutableFiles(
+          Array.from(
+            new Set(
+              includedResources.flatMap(listCapabilityPackageExecutablePaths),
+            ),
+          ).sort(),
+        );
+  const privateSources =
+    mode === 'reference'
+      ? []
+      : groupCapabilityPackageProviderTwins(includedResources).flatMap(
+          (group) =>
+            group[0]?.sourceVisibility === 'private'
+              ? [group[0].displayName]
+              : [],
+        );
+  if (privateSources.length > 0) {
+    lines.push(`From private sources: ${cappedList(privateSources)}.`);
+  }
+  if (executableFiles !== null) lines.push(`${executableFiles}.`);
+  if (requirements.length > 0) {
+    lines.push(
+      `Recipients set up: ${cappedList(
+        requirements.map((requirement) => requirement.displayName),
+      )}.`,
+    );
+  }
+  if (keptPrivateLabels.length > 0) {
+    lines.push(`Kept private: ${cappedList(keptPrivateLabels)}.`);
+  }
+  lines.push(
+    copied.length === 0
+      ? 'Credentials, private configuration, and local files are never included.'
+      : 'Credentials, private configuration, and other local files are never included.',
+  );
+  return lines;
+}
+
+function IncludedFilesHelp({
+  lines,
+  testIdPrefix,
+}: {
+  lines: readonly string[];
+  testIdPrefix: string;
+}): JSX.Element {
+  // Hover and keyboard focus open the help on their own; a click or tap opens
+  // it too, because touch has no hover and these lines are the only place a
+  // publisher sees what a share copies, including private and runnable files.
+  const [open, setOpen] = useState(false);
+  return (
+    <RichHoverTooltip
+      dataTestId={`${testIdPrefix}-dependencies-help-details`}
+      surfacePadding="card"
+      surfaceClassName="w-80"
+      dismissOnEscape
+      open={open}
+      onOpenChange={setOpen}
+      content={
+        <div className="flex flex-col gap-1 text-xs fg-secondary">
+          {lines.map((line) => (
+            <p key={line} className="break-words">
+              {line}
+            </p>
+          ))}
+        </div>
+      }
+    >
+      <button
+        type="button"
+        aria-label={HELP_LABEL}
+        data-testid={`${testIdPrefix}-dependencies-help`}
+        onClick={(): void => {
+          setOpen(true);
+        }}
+        className="focus-ring shrink-0 rounded p-0.5 fg-secondary transition-colors hover:fg-primary"
+      >
+        <QuestionMarkIcon aria-hidden="true" />
+      </button>
+    </RichHoverTooltip>
+  );
+}
+
 /**
  * The summary line: files and size of what the selected closure copies, or
  * Definition only, plus how many setup requirements recipients meet.
@@ -153,24 +330,37 @@ function includedSummary({
   mode,
   includedResources,
   requirementCount,
+  pipelineCount,
+  withheldCount,
 }: {
   mode: 'package' | 'reference';
   includedResources: readonly PipelinePackageResource[];
   requirementCount: number;
+  pipelineCount: number;
+  withheldCount: number;
 }): string {
   const { files, bytes } =
     mode === 'reference'
       ? { files: 0, bytes: 0 }
       : countCapabilityPackageDistinctFiles(includedResources);
-  const parts = [
-    files === 0
-      ? DEFINITION_ONLY_LABEL
-      : formatPipelinePackageFileSummary(files, bytes),
-  ];
+  // Packaged pipelines are counted on their own, so a share that carries
+  // only pipelines is not "definition only".
+  const parts =
+    files > 0
+      ? [formatPipelinePackageFileSummary(files, bytes)]
+      : pipelineCount > 0
+        ? []
+        : [DEFINITION_ONLY_LABEL];
+  if (pipelineCount > 0) {
+    parts.push(plural(pipelineCount, 'pipeline', 'pipelines'));
+  }
   if (requirementCount > 0) {
     parts.push(
       plural(requirementCount, 'setup requirement', 'setup requirements'),
     );
+  }
+  if (withheldCount > 0) {
+    parts.push(`${plural(withheldCount, 'file', 'files')} left out`);
   }
   return parts.join(' · ');
 }
@@ -186,8 +376,14 @@ export function CapabilityPackageDependencies({
   dismissedInvocations,
   onDismissInvocation,
   onRestoreInvocation,
+  dismissedReferences,
+  onDismissReference,
+  onRestoreReference,
+  selectedPipelineKeys = [],
+  onTogglePipeline,
+  pipelineAdd,
   bindingLabelFor = DEFAULT_BINDING_LABEL,
-  subjectLabel = 'pipeline',
+  subjectLabel = 'workflow',
   testIdPrefix,
   disabled,
   mode = 'package',
@@ -202,7 +398,7 @@ export function CapabilityPackageDependencies({
   const helperText =
     mode === 'reference'
       ? `Only a reference is shared. Recipients set up the requirements listed here; no files, credentials, or private configuration are copied.`
-      : `These files will be copied into this share so recipients can run the ${subjectLabel} without access to the original sources.`;
+      : `Choose which optional files to copy into this share. Required files are always copied so recipients can run the ${subjectLabel}.`;
   const emptyDependenciesLabel =
     mode === 'reference'
       ? `No additional setup requirements were detected for this ${subjectLabel}.`
@@ -237,15 +433,16 @@ export function CapabilityPackageDependencies({
           testIdPrefix={testIdPrefix}
           summary={null}
           toggle={
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="compact"
               onClick={onRetry}
               disabled={disabled}
               data-testid={`${testIdPrefix}-dependencies-retry`}
-              className="focus-ring shrink-0 rounded-md border px-2 py-1 text-xs fg-primary disabled:opacity-40"
             >
               {RETRY_LABEL}
-            </button>
+            </Button>
           }
         >
           {/* One alert region, so the reason is announced with the failure. */}
@@ -262,7 +459,19 @@ export function CapabilityPackageDependencies({
   }
 
   const manifest = analysis.manifest;
-  const resources = manifest?.resources ?? [];
+  const packagedPipelines = analysis.packagedPipelines ?? [];
+  const withheldFiles = analysis.withheldFiles ?? [];
+  const manifestResourceIds = new Set(
+    (manifest?.resources ?? []).map((resource) => resource.id),
+  );
+  const shippedPipelineCount = packagedPipelines.filter((pipeline) =>
+    manifestResourceIds.has(pipeline.resourceId),
+  ).length;
+  // Packaged pipelines get their own group, so the file list skips them.
+  const resources = (manifest?.resources ?? []).filter(
+    (resource) =>
+      packagedPipelines.length === 0 || resource.kind !== 'automation_pipeline',
+  );
   const requiredIds = manifest
     ? computeRequiredResourceIds(manifest)
     : new Set<string>();
@@ -277,6 +486,14 @@ export function CapabilityPackageDependencies({
     : new Set<string>();
   const requirements = manifest?.environmentRequirements ?? [];
   const blockerCount = analysis.blockers.length;
+  const includedResources = resources.filter((resource) =>
+    includedIds.has(resource.id),
+  );
+  // The file list is only a choice when something can be opted in to; every
+  // other detail fits in the help tooltip.
+  const hasOptionalFiles =
+    mode === 'package' &&
+    resources.some((resource) => !requiredIds.has(resource.id));
   // Without a manifest the renderer has no evidence of emptiness, so it must
   // stay silent rather than claim there is nothing to copy. That missing
   // `manifest !== undefined` clause is what let "No local dependency files
@@ -286,6 +503,7 @@ export function CapabilityPackageDependencies({
     !errored &&
     manifest !== undefined &&
     resources.length === 0 &&
+    packagedPipelines.length === 0 &&
     requirements.length === 0 &&
     blockerCount === 0;
   // The problem card above already says what blocks the share, so the
@@ -297,10 +515,10 @@ export function CapabilityPackageDependencies({
         ? REVALIDATING_LABEL
         : includedSummary({
             mode,
-            includedResources: resources.filter((resource) =>
-              includedIds.has(resource.id),
-            ),
+            includedResources,
             requirementCount: requirements.length,
+            pipelineCount: shippedPipelineCount,
+            withheldCount: withheldFiles.length,
           });
 
   return (
@@ -330,6 +548,9 @@ export function CapabilityPackageDependencies({
         {...(onRestoreInvocation !== undefined
           ? { onRestore: onRestoreInvocation }
           : {})}
+        {...(dismissedReferences !== undefined ? { dismissedReferences } : {})}
+        {...(onDismissReference !== undefined ? { onDismissReference } : {})}
+        {...(onRestoreReference !== undefined ? { onRestoreReference } : {})}
         bindingLabelFor={bindingLabelFor}
         disabled={disabled || loading}
         {...(onFixWithAI !== undefined ? { onFixWithAI } : {})}
@@ -345,29 +566,60 @@ export function CapabilityPackageDependencies({
         {...(loading && blockerCount === 0
           ? { summaryTestId: `${testIdPrefix}-dependencies-revalidating` }
           : {})}
+        help={
+          <IncludedFilesHelp
+            lines={includedHelpLines({
+              mode,
+              subjectLabel,
+              includedResources,
+              requirements,
+              keptPrivateLabels: analysis.unpackageableSelectionLabels ?? [],
+            })}
+            testIdPrefix={testIdPrefix}
+          />
+        }
         toggle={
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={detailsId}
-            onClick={(): void => {
-              setExpanded((open) => !open);
-            }}
-            data-testid={`${testIdPrefix}-dependencies-toggle`}
-            className={`${DISCLOSURE_CLASS} shrink-0`}
-          >
-            {expanded ? HIDE_DETAILS_LABEL : SHOW_DETAILS_LABEL}
-          </button>
+          hasOptionalFiles ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={detailsId}
+              onClick={(): void => {
+                setExpanded((open) => !open);
+              }}
+              data-testid={`${testIdPrefix}-dependencies-toggle`}
+              className={`${DISCLOSURE_CLASS} shrink-0`}
+            >
+              {expanded ? HIDE_FILES_LABEL : CHOOSE_FILES_LABEL}
+            </button>
+          ) : null
         }
       />
 
+      {(packagedPipelines.length > 0 ||
+        (pipelineAdd?.options.length ?? 0) > 0) && (
+        <PackagedPipelineList
+          pipelines={packagedPipelines}
+          shippedResourceIds={manifestResourceIds}
+          selectedPipelineKeys={selectedPipelineKeys}
+          disabled={disabled || loading}
+          testIdPrefix={testIdPrefix}
+          {...(onTogglePipeline !== undefined ? { onTogglePipeline } : {})}
+          {...(pipelineAdd !== undefined ? { pipelineAdd } : {})}
+        />
+      )}
+
+      {withheldFiles.length > 0 && (
+        <WithheldFileList files={withheldFiles} testIdPrefix={testIdPrefix} />
+      )}
+
       <div
         id={detailsId}
-        hidden={!expanded}
+        hidden={!expanded || !hasOptionalFiles}
         className="space-y-3"
         data-testid={`${testIdPrefix}-dependencies-details`}
       >
-        {expanded && (
+        {expanded && hasOptionalFiles && (
           <>
             <p className="text-xs fg-secondary">{helperText}</p>
 
@@ -473,12 +725,15 @@ function SummaryRow({
   testIdPrefix,
   summary,
   summaryTestId,
+  help,
   toggle,
   children,
 }: {
   testIdPrefix: string;
   summary: string | null;
   summaryTestId?: string;
+  /** Rendered right after the value, or after the heading without one. */
+  help?: ReactNode;
   toggle: ReactNode;
   children?: ReactNode;
 }): JSX.Element {
@@ -488,18 +743,24 @@ function SummaryRow({
       data-testid={`${testIdPrefix}-dependencies-summary`}
     >
       <div className="min-w-0 space-y-0.5">
-        <h3 className="text-s font-medium fg-primary">
-          {INCLUDED_FILES_HEADING}
-        </h3>
+        <div className="flex items-center gap-1">
+          <h3 className="text-s font-medium fg-primary">
+            {INCLUDED_FILES_HEADING}
+          </h3>
+          {summary === null && help}
+        </div>
         {summary !== null && (
-          <p
-            className="text-xs fg-secondary"
-            {...(summaryTestId !== undefined
-              ? { 'data-testid': summaryTestId }
-              : {})}
-          >
-            {summary}
-          </p>
+          <div className="flex items-center gap-1">
+            <p
+              className="text-xs fg-secondary"
+              {...(summaryTestId !== undefined
+                ? { 'data-testid': summaryTestId }
+                : {})}
+            >
+              {summary}
+            </p>
+            {help}
+          </div>
         )}
         {children}
       </div>
@@ -640,6 +901,201 @@ function DependencyRow({
         )}
       </div>
     </li>
+  );
+}
+
+function pipelineSourceLabel(
+  pipeline: PipelinePackagePackagedPipeline,
+): string {
+  if (pipeline.isActionPipeline) return ACTION_PIPELINE_LABEL;
+  return pipeline.source === 'project' ? 'Project pipeline' : 'Your pipeline';
+}
+
+/**
+ * The pipelines an automation share packages. A pipeline the prompt names by
+ * ID is required; one it only mentions by name is a suggestion the author
+ * opts in to, which re-runs the analysis.
+ */
+function PackagedPipelineList({
+  pipelines,
+  shippedResourceIds,
+  selectedPipelineKeys,
+  disabled,
+  testIdPrefix,
+  onTogglePipeline,
+  pipelineAdd,
+}: {
+  pipelines: readonly PipelinePackagePackagedPipeline[];
+  shippedResourceIds: ReadonlySet<string>;
+  selectedPipelineKeys: readonly string[];
+  disabled: boolean;
+  testIdPrefix: string;
+  onTogglePipeline?: (key: string) => void;
+  pipelineAdd?: CapabilityPackagePipelineAdd;
+}): JSX.Element {
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  // A suggestion the author has not ticked is not in the share yet, so it
+  // stays addable as a required pipeline.
+  const inShare = new Set(
+    pipelines
+      .filter(
+        (pipeline) =>
+          !pipeline.optional || selectedPipelineKeys.includes(pipeline.key),
+      )
+      .map((pipeline) => pipeline.key),
+  );
+  const addable = (pipelineAdd?.options ?? []).filter(
+    (option) => !inShare.has(option.key),
+  );
+  const add = (id: string): void => {
+    if (!pipelineAdd || !id) return;
+    setAdding(true);
+    setAddError(null);
+    pipelineAdd
+      .onAdd(id)
+      .catch((error: unknown) => {
+        setAddError(
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : ADD_PIPELINE_FAILED_LABEL,
+        );
+      })
+      .finally(() => {
+        setAdding(false);
+      });
+  };
+  // Rows keep one text column only when some row has a checkbox.
+  const anyChoosable =
+    onTogglePipeline !== undefined &&
+    pipelines.some((pipeline) => pipeline.optional);
+  return (
+    <div
+      className="space-y-1.5"
+      data-testid={`${testIdPrefix}-dependencies-pipelines`}
+    >
+      <h4 className="text-s font-medium fg-primary">{PIPELINES_HEADING}</h4>
+      <p className="text-xs fg-secondary">{PIPELINES_HELPER}</p>
+      {pipelines.length > 0 && (
+        <ul className="divide-y divide-line-base">
+          {pipelines.map((pipeline) => {
+            const shipped = shippedResourceIds.has(pipeline.resourceId);
+            const choosable =
+              pipeline.optional && onTogglePipeline !== undefined;
+            return (
+              <li
+                key={pipeline.key}
+                className="flex items-start gap-2.5 py-2"
+                data-testid={`${testIdPrefix}-dependencies-pipeline-${pipeline.key}`}
+                data-required={pipeline.optional ? 'false' : 'true'}
+                data-included={shipped ? 'true' : 'false'}
+              >
+                {choosable ? (
+                  <input
+                    type="checkbox"
+                    checked={selectedPipelineKeys.includes(pipeline.key)}
+                    disabled={disabled}
+                    onChange={(): void => {
+                      onTogglePipeline(pipeline.key);
+                    }}
+                    aria-label={`Include ${pipeline.name}`}
+                    data-testid={`${testIdPrefix}-dependencies-pipeline-toggle-${pipeline.key}`}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded"
+                  />
+                ) : anyChoosable ? (
+                  <span aria-hidden="true" className="h-4 w-4 shrink-0" />
+                ) : null}
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <span className="text-s font-medium fg-primary">
+                    {pipeline.name}
+                  </span>
+                  <p className="text-xs fg-secondary">
+                    {pipeline.optional
+                      ? SUGGESTED_PIPELINE_HINT
+                      : pipelineSourceLabel(pipeline)}
+                  </p>
+                </div>
+                {!pipeline.optional && (
+                  <span className="shrink-0 text-xs fg-tertiary">Required</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {pipelineAdd !== undefined && addable.length > 0 && (
+        <select
+          value=""
+          disabled={disabled || adding}
+          onChange={(event): void => {
+            add(event.target.value);
+          }}
+          aria-label={ADD_PIPELINE_LABEL}
+          data-testid={`${testIdPrefix}-dependencies-pipeline-add`}
+          className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <option value="">{ADD_PIPELINE_PLACEHOLDER}</option>
+          {addable.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.name}
+            </option>
+          ))}
+        </select>
+      )}
+      {addError !== null && (
+        <p
+          className="text-xs fg-destructive"
+          role="alert"
+          data-testid={`${testIdPrefix}-dependencies-pipeline-add-error`}
+        >
+          {addError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function withheldFileLabel(file: PipelinePackageWithheldFile): string {
+  return file.relativePath
+    ? `${file.assetId}/${file.relativePath}`
+    : file.assetId;
+}
+
+/** Asset files the analysis left out, so the author knows what stays here. */
+function WithheldFileList({
+  files,
+  testIdPrefix,
+}: {
+  files: readonly PipelinePackageWithheldFile[];
+  testIdPrefix: string;
+}): JSX.Element {
+  return (
+    <div
+      className="space-y-1.5"
+      data-testid={`${testIdPrefix}-dependencies-withheld`}
+    >
+      <h4 className="text-s font-medium fg-primary">{WITHHELD_HEADING}</h4>
+      <p className="text-xs fg-secondary">{WITHHELD_HELPER}</p>
+      <ul className="space-y-1">
+        {files.map((file) => (
+          <li
+            key={`${file.pipelineKey}\0${file.assetId}\0${file.relativePath}`}
+            className="flex flex-wrap items-center gap-1.5 text-xs"
+            data-testid={`${testIdPrefix}-dependencies-withheld-item`}
+            data-reason={file.reason}
+          >
+            <span className="min-w-0 break-all fg-primary">
+              {withheldFileLabel(file)}
+            </span>
+            <span
+              className={`${BADGE_CLASS} bg-fg-primary/[0.06] fg-secondary`}
+            >
+              {WITHHELD_REASON_LABELS[file.reason]}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

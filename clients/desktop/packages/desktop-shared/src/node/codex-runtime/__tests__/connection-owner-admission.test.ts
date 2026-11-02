@@ -6,7 +6,15 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type * as NodeChildProcess from 'node:child_process';
-import type { CodexAppServerConnectionOwner } from '../connection';
+import type * as ProcessKill from '../../lib/process-kill';
+import type {
+  CodexAppServerConnectionOwner,
+  CodexIngestionLagChange,
+} from '../connection';
+import type {
+  CodexIngestionLagSample,
+  CodexInteractiveOwner,
+} from '../runtime-service';
 
 const spawnMock = jest.fn<
   MockChildProcess,
@@ -15,17 +23,22 @@ const spawnMock = jest.fn<
 
 jest.mock('node:child_process', () => ({
   ...jest.requireActual<typeof NodeChildProcess>('node:child_process'),
-  spawn: spawnMock,
+  get spawn(): typeof spawnMock {
+    return spawnMock;
+  },
 }));
 
-// Fake PIDs must never reach the host's process-group signal path.
+// Signal the mock child directly: never send a real signal to its fake pid.
 jest.mock('../../lib/process-kill', () => ({
-  killChildProcessGroup: (
-    child: NodeChildProcess.ChildProcess,
-    signal: NodeJS.Signals,
-  ): void => {
-    child.kill(signal);
-  },
+  ...jest.requireActual<typeof ProcessKill>('../../lib/process-kill'),
+  killChildProcessGroup: jest.fn(
+    (
+      child: { kill(signal?: NodeJS.Signals): boolean },
+      signal?: NodeJS.Signals,
+    ): void => {
+      child.kill(signal);
+    },
+  ),
 }));
 
 jest.mock('../../../pipelines/config-paths', () => ({
@@ -34,6 +47,8 @@ jest.mock('../../../pipelines/config-paths', () => ({
 }));
 
 import { CodexAppServerConnection } from '../connection';
+import { CodexCapabilityStore } from '../capability-store';
+import { createCodexRuntimeService } from '../runtime-service';
 import {
   configureCodexRuntimeHostHooks,
   resetCodexRuntimeHostHooksForTests,
@@ -88,6 +103,21 @@ function ownerStub(): CodexAppServerConnectionOwner {
   };
 }
 
+function dispatchIngestionLagSample(
+  connection: CodexAppServerConnection,
+  owner: CodexInteractiveOwner,
+  sample: CodexIngestionLagSample,
+): boolean {
+  const ownerLanes: unknown = Reflect.get(connection, 'ownerLanes');
+  if (typeof ownerLanes !== 'object' || ownerLanes === null) return false;
+  const host: unknown = Reflect.get(ownerLanes, 'host');
+  if (typeof host !== 'object' || host === null) return false;
+  const report: unknown = Reflect.get(host, 'onIngestionLagSample');
+  if (typeof report !== 'function') return false;
+  Reflect.apply(report, host, [owner, sample]);
+  return true;
+}
+
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -109,7 +139,7 @@ function parseClientMessage(line: string): Record<string, unknown> {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error('Expected a Codex client protocol message object');
   }
-  return parsed;
+  return Object.fromEntries(Object.entries(parsed));
 }
 
 function collectClientMessages(
@@ -144,6 +174,21 @@ function deferred(): Deferred {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+function itemIdOf(notification: Record<string, unknown>): string {
+  const params = notification.params;
+  if (typeof params !== 'object' || params === null || !('item' in params))
+    return '-';
+  const item = params.item;
+  if (
+    typeof item !== 'object' ||
+    item === null ||
+    !('id' in item) ||
+    typeof item.id !== 'string'
+  )
+    return '-';
+  return item.id;
 }
 
 function sequenceOf(notification: Record<string, unknown>): number | null {
@@ -192,6 +237,7 @@ interface TestConnectionOptions {
   allowOwnerlessStartup?: boolean;
   stdoutQueueHighWaterBytes?: number;
   stdoutQueueLowWaterBytes?: number;
+  stdoutOwnerHardLimitBytes?: number;
   longStdoutHoldThresholdMs?: number;
 }
 
@@ -264,6 +310,671 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     resetCodexRuntimeHostHooksForTests();
   });
 
+  it('extracts lifecycle timestamps, forwards lag transitions, and reads the current owner lag', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const notifications: string[] = [];
+    owner.handleConnectionNotification = (method): void | Promise<void> => {
+      notifications.push(method);
+      return method === 'item/started' ? hold.promise : undefined;
+    };
+    const lagChanges: CodexIngestionLagChange[] = [];
+    owner.handleIngestionLagChange = (change): void => {
+      lagChanges.push(change);
+    };
+    const startedAtMs = Date.now() - 6_000;
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'lag-thread'],
+    ]);
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'lag-thread',
+          turnId: 'turn-1',
+          startedAtMs,
+          item: { id: 'started-item' },
+        },
+      });
+      await flushMany(2);
+
+      expect(lagChanges[0]).toMatchObject({
+        outcome: 'entered',
+        thresholdMs: 5_000,
+        source: 'provider',
+      });
+      expect(lagChanges[0]?.lagMs).toBeGreaterThan(5_000);
+      expect(connection.ingestionLag(owner)).toMatchObject({
+        catchingUp: true,
+        source: 'provider',
+      });
+      expect(connection.ingestionLag(owner)?.lagMs).toBeGreaterThan(5_000);
+
+      const completedAtMs = Date.now() - 100;
+      emitServerMessage(proc, {
+        method: 'item/completed',
+        params: {
+          threadId: 'lag-thread',
+          turnId: 'turn-1',
+          completedAtMs,
+          item: { id: 'completed-item' },
+        },
+      });
+      await flushMany(2);
+      hold.resolve();
+      await flushMany(2);
+
+      expect(notifications).toEqual(['item/started', 'item/completed']);
+      expect(connection.ingestionLag(owner)).toEqual({
+        lagMs: 0,
+        catchingUp: false,
+        source: 'receipt',
+      });
+      expect(lagChanges.map((change) => change.outcome)).toEqual([
+        'entered',
+        'drained',
+      ]);
+      expect(lagChanges[1]).toMatchObject({
+        lagMs: 0,
+        thresholdMs: 5_000,
+        source: 'provider',
+      });
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('delivers normally when an owner does not implement the optional lag hook', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const handleNotification = jest.fn(() => hold.promise);
+    owner.handleConnectionNotification = handleNotification;
+    const startedAtMs = Date.now() - 6_000;
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'optional-lag-thread'],
+    ]);
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'optional-lag-thread',
+          turnId: 'turn-1',
+          startedAtMs,
+          item: { id: 'started-item' },
+        },
+      });
+      await flushMany(2);
+
+      expect(handleNotification).toHaveBeenCalledTimes(1);
+      expect(connection.ingestionLag(owner)?.catchingUp).toBe(true);
+      expect(proc.exitCode).toBeNull();
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('ignores a throwing owner lag hook without interrupting transcript delivery', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const handleNotification = jest.fn(() => hold.promise);
+    owner.handleConnectionNotification = handleNotification;
+    const throwingHook = jest.fn((): void => {
+      throw new Error('lag observer failed');
+    });
+    owner.handleIngestionLagChange = throwingHook;
+    const startedAtMs = Date.now() - 6_000;
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'throwing-lag-thread'],
+    ]);
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'throwing-lag-thread',
+          turnId: 'turn-1',
+          startedAtMs,
+          item: { id: 'started-item' },
+        },
+      });
+      await flushMany(2);
+
+      expect(handleNotification).toHaveBeenCalledTimes(1);
+      expect(throwingHook).toHaveBeenCalledTimes(1);
+      expect(connection.ingestionLag(owner)?.catchingUp).toBe(true);
+      expect(proc.exitCode).toBeNull();
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('forwards runtime-owner lag samples on a microtask while admission is pending', async () => {
+    const owner: CodexInteractiveOwner = ownerStub();
+    const hold = deferred();
+    const notifications: string[] = [];
+    const observedSamples: CodexIngestionLagSample[] = [];
+    owner.handleConnectionNotification = (method): Promise<void> => {
+      notifications.push(method);
+      return hold.promise;
+    };
+    owner.handleIngestionLagSample = (sample): void => {
+      observedSamples.push(sample);
+    };
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'sample-thread'],
+    ]);
+
+    try {
+      notify(proc, 'sample-thread', 1);
+      await flushMany(2);
+      expect(notifications).toEqual(['item/started']);
+
+      const firstSample: CodexIngestionLagSample = {
+        lagMs: 5_100,
+        source: 'receipt',
+        sampledAtMs: Date.now(),
+        catchingUp: true,
+      };
+      const secondSample: CodexIngestionLagSample = {
+        ...firstSample,
+        lagMs: 5_200,
+        sampledAtMs: firstSample.sampledAtMs + 100,
+      };
+
+      expect(dispatchIngestionLagSample(connection, owner, firstSample)).toBe(
+        true,
+      );
+      expect(dispatchIngestionLagSample(connection, owner, secondSample)).toBe(
+        true,
+      );
+      expect(observedSamples).toEqual([]);
+
+      await flush();
+
+      expect(observedSamples).toEqual([firstSample, secondSample]);
+      expect(notifications).toEqual(['item/started']);
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('isolates throwing and rejecting lag-sample observers from owner admission', async () => {
+    const owner: CodexInteractiveOwner = ownerStub();
+    const hold = deferred();
+    let notificationCount = 0;
+    let sampleCount = 0;
+    owner.handleConnectionNotification = (): Promise<void> => {
+      notificationCount += 1;
+      return notificationCount === 1 ? hold.promise : Promise.resolve();
+    };
+    owner.handleIngestionLagSample = (): void | Promise<void> => {
+      sampleCount += 1;
+      if (sampleCount === 1) throw new Error('synchronous observer failure');
+      return Promise.reject(new Error('asynchronous observer failure'));
+    };
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'sample-error-thread'],
+    ]);
+
+    try {
+      notify(proc, 'sample-error-thread', 1);
+      await flushMany(2);
+      notify(proc, 'sample-error-thread', 2);
+
+      const sample: CodexIngestionLagSample = {
+        lagMs: 5_100,
+        source: 'receipt',
+        sampledAtMs: Date.now(),
+        catchingUp: true,
+      };
+      expect(dispatchIngestionLagSample(connection, owner, sample)).toBe(true);
+      expect(
+        dispatchIngestionLagSample(connection, owner, {
+          ...sample,
+          sampledAtMs: sample.sampledAtMs + 1,
+        }),
+      ).toBe(true);
+
+      await flushMany(2);
+      expect(sampleCount).toBe(2);
+      expect(notificationCount).toBe(1);
+      expect(proc.exitCode).toBeNull();
+
+      hold.resolve();
+      await flushMany(2);
+      expect(notificationCount).toBe(2);
+      expect(proc.exitCode).toBeNull();
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it.each(['turn/completed', 'error'])(
+    'noninteractive %s waits for admitted transcript frames without delaying a peer turn',
+    async (terminalMethod) => {
+      const proc = new MockChildProcess();
+      spawnMock.mockReturnValue(proc);
+      const store = new CodexCapabilityStore('/unused/capabilities');
+      jest
+        .spyOn(store, 'publishSelectedRoots')
+        .mockResolvedValue({ roots: [], rootContentIds: [] });
+      jest.spyOn(store, 'writeLease').mockResolvedValue(undefined);
+      jest.spyOn(store, 'releaseLease').mockResolvedValue(undefined);
+      const service = createCodexRuntimeService({ capabilityStore: store });
+      const hold = deferred();
+      const finalAdmission = deferred();
+      const events: string[] = [];
+      const outcomes: Promise<unknown>[] = [];
+      try {
+        const firstHandle = service.startThread({
+          params: { cwd: '/tmp/repo', selectedCapabilityRoots: [] },
+          capabilitySnapshotId: 'snapshot',
+        });
+        await flushMany(2);
+        emitServerMessage(proc, {
+          id: findClientRequest(proc, 'initialize').id,
+          result: { userAgent: 'test', codexHome: '/tmp/.codex' },
+        });
+        await flushMany(2);
+        const answerThread = (id: unknown, threadId: string): void =>
+          emitServerMessage(proc, {
+            id,
+            result: {
+              thread: { id: threadId, turns: [] },
+              model: 'test',
+              modelProvider: 'openai',
+            },
+          });
+        // Ambient MCP exclusion reads the effective config before each start.
+        const answerConfigRead = async (): Promise<void> => {
+          emitServerMessage(proc, {
+            id: findClientRequest(proc, 'config/read').id,
+            result: { config: {} },
+          });
+          await flushMany(2);
+        };
+        await answerConfigRead();
+        answerThread(findClientRequest(proc, 'thread/start').id, 'first');
+        const first = await firstHandle;
+        const secondHandle = service.startThread({
+          params: { cwd: '/tmp/repo', selectedCapabilityRoots: [] },
+          capabilitySnapshotId: 'snapshot',
+        });
+        await flushMany(2);
+        await answerConfigRead();
+        answerThread(findClientRequest(proc, 'thread/start').id, 'second');
+        const second = await secondHandle;
+        const firstOutcome = first.runTurn({
+          input: [],
+          onEvent: (event): Promise<void> | undefined => {
+            events.push(event.method);
+            return event.method === 'item/started'
+              ? hold.promise
+              : event.method === 'item/completed'
+                ? finalAdmission.promise
+                : undefined;
+          },
+        });
+        outcomes.push(firstOutcome);
+        const secondOutcome = second.runTurn({ input: [] });
+        outcomes.push(secondOutcome);
+        let firstSettled = false;
+        void firstOutcome.then(
+          () => {
+            firstSettled = true;
+          },
+          () => {
+            firstSettled = true;
+          },
+        );
+        await flushMany(2);
+        const starts = collectClientMessages(proc).filter(
+          (message) => message.method === 'turn/start',
+        );
+        starts.forEach((request, index): void => {
+          emitServerMessage(proc, {
+            id: request.id,
+            result: {
+              turn: {
+                id: index === 0 ? 'first-turn' : 'second-turn',
+                status: 'inProgress',
+                items: [],
+                error: null,
+              },
+            },
+          });
+        });
+        await flushMany(2);
+        emitServerMessage(proc, {
+          method: 'item/started',
+          params: {
+            threadId: 'first',
+            turnId: 'first-turn',
+            item: { id: 'held' },
+          },
+        });
+        emitServerMessage(proc, {
+          method: 'item/completed',
+          params: {
+            threadId: 'first',
+            turnId: 'first-turn',
+            item: {
+              id: 'message',
+              type: 'agentMessage',
+              text: 'Retained answer',
+              phase: 'final_answer',
+            },
+          },
+        });
+        if (terminalMethod === 'error')
+          emitServerMessage(proc, {
+            method: 'error',
+            params: {
+              threadId: 'first',
+              turnId: 'first-turn',
+              willRetry: false,
+              error: {
+                message: 'terminal failure',
+                codexErrorInfo: 'usageLimitExceeded',
+              },
+            },
+          });
+        // A non-retrying error settles the turn with its own details; the
+        // failed turn's completion may still follow it.
+        emitServerMessage(proc, {
+          method: 'turn/completed',
+          params: {
+            threadId: 'first',
+            turn: {
+              id: 'first-turn',
+              status: terminalMethod === 'error' ? 'failed' : 'completed',
+              items: [],
+              error:
+                terminalMethod === 'error'
+                  ? {
+                      message: 'terminal failure',
+                      codexErrorInfo: 'usageLimitExceeded',
+                    }
+                  : null,
+            },
+          },
+        });
+        emitServerMessage(proc, {
+          method: 'turn/completed',
+          params: {
+            threadId: 'second',
+            turn: {
+              id: 'second-turn',
+              status: 'completed',
+              items: [],
+              error: null,
+            },
+          },
+        });
+        const startedAt = Date.now();
+        await expect(secondOutcome).resolves.toMatchObject({
+          status: 'completed',
+        });
+        await flushMany(2);
+        expect(Date.now() - startedAt).toBeLessThan(1000);
+        expect(firstSettled).toBe(false);
+        hold.resolve();
+        await flushMany(2);
+        // Delivery of the last queued frame is not enough: its receipt must
+        // also settle before terminal callbacks or runTurn finalization.
+        expect(events).toEqual(['item/started', 'item/completed']);
+        expect(firstSettled).toBe(false);
+        finalAdmission.resolve();
+        await flushMany(2);
+        expect(firstSettled).toBe(true);
+        await expect(firstOutcome).resolves.toMatchObject(
+          terminalMethod === 'error'
+            ? {
+                status: 'failed',
+                finalText: 'Retained answer',
+                error: 'terminal failure',
+                // Failure classification reads the terminal error's info.
+                errorInfo: 'usageLimitExceeded',
+              }
+            : { status: 'completed', finalText: 'Retained answer' },
+        );
+        expect(events).toEqual(
+          terminalMethod === 'error'
+            ? ['item/started', 'item/completed', 'error', 'turn/completed']
+            : ['item/started', 'item/completed', 'turn/completed'],
+        );
+      } finally {
+        hold.resolve();
+        finalAdmission.resolve();
+        await service.shutdown();
+        await Promise.allSettled(outcomes);
+      }
+    },
+  );
+
+  it('delivers peer turn/start responses and both owners tool calls within 1 s at the owner soft cap', async () => {
+    const owner = ownerStub();
+    const peer = ownerStub();
+    const ownerTool = jest.fn((): Promise<void> => Promise.resolve());
+    const peerTool = jest.fn((): Promise<void> => Promise.resolve());
+    owner.handleDynamicToolCall = ownerTool;
+    peer.handleDynamicToolCall = peerTool;
+    const hold = deferred();
+    owner.handleConnectionNotification = (): Promise<void> => hold.promise;
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'held-thread'],
+      [peer, 'peer-thread'],
+    ]);
+    try {
+      notify(proc, 'held-thread', 0);
+      for (let sequence = 1; sequence <= 12; sequence += 1)
+        notify(proc, 'held-thread', sequence, {
+          payload: 'x'.repeat(1024 * 1024),
+        });
+      const response = observe(
+        connection.request(
+          'turn/start',
+          {
+            threadId: 'peer-thread',
+            input: [],
+          },
+          { owner: peer, timeoutMs: 900 },
+        ),
+      );
+      await flush();
+      const startedAt = Date.now();
+      emitServerMessage(proc, {
+        id: findClientRequest(proc, 'turn/start').id,
+        result: { turn: { id: 'peer-turn' } },
+      });
+      for (const threadId of ['held-thread', 'peer-thread'])
+        emitServerMessage(proc, {
+          id: `tool-${threadId}`,
+          method: 'item/tool/call',
+          params: {
+            threadId,
+            turnId: 't',
+            callId: `call-${threadId}`,
+            tool: 'test',
+            arguments: {},
+          },
+        });
+      await flushMany(2);
+      expect(response.state).toBe('resolved');
+      expect(ownerTool).toHaveBeenCalledTimes(1);
+      expect(peerTool).toHaveBeenCalledTimes(1);
+      expect(Date.now() - startedAt).toBeLessThan(1000);
+      expect(proc.stdout.isPaused()).toBe(false);
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('handles every lifecycle control immediately without making its admission a transcript barrier', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const controls = [
+      'turn/started',
+      'turn/completed',
+      'thread/status/changed',
+      'error',
+      'serverRequest/resolved',
+    ];
+    const received: string[] = [];
+    owner.handleConnectionNotification = (method): Promise<void> => {
+      received.push(method);
+      return hold.promise;
+    };
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'thread'],
+    ]);
+    try {
+      notify(proc, 'thread', 1);
+      notify(proc, 'thread', 2);
+      for (const method of controls)
+        emitServerMessage(proc, { method, params: { threadId: 'thread' } });
+      await flushMany(2);
+      expect(received).toEqual(['item/started', ...controls]);
+      hold.resolve();
+      await flushMany();
+      expect(received).toEqual(['item/started', ...controls, 'item/started']);
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('coalesces each turn diff to its newest snapshot at its latest pipe position, with soft-cap hysteresis', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const received: Array<number | null> = [];
+    owner.handleConnectionNotification = (
+      _method,
+      frame,
+    ): Promise<void> | undefined => {
+      received.push(sequenceOf(frame));
+      return received.length === 1 ? hold.promise : undefined;
+    };
+    const { proc, connection } = await startSharedConnection(
+      [[owner, 'thread']],
+      {
+        stdoutQueueHighWaterBytes: 4096,
+        stdoutQueueLowWaterBytes: 2048,
+      },
+    );
+    const diff = (turnId: string, sequence: number): void =>
+      emitServerMessage(proc, {
+        method: 'turn/diff/updated',
+        params: {
+          threadId: 'thread',
+          turnId,
+          sequence,
+          diff: 'x'.repeat(1024),
+        },
+      });
+    try {
+      notify(proc, 'thread', 0);
+      diff('turn-a', 1);
+      diff('turn-a', 2);
+      diff('turn-b', 3);
+      diff('turn-a', 4); // crosses the soft cap; diffs 1 and 2 are obsolete
+      notify(proc, 'thread', 5); // other transcript frames are never folded
+      diff('turn-b', 6); // still coalescing above low water; 3 is obsolete
+      await flushMany(2);
+      expect(proc.stdout.isPaused()).toBe(false);
+      hold.resolve();
+      await flushMany();
+      expect(received).toEqual([0, 4, 5, 6]);
+      diff('turn-a', 7);
+      diff('turn-a', 8); // the lane drained: ordinary delivery again
+      await flush();
+      expect(received).toEqual([0, 4, 5, 6, 7, 8]);
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('uses a hard per-owner fallback, not a sum across owners, and diagnoses even a short pause', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const owner = ownerStub();
+    const peer = ownerStub();
+    const hold = deferred();
+    const peerHold = deferred();
+    owner.handleConnectionNotification = (): Promise<void> => hold.promise;
+    const peerControls: string[] = [];
+    peer.handleConnectionNotification = (method): Promise<void> | undefined => {
+      if (method === 'turn/started') {
+        peerControls.push(method);
+        return;
+      }
+      return peerHold.promise;
+    };
+    const { proc, connection } = await startSharedConnection(
+      [
+        [owner, 'thread'],
+        [peer, 'peer'],
+      ],
+      {
+        stdoutQueueHighWaterBytes: 2048,
+        stdoutQueueLowWaterBytes: 1024,
+        stdoutOwnerHardLimitBytes: 8192,
+      },
+    );
+    try {
+      notify(proc, 'thread', 0);
+      notify(proc, 'peer', 0);
+      for (let i = 1; i <= 5; i += 1) {
+        notify(proc, 'thread', i, { payload: 'x'.repeat(1024) });
+        notify(proc, 'peer', i, { payload: 'x'.repeat(1024) });
+      }
+      await flushMany(2);
+      expect(proc.stdout.isPaused()).toBe(false);
+      emitServerMessage(proc, {
+        method: 'turn/started',
+        params: { threadId: 'peer' },
+      });
+      await flushMany(2);
+      expect(peerControls).toEqual(['turn/started']);
+      for (let i = 6; i <= 9; i += 1)
+        notify(proc, 'thread', i, { payload: 'x'.repeat(1024) });
+      await flushMany(2);
+      emitServerMessage(proc, {
+        method: 'turn/started',
+        params: { threadId: 'peer' },
+      });
+      await flushMany(2);
+      // The JSON-line reader (not the raw pipe) is paused only at hard limit.
+      expect(peerControls).toEqual(['turn/started']);
+      hold.resolve();
+      await flushMany();
+      // The triggering owner drained; the peer remains above soft cap.
+      expect(peerControls).toEqual(['turn/started', 'turn/started']);
+      expect(
+        recordDiagnosticMock.mock.calls.some(
+          ([event]) =>
+            isStdoutHoldDiagnostic(event) &&
+            'holdKind' in event &&
+            event.holdKind === 'stdout-byte-cap',
+        ),
+      ).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        '[codex-app-server]',
+        expect.stringContaining('hard per-owner'),
+      );
+    } finally {
+      hold.resolve();
+      peerHold.resolve();
+      warn.mockRestore();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
   it('delivers a peer owner thread/resume response while another owner admission is held', async () => {
     const heldOwner = ownerStub();
     const peerOwner = ownerStub();
@@ -322,7 +1033,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     }
   });
 
-  it('does not time out a response that was read but is queued behind its own owner admission', async () => {
+  it('stops the deadline and delivers a response as soon as read despite owner admission', async () => {
     const owner = ownerStub();
     const hold = deferred();
     owner.handleConnectionNotification = (
@@ -352,7 +1063,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
       await delay(250);
       // The app-server answered within the deadline; Canopy-side admission
       // must not turn that into a timeout.
-      expect(request.state).toBe('pending');
+      expect(request.state).toBe('resolved');
 
       hold.resolve();
       await flushMany(4);
@@ -364,7 +1075,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     }
   });
 
-  it('preserves per-owner pipe order for notifications, responses, and fan-out', async () => {
+  it('preserves transcript pipe order while responses and account controls overtake admission', async () => {
     const heldOwner = ownerStub();
     const peerOwner = ownerStub();
     const firstHold = deferred();
@@ -424,19 +1135,15 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
       await flushMany(4);
 
       expect(peerLog).toEqual(['n3', 'account', 'n6']);
-      expect(heldLog).toEqual(['n1']);
+      expect(heldLog).toEqual(['n1', 'account', 'response']);
 
       firstHold.resolve();
       await flushMany(4);
-      // The response was read after n4, so it must wait for n4's admission.
-      expect(heldLog).toEqual(['n1', 'n2', 'account', 'n4']);
+      expect(heldLog).toEqual(['n1', 'account', 'response', 'n2', 'n4']);
 
       secondHold.resolve();
       await flushMany(4);
-      // The response is delivered (resolved) before n5 in the synchronous
-      // drain; its promise continuation necessarily runs after that drain.
-      // The ordering guarantee is the absence of 'response' above.
-      expect(heldLog).toEqual(['n1', 'n2', 'account', 'n4', 'n5', 'response']);
+      expect(heldLog).toEqual(['n1', 'account', 'response', 'n2', 'n4', 'n5']);
       expect(peerLog).toEqual(['n3', 'account', 'n6']);
     } finally {
       firstHold.resolve();
@@ -445,7 +1152,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     }
   });
 
-  it('pauses shared stdout above the retained-byte high-water mark and resumes below low water', async () => {
+  it('pauses shared stdout only at the hard owner limit and resumes below owner low water', async () => {
     const heldOwner = ownerStub();
     const peerOwner = ownerStub();
     const hold = deferred();
@@ -466,6 +1173,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
       {
         stdoutQueueHighWaterBytes: 8 * 1024,
         stdoutQueueLowWaterBytes: 4 * 1024,
+        stdoutOwnerHardLimitBytes: 8 * 1024,
       },
     );
     try {
@@ -514,6 +1222,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
       {
         stdoutQueueHighWaterBytes: 4 * 1024,
         stdoutQueueLowWaterBytes: 2 * 1024,
+        stdoutOwnerHardLimitBytes: 8 * 1024,
       },
     );
     try {
@@ -595,8 +1304,8 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
         kind: 'codex_app_server_stdout_hold',
         holdKind: 'owner-admission',
         holdOutcome: 'released',
-        queuedFrameCount: 2,
-        responseQueued: true,
+        queuedFrameCount: 1,
+        responseQueued: false,
         appProcessId: process.pid,
         codexAppServerProcessId: proc.pid,
       });
@@ -665,7 +1374,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     }
   });
 
-  it('fails closed for a server request queued behind a retired owner', async () => {
+  it('fails closed for a server request read after owner retirement', async () => {
     const retiredOwner = ownerStub();
     const peerOwner = ownerStub();
     const hold = deferred();
@@ -679,6 +1388,8 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     ]);
     try {
       notify(proc, 'retired-thread', 1);
+      connection.unregisterThread('retired-thread', retiredOwner);
+      connection.unregisterOwner(retiredOwner);
       emitServerMessage(proc, {
         id: 'approval-1',
         method: 'item/commandExecution/requestApproval',
@@ -687,8 +1398,6 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
       await flushMany(2);
       expect(approvalHandler).not.toHaveBeenCalled();
 
-      connection.unregisterThread('retired-thread', retiredOwner);
-      connection.unregisterOwner(retiredOwner);
       await flushMany(4);
       expect(approvalHandler).not.toHaveBeenCalled();
       expect(
@@ -702,7 +1411,190 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     }
   });
 
-  it('delivers a server request in order after its owner admission settles', async () => {
+  it('decides a file-change approval only after the transcript read before it is admitted', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const order: string[] = [];
+    owner.handleConnectionNotification = (
+      method,
+      frame,
+    ): Promise<void> | undefined => {
+      order.push(`${method}:${itemIdOf(frame)}`);
+      return order.length === 1 ? hold.promise : undefined;
+    };
+    owner.handleApprovalRequest = jest.fn((): Promise<void> => {
+      order.push('approval');
+      return Promise.resolve();
+    });
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'thread'],
+    ]);
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: { threadId: 'thread', turnId: 'turn', item: { id: 'held' } },
+      });
+      // The changed paths arrive on the item, which waits behind the held
+      // admission; the approval that names it must not be decided first.
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread',
+          turnId: 'turn',
+          item: {
+            id: 'patch',
+            type: 'fileChange',
+            changes: [{ path: '/repo/private/secret.txt', kind: 'update' }],
+          },
+        },
+      });
+      emitServerMessage(proc, {
+        id: 'file-approval',
+        method: 'item/fileChange/requestApproval',
+        params: {
+          threadId: 'thread',
+          turnId: 'turn',
+          itemId: 'patch',
+          grantRoot: '/repo/public',
+        },
+      });
+      await flushMany(2);
+      expect(order).toEqual(['item/started:held']);
+
+      hold.resolve();
+      await flushMany();
+      expect(order).toEqual([
+        'item/started:held',
+        'item/started:patch',
+        'approval',
+      ]);
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('decides a fallback MCP approval only after the transcript read before it is admitted', async () => {
+    const owner = ownerStub();
+    const hold = deferred();
+    const order: string[] = [];
+    owner.handleConnectionNotification = (
+      method,
+      frame,
+    ): Promise<void> | undefined => {
+      order.push(`${method}:${itemIdOf(frame)}`);
+      return order.length === 1 ? hold.promise : undefined;
+    };
+    owner.handleApprovalRequest = jest.fn((): Promise<void> => {
+      order.push('approval');
+      return Promise.resolve();
+    });
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'thread'],
+    ]);
+    try {
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: { threadId: 'thread', turnId: 'turn', item: { id: 'held' } },
+      });
+      emitServerMessage(proc, {
+        method: 'item/started',
+        params: {
+          threadId: 'thread',
+          turnId: 'turn',
+          item: {
+            id: 'mcp-call',
+            type: 'mcpToolCall',
+            server: 'docs',
+            tool: 'search',
+            status: 'inProgress',
+            arguments: {},
+          },
+        },
+      });
+      emitServerMessage(proc, {
+        id: 'mcp-approval',
+        method: 'item/tool/requestUserInput',
+        params: {
+          threadId: 'thread',
+          turnId: 'turn',
+          itemId: 'mcp-call',
+          questions: [
+            {
+              id: 'mcp_tool_call_approval_mcp-call',
+              header: 'Approve tool call',
+              question: 'Allow docs/search?',
+              options: [],
+            },
+          ],
+        },
+      });
+      await flushMany(2);
+      expect(order).toEqual(['item/started:held']);
+
+      hold.resolve();
+      await flushMany();
+      expect(order).toEqual([
+        'item/started:held',
+        'item/started:mcp-call',
+        'approval',
+      ]);
+    } finally {
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('does not fail the connection when its own restart discards a held terminal frame', async () => {
+    const owner = ownerStub();
+    const rejectActiveTurn = jest.fn();
+    owner.rejectActiveTurn = rejectActiveTurn;
+    const hold = deferred();
+    owner.handleConnectionNotification = (
+      method,
+      _frame,
+      transcriptDrain,
+    ): Promise<void> | undefined => {
+      // Like the desktop client: finalize the turn after the drain.
+      if (transcriptDrain) return transcriptDrain.then(() => undefined);
+      return method === 'item/started' ? hold.promise : undefined;
+    };
+    const { proc, connection } = await startSharedConnection([
+      [owner, 'thread'],
+    ]);
+    // The worker exits later, as a real process does after a signal.
+    proc.kill.mockImplementation((): boolean => true);
+    try {
+      notify(proc, 'thread', 0);
+      emitServerMessage(proc, {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread',
+          turn: { id: 'turn', status: 'completed', items: [], error: null },
+        },
+      });
+      await flushMany(2);
+      connection.triggerSharedRestart(
+        owner,
+        new Error('turn_cancelled'),
+        undefined,
+        true,
+      );
+      await flushMany(2);
+      expect(rejectActiveTurn).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Codex transcript admission discarded',
+        }),
+      );
+    } finally {
+      proc.signalCode = 'SIGTERM';
+      proc.emit('exit', null, 'SIGTERM');
+      hold.resolve();
+      await connection.terminateForFinalRelease();
+    }
+  });
+
+  it('delivers a server request immediately while transcript frames retain their order', async () => {
     const owner = ownerStub();
     const hold = deferred();
     const log: string[] = [];
@@ -729,7 +1621,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
       });
       notify(proc, 'own-thread', 2);
       await flushMany(2);
-      expect(log).toEqual(['n1']);
+      expect(log).toEqual(['n1', 'approval']);
       hold.resolve();
       await flushMany(4);
       expect(log).toEqual(['n1', 'approval', 'n2']);
@@ -739,7 +1631,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
     }
   });
 
-  it('rejects a queued response when the app-server exits while its owner is held', async () => {
+  it('rejects an unanswered request when the app-server exits while its owner is held', async () => {
     const owner = ownerStub();
     const hold = deferred();
     owner.handleConnectionNotification = (): Promise<void> => hold.promise;
@@ -751,12 +1643,7 @@ describe('CodexAppServerConnection per-owner notification admission', () => {
         connection.request('account/read', { refreshToken: false }, { owner }),
       );
       await flush();
-      const accountRequest = findClientRequest(proc, 'account/read');
       notify(proc, 'own-thread', 1);
-      emitServerMessage(proc, {
-        id: accountRequest.id,
-        result: { account: null },
-      });
       await flushMany(2);
       expect(request.state).toBe('pending');
       proc.emit('exit', 1, null);

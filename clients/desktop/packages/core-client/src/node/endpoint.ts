@@ -2,6 +2,7 @@ import type { CanopyFramedAuthOptions } from '@canopy/core-transport';
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import type { CanopyErrorKind } from '@canopy/protocol/canopy-core';
 
+import { CANOPY_CONNECTION_DEFAULTS } from '../delivery';
 import { CanopyClientError } from '../errors';
 
 interface CanopyPathEndpoint<K extends 'socket' | 'pipe'> {
@@ -21,7 +22,6 @@ export type CanopyClientEndpoint =
       readonly connection: CanopyFramedConnection;
     };
 
-const DEFAULT_TIMEOUT_MS = 10_000;
 /** The largest delay a Node timer honors. */
 export const MAX_CANOPY_CONNECT_TIMEOUT_MS = 2_147_483_647;
 const LOCAL_PIPE_NAME = /^\\\\[.?]\\pipe\\.+$/i;
@@ -39,9 +39,10 @@ export function canopyConnectError(
   });
 }
 
-/** Defaults to 10 s; otherwise an integer from 1 to the timer maximum. */
+/** Defaults to the shared connect timeout; otherwise an integer from 1 to the timer maximum. */
 export function validateCanopyTimeout(timeoutMs?: number): number {
-  if (timeoutMs === undefined) return DEFAULT_TIMEOUT_MS;
+  if (timeoutMs === undefined)
+    return CANOPY_CONNECTION_DEFAULTS.connectTimeoutMs;
   if (
     !Number.isInteger(timeoutMs) ||
     timeoutMs < 1 ||

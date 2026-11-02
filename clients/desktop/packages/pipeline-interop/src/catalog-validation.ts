@@ -86,6 +86,9 @@ function safeSemanticIssue(error: unknown): PipelineCatalogIssue {
     path = 'plugin_collections';
     message =
       'Invalid plugin collection configuration; check unique ids, portable defaults and referenced collections';
+  } else if (/local_state/i.test(sourceMessage)) {
+    path = 'local_state';
+    message = 'local_state must be a list of paths';
   } else if (/dependenc/i.test(sourceMessage)) {
     path = 'dependencies';
     message =
@@ -193,6 +196,8 @@ export function validateCuratedPipeline(
     'plugin_collections',
     'model_aliases',
     'dependencies',
+    'assets',
+    'local_state',
   ]);
   for (const key of Object.keys(raw))
     if (!allowed.has(key))
@@ -201,6 +206,14 @@ export function validateCuratedPipeline(
         'unknown_field',
         'Unknown pipeline field',
       );
+  // Curated definitions carry no file package, so v1 has nowhere to put
+  // asset files; they travel only in automation shares.
+  if (raw.assets !== undefined)
+    fail(
+      'assets',
+      'unsupported_reference',
+      'Curated definitions do not support file assets; share the automation that runs this pipeline instead',
+    );
   const name = optionalString(raw.name, 'name', 256).trim();
   if (!name) fail('name', 'required', 'Pipeline name is required');
   const description = optionalString(raw.description, 'description', 65535);

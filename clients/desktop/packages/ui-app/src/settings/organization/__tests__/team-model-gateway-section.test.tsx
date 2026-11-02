@@ -509,7 +509,7 @@ describe('TeamModelGatewaySection', () => {
     // Retry clears the error and reads again; the card settles this time.
     billingFailure = false;
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     expect(retry).toBeDefined();
     await act(async () => {

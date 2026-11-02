@@ -68,6 +68,24 @@ export interface ExpressionCanopyContext {
   /** Serialized run owner, `personal` when the run recorded none. */
   owner: string;
   initiator: ExpressionCanopyInitiator;
+  /** Per-pipeline state dir (`<data>/pipeline-data/<key>/state`), when resolved. */
+  pipeline_data_dir?: string;
+}
+
+/** `assets.<id>.path` for each resolved asset of the run. */
+export type ExpressionAssetsContext = Record<string, { path: string }>;
+
+/** Project resolved asset paths into the `assets` expression root. */
+export function buildExpressionAssets(
+  assetPaths: Record<string, string> | undefined,
+): ExpressionAssetsContext | undefined {
+  if (assetPaths === undefined) return undefined;
+  return Object.fromEntries(
+    Object.entries(assetPaths).map(([id, assetPath]) => [
+      id,
+      { path: assetPath },
+    ]),
+  );
 }
 
 /** Project the trusted run identity into `canopy.*` expression fields. */
@@ -131,6 +149,8 @@ export interface ExpressionContext {
   job: ExpressionJobState;
   canopy: ExpressionCanopyContext;
   matrix?: MatrixContext;
+  /** `${{ assets.<id>.path }}`; inherited by child runs. */
+  assets?: ExpressionAssetsContext;
   [key: string]: unknown;
 }
 
@@ -227,16 +247,16 @@ function parsePipelineInputValue(
       const trimmed = rawValue.trim();
       const parsed = Number(trimmed);
       if (!trimmed || !Number.isFinite(parsed)) {
-        throw new Error(`Pipeline input "${name}" must be a finite number`);
+        throw new Error(`Workflow input "${name}" must be a finite number`);
       }
       if (definition.min !== undefined && parsed < definition.min) {
         throw new Error(
-          `Pipeline input "${name}" must be greater than or equal to ${String(definition.min)}`,
+          `Workflow input "${name}" must be greater than or equal to ${String(definition.min)}`,
         );
       }
       if (definition.max !== undefined && parsed > definition.max) {
         throw new Error(
-          `Pipeline input "${name}" must be less than or equal to ${String(definition.max)}`,
+          `Workflow input "${name}" must be less than or equal to ${String(definition.max)}`,
         );
       }
       return parsed;
@@ -249,7 +269,7 @@ function parsePipelineInputValue(
       if (normalized === 'false') {
         return false;
       }
-      throw new Error(`Pipeline input "${name}" must be "true" or "false"`);
+      throw new Error(`Workflow input "${name}" must be "true" or "false"`);
     }
     case 'choice': {
       // Choice options on the `model` input are normalized to concrete model
@@ -262,7 +282,7 @@ function parsePipelineInputValue(
         return candidate;
       }
       throw new Error(
-        `Pipeline input "${name}" must be one of: ${(definition.options ?? []).join(', ')}`,
+        `Workflow input "${name}" must be one of: ${(definition.options ?? []).join(', ')}`,
       );
     }
     case 'json':
@@ -273,7 +293,7 @@ function parsePipelineInputValue(
         }
         return parsed;
       } catch {
-        throw new Error(`Pipeline input "${name}" must be valid JSON`);
+        throw new Error(`Workflow input "${name}" must be valid JSON`);
       }
   }
 }
@@ -306,7 +326,7 @@ export function resolvePipelineInputs(
 
   for (const inputName of Object.keys(rawInputs)) {
     if (!(inputName in declaredInputs)) {
-      errors.push(`Pipeline input "${inputName}" is not declared`);
+      errors.push(`Workflow input "${inputName}" is not declared`);
     }
   }
 
@@ -331,14 +351,14 @@ export function resolvePipelineInputs(
     }
 
     if (definition.required) {
-      errors.push(`Pipeline input "${inputName}" is required`);
+      errors.push(`Workflow input "${inputName}" is required`);
     }
   }
 
   if (errors.length > 0) {
     throw new Error(
       [
-        'Pipeline input validation failed:',
+        'Workflow input validation failed:',
         ...errors.map((error) => `- ${error}`),
       ].join('\n'),
     );
@@ -359,9 +379,9 @@ export function mergePipelineInputs(
     if (overrideNames.length > 0) {
       throw new Error(
         [
-          'Pipeline input validation failed:',
+          'Workflow input validation failed:',
           ...overrideNames.map(
-            (inputName) => `- Pipeline input "${inputName}" is not declared`,
+            (inputName) => `- Workflow input "${inputName}" is not declared`,
           ),
         ].join('\n'),
       );
@@ -376,7 +396,7 @@ export function mergePipelineInputs(
 
   for (const inputName of Object.keys(rawOverrides)) {
     if (!(inputName in declaredInputs)) {
-      errors.push(`Pipeline input "${inputName}" is not declared`);
+      errors.push(`Workflow input "${inputName}" is not declared`);
     }
   }
 
@@ -406,14 +426,14 @@ export function mergePipelineInputs(
     }
 
     if (definition.required) {
-      errors.push(`Pipeline input "${inputName}" is required`);
+      errors.push(`Workflow input "${inputName}" is required`);
     }
   }
 
   if (errors.length > 0) {
     throw new Error(
       [
-        'Pipeline input validation failed:',
+        'Workflow input validation failed:',
         ...errors.map((error) => `- ${error}`),
       ].join('\n'),
     );
@@ -466,6 +486,7 @@ export function buildExpressionContext(
     },
     canopy,
     ...(input.matrix ? { matrix: input.matrix } : {}),
+    ...(input.assets ? { assets: input.assets } : {}),
   };
   context[BRAND.internalName] = canopy;
   context[toExpressionRoot(BRAND.internalName)] = canopy;

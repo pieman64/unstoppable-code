@@ -1,5 +1,5 @@
 import { type JSX, type ReactNode, useId, useState } from 'react';
-import { Button, ToggleSwitch } from '@canopy/ui-shared';
+import { Button, ToggleSwitch, ProviderStatusDot } from '@canopy/ui-shared';
 import {
   EyeIcon,
   EyeOffIcon,
@@ -11,7 +11,6 @@ import type {
   AccountProxyStatus,
 } from '@canopy/desktop-shared/types/account-proxy';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { useOpenSettingsSection } from '../settings-section-navigation';
 import {
   useAccountProxyLiveRefresh,
@@ -67,7 +66,6 @@ interface ConnectFormProps {
  * connection and puts the error under the field it belongs to.
  */
 function ConnectForm({ initialUrl, onCancel }: ConnectFormProps): JSX.Element {
-  const buttonSize = useSettingsButtonSize();
   const urlId = useId();
   const keyId = useId();
   const [url, setUrl] = useState(initialUrl);
@@ -157,7 +155,7 @@ function ConnectForm({ initialUrl, onCancel }: ConnectFormProps): JSX.Element {
               data-testid="account-proxy-key-input"
             />
             <Button
-              size={buttonSize}
+              size="compact"
               variant="ghost"
               iconOnly
               aria-label={keyVisible ? 'Hide key' : 'Show key'}
@@ -186,12 +184,12 @@ function ConnectForm({ initialUrl, onCancel }: ConnectFormProps): JSX.Element {
         control={
           <>
             {onCancel ? (
-              <Button size={buttonSize} onClick={onCancel}>
+              <Button size="compact" onClick={onCancel}>
                 Cancel
               </Button>
             ) : null}
             <Button
-              size={buttonSize}
+              size="compact"
               variant="primary"
               disabled={connecting || !url.trim() || !key.trim()}
               onClick={(): void => {
@@ -213,7 +211,6 @@ function ConnectionSection({
 }: {
   readonly status: AccountProxyStatus;
 }): JSX.Element | null {
-  const buttonSize = useSettingsButtonSize();
   const [changingKey, setChangingKey] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const connection = status.connection;
@@ -272,18 +269,13 @@ function ConnectionSection({
             <span className="inline-flex items-center gap-2">
               <GlobeIcon size={16} aria-hidden />
               <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{host}</span>
-              <span
-                aria-hidden="true"
-                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
-                  status.error ? 'bg-destructive' : 'bg-success'
-                }`}
-              />
+              <ProviderStatusDot tone={status.error ? 'failed' : 'connected'} />
             </span>
           }
           description={statusLine}
           control={
             <Button
-              size={buttonSize}
+              size="compact"
               disabled={disconnecting}
               data-testid="account-proxy-disconnect"
               onClick={(): void => {
@@ -309,7 +301,7 @@ function ConnectionSection({
           }
           control={
             <Button
-              size={buttonSize}
+              size="compact"
               variant={keyRejected ? 'primary' : undefined}
               data-testid="account-proxy-change-key"
               onClick={(): void => setChangingKey(true)}
@@ -362,7 +354,7 @@ function RoutingSection({
         <SettingsRow
           label="Claude"
           htmlFor={claudeToggleId}
-          description={`Claude chats, subagents, and pipeline steps on this device use ${whose} Claude accounts.`}
+          description={`Claude chats, subagents, and workflow steps on this device use ${whose} Claude accounts.`}
           control={
             <ToggleSwitch
               id={claudeToggleId}
@@ -377,7 +369,7 @@ function RoutingSection({
         <SettingsRow
           label="Codex"
           htmlFor={codexToggleId}
-          description={`Codex chats, subagents, and pipeline steps on this device use ${whose} Codex accounts.`}
+          description={`Codex chats, subagents, and workflow steps on this device use ${whose} Codex accounts.`}
           control={
             <ToggleSwitch
               id={codexToggleId}
@@ -416,7 +408,6 @@ function RoutingSection({
 export function AccountProxyTab(): JSX.Element {
   const status = useAccountProxyStatus();
   const openSettings = useOpenSettingsSection();
-  const buttonSize = useSettingsButtonSize();
   const [mode, setMode] = useState<AccountProxyMode>('server');
   const local = status?.connection?.kind === 'local';
   const connected =
@@ -450,7 +441,7 @@ export function AccountProxyTab(): JSX.Element {
               description="Turn on Use an account proxy in Labs to set it up."
               control={
                 <Button
-                  size={buttonSize}
+                  size="compact"
                   onClick={(): void => openSettings('experiments')}
                 >
                   Open Labs

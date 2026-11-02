@@ -6,6 +6,9 @@
 // routes from the scenario's `cloud.ledger.feed`; entries of this device are
 // added through the E2E-only Ledger hook.
 //
+// Global (workflow) entries, which a pipeline agent with no task records in
+// its run owner's Ledger, list beside task entries with their owner's label.
+//
 // These flows cover the one-column Feed: its Mine, Teammates and This device
 // audiences, read-only remote rows, explicit details toggles and source
 // navigation, offline and new-activity notices, adding and handing off drafts,
@@ -21,7 +24,7 @@ import { expect, test } from '@playwright/test';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy } from './launchCanopy.mjs';
 import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
-import { seedWorktreeChat } from './seeders/index.mjs';
+import { seedPipelineExecution, seedWorktreeChat } from './seeders/index.mjs';
 import {
   DEFAULT_MOCK_BASE_URL,
   clearScenario,
@@ -75,7 +78,7 @@ async function chooseTarget(page, picker, optionId) {
 async function addLedgerPanel(page) {
   // A chat tab that arrives after the Ledger panel takes focus from it.
   await waitForChatPanel(page);
-  await page.getByTestId(`panel-add-panel-${DEFAULT_GROUP_IDS.chat}`).click();
+  await page.getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.chat}`).click();
   await expect(page.getByTestId('panel-add-menu')).toBeVisible();
   await page.getByTestId('panel-add-menu-item-ledger').click();
   const panel = page.getByTestId('ledger-panel');
@@ -545,8 +548,8 @@ test('Ledger Feed: Add entry chooses its project and task first, keeping what wa
     await window.getByTestId('sidebar-nav-feed').click();
     const feed = feedRoot(window);
 
-    // Whose entries on a row of their own; the filter, the search and Add
-    // entry below it.
+    // Whose entries on a row of their own; the search, the Filter dropdown
+    // after it, and Add entry below them.
     const tabs = await feed
       .getByTestId('ledger-feed-audience-mine')
       .boundingBox();
@@ -557,7 +560,12 @@ test('Ledger Feed: Add entry chooses its project and task first, keeping what wa
     expect(filter?.y ?? 0).toBeGreaterThan(
       (tabs?.y ?? Infinity) + (tabs?.height ?? 0) - 1,
     );
-    expect(filter?.x ?? Infinity).toBeLessThan(search?.x ?? -Infinity);
+    expect(filter?.x ?? -Infinity).toBeGreaterThan(search?.x ?? Infinity);
+    expect(search?.height).toBe(32);
+    expect(filter?.height).toBe(28);
+    await expect(feed.getByTestId('ledger-filter-trigger')).toHaveText(
+      'Filter',
+    );
 
     // The form opens at once, with where the entry goes first.
     await feed.getByTestId('ledger-feed-add-entry').click();
@@ -1442,6 +1450,193 @@ test('Ledger Feed: a long list windows its rows and keeps the reading position a
     await window
       .screenshot({
         path: testInfo.outputPath('ledger-feed-long-list-failure.png'),
+      })
+      .catch(() => undefined);
+    throw error;
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('Ledger Feed: workflow entries beside a task, changed and corrected here, and their run', async ({}, testInfo) => {
+  test.setTimeout(240_000);
+
+  const apiKey = `csk_ledger_feed_global_e2e_${Date.now()}`;
+  const cloud = {
+    account: ACCOUNT,
+    ledger: {
+      feed: { mine: [], teammates: [], actors: [], entries: {} },
+    },
+  };
+  await registerScenario(DEFAULT_MOCK_BASE_URL, apiKey, { cloud });
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-ledger-feed-global-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [{ id: SEEDED_CHAT_TAB_ID, title: 'Parser fixes' }],
+  });
+  // A global run: no project and no worktree. Another run was pruned.
+  seedPipelineExecution({
+    userDataDir,
+    execution: {
+      id: 'global-nightly-triage',
+      pipelineName: 'Nightly triage',
+      status: 'success',
+      startedAt: '2026-10-20T02:00:00.000Z',
+      completedAt: '2026-10-20T02:05:00.000Z',
+      jobs: [
+        {
+          id: 'triage',
+          name: 'Triage',
+          steps: [{ id: 'agent', name: 'Triage failures', run: 'echo triage' }],
+        },
+      ],
+    },
+  });
+  const { electronApp, window } = await seedPanelWorktree({
+    userDataDir,
+    seedDemoWorkspaces: false,
+    env: LEDGER_ON,
+  });
+
+  try {
+    await connectMockCloudAccount(window, apiKey);
+    await addLedgerEntry(electronApp, {
+      scope: { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+      author: SEEDED_CHAT,
+      params: {
+        type: 'DECISION',
+        title: 'Keep one parser writer',
+        content: 'Two writers race on the cache.',
+      },
+    });
+    const triageAgent = {
+      kind: 'pipeline',
+      executionId: 'global-nightly-triage',
+      jobId: 'triage',
+      stepId: 'agent',
+      displayName: 'Triage failures · Nightly triage',
+    };
+    await addLedgerEntry(electronApp, {
+      scope: { kind: 'global', owner: { kind: 'personal' } },
+      author: triageAgent,
+      params: {
+        type: 'TASK',
+        title: 'Fix the three flaky parser specs',
+        content: 'They fail on a cold cache.',
+        status: 'TODO',
+      },
+    });
+    await addLedgerEntry(electronApp, {
+      scope: { kind: 'global', owner: { kind: 'personal' } },
+      author: { ...triageAgent, executionId: 'global-pruned-run' },
+      params: {
+        type: 'OBSERVATION',
+        title: 'Last week the cache warmed slowly',
+        content: 'Recorded by a run this device no longer keeps.',
+      },
+    });
+
+    await window.getByTestId('sidebar-nav-feed').click();
+    await expect(window.getByTestId('page-feed')).toBeVisible();
+    const feed = feedRoot(window);
+    const task = feedRow(feed, 'Keep one parser writer');
+    const workflow = feedRow(feed, 'Fix the three flaky parser specs');
+    const pruned = feedRow(feed, 'Last week the cache warmed slowly');
+    await expect(workflow).toBeVisible({ timeout: 15_000 });
+    await expect(task).toBeVisible();
+    await expect(pruned).toBeVisible();
+
+    // Each row names its work: the task by its project, the workflow entry
+    // by its run's owner.
+    await expect(workflow.getByTestId('ledger-entry-row-context')).toHaveText(
+      'Workflows · Personal',
+    );
+    await expect(task.getByTestId('ledger-entry-row-context')).not.toHaveText(
+      /Workflows/,
+    );
+    // The composer never offers a workflow as a destination.
+    await feed.getByTestId('ledger-feed-add-entry').click();
+    const form = feed.getByTestId('ledger-entry-form');
+    await expect(form).toBeVisible();
+    await feed.getByTestId('ledger-feed-target-project').click();
+    await expect(
+      window.getByTestId('ledger-feed-target-project-option'),
+    ).not.toHaveCount(0);
+    await expect(
+      window
+        .getByTestId('ledger-feed-target-project-option')
+        .filter({ hasText: 'Workflows' }),
+    ).toHaveCount(0);
+    await window.keyboard.press('Escape');
+    await cancelEntryDraft(form);
+
+    // A workflow entry changes here like any of this device's entries.
+    const thread = feedThread(feed, 'Fix the three flaky parser specs');
+    await rootDetailsToggle(thread).click();
+    const status = rootOwn(thread, 'ledger-status-control').first();
+    await status.click();
+    await window.getByTestId('ledger-status-option-in_progress').click();
+    await expect(status).toHaveText('In progress');
+
+    // Its run opens from the entry.
+    const openRun = rootOwn(thread, 'ledger-entry-source-open').first();
+    await expect(openRun).toHaveText('Open run');
+
+    // A correction stays in the workflow Ledger and offers no files.
+    await rootDetailsToggle(thread).click();
+    await rootAddCorrection(thread).click();
+    const correctionBox = thread.getByTestId('ledger-correction-box');
+    await expect(correctionBox).toBeVisible();
+    const correctionText = 'Only two are flaky; the third is a real bug.';
+    await correctionBox
+      .getByTestId('ledger-correction-input')
+      .fill(correctionText);
+    // More options opens the full form, which has no Files to offer.
+    await correctionBox.getByTestId('ledger-correction-more').click();
+    const correctionForm = thread.getByTestId('ledger-entry-form');
+    await expect(correctionForm).toBeVisible();
+    await expect(
+      correctionForm.getByTestId('ledger-entry-form-content'),
+    ).toHaveValue(correctionText);
+    await expect(correctionForm.getByTestId('ledger-file-search')).toHaveCount(
+      0,
+    );
+    await expect(
+      correctionForm.getByRole('group', { name: /Files/ }),
+    ).toHaveCount(0);
+    await correctionForm.getByTestId('ledger-entry-form-save').click();
+    const reply = thread
+      .getByTestId('ledger-entry-correction')
+      .filter({ hasText: correctionText });
+    // It joins the workflow entry's thread, which still names its Ledger.
+    await expect(reply).toBeVisible();
+    await expect(workflow.getByTestId('ledger-entry-row-context')).toHaveText(
+      'Workflows · Personal',
+    );
+
+    // A run this device no longer keeps has nothing to open.
+    const prunedThread = feedThread(feed, 'Last week the cache warmed slowly');
+    await rootDetailsToggle(prunedThread).click();
+    await expect(rootOwn(prunedThread, 'ledger-entry-details')).toBeVisible();
+    await expect(rootOwn(prunedThread, 'ledger-entry-source-open')).toHaveCount(
+      0,
+    );
+    await rootDetailsToggle(prunedThread).click();
+
+    await rootDetailsToggle(thread).click();
+    await rootOwn(thread, 'ledger-entry-source-open').first().click();
+    await expect(window.getByTestId('pipeline-details-nav')).toBeVisible();
+    await expect(window.getByTestId('pipeline-job-view-triage')).toBeVisible();
+  } catch (error) {
+    await window
+      .screenshot({
+        path: testInfo.outputPath('ledger-feed-global-failure.png'),
       })
       .catch(() => undefined);
     throw error;

@@ -11,7 +11,7 @@ import {
   getPipelineJobStatusDotClassName,
 } from '../utils';
 import { PipelineTimer } from '../PipelineTimer';
-import { DetailChevronIcon } from './DetailChevronIcon';
+import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PipelineStepDetail } from './PipelineStepDetail';
 import type { ArchivedPipelineSource } from './pipelineDetailTypes';
 import {
@@ -114,10 +114,10 @@ function PipelineStepRowComponent({
             stepExpanded: { ...previous.stepExpanded, [sessionKey]: next },
           }));
         }}
-        className="focus-ring flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-fg-primary/[0.04]"
+        className="focus-ring flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-fg-primary/[0.04]"
       >
         <div className="flex min-w-0 items-center gap-2">
-          <DetailChevronIcon open={expanded} />
+          <ChevronIcon open={expanded} />
           <span
             className={`h-2 w-2 shrink-0 rounded-full ${getPipelineJobStatusDotClassName(status)}`}
             aria-hidden="true"

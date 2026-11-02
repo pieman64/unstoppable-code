@@ -27,7 +27,9 @@ const mockRunCodexStructuredHelper = jest.fn<
   Promise<{ value: unknown; usage: HelperUsage }>,
   [unknown]
 >();
-const mockIsModelBlockedByStoredPolicy = jest.fn(() => Promise.resolve(false));
+const mockIsModelBlockedByStoredPolicy = jest.fn<Promise<boolean>, [string]>(
+  () => Promise.resolve(false),
+);
 const mockDisposeHelperInvocation = jest.fn();
 const mockResolveHelperInvocation = jest.fn<
   Promise<HelperInvocation>,
@@ -2482,8 +2484,8 @@ describe('local memory consolidation task', () => {
     const notePath = join(scopeDir, 'inbox', 'note.md');
     await writeFile(notePath, 'pending', 'utf8');
     const generate = jest.fn(() => Promise.resolve(null));
-    // Spy on the CommonJS module instance the task itself imports; the
-    // ts-jest `import()` namespace copy has non-configurable getters.
+    // Spy on the CommonJS module instance the task itself imports; an
+    // `import()` namespace is a separate copy.
     const fsPromises = jest.requireActual<{ stat: typeof stat }>(
       'node:fs/promises',
     );

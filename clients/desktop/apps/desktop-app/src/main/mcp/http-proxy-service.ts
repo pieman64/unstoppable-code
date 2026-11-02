@@ -1,3 +1,4 @@
+import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import {
   SHOW_CAPABILITIES_DESCRIPTION,
   showCapabilitiesJsonSchema,
@@ -1025,6 +1026,15 @@ function jsonRpcError(
     id: id ?? null,
     error: { code, message },
   };
+}
+
+// Error text can carry paths and workspace ids, so it goes to the log, never to the model.
+function jsonRpcInternalError(
+  id: unknown,
+  error: unknown,
+): Record<string, unknown> {
+  logMainProcessError('Injected MCP tool call failed', error);
+  return jsonRpcError(id, -32603, 'Internal error');
 }
 
 function getJsonRpcId(payload: unknown): unknown {
@@ -2666,11 +2676,12 @@ export class McpHttpProxyService {
       return;
     }
 
-    const response = await this.handleCanopyMcpJsonRpc(
-      route,
-      payload,
-      uiServer,
-    );
+    let response: Record<string, unknown> | null;
+    try {
+      response = await this.handleCanopyMcpJsonRpc(route, payload, uiServer);
+    } catch (error) {
+      response = jsonRpcInternalError(getJsonRpcId(payload), error);
+    }
     if (response === null) {
       res.writeHead(204);
       res.end();
@@ -2826,15 +2837,7 @@ export class McpHttpProxyService {
         return;
       }
       const id = getJsonRpcId(isRecord(payload) ? payload : {});
-      res.write(
-        `data: ${JSON.stringify(
-          jsonRpcError(
-            id,
-            -32603,
-            error instanceof Error ? error.message : 'Internal error',
-          ),
-        )}\n\n`,
-      );
+      res.write(`data: ${JSON.stringify(jsonRpcInternalError(id, error))}\n\n`);
       res.end();
     }
   }
@@ -2932,7 +2935,12 @@ export class McpHttpProxyService {
       if (
         !uiServer &&
         typeof params.name === 'string' &&
-        route.managedDelegation?.tools.some((tool) => tool.name === params.name)
+        route.managedDelegation &&
+        (route.managedDelegation.tools.some(
+          (tool) => tool.name === params.name,
+        ) ||
+          (!route.managedDelegation.exclusive &&
+            isWatchDelegatesCompatibilityName(params.name, 'claude')))
       ) {
         const result = await route.managedDelegation.invoke(
           params.name,
@@ -2973,16 +2981,16 @@ export class McpHttpProxyService {
       if (route.assistantMode === 'app-advisor') {
         const canonicalKey = getClaudeTerminalAppAdvisorToolKey(params.name);
         if (!canonicalKey) {
-          return jsonRpcError(id, -32602, 'Unknown App Advisor MCP tool');
+          return jsonRpcError(id, -32602, 'Unknown Orchestrator MCP tool');
         }
         const allowedOnSurface = uiServer
           ? canonicalKey === 'ask_user_question'
           : canonicalKey !== 'ask_user_question';
         if (!allowedOnSurface) {
-          return jsonRpcError(id, -32602, 'Unknown App Advisor MCP tool');
+          return jsonRpcError(id, -32602, 'Unknown Orchestrator MCP tool');
         }
         if (!route.appAdvisorRuntime) {
-          return jsonRpcError(id, -32603, 'App Advisor runtime unavailable');
+          return jsonRpcError(id, -32603, 'Orchestrator runtime unavailable');
         }
         // Ledger calls run only on this session's own Ledger tools, bound to
         // the Work Entry it started in. A session without them refuses the
@@ -3058,11 +3066,7 @@ export class McpHttpProxyService {
             result: toMcpToolResult(result),
           };
         } catch (error) {
-          return jsonRpcError(
-            id,
-            -32603,
-            error instanceof Error ? error.message : 'Internal error',
-          );
+          return jsonRpcInternalError(id, error);
         }
       }
       if (route.assistantMode === 'pipeline-editor') {
@@ -3125,11 +3129,7 @@ export class McpHttpProxyService {
             result: toMcpToolResult(result),
           };
         } catch (error) {
-          return jsonRpcError(
-            id,
-            -32603,
-            error instanceof Error ? error.message : 'Internal error',
-          );
+          return jsonRpcInternalError(id, error);
         }
       }
       if (
@@ -3166,11 +3166,7 @@ export class McpHttpProxyService {
             }),
           };
         } catch (error) {
-          return jsonRpcError(
-            id,
-            -32603,
-            error instanceof Error ? error.message : 'Internal error',
-          );
+          return jsonRpcInternalError(id, error);
         }
       }
       if (
@@ -3207,11 +3203,7 @@ export class McpHttpProxyService {
             }),
           };
         } catch (error) {
-          return jsonRpcError(
-            id,
-            -32603,
-            error instanceof Error ? error.message : 'Internal error',
-          );
+          return jsonRpcInternalError(id, error);
         }
       }
       const canonicalKey = getClaudeCanopyToolKey(
@@ -3305,20 +3297,28 @@ export class McpHttpProxyService {
         // The MCP JSON-RPC request id is transport-local and is not the
         // Claude transcript's tool_use id. Projecting it would make the
         // browser try to correlate (for example) `"2"` with
-        // `toolu_...`, preventing Claude's intentional first-unanswered
-        // heuristic from finding the pending question. Codex supplies its
+        // `toolu_...`, preventing the question-text match (which only
+        // id-less records may use) from finding the question. Codex supplies its
         // real `codex-*` call id through the native dynamic-tool path rather
         // than this Claude HTTP proxy. SetBaseBranch also suppresses the
         // transport id because its renderer request id has process-wide
         // deduplication scope.
+        // A pipeline run replays by tool call. The bare request id restarts
+        // per connection, so it takes Claude's tool_use id, which a retry
+        // resends, or this registration's id, as App Advisor's calls do.
+        const pipelineRun =
+          canonicalKey === 'dispatch_action' &&
+          isRecord(args.action) &&
+          args.action.type === 'pipeline.run';
         const toolCallOptions: CanopyInjectedToolContext = {
           ...(canonicalKey !== 'ask_user_question' &&
           canonicalKey !== 'set_base_branch' &&
           (typeof id === 'string' || typeof id === 'number')
             ? {
-                toolUseId:
-                  canonicalKey === 'schedule_wakeup' ||
-                  canonicalKey === 'watch_command'
+                toolUseId: pipelineRun
+                  ? this.assistantToolUseId(route, id, params._meta)
+                  : canonicalKey === 'schedule_wakeup' ||
+                      canonicalKey === 'watch_command'
                     ? this.localWatcherToolCallId(route, id)
                     : this.routeToolUseId(route, id, params._meta),
               }
@@ -3354,11 +3354,7 @@ export class McpHttpProxyService {
           result: toMcpToolResult(result),
         };
       } catch (error) {
-        return jsonRpcError(
-          id,
-          -32603,
-          error instanceof Error ? error.message : 'Internal error',
-        );
+        return jsonRpcInternalError(id, error);
       }
     }
     return jsonRpcError(id, -32601, 'Method not found');

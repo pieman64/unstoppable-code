@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
+  Button,
   DetailActionBar,
   DetailActionSlotsProvider,
   DetailHeader,
@@ -159,11 +160,12 @@ export function MarketplaceDetailPageShell({
           {breadcrumbs !== undefined ? (
             breadcrumbs
           ) : onNavigateBack ? (
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="compact"
               onClick={onNavigateBack}
               data-testid="plugins-entry-detail-back"
-              className="inline-flex items-center gap-1 text-xs fg-secondary transition-colors hover:fg-primary"
             >
               <AppCatalogChevronLeftMediumIcon
                 width="12"
@@ -171,7 +173,7 @@ export function MarketplaceDetailPageShell({
                 aria-hidden
               />
               Back
-            </button>
+            </Button>
           ) : (
             <span />
           )}

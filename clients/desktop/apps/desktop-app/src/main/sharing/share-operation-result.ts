@@ -10,12 +10,9 @@ import {
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { trackCloudWrites } from '../canopy-cloud/cloud-write-tracking';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { RESOURCE_REFUSAL } from '../lib/resource-context-error';
 
 const CLOUD_DISPLAY_NAME = `${BRAND.displayName} Cloud`;
-
-/** `Resource unavailable (<reason>)` and its per-resource variants. */
-const RESOURCE_REFUSAL =
-  /^(?:resource|pipeline|skill|agent|automation|collection|plugin) unavailable \([a-z-]+\)\.?$/i;
 
 const GENERIC_MESSAGE: Record<ShareFailureKind, string> = {
   authentication: `Sign in to ${CLOUD_DISPLAY_NAME} again to share.`,

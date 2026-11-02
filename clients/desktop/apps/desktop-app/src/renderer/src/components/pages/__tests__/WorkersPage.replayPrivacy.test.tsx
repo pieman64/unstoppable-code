@@ -29,7 +29,13 @@ const worker: WorkerCardData = {
   status: 'running',
   terminalId: 'terminal-1',
   startedAt: Date.parse('2026-09-29T00:00:00.000Z'),
+  pipelineExecutionId: 'pipeline-execution-1',
   stepId: 'draft-acquisition-reply',
+  linkTarget: {
+    page: 'main',
+    kind: 'pipeline-execution',
+    pipelineExecutionId: 'pipeline-execution-1',
+  },
 };
 
 describe('WorkersPage session replay privacy', () => {

@@ -310,7 +310,7 @@ test('a long Markdown file scrolls to its end with the comments tray open', asyn
     ).toHaveCount(2);
 
     // Raw view: the editor must fit above the tray and reach the last line.
-    await window.getByTestId('file-view-toggle').click();
+    await window.getByTestId('file-view-toggle-source').click();
     const editor = window.getByTestId('monaco-file-editor');
     await expect(editor).toBeVisible({ timeout: 20_000 });
     await expect(window.getByTestId('file-comments-drawer')).toBeVisible();

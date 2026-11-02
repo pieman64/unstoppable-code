@@ -33,16 +33,16 @@ export function tryParseAndValidateYaml(
   } catch (err: unknown) {
     return {
       success: false,
-      error: `Invalid pipeline definition: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Invalid workflow definition: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
   if (!parsed || typeof parsed !== 'object') {
-    return { success: false, error: 'YAML must define a pipeline object' };
+    return { success: false, error: 'YAML must define a workflow object' };
   }
 
   if (!parsed.jobs || typeof parsed.jobs !== 'object') {
-    return { success: false, error: 'Pipeline must define a "jobs" object' };
+    return { success: false, error: 'Workflow must define a "jobs" object' };
   }
 
   const issues = getDraftValidation(parsed);

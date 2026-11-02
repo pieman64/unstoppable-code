@@ -11,7 +11,7 @@
 // corner resizes it. Background browser opens keep it floating; a file opened
 // while the chat has focus expands it. A reply that lands while the panel is
 // not focused toasts once, in the main window, never inside the panel. With
-// early access off, App Advisor is its full window as before.
+// early access off, App Advisor keeps the same floating entry point.
 //
 // Run after building the implementation:
 //   pnpm run test:electron:built app-advisor-floating.spec.mjs --reporter=line
@@ -39,6 +39,9 @@ import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverr
 
 const CAPTURE_DIR = process.env.APP_ADVISOR_FLOATING_CAPTURE_DIR;
 const PANEL_MARGIN = 16;
+// ORCHESTRATOR_LABEL from @canopy/protocol: the Orchestrator window title
+// and the name its chat toasts lead with.
+const ORCHESTRATOR_WINDOW_TITLE = 'Orchestrator';
 
 async function launch({ earlyAccess, seed }) {
   const userDataDir = mkdtempSync(
@@ -100,9 +103,9 @@ async function openFromSidebar(app, electronApp) {
  * its bounds in that window's content, and the content size.
  */
 function readAdvisorPlacement(electronApp) {
-  return electronApp.evaluate(({ BrowserWindow }) => {
+  return electronApp.evaluate(({ BrowserWindow }, windowTitle) => {
     for (const win of BrowserWindow.getAllWindows()) {
-      const host = win.getTitle() === 'App Advisor' ? 'full' : 'main';
+      const host = win.getTitle() === windowTitle ? 'full' : 'main';
       for (const child of win.contentView.children) {
         const url = child.webContents?.getURL() ?? '';
         if (!url.includes('app-advisor')) continue;
@@ -117,15 +120,17 @@ function readAdvisorPlacement(electronApp) {
       }
     }
     return null;
-  });
+  }, ORCHESTRATOR_WINDOW_TITLE);
 }
 
 /** Whether the main Canopy window is still open. */
 function readMainWindowOpen(electronApp) {
-  return electronApp.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows().some(
-      (win) => !win.isDestroyed() && win.getTitle() !== 'App Advisor',
-    ),
+  return electronApp.evaluate(
+    ({ BrowserWindow }, windowTitle) =>
+      BrowserWindow.getAllWindows().some(
+        (win) => !win.isDestroyed() && win.getTitle() !== windowTitle,
+      ),
+    ORCHESTRATOR_WINDOW_TITLE,
   );
 }
 
@@ -252,12 +257,12 @@ test('early access shows App Advisor as a panel inside the main window and expan
     );
 
     // It follows the main window as that resizes.
-    await electronApp.evaluate(({ BrowserWindow }) => {
+    await electronApp.evaluate(({ BrowserWindow }, windowTitle) => {
       const main = BrowserWindow.getAllWindows().find(
-        (win) => win.getTitle() !== 'App Advisor',
+        (win) => win.getTitle() !== windowTitle,
       );
       main?.setContentSize(1200, 800);
-    });
+    }, ORCHESTRATOR_WINDOW_TITLE);
     await expect
       .poll(async () => {
         const moved = await readAdvisorPlacement(electronApp);
@@ -386,48 +391,51 @@ test('early access shows App Advisor as a panel inside the main window and expan
  * user sees of the page. Reset on each call.
  */
 function recordAdvisorPlacements(electronApp) {
-  return electronApp.evaluate(({ BrowserWindow, View, WebContentsView }) => {
-    globalThis.__advisorPlacements = [];
-    if (globalThis.__advisorPlacementHooked) return;
-    globalThis.__advisorPlacementHooked = true;
-    let last = null;
-    const record = () => {
-      let next = { host: null, visible: false, bounds: null };
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed()) continue;
-        for (const child of win.contentView.children) {
-          const contents = child.webContents;
-          if (!contents || contents.isDestroyed()) continue;
-          if (!contents.getURL().includes('app-advisor')) continue;
-          next = {
-            host: win.getTitle() === 'App Advisor' ? 'full' : 'main',
-            visible: child.getVisible(),
-            bounds: child.getBounds(),
+  return electronApp.evaluate(
+    ({ BrowserWindow, View, WebContentsView }, windowTitle) => {
+      globalThis.__advisorPlacements = [];
+      if (globalThis.__advisorPlacementHooked) return;
+      globalThis.__advisorPlacementHooked = true;
+      let last = null;
+      const record = () => {
+        let next = { host: null, visible: false, bounds: null };
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (win.isDestroyed()) continue;
+          for (const child of win.contentView.children) {
+            const contents = child.webContents;
+            if (!contents || contents.isDestroyed()) continue;
+            if (!contents.getURL().includes('app-advisor')) continue;
+            next = {
+              host: win.getTitle() === windowTitle ? 'full' : 'main',
+              visible: child.getVisible(),
+              bounds: child.getBounds(),
+            };
+          }
+        }
+        const key = JSON.stringify(next);
+        if (key === last) return;
+        last = key;
+        globalThis.__advisorPlacements.push({ t: Date.now(), ...next });
+      };
+      for (const proto of [View.prototype, WebContentsView.prototype]) {
+        for (const name of [
+          'setVisible',
+          'setBounds',
+          'addChildView',
+          'removeChildView',
+        ]) {
+          if (!Object.prototype.hasOwnProperty.call(proto, name)) continue;
+          const original = proto[name];
+          proto[name] = function (...args) {
+            const result = original.apply(this, args);
+            record();
+            return result;
           };
         }
       }
-      const key = JSON.stringify(next);
-      if (key === last) return;
-      last = key;
-      globalThis.__advisorPlacements.push({ t: Date.now(), ...next });
-    };
-    for (const proto of [View.prototype, WebContentsView.prototype]) {
-      for (const name of [
-        'setVisible',
-        'setBounds',
-        'addChildView',
-        'removeChildView',
-      ]) {
-        if (!Object.prototype.hasOwnProperty.call(proto, name)) continue;
-        const original = proto[name];
-        proto[name] = function (...args) {
-          const result = original.apply(this, args);
-          record();
-          return result;
-        };
-      }
-    }
-  });
+    },
+    ORCHESTRATOR_WINDOW_TITLE,
+  );
 }
 
 function readAdvisorPlacements(electronApp) {
@@ -835,7 +843,7 @@ function seedClaudeAdvisor(userDataDir) {
  * native view), and App Advisor's page.
  */
 function readToasts(electronApp) {
-  return electronApp.evaluate(async ({ BrowserWindow }) => {
+  return electronApp.evaluate(async ({ BrowserWindow }, windowTitle) => {
     const script = `[...document.querySelectorAll('[data-toast-id]')].map((el) => ({ id: el.getAttribute('data-toast-id'), text: el.innerText }))`;
     const read = async (contents) =>
       contents && !contents.isDestroyed()
@@ -844,7 +852,7 @@ function readToasts(electronApp) {
     const toasts = { main: [], overlay: [], advisor: [] };
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue;
-      if (win.getTitle() !== 'App Advisor') {
+      if (win.getTitle() !== windowTitle) {
         toasts.main.push(...(await read(win.webContents)));
       }
       for (const child of win.contentView.children ?? []) {
@@ -857,7 +865,7 @@ function readToasts(electronApp) {
       }
     }
     return toasts;
-  });
+  }, ORCHESTRATOR_WINDOW_TITLE);
 }
 
 test('an App Advisor reply that lands while the floating panel is unfocused toasts once, in the main window', async () => {
@@ -890,12 +898,12 @@ test('an App Advisor reply that lands while the floating panel is unfocused toas
     ).toBeVisible({ timeout: 60_000 });
 
     // The person returns to the main window; the panel stays open.
-    await electronApp.evaluate(({ BrowserWindow }) => {
+    await electronApp.evaluate(({ BrowserWindow }, windowTitle) => {
       const main = BrowserWindow.getAllWindows().find(
-        (win) => win.getTitle() !== 'App Advisor',
+        (win) => win.getTitle() !== windowTitle,
       );
       main?.webContents.focus();
-    });
+    }, ORCHESTRATOR_WINDOW_TITLE);
     await expect
       .poll(() =>
         electronApp.evaluate(({ BrowserWindow }) => {
@@ -925,7 +933,7 @@ test('an App Advisor reply that lands while the floating panel is unfocused toas
         const toasts = await readToasts(electronApp);
         return new Set(
           [...toasts.main, ...toasts.overlay]
-            .filter((toast) => toast.text.includes('App Advisor'))
+            .filter((toast) => toast.text.includes(ORCHESTRATOR_WINDOW_TITLE))
             .map((toast) => toast.id),
         ).size;
       })
@@ -944,17 +952,16 @@ test('an App Advisor reply that lands while the floating panel is unfocused toas
   }
 });
 
-test('without early access App Advisor opens as the full window', async () => {
+test('without early access App Advisor still opens floating', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, app } = await launch({
     earlyAccess: false,
   });
   try {
-    const advisor = await app.openAppAdvisorWindow(electronApp);
-    await expect(advisor.getByTestId('app-advisor-nav')).toBeVisible();
-    await expect(advisor.getByTestId('app-advisor-floating')).toHaveCount(0);
-    // Its page is the full window's own, not a view in the main window.
-    expect(await readAdvisorPlacement(electronApp)).toBeNull();
+    const advisor = await openFromSidebar(app, electronApp);
+    await expect(advisor.getByTestId('app-advisor-nav')).toHaveCount(0);
+    await expect(advisor.getByTestId('app-advisor-floating')).toBeVisible();
+    expect((await readAdvisorPlacement(electronApp)).host).toBe('main');
 
     if (CAPTURE_DIR) {
       mkdirSync(CAPTURE_DIR, { recursive: true });

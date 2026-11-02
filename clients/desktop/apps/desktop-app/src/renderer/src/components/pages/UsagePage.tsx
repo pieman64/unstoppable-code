@@ -1,44 +1,16 @@
 import { type JSX, useEffect, useState } from 'react';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import {
+  formatUsageUpdatedPhrase,
+  UsageRefreshButton,
+} from '@canopy/ui-shared';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeading } from '../shared/PageHeading';
+import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import { useObservabilityStore } from '@/stores/observabilityStore';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { refreshAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
-import {
-  ProviderUsageCards,
-  selectAccountProviderUsageSummaries,
-} from './usage/ProviderUsageCards';
+import { ProviderUsageCards } from './usage/ProviderUsageCards';
 import { AiCreditsUsageCard } from './usage/AiCreditsUsageCard';
-
-/**
- * Refresh every usage card shown on the page, as if the user had clicked each
- * card's refresh button. The cards keep their current values while each
- * refresh runs; only their refresh buttons spin.
- */
-async function refreshAllUsage(isActive: () => boolean): Promise<void> {
-  refreshAiCreditsUsage();
-  const { initialize } = useObservabilityStore.getState();
-  await initialize();
-  if (!isActive()) {
-    return;
-  }
-  const { usage, refreshProviderUsage } = useObservabilityStore.getState();
-  const cursorEnabled = useFeatureFlagsStore
-    .getState()
-    .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key);
-  const copilotEnabled = useFeatureFlagsStore
-    .getState()
-    .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key);
-  for (const provider of selectAccountProviderUsageSummaries(
-    usage,
-    cursorEnabled,
-    copilotEnabled,
-  )) {
-    void refreshProviderUsage(provider.provider).catch(() => undefined);
-  }
-}
+import { InterruptedSessionsNotice } from './usage/InterruptedSessionsNotice';
+import { refreshAllUsage, useUsageRefresh } from './usage/useUsageRefresh';
 
 export function UsagePage(): JSX.Element {
   const usage = useObservabilityStore((s) => s.usage);
@@ -52,6 +24,9 @@ export function UsagePage(): JSX.Element {
     (s) => s.refreshingProviders,
   );
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const { updatedAt, refreshing, refresh } = useUsageRefresh({
+    includeAiCredits: true,
+  });
 
   useEffect(() => {
     let active = true;
@@ -66,27 +41,41 @@ export function UsagePage(): JSX.Element {
     return (): void => clearInterval(interval);
   }, []);
 
+  const updated = refreshing
+    ? 'Updating…'
+    : formatUsageUpdatedPhrase(updatedAt, nowMs);
+
   return (
     <section
       className="page-scroll-gutter h-full overflow-auto"
       data-testid="page-usage"
     >
       <PageTitlebar />
-      <PageContent stack>
-        <PageHeading
-          title="Usage"
-          subtitle="Subscription usage, remaining limits, and provider account details."
-        />
-
-        <div className="space-y-4">
-          <ProviderUsageCards
-            nowMs={nowMs}
-            usage={usage}
-            refreshingProviders={refreshingProviders}
-            refreshProviderUsage={refreshProviderUsage}
-            refreshProviderUsageDetails={refreshProviderUsageDetails}
+      <PageContent>
+        <div className="mx-auto w-full max-w-160">
+          <PageHeader
+            title="Usage"
+            description={
+              <span data-testid="usage-updated-line">
+                Limits for each account
+                {updated ? ` · ${updated}` : ''}
+              </span>
+            }
+            actions={
+              <UsageRefreshButton refreshing={refreshing} onRefresh={refresh} />
+            }
           />
-          <AiCreditsUsageCard />
+          <div className="mt-6 flex flex-col gap-8">
+            <InterruptedSessionsNotice />
+            <ProviderUsageCards
+              nowMs={nowMs}
+              usage={usage}
+              refreshingProviders={refreshingProviders}
+              refreshProviderUsage={refreshProviderUsage}
+              refreshProviderUsageDetails={refreshProviderUsageDetails}
+            />
+            <AiCreditsUsageCard />
+          </div>
         </div>
       </PageContent>
     </section>

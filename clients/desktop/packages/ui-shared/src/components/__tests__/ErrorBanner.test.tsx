@@ -106,7 +106,7 @@ describe('ErrorBanner', () => {
     },
   );
 
-  it('renders a retry action in the notice actions slot', () => {
+  it('renders a Try again action in the notice actions slot', () => {
     const onRetry = jest.fn();
     act(() => {
       root.render(
@@ -117,8 +117,10 @@ describe('ErrorBanner', () => {
       );
     });
     const button = notice()?.querySelector('button');
-    expect(button?.textContent).toBe('Retry');
+    expect(button?.textContent).toBe('Try again');
     expect(button?.getAttribute('type')).toBe('button');
+    // The button says it, so the message drops its own closing `Try again.`
+    expect(notice()?.textContent).toBe("Couldn't load this.Try again");
     act(() => {
       button?.click();
     });
@@ -140,8 +142,36 @@ describe('ErrorBanner', () => {
     );
   });
 
-  it('shows no action without onRetry', () => {
+  it('shows no action without onRetry, and keeps the copy whole', () => {
     render("Couldn't load this. Try again.");
     expect(notice()?.querySelector('button')).toBeNull();
+    expect(notice()?.textContent).toBe("Couldn't load this. Try again.");
+  });
+
+  it('keeps the copy whole beside a differently named action', () => {
+    act(() => {
+      root.render(
+        <ErrorBanner
+          error="Couldn't scan scripts. Try again."
+          onRetry={jest.fn()}
+          retryLabel="Rescan"
+        />,
+      );
+    });
+    expect(notice()?.textContent).toBe(
+      "Couldn't scan scripts. Try again.Rescan",
+    );
+  });
+
+  it('keeps a reason that only starts with Try again', () => {
+    act(() => {
+      root.render(
+        <ErrorBanner
+          error="GitHub rate limit reached. Try again in a minute."
+          onRetry={jest.fn()}
+        />,
+      );
+    });
+    expect(notice()?.textContent).toContain('Try again in a minute.');
   });
 });

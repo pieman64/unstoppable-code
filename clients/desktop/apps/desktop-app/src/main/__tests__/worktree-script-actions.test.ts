@@ -30,6 +30,8 @@ jest.mock('../lib/workspace-persistence', () => ({
   readWorkspaceConfig: jest.fn(),
   readWorkspaceWorktrees: jest.fn(),
 }));
+// Script actions do not use the Codex client; isolate its unrelated runtime cycle.
+jest.mock('../codex/app-server-client', () => ({}));
 jest.mock('../lib/window-send', () => ({
   sendToWindow: jest.fn(() => true),
 }));

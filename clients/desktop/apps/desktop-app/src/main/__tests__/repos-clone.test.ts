@@ -1,9 +1,11 @@
 import { stat } from 'node:fs/promises';
 import { statSync } from 'node:fs';
+import type { IpcMainInvokeEvent } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { cloneRepo, getRemoteUrl, isGitRepo } from '../lib/git';
 import { registerIpcHandler } from '../ipc/register';
 import { registerRepoHandlers } from '../ipc/repos';
+import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
 
 jest.mock('node:fs/promises', () => ({
   mkdir: jest.fn(() => Promise.resolve()),
@@ -22,13 +24,17 @@ jest.mock('../lib/git', () => ({
   getRemoteUrl: jest.fn(),
 }));
 
-function handler(channel: string): (...args: unknown[]) => unknown {
+function handler(
+  channel: string,
+): (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown {
   const call = jest
     .mocked(registerIpcHandler)
     .mock.calls.find(([name]) => name === channel);
   if (!call) throw new Error(`Missing handler ${channel}`);
   return call[1];
 }
+
+const event = {} as IpcMainInvokeEvent;
 
 describe('repository clone-only entrypoints', () => {
   beforeEach(() => {
@@ -38,7 +44,7 @@ describe('repository clone-only entrypoints', () => {
       .mockRejectedValue(
         Object.assign(new Error('missing'), { code: 'ENOENT' }),
       );
-    registerRepoHandlers();
+    registerRepoHandlers(unusedGitReadRuntime());
   });
 
   it.each(['tree/main/pstack', 'blob/main/pstack/README.md'])(
@@ -49,13 +55,10 @@ describe('repository clone-only entrypoints', () => {
         .mocked(getRemoteUrl)
         .mockResolvedValue('https://github.com/cursor/plugins.git');
       await expect(
-        handler(IPC_CHANNELS.repoProbeCloneDestination)(
-          {},
-          {
-            remoteUrl: `https://github.com/cursor/plugins/${suffix}`,
-            destinationDir: '/repos',
-          },
-        ),
+        handler(IPC_CHANNELS.repoProbeCloneDestination)(event, {
+          remoteUrl: `https://github.com/cursor/plugins/${suffix}`,
+          destinationDir: '/repos',
+        }),
       ).resolves.toEqual({
         repoName: 'plugins',
         candidateExists: true,
@@ -74,13 +77,10 @@ describe('repository clone-only entrypoints', () => {
       );
     });
     await expect(
-      handler(IPC_CHANNELS.repoAddRemote)(
-        {},
-        {
-          remoteUrl: ' https://github.com/cursor/plugins/tree/main/pstack ',
-          destinationDir: '/repos',
-        },
-      ),
+      handler(IPC_CHANNELS.repoAddRemote)(event, {
+        remoteUrl: ' https://github.com/cursor/plugins/tree/main/pstack ',
+        destinationDir: '/repos',
+      }),
     ).resolves.toEqual({ name: 'plugins', path: '/repos/plugins-2' });
     expect(cloneRepo).toHaveBeenCalledWith(
       'https://github.com/cursor/plugins',
@@ -94,13 +94,10 @@ describe('repository clone-only entrypoints', () => {
       .mocked(getRemoteUrl)
       .mockResolvedValue('https://github.com/other/plugins');
     await expect(
-      handler(IPC_CHANNELS.repoProbeCloneDestination)(
-        {},
-        {
-          remoteUrl: 'https://github.com/cursor/plugins/tree/main/pstack',
-          destinationDir: '/repos',
-        },
-      ),
+      handler(IPC_CHANNELS.repoProbeCloneDestination)(event, {
+        remoteUrl: 'https://github.com/cursor/plugins/tree/main/pstack',
+        destinationDir: '/repos',
+      }),
     ).resolves.toEqual({
       repoName: 'plugins',
       candidateExists: true,
@@ -110,13 +107,10 @@ describe('repository clone-only entrypoints', () => {
 
   it('preserves destination validation', async () => {
     await expect(
-      handler(IPC_CHANNELS.repoAddRemote)(
-        {},
-        {
-          remoteUrl: 'https://github.com/cursor/plugins/tree/main/pstack',
-          destinationDir: 'relative',
-        },
-      ),
+      handler(IPC_CHANNELS.repoAddRemote)(event, {
+        remoteUrl: 'https://github.com/cursor/plugins/tree/main/pstack',
+        destinationDir: 'relative',
+      }),
     ).rejects.toThrow('Destination directory must be an absolute path');
     expect(cloneRepo).not.toHaveBeenCalled();
   });

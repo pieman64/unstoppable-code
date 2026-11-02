@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  *
  * Server-rendered tests for the shared plan/review comment-thread primitives.
- * Covers the canonical "pending" badge (chip shape, warning color — the
+ * Covers the canonical "Not sent" badge (chip shape, warning color — the
  * single source of truth both the Plan Explore and Code Review surfaces
  * consume) and the shared edit/delete action buttons.
  */
@@ -16,8 +16,8 @@ import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 const AUTHOR: PlanReviewAuthor = { name: 'You', kind: 'user', isYou: true };
 
-describe('PlanReviewComment pending badge', () => {
-  it('renders the pending badge as a warning-colored chip when pending', () => {
+describe('PlanReviewComment unsent badge', () => {
+  it('labels an unsent comment "Not sent" with a decorative warning icon', () => {
     const html = renderToString(
       <ul>
         <PlanReviewComment author={AUTHOR} pending>
@@ -25,20 +25,21 @@ describe('PlanReviewComment pending badge', () => {
         </PlanReviewComment>
       </ul>,
     );
-    expect(html).toContain('pending');
-    expect(html).toContain('rounded-full');
-    expect(html).toContain('bg-warning-subtle');
+    expect(html).toContain('Not sent');
+    expect(html).not.toContain('>pending<');
     expect(html).toContain('fg-warning');
+    expect(html).toMatch(/<svg[^>]*aria-hidden="true"/);
+    expect(html).toMatch(/<svg[^>]*width="12px"[^>]*height="12px"/);
   });
 
-  it('omits the pending badge when not pending', () => {
+  it('omits the badge when the comment was sent', () => {
     const html = renderToString(
       <ul>
         <PlanReviewComment author={AUTHOR}>body</PlanReviewComment>
       </ul>,
     );
+    expect(html).not.toContain('Not sent');
     expect(html).not.toContain('bg-warning-subtle');
-    expect(html).not.toContain('>pending<');
   });
 });
 

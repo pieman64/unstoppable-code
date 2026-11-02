@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import { Button, Notice, NoticeButton } from '@canopy/ui-shared/components';
 import {
   GitPullRequestIcon,
   SplitPrIcon,
@@ -144,9 +144,6 @@ function formatSplitPlanIssue(issue: SplitPlanIssue): string {
  */
 const SPLIT_PR_REFUSAL_ISSUES_DISPLAY_CAP = 8;
 
-const SPLIT_ACTION_BUTTON_CLASS =
-  'focus-ring rounded-md border px-2.5 py-1 text-xs fg-primary/80 transition hover:bg-fg-primary/[0.06] hover:fg-primary';
-
 function SplitProgressOverlay({
   view,
   isSplitting,
@@ -174,44 +171,40 @@ function SplitProgressOverlay({
       <SplitProgressChecklist view={view} />
       <div className="flex flex-wrap gap-2">
         {isSplitting && (
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onCancel}
-            className={SPLIT_ACTION_BUTTON_CLASS}
             data-testid="split-progress-cancel"
           >
             Cancel
-          </button>
+          </Button>
         )}
         {view.terminal === 'error' && canRetry && (
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onRetry}
-            className={SPLIT_ACTION_BUTTON_CLASS}
             data-testid="split-progress-retry"
           >
             Retry
-          </button>
+          </Button>
         )}
         {view.terminal === 'error' && canEditPlan && (
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onEditPlan}
-            className={SPLIT_ACTION_BUTTON_CLASS}
             data-testid="split-progress-edit-plan"
           >
             Edit plan
-          </button>
+          </Button>
         )}
         {(view.terminal === 'error' || view.terminal === 'cancelled') && (
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={onDismiss}
-            className={SPLIT_ACTION_BUTTON_CLASS}
             data-testid="split-progress-dismiss"
           >
             Dismiss
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -240,38 +233,36 @@ function SplitResultView({
       {(map.status === 'failed' || map.status === 'cancelled') && (
         <div className="space-y-1.5">
           {canResume ? (
-            <button
-              type="button"
+            <Button
+              size="compact"
               onClick={onResume}
-              className={SPLIT_ACTION_BUTTON_CLASS}
               data-testid="split-result-resume"
             >
               Resume split
-            </button>
+            </Button>
           ) : (
             <>
               <p className="text-2xs fg-secondary">
                 Resuming needs the reviewed plan, which is no longer available.
                 Plan a new split to continue.
               </p>
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={onPlanNewSplit}
-                className={SPLIT_ACTION_BUTTON_CLASS}
                 data-testid="split-result-replan"
               >
                 Plan new split
-              </button>
+              </Button>
             </>
           )}
-          <button
-            type="button"
+          <Button
+            variant="ghost-destructive"
+            size="compact"
             onClick={onDiscard}
-            className={SPLIT_ACTION_BUTTON_CLASS}
             data-testid="split-pr-discard"
           >
             Discard split state
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -917,24 +908,18 @@ export function PullRequestSection({
                   .map((blocker) => SPLIT_PR_BLOCKER_COPY[blocker])
                   .join('\n')}
               >
-                <button
-                  type="button"
-                  disabled
-                  className={`${SPLIT_ACTION_BUTTON_CLASS} inline-flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-60`}
-                  data-testid="split-pr-button"
-                >
+                <Button size="compact" disabled data-testid="split-pr-button">
                   <SplitPrIcon className="h-3.5 w-3.5" />
                   Split PR
                   {splitLineCount !== undefined
                     ? ` (${splitLineCount.toLocaleString()} changed lines)`
                     : ''}
-                </button>
+                </Button>
               </ActionTooltip>
             ) : (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={() => openSplitPreflight(projectId, worktreeId)}
-                className={`${SPLIT_ACTION_BUTTON_CLASS} inline-flex items-center gap-1.5`}
                 data-testid="split-pr-button"
               >
                 <SplitPrIcon className="h-3.5 w-3.5" />
@@ -942,7 +927,7 @@ export function PullRequestSection({
                 {splitLineCount !== undefined
                   ? ` (${splitLineCount.toLocaleString()} changed lines)`
                   : ''}
-              </button>
+              </Button>
             )}
           </div>
         )}

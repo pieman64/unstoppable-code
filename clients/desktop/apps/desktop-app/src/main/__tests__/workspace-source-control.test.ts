@@ -893,6 +893,7 @@ describe('project source control helpers', () => {
       try {
         const result = await buildWorkspaceManifest({
           version: 1,
+          type: 'multi-repo',
           repos: [
             {
               id: 'repo-a',
@@ -941,6 +942,7 @@ describe('project source control helpers', () => {
       try {
         const result = await buildWorkspaceManifest({
           version: 1,
+          type: 'multi-repo',
           repos: [
             {
               id: 'repo-a',
@@ -972,7 +974,11 @@ describe('project source control helpers', () => {
               }
             : undefined,
         );
-        expect(result.manifest.repos[0]?.hooks).toEqual({
+        const manifestRepos = result.manifest.repos;
+        if (manifestRepos === undefined) {
+          throw new Error('Expected workspace manifest repositories');
+        }
+        expect(manifestRepos[0]?.hooks).toEqual({
           'pr:create': [
             {
               type: 'chat',
@@ -1035,7 +1041,11 @@ describe('project source control helpers', () => {
       ],
       'pr:merged': null,
     });
-    expect(result.manifest.repos[0]?.hooks).toEqual({
+    const manifestRepos = result.manifest.repos;
+    if (manifestRepos === undefined) {
+      throw new Error('Expected workspace manifest repositories');
+    }
+    expect(manifestRepos[0]?.hooks).toEqual({
       'pr:create': [{ type: 'command', command: 'echo source controlled' }],
       'pr:closed': [{ type: 'chat', prompt: 'Retain only my selections' }],
       'pr:merged': null,

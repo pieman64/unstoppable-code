@@ -4,6 +4,7 @@ import {
   type CuratedMcpServerEntry,
 } from '@canopy/protocol/mcp-catalog';
 import type { McpServerIndexEntry } from '@canopy/desktop-shared/types/mcp-servers';
+import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '../shared/DialogModal';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -242,17 +243,17 @@ function CuratedCard({ entry, onOpen, onAdd }: CuratedCardProps): JSX.Element {
         </div>
       </div>
       <div className="flex justify-end">
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
           onClick={(event) => {
             event.stopPropagation();
             onAdd(entry);
           }}
           data-testid="mcp-browse-card-add"
-          className="focus-ring rounded-md bg-accent px-2.5 py-1 text-2xs font-medium fg-emphasis transition-colors hover:bg-accent/90"
         >
           Add
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -1,5 +1,11 @@
 import type { IpcMainInvokeEvent } from 'electron';
-import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
+  CANOPY_INSTRUCTION_DEFINITIONS,
+  CANOPY_QUERY_DEFINITIONS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import type { RepoRulesPolicy } from '@canopy/core-runtime/node/workspace/repo-rules';
+import { createCoreWorkspaceRepoRulesHandlers } from '@canopy/core-runtime/node/workspace/workspace-repo-rules';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { registerRepoRulesHandlers } from '../ipc/repo-rules';
@@ -16,28 +22,76 @@ jest.mock('../ipc/register', () => ({
     handlers.set(channel, handler);
   },
 }));
-const scan = jest.fn(() => Promise.resolve({ proposals: [] }));
-const apply = jest.fn(() => Promise.resolve({ enabled: false }));
-const status = jest.fn(() => Promise.resolve({ enabled: false }));
-const preview = jest.fn(() => ({ body: 'snapshot' }));
-const resolveCheckouts = jest.fn(() => Promise.resolve([]));
+const scan = jest.fn<Promise<{ proposals: never[] }>, [unknown, unknown]>(() =>
+  Promise.resolve({ proposals: [] }),
+);
+const apply = jest.fn<Promise<{ enabled: boolean }>, [unknown, unknown]>(() =>
+  Promise.resolve({ enabled: false }),
+);
+const status = jest.fn<Promise<{ enabled: boolean }>, [unknown]>(() =>
+  Promise.resolve({ enabled: false }),
+);
+const preview = jest.fn<{ body: string }, [unknown, unknown]>(() => ({
+  body: 'snapshot',
+}));
+const resolveCheckouts = jest.fn<Promise<never[]>, [unknown]>(() =>
+  Promise.resolve([]),
+);
 jest.mock('../repo-rules/host', () => ({
   repoRulesService: {
-    scan: (...args: unknown[]): ReturnType<typeof scan> => scan(...args),
-    apply: (...args: unknown[]): ReturnType<typeof apply> => apply(...args),
-    status: (...args: unknown[]): ReturnType<typeof status> => status(...args),
-    preview: (...args: unknown[]): ReturnType<typeof preview> =>
-      preview(...args),
+    scan: (session: unknown, request: unknown): ReturnType<typeof scan> =>
+      scan(session, request),
+    apply: (session: unknown, request: unknown): ReturnType<typeof apply> =>
+      apply(session, request),
+    status: (workspaceId: unknown): ReturnType<typeof status> =>
+      status(workspaceId),
+    preview: (session: unknown, request: unknown): ReturnType<typeof preview> =>
+      preview(session, request),
   },
   resolveRepoRuleCheckouts: (
-    ...args: unknown[]
-  ): ReturnType<typeof resolveCheckouts> => resolveCheckouts(...args),
+    request: unknown,
+  ): ReturnType<typeof resolveCheckouts> => resolveCheckouts(request),
 }));
 
-let query: jest.Mock<
-  Promise<{ kind?: string; workspaceId?: string }>,
-  [string]
->;
+const repoRules = createCoreWorkspaceRepoRulesHandlers({
+  load: () =>
+    Promise.resolve({
+      policy: { scan, apply, status, preview } as unknown as RepoRulesPolicy,
+    }),
+});
+type Call = [string, unknown, { caller: CanopyCallerDescriptor }];
+// Stands in for the dispatcher: checks each call's grants and runs the core
+// repo-rules handlers in process.
+function dispatch(
+  definitions: Record<
+    string,
+    {
+      requiredGrants: readonly CanopyCallerDescriptor['grants'][number][];
+    }
+  >,
+  handlers: Record<string, (params: never, context: never) => unknown>,
+): jest.Mock<Promise<unknown>, Call> {
+  return jest.fn((name: string, params: unknown, options) => {
+    const required = definitions[name]?.requiredGrants ?? [];
+    if (required.some((grant) => !options.caller.grants.includes(grant)))
+      return Promise.reject(new Error(`${name} lacks a grant`));
+    const handler = handlers[name];
+    if (handler)
+      return Promise.resolve(
+        Reflect.apply(handler, undefined, [
+          params,
+          { caller: options.caller, requestId: 'r', metadata: {} },
+        ]),
+      );
+    return Promise.resolve(
+      name === 'core.workspace.get'
+        ? { kind: 'git' }
+        : { workspaceId: 'workspace-1' },
+    );
+  });
+}
+let query: jest.Mock<Promise<unknown>, Call>;
+let instruction: jest.Mock<Promise<unknown>, Call>;
 let caller: CanopyCallerDescriptor;
 const event = {} as IpcMainInvokeEvent;
 const scanId = '12345678-1234-4234-8234-123456789abc';
@@ -51,15 +105,13 @@ beforeEach(() => {
     interfaceKind: 'desktop',
     grants: [],
   };
-  query = jest.fn((name: string) =>
-    Promise.resolve(
-      name === 'core.workspace.get'
-        ? { kind: 'git' }
-        : { workspaceId: 'workspace-1' },
-    ),
+  query = dispatch(CANOPY_QUERY_DEFINITIONS, repoRules.queries);
+  instruction = dispatch(
+    CANOPY_INSTRUCTION_DEFINITIONS,
+    repoRules.instructions,
   );
   registerRepoRulesHandlers(
-    { query } as unknown as DesktopCanopyDispatcher,
+    { query, instruction } as unknown as DesktopCanopyDispatcher,
     () => caller,
   );
 });
@@ -73,9 +125,10 @@ it('authorizes workspace/worktree through the existing dispatcher before scannin
     workspaceId: 'workspace-1',
     worktreeId: 'worktree-1',
   });
-  expect(query.mock.calls.map((c) => c[0])).toEqual([
-    'core.workspace.get',
-    'core.worktree.get',
+  expect(query.mock.calls.map((c) => [c[0], c[2].caller.grants])).toEqual([
+    ['core.workspace.get', ['core.workspace.read']],
+    ['core.worktree.get', ['core.worktree.read']],
+    ['core.workspace.repoRules.scan', ['core.workspace.read']],
   ]);
   expect(scan).toHaveBeenCalledWith('local-desktop-user:window-1', {
     workspaceId: 'workspace-1',
@@ -92,7 +145,8 @@ it('rejects caller-supplied paths, unsafe IDs, cross-workspace worktrees and unt
   await expect(
     invoke(IPC_CHANNELS.repoRulesScan, { workspaceId: '../bad' }),
   ).rejects.toThrow();
-  query.mockResolvedValue({ kind: 'git', workspaceId: 'other' });
+  query.mockResolvedValueOnce({ kind: 'git' });
+  query.mockResolvedValueOnce({ workspaceId: 'other' });
   await expect(
     invoke(IPC_CHANNELS.repoRulesScan, {
       workspaceId: 'workspace-1',
@@ -112,6 +166,9 @@ it('queries policy and disables without resolving repositories or scanning', asy
     enabled: false,
   });
   expect(status).toHaveBeenCalledWith('workspace-1');
+  expect(instruction.mock.calls.map((c) => [c[0], c[2].caller.grants])).toEqual(
+    [['core.workspace.repoRules.apply', ['core.workspace.write']]],
+  );
   expect(apply).toHaveBeenCalledWith('local-desktop-user:window-1', {
     workspaceId: 'workspace-1',
     enabled: false,

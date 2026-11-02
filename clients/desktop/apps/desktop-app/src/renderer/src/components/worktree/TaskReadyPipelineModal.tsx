@@ -65,9 +65,9 @@ export function TaskReadyPipelineModal({
     <PipelineTriggerModal
       triggerType="task_ready"
       labels={{
-        title: 'Run task pipeline',
-        selectSubtitle: 'Select a pipeline with task_ready trigger',
-        emptyMessage: 'No pipelines with task_ready trigger found',
+        title: 'Run task workflow',
+        selectSubtitle: 'Select a workflow with task_ready trigger',
+        emptyMessage: 'No workflows with task_ready trigger found',
       }}
       cwd={cwd}
       repoChoices={repoChoices}

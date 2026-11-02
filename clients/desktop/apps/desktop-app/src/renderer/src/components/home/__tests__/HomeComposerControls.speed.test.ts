@@ -1,11 +1,9 @@
 /**
  * @jest-environment node
  */
-// Source-level coverage for the Home speed wiring, following the other Home
-// composer suites: the effort panel, cycle, availability view, and step-down
-// carry their own behavioral tests (`ThinkingLevelControl`,
-// `CodexSpeedControl`, `useCodexSpeedControl`, `useCodexSpeedDowngrade`), and
-// the Electron Home handoff specs drive the real Regular/Fast/Ultra fast flow.
+// Keep the Home route-projection boundary guard until an integration test
+// covers Auto/AI Credits invalidation. The shared speed-control suites and
+// Electron Home handoff specs cover speed cycling and persisted handoffs.
 // eslint-disable-next-line no-restricted-imports
 import { readFileSync } from 'node:fs';
 // eslint-disable-next-line no-restricted-imports
@@ -17,23 +15,6 @@ const SOURCE = readFileSync(
 );
 
 describe('HomeComposerControls Codex speed', () => {
-  it('stages an exact speed rather than toggling the legacy boolean', () => {
-    expect(SOURCE).not.toContain('setFastMode(');
-    expect(SOURCE).not.toContain('resolveHomeFastMode');
-    expect(SOURCE).toContain('resolveHomeSpeed(');
-    expect(SOURCE).toContain('setSpeed(');
-  });
-
-  it('keeps speed in the effort panel bolt, with Ultra fast as its third state', () => {
-    // No separate speed chip beside the effort trigger, as on develop.
-    expect(SOURCE).not.toContain('buildCodexSpeedChip');
-    expect(SOURCE).not.toContain("'home-fast-mode-button'");
-    expect(SOURCE).toContain('fastMode: {');
-    expect(SOURCE).toContain("on: effectiveSpeed !== 'standard'");
-    expect(SOURCE).toContain("ultra: effectiveSpeed === 'ultrafast'");
-    expect(SOURCE).toContain('onToggle: cycleSpeed');
-  });
-
   it('cycles with availability for the draft route, including Auto and the billing lane', () => {
     // Availability comes from the host's Home-scoped route projection, never
     // from the global catalog alone.

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getGitExecutableCommand } from '@canopy/desktop-shared/lib/git-executable';
-import { runCodeGraphMigrations } from '@canopy/desktop-shared/node/code-graph/store/migrations';
+import { runCodeGraphMigrations } from '@canopy/code-graph/store/migrations';
 import {
   CODE_GRAPH_MAX_FILE_BYTES,
   CODE_GRAPH_SCHEMA_VERSION,
@@ -21,11 +21,12 @@ import {
   readCodeGraphFingerprintMetadata,
   setMetadataValue,
   type CodeGraphFingerprintMetadata,
-} from '@canopy/desktop-shared/node/code-graph/store/database';
+} from '@canopy/code-graph/store/database';
 import { fingerprintCodeGraphWorktree } from '../lib/code-graph-worktree-fingerprint-core';
 import {
   persistCodeGraphWorktreeFingerprint,
   persistStableCodeGraphWorktreeFingerprint,
+  readCodeGraphBuildStampUncached,
   readCodeGraphWorktreeCompletion,
   readPersistedCodeGraphWorktreeFingerprint,
   readPersistedCodeGraphWorktreeFingerprintSnapshot,
@@ -268,6 +269,44 @@ describe('code graph worktree fingerprint', () => {
       cacheHit: true,
     });
     expect(reader).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the build stamp through the worker on every call, bypassing the stat cache', async () => {
+    const dbPath = path.join(root, 'stamp-graph.db');
+    const db = new DatabaseSync(dbPath);
+    runCodeGraphMigrations(db);
+    db.close();
+    let stamp = '100';
+    const reader = jest.fn(
+      (): Promise<CodeGraphFingerprintMetadata> =>
+        Promise.resolve({
+          fingerprint: null,
+          schemaVersion: CODE_GRAPH_SCHEMA_VERSION,
+          extractorVersion: 7,
+          completed: true,
+          lastBuildAt: stamp,
+        }),
+    );
+    setCodeGraphFingerprintMetadataReaderForTests(reader);
+    await readPersistedCodeGraphWorktreeFingerprintSnapshot(dbPath, KEY);
+
+    // A WAL-only publication leaves graph.db's stat unchanged.
+    stamp = '101';
+    await expect(readCodeGraphBuildStampUncached(dbPath, KEY)).resolves.toBe(
+      '101',
+    );
+    expect(reader).toHaveBeenCalledTimes(2);
+    expect(reader).toHaveBeenLastCalledWith(dbPath, KEY);
+  });
+
+  it('reports an unreadable build stamp as null', async () => {
+    setCodeGraphFingerprintMetadataReaderForTests(() =>
+      Promise.reject(new Error('SQLITE_BUSY')),
+    );
+
+    await expect(
+      readCodeGraphBuildStampUncached(path.join(root, 'busy.db'), KEY),
+    ).resolves.toBeNull();
   });
 
   // The end-of-build write previously opened `graph.db` read-write on the

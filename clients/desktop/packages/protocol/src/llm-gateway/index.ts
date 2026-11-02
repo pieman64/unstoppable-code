@@ -1,4 +1,4 @@
-import type { DailyDripBlockedReason } from '../billing';
+import type { DailyDripBlockedReason, DailyDripGrantOutcome } from '../billing';
 import type {
   AiGatewayHarness,
   AiGatewayModelFamily,
@@ -393,6 +393,13 @@ export interface AiCreditsOrgPoolFunding {
 /** Current AI-credit balance for an account. */
 export interface AiCreditsBalance {
   dailyDripBlockedReason?: DailyDripBlockedReason;
+  /**
+   * What this read's daily-drip attempt did (CAN-4633). APPEND-ONLY /
+   * optional: older servers omit it, and so do reads with no user wallet.
+   */
+  dailyDripOutcome?: DailyDripGrantOutcome;
+  /** Credits the drip minted during this read; only with `granted`. */
+  dailyDripGrantedCredits?: number;
   /** Resolved account email the balance belongs to. */
   email: string;
   /** Remaining balance, expressed in credits (not USD). */
@@ -457,10 +464,10 @@ export interface OrgAiCreditsSpendable {
   canReplenish: boolean;
   /** Org carries the `org_credit_pool` capability (business plan / trial). */
   orgCreditPoolCapable: boolean;
-  /** Current org pool balance in credits. */
-  balanceCredits: number;
-  /** Current org pool balance in USD at the catalog rate. */
-  balanceUsd: number;
+  /** Current org pool balance in credits. OWNER/ADMIN only; omitted for MEMBER. */
+  balanceCredits?: number;
+  /** Current org pool balance in USD. OWNER/ADMIN only; omitted for MEMBER. */
+  balanceUsd?: number;
   /** A default payment method is on file for the org billing account. */
   hasPaymentMethodOnFile: boolean;
   /** The org has an active trial or subscription. */

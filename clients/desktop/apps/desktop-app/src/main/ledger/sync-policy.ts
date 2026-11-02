@@ -21,6 +21,9 @@ import type {
  *   is one of that organization's projects, sharing resolves to the
  *   organization, the person still belongs to it and its teams capability has
  *   not lapsed. Personal and Advisor scopes are always private.
+ * - A global (workflow) Ledger's owner is its container's, never a workspace
+ *   read: a Personal one is private, an organization's follows the same
+ *   sharing choice and membership facts.
  */
 
 /** What policy reads of a scope: the account it is bound to and where it lives. */
@@ -121,11 +124,41 @@ export function isLedgerScopeOfAccount(
   );
 }
 
+/**
+ * A global (workflow) Ledger's audience, from the owner its container pins:
+ * a Personal one is always private, and an organization's current members
+ * may read an organization's when sharing resolves to the organization, the
+ * person still belongs to it and its teams capability has not lapsed. The
+ * mirror checks all of it again before it grants anything.
+ */
+function globalAudience(
+  scope: LedgerSyncScope,
+  account: LedgerSyncAccount,
+): LedgerRequestedAudience {
+  const { container } = scope;
+  if (
+    container.kind !== 'global' ||
+    container.owner.kind !== 'organization' ||
+    account.summaries !== 'organization'
+  ) {
+    return PRIVATE_AUDIENCE;
+  }
+  const { organizationId } = container.owner;
+  if (
+    !account.organizationIds.has(organizationId) ||
+    account.lapsedOrganizationIds.has(organizationId)
+  ) {
+    return PRIVATE_AUDIENCE;
+  }
+  return { kind: 'organization_global', organizationId };
+}
+
 function organizationAudience(
   scope: LedgerSyncScope,
   account: LedgerSyncAccount,
   owner: LedgerWorkspaceOwner,
 ): LedgerRequestedAudience {
+  if (scope.container.kind === 'global') return globalAudience(scope, account);
   if (
     scope.container.kind === 'advisor_entry' ||
     owner.kind !== 'organization' ||
@@ -171,9 +204,18 @@ export function isLedgerAudienceApplied(
   applied: LedgerScopeAudience | null,
 ): boolean {
   if (applied === null) return false;
-  if (requested.kind === 'private') return applied.kind === 'private';
-  return (
-    applied.kind === 'organization' &&
-    applied.trackedWorkspaceId === requested.trackedWorkspaceId
-  );
+  switch (requested.kind) {
+    case 'private':
+      return applied.kind === 'private';
+    case 'organization':
+      return (
+        applied.kind === 'organization' &&
+        applied.trackedWorkspaceId === requested.trackedWorkspaceId
+      );
+    case 'organization_global':
+      return (
+        applied.kind === 'organization_global' &&
+        applied.organizationId === requested.organizationId
+      );
+  }
 }

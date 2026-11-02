@@ -19,6 +19,10 @@ import {
   stubPluginActivityLogoResolution,
 } from './seeders/seedPluginActivityLogos.mjs';
 import { readChatStorageIndexes } from './readChatStorage.mjs';
+import {
+  openProjectSettingsPage,
+  waitForProjectSettingsSaved,
+} from './projectSettingsDriver.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -367,7 +371,7 @@ test('project plugin settings explain catalog sources and the scope of defaults'
     await app.workspaceHeaderLabel('TypeScript pnpm Vite').hover();
     await app.workspaceSettingsButton('TypeScript pnpm Vite').click();
     const dialog = window.getByRole('dialog');
-    await dialog.getByRole('tab', { name: 'Plugins', exact: true }).click();
+    await openProjectSettingsPage(app, 'plugins');
     const explanation = dialog.getByTestId('workspace-plugin-scope-help');
     await expect(explanation).toHaveText(
       'Defaults for every chat in this project. A chat can still turn one off.',
@@ -382,6 +386,8 @@ test('project plugin settings explain catalog sources and the scope of defaults'
     );
     await expect(details).toContainText('A chat can still turn a default off');
     await expect(details).toContainText('do not install plugins');
+    // The plugin table opens from the page's "Plugins for new chats" row.
+    await dialog.getByTestId('project-settings-choose-chat-plugins').click();
     await expect(dialog.getByTestId('plugin-selector-scope')).toHaveText(
       'Provider scope: All supported providers',
     );
@@ -436,7 +442,10 @@ test('project default plugins apply live to existing chats and each chat can tur
       await app.workspaceHeaderLabel('TypeScript pnpm Vite').hover();
       await app.workspaceSettingsButton('TypeScript pnpm Vite').click();
       const settings = window.getByRole('dialog');
-      await settings.getByRole('tab', { name: 'Plugins', exact: true }).click();
+      await openProjectSettingsPage(app, 'plugins');
+      await settings
+        .getByTestId('project-settings-choose-chat-plugins')
+        .click();
       await settings.getByPlaceholder('Search by name…').fill(PLUGIN_NAME);
       const checkbox = settings.getByRole('checkbox', {
         name: `Select ${PLUGIN_NAME}`,
@@ -444,9 +453,9 @@ test('project default plugins apply live to existing chats and each chat can tur
       });
       if (enabled) await checkbox.check();
       else await checkbox.uncheck();
-      await settings
-        .getByRole('button', { name: 'Save local', exact: true })
-        .click();
+      // The page saves the choice as it is made; Back closes it.
+      await waitForProjectSettingsSaved(app);
+      await settings.getByTestId('project-settings-back').click();
       await expect(settings).toHaveCount(0);
     };
 

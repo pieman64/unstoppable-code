@@ -204,6 +204,18 @@ it('uses the core command and captured actual queue identity, reserving before d
     facts,
   );
 });
+it('fails a chat caller without a watcher destination at the reservation, sending nothing', async () => {
+  const withoutDestination: AgentChatSendContext = {
+    caller: context.caller,
+    toolUseId: 'tool-use',
+    watchers,
+  };
+  await expect(
+    dispatchAgentChatSend({ ...action, watchers: [{}] }, withoutDestination),
+  ).rejects.toMatchObject({ code: 'validation_failed' });
+  expect(watchers.reserveInlineChatWatchers).not.toHaveBeenCalled();
+  expect(mockDispatch).not.toHaveBeenCalled();
+});
 it('does not dispatch if reservation fails', async () => {
   watchers.reserveInlineChatWatchers.mockResolvedValue({
     ok: false,

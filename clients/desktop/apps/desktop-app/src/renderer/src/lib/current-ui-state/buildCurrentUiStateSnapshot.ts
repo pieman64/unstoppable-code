@@ -37,7 +37,10 @@ import {
   PIPELINE_DETAIL_PANEL_UI_STATE_KEY_PREFIX,
 } from './pipelineDetailUiState';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { normalizeManagedDelegationMaxDepth } from '@canopy/protocol/delegation/discovery';
+import {
+  normalizeManagedDelegationLifetimeLimit,
+  normalizeManagedDelegationMaxDepth,
+} from '@canopy/protocol/delegation/discovery';
 import { captureActivePlanContext } from '@/stores/activePlanStore';
 import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -695,6 +698,13 @@ export function buildCurrentUiStateSnapshot(
           maxDepth: normalizeManagedDelegationMaxDepth(
             readNumber(managedDelegationSlice.maxDepth),
           ),
+          ...(readNumber(managedDelegationSlice.lifetimeLimit) === null
+            ? {}
+            : {
+                lifetimeLimit: normalizeManagedDelegationLifetimeLimit(
+                  readNumber(managedDelegationSlice.lifetimeLimit),
+                ),
+              }),
           revocationIncomplete:
             readBoolean(managedDelegationSlice.revocationIncomplete) ?? false,
         },
@@ -982,11 +992,11 @@ export function buildCurrentUiStateSnapshot(
   const homeSurface = readObject(slices['home.surface']);
   const homeControls = readObject(slices['home.controls']);
   const homeToolbar = readObject(slices['home.toolbar']);
-  const homeOnboarding = readObject(slices['home.onboardingSuggestions']);
   const homeInterruptedBanner = readObject(
     slices['home.interruptedSessionsBanner'],
   );
   const homeMcpSignIn = readObject(slices['home.mcpSignIn']);
+  const homeContinueAttention = readObject(slices['home.continueAttention']);
   if (homeSurface || homeControls || homeToolbar) {
     const mode = readString(homeSurface?.mode);
     const targetKind = readString(homeSurface?.targetKind);
@@ -1030,6 +1040,35 @@ export function buildCurrentUiStateSnapshot(
           ? { interruptedSessionCount: count }
           : {};
       })(),
+      ...((): {
+        interruptedSessionReadyCount?: number;
+        interruptedSessionWaitingCount?: number;
+      } => {
+        const count = readNumber(homeInterruptedBanner?.count);
+        const ready = readNumber(homeInterruptedBanner?.readyCount);
+        const waiting = readNumber(homeInterruptedBanner?.waitingCount);
+        return count !== null && count > 0 && ready !== null && waiting !== null
+          ? {
+              interruptedSessionReadyCount: ready,
+              interruptedSessionWaitingCount: waiting,
+            }
+          : {};
+      })(),
+      ...(homeContinueAttention
+        ? {
+            continueAttention: {
+              questionCount:
+                readNumber(homeContinueAttention.questionCount) ?? 0,
+              toolApprovalCount:
+                readNumber(homeContinueAttention.toolApprovalCount) ?? 0,
+              planReviewCount:
+                readNumber(homeContinueAttention.planReviewCount) ?? 0,
+              unreadCount: readNumber(homeContinueAttention.unreadCount) ?? 0,
+              lastViewedVisible:
+                readBoolean(homeContinueAttention.lastViewedVisible) ?? false,
+            },
+          }
+        : {}),
       plusMenuOpen: readBoolean(homeToolbar?.plusMenuOpen) ?? false,
       scheduleModalOpen: readBoolean(homeControls?.scheduleModalOpen) ?? false,
       linearPickerOpen: readBoolean(homeControls?.linearPickerOpen) ?? false,
@@ -1037,10 +1076,6 @@ export function buildCurrentUiStateSnapshot(
         readBoolean(homeControls?.scheduleDisabledByCursor) ?? false,
       scheduleDisabledByAttachments:
         readBoolean(homeControls?.scheduleDisabledByAttachments) ?? false,
-      ...((): { onboardingSuggestions?: string[] } => {
-        const rows = readStringList(homeOnboarding?.entries, 12);
-        return rows && rows.length > 0 ? { onboardingSuggestions: rows } : {};
-      })(),
       ...readHomeMcpSignIn(homeMcpSignIn),
       ...(variant === 'page' || variant === 'embedded' ? { variant } : {}),
       ...(mode === 'chat' || mode === 'pipeline' ? { mode } : {}),
@@ -1600,20 +1635,28 @@ export function buildCurrentUiStateSnapshot(
     }
   }
 
-  const worktreeBatchRemovalSlice = readObject(
+  const worktreeBatchRemovalDialog = readBatchRemovalDialogSlice(
     slices['worktree.batchRemovalDialog'],
   );
-  if (readBoolean(worktreeBatchRemovalSlice?.open) === true) {
-    const mode = readString(worktreeBatchRemovalSlice?.mode);
-    const phase = readString(worktreeBatchRemovalSlice?.phase);
-    const count = readNumber(worktreeBatchRemovalSlice?.count);
-    if (
-      (mode === 'archive' || mode === 'delete') &&
-      (phase === 'confirm' || phase === 'running' || phase === 'results') &&
-      count !== null
-    ) {
-      snapshot.worktreeBatchRemovalDialog = { open: true, mode, count, phase };
-    }
+  if (worktreeBatchRemovalDialog) {
+    snapshot.worktreeBatchRemovalDialog = worktreeBatchRemovalDialog;
+  }
+
+  // The main rail and the App Advisor nav report under separate keys so one
+  // closing never clears the other's open dialog. An open dialog wins over
+  // rows draining in the background; otherwise the main rail wins.
+  const mainRailWorkEntryBatch = readBatchRemovalDialogSlice(
+    slices['workEntry.batchRemovalDialog'],
+  );
+  const appAdvisorBatch = readBatchRemovalDialogSlice(
+    slices['appAdvisor.batchRemovalDialog'],
+  );
+  const workEntryBatchRemovalDialog =
+    mainRailWorkEntryBatch?.open !== true && appAdvisorBatch?.open === true
+      ? appAdvisorBatch
+      : (mainRailWorkEntryBatch ?? appAdvisorBatch);
+  if (workEntryBatchRemovalDialog) {
+    snapshot.workEntryBatchRemovalDialog = workEntryBatchRemovalDialog;
   }
 
   const codeGraphPanelSlice = readObject(slices['codeGraph.detailPanel']);
@@ -1796,8 +1839,8 @@ export function buildCurrentUiStateSnapshot(
     const importPlanModalOriginChatId = readString(
       importPlanModalSlice?.originChatId,
     );
-    const importPlanModalActiveTab = readString(
-      importPlanModalSlice?.activeTab,
+    const importPlanModalSelectedGroup = readString(
+      importPlanModalSlice?.selectedGroup,
     );
     const toolApprovalDockSlice = readObject(slices['chat.toolApprovalDock']);
     const toolApprovalDockVisible = readBoolean(toolApprovalDockSlice?.visible);
@@ -2034,9 +2077,9 @@ export function buildCurrentUiStateSnapshot(
               ...(importPlanModalWorktreeId
                 ? { worktreeId: importPlanModalWorktreeId }
                 : {}),
-              ...(importPlanModalActiveTab === 'search' ||
-              importPlanModalActiveTab === 'detected'
-                ? { activeTab: importPlanModalActiveTab }
+              ...(importPlanModalSelectedGroup === 'suggestions' ||
+              importPlanModalSelectedGroup === 'files'
+                ? { selectedGroup: importPlanModalSelectedGroup }
                 : {}),
               ...(typeof importPlanModalSlice.importing === 'boolean'
                 ? { importing: importPlanModalSlice.importing }
@@ -2345,7 +2388,13 @@ export function buildCurrentUiStateSnapshot(
   );
   const pluginsSlice = readObject(slices['plugins.page']);
   const pluginsPageState = readPluginsPageUiState(pluginsSlice);
-  const pluginsManagementViewState = readPluginsManagementViewUiState(
+  // The legacy management view, its marketplace plugins modal and the
+  // Skills/Collections lists that reported `plugins.managementView`,
+  // `plugins.marketplaceModal`, `plugins.sharedSkills`,
+  // `plugins.sharedCollections` and `plugins.selectedRow` were deleted
+  // (CAN-4267). The readers stay so the snapshot contract is unchanged; with
+  // no producer they report nothing.
+  const legacyManagementViewState = readLegacyManagementViewUiState(
     readObject(slices['plugins.managementView']),
   );
   const pluginsEntryDetailState = readPluginsEntryDetailUiState(
@@ -2448,8 +2497,8 @@ export function buildCurrentUiStateSnapshot(
         }
       : {}),
     ...(pluginsPageState ? { page: pluginsPageState } : {}),
-    ...(pluginsManagementViewState
-      ? { managementView: pluginsManagementViewState }
+    ...(legacyManagementViewState
+      ? { managementView: legacyManagementViewState }
       : {}),
     ...(pluginsEntryDetailState
       ? { entryDetail: pluginsEntryDetailState }
@@ -2891,6 +2940,31 @@ export function buildCurrentUiStateSnapshot(
     snapshot.costPanels = costPanels;
   }
 
+  // The Subagents panel host reports its lifetime-limit notice; copy the
+  // documented status fields only.
+  const lifetimeSlice = readObject(slices['subagents.lifetimeLimit']);
+  if (lifetimeSlice) {
+    const notice =
+      lifetimeSlice.notice === 'none' ||
+      lifetimeSlice.notice === 'full' ||
+      lifetimeSlice.notice === 'full_at_cap' ||
+      lifetimeSlice.notice === 'unavailable'
+        ? lifetimeSlice.notice
+        : undefined;
+    const projectId = readString(lifetimeSlice.projectId);
+    const worktreeId = readString(lifetimeSlice.worktreeId);
+    if (notice && projectId && worktreeId) {
+      snapshot.subagentsLifetimeLimit = {
+        projectId,
+        worktreeId,
+        notice,
+        atLimit: readBoolean(lifetimeSlice.atLimit),
+        limit: readNumber(lifetimeSlice.limit),
+        canExtend: readBoolean(lifetimeSlice.canExtend) ?? false,
+      };
+    }
+  }
+
   // The share dialog reports while it is open; with agents switched off it
   // cannot be shown, so a lingering report is dropped.
   const agentShareModalSlice = useFeatureFlagsStore
@@ -3027,6 +3101,15 @@ export function buildCurrentUiStateSnapshot(
         : {}),
       ...(typeof usageLimitResumeModalSlice.selectedCount === 'number'
         ? { selectedCount: usageLimitResumeModalSlice.selectedCount }
+        : {}),
+      ...(typeof usageLimitResumeModalSlice.readinessPending === 'boolean'
+        ? { readinessPending: usageLimitResumeModalSlice.readinessPending }
+        : {}),
+      ...(typeof usageLimitResumeModalSlice.readyCount === 'number'
+        ? { readyCount: usageLimitResumeModalSlice.readyCount }
+        : {}),
+      ...(typeof usageLimitResumeModalSlice.waitingCount === 'number'
+        ? { waitingCount: usageLimitResumeModalSlice.waitingCount }
         : {}),
     };
   }
@@ -3479,6 +3562,22 @@ function readPluginsPageUiState(
   const view = readString(source.view);
   if (view !== 'discovery' && view !== 'management') return undefined;
   const managementSection = readManagementSection(source.managementSection);
+  const customizeTabs = [
+    'all',
+    'workflow',
+    'sources',
+    'plugin',
+    'app',
+    'skill',
+    'collection',
+    'agent',
+    'blueprint',
+  ] as const;
+  const customizeTab = customizeTabs.find((tab) => tab === source.customizeTab);
+  const installedStatusFilters = ['active', 'available', 'disabled'] as const;
+  const installedStatusFilter = installedStatusFilters.find(
+    (status) => status === source.installedStatusFilter,
+  );
   const selectedEntryId = readString(source.selectedEntryId);
   const detailHistoryDepth = readCount(source.detailHistoryDepth);
   const detailBackTarget = readString(source.detailBackTarget);
@@ -3489,6 +3588,11 @@ function readPluginsPageUiState(
   return {
     view,
     ...(managementSection ? { managementSection } : {}),
+    ...(customizeTab ? { customizeTab } : {}),
+    ...(installedStatusFilter ? { installedStatusFilter } : {}),
+    ...(typeof source.installedExpanded === 'boolean'
+      ? { installedExpanded: source.installedExpanded }
+      : {}),
     searchActive: readBoolean(source.searchActive) ?? false,
     resultCount: readCount(source.resultCount) ?? 0,
     ...(selectedEntryId ? { selectedEntryId } : {}),
@@ -3511,7 +3615,7 @@ function readPluginsPageUiState(
   };
 }
 
-function readPluginsManagementViewUiState(
+function readLegacyManagementViewUiState(
   source: Record<string, AppAdvisorJson> | null,
 ): PluginsSnapshot['managementView'] | undefined {
   if (!source) return undefined;
@@ -3886,7 +3990,9 @@ function buildActivePipelineRunSlice(
 ): Record<string, AppAdvisorJson> | null {
   const summary = findRelevantPipelineSummary(pipelineRuns, selectedWorktree);
   if (!summary) return null;
-  const executionState = pipelineRuns.statesById[summary.id];
+  const executionState =
+    pipelineRuns.statesById[summary.id] ??
+    pipelineRuns.rowStatesById[summary.id];
   const inputRequired = executionState?.pending_pauses?.some(
     (checkpoint) => checkpoint.kind === 'input' && checkpoint.request,
   );
@@ -4276,6 +4382,35 @@ function readObject(
   if (value === undefined || value === null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) return null;
   return value;
+}
+
+type BatchRemovalDialogState = NonNullable<
+  AppAdvisorUiStateSnapshot['worktreeBatchRemovalDialog']
+>;
+
+/** A bulk removal slice (worktrees or chats) with an open dialog or rows
+ * draining in the background, reduced to its open flag, mode, count, and
+ * phase; `undefined` when idle or malformed. */
+function readBatchRemovalDialogSlice(
+  value: AppAdvisorJson | undefined,
+): BatchRemovalDialogState | undefined {
+  const slice = readObject(value);
+  const open = readBoolean(slice?.open);
+  const mode = readString(slice?.mode);
+  const phase = readString(slice?.phase);
+  const count = readNumber(slice?.count);
+  // An open dialog (confirm/results), or a batch draining in the background.
+  const reportable = open === true || (open === false && phase === 'running');
+  if (
+    reportable &&
+    open !== null &&
+    (mode === 'archive' || mode === 'delete') &&
+    (phase === 'confirm' || phase === 'running' || phase === 'results') &&
+    count !== null
+  ) {
+    return { open, mode, count, phase };
+  }
+  return undefined;
 }
 
 type HomeMcpSignInState = NonNullable<

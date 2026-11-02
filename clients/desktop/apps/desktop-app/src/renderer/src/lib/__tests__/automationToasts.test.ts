@@ -81,7 +81,7 @@ describe('showAutomationCreatedToast', () => {
 
     showAutomationCreatedToast(activity);
 
-    const onClick = addToastMock.mock.calls[0]?.[2] as (() => void) | undefined;
+    const onClick = addToastMock.mock.calls[0]?.[2];
     onClick?.();
 
     expect(useNavigationStore.getState().workflowEdit).toEqual({
@@ -115,6 +115,8 @@ describe('showAutomationCreatedToast end-to-end gating', () => {
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
     });
     refreshOsNotificationPrefs({
@@ -130,6 +132,8 @@ describe('showAutomationCreatedToast end-to-end gating', () => {
         prCreate: true,
         pipeline: true,
         terminal: true,
+        runComment: true,
+        activation: true,
       },
       categorySounds: {
         chat: 'Default',
@@ -140,6 +144,8 @@ describe('showAutomationCreatedToast end-to-end gating', () => {
         prCreate: 'Default',
         pipeline: 'Default',
         terminal: 'Default',
+        runComment: 'Default',
+        activation: 'Default',
       },
     });
     useGitHubStore.setState({

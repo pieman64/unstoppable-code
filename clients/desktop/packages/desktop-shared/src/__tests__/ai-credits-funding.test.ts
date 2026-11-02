@@ -2,6 +2,7 @@ import {
   resolveAiCreditsFundingSource,
   scopeAiCreditsBalanceToWorkOwner,
 } from '../lib/ai-credits-funding';
+import type { AiCreditsBalance } from '@canopy/protocol/llm-gateway';
 import type { CanopyCloudAiCreditsState } from '../types';
 
 function makeState(
@@ -11,7 +12,12 @@ function makeState(
     connected: true,
     email: 'user@example.com',
     subscription: null,
-    balance: { email: 'user@example.com', credits: 500, eligible: true },
+    balance: {
+      email: 'user@example.com',
+      credits: 500,
+      eligible: true,
+      source: 'canopy',
+    },
     noUdAccount: false,
     error: null,
     ...overrides,
@@ -25,9 +31,10 @@ describe('scopeAiCreditsBalanceToWorkOwner', () => {
     email: 'user@example.com',
     credits: 0,
     eligible: true,
+    source: 'canopy',
     orgPool: ORG_POOL,
     orgFundingAvailable: true,
-  };
+  } satisfies AiCreditsBalance;
 
   it('keeps only the selected owner organization pool', () => {
     expect(
@@ -108,6 +115,7 @@ describe('resolveAiCreditsFundingSource', () => {
         email: 'user@example.com',
         credits: 12,
         eligible: true,
+        source: 'canopy',
         orgPool: ORG_POOL,
       },
     });
@@ -123,6 +131,7 @@ describe('resolveAiCreditsFundingSource', () => {
         email: 'user@example.com',
         credits: 0,
         eligible: false,
+        source: 'canopy',
         orgPool: ORG_POOL,
       },
     });
@@ -138,6 +147,7 @@ describe('resolveAiCreditsFundingSource', () => {
         email: 'user@example.com',
         credits: -3,
         eligible: false,
+        source: 'canopy',
         orgPool: ORG_POOL,
       },
     });
@@ -153,6 +163,7 @@ describe('resolveAiCreditsFundingSource', () => {
         email: 'user@example.com',
         credits: 0,
         eligible: false,
+        source: 'canopy',
         orgPool: null,
       },
     });
@@ -161,7 +172,12 @@ describe('resolveAiCreditsFundingSource', () => {
 
   it('treats an older server that omits orgPool entirely as no pool', () => {
     const state = makeState({
-      balance: { email: 'user@example.com', credits: 0, eligible: false },
+      balance: {
+        email: 'user@example.com',
+        credits: 0,
+        eligible: false,
+        source: 'canopy',
+      },
     });
     expect(resolveAiCreditsFundingSource(state)).toEqual({ kind: 'unknown' });
   });
@@ -172,6 +188,7 @@ describe('resolveAiCreditsFundingSource', () => {
         email: 'user@example.com',
         credits: 0,
         eligible: false,
+        source: 'canopy',
         orgPool: { orgId: 'org_1', orgName: '' },
       },
     });
@@ -197,6 +214,7 @@ describe('resolveAiCreditsFundingSource', () => {
                   email: 'user@example.com',
                   credits: c,
                   eligible: c > 0,
+                  source: 'canopy',
                   orgPool: pool,
                 },
               });

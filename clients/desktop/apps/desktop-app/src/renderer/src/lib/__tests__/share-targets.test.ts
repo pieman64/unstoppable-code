@@ -11,7 +11,12 @@ import {
 } from '../share-targets';
 import { SHARED_RESOURCE_ERROR_COPY } from '../sharedResourceErrors';
 
-const org: CanopyOrganizationSummary = { id: 'org-1', name: 'Acme' };
+const org: CanopyOrganizationSummary = {
+  id: 'org-1',
+  name: 'Acme',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
 const team: CanopyTeamSummary = {
   id: 'team-1',
   name: 'Platform',

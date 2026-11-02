@@ -1,0 +1,4251 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-broken-alias (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-broken-alias (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-indirect-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> escape/../CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-indirect-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Local",
+    "CLAUDE.md": "file (hard link): # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-link-dot-relative (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ./CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-link-dot-relative (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-stale-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on agents-stale-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on both-links (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on both-links (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOTSUP",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Outside",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file (hard link): # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on claude-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on equal-mirror (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on equal-mirror (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Shared",
+    "CLAUDE.md": "file (hard link): # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on none (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on none (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on unequal (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink on unequal (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink when symlink fails with EACCES (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "EACCES",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink when symlink fails with EACCES (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "EACCES",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink when symlink fails with ENOTSUP (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink when symlink fails with ENOTSUP (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink when symlink fails with EPERM (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "EPERM",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlink when symlink fails with EPERM (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "EPERM",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-broken-alias (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-broken-alias (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-indirect-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> escape/../CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-indirect-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Local",
+    "CLAUDE.md": "file (hard link): # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-link-dot-relative (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ./CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-link-dot-relative (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-stale-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on agents-stale-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on both-links (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on both-links (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOTSUP",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Outside",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file (hard link): # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on claude-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on equal-mirror (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on equal-mirror (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Shared",
+    "CLAUDE.md": "file (hard link): # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on none (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on none (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on unequal (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy on unequal (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy when symlink fails with EACCES (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy when symlink fails with EACCES (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy when symlink fails with ENOTSUP (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy when symlink fails with ENOTSUP (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy when symlink fails with EPERM (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden desktop ensureAgentsMdSymlinkOrCopy when symlink fails with EPERM (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-broken-alias (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-broken-alias (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-indirect-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-indirect-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Local",
+    "CLAUDE.md": "file (hard link): # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-link-dot-relative (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-link-dot-relative (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-stale-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on agents-stale-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on both-links (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on both-links (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOTSUP",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Outside",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file (hard link): # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": true,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on claude-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on equal-mirror (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on equal-mirror (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Shared",
+    "CLAUDE.md": "file (hard link): # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on none (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on none (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "ENOENT",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on unequal (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy on unequal (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy when symlink fails with EACCES (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy when symlink fails with EACCES (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy when symlink fails with ENOTSUP (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy when symlink fails with ENOTSUP (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 0,
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy when symlink fails with EPERM (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared ensureAgentsMdSymlinkOrCopy when symlink fails with EPERM (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-broken-alias (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-broken-alias (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "directory",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "directory",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ../outside.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ../outside.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-indirect-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> escape/../CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-indirect-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> escape/../CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-link-dot-relative (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ./CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-link-dot-relative (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ./CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-stale-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on agents-stale-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on both-links (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on both-links (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-directory (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-directory (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-escape (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-escape (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-link (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-link (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-link-dangling (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-link-dangling (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-only (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on claude-only (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on equal-mirror (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on equal-mirror (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": true,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on none (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on none (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": true,
+  "expectedBefore": false,
+  "result": "linked",
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on unequal (darwin) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd on unequal (win32) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "expectedAfter": false,
+  "expectedBefore": false,
+  "result": {
+    "error": "EEXIST",
+  },
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd when symlink fails with EACCES (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd when symlink fails with EACCES (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd when symlink fails with ENOTSUP (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd when symlink fails with ENOTSUP (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd when symlink fails with EPERM (hard link fails: false) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file (hard link): # Claude",
+    "CLAUDE.md": "file (hard link): # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 AGENTS.md alias variant golden shared linkAgentsMdToClaudeMd when symlink fails with EPERM (hard link fails: true) 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "linkCalls": 1,
+  "result": "linked",
+  "symlinkCalls": 1,
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores a agents-link source when symlink fails with EACCES 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores a agents-link source when symlink fails with ENOTSUP 1`] = `
+{
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores a agents-link source when symlink fails with EPERM 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores a claude-link source when symlink fails with EACCES 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores a claude-link source when symlink fails with ENOTSUP 1`] = `
+{
+  "result": {
+    "error": "ENOTSUP",
+  },
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores a claude-link source when symlink fails with EPERM 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-broken-alias into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-broken-alias into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-broken-alias into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-broken-alias into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-broken-alias into none on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-broken-alias into none on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-directory into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-directory into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-directory into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-directory into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-directory into none on darwin 1`] = `
+{
+  "result": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-directory into none on win32 1`] = `
+{
+  "result": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-escape into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-escape into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-escape into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-escape into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-escape into none on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-escape into none on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-indirect-escape into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-indirect-escape into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-indirect-escape into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-indirect-escape into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-indirect-escape into none on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-indirect-escape into none on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dangling into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dangling into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dangling into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dangling into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dangling into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dangling into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dot-relative into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dot-relative into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dot-relative into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dot-relative into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dot-relative into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-link-dot-relative into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-only into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-only into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-only into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-only into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-only into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-only into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-stale-link into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-stale-link into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-stale-link into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-stale-link into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-stale-link into none on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores agents-stale-link into none on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores both-links into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores both-links into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores both-links into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores both-links into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores both-links into none on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores both-links into none on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-directory into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-directory into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-directory into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-directory into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-directory into none on darwin 1`] = `
+{
+  "result": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-directory into none on win32 1`] = `
+{
+  "result": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-escape into agents-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-escape into agents-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-escape into claude-link-dangling on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-escape into claude-link-dangling on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-escape into none on darwin 1`] = `
+{
+  "result": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-escape into none on win32 1`] = `
+{
+  "result": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link-dangling into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link-dangling into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link-dangling into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link-dangling into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link-dangling into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-link-dangling into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-only into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-only into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-only into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-only into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Claude",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-only into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores claude-only into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores equal-mirror into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores equal-mirror into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores equal-mirror into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores equal-mirror into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores equal-mirror into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores equal-mirror into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores none into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores none into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores none into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores none into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores none into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores none into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores unequal into agents-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores unequal into agents-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Agents",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores unequal into claude-link-dangling on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores unequal into claude-link-dangling on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores unequal into none on darwin 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction restore golden restores unequal into none on win32 1`] = `
+{
+  "result": "restored",
+  "target": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-broken-alias layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "saved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-directory layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "directory",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "directory",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+  "saved": {
+    "error": "AGENTS.md must be a regular file.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-escape layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ../outside.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> ../outside.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "saved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-indirect-escape layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> escape/../CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> escape/../CLAUDE.md",
+    "CLAUDE.md": "file: # Local",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "saved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-link layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Saved",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "aliasPath": "<dir>/AGENTS.md",
+    "exists": true,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "readable": {
+    "AGENTS.md": true,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "aliasPath": "<dir>/AGENTS.md",
+    "exists": true,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-link-dangling layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "file: # Saved",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "aliasPath": "<dir>/AGENTS.md",
+    "exists": false,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "aliasPath": "<dir>/AGENTS.md",
+    "exists": false,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-link-dot-relative layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> ./CLAUDE.md",
+    "CLAUDE.md": "file: # Saved",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> ./CLAUDE.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "aliasPath": "<dir>/AGENTS.md",
+    "exists": true,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "readable": {
+    "AGENTS.md": true,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "aliasPath": "<dir>/AGENTS.md",
+    "exists": true,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-only layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Saved",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "readable": {
+    "AGENTS.md": true,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the agents-stale-link layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> OTHER.md",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "saved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the both-links layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "link -> CLAUDE.md",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+  "saved": {
+    "error": "Cannot edit AGENTS.md through this symbolic link. Use a regular file or a link to CLAUDE.md in the same folder.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the claude-directory layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "directory",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+  "saved": {
+    "error": "CLAUDE.md must be a regular file.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the claude-escape layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> ../outside.md",
+    "outside": "file: # Outside",
+  },
+  "optional": "unsupported",
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+  "saved": {
+    "error": "Cannot edit CLAUDE.md through this symbolic link. Use a regular instruction file.",
+  },
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the claude-link layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Saved",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "readable": {
+    "AGENTS.md": true,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the claude-link-dangling layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Saved",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "link -> AGENTS.md",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "aliasPath": "<dir>/CLAUDE.md",
+    "exists": false,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "aliasPath": "<dir>/CLAUDE.md",
+    "exists": false,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the claude-only layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Saved",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "exists": true,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "exists": true,
+    "filePath": "<dir>/CLAUDE.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the equal-mirror layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Saved",
+    "CLAUDE.md": "file: # Saved",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "file: # Shared",
+    "CLAUDE.md": "file: # Shared",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+    "mirrorPath": "<dir>/CLAUDE.md",
+  },
+  "readable": {
+    "AGENTS.md": true,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+    "mirrorPath": "<dir>/CLAUDE.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the none layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Saved",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "missing",
+    "CLAUDE.md": "missing",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "exists": false,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "readable": {
+    "AGENTS.md": false,
+    "CLAUDE.md": false,
+  },
+  "resolved": {
+    "exists": false,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 instruction-file layout golden pins resolve, readiness, load and save for the unequal layout 1`] = `
+{
+  "after": {
+    "AGENTS.md": "file: # Saved",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "before": {
+    "AGENTS.md": "file: # Agents",
+    "CLAUDE.md": "file: # Claude",
+    "outside": "file: # Outside",
+  },
+  "optional": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "readable": {
+    "AGENTS.md": true,
+    "CLAUDE.md": true,
+  },
+  "resolved": {
+    "exists": true,
+    "filePath": "<dir>/AGENTS.md",
+  },
+  "saved": "saved",
+}
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into block only content 1`] = `
+"<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into both headings content 1`] = `
+"<LEGACY_HEADING>
+
+A
+
+<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into current block content 1`] = `
+"# My rules
+
+<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into empty content 1`] = `
+"<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into legacy block content 1`] = `
+"# My rules
+
+<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into user rules only content 1`] = `
+"# My rules
+
+Keep tests green.
+
+<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;
+
+exports[`CAN-4106 multi-repo guidance merge golden merges into whitespace content 1`] = `
+"<HEADING>
+
+# Project
+
+Use the repos folder.
+
+"
+`;

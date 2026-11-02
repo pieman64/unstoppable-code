@@ -1,8 +1,18 @@
+import { isPlanFileWrite } from '@canopy/agent-transcript/lib/plan-tool-input';
+import { isHistoricalDelegateWatchToolName } from './canopy-injected-tools';
+import type { ApprovalSafetyDeniedInfo } from '@canopy/protocol/approvals';
 import type { TurnSummaryCounts } from '@canopy/agent-transcript/transcript-storage';
 export type { TurnSummaryCounts } from '@canopy/agent-transcript/transcript-storage';
 import type { PersistedUserMessageSource } from '@canopy/agent-transcript/types';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import type { AgentSentInfo } from '@canopy/protocol/portal/external-agent-sender';
+import type {
+  TurnOutcomeCounts,
+  TurnOutcomeStepDetail,
+  TurnOutcomeEvidence,
+  ToolInterruption,
+} from '@canopy/protocol/portal';
+import { classifyTurnStepOutcome } from '@canopy/protocol/portal';
 import type {
   AgentUsage,
   ChangedFileInfo,
@@ -101,9 +111,11 @@ function isPlanToolName(name: string | null | undefined): boolean {
 export interface TurnToolResult {
   output: string;
   isError: boolean;
+  interruption?: ToolInterruption;
 }
 
 export type TurnBlock =
+  | ApprovalSafetyDeniedInfo
   | (Extract<PersistedChatBlock, { type: 'delegated_agent_call' }> & {
       subBlocks: TurnBlock[];
     })
@@ -130,6 +142,7 @@ export type TurnBlock =
       completedAt: number | null;
     }
   | { type: 'hook_info'; triggerName: string; timestamp: number }
+  | Extract<PersistedChatBlock, { type: 'wake_boundary' }>
   | { type: 'automation_info'; activityName?: string; timestamp: number }
   // Compaction marker (mirrors {@link CompactionInfoBlock} from persisted
   // transcripts). Included so the renderer's `DisplayMessage[]` →
@@ -308,6 +321,13 @@ function toLegacyClaudeTerminalTimerMessage(message: TurnMessage): TurnMessage {
   };
 }
 
+/** A wake turn's display-only head row (turn-state phase 40d). */
+export function isWakeBoundaryMessage(message: {
+  blocks: readonly { type: string }[];
+}): boolean {
+  return message.blocks[0]?.type === 'wake_boundary';
+}
+
 export function groupIntoTurns(messages: TurnMessage[]): TurnGroupOrMessage[] {
   const result: TurnGroupOrMessage[] = [];
   let currentUserMessage: TurnMessage | null = null;
@@ -357,7 +377,7 @@ export function groupIntoTurns(messages: TurnMessage[]): TurnGroupOrMessage[] {
       ? message
       : legacyClaudeTerminalTimerMessage;
 
-    if (isUserTurnBoundary(message)) {
+    if (isUserTurnBoundary(message) || isWakeBoundaryMessage(message)) {
       flushIncomplete('next_user');
       currentUserMessage = message;
       currentAssistantMessages = [];
@@ -463,6 +483,7 @@ export function parseMcpToolName(
 export function getToolCategory(
   toolName: string,
 ): keyof Omit<TurnSummaryCounts, 'messages' | 'thinking' | 'computerUse'> {
+  if (isHistoricalDelegateWatchToolName(toolName)) return 'canopy';
   if (isPlanToolName(toolName)) {
     return 'plan';
   }
@@ -605,7 +626,11 @@ export function getToolCategory(
     case 'Monitor':
     case legacyMcpToolName('Monitor'):
       return 'monitor';
+    // Claude's own scheduler counts with the other scheduling tools.
     case 'ScheduleWakeup':
+    case 'CronCreate':
+    case 'CronDelete':
+    case 'CronList':
       return 'scheduleWakeup';
     // Codex built-in ask-user tool — not a Canopy-injected name but shares
     // the `askUser` analytics bucket so Claude MCP, Codex dynamic, and
@@ -638,6 +663,217 @@ export function getToolCategory(
 
 // Re-export shared registry so consumers who only need category mapping can
 // reach the display names / provider lookup without importing a second file.
+
+export interface TurnOutcomeStep {
+  toolUseId: string;
+  outcome: keyof TurnOutcomeCounts;
+}
+
+/**
+ * Explicit turn ownership wins over commit position. Unscoped legacy receipts
+ * belong to the supplied current-turn source; helper receipts are unsupported.
+ */
+export function getTurnSafetyDeniedToolUseIds(
+  receiptMessages: readonly TurnMessage[],
+  turnUserMessageId?: string,
+): string[] {
+  const blockedIds = new Set<string>();
+  for (const message of receiptMessages) {
+    for (const block of message.blocks) {
+      if (
+        block.type === 'approval_safety_denied_info' &&
+        block.toolUseId &&
+        !block.subagentId &&
+        (turnUserMessageId === undefined ||
+          block.turnUserMessageId === undefined ||
+          block.turnUserMessageId === turnUserMessageId)
+      ) {
+        blockedIds.add(block.toolUseId);
+      }
+    }
+  }
+  return Array.from(blockedIds);
+}
+
+/** Compact eligible-step states also let the index apply a later receipt. */
+export function getTurnOutcomeStepStates(
+  countedMessages: readonly TurnMessage[],
+  blockedIds: ReadonlySet<string>,
+  evidence?: TurnOutcomeEvidence,
+): Map<string, TurnOutcomeStep['outcome'] | undefined> {
+  const steps = new Map<string, TurnToolResult | undefined>();
+  for (const message of countedMessages) {
+    for (const block of message.blocks) {
+      if (
+        block.type !== 'tool_use' &&
+        block.type !== 'workflow' &&
+        block.type !== 'agent'
+      )
+        continue;
+      if (
+        block.type === 'tool_use' &&
+        (block.toolName === 'EnterPlanMode' ||
+          block.toolName === 'ExitPlanMode')
+      )
+        continue;
+      const result =
+        block.type === 'agent'
+          ? (block.taskOutputResult ?? block.result)
+          : block.result;
+      // Folding already selects the authoritative result. A repeated display
+      // representation must not count twice or erase a known result with none.
+      steps.set(block.toolUseId, result ?? steps.get(block.toolUseId));
+    }
+  }
+
+  const outcomes = new Map<string, TurnOutcomeStep['outcome'] | undefined>();
+  steps.forEach((result, toolUseId) => {
+    outcomes.set(
+      toolUseId,
+      classifyTurnStepOutcome(result, blockedIds.has(toolUseId), evidence),
+    );
+  });
+  return outcomes;
+}
+
+/**
+ * Derive outcomes from exactly the messages used by the host's summary. The
+ * receipt source includes separate current-turn notices beside the final answer.
+ * Order follows logical steps; nested, Codex and delegated outcomes are excluded.
+ */
+export function getTurnOutcomeSteps(
+  countedMessages: readonly TurnMessage[],
+  receiptMessages: readonly TurnMessage[] = countedMessages,
+  turnUserMessageId?: string,
+  deniedToolUseIds: readonly string[] = [],
+  evidence?: TurnOutcomeEvidence,
+): TurnOutcomeStep[] {
+  const states = getTurnOutcomeStepStates(
+    countedMessages,
+    new Set([
+      ...getTurnSafetyDeniedToolUseIds(receiptMessages, turnUserMessageId),
+      ...deniedToolUseIds,
+    ]),
+    evidence,
+  );
+  const steps: TurnOutcomeStep[] = [];
+  states.forEach((outcome, toolUseId): void => {
+    if (outcome !== undefined) steps.push({ toolUseId, outcome });
+  });
+  return steps;
+}
+
+/** The display call and authoritative result of one counted step block. */
+function getOutcomeStepCall(
+  block: Extract<TurnBlock, { type: 'tool_use' | 'agent' | 'workflow' }>,
+): Omit<TurnOutcomeStepDetail, 'outcome'> & { result?: TurnToolResult } {
+  switch (block.type) {
+    case 'tool_use':
+      return {
+        toolUseId: block.toolUseId,
+        toolName: block.toolName,
+        input: block.input,
+        result: block.result,
+      };
+    case 'agent':
+      return {
+        toolUseId: block.toolUseId,
+        toolName: 'Agent',
+        input: JSON.stringify({
+          description: block.description,
+          subagent_type: block.subagentType,
+          prompt: block.prompt,
+        }),
+        result: block.taskOutputResult ?? block.result,
+      };
+    case 'workflow':
+      return {
+        toolUseId: block.toolUseId,
+        toolName: 'Workflow',
+        input: JSON.stringify({ name: block.workflowName }),
+        result: block.result,
+      };
+  }
+}
+
+/**
+ * {@link getTurnOutcomeSteps} joined to each step's display call and raw
+ * result output, in the same order, for the outcome tooltip. Only loaded rows
+ * carry calls, so a paged turn's summary has counts but no details.
+ */
+export function getTurnOutcomeStepDetails(
+  countedMessages: readonly TurnMessage[],
+  receiptMessages: readonly TurnMessage[] = countedMessages,
+  turnUserMessageId?: string,
+  deniedToolUseIds: readonly string[] = [],
+  evidence?: TurnOutcomeEvidence,
+): TurnOutcomeStepDetail[] {
+  const steps = getTurnOutcomeSteps(
+    countedMessages,
+    receiptMessages,
+    turnUserMessageId,
+    deniedToolUseIds,
+    evidence,
+  );
+  if (steps.length === 0) return [];
+  const outcomeById = new Map(
+    steps.map((step) => [step.toolUseId, step.outcome]),
+  );
+  const calls = new Map<string, ReturnType<typeof getOutcomeStepCall>>();
+  for (const message of countedMessages) {
+    for (const block of message.blocks) {
+      if (
+        (block.type !== 'tool_use' &&
+          block.type !== 'workflow' &&
+          block.type !== 'agent') ||
+        !outcomeById.has(block.toolUseId)
+      )
+        continue;
+      const call = getOutcomeStepCall(block);
+      // Same rule as the outcome states: a repeated representation without a
+      // result keeps the known one.
+      const previous = calls.get(block.toolUseId);
+      calls.set(block.toolUseId, {
+        ...(previous ?? call),
+        result: call.result ?? previous?.result,
+      });
+    }
+  }
+  return steps.flatMap((step) => {
+    const call = calls.get(step.toolUseId);
+    if (!call) return [];
+    const detail: TurnOutcomeStepDetail = {
+      toolUseId: step.toolUseId,
+      outcome: step.outcome,
+      toolName: call.toolName,
+      input: call.input,
+    };
+    if (call.result !== undefined) detail.output = call.result.output;
+    if (call.result?.interruption !== undefined)
+      detail.interruption = call.result.interruption;
+    return [detail];
+  });
+}
+
+export function computeTurnOutcomes(
+  countedMessages: readonly TurnMessage[],
+  receiptMessages: readonly TurnMessage[] = countedMessages,
+  turnUserMessageId?: string,
+  deniedToolUseIds: readonly string[] = [],
+  evidence?: TurnOutcomeEvidence,
+): TurnOutcomeCounts {
+  const counts: TurnOutcomeCounts = { blocked: 0, failed: 0, interrupted: 0 };
+  for (const step of getTurnOutcomeSteps(
+    countedMessages,
+    receiptMessages,
+    turnUserMessageId,
+    deniedToolUseIds,
+    evidence,
+  )) {
+    counts[step.outcome] += 1;
+  }
+  return counts;
+}
 
 export function computeTurnSummary(
   assistantMessages: TurnMessage[],
@@ -720,6 +956,9 @@ export function computeTurnSummary(
           ) {
             break;
           }
+          // Plan artifacts are not project edits. Result status is handled
+          // separately by the outcome projection, including failed writes.
+          if (isPlanFileWrite(block.toolName, block.input)) break;
           if (block.toolName === 'file_change') {
             countFileChangeBlock(block.input);
             break;

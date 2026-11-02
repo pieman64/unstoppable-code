@@ -21,7 +21,9 @@ import {
   type PublicCollectionShareSnapshot,
   type SharedPipelineDetail,
   type SharedSkillDetail,
+  type ScopedShareProvenance,
 } from '@canopy/protocol';
+import { isResourceOwner } from '@canopy/protocol/resource-owner';
 import {
   CanopyCloudClientError,
   requestCanopyCloudJson,
@@ -43,7 +45,9 @@ function scopedResourcePath(
   return `/api/v1/${BRAND.web.apiNamespace}/${entity}/${encodeURIComponent(id)}`;
 }
 
-function requireScopedShare(scope: string | undefined): void {
+function requireScopedShare(
+  scope: string | undefined,
+): asserts scope is ScopedShareProvenance['shareScope'] {
   if (scope === 'team' || scope === 'organization') return;
   throw new CanopyCloudClientError('http-error', 'Share not found', 404);
 }
@@ -53,7 +57,9 @@ function requireScopedShare(scope: string | undefined): void {
  * (CAN-2361). These hit the web public-share resolve endpoints without
  * credentials, so a signed-out desktop can still render exactly what the
  * public `/share/*` page showed. Errors surface as `CanopyCloudClientError`
- * (`http-error` with status 404 for unknown/revoked shares).
+ * (`http-error` with status 404 for unavailable shares). After a public 404,
+ * eligible scoped reads preserve their own failure, including authorization,
+ * policy denial and transport errors; a 404 alone does not prove revocation.
  */
 export async function getPublicSkillShareSnapshot(
   externalId: string,
@@ -75,11 +81,7 @@ export async function getPublicSkillShareSnapshot(
     );
   } catch (error) {
     if (!isNotFound(error)) throw error;
-    try {
-      return await getScopedSkillShareSnapshot(externalId);
-    } catch {
-      throw error;
-    }
+    return getScopedSkillShareSnapshot(externalId);
   }
 }
 
@@ -103,7 +105,8 @@ export async function getScopedSkillShareSnapshot(
           },
         ),
       );
-  requireScopedShare(skill.shareScope);
+  const shareScope = skill.shareScope;
+  requireScopedShare(shareScope);
   return {
     ...(skillResourceContextEnabled() ? { sourceRemoteId: skill.id } : {}),
     entity: 'skill',
@@ -122,6 +125,17 @@ export async function getScopedSkillShareSnapshot(
     // must not read it through the public endpoints.
     scopedShare: true,
     authorUsername: null,
+    // Older servers sent a team owner without its organization; the review
+    // falls back rather than describe provenance it cannot read.
+    ...(isResourceOwner(skill.owner)
+      ? {
+          sharedBy: {
+            name: skill.createdBy.name,
+            owner: skill.owner,
+            shareScope,
+          },
+        }
+      : {}),
     updatedAt: skill.updatedAt,
   };
 }
@@ -170,35 +184,31 @@ export async function getPublicPipelineShareSnapshot(
     return await withPackageVersionNegotiation(requestSnapshot);
   } catch (error) {
     if (!isNotFound(error)) throw error;
-    try {
-      const pipeline = pipelineResourceContextEnabled()
-        ? await getSharedPipeline(externalId)
-        : await requestCanopyCloudJson<SharedPipelineDetail>(
-            scopedResourcePath('pipelines', externalId),
-          );
-      requireScopedShare(pipeline.shareScope);
-      return {
-        entity: 'pipeline',
-        ...(pipelineResourceContextEnabled()
-          ? {
-              sourceRemoteId: pipeline.id,
-              distributionMode: pipeline.distributionMode ?? 'definition_only',
-              ...(pipeline.package ? { package: pipeline.package } : {}),
-            }
-          : {}),
-        externalId: pipeline.id,
-        name: pipeline.name,
-        description: pipeline.description,
-        rawPipeline: pipeline.rawPipeline,
-        contentHash: createHash('sha256')
-          .update(pipeline.rawPipeline)
-          .digest('hex'),
-        authorUsername: null,
-        updatedAt: pipeline.updatedAt,
-      };
-    } catch {
-      throw error;
-    }
+    const pipeline = pipelineResourceContextEnabled()
+      ? await getSharedPipeline(externalId)
+      : await requestCanopyCloudJson<SharedPipelineDetail>(
+          scopedResourcePath('pipelines', externalId),
+        );
+    requireScopedShare(pipeline.shareScope);
+    return {
+      entity: 'pipeline',
+      ...(pipelineResourceContextEnabled()
+        ? {
+            sourceRemoteId: pipeline.id,
+            distributionMode: pipeline.distributionMode ?? 'definition_only',
+            ...(pipeline.package ? { package: pipeline.package } : {}),
+          }
+        : {}),
+      externalId: pipeline.id,
+      name: pipeline.name,
+      description: pipeline.description,
+      rawPipeline: pipeline.rawPipeline,
+      contentHash: createHash('sha256')
+        .update(pipeline.rawPipeline)
+        .digest('hex'),
+      authorUsername: null,
+      updatedAt: pipeline.updatedAt,
+    };
   }
 }
 
@@ -241,11 +251,7 @@ export async function getPublicAgentShareSnapshot(
     );
   } catch (error) {
     if (!agentResourceContextEnabled() || !isNotFound(error)) throw error;
-    try {
-      return await getScopedAgentShareSnapshot(externalId);
-    } catch {
-      throw error;
-    }
+    return getScopedAgentShareSnapshot(externalId);
   }
 }
 

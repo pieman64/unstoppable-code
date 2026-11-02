@@ -3,7 +3,7 @@
  * in-app browser views, so app UI can draw over a live page. Each slot is one
  * layer owned by one renderer surface.
  */
-export type OverlayLayerSlot = 'notifications';
+export type OverlayLayerSlot = 'notifications' | 'above-browser';
 
 export interface OverlayLayerRect {
   x: number;

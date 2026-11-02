@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+import type { BrowserWindow, WebContents } from 'electron';
 import {
   IPC_CHANNELS,
   type CodexLoginState,
@@ -19,16 +21,36 @@ const mockStart = jest.fn<
   method: 'chatgpt',
 }));
 
+function createBrowserWindowIdentityDouble(): BrowserWindow {
+  // This test checks sender identity only; Electron window behavior is unused.
+  const webContents = new EventEmitter() as WebContents;
+  return { webContents } as BrowserWindow;
+}
+
 jest.mock('electron', () => ({
-  shell: { openExternal: mockOpenExternal },
+  shell: {
+    get openExternal(): typeof mockOpenExternal {
+      return mockOpenExternal;
+    },
+  },
 }));
 jest.mock('../auth/codex-login', () => ({
   codexLoginManager: {
-    onState: mockOnState,
-    start: mockStart,
-    finish: mockFinish,
-    retryVerification: mockRetryVerification,
-    browserUrl: mockBrowserUrl,
+    get onState(): typeof mockOnState {
+      return mockOnState;
+    },
+    get start(): typeof mockStart {
+      return mockStart;
+    },
+    get finish(): typeof mockFinish {
+      return mockFinish;
+    },
+    get retryVerification(): typeof mockRetryVerification {
+      return mockRetryVerification;
+    },
+    get browserUrl(): typeof mockBrowserUrl {
+      return mockBrowserUrl;
+    },
   },
 }));
 jest.mock('../lib/window-send', () => ({ sendToWindow: jest.fn() }));
@@ -61,9 +83,11 @@ describe('registerCodexLoginHandlers', () => {
   });
 
   it('rejects follow-up login commands from a renderer that does not own the attempt', async () => {
-    const owner = { once: jest.fn() };
-    const other = { once: jest.fn() };
-    registerCodexLoginHandlers(() => ({ webContents: owner }));
+    const ownerWindow = createBrowserWindowIdentityDouble();
+    const otherWindow = createBrowserWindowIdentityDouble();
+    const owner = ownerWindow.webContents;
+    const other = otherWindow.webContents;
+    registerCodexLoginHandlers(() => ownerWindow);
     const start = handlers.get(IPC_CHANNELS.codexLoginStart);
     const cancel = handlers.get(IPC_CHANNELS.codexLoginCancel);
     const retry = handlers.get(IPC_CHANNELS.codexLoginRetryVerification);

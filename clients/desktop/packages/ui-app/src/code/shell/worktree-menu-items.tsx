@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import type { PortalRowBackend } from '@canopy/protocol/portal';
 import type {
+  SidebarBatchUnitLabel,
   SpaceNotificationMenuChoice,
   SpaceNotificationMenuState,
   WorktreeDirectAction,
@@ -13,18 +14,23 @@ import {
   spaceNotificationMenuChoices,
   spaceNotificationMenuStatus,
   spaceNotificationMenuUnavailable,
-  worktreeCountLabel,
 } from '@canopy/ui-shared/components';
 import type { AppIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { isMacPlatform } from '../../find/shortcut-target';
+import {
+  deriveSelectionMenuItems,
+  selectionToggleMenuItem,
+  type SidebarBatchActionAvailability,
+  type SidebarBatchActionState,
+  type SidebarBatchAvailabilityRow,
+  type SidebarBulkStateAction,
+  type SidebarBulkStateActions,
+} from './sidebar-selection-menu-items';
 import {
   ArchiveIcon,
   BellIcon,
   BranchIcon,
   BuildingIcon,
   BugReportIcon,
-  CircleCheckIcon,
-  CloseIcon,
   FormatIndentDecreaseIcon,
   FormatIndentIncreaseIcon,
   GitMergeIcon,
@@ -102,11 +108,16 @@ export interface WorktreeMenuContext {
   readonly multiSelected?: boolean;
   /**
    * The row belongs to a bulk selection of 2 or more. Its menu is then the
-   * selection's: Archive N, Delete N, and Clear selection, nothing else.
+   * selection's: its state actions, Archive N, Delete N, and Clear
+   * selection, nothing else.
    */
   readonly bulkSelection?: {
     readonly count: number;
-    readonly availability: WorktreeBatchActionAvailability;
+    readonly availability: SidebarBatchActionAvailability;
+    /** Names the rows: worktrees, or chats for cloud chat sessions. */
+    readonly unitLabel: SidebarBatchUnitLabel;
+    /** What every selected row's own menu offers: Pin, Hide, Notifications. */
+    readonly stateActions?: SidebarBulkStateActions;
   };
 }
 
@@ -175,6 +186,10 @@ export interface WorktreeMenuCallbacks {
   readonly onToggleSelectionRequested?: () => void;
   /** Opens the batch confirm for the whole selection. */
   readonly onBulkRemovalRequested?: (mode: 'archive' | 'delete') => void;
+  /** Runs one state action on every selected row that needs it. */
+  readonly onBulkStateActionRequested?: (
+    action: SidebarBulkStateAction,
+  ) => void;
   readonly onClearSelectionRequested?: () => void;
   /** Saves this space's notification choice; `null` clears the override. */
   readonly onNotificationChoiceRequested?: (
@@ -210,6 +225,10 @@ export type WorktreeMenuTestIdKey =
    */
   | 'removalDelete'
   | 'toggleSelection'
+  | 'bulkPin'
+  | 'bulkDone'
+  | 'bulkNotifications'
+  | 'bulkHide'
   | 'bulkArchive'
   | 'bulkDelete'
   | 'clearSelection';
@@ -345,79 +364,15 @@ export function worktreeArchiveBlockedReason(
   );
 }
 
-/** One selected row's removal inputs, as the single-row menu reads them. */
-export interface WorktreeBatchAvailabilityRow {
-  /** The row's own `worktreeRemoval` capability. */
-  readonly removal: false | 'archive' | 'delete' | undefined;
-  /** The row's own `worktreeRetention` capability. */
-  readonly retention?: 'archive-or-delete';
-  /** The row's workspace cannot accept commands right now. */
-  readonly commandsDisabled?: boolean;
-}
-
-export interface WorktreeBatchActionState {
-  readonly enabled: boolean;
-  /**
-   * `false` when no selected row's own menu offers the action: the
-   * selection's menu leaves it out rather than showing it disabled.
-   */
-  readonly offered?: boolean;
-  /** Why the action is disabled, for the control's `title`. */
-  readonly disabledReason?: string;
-}
-
-export interface WorktreeBatchActionAvailability {
-  readonly archive: WorktreeBatchActionState;
-  readonly delete: WorktreeBatchActionState;
-}
-
-/** The removal items a row's own menu offers, ignoring transient blocks. */
-function rowRemovalActions(
-  row: WorktreeBatchAvailabilityRow,
-): ReadonlySet<'archive' | 'delete'> {
-  if (row.commandsDisabled === true) return new Set();
-  if (row.removal === undefined || row.removal === false) return new Set();
-  if (row.retention === 'archive-or-delete') {
-    return new Set(['archive', 'delete']);
-  }
-  return new Set([row.removal]);
-}
-
-/**
- * Bulk Archive and Delete enablement. An action is enabled only when every
- * selected row's own menu offers it, so bulk never offers what the single
- * row wouldn't. A row that is only blocked right now (an active session, a
- * Split PR, setup) still counts: the confirm lists it under Not included.
- */
-export function batchActionAvailability(
-  rows: readonly WorktreeBatchAvailabilityRow[],
-): WorktreeBatchActionAvailability {
-  if (rows.length === 0) {
-    return { archive: { enabled: false }, delete: { enabled: false } };
-  }
-  if (rows.some((row) => row.commandsDisabled === true)) {
-    const disabledReason = "Some selected worktrees can't be changed right now";
-    return {
-      archive: { enabled: false, disabledReason },
-      delete: { enabled: false, disabledReason },
-    };
-  }
-  const offered = rows.map(rowRemovalActions);
-  const stateFor = (action: 'archive' | 'delete'): WorktreeBatchActionState =>
-    offered.every((actions) => actions.has(action))
-      ? { enabled: true }
-      : {
-          enabled: false,
-          ...(offered.some((actions) => actions.has(action))
-            ? {}
-            : { offered: false }),
-          disabledReason:
-            action === 'archive'
-              ? "Some selected worktrees can't be archived"
-              : "Some selected worktrees can't be deleted",
-        };
-  return { archive: stateFor('archive'), delete: stateFor('delete') };
-}
+export {
+  batchActionAvailability,
+  type SidebarBatchActionAvailability,
+  type SidebarBatchActionState,
+  type SidebarBatchAvailabilityRow,
+} from './sidebar-selection-menu-items';
+export type WorktreeBatchAvailabilityRow = SidebarBatchAvailabilityRow;
+export type WorktreeBatchActionState = SidebarBatchActionState;
+export type WorktreeBatchActionAvailability = SidebarBatchActionAvailability;
 
 export function deriveWorktreeMenuItems(
   context: WorktreeMenuContext,
@@ -429,11 +384,19 @@ export function deriveWorktreeMenuItems(
     context.bulkSelection.count >= 2 &&
     callbacks.onBulkRemovalRequested
   ) {
-    return deriveBulkSelectionMenu(
-      context.bulkSelection,
-      callbacks.onBulkRemovalRequested,
-      callbacks,
-    );
+    return {
+      items: deriveSelectionMenuItems({
+        count: context.bulkSelection.count,
+        availability: context.bulkSelection.availability,
+        unitLabel: context.bulkSelection.unitLabel,
+        onBulkRemoval: callbacks.onBulkRemovalRequested,
+        onClearSelection: callbacks.onClearSelectionRequested,
+        stateActions: context.bulkSelection.stateActions,
+        onStateAction: callbacks.onBulkStateActionRequested,
+        testIds: callbacks.testIds,
+      }),
+      directActions: [],
+    };
   }
   const items: WorktreeMenuItem[] = [];
   if (callbacks.onTogglePinnedRequested) {
@@ -495,8 +458,8 @@ export function deriveWorktreeMenuItems(
       key: 'dispatch-pipeline',
       label:
         context.sentenceCaseLabels === true
-          ? 'Dispatch pipeline'
-          : 'Dispatch pipeline',
+          ? 'Dispatch workflow'
+          : 'Dispatch workflow',
       icon: <PipelineIcon />,
       onSelect: callbacks.onDispatchPipelineRequested,
       testId: callbacks.testIds?.dispatchPipeline,
@@ -586,17 +549,14 @@ export function deriveWorktreeMenuItems(
   }
   items.push(...deriveNotificationItems(context, callbacks, items.length > 0));
   if (callbacks.onToggleSelectionRequested) {
-    items.push({
-      key: 'toggle-selection',
-      label: context.multiSelected === true ? 'Deselect' : 'Select',
-      icon: <CircleCheckIcon />,
-      // The same toggle without the menu; naming it here is how most people
-      // will learn it.
-      shortcut: isMacPlatform() ? '⌘ Click' : 'Ctrl+Click',
-      onSelect: callbacks.onToggleSelectionRequested,
-      separatorBefore: true,
-      testId: callbacks.testIds?.toggleSelection,
-    });
+    items.push(
+      selectionToggleMenuItem({
+        multiSelected: context.multiSelected === true,
+        onToggle: callbacks.onToggleSelectionRequested,
+        testId: callbacks.testIds?.toggleSelection,
+        separatorBefore: true,
+      }),
+    );
   }
   if (callbacks.onToggleHiddenRequested) {
     items.push({
@@ -726,50 +686,6 @@ export function deriveWorktreeMenuItems(
     items,
     directActions: [...showAction, ...removeAction],
   };
-}
-
-/** A selection's menu: its bulk actions, from any selected row's right-click. */
-function deriveBulkSelectionMenu(
-  selection: NonNullable<WorktreeMenuContext['bulkSelection']>,
-  onBulkRemovalRequested: (mode: 'archive' | 'delete') => void,
-  callbacks: WorktreeMenuCallbacks,
-): DerivedWorktreeMenu {
-  const { count, availability } = selection;
-  const items: WorktreeMenuItem[] = [];
-  if (availability.archive.offered !== false) {
-    items.push({
-      key: 'bulk-archive',
-      label: `Archive ${worktreeCountLabel(count)}`,
-      icon: <ArchiveIcon />,
-      onSelect: () => onBulkRemovalRequested('archive'),
-      disabled: !availability.archive.enabled,
-      tooltip: availability.archive.disabledReason,
-      testId: callbacks.testIds?.bulkArchive,
-    });
-  }
-  if (availability.delete.offered !== false) {
-    items.push({
-      key: 'bulk-delete',
-      label: `Delete ${worktreeCountLabel(count)}`,
-      icon: <TrashIcon />,
-      onSelect: () => onBulkRemovalRequested('delete'),
-      disabled: !availability.delete.enabled,
-      tooltip: availability.delete.disabledReason,
-      tone: 'default',
-      testId: callbacks.testIds?.bulkDelete,
-    });
-  }
-  if (callbacks.onClearSelectionRequested) {
-    items.push({
-      key: 'clear-selection',
-      label: 'Clear selection',
-      icon: <CloseIcon />,
-      onSelect: callbacks.onClearSelectionRequested,
-      separatorBefore: items.length > 0,
-      testId: callbacks.testIds?.clearSelection,
-    });
-  }
-  return { items, directActions: [] };
 }
 
 /**

@@ -22,11 +22,17 @@ import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-syn
 import { TurnDiffPopover } from './TurnDiffPopover';
 import { TurnFileChip } from './TurnFiles';
 import { openFileInDiff } from '@/lib/panels/open-file-diff';
-import { ChevronDownIcon, ChevronRightIcon } from '@canopy/ui-shared/icons';
-import { Button, useCleanChatLook } from '@canopy/ui-shared/components';
+import {
+  Button,
+  GroupedDiffStats,
+  TURN_FILE_ROW_CLASS_NAME,
+  formatTurnFilesHeading,
+  TurnFilesSummaryView,
+  useCleanChatLook,
+  useToolApprovalWait,
+} from '@canopy/ui-shared/components';
 import {
   CloseIcon as AppCatalogCloseIcon,
-  FileDiff as AppCatalogFileDiffIcon,
   ForwardIcon as AppCatalogForwardIcon,
   PencilIcon as AppCatalogPencilIcon,
   RevertIcon as AppCatalogRevertIcon,
@@ -35,9 +41,12 @@ import {
 interface TurnDiffSummaryProps {
   /** Git changes captured for the turn; absent while it runs or when none. */
   turnDiff?: TurnDiffData;
-  /** Files the turn created or presented that exist; diffed paths are not repeated. */
+  /**
+   * Files the turn created, updated or presented that exist; diffed paths are
+   * not repeated.
+   */
   files?: readonly TurnFileLocation[];
-  /** Creations still in flight while the turn runs. */
+  /** Creations and updates still in flight while the turn runs. */
   pendingFiles?: readonly TranscriptTurnFile[];
   /** Chat whose viewer opens created files. */
   fileTarget?: { projectId: string; worktreeId: string; chatId: string };
@@ -57,9 +66,6 @@ interface TurnDiffSummaryProps {
   onUndo?: () => void;
 }
 
-/** Rows a clean changes card lists before "Show N more". */
-const CLEAN_VISIBLE_FILES = 10;
-
 /** The added and removed line counts, the only colors the clean look keeps. */
 function LineCounts({
   insertions,
@@ -67,16 +73,20 @@ function LineCounts({
 }: {
   insertions: number;
   deletions: number;
-}): JSX.Element {
+}): JSX.Element | null {
+  if (insertions === 0 && deletions === 0) return null;
   return (
-    <span className="shrink-0 tabular-nums">
-      <span className="fg-success">+{insertions}</span>
-      <span className="ml-1 fg-destructive">-{deletions}</span>
+    <span
+      data-line-counts=""
+      className="shrink-0 whitespace-nowrap tabular-nums"
+    >
+      <GroupedDiffStats insertions={insertions} deletions={deletions} />
     </span>
   );
 }
 
 const NO_FILES: readonly TurnFileLocation[] = [];
+
 const NO_PENDING: readonly TranscriptTurnFile[] = [];
 
 function renderStatusIcon(status: ChangedFileInfo['status']): JSX.Element {
@@ -118,6 +128,39 @@ function renderStatusIcon(status: ChangedFileInfo['status']): JSX.Element {
   );
 }
 
+const SINGLE_FILE_VERBS: Partial<Record<ChangedFileInfo['status'], string>> = {
+  added: 'Created',
+  untracked: 'Created',
+  deleted: 'Deleted',
+};
+
+function SingleDiffFile({
+  file,
+  disabled,
+  onOpen,
+}: {
+  file: ChangedFileInfo;
+  disabled: boolean;
+  onOpen: () => void;
+}): JSX.Element {
+  const filename = getBaseName(file.path);
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-3 text-s">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label={`${SINGLE_FILE_VERBS[file.status] ?? 'Edited'} ${filename}`}
+        data-turn-files-title=""
+        className="focus-ring min-w-0 truncate rounded-sm text-left fg-primary"
+        onClick={onOpen}
+      >
+        {filename}
+      </button>
+      <LineCounts insertions={file.insertions} deletions={file.deletions} />
+    </span>
+  );
+}
+
 function FileCard({
   file,
   onClick,
@@ -132,7 +175,9 @@ function FileCard({
   const baseName = getBaseName(file.path);
   // Clean chat look: one row per file in the changes card, the folder in a
   // lighter ink (cut first when the row is short) before the file name, and
-  // the line counts at the far edge.
+  // the line counts at the far edge. The hover sits inside the list's 4px
+  // inset, with corners nested in the card's 16px ones; 8px of padding
+  // keeps the text on the header's 12px edge.
   const clean = useCleanChatLook();
   if (clean) {
     const folder = file.path.slice(0, file.path.length - baseName.length);
@@ -142,7 +187,7 @@ function FileCard({
         onClick={onClick}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
-        className="focus-ring flex w-full min-w-0 items-center gap-3 px-3 py-1.5 text-left text-s transition-colors hover:bg-fg-primary/[0.04]"
+        className={`focus-ring text-left ${TURN_FILE_ROW_CLASS_NAME}`}
         aria-label={file.path}
       >
         <span className="flex min-w-0 flex-1 items-baseline">
@@ -165,7 +210,7 @@ function FileCard({
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      className="min-w-0 cursor-pointer rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition hover:bg-fg-primary/[0.04]"
+      className="min-w-0 cursor-pointer rounded-md border bg-fg-primary/[0.02] px-2 py-1.5 text-left text-xs transition-colors hover:bg-fg-primary/[0.04]"
       // The hover diff popover already surfaces the full path; the native
       // title only doubled it (CAN-2799).
       aria-label={file.path}
@@ -212,20 +257,69 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   const clean = useCleanChatLook();
   const extraFiles = useMemo(
     () =>
-      turnFilesOutsideDiff(
-        files,
-        turnDiff,
-        turnDiff?.treeRefs?.[0]?.repoId ?? fileTarget?.projectId,
+      fileTarget
+        ? turnFilesOutsideDiff(
+            files,
+            turnDiff,
+            turnDiff?.treeRefs?.[0]?.repoId ?? fileTarget?.projectId,
+          )
+        : [],
+    [files, turnDiff, fileTarget],
+  );
+  const visiblePending = useMemo(() => {
+    if (!fileTarget) return [];
+    const primaryRepoId =
+      turnDiff?.treeRefs?.[0]?.repoId ?? fileTarget.projectId;
+    return turnFilesOutsideDiff(
+      pendingFiles.map((file) => ({
+        ...file,
+        absolutePath: file.path,
+        relativePath: file.path,
+        repoId: file.target?.projectId ?? primaryRepoId,
+      })),
+      turnDiff,
+      primaryRepoId,
+    ).filter(
+      (file) =>
+        !files.some(
+          (located) =>
+            (located.path === file.path ||
+              located.absolutePath === file.path) &&
+            located.target?.projectId === file.target?.projectId &&
+            located.target?.worktreeId === file.target?.worktreeId,
+        ),
+    );
+  }, [pendingFiles, fileTarget, turnDiff, files]);
+  const approvalWait = useToolApprovalWait();
+  const waitingPending = useMemo(
+    () =>
+      new Set(
+        visiblePending
+          .filter((file) => approvalWait.isFileWaiting(file.path))
+          .map((file) => file.path),
       ),
-    [files, turnDiff, fileTarget?.projectId],
+    [visiblePending, approvalWait],
   );
   const diffCount = turnDiff?.files.length ?? 0;
-  const extraCount = extraFiles.length + pendingFiles.length;
+  const extraCount = extraFiles.length + visiblePending.length;
+  // Headings count the chips actually shown, after diff suppression.
+  const extraEntries = useMemo(
+    () => [
+      ...extraFiles,
+      ...visiblePending.map((file) => ({
+        ...(file.change ? { change: file.change } : {}),
+        pending: true,
+        waiting: waitingPending.has(file.path),
+      })),
+    ],
+    [extraFiles, visiblePending, waitingPending],
+  );
   const totalCount = diffCount + extraCount;
   // The summary can mount while the turn runs (a pending chip) and gain its
   // diff later, so the default is re-applied as the entries change until the
   // user has toggled the disclosure themselves.
-  const defaultExpanded = isLastTurnGroup && filesSettled && totalCount <= 10;
+  const defaultExpanded =
+    isLastTurnGroup && filesSettled && (clean || totalCount <= 10);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const userToggledRef = useRef(false);
   const [hoveredFile, setHoveredFile] = useState<ChangedFileInfo | null>(null);
@@ -342,17 +436,24 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
   if (totalCount === 0) return null;
 
   const diffLabel = diffCount === 1 ? 'file changed' : 'files changed';
-  const extraLabel = extraCount === 1 ? 'file' : 'files';
+  const extraHeading = formatTurnFilesHeading(extraEntries);
+  const otherHeading = formatTurnFilesHeading(extraEntries, { other: true });
 
-  // Clean chat look: a card after the Codex app's, "Edited 2 files" with the
-  // line counts under it, Undo and View changes, then one row per file.
-  const cleanTitle =
-    turnDiff && diffCount > 0
-      ? `Edited ${diffCount} ${diffCount === 1 ? 'file' : 'files'}${
-          extraCount > 0 ? `, ${extraCount} other ${extraLabel}` : ''
-        }`
-      : `${extraCount} ${extraLabel}`;
   const firstFile = turnDiff?.files[0];
+  // Clean chat look: a card after the Codex app's, "Edited 2 files" with the
+  // line counts under it, Undo and View changes, then one row per file. A
+  // turn that changed exactly one file is the header alone, named for that
+  // file: a row repeating it would add nothing. A created file git does not
+  // list takes the same header slot, preserving its preview and reveal actions.
+  const singleFile =
+    clean && diffCount === 1 && extraCount === 0 ? firstFile : undefined;
+  const cleanTitle = singleFile
+    ? getBaseName(singleFile.path)
+    : turnDiff && diffCount > 0
+      ? `Edited ${diffCount} ${diffCount === 1 ? 'file' : 'files'}${
+          otherHeading ? `, ${otherHeading}` : ''
+        }`
+      : extraHeading;
   const openChanges = (): void => {
     if (!selectedWorktree || !turnDiff || !firstFile) return;
     closePopover();
@@ -364,162 +465,138 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
       turnDiff,
     );
   };
-  const hiddenFileCount =
-    clean && !isExpanded ? Math.max(0, diffCount - CLEAN_VISIBLE_FILES) : 0;
-  const visibleDiffFiles =
-    clean && !isExpanded
-      ? (turnDiff?.files.slice(0, CLEAN_VISIBLE_FILES) ?? [])
-      : (turnDiff?.files ?? []);
-  const showFiles = clean || isExpanded;
+  const outputFiles = fileTarget
+    ? [
+        ...extraFiles.map((file) => (
+          <TurnFileChip
+            key={`file:${file.target?.projectId ?? ''}/${file.target?.worktreeId ?? ''}:${file.path}`}
+            path={file.path}
+            absolutePath={file.absolutePath}
+            target={file.target}
+            change={file.change}
+            presentation={clean && totalCount === 1 ? 'summary' : 'row'}
+            projectId={fileTarget.projectId}
+            worktreeId={fileTarget.worktreeId}
+            chatId={fileTarget.chatId}
+          />
+        )),
+        ...visiblePending.map((file) => (
+          <TurnFileChip
+            key={`pending:${file.target?.projectId ?? ''}/${file.target?.worktreeId ?? ''}:${file.path}`}
+            path={file.path}
+            target={file.target}
+            change={file.change}
+            pending
+            waiting={waitingPending.has(file.path)}
+            presentation={clean && totalCount === 1 ? 'summary' : 'row'}
+            projectId={fileTarget.projectId}
+            worktreeId={fileTarget.worktreeId}
+            chatId={fileTarget.chatId}
+          />
+        )),
+      ]
+    : [];
+  const singleContent = singleFile ? (
+    <SingleDiffFile
+      file={singleFile}
+      disabled={!selectedWorktree}
+      onOpen={openChanges}
+    />
+  ) : undefined;
+  const showFiles = !singleContent && isExpanded;
 
   return (
     <>
-      <div
-        data-testid="turn-files"
-        {...(turnId !== undefined ? { 'data-turn-id': turnId } : {})}
-        className={
-          clean
-            ? 'overflow-hidden rounded-lg border bg-fg-primary/[0.03]'
-            : 'rounded-md border bg-fg-primary/[0.02] px-3 py-2'
+      <TurnFilesSummaryView
+        heading={cleanTitle}
+        singleFile={singleContent}
+        changedFileCount={diffCount}
+        turnId={turnId}
+        expanded={isExpanded}
+        showFiles={showFiles}
+        onToggle={(): void => {
+          userToggledRef.current = true;
+          setIsExpanded((value) => !value);
+        }}
+        detail={
+          turnDiff &&
+          diffCount > 0 &&
+          (turnDiff.totalInsertions > 0 || turnDiff.totalDeletions > 0) ? (
+            <LineCounts
+              insertions={turnDiff.totalInsertions}
+              deletions={turnDiff.totalDeletions}
+            />
+          ) : undefined
         }
-      >
-        {clean ? (
-          <div className="flex items-center gap-3 px-3 py-2.5">
+        actions={
+          onUndo || (firstFile && selectedWorktree) ? (
             <span
-              aria-hidden="true"
-              className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
+              data-turn-files-actions=""
+              className="ml-auto flex shrink-0 items-center gap-3"
             >
-              <AppCatalogFileDiffIcon />
-            </span>
-            <span className="flex min-w-0 flex-1 flex-col text-s">
-              <span className="truncate fg-primary" data-turn-files-title="">
-                {cleanTitle}
-              </span>
-              {turnDiff && diffCount > 0 && (
-                <LineCounts
-                  insertions={turnDiff.totalInsertions}
-                  deletions={turnDiff.totalDeletions}
-                />
+              {onUndo && (
+                <Button variant="ghost-overlay" size="sm" onClick={onUndo}>
+                  Undo
+                  <AppCatalogRevertIcon aria-hidden="true" />
+                </Button>
+              )}
+              {firstFile && selectedWorktree && (
+                <Button variant="secondary" size="sm" onClick={openChanges}>
+                  View changes
+                </Button>
               )}
             </span>
-            {onUndo && (
-              <Button variant="ghost" size="sm" onClick={onUndo}>
-                Undo
-                <AppCatalogRevertIcon aria-hidden="true" />
-              </Button>
-            )}
-            {firstFile && selectedWorktree && (
-              <Button variant="secondary" size="sm" onClick={openChanges}>
-                View changes
-              </Button>
-            )}
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={(): void => {
-              userToggledRef.current = true;
-              setIsExpanded((e) => !e);
-            }}
-            aria-expanded={isExpanded}
-            className="flex w-full items-center gap-x-2 text-xs"
-          >
-            <span className="flex-shrink-0 fg-secondary">
-              {isExpanded ? <ChevronDownIcon /> : <ChevronRightIcon />}
-            </span>
-            {turnDiff && diffCount > 0 ? (
-              <>
-                <span className="font-medium fg-primary">
-                  {diffCount} {diffLabel}
-                </span>
-                <span className="font-medium tabular-nums fg-success">
-                  +{turnDiff.totalInsertions}
-                </span>
-                <span className="font-medium tabular-nums fg-destructive">
-                  -{turnDiff.totalDeletions}
-                </span>
-                {extraCount > 0 && (
-                  <span className="fg-secondary">
-                    · {extraCount} other {extraLabel}
-                  </span>
-                )}
-              </>
-            ) : (
+          ) : undefined
+        }
+        classicHeading={
+          turnDiff && diffCount > 0 ? (
+            <>
               <span className="font-medium fg-primary">
-                {extraCount} {extraLabel}
+                {diffCount} {diffLabel}
               </span>
-            )}
-          </button>
-        )}
-        <div
-          className={
-            !showFiles
-              ? 'hidden'
-              : clean
-                ? 'flex flex-col border-t py-1'
-                : 'mt-2 flex flex-wrap gap-2'
-          }
-        >
-          {showFiles &&
-            visibleDiffFiles.map((file) => (
-              <FileCard
-                key={`${file.repoId ?? ''}:${file.path}`}
-                file={file}
-                onClick={(): void => {
-                  if (selectedWorktree) {
-                    closePopover();
-                    void openFileInDiff(
-                      selectedWorktree,
-                      file,
-                      'combined',
-                      { chatTabId: originChatTabId },
-                      turnDiff,
-                    );
+              <span className="font-medium tabular-nums fg-success">
+                +{turnDiff.totalInsertions}
+              </span>
+              <span className="font-medium tabular-nums fg-destructive">
+                -{turnDiff.totalDeletions}
+              </span>
+              {otherHeading && (
+                <span className="fg-secondary">· {otherHeading}</span>
+              )}
+            </>
+          ) : (
+            <span className="font-medium fg-primary">{extraHeading}</span>
+          )
+        }
+        changedFiles={
+          showFiles
+            ? turnDiff?.files.map((file) => (
+                <FileCard
+                  key={`${file.repoId ?? ''}:${file.path}`}
+                  file={file}
+                  onClick={(): void => {
+                    if (selectedWorktree) {
+                      closePopover();
+                      void openFileInDiff(
+                        selectedWorktree,
+                        file,
+                        'combined',
+                        { chatTabId: originChatTabId },
+                        turnDiff,
+                      );
+                    }
+                  }}
+                  onMouseEnter={(event): void =>
+                    handleCardMouseEnter(file, event.currentTarget)
                   }
-                }}
-                onMouseEnter={(e): void => {
-                  handleCardMouseEnter(file, e.currentTarget);
-                }}
-                onMouseLeave={handleCardMouseLeave}
-              />
-            ))}
-          {fileTarget &&
-            extraFiles.map((file) => (
-              <TurnFileChip
-                key={`file:${file.target?.projectId ?? ''}/${file.target?.worktreeId ?? ''}:${file.path}`}
-                path={file.path}
-                target={file.target}
-                projectId={fileTarget.projectId}
-                worktreeId={fileTarget.worktreeId}
-                chatId={fileTarget.chatId}
-              />
-            ))}
-          {fileTarget &&
-            pendingFiles.map((file) => (
-              <TurnFileChip
-                key={`pending:${file.target?.projectId ?? ''}/${file.target?.worktreeId ?? ''}:${file.path}`}
-                path={file.path}
-                target={file.target}
-                pending
-                projectId={fileTarget.projectId}
-                worktreeId={fileTarget.worktreeId}
-                chatId={fileTarget.chatId}
-              />
-            ))}
-          {hiddenFileCount > 0 && (
-            <button
-              type="button"
-              onClick={(): void => {
-                userToggledRef.current = true;
-                setIsExpanded(true);
-              }}
-              className="focus-ring px-3 py-1 text-left text-s fg-tertiary transition-colors hover:fg-secondary"
-            >
-              Show {hiddenFileCount} more
-            </button>
-          )}
-        </div>
-      </div>
+                  onMouseLeave={handleCardMouseLeave}
+                />
+              ))
+            : undefined
+        }
+      >
+        {outputFiles}
+      </TurnFilesSummaryView>
 
       {/* Hover popover */}
       {hoveredFile && selectedWorktree && turnDiff && (

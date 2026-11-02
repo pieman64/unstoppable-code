@@ -1,6 +1,11 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import { isFeatureSurfaceAvailable } from '@canopy/app-core/gating';
-import type { StatusBadgeTone } from '@canopy/ui-shared/lib';
+import type { StatusGlyphState } from '@canopy/ui-shared/lib';
+import {
+  WORKFLOW_KIND_LABELS,
+  type WorkflowKind,
+} from '@canopy/ui-shared/lib/workflow-labels';
 import type {
   PipelineRunStatus,
   PipelineRunSummary,
@@ -14,7 +19,10 @@ import { formatRunDuration } from './workflow-time';
  * infers one kind from another: an automation run is built from its own run
  * record even when it started a pipeline.
  */
-export type WorkflowRunKind = 'automation' | 'pipeline' | 'watcher';
+export type WorkflowRunKind = WorkflowKind;
+
+/** Where a run that belongs to no project shows it ran. */
+export const NO_PROJECT_LABEL = 'No project';
 
 export const WORKFLOW_RUN_KINDS: readonly WorkflowRunKind[] = [
   'automation',
@@ -24,11 +32,7 @@ export const WORKFLOW_RUN_KINDS: readonly WorkflowRunKind[] = [
 
 export const WORKFLOW_RUN_KIND_LABELS: Readonly<
   Record<WorkflowRunKind, string>
-> = {
-  automation: 'Automation',
-  pipeline: 'Pipeline',
-  watcher: 'Watcher',
-};
+> = WORKFLOW_KIND_LABELS;
 
 /** One automation run's outcome, normalized from the host's run status. */
 export type WorkflowAutomationRunStatus =
@@ -125,7 +129,7 @@ export const WORKFLOW_RUN_STARTER_LABELS: Readonly<
   manual: 'Manual',
   'plan-approved': 'Plan approved',
   'task-ready': 'Task ready',
-  'app-advisor': 'App Advisor',
+  'app-advisor': ORCHESTRATOR_LABEL,
   'remote-control': 'Remote Control',
   chat: 'Chat',
   hook: 'Hook',
@@ -296,32 +300,31 @@ export function isActiveWorkflowRunStatus(status: WorkflowRunStatus): boolean {
 }
 
 /**
- * Status → shared status-badge tone, the same mapping the pipeline run rows
- * use, extended for the automation and watcher outcomes.
+ * Status → the shared status glyph. Waiting on the user is Needs you;
+ * watching is still running; a fired watcher is done. A skipped, canceled or
+ * missed run ended without an outcome and takes the Cancelled stop glyph.
  */
-export function workflowRunStatusTone(status: WorkflowRunStatus): {
-  readonly tone: StatusBadgeTone;
-  readonly muted: boolean;
-} {
+export function workflowRunStatusGlyphState(
+  status: WorkflowRunStatus,
+): StatusGlyphState {
   switch (status) {
+    case 'queued':
+      return 'queued';
     case 'running':
     case 'watching':
-      return { tone: 'active', muted: false };
+      return 'running';
     case 'waiting':
-      return { tone: 'warning', muted: false };
+      return 'needs-you';
     case 'success':
     case 'fired':
-      return { tone: 'success', muted: false };
+      return 'done';
     case 'failure':
     case 'delivery-failed':
-      return { tone: 'failed', muted: false };
+      return 'failed';
     case 'missed':
-      return { tone: 'warning', muted: true };
-    case 'queued':
-      return { tone: 'paused', muted: true };
     case 'skipped':
     case 'canceled':
-      return { tone: 'neutral', muted: false };
+      return 'cancelled';
   }
 }
 

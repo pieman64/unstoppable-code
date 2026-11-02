@@ -294,6 +294,10 @@ fixture plus the invitation fields shown above. Pending invitations appear in
 both incoming-list and organization-list page data; accepting adds membership
 once, while declining only consumes the invitation. Repeated responses to a
 consumed invitation return 404. Registering another key keeps its data isolated.
+Both invitation projections include `organizationId` from the fixture's
+`organization.id`: the organization's external id used in organization routes,
+not an internal database id. The shared contract keeps this field optional for
+compatibility with older hosted servers.
 
 Mint arrays count every mint for the key, including auth links the desktop
 opens externally. Runtime state lives on the scenario as
@@ -397,3 +401,51 @@ mutations record `github.enqueueRequests`, reject stale `expectedHeadOid`,
 and mark the PR in-queue. The unchanged upstream baseline uses this route;
 new chat handoff tests assert zero enqueue requests as well as zero direct
 merge requests.
+
+## Deterministic LLM lifecycle controls (C1 v2)
+
+Existing scripts keep their history-derived cursor behavior. These optional
+fields apply after the helper, request-tag, resume, or history cursor selects a
+step, uniformly on Messages, Responses, Chat Completions, and Responses WS:
+
+| Step field                               | Meaning                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stepId: string`                         | Stable identifier; required with `attempts`.                                                                                                                                                                                                                                                                                                                   |
+| `attempts: Step[]`                       | Nonempty ordered alternatives, consumed per scenario key and `stepId`; the last alternative repeats. Alternative fields override the parent step. Observation `attempt` is one-based and saturates at the final alternative.                                                                                                                                   |
+| `waitFor: string`                        | Emit nothing until this scenario's named barrier is released.                                                                                                                                                                                                                                                                                                  |
+| `barrierTimeoutMs: number`               | Barrier timeout, default `30000`; failure class `mock_barrier_timeout`.                                                                                                                                                                                                                                                                                        |
+| `delayMs: number`                        | Delay after the barrier, before the first structural frame or JSON response.                                                                                                                                                                                                                                                                                   |
+| `error: { kind, status?, afterFrames? }` | `status`: HTTP status error (default `500`), WS `response.failed`; `disconnect`: close before any frames; `midstream`: close after `afterFrames` structural frames (default `1`, `0` closes before frames). JSON transports close without a complete response for either close directive. Existing error strings and objects keep their prior status behavior. |
+
+A top-level scenario `strict: true` replaces the benign unmatched fallback with
+`mock_unmatched`: HTTP `500` JSON `error.code` / `error.type`, or WS
+`response.failed` with `response.error.code`. Unregistered scenarios remain
+benign. Marker/prompt scenario selection takes priority; a request's Bearer or
+API-key credential can select a scenario when no marker/prompt scenario matches.
+
+Additional JSON control-plane routes:
+
+- `POST /__mock/barrier` with `{ key, name }` returns `{ ok: true, key, name }` and releases
+  all waiters. Release persists, including when it precedes the first wait.
+- `GET /__mock/barrier?key=<encoded-key>` returns
+  `{ barriers: [{ name, waiting, released }] }`. `waiting` counts blocked requests.
+- `GET /__mock/requests?key=<encoded-key>` returns
+  `{ requests: [{ index, transport, route, stepId?, attempt?, tag?, toolNames, toolResultIds, errorClass? }] }`.
+  `index` starts at zero and follows request resolution/arrival order within the
+  key. `transport` is `http` or `ws`; both Responses paths use the canonical route
+  `/v1/responses`. Tool metadata contains offered tool names and incoming tool
+  result identifiers, never prompt, arguments, or content text. `tag` is the
+  latest `[Canopy-Mock-Request:<tag>]` marker. Error metadata is updated when a
+  pending request fails; close directives use `mock_disconnect` / `mock_midstream`.
+
+Replacing a scenario with `POST /__mock/state`, deleting it, or resetting all
+scenarios rejects its pending barrier waiters with `mock_scenario_reset` and
+clears its barriers, attempts, and observations. An in-flight request does not
+repopulate cleared observations. Requests wait independently: releasing one
+barrier does not advance another request or serialize a WebSocket connection.
+
+Run the lifecycle coverage with:
+
+```bash
+node --test apps/desktop-app/tests/electron/mock-server/routes/lifecycle.test.mjs
+```

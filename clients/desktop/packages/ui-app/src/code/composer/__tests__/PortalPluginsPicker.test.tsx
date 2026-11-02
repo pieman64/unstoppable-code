@@ -13,7 +13,7 @@
  * stayed behind in `apps/web` because it builds its catalog through the web
  * app's real server-side projection, which this package cannot import.
  */
-import { act, useEffect, type JSX } from 'react';
+import { StrictMode, act, useEffect, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   PortalChatTabPluginSelections,
@@ -21,6 +21,7 @@ import type {
 } from '@canopy/protocol/portal';
 import type { InstalledItemSnapshot } from '@canopy/protocol/installed-items';
 import type { CapabilityUnavailable } from '@canopy/protocol/capability-bundle';
+import type { SkillRiskInfo } from '@canopy/protocol/skills';
 import {
   PORTAL_PLUGINS_DESKTOP_ONLY_LABEL,
   PORTAL_PLUGINS_NO_LONGER_AVAILABLE_LABEL,
@@ -275,6 +276,81 @@ describe('PortalPluginsPicker', () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it('opens once under Strict Mode from the plus menu and keeps edits on prop updates', () => {
+    const opened = jest.fn();
+    const changed = jest.fn<void, [PortalChatTabPluginSelections]>();
+    const setOpen = jest.fn();
+    const render = (selected: PortalChatTabPluginSelections): void => {
+      act(() =>
+        root.render(
+          <StrictMode>
+            <PortalPluginsPicker
+              catalog={catalog}
+              selections={selected}
+              brandDisplayName="desktop"
+              onChange={changed}
+              onOpen={opened}
+              open
+              onOpenChange={setOpen}
+              hideTrigger
+            />
+          </StrictMode>,
+        ),
+      );
+    };
+    render(emptySelections);
+    expect(
+      container.querySelector('[data-testid="portal-chat-plugins-button"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-testid="portal-plugins-modal"]'),
+    ).not.toBeNull();
+    expect(opened).toHaveBeenCalledTimes(1);
+    const collection = document.querySelector<HTMLInputElement>(
+      '[data-testid="portal-plugins-row-checkbox"][data-row-key="collection:col-1"]',
+    );
+    // Select through the real row checkbox rather than inspecting private draft state.
+    const checkbox = collection;
+    expect(checkbox).not.toBeNull();
+    act(() => checkbox?.click());
+    render({ ...emptySelections });
+    expect(opened).toHaveBeenCalledTimes(1);
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="portal-plugins-save"]')
+        ?.click(),
+    );
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(changed.mock.calls[0][0].collectionIds).toEqual(['col-1']);
+    expect(setOpen).toHaveBeenCalledWith(false);
+  });
+
+  it('does not restore focus into another scope when a controlled picker unmounts', () => {
+    const origin = document.createElement('button');
+    document.body.append(origin);
+    origin.focus();
+    let currentScope = true;
+    act(() =>
+      root.render(
+        <PortalPluginsPicker
+          catalog={catalog}
+          selections={emptySelections}
+          brandDisplayName="desktop"
+          onChange={jest.fn()}
+          open
+          onOpenChange={jest.fn()}
+          hideTrigger
+          canRestoreFocus={(): boolean => currentScope}
+        />,
+      ),
+    );
+    expect(document.activeElement).not.toBe(origin);
+    currentScope = false;
+    act(() => root.render(<div />));
+    expect(document.activeElement).not.toBe(origin);
+    origin.remove();
   });
 
   function mount(props: {
@@ -1749,7 +1825,7 @@ describe('PortalPluginsPicker', () => {
   function provenanceEntry(provenance: {
     sourceUrl?: string;
     license?: string;
-    securityAudit?: { level: string; socketAlerts: number | null };
+    securityAudit?: SkillRiskInfo;
   }): NonNullable<PortalPluginCatalog['entries']>[number] {
     return {
       id: 'plugin:marketplace:openai/build-web-apps',
@@ -1958,7 +2034,7 @@ describe('PortalPluginsPicker', () => {
       '[data-testid="portal-plugin-details-security-audit"]',
     );
     expect(audit?.textContent).toContain('Security scan');
-    expect(audit?.textContent).toContain('medium');
+    expect(audit?.textContent).toContain('Medium');
     expect(audit?.textContent).toContain('2 Socket alerts');
     expect(provenance?.textContent).toContain('License: MIT');
   });
@@ -1978,7 +2054,7 @@ describe('PortalPluginsPicker', () => {
     });
     const provenance = openFirstDetails();
     expect(provenance).not.toBeNull();
-    expect(provenance?.textContent).toContain('safe');
+    expect(provenance?.textContent).toContain('Safe');
     expect(provenance?.textContent).not.toContain('License:');
     expect(provenance?.querySelector('a')).toBeNull();
   });

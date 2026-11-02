@@ -30,6 +30,7 @@ function account(
 ): CanopyCloudAccountPublicState {
   return {
     hasApiKey: true,
+    authMode: 'api_key',
     credentialSource: 'manual',
     capabilities: [],
     storageAvailable: true,

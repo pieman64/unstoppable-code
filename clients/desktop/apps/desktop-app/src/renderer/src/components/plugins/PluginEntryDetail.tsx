@@ -1,3 +1,4 @@
+import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import { type JSX, useEffect, useMemo, useRef, useState } from 'react';
 import { CuratedMcpConnectionDetail } from './CuratedMcpConnectionDetail';
 import { MarketplaceSkillDetail } from '../share/MarketplaceSkillDetail';
@@ -24,9 +25,20 @@ import {
 } from '@canopy/ui-app/capability';
 import {
   marketplaceUnsharedNotice,
+  marketplaceUnshareMenuLabel,
   type MarketplaceUnshareKind,
 } from '@canopy/ui-shared/lib/marketplace-unshare';
-import { unshareMarketplaceResource } from '@/lib/marketplaceUnshare';
+import { publicLinkRemovedNotice } from '@canopy/ui-shared/lib/shared-by-you';
+import {
+  sharedByYouAudienceCount,
+  type SharedByYouAudience,
+} from '@canopy/ui-app/sharing';
+import { SharedByYou } from './SharedByYou';
+import {
+  followMarketplaceUnshare,
+  unshareMarketplaceResource,
+  unshareOwnerName,
+} from '@/lib/marketplaceUnshare';
 import { postShareToast } from '@/lib/share-toast';
 import {
   SHARED_AGENTS_CHANGED_EVENT,
@@ -99,7 +111,11 @@ import type {
   SharedAgentSummary,
 } from '@canopy/desktop-shared/types/agent-models';
 import { LocalAgentMarketplaceDetail } from './LocalAgentMarketplaceDetail';
-import type { SharedPluginSummary } from '@canopy/protocol/plugins';
+import {
+  getShareablePluginRefKey,
+  type SharedPluginSummary,
+} from '@canopy/protocol/plugins';
+import { computePluginShareableRef } from '@/hooks/useUnifiedTableData';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';
 import {
   SharedAgentMarketplaceDetail,
@@ -139,6 +155,7 @@ export interface PluginEntryDetailProps {
   presentation?: 'modal' | 'page';
   /** Opens the add/configuration flow immediately when the card CTA initiated it. */
   initialIntent?: 'view' | 'add';
+  mcpTarget?: PluginMcpNavigationTarget;
   /**
    * The entry's Share: the host's share flow for a resolved target (a plugin,
    * or the viewer's own skill, pipeline, automation or collection), or the
@@ -194,6 +211,11 @@ export interface PluginEntryDetailProps {
   sharedAgents: SharedAgentSummary[];
   /** Plugin references shared with the viewer; resolves `shared-plugin` refs. */
   sharedPlugins: SharedPluginSummary[];
+  /**
+   * The viewer's own plugin shares, including link-only ones; the installed
+   * plugin page's Shared by you reads its share from here (CAN-4842).
+   */
+  ownSharedPlugins?: SharedPluginSummary[];
   /** Project templates shared with the viewer. */
   sharedBlueprints?: WorkspaceTemplateShareSummary[];
   /** Per-provider connector reads, used to resolve `provider-connector` refs. */
@@ -256,15 +278,6 @@ export interface PluginEntryDetailProps {
 interface ResolvedPlugin {
   marketplace: MarketplaceInfo;
   plugin: PluginInfo;
-}
-
-/** The team or organization a share reaches, for the Unshare confirmation. */
-function unshareOwnerName(owner: {
-  type: string;
-  name?: string | null;
-}): string | null {
-  if (owner.type !== 'team' && owner.type !== 'organization') return null;
-  return owner.name?.trim() || null;
 }
 
 function findMarketplace(
@@ -425,24 +438,43 @@ function DetailShell({
  */
 function SharedDetailShell({
   unshare,
+  audienceCount = 0,
   ...shell
 }: Parameters<typeof DetailShell>[0] & {
   unshare: UseMarketplaceUnshareOptions | null;
+  /** Rows in the Shared by you section; two read the item "Unshare all". */
+  audienceCount?: number;
 }): JSX.Element {
   if (unshare === null) return <DetailShell {...shell} moreItems={[]} />;
-  return <SharedDetailShellWithUnshare unshare={unshare} {...shell} />;
+  return (
+    <SharedDetailShellWithUnshare
+      unshare={unshare}
+      audienceCount={audienceCount}
+      {...shell}
+    />
+  );
 }
 
 function SharedDetailShellWithUnshare({
   unshare: options,
+  audienceCount,
   ...shell
 }: Parameters<typeof DetailShell>[0] & {
   unshare: UseMarketplaceUnshareOptions;
+  audienceCount: number;
 }): JSX.Element {
   const unshare = useMarketplaceUnshare(options);
   return (
     <>
-      <DetailShell {...shell} moreItems={[unshare.item]} />
+      <DetailShell
+        {...shell}
+        moreItems={[
+          {
+            ...unshare.item,
+            label: marketplaceUnshareMenuLabel(audienceCount),
+          },
+        ]}
+      />
       {unshare.dialog}
     </>
   );
@@ -452,6 +484,7 @@ export function PluginEntryDetail({
   entry,
   presentation = 'modal',
   initialIntent = 'view',
+  mcpTarget,
   shareAction,
   preferCatalogDetail = false,
   marketplaces,
@@ -474,6 +507,7 @@ export function PluginEntryDetail({
   onDeleteLocalAgent,
   sharedAgents,
   sharedPlugins,
+  ownSharedPlugins = [],
   sharedBlueprints = [],
   onClose,
   onOpenEntry,
@@ -496,10 +530,9 @@ export function PluginEntryDetail({
   providerConnectorsLoading,
   onProviderConnectorsChanged,
 }: PluginEntryDetailProps): JSX.Element | null {
-  // Local overrides mirror `MarketplacePluginsModal`: an install or
-  // compatibility toggle re-renders the detail immediately, while the shared
-  // cache write below keeps every other surface (row states, install counters)
-  // in agreement.
+  // Local overrides: an install or compatibility toggle re-renders the
+  // detail immediately, while the shared cache write below keeps every other
+  // surface (row states, install counters) in agreement.
   const [pluginOverride, setPluginOverride] = useState<PluginInfo | null>(null);
   const [pluginAddOpen, setPluginAddOpen] = useState(false);
   const [curatedEditorOpen, setCuratedEditorOpen] = useState(false);
@@ -528,6 +561,45 @@ export function PluginEntryDetail({
   // `canDelete === true`. After main confirms the delete, the kind's shared
   // list re-reads (retiring any older read) and the detail closes back to the
   // Marketplace browse state it opened from.
+  const refreshSharedList = (kind: MarketplaceUnshareKind): void => {
+    if (kind === 'skill') void onSharedSkillsChanged().catch(() => {});
+    if (kind === 'collection')
+      void onSharedCollectionsChanged().catch(() => {});
+    if (kind === 'agent')
+      window.dispatchEvent(new Event(SHARED_AGENTS_CHANGED_EVENT));
+    if (kind === 'plugin')
+      window.dispatchEvent(new Event(SHARED_PLUGINS_CHANGED_EVENT));
+  };
+  const afterUnshared = (
+    kind: MarketplaceUnshareKind,
+    shareId: string,
+    name: string,
+  ): void => {
+    onSharedResourceUnshared?.(kind, shareId);
+    followMarketplaceUnshare(kind, name, {
+      sharedSkills: onSharedSkillsChanged,
+      sharedCollections: onSharedCollectionsChanged,
+    });
+    onClose();
+  };
+  // Removing only the public link keeps the share, so the detail stays open.
+  const afterPublicLinkRemoved = (
+    kind: MarketplaceUnshareKind,
+    name: string,
+  ): void => {
+    refreshSharedList(kind);
+    postShareToast({
+      tone: 'success',
+      message: publicLinkRemovedNotice(name),
+      blockMessageFromReplay: true,
+    });
+  };
+  const sharedByYouUnshared =
+    (kind: MarketplaceUnshareKind, shareId: string, name: string) =>
+    (audience: SharedByYouAudience): void => {
+      if (audience.id === 'public') afterPublicLinkRemoved(kind, name);
+      else afterUnshared(kind, shareId, name);
+    };
   const unshareOptions = (share: {
     kind: MarketplaceUnshareKind;
     shareId: string;
@@ -542,22 +614,7 @@ export function PluginEntryDetail({
       name,
       ownerName: unshareOwnerName(share.owner),
       onUnshare: () => unshareMarketplaceResource(kind, shareId),
-      onUnshared: (): void => {
-        onSharedResourceUnshared?.(kind, shareId);
-        if (kind === 'skill') void onSharedSkillsChanged().catch(() => {});
-        if (kind === 'collection')
-          void onSharedCollectionsChanged().catch(() => {});
-        if (kind === 'agent')
-          window.dispatchEvent(new Event(SHARED_AGENTS_CHANGED_EVENT));
-        if (kind === 'plugin')
-          window.dispatchEvent(new Event(SHARED_PLUGINS_CHANGED_EVENT));
-        postShareToast({
-          tone: 'success',
-          message: marketplaceUnsharedNotice(name),
-          blockMessageFromReplay: true,
-        });
-        onClose();
-      },
+      onUnshared: (): void => afterUnshared(kind, shareId, name),
     };
   };
   const renderUnshare = (
@@ -629,6 +686,21 @@ export function PluginEntryDetail({
     () => resolvePlugin(marketplaces, ref),
     [marketplaces, ref],
   );
+  // The viewer's own share of this installed plugin (an account share, a
+  // public link or both), matched on its share key, for the Shared by you
+  // section (CAN-4842).
+  const ownPluginShare = useMemo(() => {
+    if (!resolved) return undefined;
+    const shareableRef = computePluginShareableRef(
+      pluginOverride ?? resolved.plugin,
+      resolved.marketplace,
+    );
+    if (!shareableRef) return undefined;
+    const refKey = getShareablePluginRefKey(shareableRef);
+    return ownSharedPlugins.find(
+      (share) => share.canDelete === true && share.refKey === refKey,
+    );
+  }, [ownSharedPlugins, pluginOverride, resolved]);
 
   const localServer = useMemo(
     () =>
@@ -882,12 +954,19 @@ export function PluginEntryDetail({
         />
       );
     }
+    // Shared by you renders exactly these rows; the header defers to them.
+    const agentAudienceCount = sharedByYouAudienceCount(
+      agent,
+      personalOrganizationId,
+    );
     return (
       <SharedDetailShell
         title={entry.name}
         presentation={presentation}
         onClose={onClose}
-        header={sharedAgentDetailHeader(agent, personalOrganizationId)}
+        header={sharedAgentDetailHeader(agent, personalOrganizationId, {
+          audienceListedBelow: agentAudienceCount > 0,
+        })}
         unshare={unshareOptions({
           kind: 'agent',
           shareId: agent.id,
@@ -895,8 +974,18 @@ export function PluginEntryDetail({
           owner: agent.owner,
           canDelete: agent.canDelete,
         })}
+        audienceCount={agentAudienceCount}
       >
-        <SharedAgentMarketplaceDetail agent={agent} />
+        <div className="space-y-6">
+          <SharedAgentMarketplaceDetail agent={agent} />
+          <SharedByYou
+            kind="agent"
+            shareId={agent.id}
+            name={agent.name}
+            facts={agent}
+            onUnshared={sharedByYouUnshared('agent', agent.id, agent.name)}
+          />
+        </div>
       </SharedDetailShell>
     );
   }
@@ -915,13 +1004,20 @@ export function PluginEntryDetail({
         />
       );
     }
+    // Shared by you renders exactly these rows; the header defers to them.
+    const pluginAudienceCount = sharedByYouAudienceCount(
+      plugin,
+      personalOrganizationId,
+    );
     return (
       <SharedDetailShell
         title={entry.name}
         presentation={presentation}
         onClose={onClose}
         shareAction={shareAction}
-        header={sharedPluginDetailHeader(plugin, personalOrganizationId)}
+        header={sharedPluginDetailHeader(plugin, personalOrganizationId, {
+          audienceListedBelow: pluginAudienceCount > 0,
+        })}
         unshare={unshareOptions({
           kind: 'plugin',
           shareId: plugin.externalId,
@@ -929,8 +1025,22 @@ export function PluginEntryDetail({
           owner: plugin.owner,
           canDelete: plugin.canDelete,
         })}
+        audienceCount={pluginAudienceCount}
       >
-        <SharedPluginMarketplaceDetail plugin={plugin} />
+        <div className="space-y-6">
+          <SharedPluginMarketplaceDetail plugin={plugin} />
+          <SharedByYou
+            kind="plugin"
+            shareId={plugin.externalId}
+            name={plugin.name}
+            facts={plugin}
+            onUnshared={sharedByYouUnshared(
+              'plugin',
+              plugin.externalId,
+              plugin.name,
+            )}
+          />
+        </div>
       </SharedDetailShell>
     );
   }
@@ -1086,6 +1196,7 @@ export function PluginEntryDetail({
     );
     if (
       preferCatalogDetail &&
+      mcpTarget === undefined &&
       initialIntent === 'view' &&
       !pluginAddOpen &&
       entry.state === 'available'
@@ -1115,6 +1226,8 @@ export function PluginEntryDetail({
               categories: entry.categories,
               components: entry.components,
             }}
+            alternatives={entry.alsoAvailableFrom}
+            onOpenEntryId={onOpenEntry}
             McpServerLogoComponent={McpServerLogo}
           />
         </DetailShell>
@@ -1130,8 +1243,36 @@ export function PluginEntryDetail({
         // Its `onBack` below carries the destination instead.
       >
         <PluginDetailView
+          mcpTarget={mcpTarget}
           autoInstall={initialIntent === 'add' || pluginAddOpen}
           plugin={pluginOverride ?? resolved.plugin}
+          sharedContent={
+            ownPluginShare ? (
+              <SharedByYou
+                kind="plugin"
+                shareId={ownPluginShare.externalId}
+                name={ownPluginShare.name}
+                facts={ownPluginShare}
+                // The installed plugin stays; only its share goes.
+                onUnshared={(audience): void => {
+                  if (audience.id === 'public') {
+                    afterPublicLinkRemoved('plugin', ownPluginShare.name);
+                    return;
+                  }
+                  onSharedResourceUnshared?.(
+                    'plugin',
+                    ownPluginShare.externalId,
+                  );
+                  refreshSharedList('plugin');
+                  postShareToast({
+                    tone: 'success',
+                    message: marketplaceUnsharedNotice(ownPluginShare.name),
+                    blockMessageFromReplay: true,
+                  });
+                }}
+              />
+            ) : undefined
+          }
           headerIcon={
             <McpServerLogo
               logoUrl={entry.logoUrl}
@@ -1148,6 +1289,9 @@ export function PluginEntryDetail({
           renderPrimaryAction={({ onInstall, busy }) =>
             pluginTryIt(onInstall, busy)
           }
+          alternatives={entry.alsoAvailableFrom}
+          onOpenEntryId={onOpenEntry}
+          bundledServerRows={entry.bundledServerRows}
           // A page leaves through its breadcrumb (CAN-4261); the plugin's
           // own Back still closes an open component view.
           onBack={
@@ -1163,26 +1307,26 @@ export function PluginEntryDetail({
               updated,
             )
           }
+          statusContent={
+            <InstalledEntryStatusSection
+              entry={entry}
+              onUninstalled={onClose}
+            />
+          }
           relatedContent={
-            <>
-              <InstalledEntryStatusSection
-                entry={entry}
-                onUninstalled={onClose}
-              />
-              <CapabilityRelatedSections
-                flush
-                presentation="list"
-                subject={{
-                  kind: 'plugin',
-                  marketplaceId: resolved.marketplace.id,
-                  pluginName: marketplacePluginName,
-                }}
-                subjectEntryId={entry.id}
-                onBeforeNavigate={onClose}
-                onOpenEntry={onOpenEntry}
-                onOpenPipeline={onOpenPipeline}
-              />
-            </>
+            <CapabilityRelatedSections
+              flush
+              presentation="list"
+              subject={{
+                kind: 'plugin',
+                marketplaceId: resolved.marketplace.id,
+                pluginName: marketplacePluginName,
+              }}
+              subjectEntryId={entry.id}
+              onBeforeNavigate={onClose}
+              onOpenEntry={onOpenEntry}
+              onOpenPipeline={onOpenPipeline}
+            />
           }
         />
       </DetailShell>
@@ -1280,6 +1424,18 @@ export function PluginEntryDetail({
               canDelete: detail.canDelete,
             })
           }
+          renderSharedByYou={(detail, refresh) => (
+            <SharedByYou
+              kind="skill"
+              shareId={detail.id}
+              name={detail.name}
+              facts={detail}
+              onUnshared={(audience): void => {
+                if (audience.id === 'public') void refresh();
+                sharedByYouUnshared('skill', detail.id, detail.name)(audience);
+              }}
+            />
+          )}
           {...(skillInstallLink !== null
             ? {
                 // The shared install review (CAN-3710) installs the skill and
@@ -1397,6 +1553,22 @@ export function PluginEntryDetail({
               canDelete: detail.canDelete,
             })
           }
+          renderSharedByYou={(detail, refresh) => (
+            <SharedByYou
+              kind="collection"
+              shareId={detail.id}
+              name={detail.name}
+              facts={detail}
+              onUnshared={(audience): void => {
+                if (audience.id === 'public') void refresh();
+                sharedByYouUnshared(
+                  'collection',
+                  detail.id,
+                  detail.name,
+                )(audience);
+              }}
+            />
+          )}
           {...(collectionInstallLink !== null
             ? {
                 // The shared install review (CAN-3710) installs it and lands

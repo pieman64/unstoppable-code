@@ -11,6 +11,7 @@ import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
 import { StepCard } from './StepCard';
 import { PipelineDragHandleIcon } from './PipelinePanelPrimitives';
+import { Button } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   PlusIcon as AppCatalogPlusIcon,
@@ -74,7 +75,7 @@ export function JobCard({
     <div
       ref={setSortableRef}
       style={style}
-      className={`border rounded-lg overflow-hidden transition-all ${
+      className={`border rounded-lg overflow-hidden transition-[border-color,box-shadow,opacity] ${
         isSelected
           ? 'border-line-accent ring-1 ring-line-accent'
           : 'hover:border-line-accent/30'
@@ -98,19 +99,23 @@ export function JobCard({
         )}
 
         {/* Collapse toggle */}
-        <button
+        <Button
+          variant="ghost-quiet"
+          size="compact"
+          iconOnly
           onClick={(e) => {
             e.stopPropagation();
             setCollapsed(!collapsed);
           }}
-          className="shrink-0 p-0.5 fg-secondary hover:fg-primary transition-colors"
+          aria-label={collapsed ? 'Expand job' : 'Collapse job'}
+          aria-expanded={!collapsed}
         >
           <AppCatalogChevronRightMediumIcon
             width="14"
             height="14"
             className={`transition-transform ${collapsed ? '' : 'rotate-90'}`}
           />
-        </button>
+        </Button>
 
         {/* Job name */}
         <span className="text-s font-medium fg-primary truncate flex-1">
@@ -138,15 +143,18 @@ export function JobCard({
 
         {/* Add step button */}
         {!readonly && (
-          <button
+          <Button
+            variant="ghost-quiet"
+            size="compact"
+            iconOnly
             onClick={(e) => {
               e.stopPropagation();
               onAddStep(jobId);
             }}
-            className="shrink-0 p-1 fg-secondary hover:fg-primary transition-colors rounded hover:bg-secondary"
+            aria-label="Add step"
           >
             <AppCatalogPlusIcon width="14" height="14" />
-          </button>
+          </Button>
         )}
       </div>
 

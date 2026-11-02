@@ -24,6 +24,7 @@ import {
   registerScenario,
   registerShareMembership,
   seedAutomations,
+  seedStoredPipeline,
 } from './seeders/index.mjs';
 
 const SHAREABLE_ID = 'shareable-nightly-review';
@@ -315,7 +316,14 @@ test('CAN-3734: explicitly resets a narrowed pipeline requirement when changing 
     await expect(modal.getByTestId('share-automation-consent')).toHaveCount(0);
     await expect(modal.getByTestId('share-automation-submit')).toBeEnabled();
     await modal.getByTestId('share-automation-submit').click();
+    await expect(modal.getByTestId('share-automation-success')).toBeVisible();
+    await modal.getByTestId('share-automation-done').click();
     await expect(modal).toBeHidden();
+    // Success toasts expire after six seconds and may already be gone.
+    // Wait for expiry before opening the editor, whose Save button they cover.
+    await expect(window.getByTestId('toast-stack-card')).toHaveCount(0, {
+      timeout: 15_000,
+    });
     const published = await window.evaluate(async () => {
       const { activities } = await window.api.automations.list();
       const local = activities.find((entry) => entry.id === 'narrowed-local');
@@ -353,6 +361,8 @@ test('CAN-3734: explicitly resets a narrowed pipeline requirement when changing 
     await expect(modal.getByTestId('share-automation-consent')).toHaveCount(0);
     await expect(modal.getByTestId('share-automation-submit')).toBeEnabled();
     await modal.getByTestId('share-automation-submit').click();
+    await expect(modal.getByTestId('share-automation-success')).toBeVisible();
+    await modal.getByTestId('share-automation-done').click();
     await expect(modal).toBeHidden();
     const republished = await window.evaluate(
       (id) => window.api.automations.getShared(id),
@@ -407,8 +417,8 @@ test('shares downgraded automations and hides Share for execution resumes', asyn
     await expect(advancedToggle).toHaveText(
       'More details · May contain a secret, kept private',
     );
-    // Where it runs and what stays private sit under More details. This
-    // pipeline copies no files, so there is no Included files section at all.
+    // Where it runs and what stays private sit under More details, with the
+    // review of what the share includes: the pipeline the automation runs.
     for (const id of [
       // A pipeline that runs in both contexts offers narrowing in place of
       // the Runs in line.
@@ -425,10 +435,13 @@ test('shares downgraded automations and hides Share for execution resumes', asyn
     ]) {
       await expect(details.getByTestId(id)).toBeVisible();
     }
+    // CAN-4915: the user pipeline travels in the capability package.
     await expect(
-      modal.getByTestId('share-automation-dependencies'),
-    ).toHaveCount(0);
-    await expect(modal).not.toContainText('Included files');
+      details.getByTestId('share-automation-dependencies-pipelines'),
+    ).toContainText('Runs this automation');
+    await expect(
+      details.getByTestId('share-automation-included-notices'),
+    ).toContainText('workflow definition travels with this automation');
     const runCondition = modal.getByTestId('share-automation-run-condition');
     await expect(
       runCondition.getByTestId('share-automation-run-condition-command'),
@@ -464,8 +477,8 @@ test('shares downgraded automations and hides Share for execution resumes', asyn
     await expect(notices).toContainText('input values');
     await expect(notices).toContainText('model preferences');
     await expect(notices).toContainText('project and worktree bindings');
-    await expect(notices).toContainText(
-      'pipeline definition travels with this automation',
+    await expect(notices).not.toContainText(
+      'workflow definition travels with this automation',
     );
     await expect(notices).not.toContainText('only exists on this machine');
     await expect(preview).not.toContainText('"version": 4');
@@ -575,6 +588,8 @@ test('shares an automation that pins an approval mode and leaves the mode behind
       .click();
     await modal.getByRole('button', { name: /Platform/ }).click();
     await modal.getByTestId('share-automation-submit').click();
+    await expect(modal.getByTestId('share-automation-success')).toBeVisible();
+    await modal.getByTestId('share-automation-done').click();
     await expect(modal).toHaveCount(0);
 
     // The share is a snapshot: the publisher keeps the mode they chose.
@@ -758,7 +773,7 @@ test('uses one audience-neutral description placeholder for every share scope', 
 
 // A share description is authored in a plain textarea, so paragraphs and a
 // numbered list arrive as newline-separated Markdown. The Shared tab preview
-// must render that structure, and the compact row must show clean text.
+// must render that structure, while the compact row names its audience.
 const MARKDOWN_DESCRIPTION = [
   'Reviews every open branch overnight.',
   'Posts findings to the team.',
@@ -808,6 +823,8 @@ test('renders a Markdown share description in Marketplace Shared by me', async (
       .click();
     await modal.getByRole('button', { name: /Platform/ }).click();
     await modal.getByTestId('share-automation-submit').click();
+    await expect(modal.getByTestId('share-automation-success')).toBeVisible();
+    await modal.getByTestId('share-automation-done').click();
     await expect(modal).toHaveCount(0);
 
     const remoteId = await window.evaluate(async (id) => {
@@ -816,17 +833,13 @@ test('renders a Markdown share description in Marketplace Shared by me', async (
         ?.remoteId;
     }, SHAREABLE_ID);
     expect(remoteId).toBeTruthy();
-    // CAN-3980: the share lists under Marketplace › Automations › "Shared by
-    // me", where its card subtitle is the description as plain text.
+    // CAN-4840, CAN-5220: Shared by me rows name the audience and share date; the
+    // description remains in the preview.
     await app.openSharedByMeAutomations();
     const card = window
       .getByTestId('customize-section-shared-by-me')
       .getByTestId(`customize-row-automation:shared:${remoteId}`);
-    const subtitle = card;
-    await expect(subtitle).toContainText(
-      'Reviews every open branch overnight.',
-    );
-    await expect(subtitle).not.toContainText('**');
+    await expect(card).toContainText('Platform · Since Jun 18');
 
     await card.click();
     const description = window
@@ -892,6 +905,8 @@ test('CAN-3734: Cowork session publishes a Cowork action and installs only into 
     await expect(modal.getByTestId('share-automation-consent')).toHaveCount(0);
     await expect(modal.getByTestId('share-automation-submit')).toBeEnabled();
     await modal.getByTestId('share-automation-submit').click();
+    await expect(modal.getByTestId('share-automation-success')).toBeVisible();
+    await modal.getByTestId('share-automation-done').click();
     await expect(modal).toBeHidden();
     const detail = await window.evaluate(async () => {
       const { activities } = await window.api.automations.list();
@@ -988,5 +1003,113 @@ test('CAN-3734: Cowork session publishes a Cowork action and installs only into 
     await discardWorkflowEditIfOpen(electronApp);
     await closeCanopy(electronApp, userDataDir);
     rmSync(codexFixture.runtimeDir, { recursive: true, force: true });
+  }
+});
+
+// CAN-4550: a pipeline automation with no project shares its destination in
+// a version 6 document; it has no project binding to strip.
+test('shares a pipeline automation with no project as a v6 document that runs with no project', async () => {
+  const apiKey = 'csk_can4550_global_share';
+  await registerShareMembership(apiKey);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'automation-share-global-e2e-'),
+  );
+  seedAutomationTargetProjects(userDataDir);
+  seedStoredPipeline({
+    userDataDir,
+    id: 'local-global-report',
+    name: 'Global Report',
+    yaml: [
+      'name: Global Report',
+      'on: dispatch',
+      'scope: global',
+      'jobs:',
+      '  report:',
+      '    steps:',
+      '      - run: echo report',
+      '',
+    ].join('\n'),
+  });
+  seedAutomations({
+    userDataDir,
+    activities: [
+      {
+        version: 1,
+        id: 'global-report',
+        name: 'Global report',
+        enabled: false,
+        schedule: { kind: 'cron', expression: '0 6 * * *', timezone: 'local' },
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineId: 'local-global-report',
+          pipelineSource: 'user',
+          pipelineName: 'Global Report',
+        },
+        createdAt: '2026-10-06T00:00:00.000Z',
+        updatedAt: '2026-10-06T00:00:00.000Z',
+        failureCount: 0,
+      },
+    ],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    const account = await window.evaluate(
+      (key) => window.api.saveCanopyCloudApiKey({ apiKey: key }),
+      apiKey,
+    );
+    expect(account.status).toMatchObject({ authenticated: true });
+    await window.evaluate(() =>
+      window.dispatchEvent(new Event('canopy:cloud-account-changed')),
+    );
+    await app.openAutomationsPage();
+    await app.chooseWorkflowsLibraryRowAction(
+      app.workflowsLibraryAutomationRow('global-report'),
+      'share',
+    );
+    const modal = window.getByTestId('share-automation-modal');
+    await expect(modal).toBeVisible();
+    // Where it runs sits under More details.
+    await modal.getByTestId('share-automation-advanced-toggle').click();
+    const details = modal.getByTestId('share-automation-advanced-body');
+    await expect(
+      details.getByTestId('automation-summary-destination'),
+    ).toHaveText('Runs with no project.');
+    await expect(modal.getByTestId('share-automation-blockers')).toHaveCount(0);
+    await expect(details).not.toContainText('project and worktree bindings');
+    const preview = details.getByTestId('share-automation-preview');
+    await expect(preview).toContainText('"version": 6');
+    const previewText = await preview.innerText();
+    expect(previewText).toContain('"kind": "global"');
+
+    await modal
+      .getByTestId('share-automation-scope')
+      .getByRole('radio', { name: 'Team' })
+      .click();
+    await modal.getByRole('button', { name: /Platform/ }).click();
+    await expect(modal.getByTestId('share-automation-submit')).toBeEnabled();
+    await modal.getByTestId('share-automation-submit').click();
+    await expect(modal.getByTestId('share-automation-success')).toBeVisible();
+    await modal.getByTestId('share-automation-done').click();
+    await expect(modal).toBeHidden();
+
+    const published = await window.evaluate(async () => {
+      const { activities } = await window.api.automations.list();
+      const local = activities.find((entry) => entry.id === 'global-report');
+      return window.api.automations.getShared(local.remote.remoteId);
+    });
+    expect(published.automation.version).toBe(6);
+    expect(published.automation.action).toMatchObject({
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+    });
+    expect(published.automation).not.toHaveProperty('targetRequirement');
+  } finally {
+    await discardWorkflowEditIfOpen(electronApp);
+    await closeCanopy(electronApp, userDataDir);
+    await clearScenario(DEFAULT_MOCK_BASE_URL, apiKey);
   }
 });

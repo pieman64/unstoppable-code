@@ -1,8 +1,8 @@
 /**
  * Early access: sidebar worktree row menus read "Rename" with a pencil, and
  * the shared rail folds its rare rows (Branch info, Hide, Split PR, …) into
- * one "More" submenu. With early access off, both rails keep develop's menu:
- * "Set label" and every row at the top level.
+ * one "More" submenu. The legacy cursor menu has graduated; the shared
+ * rail uses its separate Sidebar experiment, unaffected by Early access.
  *
  * Deterministic: workspaces and worktrees are seeded on disk before launch.
  * No live agents, no network.
@@ -11,7 +11,7 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { CanopyAppDriver } from './canopyApp.mjs';
+import { CanopyAppDriver, waitForStableLocator } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedChatsSectionFixture } from './seeders/index.mjs';
 
@@ -61,7 +61,7 @@ async function closeMenu(window) {
 for (const sharedRail of [false, true]) {
   const railName = sharedRail ? 'shared rail' : 'legacy rail';
 
-  test(`${railName}: early access renames Set label and, on the shared rail, folds rare rows into More`, async () => {
+  test(`${railName}: row menus follow their graduated and early-access behavior`, async () => {
     test.setTimeout(180_000);
     const { electronApp, window, userDataDir } = await launchSeeded({
       sharedRail,
@@ -74,35 +74,36 @@ for (const sharedRail of [false, true]) {
       const branchInfo = window.getByTestId('worktree-actions-menu-info');
       const more = menu.getByTestId('worktree-actions-menu-more');
 
-      // Early access off: develop's menu.
-      await setEarlyAccess(window, false);
-      await row.click({ button: 'right' });
-      await expect(menu).toBeVisible();
-      await expect(setLabel).toHaveText('Set label');
-      await expect(branchInfo).toBeVisible();
-      await expect(more).toHaveCount(0);
-      await closeMenu(window);
-
-      // Early access on: "Rename"; the shared rail moves Branch info into
-      // More, and the legacy rail keeps it at the top level.
-      await setEarlyAccess(window, true);
-      await row.click({ button: 'right' });
-      await expect(menu).toBeVisible();
-      await expect(setLabel).toHaveText('Rename');
-      if (sharedRail) {
-        await expect(branchInfo).toHaveCount(0);
-        await expect(more).toBeVisible();
-        await more.click();
-        const moreMenu = window.getByTestId('worktree-actions-menu-more-menu');
-        await expect(moreMenu).toBeVisible();
-        await expect(
-          moreMenu.getByTestId('worktree-actions-menu-info'),
-        ).toBeVisible();
-      } else {
-        await expect(branchInfo).toBeVisible();
-        await expect(more).toHaveCount(0);
+      for (const enabled of [false, true]) {
+        await setEarlyAccess(window, enabled);
+        // Rehydrate the persisted choice before opening a menu; the live
+        // experiment update can otherwise remount the row after right-click.
+        await window.reload();
+        await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+        // After the reload the Projects section can briefly return to its
+        // loading state and remount its rows, which closes an open menu.
+        await waitForStableLocator(window, row);
+        await row.click({ button: 'right' });
+        await expect(menu).toBeVisible();
+        const groupedMenu = !sharedRail;
+        await expect(setLabel).toHaveText(groupedMenu ? 'Rename' : 'Set label');
+        if (groupedMenu) {
+          await expect(branchInfo).toHaveCount(0);
+          await expect(more).toBeVisible();
+          await more.click();
+          const moreMenu = window.getByTestId(
+            'worktree-actions-menu-more-menu',
+          );
+          await expect(moreMenu).toBeVisible();
+          await expect(
+            moreMenu.getByTestId('worktree-actions-menu-info'),
+          ).toBeVisible();
+        } else {
+          await expect(branchInfo).toBeVisible();
+          await expect(more).toHaveCount(0);
+        }
+        await closeMenu(window);
       }
-      await closeMenu(window);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

@@ -50,7 +50,7 @@ export function blockFingerprint(block: PersistedChatBlock): string {
     case 'tool_use':
       return `tool_use:${block.toolName}:${block.input}`;
     case 'tool_result':
-      return `tool_result:${block.toolUseId}:${block.toolName}:${block.output}:${String(block.isError)}`;
+      return `tool_result:${block.toolUseId}:${block.toolName}:${block.output}:${String(block.isError)}${block.interruption ? `:interrupted:${block.interruption.reason}:${block.interruption.at}` : ''}`;
     case 'compaction_info':
       return `compaction_info:${block.sourceEventId ?? ''}:${block.sessionId ?? ''}:${normalizeFingerprintText(block.summary ?? block.reason ?? '')}`;
     case 'mcp_activation': {
@@ -74,6 +74,8 @@ export function blockFingerprint(block: PersistedChatBlock): string {
       return `builtin_gh_chat_info:${block.kind}:${block.repoName ?? ''}:${block.branchName ?? ''}`;
     case 'pending_setup_info':
       return `pending_setup_info:${String(block.timestamp)}`;
+    case 'approval_safety_denied_info':
+      return `approval_safety_denied_info:${block.receiptId}`;
     case 'approval_resolution_info':
       return `approval_resolution_info:${block.resolvedBy}:${block.mode}:${block.previousMode ?? ''}:${String(block.timestamp)}:${block.titles.join('\u0000')}`;
     case 'revert_info':
@@ -109,5 +111,6 @@ export const LAYOUT_BLOCK_TYPES: ReadonlySet<string> = new Set<string>([
   'builtin_gh_chat_info',
   'pending_setup_info',
   'approval_resolution_info',
+  'approval_safety_denied_info',
   'revert_info',
 ]);

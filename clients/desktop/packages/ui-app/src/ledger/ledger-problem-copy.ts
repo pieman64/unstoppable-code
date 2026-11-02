@@ -5,7 +5,10 @@ export interface ProblemCopy {
   readonly retry: boolean;
 }
 
-/** What a failed read means to the person, and whether retrying can help. */
+/**
+ * What a failed read means to the person, and whether retrying can help. A
+ * failed list is one sentence: its Try again capsule says the rest.
+ */
 export function problemCopy(
   problem: LedgerViewProblem,
   subject: 'list' | 'entry',
@@ -23,7 +26,7 @@ export function problemCopy(
         return {
           message:
             subject === 'list'
-              ? "Couldn't load entries. Try again."
+              ? "Couldn't load entries."
               : "Couldn't load this entry. Try again.",
           retry: true,
         };
@@ -33,7 +36,7 @@ export function problemCopy(
     case 'NOT_FOUND':
       return subject === 'entry'
         ? { message: 'This entry no longer exists.', retry: false }
-        : { message: "Couldn't load entries. Try again.", retry: true };
+        : { message: "Couldn't load entries.", retry: true };
     case 'SCOPE_RETIRED':
       return { message: "This work's Feed was removed.", retry: false };
     case 'FORBIDDEN':
@@ -42,7 +45,7 @@ export function problemCopy(
       return {
         message:
           subject === 'list'
-            ? "Couldn't load entries. Try again."
+            ? "Couldn't load entries."
             : "Couldn't load this entry. Try again.",
         retry: true,
       };

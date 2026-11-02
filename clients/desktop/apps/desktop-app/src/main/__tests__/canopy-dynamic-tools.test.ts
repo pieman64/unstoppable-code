@@ -113,6 +113,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A function tool's input schema; namespace specs carry none. */
+function inputSchemaOf(
+  tool: ReturnType<typeof buildCanopyDynamicToolSpecs>[number] | undefined,
+): unknown {
+  return tool?.type === 'function' ? tool.inputSchema : undefined;
+}
+
 function getSchemaProperty(
   schema: unknown,
   propertyName: string,
@@ -140,33 +147,37 @@ function getStringArrayProperty(
 
 describe('canopy dynamic tools', () => {
   it('advertises independent SearchWatchers instance paging and target filters', () => {
-    const tool = buildCanopyDynamicToolSpecs({}).find(
-      (entry) => entry.name === 'canopy_search_watchers',
-    );
+    const tool = buildCanopyDynamicToolSpecs({
+      includeChatVisuals: false,
+    }).find((entry) => entry.name === 'canopy_search_watchers');
     expect(
-      getSchemaProperty(tool?.inputSchema, 'activePageSize'),
+      getSchemaProperty(inputSchemaOf(tool), 'activePageSize'),
     ).toMatchObject({ type: 'integer', minimum: 1, maximum: 200, default: 50 });
-    expect(getSchemaProperty(tool?.inputSchema, 'activeCursor')).toMatchObject({
+    expect(
+      getSchemaProperty(inputSchemaOf(tool), 'activeCursor'),
+    ).toMatchObject({
       type: 'string',
       minLength: 1,
       maxLength: 200,
     });
-    expect(getSchemaProperty(tool?.inputSchema, 'activeQuery')).toMatchObject({
-      type: 'string',
-      maxLength: 500,
-    });
+    expect(getSchemaProperty(inputSchemaOf(tool), 'activeQuery')).toMatchObject(
+      {
+        type: 'string',
+        maxLength: 500,
+      },
+    );
     for (const key of [
       'targetProjectId',
       'targetBotId',
       'targetTaskId',
       'targetChatId',
     ]) {
-      expect(getSchemaProperty(tool?.inputSchema, key)).toMatchObject({
+      expect(getSchemaProperty(inputSchemaOf(tool), key)).toMatchObject({
         type: 'string',
         minLength: 1,
       });
     }
-    expect(getSchemaProperty(tool?.inputSchema, 'limit')).toMatchObject({
+    expect(getSchemaProperty(inputSchemaOf(tool), 'limit')).toMatchObject({
       minimum: 1,
       maximum: 50,
     });
@@ -246,11 +257,11 @@ describe('canopy dynamic tools', () => {
   });
 
   it('advertises browser focus, wait_for, and their bounded parameters', () => {
-    const dispatchTool = buildCanopyDynamicToolSpecs({}).find(
-      (tool) => tool.name === 'canopy_dispatch_action',
-    );
+    const dispatchTool = buildCanopyDynamicToolSpecs({
+      includeChatVisuals: false,
+    }).find((tool) => tool.name === 'canopy_dispatch_action');
     const actionProperty = getSchemaProperty(
-      dispatchTool?.inputSchema,
+      inputSchemaOf(dispatchTool),
       'action',
     );
     const typeProperty = getSchemaProperty(actionProperty, 'type');
@@ -481,15 +492,16 @@ describe('canopy dynamic tools', () => {
       expect(disabled.map((tool) => tool.name)).not.toContain(
         'canopy_show_visual',
       );
-      expect(getStringArrayProperty(visual?.inputSchema, 'required')).toEqual([
-        'html',
-        'title',
-        'height',
-      ]);
-      expect(visual?.inputSchema).toHaveProperty('additionalProperties', false);
-      expect(getStringArrayProperty(preview?.inputSchema, 'required')).toEqual([
-        'html',
-      ]);
+      expect(getStringArrayProperty(inputSchemaOf(visual), 'required')).toEqual(
+        ['html', 'title', 'height'],
+      );
+      expect(inputSchemaOf(visual)).toHaveProperty(
+        'additionalProperties',
+        false,
+      );
+      expect(
+        getStringArrayProperty(inputSchemaOf(preview), 'required'),
+      ).toEqual(['html']);
       expect(disabled.map((tool) => tool.name)).not.toContain(
         'canopy_preview_visual',
       );
@@ -629,10 +641,10 @@ describe('canopy dynamic tools', () => {
     const tool = buildCanopyDynamicToolSpecs({
       includeChatVisuals: false,
     }).find((candidate) => candidate.name === 'canopy_set_auto_archive');
-    expect(getStringArrayProperty(tool?.inputSchema, 'required')).toContain(
+    expect(getStringArrayProperty(inputSchemaOf(tool), 'required')).toContain(
       'enabled',
     );
-    expect(getSchemaProperty(tool?.inputSchema, 'enabled')).toMatchObject({
+    expect(getSchemaProperty(inputSchemaOf(tool), 'enabled')).toMatchObject({
       type: 'boolean',
     });
   });
@@ -641,17 +653,19 @@ describe('canopy dynamic tools', () => {
     const tool = buildCanopyDynamicToolSpecs({
       includeChatVisuals: false,
     }).find((candidate) => candidate.name === 'canopy_set_base_branch');
-    expect(getStringArrayProperty(tool?.inputSchema, 'required')).toContain(
+    expect(getStringArrayProperty(inputSchemaOf(tool), 'required')).toContain(
       'baseBranch',
     );
-    expect(getSchemaProperty(tool?.inputSchema, 'baseBranch')).toMatchObject({
+    expect(getSchemaProperty(inputSchemaOf(tool), 'baseBranch')).toMatchObject({
       type: 'string',
     });
-    expect(getSchemaProperty(tool?.inputSchema, 'repoId')).toMatchObject({
+    expect(getSchemaProperty(inputSchemaOf(tool), 'repoId')).toMatchObject({
       type: 'string',
     });
-    expect(getSchemaProperty(tool?.inputSchema, 'projectId')).toBeUndefined();
-    expect(getSchemaProperty(tool?.inputSchema, 'worktreeId')).toBeUndefined();
+    expect(getSchemaProperty(inputSchemaOf(tool), 'projectId')).toBeUndefined();
+    expect(
+      getSchemaProperty(inputSchemaOf(tool), 'worktreeId'),
+    ).toBeUndefined();
     expect(
       buildCanopyDynamicToolSpecs({
         includeChatVisuals: false,
@@ -665,11 +679,11 @@ describe('canopy dynamic tools', () => {
       includeChatVisuals: false,
     }).find((tool) => tool.name === 'canopy_search_actions');
     const categoryProperty = getSchemaProperty(
-      searchTool?.inputSchema,
+      inputSchemaOf(searchTool),
       'category',
     );
     const actionTypeProperty = getSchemaProperty(
-      searchTool?.inputSchema,
+      inputSchemaOf(searchTool),
       'actionType',
     );
     const categoryDescription =
@@ -692,7 +706,7 @@ describe('canopy dynamic tools', () => {
     expect(actionTypeDescription).toContain('browser.screenshot');
     expect(actionTypeDescription).toContain('browser.input_snapshot');
     expect(actionTypeDescription).toContain('browser.inspect');
-    expect(JSON.stringify(searchTool?.inputSchema)).not.toContain(
+    expect(JSON.stringify(inputSchemaOf(searchTool))).not.toContain(
       'Only "pipeline"',
     );
   });
@@ -702,7 +716,7 @@ describe('canopy dynamic tools', () => {
       includeChatVisuals: false,
     }).find((tool) => tool.name === 'canopy_dispatch_action');
     const actionProperty = getSchemaProperty(
-      dispatchTool?.inputSchema,
+      inputSchemaOf(dispatchTool),
       'action',
     );
     const typeProperty = getSchemaProperty(actionProperty, 'type');
@@ -1119,8 +1133,10 @@ describe('canopy dynamic tools — toolSchemaProfile', () => {
     }).find((tool) => tool.name === 'canopy_dispatch_action');
     // The default (rich) schemas still carry the combinators the strict
     // dialect can't accept — this is what makes the flag meaningful.
-    expect(schemaKeywords(setupWatchers?.inputSchema).has('anyOf')).toBe(true);
-    expect(schemaKeywords(dispatch?.inputSchema).has('allOf')).toBe(true);
+    expect(schemaKeywords(inputSchemaOf(setupWatchers)).has('anyOf')).toBe(
+      true,
+    );
+    expect(schemaKeywords(inputSchemaOf(dispatch)).has('allOf')).toBe(true);
   });
 
   it('strips every combinator from setup_watchers and dispatch_action when on', () => {
@@ -1131,7 +1147,7 @@ describe('canopy dynamic tools — toolSchemaProfile', () => {
     for (const name of ['canopy_setup_watchers', 'canopy_dispatch_action']) {
       const spec = specs.find((tool) => tool.name === name);
       expect(spec).toBeDefined();
-      const keywords = schemaKeywords(spec?.inputSchema);
+      const keywords = schemaKeywords(inputSchemaOf(spec));
       for (const combinator of COMBINATORS) {
         expect(keywords.has(combinator)).toBe(false);
       }
@@ -1144,7 +1160,7 @@ describe('canopy dynamic tools — toolSchemaProfile', () => {
       toolSchemaProfile: 'flat',
     });
     for (const spec of specs) {
-      const keywords = schemaKeywords(spec.inputSchema);
+      const keywords = schemaKeywords(inputSchemaOf(spec));
       for (const combinator of COMBINATORS) {
         expect(keywords.has(combinator)).toBe(false);
       }
@@ -1157,7 +1173,7 @@ describe('canopy dynamic tools — toolSchemaProfile', () => {
       toolSchemaProfile: 'flat',
     }).find((tool) => tool.name === 'canopy_dispatch_action');
     const actionProperty = getSchemaProperty(
-      dispatchTool?.inputSchema,
+      inputSchemaOf(dispatchTool),
       'action',
     );
     const typeProperty = getSchemaProperty(actionProperty, 'type');
@@ -1179,12 +1195,14 @@ describe('canopy dynamic tools — Ledger', () => {
     'adds the Ledger tools in %s mode only for an exposed session',
     (mode) => {
       const exposed = buildCanopyDynamicToolSpecs({
+        includeChatVisuals: false,
         mode,
         includeLedger: true,
       }).map((tool) => tool.name);
-      const hidden = buildCanopyDynamicToolSpecs({ mode }).map(
-        (tool) => tool.name,
-      );
+      const hidden = buildCanopyDynamicToolSpecs({
+        includeChatVisuals: false,
+        mode,
+      }).map((tool) => tool.name);
 
       expect(exposed).toEqual(expect.arrayContaining(LEDGER_CODEX_NAMES));
       for (const name of LEDGER_CODEX_NAMES) {
@@ -1195,11 +1213,13 @@ describe('canopy dynamic tools — Ledger', () => {
 
   it('keeps the Ledger tools with or without the code graph and never in minimal mode', () => {
     const withoutGraph = buildCanopyDynamicToolSpecs({
+      includeChatVisuals: false,
       mode: 'worktree',
       includeCodeGraph: false,
       includeLedger: true,
     }).map((tool) => tool.name);
     const minimal = buildCanopyDynamicToolSpecs({
+      includeChatVisuals: false,
       mode: 'minimal',
       includeLedger: true,
     }).map((tool) => tool.name);
@@ -1212,6 +1232,7 @@ describe('canopy dynamic tools — Ledger', () => {
 
   it('derives the advertised Ledger schemas from the protocol tool inputs', () => {
     const specs = buildCanopyDynamicToolSpecs({
+      includeChatVisuals: false,
       mode: 'worktree',
       includeLedger: true,
     });
@@ -1477,7 +1498,7 @@ describe('canonical watcher Codex boundary', () => {
       { trigger: 'bot_new_chat_started', target: { botId: 'app_advisor' } },
     ];
     const call = (
-      args: unknown,
+      args: Parameters<typeof handleCanopyDynamicToolCall>[0]['arguments'],
     ): ReturnType<typeof handleCanopyDynamicToolCall> =>
       handleCanopyDynamicToolCall(
         {
@@ -1518,9 +1539,9 @@ describe('canonical watcher Codex boundary', () => {
       );
     }
     expect(setupCanonical).not.toHaveBeenCalled();
-    const tool = buildCanopyDynamicToolSpecs({}).find(
-      (tool) => tool.name === 'canopy_setup_watchers',
-    );
+    const tool = buildCanopyDynamicToolSpecs({
+      includeChatVisuals: false,
+    }).find((tool) => tool.name === 'canopy_setup_watchers');
     const schema =
       tool && tool.type === 'function' ? tool.inputSchema : undefined;
     for (const watcher of watchers)

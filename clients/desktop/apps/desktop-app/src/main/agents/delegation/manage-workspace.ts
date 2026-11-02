@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import * as fs from 'node:fs/promises';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import {
   DELEGATION_APPLY_FAILURE_LIMITS,
   type DelegationApplyFailure,
@@ -22,6 +23,7 @@ import {
   type DelegationWorkspaceHooks,
   type StoredDelegation,
 } from '@canopy/desktop-shared/node/delegation/broker';
+import { legacyPrefixView } from '@canopy/desktop-shared/node/delegation/record-v3';
 import {
   DELEGATION_FILE_MAX_BYTES,
   DelegationFileAccessError,
@@ -556,15 +558,9 @@ function blobId(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
-/** Flushes a directory entry on platforms that support it. */
+/** The shared D1 flush; the journal store is durable on Windows too. */
 async function syncDirectory(directory: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await fs.open(directory, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
+  await flushDirectory(directory);
 }
 
 /** Writes each image once, durably, named by its sha256. */
@@ -1392,7 +1388,7 @@ function delegationApplyState(
 ): ManagedDelegationWorktreeSummary['applyState'] {
   if (record.workspaceDiscarded) return 'discarded';
   const commands = [
-    ...(record.controls ?? []),
+    ...(legacyPrefixView(record).controls ?? []),
     ...(record.control ? [record.control] : []),
   ].filter(
     (command) =>

@@ -101,7 +101,9 @@ export async function handlePortalEditorListSlashCommands(
     return;
   }
   try {
-    const commands = await listEditorSlashCommands(command.payload);
+    const commands = await listEditorSlashCommands(command.payload, {
+      sessionId: context.sessionId ?? '',
+    });
     context.complete(command, { commands });
   } catch (error) {
     failServiceError(command, context, error);
@@ -245,6 +247,7 @@ export async function handlePortalEditorListInvocables(
       await listChatInvocables({
         scope: chat.scope,
         tab: chat.tab,
+        session: { sessionId: context.sessionId ?? '' },
         ...(read.providerType ? { providerType: read.providerType } : {}),
       }),
     );

@@ -4,22 +4,24 @@ import {
   type AgentSentReceivingContext,
 } from '@canopy/ui-shared';
 import { memo, useCallback, type JSX } from 'react';
-import { ScheduleIcon, SteerIcon } from '@canopy/ui-shared/icons';
-import { TrashIcon as AppCatalogTrashIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { StopIcon } from '@canopy/ui-shared/icons/AppIcons';
+import type {
+  ChatTurnPhase,
+  SettingsHeldChange,
+} from '@canopy/desktop-shared/types';
 import {
-  BUBBLE_ACTION_BADGE_CLASS,
-  BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS,
-  BUBBLE_PILL_ACTION_CLASS,
-  MessageEditBadge,
-  QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP,
-  QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE,
-  ActionTooltip,
+  QUEUED_MESSAGE_LABEL_CLASS,
+  QueuedMessageActions,
+  QueuedMessageReason,
+  QueuedMessageSetupQuote,
+  type QueuedMessageSetupWait,
+} from '@canopy/ui-shared';
+import { ScheduleIcon } from '@canopy/ui-shared/icons';
+import {
+  BubbleCopyBadge,
   steeringRequestPresentation,
   MessageEditSurface,
 } from '@canopy/ui-shared/components';
 import type { QueuedChatMessage } from '@/stores/chatStore';
-import { MessageCopyButton } from './MessageCopyButton';
 import { MessageAttachments } from './MessageAttachments';
 import { WatcherFiredTitle } from './WatcherFiredTitle';
 import { CollapsibleUserMessageContent } from './CollapsibleUserMessageContent';
@@ -54,25 +56,41 @@ interface QueuedMessageBubbleProps {
   message: QueuedChatMessage;
   index: number;
   onClear: (index: number) => void;
+  /** Interrupt: stops the running turn so this message sends now. */
   onForce?: (index: number) => void;
+  /** Retry a send that failed, for example a Claude terminal launch. */
+  onRetry?: (index: number) => void;
+  /** Start a message that waits on something other than a running turn. */
+  onRunNow?: (index: number) => void;
   onSteer?: (index: number) => void;
   steeringSupported?: boolean;
+  /** Settings that wait for live background work; see `QueuedMessageActions`. */
+  settingsHeld?: readonly SettingsHeldChange[];
   /**
    * Opens the editor. `message` identifies the target so the store can
    * resolve it again if the queue advanced since this bubble rendered.
    */
   onEdit?: (index: number, message: QueuedChatMessage) => void;
+  /** Head-row gate for Interrupt, Retry and Run now. */
   canForce?: boolean;
   /**
-   * When true, the message is queued because the worktree's two-phase
-   * creation (`setupPhase === 'git-pending'`) is still running — show a
-   * more specific label than the generic "Queued" used during streaming.
+   * Host-reported turn phase of the chat. Steer and Interrupt render only in
+   * `foreground`; `undefined` keeps the pre-phase rule for older hosts.
    */
-  queuedForSetup?: boolean;
+  turnPhase?: ChatTurnPhase;
   /**
-   * True when any queued message in this tab is currently being edited
-   * inline. Hides the Interrupt button so the user can't bypass the queue while
-   * an edit is pending.
+   * Present while the message is queued because the worktree's two-phase
+   * creation (`setupPhase === 'git-pending'`) is still running: the bubble
+   * explains the setup, its clock, and that the message sends by itself.
+   */
+  setupWait?: QueuedMessageSetupWait;
+  /** Fixed setup-clock reading for fixtures and captures; never ticks. */
+  clockNowMs?: number;
+  /**
+   * True when a queued or scheduled message in this tab is being edited (in
+   * the composer's place). Hides Edit, since only one editor can be open, and
+   * a queued row's Interrupt so the user can't bypass the queue while an edit
+   * is pending.
    */
   anyEditing?: boolean;
   /**
@@ -88,11 +106,16 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   index,
   onClear,
   onForce,
+  onRetry,
+  onRunNow,
   onSteer,
   steeringSupported = false,
+  settingsHeld,
   onEdit,
   canForce = false,
-  queuedForSetup = false,
+  turnPhase,
+  setupWait,
+  clockNowMs,
   anyEditing = false,
   scheduled,
 }: QueuedMessageBubbleProps): JSX.Element {
@@ -118,14 +141,13 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   const watcherFired =
     message.watcherFired ?? message.dispatchOptions?.watcherFired;
 
-  const getCopyText = useCallback((): string => {
-    const lines = [
-      ...(message.fileReferences?.map((file) => `@${file.displayPath}`) ?? []),
-      ...(message.attachmentPaths?.map((p) => `[attachment: ${p}]`) ?? []),
-      visibleText,
-    ].filter(Boolean);
-    return lines.join('\n');
-  }, [message, visibleText]);
+  const copyText = [
+    ...(message.fileReferences?.map((file) => `@${file.displayPath}`) ?? []),
+    ...(message.attachmentPaths?.map((p) => `[attachment: ${p}]`) ?? []),
+    visibleText,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const handleForce = useCallback((): void => {
     if (scheduled) {
@@ -134,6 +156,18 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
     }
     onForce?.(index);
   }, [index, onForce, scheduled]);
+
+  const handleRetry = useCallback((): void => {
+    onRetry?.(index);
+  }, [index, onRetry]);
+
+  const handleRunNow = useCallback((): void => {
+    onRunNow?.(index);
+  }, [index, onRunNow]);
+
+  const handleSteer = useCallback((): void => {
+    onSteer?.(index);
+  }, [index, onSteer]);
 
   const handleEdit = useCallback((): void => {
     if (scheduled) {
@@ -172,8 +206,13 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
     </div>
   );
 
+  // Free text wins over setup, and the scheduled variant shows neither; the
+  // setup reason and its quoted body render together or not at all.
+  const showSetupReason =
+    !isScheduled && !message.reason && setupWait !== undefined;
+
   const showEdit = isScheduled
-    ? true
+    ? !anyEditing
     : !message.pendingSend &&
       !message.editLocked &&
       Boolean(onEdit) &&
@@ -182,8 +221,9 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   const showInterrupt = isScheduled
     ? true
     : !message.pendingSend && Boolean(canForce && onForce) && !anyEditing;
-  const showDisabledSteer =
-    steeringSupported && message.steerBlockedByCapabilityChange === true;
+  // The scheduled variant keeps its own Interrupt (run now) action.
+  const showRetry = !isScheduled && canForce && Boolean(onRetry);
+  const showRunNow = !isScheduled && canForce && Boolean(onRunNow);
 
   return (
     <div
@@ -214,37 +254,26 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
               : 'default'
           }
         >
-          <div className="absolute -right-2 -top-2 z-10 flex gap-1 opacity-0 transition group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
-            <MessageCopyButton
-              getText={getCopyText}
-              className={BUBBLE_ACTION_BADGE_CLASS}
-            />
-            {showEdit && (
-              <MessageEditBadge
-                testId="queued-message-edit"
-                label={
-                  isScheduled ? 'Edit scheduled message' : 'Edit queued message'
-                }
-                onEdit={handleEdit}
-              />
-            )}
-            <button
-              type="button"
-              data-testid="queued-message-cancel"
-              disabled={message.pendingSend === true}
-              onClick={handleClear}
-              className={BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS}
-              aria-label={
-                isScheduled ? 'Clear scheduled message' : 'Clear queued message'
-              }
-            >
-              <AppCatalogTrashIcon width="14" height="14" />
-            </button>
-          </div>
+          <QueuedMessageActions
+            placement="corner"
+            variant="badge"
+            cornerLeading={
+              <BubbleCopyBadge copyText={copyText} label="Copy to clipboard" />
+            }
+            onEdit={showEdit ? handleEdit : undefined}
+            onCancel={handleClear}
+            pending={message.pendingSend === true}
+            editLabel={
+              isScheduled ? 'Edit scheduled message' : 'Edit queued message'
+            }
+            cancelLabel={
+              isScheduled ? 'Clear scheduled message' : 'Clear queued message'
+            }
+          />
           {isScheduled ? (
             <div
               data-testid="scheduled-message-send-label"
-              className="mb-1 flex items-center gap-1 text-3xs fg-secondary"
+              className="mb-1 flex items-center gap-1 text-xs fg-secondary"
             >
               <ScheduleIcon width={11} height={11} className="shrink-0" />
               <span>
@@ -253,7 +282,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
             </div>
           ) : (
             <>
-              <div className="mb-1 text-3xs fg-secondary">Queued</div>
+              <div className={QUEUED_MESSAGE_LABEL_CLASS}>Queued</div>
               {agentSent && (
                 <AgentSentTitle
                   agentSent={agentSent}
@@ -266,22 +295,17 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
                 steeringRequest?.title
               )}
               {/*
-                Prefer the per-message reason (hook-chat queue path); otherwise
-                surface the setup-queue reason when applicable. When neither is
-                present, no reason row is rendered (preserves the streaming-queue
-                look).
+                Prefer the per-message reason (hook-chat queue path), then the
+                setup wait, then the host's waiting reason. With none, no
+                reason row renders (the streaming-queue look).
               */}
-              {(message.reason ??
-                (queuedForSetup
-                  ? 'Worktree setup is still running.'
-                  : null)) && (
-                <div className="mb-1 text-3xs fg-secondary">
-                  {message.reason ??
-                    (queuedForSetup
-                      ? 'Worktree setup is still running.'
-                      : null)}
-                </div>
-              )}
+              {message.reason ? (
+                <QueuedMessageReason reason={message.reason} />
+              ) : showSetupReason ? (
+                <QueuedMessageReason setup={setupWait} nowMs={clockNowMs} />
+              ) : message.waitingReason !== undefined ? (
+                <QueuedMessageReason waitingReason={message.waitingReason} />
+              ) : null}
             </>
           )}
           {isScheduled ? (
@@ -290,58 +314,36 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
             <CollapsibleUserMessageContent>
               {messageParagraphs}
             </CollapsibleUserMessageContent>
+          ) : showSetupReason ? (
+            <QueuedMessageSetupQuote>
+              {messageParagraphs}
+            </QueuedMessageSetupQuote>
           ) : (
             messageParagraphs
           )}
         </MessageEditSurface>
         <MessageAttachments attachmentPaths={message.attachmentPaths} />
-        {(showInterrupt || onSteer || showDisabledSteer) && (
-          <div className="mt-1 flex flex-wrap justify-end gap-2">
-            {(onSteer || showDisabledSteer) && !anyEditing && (
-              <ActionTooltip
-                title={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE}
-                description={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP}
-                disabled={!showDisabledSteer}
-              >
-                <button
-                  type="button"
-                  className={BUBBLE_PILL_ACTION_CLASS}
-                  data-testid="queued-message-steer"
-                  disabled={showDisabledSteer}
-                  aria-description={
-                    showDisabledSteer
-                      ? QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP
-                      : undefined
-                  }
-                  onClick={() => onSteer?.(index)}
-                >
-                  <SteerIcon
-                    data-testid="queued-message-steer-icon"
-                    className="-my-1"
-                  />
-                  Steer
-                </button>
-              </ActionTooltip>
-            )}
-            {showInterrupt && (
-              <button
-                type="button"
-                data-testid="queued-message-interrupt"
-                onClick={handleForce}
-                disabled={isScheduled ? scheduled?.running === true : false}
-                className={BUBBLE_PILL_ACTION_CLASS}
-              >
-                <StopIcon
-                  data-testid="queued-message-interrupt-icon"
-                  width={16}
-                  height={16}
-                  className="-my-1"
-                />
-                Interrupt
-              </button>
-            )}
-          </div>
-        )}
+        <QueuedMessageActions
+          placement="footer"
+          variant="badge"
+          turnPhase={isScheduled ? undefined : turnPhase}
+          onSteer={onSteer ? handleSteer : undefined}
+          onInterrupt={showInterrupt ? handleForce : undefined}
+          onRetry={showRetry ? handleRetry : undefined}
+          onRunNow={showRunNow ? handleRunNow : undefined}
+          // Like Retry, only the head row explains a hold.
+          retryBlockedReason={
+            !isScheduled && canForce ? message.retryBlockedReason : undefined
+          }
+          steeringSupported={steeringSupported}
+          steerBlockedByCapabilityChange={
+            message.steerBlockedByCapabilityChange
+          }
+          settingsHeld={isScheduled ? undefined : settingsHeld}
+          pending={!isScheduled && message.pendingSend === true}
+          anyEditing={!isScheduled && anyEditing}
+          interruptDisabled={scheduled?.running === true}
+        />
       </div>
     </div>
   );

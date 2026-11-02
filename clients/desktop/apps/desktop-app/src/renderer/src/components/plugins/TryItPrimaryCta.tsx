@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
@@ -14,7 +15,12 @@ import { useTryItAccount } from '@/hooks/useCanopyCloudConnected';
 import { useClaudeAuthStatus } from '@/hooks/useClaudeAuthStatus';
 import { useCodexAuthStatus } from '@/hooks/useCodexAuthStatus';
 import { useCursorChatAvailable } from '@/hooks/useCursorChatAvailable';
-import { startTryItChat, type TryItChatRequest } from '@/lib/tryItChat';
+import {
+  startTryItChat,
+  TryItStageCancelledError,
+  type TryItChatRequest,
+} from '@/lib/tryItChat';
+import { tryItStagedMessage } from '@/lib/tryItStage';
 import {
   resolveTryItRuntime,
   type TryItHarnessSupport,
@@ -57,7 +63,8 @@ const DEFAULT_RUNTIME: TryItRuntime = { status: 'default' };
 /**
  * Desktop host for the shared detail-page CTA (CAN-4359): resolves Try it /
  * Install from the live account and the host's installation state, and
- * launches one standalone chat per account-scoped capability.
+ * stages the starter prompt, unsent, in the current worktree's chat
+ * (CAN-5218); see `startTryItChat`.
  */
 export function TryItPrimaryCta(props: TryItPrimaryCtaProps): JSX.Element {
   return props.harnessSupport ? (
@@ -98,6 +105,7 @@ function TryItPrimaryCtaView({
   prompt,
   installation,
   runtimeSelections,
+  harnessSupport,
   runtime,
   onInstall,
   installLabel,
@@ -118,6 +126,11 @@ function TryItPrimaryCtaView({
   });
   const accountId = account.accountId;
   const model = runtime.status === 'model' ? runtime.selection : undefined;
+  // A launch is fenced to the account that started it.
+  const accountRef = useRef(accountId);
+  useEffect(() => {
+    accountRef.current = accountId;
+  }, [accountId]);
 
   const onTry = useCallback((): void => {
     if (accountId === null) return;
@@ -128,14 +141,27 @@ function TryItPrimaryCtaView({
       prompt,
       runtimeSelections,
       ...(model ? { model } : {}),
+      ...(harnessSupport ? { harnessSupport } : {}),
+      isCurrent: () => accountRef.current === accountId,
     })
-      .catch((): void => {
+      .then((result): void => {
+        if (result === 'joined') return;
+        useGitHubStore
+          .getState()
+          .addToast(tryItStagedMessage(capability.name), 'success', undefined, {
+            forceInApp: true,
+            suppressOsNotification: true,
+          });
+      })
+      .catch((error: unknown): void => {
+        // A launch whose destination changed is dropped quietly.
+        if (error instanceof TryItStageCancelledError) return;
         useGitHubStore.getState().addToast(TRY_IT_START_ERROR, 'error');
       })
       .finally((): void => {
         setLaunching(false);
       });
-  }, [accountId, capability, prompt, runtimeSelections, model]);
+  }, [accountId, capability, prompt, runtimeSelections, model, harnessSupport]);
 
   const cta = (
     <DetailPrimaryCta

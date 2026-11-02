@@ -81,20 +81,25 @@ export function usePrivateMemoryDraft(
   const reset = useCallback((): void => setState(EMPTY_STATE), []);
   const save = useCallback(async (): Promise<boolean> => {
     if (workspaceId === null || !dirty) return true;
+    // A change made while this write is in flight is newer than it: keep it
+    // as the draft so the next save writes it, instead of clearing it.
+    const changedSince = (state: DraftState): boolean =>
+      state.workspaceId === workspaceId &&
+      state.draft !== null &&
+      state.draft !== checked;
     try {
       await saveWorkspacePrivateMemory(workspaceId, checked);
-      setState(EMPTY_STATE);
+      setState((previous) => (changedSince(previous) ? previous : EMPTY_STATE));
       return true;
     } catch (cause) {
       // The reloaded row is now the value to show, beside the reason.
-      setState({
+      const error =
+        cause instanceof Error ? cause.message : "Couldn't save Private memory";
+      setState((previous) => ({
         workspaceId,
-        draft: null,
-        error:
-          cause instanceof Error
-            ? cause.message
-            : "Couldn't save Private memory",
-      });
+        draft: changedSince(previous) ? previous.draft : null,
+        error,
+      }));
       return false;
     }
   }, [checked, dirty, workspaceId]);

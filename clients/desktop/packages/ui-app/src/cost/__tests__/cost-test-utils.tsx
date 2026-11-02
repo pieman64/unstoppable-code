@@ -426,6 +426,7 @@ const BASE_CAPABILITIES: CanopyCapabilities = {
   settingsScope: 'api-keys-only',
   pipelines: 'crud-only',
   routing: 'url',
+  overviewNotifications: false,
 };
 
 export interface CostRenderer {

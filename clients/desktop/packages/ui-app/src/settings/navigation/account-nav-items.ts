@@ -2,6 +2,7 @@ import {
   Bot,
   CreditCard,
   ExperimentIcon,
+  Eye,
   FileText,
   Globe,
   Lock,
@@ -30,7 +31,8 @@ export type AccountNavKey =
   | 'externalAgents'
   | 'security'
   | 'billing'
-  | 'labs';
+  | 'labs'
+  | 'appearance';
 
 export interface AccountNavItem {
   readonly key: AccountNavKey;
@@ -128,6 +130,13 @@ export const ACCOUNT_NAV_ITEMS: readonly AccountNavItem[] = [
     icon: CreditCard,
   },
   {
+    key: 'appearance',
+    label: 'Appearance',
+    description: 'How chats look while agents work.',
+    href: '/account/appearance',
+    icon: Eye,
+  },
+  {
     key: 'labs',
     label: 'Labs',
     description: 'Try features we are still working on.',
@@ -170,6 +179,7 @@ export function visibleAccountNavItems(
     if (item.key === 'externalAgents')
       return flags.externalAgentsEnabled === true;
     if (item.key === 'labs') return flags.labsEnabled === true;
+    if (item.key === 'appearance') return flags.appearanceEnabled === true;
     return true;
   }).map((item) => accountNavItem(item.key, flags.freeAccess === true));
 }

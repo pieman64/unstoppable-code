@@ -14,10 +14,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { RichHoverTooltip } from '../RichHoverTooltip';
 import { Tooltip } from '../Tooltip';
-import {
-  TooltipStackingProvider,
-  type TooltipStacking,
-} from '../tooltip-exclusivity';
+import { TooltipProvider, type TooltipStacking } from '../tooltip-handoff';
 
 /** Moves the pointer from `from` to `to` the way a browser reports it. */
 function movePointer(from: Element | null, to: Element | null): void {
@@ -54,7 +51,7 @@ describe.each([false, true])('rich row cards (deferred=%s)', (deferred) => {
   const render = (stacking: TooltipStacking): void => {
     act(() => {
       root.render(
-        <TooltipStackingProvider value={stacking}>
+        <TooltipProvider stacking={stacking}>
           <div data-testid="rail">
             {['Greeting', 'New Task'].map((title) => (
               <RichHoverTooltip
@@ -89,7 +86,7 @@ describe.each([false, true])('rich row cards (deferred=%s)', (deferred) => {
               </div>
             </RichHoverTooltip>
           </div>
-        </TooltipStackingProvider>,
+        </TooltipProvider>,
       );
     });
   };

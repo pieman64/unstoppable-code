@@ -7,6 +7,8 @@ interface ScriptActionsSettingsSectionProps {
   readonly projectId: string;
   /** A worktree the settings view already scopes to, such as the inspected one. */
   readonly fallbackWorktreeId?: string;
+  /** `plain` drops the frame, for a settings page section that has its own. */
+  readonly surface?: 'card' | 'plain';
 }
 
 /**
@@ -16,7 +18,9 @@ interface ScriptActionsSettingsSectionProps {
 export function ScriptActionsSettingsSection({
   projectId,
   fallbackWorktreeId,
+  surface = 'card',
 }: ScriptActionsSettingsSectionProps): JSX.Element {
+  const frame = surface === 'card' ? 'rounded-lg border p-3' : '';
   const reviewProps = useDesktopScriptActionsReviewProps();
   const selected = useChatStore((state) => state.selectedWorktree);
   const worktreeId =
@@ -26,20 +30,19 @@ export function ScriptActionsSettingsSection({
   if (worktreeId === undefined)
     return (
       <section
-        className="space-y-1 rounded-lg border p-3"
+        className={`space-y-1 ${frame}`}
         data-testid="script-actions-settings-no-worktree"
       >
-        <h3 className="text-s font-medium fg-primary">Detected scripts</h3>
+        {surface === 'card' && (
+          <h3 className="text-s font-medium fg-primary">Detected scripts</h3>
+        )}
         <p className="text-xs fg-secondary">
           Open a worktree in this project to review the scripts found in it.
         </p>
       </section>
     );
   return (
-    <div
-      className="rounded-lg border p-3"
-      data-testid="script-actions-settings"
-    >
+    <div className={frame} data-testid="script-actions-settings">
       <ScriptActionsReview
         {...reviewProps}
         projectId={projectId}

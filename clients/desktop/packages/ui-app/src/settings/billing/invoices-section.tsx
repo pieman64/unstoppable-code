@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import {
+  Button,
   InvoicesTable,
   type InvoicesTableInvoice,
 } from '@canopy/ui-shared/components';
@@ -130,15 +131,15 @@ export function InvoicesSection({
         </p>
       )}
       {nextCursor !== null && (
-        <button
-          type="button"
+        <Button
+          size="compact"
           onClick={() => void handleLoadMore()}
           disabled={loadingMore}
           data-testid={`${testId}-load-more`}
-          className="mt-3 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-3"
         >
           {loadingMore ? 'Loading…' : 'Load more'}
-        </button>
+        </Button>
       )}
     </div>
   );

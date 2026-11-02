@@ -14,10 +14,23 @@ import {
   clearPresentationTurn,
 } from '../canopy-tools/presentation-state';
 import type * as CloudClientModule from '../canopy-cloud/client';
-jest.mock('../canopy-cloud/client', (): object => ({
-  ...jest.requireActual<typeof CloudClientModule>('../canopy-cloud/client'),
-  resolveCanopyCloudCredentialContext: jest.fn(),
-}));
+jest.mock('../canopy-cloud/client', (): object => {
+  const actual = jest.requireActual<typeof CloudClientModule>(
+    '../canopy-cloud/client',
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      resolveCanopyCloudCredentialContext: {
+        configurable: true,
+        enumerable: true,
+        value: jest.fn(),
+        writable: true,
+      },
+    },
+  );
+});
 import {
   CanopyCloudClientError,
   resolveCanopyCloudCredentialContext,
@@ -33,9 +46,11 @@ import {
   type ServerResponse,
 } from 'node:http';
 
-type ExecuteCanopyInjectedToolCall = [string, unknown, unknown, unknown?];
+type ExecuteCanopyInjectedToolCall = Parameters<
+  typeof CanopyCoreModule.executeCanopyInjectedTool
+>;
 const mockExecuteCanopyInjectedTool = jest.fn<
-  unknown,
+  ReturnType<typeof CanopyCoreModule.executeCanopyInjectedTool>,
   ExecuteCanopyInjectedToolCall
 >();
 type BotServiceResponse = Omit<AppAdvisorActionResponse, 'requestId'>;
@@ -48,15 +63,21 @@ const mockDispatchBotAction = jest.fn<
   [BotAction, ProjectDiscoveryCaller]
 >();
 jest.mock('../project-discovery/bots', (): object => ({
-  isBotAccessAllowed: mockIsBotAccessAllowed,
-  dispatchBotAction: mockDispatchBotAction,
+  get isBotAccessAllowed(): typeof mockIsBotAccessAllowed {
+    return mockIsBotAccessAllowed;
+  },
+  get dispatchBotAction(): typeof mockDispatchBotAction {
+    return mockDispatchBotAction;
+  },
 }));
 jest.mock('node:fs/promises', () => ({
   readFile: jest.fn(),
 }));
 
 jest.mock('../canopy-tools/core', () => ({
-  executeCanopyInjectedTool: mockExecuteCanopyInjectedTool,
+  get executeCanopyInjectedTool(): typeof mockExecuteCanopyInjectedTool {
+    return mockExecuteCanopyInjectedTool;
+  },
 }));
 
 const mockGetValidMcpAccessToken = jest.fn();
@@ -65,8 +86,12 @@ const mockHandleMcpOAuthCallback = jest.fn<
   [URL]
 >(() => Promise.resolve({ success: true, message: 'ok' }));
 jest.mock('../mcp/oauth-client', () => ({
-  getValidMcpAccessToken: mockGetValidMcpAccessToken,
-  handleMcpOAuthCallback: mockHandleMcpOAuthCallback,
+  get getValidMcpAccessToken(): typeof mockGetValidMcpAccessToken {
+    return mockGetValidMcpAccessToken;
+  },
+  get handleMcpOAuthCallback(): typeof mockHandleMcpOAuthCallback {
+    return mockHandleMcpOAuthCallback;
+  },
 }));
 
 const mockInvalidateMcpOAuthAccessToken = jest.fn<
@@ -85,8 +110,12 @@ const mockRecordMcpOAuthTokenError = jest.fn<
   RecordMcpOAuthTokenErrorArgs
 >(() => Promise.resolve());
 jest.mock('../mcp/oauth-token-store', () => ({
-  recordMcpOAuthTokenError: mockRecordMcpOAuthTokenError,
-  invalidateMcpOAuthAccessToken: mockInvalidateMcpOAuthAccessToken,
+  get recordMcpOAuthTokenError(): typeof mockRecordMcpOAuthTokenError {
+    return mockRecordMcpOAuthTokenError;
+  },
+  get invalidateMcpOAuthAccessToken(): typeof mockInvalidateMcpOAuthAccessToken {
+    return mockInvalidateMcpOAuthAccessToken;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({
@@ -128,7 +157,9 @@ const mockCreateApprovalSession = jest.fn(() => ({
   dispose: mockApprovalDispose,
 }));
 jest.mock('../approvals/approval-service', () => ({
-  createApprovalSession: mockCreateApprovalSession,
+  get createApprovalSession(): typeof mockCreateApprovalSession {
+    return mockCreateApprovalSession;
+  },
 }));
 
 type MockRegisteredIpcHandler = (event: unknown, ...args: unknown[]) => unknown;
@@ -171,13 +202,44 @@ import {
   PIPELINE_EDITOR_WORKTREE_ID,
 } from '@canopy/desktop-shared/types';
 import { createAppAdvisorToolRuntime } from '../app-advisor/runtime';
+import type { AppAdvisorToolRuntime } from '../app-advisor/runtime';
 import { registerAppAdvisorHandlers } from '../ipc/app-advisor';
 import { createPipelineEditorToolRuntime } from '../pipeline-editor/runtime';
 import { rejectAllForSession } from '../mcp/pending-requests';
 import { registerPipelineEditorHandlers } from '../ipc/pipeline-editor';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
+import * as mainProcessLogging from '../lib/main-process-logging';
+
+function createAppAdvisorRuntimeFixture(
+  watcherDestination: AppAdvisorToolRuntime['watcherDestination'],
+  overrides: Partial<AppAdvisorToolRuntime> = {},
+): AppAdvisorToolRuntime {
+  // Each route fixture exposes only the callbacks exercised by its test.
+  return { watcherDestination, ...overrides } as AppAdvisorToolRuntime;
+}
+
+function createStartForkedAgentMock(): NonNullable<
+  AppAdvisorToolRuntime['startForkedAgent']
+> {
+  return jest.fn<Promise<unknown>, [string, AbortSignal?]>(
+    (): Promise<unknown> => Promise.resolve(undefined),
+  );
+}
+
+function createWatchCommandMock(): NonNullable<
+  AppAdvisorToolRuntime['watchCommand']
+> {
+  type WatchCommand = NonNullable<AppAdvisorToolRuntime['watchCommand']>;
+  return jest.fn<ReturnType<WatchCommand>, Parameters<WatchCommand>>(
+    (): Promise<unknown> => Promise.resolve(undefined),
+  );
+}
 
 const readFileMock = jest.mocked(readFile);
+const logMainProcessErrorSpy = jest.spyOn(
+  mainProcessLogging,
+  'logMainProcessError',
+);
 const globalOverrides = globalThis as Record<string, unknown>;
 
 function listen(server: Server): Promise<number> {
@@ -1463,6 +1525,195 @@ describe('McpHttpProxyService', () => {
     expect(JSON.stringify(retiredPayload)).toMatch(/Unknown .+ MCP tool/);
   });
 
+  const askArgs = {
+    questions: [{ question: 'Proceed?', options: ['Yes', 'No'] }],
+  };
+  const registerRejectingAppAdvisorRoute = async (
+    sessionKey: string,
+    failure: Error,
+  ): Promise<jest.Mock> => {
+    mockExecuteCanopyInjectedTool.mockRejectedValueOnce(failure);
+    await service.registerCanopyWorktreeSessionRoute({
+      sessionKey,
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      chatId: 'chat-1',
+      assistantMode: 'app-advisor',
+      sdkSessionId: `sdk-${sessionKey}`,
+      authToken: `${sessionKey}-token`,
+      createdAt: Date.now(),
+      hookHandler: jest.fn(),
+      authorizeToolCall: () => Promise.resolve(true),
+      appAdvisorRuntime: createAppAdvisorRuntimeFixture({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+      }),
+    });
+    return mockExecuteCanopyInjectedTool;
+  };
+  const registerRejectingPipelineEditorRoute = async (
+    sessionKey: string,
+    failure: Error,
+  ): Promise<jest.Mock> => {
+    mockExecuteCanopyInjectedTool.mockRejectedValueOnce(failure);
+    await service.registerCanopyWorktreeSessionRoute({
+      sessionKey,
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      chatId: 'chat-1',
+      sdkSessionId: `sdk-${sessionKey}`,
+      assistantMode: 'pipeline-editor',
+      authToken: `${sessionKey}-token`,
+      createdAt: Date.now(),
+      hookHandler: jest.fn(),
+      authorizeToolCall: () => Promise.resolve(true),
+      pipelineEditorRuntime: createPipelineEditorToolRuntime(
+        { getMainWindow: () => null },
+        {
+          projectId: 'project-1',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+          providerType: 'claude',
+        },
+      ),
+    });
+    return mockExecuteCanopyInjectedTool;
+  };
+
+  // Each operation rejects after its route gate passes, so the failure
+  // reaches that branch's own catch rather than an outer one.
+  it.each([
+    {
+      operation: 'executeAppAdvisorTool',
+      tool: 'AskUserQuestion',
+      args: askArgs,
+      onUiRoute: true,
+      register: registerRejectingAppAdvisorRoute,
+    },
+    {
+      operation: 'executeAppAdvisorTool',
+      tool: 'SearchDeferredTools',
+      args: { queries: [] },
+      onUiRoute: false,
+      register: registerRejectingAppAdvisorRoute,
+    },
+    {
+      operation: 'executePipelineEditorTool',
+      tool: 'AskUserQuestion',
+      args: askArgs,
+      onUiRoute: true,
+      register: registerRejectingPipelineEditorRoute,
+    },
+    {
+      operation: 'executePipelineEditorTool',
+      tool: 'SearchDeferredTools',
+      args: { queries: [] },
+      onUiRoute: false,
+      register: registerRejectingPipelineEditorRoute,
+    },
+    {
+      operation: 'respondToReviewComment',
+      tool: 'RespondToComment',
+      args: { threadId: 'thread-1', body: 'Fixed.' },
+      onUiRoute: false,
+      register: async (
+        sessionKey: string,
+        failure: Error,
+      ): Promise<jest.Mock> => {
+        const respondToReviewComment = jest.fn().mockRejectedValue(failure);
+        await service.registerCanopyWorktreeSessionRoute({
+          sessionKey,
+          projectId: 'project-1',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+          sdkSessionId: `sdk-${sessionKey}`,
+          cwd: '/mock/worktree/repo-a',
+          authToken: `${sessionKey}-token`,
+          createdAt: Date.now(),
+          hookHandler: jest.fn(),
+          isCodeReview: true,
+          respondToReviewComment,
+        });
+        return respondToReviewComment;
+      },
+    },
+    {
+      operation: 'getReviewCommentThread',
+      tool: 'GetReviewComments',
+      args: { threadId: 'thread-1' },
+      onUiRoute: false,
+      register: async (
+        sessionKey: string,
+        failure: Error,
+      ): Promise<jest.Mock> => {
+        const getReviewCommentThread = jest.fn().mockRejectedValue(failure);
+        await service.registerCanopyWorktreeSessionRoute({
+          sessionKey,
+          projectId: 'project-1',
+          worktreeId: 'wt-1',
+          chatId: 'chat-1',
+          sdkSessionId: `sdk-${sessionKey}`,
+          cwd: '/mock/worktree/repo-a',
+          authToken: `${sessionKey}-token`,
+          createdAt: Date.now(),
+          hookHandler: jest.fn(),
+          isCodeReview: true,
+          getReviewCommentThread,
+        });
+        return getReviewCommentThread;
+      },
+    },
+  ])(
+    'answers a rejected $operation $tool call without forwarding its error text',
+    async ({ operation, tool, args, onUiRoute, register }) => {
+      await service.ensureStarted(await getFreePort());
+      const sessionKey = `${operation}-${tool}-rejects`;
+      const failure = new Error(
+        'ENOENT: /Users/someone/.canopy/workspaces/ws_secret/state.json',
+      );
+      const operationMock = await register(sessionKey, failure);
+      const url = onUiRoute
+        ? service.getCanopyWorktreeUiMcpUrl(sessionKey)
+        : service.getCanopyWorktreeMcpUrl(sessionKey);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        signal: AbortSignal.timeout(1500),
+        headers: {
+          Authorization: `Bearer ${sessionKey}-token`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: `${operation}-${tool}-call`,
+          method: 'tools/call',
+          params: { name: tool, arguments: args },
+        }),
+      });
+
+      const body = await response.text();
+      const dataLine = body
+        .split('\n')
+        .find((line) => line.startsWith('data: '));
+      // The /ui server streams (SSE); the plain route answers with JSON.
+      expect(dataLine !== undefined).toBe(onUiRoute);
+      expect(
+        JSON.parse(dataLine ? dataLine.slice('data: '.length) : body),
+      ).toEqual({
+        jsonrpc: '2.0',
+        id: `${operation}-${tool}-call`,
+        error: { code: -32603, message: 'Internal error' },
+      });
+      expect(body).not.toContain('ws_secret');
+      expect(operationMock).toHaveBeenCalledTimes(1);
+      expect(logMainProcessErrorSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        failure,
+      );
+    },
+  );
+
   it.each(['native-sdk', 'copilot-sdk', 'opencode-acp'] as const)(
     'keeps Code Graph tool advertisement immutable for %s',
     async (toolSurface) => {
@@ -1660,6 +1911,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'cowork-1',
       worktreeId: 'entry-1',
       chatId: 'chat-1',
+      sdkSessionId: 'sdk-copilot-cowork-schema',
       toolSurface: 'copilot-sdk-standalone',
       cwd: '/mock/cowork',
       authToken: 'secret-token',
@@ -1907,6 +2159,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
+      sdkSessionId: 'sdk-opencode-delivery',
       toolSurface: 'opencode-acp',
       providerType: 'opencode',
       cwd: '/mock/workspace',
@@ -1951,6 +2204,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
+      sdkSessionId: 'sdk-cursor-session',
       toolSurface: 'cursor-acp',
       providerType: 'cursor',
       cwd: '/mock/workspace',
@@ -2007,6 +2261,7 @@ describe('McpHttpProxyService', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
+        sdkSessionId: `sdk-visual-${providerType}`,
         providerType,
         toolSurface,
         cwd: '/mock/workspace',
@@ -2054,6 +2309,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
+      sdkSessionId: 'sdk-visual-flag-off',
       providerType: 'claude',
       toolSurface: 'native-sdk',
       cwd: '/mock/workspace',
@@ -2107,6 +2363,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'cowork-1',
       worktreeId: 'entry-1',
       chatId: 'chat-1',
+      sdkSessionId: 'sdk-cursor-cowork-session',
       toolSurface: 'cursor-acp-standalone',
       providerType: 'cursor',
       cwd: '/mock/cowork',
@@ -2165,6 +2422,7 @@ describe('McpHttpProxyService', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
+        sdkSessionId: 'sdk-wakeup-session',
         toolSurface,
         cwd: '/mock/workspace',
         authToken: 'secret-token',
@@ -2215,6 +2473,72 @@ describe('McpHttpProxyService', () => {
     },
   );
 
+  it('keys a pipeline.run dispatch to its route registration, so a reused request id never replays an earlier run', async () => {
+    await service.ensureStarted(await getFreePort());
+    const register = (): Promise<string> =>
+      service.registerCanopyWorktreeSessionRoute({
+        sessionKey: 'pipeline-run-session',
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+        sdkSessionId: 'sdk-pipeline-run-session',
+        toolSurface: 'native-sdk',
+        cwd: '/mock/workspace',
+        authToken: 'secret-token',
+        createdAt: Date.now(),
+        hookHandler: jest.fn(),
+      });
+    const dispatch = async (
+      id: number,
+      type: string,
+      claudeToolUseId?: string,
+    ): Promise<void> => {
+      await fetch(service.getCanopyWorktreeMcpUrl('pipeline-run-session'), {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer secret-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: {
+            name: 'DispatchAction',
+            arguments: { action: { type, pipelineId: 'p' } },
+            ...(claudeToolUseId
+              ? { _meta: { 'claudecode/toolUseId': claudeToolUseId } }
+              : {}),
+          },
+        }),
+      });
+    };
+    const toolUseIds = (): unknown[] =>
+      mockExecuteCanopyInjectedTool.mock.calls
+        .filter(([key]) => key === 'dispatch_action')
+        .map((call) => {
+          const context = call[3];
+          return isRecord(context) ? context.toolUseId : undefined;
+        });
+
+    await register();
+    await dispatch(2, 'pipeline.run');
+    await dispatch(3, 'chat.list');
+    // A new MCP connection registers the route again and restarts its ids.
+    await register();
+    await dispatch(2, 'pipeline.run');
+    // Claude's tool_use id, which a retry resends, keys the run when sent.
+    await dispatch(4, 'pipeline.run', 'toolu_run');
+
+    const [first, other, second, claude] = toolUseIds();
+    expect(first).toEqual(expect.stringMatching(/:2$/));
+    expect(second).toEqual(expect.stringMatching(/:2$/));
+    expect(second).not.toBe(first);
+    expect(claude).toBe('toolu_run');
+    // Other actions keep the transport id.
+    expect(other).toBe('3');
+  });
+
   it.each([
     'native-sdk-standalone',
     'cursor-acp-standalone',
@@ -2230,6 +2554,7 @@ describe('McpHttpProxyService', () => {
           projectId: 'cowork-1',
           worktreeId: 'entry-1',
           chatId: 'chat-a',
+          sdkSessionId: 'sdk-cowork-github-session',
           toolSurface,
           cwd: '/mock/cowork',
           authToken: 'secret-token',
@@ -2319,6 +2644,7 @@ describe('McpHttpProxyService', () => {
           projectId,
           worktreeId: 'wt-1',
           chatId: 'chat-a',
+          sdkSessionId: `sdk-${sessionKey}`,
           toolSurface,
           cwd: '/mock/worktree',
           authToken: 'secret-token',
@@ -2379,6 +2705,7 @@ describe('McpHttpProxyService', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
+        sdkSessionId: `sdk-${sessionKey}`,
         toolSurface,
         cwd: '/mock/workspace',
         authToken: 'secret-token',
@@ -2430,6 +2757,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
+      sdkSessionId: `sdk-${sessionKey}`,
       toolSurface: 'cursor-acp',
       providerType: 'cursor',
       cwd: '/mock/workspace',
@@ -2490,6 +2818,66 @@ describe('McpHttpProxyService', () => {
     expect(mockExecuteCanopyInjectedTool).not.toHaveBeenCalled();
   });
 
+  it('answers a failed delegate tool call without forwarding its error text', async () => {
+    await service.ensureStarted(await getFreePort());
+    const sessionKey = 'cursor-child-throws';
+    const invokeError = new Error(
+      'approval rules unreadable in /Users/someone/ws_secret',
+    );
+    await service.registerCanopyWorktreeSessionRoute({
+      sessionKey,
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      chatId: 'chat-1',
+      sdkSessionId: `sdk-${sessionKey}`,
+      toolSurface: 'cursor-acp',
+      providerType: 'cursor',
+      cwd: '/mock/workspace',
+      authToken: 'child-throws-token',
+      createdAt: Date.now(),
+      hookHandler: jest.fn(),
+      managedDelegation: {
+        exclusive: true,
+        tools: [
+          {
+            name: 'GetDelegateOutput',
+            description: 'Read child output',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        invoke: (): Promise<never> => Promise.reject(invokeError),
+      },
+    });
+    const response = await fetch(service.getCanopyWorktreeMcpUrl(sessionKey), {
+      method: 'POST',
+      signal: AbortSignal.timeout(1500),
+      headers: {
+        Authorization: 'Bearer child-throws-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'owned-call-throws',
+        method: 'tools/call',
+        params: {
+          name: 'GetDelegateOutput',
+          arguments: { delegationId: 'child' },
+        },
+      }),
+    });
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
+      jsonrpc: '2.0',
+      id: 'owned-call-throws',
+      error: { code: -32603, message: 'Internal error' },
+    });
+    expect(body).not.toContain('ws_secret');
+    expect(logMainProcessErrorSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      invokeError,
+    );
+  });
+
   it('consults a route-provided tool-call gate before executing on cursor-acp routes', async () => {
     await service.ensureStarted(await getFreePort());
     const sessionKey = 'tool-gate-cursor-acp';
@@ -2501,6 +2889,7 @@ describe('McpHttpProxyService', () => {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
+      sdkSessionId: `sdk-${sessionKey}`,
       toolSurface: 'cursor-acp',
       providerType: 'cursor',
       cwd: '/mock/workspace',
@@ -3044,7 +3433,7 @@ describe('McpHttpProxyService', () => {
     if (!isRecord(executeRuntime)) {
       throw new Error('Expected an injected-tool runtime.');
     }
-    expect(executeRuntime.requestUserAnswers).toEqual(expect.any(Function));
+    expect(typeof executeRuntime.requestUserAnswers).toBe('function');
     // The JSON-RPC id belongs to the MCP transport, not Claude's transcript
     // tool_use block. Claude questions deliberately omit a projected id so
     // the renderer/browser uses the first-unanswered matching heuristic, while
@@ -3160,12 +3549,11 @@ describe('McpHttpProxyService', () => {
     const realClearInterval = global.clearInterval;
     const intervalHandles: NodeJS.Timeout[] = [];
     const setIntervalMock: (
-      callback: (...args: unknown[]) => void,
+      callback: (_: void) => void,
       delay?: number,
-      ...args: unknown[]
-    ) => NodeJS.Timeout = (callback, delay, ...args) => {
+    ) => NodeJS.Timeout = (callback, delay) => {
       const effectiveDelay = delay === 240_000 ? 1 : delay;
-      const handle = realSetInterval(callback, effectiveDelay, ...args);
+      const handle = realSetInterval(callback, effectiveDelay);
       intervalHandles.push(handle);
       return handle;
     };
@@ -3313,18 +3701,12 @@ describe('McpHttpProxyService', () => {
       hookHandler: jest.fn(),
     });
     mockExecuteCanopyInjectedTool.mockImplementationOnce(
-      (
-        _key,
-        _args,
-        runtime: {
-          requestUserAnswers: (
-            questions: Array<{ question: string; options: string[] }>,
-          ) => Promise<unknown>;
-        },
-      ) =>
-        runtime.requestUserAnswers([
-          { question: 'Continue?', options: ['Yes', 'No'] },
-        ]),
+      (_key, _args, runtime) =>
+        runtime
+          .requestUserAnswers([
+            { question: 'Continue?', options: ['Yes', 'No'] },
+          ])
+          .then(() => ({ text: 'answers received' })),
     );
 
     const uiUrl = new URL(
@@ -3407,6 +3789,7 @@ describe('McpHttpProxyService', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
+        sdkSessionId: 'sdk-cursor-pipeline-question',
         assistantMode: 'pipeline-editor',
         providerType: 'cursor',
         authToken: 'pipeline-question-token',
@@ -3585,13 +3968,11 @@ describe('McpHttpProxyService', () => {
   it('splits AskUserQuestion onto the /ui path for app-advisor routes', async () => {
     const proxyPort = await getFreePort();
     await service.ensureStarted(proxyPort);
-    const appAdvisorRuntime = {
-      getWindow: jest.fn(() => null),
+    const appAdvisorRuntime = createAppAdvisorRuntimeFixture({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
-      sessionKey: 'advisor-ui-session',
-    };
+    });
     const mockExecuteAppAdvisorTool = jest
       .fn()
       .mockResolvedValue({ text: 'ok' });
@@ -3683,20 +4064,20 @@ describe('McpHttpProxyService', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
+        sdkSessionId: `sdk-${sessionKey}`,
         assistantMode: 'app-advisor',
         providerType: 'claude',
-        sdkSessionId: `sdk-${sessionKey}`,
         authToken: `${sessionKey}-token`,
         createdAt: Date.now(),
         hookHandler: jest.fn(),
-        appAdvisorRuntime: {
-          getWindow: jest.fn(() => null),
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          chatId: 'chat-1',
-          sessionKey,
-          ...(canFork ? { startForkedAgent: jest.fn() } : {}),
-        },
+        appAdvisorRuntime: createAppAdvisorRuntimeFixture(
+          {
+            projectId: 'project-1',
+            worktreeId: 'wt-1',
+            chatId: 'chat-1',
+          },
+          canFork ? { startForkedAgent: createStartForkedAgentMock() } : {},
+        ),
       });
     }
 
@@ -3711,13 +4092,11 @@ describe('McpHttpProxyService', () => {
   it('dispatches AskUserQuestion tools/call on the app-advisor /ui route to executeAppAdvisorTool', async () => {
     const proxyPort = await getFreePort();
     await service.ensureStarted(proxyPort);
-    const appAdvisorRuntime = {
-      getWindow: jest.fn(() => null),
+    const appAdvisorRuntime = createAppAdvisorRuntimeFixture({
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
-      sessionKey: 'advisor-call-session',
-    };
+    });
     await service.registerCanopyWorktreeSessionRoute({
       sessionKey: 'advisor-call-session',
       projectId: 'project-1',
@@ -3821,7 +4200,10 @@ describe('McpHttpProxyService', () => {
         authToken: 'advisor-cursor-list-token',
         createdAt: Date.now(),
         hookHandler: jest.fn(),
-        appAdvisorRuntime: { watchCommand: jest.fn() },
+        appAdvisorRuntime: createAppAdvisorRuntimeFixture(
+          { projectId: 'project-1', worktreeId: 'wt-1', chatId: 'chat-1' },
+          { watchCommand: createWatchCommandMock() },
+        ),
       });
       const cursorTools = await list('advisor-cursor-list');
       expect(cursorTools).toContain('SearchActions');
@@ -3841,7 +4223,10 @@ describe('McpHttpProxyService', () => {
         authToken: 'advisor-claude-list-token',
         createdAt: Date.now(),
         hookHandler: jest.fn(),
-        appAdvisorRuntime: { watchCommand: jest.fn() },
+        appAdvisorRuntime: createAppAdvisorRuntimeFixture(
+          { projectId: 'project-1', worktreeId: 'wt-1', chatId: 'chat-1' },
+          { watchCommand: createWatchCommandMock() },
+        ),
       });
       expect(await list('advisor-claude-list')).toContain('LoadDeferredTools');
     },
@@ -3901,9 +4286,14 @@ describe('McpHttpProxyService', () => {
       authToken: 'advisor-gate-throws-token',
       createdAt: Date.now(),
       hookHandler: jest.fn(),
-      appAdvisorRuntime: { watchCommand: jest.fn() },
+      appAdvisorRuntime: createAppAdvisorRuntimeFixture(
+        { projectId: 'project-1', worktreeId: 'wt-1', chatId: 'chat-1' },
+        { watchCommand: createWatchCommandMock() },
+      ),
       authorizeToolCall: (): Promise<boolean> =>
-        Promise.reject(new Error('approval session disposed')),
+        Promise.reject(
+          new Error('approval session disposed for /Users/someone/ws_secret'),
+        ),
     });
     const response = await fetch(
       service.getCanopyWorktreeMcpUrl('advisor-gate-throws'),
@@ -3930,8 +4320,9 @@ describe('McpHttpProxyService', () => {
       JSON.parse(dataLine ? dataLine.slice('data: '.length) : body),
     ).toMatchObject({
       id: 'gate-throws',
-      error: { code: -32603, message: 'approval session disposed' },
+      error: { code: -32603, message: 'Internal error' },
     });
+    expect(body).not.toContain('ws_secret');
   });
 
   it('refuses an App Advisor tool when the route gate denies it, before executing', async () => {
@@ -3950,7 +4341,10 @@ describe('McpHttpProxyService', () => {
       authToken: 'advisor-gated-token',
       createdAt: Date.now(),
       hookHandler: jest.fn(),
-      appAdvisorRuntime: { watchCommand: jest.fn() },
+      appAdvisorRuntime: createAppAdvisorRuntimeFixture(
+        { projectId: 'project-1', worktreeId: 'wt-1', chatId: 'chat-1' },
+        { watchCommand: createWatchCommandMock() },
+      ),
       authorizeToolCall,
     });
     const url = service.getCanopyWorktreeMcpUrl('advisor-gated');
@@ -4030,11 +4424,15 @@ describe('McpHttpProxyService', () => {
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
+        sdkSessionId: `sdk-${sessionKey}`,
         assistantMode: 'app-advisor',
         authToken: `${sessionKey}-token`,
         createdAt: Date.now(),
         hookHandler: jest.fn(),
-        appAdvisorRuntime: { watchCommand },
+        appAdvisorRuntime: createAppAdvisorRuntimeFixture(
+          { projectId: 'project-1', worktreeId: 'wt-1', chatId: 'chat-1' },
+          { watchCommand },
+        ),
       });
       const response = await fetch(
         service.getCanopyWorktreeMcpUrl(sessionKey),
@@ -4094,14 +4492,14 @@ describe('McpHttpProxyService', () => {
         });
       },
     );
-    const appAdvisorRuntime = {
-      getWindow: jest.fn(() => null),
-      projectId: 'project-1',
-      worktreeId: 'wt-1',
-      chatId: 'chat-1',
-      sessionKey: 'advisor-base-close-session',
-      dispatchRendererAction,
-    };
+    const appAdvisorRuntime = createAppAdvisorRuntimeFixture(
+      {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        chatId: 'chat-1',
+      },
+      { dispatchRendererAction },
+    );
     await service.registerCanopyWorktreeSessionRoute({
       sessionKey: 'advisor-base-close-session',
       projectId: 'project-1',
@@ -4198,13 +4596,11 @@ describe('McpHttpProxyService', () => {
       authToken: 'advisor-gated-token',
       createdAt: Date.now(),
       hookHandler: jest.fn(),
-      appAdvisorRuntime: {
-        getWindow: jest.fn(() => null),
+      appAdvisorRuntime: createAppAdvisorRuntimeFixture({
         projectId: 'project-1',
         worktreeId: 'wt-1',
         chatId: 'chat-1',
-        sessionKey: 'advisor-gated-session',
-      },
+      }),
     });
     const baseUrl = service.getCanopyWorktreeMcpUrl('advisor-gated-session');
     const uiUrl = service.getCanopyWorktreeUiMcpUrl('advisor-gated-session');
@@ -4234,7 +4630,7 @@ describe('McpHttpProxyService', () => {
       id: 'advisor-ask-on-base',
       error: {
         code: -32602,
-        message: 'Unknown App Advisor MCP tool',
+        message: 'Unknown Orchestrator MCP tool',
       },
     });
 
@@ -4270,7 +4666,7 @@ describe('McpHttpProxyService', () => {
       id: 'advisor-script-on-ui',
       error: {
         code: -32602,
-        message: 'Unknown App Advisor MCP tool',
+        message: 'Unknown Orchestrator MCP tool',
       },
     });
   });
@@ -4543,13 +4939,16 @@ describe('McpHttpProxyService', () => {
     );
 
     expect(dispatchResponse.status).toBe(200);
+    // A run's replay key is unique to this route registration.
+    const registrationToolUseId: unknown =
+      expect.stringMatching(/:dispatch-call$/);
     expect(mockExecuteCanopyInjectedTool).toHaveBeenLastCalledWith(
       'dispatch_action',
       {
         action: { type: 'pipeline.run', pipelineId: 'pipeline-1' },
       },
       expect.any(Object),
-      { toolUseId: 'dispatch-call' },
+      { toolUseId: registrationToolUseId },
     );
     const calls = mockExecuteCanopyInjectedTool.mock.calls as unknown as Array<
       [
@@ -4736,7 +5135,9 @@ describe('McpHttpProxyService', () => {
       createdAt: Date.now(),
       hookHandler: jest.fn(),
     });
-    mockExecuteCanopyInjectedTool.mockRejectedValueOnce(new Error('boom'));
+    mockExecuteCanopyInjectedTool.mockRejectedValueOnce(
+      new Error('ENOENT: /Users/someone/.canopy/workspaces/ws_secret/scripts'),
+    );
 
     const response = await fetch(
       service.getCanopyWorktreeMcpUrl('session-key'),
@@ -4759,14 +5160,70 @@ describe('McpHttpProxyService', () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({
       jsonrpc: '2.0',
       id: 'tool-call',
       error: {
         code: -32603,
-        message: 'boom',
+        message: 'Internal error',
       },
     });
+    expect(body).not.toContain('ws_secret');
+  });
+
+  it('answers a throwing worktree route gate without forwarding its error text', async () => {
+    await service.ensureStarted(await getFreePort());
+    await service.registerCanopyWorktreeSessionRoute({
+      sessionKey: 'worktree-gate-throws',
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      chatId: 'chat-1',
+      toolSurface: 'cursor-acp',
+      providerType: 'cursor',
+      cwd: '/mock/workspace',
+      sdkSessionId: 'sdk-worktree-gate-throws',
+      authToken: 'worktree-gate-throws-token',
+      createdAt: Date.now(),
+      hookHandler: jest.fn(),
+      authorizeToolCall: (): Promise<boolean> =>
+        Promise.reject(
+          new Error('rule write failed: /Users/someone/ws_secret/rules.json'),
+        ),
+    });
+
+    const response = await fetch(
+      service.getCanopyWorktreeMcpUrl('worktree-gate-throws'),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer worktree-gate-throws-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'worktree-gate-throws',
+          method: 'tools/call',
+          params: {
+            name: 'WatchCommand',
+            arguments: {
+              command: 'echo ready',
+              intervalSeconds: 5,
+              maxAttempts: 1,
+            },
+          },
+        }),
+      },
+    );
+
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
+      jsonrpc: '2.0',
+      id: 'worktree-gate-throws',
+      error: { code: -32603, message: 'Internal error' },
+    });
+    expect(body).not.toContain('ws_secret');
+    expect(mockExecuteCanopyInjectedTool).not.toHaveBeenCalled();
   });
 
   it('treats malformed percent-encoded route segments as missing routes', async () => {
@@ -5533,13 +5990,11 @@ describe('McpHttpProxyService', () => {
       toolSurface: 'copilot-sdk',
       deferredToolsAllowed: false,
       codeGraphToolsAdvertised: false,
-      appAdvisorRuntime: {
-        getWindow: () => null,
+      appAdvisorRuntime: createAppAdvisorRuntimeFixture({
         projectId: 'project',
         worktreeId: 'worktree',
         chatId: 'chat',
-        sessionKey,
-      },
+      }),
     });
     const list = async (url: string) => {
       const response = await fetch(url, {
@@ -6373,6 +6828,7 @@ describe('McpHttpProxyService assistant dispatch request ids (CAN-3976)', () => 
       projectId: APP_ADVISOR_PROJECT_ID,
       worktreeId: 'advisor-entry',
       chatId,
+      sdkSessionId: `sdk-${sessionKey}`,
       assistantMode: 'app-advisor',
       authToken: `${sessionKey}-token`,
       createdAt: Date.now(),
@@ -6407,6 +6863,7 @@ describe('McpHttpProxyService assistant dispatch request ids (CAN-3976)', () => 
       projectId: PIPELINE_EDITOR_PROJECT_ID,
       worktreeId: PIPELINE_EDITOR_WORKTREE_ID,
       chatId,
+      sdkSessionId: `sdk-${sessionKey}`,
       assistantMode: 'pipeline-editor',
       ...(cursorGate
         ? { providerType: 'cursor', authorizeToolCall: cursorGate }
@@ -6594,6 +7051,94 @@ describe('McpHttpProxyService assistant dispatch request ids (CAN-3976)', () => 
     expect(result).toMatchObject({ isError: true });
     expect(gate).toHaveBeenCalled();
     expect(renderer.requests).toHaveLength(0);
+  });
+
+  it('answers a throwing Cursor Pipeline Assistant gate without forwarding its error text', async () => {
+    const renderer = createPipelineEditorRenderer();
+    const gateError = new Error(
+      'rule write failed: /Users/someone/ws_secret/rules.json',
+    );
+    const session = await registerPipelineEditorRoute(
+      'cursor-gate-throws',
+      renderer,
+      () => Promise.reject(gateError),
+    );
+    const response = await fetch(service.getCanopyWorktreeMcpUrl(session), {
+      method: 'POST',
+      signal: AbortSignal.timeout(1500),
+      headers: {
+        Authorization: `Bearer ${session}-token`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'pipeline-gate-throws',
+        method: 'tools/call',
+        params: { name: 'SetPipelineYaml', arguments: { yaml: 'name: x' } },
+      }),
+    });
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
+      jsonrpc: '2.0',
+      id: 'pipeline-gate-throws',
+      error: { code: -32603, message: 'Internal error' },
+    });
+    expect(body).not.toContain('ws_secret');
+    expect(renderer.requests).toHaveLength(0);
+    expect(logMainProcessErrorSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      gateError,
+    );
+  });
+
+  it('answers a gate that throws on the streamed /ui path without forwarding its error text', async () => {
+    const renderer = createPipelineEditorRenderer();
+    const gateError = new Error(
+      'rule write failed: /Users/someone/ws_secret/rules.json',
+    );
+    const session = await registerPipelineEditorRoute(
+      'cursor-ui-gate-throws',
+      renderer,
+      () => Promise.reject(gateError),
+    );
+    // The Pipeline Editor gate runs outside that branch's try, so its
+    // rejection reaches the catch in streamCanopyMcpJsonRpc.
+    const response = await fetch(service.getCanopyWorktreeUiMcpUrl(session), {
+      method: 'POST',
+      signal: AbortSignal.timeout(1500),
+      headers: {
+        Authorization: `Bearer ${session}-token`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'pipeline-ui-gate-throws',
+        method: 'tools/call',
+        params: {
+          name: 'AskUserQuestion',
+          arguments: {
+            questions: [{ question: 'Continue?', options: ['Yes', 'No'] }],
+          },
+        },
+      }),
+    });
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const body = await response.text();
+    const dataLines = body
+      .split('\n')
+      .filter((line) => line.startsWith('data: '));
+    expect(dataLines).toHaveLength(1);
+    expect(JSON.parse((dataLines[0] ?? '').slice('data: '.length))).toEqual({
+      jsonrpc: '2.0',
+      id: 'pipeline-ui-gate-throws',
+      error: { code: -32603, message: 'Internal error' },
+    });
+    expect(body).not.toContain('ws_secret');
+    expect(renderer.requests).toHaveLength(0);
+    expect(logMainProcessErrorSpy).toHaveBeenCalledWith(
+      expect.any(String),
+      gateError,
+    );
   });
 
   it('runs a second Pipeline Editor chat call that reuses another chat JSON-RPC id', async () => {

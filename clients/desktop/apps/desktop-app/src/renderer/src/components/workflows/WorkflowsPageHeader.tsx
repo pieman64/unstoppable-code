@@ -5,10 +5,14 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { WorkflowsTabBar } from '@canopy/ui-shared/components';
+import {
+  WORKFLOWS_PAGE_DESCRIPTION,
+  WORKFLOWS_PAGE_TITLE,
+  WorkflowsTabBar,
+} from '@canopy/ui-shared/components';
 import type { WorkflowsTabId } from '@canopy/ui-shared/lib';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { PageHeading } from '../shared/PageHeading';
+import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import { WorkflowsTabContext } from './workflowsTabContext';
 
 export interface WorkflowsPageHeaderProps {
@@ -38,25 +42,24 @@ export function WorkflowsPageHeader({
     if (keyboardTarget?.current === tab) keyboardTarget.current = null;
   }, [keyboardTarget, tab]);
   return (
-    <>
-      <PageHeading
-        title="Workflows"
-        subtitle="Chain together prompts and scripts from multiple agents and trigger them on a schedule, when something happens, or manually."
-        actions={actions}
-      />
-      <WorkflowsTabBar
-        className="mt-6"
-        value={tab}
-        counts={counts}
-        focusSelectedOnMount={focusSelectedOnMount}
-        onChange={(next, source): void => {
-          if (next === tab) return;
-          if (keyboardTarget) {
-            keyboardTarget.current = source === 'keyboard' ? next : null;
-          }
-          navigate(next);
-        }}
-      />
-    </>
+    <PageHeader
+      title={WORKFLOWS_PAGE_TITLE}
+      description={WORKFLOWS_PAGE_DESCRIPTION}
+      actions={actions}
+      tabs={
+        <WorkflowsTabBar
+          value={tab}
+          counts={counts}
+          focusSelectedOnMount={focusSelectedOnMount}
+          onChange={(next, source): void => {
+            if (next === tab) return;
+            if (keyboardTarget) {
+              keyboardTarget.current = source === 'keyboard' ? next : null;
+            }
+            navigate(next);
+          }}
+        />
+      }
+    />
   );
 }

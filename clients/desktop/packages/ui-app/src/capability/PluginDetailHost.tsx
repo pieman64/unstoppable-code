@@ -1,32 +1,76 @@
 'use client';
 
-import { pluginDisplayName } from '@canopy/ui-shared';
+import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
+import {
+  pluginDisplayName,
+  type UnifiedEntryAlternative,
+  type UnifiedEntryBundledServerRow,
+} from '@canopy/ui-shared';
 import { type JSX, type ReactNode, useEffect, useMemo, useState } from 'react';
 import type {
   BuiltInProviderInstallStatus,
   MarketplacePluginExternalSource,
+  PluginMcpServerInfo,
   PluginProvider,
 } from '@canopy/protocol/plugins';
 import {
+  Button,
   ErrorBanner,
   LoadingPlaceholder,
   LoadingSpinner,
   PluginDetailContent,
   PluginDetailSectionHeading,
   RefreshSpinner,
+  ToggleSwitch,
   type PluginDetailContentPlugin,
+  type PluginHarnessConnectionRow,
   type MarkdownProps,
   type PluginDetailReadComponent,
 } from '@canopy/ui-shared/components';
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
+  DetailMoreItemsContributionProvider,
+  DetailMoreItemsProvider,
+  DetailMoreMenu,
+  useDetailMoreItemContributions,
   ExecutionActionButton,
   MarketplaceShareButton,
   useDetailActionSlots,
+  type DetailMoreMenuItem,
 } from '@canopy/ui-shared/components';
 import type { MarketplaceShareAction } from '@canopy/ui-shared/lib';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
+import { PluginAlternatives } from './PluginAlternatives';
+import {
+  McpServerHealthSection,
+  type McpServerHealthSectionProps,
+} from './McpServerManagement';
+
+/** The health a plugin's MCP server row shows, read from the host's device index. */
+export type PluginDetailMcpHealthTarget = Pick<
+  McpServerHealthSectionProps,
+  | 'targetKey'
+  | 'status'
+  | 'accountConnectionStatus'
+  | 'configs'
+  | 'testableConfigIds'
+  | 'testConnection'
+  | 'onTested'
+>;
+
+export type PluginDetailMcpServerHealth =
+  | { readonly kind: 'target'; readonly target: PluginDetailMcpHealthTarget }
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'unavailable'; readonly reason: string };
+
+/** Host port for the plugin detail's MCP servers rows (CAN-4842). */
+export interface PluginDetailMcpHealth {
+  /** `undefined` = this device has no configuration for the server. */
+  readonly resolve: (
+    server: PluginMcpServerInfo,
+  ) => PluginDetailMcpServerHealth | undefined;
+  readonly formatTimestamp?: (iso: string) => string;
+}
 
 export interface PluginDetailHostPlugin extends PluginDetailContentPlugin {
   builtIn?: boolean;
@@ -90,8 +134,24 @@ export interface PluginDetailHostProps {
   headerIcon?: ReactNode;
   /** Page hosts own an h1; nested desktop panels retain the default h2. */
   titleAs?: 'h1' | 'h2';
+  mcpTarget?: PluginMcpNavigationTarget;
   authorDisplay?: string | null;
-  connectionContent?: ReactNode;
+  /** A notice right under the metadata, such as an available update. */
+  updateNotice?: ReactNode;
+  /**
+   * The Status row, under the metadata. Its `DetailPageActions` join this
+   * detail's action bar, so an Uninstall ⋯ stays in the header.
+   */
+  statusContent?: ReactNode;
+  /** Where the plugin runs, one row per harness, after the Status row. */
+  harnessRows?: readonly PluginHarnessConnectionRow[];
+  /** The "Shared by you" section, after the install area. */
+  sharedContent?: ReactNode;
+  /**
+   * Health and Test connection for each bundled MCP server row. Omitted by
+   * hosts with no device to ask, whose rows read "Not configured yet".
+   */
+  mcpServerHealth?: PluginDetailMcpHealth;
   /**
    * Host transport's install panel, replacing the built-in one. It declares
    * its page-level buttons with `DetailPageActions`, so they join the
@@ -100,6 +160,12 @@ export interface PluginDetailHostProps {
   installContent?: ReactNode;
   onToggleCodexCompat?: (disabled: boolean) => Promise<PluginDetailHostPlugin>;
   onOpenRelated?: (id: string) => void;
+  /** The same app from other catalogs, linked under the metadata. */
+  alternatives?: readonly UnifiedEntryAlternative[];
+  /** Opens a linked entry; alternatives render disabled without it. */
+  onOpenEntryId?: (entryId: string) => void;
+  /** Installed MCP rows hidden behind this plugin; each opens its settings. */
+  bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   relatedItems?: readonly PluginDetailRelatedItem[];
   relatedContent?: ReactNode;
   loading?: boolean;
@@ -301,11 +367,11 @@ function BuiltInInstallPanel({
               </p>
             </div>
             {row.available && (
-              <button
+              <Button
                 type="button"
+                size="compact"
                 onClick={() => void install([row.provider])}
                 disabled={installing !== null}
-                className={`${SECONDARY_ACTION_BUTTON_CLASS} disabled:opacity-50`}
                 data-testid={`built-in-install-button-${row.provider}`}
               >
                 {installingOnly(row.provider)
@@ -313,7 +379,7 @@ function BuiltInInstallPanel({
                   : row.installed
                     ? `Reinstall in ${providerLabel(row.provider)}`
                     : `Install to ${providerLabel(row.provider)}`}
-              </button>
+              </Button>
             )}
           </div>
         ))}
@@ -345,10 +411,18 @@ export function PluginDetailHost({
   headerIcon,
   titleAs = 'h2',
   authorDisplay,
-  connectionContent,
+  mcpTarget,
+  updateNotice,
+  statusContent,
+  harnessRows,
+  sharedContent,
+  mcpServerHealth,
   installContent,
   onToggleCodexCompat,
   onOpenRelated,
+  alternatives,
+  onOpenEntryId,
+  bundledServerRows,
   relatedItems = [],
   relatedContent,
   loading = false,
@@ -368,6 +442,8 @@ export function PluginDetailHost({
   const [compatBusy, setCompatBusy] = useState(false);
   const builtIn = useBuiltInInstall(plugin, onInstall, onPluginUpdated);
   const actionSlots = useDetailActionSlots();
+  // Rows bodies offer to the ⋯ menu (the web install panel's Reinstall).
+  const contributedMore = useDetailMoreItemContributions();
 
   // Host-local action state is scoped to one plugin; a failed toggle or
   // install message from a previous plugin must not survive an identity
@@ -396,14 +472,14 @@ export function PluginDetailHost({
           {pluginDisplayName(plugin)}
         </Title>
         <ErrorBanner error={error} />
-        <button
+        <Button
           type="button"
           onClick={() => void loadDetail()}
           data-testid="plugin-detail-retry"
-          className="focus-ring mt-3 rounded-md border px-4 py-2 text-s font-medium fg-primary"
+          className="mt-3"
         >
           Retry
-        </button>
+        </Button>
       </div>
     );
   }
@@ -424,6 +500,11 @@ export function PluginDetailHost({
 
   const metadataFooter = (
     <>
+      <PluginAlternatives
+        alternatives={alternatives}
+        onOpenEntryId={onOpenEntryId}
+        testIdPrefix="plugin-detail-also-available"
+      />
       {(compatError || compatibilityError) && (
         <p className="text-xs fg-destructive mt-2">
           {compatError || compatibilityError}
@@ -439,13 +520,11 @@ export function PluginDetailHost({
               When off, this Claude plugin is not used under Codex.
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-label="Codex compatibility mode"
-            aria-checked={plugin.codexCompatDisabled !== true}
+          <ToggleSwitch
+            label="Codex compatibility mode"
+            checked={plugin.codexCompatDisabled !== true}
             disabled={compatBusy}
-            onClick={() => {
+            onChange={() => {
               setCompatBusy(true);
               setCompatError('');
               void onToggleCodexCompat(plugin.codexCompatDisabled !== true)
@@ -455,13 +534,8 @@ export function PluginDetailHost({
                 )
                 .finally(() => setCompatBusy(false));
             }}
-            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${plugin.codexCompatDisabled === true ? 'bg-muted' : 'bg-accent'}`}
-            data-testid="plugin-detail-codex-compat-disable-toggle"
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-base transition-transform ${plugin.codexCompatDisabled === true ? 'translate-x-0.5' : 'translate-x-4'}`}
-            />
-          </button>
+            dataTestId="plugin-detail-codex-compat-disable-toggle"
+          />
         </div>
       )}
     </>
@@ -508,29 +582,38 @@ export function PluginDetailHost({
         busy: installing || builtIn.installing !== null,
       })
     : (installAction ?? idlePrimaryAction);
-  const updateAction =
-    canInstall && !installContent && plugin.externalSource && !needsInstall ? (
-      <button
-        type="button"
-        onClick={() => void installExternal()}
-        disabled={installing}
-        className={`${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5 disabled:opacity-50`}
-        data-testid="plugin-detail-update"
-      >
-        <RefreshSpinner spinning={installing} />
-        {installing ? 'Updating…' : 'Update'}
-      </button>
+  // Update is a rarer action, so it sits in the ⋯ More menu: the bar keeps at
+  // most three visible actions, [⋯ More] [Share] [Primary] (CAN-4686). The
+  // Status row's ⋯ (Uninstall) takes it when present; otherwise the host
+  // draws its own ⋯ for it.
+  const moreItems: readonly DetailMoreMenuItem[] = [
+    ...(canInstall && !installContent && plugin.externalSource && !needsInstall
+      ? [
+          {
+            id: 'update',
+            label: installing ? 'Updating…' : 'Update',
+            icon: <RefreshSpinner spinning={installing} />,
+            testId: 'plugin-detail-update',
+            onSelect: (): void => void installExternal(),
+            disabled: installing,
+          },
+        ]
+      : []),
+    ...contributedMore.items,
+  ];
+  const hostMoreMenu =
+    moreItems.length > 0 && actionSlots.moreDeclared === 0 ? (
+      <DetailMoreMenu
+        name={pluginDisplayName(plugin)}
+        items={moreItems}
+        triggerTestId="plugin-detail-more"
+        menuTestId="plugin-detail-menu"
+      />
     ) : undefined;
   const chromeActions = (
     <DetailActionBar
-      secondary={
-        headerActions || updateAction ? (
-          <>
-            {headerActions}
-            {updateAction}
-          </>
-        ) : undefined
-      }
+      more={hostMoreMenu}
+      secondary={headerActions}
       share={
         shareAction ? (
           <MarketplaceShareButton
@@ -547,14 +630,12 @@ export function PluginDetailHost({
   );
 
   const hasInstallActions =
-    !!connectionContent ||
     (canInstall && builtInPanel) ||
     !!plugin.externalSource ||
     showInstallPrompt ||
     installing;
   const installActions = hasInstallActions ? (
     <>
-      {connectionContent}
       {canInstall && builtInPanel && (
         <BuiltInInstallPanel state={builtIn} brandName={brandName} />
       )}
@@ -594,6 +675,17 @@ export function PluginDetailHost({
             </dl>
           </div>
         </div>
+      )}
+      {!showInstallPrompt && !installing && installError && (
+        // Update runs from the ⋯ menu, which closes on select, so its failure
+        // shows here.
+        <p
+          role="alert"
+          className="text-s fg-destructive"
+          data-testid="plugin-detail-update-error"
+        >
+          {installError}
+        </p>
       )}
       {showInstallPrompt && !installing && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -649,23 +741,87 @@ export function PluginDetailHost({
         plugin={plugin}
         titleAs={titleAs}
         authorDisplay={authorDisplay}
+        mcpTarget={mcpTarget}
         headerIcon={headerIcon}
         onBack={onBack}
         onReadComponent={readComponent}
         readme={readme}
         markdownOptions={markdownOptions}
         metadataFooter={metadataFooter}
-        installActions={
-          installContent || installActions ? (
+        updateNotice={updateNotice}
+        statusContent={
+          statusContent ? (
             <DetailActionSlotsProvider slots={actionSlots}>
-              {installContent ?? installActions}
+              <DetailMoreItemsProvider items={moreItems}>
+                {statusContent}
+              </DetailMoreItemsProvider>
             </DetailActionSlotsProvider>
           ) : undefined
         }
-        hideComponents={showInstallPrompt || installing}
+        harnessRows={harnessRows}
+        installActions={
+          installContent || installActions ? (
+            <DetailActionSlotsProvider slots={actionSlots}>
+              <DetailMoreItemsContributionProvider
+                contribute={contributedMore.contribute}
+              >
+                {installContent ?? installActions}
+              </DetailMoreItemsContributionProvider>
+            </DetailActionSlotsProvider>
+          ) : undefined
+        }
+        sharedContent={
+          sharedContent ? (
+            <DetailActionSlotsProvider slots={actionSlots}>
+              {sharedContent}
+            </DetailActionSlotsProvider>
+          ) : undefined
+        }
+        hideComponents={
+          (showInstallPrompt || installing) && mcpTarget === undefined
+        }
         relatedContent={sharedRelatedContent}
         headerActions={chromeActions}
+        bundledServerRows={bundledServerRows}
+        onOpenEntryId={onOpenEntryId}
+        {...(mcpServerHealth
+          ? {
+              renderMcpServerStatus: (server: PluginMcpServerInfo) =>
+                renderMcpServerHealth(mcpServerHealth, server),
+            }
+          : {})}
       />
     </div>
   );
+}
+
+/** One MCP server row's Status cell; `undefined` reads "Not configured yet". */
+function renderMcpServerHealth(
+  health: PluginDetailMcpHealth,
+  server: PluginMcpServerInfo,
+): ReactNode | undefined {
+  const resolved = health.resolve(server);
+  if (!resolved) return undefined;
+  switch (resolved.kind) {
+    case 'target':
+      return (
+        <McpServerHealthSection
+          presentation="inline"
+          label={`Health for ${server.name}`}
+          {...resolved.target}
+          formatTimestamp={health.formatTimestamp}
+        />
+      );
+    case 'loading':
+      return <span className="text-xs fg-tertiary">Loading…</span>;
+    case 'unavailable':
+      return (
+        <span
+          data-testid="plugin-detail-mcp-status-unavailable"
+          className="text-xs fg-tertiary"
+        >
+          {resolved.reason}
+        </span>
+      );
+  }
 }

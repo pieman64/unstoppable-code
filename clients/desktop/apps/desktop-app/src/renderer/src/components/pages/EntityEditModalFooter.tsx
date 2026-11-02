@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import type { JSX, ReactNode } from 'react';
 import { ErrorBanner, LoadingPlaceholder } from '../shared/StatusBlocks';
 
@@ -58,52 +59,44 @@ export function EntityEditModalFooter({
     <div className="flex items-center justify-between border-t px-5 py-3">
       <div>
         {!isCreate && !confirmDelete && (
-          <button
-            type="button"
+          <Button
+            variant="ghost-destructive"
+            size="compact"
             onClick={onConfirmDeleteStart}
             disabled={saving}
-            className="focus-ring rounded-lg px-3 py-1.5 text-xs font-medium fg-destructive hover:bg-destructive-subtle transition-colors disabled:opacity-50"
           >
             Delete
-          </button>
+          </Button>
         )}
         {!isCreate && confirmDelete && (
           <span className="inline-flex items-center gap-2">
             <span className="text-xs fg-secondary">Are you sure?</span>
-            <button
-              type="button"
+            <Button
+              variant="destructive"
+              size="compact"
               onClick={onDelete}
               disabled={saving}
-              className="focus-ring rounded-lg px-3 py-1.5 text-xs font-medium fg-emphasis bg-destructive hover:bg-destructive/90 transition-colors disabled:opacity-50"
             >
               Confirm
-            </button>
-            <button
-              type="button"
-              onClick={onConfirmDeleteCancel}
-              className="focus-ring rounded-lg px-3 py-1.5 text-xs font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-            >
+            </Button>
+            <Button size="compact" onClick={onConfirmDeleteCancel}>
               Cancel
-            </button>
+            </Button>
           </span>
         )}
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="focus-ring rounded-lg px-4 py-2 text-s font-medium fg-secondary hover:fg-primary hover:bg-secondary transition-colors"
-        >
+        <Button size="compact" onClick={onClose}>
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
+          size="compact"
           onClick={onSave}
           disabled={!canSave}
-          className="focus-ring inline-flex items-center rounded-lg bg-accent px-4 py-2 text-s font-medium fg-emphasis disabled:opacity-60"
         >
           {saving ? 'Saving\u2026' : 'Save'}
-        </button>
+        </Button>
       </div>
     </div>
   );

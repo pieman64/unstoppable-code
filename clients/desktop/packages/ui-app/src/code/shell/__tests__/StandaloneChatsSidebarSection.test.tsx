@@ -3,7 +3,11 @@
  */
 import { act, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StandaloneChatsSidebarSection } from '../StandaloneChatsSidebarSection';
+import type { SpaceNotificationMenuState } from '@canopy/ui-shared/components';
+import {
+  StandaloneChatsSidebarSection,
+  type StandaloneChatsSidebarSnapshot,
+} from '../StandaloneChatsSidebarSection';
 import { SidebarScrollArea } from '../sidebar/SidebarScrollArea';
 import {
   CHATS_CONTENT_SELECTOR,
@@ -238,6 +242,48 @@ describe('StandaloneChatsSidebarSection', () => {
         'entry-a',
         'mute',
       );
+    });
+    it("hides a muted entry's unread dot from its group header (CAN-4378)", async () => {
+      const unreadSnapshot = {
+        ...snapshot,
+        standaloneChats: snapshot.standaloneChats.map((chat) => ({
+          ...chat,
+          hasUnread: true,
+        })),
+      };
+      const collapsedWorkspace = {
+        ...workspace,
+        itemGroups: workspace.itemGroups.map((group) => ({
+          ...group,
+          collapsed: true,
+        })),
+      };
+      const groupDot = (): Element | null =>
+        container.querySelector('[aria-label="Unread work in group"]');
+      const renderWith = async (
+        state: SpaceNotificationMenuState | undefined,
+      ): Promise<void> =>
+        render({
+          workspace: collapsedWorkspace,
+          snapshot: unreadSnapshot,
+          headerPresentation: 'section',
+          workEntryNotifications: {
+            getState: () => state,
+            onOpen: jest.fn(),
+            onSelect: jest.fn(),
+          },
+        });
+      await renderWith(undefined);
+      expect(groupDot()).not.toBeNull();
+      await renderWith({ status: 'ready', override: 'mute' });
+      expect(groupDot()).toBeNull();
+      // A save still in flight claims nothing.
+      await renderWith({
+        status: 'saving',
+        override: null,
+        pendingChoice: 'mute',
+      });
+      expect(groupDot()).not.toBeNull();
     });
   });
 
@@ -740,7 +786,7 @@ describe('StandaloneChatsSidebarSection', () => {
   });
 
   it('renders orphan chats under only the first displayed cowork project', async () => {
-    const coworkSnapshot = {
+    const coworkSnapshot: StandaloneChatsSidebarSnapshot = {
       workspaces: [
         {
           localId: 'cowork-b',
@@ -1078,6 +1124,26 @@ describe('StandaloneChatsSidebarSection — Chats Work Entry rows', () => {
     expect(row('chat-idle').querySelector('[aria-label="Working"]')).toBe(null);
   });
 
+  it('shows the background spinner on the row of a chat with only background work (turn-state phase 41b)', async () => {
+    await renderChats([
+      {
+        localId: 'chat-bg',
+        projectLocalId: 'cowork-default',
+        title: 'Background',
+        backgroundTasks: 2,
+      },
+    ]);
+    expect(
+      row('chat-bg').querySelector(
+        '[data-testid="portal-chats-work-entry-chat-bg-background"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      row('chat-bg').querySelector('[aria-label="2 background tasks running"]'),
+    ).not.toBeNull();
+    expect(row('chat-bg').querySelector('[aria-label="Working"]')).toBeNull();
+  });
+
   it('shows the unread dot on the row of a chat with unviewed output', async () => {
     await renderChats([
       {
@@ -1116,6 +1182,80 @@ describe('StandaloneChatsSidebarSection — Chats Work Entry rows', () => {
     expect(row('chat-open').hasAttribute('data-sidebar-selected-item')).toBe(
       true,
     );
+  });
+
+  describe('muted entries (CAN-4378)', () => {
+    const chats = [
+      {
+        localId: 'chat-muted',
+        projectLocalId: 'cowork-default',
+        title: 'Muted',
+        workEntryId: 'entry-muted',
+        workEntryLastMessageAt: '2026-01-01T00:00:00.000Z',
+        hasUnread: true,
+      },
+      {
+        localId: 'chat-busy',
+        projectLocalId: 'cowork-default',
+        title: 'Busy',
+        workEntryId: 'entry-busy',
+        workEntryLastMessageAt: '2026-01-01T00:00:00.000Z',
+        hasActiveChat: true,
+        hasUnread: true,
+      },
+      {
+        localId: 'chat-loud',
+        projectLocalId: 'cowork-default',
+        title: 'Loud',
+        workEntryId: 'entry-loud',
+        workEntryLastMessageAt: '2026-01-01T00:00:00.000Z',
+        hasUnread: true,
+      },
+    ];
+    const notifications = (
+      stateFor: (workEntryId: string) => SpaceNotificationMenuState | undefined,
+    ): ComponentProps<
+      typeof StandaloneChatsSidebarSection
+    >['workEntryNotifications'] => ({
+      getState: (_workspaceLocalId, workEntryId) => stateFor(workEntryId),
+      onOpen: jest.fn(),
+      onSelect: jest.fn(),
+    });
+    const unreadDot = (entryId: string): Element | null =>
+      row(entryId).querySelector('[aria-label="Unread messages"]');
+
+    it('hides the unread dot of a muted entry and keeps its working spinner', async () => {
+      await renderChats(chats, {
+        workEntryNotifications: notifications((workEntryId) =>
+          workEntryId === 'entry-loud'
+            ? { status: 'ready', override: 'attention' }
+            : { status: 'ready', override: 'mute' },
+        ),
+      });
+      expect(unreadDot('entry-muted')).toBeNull();
+      expect(
+        row('entry-busy').querySelector('[aria-label="Working"]'),
+      ).not.toBe(null);
+      expect(unreadDot('entry-loud')).not.toBeNull();
+    });
+
+    it('keeps the dot while a save to Mute is in flight or unread', async () => {
+      await renderChats(chats, {
+        workEntryNotifications: notifications(() => ({
+          status: 'saving',
+          override: null,
+          pendingChoice: 'mute',
+        })),
+      });
+      expect(unreadDot('entry-muted')).not.toBeNull();
+      await renderChats(chats, {
+        workEntryNotifications: notifications(() => ({
+          status: 'loading',
+          override: 'mute',
+        })),
+      });
+      expect(unreadDot('entry-muted')).not.toBeNull();
+    });
   });
 
   describe('notification choices (CAN-3615)', () => {

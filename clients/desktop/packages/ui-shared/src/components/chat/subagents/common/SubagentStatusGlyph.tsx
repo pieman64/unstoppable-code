@@ -1,19 +1,13 @@
 import type { JSX } from 'react';
 import type { SubagentStatus } from '@canopy/agent-transcript';
-import {
-  CheckIcon,
-  FailedIcon,
-  RaisedHandIcon,
-  ScheduleIcon,
-  SnoozeIcon,
-  StopIcon,
-} from '../../../../icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '../../../../lib/operational-status-colors';
-import { ThinkingSpinner } from '../../../ThinkingSpinner';
+import type { StatusGlyphState } from '../../../../lib/status-glyph';
+import { StatusGlyph, type StatusGlyphSize } from '../../../StatusGlyph';
 
 const STATUS_INK: Readonly<Record<SubagentStatus, string>> = {
-  running: OPERATIONAL_STATUS_COLORS.active.foreground,
-  starting: OPERATIONAL_STATUS_COLORS.active.foreground,
+  // Running reads in the neutral ink of its spinner, never the info blue.
+  running: 'fg-secondary',
+  starting: 'fg-secondary',
   queued: OPERATIONAL_STATUS_COLORS.paused.foreground,
   approval: 'fg-warning',
   idle: 'fg-tertiary',
@@ -29,50 +23,68 @@ export function subagentStatusInk(status: SubagentStatus): string {
   return STATUS_INK[status];
 }
 
+const GLYPH_STATE: Readonly<Record<SubagentStatus, StatusGlyphState>> = {
+  running: 'running',
+  starting: 'running',
+  queued: 'queued',
+  approval: 'needs-you',
+  // An idle teammate is parked until it is messaged again.
+  idle: 'paused',
+  completed: 'done',
+  failed: 'failed',
+  // Every way a subagent stops before finishing reads as Cancelled.
+  interrupted: 'cancelled',
+  cancelled: 'cancelled',
+  'stopped-by-parent': 'cancelled',
+};
+
+/** A subagent status → the shared status glyph state. */
+export function subagentStatusGlyphState(
+  status: SubagentStatus,
+): StatusGlyphState {
+  return GLYPH_STATE[status];
+}
+
+function glyphSize(size: number): StatusGlyphSize {
+  if (size <= 12) return 12;
+  return size <= 16 ? 14 : 20;
+}
+
 export interface SubagentStatusGlyphProps {
   readonly status: SubagentStatus;
-  /** Glyph size in pixels. Defaults to 12. */
+  /**
+   * Glyph size in pixels, drawn at the status glyph box it falls in: 12
+   * and below are the dense 12px box, up to 16 the compact 14px tier, and
+   * larger the regular 20px tier. Defaults to 12.
+   */
   readonly size?: number;
+  /**
+   * The running spinner's box, when it must match a smaller spinner beside
+   * it (the sidebar row's 10px grid). Defaults to `size`.
+   */
+  readonly spinnerSize?: number;
 }
 
 /**
- * One glyph per status, always paired with the status label where space
- * allows. The spinner is reserved for work that is actually running.
+ * The shared status glyph for a subagent, always paired with the status
+ * label where space allows. The spinner is reserved for work that is
+ * actually running.
  */
 export function SubagentStatusGlyph({
   status,
   size = 12,
+  spinnerSize = size,
 }: SubagentStatusGlyphProps): JSX.Element {
-  if (status === 'running' || status === 'starting') {
-    return (
-      <span
-        className="inline-flex shrink-0 items-center justify-center"
-        data-status={status}
-      >
-        <ThinkingSpinner sizePx={size} tone="active" />
-      </span>
-    );
-  }
-  const glyph =
-    status === 'queued' ? (
-      <ScheduleIcon size={size} aria-hidden />
-    ) : status === 'approval' ? (
-      <RaisedHandIcon size={size} aria-hidden />
-    ) : status === 'completed' ? (
-      <CheckIcon size={size} aria-hidden />
-    ) : status === 'failed' ? (
-      <FailedIcon size={size} aria-hidden />
-    ) : status === 'idle' ? (
-      <SnoozeIcon size={size} aria-hidden />
-    ) : (
-      <StopIcon size={size} aria-hidden />
-    );
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center ${STATUS_INK[status]}`}
+      className="inline-flex shrink-0 items-center justify-center"
       data-status={status}
     >
-      {glyph}
+      <StatusGlyph
+        state={GLYPH_STATE[status]}
+        size={glyphSize(size)}
+        spinnerSize={spinnerSize}
+      />
     </span>
   );
 }

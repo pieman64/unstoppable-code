@@ -1,6 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { X } from '@canopy/ui-shared/icons/AppIcons';
 import type { ExplorerFactDetail } from '@canopy/protocol/settings/organization-memory';
 import { withPrivacyClass } from '../account/privacy-class';
@@ -47,14 +48,17 @@ export function FactDetailDrawer({
           </span>
         </div>
         {onClose !== undefined && (
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="compact"
+            iconOnly
+            data-settings-control="dismiss"
             onClick={onClose}
-            className="rounded-md p-1 fg-secondary hover:bg-base hover:fg-primary"
             aria-label="Close fact detail"
           >
             <X size={18} />
-          </button>
+          </Button>
         )}
       </div>
 

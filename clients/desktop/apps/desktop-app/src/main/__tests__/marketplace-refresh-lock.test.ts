@@ -10,16 +10,36 @@ const rmdirMock = jest.fn();
 const writeFileMock = jest.fn();
 
 jest.mock('node:fs/promises', () => ({
-  chmod: chmodMock,
-  lstat: lstatMock,
-  mkdir: mkdirMock,
-  open: openMock,
-  readFile: readFileMock,
-  realpath: realpathMock,
-  rmdir: rmdirMock,
-  stat: statMock,
-  unlink: unlinkMock,
-  writeFile: writeFileMock,
+  get chmod(): typeof chmodMock {
+    return chmodMock;
+  },
+  get lstat(): typeof lstatMock {
+    return lstatMock;
+  },
+  get mkdir(): typeof mkdirMock {
+    return mkdirMock;
+  },
+  get open(): typeof openMock {
+    return openMock;
+  },
+  get readFile(): typeof readFileMock {
+    return readFileMock;
+  },
+  get realpath(): typeof realpathMock {
+    return realpathMock;
+  },
+  get rmdir(): typeof rmdirMock {
+    return rmdirMock;
+  },
+  get stat(): typeof statMock {
+    return statMock;
+  },
+  get unlink(): typeof unlinkMock {
+    return unlinkMock;
+  },
+  get writeFile(): typeof writeFileMock {
+    return writeFileMock;
+  },
 }));
 jest.mock('../lib/paths', () => ({
   getDataDir: (): string => '/mock/data',
@@ -274,6 +294,56 @@ describe('withMarketplaceRefreshLock', () => {
         lockPath.startsWith('/mock/data/locks/marketplace-refresh/'),
       ),
     ).toBe(true);
+  });
+
+  it('removes its own lock file when closing the lock fails, so the next refresh can acquire it', async () => {
+    const owners = new Map<string, string>();
+    let failNextClose = true;
+    openMock.mockImplementation((target: string) => {
+      if (owners.has(target)) {
+        return Promise.reject(
+          Object.assign(new Error('exists'), { code: 'EEXIST' }),
+        );
+      }
+      owners.set(target, '');
+      return Promise.resolve({
+        writeFile: jest.fn((contents: string) => {
+          owners.set(target, contents);
+          return Promise.resolve();
+        }),
+        close: jest.fn(() => {
+          if (!failNextClose) return Promise.resolve();
+          failNextClose = false;
+          return Promise.reject(
+            Object.assign(new Error('close failed'), { code: 'EIO' }),
+          );
+        }),
+      });
+    });
+    readFileMock.mockImplementation((target: string) => {
+      const owner = owners.get(target);
+      return owner === undefined
+        ? Promise.reject(
+            Object.assign(new Error('missing'), { code: 'ENOENT' }),
+          )
+        : Promise.resolve(owner);
+    });
+    unlinkMock.mockImplementation((target: string) => {
+      owners.delete(target);
+      return Promise.resolve();
+    });
+    const operation = jest.fn(() => Promise.resolve('refreshed'));
+
+    await expect(withMarketplaceRefreshLock(operation)).rejects.toThrow(
+      'close failed',
+    );
+    expect(operation).not.toHaveBeenCalled();
+    expect(owners.size).toBe(0);
+
+    // A live-PID lock left behind would make this wait LOCK_MAX_WAIT_MS.
+    await expect(withMarketplaceRefreshLock(operation)).resolves.toBe(
+      'refreshed',
+    );
   });
 
   it('rejects a symlinked reclaim directory before reading its owner', async () => {

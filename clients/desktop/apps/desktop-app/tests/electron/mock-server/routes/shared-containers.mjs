@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   getScenario,
   keyFromBearer,
@@ -87,12 +88,15 @@ export function sharedContainersAllowExternalSharing(key) {
  * the scenario's roster (a recipient fixture shares from Ada Lovelace), and
  * reads as the mock owner otherwise.
  */
-function containerRef(container, members) {
+function containerRef(container, members, request) {
   const organizationId = container.organizationId ?? undefined;
   const ownerUserId = container.ownerUserId ?? OWNER.userId;
   const rosterOwner = members.find((member) => member.userId === ownerUserId);
   return {
     ...container,
+    ...(container.latestRevision
+      ? { latestRevision: revisionForClient(request, container.latestRevision) }
+      : {}),
     owner:
       container.owner ??
       (rosterOwner
@@ -138,6 +142,102 @@ function readJsonBody(request) {
     });
     request.on('error', () => resolve(undefined));
   });
+}
+
+function revisionForClient(request, revision) {
+  if (!revision || Number(request.headers['x-pipeline-package-version']) >= 5)
+    return revision;
+  const { package: ignored, ...legacy } = revision;
+  return legacy;
+}
+
+/**
+ * The `revision.package` summary the server derives from a committed package.
+ * Exported so a recipient replica can be seeded with the same metadata the
+ * listing reports for that revision.
+ */
+export function sharedContainerPackageMetadata(download) {
+  return packageMetadata(download);
+}
+
+// Mirrors summarizeSharedContainerCapabilityPackage: plugin skills, commands
+// and agents are carried but a copy does not install them, so they are
+// neither counted nor listed as runnable scripts.
+const PLUGIN_MEMBER_KINDS = new Set([
+  'plugin_skill',
+  'plugin_command',
+  'plugin_agent',
+]);
+
+function packageMetadata(download) {
+  const counts = {
+    skills: 0,
+    pipelines: 0,
+    agents: 0,
+    automations: 0,
+    hooks: 0,
+  };
+  const executableFiles = new Set();
+  const twins = new Map();
+  for (const resource of download.manifest.resources) {
+    if (PLUGIN_MEMBER_KINDS.has(resource.kind)) continue;
+    const category = {
+      standalone_skill: 'skills',
+      agent_definition: 'agents',
+      pipeline_definition: 'pipelines',
+      automation_definition: 'automations',
+      hook_definition: 'hooks',
+    }[resource.kind];
+    const key = JSON.stringify([
+      resource.kind,
+      resource.sourceLabel,
+      resource.sourceVisibility,
+      resource.trees.map((tree) => tree.rootName).sort(),
+    ]);
+    const providers = new Set(resource.trees.map((tree) => tree.provider));
+    const groups = twins.get(key) ?? [];
+    const twin =
+      resource.kind === 'standalone_skill' &&
+      groups.find((group) =>
+        [...providers].every((provider) => !group.has(provider)),
+      );
+    if (twin) for (const provider of providers) twin.add(provider);
+    else {
+      if (category) counts[category] += 1;
+      groups.push(providers);
+      twins.set(key, groups);
+    }
+    for (const tree of resource.trees)
+      for (const entry of tree.entries) {
+        if (entry.mode === 'execute')
+          executableFiles.add(`${tree.rootName}/${entry.path}`);
+      }
+  }
+  return {
+    digest: download.digest,
+    counts,
+    executableFiles: [...executableFiles].sort(),
+  };
+}
+
+function packageAttachmentValid(body) {
+  if (body.carryParentPackage !== undefined)
+    return (
+      body.carryParentPackage === true &&
+      typeof body.parentRevisionId === 'string' &&
+      !body.capabilityPackage &&
+      body.committedPackageUploadId === undefined
+    );
+  if (
+    body.capabilityPackage === undefined &&
+    body.committedPackageUploadId === undefined
+  )
+    return true;
+  return (
+    body.capabilityPackage?.version === 1 &&
+    /^pp:v1:[A-Za-z0-9_-]{43}$/.test(body.capabilityPackage.digest) &&
+    typeof body.committedPackageUploadId === 'string'
+  );
 }
 
 function stateFor(request) {
@@ -322,6 +422,9 @@ export async function handleSharedContainersRequest(request, response, url) {
     return true;
   }
 
+  if (/\/revisions\/[^/]+\/package(?:\/|$)/.test(pathname))
+    response.setHeader('Cache-Control', 'no-store');
+
   // Every mock account advertises `shared-containers-v1`, so the sidebar of
   // any signed-in spec reads these listings. Outside the fixture they are
   // empty, not a 401 the sidebar would render as a load failure.
@@ -452,7 +555,7 @@ export async function handleSharedContainersRequest(request, response, url) {
         : 'sharedContainersCreate',
     );
     jsonResponse(response, 201, {
-      container: containerRef(container, membersFor(key)),
+      container: containerRef(container, membersFor(key), request),
       grant: grantResponse(grant),
     });
     return true;
@@ -548,7 +651,7 @@ export async function handleSharedContainersRequest(request, response, url) {
       // A container reachable only through its link is not shared with this
       // account until the link is claimed.
       .filter((container) => byMe || container.linkOnly !== true)
-      .map((container) => containerRef(container, members))
+      .map((container) => containerRef(container, members, request))
       .filter((container) =>
         direct
           ? byMe
@@ -688,7 +791,7 @@ export async function handleSharedContainersRequest(request, response, url) {
     // shares, no organization lists the direct ones.
     const entries = dismissedFor(state)
       .map((entry) => ({
-        ...containerRef(entry.container, members),
+        ...containerRef(entry.container, members, request),
         dismissedAt: entry.dismissedAt,
       }))
       .filter((container) =>
@@ -746,7 +849,7 @@ export async function handleSharedContainersRequest(request, response, url) {
     }
     recordScenarioActivity(key, 'sharedContainersRestore');
     jsonResponse(response, 200, {
-      container: containerRef(container, membersFor(key)),
+      container: containerRef(container, membersFor(key), request),
     });
     return true;
   }
@@ -773,6 +876,121 @@ export async function handleSharedContainersRequest(request, response, url) {
     return true;
   }
 
+  state.revisions ??= [];
+  const revisionPackageMatch =
+    /^\/api\/v1\/shared-containers\/([^/]+)\/revisions\/([^/]+)\/package(?:\/blobs\/([^/]+))?$/.exec(
+      pathname,
+    );
+  if (revisionPackageMatch && method === 'GET') {
+    response.setHeader('Cache-Control', 'no-store');
+    const [, containerId, revisionId, sha256] = revisionPackageMatch;
+    const container = state.containers.find(
+      (entry) => entry.id === containerId,
+    );
+    const revision = state.revisions.find(
+      (entry) =>
+        entry.containerId === containerId && entry.revision.id === revisionId,
+    );
+    // Mirrors `resolveContainerAccess`: the owner, a grant holder, or, for an
+    // organization share, any member of its organization (every fixture
+    // account is a member of the one fixture organization).
+    const hasAccess =
+      container?.owner?.userId === OWNER.userId ||
+      state.grants.some((grant) => grant.containerId === containerId) ||
+      (container !== undefined &&
+        containerRef(container, membersFor(key), request).access ===
+          'organization');
+    if (
+      !container ||
+      !hasAccess ||
+      !organizationHintMatches(organizationId, container) ||
+      !revision ||
+      revision.retired ||
+      !revision.packageDownload
+    ) {
+      jsonResponse(response, 404, { error: 'Revision package not found.' });
+      return true;
+    }
+    const download = revision.packageDownload;
+    const expected = url.searchParams.get('expectedPackageDigest');
+    if (!/^pp:v1:[A-Za-z0-9_-]{43}$/.test(expected ?? '')) {
+      jsonResponse(response, 400, {
+        error: 'Expected package digest required.',
+      });
+      return true;
+    }
+    if (expected !== download.digest) {
+      jsonResponse(response, 409, { error: 'Package digest mismatch.' });
+      return true;
+    }
+    const kinds = download.manifest.resources.map((entry) => entry.kind);
+    const required = kinds.some((kind) => kind.endsWith('_definition'))
+      ? 5
+      : kinds.some((kind) =>
+            ['pipeline_action', 'child_pipeline'].includes(kind),
+          )
+        ? 4
+        : download.manifest.bindings.some(
+              (binding) => binding.target === 'subject',
+            )
+          ? 3
+          : download.manifest.publisherNotes !== undefined
+            ? 2
+            : 1;
+    if (!(Number(request.headers['x-pipeline-package-version']) >= required)) {
+      jsonResponse(response, 426, {
+        code: 'pipeline_package_client_upgrade_required',
+        requiredPackageVersion: required,
+      });
+      return true;
+    }
+    if (sha256) {
+      const belongs = download.manifest.resources.some((resource) =>
+        resource.trees.some((tree) =>
+          tree.entries.some((entry) => entry.sha256 === sha256),
+        ),
+      );
+      const bytes = download.blobs?.[sha256];
+      if (!belongs || !bytes) {
+        jsonResponse(response, 404, { error: 'Package blob not found.' });
+        return true;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      response.end(Buffer.from(bytes, 'base64'));
+    } else
+      jsonResponse(response, 200, {
+        digest: download.digest,
+        manifest: download.manifest,
+      });
+    return true;
+  }
+  const revisionMatch =
+    /^\/api\/v1\/shared-containers\/([^/]+)\/revisions\/([^/]+)$/.exec(
+      pathname,
+    );
+  if (revisionMatch && revisionMatch[2] !== 'latest' && method === 'GET') {
+    const container = state.containers.find(
+      (entry) => entry.id === revisionMatch[1],
+    );
+    const stored = state.revisions.find(
+      (entry) =>
+        entry.containerId === revisionMatch[1] &&
+        entry.revision.id === revisionMatch[2],
+    );
+    if (
+      !container ||
+      !stored ||
+      stored.retired ||
+      !organizationHintMatches(organizationId, container)
+    )
+      jsonResponse(response, 404, { error: 'Revision not found.' });
+    else
+      jsonResponse(response, 200, {
+        revision: revisionForClient(request, stored.revision),
+      });
+    return true;
+  }
+
   const latestMatch =
     /^\/api\/v1\/shared-containers\/([^/]+)\/revisions\/latest$/.exec(pathname);
   if (latestMatch && method === 'GET') {
@@ -784,7 +1002,9 @@ export async function handleSharedContainersRequest(request, response, url) {
       return true;
     }
     recordScenarioActivity(key, 'sharedContainersResolveLatest');
-    jsonResponse(response, 200, containerRef(container, membersFor(key)));
+    const detail = containerRef(container, membersFor(key), request);
+    detail.latestRevision = revisionForClient(request, detail.latestRevision);
+    jsonResponse(response, 200, detail);
     return true;
   }
 
@@ -798,21 +1018,94 @@ export async function handleSharedContainersRequest(request, response, url) {
     if (
       !container ||
       !organizationHintMatches(body?.organizationId ?? null, container) ||
-      !Array.isArray(body?.artifacts)
+      !Array.isArray(body?.artifacts) ||
+      !packageAttachmentValid(body)
     ) {
       jsonResponse(response, 400, { error: 'Invalid request.' });
       return true;
     }
-    const revisionNumber = state.nextRevision++;
+    state.stagedRevisions = state.stagedRevisions.filter(
+      (entry) =>
+        !entry.createdAt || entry.createdAt > Date.now() - 24 * 60 * 60 * 1_000,
+    );
+    const replay = state.stagedRevisions.find(
+      (entry) => entry.stagingSessionId === body.idempotencyKey,
+    );
+    if (
+      replay &&
+      (replay.containerId !== container.id ||
+        !isDeepStrictEqual(replay.request, body))
+    ) {
+      jsonResponse(response, 409, {
+        error: 'Stage idempotency key is already in use.',
+      });
+      return true;
+    }
+    if (replay?.committedRevision) {
+      jsonResponse(response, 409, {
+        code: 'shared-container-stage-already-committed',
+      });
+      return true;
+    }
+    let packageDownload = replay?.packageDownload;
+    if (!replay && body.parentRevisionId) {
+      const parent = state.revisions.find(
+        (entry) =>
+          entry.containerId === container.id &&
+          entry.revision.id === body.parentRevisionId &&
+          !entry.retired,
+      );
+      if (!parent) {
+        jsonResponse(response, 404, { error: 'Parent revision not found.' });
+        return true;
+      }
+      if (body.carryParentPackage) {
+        if (!parent.packageDownload) {
+          jsonResponse(response, 422, {
+            error: 'Parent package unavailable.',
+            code: 'shared_container_parent_package_unavailable',
+          });
+          return true;
+        }
+        packageDownload = parent.packageDownload;
+      }
+    }
+    if (!replay && body.capabilityPackage) {
+      const upload =
+        getScenario(key)?.sharedContainers?.packageUploads?.[
+          body.committedPackageUploadId
+        ];
+      if (
+        !upload ||
+        upload.state !== 'COMMITTED' ||
+        new Date(upload.expiresAt).getTime() <= Date.now() ||
+        upload.digest !== body.capabilityPackage.digest
+      ) {
+        jsonResponse(response, 422, {
+          error: 'Committed package upload is invalid or expired.',
+          ...(upload?.state === 'COMMITTED' &&
+          upload.digest === body.capabilityPackage.digest &&
+          new Date(upload.expiresAt).getTime() <= Date.now()
+            ? { code: 'shared_container_package_upload_expired' }
+            : {}),
+        });
+        return true;
+      }
+      packageDownload = structuredClone(upload);
+    }
+    const revisionNumber = replay?.revisionNumber ?? state.nextRevision++;
     const revisionId = `55555555-5555-4555-8555-${String(revisionNumber).padStart(12, '0')}`;
     const stagingSessionId = body.idempotencyKey;
-    state.stagedRevisions.push({
-      containerId: container.id,
-      revisionId,
-      revisionNumber,
-      stagingSessionId,
-      request: body,
-    });
+    if (!replay)
+      state.stagedRevisions.push({
+        containerId: container.id,
+        revisionId,
+        revisionNumber,
+        stagingSessionId,
+        request: body,
+        createdAt: Date.now(),
+        packageDownload,
+      });
     const host = request.headers.host;
     const uploadTargets = body.artifacts.map((artifact) => ({
       artifactId: artifact.artifactId,
@@ -862,10 +1155,30 @@ export async function handleSharedContainersRequest(request, response, url) {
       jsonResponse(response, 404, { error: 'Not found.' });
       return true;
     }
+    if (staged.committedRevision) {
+      jsonResponse(response, 200, {
+        revision: revisionForClient(request, staged.committedRevision),
+      });
+      return true;
+    }
+    if (
+      staged.createdAt &&
+      staged.createdAt <= Date.now() - 24 * 60 * 60 * 1_000
+    ) {
+      staged.packageDownload = undefined;
+      jsonResponse(response, 404, { error: 'Staging session expired.' });
+      return true;
+    }
     const manifest = staged.request.artifacts.find(
       (artifact) => artifact.artifactId === staged.revisionId,
     );
     const revision = {
+      ...(staged.packageDownload
+        ? { package: packageMetadata(staged.packageDownload) }
+        : {}),
+      ...(staged.request.parentRevisionId
+        ? { parentRevisionId: staged.request.parentRevisionId }
+        : {}),
       id: staged.revisionId,
       revision: staged.revisionNumber,
       schemaVersion: staged.request.schemaVersion,
@@ -883,11 +1196,27 @@ export async function handleSharedContainersRequest(request, response, url) {
       ),
       createdAt: NOW,
     };
+    state.revisions.push({
+      containerId: container.id,
+      revision,
+      packageDownload: staged.packageDownload,
+    });
+    staged.committedRevision = revision;
+    staged.packageDownload = undefined;
+    const live = state.revisions.filter(
+      (entry) => entry.containerId === container.id && !entry.retired,
+    );
+    for (const retired of live.slice(0, Math.max(0, live.length - 20))) {
+      retired.retired = true;
+      retired.packageDownload = undefined;
+    }
     container.revision = staged.revisionNumber;
     container.updatedAt = NOW;
     container.latestRevision = revision;
     recordScenarioActivity(key, 'sharedContainersCommit');
-    jsonResponse(response, 200, { revision });
+    jsonResponse(response, 200, {
+      revision: revisionForClient(request, revision),
+    });
     return true;
   }
 
@@ -1025,7 +1354,7 @@ export async function handleSharedContainersRequest(request, response, url) {
         jsonResponse(response, 200, scripted);
         return true;
       }
-      const ref = containerRef(container, membersFor(key));
+      const ref = containerRef(container, membersFor(key), { headers: {} });
       jsonResponse(response, 200, {
         state: 'ready',
         audience: link.audience,
@@ -1055,7 +1384,11 @@ export async function handleSharedContainersRequest(request, response, url) {
       link.claimed = true;
       container.linkOnly = false;
       recordScenarioActivity(key, 'sharedContainersLinkClaim');
-      jsonResponse(response, 200, containerRef(container, membersFor(key)));
+      jsonResponse(
+        response,
+        200,
+        containerRef(container, membersFor(key), request),
+      );
       return true;
     }
   }

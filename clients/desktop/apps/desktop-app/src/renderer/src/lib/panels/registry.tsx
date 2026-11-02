@@ -93,7 +93,7 @@ import {
   resolveFileTreeVisible,
   useFileTabUiStore,
 } from '@/stores/fileTabUiStore';
-import { formatShortcut } from '@/lib/keyboardShortcuts';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { useDesktopFileTabDirty } from '@/lib/file-viewer/desktop-file-session-controller';
 import {
   findPanelByInstanceKey,
@@ -143,8 +143,14 @@ import {
   AUTOMATIONS_PANEL_VARIANTS,
   AUTOMATIONS_PANEL_VARIANT_LABELS,
 } from './automations-variants';
-import { Tooltip } from '@canopy/ui-shared';
-import { Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DelayedLoadingPlaceholder,
+  HeaderActionButton,
+  LedgerThreadListSkeleton,
+  Notice,
+} from '@canopy/ui-shared/components';
+import { formatShortcut as formatShortcutHint } from '@canopy/ui-shared/lib/shortcuts';
 import { CostIcon } from '@canopy/ui-shared/components/cost';
 import type { PlanPanelHostProps } from '@/components/plan-explore/PlanPanelHost';
 import {
@@ -413,27 +419,24 @@ function FileTabTreeToggleButton({
   const setFileTreeVisible = useFileTabUiStore((s) => s.setFileTreeVisible);
   const label = visible ? 'Hide file tree' : 'Show file tree';
   return (
-    <Tooltip label={label}>
-      <button
-        type="button"
-        aria-pressed={visible}
-        aria-label={label}
-        data-testid="file-tab-tree-toggle"
-        onClick={(): void => setFileTreeVisible(tabId, !visible)}
-        className={`shrink-0 rounded p-1 transition hover:bg-fg-primary/[0.08] ${
-          visible ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-        }`}
-      >
-        <MultiRepoIcon className="h-3.5 w-3.5" />
-      </button>
-    </Tooltip>
+    <HeaderActionButton
+      iconOnly
+      tone="neutral"
+      stateStyle="toolbar"
+      aria-pressed={visible}
+      aria-label={label}
+      data-testid="file-tab-tree-toggle"
+      onClick={(): void => setFileTreeVisible(tabId, !visible)}
+    >
+      <MultiRepoIcon aria-hidden="true" />
+    </HeaderActionButton>
   );
 }
 
 /**
  * Body of an EMPTY file tab (no file assigned yet): a header carrying the
  * tree toggle plus a centered prompt pointing at the embedded workspace
- * tree and the quick-open shortcut.
+ * tree and an Open file button carrying the quick-open shortcut.
  */
 function EmptyFileTabBody({
   tabId,
@@ -442,6 +445,36 @@ function EmptyFileTabBody({
   tabId: string;
   treeVisible: boolean;
 }): JSX.Element {
+  const openFileSearchPalette = useNavigationStore(
+    (state) => state.openFileSearchPalette,
+  );
+  const panelWorktree = useSelectedWorktree();
+  const mainWorktree = useChatStore(
+    useShallow((s) => getWorktreeChatSelection(s.selectedWorktree)),
+  );
+  // File search opens in the main window over its selected worktree, so it
+  // is offered only from a panel in that window showing that same worktree.
+  // A popped-out panel, or one whose worktree the main window has left,
+  // keeps the file tree alone. The owner document follows the panel when it
+  // moves between windows without remounting.
+  const ownerDocument = usePanelOwnerDocument();
+  const inMainWindow =
+    ownerDocument === undefined || ownerDocument === document;
+  const canSearchFiles =
+    inMainWindow &&
+    panelWorktree !== null &&
+    mainWorktree !== null &&
+    panelWorktree.projectId === mainWorktree.projectId &&
+    panelWorktree.worktreeId === mainWorktree.worktreeId;
+  const openFileSearch = (): void => {
+    // File search fills the worktree's active empty file tab. A pointer
+    // press activates this panel's tab on its own; a keyboard press does
+    // not, so make this tab the active one first.
+    if (panelWorktree !== null) {
+      useChatStore.getState().switchTab(tabId, panelWorktree);
+    }
+    openFileSearchPalette();
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
@@ -453,17 +486,27 @@ function EmptyFileTabBody({
         data-testid="file-tab-empty-state"
       >
         <FolderIcon className="h-8 w-8 fg-secondary/60" />
-        <p className="text-s font-medium fg-primary">Open file</p>
-        <p className="text-xs fg-secondary">
-          Select a file from the project tree
+        <h3 className="text-s font-medium text-balance fg-primary">
+          No file open
+        </h3>
+        <p className="text-xs text-pretty fg-secondary">
+          {canSearchFiles
+            ? 'Pick one in the file tree, or search by name.'
+            : 'Pick one in the file tree.'}
         </p>
-        <p className="text-xs fg-secondary">
-          Press{' '}
-          <kbd className="rounded border px-1 py-0.5 font-mono text-3xs">
-            {formatShortcut('⌘P', 'Ctrl P')}
-          </kbd>{' '}
-          to quickly open a file
-        </p>
+        {/* The quick-open shortcut rides inside the button that does the
+            same thing, instead of a sentence telling you to press it. */}
+        {canSearchFiles && (
+          <Button
+            size="sm"
+            className="mt-2"
+            shortcut={formatShortcutHint('open-file-search-palette')}
+            onClick={openFileSearch}
+            data-testid="file-tab-empty-open-file"
+          >
+            Open file
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -1293,6 +1336,23 @@ const SessionBreakdownPanelHost = lazy(() =>
 );
 
 /**
+ * The Feed panel while its code loads: nothing for the shared delay, then
+ * entry rows in skeleton at the list's own inset, then a note if it is slow.
+ */
+function LedgerPanelLoading(): JSX.Element {
+  return (
+    <div
+      data-testid="ledger-panel-loading"
+      className="flex min-h-0 min-w-0 flex-1 flex-col p-3"
+    >
+      <DelayedLoadingPlaceholder slowNote="Still loading the Feed…">
+        <LedgerThreadListSkeleton density="panel" />
+      </DelayedLoadingPlaceholder>
+    </div>
+  );
+}
+
+/**
  * 'ledger' — the Agent Ledger of the panel's own work scope: a Code worktree,
  * or a Cowork or App Advisor Work Entry, including in a detached window. It
  * never follows the global selection. Lazy, so its code stays out of the
@@ -1306,7 +1366,7 @@ const PanelLedgerContent = memo(function PanelLedgerContent(
   return (
     <PanelContentFrame kind="ledger" panelId={props.panelId}>
       {selectedWorktree ? (
-        <Suspense fallback={<LoadingPlaceholder label="Loading Feed…" />}>
+        <Suspense fallback={<LedgerPanelLoading />}>
           <LedgerPanelHost
             key={`${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`}
             projectId={selectedWorktree.projectId}

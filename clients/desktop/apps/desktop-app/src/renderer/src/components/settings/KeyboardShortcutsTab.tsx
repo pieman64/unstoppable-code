@@ -5,8 +5,7 @@ import {
   type CommandId,
 } from '@/lib/keyboardShortcuts';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { ShortcutKeys } from '@/components/shared/ShortcutKeys';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Kbd } from '@canopy/ui-shared/components';
 import { GlobalFocusShortcutSection } from './GlobalFocusShortcutSection';
 import { ScriptShortcutsSection } from './ScriptShortcutsSection';
 import {
@@ -23,7 +22,6 @@ import {
   SettingsRow,
   SettingsSection,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 interface ShortcutRowProps {
   command: CommandDefinition;
@@ -51,7 +49,7 @@ function ShortcutRow({ command }: ShortcutRowProps): JSX.Element {
       dataTestId={`shortcut-row-${command.id}`}
       control={
         command.shortcut ? (
-          <ShortcutKeys shortcut={command.shortcut} />
+          <Kbd data-testid="shortcut-keys" shortcut={command.shortcut} />
         ) : (
           <span className="text-xs fg-secondary">Command palette</span>
         )
@@ -79,7 +77,6 @@ function ShortcutSection({
 }
 
 export function KeyboardShortcutsTab(): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const openCommandPalette = useNavigationStore(
     (state) => state.openCommandPalette,
   );
@@ -128,7 +125,7 @@ export function KeyboardShortcutsTab(): JSX.Element {
             description="Find worktrees, pages, settings, scripts, hooks, and activity actions."
             control={
               <Button
-                size={settingsButtonSize}
+                size="compact"
                 variant="secondary"
                 onClick={() => openCommandPalette()}
               >

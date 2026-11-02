@@ -7,11 +7,13 @@
 
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  OsNotificationPreferences,
-  PreferencesData,
-} from '@canopy/desktop-shared/types';
+import type { OsNotificationPreferences } from '@canopy/desktop-shared/types';
 import { NotificationsTab } from '../NotificationsTab';
+import {
+  settingsSelectOptionValues,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 jest.mock('../CloudDigestSettings', () => ({
   CloudDigestSettings: (): null => null,
@@ -92,9 +94,7 @@ async function renderTab(
   Object.defineProperty(window, 'api', {
     configurable: true,
     value: {
-      loadPreferences: jest
-        .fn()
-        .mockResolvedValue({ osNotifications: os } as PreferencesData),
+      loadPreferences: jest.fn().mockResolvedValue({ osNotifications: os }),
       savePreferences,
     },
   });
@@ -106,19 +106,15 @@ async function renderTab(
 }
 
 function optionValues(testId: string): string[] {
-  const select = container.querySelector(`[data-testid="${testId}"]`);
-  if (!(select instanceof HTMLSelectElement)) {
-    throw new Error(`Missing select ${testId}`);
-  }
-  return Array.from(select.options).map((option) => option.value);
+  return settingsSelectOptionValues(
+    settingsSelectTrigger(container, `[data-testid="${testId}"]`),
+  );
 }
 
 function selectedValue(testId: string): string {
-  const select = container.querySelector(`[data-testid="${testId}"]`);
-  if (!(select instanceof HTMLSelectElement)) {
-    throw new Error(`Missing select ${testId}`);
-  }
-  return select.value;
+  return settingsSelectValue(
+    settingsSelectTrigger(container, `[data-testid="${testId}"]`),
+  );
 }
 
 beforeEach(() => {
@@ -196,5 +192,16 @@ describe('NotificationsTab sound choices (CAN-3946)', () => {
     await renderTab('win32', osPreferences({ defaultSound: 'Mail' }));
 
     expect(selectedValue('notifications-default-sound')).toBe('Mail');
+  });
+});
+
+describe('NotificationsTab category rows (CAN-4651)', () => {
+  it('names the pipeline category Workflow, as its test notification does', async () => {
+    await renderTab('darwin', osPreferences());
+
+    expect(container.textContent).toContain(
+      'Workflow completion and worktree lifecycle alerts',
+    );
+    expect(container.textContent).not.toContain('Pipeline completion');
   });
 });

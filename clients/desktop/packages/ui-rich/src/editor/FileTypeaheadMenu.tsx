@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, type JSX, type ReactNode } from 'react';
 import type { FileMentionOption } from '../types';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 export interface FileTypeaheadMenuProps {
   files: FileMentionOption[];
@@ -140,7 +141,7 @@ export function FileTypeaheadMenu({
                 data-testid="file-typeahead-section-header"
                 className="sticky top-0 bg-popover px-3 py-0.5 text-3xs font-medium fg-secondary "
               >
-                {group.repoName}
+                <span className={REPLAY_MASK_CLASS}>{group.repoName}</span>
               </div>
             )}
             {group.items.map((file) => {

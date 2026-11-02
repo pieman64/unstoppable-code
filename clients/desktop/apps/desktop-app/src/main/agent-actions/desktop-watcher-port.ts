@@ -110,7 +110,7 @@ function chatScopedWatcherGuidance(
     case 'standalone_new_chat_started':
       return `Fires once when a user message is sent in a newly created or newly tracked chat in the target cowork project: {"watchers":[{"trigger":"standalone_new_chat_started","target":{"projectId":"..."}}]} where projectId is the cowork project id (never the standalone sentinel). ${BRAND.displayName} injects target.kind and the destination chat server-side.`;
     case 'automation_run':
-      return `Fires once when a run of the target automation reaches its outcome. Failed and skipped runs fire immediately with that status; a successful run fires when its dispatched chat turn ends or its dispatched pipeline reaches a terminal status, and App Advisor prompt dispatches fire at dispatch. Use SetupWatchers with {"watchers":[{"trigger":"automation_run","target":{"automationId":"..."}}]}. Automations are global to the user; discover ids with the automation.list / automation.get dispatch actions, or arm atomically with the optional watchers array on the automation.create / automation.run_now dispatch actions. The watcher is consumed on fire — re-arm per run for recurring automations. Unknown automation ids are rejected.`;
+      return `Fires once when a run of the target automation reaches its outcome. Failed and skipped runs fire immediately with that status; a successful run fires when its dispatched chat turn ends or its dispatched pipeline reaches a terminal status, and Orchestrator prompt dispatches fire at dispatch. Use SetupWatchers with {"watchers":[{"trigger":"automation_run","target":{"automationId":"..."}}]}. Automations are global to the user; discover ids with the automation.list / automation.get dispatch actions, or arm atomically with the optional watchers array on the automation.create / automation.run_now dispatch actions. The watcher is consumed on fire — re-arm per run for recurring automations. Unknown automation ids are rejected.`;
     default:
       return undefined;
   }
@@ -429,7 +429,7 @@ async function searchWatchers(
 }
 
 const ADVISOR_ACCESS_OWNER_UNKNOWN_MESSAGE =
-  'The project owner could not be confirmed, so App Advisor watcher access is denied for safety.';
+  'The project owner could not be confirmed, so Orchestrator watcher access is denied for safety.';
 const AUTOMATION_WATCHER_OWNER_UNKNOWN_MESSAGE =
   'The project owner could not be confirmed, so automation watcher access is denied for safety.';
 
@@ -701,7 +701,10 @@ async function setupWatchers(
     : await service.setup(
         { watchers: watchers.filter(isTargetWatcher) },
         destination,
-        { toolUseId: call.toolUseId },
+        {
+          toolUseId: call.toolUseId,
+          ...(call.signal ? { signal: call.signal } : {}),
+        },
       );
   return setupResultText(result, watchers.length);
 }

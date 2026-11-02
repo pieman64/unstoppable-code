@@ -1,11 +1,18 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, type JSX } from 'react';
 import type { WorkflowsTabId } from '@canopy/ui-shared/lib';
 import {
+  scrollSectionToTop,
+  useSidebarSectionRoot,
+} from '@canopy/ui-app/sidebar';
+import {
   AUTOMATIONS_OPEN_TAB_EVENT,
   isLegacyAutomationsTab,
   openLegacyAutomationsTab,
 } from '@/lib/navigation/workflows-navigation';
-import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  desktopSectionRoot,
+  useNavigationStore,
+} from '@/stores/navigationStore';
 import { WorkflowsTabContext } from '../workflows/workflowsTabContext';
 
 const PipelinesPage = lazy(() =>
@@ -43,6 +50,14 @@ export function WorkflowsPage({ tab }: WorkflowsPageProps): JSX.Element {
   const workflowEdit = useNavigationStore((state) => state.workflowEdit);
   const keyboardTarget = useRef<WorkflowsTabId | null>(null);
   const tabContext = useMemo(() => ({ tab, keyboardTarget }), [tab]);
+  const pageRef = useRef<HTMLDivElement>(null);
+  // The Workflows row clicked on Runs with no editor open (QA, 2026-10-23):
+  // Runs is the root and its first tab, so only its scroll resets, in place.
+  useSidebarSectionRoot(
+    desktopSectionRoot,
+    tab === 'workflows' && workflowEdit === undefined,
+    (): void => scrollSectionToTop(pageRef.current),
+  );
   // A keyboard change is spent once a different tab shows, such as after
   // other navigation, so a later header mount never takes focus for it.
   useEffect(() => {
@@ -70,7 +85,7 @@ export function WorkflowsPage({ tab }: WorkflowsPageProps): JSX.Element {
 
   return (
     <WorkflowsTabContext.Provider value={tabContext}>
-      <div className="h-full w-full" data-testid="page-workflows">
+      <div ref={pageRef} className="h-full w-full" data-testid="page-workflows">
         <Suspense fallback={null}>
           <PipelinesPage
             assistantEnabled={tab === 'workflows-library'}

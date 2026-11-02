@@ -13,8 +13,10 @@ import {
   LedgerEntrySchema,
   LedgerEntrySearchItemSchema,
   LedgerEntryTypeSchema,
+  LedgerGlobalOwnerSchema,
   LedgerMutationSchema,
   LedgerOpaqueIdSchema,
+  LedgerOrganizationIdSchema,
   LedgerScopeRefSchema,
   LedgerSearchQuerySchema,
   LedgerSearchSortSchema,
@@ -38,9 +40,32 @@ import { containsDisallowedControlCharacters } from '../canopy-core/core/ledger/
  * The server trusts no submitted organization: it recomputes the audience from
  * the tracked workspace and live membership. Event payloads are the desktop's
  * canonical outbox payloads, hashed with `toLedgerCanonicalJson`.
+ *
+ * Task scopes sync at schema version 1. Global (workflow) scopes sync at
+ * version 2, only to a mirror that advertises `ledger-global-v1`; a request's
+ * version must match its scope kind, and one push never mixes versions.
  */
 
 export const LEDGER_SYNC_SCHEMA_VERSION = 1;
+export const LEDGER_SYNC_GLOBAL_SCHEMA_VERSION = 2;
+
+/**
+ * Mirror reads negotiate their version with this header. A read without it is
+ * version 1 and never sees a global scope: older readers parse scope kinds
+ * strictly. The negotiated version is part of a search cursor's identity.
+ */
+export const LEDGER_MIRROR_VERSION_HEADER = 'X-Canopy-Ledger-Version';
+export const LEDGER_MIRROR_READ_VERSIONS = [1, 2] as const;
+export type LedgerMirrorReadVersion =
+  (typeof LEDGER_MIRROR_READ_VERSIONS)[number];
+export const LEDGER_MIRROR_GLOBAL_READ_VERSION = 2;
+
+/** The read version a header value names; anything else reads as version 1. */
+export function parseLedgerMirrorReadVersion(
+  value: string | null | undefined,
+): LedgerMirrorReadVersion {
+  return value?.trim() === String(LEDGER_MIRROR_GLOBAL_READ_VERSION) ? 2 : 1;
+}
 
 export const LEDGER_SYNC_LIMITS = {
   /** Events in one push; the batch is applied or rejected as a whole. */
@@ -118,10 +143,17 @@ export type LedgerSyncErrorResponse = z.output<
   typeof LedgerSyncErrorResponseSchema
 >;
 
-export const LEDGER_SCOPE_KINDS = [
+export const LEDGER_TASK_SCOPE_KINDS = [
   'code_worktree',
   'cowork_entry',
   'advisor_entry',
+] as const;
+export const LedgerTaskScopeKindSchema = z.enum(LEDGER_TASK_SCOPE_KINDS);
+export type LedgerTaskScopeKind = z.output<typeof LedgerTaskScopeKindSchema>;
+
+export const LEDGER_SCOPE_KINDS = [
+  ...LEDGER_TASK_SCOPE_KINDS,
+  'global',
 ] as const;
 export const LedgerScopeKindSchema = z.enum(LEDGER_SCOPE_KINDS);
 export type LedgerScopeKind = z.output<typeof LedgerScopeKindSchema>;
@@ -155,43 +187,123 @@ export type LedgerWriterSession = z.output<typeof LedgerWriterSessionSchema>;
 /** A writer epoch: a decimal counter the mirror mints per writer session. */
 export const LedgerWriterEpochSchema = z.string().regex(/^[1-9][0-9]{0,15}$/);
 
-/** The audience the desktop's summary sharing resolves to for a scope. */
-export const LedgerRequestedAudienceSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('private') }),
+const LedgerPrivateAudienceSchema = z.strictObject({
+  kind: z.literal('private'),
+});
+
+/** A task scope's audience: private, or its tracked workspace's organization. */
+export const LedgerRequestedTaskAudienceSchema = z.discriminatedUnion('kind', [
+  LedgerPrivateAudienceSchema,
   z.strictObject({
     kind: z.literal('organization'),
     trackedWorkspaceId: LedgerUuidSchema,
+  }),
+]);
+
+/**
+ * A global scope's audience: private, or its owning organization's current
+ * members. The server grants the organization only while the writer is a
+ * member, and only when it is the scope's pinned owner.
+ */
+export const LedgerRequestedGlobalAudienceSchema = z.discriminatedUnion(
+  'kind',
+  [
+    LedgerPrivateAudienceSchema,
+    z.strictObject({
+      kind: z.literal('organization_global'),
+      organizationId: LedgerOrganizationIdSchema,
+    }),
+  ],
+);
+export type LedgerRequestedTaskAudience = z.output<
+  typeof LedgerRequestedTaskAudienceSchema
+>;
+export type LedgerRequestedGlobalAudience = z.output<
+  typeof LedgerRequestedGlobalAudienceSchema
+>;
+
+/** The audience the desktop's summary sharing resolves to for a scope. */
+export const LedgerRequestedAudienceSchema = z.discriminatedUnion('kind', [
+  LedgerPrivateAudienceSchema,
+  z.strictObject({
+    kind: z.literal('organization'),
+    trackedWorkspaceId: LedgerUuidSchema,
+  }),
+  z.strictObject({
+    kind: z.literal('organization_global'),
+    organizationId: LedgerOrganizationIdSchema,
   }),
 ]);
 export type LedgerRequestedAudience = z.output<
   typeof LedgerRequestedAudienceSchema
 >;
 
-export const LedgerScopeRegisterRequestSchema = z.strictObject({
-  schemaVersion: z.literal(LEDGER_SYNC_SCHEMA_VERSION),
+/** Fields every registration carries, in the order version 1 sends them. */
+const ledgerScopeRegisterFields = {
   ledgerId: LedgerUuidSchema,
   /** The account the desktop bound the scope to: the user's external ID. */
   accountId: LedgerUuidSchema,
-  scopeKind: LedgerScopeKindSchema,
+} as const;
+const ledgerScopeRegisterSessionFields = {
   session: LedgerWriterSessionSchema,
   /**
    * The epoch this session already holds, on every registration after its
    * first. A session that was superseded is refused rather than resumed.
    */
   writerEpoch: LedgerWriterEpochSchema.optional(),
-  audience: LedgerRequestedAudienceSchema,
+} as const;
+
+export const LedgerTaskScopeRegisterRequestSchema = z.strictObject({
+  schemaVersion: z.literal(LEDGER_SYNC_SCHEMA_VERSION),
+  ...ledgerScopeRegisterFields,
+  scopeKind: LedgerTaskScopeKindSchema,
+  ...ledgerScopeRegisterSessionFields,
+  audience: LedgerRequestedTaskAudienceSchema,
 });
+export type LedgerTaskScopeRegisterRequest = z.output<
+  typeof LedgerTaskScopeRegisterRequestSchema
+>;
+
+/**
+ * A global scope's registration. `globalOwner` is the owner the writer
+ * claims; the first registration pins it, including a private one, and no
+ * later registration can change it.
+ */
+export const LedgerGlobalScopeRegisterRequestSchema = z.strictObject({
+  schemaVersion: z.literal(LEDGER_SYNC_GLOBAL_SCHEMA_VERSION),
+  ...ledgerScopeRegisterFields,
+  scopeKind: z.literal('global'),
+  globalOwner: LedgerGlobalOwnerSchema,
+  ...ledgerScopeRegisterSessionFields,
+  audience: LedgerRequestedGlobalAudienceSchema,
+});
+export type LedgerGlobalScopeRegisterRequest = z.output<
+  typeof LedgerGlobalScopeRegisterRequestSchema
+>;
+
+export const LedgerScopeRegisterRequestSchema = z.discriminatedUnion(
+  'schemaVersion',
+  [
+    LedgerTaskScopeRegisterRequestSchema,
+    LedgerGlobalScopeRegisterRequestSchema,
+  ],
+);
 export type LedgerScopeRegisterRequest = z.output<
   typeof LedgerScopeRegisterRequestSchema
 >;
 
 /** The audience the mirror applied: private, or an organization lease. */
 export const LedgerScopeAudienceSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('private') }),
+  LedgerPrivateAudienceSchema,
   z.strictObject({
     kind: z.literal('organization'),
     organizationId: LedgerUuidSchema,
     trackedWorkspaceId: LedgerUuidSchema,
+    expiresAt: LedgerTimestampSchema,
+  }),
+  z.strictObject({
+    kind: z.literal('organization_global'),
+    organizationId: LedgerOrganizationIdSchema,
     expiresAt: LedgerTimestampSchema,
   }),
 ]);
@@ -273,7 +385,14 @@ export const LedgerSyncEventSchema = z.strictObject({
 export type LedgerSyncEvent = z.output<typeof LedgerSyncEventSchema>;
 
 export const LedgerSyncPushRequestSchema = z.strictObject({
-  schemaVersion: z.literal(LEDGER_SYNC_SCHEMA_VERSION),
+  /**
+   * Version 1 for a task scope, version 2 for a global scope; the mirror
+   * refuses a version that does not match the registered scope's kind.
+   */
+  schemaVersion: z.union([
+    z.literal(LEDGER_SYNC_SCHEMA_VERSION),
+    z.literal(LEDGER_SYNC_GLOBAL_SCHEMA_VERSION),
+  ]),
   ledgerId: LedgerUuidSchema,
   accountId: LedgerUuidSchema,
   writerEpoch: LedgerWriterEpochSchema,
@@ -368,6 +487,16 @@ export const LedgerMirrorSourceSchema = z.discriminatedUnion('kind', [
 ]);
 export type LedgerMirrorSource = z.output<typeof LedgerMirrorSourceSchema>;
 
+/**
+ * A global scope's owner on a version-2 row. `organizationName` is present
+ * only when the reader may see the organization; without it a reader labels
+ * the row by its kind of work alone.
+ */
+const LedgerMirrorGlobalFieldsShape = {
+  globalOwner: LedgerGlobalOwnerSchema.optional(),
+  organizationName: z.string().min(1).max(256).optional(),
+};
+
 /** A search item from a mirrored scope, with the scope and its source. */
 export const LedgerMirrorEntrySchema = LedgerEntrySearchItemSchema.omit({
   // A row the mirror returns is mirrored by definition.
@@ -379,6 +508,7 @@ export const LedgerMirrorEntrySchema = LedgerEntrySearchItemSchema.omit({
   scopeKind: LedgerScopeKindSchema,
   scopeArchived: z.boolean(),
   source: LedgerMirrorSourceSchema,
+  ...LedgerMirrorGlobalFieldsShape,
 });
 export type LedgerMirrorEntry = z.output<typeof LedgerMirrorEntrySchema>;
 
@@ -412,6 +542,7 @@ export const LedgerMirrorEntryResponseSchema = z.strictObject({
   scopeKind: LedgerScopeKindSchema,
   scopeArchived: z.boolean(),
   source: LedgerMirrorSourceSchema,
+  ...LedgerMirrorGlobalFieldsShape,
   sourceAvailability: LedgerSourceAvailabilitySchema,
   history: z.strictObject({
     mutations: z.array(LedgerMutationSchema).max(LEDGER_LIMITS.historyPageMax),

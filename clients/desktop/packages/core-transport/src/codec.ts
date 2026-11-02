@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer';
-import type { CanopyErrorPayload } from '@canopy/protocol/canopy-core';
 
+import { CanopyTransportError } from './errors';
 import { CanopyChannelIdSchema } from './frames';
+
+export { CanopyTransportError };
 
 /**
  * 8 MiB: the catalog's largest bounded payload (a 4 MiB
@@ -13,13 +15,6 @@ const HEADER_BYTES = 4;
 const JSON_OBJECT_TAG = 0x7b; // '{'
 const JSON_ARRAY_TAG = 0x5b; // '['
 const CHANNEL_DATA_TAG = 0x00;
-
-export class CanopyTransportError extends Error {
-  constructor(readonly payload: CanopyErrorPayload) {
-    super(payload.message);
-    this.name = 'CanopyTransportError';
-  }
-}
 
 function frameError(
   kind: 'invalid_argument' | 'resource_exhausted',

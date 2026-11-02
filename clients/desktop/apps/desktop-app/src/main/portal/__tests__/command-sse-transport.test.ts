@@ -186,12 +186,14 @@ describe('runPortalCommandSseTransport', () => {
   });
 
   it('aborts and falls back when the connection watchdog fires', async () => {
-    let fireConnectWatchdog: (() => void) | null = null;
-    let signal: AbortSignal | null = null;
+    const captured: {
+      fireConnectWatchdog: (() => void) | null;
+      signal: AbortSignal | null;
+    } = { fireConnectWatchdog: null, signal: null };
     const harness = makeHarness({
       maxImmediateFailures: 1,
       openStream: (input): Promise<Response> => {
-        signal = input.signal;
+        captured.signal = input.signal;
         return new Promise<Response>((_resolve, reject) => {
           input.signal.addEventListener(
             'abort',
@@ -202,7 +204,7 @@ describe('runPortalCommandSseTransport', () => {
       },
       armTimeout: (ms, onFire): (() => void) => {
         if (ms === 30_000) {
-          fireConnectWatchdog = onFire;
+          captured.fireConnectWatchdog = onFire;
         }
         return (): void => undefined;
       },
@@ -210,10 +212,10 @@ describe('runPortalCommandSseTransport', () => {
 
     const outcomePromise = runPortalCommandSseTransport(harness.deps);
     await Promise.resolve();
-    fireConnectWatchdog?.();
+    captured.fireConnectWatchdog?.();
 
     await expect(outcomePromise).resolves.toBe('fallback');
-    expect(signal?.aborted).toBe(true);
+    expect(captured.signal?.aborted).toBe(true);
     expect(harness.networkFailures).toBe(1);
   });
 

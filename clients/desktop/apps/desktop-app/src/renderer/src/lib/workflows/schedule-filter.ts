@@ -3,16 +3,21 @@ import type {
   ScheduledActivity,
 } from '@canopy/desktop-shared/types';
 import { WORKFLOW_NO_PROJECT } from '@canopy/ui-app/workflows';
+import { pipelineAutomationWorkspaceId } from '@canopy/desktop-shared/lib/automation-pipeline-target';
 
-/** The project an automation runs in; `undefined` for App Advisor. */
+/**
+ * The project an automation runs in; `undefined` for App Advisor and for a
+ * pipeline automation with no project, which fall in the No project bucket.
+ */
 export function automationProjectId(
   action: AutomationAction,
 ): string | undefined {
   switch (action.type) {
     case 'worktree_prompt':
     case 'worktree_session_prompt':
-    case 'worktree_pipeline':
       return action.workspaceId;
+    case 'worktree_pipeline':
+      return pipelineAutomationWorkspaceId(action);
     case 'standalone_prompt':
       return action.chatProjectId;
     case 'pipeline_execution_resume':

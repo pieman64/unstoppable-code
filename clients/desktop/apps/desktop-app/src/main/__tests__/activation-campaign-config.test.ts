@@ -51,6 +51,16 @@ describe('ACTIVATION_CAMPAIGNS', () => {
     }
   });
 
+  it('names workflows in the marketplace nudge', () => {
+    const marketplace = ACTIVATION_CAMPAIGNS.find(
+      (campaign) => campaign.id === 'activation-marketplace',
+    );
+    expect(marketplace?.variants.default).toMatchObject({
+      title: 'Ready-made workflows are waiting',
+      body: 'Discover plugins and workflows to get started faster.',
+    });
+  });
+
   it('gives the role campaign no default branch', () => {
     // Silence beats a generic nudge: an unmapped or unset role suppresses
     // rather than falling back to neutral copy.

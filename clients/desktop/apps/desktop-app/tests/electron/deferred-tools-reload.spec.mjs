@@ -18,6 +18,10 @@ import {
   writeJson,
 } from './seeders/index.mjs';
 import { composerIdleAction } from './composerIdleAction.mjs';
+import {
+  readChatStorageIndexes,
+  readChatStorageMessages,
+} from './readChatStorage.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -81,8 +85,60 @@ function seedAppAdvisorPreferences(userDataDir) {
   });
 }
 
+/**
+ * Observe the Claude process host from main: every CLI spawned for the chat's
+ * session key, its pid once started, and whether the host reported its exit.
+ * Install before the chat's first send; the host forks on the first spawn.
+ */
+async function installChatCliObserver(electronApp, sessionRoute) {
+  await electronApp.evaluate(({ utilityProcess }, route) => {
+    const originalFork = utilityProcess.fork;
+    const clis = new Map();
+    utilityProcess.fork = function (...args) {
+      const child = originalFork.apply(this, args);
+      if (args[2]?.serviceName !== 'claude-process-host') return child;
+      child.on('message', (message) => {
+        const payload = message?.data ?? message;
+        const cli = clis.get(payload?.requestId);
+        if (!cli) return;
+        if (payload.type === 'started') cli.pid = payload.pid;
+        if (payload.type === 'exit') cli.exited = true;
+      });
+      const originalPostMessage = child.postMessage;
+      child.postMessage = function (message, ...rest) {
+        if (
+          message?.type === 'spawn' &&
+          (message.args ?? []).some((arg) => String(arg).includes(route))
+        ) {
+          clis.set(message.requestId, { pid: null, exited: false });
+        }
+        return originalPostMessage.call(this, message, ...rest);
+      };
+      return child;
+    };
+    globalThis.__CANOPY_CHAT_CLIS__ = clis;
+  }, sessionRoute);
+}
+
+async function readChatClis(electronApp) {
+  return electronApp.evaluate(() =>
+    Array.from(globalThis.__CANOPY_CHAT_CLIS__?.values() ?? [], (cli) => ({
+      ...cli,
+    })),
+  );
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test.describe('deferred tools reload live turn', () => {
-  test('keeps one visible turn while Search/Load enables and resumes with a new MCP tool', async () => {
+  test('gives the continuation after Search/Load its own turn, headed by a tools-loaded divider', async () => {
     test.setTimeout(240_000);
     const userDataDir = mkdtempSync(
       path.join(os.tmpdir(), 'canopy-deferred-tools-reload-'),
@@ -176,6 +232,11 @@ test.describe('deferred tools reload live turn', () => {
     );
 
     try {
+      // CAN-4833: the interrupted CLI must exit, leaving only the resumed one.
+      await installChatCliObserver(
+        electronApp,
+        encodeURIComponent(`${WORKSPACE_ID}/${WORKTREE_ID}/${CHAT_ID}`),
+      );
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
 
@@ -244,8 +305,53 @@ test.describe('deferred tools reload live turn', () => {
       await expect(panel.getByText(userMessage, { exact: true })).toHaveCount(
         1,
       );
-      await expect(panel.locator('[data-testid="turn-timer"]')).toHaveCount(1);
+      // The reload continuation is a second execution with its own turn: the
+      // prompt's turn closes at its own timer, and a divider heads the next.
+      await expect(panel.locator('[data-testid="turn-timer"]')).toHaveCount(2);
+      const boundary = panel.getByTestId('wake-turn-boundary');
+      await expect(boundary).toHaveCount(1);
+      await expect(boundary).toContainText('Continued after loading tools');
+      const order = await panel.evaluate((root) =>
+        Array.from(
+          root.querySelectorAll(
+            '[data-testid="turn-timer"], [data-testid="wake-turn-boundary"]',
+          ),
+        ).map((element) =>
+          element.getAttribute('data-testid') === 'turn-timer'
+            ? 'timer'
+            : 'wake',
+        ),
+      );
+      expect(order).toEqual(['timer', 'wake', 'timer']);
+      // The reload ended the first execution; no one cancelled it.
+      await expect(panel.getByText(/Cancelled/)).toHaveCount(0);
       await expect(panel.getByText('system_instruction')).toHaveCount(0);
+      const timerBlocks = readChatStorageMessages(
+        path.join(userDataDir, 'workspaces', WORKSPACE_ID),
+        WORKTREE_ID,
+        CHAT_ID,
+      )
+        .flatMap((message) => message.blocks ?? [])
+        .filter((block) => block.type === 'turn_timer');
+      expect(timerBlocks.map((block) => block.spawnedBy)).toEqual([
+        undefined,
+        { toolUseId: expect.any(String), toolsLoaded: true },
+      ]);
+      // "Show where it started" opens the prompt's turn, which holds the load
+      // call: the worktree MCP route names that call by its request id, not
+      // the transcript's tool_use id.
+      const showStart = boundary.getByTestId(
+        'wake-turn-boundary-show-spawning-turn',
+      );
+      await expect(showStart).toHaveAccessibleName('Show where it started');
+      await showStart.hover();
+      await expect(window.getByRole('tooltip')).toHaveText(
+        'Show where it started',
+      );
+      await showStart.click();
+      await expect(
+        panel.getByText(userMessage, { exact: true }),
+      ).toBeInViewport({ timeout: 10_000 });
 
       const observabilityRoot = path.join(userDataDir, 'agent-observability');
       await expect
@@ -260,6 +366,38 @@ test.describe('deferred tools reload live turn', () => {
           'Requested items now enabled, continue the interrupted request.',
         );
       await expect(panel.getByText(hiddenContinuation)).toHaveCount(0);
+
+      // The reload ended the first CLI and the continuation runs on a second;
+      // only that one is still running, and the host saw the first one exit.
+      await expect
+        .poll(
+          async () => {
+            const clis = await readChatClis(electronApp);
+            return {
+              spawned: clis.length,
+              running: clis.filter(
+                (cli) => !cli.exited && cli.pid && isProcessAlive(cli.pid),
+              ).length,
+              exitedButAlive: clis.filter(
+                (cli) => cli.exited && cli.pid && isProcessAlive(cli.pid),
+              ).length,
+            };
+          },
+          { timeout: 30_000 },
+        )
+        .toEqual({ spawned: 2, running: 1, exitedButAlive: 0 });
+      // The continuation turn completed; nothing recorded the chat as
+      // interrupted, so no later turn can abandon it.
+      const { live, archive } = readChatStorageIndexes(
+        path.join(userDataDir, 'workspaces', WORKSPACE_ID),
+        WORKTREE_ID,
+      );
+      const tab = [...live.tabs, ...(archive.tabs ?? [])].find(
+        (candidate) => candidate.id === CHAT_ID,
+      );
+      expect(tab).toBeDefined();
+      expect(tab?.interruptedTurns).toBeUndefined();
+      expect(live.runtimeByChatId[CHAT_ID]?.status).toBe('completed');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

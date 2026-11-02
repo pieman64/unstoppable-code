@@ -66,6 +66,53 @@ describe('WorktreeRow focused subtitle status', () => {
     expect(status).not.toContain('canopy-text-shimmer');
   });
 
+  it('keeps a row waiting in a bulk removal queue still', () => {
+    for (const [queuedRemoval, text] of [
+      ['delete', 'Queued for deletion'],
+      ['archive', 'Queued for archiving'],
+    ] as const) {
+      const status = subtitleStatus(render({ queuedRemoval }));
+      expect(status).toContain(text);
+      expect(status).not.toContain('canopy-text-shimmer');
+    }
+  });
+
+  it('starts a classic queued status without a separator when no identity precedes it', () => {
+    const html = render({
+      statusModel: 'classic',
+      queuedRemoval: 'archive',
+      worktreeIdSlot: null,
+    });
+    expect(html).toContain('Queued for archiving');
+    expect(html).not.toContain('·');
+    expect(
+      render({ statusModel: 'classic', queuedRemoval: 'archive' }),
+    ).toMatch(/dzzzgnr\/unclear-task<\/span>.*·.*Queued for archiving/s);
+  });
+
+  it('keeps the subtitle line on a compact row with nothing else to show', () => {
+    const compactRow = (props: Partial<WorktreeRowProps>): string =>
+      render({
+        statusModel: 'classic',
+        compact: true,
+        worktreeIdSlot: null,
+        ...props,
+      });
+    expect(compactRow({})).toContain('data-worktree-single-line="true"');
+    const queued = compactRow({ queuedRemoval: 'delete' });
+    expect(queued).not.toContain('data-worktree-single-line');
+    expect(queued).toContain('Queued for deletion');
+  });
+
+  it('lets the host teardown replace the queued status', () => {
+    const html = render({
+      queuedRemoval: 'delete',
+      setupPhase: 'running-teardown',
+    });
+    expect(subtitleStatus(html)).toContain('Running teardown…');
+    expect(html).not.toContain('Queued');
+  });
+
   it('shimmers the animal name only while scripts run on focused rows', () => {
     const running = render({ worktreeId: 'scorpion', scriptStatus: 'running' });
     expect(running).toMatch(

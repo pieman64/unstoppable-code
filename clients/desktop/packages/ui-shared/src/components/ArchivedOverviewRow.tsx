@@ -79,7 +79,7 @@ export interface OverviewListRowProps {
 }
 
 const OVERVIEW_ROW_BODY_BASE_CLASS_NAME =
-  'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition';
+  'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors';
 
 /**
  * Layout shell for one row of an overview list: leading glyph, truncated
@@ -127,7 +127,7 @@ export function OverviewListRow({
   );
   return (
     <div
-      className="group relative flex w-full items-center rounded-md transition hover:bg-fg-primary/[0.04] pointer-coarse:min-h-11"
+      className="group relative flex w-full items-center rounded-md transition-colors hover:bg-fg-primary/[0.04] pointer-coarse:min-h-11"
       data-testid={testId}
       data-state={state}
       aria-busy={busy ? 'true' : undefined}

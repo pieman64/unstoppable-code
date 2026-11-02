@@ -18,6 +18,8 @@ export function unifiedEntryIdForRef(ref: UnifiedEntryRef): string | null {
       return `pipeline:curated:${ref.key}`;
     case 'marketplace-plugin':
       return `mkt:${ref.marketplaceId}/${ref.pluginName}`;
+    case 'plugin-skill':
+      return `plugin-skill:${ref.marketplaceId}/${ref.pluginName}:${ref.skillName}`;
     case 'curated-mcp':
       return `mcp-catalog:${ref.key}`;
     case 'local-mcp':

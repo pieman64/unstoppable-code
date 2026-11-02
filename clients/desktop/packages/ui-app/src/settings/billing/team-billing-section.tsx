@@ -10,12 +10,8 @@ import {
   type RefObject,
 } from 'react';
 import {
-  CircleDollarSign,
-  CreditCard,
-  History,
-} from '@canopy/ui-shared/icons/AppIcons';
-import {
   BillingHistoryTable as SharedBillingHistoryTable,
+  Button,
   CreditLedgerTable as SharedCreditLedgerTable,
   DelayedLoadingPlaceholder,
   EmptyState,
@@ -47,7 +43,7 @@ import type { OrganizationDetail } from '@canopy/protocol/settings/organization'
 import { formatPlanDate } from '@canopy/protocol/settings/plan-display';
 import {
   SETTINGS_CARD_CLASS,
-  SETTINGS_CARD_ICON_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
   SETTINGS_CARD_TITLE_CLASS,
   SettingsCard,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
@@ -370,19 +366,18 @@ function PlanCard({
         className={SETTINGS_CARD_CLASS}
         data-testid="team-billing-plan-card"
       >
-        <div className="flex items-start gap-3">
-          <span className={SETTINGS_CARD_ICON_CLASS}>
-            <CreditCard size={18} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
-            {loading ? (
-              <BillingCardBodySkeleton className="mt-3" />
-            ) : (
-              <p className="mt-1 text-s fg-secondary">
-                No plan details available.
-              </p>
-            )}
+        <div className={SETTINGS_CARD_GROUP_CLASS}>
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+              {loading ? (
+                <BillingCardBodySkeleton className="mt-3" />
+              ) : (
+                <p className="mt-1 text-s fg-secondary">
+                  No plan details available.
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </section>
@@ -487,200 +482,198 @@ function PlanCard({
       className={SETTINGS_CARD_CLASS}
       data-testid="team-billing-plan-card"
     >
-      <div className="flex items-start gap-3">
-        <span className={SETTINGS_CARD_ICON_CLASS}>
-          <CreditCard size={18} />
-        </span>
-        <div className="flex min-w-0 flex-1 items-stretch justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
-              <PlanPill
-                planDisplayName={planName}
-                dataTestId="team-billing-plan-pill"
-              />
-              {trialActive && summary.trial ? (
-                <TrialBadge
-                  endsAt={summary.trial.endsAt}
-                  dataTestId="team-billing-trial-chip"
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <div className="flex items-start gap-3">
+          <div className="flex min-w-0 flex-1 items-stretch justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+                <PlanPill
+                  planDisplayName={planName}
+                  dataTestId="team-billing-plan-pill"
                 />
-              ) : null}
-            </div>
+                {trialActive && summary.trial ? (
+                  <TrialBadge
+                    endsAt={summary.trial.endsAt}
+                    dataTestId="team-billing-trial-chip"
+                  />
+                ) : null}
+              </div>
 
-            {lapseSentence !== null ? (
-              <p
-                className="mt-1 text-s fg-secondary"
-                data-testid="team-billing-trial-ended-notice"
-              >
-                {lapseSentence}
-              </p>
-            ) : (
-              <p className="mt-1 text-s fg-secondary">
-                {trialActive &&
-                summary.paymentMethod === null &&
-                isOwner &&
-                paymentsAvailable
-                  ? `You're on a free trial — nothing's due yet. Upgrade to ${upgradePlanName} to lock in your team's access.`
-                  : "Your team's plan, seats, and next payment."}
-              </p>
-            )}
+              {lapseSentence !== null ? (
+                <p
+                  className="mt-1 text-s fg-secondary"
+                  data-testid="team-billing-trial-ended-notice"
+                >
+                  {lapseSentence}
+                </p>
+              ) : (
+                <p className="mt-1 text-s fg-secondary">
+                  {trialActive &&
+                  summary.paymentMethod === null &&
+                  isOwner &&
+                  paymentsAvailable
+                    ? `You're on a free trial — nothing's due yet. Upgrade to ${upgradePlanName} to lock in your team's access.`
+                    : "Your team's plan, seats, and next payment."}
+                </p>
+              )}
 
-            <dl className="mt-4 grid grid-cols-1 gap-2 text-s sm:grid-cols-2">
-              {complimentary ? (
-                <>
-                  {seatCount !== null && seatCount > 0 ? (
+              <dl className="mt-4 grid grid-cols-1 gap-2 text-s sm:grid-cols-2">
+                {complimentary ? (
+                  <>
+                    {seatCount !== null && seatCount > 0 ? (
+                      <div>
+                        <dt className="text-xs fg-secondary">Seats</dt>
+                        <dd
+                          className="fg-primary"
+                          data-testid="team-billing-seats"
+                        >
+                          {seatCount} seat{seatCount === 1 ? '' : 's'}
+                        </dd>
+                      </div>
+                    ) : null}
                     <div>
-                      <dt className="text-xs fg-secondary">Seats</dt>
+                      <dt className="text-xs fg-secondary">Price</dt>
                       <dd
                         className="fg-primary"
-                        data-testid="team-billing-seats"
+                        data-testid="team-billing-complimentary"
                       >
-                        {seatCount} seat{seatCount === 1 ? '' : 's'}
+                        Complimentary
                       </dd>
                     </div>
-                  ) : null}
+                  </>
+                ) : null}
+                {!complimentary && seatCount !== null && perSeat !== null ? (
                   <div>
-                    <dt className="text-xs fg-secondary">Price</dt>
-                    <dd
-                      className="fg-primary"
-                      data-testid="team-billing-complimentary"
-                    >
-                      Complimentary
+                    <dt className="text-xs fg-secondary">Seats</dt>
+                    <dd className="fg-primary">
+                      {seatCount} seat{seatCount === 1 ? '' : 's'} ×{' '}
+                      {formatUsd(perSeat)}
                     </dd>
                   </div>
-                </>
-              ) : null}
-              {!complimentary && seatCount !== null && perSeat !== null ? (
-                <div>
-                  <dt className="text-xs fg-secondary">Seats</dt>
-                  <dd className="fg-primary">
-                    {seatCount} seat{seatCount === 1 ? '' : 's'} ×{' '}
-                    {formatUsd(perSeat)}
-                  </dd>
-                </div>
-              ) : null}
-              {!complimentary && summary.nextBillingAmountUsd !== null ? (
-                <div>
-                  <dt className="text-xs fg-secondary">
-                    {trialActive ? 'Monthly cost' : 'Next charge'}
-                  </dt>
-                  <dd className="fg-primary">
-                    {formatUsd(summary.nextBillingAmountUsd)}
-                  </dd>
-                </div>
-              ) : null}
-              {/* A pending cancellation REPLACES the next-billing row: there is
+                ) : null}
+                {!complimentary && summary.nextBillingAmountUsd !== null ? (
+                  <div>
+                    <dt className="text-xs fg-secondary">
+                      {trialActive ? 'Monthly cost' : 'Next charge'}
+                    </dt>
+                    <dd className="fg-primary">
+                      {formatUsd(summary.nextBillingAmountUsd)}
+                    </dd>
+                  </div>
+                ) : null}
+                {/* A pending cancellation REPLACES the next-billing row: there is
                   no next charge, and a silently-canceling plan that still
                   advertises a billing date is the single most common
                   cancellation support ticket. During a trial the countdown pill
                   conveys the timing, so the plain "Next billing date" is hidden
                   and the amount above reads as the monthly cost. */}
+                {pendingCancellation !== null ? (
+                  <div>
+                    <dt className="text-xs fg-secondary">
+                      {pendingCancellationLapsed ? 'Status' : 'Cancels on'}
+                    </dt>
+                    <dd
+                      className="fg-secondary"
+                      data-testid="team-billing-cancels-on"
+                    >
+                      {pendingCancellationLapsed
+                        ? 'Canceling'
+                        : formatPlanDate(pendingCancellation.effectiveAt)}
+                    </dd>
+                  </div>
+                ) : !trialActive &&
+                  !complimentary &&
+                  summary.nextBillingDate !== null ? (
+                  <div>
+                    <dt className="text-xs fg-secondary">Next billing date</dt>
+                    <dd className="fg-primary">
+                      {formatPlanDate(summary.nextBillingDate)}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+
               {pendingCancellation !== null ? (
-                <div>
-                  <dt className="text-xs fg-secondary">
-                    {pendingCancellationLapsed ? 'Status' : 'Cancels on'}
-                  </dt>
-                  <dd
-                    className="fg-secondary"
-                    data-testid="team-billing-cancels-on"
-                  >
-                    {pendingCancellationLapsed
-                      ? 'Canceling'
-                      : formatPlanDate(pendingCancellation.effectiveAt)}
-                  </dd>
-                </div>
-              ) : !trialActive &&
-                !complimentary &&
-                summary.nextBillingDate !== null ? (
-                <div>
-                  <dt className="text-xs fg-secondary">Next billing date</dt>
-                  <dd className="fg-primary">
-                    {formatPlanDate(summary.nextBillingDate)}
-                  </dd>
-                </div>
+                <p
+                  className="mt-3 text-xs fg-secondary"
+                  data-testid="team-billing-pending-cancel-notice"
+                >
+                  {pendingCancellationLapsed
+                    ? 'Your plan is ending. Access will end shortly.'
+                    : `Your plan stays active until ${formatPlanDate(
+                        pendingCancellation.effectiveAt,
+                      )}. You can resume any time before then.`}
+                </p>
               ) : null}
-            </dl>
 
-            {pendingCancellation !== null ? (
-              <p
-                className="mt-3 text-xs fg-secondary"
-                data-testid="team-billing-pending-cancel-notice"
-              >
-                {pendingCancellationLapsed
-                  ? 'Your plan is ending. Access will end shortly.'
-                  : `Your plan stays active until ${formatPlanDate(
-                      pendingCancellation.effectiveAt,
-                    )}. You can resume any time before then.`}
-              </p>
-            ) : null}
+              {summary.coverageNotes.length > 0 ? (
+                <ul className="mt-3 flex flex-col gap-1">
+                  {summary.coverageNotes.map((note, index) => (
+                    <li key={index} className="text-xs fg-secondary">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
 
-            {summary.coverageNotes.length > 0 ? (
-              <ul className="mt-3 flex flex-col gap-1">
-                {summary.coverageNotes.map((note, index) => (
-                  <li key={index} className="text-xs fg-secondary">
-                    {note}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-
-          {/* The menu pins to the TOP of this column and the CTA to the bottom
+            {/* The menu pins to the TOP of this column and the CTA to the bottom
               (`mt-auto`), so they sit at opposite corners instead of side by
               side. A filled button with a bare "…" glued to its right reads as a
               split button, promising the menu holds variants of that button — it
               holds Cancel subscription. Diagonal separation kills that reading
               without spending a divider or a full-width footer row on it. */}
-          <div className="flex shrink-0 flex-col items-end gap-3">
-            {/* Owner-gated to match the subscribe CTA rather than the page's
+            <div className="flex shrink-0 flex-col items-end gap-3">
+              {/* Owner-gated to match the subscribe CTA rather than the page's
                 broader OWNER/ADMIN view gate — canceling team billing stops
                 funding every member's seat, so it is an owner action. */}
-            {isOwner && slots !== null ? (
-              <slots.SubscriptionActionsMenu
-                scope="org"
-                orgId={orgId}
-                summary={summary}
-                onChanged={onSubscriptionChanged}
-              />
-            ) : null}
+              {isOwner && slots !== null ? (
+                <slots.SubscriptionActionsMenu
+                  scope="org"
+                  orgId={orgId}
+                  summary={summary}
+                  onChanged={onSubscriptionChanged}
+                />
+              ) : null}
 
-            {/* At most one of these renders — the two predicates are
+              {/* At most one of these renders — the two predicates are
                 complements. `mt-auto` drops whichever one it is to the bottom of
                 the card even when the menu above is absent. */}
-            <div className="mt-auto" data-testid="team-billing-plan-action">
-              {isOwner ? (
-                <PaymentAreaCta
-                  action="subscription"
-                  offered={recovery !== null}
-                  plan={recovery?.plan}
-                  variant="primary"
-                  testId="team-billing-manage-billing-on-web"
-                  inline={
-                    slots !== null ? (
-                      <>
-                        {slots.publishableKey ? (
-                          <slots.OrganizationPlanSubscribeCta
-                            summary={summary}
-                            organizationId={orgId}
-                            onSubscribed={onSubscribed}
-                            intentPlanKey={intentPlanKey}
-                          />
-                        ) : null}
-                        {/* The paid-subscriber half of the CTA split. Not
+              <div className="mt-auto" data-testid="team-billing-plan-action">
+                {isOwner ? (
+                  <PaymentAreaCta
+                    action="subscription"
+                    offered={recovery !== null}
+                    plan={recovery?.plan}
+                    testId="team-billing-manage-billing-on-web"
+                    inline={
+                      slots !== null ? (
+                        <>
+                          {slots.publishableKey ? (
+                            <slots.OrganizationPlanSubscribeCta
+                              summary={summary}
+                              organizationId={orgId}
+                              onSubscribed={onSubscribed}
+                              intentPlanKey={intentPlanKey}
+                            />
+                          ) : null}
+                          {/* The paid-subscriber half of the CTA split. Not
                             gated on the Stripe key: this path captures no
                             card, only the org's existing payment method,
                             which the quote reports on. */}
-                        <slots.OrganizationPlanUpgradeCta
-                          summary={summary}
-                          organizationId={orgId}
-                          intentPlanKey={intentPlanKey}
-                          onChanged={onSubscriptionChanged}
-                        />
-                      </>
-                    ) : null
-                  }
-                />
-              ) : null}
+                          <slots.OrganizationPlanUpgradeCta
+                            summary={summary}
+                            organizationId={orgId}
+                            intentPlanKey={intentPlanKey}
+                            onChanged={onSubscriptionChanged}
+                          />
+                        </>
+                      ) : null
+                    }
+                  />
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
@@ -736,7 +729,7 @@ function PaymentMethodSubcard({
 
   const layout = (actions: ReactNode, after: ReactNode): JSX.Element => (
     <div
-      className="rounded-lg bg-muted p-4"
+      className="border-b pb-4"
       data-testid="team-billing-payment-method-card"
     >
       <div className="flex items-start justify-between gap-3">
@@ -908,7 +901,6 @@ function BillingHistoryCard({
 
   return (
     <SettingsCard
-      icon={<History size={18} />}
       title="Billing history"
       subtitle="Past payments and receipts for this organization, in USD."
       testId="team-billing-history-card"
@@ -952,15 +944,15 @@ function BillingHistoryCard({
               />
             </div>
             {nextCursor !== null ? (
-              <button
-                type="button"
+              <Button
+                size="compact"
                 disabled={loadingMore}
                 onClick={() => void loadPage(nextCursor)}
                 data-testid="team-billing-history-load-more"
-                className="mt-3 rounded-md border px-3 py-1.5 text-s font-medium fg-secondary transition-colors hover:fg-primary disabled:opacity-50"
+                className="mt-3"
               >
                 {loadingMore ? 'Loading…' : 'Load more'}
-              </button>
+              </Button>
             ) : null}
           </div>
         ) : null}
@@ -1100,7 +1092,6 @@ function AiCreditPoolCard({
     topUpDialog: ReactNode,
   ): JSX.Element => (
     <SettingsCard
-      icon={<CircleDollarSign size={18} />}
       title="AI credit pool"
       subtitle={
         freeAccess

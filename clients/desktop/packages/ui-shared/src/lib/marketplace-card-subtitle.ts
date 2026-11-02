@@ -1,15 +1,4 @@
-import {
-  boundedMarkdownSource,
-  markdownToPlainText,
-} from './markdown-plain-text';
-
-const MAX_CARD_SUBTITLE_WORDS = 7;
-
-/**
- * Only the opening of a catalog description can reach a seven-word subtitle,
- * so the Markdown parse is bounded to this prefix instead of the whole entry.
- */
-const MAX_CARD_SUBTITLE_SOURCE_CHARS = 400;
+import { markdownToPlainText } from './markdown-plain-text';
 
 /**
  * Purpose-written copy for the marketplace entries users see most often.
@@ -47,34 +36,17 @@ function normalizeName(value: string): string {
  * colon or stop the last kept word carried, so a row never reads as complete
  * when it is not.
  */
-function firstWords(value: string, limit: number): string {
-  const words = value.trim().replace(/\s+/g, ' ').split(' ');
-  if (words.length <= limit) return words.join(' ');
-  // A cut sentence ends in an ellipsis, never in a stray comma or a bare word.
-  return `${words
-    .slice(0, limit)
-    .join(' ')
-    .replace(/[\s,;:.–—-]+$/u, '')}…`;
-}
-
 /**
  * Return a concise subtitle for a compact marketplace card.
  *
- * Known products get edited copy. The fallback flattens the opening of the
- * author Markdown to plain text and caps third-party catalog prose at seven
- * words, ending a cut with an ellipsis, without mutating the full entry
- * description used by search matching and detail views.
+ * Known products get edited copy. The fallback flattens the author Markdown
+ * to plain text; the row owns visual truncation so the subtitle uses all of
+ * the width available to it.
  */
 export function marketplaceCardSubtitle(
   name: string,
   description: string,
 ): string {
   const rewritten = CARD_SUBTITLE_BY_NAME[normalizeName(name)];
-  return firstWords(
-    rewritten ??
-      markdownToPlainText(
-        boundedMarkdownSource(description, MAX_CARD_SUBTITLE_SOURCE_CHARS),
-      ),
-    MAX_CARD_SUBTITLE_WORDS,
-  );
+  return rewritten ?? markdownToPlainText(description);
 }

@@ -5,6 +5,10 @@ import {
   type WorkspaceConfigFile,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
+jest.mock('../../../agents/session-manager', () => ({
+  getLiveBackgroundTasksForChat: jest.fn(),
+  listLiveBackgroundTaskOwners: jest.fn(),
+}));
 import {
   handlePortalWorktreeArchive,
   handlePortalWorktreeCreate,
@@ -26,6 +30,12 @@ import {
   updateWorkspaceWorktrees,
 } from '../../../lib/workspace-persistence';
 import { setDelegationActivity } from '../../../agents/delegation/activity';
+import {
+  getLiveBackgroundTasksForChat,
+  listLiveBackgroundTaskOwners,
+  type LiveBackgroundTaskOwner,
+} from '../../../agents/session-manager';
+import { createLiveBackgroundTaskOwner } from '../../../ipc/__tests__/background-work-removal-test-helpers';
 import { sendToWindow } from '../../../lib/window-send';
 import { recordWorktreeCrudTelemetry } from '../../../lib/desktop-telemetry';
 import {
@@ -122,9 +132,28 @@ const mockedGetPortalWorktreeEntity = jest.mocked(
 const mockedGetPortalWorktreeRuntimeStatus = jest.mocked(
   getWorkspacePortalWorktreeRuntimeStatus,
 );
+const mockedGetLiveBackgroundTasksForChat = jest.mocked(
+  getLiveBackgroundTasksForChat,
+);
+const mockedListLiveBackgroundTaskOwners = jest.mocked(
+  listLiveBackgroundTaskOwners,
+);
+
+function setProviderTask(owner: LiveBackgroundTaskOwner): void {
+  mockedGetLiveBackgroundTasksForChat.mockImplementation(
+    (projectId, worktreeId, chatId) =>
+      owner.projectId === projectId &&
+      owner.worktreeId === worktreeId &&
+      owner.chatId === chatId
+        ? owner.liveTasks
+        : undefined,
+  );
+  mockedListLiveBackgroundTaskOwners.mockReturnValue([owner]);
+}
 
 function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
   return {
+    getWindow: () => null,
     enqueueEvent: (event) => events.push(event),
     complete: (command, result): void => {
       events.push({
@@ -141,6 +170,18 @@ function adapterContext(events: PortalEventEnvelope[]): PortalAdapterContext {
       } as PortalEventEnvelope);
     },
   };
+}
+
+function isRecord(payload: unknown): payload is Record<string, unknown> {
+  return (
+    typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+  );
+}
+
+function stateDeltaPayload(payload: unknown): Record<string, unknown> {
+  if (!isRecord(payload))
+    throw new Error('Expected a worktree status delta payload');
+  return payload;
 }
 
 function command(
@@ -197,6 +238,8 @@ const createdWorktree = {
 describe('worktree portal adapter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedGetLiveBackgroundTasksForChat.mockReset().mockReturnValue(undefined);
+    mockedListLiveBackgroundTaskOwners.mockReset().mockReturnValue([]);
     mockedReadWorktrees.mockResolvedValue([]);
     mockedGetPortalWorktreeRuntimeStatus.mockResolvedValue({});
     mockedGetPortalWorktreeEntity.mockResolvedValue({
@@ -284,12 +327,13 @@ describe('worktree portal adapter', () => {
     if (statusEvent?.type !== 'portal.state.delta') {
       throw new Error('Expected a worktree status delta');
     }
-    expect(statusEvent.payload.scope).toBe('worktree');
-    expect(statusEvent.payload.target).toEqual({
+    const statusPayload = stateDeltaPayload(statusEvent.payload);
+    expect(statusPayload.scope).toBe('worktree');
+    expect(statusPayload.target).toEqual({
       workspaceLocalId: 'ws-1',
       worktreeLocalId: 'wt-new',
     });
-    expect(statusEvent.payload.entities).toEqual([
+    expect(statusPayload.entities).toEqual([
       {
         entityType: 'worktree',
         localId: 'wt-new',
@@ -358,8 +402,9 @@ describe('worktree portal adapter', () => {
     if (statusEvent?.type !== 'portal.state.delta') {
       throw new Error('Expected a worktree status delta');
     }
-    expect(statusEvent.payload).not.toHaveProperty('worktreeSetupFailure');
-    expect(statusEvent.payload.entities).toEqual([
+    const statusPayload = stateDeltaPayload(statusEvent.payload);
+    expect(statusPayload).not.toHaveProperty('worktreeSetupFailure');
+    expect(statusPayload.entities).toEqual([
       {
         entityType: 'worktree',
         localId: 'wt-new',
@@ -492,9 +537,11 @@ describe('worktree portal adapter', () => {
     mockedReadConfig.mockResolvedValue(config('single-repo'));
     mockedForkOpenTabs.mockImplementation(
       () =>
-        new Promise<void>((resolve) => {
-          resolveForkOpenTabs = resolve;
-        }),
+        new Promise<Awaited<ReturnType<typeof forkOpenWorktreeTabs>>>(
+          (resolve) => {
+            resolveForkOpenTabs = (): void => resolve(new Map());
+          },
+        ),
     );
     mockedSingle.mockImplementation((options) => {
       createOptions = options;
@@ -716,6 +763,8 @@ const archivedResult = { success: true, warnings: [] };
 describe('worktree portal adapter — archive', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedGetLiveBackgroundTasksForChat.mockReset().mockReturnValue(undefined);
+    mockedListLiveBackgroundTaskOwners.mockReset().mockReturnValue([]);
     // The archive boundary sees the worktree before the archive; reads after
     // it see the list without the worktree.
     mockedReadWorktrees
@@ -738,6 +787,9 @@ describe('worktree portal adapter — archive', () => {
     'archives a single-repo worktree with %s and the expected retained-item lock',
     async (_label, mode, locksAfterArchive) => {
       mockedReadConfig.mockResolvedValue(config('single-repo'));
+      setProviderTask(
+        createLiveBackgroundTaskOwner('ws-1', 'wt-1', 'chat-a', 'local_bash'),
+      );
       mockedArchiveSingle.mockResolvedValue(archivedResult);
       const events: PortalEventEnvelope[] = [];
       const payload = {
@@ -937,6 +989,9 @@ describe('worktree portal adapter — archive', () => {
       mockedReadConfig.mockResolvedValue(config(type));
       mockedAssertNotSplitLocked.mockImplementation(() => undefined);
       const events: PortalEventEnvelope[] = [];
+      setProviderTask(
+        createLiveBackgroundTaskOwner('ws-1', 'wt-1', 'chat-a', 'local_agent'),
+      );
       setDelegationActivity('portal-archive-owner', 'ws-1/wt-1/chat-a', 1);
       try {
         await handlePortalWorktreeArchive(
@@ -957,6 +1012,50 @@ describe('worktree portal adapter — archive', () => {
             error: {
               code: 'conflict',
               message: 'Delegates are still running here. Stop them first.',
+            },
+          },
+        }),
+      ]);
+    },
+  );
+
+  it.each([
+    ['single-repo', 'local_agent'],
+    ['single-repo', 'local_workflow'],
+    ['multi-repo', 'local_agent'],
+    ['multi-repo', 'local_workflow'],
+  ] as const)(
+    'refuses to archive a %s worktree while a chat has a live %s',
+    async (type, taskType) => {
+      mockedReadConfig.mockResolvedValue(config(type));
+      const owner = createLiveBackgroundTaskOwner(
+        'ws-1',
+        'wt-1',
+        'chat-a',
+        taskType,
+      );
+      setProviderTask(owner);
+      const events: PortalEventEnvelope[] = [];
+
+      await handlePortalWorktreeArchive(
+        archiveCommand({ workspaceId: 'ws-1', worktreeId: 'wt-1' }),
+        adapterContext(events),
+      );
+
+      expect(mockedArchiveSingle).not.toHaveBeenCalled();
+      expect(mockedArchiveMulti).not.toHaveBeenCalled();
+      expect(mockedCleanupLiveState).not.toHaveBeenCalled();
+      expect(mockedPurgeObservabilityData).not.toHaveBeenCalled();
+      expect(mockedTelemetry).not.toHaveBeenCalled();
+      expect(mockedSendToWindow).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        expect.objectContaining({
+          type: 'portal.command.failed',
+          payload: {
+            error: {
+              code: 'conflict',
+              message:
+                'Background agents or workflows are still running here. Stop them first.',
             },
           },
         }),

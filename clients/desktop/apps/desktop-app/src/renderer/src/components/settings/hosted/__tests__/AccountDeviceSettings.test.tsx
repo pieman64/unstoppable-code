@@ -141,8 +141,9 @@ describe('AccountDeviceSettings', () => {
   it('puts the cloud sign-in under Account', () => {
     render('account');
     const region = query('account-device-settings-account');
-    expect(region?.querySelector('h2')?.textContent).toBe('On this computer');
-    expect(cardTitles()).toEqual(['Signed in on this computer']);
+    // One more section of the page, named like the others.
+    expect(region?.getAttribute('aria-label')).toBe('On this computer');
+    expect(cardTitles()).toEqual(['On this computer']);
     expect(
       query('account-device-card-cloud-account')?.contains(
         query('cloud-account-row'),
@@ -153,7 +154,7 @@ describe('AccountDeviceSettings', () => {
   it('puts the personal catalog under Public profile with its placement copy', () => {
     render('profile');
     expect(query('account-device-settings-profile')).not.toBeNull();
-    expect(cardTitles()).toEqual(['Personal projects on the web']);
+    expect(cardTitles()).toEqual(['On this computer']);
     const card = query('personal-catalog-settings');
     expect(card?.contains(query('catalog-notice'))).toBe(true);
     expect(query('catalog-row')?.dataset.placement).toBe('public-profile');
@@ -179,11 +180,8 @@ describe('AccountDeviceSettings', () => {
 
   it('puts the notification rows under Notifications once loaded', () => {
     render('notifications');
-    expect(cardTitles()).toEqual([
-      'In-app notifications',
-      'OS notifications',
-      'Categories',
-    ]);
+    // In-app and OS notifications share one "On this computer" section.
+    expect(cardTitles()).toEqual(['On this computer', 'Categories']);
     expect(
       query('account-device-card-in-app-notifications')?.contains(
         query('in-app-rows'),
@@ -204,8 +202,7 @@ describe('AccountDeviceSettings', () => {
     mockSettings = notificationSettings({ activationJourneyEnabled: true });
     render('notifications');
     expect(cardTitles()).toEqual([
-      'In-app notifications',
-      'OS notifications',
+      'On this computer',
       'Promotional notifications',
       'Categories',
     ]);
@@ -239,7 +236,7 @@ describe('AccountDeviceSettings', () => {
 
   it('puts GitHub and Linear under Integrations', () => {
     render('integrations');
-    expect(cardTitles()).toEqual(['GitHub on this computer', 'Linear']);
+    expect(cardTitles()).toEqual(['On this computer']);
     const github = query('provider-auth-github');
     expect(github?.dataset.layout).toBe('row');
     expect(query('account-device-card-github')?.contains(github)).toBe(true);

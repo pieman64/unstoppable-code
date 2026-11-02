@@ -1,5 +1,6 @@
 import type {
   ChatHookAction,
+  HookAction,
   HookOverrides,
 } from '@canopy/desktop-shared/hooks';
 import { addOrganizationSourceHookBindings } from '../lib/source-hook-context-bindings';
@@ -185,8 +186,13 @@ it('does not copy a context supplied by a source-controlled action into local st
 });
 
 it('handles a trigger whose name is an inherited object property', () => {
+  const inheritedPipelineAction: HookAction = {
+    type: 'pipeline',
+    source: 'bundled',
+    id: 'review',
+  };
   const inherited: HookOverrides = {
-    toString: [{ type: 'pipeline', source: 'bundled', id: 'review' }],
+    toString: [inheritedPipelineAction],
   };
   expect(
     addOrganizationSourceHookBindings(

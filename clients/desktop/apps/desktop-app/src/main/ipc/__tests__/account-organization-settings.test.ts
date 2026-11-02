@@ -22,7 +22,10 @@ const mockService = {
   write: jest.fn(() => Promise.resolve({ ok: true, result: 'write' })),
   subscribe: jest.fn(() => Promise.resolve({ ok: true, result: null })),
   unsubscribe: jest.fn(),
-  paymentHandoff: jest.fn(() => Promise.resolve({ ok: true })),
+  paymentHandoff: jest.fn(
+    (): Promise<{ ok: boolean; reason?: string }> =>
+      Promise.resolve({ ok: true }),
+  ),
   paymentHandoffAvailability: jest.fn(() =>
     Promise.resolve({ available: true }),
   ),
@@ -65,6 +68,30 @@ async function flushImports(): Promise<void> {
 }
 
 describe('account organization settings IPC', () => {
+  it('preserves unlock attribution and main correlation through IPC parsing', async () => {
+    mockService.paymentHandoff.mockImplementationOnce(() =>
+      Promise.resolve({ ok: true, requestId: 'main-request-1' }),
+    );
+    const request = {
+      accountId: 'acct-1',
+      owner: { kind: 'personal' },
+      intent: {
+        kind: 'top-up',
+        reason: 'unlock_models',
+        source: 'picker',
+        modelId: 'provider/model:1',
+        chatId: 'chat-1',
+      },
+    };
+    await expect(
+      handler(IPC_CHANNELS.accountOrganizationSettingsPaymentHandoff)(
+        event,
+        request,
+      ),
+    ).resolves.toEqual({ ok: true, requestId: 'main-request-1' });
+    expect(mockService.paymentHandoff).toHaveBeenCalledWith(request);
+  });
+
   let close: () => void = () => undefined;
   let lifecycleInstalls = 0;
 
@@ -127,6 +154,34 @@ describe('account organization settings IPC', () => {
       expect(mockService.write).not.toHaveBeenCalled();
       expect(mockService.subscribe).not.toHaveBeenCalled();
       expect(mockService.paymentHandoffAvailability).not.toHaveBeenCalled();
+      await expect(
+        handler(IPC_CHANNELS.accountOrganizationSettingsPaymentHandoff)(event, {
+          accountId: 'acct-1',
+          owner: { kind: 'personal' },
+          intent: { kind: 'top-up', reason: 'credits' },
+        }),
+      ).resolves.toEqual({ ok: false, reason: 'failed' });
+      expect(mockService.paymentHandoff).not.toHaveBeenCalled();
+
+      // CAN-4693: unlocking models is not a Settings surface. It skips the
+      // hosted-settings gate; the service still applies the portal gate.
+      mockService.paymentHandoff.mockResolvedValueOnce({
+        ok: false,
+        reason: 'unavailable',
+      });
+      const unlock = {
+        accountId: 'acct-1',
+        owner: { kind: 'personal' },
+        intent: { kind: 'top-up', reason: 'unlock_models', source: 'picker' },
+      };
+      await expect(
+        handler(IPC_CHANNELS.accountOrganizationSettingsPaymentHandoff)(
+          event,
+          unlock,
+        ),
+      ).resolves.toEqual({ ok: false, reason: 'unavailable' });
+      expect(mockService.paymentHandoff).toHaveBeenCalledTimes(1);
+      expect(mockService.paymentHandoff).toHaveBeenCalledWith(unlock);
     } finally {
       mockHostedSettingsEnabled = true;
     }

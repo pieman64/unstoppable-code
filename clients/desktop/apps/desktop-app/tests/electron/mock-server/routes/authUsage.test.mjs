@@ -147,6 +147,32 @@ test('buildClaudeUsageBody resolves resets and keeps extra_usage', () => {
   assert.deepEqual(body.extra_usage, { monthly_limit: 100, used_credits: 10 });
 });
 
+test('buildClaudeUsageBody preserves modern limits, scope and reset semantics', () => {
+  const scope = {
+    model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet' },
+    surface: { display_name: 'Claude Code' },
+  };
+  const body = buildClaudeUsageBody(
+    {
+      claude: {
+        usage: {
+          limits: [
+            { kind: 'session', percent: 10, resets_at: '+2h' },
+            { kind: 'weekly_scoped', percent: 20, scope, resets_at: null },
+          ],
+          extra_usage: { used_credits: 6100 },
+        },
+      },
+    },
+    NOW,
+  );
+  assert.deepEqual(body.limits, [
+    { kind: 'session', percent: 10, resets_at: '2026-01-01T02:00:00.000Z' },
+    { kind: 'weekly_scoped', percent: 20, scope, resets_at: null },
+  ]);
+  assert.deepEqual(body.extra_usage, { used_credits: 6100 });
+});
+
 test('buildClaudeAuthBody coerces loggedIn', () => {
   assert.equal(
     buildClaudeAuthBody({ claude: { auth: { loggedIn: true } } }).loggedIn,

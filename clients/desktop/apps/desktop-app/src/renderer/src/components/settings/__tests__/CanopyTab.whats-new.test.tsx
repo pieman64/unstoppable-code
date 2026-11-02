@@ -6,12 +6,21 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { ReleaseNotesEntry } from '@canopy/protocol/release-notes';
 import type { CanopyApi } from '@canopy/desktop-shared/types';
 import { useUpdateState } from '@/hooks/useUpdateState';
+import { makeTestPreferences } from '@/test-utils/preferences';
 import { openReleaseHighlights } from '@/stores/releaseHighlightsStore';
 import { CanopyTab } from '../CanopyTab';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+
+type WhatsNewApiDouble = Pick<
+  CanopyApi,
+  'loadGitHubPat' | 'onPreferencesSynced' | 'loadPreferences'
+> & {
+  cli: Pick<CanopyApi['cli'], 'getStatus'>;
+  update: Pick<CanopyApi['update'], 'checkForUpdates'>;
+};
 
 // Published entries: a stable build only surfaces published releases.
 const mockEntries: ReleaseNotesEntry[] = [
@@ -41,6 +50,11 @@ jest.mock('@/stores/releaseHighlightsStore', () => ({
   ),
 }));
 
+// The tips row reads the shared tip store, which needs a client provider;
+// its own coverage is ShowTipsAgainRow.test.tsx.
+jest.mock('../ShowTipsAgainRow', () => ({
+  ShowTipsAgainRow: (): null => null,
+}));
 jest.mock('@/hooks/useGitHubCliStatus', () => ({
   useGitHubCliStatus: jest.fn(() => ({
     authenticated: true,
@@ -98,22 +112,26 @@ beforeEach(() => {
     configurable: true,
     value: 'darwin',
   });
-  Object.defineProperty(window, 'api', {
-    configurable: true,
-    value: {
-      cli: {
-        getStatus: jest
-          .fn()
-          .mockResolvedValue({ state: 'unsupported', reason: 'dev' }),
-      },
-      loadGitHubPat: jest.fn().mockResolvedValue(''),
-      onPreferencesSynced: jest.fn(() => jest.fn()),
-      loadPreferences: jest.fn().mockResolvedValue({
+  const api = {
+    cli: {
+      getStatus: jest.fn().mockResolvedValue({
+        state: 'unsupported',
+        reason: 'dev',
+      }),
+    },
+    loadGitHubPat: jest.fn().mockResolvedValue(''),
+    onPreferencesSynced: jest.fn(() => jest.fn()),
+    loadPreferences: jest.fn().mockResolvedValue(
+      makeTestPreferences({
         auditRetentionDays: 7,
         autoDownloadUpdates: true,
       }),
-      update: { checkForUpdates: jest.fn().mockResolvedValue(undefined) },
-    } as Partial<CanopyApi> as CanopyApi,
+    ),
+    update: { checkForUpdates: jest.fn().mockResolvedValue(undefined) },
+  } satisfies WhatsNewApiDouble;
+  Object.defineProperty(window, 'api', {
+    configurable: true,
+    value: api,
   });
   container = document.createElement('div');
   document.body.appendChild(container);

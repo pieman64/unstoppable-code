@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
 import * as pipelineStore from '../pipelines/pipeline-service';
+import { isOwnedPipelineHiddenFromAgent } from '../automations/owned-pipeline';
 import { discoverProjectPipelines } from '../pipelines/project-pipeline-discovery';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 
@@ -226,7 +227,7 @@ async function loadProjectPipelineYaml(
       filePath: info.filePath,
     });
     if (resolved.projectId !== projectId)
-      throw new Error('Pipeline unavailable (context-mismatch)');
+      throw new Error('Workflow unavailable (context-mismatch)');
   }
   return {
     info,
@@ -263,6 +264,9 @@ async function loadPipelineYaml(
       );
     await assertStoredPipelineContext(request.pipelineId, request.projectId);
   }
+  // Hidden like the Orchestrator automation that owns it (CAN-4551).
+  if (await isOwnedPipelineHiddenFromAgent(request.pipelineId, request))
+    return null;
   return (
     loadStoredPipelineYaml(request.pipelineId) ??
     (await loadProjectPipelineYaml(request.pipelineId, cwd, request.projectId))

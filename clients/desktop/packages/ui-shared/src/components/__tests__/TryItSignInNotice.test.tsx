@@ -104,6 +104,29 @@ describe('TryItSignInNotice', () => {
     );
   });
 
+  it('never promises a send when the prompt is a staged draft', () => {
+    render({
+      state: 'sign-in',
+      promptSaved: true,
+      continuation: 'select',
+      signIn: { href: '/login' },
+    });
+    expect(notice()?.textContent).toBe(
+      'Sign in to use Linear. Your prompt stays in the composer. Send it after you sign in.Sign in to continue',
+    );
+    render({
+      state: 'setup-required',
+      continuation: 'select',
+      setup: { requiresSignIn: true, route: 'external', onActivate: jest.fn() },
+    });
+    expect(notice()?.textContent).toContain(
+      'Authorize Linear, then send your prompt.',
+    );
+    expect(notice()?.textContent).not.toContain('continues');
+    render({ state: 'continuing', continuation: 'select' });
+    expect(notice()?.textContent).toBe('Setting up Linear…');
+  });
+
   it('activates on left, modified and middle clicks but not right clicks', () => {
     const onActivate = jest.fn();
     render({ state: 'sign-in', signIn: { href: '/login', onActivate } });

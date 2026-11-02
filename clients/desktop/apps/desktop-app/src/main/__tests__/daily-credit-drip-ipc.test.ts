@@ -2,6 +2,7 @@ const saveDailyCreditDripMock = jest.fn();
 const loadDailyCreditDripMock = jest.fn();
 const clearAiCreditsRoutingContextCacheMock = jest.fn<void, []>();
 const registerIpcHandlerMock = jest.fn();
+const recordDailyCreditGrantFromSaveMock = jest.fn();
 
 jest.mock('../canopy-cloud/daily-credit-drip', () => ({
   saveDailyCreditDrip: (...args: unknown[]): unknown =>
@@ -14,6 +15,16 @@ jest.mock('../agents/ai-credits-routing', () => ({
   clearAiCreditsRoutingContextCache: (): void => {
     clearAiCreditsRoutingContextCacheMock();
   },
+}));
+
+jest.mock('../lib/canopy-cloud-account-store', () => ({
+  loadCanopyCloudAccount: (): Promise<null> => Promise.resolve(null),
+}));
+
+jest.mock('../lib/daily-credit-grant-telemetry', () => ({
+  captureDailyCreditGrantAccount: (): object => ({ key: 'account:a' }),
+  recordDailyCreditGrantFromSave: (...args: unknown[]): unknown =>
+    recordDailyCreditGrantFromSaveMock(...args),
 }));
 
 jest.mock('../ipc/register', () => ({
@@ -85,5 +96,16 @@ describe('daily credit drip IPC', () => {
       'offline',
     );
     expect(clearAiCreditsRoutingContextCacheMock).toHaveBeenCalledTimes(1);
+    expect(recordDailyCreditGrantFromSaveMock).not.toHaveBeenCalled();
+  });
+
+  it('reports the confirmed save outcome to grant telemetry (CAN-4633)', async () => {
+    await handleSaveDailyCreditDrip({ enabled: true });
+
+    expect(recordDailyCreditGrantFromSaveMock).toHaveBeenCalledWith(
+      SAVED,
+      undefined,
+      { key: 'account:a' },
+    );
   });
 });

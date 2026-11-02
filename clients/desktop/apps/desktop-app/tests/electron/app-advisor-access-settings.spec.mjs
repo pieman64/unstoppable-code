@@ -15,9 +15,9 @@ import {
 
 const ACCESS_PREFIX = 'app-advisor-project-agent-access';
 const ACCESS_LABEL =
-  'Allow project agents to use App Advisor chats and create automations';
+  'Allow project agents to use Orchestrator chats and create automations';
 const ACCESS_DESCRIPTION =
-  'Controls whether code and cowork agents can use App Advisor tools and create automations that prompt App Advisor.';
+  'Controls whether code and cowork agents can use Orchestrator tools and create automations that prompt Orchestrator.';
 const STALE_ORGANIZATION_ID = '33333333-3333-4333-8333-333333333333';
 
 async function openAppAdvisorSettings(app, window) {

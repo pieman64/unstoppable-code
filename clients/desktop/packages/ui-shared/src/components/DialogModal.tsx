@@ -7,6 +7,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { focusableWithin } from '../lib/focusable';
+import { Button } from './Button';
 import { useOverlayEscape } from './useOverlayEscape';
 import { CloseIcon as AppCatalogCloseIcon } from '../icons/AppIcons';
 
@@ -107,8 +108,19 @@ function isTopmostFocusTrap(doc: Document, trapId: number): boolean {
   return stack?.[stack.length - 1] === trapId;
 }
 
+/**
+ * `confirm` is the compact confirmation and short-form shape: a 380px card
+ * with the title, one sentence and the actions, no header rule and no close
+ * button (Cancel and Escape close it). `confirm-wide` is the same card at
+ * 400px, for a footer with three buttons. Both override `maxWidth`,
+ * `headerBorder`, `headerSpacing` and `showCloseButton`.
+ */
+export type DialogModalVariant = 'default' | 'confirm' | 'confirm-wide';
+
 interface DialogModalProps {
   onClose: () => void;
+  /** Card shape. Default keeps the classic header; see {@link DialogModalVariant}. */
+  variant?: DialogModalVariant;
   title: DialogTitle;
   /**
    * Optional subtitle shown below the title. A node, so a caller can block
@@ -181,8 +193,17 @@ interface DialogModalProps {
    * belong in the header chrome, not the body.
    */
   topRightActions?: ReactNode;
+  /**
+   * The dialog's action buttons (Cancel, Save, Done), drawn in the footer at
+   * the bottom right in that order, outside the scrolling body. A dialog's
+   * actions always go here, never beside the title in `topRightActions`.
+   */
+  footer?: ReactNode;
   /** Render the header close button (default: true). */
   showCloseButton?: boolean;
+  /** Compact list dialogs align their title and circular close control. */
+  headerAlignment?: 'start' | 'center';
+  closeButtonAppearance?: 'default' | 'compact';
   /** Extra classes on the full-screen backdrop/overlay element */
   overlayClassName?: string;
   /**
@@ -217,6 +238,16 @@ interface DialogModalProps {
    */
   initialFocusRef?: RefObject<HTMLElement | null>;
   /**
+   * What takes focus first when `trapFocus` is set (default: `'control'`, the
+   * `initialFocusRef` target or first focusable descendant).
+   *
+   * `'dialog'` focuses the card itself. Use it for a dialog that can open
+   * without the user asking, such as one an agent raises while the user is
+   * typing: on a button, the next space or Enter would answer the dialog.
+   * Tab from the card moves to the first control, Shift+Tab to the last.
+   */
+  initialFocus?: 'control' | 'dialog';
+  /**
    * Where focus goes on close when the element that opened the dialog is gone.
    *
    * Confirmations routinely destroy their own trigger — removing a member,
@@ -227,6 +258,8 @@ interface DialogModalProps {
    * unset or itself detached.
    */
   restoreFocusRef?: RefObject<HTMLElement | null>;
+  /** A scoped host can prevent restoration after its chat/account has changed. */
+  restoreFocusWhen?: () => boolean;
   /**
    * @deprecated Dialogs always mount and unmount instantly. Retained for
    * source compatibility with callers that previously opted out of motion.
@@ -237,25 +270,33 @@ interface DialogModalProps {
 export function CloseButton({
   onClick,
   disabled = false,
+  appearance = 'default',
 }: {
+  appearance?: 'default' | 'compact';
   onClick: () => void;
   disabled?: boolean;
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="compact"
+      iconOnly
       onClick={onClick}
       disabled={disabled}
-      className="focus-ring rounded-md p-1 fg-secondary hover:bg-secondary hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40"
       aria-label="Close"
     >
-      <AppCatalogCloseIcon width="16" height="16" aria-hidden="true" />
-    </button>
+      <AppCatalogCloseIcon
+        size={16}
+        exactSize={appearance === 'compact'}
+        aria-hidden="true"
+      />
+    </Button>
   );
 }
 
 export function DialogModal({
   onClose,
+  variant = 'default',
   title,
   subtitle,
   titleId,
@@ -273,19 +314,37 @@ export function DialogModal({
   dataTestId,
   headerActions,
   topRightActions,
+  footer,
   showCloseButton = true,
+  headerAlignment = 'start',
+  closeButtonAppearance = 'default',
   overlayClassName = '',
   placement = 'center',
   closeOnEscape = closeOnBackdrop,
   ownerDocument,
   portalContainer,
   trapFocus = false,
+  initialFocus = 'control',
   initialFocusRef,
   restoreFocusRef,
+  restoreFocusWhen,
 }: DialogModalProps): JSX.Element {
   const id = titleId ?? 'dialog-modal-title';
-  const borderClass = headerBorder ? 'border-b' : '';
-  const headerPadClass = headerSpacing === 'tight' ? 'pb-2' : 'pb-4';
+  const confirmShape = variant !== 'default';
+  const borderClass = headerBorder && !confirmShape ? 'border-b' : '';
+  const headerPadClass = confirmShape
+    ? 'px-5 pt-4.5'
+    : `p-5 ${headerSpacing === 'tight' ? 'pb-2' : 'pb-4'}`;
+  const titleClass = confirmShape
+    ? 'text-m font-medium text-balance fg-primary'
+    : 'text-lg font-semibold fg-primary';
+  const widthClass =
+    variant === 'confirm'
+      ? 'max-w-95'
+      : variant === 'confirm-wide'
+        ? 'max-w-100'
+        : maxWidthClasses[maxWidth];
+  const renderCloseButton = showCloseButton && !confirmShape;
   // Both derived strings reproduce today's values for every non-`'full'`
   // width, so existing callers are byte-identical.
   const overlayPadClass = maxWidth === 'full' ? 'p-0 sm:p-4' : 'p-4';
@@ -327,8 +386,13 @@ export function DialogModal({
   // so closing would strand focus there instead of returning it.
   const initialFocusRefRef = useRef(initialFocusRef);
   initialFocusRefRef.current = initialFocusRef;
+  const restoreFocusWhenRef = useRef(restoreFocusWhen);
+  restoreFocusWhenRef.current = restoreFocusWhen;
   const restoreFocusRefRef = useRef(restoreFocusRef);
   restoreFocusRefRef.current = restoreFocusRef;
+  const focusCard = trapFocus && initialFocus === 'dialog';
+  const focusCardRef = useRef(focusCard);
+  focusCardRef.current = focusCard;
 
   useEffect(() => {
     if (!trapFocus) return;
@@ -348,8 +412,9 @@ export function DialogModal({
     // surface: exactly the failure the trap exists to prevent.
     const focusables = focusableWithin(card);
     const named = initialFocusRefRef.current?.current;
-    const initial =
-      named !== null && named !== undefined && focusables.includes(named)
+    const initial = focusCardRef.current
+      ? card
+      : named !== null && named !== undefined && focusables.includes(named)
         ? named
         : focusables[0];
     initial?.focus();
@@ -366,10 +431,32 @@ export function DialogModal({
         event.preventDefault();
         return;
       }
+      const active = doc.activeElement;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
-      const active = doc.activeElement;
-      const inside = active !== null && card.contains(active);
+      // A dropdown opened from the dialog draws its menu at the page body.
+      // Tab there closes the menu with focus back on its trigger, and Tab
+      // moves on from the trigger, so the trap judges the boundary by the
+      // trigger: past the last (or before the first) control it wraps.
+      // A menu with no trigger linked in this dialog falls through to the
+      // ordinary wrap below.
+      const menu = active?.closest('.canopy-floating-menu');
+      const trigger = menu
+        ? Array.from(card.querySelectorAll('[aria-controls]')).find(
+            (element) => element.getAttribute('aria-controls') === menu.id,
+          )
+        : undefined;
+      if (trigger) {
+        if (event.shiftKey ? trigger === first : trigger === last) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
+        return;
+      }
+      // The card itself is not a Tab stop, so Tab from it enters the controls
+      // the same way Tab from behind the dialog does.
+      const inside =
+        active !== null && active !== card && card.contains(active);
       if (event.shiftKey) {
         if (!inside || active === first) {
           event.preventDefault();
@@ -393,7 +480,7 @@ export function DialogModal({
       // pulling it back to the pre-dialog element would fight that.
       const stillOurs =
         active === null || active === doc.body || card.contains(active);
-      if (!stillOurs) return;
+      if (!stillOurs || restoreFocusWhenRef.current?.() === false) return;
 
       // The confirmed action often REMOVES the control that opened the dialog —
       // removing a member, revoking a key, deleting a row. Focusing a detached
@@ -424,15 +511,16 @@ export function DialogModal({
         aria-modal="true"
         aria-labelledby={id}
         data-testid={dataTestId}
-        className={`w-full ${maxWidthClasses[maxWidth]} ${heightClass} flex flex-col overflow-hidden ${radiusClass} bg-card shadow-xl ${className}`}
+        tabIndex={focusCard ? -1 : undefined}
+        className={`w-full ${widthClass} ${heightClass} flex flex-col overflow-hidden ${radiusClass} bg-card shadow-xl ${focusCard ? 'outline-none' : ''} ${className}`}
         style={{ maxHeight: resolvedMaxHeight, height, minHeight }}
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className={`flex items-start justify-between p-5 ${headerPadClass} ${borderClass}`}
+          className={`flex ${headerAlignment === 'center' ? 'items-center' : 'items-start'} justify-between ${headerPadClass} ${borderClass}`}
         >
           <div className="min-w-0 flex-1">
-            <h2 id={id} className="text-lg font-semibold fg-primary">
+            <h2 id={id} className={titleClass}>
               {title}
             </h2>
             {(subtitle || headerActions) && (
@@ -448,18 +536,34 @@ export function DialogModal({
           </div>
           <div className="flex items-center gap-2">
             {topRightActions}
-            {showCloseButton ? (
-              <CloseButton onClick={onClose} disabled={closeButtonDisabled} />
+            {renderCloseButton ? (
+              <CloseButton
+                onClick={onClose}
+                disabled={closeButtonDisabled}
+                appearance={closeButtonAppearance}
+              />
             ) : null}
           </div>
         </div>
         {scrollableBody ? (
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+          <div
+            // Above a footer the body keeps 4px under its last control, so
+            // the scroll edge never clips that control's edge or focus ring.
+            className={`flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain ${footer ? 'pb-1' : ''}`}
+          >
             {children}
           </div>
         ) : (
           children
         )}
+        {footer ? (
+          <div
+            data-dialog-footer=""
+            className="flex shrink-0 items-center justify-end gap-2 px-5 pb-4 pt-3.5"
+          >
+            {footer}
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -17,11 +17,11 @@ const MATH_FENCE_LANGUAGES = new Set(['latex', 'math', 'tex']);
 const INLINE_MATH_PREFIX = '\uE000canopy-math-';
 const INLINE_MATH_SUFFIX = '\uE001';
 
-function mightContainMath(markdown: string): boolean {
+function mightContainMath(markdown: string, singleDollar: boolean): boolean {
   if (
     markdown.includes('\\(') ||
     markdown.includes('\\[') ||
-    markdown.includes('$$')
+    markdown.includes(singleDollar ? '$' : '$$')
   ) {
     return true;
   }
@@ -451,15 +451,20 @@ function inlineCodeEnd(
   return null;
 }
 
+interface DelimiterSearchResult {
+  readonly closingIndex: number;
+  readonly nextOpeningIndex: number;
+}
+
 function findClosingDelimiter(
   markdown: string,
-  delimiter: string,
+  delimiter: Delimiter,
   from: number,
   unavailableBacktickRuns: Set<number>,
   precedingListContentIndents: ReadonlyMap<number, number>,
   angleDestinationEnds: ReadonlyMap<number, number>,
   until = markdown.length,
-): number {
+): DelimiterSearchResult {
   let cursor = from;
   while (cursor < until) {
     const referenceDefinitionEnd = referenceDefinitionLineEnd(markdown, cursor);
@@ -499,14 +504,26 @@ function findClosingDelimiter(
       continue;
     }
     if (
-      markdown.startsWith(delimiter, cursor) &&
-      !isEscaped(markdown, cursor)
+      markdown.startsWith(delimiter.closing, cursor) &&
+      !isEscaped(markdown, cursor) &&
+      (delimiter.isClosingValid === undefined ||
+        delimiter.isClosingValid(markdown, cursor))
     ) {
-      return cursor;
+      return { closingIndex: cursor, nextOpeningIndex: -1 };
+    }
+    if (
+      delimiter.isOpeningValid !== undefined &&
+      markdown.startsWith(delimiter.opening, cursor) &&
+      !isEscaped(markdown, cursor) &&
+      delimiter.isOpeningValid(markdown, cursor)
+    ) {
+      // If this delimiter can open but not close, let the later opening take
+      // precedence (for example, a price before a separate inline formula).
+      return { closingIndex: -1, nextOpeningIndex: cursor };
     }
     cursor += 1;
   }
-  return -1;
+  return { closingIndex: -1, nextOpeningIndex: -1 };
 }
 
 function inlineMathBoundary(markdown: string, from: number): number {
@@ -550,12 +567,48 @@ interface Delimiter {
   readonly closing: string;
   readonly display: boolean;
   readonly inline: boolean;
+  readonly isOpeningValid?: (markdown: string, index: number) => boolean;
+  readonly isClosingValid?: (markdown: string, index: number) => boolean;
 }
 
-const DELIMITERS: readonly Delimiter[] = [
+function isSingleDollarOpeningValid(markdown: string, index: number): boolean {
+  const next = markdown[index + 1];
+  return (
+    next !== undefined &&
+    next !== '$' &&
+    markdown[index - 1] !== '$' &&
+    !/\s/.test(next)
+  );
+}
+
+function isSingleDollarClosingValid(markdown: string, index: number): boolean {
+  const previous = markdown[index - 1];
+  const next = markdown[index + 1];
+  return (
+    previous !== undefined &&
+    previous !== '$' &&
+    next !== '$' &&
+    !/\s/.test(previous) &&
+    (next === undefined || !/[0-9]/.test(next))
+  );
+}
+
+const SHARED_DELIMITERS: readonly Delimiter[] = [
   { opening: '\\(', closing: '\\)', display: false, inline: true },
   { opening: '\\[', closing: '\\]', display: true, inline: false },
   { opening: '$$', closing: '$$', display: true, inline: false },
+];
+
+const DELIMITERS: readonly Delimiter[] = [
+  ...SHARED_DELIMITERS,
+  {
+    opening: '$',
+    closing: '$',
+    display: false,
+    inline: true,
+    isOpeningValid: isSingleDollarOpeningValid,
+    isClosingValid: isSingleDollarClosingValid,
+  },
 ];
 
 /**
@@ -566,8 +619,13 @@ const DELIMITERS: readonly Delimiter[] = [
  * The scanner is bounded and linear in document size for each fixed delimiter
  * kind. Oversized or excessive expressions stay as readable source.
  */
-export function prepareMarkdownMath(markdown: string): PreparedMarkdownMath {
-  if (!mightContainMath(markdown)) {
+export function prepareMarkdownMath(
+  markdown: string,
+  options: { readonly singleDollar?: boolean } = {},
+): PreparedMarkdownMath {
+  const singleDollar = options.singleDollar !== false;
+  const delimiters = singleDollar ? DELIMITERS : SHARED_DELIMITERS;
+  if (!mightContainMath(markdown, singleDollar)) {
     return {
       markdown,
       expressions: new Map(),
@@ -588,6 +646,17 @@ export function prepareMarkdownMath(markdown: string): PreparedMarkdownMath {
   let copyFrom = 0;
   let index = 0;
   let hasMath = false;
+  // Every start inside [boundaryFrom, boundary] ends at the same paragraph
+  // boundary, so repeated `$` retries in one paragraph stay linear.
+  let boundaryFrom = -1;
+  let boundary = -1;
+  const inlineBoundary = (from: number): number => {
+    if (from < boundaryFrom || from > boundary) {
+      boundaryFrom = from;
+      boundary = inlineMathBoundary(markdown, from);
+    }
+    return boundary;
+  };
 
   while (index < markdown.length) {
     const referenceDefinitionEnd = referenceDefinitionLineEnd(markdown, index);
@@ -634,30 +703,40 @@ export function prepareMarkdownMath(markdown: string): PreparedMarkdownMath {
     }
 
     let matched = false;
-    for (const delimiter of DELIMITERS) {
+    for (const delimiter of delimiters) {
       if (
         unavailableDelimiters.has(delimiter.opening) ||
         index < (blockedDelimitersUntil.get(delimiter.opening) ?? 0) ||
         !markdown.startsWith(delimiter.opening, index) ||
-        isEscaped(markdown, index)
+        isEscaped(markdown, index) ||
+        (delimiter.isOpeningValid !== undefined &&
+          !delimiter.isOpeningValid(markdown, index))
       ) {
         continue;
       }
 
       const sourceStart = index + delimiter.opening.length;
       const closingBoundary = delimiter.inline
-        ? inlineMathBoundary(markdown, sourceStart)
+        ? inlineBoundary(sourceStart)
         : markdown.length;
-      const closingIndex = findClosingDelimiter(
+      const searchResult = findClosingDelimiter(
         markdown,
-        delimiter.closing,
+        delimiter,
         sourceStart,
         unavailableBacktickRuns,
         precedingListContentIndents,
         angleDestinationEnds,
         closingBoundary,
       );
+      const closingIndex = searchResult.closingIndex;
       if (closingIndex === -1) {
+        if (searchResult.nextOpeningIndex !== -1) {
+          blockedDelimitersUntil.set(
+            delimiter.opening,
+            searchResult.nextOpeningIndex,
+          );
+          continue;
+        }
         if (delimiter.inline) {
           blockedDelimitersUntil.set(delimiter.opening, closingBoundary);
         } else {

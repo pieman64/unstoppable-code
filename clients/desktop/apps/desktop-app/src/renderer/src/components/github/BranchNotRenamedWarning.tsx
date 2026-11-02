@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 import type { UnrenamedRepo } from '@/lib/branchRenameWarning';
 import { WarningIcon as AppCatalogWarningIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -78,20 +79,12 @@ export function BranchNotRenamedWarning({
           </div>
         </div>
         <div className="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onRename}
-            className="focus-ring rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition hover:bg-secondary"
-          >
+          <Button variant="secondary" size="compact" onClick={onRename}>
             {isMultiRepo ? 'Rename branches' : 'Rename branch'}
-          </button>
-          <button
-            type="button"
-            onClick={onContinue}
-            className="focus-ring rounded-md bg-destructive px-3 py-1.5 text-s font-medium text-white transition hover:bg-destructive-hover"
-          >
+          </Button>
+          <Button variant="destructive" size="compact" onClick={onContinue}>
             Continue anyway
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

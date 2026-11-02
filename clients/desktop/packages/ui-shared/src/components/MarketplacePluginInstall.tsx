@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { CheckIcon, DownloadIcon, StopIcon } from '../icons';
+import { Button } from './Button';
 import { Tooltip } from './Tooltip';
 import { RefreshSpinner } from './RefreshSpinner';
 
@@ -157,12 +158,12 @@ export function BulkInstallButton({
           label="Cancel after the current install finishes"
           suppressed={!installing}
         >
-          <button
-            type="button"
+          <Button
+            variant="warning"
+            size="compact"
             data-testid="bulk-install-plugins"
             disabled={disabled}
             onClick={onClick}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md bg-warning-subtle px-3 py-1.5 text-xs font-medium fg-warning hover:bg-warning-subtle/80 transition-colors"
           >
             {installing ? <StopIcon /> : <DownloadIcon />}
             {installing && progress
@@ -170,7 +171,7 @@ export function BulkInstallButton({
               : `Install ${missingCount} ${
                   missingCount === 1 ? 'plugin' : 'plugins'
                 }`}
-          </button>
+          </Button>
         </Tooltip>
       )}
       {showSummary && (

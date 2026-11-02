@@ -21,7 +21,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
-import { act, createElement } from 'react';
+import { act, createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ModelRecoveryModal } from '../ModelRecoveryModal';
 import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
@@ -29,7 +29,7 @@ import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
 import { initCodexModels } from '@canopy/desktop-shared/types';
 
 jest.mock('@/components/settings/AuthLoginModal', () => ({
-  AuthLoginModal: ({ onClose }: { onClose: () => void }): JSX.Element => (
+  AuthLoginModal: ({ onClose }: { onClose: () => void }): ReactElement => (
     <button data-testid="auth-login-modal-stub" onClick={onClose}>
       Close provider sign-in
     </button>

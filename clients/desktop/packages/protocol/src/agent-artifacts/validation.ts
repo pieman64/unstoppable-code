@@ -197,6 +197,21 @@ export function isSameAgentArtifactCarryReceipt(
   );
 }
 
+/**
+ * The newest observation in a GitHub run snapshot: the run's own, or a later
+ * one of its jobs. An older snapshot never replaces a newer one.
+ */
+export function latestGitHubRunObservation(run: {
+  readonly observedAt: string;
+  readonly jobs?: readonly { readonly observedAt: string }[];
+}): string {
+  let latest = run.observedAt;
+  for (const job of run.jobs ?? []) {
+    if (job.observedAt.localeCompare(latest) > 0) latest = job.observedAt;
+  }
+  return latest;
+}
+
 const GITHUB_REPOSITORY_PATTERN =
   /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const GITHUB_RUN_ID_PATTERN = /^[1-9]\d{0,19}$/;

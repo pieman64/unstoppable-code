@@ -53,6 +53,45 @@ describe('DialogModal', () => {
     jest.restoreAllMocks();
   });
 
+  it.each([false, true])(
+    'wraps Tab (shift: %s) from a floating menu with no trigger linked in the dialog',
+    (shiftKey) => {
+      render(
+        <DialogModal
+          onClose={jest.fn()}
+          title="Create project"
+          trapFocus
+          showCloseButton={false}
+        >
+          <button type="button">First</button>
+          <button type="button">Last</button>
+        </DialogModal>,
+      );
+      // A menu drawn at the page body whose trigger carries no aria-controls.
+      const menu = document.createElement('div');
+      menu.className = 'canopy-floating-menu';
+      menu.id = 'unlinked-menu';
+      const row = document.createElement('button');
+      menu.append(row);
+      document.body.append(menu);
+      row.focus();
+      const tab = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        row.dispatchEvent(tab);
+      });
+      expect(tab.defaultPrevented).toBe(true);
+      expect(document.activeElement?.textContent).toBe(
+        shiftKey ? 'Last' : 'First',
+      );
+      unmountAllRoots();
+    },
+  );
+
   it('portals into the supplied container without losing Escape dismissal', () => {
     const portalContainer = document.createElement('section');
     document.body.appendChild(portalContainer);
@@ -120,6 +159,36 @@ describe('DialogModal', () => {
       });
     }
   });
+
+  it.each([
+    ['confirm', 'max-w-95'],
+    ['confirm-wide', 'max-w-100'],
+  ] as const)(
+    'draws the %s shape: narrow, compact title, no rule and no close button',
+    (variant, widthClass) => {
+      render(
+        <DialogModal
+          onClose={jest.fn()}
+          title="Delete worktree “owl”?"
+          variant={variant}
+          maxWidth="3xl"
+          headerBorder
+          showCloseButton
+        >
+          <div>Body</div>
+        </DialogModal>,
+      );
+      const card = document.querySelector('[role="dialog"]');
+      expect(card?.className).toContain(widthClass);
+      expect(card?.className).not.toContain('max-w-3xl');
+      expect(card?.querySelector('.border-b')).toBeNull();
+      expect(card?.querySelector('[aria-label="Close"]')).toBeNull();
+      const heading = card?.querySelector('h2');
+      expect(heading?.className).toContain('text-m');
+      expect(heading?.className).toContain('text-balance');
+      unmountAllRoots();
+    },
+  );
 
   it('uses the semantic black scrim with no backdrop blur or entrance motion', () => {
     const { root } = render(
@@ -662,6 +731,55 @@ describe('DialogModal trapFocus', () => {
     render(<Harness />);
 
     expect(document.activeElement).toBe(query('two'));
+  });
+
+  describe('with initialFocus="dialog"', () => {
+    function card(): HTMLElement {
+      const value = document.body.querySelector('[role="dialog"]');
+      if (!(value instanceof HTMLElement)) throw new Error('Missing card');
+      return value;
+    }
+
+    it('focuses the card instead of a control', () => {
+      render(
+        <DialogModal
+          onClose={() => undefined}
+          title="t"
+          trapFocus
+          initialFocus="dialog"
+        >
+          <Body />
+        </DialogModal>,
+      );
+
+      expect(document.activeElement).toBe(card());
+      expect(card().getAttribute('tabindex')).toBe('-1');
+    });
+
+    it.each([
+      [false, 'Close'],
+      [true, 'Two'],
+    ])('moves Tab (shift: %s) from the card to a control', (shiftKey, name) => {
+      render(
+        <DialogModal
+          onClose={() => undefined}
+          title="t"
+          trapFocus
+          initialFocus="dialog"
+        >
+          <Body />
+        </DialogModal>,
+      );
+      expect(document.activeElement).toBe(card());
+
+      dispatchTab(shiftKey);
+
+      const expected =
+        name === 'Close'
+          ? document.body.querySelector('button[aria-label="Close"]')
+          : query('two');
+      expect(document.activeElement).toBe(expected);
+    });
   });
 
   it('cycles Tab from the last focusable back to the first', () => {

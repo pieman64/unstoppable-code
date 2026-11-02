@@ -128,7 +128,7 @@ test('Connect on a device-only catalog server signs in through the account and r
 
     await app.openPluginsPage();
     await window.getByTestId('plugins-search').fill('Linear');
-    await window.getByTestId('plugins-entry-mcp-catalog:linear').click();
+    await window.getByTestId('customize-row-mcp-catalog:linear').click();
     const connection = window.getByTestId('plugin-account-connection');
     await expect(connection).toContainText(
       "Linear isn't connected to your account",

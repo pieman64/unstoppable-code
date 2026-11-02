@@ -1,5 +1,4 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import {
   lazy,
@@ -15,10 +14,14 @@ import {
   type JSX,
 } from 'react';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
+  ErrorState,
   SettingsChartSkeleton,
   SettingsListSkeleton,
+  SettingsSelect,
+  type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { RefreshCw } from '@canopy/ui-shared/icons/AppIcons';
 import type {
@@ -55,6 +58,12 @@ import {
 
 // Matches MAX_FACT_DETAIL_BATCH on the facts/batch route.
 const MAX_SELECTED_FACTS = 25;
+
+const LIVENESS_OPTIONS: readonly SettingsSelectOption<EntityGraphLiveness>[] = [
+  { value: 'live', label: 'Live' },
+  { value: 'superseded', label: 'Superseded' },
+  { value: 'all', label: 'All' },
+];
 
 // The graph area fills the space below the page header instead of a fixed
 // 650px band; the floor keeps it usable in short windows. Shared by the graph
@@ -136,6 +145,11 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
     () => graphCache.get(entityGraphCacheKey(orgId, filters)) ?? null,
   );
   const [graphError, setGraphError] = useState<string | null>(null);
+  // The failure Try again is reading past: it stays on screen, its capsule
+  // spinning, until the read settles, instead of blanking to the skeleton.
+  const [retriedGraphError, setRetriedGraphError] = useState<string | null>(
+    null,
+  );
   const [graphLoading, setGraphLoading] = useState(() => graph === null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [selectionTitle, setSelectionTitle] = useState('Select a node or edge');
@@ -162,6 +176,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         setGraph(cached);
         setGraphError(null);
         setGraphLoading(false);
+        setRetriedGraphError(null);
         return;
       }
       setGraphLoading(true);
@@ -185,6 +200,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
       } finally {
         if (graphRequestRef.current === requestId) {
           setGraphLoading(false);
+          setRetriedGraphError(null);
         }
       }
     };
@@ -310,8 +326,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
     );
   }, [highlight, graph]);
 
-  const onLivenessChange = (event: ChangeEvent<HTMLSelectElement>): void => {
-    const value = event.target.value;
+  const onLivenessChange = (value: string): void => {
     const liveness: EntityGraphLiveness =
       value === 'superseded' || value === 'all' ? value : 'live';
     applyFilters({ ...filters, liveness });
@@ -346,25 +361,23 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
             aria-label="Filter entities by name"
             className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
           />
-          <button
+          <Button
             type="submit"
+            size="compact"
             disabled={graphLoading || queryInput.trim() === filters.q}
-            className="shrink-0 rounded-lg border bg-base px-4 py-2 text-s font-medium fg-primary hover:bg-card disabled:opacity-50"
+            className="self-center"
           >
             Filter
-          </button>
+          </Button>
         </form>
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <SettingsControlSelect
+          <SettingsSelect
             value={filters.liveness}
-            onChange={onLivenessChange}
-            fill
+            onValueChange={onLivenessChange}
+            width="fill"
             aria-label="Fact liveness"
-          >
-            <option value="live">Live</option>
-            <option value="superseded">Superseded</option>
-            <option value="all">All</option>
-          </SettingsControlSelect>
+            options={LIVENESS_OPTIONS}
+          />
           <input
             type="date"
             value={filters.from}
@@ -399,7 +412,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         <ErrorBanner className="" error={graphError} onRetry={handleRefresh} />
       )}
 
-      {graph === null && graphLoading ? (
+      {graph === null && graphLoading && retriedGraphError === null ? (
         <div className={`flex ${GRAPH_AREA_HEIGHT}`}>
           <DelayedLoadingPlaceholder>
             <SettingsChartSkeleton variant="graph" />
@@ -407,21 +420,19 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         </div>
       ) : graph === null ? (
         <div
-          className={`flex ${GRAPH_AREA_HEIGHT} items-center justify-center rounded-xl border bg-card`}
+          className={`flex ${GRAPH_AREA_HEIGHT} items-center justify-center`}
         >
-          <div className="text-center">
-            <h2 role="alert" className="text-base font-semibold fg-primary">
-              {graphError ?? SETTINGS_LOAD_ERROR_COPY}
-            </h2>
-            <button
-              type="button"
-              onClick={handleRefresh}
-              className="mt-4 inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-s font-medium fg-primary hover:bg-base"
-            >
-              <RefreshCw size={14} />
-              Retry
-            </button>
-          </div>
+          <ErrorState
+            testId="memory-graph-load-failed"
+            message={
+              graphError ?? retriedGraphError ?? SETTINGS_LOAD_ERROR_COPY
+            }
+            retrying={graphLoading}
+            onRetry={(): void => {
+              setRetriedGraphError(graphError ?? SETTINGS_LOAD_ERROR_COPY);
+              handleRefresh();
+            }}
+          />
         </div>
       ) : graph.nodes.length === 0 ? (
         <div className="rounded-xl border border-dashed py-20 text-center">
@@ -433,15 +444,15 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
               ? 'No entities match the current filters. Adjust or clear them to see the graph.'
               : 'Run entity backfill to populate the organization graph.'}
           </p>
-          <button
-            type="button"
+          <Button
+            size="compact"
             onClick={handleRefresh}
             disabled={graphLoading}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-s font-medium fg-primary hover:bg-base disabled:opacity-50"
+            className="mt-4"
           >
             <RefreshCw size={14} />
             Refresh
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,24rem)]">
@@ -466,19 +477,18 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
                   Truncated — showing the most connected activity
                 </span>
               )}
-              <button
-                type="button"
+              <Button
+                size="compact"
                 onClick={handleRefresh}
                 disabled={graphLoading}
                 aria-label="Refresh graph"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium fg-secondary hover:bg-base hover:fg-primary disabled:opacity-50"
               >
                 <RefreshCw
-                  size={12}
+                  size={14}
                   className={graphLoading ? 'animate-spin' : ''}
                 />
                 Refresh
-              </button>
+              </Button>
             </div>
             {/* The canvas paints entity names. */}
             <div className={withPrivacyClass('h-full w-full', blockClassName)}>

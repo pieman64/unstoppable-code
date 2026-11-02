@@ -144,29 +144,20 @@ for (const origin of ['chat', 'file preview']) {
       await expect(viewer).toBeVisible({ timeout: 20_000 });
       // The origin preview can remain visible in another panel group.
       // Match the target filename so its origin cannot satisfy assertions.
-      const toggle = viewer.getByTestId('file-view-toggle');
-      // The toggle names the mode it would switch TO, so "View source" proves the
-      // tab is currently rendered.
-      await expect(toggle).toHaveAttribute(
-        'aria-label',
-        'View source; current view: preview',
-      );
+      const formatted = viewer.getByTestId('file-view-toggle-formatted');
+      const source = viewer.getByTestId('file-view-toggle-source');
+      await expect(formatted).toHaveAttribute('aria-pressed', 'true');
+      await expect(formatted).toHaveText('Formatted');
       await expect(
         window.getByRole('heading', { name: 'Linked Report' }),
       ).toBeVisible();
 
       // --- A user switch back to source survives reopening the same link ---
-      await toggle.click();
-      await expect(toggle).toHaveAttribute(
-        'aria-label',
-        'View preview; current view: source',
-      );
+      await source.click();
+      await expect(source).toHaveAttribute('aria-pressed', 'true');
       await originTab.click();
       await links.filter({ hasText: 'Report' }).click();
-      await expect(toggle).toHaveAttribute(
-        'aria-label',
-        'View preview; current view: source',
-      );
+      await expect(source).toHaveAttribute('aria-pressed', 'true');
       await expect(
         window.locator('[data-testid^="panel-tab-panel-file-"]'),
       ).toHaveCount(origin === 'chat' ? 1 : 2);
@@ -192,8 +183,8 @@ for (const origin of ['chat', 'file preview']) {
         await expect(viewerFor(HTML_FILE)).toHaveCount(0);
       } else {
         await expect(
-          viewerFor(HTML_FILE).getByTestId('file-view-toggle'),
-        ).toHaveAttribute('aria-label', 'View source; current view: preview');
+          viewerFor(HTML_FILE).getByTestId('file-view-toggle-formatted'),
+        ).toHaveAttribute('aria-pressed', 'true');
         await expect(
           viewerFor(HTML_FILE)
             .frameLocator('[data-testid="html-file-preview-frame"]')
@@ -204,9 +195,11 @@ for (const origin of ['chat', 'file preview']) {
       // --- CSV opens as a table ---
       await originTab.click();
       await links.filter({ hasText: /^Rows$/ }).click();
-      await expect(
-        viewerFor(CSV_FILE).getByTestId('file-view-toggle'),
-      ).toHaveAttribute('aria-label', 'View source; current view: table');
+      const tableSegment = viewerFor(CSV_FILE).getByTestId(
+        'file-view-toggle-formatted',
+      );
+      await expect(tableSegment).toHaveAttribute('aria-pressed', 'true');
+      await expect(tableSegment).toHaveText('Table');
 
       // --- An oversized CSV falls back to raw instead of mounting a huge table ---
       await originTab.click();

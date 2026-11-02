@@ -5,7 +5,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InvocableInventoryEntry } from '@canopy/desktop-shared/types';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
-import { useChatStore, type ChatTab } from '@/stores/chatStore';
+import {
+  chatStoreRenderView,
+  useChatStore,
+  type ChatTab,
+} from '@/stores/chatStore';
 import type { ChatMessage } from '@/stores/chat/types';
 import { createEmptyTab } from '@/stores/chat/tab-utils';
 import { useGlobalPluginDefaultsStore } from '@/stores/globalPluginDefaultsStore';
@@ -208,7 +212,16 @@ describe('ChatPluginsSection: Used in this chat', () => {
                 displayName: 'Release tools',
                 marketplaceId: 'acme-market',
                 sourcePath: 'plugins/release-tools',
-                facets: { claude: {} },
+                providerSupport: { claude: 'native', codex: 'none' },
+                facets: {
+                  claude: {
+                    provider: 'claude',
+                    mode: 'native',
+                    name: 'release-tools',
+                    installLocation: '/plugins/release-tools',
+                    sourcePath: 'plugins/release-tools',
+                  },
+                },
               },
             ],
           },
@@ -411,24 +424,32 @@ describe('ChatPluginsSection: Used in this chat', () => {
     ['team', '   ', 'Team'],
   ] as const)(
     'renders the existing %s audience wording in metadata',
-    async (audience, teamName, label) => {
+    async (
+      audience: 'organization' | 'public' | 'team',
+      teamName: string | null,
+      label: string,
+    ): Promise<void> => {
       const response = await loadSkills();
       if (!response.data) throw new Error('Missing fixture skills');
       const skill = response.data[0];
-      if (!skill.remote) throw new Error('Missing fixture remote');
-      skill.remote.shareScope = audience === 'public' ? 'private' : audience;
-      skill.remote.ownerName = teamName ?? undefined;
-      if (audience === 'public') {
-        skill.remote.publicLink = {
-          externalId: 'public-fixture',
-          pinnedContentHash: 'hash',
-          upToDate: true,
-          sharePath: '/skills/public-fixture',
-          createdAt: '2026-01-01T00:00:00.000Z',
-          updatedAt: '2026-01-01T00:00:00.000Z',
-        };
-      }
-      loadSkills.mockResolvedValue(response);
+      if (!skill?.remote) throw new Error('Missing fixture remote');
+      const shareScope: NonNullable<typeof skill.remote.shareScope> =
+        audience === 'public' ? 'private' : audience;
+      const skillWithAudience = {
+        ...skill,
+        remote: {
+          ...skill.remote,
+          shareScope,
+          ownerName: teamName ?? undefined,
+          ...(audience === 'public'
+            ? { publicLink: 'https://example.test/skills/public-fixture' }
+            : {}),
+        },
+      };
+      loadSkills.mockResolvedValue({
+        ...response,
+        data: [skillWithAudience, ...response.data.slice(1)],
+      });
       setChats(
         [{ id: 'chat', messages: [userMessage('m1', '/release-notes')] }],
         'chat',
@@ -858,6 +879,47 @@ describe('ChatPluginsSection: Used in this chat', () => {
     expect(usedRows().map((row) => row.textContent)).toEqual([
       expect.stringContaining('/external'),
     ]);
+  });
+
+  it('renders, without throwing, while React still shows a chat the store already removed', async () => {
+    setChats(
+      [
+        { id: 'chat', messages: [userMessage('m1', '/release-notes')] },
+        { id: 'next', messages: [] },
+      ],
+      'chat',
+    );
+    await render();
+    expect(hasContent).toBe(true);
+
+    // A streamed commit removes the active chat; React keeps the previous
+    // snapshot until the next frame, which never comes in this test.
+    const never = (): number => 0;
+    chatStoreRenderView.deferNotifications(
+      {
+        requestFrame: never,
+        cancelFrame: () => undefined,
+        setTimer: never,
+        clearTimer: () => undefined,
+        isHidden: () => false,
+      },
+      () => setChats([{ id: 'next', messages: [] }], 'next'),
+    );
+    // An unrelated update (closing a file tab) re-renders the panel first.
+    expect(() =>
+      act(() => {
+        root.render(
+          <div>
+            <Probe />
+            <ChatPluginsSection projectId="project" worktreeId="worktree" />
+          </div>,
+        );
+      }),
+    ).not.toThrow();
+
+    act(() => chatStoreRenderView.flush());
+    await flush();
+    expect(hasContent).toBe(false);
   });
 
   it('offers no Share in a window without a share host', async () => {

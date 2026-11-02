@@ -5,26 +5,40 @@ const mockGetRemoteUrlStrict = jest.fn();
 const mockIsGitRepo = jest.fn();
 
 jest.mock('../lib/git', () => ({
-  getRemoteUrl: mockGetRemoteUrl,
-  getRemoteUrlStrict: mockGetRemoteUrlStrict,
-  isGitRepo: mockIsGitRepo,
+  get getRemoteUrl(): typeof mockGetRemoteUrl {
+    return mockGetRemoteUrl;
+  },
+  get getRemoteUrlStrict(): typeof mockGetRemoteUrlStrict {
+    return mockGetRemoteUrlStrict;
+  },
+  get isGitRepo(): typeof mockIsGitRepo {
+    return mockIsGitRepo;
+  },
 }));
 
 const mockReadWorkspaceConfig = jest.fn();
 const mockReadWorkspaceConfigDetailed = jest.fn();
 jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceConfig: mockReadWorkspaceConfig,
-  readWorkspaceConfigDetailed: mockReadWorkspaceConfigDetailed,
+  get readWorkspaceConfig(): typeof mockReadWorkspaceConfig {
+    return mockReadWorkspaceConfig;
+  },
+  get readWorkspaceConfigDetailed(): typeof mockReadWorkspaceConfigDetailed {
+    return mockReadWorkspaceConfigDetailed;
+  },
 }));
 
 const mockGetWorktreeDir = jest.fn(() => '/mock/worktree');
 jest.mock('../lib/paths', () => ({
-  getWorktreeDir: mockGetWorktreeDir,
+  get getWorktreeDir(): typeof mockGetWorktreeDir {
+    return mockGetWorktreeDir;
+  },
 }));
 
 const mockListWorkspaceWorktreeRepoEntries = jest.fn(() => Promise.resolve([]));
 jest.mock('../lib/worktree-repo-entries', () => ({
-  listWorkspaceWorktreeRepoEntries: mockListWorkspaceWorktreeRepoEntries,
+  get listWorkspaceWorktreeRepoEntries(): typeof mockListWorkspaceWorktreeRepoEntries {
+    return mockListWorkspaceWorktreeRepoEntries;
+  },
 }));
 
 import {

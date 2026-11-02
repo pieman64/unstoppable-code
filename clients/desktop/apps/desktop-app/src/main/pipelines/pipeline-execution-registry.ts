@@ -1,4 +1,6 @@
+import type { ExecutionLease } from '@canopy/core-runtime';
 import type { ExecutionHandle } from '@canopy/desktop-shared/node/pipelines/executor';
+import { getExecutionAccounting } from '../execution-accounting';
 
 interface ReservedExecution {
   kind: 'reserved';
@@ -15,13 +17,34 @@ type ActiveExecution = ReservedExecution | RunningExecution;
 let shutdownStarted = false;
 
 const activeExecutions = new Map<string, ActiveExecution>();
+// Every reserved or running execution holds a core accounting lease, so core
+// counts it against the pipeline limit until the entry leaves the registry.
+const executionLeases = new Map<string, ExecutionLease>();
 const activeCountListeners = new Set<(count: number) => void>();
 const shutdownPauseTasks = new Map<string, Promise<void>>();
 const timedOutShutdownReservations = new Set<string>();
 const DEFAULT_CANCEL_TIMEOUT_MS = 8_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 
+function syncExecutionLeases(): void {
+  activeExecutions.forEach((_execution, executionId): void => {
+    if (!executionLeases.has(executionId)) {
+      executionLeases.set(
+        executionId,
+        getExecutionAccounting().track('pipeline', executionId),
+      );
+    }
+  });
+  executionLeases.forEach((lease, executionId): void => {
+    if (!activeExecutions.has(executionId)) {
+      lease.release();
+      executionLeases.delete(executionId);
+    }
+  });
+}
+
 function notifyActiveCountChange(): void {
+  syncExecutionLeases();
   const count = activeExecutions.size;
   for (const listener of Array.from(activeCountListeners)) {
     listener(count);

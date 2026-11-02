@@ -4,10 +4,20 @@ import { memo, type JSX } from 'react';
 import { visibleMessageParts } from '@canopy/agent-transcript';
 import { AppAdvisorWatcherIcon } from '../../icons';
 import type { ChatWatcherFiredInfo } from '@canopy/protocol/portal';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '../../lib/replay-privacy';
 import { RichHoverTooltip } from '../RichHoverTooltip';
 
 interface WatcherFiredTitleProps {
   watcherFired: ChatWatcherFiredInfo;
+  /**
+   * `block` (the default) is the title line above a bubble's text. `inline`
+   * is the leading label of a one-line queued row: the row's own text size,
+   * truncating, with no line below it.
+   */
+  layout?: 'block' | 'inline';
 }
 
 /**
@@ -18,7 +28,9 @@ interface WatcherFiredTitleProps {
  */
 export const WatcherFiredTitle = memo(function WatcherFiredTitle({
   watcherFired,
+  layout = 'block',
 }: WatcherFiredTitleProps): JSX.Element {
+  const inline = layout === 'inline';
   const combinedWatchers = watcherFired.combinedWatchers;
   const title = combinedWatchers?.length
     ? watcherFired.kind
@@ -28,10 +40,23 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
       data-testid="watcher-fired-title"
       tabIndex={combinedWatchers?.length ? 0 : undefined}
       role={combinedWatchers?.length ? 'button' : undefined}
-      className={`mb-1 flex items-center gap-1.5 text-3xs font-medium fg-info${combinedWatchers?.length ? ' cursor-help' : ''}`}
+      className={`${
+        inline
+          ? 'flex min-w-0 items-center gap-1.5 fg-info'
+          : 'mb-1 flex items-center gap-1.5 text-3xs font-medium fg-info'
+      }${combinedWatchers?.length ? ' cursor-help' : ''}`}
     >
-      <AppAdvisorWatcherIcon width={11} height={11} className="shrink-0" />
-      <span>{title}</span>
+      <AppAdvisorWatcherIcon
+        width={inline ? 14 : 11}
+        height={inline ? 14 : 11}
+        className="shrink-0"
+      />
+      {/* The kind names the watched chat and project: mask it, as titles are. */}
+      <span
+        className={inline ? `truncate ${REPLAY_MASK_CLASS}` : REPLAY_MASK_CLASS}
+      >
+        {title}
+      </span>
     </span>
   );
 
@@ -56,10 +81,12 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
               key={`${watcher.kind}-${index}`}
               className="border-b line-base pb-2 last:border-b-0 last:pb-0"
             >
-              <div className="font-medium fg-info">
+              <div className={`font-medium fg-info ${REPLAY_MASK_CLASS}`}>
                 {watcher.kind} watcher has fired
               </div>
-              <div className="mt-0.5 whitespace-pre-wrap break-words fg-secondary">
+              <div
+                className={`${REPLAY_BLOCK_CLASS} mt-0.5 whitespace-pre-wrap break-words fg-secondary`}
+              >
                 {watcher.text}
               </div>
             </div>
@@ -86,6 +113,7 @@ export interface WatcherFiredPresentation {
 
 export function watcherFiredPresentation(
   text: string,
+  layout: 'block' | 'inline' = 'block',
 ): WatcherFiredPresentation | undefined {
   const parts = visibleMessageParts(text);
   const watcher = parts.find((part) => part.kind === 'watcher');
@@ -96,7 +124,9 @@ export function watcherFiredPresentation(
     .join('\n\n');
   return {
     text: notice.length > 0 ? notice : watcher.text,
-    title: <WatcherFiredTitle watcherFired={watcher.watcherFired} />,
+    title: (
+      <WatcherFiredTitle watcherFired={watcher.watcherFired} layout={layout} />
+    ),
     variant: 'info',
   };
 }

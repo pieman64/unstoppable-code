@@ -24,7 +24,7 @@ export class McpActivationHandoff {
     readonly generation: number,
     readonly userMessageId: string,
     readonly signal: AbortSignal,
-    private readonly canSend: () => Promise<boolean> = () =>
+    private readonly canSend: () => Promise<boolean> = (): Promise<boolean> =>
       Promise.resolve(true),
   ) {
     this.prepared = new Promise((resolve, reject) => {

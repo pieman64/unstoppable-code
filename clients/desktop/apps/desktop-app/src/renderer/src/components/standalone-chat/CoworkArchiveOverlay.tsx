@@ -11,6 +11,7 @@
  * same stacking context, while staying below semantic app overlay tiers.
  */
 import { useCallback, useEffect, type JSX } from 'react';
+import { Button } from '@canopy/ui-shared/components';
 import { useShallow } from 'zustand/react/shallow';
 import type { StandaloneChatMeta } from '@canopy/desktop-shared/types';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -158,14 +159,14 @@ export function CoworkArchiveOverlay({
       data-testid="cowork-archive-overlay"
     >
       <div className="flex shrink-0 justify-end border-b px-3 py-1.5">
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="compact"
           onClick={handleClose}
           data-testid="cowork-archive-overlay-close"
-          className="rounded px-2 py-1 text-xs fg-secondary hover:bg-fg-primary/[0.06] hover:fg-primary"
         >
           Back
-        </button>
+        </Button>
       </div>
       {activeSummary === SUMMARY_LOADING ? (
         <div className="flex flex-1 items-center justify-center">

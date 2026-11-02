@@ -78,6 +78,35 @@ describe('chat message command contracts', () => {
     ).toBe(false);
   });
 
+  it('requires an explicit move anchor or null tail while retaining revision checks', () => {
+    for (const beforeEntryId of ['entry-2', null]) {
+      expect(
+        CoreChatQueueEntryUpdateParamsSchema.parse({
+          ...base,
+          entryId: 'entry-1',
+          expectedRevision: 8,
+          mutation: { kind: 'move', beforeEntryId },
+        }),
+      ).toMatchObject({
+        expectedRevision: 8,
+        mutation: { kind: 'move', beforeEntryId },
+      });
+    }
+    for (const mutation of [
+      { kind: 'move' },
+      { kind: 'move', beforeEntryId: '' },
+      { kind: 'move', beforeEntryId: null, text: 'extra' },
+    ]) {
+      expect(
+        CoreChatQueueEntryUpdateParamsSchema.safeParse({
+          ...base,
+          entryId: 'entry-1',
+          mutation,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('distinguishes terminal initial prompts from normal sends', () => {
     const message = { ...base, messageId: 'message-1', text: 'Hello' };
     expect(CoreChatMessageSendParamsSchema.parse(message)).toEqual(message);

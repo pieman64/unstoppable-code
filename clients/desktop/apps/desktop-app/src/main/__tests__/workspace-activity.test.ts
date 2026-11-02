@@ -28,11 +28,15 @@ const withArchivedWorkspaceOperationLockMock = jest.fn(
 const sendToAllWindowsMock = jest.fn();
 
 jest.mock('../lib/cowork-work-entries', () => ({
-  touchWorkEntry: touchWorkEntryMock,
+  get touchWorkEntry(): typeof touchWorkEntryMock {
+    return touchWorkEntryMock;
+  },
 }));
 
 jest.mock('../lib/workspace-persistence', () => ({
-  updateWorkspaceWorktree: updateWorkspaceWorktreeMock,
+  get updateWorkspaceWorktree(): typeof updateWorkspaceWorktreeMock {
+    return updateWorkspaceWorktreeMock;
+  },
 }));
 
 jest.mock('../lib/workspace-registry', () => ({
@@ -45,7 +49,9 @@ jest.mock('../lib/archived-containers', () => ({
   ...jest.requireActual<typeof ArchivedContainersModule>(
     '../lib/archived-containers',
   ),
-  withArchivedWorkspaceOperationLock: withArchivedWorkspaceOperationLockMock,
+  get withArchivedWorkspaceOperationLock(): typeof withArchivedWorkspaceOperationLockMock {
+    return withArchivedWorkspaceOperationLockMock;
+  },
 }));
 
 jest.mock('../lib/validation', () => ({
@@ -53,7 +59,9 @@ jest.mock('../lib/validation', () => ({
 }));
 
 jest.mock('../lib/window-send', () => ({
-  sendToAllWindows: sendToAllWindowsMock,
+  get sendToAllWindows(): typeof sendToAllWindowsMock {
+    return sendToAllWindowsMock;
+  },
 }));
 
 import {

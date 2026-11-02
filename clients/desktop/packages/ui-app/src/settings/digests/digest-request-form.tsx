@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   SettingsOperationError,
   type DigestRequestCredits,
@@ -295,14 +295,14 @@ export function DigestRequestForm({
             className="rounded-md border bg-base px-2 py-1 text-s fg-primary disabled:cursor-not-allowed disabled:opacity-60"
           />
         </label>
-        <button
+        <Button
           type="submit"
+          size="compact"
           disabled={!canSubmit}
           data-testid={`${testIdPrefix}-digest-request-submit`}
-          className="focus-ring rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? 'Requesting…' : 'Request digest'}
-        </button>
+        </Button>
       </form>
 
       {notice && (
@@ -317,14 +317,13 @@ export function DigestRequestForm({
           {/* Deliberately a manual refresh rather than a poll: generation is
               queue-dependent and can run for minutes, and a timer in an effect
               is exactly the pattern this repo warns against. */}
-          <button
-            type="button"
+          <Button
+            size="compact"
             data-testid={`${testIdPrefix}-digest-request-refresh`}
             onClick={() => router.refresh()}
-            className="text-xs font-medium fg-accent hover:underline"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       )}
 

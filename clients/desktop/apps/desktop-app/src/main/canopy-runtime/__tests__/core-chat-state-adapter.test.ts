@@ -1,6 +1,14 @@
+import {
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
+import { queryPortalChatState } from '../../portal/adapters/chat-state-query';
+import type { PortalAdapterContext } from '../../portal/adapters/types';
 import type {
   ChatStateCommandPort,
   ChatStateSnapshot,
+  ChatSendMessageRequest,
+  PersistedHostQueuedMessage,
 } from '@canopy/desktop-shared/types';
 import { createDesktopRuntime } from '../desktop-runtime';
 import { drainChatStateBeforeRuntimeShutdown } from '../chat-state-shutdown';
@@ -68,7 +76,7 @@ const caller = {
   clientInstanceId: 'test-client',
   authorityId: 'local-desktop',
   interfaceKind: 'test' as const,
-  grants: ['core.chat.read'],
+  grants: ['core.chat.read' as const],
 };
 
 function createPort(): ChatStateCommandPort {
@@ -76,6 +84,7 @@ function createPort(): ChatStateCommandPort {
     getState: jest.fn().mockResolvedValue(snapshot),
     getTranscriptPage: jest.fn(),
     searchTranscript: jest.fn(),
+    readVisual: jest.fn(),
     readToolOutput: jest.fn(),
     command: jest.fn(),
     subscribe: jest.fn().mockReturnValue(() => undefined),
@@ -83,6 +92,59 @@ function createPort(): ChatStateCommandPort {
 }
 
 describe('core chat state read adapter', () => {
+  it.each([false, true])(
+    'keeps registered and Portal reads equivalent with durable turn present=%s',
+    async (withTurn) => {
+      const source = structuredClone(snapshot);
+      if (withTurn)
+        source.runtimeByChatId['chat-1'].turn = serializeChatTurnState(
+          initialChatTurnState(),
+        );
+      const port = createPort();
+      port.getState = jest.fn().mockResolvedValue(source);
+      const runtime = createDesktopRuntime({ getChatStatePort: () => port });
+      const context: PortalAdapterContext = {
+        sessionId: 'turn-query-session',
+        getWindow: () => null,
+        enqueueEvent: jest.fn(),
+        complete: jest.fn(),
+        fail: jest.fn(),
+      };
+      try {
+        const params = {
+          scope: {
+            workspaceId: source.projectId,
+            worktreeId: source.worktreeId,
+          },
+        };
+        const registered = await runtime.query(
+          'core.chat.snapshot.get',
+          params,
+          { caller },
+        );
+        const legacy = await runtime.queryChatStateForLegacyIpc(params, {
+          caller,
+        });
+        const portal = await queryPortalChatState(context, {
+          projectId: source.projectId,
+          worktreeId: source.worktreeId,
+        });
+        expect(registered).toEqual(legacy.canonicalResult);
+        expect(portal).toEqual(legacy.legacyResult);
+        expect(portal).toBe(source);
+        expect(registered.runtimeByChatId['chat-1']).toEqual({
+          status: 'streaming',
+          queuedMessageIds: ['queued-1'],
+        });
+        expect(portal.runtimeByChatId['chat-1'].turn).toEqual(
+          source.runtimeByChatId['chat-1'].turn,
+        );
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
+
   it('projects custom names for live and archived chats without changing older title fallbacks', async () => {
     const port = createPort();
     jest.spyOn(port, 'getState').mockResolvedValue({
@@ -127,6 +189,7 @@ describe('core chat state read adapter', () => {
       await runtime.shutdown();
     }
   });
+
   it('keeps dispatched legacy reads available while chat state drains on quit', async () => {
     const runtime = createDesktopRuntime({ getChatStatePort: createPort });
     let finishDrain: (() => void) | undefined;
@@ -247,6 +310,74 @@ describe('core chat state read adapter', () => {
     ).rejects.toMatchObject({
       payload: { kind: 'conflict' },
     });
+    await runtime.shutdown();
+  });
+
+  it('filters evidenced internal runtime ids from portable snapshots without mutating state', async () => {
+    const sourceSnapshot = structuredClone(snapshot);
+    const target = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const queuedMessage = (
+      id: string,
+      request: Pick<
+        ChatSendMessageRequest,
+        'internalRow' | 'managedDelegationDeliveryId'
+      >,
+    ): PersistedHostQueuedMessage => ({
+      id,
+      request: { ...target, userMessageId: id, text: id, ...request },
+      origin: 'desktop',
+      enqueuedAtMs: 1,
+    });
+    sourceSnapshot.runtimeByChatId['chat-1'] = {
+      status: 'streaming',
+      queuedMessageIds: [
+        'internal-row',
+        'legacy-row',
+        'visible-row',
+        'unknown-row',
+      ],
+      queuedMessages: [
+        queuedMessage('internal-row', {
+          managedDelegationDeliveryId: 'internal-row',
+          internalRow: {
+            kind: 'delegation-request',
+            delegationId: 'delegate-1',
+            displayLine: 'Waiting for parent input',
+          },
+        }),
+        queuedMessage('legacy-row', {
+          managedDelegationDeliveryId: 'legacy-delivery',
+        }),
+        queuedMessage('visible-row', {}),
+      ],
+    };
+    const port = createPort();
+    jest.spyOn(port, 'getState').mockResolvedValue(sourceSnapshot);
+    const runtime = createDesktopRuntime({ getChatStatePort: () => port });
+
+    const projected = await runtime.query(
+      'core.chat.snapshot.get',
+      {
+        scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+        chatId: 'chat-1',
+      },
+      { caller },
+    );
+
+    expect(projected.runtimeByChatId['chat-1']?.queuedMessageIds).toEqual([
+      'visible-row',
+      'unknown-row',
+    ]);
+    expect(sourceSnapshot.runtimeByChatId['chat-1']?.queuedMessageIds).toEqual([
+      'internal-row',
+      'legacy-row',
+      'visible-row',
+      'unknown-row',
+    ]);
     await runtime.shutdown();
   });
 

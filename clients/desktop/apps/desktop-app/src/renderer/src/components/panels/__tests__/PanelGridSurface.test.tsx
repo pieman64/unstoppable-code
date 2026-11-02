@@ -14,6 +14,7 @@ import { useChatStore } from '@/stores/chatStore';
 import type { PanelGroupModel, PanelTabModel } from '@canopy/ui-shared/panels';
 import { resetExperimentalFeaturesStoreForTest } from '@/stores/experimentalFeaturesStore';
 import { usePanelLayoutStore } from '@/stores/panelLayoutStore';
+import { useNavigationModeStore } from '@/stores/navigationModeStore';
 import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
 import {
   ChatGroupArchivedChatsAccessory,
@@ -82,7 +83,6 @@ jest.mock('@/stores/workspaceLayoutModeStore', () => {
 jest.mock('@/lib/panels/persistence-bridge', () => ({
   ensureWorktreePanelLayout: jest.fn(),
   disposeWorktreePanelHydration: jest.fn(),
-  refreshLiveMinimalLayout: jest.fn(),
 }));
 jest.mock('@/lib/panels/terminal-panel-sync', () => ({
   initTerminalPanelSync: jest.fn(),
@@ -166,9 +166,23 @@ describe('PanelGridSurface', () => {
               id: 'chat-1',
               title: 'Shared session',
               messages: [],
+              status: 'idle',
+              error: null,
+              createdAt: '2026-07-01T00:00:00.000Z',
               queuedMessages: [],
+              planMode: false,
+              proposalMode: 'optional',
+              thinkingLevel: 'high',
+              modelConfig: {
+                thinkingLevel: 'high',
+                speed: 'standard',
+                fastMode: false,
+              },
+              fastModeExplicit: false,
+              model: 'claude-sonnet-4-5-20250514',
+              providerType: 'claude',
               sharedRun: EXISTING_SHARE,
-            } as ChatTab,
+            } satisfies ChatTab,
           ],
         },
       },
@@ -309,13 +323,14 @@ describe('PanelGridSurface', () => {
       instance: { chatTabId: 'chat-1' },
     };
 
-    it('offers no hover card while the experiment is off', async () => {
+    it('offers hover cards without a Labs opt-in', async () => {
       await renderGrid();
-      expect(capturedServices?.renderTabHoverCard).toBeUndefined();
+      expect(capturedServices?.renderTabHoverCard).toEqual(
+        expect.any(Function),
+      );
     });
 
-    it('offers a preview card for chat tabs once switched on', async () => {
-      setTestLabsFeatures({ 'chat-tab-previews': true });
+    it('offers a preview card for chat tabs by default', async () => {
       await renderGrid();
       const renderCard = capturedServices?.renderTabHoverCard;
       expect(renderCard).toBeDefined();
@@ -331,17 +346,35 @@ describe('PanelGridSurface', () => {
     });
 
     it('keeps other tab kinds on their tooltip', async () => {
-      setTestLabsFeatures({ 'chat-tab-previews': true });
       await renderGrid();
       const renderCard = capturedServices?.renderTabHoverCard;
+      expect(
+        renderCard?.({ panelId: 'terminal-1', kind: 'terminal', title: 'zsh' }),
+      ).toBeNull();
       expect(
         renderCard?.({ panelId: 'browser-1', kind: 'browser', title: 'Docs' }),
       ).toBeNull();
       expect(renderCard?.({ ...chatTab, instance: undefined })).toBeNull();
     });
+
+    it('offers a preview card for bound browser tabs by default', async () => {
+      await renderGrid();
+      const card = capturedServices?.renderTabHoverCard?.({
+        panelId: 'panel-browser-b1',
+        kind: 'browser',
+        title: 'Docs',
+        instance: { browserId: 'b1' },
+      });
+      expect(isValidElement<{ browserId: string }>(card)).toBe(true);
+      expect(
+        isValidElement<{ browserId: string }>(card)
+          ? card.props.browserId
+          : null,
+      ).toBe('b1');
+    });
   });
 
-  it('offers a worktree grid no archive accessory with early access off', async () => {
+  it('offers no archive accessory with Activity card off', async () => {
     selectWorktree();
     await renderGrid(false);
 
@@ -413,12 +446,45 @@ describe('PanelGridSurface', () => {
     );
   });
 
+  it.each([
+    ['work', true],
+    ['code', false],
+  ] as const)(
+    'leads file tab menus with reveal only in %s navigation',
+    async (mode, expected) => {
+      useNavigationModeStore.setState({ mode });
+      await act(async () => {
+        root.render(
+          <PanelGridSurface
+            projectId="project-1"
+            worktreeId="worktree-1"
+            hostState={{} as never}
+          />,
+        );
+        await Promise.resolve();
+      });
+      expect(capturedServices?.fileActionsFirst).toBe(expected);
+      useNavigationModeStore.setState({ mode: 'code' });
+    },
+  );
+
+  it('does not offer a file-manager callback without a native reveal action', async () => {
+    await renderGrid();
+    expect(capturedServices?.onOpenFileInFileManager).toBeUndefined();
+  });
+
   describe('Minimal Side Panel', () => {
     const KEY = 'project-1/worktree-1';
-    const tab = (panelId: string, kind: string): PanelTabModel =>
-      ({ panelId, kind, title: kind }) as never;
-    const group = (groupId: string): PanelGroupModel =>
-      ({ groupId, tabs: [], activePanelId: null }) as never;
+    const tab = (panelId: string, kind: string): PanelTabModel => ({
+      panelId,
+      kind,
+      title: kind,
+    });
+    const group = (groupId: string): PanelGroupModel => ({
+      groupId,
+      tabs: [],
+      activePanelId: null,
+    });
 
     async function renderMinimal(
       earlyAccess: boolean,

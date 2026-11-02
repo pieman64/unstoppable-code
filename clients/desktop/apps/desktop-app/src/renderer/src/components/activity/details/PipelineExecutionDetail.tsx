@@ -750,7 +750,7 @@ export function PipelineExecutionDetail({
     try {
       const result = await window.pipelines.runAdvisor(activeExecutionId);
       if (!result.success || !result.data) {
-        throw new Error(result.error || 'Failed to start Pipeline Advisor');
+        throw new Error(result.error || 'Failed to start Workflow Advisor');
       }
       handleAdvisorEvent({
         executionId: activeExecutionId,
@@ -769,10 +769,10 @@ export function PipelineExecutionDetail({
   }, [activeExecutionId, handleAdvisorEvent]);
 
   const title =
-    state?.pipeline_snapshot.name ?? summary?.pipeline_name ?? 'Pipeline run';
+    state?.pipeline_snapshot.name ?? summary?.pipeline_name ?? 'Workflow run';
   const rootLabel =
     viewStack.length > 0
-      ? (rootSummary?.pipeline_name ?? 'Pipeline run')
+      ? (rootSummary?.pipeline_name ?? 'Workflow run')
       : title;
 
   const handleBodyScroll = useRetainedBodyScroll(bodyRef, state !== undefined);
@@ -836,7 +836,7 @@ export function PipelineExecutionDetail({
               <button
                 type="button"
                 onClick={() => navigateToBreadcrumb(-1)}
-                className="rounded px-1 py-0.5 fg-info/80 transition hover:bg-fg-primary/[0.04] hover:fg-info"
+                className="rounded px-1 py-0.5 fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
               >
                 {rootLabel}
               </button>
@@ -854,7 +854,7 @@ export function PipelineExecutionDetail({
                     <button
                       type="button"
                       onClick={() => navigateToBreadcrumb(index)}
-                      className="rounded px-1 py-0.5 fg-info/80 transition hover:bg-fg-primary/[0.04] hover:fg-info"
+                      className="rounded px-1 py-0.5 fg-info/80 transition-colors hover:bg-fg-primary/[0.04] hover:fg-info"
                     >
                       {entry.label}
                     </button>

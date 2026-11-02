@@ -1,4 +1,7 @@
-import { TranscriptPagingControls } from '@canopy/ui-shared/components';
+import {
+  ComposerTrayProvider,
+  TranscriptPagingControls,
+} from '@canopy/ui-shared/components';
 import { estimateTranscriptWindowBytes } from '@canopy/agent-transcript/transcript-storage';
 import {
   loadChatTranscriptPage,
@@ -20,14 +23,18 @@ import type {
   FileReference,
 } from '@canopy/desktop-shared/types';
 import { useChatStore, type QueuedChatMessage } from '@/stores/chatStore';
+import { hasPendingApprovalForChat } from '@/stores/chat/pending-approvals';
 import { useShallow } from 'zustand/react/shallow';
+import { QueuedEditComposerSlot } from '@canopy/ui-app/chat-panel';
 import { ChatInput } from './ChatInput';
 import { ChatStateRecoveryBanner } from './ChatStateRecoveryBanner';
+import { ComposerWorkDrawerProvider } from './composer-work-drawer-context';
 import { StaleTranscriptCatchUpControls } from './StaleTranscriptCatchUpControls';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { useTranscriptSearch } from '@/hooks/useTranscriptSearch';
 import { useContentSearch } from '@/hooks/useContentSearch';
 import { createDomSearchExecutor } from '@/lib/dom-search-highlight';
+import { getSavedChatScrollPosition } from '@/lib/tab-scroll-positions';
 import {
   useSurfaceFindStore,
   type FindController,
@@ -37,11 +44,23 @@ import type { SearchExecutor } from '@/components/shared/search/search-types';
 import type { ActiveComposerView, ActiveTranscriptView } from './types';
 import type { ScheduledQueuedMessage } from '@/lib/worktreeSessionPromptAutomations';
 import { extractUserMessageHistory } from './message-history';
+import { useQueuedMessageComposerEditor } from './useQueuedMessageComposerEditor';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import type { ChatInterfaceModeControl } from './chatInterfaceModes';
+import {
+  useSetupQueueAnnouncement,
+  useWorktreeSetupWait,
+} from '@/hooks/useWorktreeSetupWait';
+import { QueuedMessageAnnouncer } from '@canopy/ui-shared/components';
+import {
+  loadChatMessageListModule,
+  loadedChatMessageListModule,
+} from './chatMessageListChunk';
 
-const ChatMessageList = lazy(() =>
-  import('./ChatMessageList').then((m) => ({ default: m.ChatMessageList })),
+const NO_QUEUED_MESSAGES: readonly QueuedChatMessage[] = [];
+
+const LazyChatMessageList = lazy(() =>
+  loadChatMessageListModule().then((m) => ({ default: m.ChatMessageList })),
 );
 
 // ---------------------------------------------------------------------------
@@ -122,7 +141,10 @@ interface ChatContentProps {
   runningScheduledMessageId?: string | null;
   scheduledMessageError?: string | null;
   queuedMessageSchedulingEnabled?: boolean;
-  /** Host renders the native composer through shared ChatPanel.renderComposer. */
+  /**
+   * Host renders the native composer through shared ChatPanel.renderComposer
+   * and the queued-message editor through its hostQueuedMessageEditor.
+   */
   hideComposer?: boolean;
   /**
    * Optional suggested-prompt chips (CAN-1809) rendered inside the
@@ -205,6 +227,19 @@ export function ChatContent({
   const searchExecutorRef = useRef<SearchExecutor>(searchExecutor);
   searchExecutorRef.current = searchExecutor;
   const domSearch = useContentSearch(searchExecutorRef);
+  const queuedMessageEditor = useQueuedMessageComposerEditor({
+    queuedMessages: transcript?.queuedMessages,
+    editingQueuedMessageIndex: transcript?.editingQueuedMessageIndex,
+    autoFocus: transcript?.editingQueuedMessageFocusAllowed,
+    onCancelEditQueuedMessage,
+    onSaveEditQueuedMessage,
+    scheduledMessages,
+    editingScheduledMessageId,
+    onCancelEditScheduledMessage,
+    onSaveEditScheduledMessage,
+    composerTab,
+    scheduleEnabled: queuedMessageSchedulingEnabled,
+  });
   const userMessageHistory = useMemo(
     (): string[] =>
       hideComposer ? [] : extractUserMessageHistory(transcript?.messages ?? []),
@@ -221,6 +256,46 @@ export function ChatContent({
     }),
   );
 
+  // The dock's pending approvals pause this chat's running turn timer in the
+  // same render that shows the card (CAN-4996).
+  const approvalChatId = targetOverride?.chatId ?? transcript?.id;
+  const waitingForApproval = useChatStore(
+    (s): boolean =>
+      recoveryScope !== null &&
+      approvalChatId !== undefined &&
+      hasPendingApprovalForChat(
+        s.pendingApprovals,
+        recoveryScope.projectId,
+        recoveryScope.worktreeId,
+        approvalChatId,
+      ),
+  );
+
+  // The setup wait a new worktree's queued messages show, and the polite
+  // announcements for it: queued once, and sending when they actually go.
+  const setupChatId = transcript?.id;
+  const setupWaitTarget = useMemo(
+    () =>
+      recoveryScope && setupChatId !== undefined
+        ? {
+            projectId: recoveryScope.projectId,
+            worktreeId: recoveryScope.worktreeId,
+            chatId: setupChatId,
+          }
+        : null,
+    [recoveryScope, setupChatId],
+  );
+  const setupWait = useWorktreeSetupWait(
+    setupWaitTarget,
+    transcript?.queuedForSetup === true,
+    transcript?.queuedMessages ?? NO_QUEUED_MESSAGES,
+  );
+  const queueAnnouncement = useSetupQueueAnnouncement(
+    setupWaitTarget,
+    setupWait,
+    (transcript?.queuedMessages.length ?? 0) > 0,
+  );
+
   const canonicalSearchEnabled = Boolean(
     transcript?.transcript && recoveryScope,
   );
@@ -233,6 +308,12 @@ export function ChatContent({
   );
   const search = canonicalSearchEnabled ? transcriptSearch : domSearch;
 
+  // A chunk loaded ahead of this mount (a Home first send waits for it) renders
+  // without suspending, so the first frame shows the transcript. Chosen once
+  // per mount: swapping component types later would remount the list.
+  const [ChatMessageList] = useState(
+    () => loadedChatMessageListModule()?.ChatMessageList ?? LazyChatMessageList,
+  );
   const [pageLoading, setPageLoading] = useState(false);
   const [turnPageId, setTurnPageId] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -241,6 +322,17 @@ export function ChatContent({
   const pageProjectId = recoveryScope?.projectId;
   const pageWorktreeId = recoveryScope?.worktreeId;
   const pageChatId = transcript?.id;
+  const pageScrollTarget = useMemo(
+    () =>
+      pageProjectId && pageWorktreeId && pageChatId
+        ? {
+            projectId: pageProjectId,
+            worktreeId: pageWorktreeId,
+            chatId: pageChatId,
+          }
+        : undefined,
+    [pageChatId, pageProjectId, pageWorktreeId],
+  );
   const loadPage = useCallback(
     async (older = false, turnId?: string): Promise<void> => {
       if (!pageProjectId || !pageWorktreeId || !pageChatId) return;
@@ -259,6 +351,11 @@ export function ChatContent({
           },
           older,
           turnId,
+          {
+            retainOlderWindow:
+              pageScrollTarget === undefined ||
+              getSavedChatScrollPosition(pageScrollTarget)?.atBottom === false,
+          },
         );
       } catch {
         if (pageRequest.current === request)
@@ -270,25 +367,26 @@ export function ChatContent({
         }
       }
     },
-    [pageProjectId, pageWorktreeId, pageChatId],
+    [pageProjectId, pageScrollTarget, pageWorktreeId, pageChatId],
   );
   const needsTurnPage =
     transcript?.transcriptLoaded === false ||
     (transcript?.transcriptWindow?.before !== undefined &&
       transcript.transcriptWindow.view !== 'turns');
   useEffect(() => {
-    pageRequest.current += 1;
-    pageInFlight.current = false;
     setTurnPageId(null);
-    setPageLoading(false);
+    if (!pageInFlight.current) setPageLoading(false);
     setPageError(null);
-    // Older raw tail projections can omit the original prompt and timer,
-    // especially when a later in-turn answer is the latest human message.
-    // Restore the retained turn frame without waiting for a history scroll.
-    if (needsTurnPage) void loadPage();
     return (): void => {
       pageRequest.current += 1;
+      pageInFlight.current = false;
     };
+  }, [loadPage]);
+  useEffect(() => {
+    // Keep an older read or the paging sentinel on the same in-flight slot.
+    // The store loader retries a reset itself; changing needsTurnPage must not
+    // clear this guard and issue a duplicate reload.
+    if (needsTurnPage) void loadPage();
   }, [loadPage, needsTurnPage]);
   const loadTurn = useCallback(
     (id: string): Promise<void> => loadPage(true, id),
@@ -488,113 +586,120 @@ export function ChatContent({
   }
 
   return (
-    <div
-      ref={cancelShortcutFallbackRootRef}
-      className="contents"
-      data-find-surface="chat"
-      data-find-scope={transcript.id}
-    >
-      <div
-        ref={searchHostRef}
-        // The find bar returns focus here when it closes without an opener.
-        tabIndex={-1}
-        className="relative flex min-h-0 flex-1 flex-col outline-none"
-      >
-        <Suspense
-          fallback={
-            <div className="flex min-h-0 flex-1 items-center justify-center">
-              <LoadingSpinner tone="secondary" />
-            </div>
-          }
+    <ComposerWorkDrawerProvider>
+      {/* A host that draws the composer owns the tray around this view. */}
+      <ComposerTrayProvider enabled={!hideComposer}>
+        <div
+          ref={cancelShortcutFallbackRootRef}
+          className="contents"
+          data-find-surface="chat"
+          data-find-scope={transcript.id}
         >
-          <ChatMessageList
-            canonicalSearch={canonicalSearchEnabled}
-            searchSelection={transcriptSearch.selection}
-            pagingControls={pageControls}
-            transcriptTurns={transcript.transcriptWindow?.turns}
-            onLoadTurn={loadTurn}
-            turnPageId={turnPageId}
-            turnLoading={pageLoading}
-            turnError={pageError}
-            messages={transcript.messages}
-            loadedBytesEstimate={estimateTranscriptWindowBytes(
-              transcript.transcript ?? {
-                committedByteLength: 0,
-                committedMessageCount: 0,
-              },
-              transcript.messages.length,
-            )}
-            pendingTurnTimerId={transcript.pendingTurnTimerId}
-            queuedMessages={transcript.queuedMessages}
-            chatId={transcript.id}
-            agentUsage={transcript.agentUsage}
-            turnDiffs={transcript.turnDiffs}
-            memoryByMessageId={transcript.memoryByMessageId}
-            onClearQueuedMessage={onClearQueuedMessage}
-            onForceQueuedMessage={onForceQueuedMessage}
-            onEditQueuedMessage={onEditQueuedMessage}
-            onCancelEditQueuedMessage={onCancelEditQueuedMessage}
-            onSaveEditQueuedMessage={onSaveEditQueuedMessage}
-            pendingQueuedMessageEditId={transcript.pendingQueuedMessageEditId}
-            editingQueuedMessageIndex={transcript.editingQueuedMessageIndex}
-            editingQueuedMessageFocusAllowed={
-              transcript.editingQueuedMessageFocusAllowed
-            }
-            composerTab={composerTab}
-            onResetToPoint={readOnly ? undefined : onResetToPoint}
-            queuedForSetup={transcript.queuedForSetup === true}
-            targetOverride={targetOverride}
-            hideBranchActions={hideBranchActions}
-            containerRef={messageContainerRef}
-            searchActive={searchOpen}
-            suppressAutoScroll={searchOpen && search.totalCount > 0}
-            scheduledMessages={scheduledMessages}
-            onEditScheduledMessage={onEditScheduledMessage}
-            onCancelEditScheduledMessage={onCancelEditScheduledMessage}
-            onSaveEditScheduledMessage={onSaveEditScheduledMessage}
-            onClearScheduledMessage={onClearScheduledMessage}
-            onInterruptScheduledMessage={onInterruptScheduledMessage}
-            editingScheduledMessageId={editingScheduledMessageId}
-            runningScheduledMessageId={runningScheduledMessageId}
-            queuedMessageSchedulingEnabled={queuedMessageSchedulingEnabled}
-            enableForkedFromLink
-          />
-        </Suspense>
-        {scheduledMessageError && (
           <div
-            role="alert"
-            data-testid="chat-scheduled-message-error"
-            className="border-t px-4 py-2 text-xs fg-destructive"
+            ref={searchHostRef}
+            // The find bar returns focus here when it closes without an opener.
+            tabIndex={-1}
+            className="relative flex min-h-0 flex-1 flex-col outline-none"
           >
-            {scheduledMessageError}
+            <Suspense
+              fallback={
+                <div className="flex min-h-0 flex-1 items-center justify-center">
+                  <LoadingSpinner tone="secondary" />
+                </div>
+              }
+            >
+              <ChatMessageList
+                canonicalSearch={canonicalSearchEnabled}
+                searchSelection={transcriptSearch.selection}
+                pagingControls={pageControls}
+                transcriptTurns={transcript.transcriptWindow?.turns}
+                onLoadTurn={loadTurn}
+                turnPageId={turnPageId}
+                turnLoading={pageLoading}
+                turnError={pageError}
+                messages={transcript.messages}
+                loadedBytesEstimate={estimateTranscriptWindowBytes(
+                  transcript.transcript ?? {
+                    committedByteLength: 0,
+                    committedMessageCount: 0,
+                  },
+                  transcript.messages.length,
+                )}
+                pendingTurnTimerId={transcript.pendingTurnTimerId}
+                startingTurnUserMessageId={transcript.startingTurnUserMessageId}
+                startingTurnPresentationKey={
+                  transcript.startingTurnPresentationKey
+                }
+                waitingForApproval={waitingForApproval}
+                queuedMessages={transcript.queuedMessages}
+                chatId={transcript.id}
+                agentUsage={transcript.agentUsage}
+                turnDiffs={transcript.turnDiffs}
+                memoryByMessageId={transcript.memoryByMessageId}
+                onClearQueuedMessage={onClearQueuedMessage}
+                onForceQueuedMessage={onForceQueuedMessage}
+                onEditQueuedMessage={onEditQueuedMessage}
+                pendingQueuedMessageEditId={
+                  transcript.pendingQueuedMessageEditId
+                }
+                editingQueuedMessageIndex={transcript.editingQueuedMessageIndex}
+                onResetToPoint={readOnly ? undefined : onResetToPoint}
+                queuedForSetup={transcript.queuedForSetup === true}
+                setupWait={setupWait}
+                targetOverride={targetOverride}
+                hideBranchActions={hideBranchActions}
+                containerRef={messageContainerRef}
+                searchActive={searchOpen}
+                suppressAutoScroll={searchOpen && search.totalCount > 0}
+                scheduledMessages={scheduledMessages}
+                onEditScheduledMessage={onEditScheduledMessage}
+                onClearScheduledMessage={onClearScheduledMessage}
+                onInterruptScheduledMessage={onInterruptScheduledMessage}
+                editingScheduledMessageId={editingScheduledMessageId}
+                runningScheduledMessageId={runningScheduledMessageId}
+                enableForkedFromLink
+              />
+            </Suspense>
+            <QueuedMessageAnnouncer announcement={queueAnnouncement} />
+            {scheduledMessageError && (
+              <div
+                role="alert"
+                data-testid="chat-scheduled-message-error"
+                className="border-t px-4 py-2 text-xs fg-destructive"
+              >
+                {scheduledMessageError}
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {recoveryScope && (
-        <ChatStateRecoveryBanner
-          projectId={recoveryScope.projectId}
-          worktreeId={recoveryScope.worktreeId}
-        />
-      )}
-      {!hideComposer && (
-        <ChatInput
-          allowCursor={allowCursor}
-          cancelShortcutTargetRootRef={cancelShortcutFallbackRootRef}
-          tab={composerTab}
-          userMessageHistory={userMessageHistory}
-          beforeComposer={beforeComposer}
-          interfaceModeControl={interfaceModeControl}
-          extraFileReferences={extraFileReferences}
-          targetOverride={targetOverride}
-          nativeSessionComposer={nativeSessionComposer}
-          hidePlanMode={hidePlanMode}
-          hideDirectoryPicker={hideDirectoryPicker}
-          disableTerminalMode={disableTerminalMode}
-          disableFileTypeahead={disableFileTypeahead}
-          lockedSkillRefs={lockedSkillRefs}
-          onSendMessage={onSendMessage}
-        />
-      )}
-    </div>
+          {recoveryScope && (
+            <ChatStateRecoveryBanner
+              projectId={recoveryScope.projectId}
+              worktreeId={recoveryScope.worktreeId}
+            />
+          )}
+          {!hideComposer && (
+            <QueuedEditComposerSlot editor={queuedMessageEditor}>
+              <ChatInput
+                allowCursor={allowCursor}
+                cancelShortcutTargetRootRef={cancelShortcutFallbackRootRef}
+                tab={composerTab}
+                userMessageHistory={userMessageHistory}
+                beforeComposer={beforeComposer}
+                interfaceModeControl={interfaceModeControl}
+                extraFileReferences={extraFileReferences}
+                targetOverride={targetOverride}
+                nativeSessionComposer={nativeSessionComposer}
+                hidePlanMode={hidePlanMode}
+                hideDirectoryPicker={hideDirectoryPicker}
+                disableTerminalMode={disableTerminalMode}
+                disableFileTypeahead={disableFileTypeahead}
+                lockedSkillRefs={lockedSkillRefs}
+                onSendMessage={onSendMessage}
+              />
+            </QueuedEditComposerSlot>
+          )}
+        </div>
+      </ComposerTrayProvider>
+    </ComposerWorkDrawerProvider>
   );
 }

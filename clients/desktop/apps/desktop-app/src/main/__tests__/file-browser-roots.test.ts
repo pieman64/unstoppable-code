@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 
 const mockGetCanopyDataDir = jest.fn<string, []>();
 const mockResolveViewerRoots = jest.fn<Promise<unknown>, unknown[]>();
@@ -10,11 +10,19 @@ jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
   getCanopyDataDir: (): string => mockGetCanopyDataDir(),
 }));
 
-jest.mock('../lib/workspace-persistence', () => ({
-  ...jest.requireActual<object>('../lib/workspace-persistence'),
-  readWorkspaceConfig: (id: string): Promise<unknown> =>
-    mockReadWorkspaceConfig(id),
-}));
+jest.mock('../lib/workspace-persistence', () => {
+  const actual = jest.requireActual<object>('../lib/workspace-persistence');
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      readWorkspaceConfig: {
+        value: (id: string): Promise<unknown> => mockReadWorkspaceConfig(id),
+        enumerable: true,
+      },
+    },
+  );
+});
 
 jest.mock('../shared-containers/read/viewer-root', () => ({
   resolveSharedContainerViewerReadRoots: (
@@ -29,7 +37,38 @@ import {
 } from '@canopy/desktop-shared/types';
 import { getFileBrowserRoots } from '../lib/file-browser-roots';
 import { getAppAdvisorHomeDir, getWorkspaceHomeDir } from '../lib/paths';
-import { registerWorkspaceTypes } from '../lib/workspace-registry';
+import {
+  registerWorkspaceExternalPaths,
+  registerWorkspaceTypes,
+} from '../lib/workspace-registry';
+import {
+  writeCoworkMigrationMap,
+  coworkMigrationMapTestExports,
+} from '../lib/cowork-migration-map';
+
+function seedIndex(
+  dataDir: string,
+  name: string | undefined = 'Vendor Spend Q3',
+): void {
+  mkdirSync(join(dataDir, 'workspaces'), { recursive: true });
+  writeFileSync(
+    join(dataDir, 'workspaces/index.json'),
+    JSON.stringify({
+      version: 1,
+      workspaces: [
+        'other',
+        'cowork-default',
+        'legacy-project-a',
+        'cowork-a',
+      ].map((id) => ({
+        id,
+        name: id === 'other' ? 'Wrong workspace' : name,
+        type: 'cowork',
+        color: '#fff',
+      })),
+    }),
+  );
+}
 
 describe('getFileBrowserRoots cowork project roots', () => {
   let tempDir = '';
@@ -37,12 +76,17 @@ describe('getFileBrowserRoots cowork project roots', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'canopy-file-browser-roots-'));
     mockGetCanopyDataDir.mockReturnValue(tempDir);
+    seedIndex(tempDir);
     registerWorkspaceTypes(new Map());
+    registerWorkspaceExternalPaths(new Map());
+    coworkMigrationMapTestExports.resetCache();
     mockResolveViewerRoots.mockReset();
   });
 
   afterEach(() => {
     registerWorkspaceTypes(new Map());
+    registerWorkspaceExternalPaths(new Map());
+    coworkMigrationMapTestExports.resetCache();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -52,12 +96,12 @@ describe('getFileBrowserRoots cowork project roots', () => {
 
     const result = await getFileBrowserRoots('cowork-default', 'home');
 
-    // The workspace folder itself is the primary root, labeled "Workspace".
+    // The workspace folder itself remains the primary root.
     const workspaceRoot = result.roots.find(
       (root) => root.repoId === 'workspace',
     );
     expect(workspaceRoot?.absolutePath).toBe(home);
-    expect(workspaceRoot?.repoName).toBe('Workspace');
+    expect(workspaceRoot?.repoName).toBe('Vendor Spend Q3');
     expect(result.roots[0]?.repoId).toBe('workspace');
     expect(
       result.roots.find((root) => root.repoId === 'notes')?.absolutePath,
@@ -118,6 +162,105 @@ describe('getFileBrowserRoots cowork project roots', () => {
     ).toBe(getCoworkManagedSubdir(home, 'notes'));
   });
 
+  it.each([undefined, '', '   ', '  支出 / Q3 🌳  '])(
+    'resolves attached-folder display metadata %j without changing identity',
+    async (name) => {
+      seedIndex(tempDir, name === undefined ? '' : name);
+      if (name === undefined) {
+        writeFileSync(
+          join(tempDir, 'workspaces/index.json'),
+          JSON.stringify({
+            version: 1,
+            workspaces: [
+              { id: 'cowork-default', type: 'cowork', color: '#fff' },
+            ],
+          }),
+        );
+      }
+      registerWorkspaceTypes(new Map([['cowork-default', 'cowork']]));
+      const home = join(tempDir, 'attached-folder');
+      registerWorkspaceExternalPaths(new Map([['cowork-default', home]]));
+      const result = await getFileBrowserRoots('cowork-default', 'home');
+      expect(result.roots[0]).toMatchObject({
+        repoId: 'workspace',
+        repoName: name?.trim() || basename(home),
+        absolutePath: home,
+        rootKind: 'standalone',
+      });
+    },
+  );
+
+  it('falls back to the managed-home basename when the display name is blank', async () => {
+    seedIndex(tempDir, '   ');
+    registerWorkspaceTypes(new Map([['cowork-default', 'cowork']]));
+    const result = await getFileBrowserRoots('cowork-default', 'home');
+    expect(result.roots[0]).toMatchObject({
+      repoName: 'home',
+      absolutePath: getWorkspaceHomeDir('cowork-default'),
+    });
+  });
+
+  it('uses the owning workspace name through a migrated legacy sentinel', async () => {
+    await writeCoworkMigrationMap({ 'old-chat': 'cowork-default' });
+    registerWorkspaceTypes(new Map([['cowork-default', 'cowork']]));
+    const result = await getFileBrowserRoots('standalone-chat', 'old-chat');
+    expect(result.roots[0]).toMatchObject({
+      repoName: 'Vendor Spend Q3',
+      absolutePath: getWorkspaceHomeDir('cowork-default'),
+    });
+  });
+
+  it('refreshes a renamed project without changing root paths or identities', async () => {
+    registerWorkspaceTypes(new Map([['cowork-default', 'cowork']]));
+    const before = await getFileBrowserRoots('cowork-default', 'home');
+    seedIndex(tempDir, 'Renamed project');
+    const after = await getFileBrowserRoots('cowork-default', 'home');
+    expect(after.roots).toEqual(
+      before.roots.map((root) =>
+        root.repoId === 'workspace'
+          ? { ...root, repoName: 'Renamed project' }
+          : root,
+      ),
+    );
+  });
+
+  it.each(['unreadable', 'missing', 'duplicate', 'invalid-name'])(
+    'fails closed for %s index selection',
+    async (state) => {
+      registerWorkspaceTypes(new Map([['cowork-default', 'cowork']]));
+      const entry = {
+        id: 'cowork-default',
+        name: 'Project',
+        type: 'cowork',
+        color: '#fff',
+      };
+      writeFileSync(
+        join(tempDir, 'workspaces/index.json'),
+        state === 'unreadable'
+          ? '{'
+          : JSON.stringify({
+              version: 1,
+              workspaces:
+                state === 'duplicate'
+                  ? [entry, entry]
+                  : state === 'invalid-name'
+                    ? [{ ...entry, name: 42 }]
+                    : [],
+            }),
+      );
+      await expect(
+        getFileBrowserRoots('cowork-default', 'home'),
+      ).rejects.toMatchObject({
+        payload: {
+          code:
+            state === 'missing'
+              ? 'worker.filesystem.roots.notFound'
+              : 'worker.filesystem.roots.invalidState',
+        },
+      });
+    },
+  );
+
   it('falls back to a plain git-repo root for a non-cowork project id', async () => {
     const result = await getFileBrowserRoots('project-a', 'wt-a');
 
@@ -175,6 +318,7 @@ describe('getFileBrowserRoots golden catalogs', () => {
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'canopy-file-browser-golden-'));
     mockGetCanopyDataDir.mockReturnValue(dataDir);
+    seedIndex(dataDir);
     registerWorkspaceTypes(new Map());
     mockReadWorkspaceConfig.mockReset();
   });
@@ -304,7 +448,7 @@ describe('getFileBrowserRoots golden catalogs', () => {
       const { rows } = await golden('cowork-a', 'home');
 
       expect(rows).toEqual([
-        `workspace | Workspace | standalone | - | workspaces/cowork-a/home | ${notes} | ${prompts} | ${attachments}`,
+        `workspace | Vendor Spend Q3 | standalone | - | workspaces/cowork-a/home | ${notes} | ${prompts} | ${attachments}`,
         `notes | notes | standalone | - | ${notes}`,
         `prompts | prompts | standalone | - | ${prompts}`,
         ...(visible

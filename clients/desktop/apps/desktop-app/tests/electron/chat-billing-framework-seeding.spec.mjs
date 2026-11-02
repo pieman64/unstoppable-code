@@ -151,8 +151,9 @@ test('remembers the billing choice and seeds a new chat tab and a new worktree i
 
     // A new chat tab created in the same session inherits the remembered ON
     // choice (previously it re-defaulted to the global routing mode).
-    // The `+` creates the chat directly now — no menu step.
+    // The tab-strip + opens the Add menu; choose New chat explicitly.
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
 
     const newChatBilling = await openBillingMenu(window);
     await expect(newChatBilling.credits).toHaveAttribute(
@@ -261,6 +262,8 @@ test('a credits-only user gets the gateway default and AI Credits billing on a n
     await injectCreditsDefaultRegistry(electronApp);
 
     await window.getByTestId('panel-add-tab-group-chat').click();
+
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const picker = window
       .locator('[data-testid="chat-model-picker"]:visible')
       .first();
@@ -277,7 +280,7 @@ test('a credits-only user gets the gateway default and AI Credits billing on a n
       window.locator(
         '[data-testid="chat-model-row-credits-deepseek-v4-pro"]:visible',
       ),
-    ).toHaveText('AI credits');
+    ).toHaveText('AI Credits');
     // No row menu for it holds billing, whichever button opens it.
     await expect(
       window.locator(
@@ -336,6 +339,7 @@ test('an AI-Credits-routed chat displays and cycles the gateway-advertised think
     // A credits-only user's new chat lands on the gateway-only default model,
     // which routes on AI Credits by construction.
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const picker = window
       .locator('[data-testid="chat-model-picker"]:visible')
       .first();

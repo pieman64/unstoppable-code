@@ -14,7 +14,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
-const INTERVIEW_PROMPT_PREFIX = 'Interview me to help me build a pipeline';
+const INTERVIEW_PROMPT_PREFIX = 'Interview me to help me build a workflow';
 
 test('the main New pipeline action starts the interview in a Cowork chat', async () => {
   const { electronApp, userDataDir } = await launchCanopy();

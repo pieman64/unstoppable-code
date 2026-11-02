@@ -1,11 +1,105 @@
 import { renderToString } from 'react-dom/server';
 import { QueuedMessageBubble } from '../QueuedMessageBubble';
+import { QUEUED_MESSAGE_WAITING_REASON_COPY } from '../QueuedMessageReason';
 import {
   BUBBLE_ACTION_BADGE_CLASS,
   BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS,
 } from '../../bubble-badge';
 
 describe('QueuedMessageBubble', () => {
+  it('does not render a reason line when the message has no reason', () => {
+    const html = renderToString(
+      <QueuedMessageBubble message={{ id: 'queue-1', text: 'queued text' }} />,
+    );
+
+    expect(html).toContain(
+      '<div class="mb-1 text-xs fg-secondary">Queued</div><div class="break-words">',
+    );
+  });
+
+  it('renders a reason line directly under Queued when provided', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{
+          id: 'queue-1',
+          text: 'queued text',
+          reason: 'Waiting for active chat sessions to finish.',
+        }}
+      />,
+    );
+
+    expect(html).toContain(
+      '<div class="mb-1 text-xs fg-secondary">Queued</div><div class="mb-1 text-xs fg-secondary">Waiting for active chat sessions to finish.</div><div class="break-words">',
+    );
+  });
+
+  it('renders a host waiting reason with its stable test id and copy', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{
+          id: 'queue-1',
+          text: 'queued text',
+          waitingReason: 'steer_unavailable',
+        }}
+      />,
+    );
+
+    expect(html).toContain('data-testid="queued-message-waiting-reason"');
+    expect(html).toContain('data-waiting-reason="steer_unavailable"');
+    expect(html).toContain(
+      QUEUED_MESSAGE_WAITING_REASON_COPY.steer_unavailable,
+    );
+  });
+
+  it('shows the background-work reason and Run now on a held row', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{
+          id: 'queue-1',
+          text: 'queued text',
+          waitingReason: 'background_work',
+        }}
+        turnPhase="foreground"
+        onRunNow={(): void => {}}
+      />,
+    );
+
+    expect(html).toContain('data-waiting-reason="background_work"');
+    expect(html).toContain(QUEUED_MESSAGE_WAITING_REASON_COPY.background_work);
+    expect(html).toContain('data-testid="queued-message-run-now"');
+    expect(html).not.toContain('data-testid="queued-message-retry"');
+    expect(html).not.toContain('data-testid="queued-message-interrupt"');
+  });
+
+  it('does not render a host waiting reason when one is not provided', () => {
+    const html = renderToString(
+      <QueuedMessageBubble message={{ id: 'queue-1', text: 'queued text' }} />,
+    );
+
+    expect(html).not.toContain('data-testid="queued-message-waiting-reason"');
+  });
+
+  it('prefers the free-text reason over a host waiting reason', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{
+          id: 'queue-1',
+          text: 'queued text',
+          reason: 'Waiting for a specific setup step.',
+          waitingReason: 'steer_unavailable',
+        }}
+      />,
+    );
+
+    expect(html).toContain(
+      '<div class="mb-1 text-xs fg-secondary">Waiting for a specific setup step.</div>',
+    );
+    expect(html).not.toContain('data-testid="queued-message-waiting-reason"');
+    expect(html).not.toContain(
+      QUEUED_MESSAGE_WAITING_REASON_COPY.steer_unavailable,
+    );
+  });
+
   it('renders the stable queue action test ids and message text', () => {
     const html = renderToString(
       <QueuedMessageBubble
@@ -128,6 +222,53 @@ describe('QueuedMessageBubble', () => {
     expect(html).not.toContain('data-testid="queued-message-steer"');
     expect(html).toContain('data-testid="queued-message-interrupt"');
   });
+
+  it.each(['idle', 'background'] as const)(
+    'hides Steer and Interrupt when the host reports the chat %s',
+    (turnPhase) => {
+      const html = renderToString(
+        <QueuedMessageBubble
+          message={{ id: 'queue-1', text: 'queued text' }}
+          turnPhase={turnPhase}
+          onCancel={(): void => {}}
+          onForce={(): void => {}}
+          onSteer={(): void => {}}
+        />,
+      );
+
+      expect(html).not.toContain('data-testid="queued-message-steer"');
+      expect(html).not.toContain('data-testid="queued-message-interrupt"');
+      expect(html).toContain('data-testid="queued-message-cancel"');
+    },
+  );
+
+  it('keeps Steer and Interrupt in a foreground turn', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{ id: 'queue-1', text: 'queued text' }}
+        turnPhase="foreground"
+        onForce={(): void => {}}
+        onSteer={(): void => {}}
+      />,
+    );
+
+    expect(html).toContain('data-testid="queued-message-steer"');
+    expect(html).toContain('data-testid="queued-message-interrupt"');
+  });
+
+  it('offers Retry and Run now outside a foreground turn', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{ id: 'queue-1', text: 'queued text' }}
+        turnPhase="background"
+        onRetry={(): void => {}}
+        onRunNow={(): void => {}}
+      />,
+    );
+
+    expect(html).toContain('data-testid="queued-message-retry"');
+    expect(html).toContain('data-testid="queued-message-run-now"');
+  });
 });
 
 describe('QueuedMessageBubble subordinate steering request', () => {
@@ -233,5 +374,28 @@ describe('QueuedMessageBubble fired watcher', () => {
     expect(html).not.toContain('canopy_watcher_event');
     expect(html).not.toContain('Plan ready.');
     expect(html).toContain('bg-info-subtle');
+  });
+
+  it('passes a held row to a disabled Retry with no other send action', () => {
+    const html = renderToString(
+      <QueuedMessageBubble
+        message={{
+          id: 'held',
+          text: 'Try it prompt',
+          retryBlockedReason: 'insufficient_credits',
+        }}
+        turnPhase="foreground"
+        onForce={() => undefined}
+        onRetry={() => undefined}
+        onEdit={() => Promise.resolve()}
+        onCancel={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('data-testid="queued-message-retry"');
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).not.toContain('data-testid="queued-message-interrupt"');
+    expect(html).toContain('data-testid="queued-message-edit"');
+    expect(html).toContain('data-testid="queued-message-cancel"');
   });
 });

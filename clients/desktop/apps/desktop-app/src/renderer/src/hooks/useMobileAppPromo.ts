@@ -69,16 +69,19 @@ export function useMobileAppPromo(): UseMobileAppPromoResult {
       return;
     }
     let cancelled = false;
+    let readVersion = 0;
     const reload = (): void => {
+      const version = ++readVersion;
+      setAccount(null);
       const loadAccount = window.api?.loadCanopyCloudAccount;
       if (typeof loadAccount === 'function') {
         void loadAccount()
           .then((next) => {
-            if (cancelled) return;
+            if (cancelled || version !== readVersion) return;
             setAccount(next);
           })
           .catch(() => {
-            if (cancelled) return;
+            if (cancelled || version !== readVersion) return;
             setAccount(null);
           });
       }

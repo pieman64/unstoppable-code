@@ -203,7 +203,7 @@ describe('normalizeShareablePluginRef', () => {
     expect(() =>
       normalizeShareablePluginRef({
         type: 'bogus',
-      } as unknown as ShareableSkillRef),
+      }),
     ).toThrow();
   });
 

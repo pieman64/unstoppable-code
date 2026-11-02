@@ -15,8 +15,8 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { createAgentArtifactDedupeKey } from '@canopy/desktop-shared/lib/agent-artifacts';
 import type * as GitHubWorkflowRunRowModule from '@canopy/ui-app/code/activity/github/GitHubWorkflowRunRow';
-import type { BackgroundProcess } from '@canopy/desktop-shared/types';
-import { reportBackgroundProcessSelection } from '@/lib/current-ui-state/backgroundProcessesUiState';
+import type * as PipelineRunReceiptModule from '@canopy/ui-app/code/agent-activity/pipeline-run-receipt';
+import type { PipelineRunReceiptCardProps } from '@canopy/ui-app/code/agent-activity/PipelineRunReceiptCard';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
 import { DesktopAgentActivitySection } from '../DesktopAgentActivitySection';
 import {
@@ -30,21 +30,10 @@ let mockPipelineRunsState: Record<string, unknown>;
 let reportModalProps: Record<string, unknown> | null;
 let planReadyModalProps: Record<string, unknown> | null;
 
-jest.mock('@/lib/current-ui-state/backgroundProcessesUiState', () => ({
-  reportBackgroundProcessSelection: jest.fn(),
-}));
-const reportBackgroundProcessSelectionMock = jest.mocked(
-  reportBackgroundProcessSelection,
-);
 jest.mock('@/lib/plans/open-tracked-plan', () => ({
   openTrackedPlan: jest.fn().mockResolvedValue({ status: 'placed' }),
 }));
 const openTrackedPlanMock = jest.mocked(openTrackedPlan);
-jest.mock('@canopy/ui-app/code/activity/BackgroundTaskDetailModal', () => ({
-  BackgroundTaskDetailModal: (): JSX.Element => (
-    <div data-testid="bg-detail-modal" />
-  ),
-}));
 
 jest.mock('@/components/activity/WorkflowRunView', () => ({
   WorkflowRunView: (): null => null,
@@ -77,50 +66,53 @@ jest.mock('@canopy/ui-app', () => ({
   GitHubWorkflowRunRow: jest.requireActual<typeof GitHubWorkflowRunRowModule>(
     '@canopy/ui-app/code/activity/github/GitHubWorkflowRunRow',
   ).GitHubWorkflowRunRow,
-  PipelineRunTreeRow: ({
-    node,
-    onToggleHidden,
-    onPipelineFollowUp,
-    onViewReport,
-    onOpenPlan,
-  }: {
-    node: { summary: { id: string; pipeline_name: string; status: string } };
-    onToggleHidden?: unknown;
-    onPipelineFollowUp?: (executionId: string) => void;
-    onViewReport?: (executionId: string) => void;
-    onOpenPlan?: (executionId: string) => void;
-  }): JSX.Element => (
-    <div
-      data-testid={`pipeline-run-card-${node.summary.id}`}
-      data-has-hide-toggle={String(onToggleHidden !== undefined)}
-    >
-      {node.summary.pipeline_name} {node.summary.status}
-      {onPipelineFollowUp && (
-        <button
-          data-testid={`pipeline-follow-up-${node.summary.id}`}
-          onClick={() => onPipelineFollowUp(node.summary.id)}
-        >
-          Follow up
-        </button>
-      )}
-      {onViewReport && (
-        <button
-          data-testid={`pipeline-view-report-${node.summary.id}`}
-          onClick={() => onViewReport(node.summary.id)}
-        >
-          View report
-        </button>
-      )}
-      {onOpenPlan && (
-        <button
-          data-testid={`pipeline-view-plan-${node.summary.id}`}
-          onClick={() => onOpenPlan(node.summary.id)}
-        >
-          View plan
-        </button>
-      )}
-    </div>
-  ),
+}));
+jest.mock('@canopy/ui-app/code/agent-activity/PipelineRunReceiptCard', () => ({
+  PipelineRunReceiptCard: ({
+    receipt,
+    summaries,
+    liveOverride,
+    actions,
+  }: PipelineRunReceiptCardProps): JSX.Element => {
+    const { summary } = jest
+      .requireActual<
+        typeof PipelineRunReceiptModule
+      >('@canopy/ui-app/code/agent-activity/pipeline-run-receipt')
+      .pipelineRunReceiptView(receipt, summaries ?? [], liveOverride);
+    const { onPipelineFollowUp, onViewReport, onOpenPlan } = actions ?? {};
+    return (
+      <div
+        data-testid={`pipeline-run-card-${summary.id}`}
+        data-has-hide-toggle="false"
+      >
+        {summary.pipeline_name} {summary.status}
+        {onPipelineFollowUp && (
+          <button
+            data-testid={`pipeline-follow-up-${summary.id}`}
+            onClick={() => onPipelineFollowUp(summary.id)}
+          >
+            Follow up
+          </button>
+        )}
+        {onViewReport && (
+          <button
+            data-testid={`pipeline-view-report-${summary.id}`}
+            onClick={() => onViewReport(summary.id)}
+          >
+            View report
+          </button>
+        )}
+        {onOpenPlan && (
+          <button
+            data-testid={`pipeline-view-plan-${summary.id}`}
+            onClick={() => onOpenPlan(summary.id)}
+          >
+            View plan
+          </button>
+        )}
+      </div>
+    );
+  },
 }));
 const handleSdkSystemEvent = jest.fn();
 jest.mock('@/stores/activityStore', () => ({
@@ -169,12 +161,10 @@ Object.defineProperty(globalThis, 'CSS', {
   value: { escape: (value: string): string => value },
 });
 const openLink = jest.fn().mockResolvedValue(undefined);
-const stopBgProcess = jest.fn().mockResolvedValue('stopped');
 Object.defineProperty(window, 'api', {
   configurable: true,
   value: {
     browser: { openLink },
-    activity: { stopBgProcess },
   },
 });
 
@@ -182,21 +172,6 @@ const CHAT_TARGET = {
   projectId: 'project-1',
   worktreeId: 'worktree-1',
   chatId: 'chat-1',
-};
-
-const backgroundProcess: BackgroundProcess = {
-  id: 'bash-1',
-  chatId: 'chat-1',
-  toolUseId: 'bash-1',
-  taskId: 'task-1',
-  toolName: 'Bash',
-  kind: 'bash',
-  description: 'npm run dev',
-  status: 'running',
-  startedAt: 1,
-  updatedAt: 2,
-  outputLines: ['listening on 5173'],
-  canStop: true,
 };
 
 const receipt: SkillArtifactReceiptV1 = {
@@ -358,11 +333,11 @@ describe('DesktopAgentActivitySection', () => {
     openTrackedPlanMock.mockClear();
     reportModalProps = null;
     planReadyModalProps = null;
-    reportBackgroundProcessSelectionMock.mockClear();
-    stopBgProcess.mockResolvedValue('stopped');
     mockPipelineRunsState = {
       summaries: [],
       statesById: {},
+      rowStatesById: {},
+      loadExecutionRowState: jest.fn().mockResolvedValue(null),
       loadExecutionDetails: jest.fn().mockResolvedValue(null),
       retryExecution: jest.fn(),
       rerunExecution: jest.fn(),
@@ -816,11 +791,13 @@ describe('DesktopAgentActivitySection', () => {
           completed_at: '2026-08-04T12:05:00.000Z',
         },
       ],
-      statesById: {
+      statesById: {},
+      rowStatesById: {
         'exec-1': {
           status: 'success',
         },
       },
+      loadExecutionRowState: jest.fn().mockResolvedValue(null),
       loadExecutionDetails: jest.fn(),
       retryExecution: jest.fn(),
       rerunExecution: jest.fn(),
@@ -848,7 +825,7 @@ describe('DesktopAgentActivitySection', () => {
 
   it('keeps the canonical fallback row while execution details load', async () => {
     let resolveDetails: (value: null) => void = () => undefined;
-    const loadExecutionDetails = jest.fn(
+    const loadExecutionRowState = jest.fn(
       () =>
         new Promise<null>((resolve) => {
           resolveDetails = resolve;
@@ -857,7 +834,9 @@ describe('DesktopAgentActivitySection', () => {
     mockPipelineRunsState = {
       summaries: [],
       statesById: {},
-      loadExecutionDetails,
+      rowStatesById: {},
+      loadExecutionRowState,
+      loadExecutionDetails: jest.fn(),
       retryExecution: jest.fn(),
       rerunExecution: jest.fn(),
       advisorSnapshotsByExecutionId: {},
@@ -883,7 +862,7 @@ describe('DesktopAgentActivitySection', () => {
         />,
       );
     });
-    expect(loadExecutionDetails).toHaveBeenCalledWith('exec-unavailable');
+    expect(loadExecutionRowState).toHaveBeenCalledWith('exec-unavailable');
     expect(
       container.querySelector(
         '[data-testid="pipeline-run-card-exec-unavailable"]',
@@ -900,7 +879,9 @@ describe('DesktopAgentActivitySection', () => {
   it('keeps its run live with a summary interest while mounted, never a detail lease', () => {
     mockPipelineRunsState = {
       summaries: [],
-      statesById: { 'exec-1': { status: 'running' } },
+      statesById: {},
+      rowStatesById: { 'exec-1': { status: 'running' } },
+      loadExecutionRowState: jest.fn().mockResolvedValue(null),
       loadExecutionDetails: jest.fn(),
       retryExecution: jest.fn(),
       rerunExecution: jest.fn(),
@@ -922,12 +903,14 @@ describe('DesktopAgentActivitySection', () => {
     expect(hasPipelineSummaryInterest('exec-1')).toBe(false);
   });
 
-  it('allows execution details to reload after an earlier request settles', async () => {
-    const loadExecutionDetails = jest.fn().mockResolvedValue(null);
+  it('allows row state to reload after an earlier request settles', async () => {
+    const loadExecutionRowState = jest.fn().mockResolvedValue(null);
     mockPipelineRunsState = {
       summaries: [],
       statesById: {},
-      loadExecutionDetails,
+      rowStatesById: {},
+      loadExecutionRowState,
+      loadExecutionDetails: jest.fn(),
       retryExecution: jest.fn(),
       rerunExecution: jest.fn(),
       advisorSnapshotsByExecutionId: {},
@@ -953,156 +936,6 @@ describe('DesktopAgentActivitySection', () => {
       await Promise.resolve();
     });
 
-    expect(loadExecutionDetails).toHaveBeenCalledTimes(2);
-  });
-  it('renders background processes with the shared panel card body', () => {
-    act(() =>
-      root.render(
-        <DesktopAgentActivitySection
-          artifacts={[receipt]}
-          backgroundProcesses={[backgroundProcess]}
-          variant="active"
-          chatTarget={CHAT_TARGET}
-        />,
-      ),
-    );
-    expect(container.textContent).toContain('2 items');
-    const processItems = container.querySelector(
-      '[data-testid="agent-activity-background-process-items"]',
-    );
-    if (!processItems) throw new Error('Expected background process items');
-    // The shared `BackgroundProcessesSectionBody` owns these test ids; their
-    // presence is what proves the chat reuses the panel card UX.
-    expect(
-      processItems.querySelector('[data-testid="activity-bg-body"]'),
-    ).not.toBeNull();
-    const card = processItems.querySelector('[data-testid="activity-bg-item"]');
-    expect(card?.textContent).toContain('npm run dev');
-    expect(card?.textContent).toContain('running');
-    expect(card?.textContent).toContain('listening on 5173');
-  });
-
-  it('reports the chat background-process detail modal to App Advisor', () => {
-    act(() =>
-      root.render(
-        <DesktopAgentActivitySection
-          artifacts={[]}
-          backgroundProcesses={[backgroundProcess]}
-          variant="completed"
-          chatTarget={CHAT_TARGET}
-        />,
-      ),
-    );
-
-    act(() => {
-      container
-        .querySelector<HTMLElement>('[data-testid="activity-bg-item"]')
-        ?.click();
-    });
-
-    expect(reportBackgroundProcessSelectionMock).toHaveBeenLastCalledWith({
-      projectId: CHAT_TARGET.projectId,
-      worktreeId: CHAT_TARGET.worktreeId,
-      processes: [backgroundProcess],
-      selectedTaskId: 'task-1',
-    });
-  });
-
-  it('stops a background process through the chat card', async () => {
-    stopBgProcess.mockClear();
-    handleSdkSystemEvent.mockClear();
-    act(() =>
-      root.render(
-        <DesktopAgentActivitySection
-          artifacts={[]}
-          backgroundProcesses={[backgroundProcess]}
-          variant="completed"
-          chatTarget={CHAT_TARGET}
-        />,
-      ),
-    );
-    const stop = container.querySelector<HTMLButtonElement>(
-      '[data-testid="activity-bg-stop"]',
-    );
-    if (!stop) throw new Error('Expected a stop button');
-    await act(async () => {
-      stop.click();
-      await Promise.resolve();
-    });
-    expect(stopBgProcess).toHaveBeenCalledWith({
-      projectId: CHAT_TARGET.projectId,
-      worktreeId: CHAT_TARGET.worktreeId,
-      chatId: 'chat-1',
-      taskId: 'task-1',
-    });
-    expect(handleSdkSystemEvent).toHaveBeenCalled();
-  });
-
-  it('omits background processes when the section has no chat target', () => {
-    act(() =>
-      root.render(
-        <DesktopAgentActivitySection
-          artifacts={[receipt]}
-          backgroundProcesses={[backgroundProcess]}
-          variant="completed"
-        />,
-      ),
-    );
-    expect(
-      container.querySelector(
-        '[data-testid="agent-activity-background-process-items"]',
-      ),
-    ).toBeNull();
-  });
-});
-
-describe('DesktopAgentActivitySection Stop all delegates', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    stopBgProcess.mockClear();
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    act(() => root.unmount());
-    container.remove();
-  });
-
-  function byTestId(testId: string): HTMLButtonElement | null {
-    return container.querySelector<HTMLButtonElement>(
-      `[data-testid="${testId}"]`,
-    );
-  }
-
-  it('stops the chat delegations, and only them, on Stop all', async () => {
-    const onStopAll = jest.fn().mockResolvedValue(true);
-    act(() =>
-      root.render(
-        <DesktopAgentActivitySection
-          artifacts={[]}
-          agentItems={[<div key="delegate-1" data-testid="delegate-row-1" />]}
-          backgroundProcesses={[backgroundProcess]}
-          variant="active"
-          chatTarget={CHAT_TARGET}
-          liveDelegationIds={['delegation-1', 'delegation-2']}
-          onStopAllDelegations={onStopAll}
-        />,
-      ),
-    );
-    act(() => byTestId('agent-activity-stop-all')?.click());
-    await act(async () => {
-      byTestId('agent-activity-stop-all-confirm')?.click();
-      await Promise.resolve();
-    });
-    expect(onStopAll).toHaveBeenCalledTimes(1);
-    expect(onStopAll).toHaveBeenCalledWith(CHAT_TARGET);
-    expect(stopBgProcess).not.toHaveBeenCalled();
-    expect(
-      container.querySelector('[data-testid="activity-bg-stop"]'),
-    ).not.toBeNull();
+    expect(loadExecutionRowState).toHaveBeenCalledTimes(2);
   });
 });

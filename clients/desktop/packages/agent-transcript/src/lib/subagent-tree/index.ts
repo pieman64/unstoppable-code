@@ -275,6 +275,10 @@ export interface CodexNativeCallInput {
       }
     >
   >;
+  /** When each receiver thread's own turns ran, when the host knows it. */
+  readonly receiverTimes?: Readonly<
+    Record<string, { readonly startedAt?: number; readonly settledAt?: number }>
+  >;
   readonly occurredAt?: number;
 }
 
@@ -381,6 +385,17 @@ export function countSubagentsByFilter(
   return counts;
 }
 
+/**
+ * The subagents the Active filter shows, in tree order: every node that
+ * counts as a subagent and is still live. Its length is always the tree's
+ * `active` count from {@link countSubagentsByFilter}.
+ */
+export function liveSubagentNodes(tree: SubagentTree): readonly SubagentNode[] {
+  return Array.from(tree.nodes.values()).filter(
+    (node) => countsAsSubagent(node) && matchesSubagentFilter(node, 'active'),
+  );
+}
+
 /** Ancestors nearest-first, stopping safely if a partial tree has a broken link. */
 export function subagentAncestors(
   tree: SubagentTree,
@@ -468,6 +483,12 @@ interface CodexReceiverAccumulator {
   readonly id: string;
   readonly events: CodexStatusEvent[];
   spawn?: CodexNativeCallInput;
+  /** The receiver's own turn times from its latest call that reports them. */
+  times?: {
+    readonly call: CodexNativeCallInput;
+    readonly startedAt?: number;
+    readonly settledAt?: number;
+  };
 }
 
 function textOrder(left: string, right: string): number {
@@ -737,6 +758,28 @@ function claudeMutableNodes(
   return nodes;
 }
 
+function finiteTime(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+/** A call's times for one receiver; persisted data is read defensively. */
+function codexReceiverTimes(
+  call: CodexNativeCallInput,
+  receiverId: string,
+): CodexReceiverAccumulator['times'] {
+  const raw = call.receiverTimes?.[receiverId];
+  const startedAt = finiteTime(raw?.startedAt);
+  const settledAt = finiteTime(raw?.settledAt);
+  if (startedAt === undefined && settledAt === undefined) return undefined;
+  return {
+    call,
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(settledAt === undefined ? {} : { settledAt }),
+  };
+}
+
 function codexMutableNodes(
   inputs: readonly CodexNativeCallInput[],
   rootThreadId: string | undefined,
@@ -772,6 +815,12 @@ function codexMutableNodes(
         (!receiver.spawn || compareCodexCalls(call, receiver.spawn) < 0)
       )
         receiver.spawn = call;
+      const times = codexReceiverTimes(call, receiverId);
+      if (
+        times !== undefined &&
+        (!receiver.times || compareCodexCalls(call, receiver.times.call) >= 0)
+      )
+        receiver.times = times;
       receivers.set(receiverId, receiver);
     }
   }
@@ -798,6 +847,7 @@ function codexMutableNodes(
       nonEmptyText(spawn?.reasoningEffort);
     const sender = spawn?.senderThreadId;
     const message = latestEvent?.message;
+    const settledAt = receiver.times?.settledAt ?? latestEvent?.occurredAt;
     nodes.push({
       id,
       kind: 'codex-native',
@@ -813,10 +863,13 @@ function codexMutableNodes(
       ...(spawn?.occurredAt !== undefined
         ? { createdAt: spawn.occurredAt, startedAt: spawn.occurredAt }
         : {}),
-      ...(latestEvent?.occurredAt !== undefined &&
+      ...(receiver.times?.startedAt !== undefined
+        ? { startedAt: receiver.times.startedAt }
+        : {}),
+      ...(settledAt !== undefined &&
       !isLiveSubagentStatus(status) &&
       status !== 'idle'
-        ? { settledAt: latestEvent.occurredAt }
+        ? { settledAt }
         : {}),
       runs: [],
       ...(status === 'failed' && message != null

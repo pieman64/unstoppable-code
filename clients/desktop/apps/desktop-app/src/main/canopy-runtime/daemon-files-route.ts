@@ -4,7 +4,7 @@ import {
   type ReadEvidenceJournal,
   type ReadEvidenceSnapshot,
 } from '@canopy/desktop-shared/lib/bounded-read-evidence';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import {
   CanopyClientError,
   type CanopyClientQueryOptions,
@@ -22,20 +22,31 @@ import {
   requireFilesystemCatalogRevision,
   sortDirectoryEntries,
   withVerifiedFilesystemCatalog,
-  type FilesystemReadOperation,
+  type FilesystemFileRead,
+  type FilesystemLinkResolved,
   type FilesystemRootCatalog,
   type FilesystemScopeDependencies,
   type FilesystemScopeResolver,
+  type FilesystemSearchPage,
 } from '@canopy/core-runtime/node';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  WORKER_FILESYSTEM_FILE_READ_ERROR_CODES,
+  WORKER_FILESYSTEM_LINK_RESOLVE_ERROR_CODES,
+  WORKER_FILESYSTEM_SEARCH_ERROR_CODES,
   type CanopyCallerDescriptor,
   type CanopyErrorPayload,
   type CanopyWorkspaceScope,
   type WorkerFilesystemDirectoryListParams,
   type WorkerFilesystemDirectoryListResult,
+  type WorkerFilesystemFileReadParams,
+  type WorkerFilesystemFileReadResult,
+  type WorkerFilesystemLinkResolveParams,
+  type WorkerFilesystemLinkResolveResult,
   type WorkerFilesystemRootsListParams,
   type WorkerFilesystemRootsListResult,
+  type WorkerFilesystemSearchParams,
+  type WorkerFilesystemSearchResult,
 } from '@canopy/protocol/canopy-core';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -52,7 +63,12 @@ import {
 } from '@canopy/desktop-shared/node/work-counters';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { normalizeFileTreeRelativePath } from '../services/file-tree-relative-path';
-import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
+import {
+  evaluateReadRoute,
+  resolveReadRoutePlatform,
+  type FilesReadRouteOperation,
+  type ReadRoutePlatform,
+} from './daemon-read-route-guard';
 import { translateFilesServiceError } from './worker-filesystem-adapter';
 import type {
   CallerLifetimeSender,
@@ -60,17 +76,38 @@ import type {
 } from './electron-daemon-caller-lifetime';
 
 /**
- * Opt-in routing of Files roots and directory reads through the local core
- * daemon (CAN-4305), behind `canopy-desktop-daemon-files-reads`.
+ * Routing of Files reads through the local core daemon (CAN-4305, CAN-5509),
+ * selected by the authoritative `daemon-files-reads` Labs entry.
  *
- * Only the file-tree IPC handlers mark a request as routable; every other
- * caller of the same operations keeps the direct desktop reader. The backend
- * is chosen once, before any daemon contact. A request selected for the
- * daemon never falls back: every failure is returned typed, and the direct
- * reader is not called for it.
+ * Only the Files IPC handlers mark a request as routable; every other caller
+ * of the same operations keeps the direct desktop reader. The backend is
+ * chosen once, before any daemon contact. A request selected for the daemon
+ * never falls back: every failure is returned typed, and the direct reader is
+ * not called for it.
  */
 
-export type DaemonFilesOperation = FilesystemReadOperation;
+/**
+ * The reads with a daemon path: roots and directory listings, scoped
+ * `file:read-content` (CAN-4099), each `file-index:get` search page
+ * (CAN-5037) and `file-reference:resolve` (CAN-5038). Kept literal, never
+ * derived from the filesystem operation set.
+ */
+export type DaemonFilesOperation =
+  | 'roots'
+  | 'directory'
+  | 'file'
+  | 'search'
+  | 'link';
+
+export type FilesRouteObservedOperation = DaemonFilesOperation;
+
+/**
+ * Production selection: the reads that may leave with a plan. File, search
+ * and link stay direct until CAN-4729 widens it; a new read never becomes
+ * selectable by accident.
+ */
+export const DAEMON_FILES_PRODUCTION_SELECTION: ReadonlySet<DaemonFilesOperation> =
+  new Set<DaemonFilesOperation>(['roots', 'directory']);
 
 export interface DaemonFilesRouteSender extends CallerLifetimeSender {
   readonly id: number;
@@ -92,6 +129,21 @@ export interface DaemonFilesQueryClient {
     params: WorkerFilesystemDirectoryListParams,
     options?: CanopyClientQueryOptions,
   ): Promise<WorkerFilesystemDirectoryListResult>;
+  query(
+    name: 'worker.filesystem.file.read',
+    params: WorkerFilesystemFileReadParams,
+    options?: CanopyClientQueryOptions,
+  ): Promise<WorkerFilesystemFileReadResult>;
+  query(
+    name: 'worker.filesystem.search',
+    params: WorkerFilesystemSearchParams,
+    options?: CanopyClientQueryOptions,
+  ): Promise<WorkerFilesystemSearchResult>;
+  query(
+    name: 'worker.filesystem.link.resolve',
+    params: WorkerFilesystemLinkResolveParams,
+    options?: CanopyClientQueryOptions,
+  ): Promise<WorkerFilesystemLinkResolveResult>;
 }
 
 export interface DaemonFilesSession {
@@ -138,6 +190,10 @@ export interface DaemonFilesRouteOptions {
   readonly queryDeadlineMs?: number;
   /** Whose entry-name rules a listing must satisfy; defaults to this host's. */
   readonly entryNamePlatform?: 'posix' | 'win32';
+  /** The read-route table's host; defaults to this one, `null` if unsupported. */
+  readonly platform?: ReadRoutePlatform | null;
+  /** Test seam: the reads that may leave with a plan; defaults to production's. */
+  readonly selectable?: ReadonlySet<DaemonFilesOperation>;
 }
 
 export interface DaemonFilesRouteRun<Result, Legacy> {
@@ -145,6 +201,40 @@ export interface DaemonFilesRouteRun<Result, Legacy> {
   direct: () => Promise<Result>;
   /** Stores the legacy projection of a daemon result. */
   capture: (legacy: Legacy) => void;
+}
+
+export interface DaemonFilesLinkRun extends DaemonFilesRouteRun<
+  WorkerFilesystemLinkResolveResult,
+  FilesystemLinkResolved
+> {
+  /**
+   * The markdown base is a host path outside every root. It has no portable
+   * form, so the request stays direct before any contact (CAN-4729 decides
+   * whether for good).
+   */
+  readonly hostBase: boolean;
+}
+
+/**
+ * One `file-index:get` request's walks, pinned to the backend chosen before
+ * its first page. Every page and cursor of its roots stays on that backend.
+ */
+export interface DaemonFilesSearchWalk {
+  readonly backend: 'direct' | 'daemon';
+  /**
+   * The index coalescing lane, `null` for the lane retained direct callers
+   * share. A walk the flag decides gets its own, per flag generation and, for
+   * a daemon walk, per document, so no request waits on a walk that another
+   * document's reload or an earlier flip would end.
+   */
+  readonly lane: string | null;
+}
+
+export interface DaemonFilesSearchRun extends DaemonFilesRouteRun<
+  WorkerFilesystemSearchResult,
+  FilesystemSearchPage
+> {
+  readonly walk: DaemonFilesSearchWalk;
 }
 
 export interface DaemonFilesRoute {
@@ -166,6 +256,34 @@ export interface DaemonFilesRoute {
       FileTreeDirectoryResponse
     >,
   ): Promise<WorkerFilesystemDirectoryListResult>;
+  file(
+    params: WorkerFilesystemFileReadParams,
+    context: CanopyHandlerContext,
+    request: DaemonFilesRouteRequest,
+    run: DaemonFilesRouteRun<
+      WorkerFilesystemFileReadResult,
+      FilesystemFileRead
+    >,
+  ): Promise<WorkerFilesystemFileReadResult>;
+  /** Decides the backend of one index request, before any contact. */
+  searchWalk(
+    scope: CanopyWorkspaceScope,
+    caller: CanopyCallerDescriptor,
+    request: DaemonFilesRouteRequest,
+  ): DaemonFilesSearchWalk;
+  /** One page of a walk `searchWalk` pinned; an unknown walk stays direct. */
+  search(
+    params: WorkerFilesystemSearchParams,
+    context: CanopyHandlerContext,
+    request: DaemonFilesRouteRequest,
+    run: DaemonFilesSearchRun,
+  ): Promise<WorkerFilesystemSearchResult>;
+  link(
+    params: WorkerFilesystemLinkResolveParams,
+    context: CanopyHandlerContext,
+    request: DaemonFilesRouteRequest,
+    run: DaemonFilesLinkRun,
+  ): Promise<WorkerFilesystemLinkResolveResult>;
   dispose(): void;
 }
 
@@ -191,7 +309,6 @@ const ROUTED_WORKSPACE_TYPES: ReadonlySet<WorkspaceType> =
   new Set<WorkspaceType>(['single-repo', 'multi-repo', 'cowork']);
 
 const DEFAULT_QUERY_DEADLINE_MS = 30_000;
-const LOCAL_CALLER_PREFIX = 'electron-web-contents:';
 const ROUTE_REFRESH = {
   kind: 'after_refresh',
   resource: 'filesystem-roots',
@@ -210,6 +327,9 @@ const OPERATION_CODES: Readonly<
     'worker.filesystem.directory.revisionConflict',
     'worker.filesystem.directory.notFound',
   ]),
+  file: new Set(WORKER_FILESYSTEM_FILE_READ_ERROR_CODES),
+  search: new Set(WORKER_FILESYSTEM_SEARCH_ERROR_CODES),
+  link: new Set(WORKER_FILESYSTEM_LINK_RESOLVE_ERROR_CODES),
 };
 
 interface ProjectionChecks {
@@ -327,7 +447,7 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 type FilesRouteEvidenceEvent = {
-  operation: DaemonFilesOperation;
+  operation: FilesRouteObservedOperation;
   backend: 'direct' | 'daemon';
   senderId: number;
   generation: number;
@@ -351,10 +471,15 @@ export function createDaemonFilesRoute(
   const queryDeadlineMs = options.queryDeadlineMs ?? DEFAULT_QUERY_DEADLINE_MS;
   const entryNamePlatform =
     options.entryNamePlatform ?? (sep === '/' ? 'posix' : 'win32');
+  const platform =
+    options.platform !== undefined
+      ? options.platform
+      : resolveReadRoutePlatform();
+  const selectable = options.selectable ?? DAEMON_FILES_PRODUCTION_SELECTION;
   const evidence = createRouteEvidence();
   let requestSequence = 0;
   const observeRead = async <T>(
-    operation: DaemonFilesOperation,
+    operation: FilesRouteObservedOperation,
     backend: 'direct' | 'daemon',
     senderId: number,
     run: () => Promise<T>,
@@ -415,7 +540,7 @@ export function createDaemonFilesRoute(
           authorityId: host.authorityId,
           targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
           coworkManagedDirName: options.coworkManagedDirName,
-          paths: { join, resolve, isAbsolute, sep },
+          paths: { join, resolve, isAbsolute, sep, basename },
           rootIdentity: readNativeRootIdentity,
         }))
     )(context);
@@ -428,80 +553,106 @@ export function createDaemonFilesRoute(
   };
 
   /**
-   * Whether the flag decides this request's backend: the trusted caller for
-   * this exact sender, an eligible scope, nothing foreign selected. Local
-   * lookups only, never daemon contact; `null` keeps the direct reader
-   * whatever the flag says.
+   * Whether the flag decides this request's backend: the shared read-route
+   * guard (platform table, trusted caller for this exact sender, an eligible
+   * scope, nothing foreign selected). Local lookups only, never daemon
+   * contact; `null` keeps the direct reader whatever the flag says.
    */
   const eligibility = (
+    operation: DaemonFilesOperation,
     scope: CanopyWorkspaceScope,
     caller: CanopyCallerDescriptor,
     request: DaemonFilesRouteRequest,
   ): DaemonPlan | null => {
     if (disposed) return null;
-    if (
-      caller.interfaceKind !== 'desktop' ||
-      caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID
-    )
-      return null;
-    const { sender } = request;
-    // Only the local window caller trusted main derived for this exact
-    // sender. Remote-control bridge callers (`remote-bridge:<id>`) always keep
-    // the direct reader, by decision, whatever the flag says.
-    if (caller.clientInstanceId !== `${LOCAL_CALLER_PREFIX}${sender.id}`)
-      return null;
-    // IPC scopes carry exactly these two ids; never reinterpret another selection.
-    const { workspaceId, worktreeId, ...selectors } = scope;
-    if (
-      workspaceId === undefined ||
-      worktreeId === undefined ||
-      Object.values(selectors).some((value) => value !== undefined)
-    )
-      return null;
-    if (DAEMON_FILES_EXCLUDED_WORKSPACE_IDS.has(workspaceId)) return null;
-    // Trusted alias normalization (standalone Cowork); unresolvable stays direct.
-    const target = options.resolveWorktreeTargetIds(workspaceId, worktreeId);
-    if (!target) return null;
-    // Only registered workspaces: an unknown id keeps today's direct read.
-    const type = options.workspaceType(target.projectId);
-    if (type === null || !ROUTED_WORKSPACE_TYPES.has(type)) return null;
-    return {
-      scope: { workspaceId: target.projectId, worktreeId: target.worktreeId },
+    const guarded: FilesReadRouteOperation = `files.${operation}`;
+    const target = evaluateReadRoute({
+      operation: guarded,
+      platform,
       caller,
-      sender,
+      senderId: request.sender.id,
+      scope,
+      lookups: {
+        resolveWorktreeTargetIds: options.resolveWorktreeTargetIds,
+        workspaceType: options.workspaceType,
+        excludedWorkspaceIds: DAEMON_FILES_EXCLUDED_WORKSPACE_IDS,
+        routedWorkspaceTypes: ROUTED_WORKSPACE_TYPES,
+      },
+    });
+    if (target?.shape !== 'worktree') return null;
+    return {
+      scope: { workspaceId: target.workspaceId, worktreeId: target.worktreeId },
+      caller,
+      sender: request.sender,
     };
   };
 
-  /** Decided before any daemon contact; `null` keeps the direct reader. */
+  /**
+   * Decided before any daemon contact; `null` keeps the direct reader. Only
+   * a selectable operation can leave with a plan.
+   */
   const select = (
+    operation: DaemonFilesOperation,
     scope: CanopyWorkspaceScope,
     caller: CanopyCallerDescriptor,
     request: DaemonFilesRouteRequest,
-  ): DaemonPlan | null =>
-    enabled && options.isFlagEnabled()
-      ? eligibility(scope, caller, request)
-      : null;
+  ): DaemonPlan | null => {
+    if (!enabled || !options.isFlagEnabled()) return null;
+    if (!selectable.has(operation)) return null;
+    return eligibility(operation, scope, caller, request);
+  };
 
+  /** Whether the flag picks this request's backend now. */
+  const routable =
+    (
+      operation: DaemonFilesOperation,
+      scope: CanopyWorkspaceScope,
+      caller: CanopyCallerDescriptor,
+      request: DaemonFilesRouteRequest,
+    ): (() => boolean) =>
+    () =>
+      selectable.has(operation) &&
+      eligibility(operation, scope, caller, request) !== null;
+  const NEVER_ROUTABLE = (): boolean => false;
+
+  /**
+   * The direct reader. A read that spans a flip (since `startedAt`, a whole
+   * walk for search) is discarded only where the flag picks the backend;
+   * excluded scopes, callers and host-base links, and reads production never
+   * selects, are not affected by it.
+   */
   const runDirect = async <Result>(
     operation: DaemonFilesOperation,
-    scope: CanopyWorkspaceScope,
-    context: CanopyHandlerContext,
-    request: DaemonFilesRouteRequest,
+    isRoutable: () => boolean,
     direct: () => Promise<Result>,
+    startedAt = generation,
   ): Promise<Result> => {
     recordFilesRouteSelected(operation, 'direct');
-    const startedAt = generation;
-    const result = await direct();
-    // A flip mid-read discards a result only where the flag picks the
-    // backend; excluded scopes and callers are never affected by it.
-    if (
-      generation !== startedAt &&
-      eligibility(scope, context.caller, request) !== null
-    ) {
+    const discardIfFlipped = (): void => {
+      if (generation === startedAt || !isRoutable()) return;
       recordFilesRouteOutcome(operation, 'direct.discarded');
       throw routeChangedError();
-    }
+    };
+    discardIfFlipped();
+    const result = await direct();
+    discardIfFlipped();
     return result;
+  };
+
+  interface SearchWalkPin {
+    readonly generation: number;
+    /** `owner` is the requesting document at the start; its reload ends the walk. */
+    readonly daemon: { plan: DaemonPlan; owner: AbortSignal } | null;
+  }
+  const searchWalks = new WeakMap<DaemonFilesSearchWalk, SearchWalkPin>();
+  const documentLanes = new WeakMap<AbortSignal, number>();
+  let documentLaneSequence = 0;
+  const documentLane = (owner: AbortSignal): number => {
+    const known = documentLanes.get(owner);
+    if (known !== undefined) return known;
+    documentLaneSequence += 1;
+    documentLanes.set(owner, documentLaneSequence);
+    return documentLaneSequence;
   };
 
   const runDaemon = async <
@@ -522,9 +673,19 @@ export function createDaemonFilesRoute(
       projectPath: (path: string) => string,
       checks: ProjectionChecks,
     ) => Legacy | Promise<Legacy>,
+    {
+      startedAt = generation,
+      owner = options.lifetime.ownerFor(plan.sender),
+      refreshOnConflict = true,
+    }: {
+      /** The plan's generation; a flip since then fails before contact. */
+      readonly startedAt?: number;
+      /** The plan's document; once it retires, the read fails before contact. */
+      readonly owner?: AbortSignal;
+      /** False for a cursor page: the daemon already consumed its cursor. */
+      readonly refreshOnConflict?: boolean;
+    } = {},
   ): Promise<{ canonical: Canonical; legacy: Legacy }> => {
-    const startedAt = generation;
-    const owner = options.lifetime.ownerFor(plan.sender);
     const signal = AbortSignal.any([context.signal, owner, flagEpoch.signal]);
     const throwIfInvalidated = (): void => {
       if (generation !== startedAt || disposed) throw routeChangedError();
@@ -616,7 +777,8 @@ export function createDaemonFilesRoute(
         } catch (error) {
           throwIfInvalidated();
           const failure = normalizeDaemonFilesError(operation, error);
-          if (failure.payload.kind !== 'conflict') throw failure;
+          if (failure.payload.kind !== 'conflict' || !refreshOnConflict)
+            throw failure;
           // One bounded refresh: re-resolve, re-query and re-project once.
           if (conflicts >= 1)
             throw filesystemScopeError(operation, 'revisionConflict');
@@ -640,7 +802,7 @@ export function createDaemonFilesRoute(
       request,
       run,
     ): Promise<WorkerFilesystemRootsListResult> {
-      const plan = select(params.scope, context.caller, request);
+      const plan = select('roots', params.scope, context.caller, request);
       return observeRead(
         'roots',
         plan ? 'daemon' : 'direct',
@@ -649,9 +811,7 @@ export function createDaemonFilesRoute(
           if (!plan)
             return runDirect(
               'roots',
-              params.scope,
-              context,
-              request,
+              routable('roots', params.scope, context.caller, request),
               run.direct,
             );
           recordFilesRouteSelected('roots', 'daemon');
@@ -682,7 +842,7 @@ export function createDaemonFilesRoute(
       request,
       run,
     ): Promise<WorkerFilesystemDirectoryListResult> {
-      const plan = select(params.scope, context.caller, request);
+      const plan = select('directory', params.scope, context.caller, request);
       return observeRead(
         'directory',
         plan ? 'daemon' : 'direct',
@@ -691,9 +851,7 @@ export function createDaemonFilesRoute(
           if (!plan)
             return runDirect(
               'directory',
-              params.scope,
-              context,
-              request,
+              routable('directory', params.scope, context.caller, request),
               run.direct,
             );
           recordFilesRouteSelected('directory', 'daemon');
@@ -727,6 +885,166 @@ export function createDaemonFilesRoute(
                 entryNamePlatform,
                 checks,
               ),
+          );
+          run.capture(served.legacy);
+          return served.canonical;
+        },
+      );
+    },
+    async file(
+      params,
+      context,
+      request,
+      run,
+    ): Promise<WorkerFilesystemFileReadResult> {
+      const plan = select('file', params.scope, context.caller, request);
+      return observeRead(
+        'file',
+        plan ? 'daemon' : 'direct',
+        request.sender.id,
+        async () => {
+          if (!plan)
+            return runDirect(
+              'file',
+              routable('file', params.scope, context.caller, request),
+              run.direct,
+            );
+          recordFilesRouteSelected('file', 'daemon');
+          checkDirectReaderRequest('file', params.scope);
+          const served = await runDaemon<
+            WorkerFilesystemFileReadResult,
+            FilesystemFileRead
+          >(
+            'file',
+            plan,
+            context,
+            (client, scope, queryOptions) =>
+              client.query(
+                'worker.filesystem.file.read',
+                { ...params, scope },
+                queryOptions,
+              ),
+            (result, catalog) => projectFileRead(params, result, catalog),
+          );
+          run.capture(served.legacy);
+          return served.canonical;
+        },
+      );
+    },
+    searchWalk(scope, caller, request): DaemonFilesSearchWalk {
+      const plan = select('search', scope, caller, request);
+      const daemon = plan
+        ? { plan, owner: options.lifetime.ownerFor(plan.sender) }
+        : null;
+      const walk: DaemonFilesSearchWalk = daemon
+        ? {
+            backend: 'daemon',
+            lane: `daemon:${generation}:${documentLane(daemon.owner)}`,
+          }
+        : {
+            backend: 'direct',
+            lane: routable('search', scope, caller, request)()
+              ? `direct:${generation}`
+              : null,
+          };
+      searchWalks.set(walk, { generation, daemon });
+      return walk;
+    },
+    async search(
+      params,
+      context,
+      request,
+      run,
+    ): Promise<WorkerFilesystemSearchResult> {
+      const pin = searchWalks.get(run.walk);
+      const daemon = pin?.daemon ?? null;
+      return observeRead(
+        'search',
+        daemon ? 'daemon' : 'direct',
+        request.sender.id,
+        async () => {
+          if (!pin || !daemon)
+            return runDirect(
+              'search',
+              pin
+                ? routable('search', params.scope, context.caller, request)
+                : NEVER_ROUTABLE,
+              run.direct,
+              pin?.generation,
+            );
+          recordFilesRouteSelected('search', 'daemon');
+          checkDirectReaderRequest('search', params.scope);
+          const served = await runDaemon<
+            WorkerFilesystemSearchResult,
+            FilesystemSearchPage
+          >(
+            'search',
+            daemon.plan,
+            context,
+            (client, scope, queryOptions) =>
+              client.query(
+                'worker.filesystem.search',
+                { ...params, scope },
+                queryOptions,
+              ),
+            (result, catalog, projectPath) =>
+              projectSearchPage(
+                params.fileRootId,
+                result,
+                catalog,
+                projectPath,
+                entryNamePlatform,
+              ),
+            {
+              startedAt: pin.generation,
+              owner: daemon.owner,
+              refreshOnConflict: params.cursor === undefined,
+            },
+          );
+          run.capture(served.legacy);
+          return served.canonical;
+        },
+      );
+    },
+    async link(
+      params,
+      context,
+      request,
+      run,
+    ): Promise<WorkerFilesystemLinkResolveResult> {
+      const plan = run.hostBase
+        ? null
+        : select('link', params.scope, context.caller, request);
+      return observeRead(
+        'link',
+        plan ? 'daemon' : 'direct',
+        request.sender.id,
+        async () => {
+          if (!plan)
+            return runDirect(
+              'link',
+              run.hostBase
+                ? NEVER_ROUTABLE
+                : routable('link', params.scope, context.caller, request),
+              run.direct,
+            );
+          recordFilesRouteSelected('link', 'daemon');
+          checkDirectReaderRequest('link', params.scope);
+          const served = await runDaemon<
+            WorkerFilesystemLinkResolveResult,
+            FilesystemLinkResolved
+          >(
+            'link',
+            plan,
+            context,
+            (client, scope, queryOptions) =>
+              client.query(
+                'worker.filesystem.link.resolve',
+                { ...params, scope },
+                queryOptions,
+              ),
+            (result, catalog, projectPath) =>
+              projectLink(result, catalog, projectPath, entryNamePlatform),
           );
           run.capture(served.legacy);
           return served.canonical;
@@ -896,4 +1214,97 @@ async function projectDirectory(
       };
     }),
   };
+}
+
+/** A root-relative path the platform's walk can produce, outside `.git`. */
+function isWalkedRelativePath(
+  relativePath: string,
+  platform: 'posix' | 'win32',
+): boolean {
+  return (
+    relativePath
+      .split('/')
+      .every((segment) => isDirectoryEntryName(segment, platform)) &&
+    !hasGitPathSegment(relativePath)
+  );
+}
+
+/**
+ * The in-process read a daemon file result stands for. The daemon reads the
+ * requested root and path or fails. `modifiedAtMs` comes from the contract's
+ * ISO `modifiedAt`, so it is whole milliseconds where the direct reader
+ * keeps the fractional `mtimeMs` (accepted, CAN-5509).
+ */
+function projectFileRead(
+  params: WorkerFilesystemFileReadParams,
+  result: WorkerFilesystemFileReadResult,
+  catalog: FilesystemRootCatalog,
+): FilesystemFileRead {
+  const modifiedAtMs = Date.parse(result.modifiedAt);
+  if (
+    result.fileRootId !== params.fileRootId ||
+    result.relativePath !== params.relativePath ||
+    !catalog.byId.has(result.fileRootId) ||
+    !Number.isFinite(modifiedAtMs)
+  )
+    throw filesystemScopeError('file', 'invalidState');
+  return { result, modifiedAtMs };
+}
+
+/**
+ * One search page as the in-process walk captures it: each match is a file
+ * of the requested root, and its local path is the catalog root's display
+ * spelling joined with the match path, as the walk joins it.
+ */
+function projectSearchPage(
+  fileRootId: string,
+  result: WorkerFilesystemSearchResult,
+  catalog: FilesystemRootCatalog,
+  projectPath: (path: string) => string,
+  platform: 'posix' | 'win32',
+): FilesystemSearchPage {
+  const root = catalog.byId.get(fileRootId);
+  if (!root) throw filesystemScopeError('search', 'invalidState');
+  const rootPath = projectPath(root.absolutePath);
+  return {
+    result,
+    files: result.matches.map((match) => {
+      const segments = match.path.split('/');
+      if (
+        match.fileRootId !== fileRootId ||
+        match.kind !== 'file' ||
+        !isWalkedRelativePath(match.path, platform) ||
+        match.name !== segments[segments.length - 1]
+      )
+        throw filesystemScopeError('search', 'invalidState');
+      return {
+        relativePath: match.path,
+        filename: match.name,
+        absolutePath: join(rootPath, ...segments),
+        isIgnored: match.isIgnored,
+      };
+    }),
+  };
+}
+
+/**
+ * A daemon link resolution with its matched root's display path. Outside the
+ * root itself, the name is the target's last segment, as the resolver names it.
+ */
+function projectLink(
+  result: WorkerFilesystemLinkResolveResult,
+  catalog: FilesystemRootCatalog,
+  projectPath: (path: string) => string,
+  platform: 'posix' | 'win32',
+): FilesystemLinkResolved {
+  const root = catalog.byId.get(result.fileRootId);
+  const segments =
+    result.relativePath === '' ? [] : result.relativePath.split('/');
+  if (
+    !root ||
+    !segments.every((segment) => isDirectoryEntryName(segment, platform)) ||
+    (segments.length > 0 && result.name !== segments[segments.length - 1])
+  )
+    throw filesystemScopeError('link', 'invalidState');
+  return { result, rootAbsolutePath: projectPath(root.absolutePath) };
 }

@@ -15,6 +15,7 @@ import type { PipelineContextResource } from '@canopy/desktop-shared/node/backgr
 import type { getStoredPipelineBySource } from '@canopy/desktop-shared/pipelines/store';
 import {
   authorizeBackgroundExecution,
+  automationActionDestination,
   bindEnabledHookContexts,
   describeAutomationContextMismatch,
   rebindHookExecutionContexts,
@@ -25,6 +26,7 @@ import {
   APP_ADVISOR_PROJECT_ID,
   type AutomationsListResponse,
   type ScheduledActivity,
+  type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type {
@@ -137,10 +139,77 @@ const mockFindLocalReceipt = jest.fn(() => Promise.resolve(undefined));
 const orgA = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const orgB = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
+const makeWorkspaceConfig = (
+  overrides: Partial<WorkspaceConfigFile> = {},
+): WorkspaceConfigFile => ({
+  version: 1,
+  type: 'single-repo',
+  repos: [],
+  ...overrides,
+});
+
+/** Legacy stored pipelines can omit `on`; the pipeline parser treats that as `dispatch`. */
+const makeLegacyPipeline = (
+  name: string,
+): Awaited<ReturnType<typeof childResolver.resolveChildPipeline>>['pipeline'] =>
+  ({ name, jobs: {} }) as Awaited<
+    ReturnType<typeof childResolver.resolveChildPipeline>
+  >['pipeline'];
+
+type LegacyExecutionState = Omit<
+  Partial<ExecutionState>,
+  | 'pipeline_snapshot'
+  | 'job_definitions'
+  | 'job_groups'
+  | 'pending_pauses'
+  | 'status_reasons'
+> &
+  Pick<
+    ExecutionState,
+    | 'version'
+    | 'id'
+    | 'pipeline_id'
+    | 'status'
+    | 'jobs'
+    | 'started_at'
+    | 'cwd'
+    | 'env'
+    | 'inputs'
+  > & {
+    pipeline_snapshot: {
+      name: string;
+      jobs: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+  };
+
+function makeLegacyExecutionState(state: LegacyExecutionState): ExecutionState {
+  // Preserve v1 snapshots that predate normalized scope and newer bookkeeping fields.
+  const executionState: ExecutionState = {
+    ...state,
+    pipeline_snapshot: {
+      name: state.pipeline_snapshot.name,
+      scope: ['directory'],
+      jobs: {},
+    },
+    job_definitions: {},
+    job_groups: {},
+    pending_pauses: [],
+    status_reasons: [],
+  };
+  Reflect.set(executionState, 'pipeline_snapshot', state.pipeline_snapshot);
+  Reflect.deleteProperty(executionState, 'job_definitions');
+  Reflect.deleteProperty(executionState, 'job_groups');
+  Reflect.deleteProperty(executionState, 'pending_pauses');
+  Reflect.deleteProperty(executionState, 'status_reasons');
+  return executionState;
+}
+
 it('resolves a bound Cowork workspace to its organization context', async () => {
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
+    memoryMalformed: false,
     config: {
       version: 1,
       type: 'cowork',
@@ -154,11 +223,15 @@ it('resolves a bound Cowork workspace to its organization context', async () => 
       },
     },
   });
-  mockResolveWorkspaceTarget.mockImplementationOnce((_projectId, options) => ({
-    workspaceId: 'cowork-org-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    workspaceOwner: options.workspaceOwner ?? { kind: 'personal' },
-    linkedPersonalCandidate: options.linkedPersonalCandidate ?? false,
-  }));
+  mockResolveWorkspaceTarget.mockImplementationOnce(
+    (_projectId, options): Promise<ResolvedWorkspaceTarget> =>
+      Promise.resolve({
+        workspaceId: 'cowork-org-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        workspaceOwner: options.workspaceOwner ?? { kind: 'personal' },
+        linkedPersonalCandidate: options.linkedPersonalCandidate ?? false,
+        linkedOrganizationIds: [],
+      }),
+  );
 
   await expect(
     resolveBackgroundWorkspaceContext(
@@ -193,7 +266,8 @@ it('authorizes the bundled review plugin collection under strict background poli
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
-    config: { type: 'single-repo', repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig({ type: 'single-repo' }),
   });
   mockDecide.mockImplementation((input) =>
     Promise.resolve(decideResourceContext(input)),
@@ -235,7 +309,7 @@ beforeEach((): void => {
   mockResolveWorkspaceTarget.mockImplementation(
     (_projectId, options): Promise<ResolvedWorkspaceTarget> =>
       Promise.resolve({
-        workspaceOwner: options.workspaceOwner,
+        workspaceOwner: options.workspaceOwner ?? { kind: 'personal' },
         linkedOrganizationIds: [],
       }),
   );
@@ -266,8 +340,8 @@ it.each([{ shareScope: 'private' }, { type: 'system' }])(
     mockRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: {
-        repos: [],
+      memoryMalformed: false,
+      config: makeWorkspaceConfig({
         owner: {
           type: 'organization',
           organizationId: orgB,
@@ -275,7 +349,7 @@ it.each([{ shareScope: 'private' }, { type: 'system' }])(
           instanceId: orgB,
           bindingGeneration: 1,
         },
-      },
+      }),
     });
     expect(
       await authorizeBackgroundExecution(`org:${orgA}`, [{ owner }], {
@@ -288,7 +362,8 @@ it('allows an organization-bound run to target a linked Personal workspace', asy
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
-    config: { type: 'single-repo', repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig({ type: 'single-repo' }),
   });
   mockResolveWorkspaceTarget.mockResolvedValue({
     workspaceOwner: { kind: 'personal' },
@@ -323,7 +398,8 @@ it('keeps an unlinked Personal background destination as a context mismatch', as
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
-    config: { type: 'single-repo', repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig({ type: 'single-repo' }),
   });
   expect(
     await authorizeBackgroundExecution(
@@ -339,7 +415,8 @@ it('keeps an unknown linked audience transient for background retries', async ()
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
-    config: { type: 'single-repo', repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig({ type: 'single-repo' }),
   });
   mockResolveWorkspaceTarget.mockRejectedValue(
     new MockWorkspaceTargetResolutionError('unknown-provenance', true),
@@ -360,7 +437,8 @@ it('denies unreadable destination ownership', async (): Promise<void> => {
   mockRead.mockResolvedValue({
     authority: 'unreadable',
     ownerMalformed: false,
-    config: { repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig(),
   });
   expect(
     await authorizeBackgroundExecution(
@@ -387,7 +465,8 @@ it.each([
     mockRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: { repos: [] },
+      memoryMalformed: false,
+      config: makeWorkspaceConfig(),
     });
     mockDecide.mockRejectedValueOnce(error);
     expect(
@@ -403,7 +482,8 @@ it('reports an unreadable account store for a stored definition as temporary', a
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
-    config: { repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig(),
   });
   mockAccountAvailable = false;
   try {
@@ -428,7 +508,8 @@ it('passes the trusted destination owner to each resource decision', async (): P
   mockRead.mockResolvedValue({
     authority: 'ok',
     ownerMalformed: false,
-    config: { repos: [] },
+    memoryMalformed: false,
+    config: makeWorkspaceConfig(),
   });
   expect(
     await authorizeBackgroundExecution(
@@ -552,7 +633,8 @@ describe('scopeAutomationsToSelectedContext', () => {
           return Promise.resolve({
             authority: 'unreadable',
             ownerMalformed: false,
-            config: { repos: [] },
+            memoryMalformed: false,
+            config: makeWorkspaceConfig(),
           });
         const organizationId =
           id === 'org-a-project'
@@ -563,8 +645,8 @@ describe('scopeAutomationsToSelectedContext', () => {
         return Promise.resolve({
           authority: 'ok',
           ownerMalformed: false,
-          config: {
-            repos: [],
+          memoryMalformed: false,
+          config: makeWorkspaceConfig({
             ...(organizationId
               ? {
                   owner: {
@@ -576,7 +658,7 @@ describe('scopeAutomationsToSelectedContext', () => {
                   },
                 }
               : {}),
-          },
+          }),
         });
       },
     );
@@ -600,6 +682,38 @@ describe('scopeAutomationsToSelectedContext', () => {
       'personal',
       'unreadable',
     ]);
+  });
+
+  it('files global pipeline automations under their saved owner only', async (): Promise<void> => {
+    mockCurrentContext = { kind: 'organization', organizationId: orgA };
+    const global = (
+      id: string,
+      executionContext: string | undefined,
+      workspaceId?: string,
+    ): ScheduledActivity => ({
+      ...scheduled(id, {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'digest',
+        // Inert: an org B project id must not move the automation.
+        ...(workspaceId ? { workspaceId } : {}),
+      }),
+      ...(executionContext ? { executionContext } : {}),
+    });
+    const scoped = await scopeAutomationsToSelectedContext({
+      activities: [
+        global('a', `org:${orgA}`, 'org-b-project'),
+        global('b', `org:${orgB}`),
+        global('personal-absent', undefined),
+        global('a-again', `org:${orgA}`),
+      ],
+      recentRuns: [],
+    });
+    expect(scoped.activities.map((activity) => activity.id)).toEqual([
+      'a',
+      'a-again',
+    ]);
+    expect(mockRead).not.toHaveBeenCalled();
   });
 
   it('resolves each destination once', async (): Promise<void> => {
@@ -650,8 +764,8 @@ describe('describeAutomationContextMismatch', () => {
     mockRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: {
-        repos: [],
+      memoryMalformed: false,
+      config: makeWorkspaceConfig({
         owner: {
           type: 'organization',
           organizationId: orgB,
@@ -659,7 +773,7 @@ describe('describeAutomationContextMismatch', () => {
           instanceId: 'org-b-project',
           bindingGeneration: 1,
         },
-      },
+      }),
     });
   });
 
@@ -686,7 +800,7 @@ describe('describeAutomationContextMismatch', () => {
 });
 
 it('resolves replay provenance without replacing the persisted snapshot or cwd', (): void => {
-  const state: ExecutionState = {
+  const state = makeLegacyExecutionState({
     version: 1,
     id: 'source',
     pipeline_id: 'parent',
@@ -727,7 +841,7 @@ it('resolves replay provenance without replacing the persisted snapshot or cwd',
       source: 'user',
       value: 'parent',
     },
-  };
+  });
   const lookup = jest.fn<
     ReturnType<typeof getStoredPipelineBySource>,
     Parameters<typeof getStoredPipelineBySource>
@@ -738,10 +852,16 @@ it('resolves replay provenance without replacing the persisted snapshot or cwd',
         id: 'parent',
         name: 'Changed',
         source: 'user',
-        path: '/storage/parent.yml',
+        filename: 'parent.yml',
+        filePath: '/storage/parent.yml',
+        description: '',
+        icon: '',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        readonly: false,
         remoteId: 'receipt-id',
       },
-      content: { name: 'Changed', jobs: {} },
+      content: makeLegacyPipeline('Changed'),
     },
   }));
   const resources = persistedPipelineContextResources(state, lookup);
@@ -768,7 +888,7 @@ it('resolves replay provenance without replacing the persisted snapshot or cwd',
 });
 
 it('requires a current owner lookup for a saved shared pipeline and preserves children', (): void => {
-  const state: ExecutionState = {
+  const state = makeLegacyExecutionState({
     version: 1,
     id: 'shared-run',
     pipeline_id: 'shared:canopy-cloud:remote-1',
@@ -793,7 +913,7 @@ it('requires a current owner lookup for a saved shared pipeline and preserves ch
       type: 'shared',
       value: 'canopy-cloud:remote-1',
     },
-  };
+  });
   const lookup = jest.fn<
     ReturnType<typeof getStoredPipelineBySource>,
     Parameters<typeof getStoredPipelineBySource>
@@ -850,7 +970,7 @@ it('requires a current owner lookup for a saved shared pipeline and preserves ch
 });
 
 it('restores curated replay only for a matching captured source', async (): Promise<void> => {
-  const state: ExecutionState = {
+  const state = makeLegacyExecutionState({
     version: 1,
     id: 'curated-run',
     pipeline_id: 'curated:review',
@@ -867,7 +987,7 @@ it('restores curated replay only for a matching captured source', async (): Prom
       value: 'curated:review',
       contentHash: 'hash',
     },
-  };
+  });
   const lookup = jest.fn<
     ReturnType<typeof getStoredPipelineBySource>,
     Parameters<typeof getStoredPipelineBySource>
@@ -907,7 +1027,8 @@ it.each([false, true])(
     mockRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: { repos: [] },
+      memoryMalformed: false,
+      config: makeWorkspaceConfig(),
     });
     const receipt: InstallReceipt = {
       family: 'pipelines',
@@ -1147,7 +1268,7 @@ it.each(['user', 'bundled'])(
   async (source): Promise<void> => {
     if (source !== 'user' && source !== 'bundled')
       throw new Error('Unexpected source');
-    const child = { name: 'Child', jobs: {} };
+    const child = makeLegacyPipeline('Child');
     const resolve = jest
       .spyOn(childResolver, 'resolveChildPipeline')
       .mockResolvedValue({
@@ -1164,8 +1285,14 @@ it.each(['user', 'bundled'])(
           info: {
             id: 'child',
             name: 'Child',
+            filename: 'child.yaml',
+            filePath: '/stored/child.yaml',
+            description: '',
+            icon: '',
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z',
+            readonly: source === 'bundled',
             source,
-            path: '/stored/child.yaml',
           },
         },
       });
@@ -1186,7 +1313,8 @@ it.each(['user', 'bundled'])(
       mockRead.mockResolvedValue({
         authority: 'ok',
         ownerMalformed: false,
-        config: { repos: [] },
+        memoryMalformed: false,
+        config: makeWorkspaceConfig(),
       });
       mockFindReceipt.mockResolvedValue(undefined);
       mockDecide.mockImplementation(
@@ -1217,8 +1345,8 @@ it('refuses continuation after the workspace is reassigned following preflight',
     {
       authority: 'ok',
       ownerMalformed: false,
-      config: {
-        repos: [],
+      memoryMalformed: false,
+      config: makeWorkspaceConfig({
         owner: {
           type: 'organization',
           organizationId: orgA,
@@ -1226,7 +1354,7 @@ it('refuses continuation after the workspace is reassigned following preflight',
           instanceId: orgA,
           bindingGeneration: 1,
         },
-      },
+      }),
     };
   mockRead.mockResolvedValue(workspaceRead);
   mockDecide.mockResolvedValue({ allow: true });
@@ -1351,7 +1479,8 @@ describe('watcher delivery to a chat with selected capabilities', () => {
     mockRead.mockResolvedValue({
       authority: 'ok',
       ownerMalformed: false,
-      config: { version: 1, type: 'single-repo', repos: [] },
+      memoryMalformed: false,
+      config: makeWorkspaceConfig({ type: 'single-repo' }),
     });
     mockDecide.mockImplementation((input) =>
       Promise.resolve(decideResourceContext(input)),
@@ -1409,5 +1538,41 @@ describe('watcher delivery to a chat with selected capabilities', () => {
         { projectId: 'workspace', worktreeId: 'worktree' },
       ),
     ).toEqual({ allow: false, reason: 'unknown-provenance' });
+  });
+});
+
+describe('automationActionDestination for pipeline destinations', () => {
+  const base = { type: 'worktree_pipeline', pipelineId: 'p' } as const;
+  it('has no destination for a global pipeline, even with an inert workspaceId', (): void => {
+    expect(
+      automationActionDestination({ ...base, target: { kind: 'global' } }),
+    ).toBeNull();
+    expect(
+      automationActionDestination({
+        ...base,
+        target: { kind: 'global' },
+        workspaceId: 'ws-1',
+      }),
+    ).toBeNull();
+  });
+
+  it('names the task of a task destination and the project otherwise', (): void => {
+    expect(
+      automationActionDestination({
+        ...base,
+        workspaceId: 'ws-1',
+        target: { kind: 'task', taskId: 'wt-1' },
+      }),
+    ).toEqual({ projectId: 'ws-1', worktreeId: 'wt-1' });
+    expect(
+      automationActionDestination({
+        ...base,
+        workspaceId: 'ws-1',
+        target: { kind: 'project' },
+      }),
+    ).toEqual({ projectId: 'ws-1' });
+    expect(
+      automationActionDestination({ ...base, workspaceId: 'ws-1' }),
+    ).toEqual({ projectId: 'ws-1' });
   });
 });

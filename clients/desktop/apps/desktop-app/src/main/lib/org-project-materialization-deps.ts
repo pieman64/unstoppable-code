@@ -32,7 +32,11 @@ import {
   readAllSidebarItemsSnapshot,
 } from './sidebar-items';
 import { resolveGitHubTokenWithSource } from './github-auth';
-import { cloneRepoWithProgress, getRemoteUrlStrict } from './git';
+import {
+  cloneRepoWithProgress,
+  getRemoteUrlStrict,
+  initLocalRepo,
+} from './git';
 import { readWorkspaceOwnership } from './workspace-persistence';
 import {
   recordWorkspaceOwner,
@@ -43,6 +47,8 @@ import {
   buildWorkspaceId,
   findOrCreateSingleRepoWorkspaceForRepo,
 } from './workspace-service';
+import { createWorkspace } from './workspace-creation';
+import { multiRepoSetupManifest } from './org-project-multi-repo';
 import type { OrgProjectMaterializationDeps } from './org-project-materialization';
 import { getOrgCoworkCreator } from './org-cowork-create-deps';
 import type { TelemetrySharingPreferences } from '@canopy/desktop-shared/types';
@@ -86,9 +92,9 @@ export function createProductionDeps(): OrgProjectMaterializationDeps {
               credentialContext ?? (await getCanopyCloudCredentials()),
           },
         ),
-      detach: async (instanceId, credentialContext) =>
+      detach: async (instanceId, credentialContext, fence) =>
         requestCanopyCloudJson(
-          `/api/v1/projects/instances/${instanceId}/detach`,
+          `/api/v1/projects/instances/${instanceId}/detach${fence ? `?${new URLSearchParams({ operationId: fence.operationId, fencingGeneration: String(fence.fencingGeneration) })}` : ''}`,
           {
             method: 'POST',
             credentialContext:
@@ -191,6 +197,12 @@ export function createProductionDeps(): OrgProjectMaterializationDeps {
       ledger: createActivityRepairLedger(getActivityScopeRepairFilePath),
     },
     git: {
+      initializeRoot: (path, name, repositories) =>
+        initLocalRepo(
+          path,
+          name,
+          repositories ? multiRepoSetupManifest(repositories) : undefined,
+        ),
       clone: (url, destination, options) =>
         cloneRepoWithProgress(url, destination, {
           ...options,
@@ -205,6 +217,13 @@ export function createProductionDeps(): OrgProjectMaterializationDeps {
         }),
     },
     workspace: {
+      createBoundMultiRepoWorkspace: async (input): Promise<void> => {
+        await createWorkspace({
+          source: 'org-shared-multi-repo-setup',
+          idempotencyKey: `org-shared-setup:${input.owner.instanceId}:${input.owner.bindingGeneration}`,
+          variant: { kind: 'bound-multi-repo', ...input },
+        });
+      },
       buildLocalWorkspaceId: buildWorkspaceId,
       applyManagedPrivateMemory: async (input): Promise<void> => {
         await recordOrganizationPrivateMemory(input);

@@ -12,6 +12,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { InviteTeammateModal } from '../InviteTeammateModal';
 import type {
+  CanopyCloudAccountPublicState,
   SaveSharedContainerFileScopeRequest,
   SharedContainerEligibilityResponse,
   SharedContainerSharePreview,
@@ -44,26 +45,48 @@ const mockOpenAccountOrganizationPage = jest.fn<
   'settings' | 'web',
   [unknown]
 >();
-jest.mock('@/lib/navigation/settings-destinations', () => ({
-  ...jest.requireActual<typeof SettingsDestinationsModule>(
+jest.mock('@/lib/navigation/settings-destinations', () => {
+  const actual = jest.requireActual<typeof SettingsDestinationsModule>(
     '@/lib/navigation/settings-destinations',
-  ),
-  openAccountOrganizationPage: (route: unknown): 'settings' | 'web' =>
-    mockOpenAccountOrganizationPage(route),
-}));
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      openAccountOrganizationPage: {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: (route: unknown): 'settings' | 'web' =>
+          mockOpenAccountOrganizationPage(route),
+      },
+    },
+  );
+});
 
-jest.mock('@/lib/panels/persistence-bridge', () => ({
-  ...jest.requireActual<Record<string, unknown>>(
+jest.mock('@/lib/panels/persistence-bridge', () => {
+  const actual = jest.requireActual<Record<string, unknown>>(
     '@/lib/panels/persistence-bridge',
-  ),
-  flushPanelLayoutSaveForWorktree: (key: string): Promise<void> =>
-    mockFlushLayoutSave(key),
-}));
+  );
+  return Object.defineProperties(
+    {},
+    {
+      ...Object.getOwnPropertyDescriptors(actual),
+      flushPanelLayoutSaveForWorktree: {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: (key: string): Promise<void> => mockFlushLayoutSave(key),
+      },
+    },
+  );
+});
 
 const ORG = { id: 'org-1', name: 'Acme', createdAt: '', updatedAt: '' };
 
 const PREVIEW: SharedContainerSharePreview = {
   containerType: 'CODE_WORKTREE',
+  startPage: null,
   chatCount: 3,
   planCount: 1,
   attachmentCount: 2,
@@ -621,6 +644,9 @@ describe('InviteTeammateModal', () => {
           ownerUserId: 'me',
           worktreeId: 'server-wt-1',
           containerType: 'CODE_WORKTREE',
+          title: 'Shared worktree',
+          owner: { userId: 'me', name: 'Owner' },
+          access: 'direct',
           revision: 0,
           createdAt: '',
           updatedAt: '',
@@ -1454,6 +1480,54 @@ describe('InviteTeammateModal', () => {
     ).toBeNull();
   });
 
+  it('notes the bundled capabilities once, between repositories and withheld files', async () => {
+    preview.mockResolvedValue({
+      ...PREVIEW,
+      withheldFileCount: 1,
+      capabilityPackageCounts: {
+        skills: 2,
+        pipelines: 1,
+        agents: 0,
+        automations: 0,
+        hooks: 0,
+      },
+    });
+
+    await renderModal();
+    await expandScopeDetails();
+
+    const note = q('shared-container-invite-modal-capabilities');
+    expect(note?.textContent).toBe(
+      'This share also carries the 2 skills and 1 pipeline used here. They install only if a teammate makes a copy.',
+    );
+    expect(note?.querySelector('input, button')).toBeNull();
+    const withheld = q('shared-container-invite-modal-withheld-files');
+    expect(
+      note !== null &&
+        withheld !== null &&
+        Boolean(
+          note.compareDocumentPosition(withheld) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+    ).toBe(true);
+  });
+
+  it('adds no capability note when analysis is pending or the package is empty', async () => {
+    preview.mockResolvedValue({
+      ...PREVIEW,
+      capabilityPackageCounts: {
+        skills: 0,
+        pipelines: 0,
+        agents: 0,
+        automations: 0,
+        hooks: 0,
+      },
+    });
+    await renderModal();
+    await expandScopeDetails();
+    expect(q('shared-container-invite-modal-capabilities')).toBeNull();
+  });
+
   it('names the escaping symlinks it withholds, owner-side', async () => {
     preview.mockResolvedValue({
       ...PREVIEW,
@@ -1831,6 +1905,9 @@ describe('InviteTeammateModal', () => {
           ownerUserId: 'me',
           worktreeId: 'server-wt-1',
           containerType: 'CODE_WORKTREE',
+          title: 'Shared worktree',
+          owner: { userId: 'me', name: 'Owner' },
+          access: 'direct',
           revision: 0,
           createdAt: '',
           updatedAt: '',
@@ -3887,15 +3964,27 @@ describe('InviteTeammateModal', () => {
         organizations: [],
         orgBillingStates: [],
       });
+      const accountState: CanopyCloudAccountPublicState =
+        accountKind === 'guest'
+          ? {
+              hasApiKey: true,
+              authMode: 'guest',
+              credentialSource: 'guest',
+              capabilities: [],
+              storageAvailable: true,
+            }
+          : {
+              hasApiKey: false,
+              authMode: null,
+              credentialSource: null,
+              capabilities: [],
+              storageAvailable: true,
+            };
       (
         window.api.loadCanopyCloudAccount as jest.MockedFunction<
           typeof window.api.loadCanopyCloudAccount
         >
-      ).mockResolvedValue(
-        accountKind === 'guest'
-          ? ({ hasApiKey: true, authMode: 'guest' } as never)
-          : null,
-      );
+      ).mockResolvedValue(accountState);
       await renderModal();
       expect(checkEligibility).not.toHaveBeenCalled();
       expect(useCloudConnectGateStore.getState().pending).not.toBeNull();
@@ -4447,7 +4536,7 @@ describe('InviteTeammateModal', () => {
         includedPaths: [],
         legacyAllowlist: true,
       },
-    } as never);
+    });
     await renderModal('COWORK_WORK_ENTRY');
     await expandScopeDetails();
 
@@ -6370,10 +6459,11 @@ describe('InviteTeammateModal', () => {
 
         const people = q('shared-container-invite-people');
         const linkSection = q('shared-container-invite-link');
-        expect(people).not.toBeNull();
-        expect(linkSection).not.toBeNull();
+        if (!people || !linkSection) {
+          throw new Error('People and link sections should be visible');
+        }
         expect(
-          people?.compareDocumentPosition(linkSection as Node) &
+          people.compareDocumentPosition(linkSection) &
             Node.DOCUMENT_POSITION_FOLLOWING,
         ).toBeTruthy();
         expect(getLink).toHaveBeenCalledWith({ containerId: 'container-1' });

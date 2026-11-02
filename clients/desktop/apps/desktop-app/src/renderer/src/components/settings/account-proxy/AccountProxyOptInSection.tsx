@@ -1,6 +1,5 @@
 import { type JSX, useId, useState } from 'react';
 import { Button, ErrorBanner, Notice, ToggleSwitch } from '@canopy/ui-shared';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 import { useOpenSettingsSection } from '../settings-section-navigation';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
 import {
@@ -20,7 +19,6 @@ const SAVE_ERROR_MESSAGE = 'Could not save this setting. Try again.';
 export function AccountProxyOptInSection(): JSX.Element {
   const status = useAccountProxyStatus();
   const openSettings = useOpenSettingsSection();
-  const buttonSize = useSettingsButtonSize();
   const toggleId = useId();
   const [saving, setSaving] = useState(false);
   const [optimistic, setOptimistic] = useState<boolean | null>(null);
@@ -74,7 +72,7 @@ export function AccountProxyOptInSection(): JSX.Element {
               description="Connect to a CLIProxyAPI server."
               control={
                 <Button
-                  size={buttonSize}
+                  size="compact"
                   data-testid="account-proxy-open-settings"
                   onClick={(): void => openSettings('account-proxy')}
                 >

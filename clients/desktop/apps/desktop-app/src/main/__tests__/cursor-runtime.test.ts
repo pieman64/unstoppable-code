@@ -216,8 +216,9 @@ test('rejects archive links even when download digest matches', async () => {
     ['dist-package'],
   );
   archive = await readFile(join(root, 'linked.tgz'));
-  artifact.sha256 = hash(archive);
-  artifact.archiveBytes = archive.length;
+  // Match this malicious archive's pin so the test reaches content validation.
+  Reflect.set(artifact, 'sha256', hash(archive));
+  Reflect.set(artifact, 'archiveBytes', archive.length);
   await expect(
     installer(
       (): Promise<Response> =>
@@ -227,7 +228,7 @@ test('rejects archive links even when download digest matches', async () => {
 });
 
 test('oversized downloads fail with no partial installation', async () => {
-  artifact.archiveBytes = 1;
+  Reflect.set(artifact, 'archiveBytes', 1);
   await expect(
     installer(() =>
       Promise.resolve(new Response(new Uint8Array(archive))),

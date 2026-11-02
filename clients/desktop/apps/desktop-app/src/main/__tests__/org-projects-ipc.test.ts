@@ -7,10 +7,15 @@ jest.mock('../feature-flags', () => ({
 const mockLinksList = jest.fn();
 const mockLinksDecide = jest.fn();
 jest.mock('../services/org-project-relationship-service', () => ({
-  listOrgProjectRelationships: mockLinksList,
-  decideOrgProjectRelationship: mockLinksDecide,
+  get listOrgProjectRelationships(): typeof mockLinksList {
+    return mockLinksList;
+  },
+  get decideOrgProjectRelationship(): typeof mockLinksDecide {
+    return mockLinksDecide;
+  },
 }));
 import type { OrgProjectSetupProgress } from '@canopy/protocol/org-projects';
+import type { OrgMemberCodeEligibility } from '../lib/org-cowork-binding-deps';
 const mockSetupStart = jest.fn();
 const mockSetupCancel = jest.fn();
 const mockSetupSubscribe = jest.fn<
@@ -35,10 +40,14 @@ jest.mock('../lib/org-project-materialization', () => ({
     onOwnershipChanged: mockOnOwnershipChanged,
   }),
 }));
-const mockCodeEligibility = jest.fn<Promise<boolean>, [string]>();
+const mockCodeEligibility = jest.fn<
+  Promise<OrgMemberCodeEligibility>,
+  [string]
+>();
 jest.mock('../lib/org-cowork-binding-deps', () => ({
-  getOrgMemberCodeEligibility: (organizationId: string): Promise<boolean> =>
-    mockCodeEligibility(organizationId),
+  getOrgMemberCodeEligibility: (
+    organizationId: string,
+  ): Promise<OrgMemberCodeEligibility> => mockCodeEligibility(organizationId),
 }));
 const mockInspectFolder = jest.fn();
 jest.mock('../lib/org-member-folder-inspection', () => ({
@@ -97,7 +106,9 @@ const mockSubscribe = jest.fn<() => void, [Listener]>();
 const mockGetAllWindows = jest.fn();
 
 jest.mock('../ipc/register', () => ({
-  registerIpcHandler: mockRegisterIpcHandler,
+  get registerIpcHandler(): typeof mockRegisterIpcHandler {
+    return mockRegisterIpcHandler;
+  },
 }));
 jest.mock('../services/org-project-catalog-service', () => ({
   getOrgProjectCatalogService: (): unknown => ({
@@ -108,7 +119,11 @@ jest.mock('../services/org-project-catalog-service', () => ({
   }),
 }));
 jest.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: mockGetAllWindows },
+  BrowserWindow: {
+    get getAllWindows(): typeof mockGetAllWindows {
+      return mockGetAllWindows;
+    },
+  },
 }));
 const mockRecordSessionDiagnostic = jest.fn<void, [SessionDiagnosticRecord]>();
 jest.mock('../observability', () => ({

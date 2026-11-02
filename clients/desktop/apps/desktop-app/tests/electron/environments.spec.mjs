@@ -6,6 +6,16 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { seedCoworkWorkspace } from './seeders/index.mjs';
 import { injectSecureStorageFault } from './secureStorageFixture.mjs';
+import {
+  openProjectSettingsPage,
+  projectSettingsNav,
+  waitForProjectSettingsSaved,
+} from './projectSettingsDriver.mjs';
+import {
+  chooseOption,
+  chooseSettingsOption,
+  chosenValue,
+} from './helpers/settingsSelect.mjs';
 
 // Doc 2 Spec 15 — workspace-scoped environment configuration (PR 761).
 //
@@ -91,7 +101,7 @@ async function openFixtureWorkspaceEnvironmentTab(window, app) {
   await app.workspaceHeaderLabel(workspaceName).hover();
   await app.workspaceSettingsButton(workspaceName).click();
   const dialog = window.getByRole('dialog', { name: workspaceName });
-  await dialog.getByRole('tab', { name: 'Environment', exact: true }).click();
+  await openProjectSettingsPage(app, 'environment');
   const tab = dialog.locator('[data-testid^="workspace-environment-tab-"]');
   await expect(tab).toBeVisible();
   return { dialog, tab };
@@ -276,8 +286,8 @@ for (const fault of ['probe-failed', 'locked']) {
       await app.openEnvironmentsSettings();
       await addFixtureEnvironment(window);
       const page = window.getByTestId('settings-tab-environment');
-      await page.getByTestId('environments-save').click();
-      await expect(page.getByTestId('environments-save-status')).toHaveText(
+      await window.getByTestId('environments-save').click();
+      await expect(window.getByTestId('environments-save-status')).toHaveText(
         'Saved.',
       );
       const savedRecord = readEnvironmentRecord(userDataDir);
@@ -297,9 +307,11 @@ for (const fault of ['probe-failed', 'locked']) {
         'data-storage-state',
         fault === 'locked' ? 'locked' : 'unavailable',
       );
-      await expect(page.getByTestId('environments-save-status')).toHaveCount(0);
+      await expect(window.getByTestId('environments-save-status')).toHaveCount(
+        0,
+      );
       await expect(page.getByTestId('environments-list')).toHaveCount(0);
-      await expect(page.getByTestId('environments-save-bar')).toHaveCount(0);
+      await expect(window.getByTestId('environments-save-bar')).toHaveCount(0);
       expect(readEnvironmentRecord(userDataDir)).toBe(savedRecord);
 
       const retry = page.getByTestId('secure-storage-retry');
@@ -308,7 +320,7 @@ for (const fault of ['probe-failed', 'locked']) {
       await retry.click();
       await expect(page.getByTestId('secure-storage-notice')).toHaveCount(0);
       await selectAndExpectFixtureEnvironment(window);
-      await expect(page.getByTestId('environments-unsaved')).toHaveCount(0);
+      await expect(window.getByTestId('environments-unsaved')).toHaveCount(0);
       expect(readEnvironmentRecord(userDataDir)).toBe(savedRecord);
     } finally {
       try {
@@ -331,22 +343,22 @@ test('CAN-3220 failed environment encryption preserves unsaved values and Retry 
     await app.openEnvironmentsSettings();
     // Establish a real persisted baseline; the refused save cannot replace it.
     const page = window.getByTestId('settings-tab-environment');
-    await page.getByTestId('environments-save').click();
-    await expect(page.getByTestId('environments-save-status')).toHaveText(
+    await window.getByTestId('environments-save').click();
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
       'Saved.',
     );
     const savedRecord = readEnvironmentRecord(userDataDir);
     await addFixtureEnvironment(window);
     restore = await injectSecureStorageFault(electronApp, 'encrypt-failed');
-    await page.getByTestId('environments-save').click();
+    await window.getByTestId('environments-save').click();
 
     await expect(page).toContainText('Couldn’t access secure storage.');
     await expect(page.getByTestId('secure-storage-notice')).toHaveAttribute(
       'data-storage-state',
       'failed',
     );
-    await expect(page.getByTestId('environments-save-status')).toHaveCount(0);
-    await expect(page.getByTestId('environments-unsaved')).toBeVisible();
+    await expect(window.getByTestId('environments-save-status')).toHaveCount(0);
+    await expect(window.getByTestId('environments-unsaved')).toBeVisible();
     await expectFixtureDraft(window);
     expect(readEnvironmentRecord(userDataDir)).toBe(savedRecord);
 
@@ -361,10 +373,10 @@ test('CAN-3220 failed environment encryption preserves unsaved values and Retry 
     await expect(retry).toHaveText('Retry');
     await restore();
     await retry.click();
-    await expect(page.getByTestId('environments-save-status')).toHaveText(
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
       'Saved.',
     );
-    await expect(page.getByTestId('environments-unsaved')).toHaveCount(0);
+    await expect(window.getByTestId('environments-unsaved')).toHaveCount(0);
     await expectFixtureDraft(window);
     expect(readEnvironmentRecord(userDataDir)).not.toContain(STORAGE_VALUE);
     await window.reload();
@@ -392,7 +404,7 @@ test('CAN-3220 environment Retry replays the failed save without persisting a ne
     await addFixtureEnvironment(window);
     const page = window.getByTestId('settings-tab-environment');
     restore = await injectSecureStorageFault(electronApp, 'encrypt-failed');
-    await page.getByTestId('environments-save').click();
+    await window.getByTestId('environments-save').click();
     await expect(page.getByTestId('secure-storage-notice')).toBeVisible();
     await lastValueInput(window, page).fill('newer-unsaved-environment-draft');
     await restore();
@@ -401,7 +413,7 @@ test('CAN-3220 environment Retry replays the failed save without persisting a ne
     await expect(lastValueInput(window, page)).toHaveValue(
       'newer-unsaved-environment-draft',
     );
-    await expect(page.getByTestId('environments-unsaved')).toBeVisible();
+    await expect(window.getByTestId('environments-unsaved')).toBeVisible();
     await app.closeSettings();
     await app.openMainPage();
     await app.openEnvironmentsSettings();
@@ -412,7 +424,7 @@ test('CAN-3220 environment Retry replays the failed save without persisting a ne
     await expect(lastValueInput(window, page)).toHaveValue(
       'newer-unsaved-environment-draft',
     );
-    await expect(page.getByTestId('environments-unsaved')).toBeVisible();
+    await expect(window.getByTestId('environments-unsaved')).toBeVisible();
     await window.reload();
     await app.waitForShell();
     await app.openEnvironmentsSettings();
@@ -443,8 +455,8 @@ test('CAN-3220 unavailable environment encryption explicitly warns about the his
     await expect(
       page.getByTestId('environment-editor-encryption-status'),
     ).toHaveCount(0);
-    await page.getByTestId('environments-save').click();
-    await expect(page.getByTestId('environments-save-status')).toHaveText(
+    await window.getByTestId('environments-save').click();
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
       'Saved.',
     );
     await expect(warning).toBeVisible();
@@ -790,7 +802,7 @@ test('Environment editor cases reset state between steps in one app', async () =
       await window.getByTestId('environments-name-input').fill('Child Env');
       const parentSelect = window.getByTestId('environments-parent-select');
       await expect(parentSelect).toBeVisible();
-      await parentSelect.selectOption({ label: 'Parent Env' });
+      await chooseSettingsOption(parentSelect, { label: 'Parent Env' });
 
       const resolved = window.getByTestId('environments-resolved-list');
       await expect(resolved).toBeVisible();
@@ -894,7 +906,7 @@ test('Environment editor cases reset state between steps in one app', async () =
     await closeCanopy(electronApp, userDataDir);
   }
 });
-test('CAN-3220 workspace Retry saves the pending environment without saving its local assignment draft', async () => {
+test('CAN-3220 workspace Retry saves the pending environment before the assignment chosen meanwhile', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir } = await launchCanopy({
     seedDemoWorkspaces: true,
@@ -907,8 +919,8 @@ test('CAN-3220 workspace Retry saves the pending environment without saving its 
     await app.waitForShell();
     await app.openEnvironmentsSettings();
     const page = window.getByTestId('settings-tab-environment');
-    await page.getByTestId('environments-save').click();
-    await expect(page.getByTestId('environments-save-status')).toHaveText(
+    await window.getByTestId('environments-save').click();
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
       'Saved.',
     );
     const baselineRecord = readEnvironmentRecord(userDataDir);
@@ -916,7 +928,7 @@ test('CAN-3220 workspace Retry saves the pending environment without saving its 
       JSON.parse(baselineRecord).data.workspaceAssignments;
     await addFixtureEnvironment(window);
     restore = await injectSecureStorageFault(electronApp, 'encrypt-failed');
-    await page.getByTestId('environments-save').click();
+    await window.getByTestId('environments-save').click();
     await expect(page.getByTestId('secure-storage-notice')).toHaveAttribute(
       'data-storage-state',
       'failed',
@@ -931,28 +943,40 @@ test('CAN-3220 workspace Retry saves the pending environment without saving its 
     await app.workspaceHeaderLabel(workspaceName).hover();
     await app.workspaceSettingsButton(workspaceName).click();
     const dialog = window.getByRole('dialog', { name: workspaceName });
-    await dialog.getByRole('tab', { name: 'Environment', exact: true }).click();
+    await openProjectSettingsPage(app, 'environment');
     const tab = dialog.locator('[data-testid^="workspace-environment-tab-"]');
     await expect(tab.getByTestId('secure-storage-notice')).toHaveAttribute(
       'data-storage-state',
       'failed',
     );
     const runtime = tab.getByTestId('workspace-environment-canopy');
-    await runtime.selectOption({ label: 'Overall (default)' });
-    const localOverride = await runtime.inputValue();
-    const save = tab.getByTestId('workspace-environment-save');
-    await expect(save).toBeEnabled();
+    await chooseOption(runtime, { label: 'Overall (default)' });
+    const localOverride = await chosenValue(runtime);
     await restore();
     await tab.getByTestId('secure-storage-retry').click();
     await expect(tab.getByTestId('secure-storage-notice')).toHaveCount(0);
-    await expect(runtime).toHaveValue(localOverride);
-    await expect(save).toBeEnabled();
-    await expect(tab.getByTestId('workspace-environment-saved')).toHaveCount(0);
+    await expect.poll(() => chosenValue(runtime)).toBe(localOverride);
 
+    // The choice waited while the environment save failed, so it did not
+    // replace that save. Once Retry writes the environment, the page saves
+    // the assignment beside it.
+    await expect
+      .poll(
+        () =>
+          JSON.parse(readEnvironmentRecord(userDataDir)).data
+            .workspaceAssignments,
+      )
+      .toEqual([
+        ...baselineAssignments,
+        {
+          workspaceId: 'demo-ts-pnpm-vite',
+          runtimes: { canopy: localOverride },
+          updatedAt: expect.any(String),
+        },
+      ]);
     const savedRecord = readEnvironmentRecord(userDataDir);
     expect(savedRecord).not.toContain(STORAGE_VALUE);
     const saved = JSON.parse(savedRecord).data;
-    expect(saved.workspaceAssignments).toEqual(baselineAssignments);
     const environment = saved.environments.find(
       ({ name }) => name === STORAGE_ENVIRONMENT_NAME,
     );
@@ -1000,16 +1024,8 @@ test('project Environment assignment tab saves a runtime override', async () => 
     await app.workspaceSettingsButton(workspaceName).click();
     const dialog = window.getByRole('dialog', { name: workspaceName });
     await expect(dialog).toBeVisible();
-    await expect(
-      dialog.getByRole('tab', { name: 'General', exact: true }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole('tab', { name: 'Details', exact: true }),
-    ).toHaveCount(0);
-
-    // The Environment tab has no testid — it is labelled within the dialog.
-    // "Environment" scoped to the dialog.
-    await dialog.getByRole('tab', { name: 'Environment' }).click();
+    await expect(projectSettingsNav(app, 'general')).toBeVisible();
+    await openProjectSettingsPage(app, 'environment');
 
     // The assignment tab is keyed by workspace id; match it by prefix.
     const envTab = dialog.locator(
@@ -1017,20 +1033,16 @@ test('project Environment assignment tab saves a runtime override', async () => 
     );
     await expect(envTab).toBeVisible();
 
-    // Change the Canopy runtime select to a concrete environment, which marks
-    // the tab dirty and enables Save.
+    // Change the Canopy runtime select to a concrete environment; the page
+    // saves the choice as it is made.
     const canopySelect = window.getByTestId('workspace-environment-canopy');
     await expect(canopySelect).toBeVisible();
     // Default environment options render with a "(default)" suffix.
-    await canopySelect.selectOption({ label: 'Overall (default)' });
-
-    const saveButton = window.getByTestId('workspace-environment-save');
-    await expect(saveButton).toBeEnabled();
-    await saveButton.click();
-
-    await expect(window.getByTestId('workspace-environment-saved')).toHaveText(
-      'Saved.',
+    await chooseOption(canopySelect, { label: 'Overall (default)' });
+    await expect(window.getByTestId('workspace-environment-save')).toHaveCount(
+      0,
     );
+    await waitForProjectSettingsSaved(app);
 
     await window.getByTestId('workspace-environment-manage').click();
     await expect(dialog).toHaveCount(0);
@@ -1053,25 +1065,22 @@ test('CAN-3220 PR5406 assignment save then Environments remount has no false uns
     await app.openEnvironmentsSettings();
     await addFixtureEnvironment(window);
     const page = window.getByTestId('settings-tab-environment');
-    await page.getByTestId('environments-save').click();
-    await expect(page.getByTestId('environments-save-status')).toHaveText(
+    await window.getByTestId('environments-save').click();
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
       'Saved.',
     );
-    await expect(page.getByTestId('environments-save-status')).toHaveCount(0);
+    await expect(window.getByTestId('environments-save-status')).toHaveCount(0);
 
     const { tab } = await openFixtureWorkspaceEnvironmentTab(window, app);
-    await tab.getByTestId('workspace-environment-canopy').selectOption({
+    await chooseOption(tab.getByTestId('workspace-environment-canopy'), {
       label: STORAGE_ENVIRONMENT_NAME,
     });
-    await tab.getByTestId('workspace-environment-save').click();
-    await expect(tab.getByTestId('workspace-environment-saved')).toHaveText(
-      'Saved.',
-    );
+    await waitForProjectSettingsSaved(app);
     await tab.getByTestId('workspace-environment-manage').click();
     await expect(page).toBeVisible();
-    await expect(page.getByTestId('environments-unsaved')).toHaveCount(0);
-    await expect(page.getByTestId('environments-save-status')).toHaveCount(0);
-    await expect(page.getByTestId('environments-save')).toHaveText(
+    await expect(window.getByTestId('environments-unsaved')).toHaveCount(0);
+    await expect(window.getByTestId('environments-save-status')).toHaveCount(0);
+    await expect(window.getByTestId('environments-save')).toHaveText(
       'Save changes',
     );
   } finally {
@@ -1094,19 +1103,18 @@ for (const assignmentFirst of [false, true]) {
       await app.openEnvironmentsSettings();
       await addFixtureEnvironment(window);
       const page = window.getByTestId('settings-tab-environment');
-      await page.getByTestId('environments-save').click();
-      await expect(page.getByTestId('environments-save-status')).toHaveText(
+      await window.getByTestId('environments-save').click();
+      await expect(window.getByTestId('environments-save-status')).toHaveText(
         'Saved.',
       );
-      await expect(page.getByTestId('environments-save-status')).toHaveCount(0);
+      await expect(window.getByTestId('environments-save-status')).toHaveCount(
+        0,
+      );
       const { tab } = await openFixtureWorkspaceEnvironmentTab(window, app);
-      await tab.getByTestId('workspace-environment-canopy').selectOption({
+      await chooseOption(tab.getByTestId('workspace-environment-canopy'), {
         label: STORAGE_ENVIRONMENT_NAME,
       });
-      await tab.getByTestId('workspace-environment-save').click();
-      await expect(tab.getByTestId('workspace-environment-saved')).toHaveText(
-        'Saved.',
-      );
+      await waitForProjectSettingsSaved(app);
       const workspaceId = JSON.parse(
         readEnvironmentRecord(userDataDir),
       ).data.workspaceAssignments.find(
@@ -1133,15 +1141,17 @@ for (const assignmentFirst of [false, true]) {
         await expect
           .poll(async () => (await fixture.counts()).saveEntered)
           .toBe(true);
-        await page.getByTestId('environments-save').click();
+        await window.getByTestId('environments-save').click();
       } else {
-        await page.getByTestId('environments-save').click();
+        await window.getByTestId('environments-save').click();
         await expect
           .poll(async () => (await fixture.counts()).saveEntered)
           .toBe(true);
         await fixture.dispatchAssignment(workspaceId);
       }
-      await expect(page.getByTestId('environments-save')).toHaveText('Saving…');
+      await expect(window.getByTestId('environments-save')).toHaveText(
+        'Saving…',
+      );
       await expect
         .poll(async () => (await fixture.counts()).loadSettled)
         .toBeGreaterThanOrEqual(1);
@@ -1152,11 +1162,11 @@ for (const assignmentFirst of [false, true]) {
       await fixture.release();
       const action = await fixture.actionResponse();
       expect(action.ok).toBe(true);
-      await expect(page.getByTestId('environments-save')).toHaveText(
+      await expect(window.getByTestId('environments-save')).toHaveText(
         'Save changes',
       );
-      await expect(page.getByTestId('environments-unsaved')).toHaveCount(0);
-      await expect(page.getByTestId('environments-save-status')).toHaveText(
+      await expect(window.getByTestId('environments-unsaved')).toHaveCount(0);
+      await expect(window.getByTestId('environments-save-status')).toHaveText(
         'Saved.',
       );
       const saved = JSON.parse(readEnvironmentRecord(userDataDir)).data;
@@ -1191,14 +1201,15 @@ test('CAN-3220 PR5406 failed preliminary assignment read then Manage Environment
     await app.waitForShell();
     await app.openEnvironmentsSettings();
     const { tab } = await openFixtureWorkspaceEnvironmentTab(window, app);
-    await tab.getByTestId('workspace-environment-canopy').selectOption({
-      label: 'Overall (default)',
-    });
     fixture = await interceptEnvironmentConfigIpc(
       electronApp,
       'fail-next-load',
     );
-    await tab.getByTestId('workspace-environment-save').click();
+    // The page saves the choice as it is made; that save's preliminary read
+    // fails.
+    await chooseOption(tab.getByTestId('workspace-environment-canopy'), {
+      label: 'Overall (default)',
+    });
     await expect(tab.getByTestId('secure-storage-notice')).toBeVisible();
     expect((await fixture.counts()).saveCalls).toBe(0);
     await tab.getByTestId('workspace-environment-manage').click();
@@ -1267,9 +1278,9 @@ test('cowork project settings persist and deep-link back to Environment', async 
       .getByTestId('chat-project-settings-auto-archive-days')
       .fill('14');
     await dialog.getByRole('tab', { name: 'Environment' }).click();
-    await dialog
-      .getByTestId('workspace-environment-canopy')
-      .selectOption({ label: 'Overall (default)' });
+    await chooseOption(dialog.getByTestId('workspace-environment-canopy'), {
+      label: 'Overall (default)',
+    });
     await dialog.getByTestId('workspace-environment-save').click();
     await expect(dialog.getByTestId('workspace-environment-saved')).toHaveText(
       'Saved.',
@@ -1297,9 +1308,11 @@ test('cowork project settings persist and deep-link back to Environment', async 
     ).toHaveValue('14');
 
     await dialog.getByRole('tab', { name: 'Environment' }).click();
-    await expect(
-      dialog.getByTestId('workspace-environment-canopy'),
-    ).toHaveValue('default-overall');
+    await expect
+      .poll(() =>
+        chosenValue(dialog.getByTestId('workspace-environment-canopy')),
+      )
+      .toBe('default-overall');
     await dialog.getByTestId('workspace-environment-manage').click();
     await expect(dialog).toHaveCount(0);
     await expect(window.getByTestId('settings-tab-environment')).toBeVisible();

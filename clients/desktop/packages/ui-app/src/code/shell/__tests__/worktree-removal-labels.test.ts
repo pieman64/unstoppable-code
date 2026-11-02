@@ -1,4 +1,8 @@
-import { getWorktreeDeleteLabels } from '../worktree-removal-labels';
+import {
+  getWorktreeBranchChoiceHint,
+  getWorktreeDeleteLabels,
+} from '../worktree-removal-labels';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 
 const BRANCH = 'feature-x';
 
@@ -9,7 +13,8 @@ describe('getWorktreeDeleteLabels', () => {
       expect(labels.archiveActionLabel).toBe('Delete feature-x');
       expect(labels.standaloneActionLabel).toBe('Delete feature-x');
       expect(labels.dialogTitle).toBe('Delete worktree?');
-      expect(labels.dialogConfirmLabel).toBe('Delete');
+      expect(labels.dialogConfirmLabel).toBe('Delete worktree');
+      expect(labels.dialogDestructive).toBe(true);
     });
 
     it('conditions the retention promise on creating a restorable archive', () => {
@@ -20,13 +25,13 @@ describe('getWorktreeDeleteLabels', () => {
       expect(labels.retentionDetail).toBe(
         'Deleting removes the worktree from disk and its chat from the ' +
           'sidebar. When a restorable archive can be created, its Git state, ' +
-          'chats, and eligible pipeline history are kept for 5 days. ' +
+          'chats, and eligible workflow history are kept for 5 days. ' +
           'Otherwise, deletion is permanent.',
       );
       expect(labels.localWorkRetentionDetail).toBe(
         'Deleting removes the worktree from disk and its chat from the ' +
           'sidebar. When a restorable archive can be created, its commits, ' +
-          'local changes, chats, and eligible pipeline history are kept for ' +
+          'local changes, chats, and eligible workflow history are kept for ' +
           '5 days. Otherwise, deletion is permanent.',
       );
     });
@@ -58,7 +63,8 @@ describe('getWorktreeDeleteLabels', () => {
       expect(labels.archiveActionLabel).toBe('Archive feature-x');
       expect(labels.standaloneActionLabel).toBe('Archive feature-x');
       expect(labels.dialogTitle).toBe('Archive worktree?');
-      expect(labels.dialogConfirmLabel).toBe('Archive');
+      expect(labels.dialogConfirmLabel).toBe('Archive worktree');
+      expect(labels.dialogDestructive).toBe(false);
     });
 
     it('conditions Git restoration on creating a restorable archive', () => {
@@ -68,19 +74,34 @@ describe('getWorktreeDeleteLabels', () => {
       );
       expect(labels.retentionDetail).toBe(
         'Archiving removes the worktree from disk and keeps its chats and ' +
-          'eligible pipeline history until you delete the archive. When a ' +
+          'eligible workflow history until you delete the archive. When a ' +
           'restorable archive can be created, its Git state is kept too, and ' +
           'restoring recreates that state in a new worktree.',
       );
       expect(labels.localWorkRetentionDetail).toBe(
         'Archiving removes the worktree from disk and keeps its chats and ' +
-          'eligible pipeline history until you delete the archive. When a ' +
+          'eligible workflow history until you delete the archive. When a ' +
           'restorable archive can be created, its commits and local changes ' +
           'are kept too, and restoring recreates that state in a new worktree.',
       );
       expect(labels.retentionDetail).not.toContain('5 days');
       expect(labels.retentionDetail).not.toContain('missing');
       expect(labels.localWorkRetentionDetail).not.toContain('missing');
+    });
+  });
+
+  describe('getWorktreeBranchChoiceHint', () => {
+    it('adds no note without an App Advisor request', () => {
+      expect(getWorktreeBranchChoiceHint()).toBeNull();
+    });
+
+    it('names the branch handling an App Advisor request asked for', () => {
+      expect(getWorktreeBranchChoiceHint(true)).toBe(
+        `${ORCHESTRATOR_LABEL} suggested deleting it.`,
+      );
+      expect(getWorktreeBranchChoiceHint(false)).toBe(
+        `${ORCHESTRATOR_LABEL} suggested keeping it.`,
+      );
     });
   });
 });

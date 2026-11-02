@@ -3,8 +3,13 @@ import {
   type AgentDelegationResult,
 } from '@canopy/protocol/delegation';
 import type { ResolvedAgentRouteSnapshot } from '../types';
+import { InMemoryDelegationTranscriptPort } from '../in-memory-transcript-port';
 import { DevelopmentDelegationBroker } from '../development-broker';
 import { createDevelopmentDelegationProjection } from '../development-projections';
+import type {
+  DelegationTranscriptChange,
+  DelegationTranscriptTarget,
+} from '../transcript-port';
 import { routeFixture } from './fixtures';
 
 const parent = {
@@ -25,6 +30,29 @@ const task = {
   thinkingLevel: 'low' as const,
 };
 
+function transcriptTarget(
+  chatId: string,
+  delegationId: string,
+  runGeneration = 1,
+): DelegationTranscriptTarget {
+  return { kind: 'delegation', chatId, delegationId, runGeneration };
+}
+
+function transcriptChange(): DelegationTranscriptChange {
+  return {
+    row: {
+      id: 'retained-row',
+      role: 'assistant',
+      timestamp: 1,
+      parentBlockId: 'agent-call',
+      delegationSequence: 0,
+      blocks: [],
+      itemRevision: 0,
+      final: false,
+    },
+  };
+}
+
 describe('developer-only projections over one fake broker', () => {
   let broker: DevelopmentDelegationBroker;
   beforeEach(() => {
@@ -40,6 +68,88 @@ describe('developer-only projections over one fake broker', () => {
     });
   });
   afterEach(() => broker.close());
+
+  it('scopes its default port to known parent chats and retains completed streams', async () => {
+    const unknown = await broker.transcriptPort.open({
+      target: transcriptTarget(parent.chatId, 'unknown-child'),
+    });
+    expect(unknown).toMatchObject({
+      ok: false,
+      error: { code: 'unauthorized' },
+    });
+
+    const first = await broker.spawn(parent, task);
+    if (!first.ok) throw new Error(first.error.message);
+    const firstTarget = transcriptTarget(
+      parent.chatId,
+      first.value.delegationId,
+    );
+
+    const otherParent = {
+      ...parent,
+      chatId: 'second-chat',
+      sessionKey: 'second-session',
+      turnId: 'second-turn',
+      toolCallId: 'second-tool',
+    };
+    const second = await broker.spawn(otherParent, task);
+    if (!second.ok) throw new Error(second.error.message);
+    const secondTarget = transcriptTarget(
+      otherParent.chatId,
+      second.value.delegationId,
+    );
+
+    const foreign = await broker.transcriptPort.open({
+      target: transcriptTarget('foreign-chat', first.value.delegationId),
+    });
+    expect(foreign).toMatchObject({
+      ok: false,
+      error: { code: 'unauthorized' },
+    });
+    const firstOpen = await broker.transcriptPort.open({ target: firstTarget });
+    const secondOpen = await broker.transcriptPort.open({
+      target: secondTarget,
+    });
+    expect(firstOpen).toMatchObject({ ok: true });
+    expect(secondOpen).toMatchObject({ ok: true });
+
+    const append = await broker.transcriptPort.appendChanges({
+      target: firstTarget,
+      mutationKey: 'retained-row-0',
+      changes: [transcriptChange()],
+    });
+    if (!append.ok) throw new Error(append.error.message);
+    broker.finish(first.value.delegationId, 'completed', 'Retained report');
+    const read = await broker.transcriptPort.message({
+      target: firstTarget,
+      streamRevision: append.value.streamRevision,
+      messageId: 'retained-row',
+    });
+    expect(read).toMatchObject({
+      ok: true,
+      value: { id: 'retained-row', itemRevision: 0 },
+    });
+  });
+
+  it('exposes an explicitly injected transcript port unchanged', () => {
+    const injectedPort = new InMemoryDelegationTranscriptPort({
+      owns: (target: DelegationTranscriptTarget): boolean =>
+        target.chatId === parent.chatId,
+    });
+    broker = new DevelopmentDelegationBroker({
+      mode: 'development-probe',
+      resolveRoute: (
+        request,
+      ): Promise<AgentDelegationResult<ResolvedAgentRouteSnapshot>> =>
+        Promise.resolve({
+          ok: true,
+          value: routeFixture({ selectedModelId: request.modelId }),
+        }),
+      transcriptPort: injectedPort,
+    });
+
+    expect(broker.transcriptPort).toBe(injectedPort);
+  });
 
   it.each(['claude', 'codex'] as const)(
     'runs the %s shaped schema through the same lifecycle with no child recursion',
@@ -69,20 +179,12 @@ describe('developer-only projections over one fake broker', () => {
       expect(result.ok).toBe(true);
       const child = broker.list(parent)[0];
       if (!child) throw new Error('Missing child');
-      expect(child.routeSnapshot.effectiveThinkingLevel).toBe('low');
-      expect(
-        await projection.invoke(parent, 'probe_watch_delegates', {
-          delegationIds: [child.delegationId],
-          mode: 'any',
-          timeoutMs: 0,
-        }),
-      ).toMatchObject({
-        ok: true,
-        value: {
-          mode: 'any',
-          targets: [{ delegationId: child.delegationId, runGeneration: 1 }],
-        },
-      });
+      const routeSnapshot = child.routeSnapshot;
+      if (!routeSnapshot) throw new Error('Missing child route snapshot');
+      expect(routeSnapshot.effectiveThinkingLevel).toBe('low');
+      expect(projection.tools.map((tool) => tool.name)).not.toContain(
+        'probe_watch_delegates',
+      );
       expect(broker.activeCount(parent)).toBe(1);
       expect(
         await projection.invoke({ ...parent, depth: 1 }, spawn.name, input),
@@ -119,7 +221,9 @@ describe('developer-only projections over one fake broker', () => {
       );
       expect(legacyWait.ok).toBe(false);
       if (legacyWait.ok) throw new Error('Legacy wait unexpectedly succeeded');
-      expect(legacyWait.error.message).toContain('Watch Delegates');
+      expect(legacyWait.error.message).toContain(
+        'Completion notices arrive automatically',
+      );
       const legacyManage = await projection.invoke(
         parent,
         'probe_manage_delegate',
@@ -133,7 +237,7 @@ describe('developer-only projections over one fake broker', () => {
   );
 
   it.each(['claude', 'codex'] as const)(
-    'advertises the %s watch deadline from the shared protocol limit',
+    'does not list or dispatch the retired %s watch tool',
     async (harness) => {
       const projection = createDevelopmentDelegationProjection(
         harness,
@@ -143,14 +247,7 @@ describe('developer-only projections over one fake broker', () => {
       const watch = projection.tools.find(
         (tool) => tool.name === 'probe_watch_delegates',
       );
-      expect(watch?.inputSchema).toMatchObject({
-        properties: {
-          timeoutMs: {
-            maximum: AGENT_DELEGATION_INPUT_LIMITS.waitTimeoutMs,
-          },
-        },
-      });
-      expect(watch?.description).toContain('30 minutes');
+      expect(watch).toBeUndefined();
       expect(
         await projection.invoke(parent, 'probe_watch_delegates', {
           delegationIds: ['missing-child'],

@@ -33,7 +33,18 @@ describe('Jest electron-log isolation', () => {
           'main.log',
         ),
       );
-      expect(log.transports.file.resolvePathFn()).toBe(logPath);
+      expect(
+        log.transports.file.resolvePathFn({
+          appData: '',
+          appName: '',
+          appVersion: '',
+          home: '',
+          libraryDefaultDir: '',
+          libraryTemplate: '',
+          tempDir: '',
+          userData: '',
+        }),
+      ).toBe(logPath);
       expect(log.transports.file.level).toBe('silly');
     } finally {
       log.transports.file.resolvePathFn = originalResolvePathFn;

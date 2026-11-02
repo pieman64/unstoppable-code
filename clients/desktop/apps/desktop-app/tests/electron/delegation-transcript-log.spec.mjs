@@ -32,6 +32,9 @@ async function openDelegateCard(window) {
     await expect(card).toBeVisible({ timeout: 2_000 });
     const expand = card.getByRole('button', { name: 'Expand delegated task' });
     if (await expand.count()) await expand.first().click({ timeout: 2_000 });
+    const thought = card.getByRole('button', { name: /^Thought/ });
+    if ((await thought.getAttribute('aria-expanded')) !== 'true')
+      await thought.click();
     await expect(
       card.getByText(DELEGATION_LOG_FIXTURE.reasoning).first(),
     ).toBeVisible({ timeout: 2_000 });
@@ -65,6 +68,10 @@ for (const logged of [false, true]) {
       const window = await electronApp.firstWindow();
       const app = new CanopyAppDriver(window);
       await app.waitForShell({ timeout: 30_000 });
+      // Inspect individual steps while retaining the Clean chat look.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(DELEGATION_LOG_FIXTURE.worktreeId);
       if (logged) {
@@ -74,6 +81,10 @@ for (const logged of [false, true]) {
         writeDelegationLog(userDataDir);
         await window.reload();
         await app.waitForShell({ timeout: 30_000 });
+        // Inspect individual steps while retaining the Clean chat look.
+        await window.evaluate(() =>
+          window.api.savePreferences({ chatDetail: 'detailed' }),
+        );
         await app.openMainPage();
         await app.selectWorktree(DELEGATION_LOG_FIXTURE.worktreeId);
       }
@@ -84,6 +95,10 @@ for (const logged of [false, true]) {
       // children from the delegate log again.
       await window.reload();
       await app.waitForShell({ timeout: 30_000 });
+      // Inspect individual steps while retaining the Clean chat look.
+      await window.evaluate(() =>
+        window.api.savePreferences({ chatDetail: 'detailed' }),
+      );
       await app.openMainPage();
       await app.selectWorktree(DELEGATION_LOG_FIXTURE.worktreeId);
       await expectChildren(await openDelegateCard(window));

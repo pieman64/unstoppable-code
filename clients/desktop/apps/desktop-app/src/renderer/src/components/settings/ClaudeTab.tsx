@@ -1,3 +1,4 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   DEFAULT_CLAUDE_MAX_TURNS,
   CLAUDE_MAX_TURNS_MIN,
@@ -11,9 +12,10 @@ import {
   useRef,
   useState,
 } from 'react';
-import type {
-  ChatInterfaceMode,
-  PreferencesData,
+import {
+  DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES,
+  type ChatInterfaceMode,
+  type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { brandText } from '@/lib/brand';
@@ -30,8 +32,9 @@ import { hasVisibleClaudeSettingsSections } from '@/lib/claude-settings-availabi
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
+  ErrorState,
   Notice,
-  NoticeButton,
+  Radio,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
@@ -43,8 +46,7 @@ import {
   SettingsSubRow,
   SettingsTextField,
 } from './SettingsLayout';
-import { SETTINGS_CHECK_INPUT_CLASS_NAME } from './settings-classes';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
+import { IdleTimeoutMinutesRow } from './IdleTimeoutMinutesRow';
 
 interface InterfaceModeOption {
   value: ChatInterfaceMode;
@@ -127,7 +129,6 @@ interface ClaudeTabProps {
 export function ClaudeTab({
   onOpenPerformanceSettings,
 }: ClaudeTabProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -173,7 +174,7 @@ export function ClaudeTab({
       })
       .catch(() => {
         setPrefs(null);
-        setLoadError('Could not load Claude settings.');
+        setLoadError("Couldn't load Claude settings.");
       });
   }, []);
 
@@ -288,6 +289,27 @@ export function ClaudeTab({
     [prefs],
   );
 
+  const commitIdleTimeout = useCallback(
+    (next: number): void => {
+      if (!prefs || prefs.claudeSessionIdleTimeoutMinutes === next) return;
+      const previous = prefs;
+      setPrefs({ ...prefs, claudeSessionIdleTimeoutMinutes: next });
+      setSaveError(null);
+      void window.api
+        .savePreferences({ claudeSessionIdleTimeoutMinutes: next })
+        .then((normalized: PreferencesData) => {
+          setPrefs(normalized);
+          emitPreferencesUpdated(normalized);
+          useAppAdvisorStore.getState().applyPreferences(normalized);
+        })
+        .catch(() => {
+          setPrefs(previous);
+          setSaveError('Could not save Claude settings.');
+        });
+    },
+    [prefs],
+  );
+
   const commitTurnLimit = useCallback(
     (next: number | null): void => {
       if (!prefs) return;
@@ -344,13 +366,11 @@ export function ClaudeTab({
   if (loadError) {
     return (
       <SettingsPage title="Claude" dataTestId="settings-tab-claude">
-        <Notice
-          intent="destructive"
-          data-testid="settings-claude-load-error"
-          actions={<NoticeButton onClick={loadPreferences}>Retry</NoticeButton>}
-        >
-          {loadError}
-        </Notice>
+        <ErrorState
+          message={loadError}
+          onRetry={loadPreferences}
+          testId="settings-claude-load-error"
+        />
       </SettingsPage>
     );
   }
@@ -445,6 +465,21 @@ export function ClaudeTab({
         </SettingsGroup>
       </SettingsSection>
 
+      <SettingsSection title="Idle chats">
+        <SettingsGroup>
+          <IdleTimeoutMinutesRow
+            id="settings-claude-idle-timeout-minutes"
+            description="Stop the Claude process of an idle chat after this long. Applies to Claude chats and to Ollama chats that run on Claude. Your next message resumes the chat. Chats that run on Codex use the Codex setting."
+            minutes={
+              Number.isFinite(prefs.claudeSessionIdleTimeoutMinutes)
+                ? prefs.claudeSessionIdleTimeoutMinutes
+                : DEFAULT_CLAUDE_SESSION_IDLE_TIMEOUT_MINUTES
+            }
+            onCommit={commitIdleTimeout}
+          />
+        </SettingsGroup>
+      </SettingsSection>
+
       {window.platform === 'darwin' && (
         <SettingsSection title="Sleep">
           <SettingsGroup>
@@ -470,7 +505,7 @@ export function ClaudeTab({
               description={`To keep your Mac awake while agents run, use the ${brandText.appName} "Keep system awake" setting.`}
               control={
                 <Button
-                  size={settingsButtonSize}
+                  size="compact"
                   variant="secondary"
                   onClick={(): void => onOpenPerformanceSettings?.()}
                   data-testid="settings-claude-open-performance"
@@ -516,7 +551,7 @@ export function ClaudeTab({
             />
 
             <InterfaceModeRow
-              label="App Advisor chats"
+              label={`${ORCHESTRATOR_LABEL} chats`}
               name="settings-claude-default-app-advisor-chat-mode"
               testIdPrefix="settings-claude-default-app-advisor-chat-mode"
               selected={prefs.defaultAppAdvisorInterfaceMode}
@@ -533,7 +568,7 @@ export function ClaudeTab({
       {claudeTuiWorkersEnabled && (
         <SettingsSection
           title="Claude workers"
-          description="Where background and pipeline tasks run."
+          description="Where background and workflow tasks run."
           dataTestId="settings-claude-workers-section"
         >
           <SettingsGroup>
@@ -551,8 +586,8 @@ export function ClaudeTab({
             />
 
             <WorkerModeRow
-              label="Pipelines"
-              description="Agent prompt steps in pipelines."
+              label="Workflows"
+              description="Agent prompt steps in workflows."
               name="settings-claude-pipelines-mode"
               testIdPrefix="settings-claude-pipelines-mode"
               selected={prefs.pipelinesMode}
@@ -738,7 +773,7 @@ interface ModeRadioOptionProps {
   onSelect: (value: string) => void;
 }
 
-/** One native radio with its label and explanation; a disabled choice says why. */
+/** One shared radio with its label and explanation; a disabled choice says why. */
 function ModeRadioOption({
   name,
   value,
@@ -757,8 +792,7 @@ function ModeRadioOption({
           disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
         }`}
       >
-        <input
-          type="radio"
+        <Radio
           name={name}
           value={value}
           checked={checked}
@@ -766,7 +800,7 @@ function ModeRadioOption({
           onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
             onSelect(e.target.value);
           }}
-          className={`mt-0.5 ${SETTINGS_CHECK_INPUT_CLASS_NAME}`}
+          className="mt-0.5"
           data-testid={dataTestId}
         />
         <span className="min-w-0 space-y-0.5">

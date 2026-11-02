@@ -64,6 +64,11 @@ export interface LedgerEntryFormProps {
   autoFocusContent?: boolean;
   /** Finds files to reference; omitted where the host has no file search. */
   fileSearch?: ReactNode;
+  /**
+   * Whether entries here can reference files at all; false leaves out the
+   * Files section. Defaults to true.
+   */
+  referencesFiles?: boolean;
   onChange: (patch: Partial<LedgerEntryFormValue>) => void;
   onSave: () => void;
   onDiscard: () => void;
@@ -119,6 +124,7 @@ export function LedgerEntryForm({
   saveBlockedReason = null,
   autoFocusContent = true,
   fileSearch,
+  referencesFiles = true,
   onChange,
   onSave,
   onDiscard,
@@ -316,59 +322,63 @@ export function LedgerEntryForm({
           </div>
         )}
       </fieldset>
-      <fieldset className="flex flex-col gap-1.5" disabled={saving}>
-        <legend className="mb-1 text-xs fg-secondary">
-          Files <span className="fg-tertiary">(optional)</span>
-        </legend>
-        {value.referenceFiles.map((file, index) => (
-          <div
-            key={`${file.rootId}:${file.path}`}
-            data-testid="ledger-entry-form-file"
-            className="flex min-w-0 items-center gap-2"
-          >
-            <span
-              className="min-w-0 flex-1 truncate font-mono text-xs fg-primary"
-              title={fileLabel(file)}
+      {referencesFiles && (
+        <fieldset className="flex flex-col gap-1.5" disabled={saving}>
+          <legend className="mb-1 text-xs fg-secondary">
+            Files <span className="fg-tertiary">(optional)</span>
+          </legend>
+          {value.referenceFiles.map((file, index) => (
+            <div
+              key={`${file.rootId}:${file.path}`}
+              data-testid="ledger-entry-form-file"
+              className="flex min-w-0 items-center gap-2"
             >
-              {file.path}
-            </span>
-            <TextInput
-              aria-label={`Line in ${file.path} (optional)`}
-              inputMode="numeric"
-              placeholder="Line"
-              value={file.startLine === undefined ? '' : String(file.startLine)}
-              onChange={(event) =>
-                onChange({
-                  referenceFiles: value.referenceFiles.map(
-                    (existing, position) =>
-                      position === index
-                        ? withLine(existing, event.target.value)
-                        : existing,
-                  ),
-                })
-              }
-              className="w-16"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              aria-label={`Remove ${file.path}`}
-              onClick={() =>
-                onChange({
-                  referenceFiles: value.referenceFiles.filter(
-                    (_existing, position) => position !== index,
-                  ),
-                })
-              }
-            >
-              Remove
-            </Button>
-          </div>
-        ))}
-        {value.referenceFiles.length < LEDGER_FORM_LIMITS.referenceFiles &&
-          fileSearch}
-      </fieldset>
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-xs fg-primary"
+                title={fileLabel(file)}
+              >
+                {file.path}
+              </span>
+              <TextInput
+                aria-label={`Line in ${file.path} (optional)`}
+                inputMode="numeric"
+                placeholder="Line"
+                value={
+                  file.startLine === undefined ? '' : String(file.startLine)
+                }
+                onChange={(event) =>
+                  onChange({
+                    referenceFiles: value.referenceFiles.map(
+                      (existing, position) =>
+                        position === index
+                          ? withLine(existing, event.target.value)
+                          : existing,
+                    ),
+                  })
+                }
+                className="w-16"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={`Remove ${file.path}`}
+                onClick={() =>
+                  onChange({
+                    referenceFiles: value.referenceFiles.filter(
+                      (_existing, position) => position !== index,
+                    ),
+                  })
+                }
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+          {value.referenceFiles.length < LEDGER_FORM_LIMITS.referenceFiles &&
+            fileSearch}
+        </fieldset>
+      )}
       <div className="flex items-center justify-end gap-2">
         {saveBlockedReason !== null && (
           <p

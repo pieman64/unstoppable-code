@@ -20,6 +20,9 @@ export { PanelCollapsedBar } from './PanelCollapsedBar';
 export type { PanelCollapsedBarProps } from './PanelCollapsedBar';
 export {
   PANEL_TAB_BUSY_ATTRIBUTE,
+  PanelChatTabBackgroundGlyph,
+  PanelChatTabQuestionMarker,
+  PanelFillChatTabGlyph,
   PanelTabBar,
   PanelTabNumber,
   PanelTabStyleProvider,
@@ -31,6 +34,11 @@ export type {
   PanelTabBarProps,
   PanelTabStyle,
 } from './PanelTabBar';
+export {
+  BrowserTabPreviewCard,
+  browserTabPreviewLocation,
+} from './BrowserTabPreviewCard';
+export type { BrowserTabPreviewCardProps } from './BrowserTabPreviewCard';
 export {
   ChatTabPreviewCard,
   formatChatTabPreviewElapsed,
@@ -75,3 +83,8 @@ export {
   startPanelTabDrag,
 } from './panel-dnd';
 export type { DraggedPanelTab } from './panel-dnd';
+
+export {
+  PANEL_TAB_UNREAD_ATTRIBUTE,
+  UNREAD_DOT_DELAY_MS,
+} from './usePanelTabStripState';

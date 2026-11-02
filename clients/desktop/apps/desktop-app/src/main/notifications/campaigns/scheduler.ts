@@ -1,11 +1,8 @@
-import { GETTING_STARTED_SEQUENCE_CAMPAIGN_ID } from '@canopy/desktop-shared/types';
 import type {
   ActivationCampaignId,
   ActivationQuietHours,
   CampaignDestination,
   CampaignSuppressionReason,
-  OnboardingChecklistItemId,
-  OnboardingChecklistState,
   OsNotificationShowRequest,
   PromotionalCampaignId,
 } from '@canopy/desktop-shared/types';
@@ -14,27 +11,17 @@ import {
   resolveDueAt,
   resolvePromotionalCapLiftsAt,
 } from './campaign-config';
-import {
-  GETTING_STARTED_INTERVAL_MS,
-  GETTING_STARTED_WINDOW_MS,
-  evaluateGettingStartedSequence,
-} from './getting-started-sequence';
 import { getActiveCampaigns } from './served-config-sync';
 import { buildCampaignNotificationId } from './click-router';
 import { isWithinQuietHours } from './quiet-hours';
 import type { VariantResolution } from './variant-resolver';
 import { evaluateCampaign } from './eligibility';
 import {
-  clearSequenceSuppressed,
   releaseDeliveryFailures,
   latchCampaignSent,
   latchCampaignSuppressed,
-  latchSequenceStepSent,
-  latchSequenceStepSuppressed,
-  latchSequenceSuppressed,
   readActivationJourneyState,
   unlatchCampaignDeliveryFailure,
-  unlatchSequenceStepDeliveryFailure,
 } from './journey-state';
 
 /**
@@ -98,9 +85,6 @@ export const EVENT_DRIVEN_SUPPRESSION_REASONS: ReadonlySet<CampaignSuppressionRe
     // machine where notifications are permanently denied. The natural
     // revivals -- next launch and a preference change -- already re-evaluate.
     'delivery-failed',
-    // Clears only when the user restores the checklist, which recomputes
-    // through the checklist's own change broadcast.
-    'checklist-dismissed',
   ]);
 
 /**
@@ -122,27 +106,18 @@ export interface ActivationNotificationPreferences {
    * "other promotional notifications" child (CAN-3013).
    */
   activationCategoryEnabled: boolean;
-  /** Promotional master AND its Getting Started child. */
-  gettingStartedCategoryEnabled: boolean;
   quietHours: ActivationQuietHours;
 }
 
-/**
- * `itemId` is present only for Getting Started sequence outcomes, where the
- * pair (campaign id, item id) is what delivery rate and click-through are
- * measured against per step.
- */
 export type CampaignOutcome =
   | {
       campaignId: PromotionalCampaignId;
-      itemId?: OnboardingChecklistItemId;
       outcome: 'delivered';
       destination: string;
       variant: string;
     }
   | {
       campaignId: PromotionalCampaignId;
-      itemId?: OnboardingChecklistItemId;
       outcome: 'suppressed';
       reason: CampaignSuppressionReason;
     };
@@ -166,9 +141,7 @@ export interface ActivationJourneyDeps {
   isCampaignFlagEnabled: () => boolean;
   readNotificationPreferences: () => Promise<ActivationNotificationPreferences>;
   isAppFocused: () => boolean;
-  /** Live checklist state, read immediately before a sequence send. */
-  readChecklistState: () => Promise<OnboardingChecklistState>;
-  hasActivated: () => Promise<boolean>;
+  hasActivated: (campaignId: ActivationCampaignId) => Promise<boolean>;
   isCampaignEligible: (id: ActivationCampaignId) => Promise<boolean>;
   /**
    * Chooses the copy variant for a campaign. `null` means no variant applies
@@ -189,131 +162,6 @@ let evaluationChain: Promise<void> = Promise.resolve();
 
 function describeDestination(destination: CampaignDestination): string {
   return destination.kind === 'page' ? destination.page : destination.kind;
-}
-
-function earliest(a: number | null, b: number | null): number | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  return Math.min(a, b);
-}
-
-/**
- * One pass of the Getting Started sequence (CAN-3013). Returns when to look
- * again, or `null` when nothing time-based can change the answer.
- *
- * Runs after the campaign loop and re-reads state, so a campaign that sent a
- * moment ago in this same pass already counts toward the daily cap. The
- * campaign gate applies the same cap against sequence sends (see
- * `frequency-capped` in `eligibility.ts`), so the guarantee is mutual.
- */
-async function evaluateGettingStarted(
-  deps: ActivationJourneyDeps,
-  preferences: ActivationNotificationPreferences,
-  nowMs: number,
-): Promise<number | null> {
-  const state = await readActivationJourneyState();
-  const decision = await evaluateGettingStartedSequence({
-    state,
-    nowMs,
-    campaignFlagEnabled: deps.isCampaignFlagEnabled(),
-    osNotificationsEnabled: preferences.enabled,
-    gettingStartedCategoryEnabled: preferences.gettingStartedCategoryEnabled,
-    skipWhenFocused: preferences.skipWhenFocused,
-    appFocused: deps.isAppFocused(),
-    inQuietHours: isWithinQuietHours(new Date(nowMs), preferences.quietHours),
-    readChecklistState: deps.readChecklistState,
-  });
-  // Anything that is not a sequence-level suppression ends the previous one,
-  // so an identical block tomorrow counts as a new funnel event.
-  if (decision.kind !== 'suppressed' || decision.itemId !== null) {
-    await clearSequenceSuppressed();
-  }
-  if (decision.kind === 'wait') return decision.retryAt;
-
-  const campaignId = GETTING_STARTED_SEQUENCE_CAMPAIGN_ID;
-  const nowIso = new Date(nowMs).toISOString();
-
-  // Steps the user finished before their turn came. `not-eligible` is the
-  // happy path, exactly as it is for a campaign whose action is already done.
-  for (const itemId of decision.skippedItemIds) {
-    const skipped = await latchSequenceStepSuppressed(
-      itemId,
-      'not-eligible',
-      nowIso,
-    );
-    if (skipped.changed) {
-      deps.recordOutcome({
-        campaignId,
-        itemId,
-        outcome: 'suppressed',
-        reason: 'not-eligible',
-      });
-    }
-  }
-
-  if (decision.kind === 'finished') return null;
-
-  const firstOpenMs =
-    state.firstOpenAt === null ? NaN : Date.parse(state.firstOpenAt);
-  const windowEndsAt = Number.isNaN(firstOpenMs)
-    ? null
-    : firstOpenMs + GETTING_STARTED_WINDOW_MS;
-  const withinWindow = (at: number): number | null =>
-    windowEndsAt !== null && at <= windowEndsAt ? at : null;
-
-  if (decision.kind === 'suppressed') {
-    const { itemId, reason } = decision;
-    const latched =
-      itemId === null
-        ? await latchSequenceSuppressed(reason, nowIso)
-        : await latchSequenceStepSuppressed(itemId, reason, nowIso);
-    if (latched.changed) {
-      deps.recordOutcome(
-        itemId === null
-          ? { campaignId, outcome: 'suppressed', reason }
-          : { campaignId, itemId, outcome: 'suppressed', reason },
-      );
-    }
-    // Same self-terminating retry as the campaigns: past the window the
-    // sequence can never send, so polling on would outlive any outcome.
-    return TRANSIENT_SUPPRESSION_REASONS.has(reason)
-      ? withinWindow(nowMs + TRANSIENT_RETRY_MS)
-      : null;
-  }
-
-  const { step } = decision;
-  deps.showNotification(
-    {
-      id: buildCampaignNotificationId(campaignId, step.itemId),
-      title: step.headline,
-      body: step.subtitle,
-    },
-    () => {
-      void unlatchSequenceStepDeliveryFailure(
-        step.itemId,
-        new Date(deps.now()).toISOString(),
-      )
-        .then((result) => {
-          if (!result.changed) return;
-          deps.recordOutcome({
-            campaignId,
-            itemId: step.itemId,
-            outcome: 'suppressed',
-            reason: 'delivery-failed',
-          });
-        })
-        .catch(() => undefined);
-    },
-  );
-  await latchSequenceStepSent(step.itemId, nowIso);
-  deps.recordOutcome({
-    campaignId,
-    itemId: step.itemId,
-    outcome: 'delivered',
-    destination: describeDestination(step.deepLink),
-    variant: step.itemId,
-  });
-  return withinWindow(nowMs + GETTING_STARTED_INTERVAL_MS);
 }
 
 async function evaluateAllCampaigns(
@@ -353,7 +201,7 @@ async function evaluateAllCampaigns(
       skipWhenFocused: preferences.skipWhenFocused,
       appFocused: deps.isAppFocused(),
       inQuietHours: isWithinQuietHours(new Date(nowMs), preferences.quietHours),
-      hasActivated: deps.hasActivated,
+      hasActivated: () => deps.hasActivated(definition.id),
       isEligible: () => deps.isCampaignEligible(definition.id),
     });
 
@@ -514,10 +362,7 @@ async function evaluateAllCampaigns(
     }
   }
 
-  return earliest(
-    nextDueAt,
-    await evaluateGettingStarted(deps, preferences, nowMs),
-  );
+  return nextDueAt;
 }
 
 /**
@@ -580,13 +425,8 @@ function clearNextTimer(): void {
  */
 interface RecomputeOptions {
   /**
-   * The recompute was caused by something happening -- launch, resume, a
-   * preference or checklist change, the window-focus anchor write -- rather
-   * than by the scheduler's own timer. Only an event may retry a banner the
-   * OS refused, and then no more than once a day: a denied OS does not change
-   * on a timer, and the heartbeat the sequence keeps alive for two weeks
-   * after install would otherwise re-present it daily -- while the focus
-   * write, unbounded, would re-present it every minute.
+   * Events (launch, resume, preference changes, activity) can release refused
+   * delivery holds. Timers cannot; OS authorization has no timer-driven signal.
    */
   event?: boolean;
 }

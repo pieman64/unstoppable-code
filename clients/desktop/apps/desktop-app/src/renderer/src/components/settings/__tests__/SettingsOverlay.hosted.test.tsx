@@ -239,6 +239,9 @@ let guest = false;
 let accountReadGate: Promise<void> | null = null;
 let openRequestListener: ((route: SettingsRoute) => void) | null = null;
 const openExternal = jest.fn((): Promise<void> => Promise.resolve());
+const openAuthenticatedPortalPage = jest.fn(
+  (): Promise<unknown> => Promise.resolve({ ok: true }),
+);
 
 function installApi(): void {
   Object.defineProperty(window, 'api', {
@@ -263,7 +266,7 @@ function installApi(): void {
         ),
       getCanopyCloudBaseUrl: (): Promise<string> =>
         Promise.resolve(`${WEB_ORIGIN}/`),
-      openAuthenticatedPortalPage: (): Promise<void> => Promise.resolve(),
+      openAuthenticatedPortalPage,
       browser: { openExternal },
       accountOrganizationSettings: {
         onOpenRequest: (
@@ -329,6 +332,7 @@ beforeEach(() => {
   bootstrapFreeAccess = false;
   mockFreeAccessFlag = false;
   openExternal.mockClear();
+  openAuthenticatedPortalPage.mockClear();
   // Each test starts without a remembered rail.
   window.localStorage.clear();
   mockClient = createFakeSettingsClient({
@@ -349,7 +353,7 @@ afterEach(() => {
 });
 
 describe('SettingsOverlay hosted account and organization settings', () => {
-  it('renders the app group, then Account, then Organizations, then the local groups', async () => {
+  it('renders the scope picker and Account, then the app group, then the local groups', async () => {
     useNavigationStore.getState().openSettings();
     render();
     await flush();
@@ -360,9 +364,8 @@ describe('SettingsOverlay hosted account and organization settings', () => {
       ),
     ).map((group) => group.dataset.testid);
     expect(groups).toEqual([
-      'settings-nav-group-personal',
       'settings-nav-group-account',
-      'settings-nav-group-organizations',
+      'settings-nav-group-personal',
       'settings-nav-group-agents',
       'settings-nav-group-integrations',
       'settings-nav-group-workflow',
@@ -376,7 +379,8 @@ describe('SettingsOverlay hosted account and organization settings', () => {
         : null,
     ).toBe(brandText.appName);
     expect(query('settings-nav-account-account')).not.toBeNull();
-    expect(query('settings-nav-organizations-list')).not.toBeNull();
+    expect(query('settings-nav-scope-picker')).toBeInstanceOf(HTMLElement);
+    expect(query('settings-nav-organizations-list')).toBeNull();
     // Local rows keep their ids; Accounts is Providers, first in Agents.
     expect(query('settings-nav-account')?.textContent).toBe('Providers');
     expect(
@@ -404,13 +408,14 @@ describe('SettingsOverlay hosted account and organization settings', () => {
     expect(query('settings-nav-group-organization')).toBeNull();
   });
 
-  it('shows the organization group after picking it and selects exactly one row', async () => {
+  it('shows the organization scope after picking it and selects exactly one row', async () => {
     useNavigationStore
       .getState()
       .openAccountOrganizationSettings({ scope: 'organizations' });
     render();
     await flush();
-    expect(selectedRows()).toEqual(['settings-nav-organizations-list']);
+    // The list is opened from the scope menu; no rail row stands for it.
+    expect(selectedRows()).toEqual([]);
     expect(query('settings-nav-group-organization')).toBeNull();
 
     act(() => {
@@ -421,15 +426,17 @@ describe('SettingsOverlay hosted account and organization settings', () => {
       });
     });
     await flush();
-    expect(query('settings-nav-group-organization')?.textContent).toContain(
-      'Northwind Labs',
+    // The scope picker names the organization; its name is user-authored,
+    // so replay masks it.
+    const scopeTitle = query('settings-nav-scope-title');
+    expect(scopeTitle?.textContent).toBe('Northwind Labs');
+    expect(scopeTitle?.classList.contains(POSTHOG_REPLAY_MASK_CLASS)).toBe(
+      true,
     );
-    // The organization's name is user-authored: replay masks it.
-    expect(
-      query('settings-nav-group-organization')?.querySelector(
-        `.${POSTHOG_REPLAY_MASK_CLASS}`,
-      )?.textContent,
-    ).toBe('Northwind Labs');
+    expect(query('settings-nav-group-organization')).toBeInstanceOf(
+      HTMLElement,
+    );
+    expect(query('settings-nav-account-account')).toBeNull();
     expect(query('settings-nav-organization-members')).not.toBeNull();
     expect(query('settings-nav-organization-statistics')).toBeNull();
     expect(selectedRows()).toEqual(['settings-nav-organization-feed']);
@@ -448,12 +455,29 @@ describe('SettingsOverlay hosted account and organization settings', () => {
       ),
     ).toBeNull();
 
-    // A local row leaves hosted settings; the selection moves with it.
+    // App-wide pages only appear after returning to Personal.
+    expect(query('settings-nav-git')).toBeNull();
+    click('settings-nav-scope-picker');
+    // The menu portals to the document body.
+    act(() => {
+      document
+        .querySelector<HTMLElement>(
+          '[data-testid="settings-nav-scope-option-account"]',
+        )
+        ?.click();
+    });
+    await flush();
+    expect(useNavigationStore.getState().settingsHostedLocation?.route).toEqual(
+      { scope: 'account', page: 'account' },
+    );
+    expect(selectedRows()).toEqual(['settings-nav-account-account']);
+
     click('settings-nav-git');
     await flush();
     expect(useNavigationStore.getState().settingsHostedLocation).toBeNull();
     expect(selectedRows()).toEqual(['settings-nav-git']);
     expect(query('git-tab')).not.toBeNull();
+    expect(query('settings-nav-group-organization')).toBeNull();
 
     // A hosted row navigates inside the overlay.
     click('settings-nav-account-security');
@@ -464,7 +488,7 @@ describe('SettingsOverlay hosted account and organization settings', () => {
     expect(selectedRows()).toEqual(['settings-nav-account-security']);
   });
 
-  it('keeps settings links inside Settings and opens other web paths externally', async () => {
+  it('keeps settings links inside Settings and opens other web paths signed in', async () => {
     useNavigationStore
       .getState()
       .openAccountOrganizationSettings({ scope: 'account', page: 'account' });
@@ -486,7 +510,18 @@ describe('SettingsOverlay hosted account and organization settings', () => {
 
     await flush();
     click('stub-web-link');
-    expect(openExternal).toHaveBeenCalledWith({ url: `${WEB_ORIGIN}/pricing` });
+    await flush();
+    // CAN-4693: a same-origin web page opens through the strict signed-in
+    // request, never as a bare signed-out browser page.
+    expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+    expect(openAuthenticatedPortalPage).toHaveBeenCalledWith({
+      requireAuthentication: true,
+      kind: 'signed-in',
+      path: '/pricing',
+      accountId: ACCOUNT_ID,
+      webOrigin: WEB_ORIGIN,
+    });
+    expect(openExternal).not.toHaveBeenCalled();
     expect(useNavigationStore.getState().settingsHostedLocation?.route).toEqual(
       { scope: 'account', page: 'security' },
     );
@@ -570,7 +605,7 @@ describe('SettingsOverlay hosted account and organization settings', () => {
     expect(query('hosted-settings-signed-out')).toBeNull();
     expect(query('hosted-settings-content')).toBeNull();
     expect(query('settings-nav-group-account')).not.toBeNull();
-    expect(query('settings-nav-group-organizations')).not.toBeNull();
+    expect(query('settings-nav-scope-picker')).toBeNull();
     expect(mockClient?.calls).toEqual([]);
   });
 

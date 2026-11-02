@@ -28,9 +28,199 @@ handler, and `ensureW5DataRoot`. It is never re-exported from `/node`, so
 `node:sqlite` stays out of hosts that only import the barrel. The host supplies
 a `W5DurabilityPort` (durable file writes and folder syncs); the package reads
 no platform. `/worker-contract`, `/errors`, `/fingerprint` and
-`/reservation-diagnostics` load without the database. The desktop composes the
-worker and supplies atomic-file durability through
-`@canopy/desktop-shared/node/w5-commit-log`.
+`/reservation-diagnostics` load without the database. `/worker` exports the
+portable worker body (`runW5CommitLogWorker`), which each host's worker entry
+runs with its durability port and trusted OS; `/node-durability` is a node:fs
+port for a host-named OS, taking the host's folder flush. `/data-root` names a data root's commit log and W5
+root without loading the database.
+
+`/node/w5/commit-log-host` is the worker-thread host (`W5CommitLogHost`): its
+queue, admission check before every worker start, timeouts and bounded
+shutdown. It structurally satisfies the commit-log file store's host port. A
+host composition supplies the worker entry and an admission. The desktop
+composes it with atomic-file durability through
+`@canopy/desktop-shared/node/w5-commit-log`; the core daemon composes it only
+in a W5 qualification build (W5b, CAN-5450).
+
+## Vault migration sessions (inert)
+
+`src/node/vault/` holds the ADR 7 legacy-store migration session state machine
+(CAN-4504 VA-1). Nothing composes it yet, and it has no `exports` subpath.
+`createMigrationSessionRegistry` issues single-use sessions, each bound to
+one admitted launcher channel, one source (flavor and secure mode), one slot
+and one challenge. Failures after a possible release become `uncertain` and
+fence the slot's source generation. It never revokes them or issues them again.
+Import is create-only through `MigrationImportPort`. The slot set is data
+(`MIGRATION_SLOTS_AT_PIN`), and the host supplies the OS. `migration-protocol.ts`
+defines the private, versioned frames; they carry no evidence or identity.
+
+Admission from native evidence (VA-2) is inert too. `migration-evidence.ts`
+keeps each native capture as a frozen copy in a host-only `WeakMap`, keyed by
+an opaque handle that carries and serializes nothing.
+`createMigrationAdmission` admits at most one channel per daemon, the fd 3
+launcher of the daemon's own flavor, as a constant `MigrationCaller`. It
+refuses anything else with a typed reason and reports it as ambiguity. On
+Windows and Linux it returns `unavailable`. Its `port` is the registry's
+`MigrationAdmissionPort`. `authenticateMigrationDestination` is the launcher's
+check of the daemon it spawned (R-12). The daemon wiring (VA-6b) lands
+separately.
+
+## Filesystem watch
+
+`/node` serves `worker.filesystem.watch` (CAN-4102).
+`createFilesystemWatchRegistry` shares one native handle per path and
+recursion flag across subscribers. It batches each callback burst by path,
+counts the native notifications per item, and re-attaches after an error with a
+1 s to 30 s backoff. It emits `overflow` once when a re-attach first fails and
+again once it re-attaches. That error path is where
+platform limits such as Linux `ENOSPC` belong: a host `unavailable` policy
+classifies them, and the registry then retries every 30 s after the first
+attempt and reports the error to the host once per detachment. The desktop
+reuses its worktree observers' codes and warning (CAN-3190). The host injects
+`watch`, `lstat` and that policy; the registry never names an error code or
+branches on platform. A `close` handle closes with
+its last subscriber; a `retain` handle stays dormant and starts a new epoch when
+it is reused. `createWorkerFilesystemWatchHandler` resolves a root through a
+host `FilesystemWatchResolutionPort`. It serves nested roots from the outer
+root's handle, bridges an absent root through its nearest existing ancestor,
+and resumes only at a handle's exact live cursor. Hosts supply resolution, the
+`onAttached` and `onAttachFailed` hooks, and their own debounce.
+
+## Filesystem entry mutations
+
+`/node` exports `deleteFilesystemEntry`, the `worker.filesystem.entry.delete`
+engine (CAN-4101), ported from the desktop explorer's delete. Its guards live
+in `filesystem/entry-mutation-guards.ts` for every entry instruction: root
+containment by real path, other roots at, inside or contained by the entry,
+root and backslash paths, and a re-check of the parent's real path right
+before the effect. The host port (`FilesystemEntryMutationHost`) supplies the
+scope's roots, its refusals (read-only, managed target, lock), the OS and an
+optional `PlatformServices` Trash member; without one, a Trash request fails
+before any effect. It serves the CAN-4159 keyed definition: a non-null
+`expectedVersion` fails as `capability_unavailable` before any lookup,
+`recursive: false` refuses a non-empty folder, and any folder bound for the
+trash, before any effect, and the result
+counts one entry. It retains no keyed outcome (CAN-4733). The engine checks the
+call's signal before the effect and acts on the lexical path, so a symlink is
+removed as a link. Only the desktop mutation adapter composes it
+(`check:core-filesystem-boundary`); the daemon registers no entry instruction.
+
+`copyFilesystemEntry` and `moveFilesystemEntry`
+(`filesystem/entry-transfers.ts`) are the `worker.filesystem.entry.copy` and
+`.move` engines, a literal port of the explorer's copy, move and rename over
+the same guards and host port: increment naming, same-root nesting and
+cross-root symlink refusals, staged exclusive publication, the case-only
+rename, the macOS symlink move, cross-device copy then `rm`, and the file
+move's link then unlink, rolled back only while the source is still the linked
+entry. The host's `os` chooses the Windows and macOS strategies, and the
+`FilesystemEntryTransferIo` seams wrap each filesystem effect for fault tests.
+They serve the keyed definitions in
+`WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS`, which CAN-5502 split from
+the CAN-4159 write registry (CAN-4101 added `entry.copy` from its page): a
+non-null `expectedSourceVersion`,
+and for a move `expectedDestinationAbsent: false` or `conflictPolicy:
+'increment'`, fail as `capability_unavailable` before any lookup, and results
+carry a `<size>:<mtimeMs>` version. The copy engine renames the shared guards'
+codes to its catalog page's. They retain no keyed outcome (CAN-4733), and they
+check the call's signal before the first effect, before publishing, and
+before removing a move's source.
+
+`writeFilesystemFile` and `createFilesystemDirectory`
+(`filesystem/file-writes.ts`) are the `worker.filesystem.file.write` and
+`.directory.create` engines (CAN-4100), over the same guards and host port. A
+replace opens the contained file without truncating, pins it by device and
+inode against its real path, compares the exact `<size>:<mtimeMs>` version on
+the handle, then truncates and writes in place, so the inode, hard links and
+mode stay; it is not atomic. A stale version whose bytes already match
+succeeds without writing; any other is a `file.revisionConflict`. A create is
+exclusive (`O_EXCL|O_NOFOLLOW`) and never makes parent folders; a folder
+create makes missing parents one level at a time, each re-checked right
+before its `mkdir`. Both refuse another root reached through this one. The
+host port's optional `fileWriteLimitBytes`, `admitWrite` and `beforeReplace`
+supply the content cap, an admission held around a replace, and a hook right
+before its bytes change; creates use neither hook. The engines rename the
+shared guards' codes to each instruction's and drop codes it does not
+declare, keeping kind and message. They retain no keyed outcome (CAN-4733).
+Only the desktop mutation adapter composes them; the daemon registers neither
+yet (a separate CAN-4100 follow-up PR, unblocked by CAN-4802).
+
+## File annotations
+
+`@canopy/core-runtime/node/annotations` holds the `core.annotation.*` engine
+(CAN-4104): the v1 `file-annotations.json` format, its merge, per-document
+revisions and compare-and-swap, the per-file write lock and atomic replacement,
+and the projection between host file paths and portable file references (root
+ID and relative path, or an opaque handle for files outside every root). It is
+never re-exported from `/node`, so the daemon bundle does not carry it. The
+host supplies each scope's state-file path, its file roots and whether the
+scope may change; every write refuses a read-only scope. Electron main's core
+annotation adapter is its only owner, and `check:core-annotation-boundary`
+keeps other callers out.
+
+## Worker terminal
+
+`@canopy/core-runtime/node/terminal` holds the terminal engine (CAN-4147):
+`TerminalEngine` implements the in-process `WorkerTerminalPort` (create,
+restore, list, get, attach, write, resize, kill, release and the
+worktree-wide kill, release and liveness reads), with replay and sequence
+numbers, initial-command submission, the running detector and Windows
+foreground-process tracking. `TerminalShells` resolves profiles, the default
+shell, Linux login shells and the shell a restored terminal restarts with.
+Every host fact and effect is a `TerminalEngineHost` port: PTY spawning,
+shell facts, base and worktree environment, checkouts and archive exclusion,
+resource registration, persistence, process control and logging. It is
+never re-exported from `/node`. Electron main composes it in
+`apps/desktop-app/src/main/terminal/worker-terminal.ts`.
+
+## Operation ledger
+
+`@canopy/core-runtime/node/operations` holds the operation service and the
+`core.operation.*` handlers (CAN-4130); `/node/operations/ledger` holds the
+SQLite ledger, so `node:sqlite` loads only when a host opens it. The ledger
+keeps one durable record per unit of accepted execution work: lineage,
+origin, accountable owner, keyed retry receipt, cancellation intent,
+restart reconciliation, terminal outcome and an ordered event log whose
+cursor epoch is the ledger's stable identity. Domains register their kinds,
+restart class (`lost`, `resumable`, `reattachable`), cancellation rules and
+recovery with `OperationService`, and admit work before acknowledging it.
+`kernel/keyed-receipt.ts` holds the keyed-receipt identity and decisions it
+shares with the W5 commit log. `backupOperationLedger` issues verified,
+restore-tested `namespace_backup` records and `restoreOperationLedgerBackup`
+is their rollback. Electron main's core operation adapter is its only owner.
+
+`LocalWorkerExecution` (CAN-4132) records work on the builtin local worker
+(`in_process_worker`): each worker instruction it dispatches becomes a child
+operation of its parent, committed with a dispatch record (resolved target,
+this run's degenerate delegation lease, activation digest, secret
+fingerprints) before the worker is called. Ledger schema 2 holds the target
+row, leases and dispatch records. A reply lost to a cancel or transport
+error is resolved from the worker's executor receipt
+(`createWorkerExecutorReceipts`, which wraps the worker's instruction
+handlers) and never sent again; cancelling the child aborts its own request.
+It runs over a `LocalWorkerTransport`: Electron main's direct call
+(`createDirectLocalWorkerTransport`) or the bundled binding
+(`localWorkerTransportOf`, exposed as the graph's `localWorker`), and both
+write identical records.
+
+## Execution accounting
+
+`ExecutionAccounting` (CAN-4135) owns admission and lifetime accounting for
+pipeline, script, terminal and code-graph work. `admit(family)` refuses a
+start past the family's limit (active leases plus pending starts) or, for
+memory-guarded families, at critical memory while the host's guard is on,
+with `ExecutionAdmissionError`; the reservation it returns is released once
+the work holds a lease. `track(family, id)` counts accepted work until its
+lease is released, and `releaseWhenSettled` ends it however the work settles:
+success, failure, crash or cancel. `keepAwake` applies the family policy:
+pipeline executions hold a `WakeLockPolicy` holder. `register` adds processes
+and work items, and `sample()` builds the snapshot from the host's
+`PlatformServices.supervision.readProcessTable` and any rows the host
+measures itself: groups, pipeline steps rolled up under their execution,
+unregistered descendants classified by command, and pressure against the
+host's thresholds. One instance serves every client of its host; `subscribe`
+listeners only unsubscribe, so a client going away never ends work. Hosts
+supply limits, labels and copy; Electron main composes it in process
+(`apps/desktop-app/src/main/execution-accounting`).
 
 ## Event journal
 
@@ -124,18 +314,43 @@ adapters. Its tests run the reusable journal conformance cases against
 transport, endpoint, or handshake serves these operations yet.
 
 `createRuntimeProfileGraph` requires `workerCaller` and `workerBinding` when
-bundled `core+worker` modules install worker queries. The host supplies a
+bundled `core+worker` modules install worker operations. The host supplies a
 `WorkerBindingPair` with JSON-RPC send/receive endpoints, serialization,
 bounded buffers, close signals, and any physical handshake. The graph runs the
-worker dispatcher behind the server endpoint and proxies queries through the
-client endpoint. Both interface and owning-core grants are checked. Unsupported
-worker instructions and streams fail at graph construction; no direct-call
-fallback exists. Query cancellation abandons the local wait and consumes the
-late reply; deadlines and connection closure also bound worker execution.
-The binding caps unanswered queries, undrained request sends, and concurrent
-reply sends at 128 each. At most 128 replies wait for a send slot; closing
-the binding releases those waiters. Host close must settle pending sends and
-receives as well as aborting its connection signal.
+worker dispatcher behind the server endpoint and gives the core dispatcher only
+the binding's forwarders for worker queries, instructions and streams; worker
+handlers never join its handler map, so no direct-call fallback exists. Both
+interface and owning-core grants are checked. Composition rejects a definition
+filed under another kind and a stream without an open result or an object end.
+
+Cancellation, a deadline or a stream close sends a binding-private
+`worker.binding.cancel` notification for the request, which aborts the worker
+call; the core still consumes the late reply. Two more binding-private
+messages serve dispatch records: a `worker.binding.receipt` request asks how
+a keyed instruction's handler settled, waiting for a running one, and a
+`worker.binding.receipt.release` notification lets the worker forget it. The binding caps unanswered
+requests of every kind, undrained request sends, and concurrent reply sends at
+128 each, and open streams at 128 more. At most 128 replies wait for a send
+slot; closing the binding releases those waiters. Worker stream frames bypass
+the reply slots: each open stream keeps one send in flight, and its worker
+dispatcher ends it at the 1,024-frame bound if the transport stalls. On the
+core side frames feed the calling dispatcher's sink, which applies the same
+bound, cursor order and end schema. When a stream ends on the core first, the
+binding drops the worker's later frames until the worker's end arrives.
+Closing the binding aborts the worker calls it serves, ends open streams and
+fails pending calls as `unavailable`. Host close must settle pending sends and
+receives as well as aborting its connection signal. An `unavailable` or
+`deadline_exceeded` failure the binding raises for an instruction takes the
+dispatcher's retry class: `never` for `idempotency: 'none'` and
+`same_idempotency_key` for keyed instructions. As on the daemon wire, one
+`_meta` carries the request metadata; the worker receives it in its params too
+when the params schema declares `_meta`. The daemon control plane applies the
+same rule before the core dispatcher, using each operation's `declaresMeta`
+from the operation registry. A schema declares `_meta` when it is an object
+with `_meta`, a union whose branches all declare it, or a pipe whose parsing
+side declares it (the output side after a preprocess). The package root exports
+that predicate as `paramsDeclareMeta`; the desktop renderer relay's interim
+binding uses it too.
 
 The portable package imports no transport implementation. Its tests inject a
 strict serializing adapter. C7 (CAN-3768) owns composing the real L0 framed

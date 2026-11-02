@@ -7,6 +7,7 @@ import {
   NoticeList,
   NoticeListItem,
   type NoticeIntent,
+  ResizeRailIndicator,
 } from '@canopy/ui-shared/components';
 import { PipelineReadDetail } from '@canopy/ui-app';
 import { PipelineSettingsPanel } from './PipelineSettingsPanel';
@@ -144,12 +145,12 @@ export function PipelineEditorNotices({
         <Notice
           intent="attention"
           role="none"
-          title="Read-only pipeline"
+          title="Read-only workflow"
           className={EDITOR_NOTICE_PLACEMENT}
           actions={duplicateAction}
         >
           {pipelineInfo?.source === 'shared'
-            ? 'Duplicate this shared pipeline to make local changes.'
+            ? 'Duplicate this shared workflow to make local changes.'
             : 'Duplicate it to make changes.'}
         </Notice>
         {duplicateErrorNotice}
@@ -327,7 +328,7 @@ export function PipelineEditorBody({
       <div className="flex-1 flex items-center justify-center">
         <div className="flex items-center gap-3">
           <LoadingSpinner tone="secondary" />
-          <span className="text-s fg-secondary">Loading pipeline…</span>
+          <span className="text-s fg-secondary">Loading workflow…</span>
         </div>
       </div>
     );
@@ -336,7 +337,7 @@ export function PipelineEditorBody({
   if (!editor.pipeline) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-s fg-secondary">Pipeline not found.</p>
+        <p className="text-s fg-secondary">Workflow not found.</p>
       </div>
     );
   }
@@ -423,13 +424,7 @@ export function PipelineEditorBody({
                   aria-valuemax={MAX_DETAIL_WIDTH}
                   aria-valuenow={Math.round(detailPanelWidth)}
                 >
-                  <div
-                    className={`my-2 rounded-full transition-all ${
-                      isResizing
-                        ? 'w-0.5 bg-accent/80'
-                        : 'w-px bg-line-base/70 group-hover:w-0.5 group-hover:bg-accent/60'
-                    }`}
-                  />
+                  <ResizeRailIndicator active={isResizing} />
                 </div>
 
                 <div
@@ -490,13 +485,7 @@ export function PipelineEditorBody({
             aria-valuemax={MAX_SETTINGS_WIDTH}
             aria-valuenow={Math.round(settingsPanelWidth)}
           >
-            <div
-              className={`my-2 rounded-full transition-all ${
-                isResizingSettings
-                  ? 'w-0.5 bg-accent/80'
-                  : 'w-px bg-line-base/70 group-hover:w-0.5 group-hover:bg-accent/60'
-              }`}
-            />
+            <ResizeRailIndicator active={isResizingSettings} />
           </div>
 
           <div

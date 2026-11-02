@@ -584,7 +584,7 @@ describe('account organization settings dispatch', () => {
   it('routes a call through existing orchestration and validates its result', async () => {
     const orchestrated = jest.fn(() => Promise.resolve({ saved: true }));
     const harness = setup({
-      resolveOrchestrated: (name) =>
+      resolveOrchestrated: (name: string) =>
         name === 'test.write' ? orchestrated : null,
     });
     const response = await harness.service.write({
@@ -928,6 +928,113 @@ describe('account organization settings streams', () => {
 describe('account organization settings payment handoff', () => {
   const REQUEST_ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 
+  it('defaults legacy unlock attribution to desktop and returns the main id', async () => {
+    const harness = setup();
+    await expect(
+      harness.service.paymentHandoff({
+        accountId: 'acct-1',
+        owner: { kind: 'personal' },
+        intent: { kind: 'top-up', reason: 'unlock_models' },
+      }),
+    ).resolves.toEqual({ ok: true, requestId: REQUEST_ID });
+    const url = new URL(
+      String(harness.openStrictPortalPage.mock.calls[0]?.[0]),
+      'https://billing.invalid',
+    );
+    expect(url.searchParams.get('source')).toBe('desktop');
+    expect(url.searchParams.get('requestId')).toBe(REQUEST_ID);
+  });
+
+  it.each([
+    'unavailable',
+    'identity_changed',
+    'failed',
+    'browser_failed',
+  ] as const)('does not return an unlock id after %s', async (reason) => {
+    const harness = setup();
+    harness.openStrictPortalPage.mockResolvedValueOnce({ ok: false, reason });
+    await expect(
+      harness.service.paymentHandoff({
+        accountId: 'acct-1',
+        owner: { kind: 'personal' },
+        intent: { kind: 'top-up', reason: 'unlock_models' },
+      }),
+    ).resolves.toEqual({ ok: false, reason });
+    expect(harness.openStrictPortalPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps correlation local to overlapping attempts that settle out of order', async () => {
+    let sequence = 0;
+    let finishFirst:
+      | ((value: StrictAuthenticatedPortalResult) => void)
+      | undefined;
+    let startedFirst: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      startedFirst = resolve;
+    });
+    const firstResult = new Promise<StrictAuthenticatedPortalResult>(
+      (resolve) => {
+        finishFirst = resolve;
+      },
+    );
+    const harness = setup({ randomId: () => `request-${++sequence}` });
+    harness.openStrictPortalPage.mockImplementationOnce(() => {
+      startedFirst?.();
+      return firstResult;
+    });
+    const request = {
+      accountId: 'acct-1',
+      owner: { kind: 'personal' as const },
+      intent: { kind: 'top-up' as const, reason: 'unlock_models' as const },
+    };
+    const first = harness.service.paymentHandoff(request);
+    await firstStarted;
+    await expect(harness.service.paymentHandoff(request)).resolves.toEqual({
+      ok: true,
+      requestId: 'request-2',
+    });
+    finishFirst?.({ ok: true });
+    await expect(first).resolves.toEqual({ ok: true, requestId: 'request-1' });
+    expect(
+      harness.openStrictPortalPage.mock.calls.map(([path]) =>
+        new URL(path, 'https://billing.invalid').searchParams.get('requestId'),
+      ),
+    ).toEqual(['request-1', 'request-2']);
+  });
+
+  it.each([
+    { kind: 'personal' } as const,
+    { kind: 'organization', organizationId: 'org-1' } as const,
+  ])('correlates an unlock opening for %j', async (owner) => {
+    const harness = setup();
+    const request = {
+      accountId: 'acct-1',
+      owner,
+      intent: {
+        kind: 'top-up' as const,
+        reason: 'unlock_models' as const,
+        source: 'picker' as const,
+        modelId: 'provider/model:1',
+        chatId: 'chat-1',
+      },
+    };
+    const result = await harness.service.paymentHandoff(request);
+    const url = new URL(
+      String(harness.openStrictPortalPage.mock.calls[0]?.[0]),
+      'https://billing.invalid',
+    );
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      source: 'picker',
+      modelId: 'provider/model:1',
+      chatId: 'chat-1',
+      requestId: REQUEST_ID,
+    });
+    expect(result).toEqual({
+      ok: true,
+      requestId: url.searchParams.get('requestId'),
+    });
+  });
+
   it('opens the personal billing page with a top-up intent', async () => {
     const harness = setup();
     const result = await harness.service.paymentHandoff({
@@ -1045,5 +1152,59 @@ describe('account organization settings payment handoff', () => {
     await expect(
       harness.service.paymentHandoffAvailability('acct-1'),
     ).resolves.toEqual({ available: true });
+  });
+});
+
+describe('post-success settings observer', () => {
+  it('observes validated results before unrelated follow-ups and isolates throws', async () => {
+    const order: string[] = [];
+    const observeWrite = jest.fn(() => {
+      order.push('observe');
+      throw new Error('telemetry');
+    });
+    const { service } = setup({
+      observeWrite,
+      resolveWriteFollowUp: () => (): Promise<void> => {
+        order.push('refresh');
+        throw new Error('refresh');
+      },
+    });
+    const request = {
+      accountId: 'acct-1',
+      operation: 'test.write',
+      input: { organizationId: 'org-1' },
+    };
+    await expect(service.write(request)).resolves.toEqual({
+      ok: true,
+      result: { saved: true },
+    });
+    expect(order).toEqual(['observe', 'refresh']);
+    expect(observeWrite).toHaveBeenCalledWith(
+      'test.write',
+      { organizationId: 'org-1' },
+      { saved: true },
+      'acct-1',
+    );
+    service.dispose();
+  });
+  it('does not observe failures or malformed successful results', async () => {
+    const observeWrite = jest.fn();
+    const { service, execute } = setup({ observeWrite });
+    const request = {
+      accountId: 'acct-1',
+      operation: 'test.write',
+      input: { organizationId: 'org-1' },
+    };
+    execute.mockResolvedValueOnce({ saved: false });
+    expect(await service.write(request)).toEqual({
+      ok: false,
+      error: { code: 'invalid_response' },
+    });
+    execute.mockRejectedValueOnce(
+      new SettingsOperationError({ code: 'failed' }),
+    );
+    await service.write(request);
+    expect(observeWrite).not.toHaveBeenCalled();
+    service.dispose();
   });
 });

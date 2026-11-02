@@ -59,7 +59,7 @@ function makeChatTab(overrides: Partial<ChatTab> = {}): ChatTab {
     queuedMessages: [],
     planMode: false,
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', fastMode: false, speed: 'standard' },
     fastModeExplicit: false,
     proposalMode: 'optional',
     ...overrides,
@@ -670,9 +670,13 @@ describe('buildPlanItems', () => {
 });
 
 describe('navigateToChatCatalogEntry', () => {
+  const originalChatState = useChatStore.getState();
+  const originalCoworkState = useStandaloneChatStore.getState();
   afterEach(() => {
     registerCoworkWorkspaceIds([]);
     jest.restoreAllMocks();
+    useChatStore.setState(originalChatState);
+    useStandaloneChatStore.setState(originalCoworkState);
   });
 
   it('switches to the owning cowork project and opens its archive on the chat page', async () => {
@@ -709,7 +713,21 @@ describe('navigateToChatCatalogEntry', () => {
     registerCoworkWorkspaceIds(['cowork-other']);
     const openEntry = jest
       .spyOn(useStandaloneChatStore.getState(), 'openWorkEntryFromSidebar')
-      .mockResolvedValue();
+      .mockImplementation(() => {
+        useStandaloneChatStore.setState({
+          activeChatProjectId: 'cowork-other',
+          activeWorkEntryId: 'entry-1',
+        });
+        useChatStore.setState({
+          worktreeChats: {
+            'cowork-other/entry-1': {
+              tabs: [makeChatTab({ id: 'chat-1' })],
+              activeTabId: 'chat-1',
+            },
+          },
+        });
+        return Promise.resolve();
+      });
     const switchTab = jest.spyOn(useChatStore.getState(), 'switchTab');
     const navigate = jest.spyOn(useNavigationStore.getState(), 'navigate');
 
@@ -742,6 +760,14 @@ describe('navigateToChatCatalogEntry', () => {
       .spyOn(useChatStore.getState(), 'loadTabsForTarget')
       .mockImplementation(() => {
         calls.push('hydrate');
+        useChatStore.setState({
+          worktreeChats: {
+            'proj-1/wt-1': {
+              tabs: [makeChatTab({ id: 'chat-1' })],
+              activeTabId: 'chat-1',
+            },
+          },
+        });
         return Promise.resolve();
       });
     jest

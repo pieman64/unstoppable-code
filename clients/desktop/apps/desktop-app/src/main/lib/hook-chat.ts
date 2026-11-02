@@ -51,6 +51,7 @@ import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-sel
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { sendToWindow } from './window-send';
 import { dispatchWorktreeChatTurn } from './worktree-chat-turn';
+import { runAdmittedDirectDispatch } from '../services/chat-queue-service';
 import { getChatStateService } from '../services/chat-state-service';
 import {
   hasActiveChatTurnsForWorktree,
@@ -270,12 +271,6 @@ function buildInitialMessages(
           : []),
         { type: 'text', text: prompt },
       ],
-      timestamp,
-    },
-    {
-      id: nextGeneratedId('msg'),
-      role: 'system',
-      blocks: [{ type: 'turn_timer', startedAt: timestamp, completedAt: null }],
       timestamp,
     },
   ];
@@ -659,134 +654,148 @@ async function startPreparedHookChatWithScopeLease(
 
   if (isQueuedHookChatCancelled(options.queuedEntry)) return;
 
-  await persistHookChatTab({
-    projectId: prepared.projectId,
-    worktreeId: prepared.worktreeId,
-    tab,
-    activateTab: options.activateTab,
-  });
-
-  if (isQueuedHookChatCancelled(options.queuedEntry)) {
-    await rollbackHookChatTab({
-      projectId: prepared.projectId,
-      worktreeId: prepared.worktreeId,
-      chatId: prepared.chatId,
-    });
-    return;
-  }
-  // No await may appear between exposing the real tab and marking this flag:
-  // cancelQueuedHookChat uses it as the atomic boundary between "still safe to
-  // cancel the queued launch" and "the normal active-chat lifecycle owns it".
-  if (options.queuedEntry) options.queuedEntry.startExposed = true;
-
-  const startedDelivered = sendToWindow(
-    prepared.getWindow(),
-    IPC_CHANNELS.chatHookTabStarted,
+  // Ordinary admission precedes the prompt's first effect (contracts §6).
+  await runAdmittedDirectDispatch(
     {
       projectId: prepared.projectId,
       worktreeId: prepared.worktreeId,
       chatId: prepared.chatId,
-      tab,
-      activateTab: options.activateTab,
     },
-  );
-  if (!startedDelivered) {
-    await rollbackHookChatTab({
-      projectId: prepared.projectId,
-      worktreeId: prepared.worktreeId,
-      chatId: prepared.chatId,
-    });
-    throw new Error(
-      'Hook chat requires an active renderer window before it can start.',
-    );
-  }
-
-  await notifyCanonicalChatStarted(
-    prepared,
     prepared.userMessageId,
-    newChatStartedAt,
-  ).catch(() => undefined);
+    async (authorization): Promise<boolean> => {
+      await persistHookChatTab({
+        projectId: prepared.projectId,
+        worktreeId: prepared.worktreeId,
+        tab,
+        activateTab: options.activateTab,
+      });
 
-  try {
-    if (
-      prepared.providerType === 'claude' &&
-      isTerminalBackedInterfaceMode(prepared.interfaceMode)
-    ) {
-      await getClaudeTerminalSessionService().launch(
+      if (isQueuedHookChatCancelled(options.queuedEntry)) {
+        await rollbackHookChatTab({
+          projectId: prepared.projectId,
+          worktreeId: prepared.worktreeId,
+          chatId: prepared.chatId,
+        });
+        return false;
+      }
+      // No await may appear between exposing the real tab and marking this flag:
+      // cancelQueuedHookChat uses it as the atomic boundary between "still safe to
+      // cancel the queued launch" and "the normal active-chat lifecycle owns it".
+      if (options.queuedEntry) options.queuedEntry.startExposed = true;
+
+      const startedDelivered = sendToWindow(
+        prepared.getWindow(),
+        IPC_CHANNELS.chatHookTabStarted,
         {
           projectId: prepared.projectId,
           worktreeId: prepared.worktreeId,
           chatId: prepared.chatId,
-          initialPrompt: buildSubmittedMessageText({
-            text: prepared.prompt,
-            fileReferences: prepared.fileReferences,
-            cwd: resolveWorktreeCwd(
-              prepared.projectId,
-              prepared.worktreeId,
-              prepared.selectedRepoId,
-            ),
-          }),
-          interfaceMode: prepared.interfaceMode,
-          cols: 80,
-          rows: 24,
-          ...(prepared.selectedRepoId
-            ? { selectedRepoId: prepared.selectedRepoId }
-            : {}),
-        },
-        {
-          getWindow: prepared.getWindow,
-          executionContext: prepared.executionContext,
+          tab,
+          activateTab: options.activateTab,
         },
       );
-      return;
-    }
+      if (!startedDelivered) {
+        await rollbackHookChatTab({
+          projectId: prepared.projectId,
+          worktreeId: prepared.worktreeId,
+          chatId: prepared.chatId,
+        });
+        throw new Error(
+          'Hook chat requires an active renderer window before it can start.',
+        );
+      }
 
-    await dispatchWorktreeChatTurn({
-      projectId: prepared.projectId,
-      worktreeId: prepared.worktreeId,
-      chatId: prepared.chatId,
-      userMessageId: prepared.userMessageId,
-      text: prepared.prompt,
-      ...(prepared.executionContext === undefined
-        ? {}
-        : { executionContext: prepared.executionContext }),
-      fileReferences: prepared.fileReferences,
-      planMode: prepared.planMode,
-      approvalMode: prepared.approvalMode,
-      modelConfig: prepared.modelConfig,
-      thinkingLevel: prepared.thinkingLevel,
-      model: prepared.model,
-      providerType: prepared.providerType,
-      executionHarness: prepared.executionHarness,
-      pluginSelections: prepared.pluginSelections,
-      deferredToolsAllowed: prepared.deferredToolsAllowed,
-      ...(prepared.selectedRepoId
-        ? { selectedRepoId: prepared.selectedRepoId }
-        : {}),
-      initiationSource: 'hook',
-      getWindow: prepared.getWindow,
-      skipBranchNaming: true,
-      onBeforeChatEvent: (event) =>
-        commitProviderChatEvent({
+      await notifyCanonicalChatStarted(
+        prepared,
+        prepared.userMessageId,
+        newChatStartedAt,
+      ).catch(() => undefined);
+
+      try {
+        if (
+          prepared.providerType === 'claude' &&
+          isTerminalBackedInterfaceMode(prepared.interfaceMode)
+        ) {
+          await getClaudeTerminalSessionService().launch(
+            {
+              projectId: prepared.projectId,
+              worktreeId: prepared.worktreeId,
+              chatId: prepared.chatId,
+              initialPrompt: buildSubmittedMessageText({
+                text: prepared.prompt,
+                fileReferences: prepared.fileReferences,
+                cwd: resolveWorktreeCwd(
+                  prepared.projectId,
+                  prepared.worktreeId,
+                  prepared.selectedRepoId,
+                ),
+              }),
+              interfaceMode: prepared.interfaceMode,
+              cols: 80,
+              rows: 24,
+              ...(prepared.selectedRepoId
+                ? { selectedRepoId: prepared.selectedRepoId }
+                : {}),
+            },
+            {
+              getWindow: prepared.getWindow,
+              executionContext: prepared.executionContext,
+            },
+          );
+          return false;
+        }
+
+        await dispatchWorktreeChatTurn({
+          ...(authorization ? { authorization } : {}),
           projectId: prepared.projectId,
           worktreeId: prepared.worktreeId,
           chatId: prepared.chatId,
           userMessageId: prepared.userMessageId,
+          text: prepared.prompt,
+          ...(prepared.executionContext === undefined
+            ? {}
+            : { executionContext: prepared.executionContext }),
+          fileReferences: prepared.fileReferences,
+          planMode: prepared.planMode,
+          approvalMode: prepared.approvalMode,
+          modelConfig: prepared.modelConfig,
+          thinkingLevel: prepared.thinkingLevel,
+          model: prepared.model,
           providerType: prepared.providerType,
-          event,
-        }),
-    });
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await markHookChatDispatchFailed({
-      projectId: prepared.projectId,
-      worktreeId: prepared.worktreeId,
-      chatId: prepared.chatId,
-      errorMessage,
-      getWindow: prepared.getWindow,
-    });
-    throw error;
-  }
+          executionHarness: prepared.executionHarness,
+          pluginSelections: prepared.pluginSelections,
+          deferredToolsAllowed: prepared.deferredToolsAllowed,
+          ...(prepared.selectedRepoId
+            ? { selectedRepoId: prepared.selectedRepoId }
+            : {}),
+          initiationSource: 'hook',
+          getWindow: prepared.getWindow,
+          skipBranchNaming: true,
+          onBeforeChatEvent: (event) =>
+            commitProviderChatEvent({
+              projectId: prepared.projectId,
+              worktreeId: prepared.worktreeId,
+              chatId: prepared.chatId,
+              userMessageId: prepared.userMessageId,
+              providerType: prepared.providerType,
+              event,
+            }),
+        });
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        await markHookChatDispatchFailed({
+          projectId: prepared.projectId,
+          worktreeId: prepared.worktreeId,
+          chatId: prepared.chatId,
+          errorMessage,
+          getWindow: prepared.getWindow,
+        });
+        throw error;
+      }
+      return true;
+    },
+  );
 }
 
 async function startPreparedHookChat(

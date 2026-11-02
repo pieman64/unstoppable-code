@@ -1,6 +1,9 @@
 import type { ScriptAction } from '@canopy/protocol/script-actions';
 import { WORKSPACE_ROOT_REPO_NAME } from '@canopy/protocol/ui-labels';
-import { searchSlashCommands } from '@canopy/ui-rich/plugins';
+import {
+  normalizeSearchText,
+  searchSlashCommands,
+} from '@canopy/ui-rich/plugins';
 import type { SlashCommandOption } from '@canopy/ui-rich/types';
 
 /** Suggestions shown at once; the rest are reached by typing more. */
@@ -59,14 +62,11 @@ interface RankedOption extends SlashCommandOption {
 }
 
 function rankingOption(action: ScriptAction): RankedOption {
-  // The slash/`$` ranking weighs name and display name fully, the category at
-  // 0.6 and the description at 0.5: name and command lead, then repository,
-  // then package path.
+  // Script names and executable commands are identities. Repository labels
+  // and package paths are searched separately below, outside slash identity.
   return {
     name: action.name,
     displayName: action.command,
-    ...(action.repoName ? { category: action.repoName } : {}),
-    ...(action.packagePath ? { description: action.packagePath } : {}),
     data: action,
   };
 }
@@ -83,9 +83,39 @@ export function buildScriptSuggestions(
   limit: number = SCRIPT_SUGGESTION_LIMIT,
 ): ScriptSuggestion[] {
   const runnable = actions.filter(isRunnableScriptAction);
-  const ranked = searchSlashCommands(runnable.map(rankingOption), query)
-    .slice(0, Math.max(0, limit))
-    .map((option) => option.data);
+  const terms = normalizeSearchText(query)
+    .split(/[\s:/_\-.,()]+/)
+    .filter(Boolean);
+  const repositoryMatches =
+    terms.length === 0
+      ? []
+      : runnable.filter((action) => {
+          const words = normalizeSearchText(action.repoName ?? '').split(
+            /[\s:/_\-.,()]+/,
+          );
+          return terms.every((term) =>
+            words.some((word) => word.startsWith(term)),
+          );
+        });
+  const packageOptions: RankedOption[] = runnable.map((action) => ({
+    name: '',
+    description: action.packagePath ?? undefined,
+    data: action,
+  }));
+  const seen = new Set<string>();
+  const ranked = [
+    ...searchSlashCommands(runnable.map(rankingOption), query).map(
+      (option) => option.data,
+    ),
+    ...repositoryMatches,
+    ...searchSlashCommands(packageOptions, query).map((option) => option.data),
+  ]
+    .filter((action) => {
+      if (seen.has(action.id)) return false;
+      seen.add(action.id);
+      return true;
+    })
+    .slice(0, Math.max(0, limit));
   const nameCounts = new Map<string, number>();
   for (const action of ranked) {
     const key = action.name.toLowerCase();

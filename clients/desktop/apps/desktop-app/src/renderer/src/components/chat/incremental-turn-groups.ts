@@ -40,6 +40,8 @@ export function findLastForkableTurnGroupIndex(
     const item = turnGroups[i];
     if (
       item.kind === 'turn-group' &&
+      // A fork cuts at a prompt, and a prompt's cut includes its wakes.
+      item.userMessage.role === 'user' &&
       item.isComplete &&
       hasForkableAssistantContent(item)
     ) {
@@ -47,6 +49,29 @@ export function findLastForkableTurnGroupIndex(
     }
   }
   return -1;
+}
+
+/**
+ * The display group holding a search match. Search reports a prompt's indexed
+ * turn, and a wake in it has its own group (turn-state phase 40d).
+ */
+export function searchTurnGroupId(
+  turnGroups: readonly TurnGroupOrMessage[],
+  selection:
+    | { turnId: string; messageId: string; renderMessageId?: string }
+    | null
+    | undefined,
+): string | undefined {
+  if (!selection) return undefined;
+  const target = selection.renderMessageId ?? selection.messageId;
+  for (const item of turnGroups) {
+    if (
+      item.kind === 'turn-group' &&
+      item.assistantMessages.some((message) => message.id === target)
+    )
+      return item.userMessage.id;
+  }
+  return selection.turnId;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +227,13 @@ function blocksMatch(a: DisplayBlock[], b: DisplayBlock[]): boolean {
     if (blkA === blkB) continue;
     if (blkA.type !== blkB.type) return false;
     if (blkA.type === 'text' && blkB.type === 'text') {
-      if (blkA.text !== blkB.text || blkA.errorCode !== blkB.errorCode)
+      if (
+        blkA.text !== blkB.text ||
+        blkA.errorCode !== blkB.errorCode ||
+        (blkA.modelAccessFailure !== blkB.modelAccessFailure &&
+          JSON.stringify(blkA.modelAccessFailure) !==
+            JSON.stringify(blkB.modelAccessFailure))
+      )
         return false;
       if (
         (blkA.asyncQuestion !== blkB.asyncQuestion &&
@@ -287,6 +318,8 @@ function blocksMatch(a: DisplayBlock[], b: DisplayBlock[]): boolean {
 function turnGroupsMatch(a: TurnGroup, b: TurnGroup): boolean {
   if (a === b) return true;
   if (a.isComplete !== b.isComplete) return false;
+  // A wake's head row gains its label and link once older history loads.
+  if (!blocksMatch(a.userMessage.blocks, b.userMessage.blocks)) return false;
   if (a.assistantMessages.length !== b.assistantMessages.length) return false;
   for (let i = 0; i < a.assistantMessages.length; i++) {
     if (a.assistantMessages[i].id !== b.assistantMessages[i].id) return false;

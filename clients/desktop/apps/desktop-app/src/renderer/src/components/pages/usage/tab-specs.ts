@@ -151,9 +151,7 @@ export const TOKENS_TAB_SPEC: TabSpec = {
     { value: 'provider', label: 'Provider' },
     { value: 'initiation_source', label: 'Source' },
     { value: 'model', label: 'Model' },
-  ] satisfies Array<PickerOption<TokenGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<TokenGroupById>>,
   defaultTableMetric: 'token_total',
   defaultTableGrouping: 'provider',
 };
@@ -220,9 +218,7 @@ export const COST_TAB_SPEC: TabSpec = {
     { value: 'provider', label: 'Provider' },
     { value: 'initiation_source', label: 'Source' },
     { value: 'model', label: 'Model' },
-  ] satisfies Array<PickerOption<CostGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<CostGroupById>>,
   defaultTableMetric: 'cost_total_usd',
   defaultTableGrouping: 'provider',
 };
@@ -272,9 +268,7 @@ export const WORKTREES_TAB_SPEC: TabSpec = {
     { value: 'workspace_then_repo', label: 'Project → Repo' },
     { value: 'repo', label: 'Repo' },
     { value: 'day_of_week', label: 'Day of week' },
-  ] satisfies Array<PickerOption<WorktreeGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<WorktreeGroupById>>,
   defaultTableMetric: 'created',
   defaultTableGrouping: 'workspace',
 };
@@ -322,9 +316,7 @@ export const CHATS_TAB_SPEC: TabSpec = {
     { value: 'provider', label: 'Provider' },
     { value: 'initiation_source', label: 'Source' },
     { value: 'model', label: 'Model' },
-  ] satisfies Array<PickerOption<ChatGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<ChatGroupById>>,
   defaultTableMetric: 'chat_turns',
   defaultTableGrouping: 'workspace',
 };
@@ -359,9 +351,7 @@ export const PLANS_TAB_SPEC: TabSpec = {
     { value: 'workspace', label: 'Project' },
     { value: 'worktree', label: WORKTREE_UNIT_LABEL },
     { value: 'initiation_source', label: 'Source' },
-  ] satisfies Array<PickerOption<PlanGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<PlanGroupById>>,
   defaultTableMetric: 'plan_approved',
   defaultTableGrouping: 'workspace',
 };
@@ -415,17 +405,15 @@ export const TOOLS_TAB_SPEC: TabSpec = {
     { value: 'initiation_source', label: 'Source' },
     { value: 'workspace', label: 'Project' },
     { value: 'worktree', label: WORKTREE_UNIT_LABEL },
-  ] satisfies Array<PickerOption<ToolGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<ToolGroupById>>,
   defaultTableMetric: 'tool_calls',
   defaultTableGrouping: 'category',
 };
 
 export const PIPELINES_TAB_SPEC: TabSpec = {
   id: 'pipelines',
-  title: 'Pipeline runs',
-  emptyMessage: 'No retained pipeline activity yet.',
+  title: 'Workflow runs',
+  emptyMessage: 'No retained workflow activity yet.',
   cards: [
     { key: 'runs_started', title: 'Started', display: 'count' },
     { key: 'runs_completed', title: 'Completed', display: 'count' },
@@ -471,14 +459,12 @@ export const PIPELINES_TAB_SPEC: TabSpec = {
   tableGroupings: [
     { value: 'workspace', label: 'Project' },
     { value: 'worktree', label: WORKTREE_UNIT_LABEL },
-    { value: 'pipeline', label: 'Pipeline' },
+    { value: 'pipeline', label: 'Workflow' },
     { value: 'status', label: 'Status' },
     { value: 'event_name', label: 'Event' },
     { value: 'initiation_source', label: 'Source' },
     { value: 'trigger_source', label: 'Trigger source' },
-  ] satisfies Array<PickerOption<PipelineGroupById>> as Array<
-    PickerOption<UsageGroupById>
-  >,
+  ] satisfies Array<PickerOption<PipelineGroupById>>,
   defaultTableMetric: 'pipeline_runs_completed',
   defaultTableGrouping: 'pipeline',
 };

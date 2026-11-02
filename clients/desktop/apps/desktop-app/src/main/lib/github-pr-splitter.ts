@@ -1,3 +1,7 @@
+import {
+  recordGitCommitTelemetry,
+  recordPullRequestOpenedTelemetry,
+} from './desktop-telemetry';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -121,6 +125,8 @@ function throwIfAborted(signal: AbortSignal): void {
 // ---------------------------------------------------------------------------
 
 export interface SplitterDeps {
+  recordGitCommitTelemetry: typeof recordGitCommitTelemetry;
+  recordPullRequestOpenedTelemetry: typeof recordPullRequestOpenedTelemetry;
   createWorktree: (opts: {
     workspaceId: string;
     branchName: string;
@@ -523,6 +529,8 @@ export function buildDefaultSplitterDeps(
       });
       notifyWorktreesUpdated(wsId);
     },
+    recordGitCommitTelemetry,
+    recordPullRequestOpenedTelemetry,
     createPr: createPrForRepo,
     closePr: closePrForRepo,
     updatePrBody: updatePrBodyForRepo,
@@ -683,6 +691,7 @@ export async function carveChild(args: {
    * only accurate signal for when carving has finished and verifying begins.
    */
   onVerifyStart?: () => void;
+  onCommitted?: () => void;
 }): Promise<CarveChildResult> {
   const {
     repoPath,
@@ -722,6 +731,7 @@ export async function carveChild(args: {
 
     await stageAllChanges(repoPath);
     const commitSha = await commitWithMessage(repoPath, commitMessage);
+    args.onCommitted?.();
 
     throwIfAborted(signal);
 
@@ -1357,6 +1367,16 @@ async function runSplit(args: RunSplitArgs): Promise<SplitPrMap> {
         `origin/${detectedBase}`,
         INTEGRATION_INIT_MESSAGE,
       );
+      try {
+        deps.recordGitCommitTelemetry({
+          projectId,
+          source: 'manual',
+          flow: 'split_pr',
+          repoCount: 1,
+        });
+      } catch {
+        /* Best effort. */
+      }
     }
     // Always push when origin lacks the branch, even if it already existed
     // locally from a prior run that crashed before the push landed. Pushing
@@ -1422,6 +1442,18 @@ async function runSplit(args: RunSplitArgs): Promise<SplitPrMap> {
       integrationBody,
       map.originalBaseBranch,
     );
+    if (result.created === true) {
+      try {
+        deps.recordPullRequestOpenedTelemetry({
+          projectId,
+          source: 'manual',
+          flow: 'split_pr',
+          repoCount: 1,
+        });
+      } catch {
+        /* Best effort. */
+      }
+    }
     map.integrationPrNumber = result.prNumber;
     map.integrationPrUrl = result.prUrl;
     await persist();
@@ -1829,6 +1861,18 @@ async function processChild(argsIn: ProcessChildArgs): Promise<void> {
       commitMessage: `[${child.index}/${childTotal}] ${child.title}`,
       signal,
       deps: { runVerifyCommand: deps.runVerifyCommand },
+      onCommitted: () => {
+        try {
+          deps.recordGitCommitTelemetry({
+            projectId,
+            source: 'manual',
+            flow: 'split_pr',
+            repoCount: 1,
+          });
+        } catch {
+          /* Best effort. */
+        }
+      },
       // Emit `verifying_child` only once the commit has landed and the verify
       // command is actually about to run (carve+verify are one call).
       onVerifyStart: () =>
@@ -1963,6 +2007,18 @@ async function processChild(argsIn: ProcessChildArgs): Promise<void> {
       body,
       child.baseBranch,
     );
+    if (result.created === true) {
+      try {
+        deps.recordPullRequestOpenedTelemetry({
+          projectId,
+          source: 'manual',
+          flow: 'split_pr',
+          repoCount: 1,
+        });
+      } catch {
+        /* Best effort. */
+      }
+    }
     child.prNumber = result.prNumber;
     child.prUrl = result.prUrl;
     await persist();

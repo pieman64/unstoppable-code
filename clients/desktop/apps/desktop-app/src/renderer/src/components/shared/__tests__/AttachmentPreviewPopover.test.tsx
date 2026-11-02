@@ -107,6 +107,43 @@ describe('AttachmentPreviewPopover', () => {
     ).toBeNull();
   });
 
+  it('keeps Markdown preview content selectable outside the chat portal', async () => {
+    window.api.readFilePreview = jest.fn(() =>
+      Promise.resolve({
+        kind: 'markdown',
+        content: 'Readable attachment content',
+        filename: 'notes.md',
+        sizeBytes: 27,
+        truncated: false,
+        modifiedAtMs: 1,
+      }),
+    );
+    const anchorRef = createRef<HTMLButtonElement>();
+    await act(async () => {
+      root.render(
+        <>
+          <button ref={anchorRef} type="button">
+            Attachment
+          </button>
+          <AttachmentPreviewPopover
+            absolutePath="/workspace/attachments/notes.md"
+            filename="notes.md"
+            anchorRef={anchorRef}
+            onMouseEnter={jest.fn()}
+            onMouseLeave={jest.fn()}
+          />
+        </>,
+      );
+      await Promise.resolve();
+    });
+    const body = document.querySelector(
+      '[data-testid="attachment-preview-body"]',
+    );
+    expect(body?.textContent).toContain('Readable attachment content');
+    expect(body?.closest('[data-selectable]')).not.toBeNull();
+    expect(findOpenButton().closest('[data-selectable]')).toBeNull();
+  });
+
   it('shows attachment metadata and opens the file in the system default application', async () => {
     const anchorRef = createRef<HTMLButtonElement>();
     const createdAt = '2026-07-16T12:00:00.000Z';

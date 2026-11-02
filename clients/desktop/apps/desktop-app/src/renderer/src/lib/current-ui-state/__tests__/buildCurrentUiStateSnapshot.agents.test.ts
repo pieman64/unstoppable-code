@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import { registerChatHarnessAction } from '@/lib/chat-harness-actions';
+
 import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
 import {
   CLIENT_FEATURE_FLAGS,
@@ -43,12 +44,11 @@ beforeEach(() => {
     state: {
       status: 'disabled',
       connectionStatus: 'inactive',
-      selectedServerId: null,
-      selectedServerName: null,
-      selectedServerBaseUrl: null,
       sessionId: null,
       pairingCode: null,
+      hostCode: null,
       pairingCodeExpiresAt: null,
+      machineName: null,
       activatedAt: null,
       lastSeenAt: null,
       lastErrorAt: null,
@@ -66,6 +66,7 @@ beforeEach(() => {
   });
   useFeatureFlagsStore.getState().setSnapshot({
     values: {
+      ...getDefaultFeatureFlagSnapshot().values,
       [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: true,
       [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]: false,
       // Agents (now in the Marketplace) report their share dialog only while
@@ -714,6 +715,44 @@ describe('buildCurrentUiStateSnapshot plugins page skill editor', () => {
 });
 
 describe('buildCurrentUiStateSnapshot skill detail slice', () => {
+  it('sanitizes Customize destination and Installed filter metadata (CAN-4267)', () => {
+    const snapshot = buildCurrentUiStateSnapshot({
+      'plugins.page': {
+        view: 'discovery',
+        customizeTab: 'skill',
+        installedStatusFilter: 'active',
+        installedExpanded: true,
+        query: 'SECRET SEARCH',
+        category: 'SECRET CATEGORY',
+      },
+    });
+    expect(snapshot.plugins?.page).toMatchObject({
+      customizeTab: 'skill',
+      installedStatusFilter: 'active',
+      installedExpanded: true,
+    });
+    expect(JSON.stringify(snapshot.plugins?.page)).not.toContain('SECRET');
+    const disabled = buildCurrentUiStateSnapshot({
+      'plugins.page': {
+        view: 'discovery',
+        customizeTab: 'all',
+        installedStatusFilter: 'disabled',
+      },
+    });
+    expect(disabled.plugins?.page).toMatchObject({
+      installedStatusFilter: 'disabled',
+    });
+    const invalid = buildCurrentUiStateSnapshot({
+      'plugins.page': {
+        view: 'discovery',
+        customizeTab: 'SECRET TAB',
+        installedStatusFilter: 'SECRET STATUS',
+      },
+    });
+    expect(invalid.plugins?.page).not.toHaveProperty('customizeTab');
+    expect(invalid.plugins?.page).not.toHaveProperty('installedStatusFilter');
+  });
+
   it('projects Plugins entry-detail navigation metadata without pipeline contents', () => {
     const snapshot = buildCurrentUiStateSnapshot({
       'plugins.page': {
@@ -1296,6 +1335,23 @@ describe('buildCurrentUiStateSnapshot worktree batch removal slice', () => {
     });
   });
 
+  it('reports a batch running in the background with no dialog open', () => {
+    const snapshot = buildCurrentUiStateSnapshot({
+      'worktree.batchRemovalDialog': {
+        open: false,
+        mode: 'delete',
+        count: 2,
+        phase: 'running',
+      },
+    });
+    expect(snapshot.worktreeBatchRemovalDialog).toEqual({
+      open: false,
+      mode: 'delete',
+      count: 2,
+      phase: 'running',
+    });
+  });
+
   it('ignores a closed or malformed batch removal slice', () => {
     expect(
       buildCurrentUiStateSnapshot({
@@ -1310,12 +1366,111 @@ describe('buildCurrentUiStateSnapshot worktree batch removal slice', () => {
     expect(
       buildCurrentUiStateSnapshot({
         'worktree.batchRemovalDialog': {
+          open: false,
+          mode: 'archive',
+          count: 1,
+          phase: 'results',
+        },
+      }).worktreeBatchRemovalDialog,
+    ).toBeUndefined();
+    expect(
+      buildCurrentUiStateSnapshot({
+        'worktree.batchRemovalDialog': {
           open: true,
           mode: 'erase',
           count: 1,
           phase: 'confirm',
         },
       }).worktreeBatchRemovalDialog,
+    ).toBeUndefined();
+  });
+});
+
+describe('buildCurrentUiStateSnapshot Work Entry batch removal slice', () => {
+  it('reports the open bulk chat removal dialog and drops other fields', () => {
+    const snapshot = buildCurrentUiStateSnapshot({
+      'workEntry.batchRemovalDialog': {
+        open: true,
+        mode: 'delete',
+        count: 2,
+        phase: 'results',
+        entryIds: ['secret-a'],
+      },
+    });
+    expect(snapshot.workEntryBatchRemovalDialog).toEqual({
+      open: true,
+      mode: 'delete',
+      count: 2,
+      phase: 'results',
+    });
+    expect(snapshot.worktreeBatchRemovalDialog).toBeUndefined();
+  });
+
+  it('falls back to the App Advisor nav dialog and prefers the main rail', () => {
+    const appAdvisorDialog = {
+      open: true,
+      mode: 'archive',
+      count: 4,
+      phase: 'running',
+    };
+    expect(
+      buildCurrentUiStateSnapshot({
+        'appAdvisor.batchRemovalDialog': appAdvisorDialog,
+      }).workEntryBatchRemovalDialog,
+    ).toEqual(appAdvisorDialog);
+    expect(
+      buildCurrentUiStateSnapshot({
+        'workEntry.batchRemovalDialog': {
+          open: true,
+          mode: 'delete',
+          count: 1,
+          phase: 'confirm',
+        },
+        'appAdvisor.batchRemovalDialog': appAdvisorDialog,
+      }).workEntryBatchRemovalDialog,
+    ).toEqual({ open: true, mode: 'delete', count: 1, phase: 'confirm' });
+    expect(
+      buildCurrentUiStateSnapshot({
+        'workEntry.batchRemovalDialog': {
+          open: false,
+          mode: 'delete',
+          count: 1,
+          phase: 'confirm',
+        },
+        'appAdvisor.batchRemovalDialog': appAdvisorDialog,
+      }).workEntryBatchRemovalDialog,
+    ).toEqual(appAdvisorDialog);
+  });
+
+  it('ignores a closed or malformed Work Entry batch removal slice', () => {
+    expect(
+      buildCurrentUiStateSnapshot({
+        'workEntry.batchRemovalDialog': {
+          open: false,
+          mode: 'archive',
+          count: 1,
+          phase: 'confirm',
+        },
+      }).workEntryBatchRemovalDialog,
+    ).toBeUndefined();
+    expect(
+      buildCurrentUiStateSnapshot({
+        'workEntry.batchRemovalDialog': {
+          open: true,
+          mode: 'archive',
+          count: 1,
+          phase: 'pending',
+        },
+      }).workEntryBatchRemovalDialog,
+    ).toBeUndefined();
+    expect(
+      buildCurrentUiStateSnapshot({
+        'workEntry.batchRemovalDialog': {
+          open: true,
+          mode: 'archive',
+          phase: 'confirm',
+        },
+      }).workEntryBatchRemovalDialog,
     ).toBeUndefined();
   });
 });
@@ -1393,6 +1548,63 @@ describe('buildCurrentUiStateSnapshot home slice', () => {
     expect(JSON.stringify(snapshot.home)).not.toContain('SECRET');
     expect(JSON.stringify(snapshot.home)).not.toContain('/tmp/secret.png');
     expect(JSON.stringify(snapshot.home)).not.toContain('/repo/secret.ts');
+  });
+
+  it('reports Continue attention counts only when page Home publishes them (CAN-4958)', () => {
+    useNavigationStore.setState({ activePage: 'home' });
+    const surface = { variant: 'page', workspaceSelected: true, mode: 'chat' };
+
+    const reported = buildCurrentUiStateSnapshot({
+      'home.surface': surface,
+      'home.continueAttention': {
+        questionCount: 1,
+        toolApprovalCount: 0,
+        planReviewCount: 2,
+        unreadCount: 3,
+        lastViewedVisible: true,
+      },
+    });
+    const absent = buildCurrentUiStateSnapshot({ 'home.surface': surface });
+
+    expect(reported.home?.continueAttention).toEqual({
+      questionCount: 1,
+      toolApprovalCount: 0,
+      planReviewCount: 2,
+      unreadCount: 3,
+      lastViewedVisible: true,
+    });
+    expect(absent.home).not.toHaveProperty('continueAttention');
+  });
+
+  it('reports interrupted-session readiness counts with the Home banner', () => {
+    useNavigationStore.setState({ activePage: 'home' });
+    const surface = { variant: 'page', workspaceSelected: true, mode: 'chat' };
+    const snapshot = buildCurrentUiStateSnapshot({
+      'home.surface': surface,
+      'home.interruptedSessionsBanner': {
+        visible: true,
+        count: 3,
+        readyCount: 2,
+        waitingCount: 1,
+      },
+    });
+    expect(snapshot.home).toMatchObject({
+      interruptedSessionsBannerVisible: true,
+      interruptedSessionCount: 3,
+      interruptedSessionReadyCount: 2,
+      interruptedSessionWaitingCount: 1,
+    });
+    const empty = buildCurrentUiStateSnapshot({
+      'home.surface': surface,
+      'home.interruptedSessionsBanner': {
+        visible: false,
+        count: 0,
+        readyCount: 0,
+        waitingCount: 0,
+      },
+    });
+    expect(empty.home).not.toHaveProperty('interruptedSessionReadyCount');
+    expect(empty.home).not.toHaveProperty('interruptedSessionWaitingCount');
   });
 
   it('reports the MCP sign-in strip only while it shows', () => {
@@ -1548,36 +1760,16 @@ describe('buildCurrentUiStateSnapshot shared-container slice', () => {
   });
 });
 
-describe('buildCurrentUiStateSnapshot home onboarding-suggestions slice', () => {
-  it('reports visible suggestion rows as entryId:stepKind pairs', () => {
+describe('retired Getting started UI projection', () => {
+  it('ignores stale checklist slices', () => {
     const snapshot = buildCurrentUiStateSnapshot({
       'home.surface': { workspaceSelected: true },
       'home.onboardingSuggestions': {
         open: true,
-        entries: ['roles:choose-roles', 'github:connect-github'],
+        entries: ['roles:choose-roles'],
       },
     });
-
-    expect(snapshot.home?.onboardingSuggestions).toEqual([
-      'roles:choose-roles',
-      'github:connect-github',
-    ]);
-  });
-
-  it('omits the field when the module is absent and drops non-string rows', () => {
-    const withoutModule = buildCurrentUiStateSnapshot({
-      'home.surface': { workspaceSelected: true },
-    });
-    expect(withoutModule.home?.onboardingSuggestions).toBeUndefined();
-
-    const mixed = buildCurrentUiStateSnapshot({
-      'home.surface': { workspaceSelected: true },
-      'home.onboardingSuggestions': {
-        open: true,
-        entries: ['add-repo:prompt', 42, null],
-      },
-    });
-    expect(mixed.home?.onboardingSuggestions).toEqual(['add-repo:prompt']);
+    expect(snapshot.home).not.toHaveProperty('onboardingSuggestions');
   });
 });
 

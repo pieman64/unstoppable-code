@@ -39,6 +39,28 @@ jest.mock('@/components/shared', () => ({
   ),
 }));
 
+jest.mock('@/components/worktree/DesktopOrgSharedMultiRepoSetup', () => ({
+  useSharedMultiRepoRequired: (ids: string[]): boolean =>
+    ids.some(
+      (id) =>
+        useProjectsStore
+          .getState()
+          .projects.find((project) => project.id === id)?.owner?.type ===
+        'organization',
+    ),
+  DesktopOrgSharedMultiRepoSetup: ({
+    mode,
+    sources,
+  }: {
+    mode: string;
+    sources: { id: string }[];
+  }): JSX.Element => (
+    <div data-testid="shared-setup" data-mode={mode}>
+      {sources.map((source) => source.id).join(',')}
+    </div>
+  ),
+}));
+
 jest.mock('@/lib/contextScope', () => ({
   switchContextForWorkspace: jest.fn(),
 }));
@@ -305,6 +327,43 @@ describe('AddRepoToWorktreeModal interactions', () => {
 
   afterEach(() => {
     document.body.innerHTML = '';
+  });
+
+  it('routes an organization source before flushing or consuming populated work', async () => {
+    const combine = jest.fn();
+    const flush = jest.fn();
+    const migrate = jest.fn();
+    setupStores({
+      combineWorktreeWithWorkspace: combine,
+      flushWorktreeTabs: flush,
+      migrateWorktreeTabsToAdhocWorkspace: migrate,
+    });
+    const source = makeSourceWorkspace();
+    source.owner = {
+      type: 'organization',
+      organizationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      projectId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      instanceId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      bindingGeneration: 0,
+    };
+    useProjectsStore.setState({ projects: [source, makeJoinWorkspace()] });
+    const { container, root } = await renderModal();
+    try {
+      expect(
+        container
+          .querySelector('[data-testid="shared-setup"]')
+          ?.getAttribute('data-mode'),
+      ).toBe('combine');
+      expect(container.textContent).not.toContain('Update project');
+      expect(container.textContent).not.toContain('Existing worktrees');
+      expect(combine).not.toHaveBeenCalled();
+      expect(flush).not.toHaveBeenCalled();
+      expect(migrate).not.toHaveBeenCalled();
+      expect(useProjectsStore.getState().projects[0]).toEqual(source);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
   });
 
   it('lists eligible join projects without showing the source project', async () => {
@@ -1267,7 +1326,7 @@ describe('AddRepoToWorktreeModal destination context (CAN-3846)', () => {
     const harness = await renderJoin('combine', null);
     act(() => {
       useProjectsStore.setState({
-        combineWorktreeWithWorkspace: jest.fn(() => Promise.resolve(null)),
+        combineWorktreeWithWorkspace: jest.fn(() => Promise.resolve(undefined)),
         worktreeError: 'Cannot add repo right now.',
       });
     });

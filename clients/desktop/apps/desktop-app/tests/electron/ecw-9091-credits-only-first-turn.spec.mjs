@@ -15,6 +15,11 @@ import {
 } from './seeders/index.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  closeModelPicker,
+  offeredBillingMenus,
+  openModelPicker,
+} from './modelPickerBilling.mjs';
 
 // ECW-9091 — credits-only users hit "Not logged in · Please run /login".
 //
@@ -163,14 +168,43 @@ test.describe('ECW-9091 credits-only first turn', () => {
       await selectModelOption(window, 'gpt-6-luna');
       await expect(modelPicker).toContainText('GPT 6 Luna');
 
-      const userMessage = `[${CONVERSATION_MARKER}] Say hello as a guest.`;
       const composer = window.getByRole('textbox').first();
-      await composer.fill(userMessage);
-      await window.getByRole('button', { name: 'Send message' }).click();
-
-      await expect(panel.getByText(ASSISTANT_REPLY).first()).toBeVisible({
-        timeout: 120_000,
-      });
+      // CAN-4921: real no-project guest turns with controlled wallet reads.
+      // The mock provider completes the turn; changing the mock cloud balance
+      // alone never sends an invalidation, so the host must refresh it.
+      for (const [turn, credits] of [
+        [1, 9.25],
+        [2, 0],
+      ]) {
+        await registerScenario(DEFAULT_MOCK_BASE_URL, 'csk_guest_e2e', {
+          cloud: { aiCreditsBalance: { credits, eligible: true } },
+        });
+        await composer.fill(
+          `[${CONVERSATION_MARKER}] Say hello as a guest, turn ${turn}.`,
+        );
+        await window.getByRole('button', { name: 'Send message' }).click();
+        await expect(panel.getByText(ASSISTANT_REPLY).first()).toBeVisible({
+          timeout: 120_000,
+        });
+        const meter = panel
+          .getByTestId('usage-indicator')
+          .filter({ visible: true });
+        await expect(meter).toHaveAccessibleName(
+          `Usage indicator, ${credits} AI Credits`,
+          { timeout: 30_000 },
+        );
+        await expect(
+          meter.getByTestId('usage-indicator-credit-balance'),
+        ).toHaveText(`${credits} AI Credits`);
+        await meter.press('Enter');
+        const account = window.getByTestId('usage-indicator-account');
+        await expect(account).toContainText('AI Credits');
+        await expect(
+          account.getByTestId('usage-indicator-account-credit-balance'),
+        ).toHaveText(String(credits));
+        await expect(account).not.toContainText('left');
+        await window.keyboard.press('Escape');
+      }
       expect(await panel.innerText()).not.toContain(RAW_LOGIN_ERROR);
       await expect
         .poll(
@@ -190,6 +224,9 @@ test.describe('ECW-9091 credits-only first turn', () => {
       });
     } finally {
       await closeCanopy(electronApp, userDataDir);
+      await clearScenario(DEFAULT_MOCK_BASE_URL, 'csk_guest_e2e').catch(
+        () => undefined,
+      );
       await clearScenario(DEFAULT_MOCK_BASE_URL, authKey).catch(
         () => undefined,
       );
@@ -272,6 +309,20 @@ test.describe('ECW-9091 credits-only first turn', () => {
           window.getByTestId('chat-input-no-billing-source-banner'),
         ).toHaveCount(0);
 
+        // CAN-5349: Claude's probe confirms sign-out and credits can pay, so
+        // the card has no subscription switch and the picker offers none.
+        const expectLockedToCredits = async () => {
+          const card = window.getByTestId('chat-input-ai-credits-active');
+          await expect(card).toBeVisible({ timeout: 15_000 });
+          await expect(
+            card.getByTestId('chat-input-ai-credits-switch-to-subscription'),
+          ).toHaveCount(0);
+          await openModelPicker(window);
+          await expect(offeredBillingMenus(window)).toHaveCount(0);
+          await closeModelPicker(window);
+        };
+        if (!autoChat) await expectLockedToCredits();
+
         const userMessage = `[${conversationMarker}] Say hello.`;
         const composer = window.getByRole('textbox').first();
         await expect(composer).toBeVisible();
@@ -307,6 +358,10 @@ test.describe('ECW-9091 credits-only first turn', () => {
             { timeout: 30_000 },
           )
           .toBeGreaterThanOrEqual(1);
+
+        // The ordinary active card after the first paid answer still has no
+        // switch: settling the turn must not unlock a confirmed sign-out.
+        if (!autoChat) await expectLockedToCredits();
 
         await window.screenshot({
           path: testInfo.outputPath('ecw-9091-credits-routed-turn.png'),
@@ -479,26 +534,16 @@ test.describe('ECW-9091 credits-only first turn', () => {
       // fall through to a native spawn (which is what produced the raw
       // `Please run /login`).
       //
-      // NOTE on what this case can and cannot assert: the backstop emits
-      // `{ type: 'error', error_code: 'no_billing_source', error: <copy> }`,
-      // which only sets the tab's status/error. The desktop worktree chat has
-      // NO surface that renders a chat error string today (only the shared
-      // `packages/ui-app` transcript used by Portal does, via
-      // `chat-transcript-error`), so the copy is not assertable from the
-      // desktop UI.
+      // The backstop emits
+      // `{ type: 'error', error_code: 'no_billing_source', error: <copy> }`.
+      // The desktop transcript renders that copy as an `Error: …` row beneath
+      // the user's message, which names both remedies, and the persistent
+      // `NoBillingSourceBanner` asserted above stays on screen after the send.
       //
-      // This IS a visibility trade, and worth stating honestly: the raw
-      // `Please run /login` it replaces arrived as SDK *content* and therefore
-      // did render as a message. The compensating surface is the persistent
-      // `NoBillingSourceBanner` asserted just above — it is driven by the same
-      // availability state, so it is on screen both before and after the send,
-      // and unlike the raw 401 it names BOTH remedies. Giving the desktop
-      // transcript its own error surface would change every chat error and is
-      // tracked separately.
-      //
-      // What IS observable here, and what actually bounds the bug, is that no
-      // provider request happens at all: no scripted reply renders and the mock
-      // records zero LLM requests for this marker.
+      // No provider turn ran, so there is nothing to time: the turn ends with
+      // the error row and no "Completed in" footer. What actually bounds the
+      // bug is that no provider request happens at all: no scripted reply
+      // renders and the mock records zero LLM requests for this marker.
       const userMessage = `[${CONVERSATION_MARKER}] Say hello.`;
       const composer = window.getByRole('textbox').first();
       await expect(composer).toBeVisible();
@@ -506,11 +551,23 @@ test.describe('ECW-9091 credits-only first turn', () => {
       await composer.fill(userMessage);
       await window.getByRole('button', { name: 'Send message' }).click();
 
-      // The sent message lands, and the turn settles (the abort closes it).
+      // The sent message lands, the abort renders its error row, and the turn
+      // settles: the composer is idle again and no live turn remains.
       await expect(panel.getByText(userMessage).first()).toBeVisible({
         timeout: 30_000,
       });
-      await expect(panel).toContainText('Completed in', { timeout: 60_000 });
+      await expect(
+        panel.getByText(
+          /^Error: You're not signed in to Claude and have no .+ AI Credits available\./,
+        ),
+      ).toBeVisible({ timeout: 60_000 });
+      await expect(
+        panel.getByRole('button', { name: 'Stop generation', exact: true }),
+      ).toHaveCount(0);
+      await expect(composer).toBeEditable();
+      await expect(panel).not.toContainText('Working…');
+      // Aborted before any provider turn started, so no turn timer is written.
+      await expect(panel).not.toContainText('Completed in');
 
       const panelText = await panel.innerText();
       expect(panelText).not.toContain(RAW_LOGIN_ERROR);

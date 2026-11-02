@@ -51,13 +51,16 @@ const mockResolveCodexRuntimeEnvironmentProfile = jest.fn(() => ({
 
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
-    startThread: mockCodexStartThread,
+    get startThread(): typeof mockCodexStartThread {
+      return mockCodexStartThread;
+    },
   })),
 }));
 
 jest.mock('../lib/user-environment-runtime', () => ({
-  resolveCodexRuntimeEnvironmentProfile:
-    mockResolveCodexRuntimeEnvironmentProfile,
+  get resolveCodexRuntimeEnvironmentProfile(): typeof mockResolveCodexRuntimeEnvironmentProfile {
+    return mockResolveCodexRuntimeEnvironmentProfile;
+  },
 }));
 
 jest.mock('../lib/helper-plugin-resolution', () => ({
@@ -85,7 +88,9 @@ const mockRunWorker = jest.fn();
 
 jest.mock('../integration/claude-worker-session-service', () => ({
   getClaudeWorkerSessionService: jest.fn(() => ({
-    runWorker: mockRunWorker,
+    get runWorker(): typeof mockRunWorker {
+      return mockRunWorker;
+    },
   })),
 }));
 
@@ -97,11 +102,21 @@ const updateObservedTaskMock = jest.fn();
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    startObservedTask: startObservedTaskMock,
-    finalizeObservedTask: finalizeObservedTaskMock,
-    seedTranscript: seedTranscriptMock,
-    appendTranscriptRecord: appendTranscriptRecordMock,
-    updateObservedTask: updateObservedTaskMock,
+    get startObservedTask(): typeof startObservedTaskMock {
+      return startObservedTaskMock;
+    },
+    get finalizeObservedTask(): typeof finalizeObservedTaskMock {
+      return finalizeObservedTaskMock;
+    },
+    get seedTranscript(): typeof seedTranscriptMock {
+      return seedTranscriptMock;
+    },
+    get appendTranscriptRecord(): typeof appendTranscriptRecordMock {
+      return appendTranscriptRecordMock;
+    },
+    get updateObservedTask(): typeof updateObservedTaskMock {
+      return updateObservedTaskMock;
+    },
     markObservedTaskAccountProxyRouted: jest.fn(),
   })),
 }));
@@ -143,15 +158,31 @@ const mockedIsModelBlockedByStoredPolicy = jest.mocked(
 function nativeInvocation(
   model: string | undefined,
 ): Promise<HelperInvocation> {
-  const harness = model ? getExecutionHarnessForModel(model) : 'claude';
+  const modelHarness = model ? getExecutionHarnessForModel(model) : 'claude';
+  const harness =
+    modelHarness === 'cursor' ||
+    modelHarness === 'copilot' ||
+    modelHarness === 'opencode'
+      ? 'claude'
+      : (modelHarness ?? 'claude');
   const invocation: HelperInvocation = {
     providerType: harness === 'codex' ? 'codex' : 'claude',
     source: harness === 'codex' ? 'codex-managed' : 'claude-managed',
-    harness: harness ?? 'claude',
+    harness,
     sdkModel: model,
     aiCreditsRouted: false,
+    dispose: () => undefined,
   };
   return Promise.resolve(invocation);
+}
+
+function partialPreferences(
+  canopyBackgroundProcessesMode: 'canopy' | 'terminal',
+): Awaited<ReturnType<typeof readPreferencesFile>> {
+  // A partial fixture: these tests rely on unset preferences staying undefined.
+  const preferences: Partial<Awaited<ReturnType<typeof readPreferencesFile>>> =
+    { canopyBackgroundProcessesMode };
+  return preferences as Awaited<ReturnType<typeof readPreferencesFile>>;
 }
 
 const NO_USABLE_RESULT_DETAIL =
@@ -206,6 +237,8 @@ describe('generateCommitMessage', () => {
       branchName: 'feat/test',
       diff: 'diff',
       model: 'gpt-5.5',
+      instructions: '',
+      instructionMode: 'append',
       abortController: controller,
     }).then(
       () => {
@@ -235,14 +268,11 @@ describe('generateCommitMessage', () => {
     clearAllProviderQuotaReached();
     mockedResolveHelperInvocation.mockImplementation(nativeInvocation);
     mockedIsModelBlockedByStoredPolicy.mockResolvedValue(false);
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'canopy',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(partialPreferences('canopy'));
     mockedRunWithOptionalHelperPlugins.mockImplementation((_, run) =>
       run({
         claudePlugins: [],
         claudeMcpServers: {},
-        codexProcessEnv: {},
         codexCapabilityRoots: [],
         codexMcpServers: {},
       }),
@@ -377,9 +407,7 @@ describe('generateCommitMessage', () => {
   });
 
   it('records terminal-mode transcript records for worker-backed audit entries', async () => {
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'terminal',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(partialPreferences('terminal'));
     mockRunWorker.mockResolvedValueOnce({
       workerId: 'worker-1',
       sessionId: 'session-1',
@@ -567,7 +595,6 @@ describe('generateCommitMessage', () => {
         claudeMcpServers: {
           helper: { type: 'stdio', command: 'helper-mcp' },
         },
-        codexProcessEnv: {},
         codexCapabilityRoots: [],
         codexMcpServers: {},
       }),
@@ -629,7 +656,6 @@ describe('generateCommitMessage', () => {
       run({
         claudePlugins: [],
         claudeMcpServers: {},
-        codexProcessEnv: { CANOPY_TEST_PROFILE: 'commit-plugin' },
         codexCapabilityRoots: [],
         codexMcpServers: {
           helper: { command: 'helper-mcp', args: [] },
@@ -742,14 +768,11 @@ describe('generateCommitMessage model fallback chain (CAN-3866)', () => {
     clearAllProviderQuotaReached();
     mockedResolveHelperInvocation.mockImplementation(nativeInvocation);
     mockedIsModelBlockedByStoredPolicy.mockResolvedValue(false);
-    mockedReadPreferencesFile.mockResolvedValue({
-      canopyBackgroundProcessesMode: 'canopy',
-    });
+    mockedReadPreferencesFile.mockResolvedValue(partialPreferences('canopy'));
     mockedRunWithOptionalHelperPlugins.mockImplementation((_, run) =>
       run({
         claudePlugins: [],
         claudeMcpServers: {},
-        codexProcessEnv: {},
         codexCapabilityRoots: [],
         codexMcpServers: {},
       }),
@@ -764,6 +787,7 @@ describe('generateCommitMessage model fallback chain (CAN-3866)', () => {
       sdkModel: ROUTED_GATEWAY_MODEL,
       envOverride: { ANTHROPIC_BASE_URL: 'https://gateway.example.test' },
       aiCreditsRouted: true,
+      dispose: () => undefined,
     };
     mockedResolveHelperInvocation.mockResolvedValue(routed);
     mockClaudeQueryResultOnce([
@@ -965,6 +989,7 @@ describe('generateCommitMessage model fallback chain (CAN-3866)', () => {
             harness: 'claude',
             sdkModel: ROUTED_GATEWAY_MODEL,
             aiCreditsRouted: true,
+            dispose: () => undefined,
           })
         : nativeInvocation(model),
     );

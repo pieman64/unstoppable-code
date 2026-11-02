@@ -26,6 +26,8 @@ export interface ModelHarnessAssignment {
   overridden: boolean;
   /** Supported destinations; absent in older host snapshots. */
   availableHarnesses?: ModelHarness[];
+  /** Per-chat choices; native defaults remain tied to their native identities. */
+  chatHarnesses?: ModelHarness[];
 }
 
 /** Complete authoritative assignment state returned by assignment IPC. */
@@ -47,6 +49,8 @@ export interface ModelHarnessCatalog {
   cursorModels?: readonly string[];
   copilotModels?: readonly string[];
   opencodeModels?: readonly string[];
+  /** Exact eligible gateway IDs projected only by a connected desktop host. */
+  openCodeGatewayModels?: readonly string[];
   /** Canonical native model -> exact, advertised Cursor runtime identity. */
   cursorModelMappings?: Readonly<Record<string, string>>;
   aiGatewayModels: ReadonlyArray<{

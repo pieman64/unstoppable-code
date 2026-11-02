@@ -8,6 +8,8 @@
  */
 export * from './CanopyClientProvider';
 export * from './create-client-store';
+export * from './delegation/lifetime-limit-store';
+export * from './transcripts/delegation-pages-store';
 export {
   NavigationProvider,
   useNavigation,
@@ -19,7 +21,9 @@ export * from './chat/create-chat-store';
 export * from './chat/chat-repair';
 export {
   computeIncrementalTurnGroups,
+  computePortalTurnOutcomes,
   createEmptyTurnGroupCache,
+  getPortalTurnOutcomeSteps,
   hasLiveTurnTimer,
   isTurnTimerMessage,
   type TurnGroupCache,
@@ -34,6 +38,10 @@ export {
 } from './chat/optimistic';
 export { detectSentPrompt, type SentPromptSummary } from './chat/sent-prompt';
 export {
+  isTranscriptPageForCurrentWindow,
+  type TranscriptWindowIdentity,
+} from './chat/transcript-window';
+export {
   createFileViewerStore,
   useFileViewerStore,
   useFileViewerStoreApi,
@@ -44,7 +52,32 @@ export {
   type FileViewerSession,
   type DiffViewerSession,
   type FileViewerState,
+  type FileChangeSource,
+  type FileSaveConflict,
+  type FileSaveConflictActionError,
+  type FileSaveConflictReason,
+  type FileSaveOptions,
+  type FileSaveOrigin,
+  type FileSavedMerge,
+  type FileOverlapComparison,
+  type FileCombinableChange,
 } from './file-viewer/create-file-viewer-store';
+export type {
+  OverlapChoice,
+  OverlapLineRange,
+  OverlapRegion,
+} from './file-viewer/three-way-conflicts';
+export {
+  buildKeepEditsPrompt,
+  formatOverlapEditSpan,
+  summarizeOverlapEdits,
+  type KeepEditsPromptInput,
+  type OverlapEditConsequence,
+  type OverlapEditSpan,
+  type OverlapEditSummary,
+  type OverlapQuoteSegment,
+  type OverlapSideEdits,
+} from './file-viewer/overlap-edit-summary';
 export {
   createActivityStore,
   useActivityStore,
@@ -54,6 +87,33 @@ export {
   selectWorktreeItems,
   type ActivityState,
 } from './activity/create-activity-store';
+export {
+  backgroundTaskStopKey,
+  backgroundTaskStopStoreFor,
+  clearEndedBackgroundTaskStops,
+  requestBackgroundTaskStop,
+  useBackgroundTaskStop,
+  type BackgroundTaskStopControl,
+  type BackgroundTaskStopState,
+  type BackgroundTaskStopStore,
+} from './activity/background-task-stop';
+// The review's store loads with the review: `@canopy/app-state/lifecycle-journal`.
+export {
+  offerLifecycleJournalQuarantine,
+  useLifecycleJournalQuarantineRequest,
+} from './lifecycle-journal/quarantine-offer';
+// The confirmation's store loads with it: `@canopy/app-state/worktree-discard`.
+export {
+  archiveRefusalOutcome,
+  offerWorktreeDiscard,
+  useWorktreeDiscardOffer,
+  type WorktreeDiscardOffer,
+} from './worktree-discard/discard-offer';
+export {
+  offerProjectDeletionDiscard,
+  useProjectDeletionDiscardOffer,
+  type ProjectDeletionDiscardOffer,
+} from './worktree-discard/project-deletion-offer';
 export {
   CODE_ONLY_ACTIVITY_SECTION_IDS,
   DEFAULT_ACTIVITY_SECTION_ORDER,
@@ -185,6 +245,17 @@ export {
   type ExternalAgentsOverviewStore,
 } from './external-agents';
 export {
+  createPlanModeHintStore,
+  isPlanModeHintAvailable,
+  isPlanModeHintRetired,
+  type PlanModeHintLoadResult,
+  type PlanModeHintOperation,
+  type PlanModeHintPersistence,
+  type PlanModeHintState,
+  type PlanModeHintStatus,
+  type PlanModeHintStore,
+} from './onboarding/plan-mode-hint-store';
+export {
   buildSidebarActivitySnapshot,
   compareSidebarActivityEntries,
   sidebarActivityStandaloneChatKey,
@@ -194,6 +265,7 @@ export {
   type SidebarActivityChatSummary,
   type SidebarActivityEntry,
   type SidebarActivityInventory,
+  type SidebarActivitySpaceMuted,
   type SidebarActivityStandaloneChat,
   type SidebarActivityWorkspace,
   type SidebarActivityWorktree,
@@ -209,4 +281,10 @@ export {
   type SidebarActivityModeState,
   type SidebarActivityStatus,
 } from './sidebar-activity/create-sidebar-activity-mode-store';
+export * from './marketplace-sources/useMarketplaceSourceAdd';
 export * from './script-actions';
+export * from './onboarding-tips';
+export * from './org-projects/create-shared-multi-repo-store';
+
+export * from './sidebar-placement/sidebar-placement-model';
+export * from './sidebar-placement/create-sidebar-placement-store';

@@ -1,7 +1,8 @@
 export class AutoModelRoutingApplyError extends Error {
   readonly code = 'auto_model_routing_apply_failed';
   readonly retryable = true;
-  readonly cause?: unknown;
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
 
   constructor(cause?: unknown) {
     super(

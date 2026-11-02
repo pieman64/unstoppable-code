@@ -30,6 +30,22 @@ import {
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
 
+type TestAiCreditsBalance = NonNullable<CanopyCloudAiCreditsState['balance']>;
+
+function createBalance(
+  credits: number,
+  eligible: boolean,
+  orgPool?: NonNullable<TestAiCreditsBalance['orgPool']>,
+): TestAiCreditsBalance {
+  return {
+    email: 'alice@example.com',
+    credits,
+    eligible,
+    source: 'canopy',
+    ...(orgPool === undefined ? {} : { orgPool }),
+  };
+}
+
 const mockOpenSettingsPathOrWeb = jest.fn<'settings' | 'web', [string]>();
 jest.mock('@/lib/navigation/settings-destinations', () => ({
   openSettingsPathOrWeb: (path: string): 'settings' | 'web' =>
@@ -83,25 +99,20 @@ const FUNDED_STATE: CanopyCloudAiCreditsState = {
   connected: true,
   email: 'alice@example.com',
   subscription: null,
-  balance: { email: 'alice@example.com', credits: 1234, eligible: true },
+  balance: createBalance(1234, true),
   noUdAccount: false,
   error: null,
 };
 
 const ZERO_BALANCE_STATE: CanopyCloudAiCreditsState = {
   ...FUNDED_STATE,
-  balance: { email: 'alice@example.com', credits: 0, eligible: true },
+  balance: createBalance(0, true),
 };
 
 /** Personal wallet empty, org pool covering — see `resolveAiCreditsFundingSource`. */
 const ORG_FUNDED_STATE: CanopyCloudAiCreditsState = {
   ...FUNDED_STATE,
-  balance: {
-    email: 'alice@example.com',
-    credits: 0,
-    eligible: false,
-    orgPool: { orgId: 'org_1', orgName: 'Acme' },
-  },
+  balance: createBalance(0, false, { orgId: 'org_1', orgName: 'Acme' }),
 };
 
 const NO_BALANCE_STATE: CanopyCloudAiCreditsState = {
@@ -195,9 +206,9 @@ describe('AiCreditsUsageCard', () => {
     );
   });
 
-  async function render(frameless = false): Promise<void> {
+  async function render(): Promise<void> {
     act(() => {
-      root.render(<AiCreditsUsageCard frameless={frameless} />);
+      root.render(<AiCreditsUsageCard />);
     });
     await act(async () => {
       await Promise.resolve();
@@ -221,24 +232,20 @@ describe('AiCreditsUsageCard', () => {
     ).toContain('1,234 credits');
   });
 
-  it('shows a grey Free chip for a resolved free plan', async () => {
+  it('names a resolved free plan', async () => {
     mockStatus = FREE_STATUS;
     await render();
-    const chip = findByTestId('usage-card-ai-credits-plan-chip');
-    expect(chip?.textContent).toBe('Free');
-    // muted (grey) variant, not the green success palette.
-    expect(chip?.className).not.toContain('success');
+    expect(findByTestId('usage-card-ai-credits-plan-chip')?.textContent).toBe(
+      'Free',
+    );
   });
 
-  it('keeps the active chip for a legacy org-seat plan with a neutral tone', async () => {
-    // Regression guard: keying the chip off `tone` instead of `kind` would
-    // render this active org subscription as grey (older servers omit
-    // `displayPlan`, so `computeSubscriptionStatus` returns a neutral tone).
+  it('names a legacy org-seat plan', async () => {
     mockStatus = ORG_SEAT_LEGACY_STATUS;
     await render();
-    const chip = findByTestId('usage-card-ai-credits-plan-chip');
-    expect(chip?.textContent).toBe('Team');
-    expect(chip?.className).toContain('success');
+    expect(findByTestId('usage-card-ai-credits-plan-chip')?.textContent).toBe(
+      'Team',
+    );
   });
 
   it('renders no plan chip until entitlements resolve', async () => {
@@ -289,11 +296,16 @@ describe('AiCreditsUsageCard', () => {
     );
   });
 
-  it('names the heading for screen readers even though the logo is aria-hidden', async () => {
+  it('names the brand and plan in the heading and AI Credits in the row', async () => {
     await render();
-    expect(container.querySelector('h2')?.getAttribute('aria-label')).toBe(
-      `${brandText.appName} AI Credits`,
+    expect(container.querySelector('h2')?.textContent).toBe(
+      `${brandText.appName} · Pro`,
     );
+    expect(container.textContent).toContain('AI Credits');
+    // One refresh for the whole surface: the group has none of its own.
+    expect(
+      container.querySelector('button[aria-label="Refresh AI Credits usage"]'),
+    ).toBeNull();
   });
 
   it('shows the native cloud-account email', async () => {
@@ -303,29 +315,21 @@ describe('AiCreditsUsageCard', () => {
     ).toContain('alice@example.com');
   });
 
-  it('emphasizes the email like the provider cards do', async () => {
+  it("shows the account as the group's last row, like the provider groups", async () => {
     await render();
     const row = findByTestId('usage-card-ai-credits-account');
-    expect(row?.textContent).toContain('Account: ');
-    const emphasized = row?.querySelector('span');
-    expect(emphasized?.textContent).toBe('alice@example.com');
-    expect(emphasized?.className).toContain('font-medium');
-    expect(emphasized?.className).toContain('fg-primary');
+    expect(row?.textContent).toBe('Accountalice@example.com');
+    const rows = findByTestId('usage-card-ai-credits')?.querySelectorAll(
+      '[data-testid="usage-card-ai-credits-account"]',
+    );
+    expect(rows).toHaveLength(1);
   });
 
   it('blocks only the account email from session replay', async () => {
     await render();
     const row = findByTestId('usage-card-ai-credits-account');
-    expect(row?.textContent).toBe('Account: alice@example.com');
     expect(outermostReplayBlock(row)).toBeNull();
     expectReplayBlocksOnlyValue(container, 'alice@example.com');
-  });
-
-  it('drops the "Account:" prefix when frameless, matching the provider row', async () => {
-    await render(true);
-    const row = findByTestId('usage-card-ai-credits-account');
-    expect(row?.textContent).toBe('alice@example.com');
-    expect(row?.querySelector('span')?.className).toContain('font-medium');
   });
 
   it('uses the brand app name as the card title (no "Unstoppable Domains")', async () => {
@@ -336,17 +340,15 @@ describe('AiCreditsUsageCard', () => {
     expect(container.textContent).not.toContain('Unstoppable Domains');
   });
 
-  it('renders the auth word as plain text next to the plan pill', async () => {
+  it('drops the auth word the old card header showed', async () => {
     await render();
-    expect(container.textContent).toContain('authenticated');
+    expect(container.textContent).not.toContain('authenticated');
   });
 
-  it('still reads authenticated when the balance payload has no email', async () => {
-    // The auth word is driven by the credential, so a real signed-in account
-    // with no email on the payload must not be labelled a guest.
+  it('still renders when the balance payload has no email', async () => {
     loadCanopyCloudAiCredits.mockResolvedValue(NO_EMAIL_STATE);
     await render();
-    expect(container.textContent).toContain('authenticated');
+    expect(findByTestId('usage-card-ai-credits')).not.toBeNull();
     expect(container.textContent).not.toContain('guest');
     // No email → no "Account:" line, but the card still renders.
     expect(findByTestId('usage-card-ai-credits-account')).toBeNull();
@@ -395,8 +397,6 @@ describe('AiCreditsUsageCard', () => {
     expect(findByTestId('usage-card-ai-credits')).not.toBeNull();
     expect(findByTestId('usage-card-ai-credits-account')).toBeNull();
     expect(container.textContent).not.toContain('guest.canopy.invalid');
-    // The auth word still reflects the credential for the true-guest path.
-    expect(container.textContent).toContain('guest');
   });
 
   describe('Manage', () => {
@@ -528,11 +528,9 @@ describe('AiCreditsUsageCard', () => {
       ...ERROR_STATE,
       balance: null,
     });
-    const refresh = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Refresh AI Credits usage"]',
-    );
+    // The Usage surface's one refresh reads AI Credits again.
     await act(async () => {
-      refresh?.click();
+      refreshAiCreditsUsage();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -557,11 +555,9 @@ describe('AiCreditsUsageCard', () => {
       balance: null,
       error: 'transient failure',
     });
-    const refresh = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Refresh AI Credits usage"]',
-    );
+    // The Usage surface's one refresh reads AI Credits again.
     await act(async () => {
-      refresh?.click();
+      refreshAiCreditsUsage();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -585,11 +581,9 @@ describe('AiCreditsUsageCard', () => {
       email: 'bob@example.com',
       balance: null,
     });
-    const refresh = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Refresh AI Credits usage"]',
-    );
+    // The Usage surface's one refresh reads AI Credits again.
     await act(async () => {
-      refresh?.click();
+      refreshAiCreditsUsage();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();

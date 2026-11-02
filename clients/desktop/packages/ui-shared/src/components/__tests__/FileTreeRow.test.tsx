@@ -3,6 +3,7 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { FileTreeRow } from '../FileTreeRow';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
@@ -26,6 +27,35 @@ describe('FileTreeRow', () => {
       container.querySelector('[data-testid="file-tree-row-badge"]'),
     ).toBeNull();
   });
+
+  it.each([
+    [true, true],
+    [false, false],
+  ])(
+    'masks only the label text in replays when replayMaskLabel is %s',
+    (replayMaskLabel, masked) => {
+      act(() =>
+        root.render(
+          <FileTreeRow
+            label="Vendor Spend Q3"
+            depth={0}
+            isDirectory
+            isRepoRoot
+            replayMaskLabel={replayMaskLabel}
+          />,
+        ),
+      );
+      const button = container.querySelector('button');
+      expect(button?.classList.contains(REPLAY_MASK_CLASS)).toBe(false);
+      expect(button?.getAttribute('title')).toBe(
+        masked ? null : 'Vendor Spend Q3',
+      );
+      expect(
+        container.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent ===
+          'Vendor Spend Q3',
+      ).toBe(masked);
+    },
+  );
 
   it('renders an always visible badge and a plain secondary title inside the button', () => {
     act(() =>

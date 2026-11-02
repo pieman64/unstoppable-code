@@ -17,6 +17,9 @@ import {
   W5RevisionConflictError,
 } from './w5-commit-log-file-store';
 import { reconcileManifestPluginDefaults } from './workspace-plugin-defaults';
+import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
+import { logMainProcessWarn } from './main-process-logging';
 import {
   admitCoworkSettingsChange,
   CoworkWorkspaceRecordRefusedError,
@@ -71,9 +74,9 @@ import {
   readAllSidebarItems,
   readAllSidebarItemsSnapshot,
   readWorkspaceIndexEntry,
-  writeAllSidebarItems,
 } from './sidebar-items';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
+import { readWorkspaceConfigDetailed } from './workspace-persistence';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { sendToAllWindows } from './window-send';
 import { IdentifierValidationError, validateId } from './validation';
@@ -645,6 +648,24 @@ function isRefusedCoworkSettingsDecision(error: unknown): boolean {
   );
 }
 
+async function reconcileCoworkSettings(
+  workspaceId: string,
+  replayed: boolean,
+): Promise<void> {
+  await reconcileManifestPluginDefaults(workspaceId, replayed);
+  try {
+    // A refresh must not turn a replay into a new cleanup decision.
+    await readAllSidebarItems({ persistRemovalCleanup: false });
+  } catch (error) {
+    logMainProcessWarn('[cowork-settings] sidebar refresh failed', {
+      workspaceId,
+      error,
+    });
+  }
+  schedulePortalStructuralSync();
+  notifyPortalStructureChanged();
+}
+
 /**
  * The keyed `core.workspace.cowork.update` (CAN-4719, A28′(a)): Cowork
  * settings and their preset-derived plugin defaults, with an optional
@@ -707,14 +728,14 @@ export async function updateCoworkWorkspaceSettings(
     );
   } catch (error) {
     // Any other failure may follow a landed decision (a lost response) whose
-    // post-commit plugin-layer refresh was dropped with its scope.
+    // post-commit refreshes were dropped with its scope.
     if (executed && !isRefusedCoworkSettingsDecision(error))
-      await reconcileManifestPluginDefaults(workspaceId, false);
+      await reconcileCoworkSettings(workspaceId, false);
     throw error;
   }
   // A replay runs no writer, and its decision may have landed without that
   // refresh, possibly after a read cached the old layer.
-  if (!executed) await reconcileManifestPluginDefaults(workspaceId, true);
+  if (!executed) await reconcileCoworkSettings(workspaceId, true);
   return result;
 }
 
@@ -816,9 +837,12 @@ function assertWorkspaceMetadataDirDisjointFromExternalFolder(
  */
 export async function deleteCoworkWorkspace(
   workspaceId: string,
-  options?: {
-    deferLocalWatcherCancellationCommit?: boolean;
-    commitIndexRemoval?: () => Promise<void>;
+  options: {
+    /**
+     * Removes the index entry. The caller, `deleteWorkspace`, owns this
+     * commit and the project's watcher fence, cancellation and commit.
+     */
+    commitIndexRemoval: () => Promise<void>;
   },
 ): Promise<void> {
   validateId(workspaceId, 'projectId');
@@ -829,45 +853,11 @@ export async function deleteCoworkWorkspace(
     );
   }
 
-  if (options?.deferLocalWatcherCancellationCommit) {
-    await deleteCoworkWorkspaceWithDeferredWatcherCommit(
-      workspaceId,
-      options?.commitIndexRemoval,
-    );
-    return;
-  }
-
-  // Defer the scheduler-backed service until destructive cowork deletion;
-  // normal cowork CRUD must not initialize watcher process lifecycle state.
-  const { getAppAdvisorWatcherService } =
-    await import('../app-advisor/watchers');
-  const watcherService = getAppAdvisorWatcherService();
-  let workspaceRemoved = false;
-  try {
-    await watcherService.cancelLocalWorkspace(workspaceId);
-    await deleteCoworkWorkspaceWithDeferredWatcherCommit(
-      workspaceId,
-      options?.commitIndexRemoval,
-    );
-    workspaceRemoved = true;
-    await watcherService.commitLocalWorkspaceCancellation(workspaceId);
-  } catch (error) {
-    if (!workspaceRemoved) {
-      await watcherService.releaseLocalWorkspaceFence(workspaceId);
-    }
-    throw error;
-  }
-}
-
-async function deleteCoworkWorkspaceWithDeferredWatcherCommit(
-  workspaceId: string,
-  commitIndexRemoval?: () => Promise<void>,
-): Promise<void> {
-  const [indexEntry, sidebarItems] = await settleAll([
+  const [indexEntry, { items }, config] = await settleAll([
     readWorkspaceIndexEntry(workspaceId),
     readAllSidebarItems(),
+    readWorkspaceConfigDetailed(workspaceId),
   ]);
-  const { items } = sidebarItems;
   const existing = items.find(
     (item): item is CoworkSidebarItem =>
       isCoworkSidebarItem(item) && item.id === workspaceId,
@@ -875,12 +865,20 @@ async function deleteCoworkWorkspaceWithDeferredWatcherCommit(
   if (!existing && indexEntry?.type !== 'cowork') {
     throw new Error('Chat project not found');
   }
+  // `deleteWorkspace` refuses this before any effect; this covers a
+  // configuration that became unreadable since (CAN-4975).
+  if (config.authority === 'unreadable') {
+    throw new Error(
+      'Refusing to delete cowork project: its configuration could not be read, so its external folder is unknown.',
+    );
+  }
 
   const workspaceMetadataDir = getWorkspaceDir(workspaceId);
-  if (existing?.externalPath !== undefined) {
+  // The independent sidebar read may have lost this path to an unreadable config.
+  if (config.config.externalPath !== undefined) {
     assertWorkspaceMetadataDirDisjointFromExternalFolder(
       workspaceMetadataDir,
-      existing.externalPath,
+      config.config.externalPath,
     );
   }
 
@@ -905,17 +903,7 @@ async function deleteCoworkWorkspaceWithDeferredWatcherCommit(
     await destructiveStep('cowork-summaries-removal', () =>
       clearWorkEntrySummariesForWorkspace(workspaceId),
     );
-    if (commitIndexRemoval) await commitIndexRemoval();
-    else
-      await writeAllSidebarItems(
-        items.filter((item) => item.id !== workspaceId),
-        {
-          preserveEmptyTemporary: false,
-          deletedWorkspaceIds: [workspaceId],
-          preserveWorkspaceIds:
-            getSidebarItemsPreserveWorkspaceIds(sidebarItems),
-        },
-      );
+    await options.commitIndexRemoval();
     ownerCommitted = true;
     if (existing?.installedFromTemplateExternalId !== undefined)
       recordSharedItemUninstall({

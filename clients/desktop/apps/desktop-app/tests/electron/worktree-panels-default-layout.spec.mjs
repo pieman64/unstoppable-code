@@ -159,6 +159,14 @@ test('default worktree panel layout renders three groups and serializes the expe
     await expect(
       activityGroup.getByTestId('panel-content-activity-section'),
     ).toBeVisible();
+    // CAN-5301: guest sign-in is still available when the user opens the
+    // rail, but the placeholder must not open it automatically.
+    await expect(activityGroup.getByTestId('guest-files-state')).toContainText(
+      'Attachments and workspace files need an account.',
+    );
+    await expect(
+      activityGroup.getByRole('button', { name: 'Sign in', exact: true }),
+    ).toBeVisible();
 
     // Regression guard: each content frame FILLS its group body (the
     // `.canopy-panel-content` wrapper must stretch its flex-1 frame — a

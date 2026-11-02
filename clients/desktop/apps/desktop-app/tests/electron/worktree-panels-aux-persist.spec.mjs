@@ -116,6 +116,17 @@ test('a popped-out window (with an inner split) is re-created on relaunch', asyn
       'data-source-group-id',
       DEFAULT_GROUP_IDS.terminal,
     );
+    // Chrome follows the local OS even when a window controls another host.
+    const nativeFrame = process.platform === 'linux';
+    const header = aux.getByTestId('panel-aux-window-top-bar');
+    await expect(header).toHaveCSS(
+      '-webkit-app-region',
+      nativeFrame ? 'no-drag' : 'drag',
+    );
+    if (nativeFrame) await expect(header).toHaveCSS('padding-left', '8px');
+    await expect(aux.getByTestId('panel-aux-window-source')).toBeVisible();
+    await expect(aux.getByTestId('panel-aux-window-merge-back')).toBeVisible();
+
     // The inner split survived the relaunch: two groups — the terminal
     // singleton plus the empty split group (splits no longer clone).
     await expect(

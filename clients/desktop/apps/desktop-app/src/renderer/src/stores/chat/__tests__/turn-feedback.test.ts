@@ -6,6 +6,7 @@
  * click, and rehydration clobbering a rating that has not uploaded yet.
  */
 import { useChatStore } from '@/stores/chatStore';
+import { createEmptyTab } from '../tab-utils';
 import type { ChatTab } from '../types';
 
 const PROJECT_ID = 'proj-a';
@@ -24,6 +25,7 @@ function seedTab(): void {
   // `as unknown as ...`: the repo forbids `as`, and the annotation makes the
   // compiler check the fixture against the real shape instead of silencing it.
   const tab: ChatTab = {
+    ...createEmptyTab(),
     id: CHAT_ID,
     kind: 'chat',
     title: 'Chat',

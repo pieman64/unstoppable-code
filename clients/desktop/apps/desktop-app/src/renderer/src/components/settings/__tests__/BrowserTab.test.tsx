@@ -614,11 +614,12 @@ describe('browser profile final-review transitions', () => {
           return Promise.resolve();
         });
         await click(container, 'browser-profile-row-profile-a');
-        expect(
-          container.querySelector(
-            '[data-testid="browser-profile-row-profile-a"]',
-          )?.classList,
-        ).toContain('ring-line-accent');
+        // The chosen profile carries the checkmark, not an accent fill.
+        const chosen = container.querySelector(
+          '[data-testid="browser-profile-row-profile-a"]',
+        );
+        expect(chosen?.getAttribute('aria-pressed')).toBe('true');
+        expect(chosen?.className).not.toContain('accent');
         await click(container, 'browser-profile-delete');
         expect(previewDelete).toHaveBeenCalledWith({
           profileId: a.profileId,

@@ -233,6 +233,40 @@ describe('workspace type conversion boundary (real fs)', () => {
     expect(getWorkspaceType('single')).toBe('multi-repo');
   });
 
+  // CAN-4106: the IPC request's mode is optional. Without one, existing
+  // instructions are kept and only a missing file gets the default.
+  it('keeps existing instructions when no instructions mode is given', async () => {
+    await writeAllSidebarItems([single()]);
+    await writeFile(path.join(singleRepoPath, 'CLAUDE.md'), '# Mine\n');
+
+    await convertWorkspaceType({
+      workspaceId: 'single',
+      targetType: 'multi-repo',
+      source: 'workspace_settings',
+    });
+
+    expect(await readFile(path.join(singleRepoPath, 'CLAUDE.md'), 'utf8')).toBe(
+      '# Mine\n',
+    );
+    await expect(
+      readFile(path.join(singleRepoPath, 'AGENTS.md'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('writes default instructions when no mode is given and none exist', async () => {
+    await writeAllSidebarItems([single()]);
+
+    await convertWorkspaceType({
+      workspaceId: 'single',
+      targetType: 'multi-repo',
+      source: 'workspace_settings',
+    });
+
+    expect(
+      await readFile(path.join(singleRepoPath, 'AGENTS.md'), 'utf8'),
+    ).toContain('Single');
+  });
+
   it('leaves the manifest as it is when the index update fails', async () => {
     await writeAllSidebarItems([single(), multi()]);
     const manifestText = await readFile(

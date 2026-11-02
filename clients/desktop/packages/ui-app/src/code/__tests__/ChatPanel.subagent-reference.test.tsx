@@ -63,7 +63,7 @@ async function flushLazyTranscript(): Promise<void> {
   });
 }
 
-function createClient(): CanopyClient {
+function createClient(calls: Array<[CommandName, unknown]> = []): CanopyClient {
   function command<K extends CommandName>(
     name: K,
     args: CommandMap[K]['args'],
@@ -72,8 +72,10 @@ function createClient(): CanopyClient {
     name: CommandName,
     args: CommandMap[CommandName]['args'],
   ): Promise<unknown> {
-    void args;
-    if (name === 'chat.queue.set_edit_lock') return Promise.resolve();
+    calls.push([name, args]);
+    if (name === 'chat.queue.set_edit_lock' || name === 'chat.queue.edit') {
+      return Promise.resolve();
+    }
     return Promise.reject(new Error('unused'));
   }
 
@@ -83,9 +85,9 @@ function createClient(): CanopyClient {
       terminalPty: false,
       fileSystemAccess: 'read',
       voice: false,
-      settingsScope: 'limited',
-      pipelines: 'view-only',
-      routing: 'portal',
+      settingsScope: 'api-keys-only',
+      pipelines: 'read-only',
+      routing: 'url',
       overviewNotifications: true,
     },
     query<K extends QueryName>(): Promise<QueryMap[K]['result']> {
@@ -183,17 +185,18 @@ describe('ChatPanel queued subagent references', () => {
     act(() => root.unmount());
   });
 
-  it('keeps the original encoded text in the queued-message editor', async () => {
+  it('keeps the original encoded text through the queued-message editor', async () => {
     const text = withSubagentReference(
       { kind: 'managed', id: 'child-1', title: 'Review source' },
       'Queued for the parent.',
     );
     const messages: readonly QueueSeed[] = [{ id: 'q1', text }];
+    const calls: Array<[CommandName, unknown]> = [];
     const container = document.createElement('div');
     const root = createRoot(container);
     act((): void => {
       root.render(
-        <CanopyClientProvider client={createClient()}>
+        <CanopyClientProvider client={createClient(calls)}>
           <Seeder messages={messages} />
           <ChatPanel chatId="c1" />
         </CanopyClientProvider>,
@@ -207,12 +210,26 @@ describe('ChatPanel queued subagent references', () => {
         ?.click();
       await Promise.resolve();
     });
+    await act(async (): Promise<void> => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="queued-message-edit-save"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
 
-    expect(
-      container.querySelector<HTMLTextAreaElement>(
-        '[data-testid="queued-message-edit-input"]',
-      )?.value,
-    ).toBe(text);
+    // Saving unchanged sends back the encoded reference line, not the chip.
+    expect(calls).toContainEqual([
+      'chat.queue.edit',
+      {
+        projectId: 'ws',
+        worktreeId: 'wt',
+        chatId: 'c1',
+        entryId: 'q1',
+        text,
+      },
+    ]);
 
     act((): void => root.unmount());
   });

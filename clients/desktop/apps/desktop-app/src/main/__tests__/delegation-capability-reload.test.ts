@@ -1,5 +1,5 @@
 import type * as LedgerModule from '../observability/claude-session-cost-ledger';
-const queryMock = jest.fn<unknown, [unknown]>();
+const queryMock = jest.fn<unknown, unknown[]>();
 let mockClaudeSessionCostLedger: ClaudeSessionCostLedger | undefined;
 
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
@@ -46,6 +46,7 @@ import type {
   DelegateCanopyTool,
   DelegateCanopyTools,
 } from '../agents/delegation/canopy-tools';
+import type { DelegationNativePolicy } from '../agents/delegation/native-policy';
 import {
   DELEGATION_CAPABILITY_RELOADS_PER_RUN,
   DelegationCapabilityReloadController,
@@ -349,6 +350,19 @@ function loadDeferredToolsFixture(): DelegateCanopyTools {
   };
 }
 
+function nativePolicyForReloadTest(): DelegationNativePolicy {
+  const policy: Pick<
+    DelegationNativePolicy,
+    'authorize' | 'mode' | 'instructions'
+  > = {
+    authorize: () => Promise.resolve(true),
+    mode: 'auto',
+    instructions: () => '',
+  };
+  // Reload coverage only exercises these three native-policy members.
+  return policy as DelegationNativePolicy;
+}
+
 type MockSegment = AsyncGenerator<Record<string, unknown>, void, void> & {
   close: jest.Mock;
   interrupt?: jest.Mock;
@@ -378,11 +392,7 @@ it('performs an in-run reload: exactly one terminal event, the resumed query car
         restore: () => Promise.reject(new Error('restore must not run')),
       },
     },
-    tools: {
-      authorize: () => Promise.resolve(true),
-      mode: 'auto',
-      instructions: () => '',
-    },
+    tools: nativePolicyForReloadTest(),
   };
   const secondPrepared: ClaudeDelegationPreparation = {
     model: 'claude-test',
@@ -395,11 +405,7 @@ it('performs an in-run reload: exactly one terminal event, the resumed query car
       },
     },
     appTools,
-    tools: {
-      authorize: () => Promise.resolve(true),
-      mode: 'auto',
-      instructions: () => '',
-    },
+    tools: nativePolicyForReloadTest(),
   };
 
   async function* segment1(): AsyncGenerator<Record<string, unknown>> {
@@ -540,11 +546,7 @@ it('continues without the failed capability when re-preparation fails, using res
     model: 'claude-test',
     environment: { PATH: '' },
     appTools,
-    tools: {
-      authorize: () => Promise.resolve(true),
-      mode: 'auto',
-      instructions: () => '',
-    },
+    tools: nativePolicyForReloadTest(),
   };
   const restore = jest.fn(() => Promise.resolve(restoredPrepared));
   const initialPrepared: ClaudeDelegationPreparation = {
@@ -561,11 +563,7 @@ it('continues without the failed capability when re-preparation fails, using res
         restore,
       },
     },
-    tools: {
-      authorize: () => Promise.resolve(true),
-      mode: 'auto',
-      instructions: () => '',
-    },
+    tools: nativePolicyForReloadTest(),
   };
 
   async function* segment1(): AsyncGenerator<Record<string, unknown>> {
@@ -697,11 +695,7 @@ it('cancels cleanly when Stop arrives during perform(), and the controller is ca
         restore,
       },
     },
-    tools: {
-      authorize: () => Promise.resolve(true),
-      mode: 'auto',
-      instructions: () => '',
-    },
+    tools: nativePolicyForReloadTest(),
   };
 
   async function* segment1(): AsyncGenerator<Record<string, unknown>> {

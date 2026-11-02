@@ -1,8 +1,7 @@
 'use client';
-import { SettingsControlSelect } from '@canopy/ui-shared/components';
 
 import type { Dispatch, SetStateAction, JSX } from 'react';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Button, Notice, SettingsSelect } from '@canopy/ui-shared/components';
 import {
   ORG_PROJECT_LIMITS,
   type OrgProjectGrant,
@@ -167,7 +166,7 @@ export function TeamProjectsGrantsEditor({
               )}
               <Button
                 size="compact"
-                variant="ghost"
+                variant="secondary"
                 disabled={disabled}
                 aria-label={`Remove ${label}`}
                 onClick={(): void =>
@@ -187,54 +186,50 @@ export function TeamProjectsGrantsEditor({
       <div className="grid gap-3 sm:grid-cols-2">
         <label>
           Add member
-          <SettingsControlSelect
+          <SettingsSelect
             aria-label="Add member"
-            fill
+            width="fill"
             replayPrivacy={{ blockClassName }}
-            value=""
+            value={null}
+            placeholder="Choose a member"
             disabled={addDisabled}
-            onChange={(event): void => {
-              const value = event.target.value;
+            onValueChange={(value): void => {
               if (value === ORGANIZATION_OPTION) add({ type: 'organization' });
               else if (value) add({ type: 'user', userId: value });
             }}
-          >
-            <option value="">Choose a member</option>
-            {!keys.has(principalKey({ type: 'organization' })) && (
-              <option value={ORGANIZATION_OPTION}>
-                {principalName({ type: 'organization' }, detail)}
-              </option>
-            )}
-            {detail.members
-              .filter((member) => !keys.has(`user:${member.id}`))
-              .map((member) => (
-                <option key={member.id} value={member.id}>
-                  {member.name || member.email}
-                </option>
-              ))}
-          </SettingsControlSelect>
+            options={[
+              ...(keys.has(principalKey({ type: 'organization' }))
+                ? []
+                : [
+                    {
+                      value: ORGANIZATION_OPTION,
+                      label: principalName({ type: 'organization' }, detail),
+                    },
+                  ]),
+              ...detail.members
+                .filter((member) => !keys.has(`user:${member.id}`))
+                .map((member) => ({
+                  value: member.id,
+                  label: member.name || member.email,
+                })),
+            ]}
+          />
         </label>
         <label>
           Add team
-          <SettingsControlSelect
+          <SettingsSelect
             aria-label="Add team"
-            fill
-            value=""
+            width="fill"
+            value={null}
+            placeholder="Choose a team"
             disabled={addDisabled}
-            onChange={(event): void => {
-              if (event.target.value)
-                add({ type: 'team', teamId: event.target.value });
+            onValueChange={(value): void => {
+              if (value) add({ type: 'team', teamId: value });
             }}
-          >
-            <option value="">Choose a team</option>
-            {detail.subTeams
+            options={detail.subTeams
               .filter((team) => !keys.has(`team:${team.id}`))
-              .map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))}
-          </SettingsControlSelect>
+              .map((team) => ({ value: team.id, label: team.name }))}
+          />
         </label>
       </div>
       {grants.length >= ORG_PROJECT_LIMITS.grantsPerProject && (

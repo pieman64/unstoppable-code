@@ -84,7 +84,7 @@ test.describe('focused-surface find bar (CAN-3048)', () => {
       const composer = window.locator('[data-chat-textarea]:visible').first();
 
       // A Browser panel in the other group, on a page with three matches.
-      await window.getByTestId('panel-add-panel-group-terminal').click();
+      await window.getByTestId('panel-add-tab-group-terminal').click();
       await expect(window.getByTestId('panel-add-menu')).toBeVisible();
       await window.getByTestId('panel-add-menu-item-browser').click();
       await expect(window.getByTestId('browser-panel-surface')).toBeVisible();
@@ -214,7 +214,7 @@ test.describe('focused-surface find bar (CAN-3048)', () => {
 
       // Browser A in the terminal group, browser B in a new group to its right.
       const openBrowserIn = async (groupId, path, title) => {
-        await window.getByTestId(`panel-add-panel-${groupId}`).click();
+        await window.getByTestId(`panel-add-tab-${groupId}`).click();
         await expect(window.getByTestId('panel-add-menu')).toBeVisible();
         await window.getByTestId('panel-add-menu-item-browser').click();
         const urlInput = window

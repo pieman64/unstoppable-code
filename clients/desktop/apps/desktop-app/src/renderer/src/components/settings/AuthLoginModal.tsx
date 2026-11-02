@@ -10,16 +10,19 @@ import {
 } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { installTerminalLinks } from '@canopy/ui-app/terminal';
+import {
+  installTerminalLinks,
+  TERMINAL_BG_COLOR,
+  TERMINAL_THEME,
+} from '@canopy/ui-app/terminal';
 import type {
   AgentProviderAuthStatus,
   AgentProviderType,
   AuthTerminalProvider,
 } from '@canopy/desktop-shared/types';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, DialogModal } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { DialogModal } from '@/components/shared/DialogModal';
 import { invalidateClaudeAuthStatusCache } from '@/hooks/useClaudeAuthStatus';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
 import { invalidateGitHubCliStatusCache } from '@/hooks/useGitHubCliStatus';
@@ -34,12 +37,10 @@ import {
   OtherAccountSnapshotsPanel,
 } from '@/components/pages/usage/OtherAccountSnapshots';
 import { findProviderAuthorizationUrl } from './authAuthorizationUrl';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 const NOW_TICK_MS = 30_000;
 
 const STATUS_POLL_MS = 2000;
-const TERMINAL_BG = '#0b0c10';
 const TERMINAL_AREA_HEIGHT = 380;
 
 type ModalView =
@@ -186,7 +187,6 @@ function LoginFailedView({
   onLogin: () => void;
   onCancel: () => void;
 }): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   return (
     <div
       className="flex flex-col items-center justify-center gap-4 px-6 text-center"
@@ -206,15 +206,15 @@ function LoginFailedView({
       </div>
       <div className="flex items-center gap-2">
         <Button
-          size={settingsButtonSize}
-          variant="ghost"
+          size="compact"
+          variant="secondary"
           onClick={onCancel}
           data-testid="auth-login-cancel"
         >
           Cancel
         </Button>
         <Button
-          size={settingsButtonSize}
+          size="compact"
           variant="primary"
           onClick={onLogin}
           data-testid="auth-login-submit"
@@ -406,12 +406,7 @@ function TerminalAuthLoginModal({
       cursorBlink: true,
       allowProposedApi: true,
       scrollback: 5000,
-      theme: {
-        background: TERMINAL_BG,
-        foreground: '#e6e6e6',
-        cursor: '#e6e6e6',
-        selectionBackground: 'rgba(120, 168, 120, 0.22)',
-      },
+      theme: { ...TERMINAL_THEME },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -682,14 +677,15 @@ function TerminalAuthLoginModal({
   const showTerminal = view.kind === 'running' || view.kind === 'exit-checking';
 
   const snapshotsToggle = hasSnapshots ? (
-    <button
-      type="button"
+    <Button
+      size="compact"
+      variant="secondary"
       onClick={(): void => setSnapshotsOpen((value) => !value)}
       aria-expanded={snapshotsPanelOpen}
       data-testid="auth-login-snapshots-toggle"
-      className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium fg-secondary transition-colors hover:bg-secondary hover:fg-primary"
+      className="shrink-0"
     >
-      <span>Other account snapshots</span>
+      Other account snapshots
       <ChevronRightIcon
         size={12}
         aria-hidden
@@ -697,7 +693,7 @@ function TerminalAuthLoginModal({
           snapshotsPanelOpen ? 'rotate-90' : ''
         }`}
       />
-    </button>
+    </Button>
   ) : null;
 
   return (
@@ -723,8 +719,8 @@ function TerminalAuthLoginModal({
           {onCancel ? (
             <div className="px-5 pt-2">
               <Button
-                variant="ghost"
-                size="sm"
+                variant="secondary"
+                size="compact"
                 data-testid="github-connect-cancel"
                 onClick={onCancel}
               >
@@ -736,10 +732,11 @@ function TerminalAuthLoginModal({
             <div className="px-5 pt-2 pb-4">
               <div
                 ref={terminalFrameRef}
-                className="relative overflow-hidden rounded-lg border"
+                // An outer hairline: the terminal canvas covers an inset one.
+                className="relative overflow-hidden rounded-lg ring-[length:var(--border-hairline)] ring-line-base"
                 style={{
                   height: TERMINAL_AREA_HEIGHT,
-                  backgroundColor: TERMINAL_BG,
+                  backgroundColor: TERMINAL_BG_COLOR,
                 }}
               >
                 <div

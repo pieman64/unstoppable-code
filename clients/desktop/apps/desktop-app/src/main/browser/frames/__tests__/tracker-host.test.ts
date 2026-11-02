@@ -148,20 +148,89 @@ describe('tracker installation', () => {
     ]);
   });
 
-  it('does not register the witness when the main-world tracker fails', async () => {
-    const sent: string[] = [];
+  it('sends both registrations before either answers, so a held session runs them before its first documents', async () => {
+    // A never-navigated view holds renderer-bound commands until its first
+    // navigation starts a renderer. Waiting for the main-world reply before
+    // sending the witness let that navigation's child documents start
+    // untracked (H108).
+    const sent: Sent[] = [];
+    const release: Array<() => void> = [];
     const trackers = new PageTrackers(
       {
-        send: (method): Promise<unknown> => {
-          sent.push(method);
-          return Promise.reject(new Error('Page domain disabled'));
+        send: (method, params, sessionId = ''): Promise<unknown> => {
+          sent.push({ method, params, sessionId });
+          const identifier = String(sent.length);
+          return new Promise((resolve) => {
+            release.push(() => resolve({ identifier }));
+          });
+        },
+      },
+      new ExecutionContexts(),
+      KEY,
+    );
+    const installed = trackers.install('');
+    expect(sent.map((entry) => entry.params.worldName)).toEqual([
+      undefined,
+      TRACKER_WORLD_NAME,
+    ]);
+    for (const answer of release) answer();
+    expect(await installed).toBe(true);
+  });
+
+  it('removes the witness when the main-world tracker fails to register', async () => {
+    const sent: Array<[string, unknown]> = [];
+    const trackers = new PageTrackers(
+      {
+        send: (method, params): Promise<unknown> => {
+          sent.push([method, params.identifier ?? params.worldName]);
+          if (method !== 'Page.addScriptToEvaluateOnNewDocument')
+            return Promise.resolve({});
+          return params.worldName === TRACKER_WORLD_NAME
+            ? Promise.resolve({ identifier: 'witness' })
+            : Promise.reject(new Error('Page domain disabled'));
         },
       },
       new ExecutionContexts(),
       KEY,
     );
     expect(await trackers.install('')).toBe(false);
-    expect(sent).toEqual(['Page.addScriptToEvaluateOnNewDocument']);
+    expect(sent).toEqual([
+      ['Page.addScriptToEvaluateOnNewDocument', undefined],
+      ['Page.addScriptToEvaluateOnNewDocument', TRACKER_WORLD_NAME],
+      ['Page.removeScriptToEvaluateOnNewDocument', 'witness'],
+    ]);
+    // Nothing is retained, so a later install starts by registering.
+    sent.length = 0;
+    await trackers.install('');
+    expect(sent[0]).toEqual([
+      'Page.addScriptToEvaluateOnNewDocument',
+      undefined,
+    ]);
+  });
+
+  it('reports failure but keeps the main-world tracker when only the witness fails', async () => {
+    const sent: Array<[string, unknown]> = [];
+    const trackers = new PageTrackers(
+      {
+        send: (method, params): Promise<unknown> => {
+          sent.push([method, params.identifier]);
+          if (method !== 'Page.addScriptToEvaluateOnNewDocument')
+            return Promise.resolve({});
+          return params.worldName === TRACKER_WORLD_NAME
+            ? Promise.reject(new Error('Session closed'))
+            : Promise.resolve({ identifier: 'main' });
+        },
+      },
+      new ExecutionContexts(),
+      KEY,
+    );
+    expect(await trackers.install('')).toBe(false);
+    sent.length = 0;
+    await trackers.install('');
+    expect(sent[0]).toEqual([
+      'Page.removeScriptToEvaluateOnNewDocument',
+      'main',
+    ]);
   });
 });
 

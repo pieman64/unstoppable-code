@@ -1,11 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type {
   PipelinePackageAnalysisBlocker,
   PipelinePackageAnalysisSummary,
   PipelinePackageInvocationDismissal,
   PipelinePackageLimit,
+  PipelinePackagePackagedPipeline,
+  PipelinePackageReferenceDismissal,
+  PipelinePackageWithheldFile,
+  PipelinePackageWithheldReason,
   Pipeline,
   PipelineInputValue,
   RepoLocalInvocableEntry,
@@ -16,6 +21,7 @@ import type {
   InvocableInventoryEntry,
 } from '../../types/invocable-inventory';
 import type {
+  PipelineAssetInstallMode,
   PipelinePackageFileEntry,
   PipelinePackageEnvironmentRequirement,
   PipelinePackageManifestV1,
@@ -25,6 +31,7 @@ import type {
   PipelineDependencyInput,
 } from '@canopy/protocol/pipelines';
 import {
+  AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
   CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
   capabilityPackageBindingFromKey,
   capabilityPackageStepBindingKey,
@@ -50,13 +57,31 @@ import {
   extractInvocationTokens,
   isExplicitPathInvocationToken,
   isPathShapedInvocationToken,
-  type InvocationToken,
+  type InvocationTokenContext,
 } from '../../lib/invocation-tokens';
 import { interpolateKnownInputs } from './executor/expression-evaluator';
+import {
+  AUTOMATION_ACTION_PIPELINE_KEY,
+  automationPipelineResourceId,
+  createAutomationPipelineReferenceCollector,
+  fileAssetResourceId,
+  type AutomationPipelineInventoryEntry,
+  type AutomationPipelineRequest,
+  type AutomationPipelineSource,
+} from './automation-pipeline-references';
+import { expandPipelineAssetPath } from './pipeline-assets';
+import {
+  SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
+  parseSharedContainerDefinitionDocument,
+  type SharedContainerDefinitionKind,
+} from '@canopy/protocol/shared-containers';
 
 const ANALYSIS_TTL_MS = 15 * 60 * 1_000;
 const DENIED_BASENAME =
   /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|credentials.*|secrets.*|token.*|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|p12|pfx|key))$/i;
+// A pipeline expression such as `${{ secrets.API_TOKEN }}` names a value the
+// run supplies; it is not the value. The inner text is still scanned.
+const PIPELINE_EXPRESSION_PATTERN = /\$\{\{([\s\S]*?)\}\}/g;
 const SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN = new RegExp(
   `\\b(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})\\s*(?:=|:)\\s*(?:<[^>\\r\\n]+>|\\{\\{?[^}\\r\\n]+\\}?\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})`,
   'gi',
@@ -81,6 +106,17 @@ export interface CapabilityPackageResolutionInput {
   repoLocalInvocables?: RepoLocalInvocableIndex;
   sourceByRepoLocalEntryId?: Record<string, PipelinePackageSourceDescriptor>;
   dismissedInvocations?: PipelinePackageInvocationDismissal[];
+  /**
+   * Pipelines a prompt source with `pipelineReferences` may name, from
+   * `automationPipelineKey`. Classified in the prompt scan by
+   * `classifyPipelineReference`, exactly as `resolveAutomationPipelineReferences`
+   * does for the host before it builds resources.
+   */
+  pipelineInventory?: AutomationPipelineInventoryEntry[];
+  /** Stored and manually added pipeline dependencies; always required. */
+  pipelineRequests?: AutomationPipelineRequest[];
+  /** Keys of optional (name-matched) pipelines the author selected. */
+  pipelineSelections?: string[];
 }
 
 export type PipelinePackageProvider = 'claude' | 'codex';
@@ -122,14 +158,59 @@ export interface AnalyzePipelinePackageInput extends CapabilityPackageResolution
   additionalRequests?: CapabilityPackageRequest[];
   additionalPromptSources?: CapabilityPackagePromptSource[];
   additionalEnvironmentRequirements?: PipelinePackageEnvironmentRequirement[];
+  hostBlockers?: AnalyzeCapabilityPackageInput['hostBlockers'];
+  dismissedReferences?: AnalyzeCapabilityPackageInput['dismissedReferences'];
 }
 
 export interface CapabilityPackagePortableResourceInput {
   kind: 'pipeline_action' | 'child_pipeline';
   displayName: string;
-  invocationKey: string;
+  /**
+   * Every key a run may look this resource up by, the authored one first. A
+   * child pipeline written as `${{ env.X }}` carries both the expression and
+   * the value a run interpolates. Emitted deduplicated, in this order.
+   */
+  invocationKeys: string[];
   bindingKey: string;
   descriptor: PipelinePackageSourceDescriptor;
+  /**
+   * The packaged pipeline that reaches this resource, when an analysis
+   * packages several: two pipelines with the same job and step ids that call
+   * the same ref still get distinct resources.
+   */
+  idScope?: string;
+}
+
+/**
+ * One pipeline an automation share packages as an `automation_pipeline`
+ * resource: its YAML travels as a single `pipeline.yaml` blob. The content
+ * hash is the analyzer's to compute from `rawContent`, so the resource, the
+ * blob and the summary can't disagree.
+ */
+export interface AutomationPipelinePortableInput {
+  /** `action` for a `worktree_pipeline` action's pipeline, else the inventory key. */
+  pipelineKey: string;
+  name: string;
+  source: AutomationPipelineSource;
+  /** The exact YAML bytes that travel. */
+  rawContent: string;
+  /** The binding the pipeline is reached from, usually the automation action. */
+  bindingKey: string;
+  /** The YAML file, so editing it after analysis makes the analysis stale. */
+  sourcePath?: string;
+}
+
+/** A directory a packaged pipeline declares under `assets`. */
+export interface FileAssetPortableInput {
+  /** Key of the packaged pipeline that declares it. */
+  pipelineKey: string;
+  assetId: string;
+  /** The declared `path`; `~` is expanded against the analyzer's `homedir`. */
+  sourcePath: string;
+  required: boolean;
+  installMode: PipelineAssetInstallMode;
+  /** The declaring pipeline's `local_state` entries, declared or expanded. */
+  localState: string[];
 }
 
 export interface CapabilityPackageRequest {
@@ -156,6 +237,12 @@ interface CapabilityPackagePromptSourceCommon {
    * Tokens that resolve are packaged; tokens that don't are not reported.
    */
   unconfirmed?: boolean;
+  /**
+   * Also scan the text for pipeline references against `pipelineInventory`.
+   * Set on the automation's own prompt only: recorded spans index into this
+   * text, so at most one source should set it.
+   */
+  pipelineReferences?: boolean;
 }
 
 /**
@@ -208,6 +295,145 @@ export interface AnalyzeCapabilityPackageInput extends CapabilityPackageResoluti
    */
   environmentRequirements?: PipelinePackageEnvironmentRequirement[];
   portableResources?: CapabilityPackagePortableResourceInput[];
+  /**
+   * Problems the host found while discovering portable resources, such as a
+   * child pipeline ref it cannot resolve before a run. They block the
+   * analysis like the analyzer's own.
+   */
+  hostBlockers?: PipelinePackageAnalysisBlocker[];
+  /**
+   * Reference dismissals. `child_pipeline_ref` entries are ones the host
+   * applied and are echoed as given; `pipeline_reference` entries are
+   * candidates the analyzer applies to ambiguous prompt references and echoes
+   * only when one matched.
+   */
+  dismissedReferences?: PipelinePackageReferenceDismissal[];
+  /** Pipelines an automation share carries, including the action pipeline. */
+  automationPipelines?: AutomationPipelinePortableInput[];
+  /** Asset directories the packaged pipelines declare. */
+  fileAssets?: FileAssetPortableInput[];
+  /** Home folder asset paths expand against and must stay inside. */
+  homedir?: string;
+  /**
+   * Portable definitions (pipelines, automations, Agents, hooks) carried as
+   * one canonical document each. Omitted by every pre-existing subject, which
+   * keeps their analysis byte-identical.
+   */
+  definitionResources?: CapabilityPackageDefinitionResourceInput[];
+}
+
+export type CapabilityPackageDefinitionKind = SharedContainerDefinitionKind;
+
+/**
+ * A structured capability a definition needs. `key` is either a key present
+ * in `capabilityInventoryEntryIdsByKey` (for example a shareable plugin ref
+ * key) or a local selection key, `skill:<sourceId>:<skillName>` or
+ * `plugin:<marketplaceId>:<pluginName>`, resolved against inventory enable
+ * refs.
+ */
+export interface CapabilityPackageDefinitionRequest {
+  key: string;
+  provider: PipelinePackageProvider;
+  /** A required request that resolves nothing blocks the analysis. */
+  required: boolean;
+  /** Best effort, as for {@link CapabilityPackageRequest.unconfirmed}. */
+  unconfirmed?: boolean;
+}
+
+/** Author text a definition executes, scanned like a prompt source. */
+export interface CapabilityPackageDefinitionPromptText {
+  provider: PipelinePackageProvider;
+  text: string;
+  unconfirmed?: boolean;
+}
+
+/**
+ * One portable definition resource. The analyzer stores `document` (its
+ * canonical bytes) as the resource's single read-only file, and makes every
+ * capability its prompt texts and requests resolve to, plus every definition
+ * it depends on, part of its dependency closure.
+ */
+export interface CapabilityPackageDefinitionResourceInput {
+  kind: CapabilityPackageDefinitionKind;
+  displayName: string;
+  /**
+   * Stable canonical identity, unique per kind. The resource id derives from
+   * it, so the same definition keeps the same id across analyses.
+   */
+  identity: string;
+  /** Canonical document bytes, as produced by the protocol encoder. */
+  document: Uint8Array;
+  bindingKey: string;
+  sourceLabel?: string;
+  sourceVisibility?: Extract<
+    PipelinePackageResource['sourceVisibility'],
+    'private' | 'local'
+  >;
+  promptTexts?: CapabilityPackageDefinitionPromptText[];
+  requestKeys?: CapabilityPackageDefinitionRequest[];
+  /** Identities of other definitions in the same input this one needs. */
+  dependsOnIdentities?: string[];
+  /**
+   * Child pipelines and project actions the definition runs. They are
+   * packaged as `child_pipeline` / `pipeline_action` resources, bound with the
+   * definition, and made part of its dependency closure.
+   */
+  portableResources?: Array<
+    Omit<CapabilityPackagePortableResourceInput, 'bindingKey'>
+  >;
+}
+
+/** Deterministic manifest resource id of a definition resource. */
+export function capabilityPackageDefinitionResourceId(
+  kind: CapabilityPackageDefinitionKind,
+  identity: string,
+): string {
+  return createHash('sha256')
+    .update(`${kind}\0${identity}`)
+    .digest('hex')
+    .slice(0, 24);
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Matches a local selection key such as `skill:custom:app:helper`. */
+function inventoryEntryMatchesSelectionKey(
+  entry: InvocableInventoryEntry,
+  key: string,
+): boolean {
+  const separator = key.lastIndexOf(':');
+  if (separator <= 0) return false;
+  const head = key.slice(0, separator);
+  const name = key.slice(separator + 1);
+  if (name.length === 0) return false;
+  if (head.startsWith('skill:'))
+    return (
+      entry.enableRef.kind === 'skill' &&
+      entry.enableRef.sourceId === head.slice('skill:'.length) &&
+      entry.enableRef.skillName === name
+    );
+  if (head.startsWith('plugin:'))
+    return (
+      entry.enableRef.kind === 'plugin' &&
+      entry.enableRef.marketplaceId === head.slice('plugin:'.length) &&
+      entry.enableRef.pluginName === name
+    );
+  return false;
+}
+
+function definitionRequestCandidates(
+  input: CapabilityPackageResolutionInput,
+  request: CapabilityPackageDefinitionRequest,
+): InvocableInventoryEntry[] {
+  const ids = new Set(input.capabilityInventoryEntryIdsByKey?.[request.key]);
+  return input.invocableInventory.entries.filter(
+    (entry) =>
+      entry.provider === request.provider &&
+      (ids.has(entry.id) ||
+        inventoryEntryMatchesSelectionKey(entry, request.key)),
+  );
 }
 
 /**
@@ -332,7 +558,7 @@ function sourceDescriptor(
 
 function classifyInvocation(
   input: CapabilityPackageResolutionInput,
-  token: InvocationToken,
+  token: InvocationTokenContext,
   provider: 'claude' | 'codex',
   origin: 'prompt' | 'body' | 'frontmatter',
   requiresResolution: boolean,
@@ -515,8 +741,16 @@ function stripControlCharacters(value: string): string {
 }
 
 function containsPipelinePackageSecretMaterial(text: string): boolean {
+  const withoutExpressions = text.replace(
+    PIPELINE_EXPRESSION_PATTERN,
+    (expression, inner: string) =>
+      containsSecretMaterial(inner) ? expression : '""',
+  );
   return containsSecretMaterial(
-    text.replace(SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN, 'placeholder=example'),
+    withoutExpressions.replace(
+      SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN,
+      'placeholder=example',
+    ),
   );
 }
 
@@ -693,6 +927,75 @@ function declaredEnvironmentRequirements(
   return requirements;
 }
 
+/**
+ * Reserve one file against the package caps, recording the blocker that names
+ * the file to leave out when a cap is hit. Once a cap is hit the budget is
+ * exhausted and every later reservation fails without another blocker.
+ */
+function reserveCollectionFile(
+  budget: CollectionBudget,
+  blockers: PendingBlocker[],
+  current: { subject: string; relativePath: string; size: number },
+): boolean {
+  if (budget.exhausted) return false;
+  const { size } = current;
+  let exceeded:
+    | { limit: PipelinePackageLimit; file: typeof current; message: string }
+    | undefined;
+  if (size > PIPELINE_PACKAGE_MAX_FILE_BYTES) {
+    exceeded = {
+      limit: 'file_size',
+      file: current,
+      message: `${current.subject} exceeds the per-file limit.`,
+    };
+  } else if (budget.files + 1 > PIPELINE_PACKAGE_MAX_FILES) {
+    exceeded = {
+      limit: 'file_count',
+      file: current,
+      message: `${current.subject} exceeds the file-count limit.`,
+    };
+  } else if (budget.bytes + size > PIPELINE_PACKAGE_MAX_TOTAL_BYTES) {
+    // The file that tipped the total over is arbitrary: it is whichever was
+    // read last. The largest one is what leaving out actually helps.
+    const largest =
+      budget.largest && budget.largest.size >= size ? budget.largest : current;
+    exceeded = {
+      limit: 'total_size',
+      file: largest,
+      message: `${largest.subject} is the largest file in a package that exceeds the total-size limit.`,
+    };
+  }
+  if (exceeded) {
+    blockers.push({
+      code: 'PACKAGE_LIMIT_EXCEEDED',
+      limit: exceeded.limit,
+      message: exceeded.message,
+      subject: exceeded.file.subject,
+      relativePath: exceeded.file.relativePath,
+    });
+    budget.exhausted = true;
+    return false;
+  }
+  budget.files += 1;
+  budget.bytes += size;
+  if (!budget.largest || size > budget.largest.size) budget.largest = current;
+  return true;
+}
+
+interface CollectMemberFilesOptions {
+  /**
+   * Withhold mode, for file assets. Denied names, `.git` directories,
+   * symlinks and files whose content trips the secret scan are left out and
+   * reported here instead of blocking; native and opaque executables,
+   * escapes and package limits still block. Asset files are data, so their
+   * contents are not followed as references and return no texts.
+   */
+  withhold?: (file: {
+    relativePath: string;
+    reason: Exclude<PipelinePackageWithheldReason, 'missing_optional_asset'>;
+  }) => void;
+}
+
 async function collectMemberFiles(
   descriptor: PipelinePackageSourceDescriptor,
   provider: 'claude' | 'codex',
@@ -701,7 +1004,9 @@ async function collectMemberFiles(
   sourceStats: CapabilityPackageAnalysisInternal['sourceStats'],
   sourceDirectories: CapabilityPackageAnalysisInternal['sourceDirectories'],
   budget: CollectionBudget,
+  options: CollectMemberFilesOptions = {},
 ): Promise<{ entries: PipelinePackageFileEntry[]; texts: string[] }> {
+  const { withhold } = options;
   const sourceRoot = path.resolve(descriptor.sourceRoot);
   const memberRoot = path.resolve(sourceRoot, descriptor.memberPath);
   const exportRoot = descriptor.exportRoot
@@ -741,6 +1046,10 @@ async function collectMemberFiles(
             .relative(sourceRoot, current)
             .split(path.sep)
             .join('/');
+          if (withhold) {
+            withhold({ relativePath, reason: 'symlink' });
+            return false;
+          }
           blockers.push({
             code: 'SYMLINK_BLOCKED',
             message: 'Symbolic links cannot be included.',
@@ -778,59 +1087,20 @@ async function collectMemberFiles(
     }
     return true;
   };
-  const reserveFile = (relativePath: string, size: number): boolean => {
-    if (budget.exhausted) return false;
-    // Prefixed with the resource's root so a publisher with several packaged
-    // dependencies can tell which folder the file lives in.
-    const current = {
+  const releaseFile = (relativePath: string, size: number): void => {
+    budget.files -= 1;
+    budget.bytes -= size;
+    if (budget.largest?.subject === `${descriptor.rootName}/${relativePath}`)
+      budget.largest = undefined;
+  };
+  const reserveFile = (relativePath: string, size: number): boolean =>
+    reserveCollectionFile(budget, blockers, {
+      // Prefixed with the resource's root so a publisher with several
+      // packaged dependencies can tell which folder the file lives in.
       subject: `${descriptor.rootName}/${relativePath}`,
       relativePath,
       size,
-    };
-    let exceeded:
-      | { limit: PipelinePackageLimit; file: typeof current; message: string }
-      | undefined;
-    if (size > PIPELINE_PACKAGE_MAX_FILE_BYTES) {
-      exceeded = {
-        limit: 'file_size',
-        file: current,
-        message: `${current.subject} exceeds the per-file limit.`,
-      };
-    } else if (budget.files + 1 > PIPELINE_PACKAGE_MAX_FILES) {
-      exceeded = {
-        limit: 'file_count',
-        file: current,
-        message: `${current.subject} exceeds the file-count limit.`,
-      };
-    } else if (budget.bytes + size > PIPELINE_PACKAGE_MAX_TOTAL_BYTES) {
-      // The file that tipped the total over is arbitrary: it is whichever was
-      // read last. The largest one is what leaving out actually helps.
-      const largest =
-        budget.largest && budget.largest.size >= size
-          ? budget.largest
-          : current;
-      exceeded = {
-        limit: 'total_size',
-        file: largest,
-        message: `${largest.subject} is the largest file in a package that exceeds the total-size limit.`,
-      };
-    }
-    if (exceeded) {
-      blockers.push({
-        code: 'PACKAGE_LIMIT_EXCEEDED',
-        limit: exceeded.limit,
-        message: exceeded.message,
-        subject: exceeded.file.subject,
-        relativePath: exceeded.file.relativePath,
-      });
-      budget.exhausted = true;
-      return false;
-    }
-    budget.files += 1;
-    budget.bytes += size;
-    if (!budget.largest || size > budget.largest.size) budget.largest = current;
-    return true;
-  };
+    });
   const includeSanitizedPluginManifest = async (
     manifestPath: string,
   ): Promise<void> => {
@@ -983,11 +1253,27 @@ async function collectMemberFiles(
     visited.add(normalized);
     if (stat.isSymbolicLink()) {
       const relativePath = outputPath(normalized);
+      if (withhold) {
+        withhold({ relativePath, reason: 'symlink' });
+        return;
+      }
       blockers.push({
         code: 'SYMLINK_BLOCKED',
         message: 'Symbolic links cannot be included.',
         subject: relativePath,
         relativePath,
+      });
+      return;
+    }
+    if (
+      withhold &&
+      normalized !== memberRoot &&
+      path.basename(normalized) === '.git'
+    ) {
+      // Listed once for the whole repository rather than file by file.
+      withhold({
+        relativePath: outputPath(normalized),
+        reason: 'git_directory',
       });
       return;
     }
@@ -1023,6 +1309,15 @@ async function collectMemberFiles(
       DENIED_BASENAME.test(basename) ||
       relativePath.split('/').includes('.git')
     ) {
+      if (withhold) {
+        withhold({
+          relativePath,
+          reason: DENIED_BASENAME.test(basename)
+            ? 'denied_name'
+            : 'git_directory',
+        });
+        return;
+      }
       blockers.push({
         code: 'EXPORT_DENIED_FILE',
         message: 'A dependency contains a file that cannot be exported.',
@@ -1055,6 +1350,11 @@ async function collectMemberFiles(
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     const normalizedSecretScan = stripControlCharacters(text);
     if (containsPipelinePackageSecretMaterial(normalizedSecretScan)) {
+      if (withhold) {
+        releaseFile(relativePath, stat.size);
+        withhold({ relativePath, reason: 'suspected_secret' });
+        return;
+      }
       blockers.push({
         code: 'SUSPECTED_SECRET',
         message: 'A dependency file may contain a credential.',
@@ -1077,6 +1377,7 @@ async function collectMemberFiles(
       size: bytes.byteLength,
       mode: executable ? 'execute' : 'read',
     });
+    if (withhold) return;
     if (!text.includes('\u0000')) {
       texts.push(text);
       const references = new Set<string>();
@@ -1148,6 +1449,341 @@ async function collectMemberFiles(
   return { entries, texts };
 }
 
+function isPathWithinOrEqual(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return (
+    relative === '' ||
+    (relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  );
+}
+
+function isPathStrictlyInside(parent: string, child: string): boolean {
+  return (
+    path.relative(parent, child) !== '' && isPathWithinOrEqual(parent, child)
+  );
+}
+
+interface CollectionContext {
+  blockers: PendingBlocker[];
+  blobs: Map<string, Uint8Array>;
+  sourceStats: CapabilityPackageAnalysisInternal['sourceStats'];
+  sourceDirectories: CapabilityPackageAnalysisInternal['sourceDirectories'];
+  budget: CollectionBudget;
+}
+
+interface CollectedAutomationPipelines {
+  /** A pipeline is bound; its assets are reached through its dependencies. */
+  resources: Array<{ resource: PipelinePackageResource; bindingKey?: string }>;
+  packagedPipelines: PipelinePackagePackagedPipeline[];
+  withheldFiles: PipelinePackageWithheldFile[];
+}
+
+/**
+ * One declared asset directory as a `file_asset` resource, collected in
+ * withhold mode. Returns nothing when the asset blocks or is absent.
+ */
+async function collectFileAsset(
+  asset: FileAssetPortableInput,
+  pipelineName: string,
+  homedir: string,
+  context: CollectionContext,
+  withheldFiles: PipelinePackageWithheldFile[],
+): Promise<PipelinePackageResource | undefined> {
+  const { blockers } = context;
+  const subject = `${asset.pipelineKey}/${asset.assetId}`;
+  const home = path.resolve(homedir);
+  const expanded = expandPipelineAssetPath(asset.sourcePath, home);
+  if (expanded === undefined || !isPathStrictlyInside(home, expanded)) {
+    blockers.push({
+      code: 'ASSET_PATH_OUTSIDE_HOME',
+      subject,
+      message: `Asset "${asset.assetId}" in "${pipelineName}" points at ${asset.sourcePath}. Asset folders must be inside your home folder, written as an absolute path or starting with ~.`,
+    });
+    return undefined;
+  }
+  const realHome = await fs.realpath(home).catch(() => home);
+  const realExpanded = await fs.realpath(expanded).catch(() => expanded);
+  for (const declaredLocalState of asset.localState) {
+    const localState = expandPipelineAssetPath(declaredLocalState, home);
+    if (localState === undefined) continue;
+    const realLocalState = await fs
+      .realpath(localState)
+      .catch(() => localState);
+    if (
+      isPathWithinOrEqual(expanded, localState) ||
+      isPathWithinOrEqual(localState, expanded) ||
+      isPathWithinOrEqual(realExpanded, realLocalState) ||
+      isPathWithinOrEqual(realLocalState, realExpanded)
+    ) {
+      blockers.push({
+        code: 'ASSET_OVERLAPS_LOCAL_STATE',
+        subject,
+        message: `Asset "${asset.assetId}" in "${pipelineName}" (${asset.sourcePath}) overlaps its local_state entry ${declaredLocalState}. Keep shared assets and per-runner state in separate folders.`,
+      });
+      return undefined;
+    }
+  }
+  let stat;
+  try {
+    stat = await fs.stat(expanded);
+  } catch {
+    stat = undefined;
+  }
+  if (!stat?.isDirectory()) {
+    if (!stat) {
+      context.sourceDirectories.push({
+        path: expanded,
+        entries: [],
+        missing: true,
+      });
+    }
+    if (asset.required) {
+      blockers.push({
+        code: 'MISSING_REQUIRED_ASSET',
+        subject,
+        message: `Asset "${asset.assetId}" in "${pipelineName}" has no folder at ${asset.sourcePath}. Create it, or mark the asset as not required.`,
+      });
+    } else {
+      withheldFiles.push({
+        pipelineKey: asset.pipelineKey,
+        assetId: asset.assetId,
+        relativePath: '',
+        reason: 'missing_optional_asset',
+      });
+    }
+    return undefined;
+  }
+  if (!isPathStrictlyInside(realHome, realExpanded)) {
+    blockers.push({
+      code: 'ASSET_PATH_OUTSIDE_HOME',
+      subject,
+      message: `Asset "${asset.assetId}" in "${pipelineName}" resolves outside your home folder. Asset folders must be inside your home folder.`,
+    });
+    return undefined;
+  }
+  const collected = await collectMemberFiles(
+    {
+      // The resolved root, so a symlinked asset folder is read in place and
+      // anything under it that leaves it is an escape.
+      sourceRoot: realExpanded,
+      memberPath: '.',
+      sourceVisibility: 'local',
+      // Paths relative to the member root; nothing else of a skill applies.
+      runtimeKind: 'standalone_skill',
+      rootName: asset.assetId,
+    },
+    'claude',
+    blockers,
+    context.blobs,
+    context.sourceStats,
+    context.sourceDirectories,
+    context.budget,
+    {
+      withhold: ({ relativePath, reason }) => {
+        withheldFiles.push({
+          pipelineKey: asset.pipelineKey,
+          assetId: asset.assetId,
+          relativePath,
+          reason,
+        });
+      },
+    },
+  );
+  return {
+    id: fileAssetResourceId(asset.pipelineKey, asset.assetId),
+    kind: 'file_asset',
+    displayName: asset.assetId,
+    sourceLabel: pipelineName,
+    sourceVisibility: 'local',
+    invocationKeys: [],
+    dependencyResourceIds: [],
+    pipelineKey: asset.pipelineKey,
+    assetId: asset.assetId,
+    installMode: asset.installMode,
+    required: asset.required,
+    trees: [
+      {
+        provider: 'claude',
+        runtimeKind: 'pipeline_asset',
+        rootName: asset.assetId,
+        entries: collected.entries.sort((left, right) =>
+          left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+        ),
+      },
+    ],
+  };
+}
+
+/**
+ * The pipelines an automation share carries, each as one `pipeline.yaml`
+ * blob, with the asset folders they declare. Only the action pipeline and
+ * pipelines the reference resolution selected are packaged; unselected
+ * suggestions are listed in the summary but carry no resource.
+ */
+async function collectAutomationPipelines(
+  input: AnalyzeCapabilityPackageInput,
+  resolved: ReadonlyArray<{
+    key: string;
+    name: string;
+    required: boolean;
+    selected: boolean;
+    promptSpans: PipelinePackagePackagedPipeline['promptSpans'];
+  }>,
+  context: CollectionContext,
+): Promise<CollectedAutomationPipelines> {
+  const { blockers } = context;
+  const collected: CollectedAutomationPipelines = {
+    resources: [],
+    packagedPipelines: [],
+    withheldFiles: [],
+  };
+  const resolvedByKey = new Map(resolved.map((entry) => [entry.key, entry]));
+  const inputsByKey = new Map<string, AutomationPipelinePortableInput>();
+  for (const pipeline of input.automationPipelines ?? []) {
+    const existing = inputsByKey.get(pipeline.pipelineKey);
+    if (existing) {
+      blockers.push({
+        code: 'DUPLICATE_PIPELINE_KEY',
+        subject: pipeline.pipelineKey,
+        message: `"${existing.name}" and "${pipeline.name}" would travel under the same key, ${pipeline.pipelineKey}. Rename one of the pipeline files.`,
+      });
+      continue;
+    }
+    inputsByKey.set(pipeline.pipelineKey, pipeline);
+  }
+  for (const entry of resolved) {
+    if (entry.selected && !inputsByKey.has(entry.key)) {
+      blockers.push({
+        code: 'MISSING_DEPENDENCY_SOURCE',
+        subject: entry.name,
+        message: `"${entry.name}" could not be read, so it can't be included.`,
+      });
+    }
+  }
+  const homedir = input.homedir ?? os.homedir();
+  const keys = Array.from(inputsByKey.keys()).sort();
+  for (const key of keys) {
+    const pipeline = inputsByKey.get(key);
+    if (!pipeline) continue;
+    const isActionPipeline = key === AUTOMATION_ACTION_PIPELINE_KEY;
+    const resolution = resolvedByKey.get(key);
+    // Only pipelines the automation resolves travel.
+    if (!isActionPipeline && !resolution) continue;
+    const name = pipeline.name.trim() || key;
+    const resourceId = automationPipelineResourceId(key);
+    const pipelineContentHash = hashPipelinePackageYaml(pipeline.rawContent);
+    collected.packagedPipelines.push({
+      key,
+      resourceId,
+      name,
+      pipelineContentHash,
+      source: pipeline.source,
+      isActionPipeline,
+      optional: !isActionPipeline && resolution?.required !== true,
+      promptSpans: resolution?.promptSpans ?? [],
+    });
+    if (!isActionPipeline && resolution?.selected !== true) continue;
+    const bytes = new TextEncoder().encode(pipeline.rawContent);
+    if (
+      !reserveCollectionFile(context.budget, blockers, {
+        subject: `${key}/${AUTOMATION_PIPELINE_TREE_ENTRY_PATH}`,
+        relativePath: AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
+        size: bytes.byteLength,
+      })
+    )
+      continue;
+    // The root YAML is scanned like any packaged file, so a literal token in
+    // `env` blocks while `${{ secrets.NAME }}` does not.
+    if (
+      containsPipelinePackageSecretMaterial(
+        stripControlCharacters(pipeline.rawContent),
+      )
+    ) {
+      blockers.push({
+        code: 'SUSPECTED_SECRET',
+        subject: name,
+        relativePath: AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
+        message: `"${name}" may contain a credential. Move it into a secret and reference it as \${{ secrets.NAME }}.`,
+      });
+      continue;
+    }
+    context.blobs.set(pipelineContentHash, bytes);
+    if (pipeline.sourcePath) {
+      try {
+        const stat = await fs.stat(pipeline.sourcePath);
+        context.sourceStats.push({
+          path: path.resolve(pipeline.sourcePath),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          sha256: pipelineContentHash,
+        });
+      } catch {
+        // Analyzed from content the host already read; nothing to watch.
+      }
+    }
+    const assetResourceIds: string[] = [];
+    for (const asset of input.fileAssets ?? []) {
+      if (asset.pipelineKey !== key) continue;
+      const resource = await collectFileAsset(
+        asset,
+        name,
+        homedir,
+        context,
+        collected.withheldFiles,
+      );
+      if (!resource) continue;
+      assetResourceIds.push(resource.id);
+      collected.resources.push({ resource });
+    }
+    collected.resources.push({
+      resource: {
+        id: resourceId,
+        kind: 'automation_pipeline',
+        displayName: name,
+        sourceLabel:
+          pipeline.source === 'user' ? 'Your pipelines' : 'Project pipelines',
+        sourceVisibility: 'local',
+        invocationKeys: [],
+        dependencyResourceIds: assetResourceIds,
+        pipelineKey: key,
+        pipelineContentHash,
+        trees: [
+          {
+            provider: 'claude',
+            runtimeKind: 'automation_pipeline',
+            rootName: key,
+            entries: [
+              {
+                path: AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
+                sha256: pipelineContentHash,
+                size: bytes.byteLength,
+                mode: 'read',
+              },
+            ],
+          },
+        ],
+      },
+      bindingKey: pipeline.bindingKey,
+    });
+  }
+  return collected;
+}
+
+/** Dismissals in first-seen order, one per kind and token. */
+function uniqueReferenceDismissals(
+  dismissals: readonly PipelinePackageReferenceDismissal[],
+): PipelinePackageReferenceDismissal[] {
+  const seen = new Set<string>();
+  return dismissals.filter(({ kind, token }) => {
+    const key = `${kind}\0${token}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function blockerIdentity(blocker: PipelinePackageAnalysisBlocker): string {
   return [
     blocker.code,
@@ -1181,7 +1817,12 @@ export async function analyzeCapabilityPackage(
   const promptSources = input.promptSources ?? [];
   const hasUnconfirmed =
     input.requests.some((request) => request.unconfirmed) ||
-    promptSources.some((source) => source.unconfirmed);
+    promptSources.some((source) => source.unconfirmed) ||
+    (input.definitionResources ?? []).some(
+      (definition) =>
+        (definition.requestKeys ?? []).some((request) => request.unconfirmed) ||
+        (definition.promptTexts ?? []).some((text) => text.unconfirmed),
+    );
   const withUnconfirmed = await analyzeCapabilityPackageOnce(input);
   if (!hasUnconfirmed || withUnconfirmed.summary.blockers.length === 0) {
     return withUnconfirmed;
@@ -1190,6 +1831,19 @@ export async function analyzeCapabilityPackage(
     ...input,
     requests: input.requests.filter((request) => !request.unconfirmed),
     promptSources: promptSources.filter((source) => !source.unconfirmed),
+    ...(input.definitionResources
+      ? {
+          definitionResources: input.definitionResources.map((definition) => ({
+            ...definition,
+            requestKeys: (definition.requestKeys ?? []).filter(
+              (request) => !request.unconfirmed,
+            ),
+            promptTexts: (definition.promptTexts ?? []).filter(
+              (text) => !text.unconfirmed,
+            ),
+          })),
+        }
+      : {}),
   });
   const confirmedBlockers = new Set(
     confirmed.summary.blockers.map(blockerIdentity),
@@ -1246,6 +1900,17 @@ async function analyzeCapabilityPackageOnce(
       .filter((request) => request.required && !request.unconfirmed)
       .map((request) => [`${request.provider}\0${request.key}`, request]),
   );
+  const pipelineReferenceCollector =
+    input.pipelineInventory !== undefined ||
+    input.pipelineRequests !== undefined ||
+    input.automationPipelines !== undefined
+      ? createAutomationPipelineReferenceCollector({
+          inventory: input.pipelineInventory ?? [],
+          requests: input.pipelineRequests,
+          selections: input.pipelineSelections,
+          dismissedReferences: input.dismissedReferences,
+        })
+      : undefined;
   for (const [requestId, request] of Array.from(requiredRequests)) {
     if (!matchedRequestIds.has(requestId)) {
       blockers.push({
@@ -1258,6 +1923,9 @@ async function analyzeCapabilityPackageOnce(
   for (const promptSource of promptSources) {
     const location = promptSourceLocation(promptSource);
     const bindingKey = promptSourceBindingKey(promptSource);
+    if (promptSource.pipelineReferences) {
+      pipelineReferenceCollector?.addPromptText(promptSource.text, location);
+    }
     for (const token of extractInvocationTokens(promptSource.text)) {
       const invocation = token.value;
       const provider = invocation.startsWith('$')
@@ -1321,6 +1989,129 @@ async function analyzeCapabilityPackageOnce(
       bindings.set(bindingKey, ids);
     }
   }
+  // Portable definitions. Each document is validated before anything it
+  // needs is resolved, so an invalid definition contributes no dependency.
+  // Inputs are processed in resource-id order, which keeps blocker order and
+  // resource selection independent of caller ordering.
+  const definitions: Array<{
+    input: CapabilityPackageDefinitionResourceInput;
+    id: string;
+    references: string[];
+    directKeys: Set<string>;
+  }> = [];
+  const definitionIds = new Set<string>();
+  for (const definition of [...(input.definitionResources ?? [])]
+    .map((candidate) => ({
+      candidate,
+      id: capabilityPackageDefinitionResourceId(
+        candidate.kind,
+        candidate.identity,
+      ),
+    }))
+    .sort((left, right) => compareCodeUnits(left.id, right.id))) {
+    const { candidate, id } = definition;
+    if (definitionIds.has(id)) {
+      blockers.push({
+        code: 'INVALID_PACKAGE',
+        message: `${candidate.displayName} is listed more than once.`,
+        subject: candidate.identity,
+      });
+      continue;
+    }
+    definitionIds.add(id);
+    const parsed = parseSharedContainerDefinitionDocument(candidate.document);
+    if (!parsed.ok || parsed.value.kind !== candidate.kind) {
+      blockers.push({
+        code: 'INVALID_PACKAGE',
+        message: `${candidate.displayName} is not a valid portable definition${
+          parsed.ok ? '.' : `: ${parsed.errors.join('; ')}`
+        }`,
+        subject: candidate.identity,
+      });
+      continue;
+    }
+    const directKeys = new Set<string>();
+    for (const request of candidate.requestKeys ?? []) {
+      const candidates = definitionRequestCandidates(input, request);
+      if (candidates.length === 0) {
+        if (request.required && !request.unconfirmed)
+          blockers.push({
+            code: 'MISSING_DEPENDENCY_SOURCE',
+            message: `Required ${request.provider} dependency ${request.key} of ${candidate.displayName} could not be resolved.`,
+            subject: request.key,
+          });
+        continue;
+      }
+      for (const entry of candidates) {
+        const resolved: ResolvedInvocable = { origin: 'inventory', entry };
+        const key = logicalEntryKey(resolved);
+        selected.set(key, resolved);
+        directKeys.add(key);
+      }
+    }
+    for (const promptText of candidate.promptTexts ?? []) {
+      for (const token of extractInvocationTokens(promptText.text)) {
+        const invocation = token.value;
+        const provider = invocation.startsWith('$')
+          ? 'codex'
+          : promptText.provider;
+        const decision = classifyInvocation(
+          input,
+          token,
+          provider,
+          'prompt',
+          !promptText.unconfirmed,
+        );
+        if (decision.kind === 'ignored') {
+          if (decision.dismissed) {
+            const dismissalKey = invocationDismissalKey(provider, invocation);
+            const dismissed = suppressedInvocations.get(dismissalKey) ?? {
+              provider,
+              token: invocation,
+              direct: false,
+              occurrences: [],
+              resourceKeys: new Set<string>(),
+            };
+            dismissed.direct = true;
+            suppressedInvocations.set(dismissalKey, dismissed);
+          }
+          continue;
+        }
+        if (decision.kind === 'unresolved') {
+          blockers.push({
+            code: 'UNRESOLVED_INVOCATION',
+            message: `Required invocation ${invocation} in ${candidate.displayName} could not be resolved.`,
+            subject: invocation,
+            origin: 'direct',
+            provider,
+            ...(decision.dismissible
+              ? { dismissal: { provider, token: invocation } }
+              : {}),
+          });
+          continue;
+        }
+        if (decision.kind === 'ambiguous') {
+          blockers.push({
+            code: 'AMBIGUOUS_INVOCATION',
+            message: `Required invocation ${invocation} in ${candidate.displayName} is ambiguous.`,
+            subject: invocation,
+            origin: 'direct',
+            provider,
+          });
+          continue;
+        }
+        const key = logicalEntryKey(decision.target);
+        selected.set(key, decision.target);
+        directKeys.add(key);
+      }
+    }
+    definitions.push({
+      input: candidate,
+      id,
+      references: parsed.value.references,
+      directKeys,
+    });
+  }
   const blobs = new Map<string, Uint8Array>();
   const sourceStats: CapabilityPackageAnalysisInternal['sourceStats'] = [];
   const sourceDirectories: CapabilityPackageAnalysisInternal['sourceDirectories'] =
@@ -1347,14 +2138,65 @@ async function analyzeCapabilityPackageOnce(
     );
     portableResources.push({
       input: resource,
+      // Keyed by the authored ref, so a literal child keeps the id it had
+      // before evaluated keys existed.
       id: createHash('sha256')
         .update(
-          `${resource.kind}\0${resource.invocationKey}\0${resource.bindingKey}`,
+          `${resource.kind}\0${resource.invocationKeys[0] ?? ''}\0${resource.bindingKey}${
+            resource.idScope === undefined ? '' : `\0${resource.idScope}`
+          }`,
         )
         .digest('hex')
         .slice(0, 24),
       files: collected.entries,
     });
+  }
+  const pipelineReferences = pipelineReferenceCollector?.finish();
+  blockers.push(...(pipelineReferences?.blockers ?? []));
+  const automationPipelines = pipelineReferenceCollector
+    ? await collectAutomationPipelines(
+        input,
+        pipelineReferences?.pipelines ?? [],
+        {
+          blockers,
+          blobs,
+          sourceStats,
+          sourceDirectories,
+          budget: collectionBudget,
+        },
+      )
+    : undefined;
+  // Child pipelines and actions a definition carries. Their ids include the
+  // owning definition's id: two definitions can name the same relative child
+  // path while meaning different files.
+  const portableIdsByDefinitionId = new Map<string, string[]>();
+  for (const definition of definitions) {
+    const ids: string[] = [];
+    for (const resource of definition.input.portableResources ?? []) {
+      const id = createHash('sha256')
+        .update(
+          `${resource.kind}\0${resource.invocationKeys[0] ?? ''}\0${definition.input.bindingKey}\0${definition.id}`,
+        )
+        .digest('hex')
+        .slice(0, 24);
+      if (ids.includes(id)) continue;
+      ids.push(id);
+      const collected = await collectMemberFiles(
+        resource.descriptor,
+        'claude',
+        blockers,
+        blobs,
+        sourceStats,
+        sourceDirectories,
+        collectionBudget,
+      );
+      portableResources.push({
+        input: { ...resource, bindingKey: definition.input.bindingKey },
+        id,
+        files: collected.entries,
+      });
+    }
+    portableIdsByDefinitionId.set(definition.id, ids);
   }
   for (const directoryPath of input.repoLocalInvocables?.scannedDirectories ??
     []) {
@@ -1427,7 +2269,7 @@ async function analyzeCapabilityPackageOnce(
     const transitiveInvocations = new Map<
       string,
       {
-        token: InvocationToken;
+        token: InvocationTokenContext;
         requiresResolution: boolean;
         origin: 'body' | 'frontmatter';
       }
@@ -1616,7 +2458,7 @@ async function analyzeCapabilityPackageOnce(
       displayName: portable.input.displayName,
       sourceLabel: descriptor.rootName,
       sourceVisibility: descriptor.sourceVisibility,
-      invocationKeys: [portable.input.invocationKey],
+      invocationKeys: Array.from(new Set(portable.input.invocationKeys)),
       dependencyResourceIds: [],
       trees: [
         {
@@ -1628,6 +2470,154 @@ async function analyzeCapabilityPackageOnce(
       ],
     });
   }
+  // Definition resources, after every other resource so their files reserve
+  // budget only once skills and portable files have.
+  const emittedResourceIds = new Set(resources.map((resource) => resource.id));
+  const emittedDefinitions = definitions.filter((definition) => {
+    const size = definition.input.document.byteLength;
+    if (
+      !reserveCollectionFile(collectionBudget, blockers, {
+        subject: `${definition.input.displayName}/${SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH}`,
+        relativePath: SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
+        size,
+      })
+    )
+      return false;
+    emittedResourceIds.add(definition.id);
+    return true;
+  });
+  const definitionsByIdentity = new Map<string, string[]>();
+  for (const definition of emittedDefinitions) {
+    const ids = definitionsByIdentity.get(definition.input.identity) ?? [];
+    ids.push(definition.id);
+    definitionsByIdentity.set(definition.input.identity, ids);
+  }
+  const definitionDependencies = new Map<string, Set<string>>();
+  for (const definition of emittedDefinitions) {
+    const dependencies = new Set<string>();
+    for (const identity of definition.input.dependsOnIdentities ?? []) {
+      const matches = (definitionsByIdentity.get(identity) ?? []).filter(
+        (id) => id !== definition.id,
+      );
+      if (matches.length === 1 && matches[0]) {
+        dependencies.add(matches[0]);
+        continue;
+      }
+      blockers.push(
+        matches.length === 0
+          ? {
+              code: 'MISSING_DEPENDENCY_SOURCE',
+              message: `${definition.input.displayName} depends on a definition that is not packaged.`,
+              subject: identity,
+            }
+          : {
+              code: 'INVALID_PACKAGE',
+              message: `${definition.input.displayName} depends on an ambiguous definition.`,
+              subject: identity,
+            },
+      );
+    }
+    definitionDependencies.set(definition.id, dependencies);
+  }
+  const directKeysByDefinitionId = new Map(
+    emittedDefinitions.map((definition) => [
+      definition.id,
+      definition.directKeys,
+    ]),
+  );
+  const definitionClosure = (definitionId: string): string[] => {
+    const closure = new Set<string>();
+    const visitedDefinitions = new Set<string>([definitionId]);
+    const pendingDefinitions = [definitionId];
+    const capabilityKeys = new Set<string>();
+    while (pendingDefinitions.length > 0) {
+      const current = pendingDefinitions.pop();
+      if (current === undefined) continue;
+      for (const key of Array.from(
+        directKeysByDefinitionId.get(current) ?? [],
+      )) {
+        capabilityKeys.add(key);
+      }
+      for (const dependency of Array.from(
+        definitionDependencies.get(current) ?? [],
+      )) {
+        if (dependency !== definitionId) closure.add(dependency);
+        if (visitedDefinitions.has(dependency)) continue;
+        visitedDefinitions.add(dependency);
+        pendingDefinitions.push(dependency);
+      }
+    }
+    for (const portableId of portableIdsByDefinitionId.get(definitionId) ?? [])
+      closure.add(portableId);
+    for (const dependency of Array.from(visitedDefinitions)) {
+      if (dependency === definitionId) continue;
+      for (const portableId of portableIdsByDefinitionId.get(dependency) ?? [])
+        closure.add(portableId);
+    }
+    const pendingKeys = Array.from(capabilityKeys);
+    while (pendingKeys.length > 0) {
+      const key = pendingKeys.pop();
+      if (key === undefined) continue;
+      for (const dependencyKey of Array.from(dependencyKeys.get(key) ?? [])) {
+        if (capabilityKeys.has(dependencyKey)) continue;
+        capabilityKeys.add(dependencyKey);
+        pendingKeys.push(dependencyKey);
+      }
+    }
+    for (const key of Array.from(capabilityKeys)) {
+      const resourceId = resourceIdByKey.get(key);
+      if (
+        resourceId !== undefined &&
+        collectedByKey.has(key) &&
+        emittedResourceIds.has(resourceId)
+      )
+        closure.add(resourceId);
+    }
+    return Array.from(closure).sort(compareCodeUnits);
+  };
+  const definitionClosures = new Map<string, string[]>();
+  for (const definition of emittedDefinitions) {
+    const closure = definitionClosure(definition.id);
+    definitionClosures.set(definition.id, closure);
+    for (const reference of definition.references) {
+      if (!closure.includes(reference))
+        blockers.push({
+          code: 'INVALID_PACKAGE',
+          message: `${definition.input.displayName} references a resource that is not one of its packaged dependencies.`,
+          subject: reference,
+        });
+    }
+    const sha256 = createHash('sha256')
+      .update(definition.input.document)
+      .digest('hex');
+    blobs.set(sha256, definition.input.document);
+    resources.push({
+      id: definition.id,
+      kind: definition.input.kind,
+      displayName: definition.input.displayName,
+      sourceLabel: definition.input.sourceLabel ?? definition.input.displayName,
+      sourceVisibility: definition.input.sourceVisibility ?? 'local',
+      invocationKeys: [],
+      dependencyResourceIds: closure,
+      trees: [
+        {
+          provider: 'claude',
+          runtimeKind: 'standalone_skill',
+          rootName: definition.id,
+          entries: [
+            {
+              path: SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
+              sha256,
+              size: definition.input.document.byteLength,
+              mode: 'read',
+            },
+          ],
+        },
+      ],
+    });
+  }
+  if (definitions.length > 0)
+    resources.sort((left, right) => compareCodeUnits(left.id, right.id));
   const environmentRequirements: PipelinePackageEnvironmentRequirement[] = [];
   for (const requirement of input.environmentRequirements ?? []) {
     if (
@@ -1725,13 +2715,32 @@ async function analyzeCapabilityPackageOnce(
     ids.add(portable.id);
     manifestBindings.set(portable.input.bindingKey, ids);
   }
+  for (const { resource, bindingKey } of automationPipelines?.resources ?? []) {
+    resources.push(resource);
+    if (bindingKey === undefined) continue;
+    const ids = manifestBindings.get(bindingKey) ?? new Set<string>();
+    ids.add(resource.id);
+    manifestBindings.set(bindingKey, ids);
+  }
+  for (const definition of emittedDefinitions) {
+    const ids = manifestBindings.get(definition.input.bindingKey) ?? new Set();
+    ids.add(definition.id);
+    for (const dependencyId of definitionClosures.get(definition.id) ?? [])
+      ids.add(dependencyId);
+    manifestBindings.set(definition.input.bindingKey, ids);
+  }
   const manifest: PipelinePackageManifestV1 = {
     version: 1,
     pipelineContentHash: hashPipelinePackageYaml(input.rawContent),
     resources,
     bindings: Array.from(manifestBindings.entries()).map(
       ([bindingKey, resourceIds]) =>
-        capabilityPackageBindingFromKey(bindingKey, Array.from(resourceIds)),
+        capabilityPackageBindingFromKey(
+          bindingKey,
+          definitions.length > 0
+            ? Array.from(resourceIds).sort(compareCodeUnits)
+            : Array.from(resourceIds),
+        ),
     ),
     environmentRequirements,
     ...(publisherNotes.length > 0 ? { publisherNotes } : {}),
@@ -1764,11 +2773,18 @@ async function analyzeCapabilityPackageOnce(
         message,
       })),
     );
+  blockers.push(...(input.hostBlockers ?? []));
   const expiresAt = new Date(Date.now() + ANALYSIS_TTL_MS).toISOString();
   const finalizedBlockers = finalizeBlockers(
     blockers,
     occurrencesForResourceKey,
   );
+  const dismissedReferences = uniqueReferenceDismissals([
+    ...(input.dismissedReferences ?? []).filter(
+      (dismissal) => dismissal.kind !== 'pipeline_reference',
+    ),
+    ...(pipelineReferences?.dismissedReferences ?? []),
+  ]);
   return {
     summary: {
       analysisId: randomUUID(),
@@ -1779,6 +2795,13 @@ async function analyzeCapabilityPackageOnce(
       dismissedInvocations: Array.from(suppressedInvocations.values()).map(
         ({ provider, token }) => ({ provider, token }),
       ),
+      ...(dismissedReferences.length > 0 ? { dismissedReferences } : {}),
+      ...(automationPipelines
+        ? { packagedPipelines: automationPipelines.packagedPipelines }
+        : {}),
+      ...(automationPipelines && automationPipelines.withheldFiles.length > 0
+        ? { withheldFiles: automationPipelines.withheldFiles }
+        : {}),
       ...(input.repoLocalInvocables
         ? {
             repoLocalScope: {

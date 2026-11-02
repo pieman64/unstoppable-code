@@ -94,6 +94,8 @@ function installPipelineApi(): void {
     name: 'Shared Test Pipeline',
     description: 'Shared description',
     icon: '',
+    version: '3.0',
+    createdBy: { id: 'user-1', name: 'Alice' },
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     triggerTypes: ['dispatch'],
@@ -108,6 +110,7 @@ function installPipelineApi(): void {
       '  jobs: {}',
       '',
     ].join('\n'),
+    contentHash: 'a'.repeat(64),
   };
 
   saveMock = jest

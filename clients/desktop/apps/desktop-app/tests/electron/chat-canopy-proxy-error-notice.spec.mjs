@@ -474,7 +474,7 @@ test('renders the guest model refusal as a notice with a sign-in route', async (
  * offered the user nothing to click. This is the whole point of the fix, so it
  * gets the walk-the-real-flow coverage rather than only a unit assertion.
  */
-test('reloads a spent gateway-only credit balance with both recovery surfaces', async () => {
+test('reloads a spent gateway-only credit balance as a stop line plus the composer banner', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-proxy-error-no-billing-'),
   );
@@ -547,20 +547,12 @@ test('reloads a spent gateway-only credit balance with both recovery surfaces', 
       await expect(banner).toBeVisible({ timeout: 3_000 });
     }).toPass({ timeout: 30_000 });
 
-    const notice = window.getByTestId('chat-canopy-proxy-error');
-    await expect(notice).toBeVisible();
-    await expect(
-      window.getByTestId('chat-canopy-proxy-error-title'),
-    ).toContainText('AI Credits');
-    await expect(
-      window.getByTestId('chat-canopy-proxy-error-get-credits'),
-    ).toBeVisible();
-
-    // No Retry: until credits exist a retry fails identically, and every click
-    // would dispatch another billed, non-idempotent turn against the same wall.
-    await expect(
-      window.getByTestId('chat-canopy-proxy-error-retry'),
-    ).toHaveCount(0);
+    // CAN-5160: the transcript only says why the chat stopped. The banner is
+    // the one place to choose how to pay, so no panel, CTA, or Retry here.
+    await expect(window.getByTestId('chat-ai-credits-stop-line')).toHaveText(
+      'Chat stopped. Choose how to pay for this message to keep going.',
+    );
+    await expect(window.getByTestId('chat-canopy-proxy-error')).toHaveCount(0);
 
     // The persisted per-tab signal must also rehydrate the composer recovery
     // banner. DeepSeek V4 Pro is gateway-only, so a native Codex sign-in is not
@@ -703,25 +695,10 @@ async function makeAiCreditsEligible(window) {
 }
 
 async function expectClaudeNoBillingRecovery(window) {
-  const notices = window.getByTestId('chat-canopy-proxy-error');
-  await expect(notices).toHaveCount(1);
-  await expect(
-    window.getByTestId('chat-canopy-proxy-error-title'),
-  ).toContainText('AI Credits');
-  await expect(
-    window.getByTestId('chat-canopy-proxy-error-get-credits'),
-  ).toBeVisible();
-  // No Retry: it would bill another turn against the same empty balance.
-  await expect(window.getByTestId('chat-canopy-proxy-error-retry')).toHaveCount(
-    0,
-  );
-  // The harness dropped the correlation id, and none is invented.
-  await expect(
-    window.getByTestId('chat-canopy-proxy-error-correlation-id'),
-  ).toHaveCount(0);
-  await expect(
-    window.getByTestId('chat-canopy-proxy-error-copy-id'),
-  ).toHaveCount(0);
+  // CAN-5160: one plain stop line in the transcript, and no second panel
+  // offering the purchase the composer banner already offers.
+  await expect(window.getByTestId('chat-ai-credits-stop-line')).toHaveCount(1);
+  await expect(window.getByTestId('chat-canopy-proxy-error')).toHaveCount(0);
 
   // The composer recovery banner, driven by the refusal's runtime signal (the
   // pre-flight condition is false because AI Credits are eligible). Its CTA
@@ -774,7 +751,7 @@ test('shows the AI Credits recovery for a normalized Claude 402 refusal', async 
     };
     // The harness's synthetic assistant error frame, then the terminal
     // result: both carry the restored body and main's stamp, and together they
-    // must produce one notice.
+    // must produce one stop line.
     await injectChatEvent(electronApp, {
       ...target,
       data: {
@@ -805,7 +782,7 @@ test('shows the AI Credits recovery for a normalized Claude 402 refusal', async 
 
     await expectClaudeNoBillingRecovery(window);
     // A next prompt can be queued before the harness repeats the old result.
-    // Turn metadata must prevent a second notice or stale recovery state.
+    // Turn metadata must prevent a second stop line or stale recovery state.
     await injectChatEvent(electronApp, {
       ...target,
       data: {
@@ -829,14 +806,16 @@ test('shows the AI Credits recovery for a normalized Claude 402 refusal', async 
         result: RESTORED_CLAUDE_NO_BILLING_BODY,
       },
     });
-    await expect(window.getByTestId('chat-canopy-proxy-error')).toHaveCount(1);
+    await expect(window.getByTestId('chat-ai-credits-stop-line')).toHaveCount(
+      1,
+    );
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await clearScenario(DEFAULT_MOCK_BASE_URL, authKey).catch(() => undefined);
   }
 });
 
-test('reloads a persisted Claude AI Credits refusal with both recovery surfaces', async () => {
+test('reloads a persisted Claude AI Credits refusal as a stop line plus the composer banner', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-proxy-error-claude-reload-'),
   );
@@ -914,7 +893,7 @@ test('normalizes a Claude harness 402 from the mock provider and persists recove
         { timeout: 90_000 },
       )
       .toBeGreaterThan(0);
-    await expect(window.getByTestId('chat-canopy-proxy-error')).toBeVisible({
+    await expect(window.getByTestId('chat-ai-credits-stop-line')).toBeVisible({
       timeout: 90_000,
     });
     await expectClaudeNoBillingRecovery(window);

@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { isDefaultWorktreeBranchName } from '@canopy/desktop-shared/lib/default-worktree-branch';
 import {
@@ -9,8 +8,11 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,
   WORKSPACE_ROOT_REPO_ID,
-  type WorktreesFile,
+  type WorktreeData,
 } from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { getCodeReviewTargetSync } from './code-review-registry';
 import { getCurrentBranch } from './git';
 import { resolveCoworkWorkspaceId } from './cowork-migration-map';
@@ -31,8 +33,6 @@ import {
   getWorkspaceDetectedPlansFilePath,
   getWorktreeSummaryFilePath,
   getWorkspaceWorktreeSummaryFilePath,
-  getProjectWorktreesFilePath,
-  getWorkspaceWorktreesFilePath,
   getCodeReviewChatTabsFilePath,
   getPlanExploreChatTabsFilePath,
   getAppAdvisorHomeDir,
@@ -45,7 +45,6 @@ import {
   validateOptionalRepoId,
   validateWorktreeChatScope,
 } from './validation';
-import { isRecord } from './type-guards';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
 
 function assertChatPersistencePathContained(filePath: string): string {
@@ -60,6 +59,62 @@ function assertChatPersistencePathContained(filePath: string): string {
     );
   }
   return filePath;
+}
+
+/**
+ * One registry hop for the chat scopes that borrow a real worktree: the
+ * plan-explore scope (`worktreeId` is the planId) and the code-review scope
+ * (`worktreeId` is the `projectId--worktreeId` composite). `undefined` for any
+ * other scope; an unregistered borrowing scope throws.
+ */
+function registeredChatWorktree(
+  projectId: string,
+  worktreeId: string,
+): { projectId: string; worktreeId: string } | undefined {
+  if (projectId === PLAN_EXPLORE_CHAT_PROJECT_ID) {
+    const ref = getPlanExploreTargetSync(worktreeId);
+    if (!ref) {
+      throw new Error(
+        `No plan-explore target registered for plan ${worktreeId}`,
+      );
+    }
+    return ref;
+  }
+  if (projectId === CODE_REVIEW_CHAT_PROJECT_ID) {
+    const ref = getCodeReviewTargetSync(worktreeId);
+    if (!ref) {
+      throw new Error(
+        `No code-review target registered for scope ${worktreeId}`,
+      );
+    }
+    return ref;
+  }
+  return undefined;
+}
+
+/**
+ * Follows registry-backed chat scopes to the real worktree they borrow, with
+ * the errors `resolveWorktreeCwd` raises; other scopes return unchanged.
+ */
+export function resolveRegisteredChatWorktree(
+  projectId: string,
+  worktreeId: string,
+): WorktreeTargetIds {
+  let target: WorktreeTargetIds = { projectId, worktreeId };
+  const visited = new Set<string>();
+  for (
+    let next = registeredChatWorktree(projectId, worktreeId);
+    next;
+    next = registeredChatWorktree(target.projectId, target.worktreeId)
+  ) {
+    // A registry entry that leads back to a visited scope never resolves.
+    const key = `${next.projectId}\0${next.worktreeId}`;
+    if (visited.has(key))
+      throw new Error(`Chat scope ${worktreeId} has a cyclic worktree target`);
+    visited.add(key);
+    target = { projectId: next.projectId, worktreeId: next.worktreeId };
+  }
+  return target;
 }
 
 /**
@@ -80,31 +135,15 @@ export function resolveWorktreeCwd(
       ? getSharedContainerRunRepoDir(worktreeId, selectedRepoId)
       : getSharedContainerRunRootDir(worktreeId);
   }
-  if (projectId === PLAN_EXPLORE_CHAT_PROJECT_ID) {
-    // The plan-explore scope borrows the plan's real worktree as its cwd.
-    // `worktreeId` is the planId; look up the registered target and resolve
-    // the real worktree directory recursively.
-    const ref = getPlanExploreTargetSync(worktreeId);
-    if (!ref) {
-      throw new Error(
-        `No plan-explore target registered for plan ${worktreeId}`,
-      );
-    }
-    return resolveWorktreeCwd(ref.projectId, ref.worktreeId, selectedRepoId);
-  }
-  if (projectId === CODE_REVIEW_CHAT_PROJECT_ID) {
-    // The code-review scope borrows the real worktree as its cwd. `worktreeId`
-    // is the composite scope key (`projectId--worktreeId`); the registry
-    // supplies the real `(projectId, worktreeId)` pair. Resolve recursively so
-    // workspace/single-repo dispatch and selectedRepoId handling stay in one
-    // place.
-    const ref = getCodeReviewTargetSync(worktreeId);
-    if (!ref) {
-      throw new Error(
-        `No code-review target registered for scope ${worktreeId}`,
-      );
-    }
-    return resolveWorktreeCwd(ref.projectId, ref.worktreeId, selectedRepoId);
+  const registered = registeredChatWorktree(projectId, worktreeId);
+  if (registered) {
+    // Resolve recursively so workspace/single-repo dispatch and
+    // selectedRepoId handling stay in one place.
+    return resolveWorktreeCwd(
+      registered.projectId,
+      registered.worktreeId,
+      selectedRepoId,
+    );
   }
   if (projectId === STANDALONE_CHAT_PROJECT_ID) {
     return getCoworkWorkspaceRootDir(resolveCoworkWorkspaceId(worktreeId));
@@ -294,30 +333,42 @@ export function resolveDetectedPlansFilePath(
   return getDetectedPlansFilePath(projectId, worktreeId);
 }
 
-/**
- * Resolve the worktrees.json file path for a project or workspace.
- */
-export function resolveWorktreesFilePath(projectId: string): string {
-  if (getWorkspaceType(projectId) !== null) {
-    return getWorkspaceWorktreesFilePath(projectId);
-  }
-  return getProjectWorktreesFilePath(projectId);
-}
-
 export interface PersistedWorktreeBranch {
   worktreeId: string;
   branchName: string;
 }
 
-function isPersistedWorktreeBranchEntry(
-  value: unknown,
-): value is { id: string; branchName: string; createdAt: string } {
-  return (
-    isRecord(value) &&
-    typeof value.id === 'string' &&
-    typeof value.branchName === 'string' &&
-    typeof value.createdAt === 'string'
-  );
+const WORKTREE_READ_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-worktree-chat-target',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.worktree.read'],
+};
+
+/**
+ * The worktree row through `core.worktree.get` (CAN-5478), with the authority
+ * of its list read; null when the runtime, workspace or row is unavailable.
+ */
+async function readWorktreeRow(
+  target: WorktreeTargetIds,
+): Promise<{ row: WorktreeData; listIsComplete: boolean } | null> {
+  try {
+    const { legacyResult, legacyAuthority } =
+      await getDesktopCanopyRuntime().queryWorktreeGetForLegacyIpc(
+        {
+          worktreeId: target.worktreeId,
+          scope: { workspaceId: target.projectId },
+        },
+        { caller: WORKTREE_READ_CALLER },
+      );
+    return {
+      row: legacyResult,
+      listIsComplete: legacyAuthority?.authority === 'ok',
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Read the persisted branch and resolved target id without spawning git. */
@@ -327,30 +378,11 @@ export async function readPersistedWorktreeBranch(
 ): Promise<PersistedWorktreeBranch | null> {
   const target = resolveWorktreeTargetIds(projectId, worktreeId);
   if (!target) return null;
-
-  try {
-    const raw = await readFile(
-      resolveWorktreesFilePath(target.projectId),
-      'utf8',
-    );
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      !isRecord(parsed) ||
-      parsed.version !== 1 ||
-      !Array.isArray(parsed.worktrees) ||
-      !parsed.worktrees.every(isPersistedWorktreeBranchEntry)
-    ) {
-      return null;
-    }
-    const worktree = parsed.worktrees.find(
-      (entry) => entry.id === target.worktreeId,
-    );
-    return worktree
-      ? { worktreeId: target.worktreeId, branchName: worktree.branchName }
-      : null;
-  } catch {
-    return null;
-  }
+  const read = await readWorktreeRow(target);
+  // Any row the list could not read leaves the branch unproven.
+  return read?.listIsComplete
+    ? { worktreeId: target.worktreeId, branchName: read.row.branchName }
+    : null;
 }
 
 /**
@@ -361,18 +393,8 @@ export async function isBranchPromptSent(
   projectId: string,
   worktreeId: string,
 ): Promise<boolean> {
-  const filePath = resolveWorktreesFilePath(projectId);
-  try {
-    const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as WorktreesFile;
-    if (parsed.version === 1 && Array.isArray(parsed.worktrees)) {
-      const target = parsed.worktrees.find((wt) => wt.id === worktreeId);
-      return target?.branchPromptSent === true;
-    }
-  } catch {
-    // Missing or corrupt file
-  }
-  return false;
+  const read = await readWorktreeRow({ projectId, worktreeId });
+  return read?.row.branchPromptSent === true;
 }
 
 export type BranchMatchResult =

@@ -3,19 +3,135 @@ import {
   type AgentDelegationTranscript,
   type AgentDelegationTranscriptItem,
 } from '@canopy/protocol/delegation';
+import type { CardState } from '@canopy/protocol/canopy-core';
 import type {
   DelegatedAgentCallBlock,
   PersistedChatMessage,
   PersistedChatBlock,
 } from '../types';
 import type { TranscriptReducerState } from './transcript-parser';
+import { isPersistedToolOutputReference } from '../transcript-storage';
+import {
+  persistedDelegationSnapshot,
+  STREAM_CARD_KEY_CLASSES,
+} from './delegation-card-snapshot';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function delegationBlockId(id: string, generation: number): string {
+/** The `agentBlockId` of a delegation generation's card; child rows link to it. */
+export function delegationBlockId(id: string, generation: number): string {
   return `delegated-agent-${id}${generation > 1 ? `-run-${generation}` : ''}`;
+}
+
+/** Child-only persisted metadata; primary messages remain unchanged. */
+export type DelegationChildRow = PersistedChatMessage & {
+  itemRevision: number;
+  final: boolean;
+  truncated?: true;
+};
+
+/** Only stream-backed cards receive mutable descriptor state. */
+export function overlayStreamBackedDelegationCard(
+  card: DelegatedAgentCallBlock,
+  state: CardState | null,
+  streamRevision?: number,
+): DelegatedAgentCallBlock {
+  if (card.transcriptStore !== 'chat-stream-v2') return card;
+  const displayCard =
+    streamRevision !== undefined &&
+    Number.isSafeInteger(streamRevision) &&
+    streamRevision >= 0
+      ? { ...card, streamRevision }
+      : card;
+  if (state === null) return displayCard;
+  if (state.version === 2) {
+    const {
+      version: _version,
+      cardRevision: _revision,
+      canonical,
+      detailOmitted: _omitted,
+      ...draft
+    } = state;
+    void _version;
+    void _revision;
+    void _omitted;
+    const creation: DelegatedAgentCallBlock & { answerUnavailable?: true } = {
+      ...displayCard,
+    };
+    for (const key of [
+      'routeSnapshot',
+      'requestedModelId',
+      'nativeSessionId',
+      'nestedDelegation',
+      'childDelegationIds',
+      'capabilities',
+      'isolatedWorkspace',
+      'workspaceDiscarded',
+      'control',
+      'cancelledByUser',
+      'stoppedBy',
+      'resultIndex',
+      'error',
+      'usage',
+      'stopReason',
+      'finalText',
+      'finalTextRef',
+      'partialText',
+      'partialTextRef',
+      'phase',
+      'queue',
+      'approvalPending',
+      'stopRequested',
+      'workspaceObservation',
+      'requestedThinkingLevel',
+      'effectiveThinkingLevel',
+      'answerUnavailable',
+    ] as const)
+      delete creation[key];
+    const route = draft.routeSnapshot;
+    return {
+      ...creation,
+      ...draft,
+      ...canonical,
+      status: canonical?.status ?? draft.status ?? card.status,
+      outputTruncated: draft.outputTruncated ?? card.outputTruncated,
+      prompt: draft.prompt ?? card.prompt,
+      selectedModelId:
+        route?.selectedModelId ??
+        draft.requestedModelId ??
+        card.selectedModelId,
+      runtimeModelId: route?.runtimeModelId ?? card.runtimeModelId,
+      targetHarnessId: route?.harnessId ?? card.targetHarnessId,
+      ...(route?.requestedThinkingLevel === undefined
+        ? {}
+        : { requestedThinkingLevel: route.requestedThinkingLevel }),
+      ...(route?.effectiveThinkingLevel === undefined
+        ? {}
+        : { effectiveThinkingLevel: route.effectiveThinkingLevel }),
+    };
+  }
+  // A descriptor preview replaces the card's answer string, so the card's
+  // reference to a different body no longer describes it.
+  const { partialTextRef, finalTextRef, ...rest } = displayCard;
+  return {
+    ...rest,
+    status: state.status,
+    ...(state.resultIndex === null ? {} : { resultIndex: state.resultIndex }),
+    ...(state.partialPreview === null
+      ? partialTextRef === undefined
+        ? {}
+        : { partialTextRef }
+      : { partialText: state.partialPreview }),
+    ...(state.finalPreview === null
+      ? finalTextRef === undefined
+        ? {}
+        : { finalTextRef }
+      : { finalText: state.finalPreview }),
+    workspaceDiscarded: state.workspaceDiscarded,
+    ...(state.usage === null ? {} : { usage: state.usage }),
+  };
 }
 
 /**
@@ -26,7 +142,7 @@ function delegationBlockId(id: string, generation: number): string {
 export function delegationChildMessages(
   agentBlockId: string,
   items: readonly AgentDelegationTranscriptItem[],
-): PersistedChatMessage[] {
+): (PersistedChatMessage & { truncated?: true })[] {
   return items.map((item) => {
     const id = `${agentBlockId}:${item.id}`;
     const blocks: PersistedChatBlock[] =
@@ -63,6 +179,7 @@ export function delegationChildMessages(
       timestamp: item.occurredAt,
       parentBlockId: agentBlockId,
       delegationSequence: item.sequence,
+      ...(item.truncated ? { truncated: true as const } : {}),
       blocks,
     };
   });
@@ -72,7 +189,12 @@ export function delegationChildMessages(
 export function delegationTranscriptMessages(
   value: AgentDelegationTranscript,
 ): PersistedChatMessage[] {
-  const { snapshot, task, transcript } = value;
+  const { snapshot: sourceSnapshot, task, transcript } = value;
+  // Display observations cannot enter creation or legacy rewrite bytes.
+  const snapshot: typeof sourceSnapshot & { streamRevision?: number } = {
+    ...sourceSnapshot,
+  };
+  delete snapshot.streamRevision;
   const route = snapshot.routeSnapshot;
   const agentBlockId = delegationBlockId(
     value.delegationId,
@@ -112,6 +234,60 @@ export function delegationTranscriptMessages(
   ];
 }
 
+// Known authored fields come from the new projection, including omission. Only
+// opaque extensions and references to unchanged bodies survive a rewrite.
+const LEGACY_ROW_FIELDS = {
+  id: true,
+  role: true,
+  blocks: true,
+  timestamp: true,
+  hidden: true,
+  userMessageSource: true,
+  autoResume: true,
+  parentToolUseId: true,
+  parentBlockId: true,
+  delegationSequence: true,
+  delegationAuthor: true,
+  delegationDelivery: true,
+  delegationSegment: true,
+  codexThreadId: true,
+  codexTurnId: true,
+  attachmentPaths: true,
+  attachmentPromptContexts: true,
+  inputMode: true,
+  watcherFired: true,
+  claudeUuid: true,
+  itemRevision: true,
+  final: true,
+  truncated: true,
+  agentSent: true,
+  // Read results only; a rewrite never carries one forward.
+  blocksOmitted: true,
+} satisfies Record<Exclude<keyof DelegationChildRow, 'blocksRef'>, true>;
+
+function preservedRewriteFields(
+  previous: object,
+  next: object,
+  knownFields: object,
+): Record<string, unknown> {
+  const before = Object.fromEntries(Object.entries(previous));
+  const after = Object.fromEntries(Object.entries(next));
+  return Object.fromEntries(
+    Object.entries(previous).filter(([key]) => {
+      const suffixLength = key.endsWith('Refs')
+        ? 4
+        : key.endsWith('Ref')
+          ? 3
+          : 0;
+      if (suffixLength > 0) {
+        const body = key.slice(0, -suffixLength);
+        return JSON.stringify(before[body]) === JSON.stringify(after[body]);
+      }
+      return !Object.prototype.hasOwnProperty.call(knownFields, key);
+    }),
+  );
+}
+
 export function applyDelegationTranscriptEvent(
   state: TranscriptReducerState,
   data: Record<string, unknown>,
@@ -125,6 +301,16 @@ export function applyDelegationTranscriptEvent(
         block.type === 'delegated_agent_call' && block.agentBlockId === id,
     ),
   );
+  if (value.transcriptStore === 'chat-stream-v2') {
+    if (existingIndex >= 0) return state;
+    const [creation] = delegationTranscriptMessages({
+      ...value,
+      snapshot: persistedDelegationSnapshot(value.snapshot),
+      transcript: [],
+    });
+    if (creation === undefined) return state;
+    return { ...state, messages: [...state.messages, creation] };
+  }
   const prior =
     existingIndex >= 0
       ? state.messages[existingIndex].blocks.find(
@@ -134,12 +320,35 @@ export function applyDelegationTranscriptEvent(
       : undefined;
   if (
     prior?.type === 'delegated_agent_call' &&
-    (prior.runGeneration > value.runGeneration ||
+    (prior.transcriptStore === 'chat-stream-v2' ||
+      prior.runGeneration > value.runGeneration ||
       (prior.runGeneration === value.runGeneration &&
         prior.sequence >= value.sequence))
   )
     return state;
   const normalized = delegationTranscriptMessages(value);
+  const previousRows = new Map(
+    state.messages.map((message) => [message.id, message]),
+  );
+  for (let index = 0; index < normalized.length; index++) {
+    const next = normalized[index];
+    const previous = previousRows.get(next.id);
+    if (!previous) continue;
+    if (next.id === id && prior?.type === 'delegated_agent_call') {
+      next.blocks = next.blocks.map((block) =>
+        block.type === 'delegated_agent_call'
+          ? {
+              ...preservedRewriteFields(prior, block, STREAM_CARD_KEY_CLASSES),
+              ...block,
+            }
+          : block,
+      );
+    }
+    normalized[index] = {
+      ...preservedRewriteFields(previous, next, LEGACY_ROW_FIELDS),
+      ...next,
+    };
+  }
   const updatedIds = new Set(normalized.map((message) => message.id));
   const retainedChildren =
     value.transcriptMode === 'patch'
@@ -236,7 +445,15 @@ export function isDelegatedAgentCallBlock(
     return false;
   if (
     block.transcriptStore !== undefined &&
-    block.transcriptStore !== 'chat-log-v1'
+    block.transcriptStore !== 'chat-log-v1' &&
+    block.transcriptStore !== 'chat-stream-v2'
+  )
+    return false;
+  if (
+    (block.partialTextRef !== undefined &&
+      !isPersistedToolOutputReference(block.partialTextRef)) ||
+    (block.finalTextRef !== undefined &&
+      !isPersistedToolOutputReference(block.finalTextRef))
   )
     return false;
   const route = isRecord(block.routeSnapshot) ? block.routeSnapshot : undefined;
@@ -260,6 +477,7 @@ export function isDelegatedAgentCallBlock(
       },
       snapshot: block,
       transcript: [],
+      transcriptStore: block.transcriptStore,
     })
   );
 }

@@ -28,10 +28,8 @@ export interface StatusBadgeProps {
 }
 
 /**
- * Variant → shared status-badge tone. `warning` keeps its historical mapping
- * onto the unread (blue) operational colour so existing callers do not
- * change hue; the pipeline row's attention chips use the `warning` tone of
- * `statusBadgeClassName` directly.
+ * Variant → shared status-badge tone. `warning` is the warning tone; it used
+ * to paint the unread blue, which made "Invited" read as a run state.
  */
 function toStatusBadgeTone(variant: StatusBadgeVariant): StatusBadgeTone {
   switch (variant) {
@@ -42,7 +40,7 @@ function toStatusBadgeTone(variant: StatusBadgeVariant): StatusBadgeTone {
     case 'destructive':
       return 'failed';
     case 'warning':
-      return 'unread';
+      return 'warning';
     case 'muted':
     default:
       return 'paused';

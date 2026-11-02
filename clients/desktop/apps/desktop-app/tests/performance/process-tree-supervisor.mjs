@@ -3817,6 +3817,31 @@ function spawnWatchdog(targetPid, trackedGroupsFile, runNonce) {
   return watchdog;
 }
 
+/**
+ * The wrapper's close as a supervisor exit cause: whether the target reported
+ * its own exit first, or the wrapper ended (for example force-killed) without
+ * reporting one.
+ */
+export function describeWrapperClose({ code, signal, targetExit }) {
+  const target = targetExit
+    ? `target exited (code=${targetExit.code ?? null}, signal=${targetExit.signal ?? null})`
+    : 'target exit not reported';
+  return `wrapper closed (code=${code ?? null}, signal=${signal ?? null}); ${target}`;
+}
+
+export function describeSupervisorExit({
+  exitCode,
+  cause,
+  cleanupFailed = false,
+  releaseUnconfirmed = false,
+}) {
+  return (
+    `[e2e-supervisor] Exiting with code ${exitCode}: ${cause ?? 'unspecified cause'}` +
+    (cleanupFailed ? '; process cleanup failed' : '') +
+    (releaseUnconfirmed ? '; wrapper release unconfirmed' : '')
+  );
+}
+
 async function runSupervisor(args) {
   const record = createWindowsBoundaryRecorder(args, 'supervisor');
   const ownership = record?.ownership;
@@ -3869,6 +3894,7 @@ async function runSupervisor(args) {
   let releaseDecisionSent = false;
   let releaseCheckpoint = false;
   let releaseControlFailed = false;
+  let shutdownCause;
   const acknowledgeRelease = (ready) => {
     if (releaseDecisionSent) return;
     releaseDecisionSent = true;
@@ -3880,8 +3906,16 @@ async function runSupervisor(args) {
         if (error) {
           releaseControlFailed = true;
           // The IPC callback can run after shutdown has selected its result.
-          if (process.exitCode === 0)
+          if (process.exitCode === 0) {
             process.exitCode = WINDOWS_RELEASE_FAILURE_EXIT_CODE;
+            try {
+              process.stderr.write(
+                `${describeSupervisorExit({ exitCode: WINDOWS_RELEASE_FAILURE_EXIT_CODE, cause: shutdownCause, releaseUnconfirmed: true })}\n`,
+              );
+            } catch {
+              // Reporting failure must not change the selected exit code.
+            }
+          }
         }
       });
     } catch {
@@ -3954,17 +3988,20 @@ async function runSupervisor(args) {
     return cleanup;
   };
   let shuttingDown = false;
-  const shutdown = async (exitCode) => {
+  const shutdown = async (exitCode, cause) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    shutdownCause = cause;
     parentWatch.stop();
     ownershipRefresh?.stop();
     process.stdin.unpipe(child.stdin);
     process.stdin.pause();
+    let cleanupFailed = false;
     try {
       await beginCleanup();
     } catch (error) {
       exitCode ||= 1;
+      cleanupFailed = true;
       try {
         process.stderr.write(
           `[e2e-supervisor] Process cleanup failed: ${error.message}\n`,
@@ -3973,20 +4010,33 @@ async function runSupervisor(args) {
         // Reporting failure must not prevent the nonzero shutdown result.
       }
     }
-    if (useWindowsLaunchGate && (!releaseCheckpoint || releaseControlFailed)) {
+    const releaseUnconfirmed =
+      useWindowsLaunchGate && (!releaseCheckpoint || releaseControlFailed);
+    if (releaseUnconfirmed) {
       exitCode ||= WINDOWS_RELEASE_FAILURE_EXIT_CODE;
     }
     process.exitCode = exitCode;
+    // Windows harness failures report only the launcher's exit code; name the
+    // path that selected it.
+    if (useWindowsLaunchGate && exitCode !== 0) {
+      try {
+        process.stderr.write(
+          `${describeSupervisorExit({ exitCode, cause, cleanupFailed, releaseUnconfirmed })}\n`,
+        );
+      } catch {
+        // Reporting failure must not change the selected exit code.
+      }
+    }
   };
   const parentWatch = startParentLivenessWatch({
     parentPid: ownerPid,
-    onParentExit: () => shutdown(1),
+    onParentExit: () => shutdown(1, `owner process ${ownerPid} exited`),
   });
   const handleOwnershipRefreshError = (error) => {
     process.stderr.write(
       `[e2e-supervisor] Failed to update supervised process ownership: ${error.message}\n`,
     );
-    return shutdown(1);
+    return shutdown(1, 'ownership refresh failed');
   };
 
   if (useWindowsLaunchGate && process.connected) {
@@ -4002,9 +4052,12 @@ async function runSupervisor(args) {
         return;
       record?.('controller-stop-requested', { reason: message.reason });
       ownership?.('controller-stop-requested', { reason: message.reason });
-      void shutdown(1);
+      void shutdown(1, `controller requested cleanup (${message.reason})`);
     });
-    process.once('disconnect', () => void shutdown(1));
+    process.once(
+      'disconnect',
+      () => void shutdown(1, 'controller channel disconnected'),
+    );
     // The parent channel must not hold normal completion open after cleanup.
     process.channel?.unref();
   }
@@ -4024,7 +4077,7 @@ async function runSupervisor(args) {
       process.stderr.write(
         `[e2e-supervisor] Failed to record supervised process ownership: ${error.message}\n`,
       );
-      void shutdown(1);
+      void shutdown(1, 'ownership record failed');
       return;
     }
     watchdog = spawnWatchdog(
@@ -4117,7 +4170,7 @@ async function runSupervisor(args) {
     process.stderr.write(
       `[e2e-supervisor] Failed to launch child: ${error.message}\n`,
     );
-    void shutdown(1);
+    void shutdown(1, 'child launch failed');
   });
   attachChildLifecycle(child, {
     onExit: (code, signal) => {
@@ -4146,11 +4199,17 @@ async function runSupervisor(args) {
       if (useWindowsLaunchGate && code === WINDOWS_RELEASE_FAILURE_EXIT_CODE) {
         exitCode ||= WINDOWS_RELEASE_FAILURE_EXIT_CODE;
       }
-      void shutdown(exitCode);
+      void shutdown(
+        exitCode,
+        describeWrapperClose({ code, signal, targetExit }),
+      );
     },
   });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    process.once(signal, () => void shutdown(signal === 'SIGINT' ? 130 : 1));
+    process.once(
+      signal,
+      () => void shutdown(signal === 'SIGINT' ? 130 : 1, `received ${signal}`),
+    );
   }
 }
 

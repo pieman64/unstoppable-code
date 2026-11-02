@@ -39,11 +39,11 @@ import { useCursorChatAvailable } from '@/hooks/useCursorChatAvailable';
 import { useCursorModels } from '@/hooks/useCursorModels';
 import {
   Button,
+  ErrorState,
   FLOATING_MENU_GAP,
   FloatingMenu,
   ModelGroupHeader,
   Notice,
-  NoticeButton,
 } from '@canopy/ui-shared';
 import {
   ActionMenuItems,
@@ -66,7 +66,6 @@ import {
   SettingsPage,
   SettingsSection,
 } from './SettingsLayout';
-import { useSettingsButtonSize } from '@/hooks/useSettingsButtonSize';
 
 function destinations(row: ModelHarnessAssignment): ModelHarness[] {
   return (
@@ -403,22 +402,14 @@ export function HarnessesTab(): JSX.Element {
         {loading && <SettingsLoading dataTestId="harness-loading" />}
 
         {fatal && (
-          <Notice
-            intent="destructive"
-            data-testid="harness-load-error"
-            actions={
-              <NoticeButton
-                data-testid="harness-retry"
-                onClick={(): void => {
-                  void loadHarnessAssignments();
-                }}
-              >
-                Retry
-              </NoticeButton>
-            }
-          >
-            Harness assignments couldn’t be loaded.
-          </Notice>
+          <ErrorState
+            message="Couldn't load harness assignments."
+            onRetry={(): void => {
+              void loadHarnessAssignments();
+            }}
+            testId="harness-load-error"
+            retryTestId="harness-retry"
+          />
         )}
 
         {assignments !== null && (
@@ -527,7 +518,6 @@ function HarnessColumn({
   onMove,
   onReset,
 }: HarnessColumnProps): JSX.Element {
-  const settingsButtonSize = useSettingsButtonSize();
   const { setNodeRef, isOver } = useDroppable({
     id: harness,
     disabled: Boolean(onConnect),
@@ -545,7 +535,7 @@ function HarnessColumn({
       aria-labelledby={headingId}
       data-testid={`harness-column-${harness}`}
       data-drop-highlight={highlighted ? 'true' : undefined}
-      className={`rounded-lg bg-secondary p-3 transition ${
+      className={`rounded-lg bg-secondary p-3 transition-colors ${
         highlighted
           ? 'ring-1 ring-line-accent'
           : 'ring-[length:var(--border-hairline)] ring-line-base'
@@ -560,7 +550,7 @@ function HarnessColumn({
       {onConnect ? (
         <div className="px-2 py-4">
           <Button
-            size={settingsButtonSize}
+            size="compact"
             variant="secondary"
             data-testid={`harness-connect-${harness}`}
             onClick={onConnect}
@@ -731,24 +721,28 @@ function ConfigurableHarnessRow({
       }`}
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      <button
-        ref={menuButtonRef}
-        type="button"
-        data-harness-row-menu
-        data-testid={`harness-row-menu-${assignment.modelId}`}
-        aria-label={`Actions for ${label}`}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        onPointerDown={(event): void => event.stopPropagation()}
-        onKeyDown={(event): void => event.stopPropagation()}
-        onClick={(event): void => {
-          event.stopPropagation();
-          setMenuOpen((open) => !open);
-        }}
-        className="focus-ring flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
-      >
-        <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
-      </button>
+      {/* Revealed with the row, like the other row actions on this board. */}
+      <span className="flex shrink-0 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+        <Button
+          ref={menuButtonRef}
+          size="compact"
+          variant="ghost"
+          iconOnly
+          data-harness-row-menu
+          data-testid={`harness-row-menu-${assignment.modelId}`}
+          aria-label={`Actions for ${label}`}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onPointerDown={(event): void => event.stopPropagation()}
+          onKeyDown={(event): void => event.stopPropagation()}
+          onClick={(event): void => {
+            event.stopPropagation();
+            setMenuOpen((open) => !open);
+          }}
+        >
+          <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
+        </Button>
+      </span>
       <FloatingMenu
         open={menuOpen}
         onOpenChange={setMenuOpen}

@@ -4,10 +4,6 @@
  * "Available to enable" row enables it through the canonical chat command
  * path before returning the authoritative insert text.
  */
-jest.mock('node:fs/promises', () => ({
-  ...jest.requireActual<typeof FsPromises>('node:fs/promises'),
-  readFile: jest.fn(),
-}));
 jest.mock('../chat-state-query', () => ({
   queryPortalChatState: jest.fn(),
 }));
@@ -38,8 +34,6 @@ jest.mock('../../../services/standalone-chat-service', () => ({
   emitStandaloneChatSummary: jest.fn(() => Promise.resolve()),
 }));
 
-import type * as FsPromises from 'node:fs/promises';
-import { readFile } from 'node:fs/promises';
 import {
   APP_ADVISOR_PROJECT_ID,
   type ChatCommandRequest,
@@ -69,8 +63,15 @@ import {
   resolveStandaloneChatTarget,
 } from '../../../services/standalone-chat-service';
 import type { PortalAdapterContext } from '../types';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../../../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../../../canopy-runtime/desktop-runtime-access';
 
-const mockedReadFile = jest.mocked(readFile);
+// project-1's worktree rows, read through core.worktree.get.
+const readWorkspaceWorktrees = jest.fn();
+let runtime: DesktopCanopyDispatcher | null = null;
 const mockedQuery = jest.mocked(queryPortalChatState);
 const mockedList = jest.mocked(listInvocableInventory);
 const mockedResolve = jest.mocked(resolveInvocableSelection);
@@ -227,7 +228,9 @@ function harness(outcome: ChatCommandResult['outcome'] = 'applied'): Harness {
         command: jest.fn(),
         getState: jest.fn(),
         getTranscriptPage: jest.fn(),
+        searchTranscript: jest.fn(),
         readToolOutput: jest.fn(),
+        readVisual: jest.fn(),
         subscribe: jest.fn(() => jest.fn()),
       },
       dispatchChatCommand: dispatch,
@@ -298,20 +301,31 @@ beforeEach(() => {
   } as unknown as Awaited<ReturnType<typeof readCollectionConfig>>);
   mockedGetAgent.mockResolvedValue(null);
   // A foreign-provider worktree discovery must not replace the tab's own.
-  mockedReadFile.mockResolvedValue(
-    JSON.stringify({
-      version: 1,
-      worktrees: [
-        {
-          id: 'worktree-1',
-          discovery: {
-            providerType: 'codex',
-            slashCommands: [{ name: 'codex-only', description: '' }],
-          },
-        },
-      ],
-    }),
-  );
+  readWorkspaceWorktrees.mockResolvedValue([
+    {
+      id: 'worktree-1',
+      branchName: 'feature/one',
+      createdAt: '2026-10-08T00:00:00.000Z',
+      discovery: {
+        providerType: 'codex',
+        slashCommands: [{ name: 'codex-only', description: '' }],
+      },
+    },
+  ]);
+  runtime = createDesktopRuntime({
+    workspaceServices: {
+      readAllSidebarItems: jest.fn(),
+      readWorkspaceIndexEntry: jest.fn().mockResolvedValue({
+        id: 'project-1',
+        name: 'Project',
+        type: 'single-repo',
+      }),
+      readWorkspaceConfig: jest.fn(),
+      readWorkspaceWorktrees,
+      readEffectiveWorkspaceConfig: jest.fn(),
+    },
+  });
+  setDesktopCanopyRuntime(runtime);
   mockedStandaloneTarget.mockResolvedValue({
     workspaceId: 'cowork-default',
     entryId: 'entry-1',
@@ -320,7 +334,75 @@ beforeEach(() => {
   });
 });
 
+afterEach(async () => {
+  setDesktopCanopyRuntime(null);
+  await runtime?.shutdown();
+  runtime = null;
+});
+
 describe('portal.editor.list_invocables', () => {
+  it.each([false, true])(
+    'CAN-5271 projects one owner-qualified command with discovery=%s',
+    async (discovered) => {
+      const commandEntry = entry({
+        id: 'investigate-entry',
+        name: 'investigate',
+        displayName: '/investigate',
+        enableRef: {
+          kind: 'plugin',
+          marketplaceId: 'unstoppable-domains-plugins',
+          pluginName: 'ud-ecom-debugger',
+        },
+      });
+      mockedList.mockResolvedValue({
+        success: true,
+        data: { entries: [commandEntry], stale: false, rebuilding: false },
+      });
+      const canonical = {
+        name: 'ud-ecom-debugger:investigate',
+        description: 'SDK investigate description',
+        insertText: '/ud-ecom-debugger:investigate ',
+      };
+      mockedQuery.mockResolvedValue(
+        snapshot(
+          chatTab({
+            discovery: {
+              providerType: 'claude',
+              slashCommands: discovered ? [canonical] : [],
+              mcpServers: [],
+              discoveredAt: '2026-10-08T00:00:00.000Z',
+            },
+          }),
+        ),
+      );
+      const { context, complete, fail } = harness();
+      await handlePortalEditorListInvocables(
+        envelope('portal.editor.list_invocables', { target: WORKTREE_TARGET }),
+        context,
+      );
+      expect(fail).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledWith(expect.anything(), {
+        commands: discovered
+          ? [{ ...canonical, section: 'discovered' }]
+          : [
+              {
+                name: 'investigate',
+                pluginName: 'ud-ecom-debugger',
+                memberName: 'investigate',
+                displayName: '/ud-ecom-debugger:investigate',
+                description: 'investigate description',
+                insertText: '/investigate ',
+                section: 'available',
+                entryId: 'investigate-entry',
+                requiresResolution: true,
+              },
+            ],
+        stale: false,
+        rebuilding: false,
+      });
+    },
+  );
+
   it('returns the desktop menu rows for a worktree chat, including available rows', async () => {
     const { context, complete, fail } = harness();
 
@@ -352,6 +434,8 @@ describe('portal.editor.list_invocables', () => {
         // Enabled directly, by the inherited default and by the Collection.
         {
           name: 'standup',
+          pluginName: 'daily',
+          memberName: 'standup',
           displayName: 'standup',
           description: 'standup description',
           insertText: '/standup ',
@@ -360,6 +444,8 @@ describe('portal.editor.list_invocables', () => {
         },
         {
           name: 'deploy',
+          pluginName: 'deployer',
+          memberName: 'deploy',
           displayName: 'deploy',
           description: 'deploy description',
           insertText: '/deploy ',
@@ -378,11 +464,25 @@ describe('portal.editor.list_invocables', () => {
         },
         {
           name: 'triage',
+          pluginName: 'agentic',
+          memberName: 'triage',
           displayName: 'triage',
           description: 'triage description',
           insertText: '/triage ',
           section: 'available',
           entryId: 'agent-entry',
+          requiresResolution: true,
+        },
+        // A bare discovered token cannot prove ownership of this plugin.
+        {
+          name: 'branch',
+          pluginName: 'git',
+          memberName: 'branch',
+          displayName: 'branch',
+          description: 'branch description',
+          insertText: '/branch ',
+          section: 'available',
+          entryId: 'branch-entry',
           requiresResolution: true,
         },
         {
@@ -400,6 +500,57 @@ describe('portal.editor.list_invocables', () => {
       builtAt: '2026-10-08T00:00:00.000Z',
     });
   });
+
+  it.each([
+    ['review', undefined, 'review'],
+    ['review', '   ', 'review'],
+    ['review', ' original-review ', 'original-review'],
+    ['generated-review', 'review/deep:thing', 'review/deep:thing'],
+    ['other:review:deep', undefined, 'review:deep'],
+  ])(
+    'projects plugin identity independently of invocation %s',
+    async (name, sourceName, memberName) => {
+      const pluginEntry = entry({
+        id: 'identity-entry',
+        name,
+        sourceName,
+        enableRef: {
+          kind: 'plugin',
+          marketplaceId: 'market',
+          pluginName: 'code-review',
+        },
+      });
+      mockedList.mockResolvedValue({
+        success: true,
+        data: { entries: [pluginEntry], stale: false, rebuilding: false },
+      });
+      const { context, complete, fail, dispatch } = harness();
+      await handlePortalEditorListInvocables(
+        envelope('portal.editor.list_invocables', { target: WORKTREE_TARGET }),
+        context,
+      );
+      expect(fail).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(complete.mock.calls[0]?.[1]).toHaveProperty(
+        'commands',
+        expect.arrayContaining([
+          {
+            name,
+            displayName: name,
+            description: `${name} description`,
+            insertText: `/${name} `,
+            pluginName: 'code-review',
+            memberName,
+            section: 'available',
+            entryId: 'identity-entry',
+            requiresResolution: true,
+          },
+        ]),
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(mockedResolve).not.toHaveBeenCalled();
+    },
+  );
 
   it('counts an Agent model selection as enabled', async () => {
     mockedQuery.mockResolvedValue(
@@ -498,7 +649,7 @@ describe('portal.editor.list_invocables', () => {
       worktreeId: 'entry-1',
     });
     expect(mockedList).toHaveBeenCalledWith({ providerType: 'codex' });
-    expect(mockedReadFile).not.toHaveBeenCalled();
+    expect(readWorkspaceWorktrees).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledTimes(1);
     expect(complete.mock.calls[0]?.[1]).toHaveProperty('commands');
   });

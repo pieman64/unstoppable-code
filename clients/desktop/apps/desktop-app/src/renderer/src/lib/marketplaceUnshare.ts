@@ -1,10 +1,16 @@
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   MarketplaceUnshareError,
+  marketplaceUnsharedNotice,
   marketplaceUnshareReasonForStatus,
   type MarketplaceUnshareKind,
 } from '@canopy/ui-shared/lib/marketplace-unshare';
 import { readSharedResourceErrorStatus } from './sharedResourceErrors';
+import { postShareToast } from './share-toast';
+import {
+  SHARED_AGENTS_CHANGED_EVENT,
+  SHARED_PLUGINS_CHANGED_EVENT,
+} from '@/hooks/useSharedMarketplaceShares';
 
 /**
  * Deletes an account share through the existing preload methods, for the
@@ -46,4 +52,38 @@ export async function unshareMarketplaceResource(
       error instanceof Error ? error.message : undefined,
     );
   }
+}
+
+/** The team or organization a share reaches, for the Unshare confirmation. */
+export function unshareOwnerName(owner: {
+  type: string;
+  name?: string | null;
+}): string | null {
+  if (owner.type !== 'team' && owner.type !== 'organization') return null;
+  return owner.name?.trim() || null;
+}
+
+/**
+ * What follows a confirmed Unshare, from a detail or a Shared by me row
+ * (CAN-4840): the kind's shared list re-reads and a toast confirms it.
+ */
+export function followMarketplaceUnshare(
+  kind: MarketplaceUnshareKind,
+  name: string,
+  refresh: {
+    readonly sharedSkills: () => Promise<void>;
+    readonly sharedCollections: () => Promise<void>;
+  },
+): void {
+  if (kind === 'skill') void refresh.sharedSkills().catch(() => {});
+  if (kind === 'collection') void refresh.sharedCollections().catch(() => {});
+  if (kind === 'agent')
+    window.dispatchEvent(new Event(SHARED_AGENTS_CHANGED_EVENT));
+  if (kind === 'plugin')
+    window.dispatchEvent(new Event(SHARED_PLUGINS_CHANGED_EVENT));
+  postShareToast({
+    tone: 'success',
+    message: marketplaceUnsharedNotice(name),
+    blockMessageFromReplay: true,
+  });
 }

@@ -37,6 +37,7 @@ function makeEnvelope(
     digest,
     snapshot: {
       activePage: 'overview',
+      archivedContainers: { count: 0, viewerOpen: false },
       overlays: {
         commandPaletteOpen: false,
         fileSearchPaletteOpen: false,
@@ -327,6 +328,7 @@ describe('AppAdvisorMainRuntimeBridge', () => {
         kind: 'dispatch_action',
         requestId: 'dispatch-cancelled',
         action: { type: 'navigation.go_to_page', page: 'pipelines' },
+        originWorktreeId: 'entry-1',
       });
       await Promise.resolve();
     });
@@ -398,6 +400,7 @@ describe('AppAdvisorMainRuntimeBridge', () => {
         kind: 'dispatch_action',
         requestId: 'dispatch-cancelled-before-start',
         action: { type: 'navigation.go_to_page', page: 'pipelines' },
+        originWorktreeId: 'entry-1',
       });
       harness.cancellationListener({
         requestId: 'dispatch-cancelled-before-start',
@@ -589,6 +592,7 @@ describe('AppAdvisorMainRuntimeBridge', () => {
     const request: AppAdvisorRendererToolRequest = {
       kind: 'dispatch_action',
       requestId: 'dispatch-retried',
+      originWorktreeId: 'entry-1',
       action: {
         type: 'worktree.create',
         workspaceId: 'ws-1',
@@ -628,6 +632,7 @@ describe('AppAdvisorMainRuntimeBridge', () => {
     const request: AppAdvisorRendererToolRequest = {
       kind: 'dispatch_action',
       requestId: 'dispatch-in-flight',
+      originWorktreeId: 'entry-1',
       action: {
         type: 'worktree.create',
         workspaceId: 'ws-1',

@@ -22,6 +22,12 @@ function makeTab(overrides: Partial<ChatTab>): ChatTab {
     planMode: overrides.planMode ?? false,
     thinkingLevel: overrides.thinkingLevel ?? 'high',
     proposalMode: overrides.proposalMode ?? 'optional',
+    modelConfig: {
+      thinkingLevel: overrides.thinkingLevel ?? 'high',
+      speed: 'standard',
+      fastMode: false,
+    },
+    fastModeExplicit: false,
     unread: overrides.unread,
     pendingPlanExit: overrides.pendingPlanExit,
     lastEventAt: overrides.lastEventAt,

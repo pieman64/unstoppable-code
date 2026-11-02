@@ -9,3 +9,4 @@ export * from './unsaved-changes';
 export * from './WorkflowsNotices';
 export * from './PipelineTriggers';
 export * from './edit-shell';
+export * from './PipelineRunContextFields';

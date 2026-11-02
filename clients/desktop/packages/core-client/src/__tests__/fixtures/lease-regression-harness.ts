@@ -1,5 +1,6 @@
 import {
   type CanopyClientError,
+  type CanopyDeliveryAttempt,
   createCanopyClientLease,
   type CanopyClientLease,
 } from '../../index';
@@ -38,7 +39,7 @@ export interface Harness {
   presence: { interactive: boolean; foreground: boolean };
   readPresence: jest.Mock<Harness['presence'], []>;
   issued: string[];
-  attach: jest.Mock<Promise<LeaseTestClient>, []>;
+  attach: jest.Mock<Promise<LeaseTestClient>, [CanopyDeliveryAttempt]>;
   advance: (ms: number) => Promise<void>;
   /** Holds the next attach until the returned gate opens. */
   holdAttach: () => Gate;
@@ -54,12 +55,14 @@ export async function setup(onError?: OnError): Promise<Harness> {
   const presence = { interactive: true, foreground: true };
   const readPresence = jest.fn(() => presence);
   let attachGate = Promise.resolve();
-  const attach = jest.fn(async () => {
-    await attachGate;
-    const client = await core.connect();
-    clients.push(client);
-    return client;
-  });
+  const attach = jest.fn<Promise<LeaseTestClient>, [CanopyDeliveryAttempt]>(
+    async () => {
+      await attachGate;
+      const client = await core.connect();
+      clients.push(client);
+      return client;
+    },
+  );
   jest.useFakeTimers({
     doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'queueMicrotask'],
   });

@@ -1,7 +1,13 @@
+import { initialChatTurnState } from '@canopy/agent-transcript/turn';
+import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
 import type {
   ApprovalRule,
+  ChatRuntimeState,
+  ChatSendMessageRequest,
+  ChatStateChange,
   ChatStateChangedEvent,
   ChatStateCommandPort,
+  PersistedHostQueuedMessage,
   PersistedChatMessage,
 } from '@canopy/desktop-shared/types';
 import type {
@@ -27,8 +33,14 @@ const caller = {
   clientInstanceId: 'electron-main-chat-push',
   authorityId: 'local-desktop',
   interfaceKind: 'test' as const,
-  grants: ['core.chat.read'],
+  grants: ['core.chat.read' as const],
 };
+
+function persistedTurnState(): PersistedChatTurnState {
+  const { cursors, ...persistedState } = initialChatTurnState();
+  void cursors;
+  return persistedState;
+}
 
 function makeHarness(): {
   runtime: ReturnType<typeof createDesktopRuntime>;
@@ -50,6 +62,7 @@ function makeHarness(): {
     getTranscriptPage: jest.fn(),
     searchTranscript: jest.fn(),
     readToolOutput: jest.fn(),
+    readVisual: jest.fn(),
     command: jest.fn(),
     subscribe,
   };
@@ -302,6 +315,110 @@ describe('core.chat.events desktop stream', () => {
     });
     resumed.handle.close();
     first.handle.close();
+    await runtime.shutdown();
+  });
+
+  it('streams an aggregate revision as one portable event with one cursor', async () => {
+    const { runtime, listeners } = makeHarness();
+    const scopedCaller = { ...caller, clientInstanceId: 'aggregate-consumer' };
+    const opened = await runtime.openStream(
+      'core.chat.events',
+      { scope: { projectId: 'project-1', worktreeId: 'worktree-1' } },
+      { caller: scopedCaller },
+    );
+    const changes: ChatStateChange[] = [
+      {
+        type: 'message.upserted',
+        chatId: 'chat-1',
+        message: {
+          id: 'assistant-1',
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'growing text 1' }],
+          timestamp: 1,
+        },
+      },
+      {
+        type: 'message.upserted',
+        chatId: 'chat-1',
+        message: {
+          id: 'assistant-1',
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'growing text 2' }],
+          timestamp: 1,
+        },
+      },
+      {
+        type: 'message.upserted',
+        chatId: 'chat-1',
+        message: {
+          id: 'assistant-1',
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'final content' }],
+          timestamp: 1,
+        },
+      },
+      {
+        type: 'runtime.patched',
+        chatId: 'chat-1',
+        runtime: {
+          status: 'streaming',
+          queuedMessageIds: [],
+          lastActivityAt: 10,
+        },
+      },
+      {
+        type: 'runtime.patched',
+        chatId: 'chat-1',
+        runtime: {
+          status: 'streaming',
+          queuedMessageIds: [],
+          lastActivityAt: 11,
+        },
+      },
+      {
+        type: 'message.upserted',
+        chatId: 'chat-1',
+        message: {
+          id: 'assistant-2',
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'new row' }],
+          timestamp: 2,
+        },
+      },
+    ];
+    const aggregate: ChatStateChangedEvent = {
+      schemaVersion: 1,
+      eventId: 'aggregate-event',
+      occurredAt: '2026-09-30T00:00:00.000Z',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      baseRevision: 40,
+      revision: 41,
+      changes,
+    };
+
+    listeners.forEach((listener) => listener(aggregate));
+    const frame = await nextFrame(opened.frames[Symbol.asyncIterator]());
+    if (frame.kind !== 'item') throw new Error('Expected a chat event item.');
+
+    expect(frame.item).toMatchObject({
+      schemaVersion: 1,
+      eventId: 'aggregate-event',
+      baseRevision: 40,
+      revision: 41,
+      changes,
+    });
+    expect(frame.item.changes).toEqual(changes);
+    expect(frame.item.changes[2]).toMatchObject({
+      type: 'message.upserted',
+      message: {
+        id: 'assistant-1',
+        blocks: [{ type: 'text', text: 'final content' }],
+      },
+    });
+    expect(frame.cursor).toMatchObject({ sequence: 1 });
+
+    opened.close();
     await runtime.shutdown();
   });
 
@@ -634,6 +751,80 @@ describe('core.chat.events desktop stream', () => {
     expect(end).toMatchObject({ kind: 'end', outcome: 'cancelled' });
     await new Promise(setImmediate);
     expect(listeners.size).toBe(0);
+    await runtime.shutdown();
+  });
+
+  it('filters internal queue ids from portable runtime patch events', async () => {
+    const { runtime, listeners } = makeHarness();
+    const opened = await runtime.openStream(
+      'core.chat.events',
+      { scope: { projectId: 'project-1', worktreeId: 'worktree-1' } },
+      { caller: { ...caller, clientInstanceId: 'scoped-consumer' } },
+    );
+    const target = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const queuedMessage = (
+      id: string,
+      request: Pick<
+        ChatSendMessageRequest,
+        'internalRow' | 'managedDelegationDeliveryId'
+      >,
+    ): PersistedHostQueuedMessage => ({
+      id,
+      request: { ...target, userMessageId: id, text: id, ...request },
+      origin: 'desktop',
+      enqueuedAtMs: 1,
+    });
+    const runtimeState: ChatRuntimeState & { turn: PersistedChatTurnState } = {
+      status: 'streaming',
+      queuedMessageIds: ['internal-row', 'visible-row', 'unknown-row'],
+      turn: persistedTurnState(),
+      queuedMessages: [
+        queuedMessage('internal-row', {
+          managedDelegationDeliveryId: 'internal-row',
+          internalRow: {
+            kind: 'delegation-request',
+            delegationId: 'delegate-1',
+            displayLine: 'Waiting for parent input',
+          },
+        }),
+        queuedMessage('visible-row', {}),
+      ],
+    };
+    const event: ChatStateChangedEvent = {
+      schemaVersion: 1,
+      eventId: 'runtime-patch-event',
+      occurredAt: '2026-10-13T00:00:00.000Z',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      baseRevision: 0,
+      revision: 1,
+      changes: [
+        { type: 'runtime.patched', chatId: 'chat-1', runtime: runtimeState },
+      ],
+    };
+
+    listeners.forEach((listener) => listener(event));
+    const frame = await nextFrame(opened.frames[Symbol.asyncIterator]());
+
+    if (frame.kind !== 'item') throw new Error('Expected a chat event item.');
+    expect(frame.item.changes).toMatchObject([
+      {
+        type: 'runtime.patched',
+        runtime: { queuedMessageIds: ['visible-row', 'unknown-row'] },
+      },
+    ]);
+    expect(frame.item.changes[0]).not.toHaveProperty('runtime.queuedMessages');
+    expect(frame.item.changes[0]).not.toHaveProperty('runtime.turn');
+    expect(runtimeState.queuedMessageIds).toEqual([
+      'internal-row',
+      'visible-row',
+      'unknown-row',
+    ]);
+    opened.close();
     await runtime.shutdown();
   });
 

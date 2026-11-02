@@ -8,6 +8,33 @@ export function isDailyDripBlockedReason(
   return value === 'network_limit' || value === 'network_unidentified';
 }
 
+/**
+ * What one daily-drip grant attempt did (CAN-4633). `blocked` carries a
+ * {@link DailyDripBlockedReason}; `already_granted` and `at_cap` are not
+ * blocks (today's drip exists, or the unused drip already fills the cap).
+ */
+export const DAILY_DRIP_GRANT_OUTCOMES = [
+  'granted',
+  'already_granted',
+  'at_cap',
+  'blocked',
+  'not_opted_in',
+  'not_eligible',
+  'failed',
+] as const;
+
+export type DailyDripGrantOutcome = (typeof DAILY_DRIP_GRANT_OUTCOMES)[number];
+
+const DAILY_DRIP_GRANT_OUTCOME_SET: ReadonlySet<unknown> = new Set(
+  DAILY_DRIP_GRANT_OUTCOMES,
+);
+
+export function isDailyDripGrantOutcome(
+  value: unknown,
+): value is DailyDripGrantOutcome {
+  return DAILY_DRIP_GRANT_OUTCOME_SET.has(value);
+}
+
 import type { BillingPresentation, EntitlementSource } from './types';
 import {
   selectedContextOrganization,

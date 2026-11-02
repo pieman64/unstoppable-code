@@ -166,7 +166,7 @@ describe('SkeletonBlock', () => {
       'bg-muted',
       'animate-pulse',
       'motion-reduce:animate-none',
-      'rounded-sm',
+      'rounded-full',
       'h-3.5',
       'w-1/3',
       'mt-2',
@@ -179,6 +179,9 @@ describe('SkeletonBlock', () => {
     ['circle', ['size-8', 'rounded-full']],
     ['square', ['size-8', 'rounded-md']],
     ['toggle', ['h-5', 'w-9', 'rounded-full']],
+    ['dot', ['size-3.5', 'rounded-full']],
+    ['badge', ['h-5', 'w-16', 'rounded-full']],
+    ['control', ['h-7', 'w-20', 'rounded-full']],
   ] as const)('draws the %s shape at its own size', (shape, classes) => {
     render(<SkeletonBlock shape={shape} height="value" width="full" />);
     const block = container.firstElementChild;

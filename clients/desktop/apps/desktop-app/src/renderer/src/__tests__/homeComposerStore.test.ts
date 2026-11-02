@@ -319,6 +319,95 @@ describe('homeComposerStore defaults', () => {
     expect(state.fileIndex).toBeNull();
     expect(state.fileIndexLoading).toBe(false);
     expect(state.scheduledSendDraft).toBeNull();
+    expect(state.workspaceSelectionReason).toBeNull();
+  });
+});
+
+describe('homeComposerStore workspace selection reason (CAN-4674)', () => {
+  beforeEach(() => {
+    useProjectsStore.setState({
+      projects: [makeProject('proj-a'), makeProject('proj-b')],
+    });
+  });
+
+  it('records a reason and replaces it with the next selection', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBe(
+      'most-recent-import',
+    );
+    store.selectWorkspace('proj-b');
+    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBeNull();
+  });
+
+  it('clears the reason when the same workspace is selected again', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    store.selectWorkspace('proj-a', { explicit: true });
+    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBeNull();
+  });
+
+  it('never keeps a reason without a selected workspace', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    store.selectWorkspace(null, { reason: 'most-recent-import' });
+    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBeNull();
+  });
+
+  it('reset clears the reason and advances the selection generation', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    const generation =
+      useHomeComposerStore.getState().workspaceSelectionGeneration;
+    store.reset();
+    const state = useHomeComposerStore.getState();
+    expect(state.workspaceSelectionReason).toBeNull();
+    expect(state.workspaceSelectionGeneration).toBe(generation + 1);
+  });
+
+  it('every selection advances the generation, even of the same workspace', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a');
+    const generation =
+      useHomeComposerStore.getState().workspaceSelectionGeneration;
+    store.selectWorkspace('proj-a');
+    expect(useHomeComposerStore.getState().workspaceSelectionGeneration).toBe(
+      generation + 1,
+    );
+  });
+
+  it('invalidates older reviews when a same-project Apply clears provenance', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    const generation =
+      useHomeComposerStore.getState().workspaceSelectionGeneration;
+    store.clearWorkspaceSelectionReason();
+    expect(useHomeComposerStore.getState().workspaceSelectionGeneration).toBe(
+      generation + 1,
+    );
+    // A second successful review must supersede pending completions too,
+    // even after the hint has already gone.
+    store.clearWorkspaceSelectionReason();
+    expect(useHomeComposerStore.getState().workspaceSelectionGeneration).toBe(
+      generation + 2,
+    );
+  });
+
+  it('typing keeps the reason, and clearing it keeps the draft', () => {
+    const store = useHomeComposerStore.getState();
+    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    store.setText('Fix the login flow');
+    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBe(
+      'most-recent-import',
+    );
+    const generation =
+      useHomeComposerStore.getState().workspaceSelectionGeneration;
+    store.clearWorkspaceSelectionReason();
+    const state = useHomeComposerStore.getState();
+    expect(state.workspaceSelectionReason).toBeNull();
+    expect(state.text).toBe('Fix the login flow');
+    expect(state.workspaceId).toBe('proj-a');
+    expect(state.workspaceSelectionGeneration).toBe(generation + 1);
   });
 });
 
@@ -700,6 +789,24 @@ describe('homeComposerStore simple field actions', () => {
     expect(useHomeComposerStore.getState().model).toBeUndefined();
   });
 
+  it('cycles declared Sol Low in Home with the same model-aware stops', () => {
+    initCodexModels([
+      {
+        id: 'gpt-6.1-sol',
+        label: 'GPT 6.1 Sol',
+        supportedThinkingLevels: ['low', 'medium', 'high'],
+      },
+    ]);
+    useHomeComposerStore.setState({
+      model: 'gpt-6.1-sol',
+      thinkingLevel: 'high',
+    });
+    useHomeComposerStore.getState().cycleThinkingLevel();
+    expect(useHomeComposerStore.getState().thinkingLevel).toBe('low');
+    useHomeComposerStore.getState().cycleThinkingLevel();
+    expect(useHomeComposerStore.getState().thinkingLevel).toBe('medium');
+  });
+
   it('cycleThinkingLevel starts from the effective resolved default (undefined draft, no workspace/modelDefaults)', () => {
     // No workspace selected and `modelDefaults` unseeded (see `resetStores`)
     // — `resolveHomeEffectiveDefaults` falls back to `FALLBACK_THINKING_LEVEL`
@@ -707,9 +814,9 @@ describe('homeComposerStore simple field actions', () => {
     // fixed starting point.
     //
     // The cycle is MODEL-AWARE (plan Task 3.2): it walks the resolved model's
-    // declared level set plus the desktop host's `off` rung, not the static
-    // `THINKING_UI_LEVELS` list. The fallback model declares
-    // off/medium/high/xhigh/max, so `ultra` is never a stop here — a model
+    // declared canonical set, not the static legacy UI list. The desktop's
+    // native fallback supports off/low/medium/high/xhigh/max, so `ultra`
+    // is never a stop here — a model
     // that does not declare a level must not be cyclable onto it.
     const store = useHomeComposerStore;
     expect(store.getState().thinkingLevel).toBeUndefined();
@@ -720,8 +827,10 @@ describe('homeComposerStore simple field actions', () => {
     store.getState().cycleThinkingLevel();
     expect(store.getState().thinkingLevel).toBe('off');
     // Task F1: `undefined` ("project default") is no longer a cycle stop —
-    // the cycle wraps straight back to 'medium' after 'off', always landing
+    // the cycle wraps back to the supported Low after Off, always landing
     // on a concrete level (this "touches" the draft on every step).
+    store.getState().cycleThinkingLevel();
+    expect(store.getState().thinkingLevel).toBe('low');
     store.getState().cycleThinkingLevel();
     expect(store.getState().thinkingLevel).toBe('medium');
     store.getState().cycleThinkingLevel();
@@ -829,6 +938,7 @@ describe('homeComposerStore simple field actions', () => {
         {
           modelId: 'routed-claude-model',
           gatewayId: 'provider/routed-claude-model',
+          family: 'anthropic',
           recommendedHarness: 'claude',
           gatewayOnly: false,
           contextWindow: 100_000,
@@ -910,7 +1020,7 @@ describe('homeComposerStore simple field actions', () => {
       modelDefaults: makeModelDefaultsFixture({
         worktreeProvider: 'codex',
         worktreeModelByProvider: {
-          claude: null,
+          claude: { model: 'worktree-claude-model', thinkingLevel: 'high' },
           codex: {
             model: 'default-limited-codex',
             thinkingLevel: 'high',
@@ -2135,7 +2245,7 @@ describe('homeComposerStore loadDiscovery', () => {
 
     expect(useHomeComposerStore.getState().discovery).toEqual(discoveryB);
 
-    deferredA.resolve(makeDiscovery({ discoveredAt: 'stale' }));
+    deferredA.resolve({ discovery: makeDiscovery({ discoveredAt: 'stale' }) });
     await loadA;
     await Promise.resolve();
 
@@ -2167,7 +2277,9 @@ describe('homeComposerStore loadDiscovery', () => {
 
     expect(useHomeComposerStore.getState().discovery).toEqual(secondDiscovery);
 
-    deferredFirst.resolve(makeDiscovery({ discoveredAt: 'stale' }));
+    deferredFirst.resolve({
+      discovery: makeDiscovery({ discoveredAt: 'stale' }),
+    });
     await loadFirst;
     await Promise.resolve();
 
@@ -2202,7 +2314,9 @@ describe('homeComposerStore loadDiscovery', () => {
 
     expect(useHomeComposerStore.getState().discovery).toEqual(secondDiscovery);
 
-    deferredFirst.resolve(makeDiscovery({ discoveredAt: 'stale' }));
+    deferredFirst.resolve({
+      discovery: makeDiscovery({ discoveredAt: 'stale' }),
+    });
     await loadFirst;
     await Promise.resolve();
 

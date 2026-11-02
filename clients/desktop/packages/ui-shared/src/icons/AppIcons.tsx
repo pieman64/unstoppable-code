@@ -4,10 +4,15 @@ import {
   IconRedo,
   IconStar,
   IconListFilter,
+  IconListStart,
+  IconMessageCircleDashed,
+  IconArrowUpDown,
+  IconSearchX,
   IconFileDown,
   IconMonitorDown,
   IconCircleStop,
   IconCircleDashed,
+  IconCirclePause,
   IconCircleX,
   IconCoins,
   IconThumbsUp,
@@ -165,6 +170,7 @@ import {
   IconMinusSmall,
   IconMoon,
   IconNoteText,
+  IconOrbit,
   IconPackage,
   IconPageAttachment,
   IconPageSearch,
@@ -374,8 +380,10 @@ export const AddChatIcon = /* @__PURE__ */ createAppIcon(IconBubblePlus);
 export const AutoIcon = /* @__PURE__ */ createAppIcon(IconLetterACircle);
 export const AutoplayIcon = /* @__PURE__ */ createAppIcon(IconAutoplay);
 export const AgentIcon = /* @__PURE__ */ createAppIcon(IconRobot);
-export const AppAdvisorIcon = /* @__PURE__ */ createAppIcon(IconRobot2);
-export const AgentAssistantIcon = AppAdvisorIcon;
+// Orchestrator (internally App Advisor) uses the orbit; other assistants such
+// as Pipeline Advisor and the Ledger sidecar keep the bot.
+export const AppAdvisorIcon = /* @__PURE__ */ createAppIcon(IconOrbit);
+export const AgentAssistantIcon = /* @__PURE__ */ createAppIcon(IconRobot2);
 export const AppAdvisorWatcherIcon =
   /* @__PURE__ */ createAppIcon(IconEyeSparkle);
 export const ApplePlatformIcon = /* @__PURE__ */ createAppIcon(IconApple, 16);
@@ -447,6 +455,10 @@ export const CodeMediumIcon = /* @__PURE__ */ createAppIcon(IconCodeMedium, 16);
 export const ClaudeIcon = /* @__PURE__ */ adaptLogo(ClaudeLogo, 'ClaudeLogo');
 export const CodexIcon = /* @__PURE__ */ adaptLogo(CodexLogo, 'CodexLogo');
 export const CursorIcon = /* @__PURE__ */ adaptLogo(CursorLogo, 'CursorLogo');
+// The agent setup marks (HermesLogo, MuseLogo, OpenClawLogo, OpenCodeLogo) are
+// manifest glyphs but deliberately not bound here: this module ships with every
+// route, and binding them added ~10.7 KB gzip of first-load JS to each one. The
+// External agents page imports them directly from `@canopy/ui-shared/icons`.
 export const DeepSeekIcon = /* @__PURE__ */ createAppIcon(IconDeepseek, 16);
 export const MiniMaxIcon = /* @__PURE__ */ createAppIcon(IconMinimax, 16);
 export const MoonshotIcon = /* @__PURE__ */ createAppIcon(IconKimi, 16);
@@ -470,6 +482,8 @@ export const DownloadIcon = /* @__PURE__ */ createAppIcon(IconArrowInbox);
 export const EditBigIcon = /* @__PURE__ */ createAppIcon(IconEditBig);
 export const EyeIcon = /* @__PURE__ */ createAppIcon(IconEyeOpen);
 export const EyeOffIcon = /* @__PURE__ */ createAppIcon(IconEyeSlash);
+export const MailIcon = /* @__PURE__ */ createAppIcon(IconEmail1);
+export const MailCheckIcon = /* @__PURE__ */ createAppIcon(IconEmail2Check);
 export const ExperimentIcon = /* @__PURE__ */ createAppIcon(IconLab, 16);
 export const FailedIcon = /* @__PURE__ */ createAppIcon(IconCrossSmall, 12);
 /** The Feed: the Agent Ledger and organization activity, on every surface. */
@@ -869,10 +883,20 @@ export const VibeCodingIcon = /* @__PURE__ */ createAppIcon(IconVibeCoding);
 export const RedoIcon = /* @__PURE__ */ createAppIcon(IconRedo);
 export const StarIcon = /* @__PURE__ */ createAppIcon(IconStar);
 export const ListFilterIcon = /* @__PURE__ */ createAppIcon(IconListFilter);
+export const ListStartIcon = /* @__PURE__ */ createAppIcon(IconListStart);
+export const MessageCircleDashedIcon = /* @__PURE__ */ createAppIcon(
+  IconMessageCircleDashed,
+);
+/** Sort controls: the search field's nested Sort button. */
+export const ArrowUpDownIcon = /* @__PURE__ */ createAppIcon(IconArrowUpDown);
+/** A search with no results: the shared search empty state. */
+export const SearchXIcon = /* @__PURE__ */ createAppIcon(IconSearchX);
 export const FileDownIcon = /* @__PURE__ */ createAppIcon(IconFileDown);
 export const MonitorDownIcon = /* @__PURE__ */ createAppIcon(IconMonitorDown);
 export const CircleStopIcon = /* @__PURE__ */ createAppIcon(IconCircleStop);
 export const CircleDashedIcon = /* @__PURE__ */ createAppIcon(IconCircleDashed);
+/** The Paused status glyph: two bars in a circle. */
+export const CirclePauseIcon = /* @__PURE__ */ createAppIcon(IconCirclePause);
 /** Cancel actions (Cancel plan): an outline X in a circle. */
 export const CircleXIcon = /* @__PURE__ */ createAppIcon(IconCircleX);
 

@@ -19,3 +19,6 @@ export const IMAGE_FILENAME =
  * back `unsupported`, so they stay file chips.
  */
 export const PREVIEWABLE_IMAGE_FILENAME = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+/** Video files: a queued message shows them as a thumbnail with a play glyph. */
+export const VIDEO_FILENAME = /\.(mp4|m4v|mov|webm|mkv|avi)$/i;

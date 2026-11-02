@@ -1,3 +1,50 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
+  ManagedMessageReceiptDecodeError,
+  boundManagedMessageSnapshot,
+  type ManagedMessageReceiptV2,
+} from '@canopy/desktop-shared/node/delegation/managed-message-receipt-v2';
+import {
+  DelegationReadMetadataError,
+  readDelegationRecordMetadata,
+  type DelegationReadMetadataSource,
+} from '@canopy/desktop-shared/node/delegation/record-read-metadata';
+import {
+  DELEGATION_COMPATIBILITY_PAGE_LIMITS,
+  type ResolvedDelegationGeneration,
+  type DelegationRecordReader,
+  type DelegationRecordReadInput,
+} from './record-reader-contract';
+import { UnsupportedDelegationRecordReader } from './record-reader';
+
+import {
+  managedDelegationRecordReader,
+  readMetadataOfRecord,
+} from './host-read-composition';
+
+let delegationReadMetadata: DelegationReadMetadataSource | undefined =
+  readMetadataOfRecord;
+let delegationRecordReader: DelegationRecordReader =
+  managedDelegationRecordReader;
+
+/** Test override boundary; production starts with the lazy host composition. */
+export function configureManagedDelegationReaders(options: {
+  readonly readMetadata?: DelegationReadMetadataSource;
+  readonly reader?: DelegationRecordReader;
+}): () => void {
+  const previousSource = delegationReadMetadata;
+  const previousReader = delegationRecordReader;
+  delegationReadMetadata = options.readMetadata;
+  delegationRecordReader =
+    options.reader ?? new UnsupportedDelegationRecordReader();
+  managedDelegationRootCache.clear();
+  return () => {
+    delegationReadMetadata = previousSource;
+    delegationRecordReader = previousReader;
+    managedDelegationRootCache.clear();
+  };
+}
+
 import { getOpenCodeConnectionGeneration } from '../../opencode/connection';
 import { createOpenCodeDelegationRunner } from './opencode-runner';
 import { getCopilotAccountGeneration } from '../../copilot/connection';
@@ -9,7 +56,24 @@ import {
   MAX_MANAGED_DELEGATION_CONCURRENCY,
   normalizeManagedDelegationMaxConcurrent,
   normalizeManagedDelegationMaxDepth,
+  MAX_MANAGED_DELEGATION_LIFETIME_LIMIT,
+  normalizeManagedDelegationLifetimeLimit,
+  managedDelegationEffectiveLifetimeLimit,
+  DELEGATION_STORAGE_RECORD_LIMIT,
 } from '@canopy/protocol/delegation/discovery';
+import {
+  readDelegationLifetimeBaseline,
+  readDelegationLifetimeBaselineReadOnly,
+  writeDelegationLifetimeBaseline,
+} from '@canopy/desktop-shared/node/delegation/lifetime-baseline';
+import type { DelegationLifetimePolicy } from '@canopy/desktop-shared/node/delegation/broker';
+import { stat } from 'node:fs/promises';
+import {
+  managedDelegationLifetimeStatus,
+  type LifetimeScope,
+  type LifetimeSnapshot,
+} from './lifetime-status';
+import type { ManagedDelegationLifetimeStatus } from '@canopy/protocol/delegation';
 import {
   createIsolatedDelegationWorktree,
   reconcileIsolatedDelegationWorktree,
@@ -32,6 +96,7 @@ import {
 } from '../../lib/canopy-cloud-account-store';
 import type { JsonValue } from '@canopy/protocol';
 import type { ChatInputAdmission } from '@canopy/protocol/portal/input-delivery';
+import type { ManagedDelegateSender } from '@canopy/protocol/portal/external-agent-sender';
 import type {
   AgentDelegationTranscript,
   AgentDelegationTranscriptItem,
@@ -40,15 +105,18 @@ import type {
   AgentDelegationSnapshot,
   DelegationApplyFailure,
   DelegationWorkspaceChanges,
-  WatchDelegatesValue,
   ManagedDelegationTreeEntry,
   ManagedDelegationRootEntry,
   ManagedDelegationTranscriptPage,
   ManagedDelegationWorktreeSummary,
 } from '@canopy/protocol/delegation';
-import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
+import {
+  DELEGATION_TRANSCRIPT_CHAT_LOG,
+  DELEGATION_TRANSCRIPT_CHAT_STREAM,
+} from '@canopy/protocol/delegation';
 import {
   IPC_CHANNELS,
+  type ChatInternalRow,
   type ChatStateChangedEvent,
   type ManagedDelegationMessageRequest,
   type ManagedDelegationMessageResult,
@@ -76,8 +144,16 @@ import {
   DELEGATION_APPLY_RESPONSE_WAIT_MS,
   projectStoredDelegationSnapshot,
   type DelegationApplyJournal,
+  type GenerationStoreDecision,
   type StoredDelegation,
+  type StoredDelegateOutput,
+  type DelegationStorage,
 } from '@canopy/desktop-shared/node/delegation/broker';
+import {
+  delegationRecordLastActivityAt,
+  legacyCurrentTranscript,
+  legacyPrefixView,
+} from '@canopy/desktop-shared/node/delegation/record-v3';
 import { AgentRunnerRegistry } from '@canopy/desktop-shared/node/delegation/runner-registry';
 import {
   FileDelegationStorage,
@@ -102,6 +178,7 @@ import { getWorktreeDataDir } from '../../lib/paths';
 import { validateId } from '../../lib/validation';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { sendToWindow } from '../../lib/window-send';
+import { wakeLockHolder, wakeLockHolderKey } from '@canopy/core-runtime';
 import { getWakeLockService } from '../../power/wake-lock-service';
 import { createClaudeDelegationRunner } from './claude-runner';
 import { createCodexDelegationRunner } from './codex-runner';
@@ -164,6 +241,11 @@ import { DelegationLiveFrames } from './item-changes';
 import { buildManagedDelegationToolPrompt } from '../../canopy-tools/prompting';
 import { getObservabilityService } from '../../observability';
 import { ManagedChildMessageInbox } from './child-messages';
+import { DelegationNoticeAckStore } from './notice-acks';
+import {
+  DelegationNoticeDelivery,
+  delegationNoticeRootParentKey,
+} from './notice-delivery';
 import { WatcherRecipientNotReadyError } from '../../app-advisor/local-watcher-scheduler';
 import type { LedgerContainer } from '@canopy/protocol/canopy-core';
 import {
@@ -186,10 +268,197 @@ const DELEGATION_HARNESSES = [
 ] as const;
 type DelegationHarness = (typeof DELEGATION_HARNESSES)[number];
 
+export type ManagedDelegationLifetimeLimitResult =
+  | {
+      readonly ok: true;
+      readonly baseline: number;
+      readonly effectiveLimit: number;
+      readonly retained: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'at_cap' | 'no_increase' | 'unavailable';
+    };
+
+/** Host policy construction. The shipped singleton never overrides the measured cap. */
+export class ManagedDelegationLifetimeService {
+  private setting: unknown;
+  readonly cap: number;
+  constructor(options: { readonly measuredCap?: number } = {}) {
+    const cap = options.measuredCap ?? MAX_MANAGED_DELEGATION_LIFETIME_LIMIT;
+    if (!Number.isSafeInteger(cap) || cap < 1)
+      throw new Error('Invalid delegation lifetime cap');
+    this.cap = Math.min(cap, DELEGATION_STORAGE_RECORD_LIMIT);
+  }
+
+  update(value: unknown): void {
+    this.setting = this.normalize(value);
+  }
+
+  normalize(value: unknown): number {
+    return normalizeManagedDelegationLifetimeLimit(value, this.cap);
+  }
+
+  createOwner(options: {
+    readonly storage: FileDelegationStorage;
+    readonly retained: () => number;
+    readonly active: () => boolean;
+    readonly initialSetting?: number;
+  }): ManagedDelegationLifetimeOwner {
+    return new ManagedDelegationLifetimeOwner(
+      options.storage,
+      options.retained,
+      options.active,
+      () => this.normalize(this.setting ?? options.initialSetting),
+      this.cap,
+    );
+  }
+}
+
+class ManagedDelegationLifetimeOwner {
+  private baseline = 0;
+  private unavailable: 'unreadable' | 'uncertain' | undefined;
+  private queue: Promise<void> = Promise.resolve();
+  private retired = false;
+  constructor(
+    private readonly storage: FileDelegationStorage,
+    private readonly retained: () => number,
+    private readonly active: () => boolean,
+    private readonly setting: () => number,
+    private readonly cap: number,
+  ) {}
+
+  async initialize(): Promise<void> {
+    try {
+      this.baseline = await readDelegationLifetimeBaseline(this.storage);
+    } catch {
+      this.unavailable = 'unreadable';
+    }
+  }
+
+  policy(): DelegationLifetimePolicy {
+    if (this.unavailable)
+      return { kind: 'unavailable', reason: this.unavailable };
+    const limit = managedDelegationEffectiveLifetimeLimit(
+      this.baseline,
+      this.setting(),
+      this.cap,
+    );
+    const next = managedDelegationEffectiveLifetimeLimit(
+      this.retained(),
+      this.setting(),
+      this.cap,
+    );
+    return {
+      kind: 'available',
+      limit,
+      extension:
+        limit >= this.cap ? 'at_cap' : next > limit ? 'possible' : 'none',
+    };
+  }
+
+  close(): Promise<void> {
+    this.retired = true;
+    return this.queue;
+  }
+
+  extendLifetimeLimit(): Promise<ManagedDelegationLifetimeLimitResult> {
+    const result = this.queue.then(() => this.extendCommittedBaseline());
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async extendCommittedBaseline(): Promise<ManagedDelegationLifetimeLimitResult> {
+    if (this.retired || !this.active() || this.unavailable)
+      return { ok: false, reason: 'unavailable' };
+    // Confirm inside the single owner queue before counting or checking eligibility.
+    await this.initialize();
+    if (this.retired || !this.active() || this.unavailable)
+      return { ok: false, reason: 'unavailable' };
+    const policy = this.policy();
+    if (policy.kind !== 'available')
+      return { ok: false, reason: 'unavailable' };
+    if (policy.extension === 'at_cap') return { ok: false, reason: 'at_cap' };
+    if (policy.extension === 'none')
+      return { ok: false, reason: 'no_increase' };
+    const retained = this.retained();
+    const extended = (): ManagedDelegationLifetimeLimitResult => {
+      this.baseline = retained;
+      this.unavailable = undefined;
+      return {
+        ok: true,
+        baseline: retained,
+        effectiveLimit: managedDelegationEffectiveLifetimeLimit(
+          retained,
+          this.setting(),
+          this.cap,
+        ),
+        retained,
+      };
+    };
+    const outcome = await writeDelegationLifetimeBaseline(
+      this.storage,
+      retained,
+    );
+    if (outcome.outcome === 'written') return extended();
+    if (outcome.outcome === 'not_written')
+      return { ok: false, reason: 'unavailable' };
+    this.unavailable = 'uncertain';
+    let confirmed: number | undefined;
+    try {
+      confirmed = await readDelegationLifetimeBaseline(this.storage);
+    } catch {
+      // Admission stays fenced until a confirmed actor is constructed afresh.
+    }
+    // The re-read decides: the new value confirms the write, the old restores it.
+    if (confirmed === retained) return extended();
+    if (confirmed === this.baseline) this.unavailable = undefined;
+    return { ok: false, reason: 'unavailable' };
+  }
+}
+
+let managedDelegationLifetimeService = new ManagedDelegationLifetimeService();
+
+/** Test composition only; an active actor's policy owner cannot be replaced. */
+export function configureManagedDelegationLifetimeService(
+  service: ManagedDelegationLifetimeService,
+): () => void {
+  if (actors.size) throw new Error('Delegation actors are already initialized');
+  const previous = managedDelegationLifetimeService;
+  managedDelegationLifetimeService = service;
+  managedDelegationLifetimeStatus.changedAll();
+  return () => {
+    managedDelegationLifetimeService = previous;
+    managedDelegationLifetimeStatus.changedAll();
+  };
+}
+
+export function updateManagedDelegationLifetimeLimit(value: unknown): void {
+  managedDelegationLifetimeService.update(value);
+  for (const [directory, pending] of Array.from(actors)) {
+    void pending
+      .then((actor): void => {
+        if (actors.get(directory) === pending)
+          managedDelegationLifetimeStatus.observe(
+            actor.scope,
+            actor.broker.lifetimeSnapshot(),
+          );
+      })
+      .catch(reportError);
+  }
+}
+
 interface Actor {
+  scope: LifetimeScope;
   broker: AgentDelegationBroker;
+  lifetime: ManagedDelegationLifetimeOwner;
   runtime: DelegationRouteRuntime;
   childMessages: ManagedChildMessageInbox;
+  notices: DelegationNoticeDelivery;
+  noticeStore: DelegationNoticeAckStore;
   /** The latest attached session's window lookup; sessions may come and go. */
   window: { current: () => BrowserWindow | null };
 }
@@ -212,9 +481,12 @@ function chatKey(target: ManagedDelegationChatTarget): string {
 /** Closes an actor's broker and drops its per-actor capability cache. */
 async function closeActor(actor: Actor): Promise<void> {
   try {
+    await actor.lifetime.close();
     await actor.broker.close();
   } finally {
     actor.runtime.dispose();
+    await actor.notices.close();
+    await actor.noticeStore.flush();
   }
 }
 const actors = new Map<string, Promise<Actor>>();
@@ -222,6 +494,23 @@ const actors = new Map<string, Promise<Actor>>();
 const sessions = new Set<ManagedDelegationSession>();
 /** Chat-scoped tree owners, keyed by `${projectId}/${worktreeId}/${chatId}`. */
 const roots = new Map<string, ManagedDelegationChatRoot>();
+/** Captured before root lookup, including callbacks during broker.initialize. */
+interface StreamCreationSlot {
+  readonly target: ManagedDelegationChatTarget;
+  creation?: AgentDelegationTranscript;
+  latest?: AgentDelegationTranscript;
+}
+const streamCreations = new Map<string, StreamCreationSlot>();
+function streamCreationKey(
+  target: ManagedDelegationChatTarget,
+  transcript: AgentDelegationTranscript,
+): string {
+  return JSON.stringify([
+    chatKey(target),
+    transcript.delegationId,
+    transcript.runGeneration,
+  ]);
+}
 const managedDelegationRootCache = new Map<
   string,
   {
@@ -351,7 +640,6 @@ function isWireJson(value: unknown): value is JsonValue {
 }
 function names(harness: DelegationHarness): {
   spawn: string;
-  watch: string;
   output: string;
   inspect: string;
   list: string;
@@ -372,7 +660,6 @@ function names(harness: DelegationHarness): {
       : name;
   return {
     spawn: bare(tools.delegateTask),
-    watch: bare(tools.watchDelegates),
     output: bare(tools.getDelegateOutput),
     inspect: bare(tools.inspectDelegate),
     list: bare(tools.listDelegates),
@@ -416,12 +703,60 @@ export async function deliverManagedDelegationWatcherToChild(
   }
 }
 
+/** Reads result metadata only; notices must never hydrate child output. */
+async function noticeResults(
+  record: StoredDelegation,
+): Promise<readonly StoredDelegateOutput[]> {
+  const results = [...(legacyPrefixView(record).results ?? [])];
+  if (record.version !== 3 || !record.latestResult) return results;
+  const legacyGeneration = results.reduce(
+    (latest, result) => Math.max(latest, result.runGeneration),
+    0,
+  );
+  for (
+    let runGeneration = legacyGeneration + 1;
+    runGeneration <= record.latestResult.runGeneration;
+    runGeneration += 1
+  ) {
+    const resolved = await delegationRecordReader.resolveGenerationOutcome(
+      recordReadInput(record),
+      runGeneration,
+    );
+    if (resolved.kind === 'unavailable')
+      throw new Error(resolved.failure.message);
+    if (resolved.kind !== 'settled') continue;
+    const { resultIndex, outcome } = resolved.result;
+    results.push({
+      resultIndex,
+      runGeneration,
+      status: outcome.status,
+      settledAt: outcome.finishedAt,
+      outputTruncated: false,
+      ...(outcome.stopReason ? { stopReason: outcome.stopReason } : {}),
+      ...(outcome.error ? { error: outcome.error } : {}),
+    });
+  }
+  return results;
+}
+
+function latestNoticeResultIndex(record: StoredDelegation): number | null {
+  const indices = (legacyPrefixView(record).results ?? []).map(
+    (result) => result.resultIndex,
+  );
+  if (record.version === 3 && record.latestResult)
+    indices.push(record.latestResult.resultIndex);
+  return indices.length > 0 ? Math.max(...indices) : null;
+}
+
 async function actorFor(
-  options: AgentSessionOptions,
+  options: Pick<
+    AgentSessionOptions,
+    'projectId' | 'worktreeId' | 'cwd' | 'managedDelegationLifetimeLimit'
+  >,
   getWindow: () => BrowserWindow | null,
 ): Promise<Actor> {
   const directory = delegationDirectory(options);
-  if (closingScopes.has(directory))
+  if (shuttingDown || closingScopes.has(directory))
     throw new Error('Delegation scope is closing');
   const prior = actors.get(directory);
   if (prior) return prior;
@@ -471,6 +806,37 @@ async function actorFor(
         broker.extendCapabilityGrant(request),
     });
     const childMessages = new ManagedChildMessageInbox(() => broker);
+    const fileStorage = new FileDelegationStorage(path.join(directory, 'runs'));
+    // The broker remains the only writer. Readers observe a new record only
+    // after its durable commit, never by reparsing the whole runs directory
+    // for each completion (a worktree can retain hundreds of large records).
+    const noticeRecords = new Map<string, StoredDelegation>();
+    const storage: DelegationStorage = {
+      load: async (): Promise<readonly StoredDelegation[]> => {
+        const records = await fileStorage.load();
+        noticeRecords.clear();
+        for (const record of records)
+          noticeRecords.set(record.state.delegationId, record);
+        return records;
+      },
+      loadOne: (id): Promise<StoredDelegation | undefined> =>
+        fileStorage.loadOne(id),
+      commit: async (record): Promise<void> => {
+        await fileStorage.commit(record);
+        noticeRecords.set(record.state.delegationId, record);
+      },
+    };
+    const noticeStore = new DelegationNoticeAckStore(directory, {
+      onError: reportError,
+    });
+    const notices = new DelegationNoticeDelivery({
+      store: noticeStore,
+      records: (): Promise<readonly StoredDelegation[]> =>
+        Promise.resolve(Array.from(noticeRecords.values())),
+      results: noticeResults,
+      childMessages,
+      onError: reportError,
+    });
     const childDelegation = (
       context: LocalDelegationContext,
     ): DelegationParent | undefined => {
@@ -561,6 +927,19 @@ async function actorFor(
         return undefined;
       }
     };
+    // Defer the chat-state and repository transcript services together so
+    // actor initialization does not eagerly pull the chat persistence graph
+    // into agent-session startup. Each actor owns exactly one scope-bound
+    // port shared by the broker and every registered provider adapter.
+    const [{ getChatStateService }, { RepositoryDelegationTranscriptPort }] =
+      await Promise.all([
+        import('../../services/chat-state-service'),
+        import('./repository-transcript-port'),
+      ]);
+    const transcriptPort = new RepositoryDelegationTranscriptPort(
+      getChatStateService(),
+      { projectId: options.projectId, worktreeId: options.worktreeId },
+    );
     const registry = new AgentRunnerRegistry();
     registry.register({
       apiVersion: 1,
@@ -569,6 +948,7 @@ async function actorFor(
         available: runtime.available,
         delegation: childDelegation,
         ledger: childLedger,
+        transcriptPort,
         prepare: (
           context,
         ): ReturnType<DelegationRouteRuntime['prepareClaude']> =>
@@ -583,6 +963,7 @@ async function actorFor(
         available: runtime.available,
         delegation: childDelegation,
         ledger: childLedger,
+        transcriptPort,
         prepare: (
           context,
         ): ReturnType<DelegationRouteRuntime['prepareCodex']> =>
@@ -596,6 +977,7 @@ async function actorFor(
       adapter: createCursorDelegationRunner({
         available: runtime.available,
         delegation: childDelegation,
+        transcriptPort,
         prepare: (context) => runtime.prepareCursor(context),
         reportError,
       }),
@@ -606,6 +988,7 @@ async function actorFor(
       adapter: createCopilotDelegationRunner({
         available: runtime.available,
         delegation: childDelegation,
+        transcriptPort,
         prepare: (context) => runtime.prepareCopilot(context),
         reportError,
       }),
@@ -616,12 +999,51 @@ async function actorFor(
       adapter: createOpenCodeDelegationRunner({
         available: runtime.available,
         delegation: childDelegation,
+        transcriptPort,
         prepare: (context) => runtime.prepareOpenCode(context),
         reportError,
       }),
     });
+    const lifetime = managedDelegationLifetimeService.createOwner({
+      storage: new FileDelegationStorage(directory),
+      retained: () => broker.retainedCount(),
+      active: () => !shuttingDown && !closingScopes.has(directory),
+      initialSetting: options.managedDelegationLifetimeLimit,
+    });
+    await lifetime.initialize();
     const broker: AgentDelegationBroker = new AgentDelegationBroker({
       asyncAdmission: true,
+      generationStore: async ({ record }): Promise<GenerationStoreDecision> => {
+        if (record.version === 3) return 'stream';
+        try {
+          const readiness =
+            await getChatStateService().generationStoreReadiness({
+              projectId: record.parent.projectId,
+              worktreeId: record.parent.worktreeId,
+            });
+          if (!readiness.enableFormat4) return 'legacy';
+          if (readiness.formatVersion === 4) return 'stream';
+          return {
+            kind: 'refused',
+            message: 'Delegation storage is not ready. Try again.',
+          };
+        } catch {
+          return {
+            kind: 'refused',
+            message: 'Delegation storage is unavailable. Try again.',
+          };
+        }
+      },
+      lifetimePolicy: (): DelegationLifetimePolicy => {
+        const policy = lifetime.policy();
+        return policy.kind === 'available'
+          ? { ...policy, cap: managedDelegationLifetimeService.cap }
+          : policy;
+      },
+      onLifetimeRefusal: (parent, reason): void => {
+        managedDelegationLifetimeStatus.refuse(parent, reason);
+      },
+      transcriptPort,
       manageWorkspace: async (
         parent,
         record,
@@ -690,7 +1112,7 @@ async function actorFor(
         );
         return { ...workspace, baseCwd };
       },
-      storage: new FileDelegationStorage(path.join(directory, 'runs')),
+      storage,
       registry,
       cwd: options.cwd,
       resolveCwd: (parent): string | undefined =>
@@ -755,7 +1177,7 @@ async function actorFor(
           );
         // A user stop-all refuses new spawns in its chat until it finishes.
         if (root.stoppingAll) return stopAllInProgress();
-        if (process.platform !== 'darwin' && process.platform !== 'win32')
+        if (hostOperatingSystem() === null)
           return preflightRejected(
             'capability_unavailable',
             'The selected model, account, or confined runner is unavailable.',
@@ -816,53 +1238,67 @@ async function actorFor(
         runtime.authorize(parent, route, signal),
       // Counts are per root chat, so one chat-keyed entry survives epochs.
       onActivity: (parent, count, queued): void => {
+        if (self.actor)
+          managedDelegationLifetimeStatus.observe(
+            options,
+            broker.lifetimeSnapshot(),
+          );
         managedDelegationRootCache.delete(directory);
         const key = parent.sessionKey;
         setDelegationActivity(key, parent.sessionKey, count, queued);
         chatRootFor(parent)?.notifyActivityChange(count);
         if (count)
-          getWakeLockService().acquire(`delegation:${key}`, 'delegated task');
-        else getWakeLockService().release(`delegation:${key}`);
+          getWakeLockService().acquire(...wakeLockHolder('delegation', key));
+        else getWakeLockService().release(wakeLockHolderKey('delegation', key));
       },
       onTranscript: (parent, transcript): void => {
         managedDelegationRootCache.delete(directory);
-        chatRootFor(parent)?.publishTranscript(transcript);
-      },
-      registerWatch: (
-        parent,
-        request,
-        targets,
-      ): Promise<AgentDelegationResult<WatchDelegatesValue>> =>
-        // Defer the local watcher module to break the service/watcher cycle.
-        // Verified in build:mac: Vite folds this local import into the packaged main bundle.
-        import('../../app-advisor/watchers').then(
-          ({ getAppAdvisorWatcherService }) =>
-            getAppAdvisorWatcherService().createManagedDelegationWatcher(
-              parent,
-              request,
-              broker.watchTargetStates(targets),
-              createHash('sha256')
-                .update(JSON.stringify(request) ?? '')
-                .digest('hex'),
-            ),
-        ),
-      onSettled: (parent, delegationId, result): Promise<void> =>
-        // Use the same deferred local boundary as registerWatch to avoid the service/watcher cycle.
-        // Verified in build:mac: Vite folds this local import into the packaged main bundle.
-        import('../../app-advisor/watchers').then(
-          ({ getAppAdvisorWatcherService }) =>
-            getAppAdvisorWatcherService().handleManagedDelegationSettled(
-              {
+        const stream =
+          transcript.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_STREAM;
+        // The broker stamps its own publications. recordStore checks live
+        // parent lineage, so it answers nothing during initialization or after
+        // a parent rollover; only a definite answer can contradict the stamp.
+        const store = broker.recordStore(parent, transcript.delegationId);
+        if (store !== undefined && stream !== (store === 'stream')) {
+          reportError(new Error('Contradictory delegation transcript store'));
+          return;
+        }
+        if (stream) {
+          if (
+            transcript.snapshot.delegationId !== transcript.delegationId ||
+            (transcript.snapshot.runGeneration !== undefined &&
+              transcript.snapshot.runGeneration !== transcript.runGeneration)
+          ) {
+            reportError(new Error('Contradictory delegation generation'));
+            return;
+          }
+          const key = streamCreationKey(parent, transcript);
+          const slot = streamCreations.get(key);
+          if (!slot)
+            streamCreations.set(key, {
+              target: {
                 projectId: parent.projectId,
                 worktreeId: parent.worktreeId,
+                chatId: parent.chatId,
               },
-              delegationId,
-              result,
-            ),
-        ),
+              creation: transcript,
+              latest: transcript,
+            });
+          else if (
+            slot.creation &&
+            (!slot.latest || transcript.sequence >= slot.latest.sequence)
+          )
+            slot.latest = transcript;
+        }
+        chatRootFor(parent)?.publishTranscript(transcript);
+      },
+      onSettled: async (parent, delegationId, result): Promise<void> => {
+        // Notice batching does not wait for the eventual queue/inbox hand-off.
+        await notices.settled(parent, delegationId, result);
+      },
       deliverUpward: async (
         parent,
-        _source,
+        source,
         message,
         attemptId,
       ): Promise<ChatInputAdmission> => {
@@ -873,7 +1309,7 @@ async function actorFor(
             attemptId,
             reason: 'The direct parent session is unavailable',
           };
-        return root.deliverUpward(message, attemptId);
+        return root.deliverUpward(message, attemptId, source);
       },
       deliverChildMessage: (delegationId, message, attemptId, failureMessage) =>
         childMessages.deliver(delegationId, message, attemptId, failureMessage),
@@ -887,13 +1323,66 @@ async function actorFor(
     });
     brokerRef.current = broker;
     await broker.initialize();
+    await noticeStore.load();
+    // Every start removes legacy watchers left behind by a crash after the
+    // migration's atomic baseline/owed write. Never evaluate them first.
+    const [
+      { migrateDelegateWatchersToNotices },
+      { getAppAdvisorWatcherService },
+    ] = await Promise.all([
+      import('./notice-migration'),
+      import('../../app-advisor/watchers'),
+    ]);
+    const watcherService = getAppAdvisorWatcherService();
+    const records = await Promise.all(
+      Array.from(noticeRecords.values()).map(async (record) => {
+        const base = {
+          delegationId: record.state.delegationId,
+          latestResultIndex: latestNoticeResultIndex(record),
+        };
+        // Only the unmarked migration reads these, for a stale legacy target.
+        if (noticeStore.isBaselined()) return base;
+        try {
+          return { ...base, results: await noticeResults(record) };
+        } catch {
+          return { ...base, resultsUnavailable: true };
+        }
+      }),
+    );
+    // Legacy watchers are inert, so a failed migration must not block the
+    // actor. It still persists the baseline acknowledgements, so nothing old
+    // is announced, and stays unmarked so the next start retries.
+    await migrateDelegateWatchersToNotices({
+      store: noticeStore,
+      records,
+      watchers: {
+        list: () =>
+          watcherService.listLegacyDelegateWatchers({
+            projectId: options.projectId,
+            worktreeId: options.worktreeId,
+          }),
+        remove: (ids) => watcherService.removeLegacyDelegateWatchers(ids),
+      },
+    }).catch((error: unknown) => {
+      logMainProcessWarn('[delegation] Delegate watcher migration failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     const actor: Actor = {
+      scope: { projectId: options.projectId, worktreeId: options.worktreeId },
       broker,
+      lifetime,
       runtime,
       childMessages,
+      notices,
+      noticeStore,
       window: windowRef,
     };
     self.actor = actor;
+    // Queue dispatch can initialize a provider session and reenter actorFor.
+    // Publish this actor without waiting for that dispatch to acknowledge.
+    void notices.start().catch(reportError);
+    managedDelegationLifetimeStatus.observe(options, broker.lifetimeSnapshot());
     return actor;
   })();
   actors.set(directory, pending);
@@ -942,6 +1431,12 @@ class ManagedDelegationChatRoot {
   private snapshot?: AgentSessionOptions;
   private lastHarness: DelegationHarness = 'claude';
   private publication: Promise<void> = Promise.resolve();
+  private readonly streamSnapshots = new Map<
+    string,
+    AgentDelegationTranscript
+  >();
+  private readonly streamQueued = new Set<string>();
+  private readonly streamRetry = new Set<string>();
   /** Detached snapshots waiting to commit, by delegate run generation. */
   private readonly detachedSnapshots = new Map<
     string,
@@ -1022,12 +1517,25 @@ class ManagedDelegationChatRoot {
     this.attached = session;
     this.lastHarness = session.harness;
     this.snapshot = session.currentOptions();
+    // Restore once at this readiness boundary; a still-unready child keeps
+    // its journal entry for the next attach, with no retry loop.
+    void this.actor.notices.replayForChat(this.target).catch(reportError);
+    // Initialization may have published before self.actor or this root existed.
+    for (const slot of Array.from(streamCreations.values()))
+      if (
+        slot.creation &&
+        slot.latest &&
+        chatKey(slot.target) === chatKey(this.target)
+      )
+        this.publishTranscript(slot.latest);
+    this.retryStreamCreations();
   }
 
   detach(session: ManagedDelegationSession): void {
     if (this.attached !== session) return;
     this.snapshot = session.currentOptions();
     this.attached = undefined;
+    this.retryStreamCreations();
   }
 
   /** Records the chat's plan mode as committed to its tab. */
@@ -1150,6 +1658,15 @@ class ManagedDelegationChatRoot {
   }
 
   publishTranscript(transcript: AgentDelegationTranscript): void {
+    if (transcript.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_STREAM) {
+      this.liveCards.offer(transcript);
+      const key = streamCreationKey(this.target, transcript);
+      const waiting = this.streamSnapshots.get(key);
+      if (!waiting || transcript.sequence >= waiting.sequence)
+        this.streamSnapshots.set(key, transcript);
+      this.queueStreamCreation(key);
+      return;
+    }
     const logged = this.logs.offer(transcript);
     this.liveCards.offer(transcript);
     this.durableCards.offer(transcript, logged);
@@ -1168,7 +1685,10 @@ class ManagedDelegationChatRoot {
       type: 'canopy_delegation',
       delegation: {
         ...delegation,
-        transcriptStore: DELEGATION_TRANSCRIPT_CHAT_LOG,
+        transcriptStore:
+          delegation.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_STREAM
+            ? DELEGATION_TRANSCRIPT_CHAT_STREAM
+            : DELEGATION_TRANSCRIPT_CHAT_LOG,
       },
       canopy_turn_user_message_id: transcript.parentTurnId,
     });
@@ -1184,6 +1704,83 @@ class ManagedDelegationChatRoot {
         if (portal.active()) portal.deliver(this.target, event(transcript));
       })
       .catch(reportError);
+  }
+
+  /** Retry only on a new envelope, an attachment change or a committed event. */
+  retryStreamCreations(): void {
+    for (const key of Array.from(this.streamSnapshots.keys()))
+      this.queueStreamCreation(key);
+  }
+
+  private queueStreamCreation(key: string): void {
+    if (this.closed || shuttingDown) return;
+    if (this.streamQueued.has(key)) {
+      this.streamRetry.add(key);
+      return;
+    }
+    this.streamQueued.add(key);
+    this.publication = this.publication
+      .then(() => this.publishStreamCreation(key))
+      .catch(reportError)
+      .finally(() => {
+        this.streamQueued.delete(key);
+        if (this.streamRetry.delete(key) && this.streamSnapshots.has(key))
+          this.queueStreamCreation(key);
+      });
+  }
+
+  private async streamCreationExists(
+    transcript: AgentDelegationTranscript,
+  ): Promise<boolean> {
+    const { getChatStateService } =
+      await import('../../services/chat-state-service');
+    const row = await getChatStateService().readStoredParentMessage(
+      this.target,
+      this.target.chatId,
+      `delegated-agent-${transcript.delegationId}${transcript.runGeneration > 1 ? `-run-${transcript.runGeneration}` : ''}`,
+    );
+    if (!row) return false;
+    if (
+      !row.blocks.some(
+        (block) =>
+          block.type === 'delegated_agent_call' &&
+          block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_STREAM &&
+          block.delegationId === transcript.delegationId &&
+          block.runGeneration === transcript.runGeneration,
+      )
+    )
+      throw new Error('Contradictory delegation creation row');
+    return true;
+  }
+
+  private async publishStreamCreation(key: string): Promise<void> {
+    if (this.closed || shuttingDown) return;
+    const latest = this.streamSnapshots.get(key);
+    const slot = streamCreations.get(key);
+    if (!latest || !slot) return;
+    const creation = slot.creation;
+    if (creation) {
+      const attached = this.attached;
+      if (attached) {
+        // This callback is deliberately void: a point read, not delivery,
+        // acknowledges the ordinary provider ingestion's durable row.
+        attached.publishTranscript(creation);
+        if (!(await this.streamCreationExists(creation))) return;
+      } else if (!(await this.publishDetached(creation))) {
+        if (!(await this.streamCreationExists(creation))) return;
+      }
+      slot.creation = undefined;
+      slot.latest = undefined;
+    }
+    // Admission is confirmed before any coalesced later envelope can create
+    // the row. The ingestion own-card lookup makes all replays write-once.
+    const current = this.streamSnapshots.get(key) ?? latest;
+    if (current !== creation) {
+      if (this.attached) this.attached.publishTranscript(current);
+      else await this.publishDetached(current);
+    }
+    if (this.streamSnapshots.get(key) === current)
+      this.streamSnapshots.delete(key);
   }
 
   private publishNow(transcript: AgentDelegationTranscript): void {
@@ -1218,7 +1815,7 @@ class ManagedDelegationChatRoot {
 
   private async publishDetached(
     transcript: AgentDelegationTranscript,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const data = {
       type: 'canopy_delegation',
       delegation: transcript,
@@ -1235,25 +1832,32 @@ class ManagedDelegationChatRoot {
       data,
       mutationId: `managed-delegation:${transcript.delegationId}:${String(transcript.runGeneration)}:${String(transcript.sequence)}:${randomUUID()}`,
     });
-    if (outcome === 'not-applied') return;
+    if (outcome === 'not-applied') return false;
     sendToWindow(this.actor.window.current(), IPC_CHANNELS.chatEvent, {
       projectId: this.target.projectId,
       worktreeId: this.target.worktreeId,
       chatId: this.target.chatId,
       data,
     });
+    return outcome === 'applied';
   }
 
   /**
    * Delivers a delegate's upward message to the root chat through the chat
-   * queue, which steers an active turn when the provider accepts it and
-   * otherwise dispatches a fresh root turn. The queue records a steered
-   * message as a durable input, so a pickup that starts its own turn is owned
-   * and settled like any other. Needs no attached session.
+   * queue. The queue steers it into a running turn on arrival when the
+   * provider accepts steering and no other generated input is being handed
+   * off, recorded as a durable input so a pickup that starts its own turn is
+   * owned and settled like any other. Otherwise it waits as a hidden internal
+   * row that the queue steers or sends as its own turn, in order. It stays
+   * hidden while it waits; once sent, the root chat shows it as a steering
+   * request from this delegate. Answers `accepted` once the input-delivery
+   * ledger or the queue owns it, not after the provider handoff. Needs no
+   * attached session.
    */
   async deliverUpward(
     message: string,
     attemptId: string,
+    source?: UpwardDeliverySource,
   ): Promise<ChatInputAdmission> {
     const current = this.live ? this.options() : undefined;
     if (!current)
@@ -1268,6 +1872,27 @@ class ManagedDelegationChatRoot {
         attemptId,
         reason: 'The direct parent queue cannot accept another message',
       };
+    // Without a known delegate the row stays internal by its delivery id
+    // alone; an attempt id is never reported as a delegation id.
+    const internalRow: ChatInternalRow | undefined = source
+      ? {
+          kind: 'delegation-request',
+          delegationId: source.delegationId,
+          displayLine: delegationDisplayLine(source),
+        }
+      : undefined;
+    // The trusted sender every surface shows once the message is sent, from
+    // the broker's delegation record rather than the message text.
+    const agentSent: ManagedDelegateSender | undefined = source
+      ? {
+          kind: 'managed_delegate',
+          delegationId: source.delegationId,
+          title:
+            plainLine(source.description ?? '', 200) ||
+            plainLine(source.delegationId, 64) ||
+            'Delegate',
+        }
+      : undefined;
     try {
       // Defer chat-service so the chat dispatch graph loads only once a
       // delegate first messages its root chat.
@@ -1306,6 +1931,8 @@ class ManagedDelegationChatRoot {
         model: current.model ?? current.selectedModel,
         initiationSource: 'automation',
         managedDelegationDeliveryId: attemptId,
+        ...(internalRow ? { internalRow } : {}),
+        ...(agentSent ? { agentSent } : {}),
       });
       return { kind: 'accepted', attemptId };
     } catch {
@@ -1347,6 +1974,14 @@ class ManagedDelegationChatRoot {
     this.runtimeGeneration = ++generation;
     for (const session of Array.from(sessions))
       if (session.belongsTo(this)) session.rebind();
+    await this.actor.notices.revokeParent(
+      delegationNoticeRootParentKey(
+        this.target.projectId,
+        this.target.worktreeId,
+        this.target.chatId,
+      ),
+      reason,
+    );
     await this.stopTree(retired, reason);
   }
 
@@ -1358,6 +1993,14 @@ class ManagedDelegationChatRoot {
       for (const session of Array.from(sessions))
         if (session.belongsTo(this)) session.retire();
       try {
+        await this.actor.notices.closeParent(
+          delegationNoticeRootParentKey(
+            this.target.projectId,
+            this.target.worktreeId,
+            this.target.chatId,
+          ),
+          reason,
+        );
         await this.stopTree(this.runtimeGeneration, reason);
       } finally {
         // Final snapshots use the still-attached route; during shutdown the
@@ -1383,6 +2026,12 @@ class ManagedDelegationChatRoot {
  * provider session to tell.
  */
 function observeCommittedPlanModes(event: ChatStateChangedEvent): void {
+  for (const root of Array.from(roots.values()))
+    if (
+      root.target.projectId === event.projectId &&
+      root.target.worktreeId === event.worktreeId
+    )
+      root.retryStreamCreations();
   for (const change of event.changes) {
     const observed =
       change.type === 'tab.metadata_patched' &&
@@ -1470,6 +2119,7 @@ export class ManagedDelegationSession {
     private readonly currentTurn: () => string | undefined,
     private readonly onActivityChange?: (count: number) => void,
     readonly onTranscript?: (transcript: AgentDelegationTranscript) => void,
+    private readonly currentMessage?: () => string | undefined,
   ) {
     this.managedDelegationMode =
       latestManagedDelegationMode ??
@@ -1530,10 +2180,11 @@ export class ManagedDelegationSession {
         : tool,
     );
   }
-  /** Standing system-prompt steering for the completion-watch workflow. */
+  /** Standing system-prompt steering for automatic completion notices. */
   get systemPromptGuidance(): string | undefined {
-    const watch = names(this.harness).watch;
-    return this.parent.projection.tools.some((tool) => tool.name === watch)
+    return this.parent.projection.tools.some(
+      (tool) => tool.name === names(this.harness).spawn,
+    )
       ? buildManagedDelegationToolPrompt(this.harness)
       : undefined;
   }
@@ -1684,8 +2335,9 @@ export class ManagedDelegationSession {
   deliverUpward(
     message: string,
     attemptId: string,
+    source?: UpwardDeliverySource,
   ): Promise<ChatInputAdmission> {
-    return this.root.deliverUpward(message, attemptId);
+    return this.root.deliverUpward(message, attemptId, source);
   }
 
   applyPolicyGuidance(text: string): string {
@@ -1773,10 +2425,180 @@ export class ManagedDelegationSession {
           result,
         ),
       currentTurn: this.currentTurn,
+      currentMessage: this.currentMessage,
       reportError,
       removeQueued: (ids): Promise<void> =>
         removeQueuedHostMessages(owner, ids),
     });
+  }
+}
+
+/** Observation only: never constructs an actor or invokes broker recovery. */
+export async function readManagedDelegationLifetimeSnapshot(
+  scope: LifetimeScope,
+): Promise<LifetimeSnapshot> {
+  if (
+    !validDelegationIdentifier(scope.projectId, 'projectId') ||
+    !validDelegationIdentifier(scope.worktreeId, 'worktreeId')
+  )
+    return { kind: 'error', reason: 'invalid_request' };
+  const directory = delegationDirectory(scope);
+  const active = (): boolean => !shuttingDown && !closingScopes.has(directory);
+  if (!active()) return { kind: 'error', reason: 'scope_unavailable' };
+  const prior = actors.get(directory);
+  try {
+    if (prior) {
+      const actor = await prior;
+      if (!active()) return { kind: 'error', reason: 'scope_unavailable' };
+      if (actors.get(directory) !== prior)
+        return readManagedDelegationLifetimeSnapshot(scope);
+      return actor.broker.lifetimeSnapshot();
+    }
+    const [{ resolveWorktreeCwd }, { readPreferencesFileDetailed }] =
+      await Promise.all([
+        import('../../lib/resolve-worktree'),
+        import('../../lib/preferences-store'),
+      ]);
+    try {
+      const info = await stat(
+        resolveWorktreeCwd(scope.projectId, scope.worktreeId),
+      );
+      if (!info.isDirectory())
+        return { kind: 'error', reason: 'scope_unavailable' };
+    } catch {
+      return { kind: 'error', reason: 'scope_unavailable' };
+    }
+    const [baseline, loaded, preferences] = await Promise.all([
+      readDelegationLifetimeBaselineReadOnly(
+        new FileDelegationStorage(directory),
+      ),
+      new FileDelegationStorage(path.join(directory, 'runs')).loadReadOnly(),
+      readPreferencesFileDetailed(),
+    ]);
+    if (!active()) return { kind: 'error', reason: 'scope_unavailable' };
+    if (actors.has(directory))
+      return readManagedDelegationLifetimeSnapshot(scope);
+    if (baseline.kind === 'unavailable') return baseline;
+    if (preferences.authority === 'unreadable')
+      return { kind: 'error', reason: 'read_failed' };
+    if (
+      loaded.records.some(
+        (record) =>
+          record.parent.projectId !== scope.projectId ||
+          record.parent.worktreeId !== scope.worktreeId,
+      )
+    )
+      return { kind: 'error', reason: 'read_failed' };
+    const retained = loaded.records.length;
+    const cap = managedDelegationLifetimeService.cap;
+    const setting = managedDelegationLifetimeService.normalize(
+      preferences.preferences.managedDelegationLifetimeLimit,
+    );
+    const limit = managedDelegationEffectiveLifetimeLimit(
+      baseline.baseline,
+      setting,
+      cap,
+    );
+    const next = managedDelegationEffectiveLifetimeLimit(
+      retained,
+      setting,
+      cap,
+    );
+    return {
+      kind: 'available',
+      occupied: retained,
+      retained,
+      limit,
+      cap,
+      atLimit: retained >= limit,
+      extension: limit >= cap ? 'at_cap' : next > limit ? 'possible' : 'none',
+    };
+  } catch {
+    if (!active()) return { kind: 'error', reason: 'scope_unavailable' };
+    const current = actors.get(directory);
+    if (current && current !== prior)
+      return readManagedDelegationLifetimeSnapshot(scope);
+    return { kind: 'error', reason: 'read_failed' };
+  }
+}
+
+export async function getManagedDelegationLifetimeStatus(
+  scope: LifetimeScope,
+): Promise<ManagedDelegationLifetimeStatus> {
+  if (
+    !validDelegationIdentifier(scope.projectId, 'projectId') ||
+    !validDelegationIdentifier(scope.worktreeId, 'worktreeId')
+  )
+    return { kind: 'error', reason: 'invalid_request' };
+  const directory = delegationDirectory(scope);
+  if (shuttingDown || closingScopes.has(directory))
+    return { kind: 'error', reason: 'scope_unavailable' };
+  // Scope liveness is not the expensive retained count and must not be cached:
+  // dormant scopes may be removed before a delegation actor installs lifecycle hooks.
+  try {
+    const { resolveWorktreeCwd } = await import('../../lib/resolve-worktree');
+    if (
+      !(
+        await stat(resolveWorktreeCwd(scope.projectId, scope.worktreeId))
+      ).isDirectory()
+    )
+      return { kind: 'error', reason: 'scope_unavailable' };
+  } catch {
+    return { kind: 'error', reason: 'scope_unavailable' };
+  }
+  if (shuttingDown || closingScopes.has(directory))
+    return { kind: 'error', reason: 'scope_unavailable' };
+  return managedDelegationLifetimeStatus.getLifetimeStatus(scope);
+}
+
+/** Trusted host scope only: no chat/session is invented to extend the worktree. */
+export async function extendManagedDelegationLifetimeLimit(scope: {
+  readonly projectId: string;
+  readonly worktreeId: string;
+}): Promise<ManagedDelegationLifetimeLimitResult> {
+  const directory = delegationDirectory(scope);
+  if (shuttingDown || closingScopes.has(directory)) {
+    managedDelegationLifetimeStatus.changed(scope);
+    return { ok: false, reason: 'unavailable' };
+  }
+  initializeManagedService();
+  try {
+    const prior = actors.get(directory);
+    if (prior) return await (await prior).lifetime.extendLifetimeLimit();
+    const [{ resolveWorktreeCwd }, { readPreferencesFile }] = await Promise.all(
+      [
+        import('../../lib/resolve-worktree'),
+        import('../../lib/preferences-store'),
+      ],
+    );
+    const preferences = await readPreferencesFile();
+    const actor = await actorFor(
+      {
+        ...scope,
+        cwd: resolveWorktreeCwd(scope.projectId, scope.worktreeId),
+        managedDelegationLifetimeLimit:
+          preferences.managedDelegationLifetimeLimit,
+      },
+      () => null,
+    );
+    return await actor.lifetime.extendLifetimeLimit();
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  } finally {
+    const pending = actors.get(directory);
+    if (pending) {
+      try {
+        const actor = await pending;
+        if (actors.get(directory) === pending)
+          managedDelegationLifetimeStatus.observe(
+            scope,
+            actor.broker.lifetimeSnapshot(),
+          );
+      } catch {
+        /* The outcome remains unavailable; no successful capacity is inferred. */
+      }
+    }
+    managedDelegationLifetimeStatus.changed(scope);
   }
 }
 
@@ -1785,6 +2607,8 @@ export async function createManagedDelegationSession(options: {
   sessionKey: string;
   currentOptions: () => AgentSessionOptions;
   currentTurn: () => string | undefined;
+  /** Transcript message that anchors delegate cards; see DelegationParent. */
+  currentMessage?: () => string | undefined;
   getWindow: () => BrowserWindow | null;
   onActivityChange?: (count: number) => void;
   onTranscript?: (transcript: AgentDelegationTranscript) => void;
@@ -1815,6 +2639,7 @@ export async function createManagedDelegationSession(options: {
     options.currentTurn,
     options.onActivityChange,
     options.onTranscript,
+    options.currentMessage,
   );
   const recoveryParent = session.parent.context('restore', 'restore');
   if (
@@ -1851,12 +2676,80 @@ function loggedDelegationRuns(
   return runs;
 }
 
+function recordReadInput(record: StoredDelegation): DelegationRecordReadInput {
+  return {
+    record,
+    ...(delegationReadMetadata
+      ? {
+          readMetadata: readDelegationRecordMetadata(
+            delegationReadMetadata,
+            record,
+          ),
+        }
+      : {}),
+  };
+}
+
+function sameChat(
+  record: StoredDelegation,
+  target: ManagedDelegationChatTarget,
+): boolean {
+  return (
+    record.parent.projectId === target.projectId &&
+    record.parent.worktreeId === target.worktreeId &&
+    record.parent.chatId === target.chatId
+  );
+}
+
+async function retainedReplayTranscripts(
+  actor: Actor,
+  parent: DelegationParentContext,
+): Promise<readonly AgentDelegationTranscript[]> {
+  // Preserve the broker's bulk ordering and write barrier for legacy runs.
+  const live = await actor.broker.transcripts(parent);
+  const transcripts = live.filter(
+    (run) => actor.broker.recordStore(parent, run.delegationId) !== 'stream',
+  );
+  const streamIds = new Set(
+    live
+      .filter(
+        (run) =>
+          actor.broker.recordStore(parent, run.delegationId) === 'stream',
+      )
+      .map((run) => run.delegationId),
+  );
+  for (const id of Array.from(streamIds)) {
+    const record = await new FileDelegationStorage(
+      path.join(delegationDirectory(parent), 'runs'),
+    ).loadOne(id);
+    if (!record || !sameChat(record, parent)) continue;
+    const input = recordReadInput(record);
+    if (input.readMetadata?.current.store !== 'stream') continue;
+    // Stream generations are never synthesized as parent/card events. Only
+    // the unchanged legacy prefix is eligible for replay.
+    const prefixHistory = legacyPrefixView(record).history;
+    if (prefixHistory?.length) {
+      const generations =
+        await delegationRecordReader.resolveGenerationList(input);
+      const legacy = new Set(
+        generations
+          .filter((run) => run.kind === 'legacy')
+          .map((run) => run.runGeneration),
+      );
+      transcripts.push(
+        ...prefixHistory.filter((run) => legacy.has(run.runGeneration)),
+      );
+    }
+  }
+  return transcripts;
+}
+
 async function replayRetainedTranscripts(
   session: ManagedDelegationSession,
   actor: Actor,
   parent: DelegationParentContext,
 ): Promise<void> {
-  const transcripts = await actor.broker.transcripts(parent);
+  const transcripts = await retainedReplayTranscripts(actor, parent);
   if (transcripts.length === 0) return;
   // Defer the chat-state service to break its main-process startup cycle
   // with agent session initialization; build:e2e verifies this packaged path.
@@ -1943,6 +2836,7 @@ export async function revokeManagedDelegations(
 
 export async function shutdownManagedDelegations(): Promise<void> {
   shuttingDown = true;
+  managedDelegationLifetimeStatus.changedAll();
   disposeCloudAuthority();
   disposeCommittedPlanModes();
   const owners = await Promise.allSettled(
@@ -1957,6 +2851,7 @@ export async function shutdownManagedDelegations(): Promise<void> {
   if ([...owners, ...brokers].some((outcome) => outcome.status === 'rejected'))
     throw new Error('Delegation shutdown was incomplete');
   actors.clear();
+  streamCreations.clear();
   managedDelegationRootCache.clear();
 }
 
@@ -1969,6 +2864,33 @@ function parentUnavailable(): AgentDelegationResult<never> {
       retryable: false,
     },
   };
+}
+
+interface UpwardDeliverySource {
+  delegationId: string;
+  description?: string;
+}
+
+/** One plain line: no control characters, angle brackets or line breaks. */
+function plainLine(value: string, limit: number): string {
+  let line = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const unsafe =
+      code < 0x20 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x3c ||
+      code === 0x3e;
+    line += unsafe ? ' ' : value.charAt(index);
+  }
+  return line.replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function delegationDisplayLine(source: UpwardDeliverySource): string {
+  const description = plainLine(source.description ?? '', 96);
+  if (description) return `Delegate: ${description}`;
+  const safeId = plainLine(source.delegationId, 64) || 'delegate';
+  return `Delegate ${safeId} requests a response.`;
 }
 
 /**
@@ -2019,7 +2941,7 @@ async function retireDelegateWatchers(
   delegationIds?: ReadonlySet<string>,
 ): Promise<void> {
   try {
-    // Use the same deferred local boundary as registerWatch to avoid the service/watcher cycle.
+    // Defer the local boundary to avoid the service/watcher cycle.
     const { getAppAdvisorWatcherService } =
       await import('../../app-advisor/watchers');
     await getAppAdvisorWatcherService().removeDelegateWatchersForChat(
@@ -2132,7 +3054,7 @@ function currentTranscript(
         : { fastMode: record.task.fastMode }),
     },
     snapshot: projectStoredDelegationSnapshot(record),
-    transcript: (record.state.transcript ?? []).map((item) => ({ ...item })),
+    transcript: legacyCurrentTranscript(record).map((item) => ({ ...item })),
   };
 }
 
@@ -2202,6 +3124,20 @@ async function completeManagedMessageReceipt(
   result: ManagedDelegationMessageResult,
 ): Promise<ManagedDelegationMessageResult> {
   try {
+    if ('version' in receipt) {
+      const complete: ManagedMessageReceiptV2 = {
+        version: 2,
+        codec: 'stream',
+        operationId: receipt.operationId,
+        requestHash: receipt.requestHash,
+        status: 'complete',
+        result: result.ok
+          ? boundManagedMessageSnapshot(result.snapshot)
+          : result,
+      };
+      await storage.commit(complete);
+      return complete.result;
+    }
     await storage.commit({
       operationId: receipt.operationId,
       requestHash: receipt.requestHash,
@@ -2294,7 +3230,12 @@ export async function messageManagedDelegationForUser(
     let receipt: StoredManagedDelegationMessageReceipt | undefined;
     try {
       receipt = await receiptStorage.load(operationId);
-    } catch {
+    } catch (error) {
+      if (error instanceof ManagedMessageReceiptDecodeError)
+        logMainProcessWarn(
+          '[delegation] Invalid versioned managed-message receipt',
+          { operationId },
+        );
       return userMessageError(
         'failed',
         'The delegation message receipt is unavailable.',
@@ -2317,7 +3258,56 @@ export async function messageManagedDelegationForUser(
       return completeManagedMessageReceipt(receiptStorage, receipt, pending);
     }
 
-    receipt = { operationId, requestHash, status: 'pending' };
+    let streamCodec = false;
+    const liveRoot = roots.get(chatKey(req));
+    const liveParent = liveRoot?.live
+      ? liveRoot.context(liveRoot.harness, 'user-message', 'user-message')
+      : undefined;
+    if (
+      liveRoot &&
+      liveParent &&
+      liveRoot.actor.broker.recordStore(liveParent, req.delegationId) ===
+        'stream'
+    ) {
+      // Privacy precedes capsule inspection, and codec selection precedes the
+      // pending write. Once pending exists even restart completion keeps it.
+      const messageText = typeof req.message === 'string' ? req.message : '';
+      if (
+        !['follow_up', 'steer', 'interrupt'].includes(req.operation) ||
+        (req.operation !== 'interrupt' &&
+          (!messageText.trim() || messageText.length > 32768))
+      )
+        return userMessageError(
+          'invalid_request',
+          'Invalid delegation message.',
+        );
+      try {
+        const retained = await new FileDelegationStorage(
+          path.join(delegationDirectory(req), 'runs'),
+        ).loadOne(req.delegationId);
+        if (!retained || !sameChat(retained, req))
+          return userMessageError(
+            'not_found',
+            'The delegation was not found in this chat.',
+          );
+        streamCodec =
+          recordReadInput(retained).readMetadata?.current.store === 'stream';
+      } catch {
+        return userMessageError(
+          'failed',
+          'The delegation record is unavailable.',
+        );
+      }
+    }
+    receipt = streamCodec
+      ? {
+          version: 2,
+          codec: 'stream',
+          operationId,
+          requestHash,
+          status: 'pending',
+        }
+      : { operationId, requestHash, status: 'pending' };
     try {
       await receiptStorage.commit(receipt);
     } catch {
@@ -2385,6 +3375,21 @@ export async function messageManagedDelegationForUser(
                   operation: req.operation,
                   message: messageText,
                 };
+          // A broker may appear while the durable legacy receipt is being written.
+          // Never deliver a stream command under the legacy receipt codec.
+          if (
+            !streamCodec &&
+            resolved.broker.recordStore(resolved.parent, req.delegationId) ===
+              'stream'
+          )
+            return completeManagedMessageReceipt(
+              receiptStorage,
+              receipt,
+              userMessageError(
+                'failed',
+                'The delegate message could not be delivered.',
+              ),
+            );
           const result = await resolved.broker.message(
             resolved.parent,
             input,
@@ -2424,66 +3429,226 @@ export async function readManagedDelegationTreeForUser(
       record.parent.worktreeId === target.worktreeId &&
       record.parent.chatId === target.chatId,
   );
+  const inputs = new Map(
+    retained.map((record) => [record, recordReadInput(record)]),
+  );
   const resolved = await userStopContext(target);
   const liveSnapshots = new Map<string, AgentDelegationSnapshot>();
   const liveTranscripts: readonly AgentDelegationTranscript[] = resolved
-    ? await resolved.broker.transcripts(resolved.parent)
+    ? (await resolved.broker.transcripts(resolved.parent)).filter(
+        (run) =>
+          resolved.broker.recordStore(resolved.parent, run.delegationId) !==
+          'stream',
+      )
     : [];
-  if (resolved)
+  if (resolved) {
     for (const snapshot of resolved.broker.list(resolved.parent))
-      liveSnapshots.set(snapshot.delegationId, snapshot);
+      if (
+        resolved.broker.recordStore(resolved.parent, snapshot.delegationId) !==
+        'stream'
+      )
+        liveSnapshots.set(snapshot.delegationId, snapshot);
+  }
   const createdAtOf = (record: StoredDelegation): number =>
-    record.history?.[0]?.createdAt ?? record.createdAt;
+    inputs.get(record)?.readMetadata?.current.store === 'stream'
+      ? (inputs.get(record)?.readMetadata?.originAt ?? record.createdAt)
+      : (legacyPrefixView(record).history?.[0]?.createdAt ?? record.createdAt);
+  const selectedRecords = [...retained]
+    .sort((left, right) => createdAtOf(left) - createdAtOf(right))
+    .slice(-1000);
+  const streamRuns = new Map<
+    StoredDelegation,
+    readonly ResolvedDelegationGeneration[]
+  >();
+  for (const record of selectedRecords) {
+    const input = inputs.get(record);
+    if (input?.readMetadata?.current.store === 'stream')
+      streamRuns.set(
+        record,
+        await delegationRecordReader.resolveGenerationList(input),
+      );
+  }
   // One entry per retained run, so the viewer can show the runs before a
   // follow-up as well as the current one.
-  return [...retained]
-    .sort((left, right) => createdAtOf(left) - createdAtOf(right))
-    .slice(-1000)
-    .flatMap((record): ManagedDelegationTreeEntry[] => {
-      const createdAt = createdAtOf(record);
-      const current = latestTranscript(
-        liveTranscripts,
-        record.state.delegationId,
-      );
-      const earlierRuns = (record.history ?? [])
-        .filter((run) => run.runGeneration < record.state.runGeneration)
-        .map(
-          (run): ManagedDelegationTreeEntry => ({
+  return selectedRecords.flatMap((record): ManagedDelegationTreeEntry[] => {
+    const createdAt = createdAtOf(record);
+    const generations = streamRuns.get(record);
+    const legacyRuns = new Map(
+      (legacyPrefixView(record).history ?? []).map((run) => [
+        run.runGeneration,
+        run,
+      ]),
+    );
+    if (generations)
+      return generations.flatMap((run): ManagedDelegationTreeEntry[] => {
+        if (run.kind === 'content_unavailable') {
+          if (
+            run.failure.code === 'not_found' ||
+            run.failure.code === 'unauthorized'
+          ) {
+            logMainProcessWarn('[delegation] Omitted unavailable generation', {
+              runGeneration: run.runGeneration,
+            });
+            return [];
+          }
+          throw new Error('Delegation generation metadata is unavailable');
+        }
+        if (run.kind === 'legacy') {
+          const legacy = legacyRuns.get(run.runGeneration);
+          return legacy
+            ? [
+                {
+                  snapshot: legacy.snapshot,
+                  ...legacy.task,
+                  runGeneration: legacy.runGeneration,
+                  sequence: legacy.sequence,
+                  createdAt,
+                  parentHarnessId: record.parent.harnessId,
+                },
+              ]
+            : [];
+        }
+        return [
+          {
             snapshot: run.snapshot,
-            description: run.task.description,
-            prompt: run.task.prompt,
-            executionMode: run.task.executionMode,
+            ...run.task,
             runGeneration: run.runGeneration,
-            sequence: run.sequence,
+            sequence: run.stream?.streamRevision ?? 0,
             createdAt,
+            ...(run.startedAt === undefined
+              ? {}
+              : { runStartedAt: run.startedAt }),
+            ...(run.finishedAt === undefined
+              ? {}
+              : { runSettledAt: run.finishedAt }),
             parentHarnessId: record.parent.harnessId,
-          }),
-        );
-      return [
-        ...earlierRuns,
-        {
-          snapshot:
-            liveSnapshots.get(record.state.delegationId) ??
-            projectStoredDelegationSnapshot(record),
-          description: record.task.description,
-          prompt: record.task.prompt,
-          executionMode: record.task.executionMode,
-          runGeneration: record.state.runGeneration,
-          sequence:
-            current?.sequence ??
-            record.transcriptRevision ??
-            record.state.sequence,
+          },
+        ];
+      });
+    const current = latestTranscript(
+      liveTranscripts,
+      record.state.delegationId,
+    );
+    const earlierRuns = (legacyPrefixView(record).history ?? [])
+      .filter((run) => run.runGeneration < record.state.runGeneration)
+      .map(
+        (run): ManagedDelegationTreeEntry => ({
+          snapshot: run.snapshot,
+          description: run.task.description,
+          prompt: run.task.prompt,
+          executionMode: run.task.executionMode,
+          runGeneration: run.runGeneration,
+          sequence: run.sequence,
           createdAt,
-          ...(record.state.startedAt !== undefined
-            ? { runStartedAt: record.state.startedAt }
-            : {}),
-          ...(record.state.finishedAt !== undefined
-            ? { runSettledAt: record.state.finishedAt }
-            : {}),
           parentHarnessId: record.parent.harnessId,
-        },
-      ];
-    });
+        }),
+      );
+    return [
+      ...earlierRuns,
+      {
+        snapshot:
+          liveSnapshots.get(record.state.delegationId) ??
+          projectStoredDelegationSnapshot(record),
+        description: record.task.description,
+        prompt: record.task.prompt,
+        executionMode: record.task.executionMode,
+        runGeneration: record.state.runGeneration,
+        sequence:
+          current?.sequence ??
+          record.transcriptRevision ??
+          record.state.sequence,
+        createdAt,
+        ...(record.state.startedAt !== undefined
+          ? { runStartedAt: record.state.startedAt }
+          : {}),
+        ...(record.state.finishedAt !== undefined
+          ? { runSettledAt: record.state.finishedAt }
+          : {}),
+        parentHarnessId: record.parent.harnessId,
+      },
+    ];
+  });
+}
+
+async function streamTranscriptPage(
+  req: ManagedDelegationTranscriptPageRequest,
+  header: Exclude<ResolvedDelegationGeneration, { kind: 'legacy' }>,
+): Promise<ManagedDelegationTranscriptPageResult> {
+  if (header.kind === 'content_unavailable') {
+    const notFound =
+      header.failure.code === 'not_found' ||
+      header.failure.code === 'unauthorized';
+    if (notFound)
+      logMainProcessWarn('[delegation] Transcript generation unavailable', {
+        runGeneration: header.runGeneration,
+      });
+    return {
+      ok: false,
+      code: notFound ? 'not_found' : 'failed',
+      error: 'The delegation transcript is unavailable.',
+    };
+  }
+  const revision = header.stream?.streamRevision ?? 0;
+  const envelope: Extract<ManagedDelegationTranscriptPageResult, { ok: true }> =
+    {
+      ok: true,
+      task: header.task,
+      snapshot: header.snapshot,
+      runGeneration: header.runGeneration,
+      revision,
+      items: [],
+      hasMore: false,
+      ...(req.sinceRevision !== undefined && revision <= req.sinceRevision
+        ? { unchanged: true }
+        : {}),
+    };
+  const encodedBudget =
+    DELEGATION_COMPATIBILITY_PAGE_LIMITS.encodedBytes -
+    (Buffer.byteLength(JSON.stringify(envelope), 'utf8') - 2);
+  if (encodedBudget <= 2)
+    return {
+      ok: false,
+      code: 'failed',
+      error: 'The delegation transcript is unavailable.',
+    };
+  if (!header.stream || envelope.unchanged) return envelope;
+  const { getChatStateService } =
+    await import('../../services/chat-state-service');
+  const page = await getChatStateService().childStreamCompatibilityPage(
+    { projectId: req.projectId, worktreeId: req.worktreeId },
+    {
+      target: header.target,
+      streamRevision: revision,
+      beforeSequence: req.beforeSequence,
+      limit: req.limit ?? 100,
+      encodedBudget,
+    },
+  );
+  if (!page.ok)
+    return {
+      ok: false,
+      code: page.code,
+      error: 'The delegation transcript is unavailable.',
+    };
+  const unchanged =
+    req.sinceRevision !== undefined && page.streamRevision <= req.sinceRevision;
+  const result: ManagedDelegationTranscriptPageResult = {
+    ...envelope,
+    revision: page.streamRevision,
+    items: unchanged ? [] : [...page.items],
+    hasMore: unchanged ? false : page.hasMore,
+    ...(unchanged ? { unchanged: true } : {}),
+  };
+  // hasMore true is shorter than false; a concurrently changed revision may
+  // gain digits, so enforce the final public-envelope cap too.
+  return Buffer.byteLength(JSON.stringify(result), 'utf8') >
+    DELEGATION_COMPATIBILITY_PAGE_LIMITS.encodedBytes
+    ? {
+        ok: false,
+        code: 'failed',
+        error: 'The delegation transcript is unavailable.',
+      }
+    : result;
 }
 
 /** Reads a bounded page from one retained run's transcript, the latest by default. */
@@ -2510,9 +3675,14 @@ export async function readManagedDelegationTranscriptForUser(
   const resolved = await userStopContext(req);
   // A live broker serves its own chat's runs from memory; a live run is read
   // repeatedly while its chat is open, so skip the record file then.
-  const liveTranscripts = resolved
-    ? await resolved.broker.transcripts(resolved.parent, req.delegationId)
-    : [];
+  const liveStore = resolved?.broker.recordStore(
+    resolved.parent,
+    req.delegationId,
+  );
+  const liveTranscripts =
+    resolved && liveStore !== 'stream'
+      ? await resolved.broker.transcripts(resolved.parent, req.delegationId)
+      : [];
   const select = (
     transcripts: readonly AgentDelegationTranscript[],
   ): AgentDelegationTranscript | undefined =>
@@ -2529,9 +3699,19 @@ export async function readManagedDelegationTranscriptForUser(
     req.delegationId,
   )?.runGeneration;
   if (!latest) {
-    const record = await new FileDelegationStorage(
-      path.join(delegationDirectory(req), 'runs'),
-    ).loadOne(req.delegationId);
+    let record: StoredDelegation | undefined;
+    try {
+      record = await new FileDelegationStorage(
+        path.join(delegationDirectory(req), 'runs'),
+      ).loadOne(req.delegationId);
+    } catch (error) {
+      if (liveStore !== 'stream') throw error;
+      return {
+        ok: false,
+        code: 'failed',
+        error: 'The delegation transcript is unavailable.',
+      };
+    }
     if (
       !record ||
       record.parent.projectId !== req.projectId ||
@@ -2543,7 +3723,28 @@ export async function readManagedDelegationTranscriptForUser(
         code: 'not_found',
         error: 'The delegation was not found in this chat.',
       };
-    latest = select([...(record.history ?? []), currentTranscript(record)]);
+    const input = recordReadInput(record);
+    if (input.readMetadata?.current.store === 'stream') {
+      try {
+        const header = await delegationRecordReader.resolveGenerationHeader(
+          input,
+          req.runGeneration ?? record.state.runGeneration,
+        );
+        if (header.kind !== 'legacy')
+          return await streamTranscriptPage(req, header);
+      } catch (error) {
+        if (error instanceof DelegationReadMetadataError) throw error;
+        return {
+          ok: false,
+          code: 'failed',
+          error: 'The delegation transcript is unavailable.',
+        };
+      }
+    }
+    latest = select([
+      ...(legacyPrefixView(record).history ?? []),
+      currentTranscript(record),
+    ]);
     retainedGeneration ??= record.state.runGeneration;
   }
   if (!latest)
@@ -2624,6 +3825,7 @@ export async function readManagedDelegationRootsForUser(scope: {
     string,
     { readonly records: StoredDelegation[]; lastActivityAt: number }
   >();
+  const readInputs = new Map<StoredDelegation, DelegationRecordReadInput>();
   for (const record of records) {
     if (
       record.parent.projectId !== scope.projectId ||
@@ -2631,7 +3833,12 @@ export async function readManagedDelegationRootsForUser(scope: {
     )
       continue;
     const entries = grouped.get(record.parent.chatId);
-    const activity = delegationLastActivityAt(record);
+    const input = recordReadInput(record);
+    readInputs.set(record, input);
+    const activity =
+      input.readMetadata?.current.store === 'stream'
+        ? input.readMetadata.lastActivityAt
+        : delegationRecordLastActivityAt(record);
     if (entries) {
       entries.records.push(record);
       entries.lastActivityAt = Math.max(entries.lastActivityAt, activity);
@@ -2653,11 +3860,39 @@ export async function readManagedDelegationRootsForUser(scope: {
       const root = roots.get(chatKey(target));
       if (!root || root.actor !== actor || !root.live) continue;
       const parent = root.context(root.harness, 'user-roots', 'user-roots');
-      liveCounts.set(
-        chatId,
-        actor.broker.list(parent).filter(isLiveDelegation).length,
+      // Keep the one bulk list for all live legacy ids, including actor-only ids.
+      const live = actor.broker.list(parent);
+      const legacyLive = live.filter(
+        (snapshot) =>
+          actor.broker.recordStore(parent, snapshot.delegationId) !==
+            'stream' && isLiveDelegation(snapshot),
+      ).length;
+      // The bulk list also retains actor-only stream execution state. Disk
+      // records replace it where present, without counting either id twice.
+      const streamStates = new Map(
+        live
+          .filter(
+            (snapshot) =>
+              actor.broker.recordStore(parent, snapshot.delegationId) ===
+              'stream',
+          )
+          .map((snapshot) => [snapshot.delegationId, snapshot.status]),
       );
+      for (const record of grouped.get(chatId)?.records ?? [])
+        if (readInputs.get(record)?.readMetadata?.current.store === 'stream')
+          streamStates.set(record.state.delegationId, record.state.status);
+      const streamLive = Array.from(streamStates.values()).filter(
+        (status) => status === 'pending' || status === 'running',
+      ).length;
+      liveCounts.set(chatId, legacyLive + streamLive);
     }
+  }
+  // Complete the unchanged legacy bulk calls before any stream scope can fail.
+  for (const [record, input] of Array.from(readInputs)) {
+    if (input.readMetadata?.current.store !== 'stream') continue;
+    const activity = await delegationRecordReader.resolveActivity(input);
+    const group = grouped.get(record.parent.chatId);
+    if (group) group.lastActivityAt = Math.max(group.lastActivityAt, activity);
   }
   const entries = Array.from(grouped, ([chatId, group]) => ({
     chatId,
@@ -2720,24 +3955,6 @@ function isLiveDelegation(snapshot: AgentDelegationSnapshot): boolean {
   return snapshot.status === 'pending' || snapshot.status === 'running';
 }
 
-function delegationLastActivityAt(record: StoredDelegation): number {
-  let lastActivityAt = Math.max(
-    record.createdAt,
-    record.state.startedAt ?? record.createdAt,
-    record.state.finishedAt ?? record.createdAt,
-    record.control?.occurredAt ?? record.createdAt,
-  );
-  for (const control of record.controls ?? [])
-    lastActivityAt = Math.max(lastActivityAt, control.occurredAt ?? 0);
-  for (const item of record.state.transcript ?? [])
-    lastActivityAt = Math.max(lastActivityAt, item.occurredAt);
-  for (const transcript of record.history ?? []) {
-    for (const item of transcript.transcript)
-      lastActivityAt = Math.max(lastActivityAt, item.occurredAt);
-  }
-  return lastActivityAt;
-}
-
 /** The top live delegation of each live subtree, with the live ids it covers. */
 function liveSubtrees(
   snapshots: readonly AgentDelegationSnapshot[],
@@ -2782,6 +3999,7 @@ export async function stopAllManagedDelegationsForUser(
   const { broker, parent, root } = resolved;
   const release = root.holdStopAllFence();
   try {
+    await root.actor.notices.fenceChat(target);
     // No stopped delegate may be woken by a watch on another one.
     await retireDelegateWatchers(target);
     const result = await stopEveryLiveSubtree(broker, parent, root);
@@ -2876,7 +4094,10 @@ function initializeManagedService(): void {
     // dispatchable while the chat's provider session is replaced.
     isDeliveryActive: (target, id) => {
       const root = roots.get(chatKey(target));
-      return root?.live === true && root.hostMessages.canDispatch(id);
+      return (
+        root?.live === true &&
+        (root.hostMessages.canDispatch(id) || root.hostMessages.isSubmitted(id))
+      );
     },
     claimDelivery: (target, id) => {
       const root = roots.get(chatKey(target));
@@ -2906,6 +4127,13 @@ function initializeManagedService(): void {
         if (outcomes.some((outcome) => outcome.status === 'rejected'))
           throw new Error('Delegation scope cleanup was incomplete');
         managedDelegationRootCache.delete(directory);
+        for (const [key, slot] of Array.from(streamCreations))
+          if (
+            slot.target.projectId === target.projectId &&
+            slot.target.worktreeId === target.worktreeId &&
+            (!target.chatId || slot.target.chatId === target.chatId)
+          )
+            streamCreations.delete(key);
         if (!target.chatId) {
           const retained = actors.get(directory);
           if (retained) {
@@ -2916,11 +4144,13 @@ function initializeManagedService(): void {
         }
       });
       closingScopes.set(directory, closing);
+      managedDelegationLifetimeStatus.changed(target);
       try {
         await closing;
       } finally {
         if (closingScopes.get(directory) === closing)
           closingScopes.delete(directory);
+        managedDelegationLifetimeStatus.changed(target);
       }
     },
   });

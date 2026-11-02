@@ -39,9 +39,14 @@ describe('SettingsPage session-replay classification (CAN-3119)', () => {
     return page;
   }
 
-  /** The page content: the root's last child, after the `<header>`. */
+  /** The page content: the root's last child, after the header. */
   function content(page: HTMLElement): Element | null {
     return page.lastElementChild;
+  }
+
+  /** The shared settings column the page sits in. */
+  function column(page: HTMLElement): Element | null {
+    return page.closest('[data-testid="settings-page-column"]');
   }
 
   it('blocks the page content when no classification is provided (fail closed)', () => {
@@ -65,7 +70,7 @@ describe('SettingsPage session-replay classification (CAN-3119)', () => {
         </SettingsPage>
       </SettingsReplayPrivacyContext.Provider>,
     );
-    expect(page.className).toBe('mx-auto w-full max-w-176 px-8 pb-16 pt-8');
+    expect(column(page)?.className).toContain('max-w-176');
     expect(content(page)?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(
       true,
     );
@@ -81,7 +86,7 @@ describe('SettingsPage session-replay classification (CAN-3119)', () => {
       </SettingsReplayPrivacyContext.Provider>,
     );
     expect(page.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
-    expect(page.className).toBe('mx-auto w-full max-w-176 px-8 pb-16 pt-8');
+    expect(column(page)?.className).toContain('max-w-176');
     expect(content(page)?.className).toBe('flex flex-col gap-10');
   });
 });

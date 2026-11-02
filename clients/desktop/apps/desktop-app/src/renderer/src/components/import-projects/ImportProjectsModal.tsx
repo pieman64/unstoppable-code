@@ -50,6 +50,7 @@ export function ImportProjectsModal({
       <div className="p-5">
         <ImportProjectsPanel
           {...(target.providers ? { providers: target.providers } : {})}
+          modalEntry={target.source}
           onSkip={onClose}
           onDone={onClose}
           onPhaseChange={(next): void => {

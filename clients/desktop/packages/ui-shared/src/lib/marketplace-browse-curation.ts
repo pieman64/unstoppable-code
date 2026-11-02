@@ -267,18 +267,20 @@ for (const category of CATEGORY_DEFINITIONS) {
 }
 
 function sourcePriority(entry: UnifiedPluginEntry): number {
-  // Prefer the curated connector when a technical plugin bundle shares its
-  // display name. The connector owns the consumer-facing catalog detail and
-  // one-click Add flow; the plugin remains discoverable in the Plugins tab.
-  if (entry.ref.type === 'curated-mcp') return 0;
-  if (
-    entry.ref.type === 'marketplace-plugin' &&
-    entry.ref.marketplaceId === 'openai-curated'
-  ) {
-    return 1;
-  }
+  // The plugin is the visible entity when a plugin and an MCP card share a
+  // display name (CAN-3653): the plugin ships the server plus its skills, and
+  // the MCP card stays on the MCP servers tab. What the user already has
+  // wins outright, an installed plugin ahead of an installed server it may
+  // bundle, and a card that folds in its curated plugin (REG-3033) ranks as
+  // that plugin.
+  if (entry.state !== 'available') return entry.kind === 'plugin' ? 0 : 1;
   if (entry.ref.type === 'curated-plugin') return 2;
-  return 3;
+  if (entry.ref.type === 'curated-mcp' && entry.integration?.plugin) return 2;
+  if (entry.ref.type === 'marketplace-plugin') {
+    return entry.ref.marketplaceId === 'openai-curated' ? 3 : 4;
+  }
+  if (entry.ref.type === 'curated-mcp') return 5;
+  return 6;
 }
 
 function dedupeByCapabilityName(

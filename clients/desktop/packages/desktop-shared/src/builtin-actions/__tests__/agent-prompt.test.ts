@@ -154,6 +154,19 @@ function makeMessages(messages: unknown[]): ClaudeQueryTestDouble {
   };
 }
 
+function makeCodexEvents(
+  messages: ThreadEvent[],
+): AsyncGenerator<ThreadEvent, void> {
+  async function* generate(): AsyncGenerator<ThreadEvent, void> {
+    for (const message of messages) {
+      await Promise.resolve();
+      yield message;
+    }
+  }
+
+  return generate();
+}
+
 describe('redactNormalizedText', () => {
   it('controller regression: keeps eligible configured secrets protected after whitespace normalization', () => {
     const secret = 'ab      cd';
@@ -570,7 +583,7 @@ describe('agent-prompt logic', () => {
           CANOPY_FAST_MODE_ENABLED: 'false',
         }),
       ).toThrow(
-        'Pipelines do not support Ultra fast. Set fast_mode on this step, or run the pipeline with Regular or Fast.',
+        'Workflows do not support Ultra fast. Set fast_mode on this step, or run the workflow with Regular or Fast.',
       );
     });
 
@@ -1539,7 +1552,7 @@ describe('agent-prompt runner', () => {
             session_id: 'controller-json-integrity',
           },
           { type: 'result', subtype: 'success', is_error: false, result: text },
-        ]) as ReturnType<typeof claudeQuery>,
+        ]),
       );
       await runAgentPromptAction({
         CANOPY_OUTPUT: outputFile,
@@ -1610,7 +1623,7 @@ describe('agent-prompt runner', () => {
           result: '{"summary":"done"}',
           structured_output: { summary: 'done' },
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -1694,7 +1707,7 @@ describe('agent-prompt runner', () => {
           result: 'The API key is sekret-token-12345.',
           structured_output: { note: 'sekret-token-12345 embedded' },
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -1745,7 +1758,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: `The passphrase is correct horse\nbattery staple, got it.`,
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -1778,7 +1791,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: `Here it is:\n${secret}\ndone.`,
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -1808,7 +1821,7 @@ describe('agent-prompt runner', () => {
           message: { content: [{ type: 'text', text: secret }] },
         },
         { type: 'result', subtype: 'success', is_error: false, result: secret },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
     await runAgentPromptAction({
       CANOPY_OUTPUT: outputFile,
@@ -1841,7 +1854,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'The API key is sekret-token-12345.',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -1871,7 +1884,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'No secrets here.',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -1898,7 +1911,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'done',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -2045,12 +2058,12 @@ describe('agent-prompt runner', () => {
       [CodexInput, TurnOptions?]
     >(
       (
-        _prompt: string,
-        options?: { signal?: AbortSignal },
-      ): Promise<{ events: AsyncGenerator<never, void> }> => {
+        _input: CodexInput,
+        options?: TurnOptions,
+      ): Promise<{ events: AsyncGenerator<ThreadEvent, void> }> => {
         startupSignal = options?.signal;
         return Promise.resolve({
-          events: (async function* (): AsyncGenerator<never, void> {
+          events: (async function* (): AsyncGenerator<ThreadEvent, void> {
             const event = await new Promise<never>(() => {});
             yield event;
           })(),
@@ -2092,7 +2105,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'done',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -2112,7 +2125,7 @@ describe('agent-prompt runner', () => {
 
   it('rejects legacy auto thinking_effort values', async () => {
     const runStreamed = jest.fn().mockResolvedValue({
-      events: makeMessages([
+      events: makeCodexEvents([
         {
           type: 'thread.started',
           thread_id: 'thread-1',
@@ -2134,7 +2147,7 @@ describe('agent-prompt runner', () => {
     const startThread = jest.fn().mockReturnValue({ runStreamed });
     mockedInitCodex.mockResolvedValue({
       startThread,
-    } as never);
+    });
 
     await expect(
       runAgentPromptAction({
@@ -2159,7 +2172,7 @@ describe('agent-prompt runner', () => {
     ).rejects.toThrow('require a host CodexPromptRunner');
     return;
     const runStreamed = jest.fn().mockResolvedValue({
-      events: makeMessages([
+      events: makeCodexEvents([
         {
           type: 'thread.started',
           thread_id: 'thread-setting-sources',
@@ -2181,7 +2194,7 @@ describe('agent-prompt runner', () => {
     const startThread = jest.fn().mockReturnValue({ runStreamed });
     mockedInitCodex.mockResolvedValue({
       startThread,
-    } as never);
+    });
 
     await runAgentPromptAction({
       CANOPY_OUTPUT: outputFile,
@@ -2222,7 +2235,7 @@ describe('agent-prompt runner', () => {
         [CodexInput, TurnOptions?]
       >()
       .mockResolvedValueOnce({
-        events: makeMessages([
+        events: makeCodexEvents([
           {
             type: 'thread.started',
             thread_id: 'thread-structured-retry',
@@ -2236,7 +2249,7 @@ describe('agent-prompt runner', () => {
         ]),
       })
       .mockResolvedValueOnce({
-        events: makeMessages([
+        events: makeCodexEvents([
           {
             type: 'item.completed',
             item: {
@@ -2260,7 +2273,7 @@ describe('agent-prompt runner', () => {
     });
     mockedInitCodex.mockResolvedValue({
       startThread,
-    } as never);
+    });
 
     await runAgentPromptAction({
       CANOPY_OUTPUT: outputFile,
@@ -2334,7 +2347,7 @@ describe('agent-prompt runner', () => {
     const makeFailure = (
       attempt: number,
     ): { events: AsyncGenerator<unknown> } => ({
-      events: makeMessages([
+      events: makeCodexEvents([
         ...(attempt === 1
           ? [
               {
@@ -2362,7 +2375,7 @@ describe('agent-prompt runner', () => {
     });
     mockedInitCodex.mockResolvedValue({
       startThread,
-    } as never);
+    });
 
     await expect(
       runAgentPromptAction({
@@ -2410,7 +2423,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'Plan shared',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -2450,7 +2463,7 @@ describe('agent-prompt runner', () => {
         [CodexInput, TurnOptions?]
       >()
       .mockResolvedValue({
-        events: makeMessages([
+        events: makeCodexEvents([
           {
             type: 'thread.started',
             thread_id: 'thread-plan',
@@ -2475,7 +2488,7 @@ describe('agent-prompt runner', () => {
     const startThread = jest.fn().mockReturnValue({ runStreamed });
     mockedInitCodex.mockResolvedValue({
       startThread,
-    } as never);
+    });
 
     await runAgentPromptAction({
       CANOPY_OUTPUT: outputFile,
@@ -2536,7 +2549,7 @@ describe('agent-prompt runner', () => {
     ).rejects.toThrow('require a host CodexPromptRunner');
     return;
     const runStreamed = jest.fn().mockResolvedValue({
-      events: makeMessages([
+      events: makeCodexEvents([
         {
           type: 'thread.started',
           thread_id: 'thread-native-plan',
@@ -2565,7 +2578,7 @@ describe('agent-prompt runner', () => {
     const startThread = jest.fn().mockReturnValue({ runStreamed });
     mockedInitCodex.mockResolvedValue({
       startThread,
-    } as never);
+    });
 
     await runAgentPromptAction({
       CANOPY_OUTPUT: outputFile,
@@ -2594,7 +2607,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'done',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentPromptAction({
@@ -2624,7 +2637,7 @@ describe('agent-prompt runner', () => {
           is_error: false,
           result: 'continued',
         },
-      ]) as ReturnType<typeof claudeQuery>,
+      ]),
     );
 
     await runAgentResumeAction({
@@ -2663,7 +2676,7 @@ describe('agent-prompt runner', () => {
     ).rejects.toThrow('require a host CodexPromptRunner');
     return;
     const runStreamed = jest.fn().mockResolvedValue({
-      events: makeMessages([
+      events: makeCodexEvents([
         {
           type: 'item.completed',
           item: { type: 'agent_message', text: 'continued' },
@@ -2685,7 +2698,7 @@ describe('agent-prompt runner', () => {
     mockedInitCodex.mockResolvedValue({
       resumeThread,
       startThread: jest.fn(),
-    } as never);
+    });
 
     await runAgentResumeAction({
       CANOPY_OUTPUT: outputFile,
@@ -2719,7 +2732,7 @@ describe('agent-prompt runner', () => {
     mockedClaudeQuery.mockReturnValue(makeMessages([]));
 
     const runStreamed = jest.fn().mockResolvedValue({
-      events: makeMessages([
+      events: makeCodexEvents([
         {
           type: 'item.completed',
           item: { type: 'agent_message', text: 'continued' },
@@ -2741,7 +2754,7 @@ describe('agent-prompt runner', () => {
     mockedInitCodex.mockResolvedValue({
       resumeThread,
       startThread: jest.fn(),
-    } as never);
+    });
 
     await runAgentResumeAction({
       CANOPY_OUTPUT: outputFile,
@@ -2886,7 +2899,7 @@ describe('agent-prompt runner', () => {
     ).rejects.toThrow('require a host CodexPromptRunner');
     return;
     const runStreamed = jest.fn().mockResolvedValue({
-      events: makeMessages([]),
+      events: makeCodexEvents([]),
     });
     const resumeThread = jest.fn().mockReturnValue({
       id: 'expired-thread',
@@ -2895,7 +2908,7 @@ describe('agent-prompt runner', () => {
     mockedInitCodex.mockResolvedValue({
       resumeThread,
       startThread: jest.fn(),
-    } as never);
+    });
 
     await expect(
       runAgentResumeAction({

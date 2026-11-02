@@ -12,6 +12,10 @@ import {
   resetDelegationActivityStoreForTests,
   useDelegationActivityStore,
 } from '../delegationActivityStore';
+import {
+  resetLiveBackgroundTaskStoreForTests,
+  useLiveBackgroundTaskStore,
+} from '../liveBackgroundTaskStore';
 import { fromPersistedTab } from '../chat/persisted-tabs';
 import type { ChatTab, WorktreeChatState } from '../chat/types';
 
@@ -58,6 +62,7 @@ function updateTab(
 
 beforeEach(() => {
   resetDelegationActivityStoreForTests();
+  resetLiveBackgroundTaskStoreForTests();
   useChatStore.setState({
     worktreeChats: chats({
       'p/w1': [tab('a'), tab('b')],
@@ -192,13 +197,54 @@ describe('chatSidebarStore', () => {
           chatId: 'a',
           live: 1,
           queued: 0,
-          delegates: [],
         },
       },
     });
+    // Delegates alone are background work, not a running turn (D15).
     expect(useChatSidebarStore.getState().badgeKeys).toMatchObject({
-      streaming: 'p/w1',
+      streaming: '',
+      background: 'p/w1=1',
       active: 'p/w1',
+    });
+  });
+
+  it('derives the active key from live provider agents, not shells, and counts both as background work', () => {
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'p',
+      worktreeId: 'w2',
+      chatId: 'c',
+      sessionActive: true,
+      liveTasks: [{ taskId: 't1', taskType: 'local_bash' }],
+    });
+    // A shell is background work (D11) but doesn't block close.
+    expect(useChatSidebarStore.getState().badgeKeys).toMatchObject({
+      active: '',
+      background: 'p/w2=1',
+    });
+
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'p',
+      worktreeId: 'w2',
+      chatId: 'c',
+      sessionActive: true,
+      liveTasks: [{ taskId: 't2', taskType: 'local_agent' }],
+    });
+    expect(useChatSidebarStore.getState().badgeKeys).toMatchObject({
+      active: 'p/w2',
+      streaming: '',
+      background: 'p/w2=1',
+    });
+
+    useLiveBackgroundTaskStore.getState().applyPush({
+      projectId: 'p',
+      worktreeId: 'w2',
+      chatId: 'c',
+      sessionActive: true,
+      liveTasks: [],
+    });
+    expect(useChatSidebarStore.getState().badgeKeys).toMatchObject({
+      active: '',
+      background: '',
     });
   });
 });

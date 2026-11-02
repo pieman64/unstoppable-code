@@ -158,6 +158,38 @@ describe('automation action scoping', () => {
     },
     {
       action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'task', taskId: 'wt-task' },
+        workspaceId: 'ws-1',
+        pipelineId: 'p-1',
+      },
+      workspaceId: 'ws-1',
+      // An existing-task destination targets that task.
+      worktreeId: 'wt-task',
+    },
+    {
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'project' },
+        workspaceId: 'ws-1',
+        pipelineId: 'p-1',
+      },
+      workspaceId: 'ws-1',
+      worktreeId: undefined,
+    },
+    {
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        // Inert compatibility data.
+        workspaceId: 'ws-1',
+        pipelineId: 'p-1',
+      },
+      workspaceId: undefined,
+      worktreeId: undefined,
+    },
+    {
+      action: {
         type: 'pipeline_execution_resume',
         executionId: 'exec-1',
         statusReasonIds: [],

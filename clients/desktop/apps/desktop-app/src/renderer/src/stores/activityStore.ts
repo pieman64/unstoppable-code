@@ -8,13 +8,19 @@ import {
 import { useProjectsStore } from './projectsStore';
 import { registerLoadedChangedFilesRefresh } from './changedFilesRefreshRuntime';
 import { WORKTREE_SUMMARY_BATCH_SIZE_LIMIT } from '@canopy/desktop-shared/types';
+import {
+  backgroundProcessKindForTaskType,
+  backgroundProcessKindForTool,
+  isAsyncAgentLaunchText,
+} from '@canopy/desktop-shared/lib/background-work';
 import type {
   ActivityChangedFilesResponse,
+  ActivityLiveBgTasksChangedEvent,
+  ActivityLiveBgTasksChatState,
   ActivityStartOutputPollingRequest,
   ActivityStopOutputPollingRequest,
   AgentAuditEntry,
   BackgroundProcess,
-  BackgroundProcessKind,
   ChangedFileInfo,
   DetectedPlanEntry,
   DetectedPlanStatus,
@@ -27,11 +33,17 @@ import type {
   WorktreeSummaryLoadBatchResponse,
   WorktreeSummaryData,
 } from '@canopy/desktop-shared/types';
+import {
+  setLiveBackgroundTaskPushHandler,
+  useLiveBackgroundTaskStore,
+} from './liveBackgroundTaskStore';
+import type { LiveBackgroundTaskChatEntry } from './liveBackgroundTaskStore';
 
 const MAX_OUTPUT_LINES = 200;
 const TERMINAL_OUTPUT_STOP_DELAY_MS = 2000;
 const BACKGROUND_PROCESS_HISTORY_LIMIT = 200;
 const BACKGROUND_PROCESS_TRANSCRIPT_CONCURRENCY = 6;
+type ActivityLiveBgTask = ActivityLiveBgTasksChatState['liveTasks'][number];
 
 interface ToolUseMeta {
   chatId: string;
@@ -99,7 +111,7 @@ interface ReconstructableTab {
 interface ImportModalRequest {
   projectId: string;
   worktreeId: string;
-  initialTab: 'search' | 'detected';
+  /** Chat whose detected plan files list first and get the import notice. */
   originChatId?: string;
 }
 
@@ -202,6 +214,22 @@ interface ActivityState {
     worktrees: Array<{ projectId: string; worktreeId: string }>,
   ) => Promise<void>;
   loadTrackedPlans: (projectId: string, worktreeId: string) => Promise<void>;
+  /**
+   * Apply a plan record returned by an authoritative write (for example a
+   * review update). A `loadTrackedPlans` response whose request started
+   * before this write keeps the store's current record for the plan instead
+   * of restoring the older listed one.
+   */
+  commitTrackedPlanUpdate: (plan: TrackedPlanData) => void;
+  /**
+   * Record that a plan changed in main without a returned record, so list
+   * requests already in flight cannot restore its earlier state.
+   */
+  noteTrackedPlanWrite: (
+    projectId: string,
+    worktreeId: string,
+    planId: string,
+  ) => void;
   /**
    * Resolve one tracked plan, fetching it when it is not in the store yet and
    * inserting it into its worktree's list. Concurrent calls for the same plan
@@ -309,6 +337,22 @@ interface ActivityState {
     worktreeId: string,
     tabs: ReconstructableTab[],
   ) => void;
+  /** Apply one absolute live-task update for the chat, settling removed tasks. */
+  applyLiveBackgroundTaskPush: (
+    previous: LiveBackgroundTaskChatEntry | undefined,
+    next: ActivityLiveBgTasksChangedEvent,
+  ) => void;
+  /**
+   * Adds the background launches of one chat whose messages loaded after
+   * hydration (it was not open at startup), then settles them through
+   * {@link resolveBackgroundProcesses}. Additive: it never drops or rewrites
+   * an existing entry, so live work known only from events survives.
+   */
+  adoptChatMessages: (
+    projectId: string,
+    worktreeId: string,
+    tab: ReconstructableTab,
+  ) => void;
   reconcileBackgroundProcessesFromObservability: (
     projectId: string,
     worktreeId: string,
@@ -348,6 +392,65 @@ const trackedPlanLoadsInFlight = new Map<
   Promise<TrackedPlanData | null>
 >();
 const reconciliationInFlight = new Set<string>();
+/**
+ * Stale-response guard for `loadTrackedPlans`. Each authoritative single-plan
+ * write takes the next sequence number; a list response keeps the store's
+ * current record for any plan written after its request started. Entries are
+ * dropped once no list request for the worktree is in flight.
+ */
+let trackedPlanWriteSequence = 0;
+const trackedPlanWrites = new Map<string, Map<string, number>>();
+const trackedPlanListsInFlight = new Map<string, number>();
+let trackedPlanListSequence = 0;
+const trackedPlanListsApplied = new Map<string, number>();
+
+function recordTrackedPlanWrite(key: string, planId: string): void {
+  trackedPlanWriteSequence += 1;
+  if (!trackedPlanListsInFlight.get(key)) return;
+  const writes = trackedPlanWrites.get(key) ?? new Map<string, number>();
+  writes.set(planId, trackedPlanWriteSequence);
+  trackedPlanWrites.set(key, writes);
+}
+
+function finishTrackedPlanList(key: string): void {
+  const remaining = (trackedPlanListsInFlight.get(key) ?? 1) - 1;
+  if (remaining > 0) {
+    trackedPlanListsInFlight.set(key, remaining);
+    return;
+  }
+  trackedPlanListsInFlight.delete(key);
+  trackedPlanWrites.delete(key);
+  trackedPlanListsApplied.delete(key);
+}
+
+/** Keep current records for plans written after a list request started. */
+function protectNewerTrackedPlanWrites(
+  key: string,
+  listed: TrackedPlanData[],
+  current: TrackedPlanData[] | undefined,
+  startedAtSequence: number,
+): TrackedPlanData[] {
+  const writes = trackedPlanWrites.get(key);
+  if (!writes) return listed;
+  const protectedPlans = listed.flatMap((plan) => {
+    const writtenAt = writes.get(plan.id);
+    if (writtenAt === undefined || writtenAt <= startedAtSequence) {
+      return [plan];
+    }
+    const newer = current?.find((entry) => entry.id === plan.id);
+    return newer ? [newer] : [];
+  });
+  const listedIds = new Set(listed.map((plan) => plan.id));
+  for (const plan of current ?? []) {
+    if (
+      !listedIds.has(plan.id) &&
+      (writes.get(plan.id) ?? 0) > startedAtSequence
+    ) {
+      protectedPlans.push(plan);
+    }
+  }
+  return protectedPlans;
+}
 const livenessInFlight = new Set<string>();
 
 function worktreeKey(projectId: string, worktreeId: string): string {
@@ -568,20 +671,6 @@ function normalizeTaskNotificationStatus(
   }
 }
 
-function toBackgroundKind(toolName: string): BackgroundProcessKind {
-  switch (toolName) {
-    case 'Bash':
-    case 'PowerShell':
-      return 'bash';
-    case 'Task':
-      return 'task';
-    case 'Workflow':
-      return 'workflow';
-    default:
-      return 'agent';
-  }
-}
-
 function createBackgroundProcess(
   meta: ToolUseMeta,
   timestamp: number,
@@ -603,7 +692,7 @@ function createBackgroundProcess(
     chatId: meta.chatId,
     toolUseId: meta.toolUseId,
     toolName: meta.toolName,
-    kind: toBackgroundKind(meta.toolName),
+    kind: backgroundProcessKindForTool(meta.toolName),
     description,
     advisorDescription: meta.toolName,
     command: getString(meta.input, 'command'),
@@ -1455,6 +1544,228 @@ function applyToolUseToData(
   }
 }
 
+/**
+ * A card first seen from an ID-only live task holds its task id as a
+ * placeholder tool-use id. Agent activity and turn attribution look cards up
+ * by tool-use id, so adopt the real one (and the tool use's own metadata, when
+ * known) once the provider names it. The card `id` stays stable.
+ */
+function adoptToolUseIdentity(
+  data: WorktreeActivityData,
+  processIndex: number,
+  toolUseId: string,
+): void {
+  const process = data.bgProcesses[processIndex];
+  const hasPlaceholderToolUseId =
+    process.toolUseId === process.taskId ||
+    process.toolUseId === process.outputTaskId;
+  if (!hasPlaceholderToolUseId) return;
+
+  const meta = data.toolUses[toolUseId];
+  const fromToolUse = meta
+    ? createBackgroundProcess(meta, meta.timestamp)
+    : undefined;
+  data.bgProcesses[processIndex] = {
+    ...process,
+    toolUseId,
+    ...(fromToolUse
+      ? {
+          toolName: fromToolUse.toolName,
+          kind: fromToolUse.kind,
+          description: fromToolUse.description,
+          advisorDescription: fromToolUse.advisorDescription,
+          command: fromToolUse.command,
+          prompt: fromToolUse.prompt,
+          startedAt: Math.min(process.startedAt, fromToolUse.startedAt),
+        }
+      : {}),
+  };
+}
+
+/**
+ * Collapse an ID-only live-task card into the tool-use card once the provider
+ * supplies both halves of its identity.
+ */
+function mergeDuplicateBackgroundProcessesForIdentity(
+  data: WorktreeActivityData,
+  chatId: string,
+  taskId: string | undefined,
+  toolUseId: string | undefined,
+): void {
+  if (!taskId || !toolUseId) return;
+
+  const taskProcessIndex = data.bgProcesses.findIndex(
+    (process) => process.chatId === chatId && process.taskId === taskId,
+  );
+  const toolUseProcessIndex = data.bgProcesses.findIndex(
+    (process) => process.chatId === chatId && process.toolUseId === toolUseId,
+  );
+  if (taskProcessIndex >= 0 && toolUseProcessIndex < 0) {
+    adoptToolUseIdentity(data, taskProcessIndex, toolUseId);
+    return;
+  }
+  if (
+    taskProcessIndex < 0 ||
+    toolUseProcessIndex < 0 ||
+    taskProcessIndex === toolUseProcessIndex
+  ) {
+    return;
+  }
+
+  const taskProcess = data.bgProcesses[taskProcessIndex];
+  const toolUseProcess = data.bgProcesses[toolUseProcessIndex];
+  const terminalProcess = isTerminalProcessStatus(toolUseProcess.status)
+    ? toolUseProcess
+    : isTerminalProcessStatus(taskProcess.status)
+      ? taskProcess
+      : undefined;
+  const taskIdChanged =
+    toolUseProcess.taskId !== undefined &&
+    toolUseProcess.taskId !== taskProcess.taskId;
+  const merged: BackgroundProcess = {
+    ...toolUseProcess,
+    taskId: taskProcess.taskId ?? toolUseProcess.taskId,
+    outputTaskId:
+      toolUseProcess.outputTaskId ??
+      (taskIdChanged ? toolUseProcess.taskId : undefined) ??
+      taskProcess.outputTaskId,
+    outputFile: toolUseProcess.outputFile ?? taskProcess.outputFile,
+    runId: toolUseProcess.runId ?? taskProcess.runId,
+    transcriptDir: toolUseProcess.transcriptDir ?? taskProcess.transcriptDir,
+    scriptFile: toolUseProcess.scriptFile ?? taskProcess.scriptFile,
+    summary: terminalProcess
+      ? terminalProcess.summary
+      : (toolUseProcess.summary ?? taskProcess.summary),
+    lastDescription:
+      toolUseProcess.lastDescription ?? taskProcess.lastDescription,
+    outputLines:
+      toolUseProcess.outputLines.length > 0
+        ? toolUseProcess.outputLines
+        : taskProcess.outputLines,
+    updatedAt: Math.max(toolUseProcess.updatedAt, taskProcess.updatedAt),
+    ...(terminalProcess
+      ? { status: terminalProcess.status, canStop: false }
+      : {}),
+  };
+
+  data.bgProcesses[toolUseProcessIndex] = merged;
+  data.bgProcesses.splice(taskProcessIndex, 1);
+}
+
+function applyLiveTasksToChat(
+  data: WorktreeActivityData,
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+  liveTasks: readonly ActivityLiveBgTask[],
+  timestamp: number,
+  mutations: ActivityMutationResult[],
+  /** The chat's previous live set, when the caller knows what changed. */
+  previousTaskIds?: ReadonlySet<string>,
+): void {
+  for (const task of liveTasks) {
+    mergeDuplicateBackgroundProcessesForIdentity(
+      data,
+      chatId,
+      task.taskId,
+      task.toolUseId,
+    );
+
+    const existingIndex = findProcessIndex(data.bgProcesses, {
+      chatId,
+      taskId: task.taskId,
+      toolUseId: task.toolUseId,
+    });
+    if (existingIndex >= 0) {
+      const existing = data.bgProcesses[existingIndex];
+      // A task back in the live set after leaving it runs again, as a resumed
+      // Codex child does under its thread's task id. A task still listed
+      // keeps the ending a notification gave it.
+      const rejoined =
+        previousTaskIds !== undefined && !previousTaskIds.has(task.taskId);
+      if (!isTerminalProcessStatus(existing.status) || rejoined) {
+        const taskIdChanged = existing.taskId !== task.taskId;
+        const nextOutputTaskId =
+          existing.outputTaskId ??
+          (taskIdChanged ? existing.taskId : undefined);
+        // The launch description only replaces the card's when the card is
+        // re-pointed at this task; `phase` is main's latest progress text,
+        // `description` the launch text, so only `phase` may advance
+        // `lastDescription`.
+        const nextDescription = taskIdChanged
+          ? (task.description ?? existing.description)
+          : existing.description;
+        const nextLastDescription = task.phase ?? existing.lastDescription;
+        const canStop = task.stoppable !== false;
+        const changed =
+          taskIdChanged ||
+          nextOutputTaskId !== existing.outputTaskId ||
+          nextDescription !== existing.description ||
+          nextLastDescription !== existing.lastDescription ||
+          existing.status !== 'running' ||
+          existing.canStop !== canStop;
+
+        if (changed) {
+          const adopted: BackgroundProcess = {
+            ...existing,
+            taskId: task.taskId,
+            outputTaskId: nextOutputTaskId,
+            description: nextDescription,
+            lastDescription: nextLastDescription,
+            status: 'running',
+            canStop,
+            updatedAt: timestamp,
+          };
+          data.bgProcesses[existingIndex] = adopted;
+          // Only on adoption: an unchanged live card already has its poller,
+          // and every push would otherwise re-request it.
+          if (adopted.outputFile) {
+            mutations.push({
+              startPolling: {
+                projectId,
+                worktreeId,
+                chatId,
+                taskId: adopted.outputTaskId ?? task.taskId,
+                outputFile: adopted.outputFile,
+              },
+            });
+          }
+        }
+      }
+      continue;
+    }
+
+    const knownMeta = task.toolUseId
+      ? data.toolUses[task.toolUseId]
+      : undefined;
+    let restored: BackgroundProcess;
+    if (knownMeta) {
+      restored = createBackgroundProcess(knownMeta, knownMeta.timestamp);
+    } else {
+      const meta: ToolUseMeta = {
+        chatId,
+        toolUseId: task.toolUseId ?? task.taskId,
+        toolName: 'Task',
+        input: {},
+        timestamp,
+      };
+      restored = {
+        ...createBackgroundProcess(meta, timestamp),
+        kind: backgroundProcessKindForTaskType(task.taskType) ?? 'task',
+        description: task.description ?? task.workflowName ?? 'Background task',
+      };
+    }
+
+    data.bgProcesses.push({
+      ...restored,
+      taskId: task.taskId,
+      lastDescription: task.phase ?? task.description,
+      status: 'running',
+      canStop: task.stoppable !== false,
+    });
+  }
+}
+
 function applyTaskStopResult(
   data: WorktreeActivityData,
   projectId: string,
@@ -1527,12 +1838,35 @@ function applyToolResultToData(
   // reach another process.
   const launchedInBackground = isBackgroundTool(meta.toolName, meta.input);
   const ownedProcessIndex = findProcessIndex(data.bgProcesses, { toolUseId });
-  if (!launchedInBackground && ownedProcessIndex < 0) {
+  if (
+    !launchedInBackground &&
+    ownedProcessIndex < 0 &&
+    meta.toolName !== 'Agent' &&
+    meta.toolName !== 'Task'
+  ) {
+    return {};
+  }
+
+  const resultText = parseContentPayload(content).text;
+  const asyncAgentLaunch =
+    !isError &&
+    (meta.toolName === 'Agent' || meta.toolName === 'Task') &&
+    isAsyncAgentLaunchText(resultText);
+  const resultLaunchedInBackground = launchedInBackground || asyncAgentLaunch;
+  if (!resultLaunchedInBackground && ownedProcessIndex < 0) {
     return {};
   }
 
   const parsedResult = parseBackgroundResult(content);
-  const processIndex = launchedInBackground
+  if (resultLaunchedInBackground) {
+    mergeDuplicateBackgroundProcessesForIdentity(
+      data,
+      chatId,
+      parsedResult.taskId,
+      toolUseId,
+    );
+  }
+  const processIndex = resultLaunchedInBackground
     ? findProcessIndex(data.bgProcesses, {
         taskId: parsedResult.taskId,
         toolUseId,
@@ -1542,17 +1876,25 @@ function applyToolResultToData(
     processIndex >= 0
       ? data.bgProcesses[processIndex]
       : createBackgroundProcess(meta, timestamp);
-  const status =
-    isError ||
-    (parsedResult.status && parsedResult.status.toLowerCase() === 'failed')
+  const existingIsTerminal = isTerminalProcessStatus(existing.status);
+  const resultFailed =
+    isError || parsedResult.status?.toLowerCase() === 'failed';
+  const status = existingIsTerminal
+    ? resultFailed
+      ? 'failed'
+      : existing.status
+    : resultFailed
       ? 'failed'
       : parsedResult.taskId || parsedResult.status === 'async_launched'
         ? 'running'
         : existing.status;
+  const nextTaskId = existingIsTerminal
+    ? (existing.taskId ?? parsedResult.taskId)
+    : (parsedResult.taskId ?? existing.taskId);
 
   const nextProcess: BackgroundProcess = {
     ...existing,
-    taskId: parsedResult.taskId ?? existing.taskId,
+    taskId: nextTaskId,
     outputTaskId:
       parsedResult.outputFile && parsedResult.taskId
         ? parsedResult.taskId
@@ -1561,14 +1903,14 @@ function applyToolResultToData(
     updatedAt: timestamp,
     description: parsedResult.description ?? existing.description,
     prompt: parsedResult.prompt ?? existing.prompt,
-    summary: parsedResult.summary ?? existing.summary,
+    summary: existingIsTerminal
+      ? existing.summary
+      : (parsedResult.summary ?? existing.summary),
     outputFile: parsedResult.outputFile ?? existing.outputFile,
     runId: parsedResult.runId ?? existing.runId,
     transcriptDir: parsedResult.transcriptDir ?? existing.transcriptDir,
     scriptFile: parsedResult.scriptFile ?? existing.scriptFile,
-    canStop:
-      !isTerminalProcessStatus(status) &&
-      Boolean(parsedResult.taskId ?? existing.taskId),
+    canStop: !isTerminalProcessStatus(status) && Boolean(nextTaskId),
   };
 
   if (processIndex >= 0) {
@@ -1647,6 +1989,8 @@ function applySystemEventToData(
   const toolUseId =
     getString(effectiveEvent, 'tool_use_id') ??
     (taskId ? findToolUseIdForTaskId(data.toolUses, taskId) : undefined);
+
+  mergeDuplicateBackgroundProcessesForIdentity(data, chatId, taskId, toolUseId);
 
   if (taskId && toolUseId) {
     const correlated = data.toolUses[toolUseId];
@@ -1829,6 +2173,10 @@ function applySdkSystemEventToData(
 
 function runMutationSideEffects(result: ActivityMutationResult): void {
   if (result.startPolling) {
+    // A task running again outlives the stop its earlier ending scheduled.
+    const key = pollingKey(result.startPolling);
+    clearTimeout(delayedStopTimers.get(key));
+    delayedStopTimers.delete(key);
     void window.api.activity
       .startOutputPolling(result.startPolling)
       .catch(() => {
@@ -1866,6 +2214,63 @@ function runMutationSideEffects(result: ActivityMutationResult): void {
           });
       }, TERMINAL_OUTPUT_STOP_DELAY_MS),
     );
+  }
+}
+
+/**
+ * Applies one chat's persisted messages to `data`: its tool uses, SDK system
+ * events and tool results, in order. Shared by the worktree rebuild and the
+ * one-chat adoption.
+ */
+function applyTabMessagesToData(
+  data: WorktreeActivityData,
+  projectId: string,
+  worktreeId: string,
+  tab: ReconstructableTab,
+): void {
+  for (const message of tab.messages) {
+    for (const block of message.blocks) {
+      if (
+        block.type === 'tool_use' &&
+        block.toolUseId &&
+        block.toolName &&
+        typeof block.input === 'string'
+      ) {
+        applyToolUseToData(
+          data,
+          tab.id,
+          block.toolUseId,
+          block.toolName,
+          block.input,
+          message.timestamp,
+        );
+      }
+
+      const systemEvent = parseSystemEventBlock(block);
+      if (systemEvent) {
+        applySdkSystemEventToData(
+          data,
+          projectId,
+          worktreeId,
+          tab.id,
+          systemEvent,
+          message.timestamp,
+        );
+      }
+
+      if (block.type === 'tool_result' && block.toolUseId) {
+        applyToolResultToData(
+          data,
+          projectId,
+          worktreeId,
+          tab.id,
+          block.toolUseId,
+          block.output ?? '',
+          block.isError === true,
+          message.timestamp,
+        );
+      }
+    }
   }
 }
 
@@ -2016,6 +2421,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
 
   upsertTrackedPlan: (plan): void => {
     const key = worktreeKey(plan.projectId, plan.worktreeId);
+    recordTrackedPlanWrite(key, plan.id);
     set((state) => {
       const current = state.trackedPlans[key] ?? [];
       const existingIndex = current.findIndex((entry) => entry.id === plan.id);
@@ -2039,6 +2445,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
 
   removeTrackedPlan: (projectId, worktreeId, planId): void => {
     const key = worktreeKey(projectId, worktreeId);
+    recordTrackedPlanWrite(key, planId);
     set((state) => {
       const current = state.trackedPlans[key];
       const nextPlans = current?.filter((entry) => entry.id !== planId);
@@ -2165,11 +2572,34 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
 
   loadTrackedPlans: async (projectId, worktreeId): Promise<void> => {
     const key = worktreeKey(projectId, worktreeId);
-    const plans = await window.api.activity.plans.list({
-      projectId,
-      worktreeId,
-    });
+    const startedAtSequence = trackedPlanWriteSequence;
+    const requestSequence = ++trackedPlanListSequence;
+    trackedPlanListsInFlight.set(
+      key,
+      (trackedPlanListsInFlight.get(key) ?? 0) + 1,
+    );
+    let listed: TrackedPlanData[];
+    try {
+      listed = await window.api.activity.plans.list({
+        projectId,
+        worktreeId,
+      });
+    } catch (error) {
+      finishTrackedPlanList(key);
+      throw error;
+    }
+    if (requestSequence < (trackedPlanListsApplied.get(key) ?? 0)) {
+      finishTrackedPlanList(key);
+      return;
+    }
+    trackedPlanListsApplied.set(key, requestSequence);
     set((state) => {
+      const plans = protectNewerTrackedPlanWrites(
+        key,
+        listed,
+        state.trackedPlans[key],
+        startedAtSequence,
+      );
       const trackedPlansChanged = !trackedPlanListsEqual(
         state.trackedPlans[key],
         plans,
@@ -2194,6 +2624,15 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
           : {}),
       };
     });
+    finishTrackedPlanList(key);
+  },
+
+  commitTrackedPlanUpdate: (plan): void => {
+    get().upsertTrackedPlan(plan);
+  },
+
+  noteTrackedPlanWrite: (projectId, worktreeId, planId): void => {
+    recordTrackedPlanWrite(worktreeKey(projectId, worktreeId), planId);
   },
 
   ensureTrackedPlanLoaded: (
@@ -2446,6 +2885,113 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     }
   },
 
+  applyLiveBackgroundTaskPush: (previous, next): void => {
+    const key = worktreeKey(next.projectId, next.worktreeId);
+    const mutations: ActivityMutationResult[] = [];
+    const timestamp = Date.now();
+
+    set((state) => {
+      const data = cloneWorktreeActivity(state, key);
+      if (next.sessionActive) {
+        applyLiveTasksToChat(
+          data,
+          next.projectId,
+          next.worktreeId,
+          next.chatId,
+          next.liveTasks,
+          timestamp,
+          mutations,
+          // Without a previous push, a listed task can't be told from one
+          // that rejoined, so its card keeps any ending it already has.
+          previous &&
+            new Set(
+              previous.sessionActive
+                ? previous.liveTasks.map((task) => task.taskId)
+                : [],
+            ),
+        );
+      }
+
+      const nextTaskIds = new Set(next.liveTasks.map((task) => task.taskId));
+      for (const task of previous?.liveTasks ?? []) {
+        if (next.sessionActive && nextTaskIds.has(task.taskId)) continue;
+
+        const taskProcessIndex = data.bgProcesses.findIndex(
+          (process) =>
+            process.chatId === next.chatId &&
+            (process.taskId === task.taskId ||
+              process.outputTaskId === task.taskId),
+        );
+        const toolUseProcessIndex = task.toolUseId
+          ? data.bgProcesses.findIndex(
+              (process) =>
+                process.chatId === next.chatId &&
+                process.toolUseId === task.toolUseId,
+            )
+          : -1;
+        const processIndex =
+          taskProcessIndex >= 0 ? taskProcessIndex : toolUseProcessIndex;
+        if (processIndex < 0) continue;
+
+        const process = data.bgProcesses[processIndex];
+        if (isTerminalProcessStatus(process.status)) continue;
+        const stillLive =
+          next.sessionActive &&
+          next.liveTasks.some(
+            (liveTask) =>
+              liveTask.taskId === process.taskId ||
+              (task.toolUseId !== undefined &&
+                liveTask.toolUseId === task.toolUseId),
+          );
+        if (stillLive) continue;
+
+        if (next.sessionActive) {
+          mutations.push(
+            applySystemEventToData(
+              data,
+              next.projectId,
+              next.worktreeId,
+              next.chatId,
+              completionEventForProcess(process),
+              timestamp,
+            ),
+          );
+          continue;
+        }
+
+        if (process.taskId) {
+          mutations.push({
+            stopPolling: {
+              projectId: next.projectId,
+              worktreeId: next.worktreeId,
+              chatId: next.chatId,
+              taskId: process.outputTaskId ?? process.taskId,
+            },
+          });
+        }
+        data.bgProcesses[processIndex] = {
+          ...process,
+          status: 'stopped',
+          summary: process.summary ?? UNRESOLVED_TASK_SUMMARY,
+          updatedAt: timestamp,
+          canStop: false,
+        };
+      }
+
+      if (
+        backgroundProcessListsEqual(state.bgProcesses[key], data.bgProcesses) &&
+        toolUseMapsEqual(state.toolUses[key], data.toolUses)
+      ) {
+        return state;
+      }
+      return buildPatch(state, key, data);
+    });
+
+    for (const mutation of mutations) {
+      runMutationSideEffects(mutation);
+    }
+  },
+
   appendBgProcessOutput: (event): void => {
     if (event.lines.length === 0) {
       return;
@@ -2496,50 +3042,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     const previousToolUses = get().toolUses[key];
 
     for (const tab of tabs) {
-      for (const message of tab.messages) {
-        for (const block of message.blocks) {
-          if (
-            block.type === 'tool_use' &&
-            block.toolUseId &&
-            block.toolName &&
-            typeof block.input === 'string'
-          ) {
-            applyToolUseToData(
-              nextData,
-              tab.id,
-              block.toolUseId,
-              block.toolName,
-              block.input,
-              message.timestamp,
-            );
-          }
-
-          const systemEvent = parseSystemEventBlock(block);
-          if (systemEvent) {
-            applySdkSystemEventToData(
-              nextData,
-              projectId,
-              worktreeId,
-              tab.id,
-              systemEvent,
-              message.timestamp,
-            );
-          }
-
-          if (block.type === 'tool_result' && block.toolUseId) {
-            applyToolResultToData(
-              nextData,
-              projectId,
-              worktreeId,
-              tab.id,
-              block.toolUseId,
-              block.output ?? '',
-              block.isError === true,
-              message.timestamp,
-            );
-          }
-        }
-      }
+      applyTabMessagesToData(nextData, projectId, worktreeId, tab);
     }
 
     // A task id the event stream correlated with a tool use is learned state
@@ -2591,6 +3094,45 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
         worktreeId,
         activeChatIds,
       );
+    } else {
+      void get().resolveBackgroundProcessLiveness(projectId, worktreeId, []);
+    }
+  },
+
+  adoptChatMessages: (projectId, worktreeId, tab): void => {
+    const key = worktreeKey(projectId, worktreeId);
+    const rebuilt: WorktreeActivityData = { bgProcesses: [], toolUses: {} };
+    applyTabMessagesToData(rebuilt, projectId, worktreeId, tab);
+    const previousProcesses = get().bgProcesses[key] ?? [];
+    const previousToolUses = get().toolUses[key] ?? {};
+    // A launch already known, by its tool use or (from a task event that
+    // carried no tool-use id) by its task, keeps its live entry.
+    const added = rebuilt.bgProcesses.filter(
+      (process) =>
+        findProcessIndex(previousProcesses, {
+          chatId: process.chatId,
+          toolUseId: process.toolUseId,
+          taskId: process.taskId,
+        }) < 0,
+    );
+    const addedToolUses = Object.fromEntries(
+      Object.entries(rebuilt.toolUses).filter(
+        ([toolUseId]) => previousToolUses[toolUseId] === undefined,
+      ),
+    );
+    if (added.length === 0 && Object.keys(addedToolUses).length === 0) return;
+    set((state) => ({
+      bgProcesses: {
+        ...state.bgProcesses,
+        [key]: [...(state.bgProcesses[key] ?? []), ...added],
+      },
+      toolUses: {
+        ...state.toolUses,
+        [key]: { ...state.toolUses[key], ...addedToolUses },
+      },
+    }));
+    if (added.some((process) => !isTerminalProcessStatus(process.status))) {
+      void get().resolveBackgroundProcesses(projectId, worktreeId, [tab.id]);
     }
   },
 
@@ -2627,58 +3169,26 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     try {
       // Absent on hosts whose preload predates the live-task bridge; fall
       // back to the previous behavior of resuming polling for live rows.
-      const activityApi =
-        typeof window === 'undefined' ? undefined : window.api?.activity;
-      const live =
-        typeof activityApi?.listLiveBgTasks === 'function'
-          ? await activityApi.listLiveBgTasks({ projectId, worktreeId })
-          : null;
+      const live = await useLiveBackgroundTaskStore
+        .getState()
+        .refreshWorktree(projectId, worktreeId);
 
       const mutations: ActivityMutationResult[] = [];
       const resolvedAt = Date.now();
       set((state) => {
         const data = cloneWorktreeActivity(state, key);
-        for (const chatId of Array.from(scopedChatIds)) {
-          const chatState = live?.chats[chatId];
-          for (const task of chatState?.liveTasks ?? []) {
-            const existingIndex = findProcessIndex(data.bgProcesses, {
-              ...task,
+        if (live !== null) {
+          for (const [chatId, chatState] of Object.entries(live.chats)) {
+            if (!chatState.sessionActive) continue;
+            applyLiveTasksToChat(
+              data,
+              projectId,
+              worktreeId,
               chatId,
-            });
-            if (existingIndex >= 0) {
-              const existing = data.bgProcesses[existingIndex];
-              if (existing && existing.taskId !== task.taskId) {
-                data.bgProcesses[existingIndex] = {
-                  ...existing,
-                  taskId: task.taskId,
-                  outputTaskId: existing.outputTaskId ?? existing.taskId,
-                  description: task.description ?? existing.description,
-                  lastDescription: task.description ?? existing.lastDescription,
-                  status: 'running',
-                  canStop: true,
-                  updatedAt: resolvedAt,
-                };
-              }
-              continue;
-            }
-            const restored = createBackgroundProcess(
-              {
-                chatId,
-                toolUseId: task.toolUseId ?? task.taskId,
-                toolName: 'Task',
-                input: {},
-                timestamp: resolvedAt,
-              },
+              chatState.liveTasks,
               resolvedAt,
+              mutations,
             );
-            data.bgProcesses.push({
-              ...restored,
-              taskId: task.taskId,
-              description: task.description ?? restored.description,
-              lastDescription: task.description,
-              status: 'running',
-              canStop: true,
-            });
           }
         }
         data.bgProcesses = data.bgProcesses.map(
@@ -3038,4 +3548,8 @@ registerLoadedChangedFilesRefresh(async (projectId, worktreeId, options) => {
     // branch/base mutation that already succeeded.
     return undefined;
   }
+});
+
+setLiveBackgroundTaskPushHandler((previous, next) => {
+  useActivityStore.getState().applyLiveBackgroundTaskPush(previous, next);
 });

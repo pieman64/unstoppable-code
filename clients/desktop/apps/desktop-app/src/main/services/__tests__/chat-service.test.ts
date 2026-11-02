@@ -9,13 +9,15 @@ jest.mock('../../account-proxy/routing', () => ({
 }));
 /* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call */
 // Must be mocked: `sendWorktreeChatMessage` calls
-// `notifyOnboardingChecklistChatStarted()`, whose fire-and-forget latch writes
+// `latchFirstTaskSubmitted()`, whose fire-and-forget latch writes
 // through real `node:fs/promises` + `paths.ts`. Unmocked, running this suite
-// latches checklist items into the developer's live `~/.canopy` install (and
+// latches campaign signals into the developer's live `~/.canopy` install (and
 // leaks an async require past Jest teardown via the cloud-account store).
+import type * as SessionManagerModule from '../../agents/session-manager';
 import type * as WorkOwnerModule from '../../agents/work-owner';
 import type * as ChatTabsReaderModule from '../../lib/chat-tabs-reader';
 import type * as ChatStateServiceModule from '../chat-state-service';
+import type { ProviderEventIngestResult } from '../provider-event-admission';
 import * as ModelCatalogProjection from '../../portal/model-catalog-projection';
 
 // The real pin resolves Settings; these cases need only its outcome.
@@ -38,10 +40,44 @@ jest.mock('../../agents/agent-default-model', () => ({
   },
 }));
 
-const mockNotifyOnboardingChecklistChatStarted = jest.fn<void, []>();
-jest.mock('../../ipc/onboarding-checklist', () => ({
-  notifyOnboardingChecklistChatStarted: (): void => {
-    mockNotifyOnboardingChecklistChatStarted();
+const mockLatchFirstTaskSubmitted = jest.fn<void, []>();
+const worktreeStopContext = {
+  target: {
+    projectId: 'workspace-1',
+    worktreeId: 'worktree-1',
+    chatId: 'chat-1',
+  },
+  session: { owner: 'worktree-session-owner' },
+  fence: {
+    processOwner: Symbol('worktree-session-owner'),
+    turnId: 'worktree-turn',
+    userMessageId: 'worktree-stopped-message',
+    turnEpoch: 21,
+  },
+};
+const mockCaptureChatTurnStop = jest.fn<unknown, [unknown]>(
+  () => worktreeStopContext,
+);
+const mockCancelChatTurn = jest.fn<
+  Promise<unknown>,
+  [unknown, unknown?, unknown?]
+>(() =>
+  Promise.resolve({ context: worktreeStopContext, outcome: 'interrupted' }),
+);
+import {
+  observeTurn,
+  turnEnded,
+  turnStarted,
+} from '../../__tests__/helpers/turn-lifecycle-events';
+jest.mock('../../lib/chat-turn-cancel', () => ({
+  captureChatTurnStop: (...args: [unknown]): unknown =>
+    mockCaptureChatTurnStop(...args),
+  cancelChatTurn: (...args: [unknown, unknown?, unknown?]): Promise<unknown> =>
+    mockCancelChatTurn(...args),
+}));
+jest.mock('../../notifications/campaigns/activation-signals', () => ({
+  latchFirstTaskSubmitted: (): void => {
+    mockLatchFirstTaskSubmitted();
   },
 }));
 jest.mock('../../lib/chat-tabs-reader', () => ({
@@ -56,6 +92,7 @@ jest.mock('../../lib/chat-tabs', () => ({
   notifyChatTabsMaterialized: jest.fn().mockResolvedValue(undefined),
 }));
 const mockChatStateService = {
+  getTurnState: jest.fn((): unknown => undefined),
   retainTrustedTerminalInput: jest.fn().mockResolvedValue(undefined),
   restoreRetainedTerminalAgentInputAfterFailedNativeAdmission: jest
     .fn()
@@ -74,6 +111,7 @@ const mockChatStateService = {
     .fn()
     .mockResolvedValue({ version: 1, tabs: [], activeTabId: '' }),
   ensureChatForTrustedSend: jest.fn().mockResolvedValue(undefined),
+  commitTurnOverrideModelFor: jest.fn().mockResolvedValue(undefined),
   ingestProviderEvent: jest
     .fn<
       Promise<boolean>,
@@ -85,12 +123,10 @@ const mockChatStateService = {
     >()
     .mockResolvedValue(true),
   // Delivery reads the outcome; it mirrors the boolean commit mock above.
-  ingestProviderEventWithOutcome: async (
-    input: ChatStateServiceModule.ProviderEventInput,
-  ): Promise<ChatStateServiceModule.ProviderEventIngestOutcome> =>
-    (await mockChatStateService.ingestProviderEvent(input))
-      ? 'applied'
-      : 'not-applied',
+  ingestProviderEventWithResult: jest.fn<
+    Promise<ChatStateServiceModule.ProviderEventIngestResult>,
+    [ChatStateServiceModule.ProviderEventInput]
+  >(),
   hasMutation: jest.fn().mockResolvedValue(false),
   hasTranscriptMessage: jest.fn(() => Promise.resolve(false)),
   replaceCompatibilityTabs: jest.fn(
@@ -131,6 +167,24 @@ const mockChatStateService = {
   reconcileHostQueue: jest.fn().mockResolvedValue(undefined),
   removeUnacceptedUserPrompt: jest.fn().mockResolvedValue(undefined),
 };
+const ingestProviderEventResultFromBoolean = async (
+  input: ChatStateServiceModule.ProviderEventInput,
+): Promise<ChatStateServiceModule.ProviderEventIngestResult> => ({
+  outcome: (await mockChatStateService.ingestProviderEvent(input))
+    ? 'applied'
+    : 'not-applied',
+});
+mockChatStateService.ingestProviderEventWithResult.mockImplementation(
+  ingestProviderEventResultFromBoolean,
+);
+const providerEventIngestResults: ProviderEventIngestResult[] = [
+  { outcome: 'applied' },
+  { outcome: 'activity-only' },
+  { outcome: 'not-applied' },
+  { outcome: 'not-applied', pickup: 'accepted' },
+  { outcome: 'not-applied', pickup: 'already-accepted' },
+  { outcome: 'not-applied', pickup: 'rejected' },
+];
 jest.mock('../chat-state-service', () => ({
   getChatStateService: () => mockChatStateService,
 }));
@@ -142,7 +196,31 @@ jest.mock('../../lib/validation', () => ({
   validateId: jest.fn(),
   validateOptionalRepoId: jest.fn(),
 }));
+let mockPortalGeneration = 1;
+const mockCurrentProviderEventCompletion = {
+  outcome: 'applied',
+  portalEmissionContext: { generation: 1 },
+  acceptedTurnUserMessageId: 'message-1',
+  sequenceNamespace: 'initial',
+} as const;
 jest.mock('../../portal/portal-event-bus', () => ({
+  capturePortalEmissionContext: jest.fn(() => ({
+    generation: mockPortalGeneration,
+  })),
+  isPortalEmissionContextCurrent: jest.fn(
+    (context: { generation: number }) =>
+      context.generation === mockPortalGeneration,
+  ),
+  enqueuePortalEventIfCurrent: jest.fn(
+    (
+      context: { generation: number },
+      event: Parameters<typeof enqueuePortalEvent>[0],
+    ) => {
+      if (context.generation !== mockPortalGeneration) return false;
+      jest.mocked(enqueuePortalEvent)(event);
+      return true;
+    },
+  ),
   createPortalEvent: jest.fn((type: string, payload: unknown) => ({
     type,
     eventId: 'event-1',
@@ -162,6 +240,7 @@ jest.mock('../../lib/worktree-chat-turn', () => ({
 jest.mock('../../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: jest.fn(() => ({
     handleCanonicalChatStartedEvent: jest.fn(),
+    checkDeliveryIngress: jest.fn(() => Promise.resolve({ allowed: true })),
   })),
 }));
 jest.mock('../../app-advisor/chat-service', () => ({
@@ -211,8 +290,28 @@ jest.mock('../../lib/auth-preflight', () => ({
 }));
 jest.mock('../../agents/session-manager', () => ({
   subscribeGlobalPluginDefaultsRevision: jest.fn(() => jest.fn()),
+  subscribeChatSessionActivity: jest.fn(() => jest.fn()),
+  subscribeLiveBackgroundTasks: jest.fn(() => jest.fn()),
+  getChatSessionLiveness: jest.fn(
+    (projectId: string, worktreeId: string, chatId: string) => {
+      const { getSession, getActiveChatIds } = jest.requireMock<
+        typeof SessionManagerModule
+      >('../../agents/session-manager');
+      const session = getSession(projectId, worktreeId, chatId);
+      return {
+        foreground:
+          session?.isDisposed?.() !== true &&
+          (session?.hasPendingSteeringInput?.() === true ||
+            getActiveChatIds(projectId, worktreeId).includes(chatId)),
+        background: false,
+      };
+    },
+  ),
+  chatHasNativeBackgroundWork: jest.fn(() => false),
+  getSessionTurnSettings: jest.fn(() => undefined),
   getGlobalPluginDefaultsRevision: jest.fn(() => 0),
   getSessionGlobalPluginDefaultsRevision: jest.fn(() => undefined),
+  getSessionPluginSelections: jest.fn(() => undefined),
   getActiveChatIds: jest.fn(() => []),
   getActiveSessionInfos: jest.fn(() => []),
   hasPendingCodexContinuation: jest.fn(() => false),
@@ -271,6 +370,7 @@ jest.mock('../../lib/resolve-worktree', () => ({
 
 import type {
   ApprovalRule,
+  ChatQueueUpdatedEvent,
   ChatSendMessageRequest,
   ChatTabsFile,
   PersistedChatTab,
@@ -305,7 +405,9 @@ import {
   clearLiveApprovalMode,
   setLiveApprovalMode,
 } from '../../approvals/live-approval-modes';
+import { markChatApprovalStateChanged } from '../../approvals/rule-revisions';
 import {
+  assertTerminalChatAcceptsSettings,
   isReusableEmptyChatTab,
   buildExistingTabDispatchOptions,
   cancelWorktreeChat,
@@ -318,6 +420,7 @@ import {
   resolveWorktreeChatApprovalPolicy,
   resumeStoppedWorktreeChatTurn,
   sendWorktreeChatMessage,
+  TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE,
   setAutoModelRoutingDispatcher,
   setSendModelPreparer,
   setWorktreeChatWindowAccessor,
@@ -336,6 +439,7 @@ import {
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   IPC_CHANNELS,
   getProviderForModel,
+  initAgentModels,
   initAiGatewayModels,
   initClaudeModels,
   initCodexModels,
@@ -372,7 +476,6 @@ function sessionInfo(
     projectId: 'workspace-1',
     worktreeId: 'worktree-1',
     providerType: 'claude',
-    turnActive: false,
     createdAt: 1,
     lastActivityAt: 1,
     turnCount: 0,
@@ -415,6 +518,12 @@ function chatTabsFile(
 describe('worktree chat service', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPortalGeneration = 1;
+    mockCaptureChatTurnStop.mockReturnValue(worktreeStopContext);
+    mockCancelChatTurn.mockReset().mockResolvedValue({
+      context: worktreeStopContext,
+      outcome: 'interrupted',
+    });
     blockedModelIds.clear();
     mockAssertTurnAuthDependencies.mockResolvedValue(undefined);
     registerWorkspaceTypes(new Map());
@@ -430,6 +539,9 @@ describe('worktree chat service', () => {
     mockedWriteChatTabsFile.mockResolvedValue(undefined);
     mockChatStateService.ensureChatForTrustedSend.mockResolvedValue(undefined);
     mockChatStateService.ingestProviderEvent.mockResolvedValue(true);
+    mockChatStateService.ingestProviderEventWithResult
+      .mockReset()
+      .mockImplementation(ingestProviderEventResultFromBoolean);
     mockChatStateService.hasMutation.mockResolvedValue(false);
     mockChatStateService.reconcileHostQueue.mockResolvedValue(undefined);
     mockChatStateService.removeUnacceptedUserPrompt.mockResolvedValue(
@@ -437,13 +549,316 @@ describe('worktree chat service', () => {
     );
     mockedDispatchWorktreeChatTurn.mockResolvedValue(undefined);
     jest.mocked(isDelegationDeliveryActive).mockReset().mockReturnValue(false);
-    mockedDispatchAppAdvisorChatMessage.mockResolvedValue(undefined);
+    mockedDispatchAppAdvisorChatMessage.mockResolvedValue('dispatched');
     mockedClearUsageLimitedChat.mockResolvedValue(undefined);
     mockedResolvePersistedApprovalMode.mockImplementation(
       (_projectId, _worktreeId, tabMode) => Promise.resolve(tabMode ?? 'ask'),
     );
     initAiGatewayModels([], []);
     initModelHarnessAssignments({ revision: 0, assignments: [] });
+  });
+
+  const callerFunnels = [
+    ['worktree local', 'desktop'],
+    ['Portal', 'portal'],
+  ] as const;
+
+  it.each(callerFunnels)(
+    'attributes a slow prompt commit to prompt_commit on the %s funnel',
+    async (_name, origin) => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Worktree chat',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+          },
+        ]),
+      );
+      mockChatStateService.ingestProviderEvent.mockImplementationOnce(
+        async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 2_050));
+          return true;
+        },
+      );
+      let phases: Array<{ phase: string; elapsedMs: number }> = [];
+      mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
+        phases = options.turnDispatchTiming?.phaseSnapshot() ?? [];
+        return Promise.resolve();
+      });
+
+      await dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'message-1',
+          text: 'A prompt with a slow commit and a fast dispatch.',
+        },
+        origin,
+        false,
+      );
+
+      expect(
+        phases.find(({ phase }) => phase === 'prompt_commit')?.elapsedMs,
+      ).toBeGreaterThanOrEqual(2_000);
+      expect(
+        phases.find(({ phase }) => phase === 'auth_preflight')?.elapsedMs,
+      ).toBeLessThan(2_000);
+      expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(callerFunnels)(
+    'attributes a slow caller preflight to auth_preflight on the %s funnel',
+    async (_name, origin) => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Worktree chat',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+          },
+        ]),
+      );
+      mockAssertTurnAuthDependencies.mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 2_050));
+      });
+      let phases: Array<{ phase: string; elapsedMs: number }> = [];
+      mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
+        phases = options.turnDispatchTiming?.phaseSnapshot() ?? [];
+        return Promise.resolve();
+      });
+
+      await dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'message-1',
+          text: 'A prompt with a slow caller preflight.',
+        },
+        origin,
+        false,
+      );
+
+      expect(
+        phases.find(({ phase }) => phase === 'auth_preflight')?.elapsedMs,
+      ).toBeGreaterThanOrEqual(2_000);
+      expect(
+        phases.find(({ phase }) => phase === 'prompt_commit')?.elapsedMs,
+      ).toBeLessThan(2_000);
+      expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(callerFunnels)(
+    "commits a queued pipeline override's model before the %s funnel routes it",
+    async (_name, origin) => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Worktree chat',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+          },
+        ]),
+      );
+      const order: string[] = [];
+      mockChatStateService.commitTurnOverrideModelFor.mockImplementationOnce(
+        () => {
+          order.push('commit');
+          return Promise.resolve();
+        },
+      );
+      mockedDispatchWorktreeChatTurn.mockImplementationOnce(() => {
+        order.push('dispatch');
+        return Promise.resolve();
+      });
+      const turnOverride = {
+        version: 1 as const,
+        model: 'claude-sonnet-4-6',
+        providerType: 'claude' as const,
+      };
+
+      await dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'message-1',
+          text: 'A queued pipeline prompt.',
+          turnOverride,
+        },
+        origin,
+        true,
+      );
+
+      expect(
+        mockChatStateService.commitTurnOverrideModelFor,
+      ).toHaveBeenCalledWith(expect.objectContaining({ turnOverride }));
+      expect(order).toEqual(['commit', 'dispatch']);
+    },
+  );
+
+  it.each(callerFunnels)(
+    "writes a queued automation send's bound context to its tab and turn on the %s funnel (CAN-4549)",
+    async (_name, origin) => {
+      const orgB = 'org:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Worktree chat',
+            createdAt: '2026-09-03T00:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+            executionContext: 'personal',
+          },
+        ]),
+      );
+
+      // A row restored from the queue carries only the admitted request.
+      await dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'automation-run-1',
+          text: 'A queued automation prompt.',
+          initiationSource: 'automation',
+          automationName: 'Morning report',
+          automationDispatch: {
+            version: 1,
+            automationName: 'Morning report',
+            executionContext: orgB,
+            presentation: 'background',
+          },
+        },
+        origin,
+        true,
+      );
+
+      expect(
+        mockedWriteChatTabsFile.mock.calls
+          .map((call) => call[2].tabs[0]?.executionContext)
+          .at(-1),
+      ).toBe(orgB);
+      expect(
+        mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0].executionContext,
+      ).toBe(orgB);
+    },
+  );
+
+  it("keeps a refused queued automation send's context off its tab (CAN-4549)", async () => {
+    initAgentModels([
+      {
+        id: 'agent_model_inherit',
+        name: 'Inherit',
+        baseModel: 'default',
+        instructions: '',
+        pluginSelections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
+        createdAt: '2026-10-12T00:00:00.000Z',
+        updatedAt: '2026-10-12T00:00:00.000Z',
+        available: true,
+      },
+    ]);
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Worktree chat',
+          createdAt: '2026-09-03T00:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+          executionContext: 'personal',
+        },
+      ]),
+    );
+
+    await expect(
+      dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'automation-run-1',
+          text: 'A queued automation prompt.',
+          model: 'agent_model_inherit',
+          initiationSource: 'automation',
+          automationName: 'Morning report',
+          automationDispatch: {
+            version: 1,
+            automationName: 'Morning report',
+            executionContext: 'org:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            presentation: 'background',
+          },
+        },
+        'desktop',
+        true,
+      ),
+    ).rejects.toThrow('now uses the default model');
+
+    expect(
+      mockedWriteChatTabsFile.mock.calls.map(
+        (call) => call[2].tabs[0]?.executionContext,
+      ),
+    ).not.toContain('org:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+    initAgentModels([]);
+  });
+
+  it('refuses settings a terminal chat would not apply before an automation dispatches (CAN-4549)', async () => {
+    const tui = jest
+      .spyOn(claudeTuiChats, 'getEffectiveClaudeChatInterfaceMode')
+      .mockImplementation((mode) => mode ?? 'canopy');
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'terminal-chat',
+          title: 'Terminal chat',
+          createdAt: '2026-09-03T00:00:00.000Z',
+          kind: 'chat',
+          providerType: 'claude',
+          interfaceMode: 'auto',
+          approvalMode: 'ask',
+          planMode: false,
+          messages: [],
+        },
+      ]),
+    );
+    const target = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'terminal-chat',
+    };
+    await expect(
+      assertTerminalChatAcceptsSettings(target, {
+        approvalMode: 'full-access',
+      }),
+    ).rejects.toThrow(TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE);
+    await expect(
+      assertTerminalChatAcceptsSettings(target, { model: 'claude-sonnet-4-6' }),
+    ).rejects.toThrow(TERMINAL_CHAT_SETTINGS_DIFFER_MESSAGE);
+    await expect(
+      assertTerminalChatAcceptsSettings(target, {
+        approvalMode: 'ask',
+        planMode: false,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertTerminalChatAcceptsSettings(
+        { ...target, chatId: 'missing' },
+        { model: 'claude-sonnet-4-6' },
+      ),
+    ).resolves.toBeUndefined();
+    tui.mockRestore();
   });
 
   describe('retired plan chats', () => {
@@ -599,6 +1014,170 @@ describe('worktree chat service', () => {
     );
   });
 
+  // D12: a delegate's message is hidden only while it waits in the queue.
+  it('shows an internal-row prompt once it is sent as its own turn', async () => {
+    const delegateSender: AgentSentInfo = {
+      kind: 'managed_delegate',
+      delegationId: 'delegate-1',
+      title: 'Review the plan',
+    };
+    // A live delegation owns the delivery, as it does for a real request.
+    jest.mocked(isDelegationDeliveryActive).mockReturnValue(true);
+    mockedDispatchWorktreeChatTurn.mockImplementationOnce(
+      (options): Promise<void> => {
+        options.onTurnAccepted?.();
+        return Promise.resolve();
+      },
+    );
+    await dispatchHostQueuedWorktreeChatMessage(
+      {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'internal-request-1',
+        text: '<system_instruction>private request</system_instruction>',
+        managedDelegationDeliveryId: 'internal-request-1',
+        internalRow: {
+          kind: 'delegation-request',
+          delegationId: 'delegate-1',
+          displayLine: 'Waiting for parent input',
+        },
+        agentSent: delegateSender,
+      },
+      'desktop',
+      false,
+    );
+
+    const promptCommit =
+      mockChatStateService.ingestProviderEvent.mock.calls.find(
+        ([input]) =>
+          input.mutationId === 'chat-1:internal-request-1:user-prompt',
+      );
+    expect(promptCommit?.[0].data).toMatchObject({
+      type: 'canopy_user_prompt',
+      canopy_persisted_messages: [
+        expect.objectContaining({
+          id: 'internal-request-1',
+          agentSent: delegateSender,
+        }),
+      ],
+    });
+    expect(promptCommit?.[0].data).not.toHaveProperty('canopy_hidden');
+    expect(promptCommit?.[0].data).not.toHaveProperty([
+      'canopy_persisted_messages',
+      0,
+      'hidden',
+    ]);
+    expect(
+      mockedEnqueuePortalEvent.mock.calls.some(
+        ([event]) =>
+          event.type === 'portal.chat.event' &&
+          isRecord(event.payload) &&
+          isRecord(event.payload.message) &&
+          event.payload.message.role === 'user' &&
+          event.payload.message.messageId === 'internal-request-1' &&
+          isRecord(event.payload.message.agentSent) &&
+          event.payload.message.agentSent.kind === 'managed_delegate',
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'deleted',
+      userMessageId: 'watcher-deleted-delivery',
+      text: 'The watcher target was deleted.',
+      hiddenContextText: '',
+      watcherFired: undefined,
+    },
+    {
+      name: 'fired',
+      userMessageId: 'watcher-fired-delivery',
+      text: 'The build finished successfully.',
+      hiddenContextText: 'Build logs confirmed the result.',
+      watcherFired: { kind: 'Pipeline completion' },
+    },
+  ])(
+    'commits and announces a $name watcher prompt after provider acceptance',
+    async ({ userMessageId, text, hiddenContextText, watcherFired }) => {
+      const mainWindow = new BrowserWindow();
+      setWorktreeChatWindowAccessor(() => mainWindow);
+      mockedDispatchWorktreeChatTurn.mockImplementationOnce(
+        (options): Promise<void> => {
+          options.onTurnAccepted?.();
+          return Promise.resolve();
+        },
+      );
+
+      await dispatchHostQueuedWorktreeChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId,
+          text,
+          hiddenContext: {
+            kind: 'canopy-watcher-event',
+            text: hiddenContextText,
+          },
+          pendingSystemInstructions: [
+            { id: 'watcher-instruction', text: 'Use the verified context.' },
+          ],
+          ...(watcherFired ? { watcherFired } : {}),
+        },
+        'desktop',
+        false,
+      );
+
+      expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
+      const promptCommits =
+        mockChatStateService.ingestProviderEvent.mock.calls.filter(
+          ([input]) =>
+            input.mutationId === `chat-1:${userMessageId}:user-prompt`,
+        );
+      expect(promptCommits).toHaveLength(1);
+      const promptData = promptCommits[0]?.[0].data;
+      expect(promptData).toMatchObject({
+        type: 'canopy_user_prompt',
+        canopy_turn_user_message_id: userMessageId,
+        canopy_persisted_messages: [
+          expect.objectContaining({
+            id: userMessageId,
+            role: 'user',
+            blocks: [expect.objectContaining({ type: 'text', text })],
+            ...(watcherFired ? { watcherFired } : {}),
+          }),
+        ],
+      });
+      if (!watcherFired) {
+        expect(promptData).not.toHaveProperty(
+          'canopy_persisted_messages.0.watcherFired',
+        );
+      }
+      const acceptedCommits =
+        mockChatStateService.ingestProviderEvent.mock.calls.filter(
+          ([input]) => input.mutationId === `chat-1:${userMessageId}:accepted`,
+        );
+      expect(acceptedCommits).toHaveLength(1);
+      expect(acceptedCommits[0]?.[0].data).toMatchObject({
+        type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+        canopy_turn_user_message_id: userMessageId,
+        canopy_consumed_pending_system_instruction_ids: ['watcher-instruction'],
+      });
+      expect(mockChatStateService.ingestProviderEvent).toHaveBeenCalledTimes(2);
+      expect(mockedSendToWindow).toHaveBeenCalledWith(
+        mainWindow,
+        IPC_CHANNELS.chatEvent,
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'canopy_user_prompt',
+            canopy_turn_user_message_id: userMessageId,
+          }),
+        }),
+      );
+    },
+  );
+
   it.each([
     [undefined, false],
     ['app_advisor', false],
@@ -689,6 +1268,74 @@ describe('worktree chat service', () => {
         message: expect.objectContaining({ role: 'user' }),
       }),
     );
+  });
+
+  it('passes provider outcomes and pickup verdicts through a resumed chat adapter', async () => {
+    const onCommitQueued = jest.fn();
+    const deliveredResults: unknown[] = [];
+    mockedDispatchWorktreeChatTurn.mockImplementationOnce(async (options) => {
+      let sequence = 0;
+      for (const result of providerEventIngestResults) {
+        mockChatStateService.ingestProviderEventWithResult.mockResolvedValueOnce(
+          result,
+        );
+        deliveredResults.push(
+          await options.onBeforeChatEvent({
+            projectId: options.projectId,
+            worktreeId: options.worktreeId,
+            chatId: options.chatId,
+            data: {
+              type: 'system',
+              subtype: 'status',
+              status: `resume-status-${sequence}`,
+            },
+            sequenceNamespace: 'resume-attempt-1',
+            sequence,
+            ...(sequence === 0
+              ? {
+                  turnUserMessageId: 'message-1',
+                  onCommitQueued,
+                }
+              : {}),
+          }),
+        );
+        sequence += 1;
+      }
+    });
+
+    await resumeStoppedWorktreeChatTurn(
+      {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'message-1',
+        providerType: 'claude',
+        sdkSessionId: 'session-1',
+      },
+      'resume-attempt-1',
+    );
+
+    // The resumed adapter returns the canonical result with its Portal
+    // emission context, so each outcome and pickup verdict passes through.
+    expect(deliveredResults).toEqual(
+      providerEventIngestResults.map((result): unknown =>
+        expect.objectContaining(result),
+      ),
+    );
+    expect(
+      mockChatStateService.ingestProviderEventWithResult,
+    ).toHaveBeenCalledTimes(providerEventIngestResults.length);
+    expect(
+      mockChatStateService.ingestProviderEventWithResult.mock.calls[0]?.[0],
+    ).toMatchObject({
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      mutationId: 'chat-1:message-1:provider:resume-attempt-1:0',
+      providerType: 'claude',
+      turnUserMessageId: 'message-1',
+      onCommitQueued,
+    });
   });
 
   it('releases the resume queue reservation when dispatch fails', async () => {
@@ -983,6 +1630,8 @@ describe('worktree chat service', () => {
         model: 'claude-haiku-4-5-20251001',
         modelSelectionMode: 'auto',
       }),
+      // No queue admission capability on this direct call.
+      undefined,
     );
   });
 
@@ -1013,6 +1662,30 @@ describe('worktree chat service', () => {
       const originalIngest =
         mockChatStateService.ingestProviderEvent.getMockImplementation();
       const output = 'complete tool output\n'.repeat(300);
+      // The Codex adapter reports the turn's start and end on receipt.
+      const codexChat = {
+        ...scope,
+        chatId: 'chat-1',
+        provider: 'codex' as const,
+      };
+      const turn = {
+        turnId: 'retry-turn-execution',
+        userMessageIds: ['retry-user'],
+      };
+      let turnEndObserved = false;
+      const observeTurnEnd = async (): Promise<void> => {
+        if (turnEndObserved) return;
+        turnEndObserved = true;
+        await observeTurn(
+          target,
+          turnEnded(codexChat, {
+            ...turn,
+            sequence: 2,
+            atMs: Date.now(),
+            source: 'turn-completed',
+          }),
+        );
+      };
       try {
         await target.replaceCompatibilityTabs(
           scope,
@@ -1042,6 +1715,7 @@ describe('worktree chat service', () => {
               // The provider can finish while the display callback holds a
               // pre-completion snapshot. Commit that native event first, then
               // let the compatibility write race in with its stale timer.
+              await observeTurnEnd();
               await target.ingestProviderEvent({
                 ...scope,
                 chatId: 'chat-1',
@@ -1069,6 +1743,16 @@ describe('worktree chat service', () => {
             let sequence = 0;
             const deliver = async (event: Record<string, unknown>) => {
               const data = { type: 'codex', event };
+              if (event.type === 'turn.started')
+                await observeTurn(
+                  target,
+                  turnStarted(codexChat, {
+                    ...turn,
+                    sequence: 1,
+                    atMs: Date.now(),
+                  }),
+                );
+              if (event.type === 'turn.completed') await observeTurnEnd();
               await options.onBeforeChatEvent({
                 ...scope,
                 chatId: 'chat-1',
@@ -1078,6 +1762,7 @@ describe('worktree chat service', () => {
                 turnUserMessageId: 'retry-user',
               });
               options.onChatEvent?.({
+                beforeChatEventResult: mockCurrentProviderEventCompletion,
                 ...scope,
                 chatId: 'chat-1',
                 data,
@@ -1254,6 +1939,65 @@ describe('worktree chat service', () => {
       { projectId: 'cowork-1', worktreeId: 'entry-1' },
       expect.any(Function),
     );
+  });
+
+  it('routes a large Codex MCP result to shared ingest without truncation', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-large-mcp',
+          title: 'Codex chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          messages: [],
+        },
+      ]),
+    );
+    let onBeforeChatEvent:
+      | Parameters<typeof dispatchWorktreeChatTurn>[0]['onBeforeChatEvent']
+      | undefined;
+    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
+      onBeforeChatEvent = options.onBeforeChatEvent;
+      return Promise.resolve();
+    });
+    const body = `start-${'x'.repeat(65_536)}-end`;
+    const data = {
+      type: 'codex',
+      event: {
+        type: 'item.completed',
+        item: {
+          id: 'mcp-call-large',
+          type: 'mcp_tool_call',
+          status: 'completed',
+          result: { content: [{ type: 'text', text: body }] },
+        },
+      },
+    };
+
+    await sendWorktreeChatMessage({
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-large-mcp',
+      userMessageId: 'large-mcp-message',
+      text: 'Inspect the result',
+      providerType: 'codex',
+    });
+    await onBeforeChatEvent?.({
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-large-mcp',
+      data,
+      sequenceNamespace: 'initial',
+      sequence: 0,
+      turnUserMessageId: 'large-mcp-message',
+    });
+
+    expect(mockChatStateService.ingestProviderEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ data }),
+    );
+    expect(body).toHaveLength(65_546);
   });
 
   it("reports a message committed once the chat's canonical transcript holds it", async () => {
@@ -1736,6 +2480,49 @@ describe('worktree chat service', () => {
     );
   });
 
+  it('persists automatic resume provenance through the trusted queued-send builder', async () => {
+    await dispatchHostQueuedWorktreeChatMessage(
+      {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'auto-resume',
+        text: 'Continue',
+        autoResume: {
+          reason: 'app_shutdown',
+          resumesUserMessageId: 'original',
+          resendsUserMessage: false,
+        },
+        resumesInterruptedTurn: true,
+      },
+      'desktop',
+      true,
+    );
+    const event = mockChatStateService.ingestProviderEvent.mock.calls.find(
+      ([input]) =>
+        isRecord(input.data) && input.data.type === 'canopy_user_prompt',
+    )?.[0];
+    expect(event?.data).toMatchObject({
+      canopy_resumes_user_message_id: 'original',
+      canopy_persisted_messages: [
+        {
+          userMessageSource: 'auto_resume',
+          autoResume: {
+            reason: 'app_shutdown',
+            resumesUserMessageId: 'original',
+            resendsUserMessage: false,
+          },
+        },
+      ],
+    });
+    const messages = isRecord(event?.data)
+      ? event.data.canopy_persisted_messages
+      : undefined;
+    expect(messages).toEqual([
+      expect.not.objectContaining({ inputMode: 'typed' }),
+    ]);
+  });
+
   it('records acceptance for every consolidated watcher delivery id', async () => {
     mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
       options.onTurnAccepted?.();
@@ -1749,8 +2536,23 @@ describe('worktree chat service', () => {
         chatId: 'chat-1',
         userMessageId: 'watcher-delivery-1',
         consolidatedWatcherUserMessageIds: [
+          'notice-batch-1',
           'watcher-delivery-1',
-          'watcher-delivery-2',
+        ],
+        watcherDeliveryId: 'delivery-1',
+        watcherPartSnapshots: [
+          {
+            userMessageId: 'notice-batch-1',
+            kind: 'Delegate finished',
+            text: 'Notice',
+            delegationNoticeBatchId: 'notice-batch-1',
+          },
+          {
+            userMessageId: 'watcher-delivery-1',
+            kind: 'Build',
+            text: 'Watcher',
+            watcherDeliveryId: 'delivery-1',
+          },
         ],
         text: 'Two watcher prompts',
         watcherFired: { kind: 'Multiple watchers fired (2)' },
@@ -1766,8 +2568,25 @@ describe('worktree chat service', () => {
     );
     expect(mockChatStateService.ingestProviderEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        mutationId: 'chat-1:watcher-delivery-2:accepted',
+        mutationId: 'chat-1:notice-batch-1:accepted',
       }),
+    );
+    const prompt = mockChatStateService.ingestProviderEvent.mock.calls.find(
+      ([input]) => input.mutationId === 'chat-1:watcher-delivery-1:user-prompt',
+    )?.[0].data;
+    expect(prompt).toMatchObject({
+      canopy_persisted_messages: [
+        expect.objectContaining({ id: 'watcher-delivery-1' }),
+      ],
+    });
+    expect(prompt).not.toHaveProperty(
+      'canopy_persisted_messages.0.watcherPartSnapshots',
+    );
+    expect(prompt).not.toHaveProperty(
+      'canopy_persisted_messages.0.hiddenContext',
+    );
+    expect(prompt).not.toHaveProperty(
+      'canopy_persisted_messages.0.watcherDeliveryId',
     );
   });
 
@@ -2006,7 +2825,488 @@ describe('worktree chat service', () => {
     expect(isRecord(message) ? 'attachments' in message : true).toBe(false);
   });
 
-  it('lets an activity-only provider event through but holds back a rejected one', async () => {
+  describe('event-local primary admission on both worktree producers', () => {
+    const target = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const request = {
+      ...target,
+      userMessageId: 'primary-user',
+      text: 'Read it',
+      providerType: 'claude' as const,
+      model: 'claude-sonnet-4-5',
+    };
+    const prepare = (): void => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Primary',
+            createdAt: '2026-08-07T12:00:00.000Z',
+            messages: [],
+            providerType: 'claude',
+            model: 'claude-sonnet-4-5',
+          },
+        ]),
+      );
+    };
+    const dispatch = async (path: string): Promise<void> => {
+      if (path === 'host')
+        await dispatchHostQueuedWorktreeChatMessage(request, 'desktop', true);
+      else await sendWorktreeChatMessage(request);
+    };
+    const primaryMessages = (): Record<string, unknown>[] =>
+      mockedCreatePortalEvent.mock.calls.flatMap(([type, payload]) => {
+        if (
+          type !== 'portal.chat.event' ||
+          !isRecord(payload) ||
+          !isRecord(payload.message)
+        )
+          return [];
+        return Array.isArray(payload.message.parts) &&
+          payload.message.parts.some(
+            (part: unknown) =>
+              isRecord(part) &&
+              (part.kind === 'tool_use' || part.kind === 'tool_result'),
+          )
+          ? [payload.message]
+          : [];
+      });
+    it.each([
+      ['host', 'claude', true],
+      ['host', 'claude', false],
+      ['portal', 'claude', true],
+      ['portal', 'claude', false],
+      ['host', 'codex', true],
+      ['host', 'codex', false],
+      ['portal', 'codex', true],
+      ['portal', 'codex', false],
+    ] as const)(
+      '%s %s terminal result carries its own stored=%s admission',
+      async (path, provider, needsRead) => {
+        prepare();
+        const data =
+          provider === 'claude'
+            ? {
+                type: 'user',
+                message: {
+                  id: 'visible-result',
+                  content: [
+                    {
+                      type: 'tool_result',
+                      tool_use_id: 'reused',
+                      content: 'preview',
+                    },
+                  ],
+                },
+              }
+            : {
+                type: 'codex',
+                event: {
+                  type: 'item.completed',
+                  item: {
+                    id: 'reused',
+                    type: 'command_execution',
+                    command: 'pwd',
+                    status: 'completed',
+                    aggregated_output: 'preview',
+                  },
+                },
+              };
+        const receipt: ProviderEventIngestResult = {
+          outcome: 'applied',
+          admission: {
+            ...target,
+            mutationId: 'primary-mutation',
+            turnUserMessageId: 'primary-user',
+            revision: 41,
+            tools:
+              provider === 'claude'
+                ? [
+                    {
+                      sourceToken: '0',
+                      occurrenceId: 'canonical-call#2',
+                      result: {
+                        rowId: 'canonical-result',
+                        blockOrdinal: 3,
+                        needsRead,
+                      },
+                    },
+                  ]
+                : [
+                    {
+                      sourceToken: 'reused:call',
+                      occurrenceId: 'canonical-call#2',
+                    },
+                    {
+                      sourceToken: 'reused:result',
+                      occurrenceId: 'canonical-call#2',
+                      result: {
+                        rowId: 'canonical-result',
+                        blockOrdinal: 3,
+                        needsRead,
+                      },
+                    },
+                  ],
+          },
+        };
+        const admission = jest
+          .spyOn(mockChatStateService, 'ingestProviderEventWithResult')
+          .mockResolvedValue(receipt);
+        mockedDispatchWorktreeChatTurn.mockImplementationOnce(
+          async (options) => {
+            const ingestResult = await options.onBeforeChatEvent({
+              ...target,
+              data,
+              sequenceNamespace: 'stream-1',
+              sequence: 0,
+              turnUserMessageId: 'primary-user',
+            });
+            const delivered = {
+              ...target,
+              data,
+              isTerminalEvent: false,
+              beforeChatEventResult: ingestResult,
+            };
+            options.onChatEvent?.(delivered);
+          },
+        );
+        try {
+          await dispatch(path);
+          const message = primaryMessages().at(-1);
+          const parts = message?.parts;
+          const part = Array.isArray(parts)
+            ? parts.find(
+                (value: unknown) =>
+                  isRecord(value) && value.kind === 'tool_result',
+              )
+            : undefined;
+          expect(isRecord(part) ? part.occurrence : undefined).toEqual({
+            id: 'canonical-call#2',
+            revision: 41,
+          });
+          expect(isRecord(part) ? part.outputLocator : undefined).toEqual(
+            needsRead
+              ? {
+                  messageId: 'canonical-result',
+                  blockOrdinal: 3,
+                  field: 'output',
+                }
+              : undefined,
+          );
+          expect(message?.messageId).toBe(
+            provider === 'claude' ? 'tool:reused' : 'codex-reused',
+          );
+          expect(admission).toHaveBeenCalledWith(
+            expect.objectContaining({
+              mutationId: 'chat-1:primary-user:provider:stream-1:0',
+              turnUserMessageId: 'primary-user',
+            }),
+          );
+        } finally {
+          admission.mockRestore();
+        }
+      },
+    );
+  });
+
+  describe('turn and provider namespace correlation replacement', () => {
+    it.each([
+      ['host', 'turn'],
+      ['portal', 'turn'],
+      ['host', 'provider'],
+      ['portal', 'provider'],
+      ['host', 'settlement'],
+      ['portal', 'settlement'],
+    ] as const)(
+      '%s clears %s retained mappings before reused visible/tool ids',
+      async (path, replacement) => {
+        const target = {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+        };
+        const request = {
+          ...target,
+          userMessageId: 'old-user',
+          text: 'Read',
+          providerType: 'claude' as const,
+          model: 'claude-sonnet-4-5',
+        };
+        mockedReadChatTabsFile.mockResolvedValue(
+          chatTabsFile([
+            {
+              id: 'chat-1',
+              title: 'Reuse',
+              createdAt: '2026-08-07T12:00:00.000Z',
+              messages: [],
+            },
+          ]),
+        );
+        const data = {
+          type: 'user',
+          message: {
+            id: 'reused-visible',
+            content: [
+              { type: 'tool_result', tool_use_id: 'same', content: 'preview' },
+            ],
+          },
+        };
+        const receipt = (
+          turn: string,
+          row: string,
+          revision: number,
+        ): ProviderEventIngestResult => ({
+          outcome: 'applied',
+          admission: {
+            ...target,
+            mutationId: row,
+            turnUserMessageId: turn,
+            revision,
+            tools: [
+              {
+                sourceToken: '0',
+                occurrenceId: `${row}#0`,
+                result: { rowId: row, blockOrdinal: 1, needsRead: true },
+              },
+            ],
+          },
+        });
+        const admission = jest.spyOn(
+          mockChatStateService,
+          'ingestProviderEventWithResult',
+        );
+        mockedDispatchWorktreeChatTurn.mockImplementationOnce(
+          async (options) => {
+            const frame = async (
+              turn: string,
+              sequenceNamespace: string,
+              result: ProviderEventIngestResult,
+              terminal = false,
+            ): Promise<void> => {
+              admission.mockResolvedValueOnce(result);
+              const beforeChatEventResult = await options.onBeforeChatEvent({
+                ...target,
+                data,
+                sequence: 0,
+                sequenceNamespace,
+                turnUserMessageId: turn,
+              });
+              options.onChatEvent?.({
+                ...target,
+                data,
+                isTerminalEvent: terminal,
+                beforeChatEventResult,
+              });
+            };
+            await frame(
+              'old-user',
+              'initial',
+              receipt('old-user', 'old-call', 4),
+              replacement === 'settlement',
+            );
+            const turn = replacement === 'turn' ? 'new-user' : 'old-user';
+            const namespace =
+              replacement === 'provider' ? 'provider-restart' : 'initial';
+            await frame(turn, namespace, { outcome: 'activity-only' });
+            const frames = mockedCreatePortalEvent.mock.calls.flatMap(
+              ([type, payload]) =>
+                type === 'portal.chat.event' &&
+                isRecord(payload) &&
+                isRecord(payload.message) &&
+                payload.message.messageId === 'tool:same'
+                  ? [payload.message]
+                  : [],
+            );
+            expect(JSON.stringify(frames[0])).toContain('old-call#0');
+            expect(JSON.stringify(frames[1])).not.toMatch(
+              /occurrence|outputLocator/,
+            );
+            await frame(turn, namespace, receipt(turn, 'new-call', 9));
+            const last = mockedCreatePortalEvent.mock.calls
+              .filter(
+                ([type, payload]) =>
+                  type === 'portal.chat.event' &&
+                  isRecord(payload) &&
+                  isRecord(payload.message) &&
+                  payload.message.messageId === 'tool:same',
+              )
+              .at(-1);
+            expect(JSON.stringify(last)).toContain('new-call#0');
+            expect(JSON.stringify(last)).not.toContain('old-call#0');
+          },
+        );
+        try {
+          if (path === 'host')
+            await dispatchHostQueuedWorktreeChatMessage(
+              request,
+              'desktop',
+              true,
+            );
+          else await sendWorktreeChatMessage(request);
+        } finally {
+          admission.mockRestore();
+        }
+      },
+    );
+  });
+
+  describe('held admission fences on both producers', () => {
+    it.each([
+      ['host', 'sign-out'],
+      ['portal', 'sign-out'],
+      ['host', 'account-switch'],
+      ['portal', 'account-switch'],
+      ['host', 'stop'],
+      ['portal', 'stop'],
+      ['host', 'pickup'],
+      ['portal', 'pickup'],
+      ['host', 'restart'],
+      ['portal', 'restart'],
+      ['host', 'resume'],
+      ['portal', 'resume'],
+    ] as const)(
+      '%s drops held %s locators without swapping receipts',
+      async (path, transition) => {
+        const target = {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+        };
+        const request = {
+          ...target,
+          userMessageId: 'fence-user',
+          text: 'Read',
+          providerType: 'claude' as const,
+          model: 'claude-sonnet-4-5',
+        };
+        mockedReadChatTabsFile.mockResolvedValue(
+          chatTabsFile([
+            {
+              id: 'chat-1',
+              title: 'Fences',
+              createdAt: '2026-08-07T12:00:00.000Z',
+              messages: [],
+            },
+          ]),
+        );
+        const data = {
+          type: 'user',
+          message: {
+            id: 'fence-result',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'reused',
+                content: 'preview',
+              },
+            ],
+          },
+        };
+        const receipt: ProviderEventIngestResult = {
+          outcome: 'applied',
+          admission: {
+            ...target,
+            mutationId: 'held',
+            turnUserMessageId: 'fence-user',
+            revision: 7,
+            tools: [
+              {
+                sourceToken: '0',
+                occurrenceId: 'fence-call#0',
+                result: {
+                  rowId: 'fence-row',
+                  blockOrdinal: 1,
+                  needsRead: true,
+                },
+              },
+            ],
+          },
+        };
+        const admission = jest.spyOn(
+          mockChatStateService,
+          'ingestProviderEventWithResult',
+        );
+        mockedDispatchWorktreeChatTurn.mockImplementationOnce(
+          async (options) => {
+            const deliver = (
+              beforeChatEventResult: Awaited<
+                ReturnType<typeof options.onBeforeChatEvent>
+              >,
+            ): void =>
+              options.onChatEvent?.({
+                ...target,
+                data,
+                isTerminalEvent: false,
+                beforeChatEventResult,
+              });
+            const begin = (
+              sequenceNamespace: string,
+              turnUserMessageId = 'fence-user',
+            ) =>
+              options.onBeforeChatEvent({
+                ...target,
+                data,
+                sequenceNamespace,
+                sequence: 0,
+                turnUserMessageId,
+              });
+            {
+              let release: (result: ProviderEventIngestResult) => void = () =>
+                undefined;
+              admission.mockImplementationOnce(
+                () =>
+                  new Promise((resolve) => {
+                    release = resolve;
+                  }),
+              );
+              const pending = begin('initial');
+              if (transition === 'sign-out' || transition === 'account-switch')
+                mockPortalGeneration++;
+              if (transition === 'stop') await cancelWorktreeChat(target);
+              if (transition === 'resume')
+                await resumeStoppedWorktreeChatTurn(request, 'new-attempt');
+              if (transition === 'pickup' || transition === 'restart') {
+                admission.mockResolvedValueOnce({ outcome: 'activity-only' });
+                await begin(
+                  transition === 'restart' ? 'restarted' : 'initial',
+                  transition === 'pickup' ? 'new-user' : 'fence-user',
+                );
+              }
+              const beforeCount = mockedEnqueuePortalEvent.mock.calls.length;
+              release(receipt);
+              deliver(await pending);
+              const emitted =
+                mockedEnqueuePortalEvent.mock.calls.slice(beforeCount);
+              if (transition === 'sign-out' || transition === 'account-switch')
+                expect(emitted).toHaveLength(0);
+              else {
+                expect(emitted).toHaveLength(1);
+                expect(JSON.stringify(emitted)).not.toMatch(
+                  /outputLocator|occurrence/,
+                );
+              }
+            }
+          },
+        );
+        try {
+          if (path === 'host')
+            await dispatchHostQueuedWorktreeChatMessage(
+              request,
+              'desktop',
+              true,
+            );
+          else await sendWorktreeChatMessage(request);
+        } finally {
+          admission.mockRestore();
+        }
+      },
+    );
+  });
+
+  it('passes provider outcomes and pickup verdicts through canonical ingestion', async () => {
     mockedReadChatTabsFile.mockResolvedValue(
       chatTabsFile([
         {
@@ -2019,66 +3319,79 @@ describe('worktree chat service', () => {
         },
       ]),
     );
-    // Neither status event is a durable commit; only 'busy' is activity-only.
-    const statusOf = (data: unknown): unknown =>
-      isRecord(data) && data.type === 'system' ? data.status : undefined;
-    mockChatStateService.ingestProviderEvent.mockImplementation((input) =>
-      Promise.resolve(statusOf(input.data) === undefined),
-    );
-    const outcome = jest
-      .spyOn(mockChatStateService, 'ingestProviderEventWithOutcome')
-      .mockImplementation((input) =>
-        Promise.resolve(
-          statusOf(input.data) === 'busy'
-            ? 'activity-only'
-            : statusOf(input.data) === 'stale'
-              ? 'not-applied'
-              : 'applied',
-        ),
-      );
-    const deliverable: (boolean | void)[] = [];
+    const onCommitQueued = jest.fn();
+    const deliveredResults: unknown[] = [];
     mockedDispatchWorktreeChatTurn.mockImplementationOnce(async (options) => {
-      for (const [sequence, status] of ['busy', 'stale'].entries()) {
-        deliverable.push(
+      let sequence = 0;
+      for (const result of providerEventIngestResults) {
+        mockChatStateService.ingestProviderEventWithResult.mockResolvedValueOnce(
+          result,
+        );
+        deliveredResults.push(
           await options.onBeforeChatEvent({
             projectId: options.projectId,
             worktreeId: options.worktreeId,
             chatId: options.chatId,
-            data: { type: 'system', subtype: 'status', status },
+            data: {
+              type: 'system',
+              subtype: 'status',
+              status: `status-${sequence}`,
+            },
             sequenceNamespace: 'initial',
             sequence,
+            ...(sequence === 0
+              ? {
+                  turnUserMessageId: 'user-activity',
+                  onCommitQueued,
+                }
+              : {}),
           }),
         );
+        sequence += 1;
       }
     });
 
     try {
-      await dispatchHostQueuedWorktreeChatMessage(
-        {
-          projectId: 'workspace-1',
-          worktreeId: 'worktree-1',
-          chatId: 'chat-1',
-          userMessageId: 'user-activity',
-          text: 'Keep going.',
-          providerType: 'claude',
-          model: 'claude-sonnet-4-5',
-        },
-        'desktop',
-        true,
-      );
+      await sendWorktreeChatMessage({
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'user-activity',
+        text: 'Keep going.',
+        providerType: 'claude',
+        model: 'claude-sonnet-4-5',
+      });
 
-      expect(deliverable).toEqual([true, false]);
-      expect(outcome).toHaveBeenCalledTimes(2);
+      // The worktree producer returns the canonical result with its Portal
+      // emission context, so each outcome and pickup verdict passes through.
+      expect(deliveredResults).toEqual(
+        providerEventIngestResults.map((result): unknown =>
+          expect.objectContaining(result),
+        ),
+      );
+      expect(
+        mockChatStateService.ingestProviderEventWithResult,
+      ).toHaveBeenCalledTimes(providerEventIngestResults.length);
+      expect(
+        mockChatStateService.ingestProviderEventWithResult.mock.calls[0]?.[0],
+      ).toMatchObject({
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        mutationId: 'chat-1:user-activity:provider:initial:0',
+        providerType: 'claude',
+        turnUserMessageId: 'user-activity',
+        onCommitQueued,
+      });
     } finally {
-      outcome.mockRestore();
       mockChatStateService.ingestProviderEvent.mockResolvedValue(true);
     }
   });
 
   it('persists provider events with the provider lane selection ran', async () => {
     const outcome = jest
-      .spyOn(mockChatStateService, 'ingestProviderEventWithOutcome')
-      .mockResolvedValue('applied');
+      .spyOn(mockChatStateService, 'ingestProviderEventWithResult')
+      .mockResolvedValue({ outcome: 'applied' });
     mockedDispatchWorktreeChatTurn.mockImplementationOnce(async (options) => {
       await options.onBeforeChatEvent({
         projectId: options.projectId,
@@ -2116,8 +3429,8 @@ describe('worktree chat service', () => {
 
   it('persists provider events with the session provider when the request names none', async () => {
     const outcome = jest
-      .spyOn(mockChatStateService, 'ingestProviderEventWithOutcome')
-      .mockResolvedValue('applied');
+      .spyOn(mockChatStateService, 'ingestProviderEventWithResult')
+      .mockResolvedValue({ outcome: 'applied' });
     mockedDispatchWorktreeChatTurn.mockImplementationOnce(async (options) => {
       await options.onBeforeChatEvent({
         projectId: options.projectId,
@@ -2227,6 +3540,7 @@ describe('worktree chat service', () => {
           sequence,
         });
         options.onChatEvent?.({
+          beforeChatEventResult: mockCurrentProviderEventCompletion,
           projectId: options.projectId,
           worktreeId: options.worktreeId,
           chatId: options.chatId,
@@ -2260,300 +3574,6 @@ describe('worktree chat service', () => {
     );
   });
 
-  it.each([false, true])(
-    'pushes the original persisted turn timer to the portal (hidden continuation: %s)',
-    async (hidden): Promise<void> => {
-      // Desktop-initiated turns never emitted a live timer row: the portal only
-      // learned "Completed in M:SS" from a later snapshot re-push, and a loop
-      // continuation (a second terminal event on the same turn, no new user
-      // row) never refreshed it at all — the browser kept the first, shorter
-      // duration while the desktop showed the extended one.
-      const persisted = chatTabsFile([
-        {
-          id: 'chat-1',
-          title: 'Timer turn',
-          createdAt: '2026-08-07T12:00:00.000Z',
-          providerType: 'claude',
-          model: 'claude-sonnet-4-5',
-          autoRoutedModels: { 'user-timer': 'claude-sonnet-4-5' },
-          messages: [
-            {
-              id: 'user-timer',
-              role: 'user',
-              timestamp: 1_000,
-              blocks: [{ type: 'text', text: 'hows going' }],
-            },
-            {
-              id: 'renderer-timer-row',
-              role: 'system',
-              timestamp: 1_000,
-              blocks: [
-                {
-                  type: 'turn_timer',
-                  startedAt: 1_000,
-                  pausedAt: 2_000,
-                  resumedAt: 3_000,
-                  accumulatedPausedDurationMs: 1_000,
-                  completedAt: null,
-                },
-              ],
-            },
-          ],
-        },
-      ]);
-      if (hidden)
-        persisted.tabs[0].messages?.push({
-          id: 'hidden-delivery',
-          role: 'user',
-          hidden: true,
-          timestamp: 4_000,
-          blocks: [{ type: 'text', text: 'hows going' }],
-        });
-      let now = 10_000;
-      const terminalInstants: number[] = [];
-      mockedReadChatTabsFile.mockImplementation(
-        async (): Promise<ChatTabsFile> => {
-          await new Promise<void>((resolve): void => {
-            setImmediate(resolve);
-          });
-          now += 5_000;
-          return persisted;
-        },
-      );
-      const terminal = {
-        type: 'result',
-        is_error: false,
-        result: 'Completed',
-        duration_ms: 42,
-        session_id: 'session-timer',
-      };
-      mockedDispatchWorktreeChatTurn.mockImplementationOnce(
-        async (options): Promise<void> => {
-          const clock = jest
-            .spyOn(Date, 'now')
-            .mockImplementation((): number => now);
-          try {
-            for (const data of [terminal, terminal]) {
-              await options.onBeforeChatEvent?.({
-                projectId: options.projectId,
-                worktreeId: options.worktreeId,
-                chatId: options.chatId,
-                data,
-                sequenceNamespace: 'initial',
-                sequence: 0,
-              });
-              terminalInstants.push(now);
-              options.onChatEvent?.({
-                projectId: options.projectId,
-                worktreeId: options.worktreeId,
-                chatId: options.chatId,
-                data,
-                isTerminalEvent: true,
-              });
-              // The timer read is asynchronous; let it settle before the next
-              // terminal event so the emission order is deterministic.
-              await new Promise<void>((resolve): void => {
-                setImmediate(resolve);
-              });
-            }
-          } finally {
-            clock.mockRestore();
-          }
-        },
-      );
-
-      await dispatchHostQueuedWorktreeChatMessage(
-        {
-          projectId: 'workspace-1',
-          worktreeId: 'worktree-1',
-          chatId: 'chat-1',
-          userMessageId: hidden ? 'hidden-delivery' : 'user-timer',
-          text: 'hows going',
-          providerType: 'claude',
-          model: 'claude-sonnet-4-5',
-        },
-        'desktop',
-        true,
-      );
-      await new Promise<void>((resolve): void => {
-        setImmediate(resolve);
-      });
-
-      const timerEvents = mockedCreatePortalEvent.mock.calls.flatMap(
-        ([type, payload]): Record<string, unknown>[] => {
-          if (type !== 'portal.chat.event') return [];
-          const eventPayload: unknown = payload;
-          if (!isRecord(eventPayload) || !isRecord(eventPayload.message)) {
-            return [];
-          }
-          return eventPayload.message.messageId === 'user-timer:turn-timer'
-            ? [eventPayload.message]
-            : [];
-        },
-      );
-      expect(timerEvents).toHaveLength(2);
-      for (const message of timerEvents) {
-        expect(message).toMatchObject({
-          chatId: 'chat-1',
-          role: 'system',
-          status: 'complete',
-          parts: [
-            {
-              kind: 'turn_timer',
-              data: {
-                startedAt: 1_000,
-                pausedAt: 2_000,
-                resumedAt: 3_000,
-                accumulatedPausedDurationMs: 1_000,
-                completedAt: expect.any(Number),
-                autoRoutedModel: 'claude-sonnet-4-5',
-                autoRoutedModelLabel: expect.any(String),
-              },
-            },
-          ],
-        });
-      }
-      // Ordering is load-bearing: the shared store sorts by `createdAtMs`, and
-      // `partitionTurns` DROPS any message that precedes the turn's user row
-      // (it has no anchor to attach to). Stamping the row at turn START sorted
-      // it ahead of the user message — which main emits a beat later than the
-      // renderer minted it — so the timer never entered a turn group and never
-      // rendered on the portal at all.
-      for (const message of timerEvents) {
-        const parts = isRecord(message) ? message.parts : undefined;
-        const first = Array.isArray(parts) ? parts[0] : undefined;
-        const data = isRecord(first) ? first.data : undefined;
-        const completed =
-          isRecord(data) && typeof data.completedAt === 'number'
-            ? data.completedAt
-            : Number.NaN;
-        expect(isRecord(message) ? message.createdAtMs : undefined).toBe(
-          completed,
-        );
-      }
-
-      const completedAt = (message: unknown): number => {
-        const parts = isRecord(message) ? message.parts : undefined;
-        const first = Array.isArray(parts) ? parts[0] : undefined;
-        const data = isRecord(first) ? first.data : undefined;
-        return isRecord(data) && typeof data.completedAt === 'number'
-          ? data.completedAt
-          : Number.NaN;
-      };
-      expect(timerEvents.map(completedAt)).toEqual(terminalInstants);
-      expect(completedAt(timerEvents[1])).toBeGreaterThanOrEqual(
-        completedAt(timerEvents[0]),
-      );
-      expect(mockedReadChatTabsFile.mock.calls).toContainEqual([
-        'workspace-1',
-        'worktree-1',
-        { chatIds: ['chat-1'] },
-      ]);
-    },
-  );
-
-  it.each([
-    [
-      'a stopped Claude turn',
-      { type: 'result', is_error: false, result: 'Session aborted' },
-      'cancelled',
-    ],
-    [
-      'an interrupted Codex turn',
-      {
-        type: 'codex',
-        event: { type: 'turn.completed', status: 'interrupted' },
-      },
-      'cancelled',
-    ],
-    [
-      'a failed turn',
-      { type: 'result', is_error: true, result: 'boom' },
-      'failed',
-    ],
-    [
-      'a normal turn',
-      { type: 'result', is_error: false, result: 'Completed' },
-      undefined,
-    ],
-  ])(
-    'marks how a desktop-initiated turn ended on the pushed turn timer: %s',
-    async (_name, terminal, expectedEndReason): Promise<void> => {
-      mockedReadChatTabsFile.mockResolvedValue(
-        chatTabsFile([
-          {
-            id: 'chat-1',
-            title: 'Timer turn',
-            createdAt: '2026-08-07T12:00:00.000Z',
-            providerType: 'claude',
-            model: 'claude-sonnet-4-5',
-            messages: [
-              {
-                id: 'user-timer',
-                role: 'user',
-                timestamp: 1_000,
-                blocks: [{ type: 'text', text: 'hows going' }],
-              },
-            ],
-          },
-        ]),
-      );
-      mockedDispatchWorktreeChatTurn.mockImplementationOnce(
-        (options): Promise<void> => {
-          options.onChatEvent?.({
-            projectId: options.projectId,
-            worktreeId: options.worktreeId,
-            chatId: options.chatId,
-            data: terminal,
-            isTerminalEvent: true,
-          });
-          return Promise.resolve();
-        },
-      );
-
-      await dispatchHostQueuedWorktreeChatMessage(
-        {
-          projectId: 'workspace-1',
-          worktreeId: 'worktree-1',
-          chatId: 'chat-1',
-          userMessageId: 'user-timer',
-          text: 'hows going',
-          providerType: 'claude',
-          model: 'claude-sonnet-4-5',
-        },
-        'desktop',
-        true,
-      );
-      await new Promise<void>((resolve): void => {
-        setImmediate(resolve);
-      });
-
-      const timerData = mockedCreatePortalEvent.mock.calls.flatMap(
-        ([type, payload]): unknown[] => {
-          if (type !== 'portal.chat.event') return [];
-          const eventPayload: unknown = payload;
-          if (!isRecord(eventPayload) || !isRecord(eventPayload.message)) {
-            return [];
-          }
-          const { messageId, parts } = eventPayload.message;
-          return messageId === 'user-timer:turn-timer' && Array.isArray(parts)
-            ? parts.map((part: unknown) =>
-                isRecord(part) ? part.data : undefined,
-              )
-            : [];
-        },
-      );
-      expect(timerData).toHaveLength(1);
-      const data = timerData[0];
-      expect(isRecord(data) ? data.endReason : 'not a record').toBe(
-        expectedEndReason,
-      );
-      expect(isRecord(data) && 'endReason' in data).toBe(
-        expectedEndReason !== undefined,
-      );
-    },
-  );
-
   it('restores a claimed terminal input when model preparation fails', async () => {
     const incoming: ChatSendMessageRequest = {
       projectId: 'workspace-1',
@@ -2561,8 +3581,9 @@ describe('worktree chat service', () => {
       chatId: 'chat-1',
       userMessageId: 'accepted-terminal',
       text: 'renderer text',
-      interfaceMode: 'native',
     };
+    // Preserve the legacy native-mode value exercised by this ingress test.
+    Reflect.set(incoming, 'interfaceMode', 'native');
     const claimed: ChatSendMessageRequest = {
       ...incoming,
       text: 'main retained body',
@@ -2597,8 +3618,9 @@ describe('worktree chat service', () => {
       chatId: 'chat-1',
       userMessageId: 'accepted-terminal',
       text: 'renderer text',
-      interfaceMode: 'native',
     };
+    // Preserve the legacy native-mode value exercised by this ingress test.
+    Reflect.set(incoming, 'interfaceMode', 'native');
     const sender = {
       kind: 'bot' as const,
       botId: 'app_advisor',
@@ -2761,7 +3783,9 @@ describe('worktree chat service', () => {
       .mockResolvedValue(undefined);
     const authority = jest
       .spyOn(senderContext, 'withAgentSenderAuthority')
-      .mockImplementation((_request, handoff) => handoff());
+      .mockImplementation(
+        (_request, handoff): Promise<unknown> => Promise.resolve(handoff()),
+      );
     try {
       const denySecrets = {
         id: 'deny-secrets',
@@ -2829,10 +3853,244 @@ describe('worktree chat service', () => {
       const dispatched = mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0];
       expect(dispatched).toMatchObject(current);
       expect(dispatched?.selectedRepoId).toBeUndefined();
+      // ...and its turn never runs with more (CAN-4821).
+      expect(dispatched?.admittedApproval).toEqual({
+        approvalMode: 'ask',
+        sessionApprovalRules: [denySecrets],
+      });
     } finally {
       authority.mockRestore();
       validation.mockRestore();
     }
+  });
+
+  describe("a pipeline's queued send (D2, D11)", () => {
+    const denySecrets = {
+      id: 'deny-secrets',
+      behavior: 'deny' as const,
+      target: { kind: 'file-write' as const, path: '/ws/secrets/**' },
+      createdAt: '2026-10-20T00:00:00.000Z',
+      origin: 'prompt' as const,
+    };
+    const sender = {
+      kind: 'pipeline' as const,
+      executionId: 'exec-1',
+      pipelineId: 'nightly',
+      stepId: 'notify',
+    };
+    function pipelineRequest(
+      agentOrigin?: { projectId: string; worktreeId: string; chatId: string },
+      approvalOverride?: 'full-access',
+    ): ChatSendMessageRequest {
+      return {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'queued-pipeline-send',
+        text: 'Visible body',
+        approvalMode: approvalOverride ?? 'full-access',
+        sessionApprovalRules: [],
+        ...(approvalOverride
+          ? {
+              turnOverride: { version: 1, approvalMode: approvalOverride },
+              admittedApproval: {
+                approvalMode: approvalOverride,
+                sessionApprovalRules: [],
+              },
+            }
+          : {}),
+        agentSent: { sender, chatTitle: 'Nightly', projectLabel: '' },
+        agentSenderProvenance: {
+          version: 1,
+          sender,
+          owner: { kind: 'personal' },
+          ...(agentOrigin ? { agentOrigin } : {}),
+          capturedAt: '2026-10-20T00:00:00.000Z',
+          acceptedInputId: 'queued-pipeline-send',
+        },
+        hiddenContext: {
+          kind: 'agent-sender-context',
+          text: '<system_instruction>Sender</system_instruction>',
+        },
+      };
+    }
+    let validation: jest.SpyInstance;
+    let authority: jest.SpyInstance;
+    beforeEach(() => {
+      validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      authority = jest
+        .spyOn(senderContext, 'withAgentSenderAuthority')
+        .mockImplementation((_request, handoff) => Promise.resolve(handoff()));
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Target',
+            createdAt: '2026-05-28T11:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+            approvalMode: 'ask',
+            sessionApprovalRules: [denySecrets],
+          },
+        ]),
+      );
+    });
+    afterEach(() => {
+      authority.mockRestore();
+      validation.mockRestore();
+    });
+
+    it('keeps the approval override a user-originated run was admitted with', async () => {
+      await dispatchHostQueuedWorktreeChatMessage(
+        pipelineRequest(undefined, 'full-access'),
+        'desktop',
+        true,
+      );
+      const dispatched = mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0];
+      expect(dispatched).toMatchObject({ approvalMode: 'full-access' });
+      expect(dispatched?.admittedApproval).toEqual({
+        approvalMode: 'full-access',
+        sessionApprovalRules: [],
+      });
+    });
+
+    it("runs an agent-originated run's send with the target's current settings", async () => {
+      await dispatchHostQueuedWorktreeChatMessage(
+        pipelineRequest({
+          projectId: 'agent-project',
+          worktreeId: 'agent-task',
+          chatId: 'agent-chat',
+        }),
+        'desktop',
+        true,
+      );
+      const dispatched = mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0];
+      expect(dispatched).toMatchObject({
+        approvalMode: 'ask',
+        sessionApprovalRules: [denySecrets],
+      });
+      expect(dispatched?.admittedApproval).toEqual({
+        approvalMode: 'ask',
+        sessionApprovalRules: [denySecrets],
+      });
+    });
+
+    it('refuses an agent-originated send that carries an approval override', async () => {
+      await expect(
+        dispatchHostQueuedWorktreeChatMessage(
+          pipelineRequest(
+            {
+              projectId: 'agent-project',
+              worktreeId: 'agent-task',
+              chatId: 'agent-chat',
+            },
+            'full-access',
+          ),
+          'desktop',
+          true,
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_conflict' });
+      expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a project agent's queued send whose target changes while it is readmitted (CAN-4821)", () => {
+    const target = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const sender = {
+      kind: 'project' as const,
+      projectType: 'code' as const,
+      projectId: 'source-project',
+      taskId: 'source-task',
+      chatId: 'source-chat',
+    };
+    const request: ChatSendMessageRequest = {
+      ...target,
+      userMessageId: 'readmitted-project-send',
+      text: 'Visible body',
+      agentSent: { sender, chatTitle: 'Origin', projectLabel: 'Source' },
+      agentSenderProvenance: {
+        version: 1,
+        sender,
+        owner: { kind: 'personal' },
+        capturedAt: '2026-10-23T00:00:00.000Z',
+        acceptedInputId: 'readmitted-project-send',
+      },
+      hiddenContext: {
+        kind: 'agent-sender-context',
+        text: '<system_instruction>Sender</system_instruction>',
+      },
+    };
+    const tabAt = (approvalMode: 'ask' | 'full-access') =>
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Target',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+          approvalMode,
+        },
+      ]);
+
+    it('admits the settings again and limits the turn to the ones admitted', async () => {
+      mockedReadChatTabsFile.mockResolvedValue(tabAt('full-access'));
+      // Narrowed while the first read was admitted: that read is not what
+      // the admission checked.
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockImplementationOnce(() => {
+          mockedReadChatTabsFile.mockResolvedValue(tabAt('ask'));
+          markChatApprovalStateChanged(target);
+          return Promise.resolve();
+        })
+        .mockResolvedValue(undefined);
+      const authority = jest
+        .spyOn(senderContext, 'withAgentSenderAuthority')
+        .mockImplementation(
+          (_request, handoff): Promise<unknown> => Promise.resolve(handoff()),
+        );
+      try {
+        await dispatchHostQueuedWorktreeChatMessage(request, 'desktop', true);
+        expect(validation).toHaveBeenCalledTimes(2);
+        expect(validation).toHaveBeenLastCalledWith(
+          expect.objectContaining({ approvalMode: 'ask' }),
+        );
+        expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
+        expect(
+          mockedDispatchWorktreeChatTurn.mock.calls[0]?.[0].admittedApproval,
+        ).toEqual({ approvalMode: 'ask', sessionApprovalRules: [] });
+      } finally {
+        authority.mockRestore();
+        validation.mockRestore();
+      }
+    });
+
+    it('refuses the send when the settings keep changing', async () => {
+      mockedReadChatTabsFile.mockResolvedValue(tabAt('full-access'));
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockImplementation(() => {
+          markChatApprovalStateChanged(target);
+          return Promise.resolve();
+        });
+      try {
+        await expect(
+          dispatchHostQueuedWorktreeChatMessage(request, 'desktop', true),
+        ).rejects.toThrow(
+          "The target chat's tool approvals kept changing while this message was checked.",
+        );
+        expect(validation).toHaveBeenCalledTimes(3);
+        expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+      } finally {
+        validation.mockRestore();
+      }
+    });
   });
 
   it('delivers a queued agent send natively when its tab left terminal mode', async () => {
@@ -2841,7 +4099,9 @@ describe('worktree chat service', () => {
       .mockResolvedValue(undefined);
     const authority = jest
       .spyOn(senderContext, 'withAgentSenderAuthority')
-      .mockImplementation((_request, handoff) => handoff());
+      .mockImplementation(
+        (_request, handoff): Promise<unknown> => Promise.resolve(handoff()),
+      );
     const released = jest.spyOn(getChatQueueService(), 'onTurnTerminal');
     try {
       mockedReadChatTabsFile.mockResolvedValue(
@@ -3443,7 +4703,7 @@ describe('worktree chat service', () => {
     // idempotent — the second call reports `changed: false` and skips the
     // broadcast — and pinning an exact count here would just encode a
     // re-entry detail this test does not care about.
-    expect(mockNotifyOnboardingChecklistChatStarted).toHaveBeenCalled();
+    expect(mockLatchFirstTaskSubmitted).toHaveBeenCalled();
   });
 
   // `handlePortalChatSend`'s chat-id-less fallthrough reaches
@@ -3471,7 +4731,7 @@ describe('worktree chat service', () => {
       text: 'Continue',
     });
 
-    expect(mockNotifyOnboardingChecklistChatStarted).not.toHaveBeenCalled();
+    expect(mockLatchFirstTaskSubmitted).not.toHaveBeenCalled();
   });
 
   // A Canopy-owned assistant turn is not the user starting a chat of their own.
@@ -3512,7 +4772,7 @@ describe('worktree chat service', () => {
       },
     );
 
-    expect(mockNotifyOnboardingChecklistChatStarted).not.toHaveBeenCalled();
+    expect(mockLatchFirstTaskSubmitted).not.toHaveBeenCalled();
   });
 
   it('persists file reference blocks for backend-originated sends', async () => {
@@ -3582,65 +4842,22 @@ describe('worktree chat service', () => {
     );
   });
 
-  it('keeps a portal turn timer live after dispatch accepts until the terminal event', async () => {
-    mockedReadChatTabsFile.mockResolvedValue(
-      chatTabsFile([
-        {
-          id: 'chat-1',
-          title: 'Existing chat',
-          createdAt: '2026-05-28T11:00:00.000Z',
-          kind: 'chat',
-          messages: [],
-        },
-      ]),
-    );
-    let onChatEvent:
-      | Parameters<typeof dispatchWorktreeChatTurn>[0]['onChatEvent']
-      | undefined;
-    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
-      onChatEvent = options.onChatEvent;
-      return Promise.resolve();
-    });
-
-    await sendWorktreeChatMessage({
-      projectId: 'workspace-1',
-      worktreeId: 'worktree-1',
-      chatId: 'chat-1',
-      userMessageId: 'message-1',
-      text: 'Continue',
-    });
-
-    const timerStatuses = (): string[] =>
+  it('leaves portal and desktop turn timers to committed turn state', async () => {
+    const timerFrames = (messageId: string): unknown[] =>
       mockedCreatePortalEvent.mock.calls.flatMap(([type, payload]) => {
-        if (type !== 'portal.chat.event') return [];
         const eventPayload: unknown = payload;
-        if (!isRecord(eventPayload) || !isRecord(eventPayload.message)) {
-          return [];
-        }
-        const { messageId, status } = eventPayload.message;
-        return messageId === 'message-1:turn-timer' &&
-          typeof status === 'string'
-          ? [status]
+        return type === 'portal.chat.event' &&
+          isRecord(eventPayload) &&
+          isRecord(eventPayload.message) &&
+          eventPayload.message.messageId === messageId
+          ? [eventPayload.message]
           : [];
       });
-    expect(timerStatuses()).toEqual(['streaming']);
-
-    onChatEvent?.({
-      projectId: 'workspace-1',
-      worktreeId: 'worktree-1',
-      chatId: 'chat-1',
-      isTerminalEvent: true,
-      data: {
-        type: 'result',
-        is_error: false,
-        result: 'Turn completed',
-      },
-    });
-
-    expect(timerStatuses()).toEqual(['streaming', 'complete']);
-  });
-
-  it('carries the model Auto picked on a portal turn timer', async () => {
+    const terminal = {
+      type: 'result',
+      is_error: false,
+      result: 'Turn completed',
+    };
     mockedReadChatTabsFile.mockResolvedValue(
       chatTabsFile([
         {
@@ -3648,18 +4865,32 @@ describe('worktree chat service', () => {
           title: 'Existing chat',
           createdAt: '2026-05-28T11:00:00.000Z',
           kind: 'chat',
-          messages: [],
-          autoRoutedModels: { 'message-1': 'claude-sonnet-4-5' },
+          messages: [
+            {
+              id: 'desktop-message',
+              role: 'user',
+              timestamp: 1_000,
+              blocks: [{ type: 'text', text: 'Continue' }],
+            },
+          ],
         },
       ]),
     );
-    let onChatEvent:
-      | Parameters<typeof dispatchWorktreeChatTurn>[0]['onChatEvent']
-      | undefined;
-    mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
-      onChatEvent = options.onChatEvent;
+    const completeTurn: Parameters<
+      typeof mockedDispatchWorktreeChatTurn.mockImplementationOnce
+    >[0] = (options) => {
+      options.onChatEvent?.({
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        isTerminalEvent: true,
+        data: terminal,
+      });
       return Promise.resolve();
-    });
+    };
+    mockedDispatchWorktreeChatTurn
+      .mockImplementationOnce(completeTurn)
+      .mockImplementationOnce(completeTurn);
 
     await sendWorktreeChatMessage({
       projectId: 'workspace-1',
@@ -3668,36 +4899,23 @@ describe('worktree chat service', () => {
       userMessageId: 'message-1',
       text: 'Continue',
     });
-    onChatEvent?.({
-      projectId: 'workspace-1',
-      worktreeId: 'worktree-1',
-      chatId: 'chat-1',
-      isTerminalEvent: true,
-      data: { type: 'result', is_error: false, result: 'Turn completed' },
+    await dispatchHostQueuedWorktreeChatMessage(
+      {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'desktop-message',
+        text: 'Continue',
+      },
+      'desktop',
+      true,
+    );
+    await new Promise<void>((resolve): void => {
+      setImmediate(resolve);
     });
 
-    const timerData = mockedCreatePortalEvent.mock.calls.flatMap(
-      ([type, payload]): unknown[] => {
-        if (type !== 'portal.chat.event') return [];
-        const eventPayload: unknown = payload;
-        if (!isRecord(eventPayload) || !isRecord(eventPayload.message)) {
-          return [];
-        }
-        const { messageId, parts } = eventPayload.message;
-        return messageId === 'message-1:turn-timer' && Array.isArray(parts)
-          ? parts.map((part: unknown) =>
-              isRecord(part) ? part.data : undefined,
-            )
-          : [];
-      },
-    );
-    expect(timerData).toHaveLength(2);
-    for (const data of timerData) {
-      expect(data).toMatchObject({
-        autoRoutedModel: 'claude-sonnet-4-5',
-        autoRoutedModelLabel: expect.any(String),
-      });
-    }
+    expect(timerFrames('message-1:turn-timer')).toEqual([]);
+    expect(timerFrames('desktop-message:turn-timer')).toEqual([]);
   });
 
   it('streams a portal-originated Cursor turn as folded patch messages without persisting blank rows', async () => {
@@ -3750,6 +4968,7 @@ describe('worktree chat service', () => {
       patches,
     });
     onChatEvent?.({
+      beforeChatEventResult: mockCurrentProviderEventCompletion,
       projectId: 'workspace-1',
       worktreeId: 'worktree-1',
       chatId: 'chat-1',
@@ -3757,6 +4976,7 @@ describe('worktree chat service', () => {
       data: patch(1, [{ index: 0, block: { type: 'text', text: 'Cursor ' } }]),
     });
     onChatEvent?.({
+      beforeChatEventResult: mockCurrentProviderEventCompletion,
       projectId: 'workspace-1',
       worktreeId: 'worktree-1',
       chatId: 'chat-1',
@@ -5112,11 +6332,23 @@ describe('worktree chat service', () => {
     );
     expect(mockedCancelTransientRetryForChat).not.toHaveBeenCalled();
 
-    await cancelWorktreeChat({
+    const target = {
       projectId: 'workspace-1',
       worktreeId: 'worktree-1',
       chatId: 'chat-1',
-    });
+    };
+    const result = await cancelWorktreeChat(target);
+    expect(mockCancelChatTurn).toHaveBeenCalledWith(
+      target,
+      'stop',
+      worktreeStopContext,
+    );
+    expect(mockCaptureChatTurnStop).toHaveBeenCalledWith(target);
+    expect(mockCaptureChatTurnStop.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCancelChatTurn.mock.invocationCallOrder[0] ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(result).toEqual({ ok: true });
     expect(mockedCancelTransientRetryForChat).toHaveBeenCalledWith(
       {
         projectId: 'workspace-1',
@@ -5125,6 +6357,97 @@ describe('worktree chat service', () => {
       },
       'stop',
     );
+  });
+
+  it("releases the queue's Stop hold when a Stop has no native fence", async () => {
+    const target = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const onTurnTerminal = jest.spyOn(getChatQueueService(), 'onTurnTerminal');
+    try {
+      const fenceless = {
+        ...worktreeStopContext,
+        session: undefined,
+        fence: undefined,
+      };
+      mockCaptureChatTurnStop.mockReturnValueOnce(fenceless);
+      mockCancelChatTurn.mockResolvedValueOnce({
+        context: fenceless,
+        outcome: 'not-found',
+        preparationsCancelled: true,
+      });
+      await cancelWorktreeChat(target);
+      // Untagged: the terminal a cancelled preparation's Stop reservation
+      // waits for, as the composer and standalone Stops send.
+      expect(onTurnTerminal).toHaveBeenCalledWith(target, 'cancelled');
+
+      // A stale Stop cancelled nothing for this session; a newer send keeps
+      // its dispatch ownership.
+      onTurnTerminal.mockClear();
+      mockCaptureChatTurnStop.mockReturnValueOnce(fenceless);
+      mockCancelChatTurn.mockResolvedValueOnce({
+        context: fenceless,
+        outcome: 'not-found',
+      });
+      await cancelWorktreeChat(target);
+      expect(onTurnTerminal).not.toHaveBeenCalled();
+
+      await cancelWorktreeChat(target);
+      // A fenced native Stop leaves its own turn to cancelChatTurn.
+      expect(onTurnTerminal).not.toHaveBeenCalled();
+    } finally {
+      onTurnTerminal.mockRestore();
+    }
+  });
+
+  it('keeps the captured worktree stop context when a newer turn starts before cancellation resolves', async () => {
+    const target = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const newerContext = {
+      ...worktreeStopContext,
+      fence: {
+        ...worktreeStopContext.fence,
+        userMessageId: 'newer-user-message',
+        turnEpoch: 22,
+      },
+    };
+    let resolveCancellation: (value: unknown) => void = () => {
+      throw new Error('Cancellation did not settle');
+    };
+    const cancellation = new Promise<unknown>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    let signalCancellationStarted: () => void = () => {
+      throw new Error('Cancellation did not start');
+    };
+    const cancellationStarted = new Promise<void>((resolve) => {
+      signalCancellationStarted = resolve;
+    });
+    mockCancelChatTurn.mockImplementationOnce(() => {
+      signalCancellationStarted();
+      return cancellation;
+    });
+
+    const stopping = cancelWorktreeChat(target);
+    await cancellationStarted;
+    mockCaptureChatTurnStop.mockReturnValue(newerContext);
+    resolveCancellation({
+      context: worktreeStopContext,
+      outcome: 'interrupted',
+    });
+    const result = await stopping;
+
+    expect(mockCancelChatTurn).toHaveBeenCalledWith(
+      target,
+      'stop',
+      worktreeStopContext,
+    );
+    expect(result).toEqual({ ok: true });
   });
 
   it('cancels an active worktree turn by turn id without retrying', async () => {
@@ -5265,6 +6588,7 @@ describe('worktree chat service', () => {
         options.userMessageId,
       );
       options.onChatEvent?.({
+        beforeChatEventResult: mockCurrentProviderEventCompletion,
         projectId: options.projectId,
         worktreeId: options.worktreeId,
         chatId: options.chatId,
@@ -5638,6 +6962,68 @@ describe('worktree chat service', () => {
     expect(typeof clearOptions?.onlyIfDetectedBefore).toBe('number');
   });
 
+  it('hands App Advisor only the chat rules plus the send deny rules (CAN-4821)', async () => {
+    const chatDeny = {
+      id: 'deny-env',
+      behavior: 'deny' as const,
+      target: { kind: 'file-write' as const, path: '.env' },
+      createdAt: '2026-07-23T00:00:00.000Z',
+      origin: 'prompt' as const,
+    };
+    const sendAllow = {
+      ...chatDeny,
+      id: 'send-allow',
+      behavior: 'allow' as const,
+      target: { kind: 'command' as const, pattern: 'git push' },
+    };
+    const sendDeny = {
+      ...chatDeny,
+      id: 'send-deny',
+      target: { kind: 'command' as const, pattern: 'rm -rf *' },
+    };
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'advisor-chat-1',
+          title: 'Existing advisor chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          approvalMode: 'auto',
+          sessionApprovalRules: [chatDeny],
+        },
+      ]),
+    );
+    const mainWindow = new BrowserWindow();
+    const appAdvisorSurfaces = {
+      getMainWindow: (): BrowserWindow => mainWindow,
+      getAppAdvisorWindow: (): BrowserWindow => mainWindow,
+      openAppAdvisorWindow: jest.fn(),
+      ensureAppAdvisorWindow: jest.fn(),
+    };
+
+    await sendWorktreeChatMessage(
+      {
+        projectId: APP_ADVISOR_PROJECT_ID,
+        worktreeId: APP_ADVISOR_ENTRY_ID,
+        chatId: 'advisor-chat-1',
+        userMessageId: 'message-1',
+        text: 'Continue',
+        providerType: 'codex',
+        model: 'gpt-5.5',
+        sessionApprovalRules: [sendAllow, sendDeny],
+      },
+      { getWindow: appAdvisorSurfaces.getMainWindow, appAdvisorSurfaces },
+    );
+
+    expect(mockedDispatchAppAdvisorChatMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionApprovalRules: [chatDeny, sendDeny] }),
+      expect.anything(),
+    );
+  });
+
   it.each([
     {
       label: 'cross-harness',
@@ -5776,6 +7162,7 @@ describe('worktree chat service', () => {
       mockedDispatchWorktreeChatTurn.mockImplementationOnce((options) => {
         options.onTurnAccepted?.();
         options.onChatEvent?.({
+          beforeChatEventResult: mockCurrentProviderEventCompletion,
           projectId: 'workspace-1',
           worktreeId: 'worktree-1',
           chatId: 'chat-1',
@@ -5929,6 +7316,7 @@ describe('worktree chat service', () => {
         {
           modelId: 'gateway-live-model',
           gatewayId: 'provider/gateway-live-model',
+          family: 'openai',
           recommendedHarness: 'codex',
           gatewayOnly: true,
           contextWindow: 100_000,
@@ -6169,6 +7557,7 @@ describe('worktree chat service', () => {
         {
           modelId: 'gateway-captured-harness',
           gatewayId: 'provider/gateway-captured-harness',
+          family: 'openai',
           recommendedHarness: 'codex',
           gatewayOnly: true,
           contextWindow: 100_000,
@@ -6326,6 +7715,7 @@ describe('worktree chat service', () => {
       });
       const writesBeforeDisplay = mockedWriteChatTabsFile.mock.calls.length;
       options.onChatEvent?.({
+        beforeChatEventResult: mockCurrentProviderEventCompletion,
         projectId: 'workspace-1',
         worktreeId: 'worktree-1',
         chatId: 'chat-1',
@@ -6453,7 +7843,7 @@ describe('worktree chat service', () => {
     );
   });
 
-  it('captures host-resolved approval state in a Portal queue request', async () => {
+  it('queues a Portal send without a copy of the chat approval state, which its turn reads when it starts', async () => {
     const sessionApprovalRules = [
       {
         id: 'deny-env',
@@ -6489,13 +7879,43 @@ describe('worktree chat service', () => {
         text: 'Queue from Portal',
       });
 
-      expect(submit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          approvalMode: 'auto',
-          sessionApprovalRules,
-        }),
-        'portal',
-      );
+      expect(submit).toHaveBeenCalledTimes(1);
+      const [queued, origin] = submit.mock.calls[0] ?? [];
+      expect(origin).toBe('portal');
+      expect(queued).toMatchObject({
+        chatId: 'chat-1',
+        text: 'Queue from Portal',
+      });
+      expect(queued).not.toHaveProperty('approvalMode');
+      expect(queued).not.toHaveProperty('sessionApprovalRules');
+    } finally {
+      submit.mockRestore();
+    }
+  });
+
+  it('preserves automation attribution in a queued worktree send', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(chatTabsFile([]));
+    const submit = jest
+      .spyOn(getChatQueueService(), 'submit')
+      .mockResolvedValue();
+
+    try {
+      await sendWorktreeChatMessage({
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'automation-message-1',
+        text: 'Run the report',
+        initiationSource: 'automation',
+        automationName: 'Morning report',
+      });
+
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(submit.mock.calls[0]?.[0]).toMatchObject({
+        initiationSource: 'automation',
+        automationName: 'Morning report',
+      });
+      expect(submit.mock.calls[0]?.[1]).toBe('portal');
     } finally {
       submit.mockRestore();
     }
@@ -6924,6 +8344,81 @@ describe('worktree chat service', () => {
     expect(summaries[1]?.customTitle).toBeUndefined();
   });
 
+  it.each([0, 1])(
+    'projects an unloaded chat with %s messages without reading its transcript',
+    async (messageCount) => {
+      const tab: PersistedChatTab = {
+        id: 'chat-1',
+        title: 'Unloaded chat',
+        createdAt: '2026-10-16T00:00:00.000Z',
+        kind: 'chat',
+        model: 'sonnet',
+        messages: [],
+        transcript: {
+          format: 'complete-message-jsonl-v1',
+          committedMessageCount: messageCount,
+          committedByteLength: 0,
+          transcriptRevision: 1,
+          hasActiveSidecar: false,
+          messageCount,
+          ...(messageCount > 0 ? { lastMessageRole: 'user' as const } : {}),
+        },
+      };
+      Object.defineProperty(tab, 'messages', {
+        enumerable: false,
+        get(): never {
+          throw new Error(
+            'Transcript chat-1 was not selected for this operation',
+          );
+        },
+      });
+      mockedReadChatTabsFile.mockResolvedValue(chatTabsFile([tab]));
+
+      const [summary] = await listWorktreeChatSummaries({
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+      expect(summary).toMatchObject({
+        chatId: 'chat-1',
+        messageCount,
+        modelHarnessLocked: messageCount > 0,
+      });
+      expect(mockedReadChatTranscript).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['auto', 'claude', false],
+    ['claude-code', 'claude', false],
+    ['canopy', 'opencode', true],
+    ['auto', 'opencode', true],
+  ] as const)(
+    'projects harness lock for an empty %s %s session as %s',
+    async (interfaceMode, executionHarness, locked) => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Empty',
+            createdAt: '2026-10-15T00:00:00.000Z',
+            kind: 'chat',
+            model: 'sonnet',
+            providerType: executionHarness,
+            interfaceMode,
+            executionHarness,
+            sdkSessionId: 'reserved-session',
+            messages: [],
+          },
+        ]),
+      );
+      const [summary] = await listWorktreeChatSummaries({
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+      expect(summary?.modelHarnessLocked).toBe(locked);
+    },
+  );
+
   it('maps the tab model to its human-friendly display name in summaries', async () => {
     initClaudeModels([
       {
@@ -7064,6 +8559,115 @@ describe('worktree chat service', () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  describe('canonical turn state (turn-state phase 41a)', () => {
+    const tabs = (): ChatTabsFile =>
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+        },
+      ]);
+    const turnState = (
+      phase: 'foreground' | 'background' | 'idle',
+      startedAtMs?: number,
+    ): unknown => ({
+      phase,
+      decisionPending: false,
+      catchingUp: false,
+      endedTurnIds: [],
+      ...(startedAtMs === undefined
+        ? {}
+        : {
+            current: {
+              id: 'turn-1',
+              origin: 'user',
+              startedAtMs,
+              pauses: [],
+            },
+          }),
+      background:
+        phase === 'background'
+          ? { native: [{ id: 'task-1' }], managed: { live: 1, queued: 1 } }
+          : { native: [], managed: { live: 0, queued: 0 } },
+    });
+
+    afterEach(() => {
+      mockChatStateService.getTurnState.mockReturnValue(undefined);
+    });
+
+    it('reads background work as not a running turn, with its count', async () => {
+      mockChatStateService.getTurnState.mockReturnValue(
+        turnState('background'),
+      );
+      // The session still reports a turn while only background work runs.
+      mockedGetActiveSessionInfos.mockReturnValueOnce([
+        sessionInfo({ chatId: 'chat-1', turnActive: true }),
+      ]);
+      mockedReadChatTabsFile.mockResolvedValue(tabs());
+
+      const [summary] = await listWorktreeChatSummaries({
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+
+      expect(summary).toMatchObject({
+        turnActive: false,
+        turnPhase: 'background',
+        backgroundTasks: 3,
+        // The Portal tray's delegates row (turn-state phase 41e).
+        backgroundDelegations: 2,
+      });
+      expect(summary).not.toHaveProperty('turnElapsedMs');
+    });
+
+    it('keeps a dispatched turn running before its canonical start commits (41b)', async () => {
+      mockChatStateService.getTurnState.mockReturnValue(turnState('idle'));
+      mockedGetActiveSessionInfos.mockReturnValueOnce([
+        sessionInfo({ chatId: 'chat-1', turnActive: true }),
+      ]);
+      mockedReadChatTabsFile.mockResolvedValue(tabs());
+
+      const [summary] = await listWorktreeChatSummaries({
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+
+      expect(summary).toMatchObject({ turnActive: true, turnPhase: 'idle' });
+    });
+
+    it('reads a canonical foreground turn as running, timed from its start', async () => {
+      const now = Date.now();
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        mockChatStateService.getTurnState.mockReturnValue(
+          turnState('foreground', now - 2_000),
+        );
+        // A wake: no dispatched session turn, but a canonical foreground one.
+        mockedGetActiveSessionInfos.mockReturnValueOnce([]);
+        mockedReadChatTabsFile.mockResolvedValue(tabs());
+
+        const [summary] = await listWorktreeChatSummaries({
+          workspaceId: 'workspace-1',
+          worktreeId: 'worktree-1',
+        });
+
+        // The count is sent whenever canonical state exists, so a delta clears it.
+        expect(summary).toMatchObject({
+          turnActive: true,
+          turnPhase: 'foreground',
+          turnElapsedMs: 2_000,
+          backgroundTasks: 0,
+          backgroundDelegations: 0,
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
   });
 
   it('projects turnActive false for an idle between-turn session', async () => {
@@ -7356,6 +8960,52 @@ describe('worktree chat service', () => {
     expect(summary?.pendingQuestions?.[0]?.toolUseId).toBe('codex-call-42');
   });
 
+  it.each([0, 1])(
+    'clears dismissed questions from persisted summaries when dismissedAt is %s (CAN-4958)',
+    async (dismissedAt) => {
+      const tab: PersistedChatTab = {
+        id: 'chat-1',
+        title: 'Waiting chat',
+        createdAt: '2026-05-28T11:00:00.000Z',
+        kind: 'chat',
+        messages: [],
+      };
+      const question: PersistedPendingQuestion = {
+        requestId: 'request-1',
+        toolUseId: 'tool-1',
+        chatId: tab.id,
+        questions: [{ question: 'Continue?', options: ['Yes', 'No'] }],
+      };
+      mockedReadChatTabsFile
+        .mockResolvedValueOnce(chatTabsFile([tab], [question]))
+        .mockResolvedValueOnce(
+          chatTabsFile([tab], [{ ...question, dismissedAt }]),
+        );
+
+      const target = {
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      };
+      const [pending] = await listWorktreeChatSummaries(target);
+      const [dismissed] = await listWorktreeChatSummaries(target);
+
+      expect(pending).toMatchObject({
+        chatId: tab.id,
+        workspaceLocalId: target.workspaceId,
+        worktreeLocalId: target.worktreeId,
+        pendingQuestions: [
+          {
+            requestId: question.requestId,
+            toolUseId: question.toolUseId,
+            questions: question.questions,
+            answered: false,
+          },
+        ],
+      });
+      expect(dismissed).toHaveProperty('pendingQuestions', []);
+    },
+  );
+
   it('projects answered questions with display-safe redacted answers', async () => {
     mockedReadChatTabsFile.mockResolvedValue(
       chatTabsFile(
@@ -7543,6 +9193,135 @@ describe('worktree chat service', () => {
     ]);
   });
 
+  it('projects queued-message waiting reasons from queue snapshots', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+        },
+      ]),
+    );
+    const queueSnapshot: ChatQueueUpdatedEvent = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      queue: [
+        {
+          id: 'queued-waiting',
+          text: 'Wait for the active turn',
+          origin: 'portal',
+          enqueuedAtMs: 1,
+          waitingReason: 'steer_unavailable',
+        },
+        {
+          id: 'queued-background-work',
+          text: 'Wait for background work',
+          origin: 'portal',
+          enqueuedAtMs: 2,
+          waitingReason: 'background_work',
+          retryable: true,
+          retryBlockedReason: 'insufficient_credits',
+        },
+        {
+          id: 'queued-ready',
+          text: 'Ready later',
+          origin: 'portal',
+          enqueuedAtMs: 3,
+        },
+      ],
+    };
+    jest
+      .spyOn(getChatQueueService(), 'getWorktreeSnapshots')
+      .mockReturnValue([queueSnapshot]);
+
+    const summaries = await listWorktreeChatSummaries({
+      workspaceId: 'workspace-1',
+      worktreeId: 'worktree-1',
+    });
+
+    expect(summaries[0]?.queuedMessages).toEqual([
+      {
+        id: 'queued-waiting',
+        text: 'Wait for the active turn',
+        origin: 'portal',
+        enqueuedAtMs: 1,
+        attachmentEditsPreservePayload: true,
+        waitingReason: 'steer_unavailable',
+      },
+      {
+        id: 'queued-background-work',
+        text: 'Wait for background work',
+        origin: 'portal',
+        enqueuedAtMs: 2,
+        attachmentEditsPreservePayload: true,
+        waitingReason: 'background_work',
+        retryable: true,
+        retryBlockedReason: 'insufficient_credits',
+      },
+      {
+        id: 'queued-ready',
+        text: 'Ready later',
+        origin: 'portal',
+        enqueuedAtMs: 3,
+        attachmentEditsPreservePayload: true,
+      },
+    ]);
+  });
+
+  it('carries the queue snapshot waiting delegation ids into Portal summaries', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+        },
+      ]),
+    );
+    const queueSnapshot = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      waitingDelegationIds: ['delegate-b', 'delegate-a'],
+      queue: [
+        {
+          id: 'visible-queue-row',
+          text: 'Visible follow-up',
+          origin: 'portal' as const,
+          enqueuedAtMs: 3,
+        },
+      ],
+    };
+    jest
+      .spyOn(getChatQueueService(), 'getWorktreeSnapshots')
+      .mockReturnValue([queueSnapshot]);
+
+    const summaries = await listWorktreeChatSummaries({
+      workspaceId: 'workspace-1',
+      worktreeId: 'worktree-1',
+    });
+
+    expect(summaries[0]?.queuedMessages).toEqual([
+      {
+        id: 'visible-queue-row',
+        text: 'Visible follow-up',
+        origin: 'portal',
+        enqueuedAtMs: 3,
+        attachmentEditsPreservePayload: true,
+      },
+    ]);
+    expect(summaries[0]?.waitingDelegationIds).toEqual([
+      'delegate-b',
+      'delegate-a',
+    ]);
+  });
+
   it('keeps the sender of a queued agent message in the Portal summary', async () => {
     mockedReadChatTabsFile.mockResolvedValue(
       chatTabsFile([
@@ -7566,25 +9345,25 @@ describe('worktree chat service', () => {
       chatTitle: 'Origin',
       projectLabel: 'Source',
     };
+    const snapshot: ChatQueueUpdatedEvent = {
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      queue: [
+        {
+          id: 'queued-agent',
+          text: 'From another chat',
+          origin: 'desktop',
+          enqueuedAtMs: 1,
+          agentSent,
+        },
+      ],
+    };
+    // Keep the legacy active-turn field on this test input at runtime.
+    Reflect.set(snapshot, 'turnActive', true);
     const snapshots = jest
       .spyOn(getChatQueueService(), 'getWorktreeSnapshots')
-      .mockReturnValue([
-        {
-          projectId: 'workspace-1',
-          worktreeId: 'worktree-1',
-          chatId: 'chat-1',
-          turnActive: true,
-          queue: [
-            {
-              id: 'queued-agent',
-              text: 'From another chat',
-              origin: 'desktop',
-              enqueuedAtMs: 1,
-              agentSent,
-            },
-          ],
-        },
-      ]);
+      .mockReturnValue([snapshot]);
     try {
       const summaries = await listWorktreeChatSummaries({
         workspaceId: 'workspace-1',
@@ -7646,6 +9425,75 @@ describe('worktree chat service', () => {
     ]);
   });
 
+  it.each([undefined, false, true])(
+    'excludes plan writes from Portal project-edit counts regardless of error state %s (CAN-5355)',
+    async (isError) => {
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-plan',
+            title: 'Plan',
+            createdAt: '2026-10-30T00:00:00.000Z',
+            kind: 'chat',
+            messages: [
+              {
+                id: 'user',
+                role: 'user',
+                timestamp: 1,
+                blocks: [{ type: 'text', text: 'Plan' }],
+              },
+              {
+                id: 'tools',
+                role: 'assistant',
+                timestamp: 2,
+                blocks: [
+                  ...[
+                    '/Users/test/.claude/plans/draft.md',
+                    'C:\\Users\\test\\.claude\\plans\\draft.md',
+                    'docs/plans/draft.md',
+                  ].map((file_path, index) => ({
+                    type: 'tool_use' as const,
+                    toolUseId: `write-${index}`,
+                    toolName: 'Write',
+                    input: JSON.stringify({ file_path }),
+                    ...(isError === undefined
+                      ? {}
+                      : {
+                          result: {
+                            output: isError ? 'Failed' : 'Written',
+                            isError,
+                          },
+                        }),
+                  })),
+                  {
+                    type: 'tool_use',
+                    toolUseId: 'edit',
+                    toolName: 'Edit',
+                    input: '{"file_path":"src/index.ts"}',
+                  },
+                ],
+              },
+              {
+                id: 'final',
+                role: 'assistant',
+                timestamp: 3,
+                blocks: [{ type: 'text', text: 'Done' }],
+              },
+            ],
+          },
+        ]),
+      );
+      const summaries = await listWorktreeChatSummaries({
+        workspaceId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+      expect(summaries[0]?.chatTurnGroups?.[0]?.summary).toEqual({
+        writeCount: 1,
+        editCount: 1,
+      });
+    },
+  );
+
   it('projects CUA REPL calls into the dedicated Computer Use summary', async () => {
     mockedReadChatTabsFile.mockResolvedValue(
       chatTabsFile([
@@ -7698,6 +9546,90 @@ describe('worktree chat service', () => {
 
     expect(summaries[0]?.chatTurnGroups?.[0]?.summary).toEqual({
       computerUseCount: 2,
+    });
+  });
+
+  it('projects successful, pending and failed edits into Portal turn file records', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-files',
+          title: 'Files',
+          createdAt: '2026-10-26T00:00:00.000Z',
+          kind: 'chat',
+          messages: [
+            {
+              id: 'user',
+              role: 'user',
+              timestamp: 1,
+              blocks: [{ type: 'text', text: 'Revise the document' }],
+            },
+            {
+              id: 'calls',
+              role: 'assistant',
+              timestamp: 2,
+              blocks: [
+                {
+                  type: 'tool_use',
+                  toolUseId: 'edit',
+                  toolName: 'Edit',
+                  input: '{"file_path":"report.md"}',
+                },
+                {
+                  type: 'tool_use',
+                  toolUseId: 'pending',
+                  toolName: 'MultiEdit',
+                  input: '{"file_path":"pending.md"}',
+                },
+                {
+                  type: 'tool_use',
+                  toolUseId: 'failed',
+                  toolName: 'Edit',
+                  input: '{"file_path":"failed.md"}',
+                },
+              ],
+            },
+            {
+              id: 'results',
+              role: 'system',
+              timestamp: 3,
+              blocks: [
+                {
+                  type: 'tool_result',
+                  toolUseId: 'edit',
+                  toolName: 'Edit',
+                  output: 'Done',
+                  isError: false,
+                },
+                {
+                  type: 'tool_result',
+                  toolUseId: 'failed',
+                  toolName: 'Edit',
+                  output: 'Denied',
+                  isError: true,
+                },
+              ],
+            },
+            {
+              id: 'final',
+              role: 'assistant',
+              timestamp: 4,
+              blocks: [{ type: 'text', text: 'Done.' }],
+            },
+          ],
+        },
+      ]),
+    );
+    const summaries = await listWorktreeChatSummaries({
+      workspaceId: 'workspace-1',
+      worktreeId: 'worktree-1',
+    });
+    expect(summaries[0]?.chatTurnGroups?.[0]).toMatchObject({
+      files: [
+        { path: 'report.md', state: 'ready', change: 'updated' },
+        { path: 'pending.md', state: 'creating', change: 'updated' },
+        { path: 'failed.md', state: 'failed', change: 'updated' },
+      ],
     });
   });
 

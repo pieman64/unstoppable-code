@@ -68,7 +68,8 @@ function execRaw(databasePath: string, sql: string): void {
 function makeVersion2Database(databasePath: string): void {
   execRaw(
     databasePath,
-    `DROP TABLE IF EXISTS ledger_pending_titles;
+    `DROP TABLE IF EXISTS ledger_global_bindings;
+    DROP TABLE IF EXISTS ledger_pending_titles;
     DROP TABLE ledger_scope_sync;
     UPDATE ledger_meta SET value = '2' WHERE key = 'schema_version';`,
   );
@@ -78,7 +79,8 @@ function makeVersion2Database(databasePath: string): void {
 function makeVersion3Database(databasePath: string): void {
   execRaw(
     databasePath,
-    `DROP TABLE IF EXISTS ledger_pending_titles;
+    `DROP TABLE IF EXISTS ledger_global_bindings;
+    DROP TABLE IF EXISTS ledger_pending_titles;
     UPDATE ledger_meta SET value = '3' WHERE key = 'schema_version';`,
   );
 }
@@ -101,6 +103,25 @@ function makeVersion1Database(
     databasePath,
     `${drops}
     UPDATE ledger_meta SET value = '1' WHERE key = 'schema_version';`,
+  );
+}
+
+/** Turns a closed database into the version 4 schema before global bindings. */
+function makeVersion4Database(databasePath: string): void {
+  execRaw(
+    databasePath,
+    `DROP TABLE IF EXISTS ledger_global_bindings;
+    UPDATE ledger_meta SET value = '4' WHERE key = 'schema_version';`,
+  );
+}
+
+function hasGlobalBindingsTable(raw: DatabaseSync): boolean {
+  return (
+    raw
+      .prepare(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'ledger_global_bindings'",
+      )
+      .get() !== undefined
   );
 }
 
@@ -463,6 +484,12 @@ describe('LedgerRepository storage', () => {
               containerCreatedAt: '2026-09-01T00:00:00Z',
               accountId: null,
             }),
+          (): unknown =>
+            newer.bindGlobalScope({
+              authorityId: context.chat.authorityId,
+              owner: { kind: 'personal' },
+              accountId: null,
+            }),
         ];
         for (const write of writes) {
           expect(captureLedgerError(write).reason).toBe('UNSUPPORTED_SCHEMA');
@@ -489,7 +516,7 @@ describe('LedgerRepository storage', () => {
       const databasePath = join(directory, 'nested', 'ledger', 'ledger.sqlite');
       const repository = LedgerRepository.open({ databasePath });
       try {
-        expect(repository.schema).toEqual({ version: 4, readOnly: false });
+        expect(repository.schema).toEqual({ version: 5, readOnly: false });
         expect(repository.schema).toEqual(CURRENT_SCHEMA);
         expect(repository.getStorageCounts()).toEqual({
           scopes: 0,
@@ -508,10 +535,11 @@ describe('LedgerRepository storage', () => {
         expect(raw.prepare('PRAGMA journal_mode').get()).toEqual({
           journal_mode: 'wal',
         });
-        expect(recordedSchemaVersion(raw)).toBe('4');
+        expect(recordedSchemaVersion(raw)).toBe('5');
         expect(mutationActorIndexes(raw)).toEqual(MUTATION_ACTOR_INDEXES);
         expect(hasScopeSyncTable(raw)).toBe(true);
         expect(hasPendingTitlesTable(raw)).toBe(true);
+        expect(hasGlobalBindingsTable(raw)).toBe(true);
       });
     });
 
@@ -597,6 +625,7 @@ describe('LedgerRepository storage', () => {
             expect(mutationActorIndexes(raw)).toEqual(MUTATION_ACTOR_INDEXES);
             expect(hasScopeSyncTable(raw)).toBe(true);
             expect(hasPendingTitlesTable(raw)).toBe(true);
+            expect(hasGlobalBindingsTable(raw)).toBe(true);
           });
           expect(
             unindexedPurgeSteps(context.databasePath, context.ledgerId),
@@ -661,7 +690,7 @@ describe('LedgerRepository storage', () => {
 
         const upgraded = context.reopen();
 
-        expect(upgraded.schema).toEqual({ version: 4, readOnly: false });
+        expect(upgraded.schema).toEqual(CURRENT_SCHEMA);
         expect(upgraded.getStorageCounts()).toEqual(counts);
         expect(upgraded.listScopes()).toEqual(scopes);
         // Every event written before the upgrade is still to send.
@@ -693,9 +722,10 @@ describe('LedgerRepository storage', () => {
         });
         upgraded.close();
         readLedgerDatabase(context.databasePath, (raw) => {
-          expect(recordedSchemaVersion(raw)).toBe('4');
+          expect(recordedSchemaVersion(raw)).toBe('5');
           expect(hasScopeSyncTable(raw)).toBe(true);
           expect(hasPendingTitlesTable(raw)).toBe(true);
+          expect(hasGlobalBindingsTable(raw)).toBe(true);
         });
       } finally {
         context.dispose();
@@ -717,7 +747,7 @@ describe('LedgerRepository storage', () => {
         });
 
         const upgraded = context.reopen();
-        expect(upgraded.schema).toEqual({ version: 4, readOnly: false });
+        expect(upgraded.schema).toEqual(CURRENT_SCHEMA);
         expect(upgraded.getStorageCounts()).toEqual(counts);
         expect(upgraded.listPendingTitles()).toEqual([]);
         expect(
@@ -727,8 +757,9 @@ describe('LedgerRepository storage', () => {
         ).toEqual(created);
         upgraded.close();
         readLedgerDatabase(context.databasePath, (raw) => {
-          expect(recordedSchemaVersion(raw)).toBe('4');
+          expect(recordedSchemaVersion(raw)).toBe('5');
           expect(hasPendingTitlesTable(raw)).toBe(true);
+          expect(hasGlobalBindingsTable(raw)).toBe(true);
         });
       } finally {
         context.dispose();
@@ -767,7 +798,103 @@ describe('LedgerRepository storage', () => {
 
         execRaw(context.databasePath, 'DROP TABLE ledger_pending_titles');
         const upgraded = context.reopen();
-        expect(upgraded.schema).toEqual({ version: 4, readOnly: false });
+        expect(upgraded.schema).toEqual(CURRENT_SCHEMA);
+        expect(upgraded.getStorageCounts()).toEqual(counts);
+      } finally {
+        context.dispose();
+      }
+    });
+
+    it('upgrades a version 4 database to global bindings, keeping its data', () => {
+      const context = setUpLedger();
+      try {
+        const created = context.repository.addEntry(
+          addInput(context, context.chat, TASK, 'version-four-add'),
+        );
+        const counts = context.repository.getStorageCounts();
+        const scopes = context.repository.listScopes();
+        context.repository.close();
+        makeVersion4Database(context.databasePath);
+        readLedgerDatabase(context.databasePath, (raw) => {
+          expect(recordedSchemaVersion(raw)).toBe('4');
+          expect(hasGlobalBindingsTable(raw)).toBe(false);
+        });
+
+        const upgraded = context.reopen();
+        expect(upgraded.schema).toEqual({ version: 5, readOnly: false });
+        expect(upgraded.getStorageCounts()).toEqual(counts);
+        expect(upgraded.listScopes()).toEqual(scopes);
+        expect(
+          upgraded.addEntry(
+            addInput(context, context.chat, TASK, 'version-four-add'),
+          ),
+        ).toEqual(created);
+        expect(
+          upgraded.findGlobalScope({
+            owner: { kind: 'personal' },
+            accountId: 'account-1',
+          }),
+        ).toBeNull();
+        const bound = upgraded.bindGlobalScope({
+          authorityId: upgraded.authorityId,
+          owner: { kind: 'personal' },
+          accountId: 'account-1',
+        });
+        expect(bound.created).toBe(true);
+        upgraded.close();
+        readLedgerDatabase(context.databasePath, (raw) => {
+          expect(recordedSchemaVersion(raw)).toBe('5');
+          expect(
+            raw
+              .prepare(
+                'SELECT owner_key, account_key, ledger_id FROM ledger_global_bindings',
+              )
+              .all(),
+          ).toEqual([
+            {
+              owner_key: 'personal',
+              account_key: 'account:account-1',
+              ledger_id: bound.scope.scope.ledgerId,
+            },
+          ]);
+        });
+        const reopened = context.reopen();
+        expect(
+          reopened.findGlobalScope({
+            owner: { kind: 'personal' },
+            accountId: 'account-1',
+          }),
+        ).toEqual(bound.scope);
+      } finally {
+        context.dispose();
+      }
+    });
+
+    it('leaves a version 4 database unchanged when the global binding migration fails', () => {
+      const context = setUpLedger();
+      try {
+        context.repository.addEntry(
+          addInput(context, context.chat, TASK, 'migration-blocker'),
+        );
+        const counts = context.repository.getStorageCounts();
+        context.repository.close();
+        makeVersion4Database(context.databasePath);
+        execRaw(
+          context.databasePath,
+          'CREATE TABLE ledger_global_bindings (blocker INTEGER)',
+        );
+
+        expect(captureLedgerError(() => context.reopen())).toMatchObject({
+          reason: 'STORAGE_UNAVAILABLE',
+          diagnosticCode: 'sqlite_1',
+        });
+        readLedgerDatabase(context.databasePath, (raw) => {
+          expect(recordedSchemaVersion(raw)).toBe('4');
+        });
+
+        execRaw(context.databasePath, 'DROP TABLE ledger_global_bindings');
+        const upgraded = context.reopen();
+        expect(upgraded.schema).toEqual({ version: 5, readOnly: false });
         expect(upgraded.getStorageCounts()).toEqual(counts);
       } finally {
         context.dispose();

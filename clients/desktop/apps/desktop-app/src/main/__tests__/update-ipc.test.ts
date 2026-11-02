@@ -18,7 +18,9 @@ const mockedAppGetVersion = jest.fn(() => '1.2.3');
 
 jest.mock('electron', () => ({
   app: {
-    getVersion: mockedAppGetVersion,
+    get getVersion(): typeof mockedAppGetVersion {
+      return mockedAppGetVersion;
+    },
   },
 }));
 
@@ -39,11 +41,6 @@ import {
   scheduleUpdate,
   reportRendererBusyState,
 } from '../updater';
-
-declare global {
-  var __CANOPY_RELEASE_FLAVOR__: string | undefined;
-  var __CANOPY_INTERNAL_RELEASE_INDICATOR__: string | undefined;
-}
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedCheckForVersion = jest.mocked(checkForVersion);
@@ -75,8 +72,8 @@ describe('registerUpdateHandlers', () => {
     jest.clearAllMocks();
     jest.mocked(isE2eBuild).mockReturnValue(false);
     delete process.env.CANOPY_E2E_APP_VERSION;
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'stable';
-    globalThis.__CANOPY_INTERNAL_RELEASE_INDICATOR__ = '';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'stable');
+    Reflect.set(globalThis, '__CANOPY_INTERNAL_RELEASE_INDICATOR__', '');
     mockedAppGetVersion.mockReturnValue('1.2.3');
     registerUpdateHandlers();
   });
@@ -88,7 +85,7 @@ describe('registerUpdateHandlers', () => {
   it.each(['stable', 'rc', 'internal'])(
     'honors a trimmed version override only in an E2E %s build',
     async (flavor) => {
-      globalThis.__CANOPY_RELEASE_FLAVOR__ = flavor;
+      Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', flavor);
       jest.mocked(isE2eBuild).mockReturnValue(true);
       process.env.CANOPY_E2E_APP_VERSION = '  99.0.0-rc.2  ';
       expect(await getHandler(IPC_CHANNELS.updateGetVersion)()).toBe(
@@ -110,8 +107,12 @@ describe('registerUpdateHandlers', () => {
   it('ignores the runtime override in a production build', async () => {
     process.env.CANOPY_E2E_APP_VERSION = '99.0.0';
     expect(await getHandler(IPC_CHANNELS.updateGetVersion)()).toBe('1.2.3');
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
-    globalThis.__CANOPY_INTERNAL_RELEASE_INDICATOR__ = 'internal-123';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
+    Reflect.set(
+      globalThis,
+      '__CANOPY_INTERNAL_RELEASE_INDICATOR__',
+      'internal-123',
+    );
     expect(await getHandler(IPC_CHANNELS.updateGetVersion)()).toBe(
       'internal-123',
     );
@@ -166,7 +167,7 @@ describe('registerUpdateHandlers', () => {
 
   it('registers targeted version handlers for internal builds', async () => {
     mockedRegisterIpcHandler.mockClear();
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
 
     registerUpdateHandlers();
 
@@ -215,8 +216,12 @@ describe('registerUpdateHandlers', () => {
   });
 
   it('returns the internal release indicator through IPC for internal builds', async () => {
-    globalThis.__CANOPY_RELEASE_FLAVOR__ = 'internal';
-    globalThis.__CANOPY_INTERNAL_RELEASE_INDICATOR__ = 'internal-123';
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
+    Reflect.set(
+      globalThis,
+      '__CANOPY_INTERNAL_RELEASE_INDICATOR__',
+      'internal-123',
+    );
     mockedAppGetVersion.mockReturnValue('9999.0.0-internal.123');
 
     const result = await getHandler(IPC_CHANNELS.updateGetVersion)();

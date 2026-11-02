@@ -22,10 +22,16 @@
 
 import type { PanelLayoutViewModel } from '@canopy/ui-shared/panels';
 import {
+  isMacPlatform,
+  isShortcutEvent,
+  type ShortcutEventLike,
+} from '../../find/shortcut-target';
+import {
   getPanelLayoutViewModel,
   usePanelLayoutStore,
   type PanelLayoutState,
 } from './panel-layout-store';
+import { getPanelTabSelectionHandler } from './panel-tab-selection';
 
 /** The command ids owned by the shared panel command layer. */
 export type PanelCommandId =
@@ -40,7 +46,9 @@ export type PanelCommandId =
   | 'panel-move-to-next-group'
   | 'panel-toggle-maximize'
   | 'panel-close-group'
-  | 'panel-even-sizes';
+  | 'panel-even-sizes'
+  | 'panel-select-next-tab'
+  | 'panel-select-previous-tab';
 
 export interface PanelCommand {
   readonly id: PanelCommandId;
@@ -63,15 +71,41 @@ export interface PanelCommand {
 }
 
 /**
- * One default keybinding, matched via `isShortcutEvent` (Cmd on macOS, Ctrl
- * elsewhere, plus the listed extra modifiers). Alt is only used with arrow
- * keys — Option+<letter> composes special characters on macOS.
+ * One default keybinding, matched via {@link matchesPanelShortcutBinding}
+ * (Cmd on macOS, Ctrl elsewhere, plus the listed extra modifiers). Alt is
+ * only used with arrow keys — Option+<letter> composes special characters on
+ * macOS. A command may have several bindings, for example a platform-scoped
+ * chord plus an alternate.
  */
 export interface PanelShortcutBinding {
   readonly id: PanelCommandId;
+  /**
+   * The `event.key` value to match. When {@link code} is set it is matched
+   * instead, and `key` only documents the unshifted character.
+   */
   readonly key: string;
+  /**
+   * The physical key (`event.code`) to match instead of `key`. Used for
+   * Shift chords on punctuation, where `event.key` reports the shifted
+   * character (⌘⇧] arrives as `key: '}'`).
+   */
+  readonly code?: string;
   readonly shift?: boolean;
   readonly alt?: boolean;
+  /** Limits the binding to one platform. Absent means every platform. */
+  readonly platform?: 'mac' | 'other';
+  /**
+   * The chord never edits text or moves a cursor, so hosts may match it while
+   * an input, composer, or editor owns focus. Hosts still skip it inside
+   * dialogs and open overlays.
+   */
+  readonly editableSafe?: boolean;
+}
+
+/** One tab in a panel layout: its group and its panel. */
+export interface PanelTabLocation {
+  readonly groupId: string;
+  readonly panelId: string;
 }
 
 function store(): PanelLayoutState {
@@ -103,6 +137,82 @@ function cycleGroupId(
     return null;
   }
   return ids[(index + offset + ids.length) % ids.length];
+}
+
+/**
+ * The tab `offset` steps away from the active tab of the active group,
+ * wrapping at the ends, in the group's tab order. The store keeps pinned
+ * tabs as a leading partition of `tabs`, so this is the order the tab strip
+ * draws. When the group's `activePanelId` is not one of its tabs, `next`
+ * lands on the first tab and `previous` on the last. Null without an active
+ * group or with fewer than two tabs.
+ */
+function cycleTabTarget(
+  viewModel: PanelLayoutViewModel,
+  offset: 1 | -1,
+): PanelTabLocation | null {
+  const activeGroup = viewModel.groups.find(
+    (group) => group.groupId === viewModel.activeGroupId,
+  );
+  if (!activeGroup) {
+    return null;
+  }
+  return cycleTabInGroup(activeGroup, activeGroup.activePanelId, offset);
+}
+
+/**
+ * The tab `offset` steps away from `fromPanelId` in `group`'s strip order,
+ * wrapping at the ends. A `fromPanelId` that is not one of the group's tabs
+ * starts the cycle at the matching end. Null with fewer than two tabs.
+ */
+function cycleTabInGroup(
+  group: PanelLayoutViewModel['groups'][number],
+  fromPanelId: string | null,
+  offset: 1 | -1,
+): PanelTabLocation | null {
+  if (group.tabs.length < 2) {
+    return null;
+  }
+  const ids = group.tabs.map((tab) => tab.panelId);
+  const index = fromPanelId === null ? -1 : ids.indexOf(fromPanelId);
+  const targetIndex =
+    index === -1
+      ? offset === 1
+        ? 0
+        : ids.length - 1
+      : (index + offset + ids.length) % ids.length;
+  return { groupId: group.groupId, panelId: ids[targetIndex] };
+}
+
+function hasCyclableTabs(viewModel: PanelLayoutViewModel): boolean {
+  return cycleTabTarget(viewModel, 1) !== null;
+}
+
+/**
+ * Selects the tab `offset` steps away like a click on it would, through the
+ * mounted surface's selection handler when there is one.
+ */
+function selectCycledTab(
+  worktreeKey: string,
+  viewModel: PanelLayoutViewModel,
+  offset: 1 | -1,
+): void {
+  const target = cycleTabTarget(viewModel, offset);
+  if (target !== null) {
+    selectTabLikeClick(worktreeKey, target);
+  }
+}
+
+function selectTabLikeClick(
+  worktreeKey: string,
+  target: PanelTabLocation,
+): void {
+  const select = getPanelTabSelectionHandler(worktreeKey);
+  if (select) {
+    select(target.groupId, target.panelId);
+  } else {
+    store().selectTab(worktreeKey, target.groupId, target.panelId);
+  }
 }
 
 function activePanelIdOfActiveGroup(
@@ -250,15 +360,37 @@ export const PANEL_COMMANDS: readonly PanelCommand[] = [
       store().arrangeGroups(worktreeKey, 'even');
     },
   },
+  {
+    id: 'panel-select-next-tab',
+    isAvailable: hasCyclableTabs,
+    run: (worktreeKey: string, viewModel: PanelLayoutViewModel): void => {
+      selectCycledTab(worktreeKey, viewModel, 1);
+    },
+  },
+  {
+    id: 'panel-select-previous-tab',
+    isAvailable: hasCyclableTabs,
+    run: (worktreeKey: string, viewModel: PanelLayoutViewModel): void => {
+      selectCycledTab(worktreeKey, viewModel, -1);
+    },
+  },
 ];
 
 /**
  * Default keybindings, matched by `useGlobalShortcuts` after its standard
  * guards (no palette/settings overlay, no editable/Slate/terminal target,
- * main page + worktree selected). Chosen to avoid every existing Canopy
- * binding (⌘K/⇧K, ⌘P, ⌘,, ⌘⇧G, ⌘L/⇧L, ⌘S, ⌘1–9, ⌘T, ⌘N, ⌘W) and the
- * Electron menu roles; VS Code-flavored where the VS Code default is a
- * single chord this dispatcher can express (⌘\ split).
+ * main page + worktree selected). `editableSafe` bindings skip only the
+ * editable-target guard. Chosen to avoid every existing Canopy binding
+ * (⌘K/⇧K, ⌘P, ⌘,, ⌘⇧G, ⌘L/⇧L, ⌘S, ⌘1–9, ⌘T, ⌘N, ⌘W) and the Electron menu
+ * roles; VS Code-flavored where the VS Code default is a single chord this
+ * dispatcher can express (⌘\ split).
+ *
+ * Tab cycling (CAN-4616) follows the browser and VS Code tab conventions of
+ * each platform: ⌘⇧] / ⌘⇧[ on macOS, matched by physical key because Shift
+ * turns `]` into `}`; Ctrl+Tab / Ctrl+Shift+Tab elsewhere, with
+ * Ctrl+PageDown / Ctrl+PageUp as the alternate. ⌘⇧Tab is a macOS system
+ * chord, and Ctrl+Shift+] / Ctrl+Shift+[ are not a tab convention on Windows
+ * (Monaco folds with them there), so neither pair crosses platforms.
  */
 export const PANEL_SHORTCUT_BINDINGS: readonly PanelShortcutBinding[] = [
   { id: 'panel-split-right', key: '\\' },
@@ -273,7 +405,132 @@ export const PANEL_SHORTCUT_BINDINGS: readonly PanelShortcutBinding[] = [
   { id: 'panel-toggle-maximize', key: 'f', shift: true },
   { id: 'panel-close-group', key: 'w', shift: true },
   { id: 'panel-even-sizes', key: 'e', shift: true },
+  {
+    id: 'panel-select-next-tab',
+    key: ']',
+    code: 'BracketRight',
+    shift: true,
+    platform: 'mac',
+    editableSafe: true,
+  },
+  {
+    id: 'panel-select-previous-tab',
+    key: '[',
+    code: 'BracketLeft',
+    shift: true,
+    platform: 'mac',
+    editableSafe: true,
+  },
+  {
+    id: 'panel-select-next-tab',
+    key: 'Tab',
+    platform: 'other',
+    editableSafe: true,
+  },
+  {
+    id: 'panel-select-previous-tab',
+    key: 'Tab',
+    shift: true,
+    platform: 'other',
+    editableSafe: true,
+  },
+  {
+    id: 'panel-select-next-tab',
+    key: 'PageDown',
+    platform: 'other',
+    editableSafe: true,
+  },
+  {
+    id: 'panel-select-previous-tab',
+    key: 'PageUp',
+    platform: 'other',
+    editableSafe: true,
+  },
 ];
+
+/**
+ * Whether a keydown matches one panel binding on the current platform: the
+ * binding's platform scope, the physical key when it names a `code` (else
+ * the `key`), exactly its Shift and Alt modifiers, and the platform's
+ * primary modifier (Cmd on macOS, Ctrl elsewhere, never both).
+ */
+export function matchesPanelShortcutBinding(
+  event: ShortcutEventLike,
+  binding: PanelShortcutBinding,
+): boolean {
+  if (event.isComposing) {
+    return false;
+  }
+  const isMac = isMacPlatform();
+  if (
+    binding.platform !== undefined &&
+    binding.platform !== (isMac ? 'mac' : 'other')
+  ) {
+    return false;
+  }
+  if (binding.code === undefined) {
+    return isShortcutEvent(event, binding.key, {
+      shift: binding.shift,
+      alt: binding.alt,
+    });
+  }
+  return (
+    event.code === binding.code &&
+    event.altKey === (binding.alt === true) &&
+    event.shiftKey === (binding.shift === true) &&
+    (isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)
+  );
+}
+
+/**
+ * The editable-safe binding (CAN-4616 tab cycling) a keydown matches on the
+ * current platform, if any. Hosts and the terminal use it to let these
+ * chords through guards that keep other keys with a focused text field or
+ * shell.
+ */
+export function findEditableSafePanelShortcut(
+  event: ShortcutEventLike,
+): PanelShortcutBinding | undefined {
+  return PANEL_SHORTCUT_BINDINGS.find(
+    (binding) =>
+      binding.editableSafe === true &&
+      matchesPanelShortcutBinding(event, binding),
+  );
+}
+
+/**
+ * Selects the tab next to or before `from` in its group, wrapping at the
+ * ends, like a click on it. Unlike `panel-select-next-tab`, which cycles the
+ * active group, this starts from a known tab: a keypress in a native browser
+ * page reaches the host without the click into the page having made its
+ * group active. Returns false (no-op) when the layout, group, or tab is
+ * missing or the group has fewer than two tabs.
+ */
+export function selectAdjacentPanelTab(
+  worktreeKey: string,
+  from: PanelTabLocation,
+  direction: 'next' | 'previous',
+): boolean {
+  const group = getPanelLayoutViewModel(worktreeKey)?.groups.find(
+    (candidate) => candidate.groupId === from.groupId,
+  );
+  if (
+    group === undefined ||
+    !group.tabs.some((tab) => tab.panelId === from.panelId)
+  ) {
+    return false;
+  }
+  const target = cycleTabInGroup(
+    group,
+    from.panelId,
+    direction === 'next' ? 1 : -1,
+  );
+  if (target === null) {
+    return false;
+  }
+  selectTabLikeClick(worktreeKey, target);
+  return true;
+}
 
 /** Looks up one panel command by id. */
 export function getPanelCommand(id: PanelCommandId): PanelCommand | undefined {

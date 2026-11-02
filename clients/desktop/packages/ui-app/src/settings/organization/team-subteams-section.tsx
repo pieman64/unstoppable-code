@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type FormEvent, type JSX } from 'react';
 import { Pencil, Trash2, Users } from '@canopy/ui-shared/icons/AppIcons';
-import { DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
 import type {
   OrganizationDetail,
   OrganizationSubTeam,
@@ -18,6 +18,7 @@ import {
   renameSubTeam,
   setSubTeamMembership,
 } from './team-api';
+import { SETTINGS_GROUP_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
 
 /** Failures of creating or renaming a team that have their own copy. */
 const TEAM_NAME_KNOWN_ERRORS: readonly KnownSettingsError[] = [
@@ -154,35 +155,32 @@ export function TeamSubTeamsSection({
             data-testid="team-subteam-name-input"
             className="flex-1 rounded-md border bg-card px-3 py-2 text-s fg-primary"
           />
-          <button
+          <Button
             type="submit"
+            variant="secondary"
+            size="compact"
             disabled={submitting || !newName.trim()}
-            className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? 'Creating…' : 'Create'}
-          </button>
-          <button
-            type="button"
-            onClick={closeCreateForm}
-            className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-          >
+          </Button>
+          <Button variant="secondary" size="compact" onClick={closeCreateForm}>
             Cancel
-          </button>
+          </Button>
         </form>
       )}
 
       <div>
         {detail.subTeams.length === 0 ? (
-          <p className="rounded-xl bg-card px-4 py-3 text-s fg-secondary shadow-sm">
-            No teams yet.
-          </p>
+          <div className={SETTINGS_GROUP_CLASS}>
+            <p className="text-s fg-secondary">No teams yet.</p>
+          </div>
         ) : (
-          <ul className="divide-y rounded-xl bg-card shadow-sm">
+          <ul className={SETTINGS_GROUP_CLASS}>
             {detail.subTeams.map((team) => (
               <li
                 key={team.id}
                 data-testid="team-subteam-row"
-                className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+                className="flex flex-wrap items-center justify-between gap-3"
               >
                 <div className="min-w-0">
                   <p className="truncate text-s font-medium fg-primary">
@@ -195,38 +193,40 @@ export function TeamSubTeamsSection({
                 </div>
                 {manage && (
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="compact"
                       onClick={() => setEditingMembership(team)}
                       data-testid="team-subteam-members"
-                      className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium fg-primary transition-colors hover:bg-secondary"
                     >
                       <Users size={13} />
                       Members
-                    </button>
+                    </Button>
                     {/* Rename and delete are gated server-side; membership
                         editing above is not, because removal is a deliberate
                         wind-down exemption. */}
                     {manageStructure && (
                       <>
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="compact"
+                          iconOnly
                           onClick={() => setRenaming(team)}
                           aria-label={`Rename ${team.name}`}
-                          className="rounded-md border p-1.5 fg-primary transition-colors hover:bg-secondary"
                         >
                           <Pencil size={13} />
-                        </button>
-                        <button
-                          type="button"
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="compact"
+                          iconOnly
                           onClick={() => void handleDelete(team)}
                           disabled={busyTeamId === team.id}
                           aria-label={`Delete ${team.name}`}
                           data-testid="team-subteam-delete"
-                          className="rounded-md border p-1.5 fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <Trash2 size={13} />
-                        </button>
+                        </Button>
                       </>
                     )}
                   </div>
@@ -334,20 +334,17 @@ function RenameSubTeamDialog({
           />
         </label>
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-          >
+          <Button variant="secondary" size="compact" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
+            variant="primary"
+            size="compact"
             disabled={submitting || !name.trim()}
-            className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </div>
       </form>
     </DialogModal>
@@ -465,22 +462,18 @@ function SubTeamMembershipDialog({
           ))}
         </ul>
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-          >
+          <Button variant="secondary" size="compact" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
             onClick={() => void handleSave()}
             disabled={submitting}
             data-testid="subteam-membership-save"
-            className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? 'Saving…' : 'Save'}
-          </button>
+          </Button>
         </div>
       </div>
     </DialogModal>

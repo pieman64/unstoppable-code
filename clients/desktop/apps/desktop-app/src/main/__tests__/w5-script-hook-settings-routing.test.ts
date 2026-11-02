@@ -100,6 +100,7 @@ function pauseCommand(
 
 function portalContext(failures: string[]): PortalAdapterContext {
   return {
+    getWindow: () => null,
     enqueueEvent: jest.fn(),
     complete: jest.fn(),
     fail: (_command, code, message): void => {

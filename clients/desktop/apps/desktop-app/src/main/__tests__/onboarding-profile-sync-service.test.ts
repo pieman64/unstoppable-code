@@ -8,13 +8,19 @@ let accountListener: ((account: unknown) => void) | null = null;
 const mockUnsubscribe = jest.fn();
 
 jest.mock('../canopy-cloud/client', () => ({
-  requestCanopyCloudJson: mockRequestCanopyCloudJson,
+  get requestCanopyCloudJson(): typeof mockRequestCanopyCloudJson {
+    return mockRequestCanopyCloudJson;
+  },
 }));
 jest.mock('../plugins/plugin-service', () => ({
-  syncCuratedPluginsForRefresh: mockSyncCuratedPluginsForRefresh,
+  get syncCuratedPluginsForRefresh(): typeof mockSyncCuratedPluginsForRefresh {
+    return mockSyncCuratedPluginsForRefresh;
+  },
 }));
 jest.mock('../lib/canopy-cloud-account-store', () => ({
-  loadCanopyCloudAccount: mockLoadCanopyCloudAccount,
+  get loadCanopyCloudAccount(): typeof mockLoadCanopyCloudAccount {
+    return mockLoadCanopyCloudAccount;
+  },
   subscribeCanopyCloudAccountChanges: jest.fn(
     (listener: (account: unknown) => void): (() => void) => {
       accountListener = listener;
@@ -23,7 +29,9 @@ jest.mock('../lib/canopy-cloud-account-store', () => ({
   ),
 }));
 jest.mock('../lib/preferences-store', () => ({
-  readPreferencesFile: mockReadPreferencesFile,
+  get readPreferencesFile(): typeof mockReadPreferencesFile {
+    return mockReadPreferencesFile;
+  },
 }));
 
 import { DEFAULT_PREFERENCES } from '../lib/preferences-store';

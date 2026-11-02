@@ -25,14 +25,7 @@ import {
   resetActivationJourneyStateForTests,
   unlatchCampaignDeliveryFailure,
 } from '../notifications/campaigns/journey-state';
-import {
-  CAMPAIGN_SUPPRESSION_REASONS,
-  ONBOARDING_CHECKLIST_ITEM_IDS,
-} from '@canopy/desktop-shared/types';
-import type {
-  OnboardingChecklistItemId,
-  OnboardingChecklistState,
-} from '@canopy/desktop-shared/types';
+import { CAMPAIGN_SUPPRESSION_REASONS } from '@canopy/desktop-shared/types';
 import {
   EVENT_DRIVEN_SUPPRESSION_REASONS,
   TRANSIENT_SUPPRESSION_REASONS,
@@ -48,29 +41,8 @@ import type {
 } from '../notifications/campaigns/scheduler';
 
 const FIRST_OPEN = '2026-01-01T00:00:00.000Z';
-// Stamped well before first open so the finished sequence neutralizes itself
-// without occupying the shared daily cap the campaigns now honor too.
-const FINISHED_SEQUENCE_STEPS = Object.fromEntries(
-  ONBOARDING_CHECKLIST_ITEM_IDS.map((id) => [
-    id,
-    { sentAt: '2025-12-01T00:00:00.000Z' },
-  ]),
-);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function checklistState(
-  complete: readonly OnboardingChecklistItemId[] = [],
-): OnboardingChecklistState {
-  return {
-    items: ONBOARDING_CHECKLIST_ITEM_IDS.map((id) => ({
-      id,
-      complete: complete.includes(id),
-    })),
-    dismissedAt: null,
-    snoozedUntil: null,
-    providersNotUsed: [],
-  };
-}
 const LAST_ACTIVE = '2026-01-01T09:00:00.000Z';
 
 function persistedState(overrides: Record<string, unknown> = {}): string {
@@ -86,7 +58,7 @@ function persistedState(overrides: Record<string, unknown> = {}): string {
     signals: {},
     // Every step already sent, so the Getting Started sequence (CAN-3013)
     // reports `finished` and stays out of the way of the campaign tests.
-    gettingStarted: { steps: FINISHED_SEQUENCE_STEPS },
+    gettingStarted: { steps: {} },
     ...overrides,
   });
 }
@@ -111,10 +83,8 @@ function deps(
         enabled: true,
         skipWhenFocused: true,
         activationCategoryEnabled: true,
-        gettingStartedCategoryEnabled: true,
         quietHours: { enabled: false, startHour: 22, endHour: 8 },
       }),
-    readChecklistState: () => Promise.resolve(checklistState()),
     isAppFocused: () => false,
     hasActivated: () => Promise.resolve(false),
     isCampaignEligible: () => Promise.resolve(true),
@@ -183,7 +153,6 @@ describe('transient suppression retries', () => {
           enabled: true,
           skipWhenFocused: true,
           activationCategoryEnabled: true,
-          gettingStartedCategoryEnabled: true,
           quietHours: quiet
             ? { enabled: true, startHour: 0, endHour: 23 }
             : { enabled: false, startHour: 22, endHour: 8 },
@@ -210,7 +179,6 @@ describe('transient suppression retries', () => {
           enabled,
           skipWhenFocused: true,
           activationCategoryEnabled: true,
-          gettingStartedCategoryEnabled: true,
           quietHours: { enabled: false, startHour: 22, endHour: 8 },
         }),
     });
@@ -237,7 +205,6 @@ describe('transient suppression retries', () => {
         enabled: true,
         skipWhenFocused: true,
         activationCategoryEnabled: true,
-        gettingStartedCategoryEnabled: true,
         quietHours: { enabled: false, startHour: 22, endHour: 8 },
       }),
     );
@@ -391,7 +358,6 @@ describe('recomputeActivationSchedule', () => {
             enabled: false,
             skipWhenFocused: true,
             activationCategoryEnabled: true,
-            gettingStartedCategoryEnabled: true,
             quietHours: { enabled: false, startHour: 22, endHour: 8 },
           }),
       }),
@@ -424,7 +390,6 @@ describe('recomputeActivationSchedule', () => {
             enabled: false,
             skipWhenFocused: true,
             activationCategoryEnabled: true,
-            gettingStartedCategoryEnabled: true,
             quietHours: { enabled: false, startHour: 22, endHour: 8 },
           }),
     };
@@ -546,10 +511,10 @@ describe('OS refuses to present the notification', () => {
   // because the fake `showNotification` never invoked the failure path.
   it('unwinds the send latch so the campaign is retried', async () => {
     jest.setSystemTime(Date.parse('2026-01-01T08:00:01.000Z'));
-    let fail: (() => void) | null = null;
+    const failures: (() => void)[] = [];
     const d = deps({
       showNotification: (_request, onFailed): void => {
-        fail = (): void => onFailed(new Error('UNErrorDomain error 1'));
+        failures.push((): void => onFailed(new Error('UNErrorDomain error 1')));
       },
     });
 
@@ -560,8 +525,8 @@ describe('OS refuses to present the notification', () => {
         ?.sentAt,
     ).toBeDefined();
 
-    expect(fail).not.toBeNull();
-    fail?.();
+    expect(failures).toHaveLength(1);
+    failures[0]?.();
     await drainActivationJourneyWrites();
 
     const record = (await readActivationJourneyState()).campaigns[
@@ -593,17 +558,18 @@ describe('OS refuses to present the notification', () => {
         },
       }),
     );
-    let fail: (() => void) | null = null;
+    const failures: (() => void)[] = [];
     const sends: string[] = [];
     const d = deps({
       showNotification: (request, onFailed): void => {
         sends.push(request.id);
-        fail = (): void => onFailed(new Error('UNErrorDomain error 1'));
+        failures.push((): void => onFailed(new Error('UNErrorDomain error 1')));
       },
     });
 
     await recomputeActivationSchedule(d, { event: true });
-    fail?.();
+    expect(failures).toHaveLength(1);
+    failures[0]?.();
     await drainActivationJourneyWrites();
     expect(sends).toHaveLength(1);
 
@@ -627,14 +593,15 @@ describe('OS refuses to present the notification', () => {
 
   it('redelivers on the next evaluation', async () => {
     jest.setSystemTime(Date.parse('2026-01-01T08:00:01.000Z'));
-    let fail: (() => void) | null = null;
+    const failures: (() => void)[] = [];
     const failing = deps({
       showNotification: (_request, onFailed): void => {
-        fail = (): void => onFailed(new Error('UNErrorDomain error 1'));
+        failures.push((): void => onFailed(new Error('UNErrorDomain error 1')));
       },
     });
     await recomputeActivationSchedule(failing);
-    fail?.();
+    expect(failures).toHaveLength(1);
+    failures[0]?.();
     await drainActivationJourneyWrites();
 
     // A later EVENT -- next launch, or a preference change -- retries once a
@@ -667,12 +634,6 @@ describe('OS refuses to present the notification', () => {
 });
 
 describe('suppression reason classification', () => {
-  it('re-checks a dismissed checklist on an event, never on a timer', () => {
-    expect(EVENT_DRIVEN_SUPPRESSION_REASONS.has('checklist-dismissed')).toBe(
-      true,
-    );
-  });
-
   it('classifies every reason exactly once', () => {
     // Nothing enforces this at compile time, and an unclassified reason
     // silently defaults to terminal -- which retires a campaign for good.
@@ -704,219 +665,5 @@ describe('suppression reason classification', () => {
         'variant-unavailable',
       ].sort(),
     );
-  });
-});
-
-describe('getting started sequence (CAN-3013)', () => {
-  // Campaigns all sent long ago, so only the sequence is live in these tests.
-  const SENT_CAMPAIGNS = {
-    'activation-first-task': { sentAt: '2025-12-01T00:00:00.000Z' },
-    'activation-role-branch': { sentAt: '2025-12-01T00:00:00.000Z' },
-    'activation-marketplace': { sentAt: '2025-12-01T00:00:00.000Z' },
-    'activation-mobile': { sentAt: '2025-12-01T00:00:00.000Z' },
-  };
-
-  function sequenceState(steps: Record<string, unknown> = {}): string {
-    return persistedState({
-      campaigns: SENT_CAMPAIGNS,
-      gettingStarted: { steps },
-    });
-  }
-
-  it('sends one step per day in checklist order, never twice in 24 hours', async () => {
-    mockReadFile.mockResolvedValue(sequenceState());
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + DAY_MS));
-
-    await recomputeActivationSchedule(deps());
-    expect(showNotification).toHaveBeenCalledTimes(1);
-    expect(showNotification.mock.calls[0][0]).toMatchObject({
-      id: 'activation-campaign:getting-started-sequence:create-account',
-      title: 'Create an account',
-    });
-
-    // An hour later nothing else may send, however many times we evaluate.
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + DAY_MS + 3_600_000));
-    await recomputeActivationSchedule(deps());
-    await recomputeActivationSchedule(deps());
-    expect(showNotification).toHaveBeenCalledTimes(1);
-
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + 2 * DAY_MS));
-    await recomputeActivationSchedule(deps());
-    expect(showNotification).toHaveBeenCalledTimes(2);
-    expect(showNotification.mock.calls[1][0]).toMatchObject({
-      id: 'activation-campaign:getting-started-sequence:start-chat',
-    });
-  });
-
-  it('reports campaign and item ids so each step is measurable', async () => {
-    mockReadFile.mockResolvedValue(sequenceState());
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + DAY_MS));
-
-    await recomputeActivationSchedule(
-      deps({
-        readChecklistState: () =>
-          Promise.resolve(checklistState(['create-account'])),
-      }),
-    );
-
-    expect(recordOutcome).toHaveBeenCalledWith({
-      campaignId: 'getting-started-sequence',
-      itemId: 'create-account',
-      outcome: 'suppressed',
-      reason: 'not-eligible',
-    });
-    expect(recordOutcome).toHaveBeenCalledWith({
-      campaignId: 'getting-started-sequence',
-      itemId: 'start-chat',
-      outcome: 'delivered',
-      destination: 'home',
-      variant: 'start-chat',
-    });
-  });
-
-  it('honors the getting started toggle before the next send', async () => {
-    mockReadFile.mockResolvedValue(sequenceState());
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + DAY_MS));
-
-    await recomputeActivationSchedule(
-      deps({
-        readNotificationPreferences: () =>
-          Promise.resolve({
-            enabled: true,
-            skipWhenFocused: true,
-            activationCategoryEnabled: true,
-            gettingStartedCategoryEnabled: false,
-            quietHours: { enabled: false, startHour: 22, endHour: 8 },
-          }),
-      }),
-    );
-
-    expect(showNotification).not.toHaveBeenCalled();
-    expect(recordOutcome).toHaveBeenCalledWith({
-      campaignId: 'getting-started-sequence',
-      outcome: 'suppressed',
-      reason: 'category-disabled',
-    });
-  });
-
-  it('holds a step the OS refused to present until an event, not the timer', async () => {
-    mockReadFile.mockResolvedValue(sequenceState());
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + DAY_MS));
-
-    await recomputeActivationSchedule(deps());
-    const [, onFailed] = showNotification.mock.calls[0];
-    onFailed(new Error('denied'));
-    await drainActivationJourneyWrites();
-
-    const state = await readActivationJourneyState();
-    expect(state.gettingStarted?.steps['create-account']).toMatchObject({
-      suppressedReason: 'delivery-failed',
-    });
-    expect(
-      state.gettingStarted?.steps['create-account']?.sentAt,
-    ).toBeUndefined();
-
-    // A denied OS does not change on a timer. The daily heartbeat must not
-    // re-present the same banner every day for two weeks; nor may it move on
-    // to the next step, which would just fail the same way.
-    await jest.advanceTimersByTimeAsync(3 * DAY_MS);
-    expect(showNotification).toHaveBeenCalledTimes(1);
-    expect(jest.getTimerCount()).toBe(0);
-
-    // The revivals that exist for campaigns apply here too: an event-driven
-    // recompute (next launch, preference change) retries the same step, once
-    // a day has passed since the refusal. The 3-day advance above covers it.
-    await recomputeActivationSchedule(deps(), { event: true });
-    expect(showNotification).toHaveBeenCalledTimes(2);
-    expect(showNotification.mock.calls[1][0]).toMatchObject({
-      id: 'activation-campaign:getting-started-sequence:create-account',
-    });
-  });
-
-  it('holds a campaign that becomes due after a step sent today', async () => {
-    // The cap must be mutual. A campaign held by a transient reason when
-    // the step sent, and unblocking later the same day, must wait for the
-    // step's 24 hours rather than landing a second banner.
-    const stepSentAt = Date.parse(FIRST_OPEN) + DAY_MS;
-    mockReadFile.mockResolvedValue(
-      persistedState({
-        // Marketplace is due at first-open + 8h; long past, inside its 48h
-        // lateness bound at +25h.
-        campaigns: {
-          'activation-first-task': { sentAt: '2025-12-01T00:00:00.000Z' },
-          'activation-role-branch': { sentAt: '2025-12-01T00:00:00.000Z' },
-          'activation-mobile': { sentAt: '2025-12-01T00:00:00.000Z' },
-        },
-        gettingStarted: {
-          steps: {
-            'create-account': { sentAt: new Date(stepSentAt).toISOString() },
-          },
-        },
-      }),
-    );
-    jest.setSystemTime(new Date(stepSentAt + 3_600_000));
-
-    await recomputeActivationSchedule(deps());
-
-    expect(showNotification).not.toHaveBeenCalled();
-    // A cap hold is a pre-start state like `not-yet-due`: no record, no
-    // funnel event, just an exact retry when the cap lifts.
-    expect(recordOutcome).not.toHaveBeenCalled();
-    expect(
-      (await readActivationJourneyState()).campaigns['activation-marketplace'],
-    ).toBeUndefined();
-    // The cap lifts on its own, so the scheduler armed an exact retry for
-    // that instant rather than the generic five-minute poll.
-    expect(jest.getTimerCount()).toBe(1);
-    await jest.advanceTimersByTimeAsync(DAY_MS - 3_600_000);
-    expect(showNotification).toHaveBeenCalledTimes(1);
-    expect(showNotification.mock.calls[0][0]).toMatchObject({
-      id: 'activation-campaign:activation-marketplace:default',
-    });
-  });
-
-  it('sends only one of two campaigns due in the same pass', async () => {
-    // The cap must hold within a single evaluation too: the scheduler reads
-    // state once per pass, so a send earlier in the loop has to be visible
-    // to the next campaign's gate without a re-read.
-    mockReadFile.mockResolvedValue(
-      persistedState({
-        // Marketplace (first-open + 8h) and mobile (first-open + 24h) are
-        // both due at +25h; the abandonment campaigns are out of the way.
-        campaigns: {
-          'activation-first-task': { sentAt: '2025-12-01T00:00:00.000Z' },
-          'activation-role-branch': { sentAt: '2025-12-01T00:00:00.000Z' },
-        },
-      }),
-    );
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + 25 * 3_600_000));
-
-    await recomputeActivationSchedule(deps());
-
-    expect(showNotification).toHaveBeenCalledTimes(1);
-    expect(showNotification.mock.calls[0][0]).toMatchObject({
-      id: 'activation-campaign:activation-marketplace:default',
-    });
-    // The second one waits for the cap, then sends.
-    await jest.advanceTimersByTimeAsync(DAY_MS);
-    expect(showNotification).toHaveBeenCalledTimes(2);
-    expect(showNotification.mock.calls[1][0]).toMatchObject({
-      id: 'activation-campaign:activation-mobile:default',
-    });
-  });
-
-  it('stops once the checklist is complete', async () => {
-    mockReadFile.mockResolvedValue(sequenceState());
-    jest.setSystemTime(new Date(Date.parse(FIRST_OPEN) + DAY_MS));
-
-    await recomputeActivationSchedule(
-      deps({
-        readChecklistState: () =>
-          Promise.resolve(checklistState([...ONBOARDING_CHECKLIST_ITEM_IDS])),
-      }),
-    );
-
-    expect(showNotification).not.toHaveBeenCalled();
-    expect(jest.getTimerCount()).toBe(0);
   });
 });

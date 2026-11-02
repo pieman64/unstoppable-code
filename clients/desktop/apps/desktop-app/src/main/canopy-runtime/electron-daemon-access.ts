@@ -7,12 +7,14 @@ import {
 import {
   createElectronDaemonConnectionService,
   type ElectronDaemonConnectionService,
+  type ElectronDaemonSession,
 } from './electron-daemon-connection';
 import {
   createElectronDaemonHost,
   ELECTRON_DAEMON_DEFINITIONS,
   type ElectronDaemonClient,
 } from './electron-daemon-host';
+import type { WorkspaceCommitEventBinding } from './workspace-commit-events';
 
 type ElectronDaemonHost = Awaited<ReturnType<typeof createElectronDaemonHost>>;
 
@@ -22,6 +24,33 @@ let connections:
 let host: Promise<ElectronDaemonHost> | undefined;
 let lifetime: ElectronDaemonCallerLifetime | undefined;
 let stopped = false;
+// W5e: every client instance id this process ever leased, so its subscriber
+// skips the commit events of its own commits (a session may end first).
+const ownClientInstances = new Set<string>();
+let workspaceCommitEvents: Promise<WorkspaceCommitEventBinding> | undefined;
+
+/** Loaded with the first session; observing never opens a connection. */
+function observeWorkspaceCommits(
+  session: ElectronDaemonSession<ElectronDaemonClient>,
+  clientInstanceId: string,
+): void {
+  ownClientInstances.add(clientInstanceId);
+  if (stopped) return;
+  const pending = (workspaceCommitEvents ??= Promise.all([
+    import('./workspace-commit-events'),
+    import('./workspace-commit-event-handlers'),
+  ]).then(([events, handlers]) =>
+    events.createWorkspaceCommitEventBinding({
+      handlers: handlers.createDesktopWorkspaceCommitEventHandlers(),
+      isOwnOrigin: (id) => ownClientInstances.has(id),
+    }),
+  ));
+  void pending
+    .then((binding) => {
+      if (!stopped) binding.observe(session);
+    })
+    .catch(() => undefined);
+}
 
 // One trusted host per process; a failed setup is retried on the next use.
 function getHost(): Promise<ElectronDaemonHost> {
@@ -56,6 +85,8 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
       });
       return result.value;
     },
+    onSession: (session, caller) =>
+      observeWorkspaceCommits(session, caller.clientInstanceId),
   });
   return connections;
 }
@@ -89,5 +120,8 @@ export function getElectronDaemonCallerLifetime(): ElectronDaemonCallerLifetime 
 export async function disposeElectronDaemonConnections(): Promise<void> {
   stopped = true;
   lifetime?.disposeAll();
+  await workspaceCommitEvents
+    ?.then((binding) => binding.close())
+    .catch(() => undefined);
   await connections?.dispose();
 }

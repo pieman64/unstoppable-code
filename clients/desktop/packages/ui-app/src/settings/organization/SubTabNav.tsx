@@ -9,7 +9,7 @@ import { ScrollableTabStrip } from './ScrollableTabStrip';
  * silently orphan an automation selector. Adding a third consumer is a
  * deliberate edit here rather than an arbitrary new string at the call site.
  */
-type SubTabNavTestIdPrefix = 'usage-metric' | 'team-settings' | 'memory-views';
+type SubTabNavTestIdPrefix = 'usage-metric' | 'memory-views';
 
 interface SubTabNavProps<TKey extends string> {
   tabs: ReadonlyArray<{
@@ -109,6 +109,7 @@ export function SubTabNav<TKey extends string>({
             <button
               key={tab.key}
               type="button"
+              data-settings-control="chip"
               onClick={() => onSelect(tab.key)}
               data-testid={`${testIdPrefix}-tab-${tab.key}`}
               aria-pressed={isActive}

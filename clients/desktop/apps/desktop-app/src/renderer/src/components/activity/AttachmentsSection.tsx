@@ -13,6 +13,11 @@ import {
   type JSX,
 } from 'react';
 import type { WorkspaceAttachmentItem } from '@canopy/desktop-shared/types';
+import { GuestFilesState } from '@canopy/ui-app/guest-files';
+import {
+  useDesktopFilesGuestGate,
+  type DesktopFilesGuestGate,
+} from '@/hooks/useDesktopFilesGuestGate';
 import { HeaderActionButton } from '@canopy/ui-shared/components';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import {
@@ -107,7 +112,7 @@ function AttachmentRow({
 
   return (
     <div
-      className="group relative rounded border bg-fg-primary/[0.02] transition hover:border-fg-primary/10"
+      className="group relative rounded border bg-fg-primary/[0.02] transition-colors hover:border-fg-primary/10"
       data-testid="workspace-attachments-item"
       onMouseEnter={(event): void =>
         onMouseEnter(attachment.absolutePath, event.currentTarget)
@@ -163,15 +168,21 @@ export function useAttachmentsHeaderChrome({
   projectId,
   worktreeId,
 }: ActivitySectionRenderProps): {
+  hasContent: boolean;
   subtitle: string | undefined;
   collapsedIconColor: CollapsedIconColor;
 } {
+  const { status } = useDesktopFilesGuestGate();
   const count = useWorkspaceItemsStore(
     (state) => state.attachments[`${projectId}/${worktreeId}`]?.length ?? 0,
   );
   return {
-    subtitle: count > 0 ? `${count} file${count !== 1 ? 's' : ''}` : undefined,
-    collapsedIconColor: count > 0 ? 'amber' : 'muted',
+    hasContent: status === 'signed-in' && count > 0,
+    subtitle:
+      status === 'signed-in' && count > 0
+        ? `${count} file${count !== 1 ? 's' : ''}`
+        : undefined,
+    collapsedIconColor: status === 'signed-in' && count > 0 ? 'amber' : 'muted',
   };
 }
 
@@ -179,6 +190,68 @@ export function AttachmentsSection({
   projectId,
   worktreeId,
 }: ActivitySectionRenderProps): JSX.Element {
+  const gate = useDesktopFilesGuestGate(`${projectId}/${worktreeId}`);
+  const readOnly = useWorkspaceIsReadOnly();
+  if (gate.status === 'signed-in') {
+    return (
+      <AuthenticatedAttachmentsSection
+        projectId={projectId}
+        worktreeId={worktreeId}
+        gate={gate}
+      />
+    );
+  }
+  const handleDrop = (event: DragEvent<HTMLElement>): void => {
+    if (!dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    gate.interceptAttachment();
+  };
+  const preventFileNavigation = (event: DragEvent<HTMLElement>): void => {
+    if (!dataTransferHasFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  return (
+    <PanelSection
+      icon={<AttachmentIcon />}
+      title="Attachments"
+      collapsedIconColor="muted"
+      hasExpandableContent={gate.status === 'guest'}
+      headerAction={
+        readOnly ? undefined : (
+          <HeaderActionButton
+            iconOnly
+            aria-label="Import attachments"
+            data-testid="workspace-attachments-import"
+            onClick={gate.onSignIn}
+          >
+            <PlusIcon />
+          </HeaderActionButton>
+        )
+      }
+      framelessBody="flex"
+    >
+      <div
+        data-testid="workspace-attachments-dropzone"
+        onDrop={handleDrop}
+        onDragOver={preventFileNavigation}
+      >
+        {gate.status === 'guest' ? (
+          <GuestFilesState onSignIn={gate.onSignIn} />
+        ) : null}
+      </div>
+    </PanelSection>
+  );
+}
+
+function AuthenticatedAttachmentsSection({
+  projectId,
+  worktreeId,
+  gate,
+}: ActivitySectionRenderProps & {
+  readonly gate: DesktopFilesGuestGate;
+}): JSX.Element {
   // Read-only scopes (the shared-container recipient) list the published
   // attachments without import, drop, mention, reveal or delete.
   const readOnly = useWorkspaceIsReadOnly();
@@ -187,7 +260,11 @@ export function AttachmentsSection({
   const attachments = useWorkspaceItemsStore(
     (s) => s.attachments[key] ?? EMPTY_ATTACHMENTS,
   );
-  const headerChrome = useAttachmentsHeaderChrome({ projectId, worktreeId });
+  const count = attachments.length;
+  const headerChrome = {
+    subtitle: count > 0 ? `${count} file${count !== 1 ? 's' : ''}` : undefined,
+    collapsedIconColor: count > 0 ? ('amber' as const) : ('muted' as const),
+  };
   const addToast = useGitHubStore((state) => state.addToast);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const fileDragDepthRef = useRef(0);
@@ -206,8 +283,8 @@ export function AttachmentsSection({
   useEffect(() => {
     void useWorkspaceItemsStore
       .getState()
-      .loadAttachments(projectId, worktreeId);
-  }, [projectId, worktreeId]);
+      .loadAttachments(projectId, worktreeId, gate.captureAccess());
+  }, [projectId, worktreeId, gate]);
 
   const reportAttachmentImportFailure = useCallback((): void => {
     addToast(ATTACHMENT_IMPORT_ERROR_MESSAGE, 'error', undefined, {
@@ -216,24 +293,36 @@ export function AttachmentsSection({
   }, [addToast]);
 
   const handleImport = useCallback((): void => {
+    if (gate.interceptAttachment() || readOnly) return;
+    const isCurrent = gate.captureAccess();
     // Empty filePaths → the main process opens the file picker dialog.
     void useWorkspaceItemsStore
       .getState()
-      .importAttachments({
-        projectId,
-        worktreeId,
-        filePaths: [],
-      })
-      .catch(reportAttachmentImportFailure);
-  }, [projectId, reportAttachmentImportFailure, worktreeId]);
+      .importAttachments(
+        {
+          projectId,
+          worktreeId,
+          filePaths: [],
+        },
+        isCurrent,
+      )
+      .catch((): void => {
+        if (isCurrent()) reportAttachmentImportFailure();
+      });
+  }, [gate, readOnly, projectId, reportAttachmentImportFailure, worktreeId]);
 
   const handleDelete = useCallback(
     async (filename: string): Promise<void> => {
       await useWorkspaceItemsStore
         .getState()
-        .deleteAttachment(projectId, worktreeId, filename);
+        .deleteAttachment(
+          projectId,
+          worktreeId,
+          filename,
+          gate.captureAccess(),
+        );
     },
-    [projectId, worktreeId],
+    [projectId, worktreeId, gate],
   );
 
   const handleFileDragEnter = useCallback(
@@ -278,6 +367,8 @@ export function AttachmentsSection({
       fileDragDepthRef.current = 0;
       setIsDraggingFiles(false);
 
+      if (gate.interceptAttachment() || readOnly) return;
+      const isCurrent = gate.captureAccess();
       const files = Array.from(event.dataTransfer.files);
       if (files.length === 0) return;
 
@@ -301,23 +392,31 @@ export function AttachmentsSection({
       const importDroppedFiles = (
         clipboardItems: Awaited<ReturnType<typeof createClipboardAttachments>>,
       ): Promise<WorkspaceAttachmentItem[]> => {
-        return useWorkspaceItemsStore.getState().importAttachments({
-          projectId,
-          worktreeId,
-          filePaths,
-          ...(clipboardItems.length > 0 ? { clipboardItems } : {}),
-        });
+        if (!isCurrent()) return Promise.resolve([]);
+        return useWorkspaceItemsStore.getState().importAttachments(
+          {
+            projectId,
+            worktreeId,
+            filePaths,
+            ...(clipboardItems.length > 0 ? { clipboardItems } : {}),
+          },
+          isCurrent,
+        );
       };
 
       if (blobFiles.length === 0) {
-        void importDroppedFiles([]).catch(reportAttachmentImportFailure);
+        void importDroppedFiles([]).catch((): void => {
+          if (isCurrent()) reportAttachmentImportFailure();
+        });
         return;
       }
       void createClipboardAttachments(blobFiles, 'dropped-file')
         .then(importDroppedFiles)
-        .catch(reportAttachmentImportFailure);
+        .catch((): void => {
+          if (isCurrent()) reportAttachmentImportFailure();
+        });
     },
-    [projectId, reportAttachmentImportFailure, worktreeId],
+    [gate, readOnly, projectId, reportAttachmentImportFailure, worktreeId],
   );
 
   return (

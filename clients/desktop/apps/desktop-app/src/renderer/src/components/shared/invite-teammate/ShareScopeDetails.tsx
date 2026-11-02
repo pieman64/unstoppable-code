@@ -4,6 +4,7 @@ import type { SharedContainerType } from '@canopy/protocol/shared-containers';
 import { CHAT_LABEL } from '@canopy/protocol';
 import { getScriptDisplayName } from '@canopy/desktop-shared/scripts';
 import { AdvancedDisclosure } from '@canopy/ui-shared/components';
+import { formatCapabilityPackageShareNote } from '@canopy/ui-shared/sharing';
 import { brandText } from '@/lib/brand';
 import { containerNoun, snapshotRepositoryDisclosure } from './shareCopy';
 import {
@@ -97,6 +98,9 @@ export function ShareScopeDetails({
     snapshotRepositoryCount,
     snapshotRepositoryNames,
   );
+  const capabilityNote = preview.capabilityPackageCounts
+    ? formatCapabilityPackageShareNote(preview.capabilityPackageCounts)
+    : null;
   const includedFileSet = new Set(includedFilePaths);
   const approvedExcludedFileSet = new Set(approvedExcludedPaths ?? []);
   const budgetCappedFileSet = new Set(
@@ -155,6 +159,19 @@ export function ShareScopeDetails({
               <li>{`Repository ${preview.repository.remoteUrl} at ${preview.repository.baseCommitSha.slice(0, 7)}`}</li>
             )}
       </ul>
+
+      {/*
+        Capabilities used here are bundled automatically; there is nothing to
+        choose. Absent while analysis is cold or the package would be empty.
+      */}
+      {capabilityNote !== null && (
+        <p
+          className="text-xs fg-secondary"
+          data-testid="shared-container-invite-modal-capabilities"
+        >
+          {capabilityNote}
+        </p>
+      )}
 
       {/*
         Withholding is Canopy working correctly - automatic suppression of

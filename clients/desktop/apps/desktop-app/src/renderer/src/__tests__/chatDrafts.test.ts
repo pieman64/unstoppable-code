@@ -16,6 +16,8 @@ function makeChatTab(id: string): ChatTab {
     queuedMessages: [],
     planMode: false,
     thinkingLevel: 'high',
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
+    fastModeExplicit: false,
     proposalMode: 'optional',
   };
 }

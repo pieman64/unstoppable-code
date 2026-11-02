@@ -70,6 +70,7 @@ import {
   createCliStdioMcpServerConfig,
   getCliCodexTurnTimeoutOptions,
 } from '../cli-runtime';
+import { emptySendAgentMessageOutputs } from '../../../pipelines/host-send-agent-message';
 import { runStep } from '../executor/step-runner';
 import type { NormalizedStep } from '../executor/types';
 import { createCodexCapabilitySnapshotId } from '../../codex-runtime';
@@ -155,6 +156,134 @@ describe('CLI host steps', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('fails the bundled send-agent-message step with needs_desktop and every output', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-host-step-'));
+    try {
+      const runtime = createCliExecutionRuntime({
+        cwd: tempDir,
+        executionsDir: path.join(tempDir, 'executions'),
+        bundledActionsDir: path.resolve(
+          __dirname,
+          '../../../../resources/actions',
+        ),
+      });
+      const result = await runStep({
+        executionId: 'exec-cli',
+        jobId: 'build',
+        step: {
+          id: 'send',
+          shell: 'bash',
+          continue_on_error: false,
+          timeout_minutes: 1,
+          skip_on_missing_action: false,
+          uses: 'builtin/send-agent-message',
+          with: { project_id: 'ws-1', task_id: 'wt-1', text: 'hi' },
+        },
+        cwd: tempDir,
+        env: {},
+        runtime,
+        signal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe('failure');
+      expect(result.error).toBe('This step needs the desktop app.');
+      expect(result.outputs).toEqual({
+        ...emptySendAgentMessageOutputs(),
+        failure_reason: 'needs_desktop',
+      });
+      expect(result.chat_send).toBeUndefined();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the bundled wait-for-agent-reply step with needs_desktop', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-host-step-'));
+    try {
+      const runtime = createCliExecutionRuntime({
+        cwd: tempDir,
+        executionsDir: path.join(tempDir, 'executions'),
+        bundledActionsDir: path.resolve(
+          __dirname,
+          '../../../../resources/actions',
+        ),
+      });
+      const result = await runStep({
+        executionId: 'exec-cli',
+        jobId: 'build',
+        step: {
+          id: 'wait',
+          shell: 'bash',
+          continue_on_error: false,
+          timeout_minutes: 1,
+          skip_on_missing_action: false,
+          uses: 'builtin/wait-for-agent-reply',
+          with: { project_id: 'ws-1', task_id: 'wt-1', chat_id: 'chat-1' },
+        },
+        cwd: tempDir,
+        env: {},
+        runtime,
+        signal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe('failure');
+      expect(result.error).toBe('This step needs the desktop app.');
+      expect(result.outputs.failure_reason).toBe('needs_desktop');
+      expect(result.outputs.reply_truncated).toBe('false');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the bundled create-worktree manifest as a Node subprocess', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-host-step-'));
+    try {
+      // The real manifest with a stub entry point: routing, not creation.
+      const actionDir = path.join(tempDir, 'actions', 'create-worktree');
+      fs.mkdirSync(actionDir, { recursive: true });
+      fs.copyFileSync(
+        path.resolve(
+          __dirname,
+          '../../../../resources/actions/create-worktree/action.yml',
+        ),
+        path.join(actionDir, 'action.yml'),
+      );
+      fs.writeFileSync(
+        path.join(actionDir, 'index.js'),
+        `require('node:fs').appendFileSync(process.env[${JSON.stringify(
+          brandEnvName('OUTPUT'),
+        )}], 'echoed=yes\\n');\n`,
+      );
+      const runtime = createCliExecutionRuntime({
+        cwd: tempDir,
+        executionsDir: path.join(tempDir, 'executions'),
+        bundledActionsDir: path.join(tempDir, 'actions'),
+      });
+      const result = await runStep({
+        executionId: 'exec-cli',
+        jobId: 'build',
+        step: {
+          id: 'create',
+          shell: 'bash',
+          continue_on_error: false,
+          timeout_minutes: 1,
+          skip_on_missing_action: false,
+          uses: 'builtin/create-worktree',
+          with: { workspace_id: 'ws-1' },
+        },
+        cwd: tempDir,
+        env: {},
+        runtime,
+        signal: new AbortController().signal,
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.outputs.echoed).toBe('yes');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Cursor prompt runner module boundary', () => {
@@ -191,8 +320,13 @@ describe('CLI Ollama harness compatibility', () => {
     const runtime = createCliExecutionRuntime({ cwd: process.cwd() });
 
     try {
+      const resolveModelHarnessInvocation =
+        runtime.resolveModelHarnessInvocation;
+      if (!resolveModelHarnessInvocation) {
+        throw new Error('Expected CLI model harness resolution');
+      }
       await expect(
-        runtime.resolveModelHarnessInvocation(toOllamaModelId('qwen3'), {
+        resolveModelHarnessInvocation(toOllamaModelId('qwen3'), {
           harness: 'claude',
         }),
       ).rejects.toThrow('Upgrade Ollama to 0.14.0 or newer');
@@ -570,9 +704,9 @@ describe('CLI org model policy enforcement', () => {
     // set it, which silently disabled org model-policy enforcement for every
     // `apps/desktop-cli` pipeline run.
     expect(typeof runtime.isModelBlockedByOrgPolicy).toBe('function');
-    await expect(runtime.isModelBlockedByOrgPolicy(POLICY_MODEL)).resolves.toBe(
-      false,
-    );
+    await expect(
+      runtime.isModelBlockedByOrgPolicy(POLICY_MODEL, {}),
+    ).resolves.toBe(false);
     expect(CLI_ORG_MODEL_POLICY_NOT_ENFORCEABLE_REASON).toContain(
       'safeStorage',
     );
@@ -586,7 +720,7 @@ describe('CLI org model policy enforcement', () => {
     // process cannot read the policy, so it reports no active policy and the
     // step-runner leaves unnamed-model steps exactly as they are today.
     expect(typeof runtime.isOrgModelPolicyActive).toBe('function');
-    await expect(runtime.isOrgModelPolicyActive()).resolves.toBe(false);
+    await expect(runtime.isOrgModelPolicyActive({})).resolves.toBe(false);
   });
 
   it('uses an injected policy-active signal when a host supplies one', async () => {
@@ -596,7 +730,7 @@ describe('CLI org model policy enforcement', () => {
       isOrgModelPolicyActive,
     });
 
-    await expect(runtime.isOrgModelPolicyActive()).resolves.toBe(true);
+    await expect(runtime.isOrgModelPolicyActive({})).resolves.toBe(true);
     expect(isOrgModelPolicyActive).toHaveBeenCalled();
   });
 

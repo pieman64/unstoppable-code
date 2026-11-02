@@ -79,6 +79,7 @@ function buildState(overrides: Partial<CanopyPortalState>): CanopyPortalState {
     pairingCode: null,
     pairingCodeExpiresAt: null,
     machineName: null,
+    hostCode: null,
     activatedAt: null,
     lastSeenAt: null,
     lastErrorAt: null,
@@ -95,6 +96,8 @@ function installApi(account: CanopyCloudAccountPublicState): void {
       getState: () => Promise.resolve(buildState({})),
       start: () => Promise.resolve({ state: buildState({}) }),
       stop: () => Promise.resolve({ state: buildState({}) }),
+      regeneratePairingCode: () => Promise.resolve({ state: buildState({}) }),
+      cancelPairingCode: () => Promise.resolve({ state: buildState({}) }),
       onStateChanged: (): (() => void) => () => undefined,
     },
   };

@@ -19,3 +19,29 @@ export function buildChatSessionKey(
 ): string {
   return `${projectId}/${worktreeId}/${chatId}`;
 }
+
+/**
+ * Parse a session key back into its project / worktree / chat identifiers.
+ *
+ * The session map is keyed by the literal `${projectId}/${worktreeId}/${chatId}`
+ * string. This is the single authoritative parser for that shape — do not
+ * `.split('/')` on session keys outside of this helper. Call sites that already
+ * hold the three identifiers separately should pass them directly instead of
+ * re-deriving them from the key.
+ */
+export function parseChatSessionKey(key: string): {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+} {
+  const parts = key.split('/');
+  if (parts.length !== 3) {
+    throw new Error(`Invalid session key: ${key}`);
+  }
+
+  const [projectId, worktreeId, chatId] = parts;
+  if (!projectId || !worktreeId || !chatId) {
+    throw new Error(`Invalid session key: ${key}`);
+  }
+  return { projectId, worktreeId, chatId };
+}

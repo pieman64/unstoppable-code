@@ -10,11 +10,13 @@ import {
   type JSX,
 } from 'react';
 import {
+  Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsListSkeleton,
 } from '@canopy/ui-shared/components';
 import { Copy, Plus, Trash2 } from '@canopy/ui-shared/icons/AppIcons';
+import { formatDateTime } from '@canopy/ui-shared/lib';
 import type {
   UserApiKeyListItem,
   UserApiKeySource,
@@ -26,6 +28,7 @@ import {
 } from '../host';
 import { withPrivacyClass } from './privacy-class';
 import { useSettingsErrorCopy } from '../errors';
+import { SETTINGS_CARD_ROW_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
 
 const API_KEYS_ERROR_SCOPE = 'api-keys-panel';
 
@@ -59,12 +62,6 @@ interface ApiKeysPanelProps {
   brandDisplayName: string;
 }
 
-function formatDate(value: string): string {
-  const ms = Date.parse(value);
-  if (Number.isNaN(ms)) return value;
-  return new Date(ms).toLocaleString();
-}
-
 /**
  * Build the per-key metadata line:
  * `Created {createdAt} · {sourceLabel} · IP {createdIpOrUnknown} · {lastUsedText}`
@@ -79,9 +76,9 @@ export function formatApiKeyMetadata(key: UserApiKeyListItem): string {
       ? key.createdIp
       : 'Unknown';
   const lastUsedText = key.lastUsedAt
-    ? `Last used ${formatDate(key.lastUsedAt)}`
+    ? `Last used ${formatDateTime(key.lastUsedAt)}`
     : 'Never used';
-  return `Created ${formatDate(key.createdAt)} · ${sourceLabel} · IP ${createdIpOrUnknown} · ${lastUsedText}`;
+  return `Created ${formatDateTime(key.createdAt)} · ${sourceLabel} · IP ${createdIpOrUnknown} · ${lastUsedText}`;
 }
 
 /**
@@ -238,41 +235,40 @@ export function ApiKeysManager({
     }
   };
 
+  // Every part of the manager is a row of the section's grouped box, so the
+  // box hands its vertical inset to the rows: the explanation with its Create
+  // action, the create form, and one row per key.
   return (
     <div>
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <div className={SETTINGS_CARD_ROW_CLASS}>
+        <div className="min-w-0">
           {showHeading && (
             <h2 className="text-xl font-semibold fg-primary">API keys</h2>
           )}
-          <p className="mt-1 max-w-xl text-s fg-secondary">
+          <p className="max-w-xl text-xs text-pretty fg-secondary">
             Create manual API keys for {brandDisplayName} clients and review
             keys created by desktop OAuth sign-in. Newly created manual keys are
             shown once and stored only as a secure hash.
           </p>
         </div>
         {!creating && !createdToken && (
-          <button
-            type="button"
-            onClick={handleStartCreate}
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90"
-          >
-            <Plus size={14} />
+          <Button size="compact" onClick={handleStartCreate}>
+            <Plus size={14} aria-hidden="true" />
             Create manual API key
-          </button>
+          </Button>
         )}
-      </header>
+      </div>
 
       <ErrorBanner
-        className="mt-4"
+        className="mb-3"
         error={loadError}
         onRetry={() => void refresh()}
       />
-      <ErrorBanner className="mt-4" error={error} />
+      <ErrorBanner className="mb-3" error={error} />
 
       {createdToken && (
         <div
-          className="mt-4 rounded-md border bg-secondary p-4"
+          className="mb-3 rounded-md border bg-secondary p-4"
           aria-live="polite"
         >
           <p className="text-s font-medium fg-primary">
@@ -290,21 +286,13 @@ export function ApiKeysManager({
             >
               {createdToken.token}
             </code>
-            <button
-              type="button"
-              onClick={() => void handleCopy()}
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-            >
-              <Copy size={14} />
+            <Button size="compact" onClick={() => void handleCopy()}>
+              <Copy size={14} aria-hidden="true" />
               {copied ? 'Copied' : 'Copy'}
-            </button>
-            <button
-              type="button"
-              onClick={handleDoneToken}
-              className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90"
-            >
+            </Button>
+            <Button size="compact" onClick={handleDoneToken}>
               Done
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -312,7 +300,7 @@ export function ApiKeysManager({
       {creating && (
         <form
           onSubmit={(event) => void handleSubmitCreate(event)}
-          className="mt-4 flex flex-col gap-3"
+          className={`${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-3`}
         >
           <label className="flex flex-col gap-1 text-s fg-secondary">
             <span className="font-medium fg-primary">Name</span>
@@ -327,49 +315,47 @@ export function ApiKeysManager({
             />
           </label>
           <div className="flex items-center gap-2">
-            <button
+            <Button
               type="submit"
+              size="compact"
               disabled={submitting || !newName.trim()}
-              className="rounded-md bg-accent px-3 py-2 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {submitting ? 'Creating…' : 'Create manual API key'}
-            </button>
-            <button
-              type="button"
-              onClick={handleCancelCreate}
-              className="rounded-md border px-3 py-2 text-s font-medium fg-primary transition-colors hover:bg-secondary"
-            >
+            </Button>
+            <Button size="compact" onClick={handleCancelCreate}>
               Cancel
-            </button>
+            </Button>
           </div>
         </form>
       )}
 
-      <div className="mt-6">
-        {status === 'loading' && (
+      {status === 'loading' && (
+        <div className="py-3">
           <DelayedLoadingPlaceholder>
             <SettingsListSkeleton rows={2} />
           </DelayedLoadingPlaceholder>
-        )}
-        {status === 'ready' && keys.length === 0 && !creating && (
-          <p className="text-s fg-secondary">No API keys yet.</p>
-        )}
-        {status === 'ready' && keys.length > 0 && (
-          <ul className="divide-y rounded-md border">
-            {keys.map((key) => (
-              <ApiKeyRow
-                key={key.id}
-                apiKey={key}
-                pendingDelete={pendingDeleteId === key.id}
-                deleting={deletingId === key.id}
-                onRequestDelete={handleRequestDelete}
-                onConfirmDelete={(id) => void handleConfirmDelete(id)}
-                onCancelDelete={handleCancelDelete}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
+        </div>
+      )}
+      {status === 'ready' && keys.length === 0 && !creating && (
+        <p className={`${SETTINGS_CARD_ROW_CLASS} text-s fg-secondary`}>
+          No API keys yet.
+        </p>
+      )}
+      {status === 'ready' && keys.length > 0 && (
+        <ul className="flex flex-col border-t">
+          {keys.map((key) => (
+            <ApiKeyRow
+              key={key.id}
+              apiKey={key}
+              pendingDelete={pendingDeleteId === key.id}
+              deleting={deletingId === key.id}
+              onRequestDelete={handleRequestDelete}
+              onConfirmDelete={(id) => void handleConfirmDelete(id)}
+              onCancelDelete={handleCancelDelete}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -398,39 +384,36 @@ export function ApiKeyRow({
   onCancelDelete,
 }: ApiKeyRowProps): JSX.Element {
   return (
-    <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-      <div className="min-w-0">
+    // The key's facts wrap under its name; its actions keep the row's
+    // trailing edge, like every settings row.
+    <li className={SETTINGS_CARD_ROW_CLASS}>
+      <div className="min-w-0 flex-1">
         <p className="truncate text-s font-medium fg-primary">{apiKey.name}</p>
         <p className="text-xs fg-secondary">{formatApiKeyMetadata(apiKey)}</p>
       </div>
       {pendingDelete ? (
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            size="compact"
+            variant="destructive"
             onClick={() => onConfirmDelete(apiKey.id)}
             disabled={deleting}
-            className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {deleting ? 'Deleting…' : 'Confirm'}
-          </button>
-          <button
-            type="button"
-            onClick={onCancelDelete}
-            disabled={deleting}
-            className="rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
-          >
+          </Button>
+          <Button size="compact" onClick={onCancelDelete} disabled={deleting}>
             Cancel
-          </button>
+          </Button>
         </div>
       ) : (
-        <button
-          type="button"
+        <Button
+          size="compact"
+          className="shrink-0"
           onClick={() => onRequestDelete(apiKey.id)}
-          className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-s font-medium fg-primary transition-colors hover:bg-secondary"
         >
-          <Trash2 size={14} />
+          <Trash2 size={14} aria-hidden="true" />
           Delete
-        </button>
+        </Button>
       )}
     </li>
   );

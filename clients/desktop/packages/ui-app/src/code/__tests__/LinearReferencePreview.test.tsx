@@ -1,15 +1,23 @@
 /**
  * @jest-environment jsdom
  */
-import { act } from 'react';
+import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CanopyCapabilities, CanopyClient } from '@canopy/app-core';
-import type { ReferenceEnrichmentMode } from '@canopy/protocol/reference-previews';
+import type {
+  CanopyCapabilities,
+  CanopyClient,
+  QueryMap,
+  QueryName,
+} from '@canopy/app-core';
+import type {
+  LinearIssuePreviewResult,
+  ReferenceEnrichmentMode,
+} from '@canopy/protocol/reference-previews';
 import {
   CanopyClientProvider,
   invalidateReferencePreviews,
 } from '@canopy/app-state';
-import * as tooltipExclusivity from '../../../../ui-shared/src/components/tooltip-exclusivity';
+import * as tooltipHandoff from '../../../../ui-shared/src/components/tooltip-handoff';
 import {
   LinearReferencePreview,
   useLinearTeamCatalog,
@@ -27,6 +35,7 @@ const BASE_CAPABILITIES: CanopyCapabilities = {
   settingsScope: 'api-keys-only',
   pipelines: 'crud-only',
   routing: 'url',
+  overviewNotifications: false,
 };
 
 let container: HTMLDivElement;
@@ -263,7 +272,7 @@ describe('LinearReferencePreview on a supporting host', () => {
   });
 
   it('does not mount full tooltip controllers until a reference is touched', () => {
-    const controller = jest.spyOn(tooltipExclusivity, 'useSingleOpenTooltip');
+    const controller = jest.spyOn(tooltipHandoff, 'useTooltipHandoff');
     try {
       render(
         { ...BASE_CAPABILITIES, referencePreviews: true },
@@ -440,7 +449,45 @@ describe('LinearReferencePreview inline titles', () => {
   const LONG_TITLE =
     'Résumé: 日本語 tickets render whole in the DOM even when they are far longer than forty characters 🚀';
 
-  function issue(identifier: string, title: string): object {
+  type QueryHandlers = Partial<{
+    [K in QueryName]: (
+      args: QueryMap[K]['args'],
+    ) => Promise<QueryMap[K]['result']>;
+  }>;
+
+  type QuerySpy = jest.Mock<
+    Promise<unknown>,
+    [QueryName, QueryMap[QueryName]['args']]
+  >;
+
+  function makeQueryFixture(handlers: QueryHandlers): {
+    query: <K extends QueryName>(
+      name: K,
+      args: QueryMap[K]['args'],
+    ) => Promise<QueryMap[K]['result']>;
+    spy: QuerySpy;
+  } {
+    const spy = jest.fn<
+      Promise<unknown>,
+      [QueryName, QueryMap[QueryName]['args']]
+    >();
+    const queryClient = {
+      query<K extends QueryName>(
+        name: K,
+        args: QueryMap[K]['args'],
+      ): Promise<QueryMap[K]['result']> {
+        void spy(name, args);
+        const handler = handlers[name];
+        if (handler === undefined) {
+          return Promise.reject(new Error(`Unexpected query: ${name}`));
+        }
+        return handler(args);
+      },
+    };
+    return { query: queryClient.query.bind(queryClient), spy };
+  }
+
+  function issue(identifier: string, title: string): LinearIssuePreviewResult {
     return {
       status: 'ok',
       scope: 'scope-a',
@@ -457,26 +504,28 @@ describe('LinearReferencePreview inline titles', () => {
     };
   }
 
-  function supportedQuery(): jest.Mock<
-    Promise<unknown>,
-    [string, { identifier?: string }]
-  > {
-    return jest.fn((name: string, args: { identifier?: string }) =>
+  function supportedQuery(
+    issueAnswer: (
+      args: QueryMap['referencePreview.linearIssue']['args'],
+    ) => Promise<LinearIssuePreviewResult> = (args) =>
       Promise.resolve(
-        name === 'referencePreview.linearScope'
-          ? { scope: 'scope-a' }
-          : issue(
-              args.identifier ?? '',
-              args.identifier === 'CAN-1' ? LONG_TITLE : 'Second issue',
-            ),
+        issue(
+          args.identifier,
+          args.identifier === 'CAN-1' ? LONG_TITLE : 'Second issue',
+        ),
       ),
-    );
+  ): ReturnType<typeof makeQueryFixture> {
+    return makeQueryFixture({
+      'referencePreview.linearScope': () =>
+        Promise.resolve({ scope: 'scope-a' }),
+      'referencePreview.linearIssue': issueAnswer,
+    });
   }
 
   function renderLabels(query: ReturnType<typeof supportedQuery>): void {
     const client: CanopyClient = {
       capabilities: { ...BASE_CAPABILITIES, referencePreviews: true },
-      query,
+      query: query.query,
       command: jest.fn(),
       subscribe: () => () => undefined,
     };
@@ -533,7 +582,7 @@ describe('LinearReferencePreview inline titles', () => {
     // A raw URL label shortens to its identifier, so the title lands in place.
     expect(references[1].textContent).toBe('CAN-2');
     expect(container.textContent).toBe('CAN-1 CAN-2 the ticket');
-    expect(query).not.toHaveBeenCalled();
+    expect(query.spy).not.toHaveBeenCalled();
   });
 
   it('expands visible generated labels to ID and full title, keeping custom labels', async () => {
@@ -546,7 +595,7 @@ describe('LinearReferencePreview inline titles', () => {
     setVisible(rawUrl, true);
     setVisible(custom, true);
     await settle(149);
-    expect(query).not.toHaveBeenCalled();
+    expect(query.spy).not.toHaveBeenCalled();
     await settle(1);
     await settle(0);
     expect(bare.textContent).toBe(`CAN-1: ${LONG_TITLE}`);
@@ -562,7 +611,7 @@ describe('LinearReferencePreview inline titles', () => {
     expect(title?.childNodes).toHaveLength(1);
     expect(title?.firstChild?.nodeType).toBe(Node.TEXT_NODE);
     expect(title?.firstChild?.textContent).toBe(LONG_TITLE);
-    const issueReads = query.mock.calls.filter(
+    const issueReads = query.spy.mock.calls.filter(
       ([name]) => name === 'referencePreview.linearIssue',
     );
     // The raw URL and custom label share one identity and one read.
@@ -582,7 +631,7 @@ describe('LinearReferencePreview inline titles', () => {
     await settle(100);
     setVisible(bare, false);
     await settle(1_000);
-    expect(query).not.toHaveBeenCalled();
+    expect(query.spy).not.toHaveBeenCalled();
     expect(bare.textContent).toBe('CAN-1');
   });
 
@@ -667,14 +716,12 @@ describe('LinearReferencePreview inline titles', () => {
   });
 
   it('animates the placeholder only while a read is in flight', async () => {
-    let answer: ((value: unknown) => void) | null = null;
-    const query = jest.fn((name: string, args: { identifier?: string }) =>
-      name === 'referencePreview.linearScope'
-        ? Promise.resolve({ scope: 'scope-a' })
-        : new Promise<unknown>((resolve) => {
-            answer = (): void =>
-              resolve(issue(args.identifier ?? '', 'Slow title'));
-          }),
+    let answer: (() => void) | null = null;
+    const query = supportedQuery(
+      (args) =>
+        new Promise<LinearIssuePreviewResult>((resolve) => {
+          answer = (): void => resolve(issue(args.identifier, 'Slow title'));
+        }),
     );
     renderLabels(query);
     const [bare] = Array.from(
@@ -688,7 +735,7 @@ describe('LinearReferencePreview inline titles', () => {
     expect(placeholderIn(bare)?.getAttribute('data-active')).toBe('true');
     expect(bare.textContent).toBe('CAN-1');
     await act(async () => {
-      answer?.(undefined);
+      answer?.();
       for (let index = 0; index < 10; index += 1) await Promise.resolve();
     });
     expect(placeholderIn(bare)).toBeNull();
@@ -696,14 +743,7 @@ describe('LinearReferencePreview inline titles', () => {
   });
 
   it('collapses the slot when no title can load', async () => {
-    const query = jest.fn<Promise<unknown>, [string, { identifier?: string }]>(
-      (name) =>
-        Promise.resolve(
-          name === 'referencePreview.linearScope'
-            ? { scope: 'scope-a' }
-            : { status: 'failed' },
-        ),
-    );
+    const query = supportedQuery(() => Promise.resolve({ status: 'failed' }));
     renderLabels(query);
     const [bare] = Array.from(
       container.querySelectorAll('[data-testid="linear-reference"]'),
@@ -711,7 +751,7 @@ describe('LinearReferencePreview inline titles', () => {
     setVisible(bare, true);
     await settle(150);
     await settle(0);
-    expect(query).toHaveBeenCalledWith('referencePreview.linearIssue', {
+    expect(query.spy).toHaveBeenCalledWith('referencePreview.linearIssue', {
       identifier: 'CAN-1',
     });
     expect(placeholderIn(bare)).toBeNull();

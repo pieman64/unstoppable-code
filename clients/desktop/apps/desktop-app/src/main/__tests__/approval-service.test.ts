@@ -1,4 +1,10 @@
 import {
+  FAIL_CLOSED_MESSAGE,
+  USER_DENIED_MESSAGE,
+  savedRuleDeniedMessage,
+} from '@canopy/protocol/approvals';
+import * as approvalEngine from '@canopy/desktop-shared/lib/approval-engine';
+import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   IPC_CHANNELS,
   STANDALONE_CHAT_PROJECT_ID,
@@ -11,6 +17,8 @@ import type {
   ApprovalPromptDecision,
   ApprovalRule,
   ApprovalsFile,
+  ChatTabsFile,
+  PersistedChatTab,
 } from '@canopy/desktop-shared/types';
 import type { WorkspaceApprovalsManifest } from '../lib/workspace-approvals-manifest';
 import type { WorkspaceApprovalsReadResult } from '../lib/approvals-persistence';
@@ -57,6 +65,7 @@ jest.mock('../lib/approvals-persistence', () => ({
 
 jest.mock('../lib/paths', () => ({
   getPreferencesFilePath: (): string => '/data/preferences.json',
+  getMigrationsFilePath: (): string => '/data/migrations.json',
 }));
 
 const mockReadWorkspaceApprovalsManifest = jest.fn<
@@ -93,6 +102,13 @@ const mockUpdatePreferencesFile = jest.fn<
   [(existing: FakePreferences) => Partial<FakePreferences>]
 >();
 jest.mock('../lib/preferences-store', () => ({
+  readPreferencesFileDetailed: async (): Promise<{
+    preferences: Awaited<ReturnType<typeof mockReadPreferencesFile>>;
+    authority: 'ok' | 'unreadable';
+  }> => ({
+    preferences: await mockReadPreferencesFile(),
+    authority: mockPreferencesLoadError !== null ? 'unreadable' : 'ok',
+  }),
   peekPreferencesLoadError: (): Error | null => mockPreferencesLoadError,
   readPreferencesFile: (): Promise<FakePreferences> =>
     mockReadPreferencesFile(),
@@ -118,12 +134,20 @@ jest.mock('../approvals/prompt-bridge', () => ({
     ) {
       onRegistered(nextPromptRequestId);
     }
+    const onAwaitingUser = isRecord(options)
+      ? options.onAwaitingUser
+      : undefined;
+    if (isAwaitingUserCallback(onAwaitingUser)) onAwaitingUser();
     return mockRequestApprovalFromRenderer(options);
   },
 }));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isAwaitingUserCallback(value: unknown): value is () => void {
+  return typeof value === 'function';
 }
 
 function isRegistrationCallback(
@@ -161,14 +185,49 @@ jest.mock('../lib/window-send', () => ({
 }));
 
 type UpdateCompatibilityTab = ChatStateService['updateCompatibilityTab'];
+function emptyCompatibilityTabResult(
+  updated: boolean = true,
+): Awaited<ReturnType<UpdateCompatibilityTab>> {
+  const tabsFile: ChatTabsFile = {
+    version: 1,
+    tabs: [],
+    activeTabId: '',
+  };
+  // Preserve the legacy no-selection value while keeping the typed fixture boundary current.
+  Reflect.set(tabsFile, 'activeTabId', null);
+  return { tabsFile, updated };
+}
+
+// These updater tests intentionally provide partial legacy tabs to exercise only projected fields.
+function legacyPartialPersistedChatTab(
+  tab: Partial<PersistedChatTab>,
+): PersistedChatTab {
+  return tab as unknown as PersistedChatTab;
+}
+
 const mockUpdateCompatibilityTab = jest.fn<
   ReturnType<UpdateCompatibilityTab>,
   Parameters<UpdateCompatibilityTab>
 >();
+type ObserveTurnPause = ChatStateService['commitTurnPause'];
+const mockObserveTurnPause = jest.fn<
+  ReturnType<ObserveTurnPause>,
+  Parameters<ObserveTurnPause>
+>();
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): {
     updateCompatibilityTab: UpdateCompatibilityTab;
-  } => ({ updateCompatibilityTab: mockUpdateCompatibilityTab }),
+    commitTurnPause: ObserveTurnPause;
+  } => ({
+    commitTurnPause: mockObserveTurnPause,
+    updateCompatibilityTab: mockUpdateCompatibilityTab,
+  }),
+}));
+
+const mockLogMainProcessWarn = jest.fn<void, [string, unknown]>();
+jest.mock('../lib/main-process-logging', () => ({
+  logMainProcessWarn: (message: string, context: unknown): void =>
+    mockLogMainProcessWarn(message, context),
 }));
 
 const mockRecordSessionDiagnostic = jest.fn<void, [unknown]>();
@@ -218,6 +277,10 @@ function makeCtx(
   };
 }
 
+function containingText(text: string): unknown {
+  return expect.stringContaining(text);
+}
+
 function commandCheck(command: string): ApprovalCheck {
   return { kind: 'command', command };
 }
@@ -246,8 +309,7 @@ beforeEach(() => {
   mockGetCodeReviewTargetSync.mockReturnValue(null);
   mockGetPlanExploreTargetSync.mockReturnValue(null);
   mockUpdateCompatibilityTab.mockResolvedValue({
-    tabsFile: { version: 1, tabs: [], activeTabId: null },
-    updated: true,
+    ...emptyCompatibilityTabResult(),
   });
   nextPromptRequestId = undefined;
   mockResolveApprovalFromMain.mockReturnValue(true);
@@ -256,6 +318,304 @@ beforeEach(() => {
 });
 
 describe('createApprovalSession - check', () => {
+  it.each([false, true])(
+    'uses system attribution when a denial has no known rule tier (untracked rule: %p)',
+    async (untrackedRule) => {
+      const rule: ApprovalRule = {
+        id: 'untracked',
+        behavior: 'deny',
+        target: { kind: 'command', pattern: 'git status' },
+        createdAt: '2026-10-24',
+        origin: 'settings',
+      };
+      const evaluate = jest
+        .spyOn(approvalEngine, 'evaluateApproval')
+        .mockReturnValue({
+          outcome: 'deny',
+          ...(untrackedRule ? { matchedRule: rule } : {}),
+        });
+      const handle = createApprovalSession(makeCtx());
+      try {
+        await expect(
+          handle.check(
+            commandCheck('git status'),
+            commandDisplay('git status'),
+          ),
+        ).resolves.toEqual({
+          decision: 'deny',
+          message: 'Denied by the approval policy.',
+        });
+        expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+        expect(mockUpdateCompatibilityTab).not.toHaveBeenCalled();
+      } finally {
+        handle.dispose();
+        evaluate.mockRestore();
+      }
+    },
+  );
+
+  it.each(['session', 'project', 'global', 'repository'] as const)(
+    'attributes a saved %s deny rule without prompting or a safety receipt',
+    async (scope) => {
+      const rule: ApprovalRule = {
+        id: 'saved-deny',
+        behavior: 'deny',
+        target: { kind: 'command', pattern: 'git status' },
+        createdAt: '2026-10-24',
+        origin: scope === 'repository' ? 'canopy-json' : 'settings',
+      };
+      const ctx = makeCtx();
+      if (scope === 'session') ctx.sessionRules.push(rule);
+      if (scope === 'project')
+        mockReadWorkspaceApprovals.mockResolvedValue({
+          version: 1,
+          rules: [rule],
+        });
+      if (scope === 'global')
+        mockReadPreferencesFile.mockResolvedValue({
+          globalApprovalRules: [rule],
+        });
+      if (scope === 'repository')
+        mockReadWorkspaceApprovalsManifest.mockResolvedValue({ rules: [rule] });
+      const handle = createApprovalSession(ctx);
+
+      await expect(
+        handle.check(commandCheck('git status'), commandDisplay('git status')),
+      ).resolves.toEqual({
+        decision: 'deny',
+        message: `Blocked by a saved deny rule (${scope} scope). This call cannot be approved from a prompt while the rule exists. Do not retry or repackage the blocked operation.`,
+      });
+      expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+      expect(mockUpdateCompatibilityTab).not.toHaveBeenCalled();
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledTimes(1);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'approval_decision',
+          decision: 'deny',
+          scope: scope === 'repository' ? 'project' : scope,
+        }),
+      );
+      handle.dispose();
+    },
+  );
+
+  it.each([
+    undefined,
+    '',
+    ' \n\t ',
+    'Not on this branch.',
+    'First line.\nKeep this detail.',
+  ])('attributes explicit denial with reason %p', async (reason) => {
+    mockRequestApprovalFromRenderer.mockResolvedValue({
+      behavior: 'deny',
+      scope: 'once',
+      message: reason,
+      stopTurn: true,
+    });
+    const handle = createApprovalSession(makeCtx());
+    await expect(
+      handle.check(commandCheck('git status'), commandDisplay('git status')),
+    ).resolves.toEqual({
+      decision: 'deny',
+      stopTurn: true,
+      message: reason?.trim()
+        ? `The user denied this tool call: ${reason}`
+        : 'The user denied this tool call.',
+    });
+    handle.dispose();
+  });
+
+  it.each(['session', 'project', 'global'] as const)(
+    'attributes failed %s rule persistence according to the current response',
+    async (scope) => {
+      for (const behavior of ['deny', 'allow'] as const) {
+        mockRequestApprovalFromRenderer.mockResolvedValue({
+          behavior,
+          scope,
+          target: { kind: 'command', pattern: 'git status' },
+          message: 'Do not publish.\nUse another branch.',
+          stopTurn: true,
+        });
+        const failure = new Error('Rule persistence unavailable');
+        mockAddWorkspaceApprovalRule.mockRejectedValue(failure);
+        mockUpdatePreferencesFile.mockRejectedValue(failure);
+        mockUpdateCompatibilityTab.mockImplementation(
+          (_scope, _chatId, _updater, operationId?: string) => {
+            if (operationId?.startsWith('approval-session-rule:'))
+              return Promise.reject(failure);
+            return Promise.resolve(emptyCompatibilityTabResult());
+          },
+        );
+        const ctx = makeCtx();
+        const handle = createApprovalSession(ctx);
+        await expect(
+          handle.check(
+            commandCheck('git status'),
+            commandDisplay('git status'),
+          ),
+        ).resolves.toEqual({
+          decision: 'deny',
+          ...(behavior === 'deny' ? { stopTurn: true } : {}),
+          message:
+            behavior === 'deny'
+              ? 'The user denied this tool call: Do not publish.\nUse another branch.'
+              : 'Approval prompt unavailable; denied by default.',
+        });
+        expect(ctx.sessionRules).toEqual([]);
+        handle.dispose();
+      }
+    },
+  );
+
+  it.each(['deny', 'allow'] as const)(
+    'fails closed when a %s session rule cannot be committed',
+    async (behavior) => {
+      mockRequestApprovalFromRenderer.mockResolvedValue({
+        behavior,
+        scope: 'session',
+        target: { kind: 'command', pattern: 'git status' },
+      });
+      mockUpdateCompatibilityTab.mockImplementation(
+        (_scope, _chatId, _updater, operationId?: string) =>
+          Promise.resolve(
+            emptyCompatibilityTabResult(
+              operationId === undefined ||
+                !operationId.startsWith('approval-session-rule:'),
+            ),
+          ),
+      );
+      const ctx = makeCtx();
+      const handle = createApprovalSession(ctx);
+      await expect(
+        handle.check(commandCheck('git status'), commandDisplay('git status')),
+      ).resolves.toEqual({
+        decision: 'deny',
+        message:
+          behavior === 'deny'
+            ? 'The user denied this tool call.'
+            : 'Approval prompt unavailable; denied by default.',
+      });
+      expect(ctx.sessionRules).toEqual([]);
+      handle.dispose();
+    },
+  );
+
+  it.each(['invalidate', 'dispose'] as const)(
+    'uses the system message after %s regardless of a late response',
+    async (operation) => {
+      for (const behavior of ['deny', 'allow'] as const) {
+        let resolvePrompt: (decision: ApprovalPromptDecision) => void = () => {
+          throw new Error('No prompt');
+        };
+        mockRequestApprovalFromRenderer.mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolvePrompt = resolve;
+          }),
+        );
+        const handle = createApprovalSession(makeCtx());
+        const pending = handle.check(
+          commandCheck('git status'),
+          commandDisplay('git status'),
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (operation === 'dispose') handle.dispose();
+        else handle.invalidatePending?.();
+        resolvePrompt({
+          behavior,
+          scope: 'global',
+          target: { kind: 'command', pattern: 'git status' },
+          message: 'Obsolete reason',
+          stopTurn: true,
+        });
+        await expect(pending).resolves.toEqual({
+          decision: 'deny',
+          message: 'Approval prompt unavailable; denied by default.',
+        });
+        expect(mockUpdatePreferencesFile).not.toHaveBeenCalled();
+        handle.dispose();
+      }
+    },
+  );
+
+  it.each(['neither', 'session', 'display', 'both'])(
+    'calls the per-check prompt callback once after the session callback when %s throws',
+    async (throws) => {
+      const order: string[] = [];
+      mockRequestApprovalFromRenderer.mockResolvedValue({
+        behavior: 'allow',
+        scope: 'once',
+      });
+      const sessionCallback = jest.fn(() => {
+        order.push('session');
+        if (throws === 'session' || throws === 'both')
+          throw new Error('session callback');
+      });
+      const displayCallback = jest.fn(() => {
+        order.push('display');
+        if (throws === 'display' || throws === 'both')
+          throw new Error('display callback');
+      });
+      const handle = createApprovalSession(
+        makeCtx({ onAwaitingUser: sessionCallback }),
+      );
+      const display = {
+        ...commandDisplay('ls'),
+        onAwaitingUser: displayCallback,
+      };
+      await expect(handle.check(commandCheck('ls'), display)).resolves.toEqual({
+        decision: 'allow',
+      });
+      expect(order).toEqual(['session', 'display']);
+      expect(sessionCallback).toHaveBeenCalledTimes(1);
+      expect(displayCallback).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('never calls prompt callbacks for an auto-allowed check', async () => {
+    const sessionCallback = jest.fn();
+    const displayCallback = jest.fn();
+    const handle = createApprovalSession(
+      makeCtx({ mode: 'full-access', onAwaitingUser: sessionCallback }),
+    );
+    const display = {
+      ...commandDisplay('ls'),
+      onAwaitingUser: displayCallback,
+    };
+    await expect(handle.check(commandCheck('ls'), display)).resolves.toEqual({
+      decision: 'allow',
+    });
+    expect(sessionCallback).not.toHaveBeenCalled();
+    expect(displayCallback).not.toHaveBeenCalled();
+    expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+  });
+
+  it('returns a specific safety denial and commits its correlated receipt without prompting', async () => {
+    const handle = createApprovalSession(makeCtx());
+    const command = 'git push --force origin HEAD';
+    const outcome = await handle.check(commandCheck(command), {
+      ...commandDisplay(command),
+      toolUseId: 'tool-1',
+      subagentId: 'child-1',
+    });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule (force-push)'),
+    });
+    expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'approval_decision',
+        approvalDecisionSource: 'safety-rule',
+      }),
+    );
+    expect(mockUpdateCompatibilityTab).toHaveBeenCalledWith(
+      { projectId: 'proj-1', worktreeId: 'wt-1' },
+      'chat-1',
+      expect.any(Function),
+      expect.stringContaining('approval-safety-denied:'),
+    );
+    handle.dispose();
+  });
   it('routes a non-chat Cursor write through policy and renderer without creating chat timer state', async (): Promise<void> => {
     mockRequestApprovalFromRenderer.mockResolvedValue({
       behavior: 'allow',
@@ -310,7 +670,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: USER_DENIED_MESSAGE,
+      });
     }
     expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(2);
   });
@@ -346,7 +709,7 @@ describe('createApprovalSession - check', () => {
       },
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({ decision: 'deny', message: USER_DENIED_MESSAGE });
     expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(1);
   });
 
@@ -381,7 +744,7 @@ describe('createApprovalSession - check', () => {
       },
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({ decision: 'deny', message: USER_DENIED_MESSAGE });
     expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(1);
   });
 
@@ -627,7 +990,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay('rm -rf root-link/*'),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -656,7 +1022,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: containingText('Blocked by a safety rule ('),
+      });
     }
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
@@ -680,7 +1049,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay('rm -rf tmp'),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -704,7 +1076,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -734,7 +1109,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: containingText('Blocked by a safety rule ('),
+      });
       expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
     }
     expect(mockRealpath).toHaveBeenCalledWith(homedir());
@@ -760,7 +1138,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -784,7 +1165,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -808,7 +1192,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -832,7 +1219,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -861,7 +1251,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: containingText('Blocked by a safety rule ('),
+      });
       expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
     }
   });
@@ -886,7 +1279,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -910,7 +1306,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -938,7 +1337,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: containingText('Blocked by a safety rule ('),
+      });
       expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
     }
   });
@@ -968,7 +1370,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: containingText('Blocked by a safety rule ('),
+      });
       expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
     }
   });
@@ -997,7 +1402,10 @@ describe('createApprovalSession - check', () => {
         commandDisplay(command),
       );
 
-      expect(outcome).toEqual({ decision: 'deny' });
+      expect(outcome).toEqual({
+        decision: 'deny',
+        message: containingText('Blocked by a safety rule ('),
+      });
       expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
     }
   });
@@ -1022,7 +1430,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay(command),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: containingText('Blocked by a safety rule ('),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
   });
 
@@ -1157,7 +1568,7 @@ describe('createApprovalSession - check', () => {
       ],
     };
     mockUpdateCompatibilityTab.mockImplementation((_scope, _chat, update) => {
-      const updated = update(tab);
+      const updated = update(tab, undefined);
       if (updated) tab = updated;
       return Promise.resolve({
         tabsFile: { version: 1, tabs: [tab], activeTabId: tab.id },
@@ -1282,10 +1693,12 @@ describe('createApprovalSession - check', () => {
       commandDisplay('npm test'),
     );
     await pauseStarted;
+    if (!handle.invalidatePending) {
+      throw new Error('Pending approval invalidation is unavailable');
+    }
     handle.invalidatePending();
     releasePause({
-      tabsFile: { version: 1, tabs: [], activeTabId: null },
-      updated: true,
+      ...emptyCompatibilityTabResult(),
     });
 
     await expect(outcome).resolves.toEqual({
@@ -1334,8 +1747,11 @@ describe('createApprovalSession - check', () => {
     );
     const updateTab = mockUpdateCompatibilityTab.mock.calls.find(
       (call) => call[3] === `approval-session-rule:${ctx.sessionRules[0]?.id}`,
-    )?.[2] as (tab: Record<string, unknown>) => Record<string, unknown>;
-    expect(updateTab({ id: 'chat-1' })).toEqual({
+    )?.[2];
+    if (!updateTab) throw new Error('missing session-rule updater');
+    expect(
+      updateTab(legacyPartialPersistedChatTab({ id: 'chat-1' }), undefined),
+    ).toEqual({
       id: 'chat-1',
       sessionApprovalRules: [ctx.sessionRules[0]],
     });
@@ -1367,7 +1783,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay('ls'),
     );
 
-    expect(outcome).toEqual({ decision: 'deny', message: 'Never allowed.' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: 'The user denied this tool call: Never allowed.',
+    });
     expect(mockUpdatePreferencesFile).toHaveBeenCalledTimes(1);
     const [updater] = mockUpdatePreferencesFile.mock.calls[0];
     const result = updater({ globalApprovalRules: [] });
@@ -1556,6 +1975,74 @@ describe('createApprovalSession - check', () => {
     expect(mockReadPreferencesFile).toHaveBeenCalledTimes(4);
   });
 
+  it('pins a known gap: project and global grants added after an agent send was admitted still apply to its turn (CAN-4723)', async () => {
+    // The admitted cap (CAN-4821) holds only the chat's mode and session
+    // rules; this turn runs at Ask with none of the chat's grants.
+    const handle = createApprovalSession(
+      makeCtx({ mode: 'ask', sessionRules: [] }),
+    );
+    const grant = (id: string, pattern: string): ApprovalRule => ({
+      id,
+      behavior: 'allow',
+      target: { kind: 'command', pattern },
+      createdAt: '2026-10-23T00:00:00.000Z',
+      origin: 'settings',
+    });
+
+    // Granted at the project and global tiers after admission.
+    mockReadWorkspaceApprovals.mockResolvedValue({
+      version: 1,
+      rules: [grant('project-grant', 'npm run lint')],
+    });
+    markWorkspaceApprovalRulesChanged('proj-1');
+    mockReadPreferencesFile.mockResolvedValue({
+      globalApprovalRules: [grant('global-grant', 'git push')],
+    });
+    markGlobalApprovalRulesChanged();
+
+    // CAN-4723 owns capping these tiers; until then the turn gains them.
+    await expect(
+      handle.check(
+        commandCheck('npm run lint'),
+        commandDisplay('npm run lint'),
+      ),
+    ).resolves.toEqual({ decision: 'allow' });
+    await expect(
+      handle.check(commandCheck('git push'), commandDisplay('git push')),
+    ).resolves.toEqual({ decision: 'allow' });
+    expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+  });
+
+  it('pins a known gap: a project deny rule removed after an agent send was admitted no longer applies to its turn (CAN-4723)', async () => {
+    const handle = createApprovalSession(
+      makeCtx({ mode: 'full-access', sessionRules: [] }),
+    );
+    // In force when the send was admitted.
+    mockReadWorkspaceApprovals.mockResolvedValue({
+      version: 1,
+      rules: [
+        {
+          id: 'project-deny',
+          behavior: 'deny',
+          target: { kind: 'command', pattern: 'git push' },
+          createdAt: '2026-10-23T00:00:00.000Z',
+          origin: 'settings',
+        },
+      ],
+    });
+    markWorkspaceApprovalRulesChanged('proj-1');
+    await expect(
+      handle.check(commandCheck('git push'), commandDisplay('git push')),
+    ).resolves.toEqual(expect.objectContaining({ decision: 'deny' }));
+
+    // Removed before the turn's next tool call. CAN-4723 owns capping this.
+    mockReadWorkspaceApprovals.mockResolvedValue({ version: 1, rules: [] });
+    markWorkspaceApprovalRulesChanged('proj-1');
+    await expect(
+      handle.check(commandCheck('git push'), commandDisplay('git push')),
+    ).resolves.toEqual({ decision: 'allow' });
+  });
+
   it('invalidates cached project rules when another writer changes them', async () => {
     mockRequestApprovalFromRenderer.mockResolvedValue({
       behavior: 'deny',
@@ -1587,7 +2074,10 @@ describe('createApprovalSession - check', () => {
         commandCheck('echo blocked'),
         commandDisplay('echo blocked'),
       ),
-    ).resolves.toEqual({ decision: 'deny' });
+    ).resolves.toEqual({
+      decision: 'deny',
+      message: savedRuleDeniedMessage('project'),
+    });
     expect(mockReadWorkspaceApprovals).toHaveBeenCalledTimes(2);
     expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(1);
   });
@@ -1622,7 +2112,10 @@ describe('createApprovalSession - check', () => {
         commandCheck('echo blocked'),
         commandDisplay('echo blocked'),
       ),
-    ).resolves.toEqual({ decision: 'deny' });
+    ).resolves.toEqual({
+      decision: 'deny',
+      message: savedRuleDeniedMessage('global'),
+    });
     expect(mockReadPreferencesFile).toHaveBeenCalledTimes(2);
     expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(1);
   });
@@ -1647,7 +2140,10 @@ describe('createApprovalSession - check', () => {
       commandDisplay('rm -rf foo'),
     );
 
-    expect(outcome).toEqual({ decision: 'deny' });
+    expect(outcome).toEqual({
+      decision: 'deny',
+      message: savedRuleDeniedMessage('repository'),
+    });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
     expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1763,6 +2259,7 @@ describe('createApprovalSession - check', () => {
 
       await expect(handle.check(uploadCheck, uploadDisplay)).resolves.toEqual({
         decision: 'deny',
+        message: savedRuleDeniedMessage('repository'),
       });
       expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
       await handle.check(
@@ -1993,7 +2490,10 @@ describe('createApprovalSession - dispose', () => {
       target: { kind: 'command', pattern: 'first *' },
     });
 
-    await expect(active).resolves.toEqual({ decision: 'deny' });
+    await expect(active).resolves.toEqual({
+      decision: 'deny',
+      message: FAIL_CLOSED_MESSAGE,
+    });
     await expect(queued).resolves.toEqual(
       expect.objectContaining({ decision: 'deny' }),
     );
@@ -2030,7 +2530,10 @@ describe('createApprovalSession - turn cancellation', () => {
       target: { kind: 'command', pattern: 'npm publish *' },
     });
 
-    await expect(staleCheck).resolves.toEqual({ decision: 'deny' });
+    await expect(staleCheck).resolves.toEqual({
+      decision: 'deny',
+      message: FAIL_CLOSED_MESSAGE,
+    });
     expect(mockRejectAllApprovalsForSession).toHaveBeenCalledWith(
       'session-cancelled-turn',
       'turn_cancelled',
@@ -2043,70 +2546,64 @@ describe('createApprovalSession - turn cancellation', () => {
     ).resolves.toEqual({ decision: 'allow' });
   });
 
-  it('rolls back a project rule persisted after cancellation', async () => {
-    let finishPersistence: (file: ApprovalsFile) => void = () => {
-      throw new Error('Project persistence was not initialized');
-    };
-    mockAddWorkspaceApprovalRule.mockReturnValueOnce(
-      new Promise((resolve) => {
-        finishPersistence = resolve;
-      }),
-    );
-    mockRequestApprovalFromRenderer.mockResolvedValueOnce({
-      behavior: 'allow',
-      scope: 'project',
-      target: { kind: 'command', pattern: 'npm publish *' },
-    });
-    const handle = createApprovalSession(
-      makeCtx({ sessionKey: 'session-project-race' }),
-    );
-    const pending = handle.check(
-      commandCheck('npm publish'),
-      commandDisplay('npm publish'),
-    );
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const persistedRule = mockAddWorkspaceApprovalRule.mock.calls[0]?.[1];
-    expect(persistedRule).toBeDefined();
-
-    handle.invalidatePending?.();
-    finishPersistence(emptyApprovalsFile);
-
-    await expect(pending).resolves.toEqual({ decision: 'deny' });
-    expect(mockRemoveWorkspaceApprovalRule).toHaveBeenCalledWith(
-      'proj-1',
-      persistedRule?.id,
-    );
-  });
-
-  it('rolls back a session rule persisted after cancellation', async () => {
-    let finishPersistence: (value: {
-      tabsFile: {
-        version: 1;
-        tabs: never[];
-        activeTabId: null;
+  // CAN-4469 D-release: a save that started is kept after Stop; only the
+  // action it was asked for is withdrawn.
+  it.each(['allow', 'deny'] as const)(
+    'keeps a project %s rule whose save started before cancellation',
+    async (behavior) => {
+      let finishPersistence: (file: ApprovalsFile) => void = () => {
+        throw new Error('Project persistence was not initialized');
       };
-      updated: boolean;
-    }) => void = () => {
+      mockAddWorkspaceApprovalRule.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishPersistence = resolve;
+        }),
+      );
+      mockRequestApprovalFromRenderer.mockResolvedValueOnce({
+        behavior,
+        scope: 'project',
+        target: { kind: 'command', pattern: 'npm publish *' },
+      });
+      const handle = createApprovalSession(
+        makeCtx({ sessionKey: 'session-project-race' }),
+      );
+      const pending = handle.check(
+        commandCheck('npm publish'),
+        commandDisplay('npm publish'),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const persistedRule = mockAddWorkspaceApprovalRule.mock.calls[0]?.[1];
+      expect(persistedRule).toMatchObject({ behavior });
+
+      handle.invalidatePending?.();
+      finishPersistence(emptyApprovalsFile);
+
+      await expect(pending).resolves.toEqual({
+        decision: 'deny',
+        message: FAIL_CLOSED_MESSAGE,
+      });
+      expect(mockRemoveWorkspaceApprovalRule).not.toHaveBeenCalled();
+      handle.dispose();
+    },
+  );
+
+  it('keeps a session rule whose save started before cancellation for the chat', async () => {
+    let finishPersistence: (
+      value: Awaited<ReturnType<UpdateCompatibilityTab>>,
+    ) => void = () => {
       throw new Error('Session persistence was not initialized');
     };
-    const persistence = new Promise<{
-      tabsFile: { version: 1; tabs: never[]; activeTabId: null };
-      updated: boolean;
-    }>((resolve) => {
+    const persistence = new Promise<
+      Awaited<ReturnType<UpdateCompatibilityTab>>
+    >((resolve) => {
       finishPersistence = resolve;
     });
     mockUpdateCompatibilityTab.mockImplementation(
-      (_scope, _chatId, _update, mutationId) => {
-        if (
-          mutationId?.startsWith('approval-session-rule:') &&
-          !mutationId.startsWith('approval-session-rule-rollback:')
-        ) {
+      (_scope, _chatId, _update, mutationId?: string) => {
+        if (mutationId?.startsWith('approval-session-rule:')) {
           return persistence;
         }
-        return Promise.resolve({
-          tabsFile: { version: 1, tabs: [], activeTabId: null },
-          updated: true,
-        });
+        return Promise.resolve(emptyCompatibilityTabResult());
       },
     );
     mockRequestApprovalFromRenderer.mockResolvedValueOnce({
@@ -2127,74 +2624,117 @@ describe('createApprovalSession - turn cancellation', () => {
     expect(persistedCall).toBeDefined();
 
     handle.invalidatePending?.();
-    finishPersistence({
-      tabsFile: { version: 1, tabs: [], activeTabId: null },
-      updated: true,
+    finishPersistence(emptyCompatibilityTabResult());
+
+    await expect(pending).resolves.toEqual({
+      decision: 'deny',
+      message: FAIL_CLOSED_MESSAGE,
     });
-
-    await expect(pending).resolves.toEqual({ decision: 'deny' });
-    expect(ctx.sessionRules).toEqual([]);
-    const rollbackCall = mockUpdateCompatibilityTab.mock.calls.find((call) =>
-      call[3]?.startsWith('approval-session-rule-rollback:'),
+    const mutationIds = mockUpdateCompatibilityTab.mock.calls.map(
+      (call) => call[3],
     );
-    expect(rollbackCall).toBeDefined();
-    const persistedRule = persistedCall?.[2]({
-      id: 'chat-1',
-      title: 'Chat',
-      createdAt: '2026-08-19T00:00:00.000Z',
-      messages: [],
-      sessionApprovalRules: [],
-    }).sessionApprovalRules?.[0];
-    expect(persistedRule).toBeDefined();
     expect(
-      rollbackCall?.[2]({
-        id: 'chat-1',
-        title: 'Chat',
-        createdAt: '2026-08-19T00:00:00.000Z',
-        messages: [],
-        sessionApprovalRules: persistedRule ? [persistedRule] : [],
-      }).sessionApprovalRules,
-    ).toEqual([]);
-  });
-
-  it('rolls back a global rule persisted after cancellation', async () => {
-    let finishPersistence: (preferences: FakePreferences) => void = () => {
-      throw new Error('Global persistence was not initialized');
-    };
-    mockUpdatePreferencesFile.mockReturnValueOnce(
-      new Promise((resolve) => {
-        finishPersistence = resolve;
+      mutationIds.filter((id) => id?.startsWith('approval-session-rule')),
+    ).toHaveLength(1);
+    expect(ctx.sessionRules).toEqual([
+      expect.objectContaining({
+        behavior: 'allow',
+        target: { kind: 'command', pattern: 'npm publish *' },
       }),
+    ]);
+    expect(mockSendToWindow).toHaveBeenCalledWith(
+      null,
+      IPC_CHANNELS.approvalRuleAdded,
+      expect.objectContaining({ chatId: 'chat-1', rule: ctx.sessionRules[0] }),
     );
-    mockRequestApprovalFromRenderer.mockResolvedValueOnce({
-      behavior: 'allow',
-      scope: 'global',
-      target: { kind: 'command', pattern: 'npm publish *' },
-    });
-    const handle = createApprovalSession(
-      makeCtx({ sessionKey: 'session-global-race' }),
-    );
-    const pending = handle.check(
-      commandCheck('npm publish'),
-      commandDisplay('npm publish'),
-    );
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const persistUpdater = mockUpdatePreferencesFile.mock.calls[0]?.[0];
-    expect(persistUpdater).toBeDefined();
-    const persisted = persistUpdater?.({ globalApprovalRules: [] });
-    const persistedRules = persisted?.globalApprovalRules ?? [];
-
-    handle.invalidatePending?.();
-    finishPersistence({ globalApprovalRules: persistedRules });
-
-    await expect(pending).resolves.toEqual({ decision: 'deny' });
-    const rollbackUpdater = mockUpdatePreferencesFile.mock.calls[1]?.[0];
-    expect(rollbackUpdater).toBeDefined();
-    expect(
-      rollbackUpdater?.({ globalApprovalRules: persistedRules })
-        .globalApprovalRules,
-    ).toEqual([]);
+    // The chat's next request is covered by the saved grant.
+    await expect(
+      handle.check(commandCheck('npm publish'), commandDisplay('npm publish')),
+    ).resolves.toEqual({ decision: 'allow' });
+    expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(1);
+    handle.dispose();
   });
+
+  it.each(['allow', 'deny'] as const)(
+    'keeps a global %s rule whose save started before shutdown',
+    async (behavior) => {
+      let finishPersistence: (preferences: FakePreferences) => void = () => {
+        throw new Error('Global persistence was not initialized');
+      };
+      mockUpdatePreferencesFile.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishPersistence = resolve;
+        }),
+      );
+      mockRequestApprovalFromRenderer.mockResolvedValueOnce({
+        behavior,
+        scope: 'global',
+        target: { kind: 'command', pattern: 'npm publish *' },
+      });
+      const handle = createApprovalSession(
+        makeCtx({ sessionKey: 'session-global-race' }),
+      );
+      const pending = handle.check(
+        commandCheck('npm publish'),
+        commandDisplay('npm publish'),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const persistUpdater = mockUpdatePreferencesFile.mock.calls[0]?.[0];
+      expect(persistUpdater).toBeDefined();
+      const persisted = persistUpdater?.({ globalApprovalRules: [] });
+      const persistedRules = persisted?.globalApprovalRules ?? [];
+      expect(persistedRules).toEqual([expect.objectContaining({ behavior })]);
+
+      handle.dispose();
+      finishPersistence({ globalApprovalRules: persistedRules });
+
+      await expect(pending).resolves.toEqual({
+        decision: 'deny',
+        message: FAIL_CLOSED_MESSAGE,
+      });
+      expect(mockUpdatePreferencesFile).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['session', 'project', 'global'] as const)(
+    'records the denial when a %s rule cannot be saved',
+    async (scope) => {
+      mockRequestApprovalFromRenderer.mockResolvedValue({
+        behavior: 'allow',
+        scope,
+        target: { kind: 'command', pattern: 'npm publish *' },
+      });
+      const failure = new Error('Rule persistence unavailable');
+      mockAddWorkspaceApprovalRule.mockRejectedValue(failure);
+      mockUpdatePreferencesFile.mockRejectedValue(failure);
+      mockUpdateCompatibilityTab.mockImplementation(
+        (_scope, _chatId, _updater, operationId?: string) =>
+          Promise.resolve(
+            emptyCompatibilityTabResult(
+              operationId === undefined ||
+                !operationId.startsWith('approval-session-rule:'),
+            ),
+          ),
+      );
+      const handle = createApprovalSession(makeCtx());
+      await expect(
+        handle.check(
+          commandCheck('npm publish'),
+          commandDisplay('npm publish'),
+        ),
+      ).resolves.toEqual({ decision: 'deny', message: FAIL_CLOSED_MESSAGE });
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledTimes(1);
+      expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'approval_decision',
+          decision: 'deny',
+          scope: 'once',
+          targetKind: 'command',
+        }),
+      );
+      handle.dispose();
+    },
+  );
 });
 
 /**
@@ -2530,17 +3070,14 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
   it('commits the transcript record before resolving the prompt', async () => {
     const order: string[] = [];
     mockUpdateCompatibilityTab.mockImplementation(
-      (_scope, _chatId, _updater, reason) => {
+      (_scope, _chatId, _updater, reason?: string) => {
         if (
           typeof reason === 'string' &&
           reason.startsWith('approval-resolution:')
         ) {
           order.push('commit');
         }
-        return Promise.resolve({
-          tabsFile: { version: 1, tabs: [], activeTabId: null },
-          updated: true,
-        });
+        return Promise.resolve(emptyCompatibilityTabResult());
       },
     );
     mockResolveApprovalFromMain.mockImplementation(() => {
@@ -2583,11 +3120,14 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     expect(commit).toBeDefined();
     const updater = commit?.[2];
     if (!updater) throw new Error('missing updater');
-    const updated = updater({
-      id: 'chat-1',
-      title: 'chat',
-      messages: [],
-    } as unknown as Parameters<typeof updater>[0]);
+    const updated = updater(
+      {
+        id: 'chat-1',
+        title: 'chat',
+        messages: [],
+      } as unknown as Parameters<typeof updater>[0],
+      undefined,
+    );
     const messages =
       updated && typeof updated === 'object' && 'messages' in updated
         ? updated.messages
@@ -2613,13 +3153,10 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     // An auto-approval that cannot be recorded is exactly the unrecorded
     // privileged action this change exists to prevent.
     mockUpdateCompatibilityTab.mockImplementation(
-      (_scope, _chatId, _updater, reason) =>
+      (_scope, _chatId, _updater, reason?: string) =>
         typeof reason === 'string' && reason.startsWith('approval-resolution:')
           ? Promise.reject(new Error('disk full'))
-          : Promise.resolve({
-              tabsFile: { version: 1, tabs: [], activeTabId: null },
-              updated: true,
-            }),
+          : Promise.resolve(emptyCompatibilityTabResult()),
     );
     const handle = createApprovalSession(makeCtx());
     void standingPrompt(
@@ -2706,11 +3243,14 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     );
     const updater = commit?.[2];
     if (!updater) throw new Error('missing updater');
-    const updated = updater({
-      id: 'chat-1',
-      title: 'chat',
-      messages: [],
-    } as unknown as Parameters<typeof updater>[0]);
+    const updated = updater(
+      {
+        id: 'chat-1',
+        title: 'chat',
+        messages: [],
+      } as unknown as Parameters<typeof updater>[0],
+      undefined,
+    );
     const messages =
       updated && typeof updated === 'object' && 'messages' in updated
         ? updated.messages
@@ -2872,13 +3412,16 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
       .at(-1);
     const updater = call?.[2];
     if (!updater) throw new Error(`no ${reasonPrefix} call`);
-    const updated = updater({
-      id: 'chat-1',
-      title: 'chat',
-      messages: seed,
-    } as unknown as Parameters<typeof updater>[0]);
+    const updated = updater(
+      {
+        id: 'chat-1',
+        title: 'chat',
+        messages: seed,
+      } as unknown as Parameters<typeof updater>[0],
+      undefined,
+    );
     return updated && typeof updated === 'object' && 'messages' in updated
-      ? (updated.messages as unknown[])
+      ? updated.messages
       : [];
   }
 
@@ -2955,17 +3498,14 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     await settleMicrotasks();
 
     mockUpdateCompatibilityTab.mockImplementation(
-      (_scope, _chatId, _updater, reason) => {
+      (_scope, _chatId, _updater, reason?: string) => {
         if (
           typeof reason === 'string' &&
           reason.startsWith('approval-resolution:')
         ) {
           setLiveApprovalMode('proj-1', 'wt-1', 'chat-1', 'ask');
         }
-        return Promise.resolve({
-          tabsFile: { version: 1, tabs: [], activeTabId: null },
-          updated: true,
-        });
+        return Promise.resolve(emptyCompatibilityTabResult());
       },
     );
 
@@ -3043,7 +3583,7 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     const handle = createApprovalSession(makeCtx());
     let widened = false;
     mockUpdateCompatibilityTab.mockImplementation(
-      (_scope, _chatId, _updater, reason) => {
+      (_scope, _chatId, _updater, reason?: string) => {
         // Land the widening inside the durable turn-timer pause -- after the
         // policy read, before `onRegistered`. `inFlightPrompts` is still empty
         // here, so the broadcast itself finds nothing to release.
@@ -3056,10 +3596,7 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
           handle.setMode('full-access');
           void handle.reevaluatePendingApprovals('full-access', 'ask');
         }
-        return Promise.resolve({
-          tabsFile: { version: 1, tabs: [], activeTabId: null },
-          updated: true,
-        });
+        return Promise.resolve(emptyCompatibilityTabResult());
       },
     );
 
@@ -3139,11 +3676,12 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     handle.dispose();
   });
 
-  it('does not let a second re-evaluation clear a mark it did not create', async () => {
-    // Two overlapping widenings over one standing prompt: A claims it, B loses
-    // the compare-and-delete. B must not clear A's suppression mark, or the
-    // resuming continuation records a SECOND, untagged decision -- the "user
-    // clicked Allow once" conflation the source field exists to prevent.
+  it('does not claim a prompt twice when widening re-evaluations overlap', async () => {
+    // Two overlapping widenings over one standing prompt: A claims it, then
+    // B's post-commit live-map check observes that the prompt is no longer
+    // pending and does not attempt a second claim. The resuming continuation
+    // must still record no SECOND, untagged decision -- the "user clicked
+    // Allow once" conflation the source field exists to prevent.
     const handle = createApprovalSession(makeCtx());
     nextPromptRequestId = 'req-1';
     let answer: ((decision: ApprovalPromptDecision) => void) | undefined;
@@ -3164,7 +3702,6 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     mockResolveApprovalFromMain.mockImplementation(
       (_requestId: string, _sessionKey: string, decision) => {
         claims += 1;
-        if (claims > 1) return false; // B loses, as `pending` would decide.
         answer?.(decision);
         return true;
       },
@@ -3179,7 +3716,7 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     await pending;
     await settleMicrotasks();
 
-    expect(claims).toBeGreaterThan(1);
+    expect(claims).toBe(1);
     const decisions = approvalDecisions();
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toEqual(
@@ -3195,7 +3732,7 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
     const handle = createApprovalSession(makeCtx());
     let widened = false;
     mockUpdateCompatibilityTab.mockImplementation(
-      (_scope, _chatId, _updater, reason) => {
+      (_scope, _chatId, _updater, reason?: string) => {
         if (
           !widened &&
           typeof reason === 'string' &&
@@ -3205,10 +3742,7 @@ describe('createApprovalSession - pending re-evaluation on mode widening', () =>
           handle.setMode('full-access');
           void handle.reevaluatePendingApprovals('full-access', 'ask');
         }
-        return Promise.resolve({
-          tabsFile: { version: 1, tabs: [], activeTabId: null },
-          updated: true,
-        });
+        return Promise.resolve(emptyCompatibilityTabResult());
       },
     );
 
@@ -3359,5 +3893,309 @@ describe('requestChatApproval through a live session', () => {
       requestChatApproval('proj-1', 'wt-1', 'chat-1', write, display),
     ).resolves.toMatchObject({ decision: 'deny' });
     expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+  });
+});
+
+describe('safety denial receipt lifecycle', () => {
+  const command = 'git push --force origin HEAD';
+  let tab: PersistedChatTab;
+
+  beforeEach(() => {
+    tab = {
+      id: 'chat-1',
+      title: 'Chat',
+      messages: [],
+      createdAt: '2026-10-23T00:00:00Z',
+    };
+    mockUpdateCompatibilityTab.mockImplementation((_scope, _chatId, update) => {
+      const next = update(tab, undefined);
+      if (next) tab = next;
+      return Promise.resolve({
+        tabsFile: { version: 1, tabs: [tab], activeTabId: tab.id },
+        updated: next !== null,
+      });
+    });
+  });
+
+  it('deduplicates overlapping checks and replay across handles, but retains distinct calls and subagents', async () => {
+    const context = makeCtx({ getTurnUserMessageId: () => 'turn-1' });
+    const handle = createApprovalSession(context);
+    const display = {
+      ...commandDisplay(command),
+      toolUseId: 'call-1',
+      subagentId: 'child-1',
+    };
+    await Promise.all([
+      handle.check(commandCheck(command), display),
+      handle.check(commandCheck(command), display),
+    ]);
+    expect(tab.messages).toHaveLength(1);
+    handle.dispose();
+    const recreated = createApprovalSession(context);
+    await recreated.check(commandCheck(command), display);
+    await recreated.check(commandCheck(command), {
+      ...display,
+      toolUseId: 'call-2',
+    });
+    await recreated.check(commandCheck(command), {
+      ...display,
+      subagentId: 'child-2',
+    });
+    expect(tab.messages).toHaveLength(3);
+    expect(new Set(tab.messages.map((message) => message.id)).size).toBe(3);
+    expect(tab.messages[0]?.blocks[0]).toMatchObject({
+      turnUserMessageId: 'turn-1',
+      toolUseId: 'call-1',
+      subagentId: 'child-1',
+    });
+    recreated.dispose();
+  });
+
+  it('retains separate checks without invocation IDs and separates reused IDs in different turns', async () => {
+    let turn = 'turn-1';
+    const handle = createApprovalSession(
+      makeCtx({ getTurnUserMessageId: () => turn }),
+    );
+    await handle.check(commandCheck(command), commandDisplay(command));
+    await handle.check(commandCheck(command), commandDisplay(command));
+    const display = { ...commandDisplay(command), toolUseId: 'call' };
+    await handle.check(commandCheck(command), display);
+    turn = 'turn-2';
+    await handle.check(commandCheck(command), display);
+    expect(tab.messages).toHaveLength(4);
+    handle.dispose();
+  });
+
+  it('awaits persistence and preserves ownership and evaluated mode through cancellation and shutdown', async () => {
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const commit = mockUpdateCompatibilityTab.getMockImplementation();
+    mockUpdateCompatibilityTab.mockImplementation(async (...args) => {
+      entered?.();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (!commit) throw new Error('Missing commit');
+      return commit(...args);
+    });
+    let turn = 'original-turn';
+    const handle = createApprovalSession(
+      makeCtx({ getTurnUserMessageId: () => turn }),
+    );
+    let settled = false;
+    const check = handle
+      .check(commandCheck(command), {
+        ...commandDisplay(command),
+        toolUseId: 'call',
+      })
+      .then((outcome) => {
+        settled = true;
+        return outcome;
+      });
+    await waiting;
+    expect(settled).toBe(false);
+    turn = 'next-turn';
+    handle.setMode('full-access');
+    handle.invalidatePending?.();
+    handle.dispose();
+    release?.();
+    expect(await check).toMatchObject({
+      decision: 'deny',
+      message: containingText('(force-push)'),
+    });
+    expect(mockUpdateCompatibilityTab.mock.calls[0]?.slice(0, 2)).toEqual([
+      { projectId: 'proj-1', worktreeId: 'wt-1' },
+      'chat-1',
+    ]);
+    expect(tab.messages[0]?.blocks[0]).toMatchObject({
+      mode: 'ask',
+      turnUserMessageId: 'original-turn',
+    });
+  });
+
+  it('keeps the specific denial and its receipt when the check aborts during persistence', async () => {
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const commit = mockUpdateCompatibilityTab.getMockImplementation();
+    mockUpdateCompatibilityTab.mockImplementation(async (...args) => {
+      entered?.();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (!commit) throw new Error('Missing commit');
+      return commit(...args);
+    });
+    const controller = new AbortController();
+    const handle = createApprovalSession(makeCtx());
+    const check = handle.check(commandCheck(command), {
+      ...commandDisplay(command),
+      toolUseId: 'aborted-call',
+      signal: controller.signal,
+    });
+    await waiting;
+    controller.abort();
+    release?.();
+    await expect(check).resolves.toMatchObject({
+      decision: 'deny',
+      message: containingText('(force-push)'),
+    });
+    expect(tab.messages[0]?.blocks[0]).toMatchObject({
+      toolUseId: 'aborted-call',
+    });
+    handle.dispose();
+  });
+
+  it('keeps the specific denial on commit rejection and retries only the receipt with the same identity', async () => {
+    mockUpdateCompatibilityTab.mockRejectedValueOnce(
+      new Error(`disk failed: ${command}`),
+    );
+    const handle = createApprovalSession(makeCtx());
+    const display = { ...commandDisplay(command), toolUseId: 'call' };
+    const outcome = await handle.check(commandCheck(command), display);
+    expect(outcome).toMatchObject({
+      decision: 'deny',
+      message: containingText('(force-push)'),
+    });
+    expect(tab.messages).toHaveLength(0);
+    expect(mockLogMainProcessWarn).toHaveBeenCalledWith(
+      'approval_safety_denied_receipt_failed',
+      expect.objectContaining({ reason: 'force-push', chatId: 'chat-1' }),
+    );
+    expect(JSON.stringify(mockLogMainProcessWarn.mock.calls)).not.toContain(
+      command,
+    );
+    await handle.check(commandCheck(command), display);
+    await handle.check(commandCheck(command), display);
+    expect(tab.messages).toHaveLength(1);
+    expect(mockRequestApprovalFromRenderer).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('recognizes canonical mutation replay even when the updater is skipped', async () => {
+    const handle = createApprovalSession(makeCtx());
+    const display = { ...commandDisplay(command), toolUseId: 'call' };
+    await handle.check(commandCheck(command), display);
+    mockUpdateCompatibilityTab.mockResolvedValueOnce({
+      tabsFile: { version: 1, tabs: [tab], activeTabId: tab.id },
+      updated: false,
+    });
+    await handle.check(commandCheck(command), display);
+    expect(tab.messages).toHaveLength(1);
+    expect(mockLogMainProcessWarn).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('reports a missing receipt destination without changing the denial', async () => {
+    mockUpdateCompatibilityTab.mockResolvedValueOnce(
+      emptyCompatibilityTabResult(false),
+    );
+    const handle = createApprovalSession(makeCtx());
+    expect(
+      await handle.check(commandCheck(command), commandDisplay(command)),
+    ).toMatchObject({
+      decision: 'deny',
+      message: containingText('(force-push)'),
+    });
+    expect(mockLogMainProcessWarn).toHaveBeenCalledTimes(1);
+    handle.dispose();
+  });
+
+  it('redacts and bounds stored command display text with an explicit marker', async () => {
+    const longCommand = `${command}; echo token=secret-value ${'x'.repeat(5000)}`;
+    const handle = createApprovalSession(makeCtx());
+    await handle.check(commandCheck(longCommand), commandDisplay(longCommand));
+    const block = tab.messages[0]?.blocks[0];
+    if (block?.type !== 'approval_safety_denied_info')
+      throw new Error('Missing receipt');
+    expect(block.command).toHaveLength(4000);
+    expect(block.command).not.toContain('secret-value');
+    expect(block.command).toMatch(/\[truncated\]$/);
+    handle.dispose();
+  });
+
+  it('excludes non-chat, saved-rule denials, and Full access from receipts', async () => {
+    const nonChat = createApprovalSession(makeCtx({ trackChatTurn: false }));
+    expect(
+      await nonChat.check(commandCheck(command), commandDisplay(command)),
+    ).toMatchObject({
+      decision: 'deny',
+      message: containingText('(force-push)'),
+    });
+    nonChat.dispose();
+    const full = createApprovalSession(makeCtx({ mode: 'full-access' }));
+    expect(
+      await full.check(commandCheck(command), commandDisplay(command)),
+    ).toEqual({ decision: 'allow' });
+    full.dispose();
+    const saved = createApprovalSession(
+      makeCtx({
+        sessionRules: [
+          {
+            id: 'deny',
+            behavior: 'deny',
+            target: { kind: 'command', pattern: 'git status' },
+            createdAt: '2026-10-23',
+            origin: 'settings',
+          },
+        ],
+      }),
+    );
+    expect(
+      await saved.check(
+        commandCheck('git status'),
+        commandDisplay('git status'),
+      ),
+    ).toEqual({ decision: 'deny', message: savedRuleDeniedMessage('session') });
+    expect(mockUpdateCompatibilityTab).not.toHaveBeenCalled();
+    saved.dispose();
+  });
+
+  it('uses the same safety handler after queued re-evaluation', async () => {
+    let release: ((decision: ApprovalPromptDecision) => void) | undefined;
+    mockRequestApprovalFromRenderer.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const handle = createApprovalSession(makeCtx());
+    const first = handle.check(
+      commandCheck('git status'),
+      commandDisplay('git status'),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const second = handle.check(commandCheck('rm -rf /workspace/link'), {
+      ...commandDisplay('rm -rf /workspace/link'),
+      toolUseId: 'queued-call',
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    mockRealpath.mockImplementation((path) =>
+      Promise.resolve(path === '/workspace/link' ? '/' : path),
+    );
+    release?.({ behavior: 'allow', scope: 'once' });
+    expect(await first).toEqual({ decision: 'allow' });
+    expect(await second).toMatchObject({
+      decision: 'deny',
+      message: containingText('(destructive delete)'),
+    });
+    expect(mockRequestApprovalFromRenderer).toHaveBeenCalledTimes(1);
+    expect(
+      tab.messages.some((message) =>
+        message.blocks.some(
+          (block) =>
+            block.type === 'approval_safety_denied_info' &&
+            block.toolUseId === 'queued-call',
+        ),
+      ),
+    ).toBe(true);
+    handle.dispose();
   });
 });

@@ -1,26 +1,38 @@
 const mockAgentContextEnabled = jest.fn(() => false);
 const mockGetContextAgent = jest.fn();
 jest.mock('../agents/resource-lanes', () => ({
-  agentResourceContextEnabled: mockAgentContextEnabled,
+  get agentResourceContextEnabled(): typeof mockAgentContextEnabled {
+    return mockAgentContextEnabled;
+  },
 }));
 jest.mock('../agents/canopy-server-client', () => ({
-  getSharedAgent: mockGetContextAgent,
+  get getSharedAgent(): typeof mockGetContextAgent {
+    return mockGetContextAgent;
+  },
 }));
 const mockSkillContextEnabled = jest.fn(() => false);
 const mockGetContextSkill = jest.fn();
 jest.mock('../skills/resource-lanes', () => ({
-  skillResourceContextEnabled: mockSkillContextEnabled,
+  get skillResourceContextEnabled(): typeof mockSkillContextEnabled {
+    return mockSkillContextEnabled;
+  },
 }));
 jest.mock('../skills/canopy-server-client', () => ({
-  getSharedSkill: mockGetContextSkill,
+  get getSharedSkill(): typeof mockGetContextSkill {
+    return mockGetContextSkill;
+  },
 }));
 const mockPipelineContextEnabled = jest.fn(() => false);
 const mockGetContextPipeline = jest.fn();
 jest.mock('../pipelines/resource-lanes', () => ({
-  pipelineResourceContextEnabled: mockPipelineContextEnabled,
+  get pipelineResourceContextEnabled(): typeof mockPipelineContextEnabled {
+    return mockPipelineContextEnabled;
+  },
 }));
 jest.mock('../pipelines/canopy-server-client', () => ({
-  getSharedPipeline: mockGetContextPipeline,
+  get getSharedPipeline(): typeof mockGetContextPipeline {
+    return mockGetContextPipeline;
+  },
 }));
 import type * as CanopyCloudClientModule from '../canopy-cloud/client';
 
@@ -33,11 +45,17 @@ jest.mock('../canopy-cloud/client', () => {
   );
   return {
     ...actual,
-    requestCanopyCloudPublicJson: requestPublicJson,
-    requestCanopyCloudJson: requestAuthenticatedJson,
+    get requestCanopyCloudPublicJson(): typeof requestPublicJson {
+      return requestPublicJson;
+    },
+    get requestCanopyCloudJson(): typeof requestAuthenticatedJson {
+      return requestAuthenticatedJson;
+    },
   };
 });
 
+import { ResourceContextUnavailableError } from '../lib/resource-context-error';
+import { resolveShareSnapshot } from '../ipc/deep-link';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -49,15 +67,36 @@ import {
   getPublicSkillShareSnapshot,
   getPublicWorkspaceTemplateSnapshot,
   getScopedAgentShareSnapshot,
+  getScopedSkillShareSnapshot,
 } from '../canopy-cloud/public-share-client';
 import { listPublisherSkills } from '../canopy-cloud/publisher-skill-catalog';
 
 import { PIPELINE_PACKAGE_CLIENT_VERSION } from '@canopy/protocol/pipelines';
+import type {
+  PublicSkillShareSnapshot,
+  SharedSkillDetail,
+} from '@canopy/protocol';
 
 const CLIENT_VERSION = String(PIPELINE_PACKAGE_CLIENT_VERSION);
 
 const UUID = '2f0c9a1e-4b3d-4f6a-8c2e-1d5b7a9e0c4f';
 const PUBLISHER_UUID = '2f0c9a1e-4b3d-5f6a-8c2e-1d5b7a9e0c4f';
+
+const scopedSkill: SharedSkillDetail = {
+  id: UUID,
+  name: 'Team helper',
+  description: 'Internal helper',
+  rawSkill: '# Team helper',
+  contentHash: 'skill-hash',
+  shareScope: 'organization',
+  owner: { type: 'organization', id: 'org-acme', name: 'Acme' },
+  createdBy: { id: 'sharer', name: 'Lena Park', email: null },
+  createdAt: '2026-09-01T00:00:00.000Z',
+  updatedAt: '2026-09-01T00:00:00.000Z',
+  canUpdate: false,
+  canDelete: false,
+  publicShare: null,
+};
 
 describe('public share client scoped fallback', () => {
   beforeEach(() => {
@@ -67,6 +106,139 @@ describe('public share client scoped fallback', () => {
     mockAgentContextEnabled.mockReturnValue(false);
     requestPublicJson.mockReset();
     requestAuthenticatedJson.mockReset();
+  });
+
+  describe.each([false, true])('skill context flag %s', (enabled) => {
+    beforeEach(() => {
+      mockSkillContextEnabled.mockReturnValue(enabled);
+    });
+
+    it.each(['organization', 'team'] as const)(
+      'forwards authenticated %s provenance through direct and public-fallback reads',
+      async (shareScope) => {
+        const detail: SharedSkillDetail = {
+          ...scopedSkill,
+          shareScope,
+          owner:
+            shareScope === 'team'
+              ? {
+                  type: 'team',
+                  id: 'team-platform',
+                  name: 'Platform',
+                  organization: { id: 'org-acme', name: 'Acme' },
+                }
+              : scopedSkill.owner,
+        };
+        mockGetContextSkill.mockResolvedValue(detail);
+        requestAuthenticatedJson.mockResolvedValue(detail);
+        const snapshot = await getScopedSkillShareSnapshot(UUID);
+        expect(snapshot).toMatchObject({
+          scopedShare: true,
+          authorUsername: null,
+          sharedBy: {
+            name: 'Lena Park',
+            owner: detail.owner,
+            shareScope,
+          },
+        });
+        expect(snapshot.sourceRemoteId).toBe(enabled ? UUID : undefined);
+        expect(requestPublicJson).not.toHaveBeenCalled();
+        if (enabled) {
+          expect(mockGetContextSkill).toHaveBeenCalledWith(UUID);
+          expect(requestAuthenticatedJson).not.toHaveBeenCalled();
+        } else {
+          expect(mockGetContextSkill).not.toHaveBeenCalled();
+          expect(requestAuthenticatedJson).toHaveBeenCalledWith(
+            `/api/v1/desktop-app/skills/${UUID}`,
+            { headers: { 'X-Pipeline-Package-Version': CLIENT_VERSION } },
+          );
+        }
+        requestPublicJson.mockRejectedValue(
+          new CanopyCloudClientError('http-error', 'Not found', 404),
+        );
+        await expect(getPublicSkillShareSnapshot(UUID)).resolves.toEqual(
+          snapshot,
+        );
+      },
+    );
+
+    it.each([null, '', '   '])(
+      'preserves an unavailable sharer name %j',
+      async (name) => {
+        const detail: SharedSkillDetail = {
+          ...scopedSkill,
+          createdBy: { ...scopedSkill.createdBy, name },
+        };
+        mockGetContextSkill.mockResolvedValue(detail);
+        requestAuthenticatedJson.mockResolvedValue(detail);
+        await expect(getScopedSkillShareSnapshot(UUID)).resolves.toMatchObject({
+          sharedBy: { name, owner: detail.owner, shareScope: 'organization' },
+        });
+      },
+    );
+
+    it('omits provenance whose owner predates the unified owner shape', async () => {
+      // Servers before CAN-2961 sent a team owner without its organization;
+      // the review must fall back rather than read through a missing parent.
+      const detail = {
+        ...scopedSkill,
+        shareScope: 'team',
+        owner: { type: 'team', id: 'team-platform', name: 'Platform' },
+      };
+      mockGetContextSkill.mockResolvedValue(detail);
+      requestAuthenticatedJson.mockResolvedValue(detail);
+      const snapshot = await getScopedSkillShareSnapshot(UUID);
+      expect(snapshot).toMatchObject({ scopedShare: true, externalId: UUID });
+      expect(snapshot).not.toHaveProperty('sharedBy');
+    });
+
+    it.each(['private', 'public', 'TEAM', '', undefined, null])(
+      'rejects invalid scoped audience %j through the existing not-found paths',
+      async (shareScope) => {
+        const detail = { ...scopedSkill, shareScope };
+        mockGetContextSkill.mockResolvedValue(detail);
+        requestAuthenticatedJson.mockResolvedValue(detail);
+        await expect(getScopedSkillShareSnapshot(UUID)).rejects.toMatchObject({
+          code: 'http-error',
+          status: 404,
+        });
+        const publicError = new CanopyCloudClientError(
+          'http-error',
+          'Not found',
+          404,
+        );
+        requestPublicJson.mockRejectedValue(publicError);
+        await expect(getPublicSkillShareSnapshot(UUID)).rejects.toMatchObject({
+          code: 'http-error',
+          status: 404,
+        });
+      },
+    );
+  });
+
+  it('preserves public attribution and publisher fields without a scoped read', async () => {
+    const snapshot: PublicSkillShareSnapshot = {
+      entity: 'skill',
+      externalId: UUID,
+      name: scopedSkill.name,
+      description: scopedSkill.description,
+      rawSkill: scopedSkill.rawSkill,
+      contentHash: scopedSkill.contentHash,
+      dependencies: [],
+      authorUsername: 'morgan',
+      publisher: {
+        name: 'Publisher',
+        sourceUrl: 'https://example.com/skills',
+        license: 'MIT',
+        pluginName: 'Guide',
+      },
+      updatedAt: scopedSkill.updatedAt,
+    };
+    requestPublicJson.mockResolvedValue(snapshot);
+    await expect(getPublicSkillShareSnapshot(UUID)).resolves.toBe(snapshot);
+    expect(snapshot).not.toHaveProperty('sharedBy');
+    expect(mockGetContextSkill).not.toHaveBeenCalled();
+    expect(requestAuthenticatedJson).not.toHaveBeenCalled();
   });
 
   it('loads publisher discovery anonymously without downloading skill contents', async () => {
@@ -189,10 +361,9 @@ describe('public share client scoped fallback', () => {
       404,
     );
     requestPublicJson.mockRejectedValue(unavailable);
-    mockGetContextAgent.mockRejectedValue(
-      new Error('Agent unavailable (context-mismatch)'),
-    );
-    await expect(getPublicAgentShareSnapshot(UUID)).rejects.toBe(unavailable);
+    const policyError = new ResourceContextUnavailableError('context-mismatch');
+    mockGetContextAgent.mockRejectedValue(policyError);
+    await expect(getPublicAgentShareSnapshot(UUID)).rejects.toBe(policyError);
     expect(mockGetContextAgent).toHaveBeenCalledWith(UUID);
   });
   it('refuses a scoped skill deep link when policy denies it', async () => {
@@ -203,10 +374,9 @@ describe('public share client scoped fallback', () => {
       404,
     );
     requestPublicJson.mockRejectedValue(unavailable);
-    mockGetContextSkill.mockRejectedValue(
-      new Error('Skill unavailable (context-mismatch)'),
-    );
-    await expect(getPublicSkillShareSnapshot(UUID)).rejects.toBe(unavailable);
+    const policyError = new ResourceContextUnavailableError('context-mismatch');
+    mockGetContextSkill.mockRejectedValue(policyError);
+    await expect(getPublicSkillShareSnapshot(UUID)).rejects.toBe(policyError);
     expect(mockGetContextSkill).toHaveBeenCalledWith(UUID);
     expect(requestAuthenticatedJson).not.toHaveBeenCalled();
   });
@@ -216,6 +386,7 @@ describe('public share client scoped fallback', () => {
       new CanopyCloudClientError('http-error', 'Not found', 404),
     );
     requestAuthenticatedJson.mockResolvedValue({
+      ...scopedSkill,
       id: UUID,
       name: 'Team helper',
       description: 'Internal helper',
@@ -270,15 +441,42 @@ describe('public share client scoped fallback', () => {
       404,
     );
     requestPublicJson.mockRejectedValue(unavailable);
-    mockGetContextPipeline.mockRejectedValue(
-      new Error('Pipeline unavailable (context-mismatch)'),
-    );
+    const policyError = new ResourceContextUnavailableError('context-mismatch');
+    mockGetContextPipeline.mockRejectedValue(policyError);
     await expect(getPublicPipelineShareSnapshot(UUID)).rejects.toBe(
-      unavailable,
+      policyError,
     );
     expect(mockGetContextPipeline).toHaveBeenCalledWith(UUID);
     expect(requestAuthenticatedJson).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['pipeline', 'Workflow unavailable (context-mismatch)'],
+    ['pipeline', 'Workflow unavailable (access-removed)'],
+    ['skill', 'Skill unavailable (context-mismatch)'],
+    ['agent', 'Agent unavailable (unknown-provenance)'],
+  ] as const)(
+    'resolves a %s lane refusal (%s) as an unavailable share',
+    async (entity, message) => {
+      mockPipelineContextEnabled.mockReturnValue(true);
+      mockSkillContextEnabled.mockReturnValue(true);
+      mockAgentContextEnabled.mockReturnValue(true);
+      requestPublicJson.mockRejectedValue(
+        new CanopyCloudClientError('http-error', 'Not found', 404),
+      );
+      const refusal = new Error(message);
+      mockGetContextPipeline.mockRejectedValue(refusal);
+      mockGetContextSkill.mockRejectedValue(refusal);
+      mockGetContextAgent.mockRejectedValue(refusal);
+      await expect(
+        resolveShareSnapshot({
+          entity,
+          externalId: UUID,
+          audience: 'ORGANIZATION',
+        }),
+      ).resolves.toEqual({ ok: false, reason: 'not-found' });
+    },
+  );
 
   it('retries a pipeline snapshot with version 1 when an older server requires it', async () => {
     requestPublicJson
@@ -392,6 +590,7 @@ describe('public share client scoped fallback', () => {
 
     expect(snapshot).toEqual(legacy);
     expect(snapshot).not.toHaveProperty('package');
+    expect(snapshot).not.toHaveProperty('sharedBy');
     expect(snapshot).not.toHaveProperty('distributionMode');
     // The fixture carries the hash the server really stored: the SHA-256 of
     // the exact SKILL.md bytes. Every import path compares against it.
@@ -457,6 +656,7 @@ describe('public share client scoped fallback', () => {
     );
     const summary = { digest: 'pp:v1:abc', totalFiles: 2, totalBytes: 10 };
     requestAuthenticatedJson.mockResolvedValue({
+      ...scopedSkill,
       id: UUID,
       name: 'Team helper',
       description: 'Internal helper',
@@ -492,6 +692,7 @@ describe('public share client scoped fallback', () => {
     );
     const summary = { digest: 'pp:v1:abc', totalFiles: 2, totalBytes: 10 };
     mockGetContextSkill.mockResolvedValue({
+      ...scopedSkill,
       id: UUID,
       name: 'Team helper',
       description: 'Internal helper',
@@ -527,37 +728,105 @@ describe('public share client scoped fallback', () => {
     );
   });
 
-  it.each([
-    new CanopyCloudClientError('missing-api-key', 'No API key'),
-    new CanopyCloudClientError('http-error', 'Forbidden', 403),
-  ])(
-    'preserves the public 404 when the scoped skill fallback fails (%s)',
-    async (fallbackError) => {
-      requestPublicJson.mockRejectedValue(
-        new CanopyCloudClientError('http-error', 'Not found', 404),
-      );
-      requestAuthenticatedJson.mockRejectedValue(fallbackError);
+  describe.each([
+    ['skill', false],
+    ['skill', true],
+    ['pipeline', false],
+    ['pipeline', true],
+    ['agent', true],
+    ['workspace', false],
+  ] as const)('%s scoped fallback (context %s)', (entity, enabled) => {
+    const read = {
+      skill: getPublicSkillShareSnapshot,
+      pipeline: getPublicPipelineShareSnapshot,
+      agent: getPublicAgentShareSnapshot,
+      workspace: getPublicWorkspaceTemplateSnapshot,
+    }[entity];
 
-      await expect(getPublicSkillShareSnapshot(UUID)).rejects.toMatchObject({
-        code: 'http-error',
-        status: 404,
-      });
+    beforeEach(() => {
+      mockSkillContextEnabled.mockReturnValue(enabled);
+      mockPipelineContextEnabled.mockReturnValue(enabled);
+      mockAgentContextEnabled.mockReturnValue(enabled);
+    });
+
+    it.each([
+      new CanopyCloudClientError('missing-api-key', 'No API key'),
+      new CanopyCloudClientError('http-error', 'Expired session', 401),
+      new CanopyCloudClientError('http-error', 'Forbidden', 403),
+      new CanopyCloudClientError('network-error', 'Offline'),
+      new CanopyCloudClientError('http-error', 'Scoped not found', 404),
+      new ResourceContextUnavailableError('context-mismatch'),
+    ])('propagates the exact scoped failure: %s', async (scopedError) => {
+      requestPublicJson.mockRejectedValue(
+        new CanopyCloudClientError('http-error', 'Public not found', 404),
+      );
+      requestAuthenticatedJson.mockRejectedValue(scopedError);
+      mockGetContextSkill.mockRejectedValue(scopedError);
+      mockGetContextPipeline.mockRejectedValue(scopedError);
+      mockGetContextAgent.mockRejectedValue(scopedError);
+
+      await expect(read(UUID)).rejects.toBe(scopedError);
+    });
+
+    it.each([401, 403, 500])(
+      'does not fall back on public HTTP %s',
+      async (status) => {
+        const error = new CanopyCloudClientError(
+          'http-error',
+          'Public failure',
+          status,
+        );
+        requestPublicJson.mockRejectedValue(error);
+        await expect(read(UUID)).rejects.toBe(error);
+        expect(requestAuthenticatedJson).not.toHaveBeenCalled();
+        expect(mockGetContextSkill).not.toHaveBeenCalled();
+        expect(mockGetContextPipeline).not.toHaveBeenCalled();
+        expect(mockGetContextAgent).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it('retains the public error when agent fallback is disabled', async () => {
+    const error = new CanopyCloudClientError(
+      'http-error',
+      'Public not found',
+      404,
+    );
+    requestPublicJson.mockRejectedValue(error);
+    await expect(getPublicAgentShareSnapshot(UUID)).rejects.toBe(error);
+    expect(mockGetContextAgent).not.toHaveBeenCalled();
+    expect(requestAuthenticatedJson).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      new CanopyCloudClientError('http-error', 'Expired session', 401),
+      'sign-in-required',
+    ],
+    [
+      new CanopyCloudClientError('http-error', 'Forbidden', 403),
+      'not-a-member',
+    ],
+    [
+      new CanopyCloudClientError('network-error', 'Offline'),
+      'cloud-unreachable',
+    ],
+  ])(
+    'classifies the real public reader fallback in the resolver: %s',
+    async (scopedError, reason) => {
+      // Only the JSON transport is mocked: the resolver and public/scoped readers
+      // compose exactly as they do for a public deep link.
+      requestPublicJson.mockRejectedValue(
+        new CanopyCloudClientError('http-error', 'Public not found', 404),
+      );
+      requestAuthenticatedJson.mockRejectedValue(scopedError);
+      await expect(
+        resolveShareSnapshot({ entity: 'skill', externalId: UUID }),
+      ).resolves.toEqual({ ok: false, reason });
+      expect(requestPublicJson).toHaveBeenCalledTimes(1);
+      expect(requestAuthenticatedJson).toHaveBeenCalledTimes(1);
     },
   );
-
-  it('preserves the public 404 when the scoped pipeline fallback fails', async () => {
-    requestPublicJson.mockRejectedValue(
-      new CanopyCloudClientError('http-error', 'Not found', 404),
-    );
-    requestAuthenticatedJson.mockRejectedValue(
-      new CanopyCloudClientError('missing-api-key', 'No API key'),
-    );
-
-    await expect(getPublicPipelineShareSnapshot(UUID)).rejects.toMatchObject({
-      code: 'http-error',
-      status: 404,
-    });
-  });
 
   it('rejects an authenticated private resource as an unresolved share', async () => {
     requestPublicJson.mockRejectedValue(

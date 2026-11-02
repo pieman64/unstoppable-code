@@ -6,12 +6,21 @@ const mockHandlers = new Map<
   string,
   (event: IpcMainInvokeEvent, value?: unknown) => unknown
 >();
-const mockSurfacing = {
-  subscribe: jest.fn((): (() => void) => () => undefined),
-  getPending: jest.fn(),
-  list: jest.fn(),
-  resolve: jest.fn(),
-};
+interface MockSurfacing {
+  subscribe: jest.Mock<() => void, []>;
+  getPending: jest.Mock;
+  list: jest.Mock;
+  resolve: jest.Mock;
+}
+
+function createMockSurfacing(): MockSurfacing {
+  return {
+    subscribe: jest.fn((): (() => void) => () => undefined),
+    getPending: jest.fn(),
+    list: jest.fn(),
+    resolve: jest.fn(),
+  };
+}
 
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
@@ -22,7 +31,7 @@ jest.mock('../ipc/register', () => ({
   },
 }));
 jest.mock('../skill-suggestions', () => ({
-  skillSuggestionSurfacing: mockSurfacing,
+  skillSuggestionSurfacing: createMockSurfacing(),
 }));
 
 import {
@@ -30,6 +39,10 @@ import {
   validateSkillSuggestionOrigin,
   validateSkillSuggestionResolveRequest,
 } from '../ipc/skill-suggestions';
+
+const mockSurfacing = jest.requireMock<{
+  skillSuggestionSurfacing: MockSurfacing;
+}>('../skill-suggestions').skillSuggestionSurfacing;
 
 const origin = { projectId: 'project', worktreeId: 'worktree', chatId: 'chat' };
 const sender = {

@@ -90,13 +90,13 @@ describe('expression-evaluator', () => {
       evaluateExpression("join(values, ',')", {
         ...context,
         values: ['alpha', 'beta'],
-      } as never),
+      }),
     ).toBe('alpha,beta');
     expect(
       evaluateExpression("contains(values, 'beta')", {
         ...context,
         values: ['alpha', 'beta'],
-      } as never),
+      }),
     ).toBe(true);
     expect(
       evaluateExpression(

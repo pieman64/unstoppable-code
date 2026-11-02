@@ -72,6 +72,9 @@ function isStreamedChatStateChange(
   runtimeBefore: (chatId: string) => ChatRuntimeState | undefined,
 ): boolean {
   switch (change.type) {
+    case 'delegation.card_state_updated':
+      // Descriptor metadata is not streamed token output.
+      return false;
     case 'message.upserted':
       return true;
     case 'transcript.updated':

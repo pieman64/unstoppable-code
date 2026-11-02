@@ -5,6 +5,7 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   UsageIndicator,
+  formatCreditCount,
   UsageIndicatorAccountSummary,
   type UsageIndicatorUsage,
 } from '../UsageIndicator';
@@ -307,6 +308,338 @@ describe('UsageIndicator', () => {
       document.body.querySelector('[data-testid="usage-indicator-expanded"]')
         ?.id,
     );
+  });
+
+  describe('AI Credits balance', () => {
+    function renderBalance(
+      props: Partial<Parameters<typeof UsageIndicator>[0]> = {},
+    ): HTMLButtonElement {
+      act(() => {
+        root.render(
+          <UsageIndicator
+            usage={BASE_USAGE}
+            isCodex={false}
+            capsule
+            {...props}
+          />,
+        );
+      });
+      const button = container.querySelector('[data-testid="usage-indicator"]');
+      if (!(button instanceof HTMLButtonElement)) throw new Error('no trigger');
+      return button;
+    }
+
+    async function open(button: HTMLButtonElement): Promise<HTMLElement> {
+      await act(async () => {
+        button.click();
+        await Promise.resolve();
+      });
+      const popover = document.body.querySelector(
+        '[data-testid="usage-indicator-popover"]',
+      );
+      if (!(popover instanceof HTMLElement)) throw new Error('no popover');
+      return popover;
+    }
+
+    it.each([
+      [42, '42'],
+      [0, '0'],
+      [0.25, '0.25'],
+      [12_500.5, '12,500.5'],
+    ])(
+      'shows a %s balance in the trigger, its name and the popover',
+      async (credits, count) => {
+        const text = `${count} AI Credits`;
+        const button = renderBalance({ creditBalance: { credits } });
+        // The context ring stays beside the balance.
+        expect(button.textContent).toBe(text);
+        expect(button.querySelector('svg')).not.toBeNull();
+        expect(
+          button.querySelector('[data-testid="usage-indicator-credit-balance"]')
+            ?.textContent,
+        ).toBe(text);
+        expect(button.getAttribute('aria-label')).toBe(
+          `Usage indicator, ${text}`,
+        );
+        const popover = await open(button);
+        const account = popover.querySelector(
+          '[data-testid="usage-indicator-account"]',
+        );
+        // One row: the label once, then the figure, never a second
+        // "AI Credits" or a "left".
+        expect(account?.textContent).toBe(`AI Credits${count}`);
+        expect(
+          account?.querySelector(
+            '[data-testid="usage-indicator-account-credit-balance"]',
+          )?.textContent,
+        ).toBe(count);
+      },
+    );
+
+    it.each([Number.NaN, -1, Number.POSITIVE_INFINITY])(
+      'shows nothing for an invalid balance (%s)',
+      (credits) => {
+        const button = renderBalance({ creditBalance: { credits } });
+        expect(
+          button.querySelector(
+            '[data-testid="usage-indicator-credit-balance"]',
+          ),
+        ).toBeNull();
+        expect(button.getAttribute('aria-label')).toBe('Usage indicator');
+        expect(button.querySelector('svg')).not.toBeNull();
+      },
+    );
+
+    it('replaces the subscription summary with the AI Credits balance', async () => {
+      const button = renderBalance({
+        creditBalance: { credits: 5 },
+        accountUsage: <div data-testid="subscription-usage">Claude Max</div>,
+      });
+      const popover = await open(button);
+      expect(
+        popover.querySelector('[data-testid="subscription-usage"]'),
+      ).toBeNull();
+      expect(
+        popover.querySelector('[data-testid="usage-indicator-account"]')
+          ?.textContent,
+      ).toBe('AI Credits5');
+    });
+
+    it('keeps the subscription summary without a balance', async () => {
+      const button = renderBalance({
+        accountUsage: <div data-testid="subscription-usage">Claude Max</div>,
+      });
+      const popover = await open(button);
+      expect(
+        popover.querySelector('[data-testid="subscription-usage"]'),
+      ).not.toBeNull();
+    });
+
+    it('shows the balance in place of the Usage label for a response-usage chat', async () => {
+      const button = renderBalance({
+        creditBalance: { credits: 3 },
+        responseUsage: {
+          message: 'Tokens for the latest response.',
+          note: 'Billed through AI Credits.',
+          usage: { inputTokens: 12, outputTokens: 3 },
+        },
+      });
+      expect(button.textContent).toBe('3 AI Credits');
+      const popover = await open(button);
+      expect(popover.textContent).toContain('Input12');
+      expect(
+        popover.querySelector('[data-testid="usage-indicator-account"]')
+          ?.textContent,
+      ).toBe('AI Credits3');
+    });
+
+    it('offers Manage only when the host supplies it', async () => {
+      const onManage = jest.fn();
+      const button = renderBalance({
+        creditBalance: { credits: 3, onManage },
+      });
+      const popover = await open(button);
+      const manage = popover.querySelector<HTMLButtonElement>(
+        'button[aria-label="Manage AI Credits"]',
+      );
+      expect(manage).not.toBeNull();
+      act(() => manage?.click());
+      expect(onManage).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['needs_purchase', 'Free AI Credits'],
+      ['needs_sign_in_then_purchase', 'Free AI Credits'],
+      ['unlocked', 'AI Credits'],
+      ['needs_sign_in', 'AI Credits'],
+    ] as const)(
+      'labels the balance for %s access',
+      async (libraryAccess, label) => {
+        const onManage = jest.fn();
+        const button = renderBalance({
+          creditBalance: { credits: 3.2, libraryAccess, onManage },
+        });
+        expect(
+          button.querySelector('[data-testid="usage-indicator-credit-balance"]')
+            ?.textContent,
+        ).toBe(`3.2 ${label}`);
+        expect(button.getAttribute('aria-label')).toBe(
+          `Usage indicator, 3.2 ${label}`,
+        );
+        const popover = await open(button);
+        const account = popover.querySelector(
+          '[data-testid="usage-indicator-account"]',
+        );
+        expect(account?.getAttribute('aria-label')).toBe(`${label} balance`);
+        expect(account?.querySelector('.fg-primary')?.textContent).toBe(label);
+        expect(
+          account?.querySelector(
+            '[data-testid="usage-indicator-account-credit-balance"]',
+          )?.textContent,
+        ).toBe('3.2');
+        // The management action keeps its plain product name.
+        expect(
+          popover.querySelector('button[aria-label="Manage AI Credits"]'),
+        ).not.toBeNull();
+      },
+    );
+
+    it('follows access from unknown to pre-purchase to unlocked', () => {
+      const name = (
+        libraryAccess?: 'needs_purchase' | 'unlocked',
+      ): string | null =>
+        renderBalance({
+          creditBalance: {
+            credits: 0,
+            ...(libraryAccess ? { libraryAccess } : {}),
+          },
+        }).getAttribute('aria-label');
+      expect(name()).toBe('Usage indicator, 0 AI Credits');
+      expect(name('needs_purchase')).toBe('Usage indicator, 0 Free AI Credits');
+      expect(name('unlocked')).toBe('Usage indicator, 0 AI Credits');
+    });
+
+    it('opens from the keyboard like the plain meter', async () => {
+      const button = renderBalance({ creditBalance: { credits: 3 } });
+      button.focus();
+      expect(document.activeElement).toBe(button);
+      expect(button.getAttribute('aria-expanded')).toBe('false');
+      await open(button);
+      expect(button.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    describe('a pending balance (CAN-5026)', () => {
+      function slot(button: HTMLButtonElement): Element | null {
+        return button.querySelector(
+          '[data-testid="usage-indicator-credit-balance"]',
+        );
+      }
+
+      function popoverFigure(): Element | null {
+        return document.body.querySelector(
+          '[data-testid="usage-indicator-account-credit-balance"]',
+        );
+      }
+
+      it('holds the slot with a skeleton, busy and without a figure', () => {
+        const button = renderBalance({ creditBalance: { credits: null } });
+        const pending = slot(button);
+        expect(pending).not.toBeNull();
+        expect(pending?.getAttribute('data-pending')).toBe('true');
+        expect(pending?.textContent).toBe('');
+        expect(
+          pending?.querySelector('.canopy-inline-skeleton'),
+        ).not.toBeNull();
+        expect(button.getAttribute('aria-busy')).toBe('true');
+        expect(button.getAttribute('aria-label')).toBe('Usage indicator');
+        // The ring stays, and no loading prose is added.
+        expect(button.querySelector('svg')).not.toBeNull();
+        expect(button.textContent).toBe('');
+      });
+
+      it('moves numeric → pending → numeric with the popover open', async () => {
+        const onManage = jest.fn();
+        const button = renderBalance({
+          creditBalance: { credits: 3.2, onManage },
+        });
+        const popover = await open(button);
+        expect(popoverFigure()?.textContent).toBe('3.2');
+        expect(button.hasAttribute('aria-busy')).toBe(false);
+
+        renderBalance({ creditBalance: { credits: null, onManage } });
+        expect(button.getAttribute('aria-busy')).toBe('true');
+        expect(button.getAttribute('aria-label')).toBe('Usage indicator');
+        expect(button.textContent).not.toContain('3.2');
+        expect(popover.isConnected).toBe(true);
+        expect(popover.textContent).not.toContain('3.2');
+        const account = popover.querySelector(
+          '[data-testid="usage-indicator-account"]',
+        );
+        expect(account?.getAttribute('aria-busy')).toBe('true');
+        expect(account?.textContent).toBe('AI CreditsManage');
+        expect(
+          popoverFigure()?.querySelector('.canopy-inline-skeleton'),
+        ).not.toBeNull();
+        // Manage stays usable while the figure loads.
+        const manage = popover.querySelector<HTMLButtonElement>(
+          'button[aria-label="Manage AI Credits"]',
+        );
+        act(() => manage?.click());
+        expect(onManage).toHaveBeenCalledTimes(1);
+
+        renderBalance({ creditBalance: { credits: 1200, onManage } });
+        expect(button.hasAttribute('aria-busy')).toBe(false);
+        expect(button.getAttribute('aria-label')).toBe(
+          'Usage indicator, 1,200 AI Credits',
+        );
+        expect(slot(button)?.textContent).toBe('1,200 AI Credits');
+        expect(popoverFigure()?.textContent).toBe('1,200');
+        expect(account?.hasAttribute('aria-busy')).toBe(false);
+      });
+
+      it('keeps the wide capsule while pending', () => {
+        const button = renderBalance({ creditBalance: { credits: 3.2 } });
+        const wide = button.className;
+        renderBalance({ creditBalance: { credits: null } });
+        expect(button.className).toBe(wide);
+        renderBalance({});
+        expect(button.className).not.toBe(wide);
+      });
+
+      it.each([3.2, 1200, 123456789])(
+        'sizes both skeletons to the figures they replaced (%s)',
+        async (credits) => {
+          const width = jest
+            .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+            .mockReturnValue(new DOMRect(0, 0, 87, 16));
+          try {
+            const button = renderBalance({ creditBalance: { credits } });
+            await open(button);
+            renderBalance({ creditBalance: { credits: null } });
+            expect(
+              slot(button)?.querySelector<HTMLElement>(
+                '.canopy-inline-skeleton',
+              )?.style.width,
+            ).toBe('87px');
+            expect(
+              popoverFigure()?.querySelector<HTMLElement>(
+                '.canopy-inline-skeleton',
+              )?.style.width,
+            ).toBe('87px');
+            expect(
+              slot(button)
+                ?.querySelector('.canopy-inline-skeleton')
+                ?.hasAttribute('data-active'),
+            ).toBe(false);
+            expect(
+              popoverFigure()
+                ?.querySelector('.canopy-inline-skeleton')
+                ?.hasAttribute('data-active'),
+            ).toBe(false);
+          } finally {
+            width.mockRestore();
+          }
+        },
+      );
+
+      it('offers no Manage while pending when the host supplies none', async () => {
+        const button = renderBalance({ creditBalance: { credits: null } });
+        const popover = await open(button);
+        expect(
+          popover.querySelector('button[aria-label="Manage AI Credits"]'),
+        ).toBeNull();
+        expect(
+          popover.querySelector('[data-testid="usage-indicator-account"]')
+            ?.textContent,
+        ).toBe('AI Credits');
+      });
+
+      it('renders no slot when the balance is omitted', () => {
+        const button = renderBalance({});
+        expect(slot(button)).toBeNull();
+        expect(button.hasAttribute('aria-busy')).toBe(false);
+      });
+    });
   });
 
   it('keeps the model on a response-tokens readout', async () => {
@@ -695,4 +1028,9 @@ describe('UsageIndicator', () => {
       jest.useRealTimers();
     }
   });
+});
+
+test('a positive fractional wallet never formats as zero', () => {
+  expect(formatCreditCount(0.004)).toBe('0.004');
+  expect(formatCreditCount(0.000001)).toBe('0.000001');
 });

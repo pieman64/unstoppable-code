@@ -8,10 +8,10 @@ import { seedPluginsCache } from './seeders/index.mjs';
 
 // Verifies rendering of uninstalled-plugin surfacing affordances:
 //
-//   - `marketplace-missing-count-<id>`  — badge on the marketplace row
-//   - `bulk-install-plugins`            — header bulk action in the modal
-//   - `plugin-install-<name>`           — per-row install button (needs install)
-//   - `plugin-install-status-<name>`    — per-row status cell (installed/inline)
+//   - `marketplace-source-missing-count` — badge on the Marketplaces source row
+//   - `bulk-install-plugins`             — bulk action on the source detail page
+//   - `plugin-install-<name>`            — per-row install button (needs install)
+//   - `plugin-install-status-<name>`     — per-row status cell (installed/inline)
 //
 // The spec seeds a v2 plugins-cache.json with one marketplace that has two
 // external plugins needing install, one installed external plugin, and one
@@ -55,22 +55,21 @@ test.describe('marketplace uninstalled-plugin surfacing', () => {
       await app.openPluginsPage();
       await app.openPluginsTab('marketplace');
 
-      // Marketplace list counter: 2 external plugins need install.
-      const badge = window.getByTestId('marketplace-missing-count-demo/market');
+      // Marketplaces source row counter: 2 external plugins need install.
+      const sourceRow = window.locator(
+        '[data-testid="marketplace-source-row"][data-source-id="demo/market"]',
+      );
+      const badge = sourceRow.getByTestId('marketplace-source-missing-count');
       await expect(badge).toBeVisible();
       await expect(badge).toContainText('2');
 
-      // Open the marketplace plugins modal.
-      // The table row also contains the "Check for updates" button. Clicking
-      // the row locator's center can land on that nested control, which
-      // intentionally refreshes the offline fixture and removes its cached
-      // plugin rows. Use the name cell so this test exercises the row-open
-      // affordance rather than the adjacent refresh action.
-      await window
-        .getByTestId('marketplace-row-demo/market')
-        .locator('td')
-        .first()
-        .click();
+      // Open the source detail page through the row's open control, not the
+      // adjacent Update action, which would refresh the offline fixture and
+      // remove its cached plugin rows.
+      await sourceRow.getByTestId('marketplace-source-open').click();
+      await expect(
+        window.getByTestId('marketplace-source-detail'),
+      ).toBeVisible();
 
       // Bulk action present with correct count.
       await expect(window.getByTestId('bulk-install-plugins')).toContainText(

@@ -51,6 +51,15 @@ function status(
     routeCodex: true,
     keepChatOnOneAccount: true,
     refreshedAt: 2000,
+    local: {
+      phase: 'not-installed',
+      version: null,
+      install: null,
+      port: null,
+      startWithApp: true,
+      message: null,
+    },
+    signIn: null,
     ...overrides,
   };
 }

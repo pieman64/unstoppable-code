@@ -22,6 +22,7 @@ export const skill = {
   contentHash: 'a'.repeat(64),
   shareScope: 'organization',
   owner: { type: 'organization', id: ORG_CONTEXT_A, name: 'Acme' },
+  createdBy: { id: 'user', name: 'Owner', email: 'owner@example.test' },
   rawSkill:
     '---\nname: Organization A review\ndescription: An organization review skill\n---\nReview this change.\n',
 };

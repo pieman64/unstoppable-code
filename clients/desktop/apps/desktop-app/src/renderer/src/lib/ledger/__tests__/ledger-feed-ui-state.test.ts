@@ -20,6 +20,7 @@ describe('ledgerFeedUiState', () => {
           projectId: 'project-1',
           scope: SCOPE,
           draft: null,
+          draftId: null,
         }),
       ),
     ).toMatchObject({
@@ -36,11 +37,33 @@ describe('ledgerFeedUiState', () => {
         projectId: 'project-1',
         scope: SCOPE,
         draft: null,
+        draftId: null,
       }),
     );
 
     expect(state).not.toHaveProperty('addingEntry');
     expect(state).not.toHaveProperty('draftProjectId');
     expect(state).not.toHaveProperty('draftWorktreeId');
+  });
+
+  it('reports a selected global (workflow) scope by its Ledger, not a task', () => {
+    const store = createLedgerFeedStore({
+      searchFeed: () => Promise.reject(new Error('Not read')),
+      getFeedEntry: () => Promise.reject(new Error('Not read')),
+    });
+    const state = ledgerFeedUiState({
+      ...store.getState(),
+      selectedScope: {
+        kind: 'global',
+        owner: { kind: 'personal' },
+        ledgerId: 'ledger-1',
+      },
+    });
+
+    expect(state).toMatchObject({
+      selectedScopeKind: 'global',
+      selectedLedgerId: 'ledger-1',
+    });
+    expect(state).not.toHaveProperty('selectedProjectId');
   });
 });

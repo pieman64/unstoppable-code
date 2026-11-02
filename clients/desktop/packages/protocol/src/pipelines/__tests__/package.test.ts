@@ -25,6 +25,7 @@ import {
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
+const HASH_C = 'c'.repeat(64);
 
 function manifest(): PipelinePackageManifestV1 {
   return {
@@ -108,7 +109,7 @@ describe('pipeline package protocol', () => {
 
   it('pins version constants and produces a stable canonical digest', async () => {
     expect(PIPELINE_PACKAGE_VERSION).toBe(1);
-    expect(PIPELINE_PACKAGE_CLIENT_VERSION).toBe(5);
+    expect(PIPELINE_PACKAGE_CLIENT_VERSION).toBe(6);
     expect(PIPELINE_PACKAGE_VERSION_HEADER).toBe('X-Pipeline-Package-Version');
 
     const first = manifest();
@@ -126,6 +127,81 @@ describe('pipeline package protocol', () => {
       /^pp:v1:[A-Za-z0-9_-]{43}$/,
     );
   });
+
+  it('keeps the digest of installed-item refs stable across a jsonb key reorder', async () => {
+    const sent = manifest();
+    firstResource(sent).installedItemRef = {
+      kind: 'plugin',
+      marketplaceId: 'market',
+      pluginName: 'plugin',
+    };
+    const secondResource = sent.resources[1];
+    if (!secondResource) throw new Error('Fixture resource is missing');
+    secondResource.installedItemRef = {
+      kind: 'skill',
+      sourceId: 'source',
+      skillName: 'skill',
+    };
+    // Postgres jsonb stores object keys shortest first, so a stored manifest
+    // comes back with its refs reordered.
+    const stored = structuredClone(sent);
+    firstResource(stored).installedItemRef = {
+      kind: 'plugin',
+      pluginName: 'plugin',
+      marketplaceId: 'market',
+    };
+
+    expect(canonicalizePipelinePackageManifest(stored)).toBe(
+      canonicalizePipelinePackageManifest(sent),
+    );
+    expect(await computePipelinePackageDigest(stored)).toBe(
+      await computePipelinePackageDigest(sent),
+    );
+    // Already-published packages were hashed in the client's key order.
+    expect(canonicalizePipelinePackageManifest(stored)).toContain(
+      '"installedItemRef":{"kind":"plugin","marketplaceId":"market","pluginName":"plugin"}',
+    );
+  });
+
+  it.each([
+    'pipeline_definition',
+    'automation_definition',
+    'agent_definition',
+    'hook_definition',
+  ] as const)(
+    'accepts a canonical %s document and requires version 5',
+    (kind) => {
+      const input = manifest();
+      firstResource(input).kind = kind;
+      expect(validatePipelinePackageManifest(input)).toEqual({ ok: true });
+      expect(requiredCapabilityPackageClientVersion(input)).toBe(5);
+      firstEntry(input).mode = 'execute';
+      expect(validatePipelinePackageManifest(input).ok).toBe(false);
+    },
+  );
+
+  it.each([{}, null, { entries: null }, { entries: [null] }])(
+    'rejects malformed definition trees without throwing',
+    (tree) => {
+      const input = manifest();
+      const malformed = {
+        ...input,
+        resources: [
+          { ...firstResource(input), kind: 'agent_definition', trees: [tree] },
+        ],
+      };
+      expect(validatePipelinePackageManifest(malformed).ok).toBe(false);
+    },
+  );
+
+  it.each(['child_pipeline', 'pipeline_action'] as const)(
+    'preserves version 4 for %s',
+    (kind) => {
+      const input = manifest();
+      firstResource(input).kind = kind;
+      expect(requiredCapabilityPackageClientVersion(input)).toBe(4);
+    },
+  );
 
   it('accepts a valid manifest without mutating it', () => {
     const input = manifest();
@@ -418,7 +494,7 @@ describe('capability package subject bindings', () => {
     if (!resource) throw new Error('Fixture resource is missing');
     resource.kind = 'pipeline_action';
     expect(requiredCapabilityPackageClientVersion(portableAction)).toBe(4);
-    expect(CAPABILITY_PACKAGE_CLIENT_VERSION).toBe(5);
+    expect(CAPABILITY_PACKAGE_CLIENT_VERSION).toBe(6);
     const pinned = manifest();
     const pinnedResource = pinned.resources[0];
     if (!pinnedResource) throw new Error('Fixture resource is missing');
@@ -428,6 +504,304 @@ describe('capability package subject bindings', () => {
       pluginName: 'plugin',
     };
     expect(requiredCapabilityPackageClientVersion(pinned)).toBe(5);
+  });
+
+  it('requires client version 6 for automation pipelines and file assets, over version 5', () => {
+    const packaged = automationPipelineManifest();
+    expect(requiredCapabilityPackageClientVersion(packaged)).toBe(6);
+    const pinnedResource = packaged.resources[0];
+    if (!pinnedResource) throw new Error('Fixture resource is missing');
+    pinnedResource.installedItemRef = {
+      kind: 'plugin',
+      marketplaceId: 'market',
+      pluginName: 'plugin',
+    };
+    expect(requiredCapabilityPackageClientVersion(packaged)).toBe(6);
+    const assetOnly = manifest();
+    assetOnly.resources.push({ ...assetResource(), pipelineKey: 'missing' });
+    expect(requiredCapabilityPackageClientVersion(assetOnly)).toBe(6);
+  });
+});
+
+function pipelineResource(key = 'action'): PipelinePackageResource {
+  return {
+    id: `automation-pipeline-${key}`,
+    kind: 'automation_pipeline',
+    displayName: `Pipeline ${key}`,
+    sourceLabel: key,
+    sourceVisibility: 'local',
+    invocationKeys: [],
+    dependencyResourceIds: [],
+    pipelineKey: key,
+    pipelineContentHash: HASH_C,
+    trees: [
+      {
+        provider: 'claude',
+        runtimeKind: 'automation_pipeline',
+        rootName: key,
+        entries: [
+          { path: 'pipeline.yaml', sha256: HASH_C, size: 5, mode: 'read' },
+        ],
+      },
+    ],
+  };
+}
+
+function assetResource(key = 'action'): PipelinePackageResource {
+  return {
+    id: `file-asset-${key}-specialists`,
+    kind: 'file_asset',
+    displayName: 'specialists',
+    sourceLabel: key,
+    sourceVisibility: 'local',
+    invocationKeys: [],
+    dependencyResourceIds: [],
+    pipelineKey: key,
+    assetId: 'specialists',
+    installMode: 'seed',
+    required: true,
+    trees: [
+      {
+        provider: 'claude',
+        runtimeKind: 'pipeline_asset',
+        rootName: 'specialists',
+        entries: [
+          { path: 'a/one.json', sha256: HASH_B, size: 6, mode: 'read' },
+        ],
+      },
+    ],
+  };
+}
+
+function automationPipelineManifest(): PipelinePackageManifestV1 {
+  const input = manifest();
+  input.resources.push(pipelineResource(), assetResource());
+  input.totalFiles += 2;
+  input.totalBytes += 11;
+  return input;
+}
+
+function resourceAt(
+  value: PipelinePackageManifestV1,
+  index: number,
+): PipelinePackageResource {
+  const resource = value.resources[index];
+  if (!resource) throw new Error('Fixture resource is missing');
+  return resource;
+}
+
+function expectInvalid(value: unknown, fragment: string): void {
+  const result = validatePipelinePackageManifest(value);
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.errors.join('\n')).toContain(fragment);
+}
+
+describe('automation pipeline and file asset resources', () => {
+  it('accepts an automation pipeline with its asset', () => {
+    expect(
+      validatePipelinePackageManifest(automationPipelineManifest()),
+    ).toEqual({ ok: true });
+  });
+
+  it('keeps the new fields through canonicalization and the digest', async () => {
+    const first = automationPipelineManifest();
+    const second = automationPipelineManifest();
+    second.resources.reverse();
+    const canonical = canonicalizePipelinePackageManifest(first);
+    expect(canonical).toBe(canonicalizePipelinePackageManifest(second));
+    expect(canonical).toContain('"pipelineKey":"action"');
+    expect(canonical).toContain(`"pipelineContentHash":"${HASH_C}"`);
+    expect(canonical).toContain('"assetId":"specialists"');
+    expect(canonical).toContain('"installMode":"seed"');
+    expect(canonical).toContain('"required":true');
+    const flipped = automationPipelineManifest();
+    resourceAt(flipped, 3).installMode = 'replace';
+    expect(await computePipelinePackageDigest(flipped)).not.toBe(
+      await computePipelinePackageDigest(first),
+    );
+  });
+
+  it('requires pipelineKey and pipelineContentHash on automation pipelines', () => {
+    const missingKey = automationPipelineManifest();
+    delete resourceAt(missingKey, 2).pipelineKey;
+    expectInvalid(missingKey, 'resources[2].pipelineKey is invalid');
+
+    const badKey = automationPipelineManifest();
+    resourceAt(badKey, 2).pipelineKey = '../escape';
+    expectInvalid(badKey, 'resources[2].pipelineKey is invalid');
+
+    const missingHash = automationPipelineManifest();
+    delete resourceAt(missingHash, 2).pipelineContentHash;
+    expectInvalid(missingHash, 'resources[2].pipelineContentHash is invalid');
+
+    const badHash = automationPipelineManifest();
+    resourceAt(badHash, 2).pipelineContentHash = 'abc';
+    expectInvalid(badHash, 'resources[2].pipelineContentHash is invalid');
+  });
+
+  it('requires assetId, installMode and required on file assets', () => {
+    const badAsset = automationPipelineManifest();
+    resourceAt(badAsset, 3).assetId = 'Bad-Id';
+    expectInvalid(badAsset, 'resources[3].assetId is invalid');
+
+    const badMode = automationPipelineManifest();
+    Object.assign(resourceAt(badMode, 3), { installMode: 'merge' });
+    expectInvalid(badMode, 'resources[3].installMode is invalid');
+
+    const missingRequired = automationPipelineManifest();
+    delete resourceAt(missingRequired, 3).required;
+    expectInvalid(missingRequired, 'resources[3].required is invalid');
+  });
+
+  it('rejects the new fields on other kinds', () => {
+    const onSkill = manifest();
+    Object.assign(resourceAt(onSkill, 0), {
+      pipelineKey: 'action',
+      pipelineContentHash: HASH_C,
+      assetId: 'specialists',
+      installMode: 'seed',
+      required: true,
+    });
+    const result = validatePipelinePackageManifest(onSkill);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        'resources[0].pipelineKey is only allowed on pipeline resources',
+        'resources[0].pipelineContentHash is only allowed on automation pipelines',
+        'resources[0].assetId is only allowed on file assets',
+        'resources[0].installMode is only allowed on file assets',
+        'resources[0].required is only allowed on file assets',
+      ]),
+    );
+
+    const hashOnAsset = automationPipelineManifest();
+    resourceAt(hashOnAsset, 3).pipelineContentHash = HASH_C;
+    expectInvalid(
+      hashOnAsset,
+      'resources[3].pipelineContentHash is only allowed on automation pipelines',
+    );
+
+    const assetFieldsOnPipeline = automationPipelineManifest();
+    resourceAt(assetFieldsOnPipeline, 2).required = false;
+    expectInvalid(
+      assetFieldsOnPipeline,
+      'resources[2].required is only allowed on file assets',
+    );
+  });
+
+  it('rejects duplicate automation pipeline keys', () => {
+    const duplicated = automationPipelineManifest();
+    duplicated.resources.push({
+      ...pipelineResource(),
+      id: 'automation-pipeline-action-2',
+    });
+    duplicated.totalFiles += 1;
+    duplicated.totalBytes += 5;
+    expectInvalid(duplicated, 'Duplicate pipeline key: action');
+  });
+
+  it('rejects a file asset whose pipelineKey names no automation pipeline', () => {
+    const orphan = automationPipelineManifest();
+    resourceAt(orphan, 3).pipelineKey = 'project-other';
+    expectInvalid(
+      orphan,
+      'resources[3].pipelineKey names no automation pipeline: project-other',
+    );
+  });
+
+  it('keeps pipeline and asset trees on their own kinds', () => {
+    const pipelineTreeOnSkill = manifest();
+    const skillTree = resourceAt(pipelineTreeOnSkill, 1).trees[0];
+    if (!skillTree) throw new Error('Fixture tree is missing');
+    skillTree.runtimeKind = 'automation_pipeline';
+    expectInvalid(
+      pipelineTreeOnSkill,
+      'resources[1].trees[0].runtimeKind does not match resources[1].kind',
+    );
+
+    const assetTreeOnSkill = manifest();
+    const commandTree = resourceAt(assetTreeOnSkill, 0).trees[0];
+    if (!commandTree) throw new Error('Fixture tree is missing');
+    commandTree.runtimeKind = 'pipeline_asset';
+    expectInvalid(
+      assetTreeOnSkill,
+      'resources[0].trees[0].runtimeKind does not match resources[0].kind',
+    );
+
+    const skillTreeOnPipeline = automationPipelineManifest();
+    const pipelineTree = resourceAt(skillTreeOnPipeline, 2).trees[0];
+    if (!pipelineTree) throw new Error('Fixture tree is missing');
+    pipelineTree.runtimeKind = 'standalone_skill';
+    expectInvalid(
+      skillTreeOnPipeline,
+      'resources[2].trees[0].runtimeKind does not match resources[2].kind',
+    );
+
+    const pipelineTreeOnAsset = automationPipelineManifest();
+    const assetTree = resourceAt(pipelineTreeOnAsset, 3).trees[0];
+    if (!assetTree) throw new Error('Fixture tree is missing');
+    assetTree.runtimeKind = 'automation_pipeline';
+    expectInvalid(
+      pipelineTreeOnAsset,
+      'resources[3].trees[0].runtimeKind does not match resources[3].kind',
+    );
+  });
+
+  it('requires one pipeline.yaml entry in one tree rooted at the key', () => {
+    const renamed = automationPipelineManifest();
+    const renamedEntry = resourceAt(renamed, 2).trees[0]?.entries[0];
+    if (!renamedEntry) throw new Error('Fixture entry is missing');
+    renamedEntry.path = 'other.yaml';
+    expectInvalid(renamed, 'must carry exactly one pipeline.yaml entry');
+
+    const extra = automationPipelineManifest();
+    resourceAt(extra, 2).trees[0]?.entries.push({
+      path: 'extra.yaml',
+      sha256: HASH_C,
+      size: 1,
+      mode: 'read',
+    });
+    extra.totalFiles += 1;
+    extra.totalBytes += 1;
+    expectInvalid(extra, 'must carry exactly one pipeline.yaml entry');
+
+    const noTree = automationPipelineManifest();
+    resourceAt(noTree, 2).trees = [];
+    noTree.totalFiles -= 1;
+    noTree.totalBytes -= 5;
+    expectInvalid(noTree, 'resources[2] must carry exactly one pipeline tree');
+
+    const wrongRoot = automationPipelineManifest();
+    const wrongRootTree = resourceAt(wrongRoot, 2).trees[0];
+    if (!wrongRootTree) throw new Error('Fixture tree is missing');
+    wrongRootTree.rootName = 'other';
+    expectInvalid(
+      wrongRoot,
+      'resources[2].trees[0].rootName must equal resources[2].pipelineKey',
+    );
+
+    const wrongAssetRoot = automationPipelineManifest();
+    const wrongAssetTree = resourceAt(wrongAssetRoot, 3).trees[0];
+    if (!wrongAssetTree) throw new Error('Fixture tree is missing');
+    wrongAssetTree.rootName = 'other';
+    expectInvalid(
+      wrongAssetRoot,
+      'resources[3].trees[0].rootName must equal resources[3].assetId',
+    );
+  });
+
+  it('accepts an empty asset tree and an asset without a tree', () => {
+    const empty = automationPipelineManifest();
+    const tree = resourceAt(empty, 3).trees[0];
+    if (!tree) throw new Error('Fixture tree is missing');
+    tree.entries = [];
+    empty.totalFiles -= 1;
+    empty.totalBytes -= 6;
+    expect(validatePipelinePackageManifest(empty)).toEqual({ ok: true });
+    resourceAt(empty, 3).trees = [];
+    expect(validatePipelinePackageManifest(empty)).toEqual({ ok: true });
   });
 });
 

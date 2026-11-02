@@ -20,7 +20,7 @@ jest.mock('../skills/skill-service', () => ({
   loadSkills: jest.fn(),
   fetchAvailable: jest.fn(),
   installSkills: jest.fn(),
-  removeSkill: jest.fn(),
+  removeSkillForContext: jest.fn(),
   updateSkill: jest.fn(),
   checkUpdates: jest.fn(),
   readSkillContent: jest.fn(),
@@ -42,6 +42,7 @@ jest.mock('../skills/canopy-server-client', () => ({
 
 import { PLUGINS_CHANNELS } from '@canopy/desktop-shared/constants/plugin-channels';
 import { SKILLS_CHANNELS } from '@canopy/desktop-shared/constants/skill-channels';
+import type { IpcMainInvokeEvent } from 'electron';
 import type { PluginInfo } from '@canopy/desktop-shared/types/plugins';
 import { registerIpcHandler } from '../ipc/register';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
@@ -54,6 +55,10 @@ const registerIpcHandlerMock = jest.mocked(registerIpcHandler);
 const refreshInvocableInventoryAfterMutationMock = jest.mocked(
   refreshInvocableInventoryAfterMutation,
 );
+type InvocableIpcHandler = (
+  event: IpcMainInvokeEvent,
+  ...args: unknown[]
+) => unknown;
 
 describe('invocable inventory mutation invalidation', () => {
   beforeEach(() => {
@@ -61,9 +66,9 @@ describe('invocable inventory mutation invalidation', () => {
   });
 
   it('refreshes inventory after successful plugin mutations only', async () => {
-    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const handlers = new Map<string, InvocableIpcHandler>();
     registerIpcHandlerMock.mockImplementation(
-      (channel, handler: (...args: unknown[]) => unknown) => {
+      (channel, handler: InvocableIpcHandler): void => {
         handlers.set(channel, handler);
       },
     );
@@ -97,9 +102,9 @@ describe('invocable inventory mutation invalidation', () => {
   });
 
   it('forces provider updates only when the caller asks for them', async () => {
-    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const handlers = new Map<string, InvocableIpcHandler>();
     registerIpcHandlerMock.mockImplementation(
-      (channel, handler: (...args: unknown[]) => unknown) => {
+      (channel, handler: InvocableIpcHandler): void => {
         handlers.set(channel, handler);
       },
     );
@@ -136,16 +141,16 @@ describe('invocable inventory mutation invalidation', () => {
   });
 
   it('refreshes inventory after successful skill mutations only', async () => {
-    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const handlers = new Map<string, InvocableIpcHandler>();
     registerIpcHandlerMock.mockImplementation(
-      (channel, handler: (...args: unknown[]) => unknown) => {
+      (channel, handler: InvocableIpcHandler): void => {
         handlers.set(channel, handler);
       },
     );
     jest
-      .mocked(skillService.removeSkill)
-      .mockReturnValueOnce({ success: true, data: undefined })
-      .mockReturnValueOnce({ success: false, error: 'failed' });
+      .mocked(skillService.removeSkillForContext)
+      .mockResolvedValueOnce({ success: true, data: undefined })
+      .mockResolvedValueOnce({ success: false, error: 'failed' });
 
     registerSkillHandlers();
 
@@ -162,9 +167,9 @@ describe('invocable inventory mutation invalidation', () => {
   });
 
   it('preserves write-raw response shape while refreshing after success', async () => {
-    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const handlers = new Map<string, InvocableIpcHandler>();
     registerIpcHandlerMock.mockImplementation(
-      (channel, handler: (...args: unknown[]) => unknown) => {
+      (channel, handler: InvocableIpcHandler): void => {
         handlers.set(channel, handler);
       },
     );
@@ -192,12 +197,12 @@ describe('invocable inventory mutation invalidation', () => {
   });
 });
 
-function ipcEvent(): { sender: { send: jest.Mock } } {
-  return {
-    sender: {
-      send: jest.fn(),
-    },
-  };
+function ipcEvent(): IpcMainInvokeEvent {
+  const event: Partial<IpcMainInvokeEvent> = {};
+  Reflect.set(event, 'sender', { send: jest.fn() });
+  // Mutation handlers in this suite only inspect sender.send, not Electron's
+  // remaining invoke-event fields.
+  return event as IpcMainInvokeEvent;
 }
 
 function pluginResult(): PluginInfo {

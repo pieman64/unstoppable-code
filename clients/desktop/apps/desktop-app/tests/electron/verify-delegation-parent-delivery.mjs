@@ -491,7 +491,7 @@ function makeCase(harness, channel) {
       toolCallId: parent.toolCallId,
       runtimeGeneration: parent.runtimeGeneration,
     });
-    const waiting = name === 'probe_watch_delegates';
+    const waiting = name === 'probe_get_delegate_output';
     const launched = waiting
       ? undefined
       : await state.projection.invoke(parent, name, input);
@@ -499,7 +499,7 @@ function makeCase(harness, channel) {
     const child = state.broker.list(parent)[0];
     assert(child);
     if (harness === 'codex' && channel === 'foreground' && !waiting) {
-      state.waitInput.delegationIds[0] = child.delegationId;
+      state.outputInput.delegationId = child.delegationId;
       return JSON.stringify(launched.value);
     }
     assert.equal(
@@ -515,8 +515,6 @@ function makeCase(harness, channel) {
     );
     state.childResult = state.broker.inspect(parent, child.delegationId);
     if (waiting) {
-      const watched = await state.projection.invoke(parent, name, input);
-      assert(watched.ok);
       const output = await state.projection.invoke(
         parent,
         'probe_get_delegate_output',
@@ -563,11 +561,7 @@ function makeCase(harness, channel) {
           message: 'Read the harmless fixture.',
           reasoning_effort: 'low',
         };
-  state.waitInput = {
-    delegationIds: ['assigned-by-host'],
-    mode: 'all',
-    timeoutMs: 0,
-  };
+  state.outputInput = { delegationId: 'assigned-by-host' };
   registerScenario(state.marker, {
     llm: {
       openAiStepCursor: 'completed-scenario-tool-calls',
@@ -611,7 +605,10 @@ function makeCase(harness, channel) {
           ? [
               {
                 toolCalls: [
-                  { name: 'probe_watch_delegates', input: state.waitInput },
+                  {
+                    name: 'probe_get_delegate_output',
+                    input: state.outputInput,
+                  },
                 ],
                 stopReason: 'tool_use',
               },

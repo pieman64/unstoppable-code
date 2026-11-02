@@ -2,6 +2,7 @@ import type { LedgerScopeSyncRecord } from '@canopy/desktop-shared/node/ledger';
 import type {
   LedgerCommandReceipt,
   LedgerContainer,
+  LedgerGlobalOwner,
 } from '@canopy/protocol/canopy-core';
 import type {
   LedgerSyncPushRequest,
@@ -152,6 +153,10 @@ interface SyncHarness {
   readonly changed: LedgerContainer[];
   readonly diagnostics: LedgerSyncDiagnostic[];
   prohibitedReports: number;
+  /** Whether the mirror advertises `ledger-global-v1`. */
+  globalSupported: boolean;
+  /** Each capability check, by whether it asked the mirror afresh. */
+  readonly globalChecks: boolean[];
   service: LedgerSyncService;
   /** Runs every timer due within `ms`, letting the service settle after each. */
   advance(ms: number): Promise<void>;
@@ -160,6 +165,8 @@ interface SyncHarness {
   /** Stops the service and starts a new one on the same store and mirror. */
   restart(): Promise<void>;
   addEntry(container?: LedgerContainer, title?: string | null): Promise<string>;
+  /** Adds an entry as a pipeline agent of the owner's global Ledger. */
+  addGlobalEntry(owner: LedgerGlobalOwner): Promise<string>;
   scopeSync(ledgerId: string): Promise<LedgerScopeSyncRecord>;
   dispose(): Promise<void>;
 }
@@ -190,12 +197,22 @@ function createSyncHarness(): SyncHarness {
       readSession: () => Promise.resolve(harness.session),
       readWorkspaceOwner: (container) =>
         Promise.resolve(
-          harness.owners.get(
-            container.kind === 'advisor_entry'
-              ? container.appWorkspaceId
-              : container.workspaceId,
-          ) ?? { kind: 'personal' },
+          container.kind === 'global'
+            ? { kind: 'unknown' }
+            : (harness.owners.get(
+                container.kind === 'advisor_entry'
+                  ? container.appWorkspaceId
+                  : container.workspaceId,
+              ) ?? { kind: 'personal' }),
         ),
+      supportsGlobalScopes: ({ live }): Promise<boolean> => {
+        harness.globalChecks.push(live);
+        // Asked afresh, a mirror that rolled back no longer advertises it.
+        return Promise.resolve(
+          harness.globalSupported &&
+            !(live && harness.mirror.refusesGlobalScopes),
+        );
+      },
       onScopeSyncChanged: (container): void => {
         harness.changed.push(container);
       },
@@ -222,6 +239,8 @@ function createSyncHarness(): SyncHarness {
     changed: [],
     diagnostics: [],
     prohibitedReports: 0,
+    globalSupported: true,
+    globalChecks: [],
     service: createService(),
     async advance(ms: number): Promise<void> {
       const until = timers.now + ms;
@@ -261,6 +280,40 @@ function createSyncHarness(): SyncHarness {
           type: 'TASK',
           ...(title === null ? {} : { title }),
           content: 'Write the plan.',
+          _meta: { idempotencyKey: `key-${String(requestKeys)}` },
+        },
+        ledger.context(principal, `key-${String(requestKeys)}`),
+      );
+      return receipt.entry.scope.ledgerId;
+    },
+    async addGlobalEntry(owner: LedgerGlobalOwner): Promise<string> {
+      const scope = await ledger.service.scopes.resolveGlobal(owner);
+      const principal = ledger.register({
+        container: scope.container,
+        containerCreatedAt: scope.containerCreatedAt,
+        role: 'pipeline_agent',
+        actor: {
+          kind: 'pipeline_agent',
+          originKey: 'session-global',
+          displayName: 'Triage · Nightly',
+        },
+        origin: {
+          kind: 'pipeline_agent',
+          executionId: 'execution-global',
+          physicalJobId: 'triage',
+          logicalJobId: 'triage',
+          stepId: 'triage',
+          attempt: 1,
+          iteration: 1,
+          agentSessionId: 'session-global',
+        },
+      });
+      requestKeys += 1;
+      const receipt = await ledger.service.addEntry(
+        {
+          type: 'OBSERVATION',
+          title: 'Nightly triage',
+          content: 'Three flaky specs.',
           _meta: { idempotencyKey: `key-${String(requestKeys)}` },
         },
         ledger.context(principal, `key-${String(requestKeys)}`),
@@ -707,6 +760,182 @@ describe('LedgerSyncService', () => {
       });
       await expect(harness.service.holdFor(ACCOUNT_ID)).resolves.toBe(
         'policy_restricted',
+      );
+    });
+  });
+
+  describe('global (workflow) scopes', () => {
+    const ORGANIZATION_OWNER: LedgerGlobalOwner = {
+      kind: 'organization',
+      organizationId: FAKE_MIRROR_ORGANIZATION_ID,
+    };
+
+    it('waits for a mirror without global scopes, and keeps task scopes syncing', async () => {
+      harness.globalSupported = false;
+      const taskLedgerId = await harness.addEntry();
+      const globalLedgerId = await harness.addGlobalEntry({ kind: 'personal' });
+
+      await startAndSync();
+
+      expect(harness.mirror.heldSequences(taskLedgerId)).toEqual([1, 2, 3, 4]);
+      expect(
+        harness.mirror.calls.filter((call) => call.ledgerId === globalLedgerId),
+      ).toEqual([]);
+      const waiting = await harness.scopeSync(globalLedgerId);
+      expect(waiting.repairReason).toBeNull();
+      expect(waiting.acknowledgedSequence).toBe('0');
+      expect(harness.diagnostics).toEqual([]);
+    });
+
+    it('never asks the mirror about global scopes the account cannot send', async () => {
+      harness.ledger.accountId = null;
+      await harness.addGlobalEntry({ kind: 'personal' });
+      harness.ledger.accountId = GUEST_ACCOUNT_ID;
+      await harness.addGlobalEntry(ORGANIZATION_OWNER);
+
+      await startAndSync();
+
+      expect(harness.globalChecks).toEqual([]);
+      expect(harness.mirror.calls).toEqual([]);
+    });
+
+    it('flushes a waiting global scope in order once the mirror holds them', async () => {
+      harness.globalSupported = false;
+      const ledgerId = await harness.addGlobalEntry({ kind: 'personal' });
+      await startAndSync();
+      expect(harness.mirror.registrations).toEqual([]);
+
+      // A reconnect or an account refresh asks the mirror again.
+      harness.globalSupported = true;
+      harness.service.requestSync('account');
+      await harness.advance(LEDGER_SYNC_POLICY_CHANGE_DELAY_MS);
+
+      expect(harness.mirror.registrations).toEqual([
+        {
+          schemaVersion: 2,
+          ledgerId,
+          accountId: ACCOUNT_ID,
+          scopeKind: 'global',
+          globalOwner: { kind: 'personal' },
+          session: SESSION,
+          audience: { kind: 'private' },
+        },
+      ]);
+      expect(harness.mirror.heldSequences(ledgerId)).toEqual([1, 2, 3, 4]);
+      expect(harness.mirror.pushes.map((push) => push.schemaVersion)).toEqual([
+        2,
+      ]);
+    });
+
+    it("shares an organization's global scope with its members, and a Personal one with no one", async () => {
+      harness.account = account({ summaries: 'organization' });
+      const organizationLedgerId =
+        await harness.addGlobalEntry(ORGANIZATION_OWNER);
+      const personalLedgerId = await harness.addGlobalEntry({
+        kind: 'personal',
+      });
+
+      await startAndSync();
+
+      const audienceOf = (ledgerId: string): unknown =>
+        harness.mirror.registrations.find(
+          (registration) => registration.ledgerId === ledgerId,
+        )?.audience;
+      expect(audienceOf(organizationLedgerId)).toEqual({
+        kind: 'organization_global',
+        organizationId: FAKE_MIRROR_ORGANIZATION_ID,
+      });
+      expect(audienceOf(personalLedgerId)).toEqual({ kind: 'private' });
+      expect(
+        (await harness.scopeSync(organizationLedgerId)).mirrorAudience,
+      ).toMatchObject({
+        kind: 'organization_global',
+        organizationId: FAKE_MIRROR_ORGANIZATION_ID,
+      });
+    });
+
+    it('narrows an organization global scope once its member leaves', async () => {
+      harness.account = account({ summaries: 'organization' });
+      const ledgerId = await harness.addGlobalEntry(ORGANIZATION_OWNER);
+      await startAndSync();
+
+      harness.account = account({
+        summaries: 'organization',
+        organizationIds: new Set(),
+      });
+      await syncAfterPolicyChange();
+
+      expect(harness.mirror.registrations.at(-1)?.audience).toEqual({
+        kind: 'private',
+      });
+      expect((await harness.scopeSync(ledgerId)).mirrorAudience).toEqual({
+        kind: 'private',
+      });
+    });
+
+    it('sends a global scope back to waiting when a mirror that advertised it refuses it', async () => {
+      const taskLedgerId = await harness.addEntry();
+      const globalLedgerId = await harness.addGlobalEntry({ kind: 'personal' });
+      // The mirror rolled back after it advertised global scopes.
+      harness.mirror.refusesGlobalScopes = true;
+
+      await startAndSync();
+
+      const record = await harness.scopeSync(globalLedgerId);
+      expect(record.repairReason).toBeNull();
+      expect(record.acknowledgedSequence).toBe('0');
+      expect(harness.mirror.heldSequences(taskLedgerId)).toEqual([1, 2, 3, 4]);
+      expect(harness.diagnostics).toEqual([
+        { code: 'global_waiting', detail: 'register' },
+      ]);
+      // It is asked afresh at the next periodic check, and syncs once the
+      // mirror holds global scopes again.
+      harness.mirror.refusesGlobalScopes = false;
+      await harness.advance(LEDGER_SYNC_PERIODIC_CHECK_MS);
+      expect(harness.globalChecks.at(-1)).toBe(true);
+      expect(harness.mirror.heldSequences(globalLedgerId)).toEqual([
+        1, 2, 3, 4,
+      ]);
+    });
+
+    it('keeps asking a rolled-back mirror afresh, sending no global scope until it answers yes', async () => {
+      const globalLedgerId = await harness.addGlobalEntry({ kind: 'personal' });
+      // The account still stores the capability; only a live answer is current.
+      harness.mirror.refusesGlobalScopes = true;
+      await startAndSync();
+      const registrationsOf = (): number =>
+        harness.mirror.registrations.filter(
+          (registration) => registration.ledgerId === globalLedgerId,
+        ).length;
+      const refused = registrationsOf();
+
+      await harness.advance(LEDGER_SYNC_PERIODIC_CHECK_MS);
+      await harness.advance(LEDGER_SYNC_PERIODIC_CHECK_MS);
+
+      expect(registrationsOf()).toBe(refused);
+      expect(harness.globalChecks.slice(-2)).toEqual([true, true]);
+    });
+
+    it('marks only the refused global scope for repair while the mirror still advertises global scopes', async () => {
+      harness.account = account({ summaries: 'organization' });
+      const refusedLedgerId = await harness.addGlobalEntry({
+        kind: 'personal',
+      });
+      const laterLedgerId = await harness.addGlobalEntry(ORGANIZATION_OWNER);
+      harness.mirror.failNextRegister({
+        kind: 'repair',
+        reason: 'invalid_request',
+      });
+
+      await startAndSync();
+
+      expect(harness.globalChecks).toContain(true);
+      expect((await harness.scopeSync(refusedLedgerId)).repairReason).toBe(
+        'invalid_request',
+      );
+      expect(harness.mirror.heldSequences(laterLedgerId)).toEqual([1, 2, 3, 4]);
+      expect(harness.diagnostics).not.toContainEqual(
+        expect.objectContaining({ code: 'global_waiting' }),
       );
     });
   });

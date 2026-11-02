@@ -11,17 +11,33 @@ const mockWriteFile = jest.fn<
 >();
 
 jest.mock('node:child_process', () => ({
-  execFile: mockExecFile,
+  get execFile(): typeof mockExecFile {
+    return mockExecFile;
+  },
 }));
 
 jest.mock('node:fs/promises', () => ({
-  lstat: mockLstat,
-  mkdir: mockMkdir,
-  readFile: mockReadFile,
-  rename: mockRename,
-  rm: mockRm,
-  unlink: mockUnlink,
-  writeFile: mockWriteFile,
+  get lstat(): typeof mockLstat {
+    return mockLstat;
+  },
+  get mkdir(): typeof mockMkdir {
+    return mockMkdir;
+  },
+  get readFile(): typeof mockReadFile {
+    return mockReadFile;
+  },
+  get rename(): typeof mockRename {
+    return mockRename;
+  },
+  get rm(): typeof mockRm {
+    return mockRm;
+  },
+  get unlink(): typeof mockUnlink {
+    return mockUnlink;
+  },
+  get writeFile(): typeof mockWriteFile {
+    return mockWriteFile;
+  },
 }));
 
 jest.mock('../lib/paths', () => ({

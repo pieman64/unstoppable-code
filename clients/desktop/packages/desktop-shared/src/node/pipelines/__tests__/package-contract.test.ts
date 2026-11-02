@@ -14,6 +14,7 @@ import {
   assertPipelinePackageMatchesYaml,
   computePipelinePackageDigestSync,
   hashPipelinePackageYaml,
+  pipelinePackageCarriesPipeline,
 } from '../package-contract';
 import {
   installPipelinePackageAtomically,
@@ -70,6 +71,37 @@ describe('desktop pipeline package contract and cache', () => {
     ).not.toThrow();
     expect(() =>
       assertPipelinePackageMatchesYaml(value, `${rawPipeline}# changed`),
+    ).toThrow('does not match');
+  });
+
+  it('accepts a pipeline an automation package carries as a dependency', () => {
+    const dependencyYaml = 'name: Dependency\n';
+    const dependencyHash = hashPipelinePackageYaml(dependencyYaml);
+    const value: PipelinePackageManifestV1 = {
+      ...manifest(),
+      // An automation package is keyed to the automation, not the pipeline.
+      pipelineContentHash: 'f'.repeat(64),
+      resources: [
+        {
+          id: 'automation-pipeline-dep',
+          kind: 'automation_pipeline',
+          displayName: 'Dependency',
+          sourceLabel: 'Your pipelines',
+          sourceVisibility: 'local',
+          invocationKeys: [],
+          dependencyResourceIds: [],
+          pipelineKey: 'dep',
+          pipelineContentHash: dependencyHash,
+          trees: [],
+        },
+      ],
+    };
+    expect(pipelinePackageCarriesPipeline(value, dependencyHash)).toBe(true);
+    expect(() =>
+      assertPipelinePackageMatchesYaml(value, dependencyYaml),
+    ).not.toThrow();
+    expect(() =>
+      assertPipelinePackageMatchesYaml(value, `${dependencyYaml}# changed`),
     ).toThrow('does not match');
   });
 
@@ -237,10 +269,10 @@ it('removes staged package files when context expires before the durable rename'
         manifest: value,
         fetchBlob: () => Promise.resolve(bytes),
         beforeCommit: () =>
-          Promise.reject(new Error('Pipeline unavailable (context-mismatch)')),
+          Promise.reject(new Error('Workflow unavailable (context-mismatch)')),
         onCreated,
       }),
-    ).rejects.toThrow('Pipeline unavailable (context-mismatch)');
+    ).rejects.toThrow('Workflow unavailable (context-mismatch)');
     expect(await readdir(join(root, 'packages'))).toEqual([]);
     expect(onCreated).not.toHaveBeenCalled();
   } finally {

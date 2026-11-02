@@ -88,7 +88,22 @@ function makeMarketplace(overrides: Partial<MarketplaceInfo>): MarketplaceInfo {
     installLocation: 'user',
     pluginCount: 0,
     plugins: [],
-    providerStatus: {},
+    providerStatus: {
+      claude: {
+        provider: 'claude',
+        state: 'valid',
+        accepted: true,
+        pluginCount: 0,
+        lastCheckedAt: '2026-01-01T00:00:00.000Z',
+      },
+      codex: {
+        provider: 'codex',
+        state: 'valid',
+        accepted: true,
+        pluginCount: 0,
+        lastCheckedAt: '2026-01-01T00:00:00.000Z',
+      },
+    },
     validProviders: [],
     ...overrides,
   };

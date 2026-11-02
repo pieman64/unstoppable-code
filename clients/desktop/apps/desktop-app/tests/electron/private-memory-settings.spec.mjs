@@ -25,6 +25,7 @@ import {
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { markWorkspaceOwnedByMemoryOrganization } from './orgMemoryDisclosureFixture.mjs';
+import { waitForProjectSettingsSaved } from './projectSettingsDriver.mjs';
 
 const EXPLANATION =
   "Agents won't use memory from other projects or your organization. New memories stay here.";
@@ -89,16 +90,20 @@ test('a code project keeps Private memory across a relaunch', async () => {
     await expect(card).toContainText(EXPLANATION);
     let toggle = dialog.getByTestId('project-settings-private-memory-toggle');
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
-    // Untouched, there is nothing to save.
+    // Untouched, nothing is being saved; there is no Save button.
+    await expect(dialog.getByTestId('settings-save-status')).toHaveAttribute(
+      'data-state',
+      'idle',
+    );
     await expect(
       dialog.getByRole('button', { name: 'Save local', exact: true }),
     ).toHaveCount(0);
 
+    // The page saves the change as it is made; Back closes it.
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await dialog
-      .getByRole('button', { name: 'Save local', exact: true })
-      .click();
+    await waitForProjectSettingsSaved(app);
+    await dialog.getByTestId('project-settings-back').click();
     await expect(dialog).toBeHidden();
 
     const workspaceId = workspaceIdByName(userDataDir, CODE_PROJECT);
@@ -118,9 +123,8 @@ test('a code project keeps Private memory across a relaunch', async () => {
 
     // Off is saved as an explicit value, and the rows refresh in place.
     await toggle.click();
-    await dialog
-      .getByRole('button', { name: 'Save local', exact: true })
-      .click();
+    await waitForProjectSettingsSaved(app);
+    await dialog.getByTestId('project-settings-back').click();
     await expect(dialog).toBeHidden();
     await expect.poll(() => readJson(configPath).privateMemory).toBe(false);
     dialog = await openCodeSettings(window, app);

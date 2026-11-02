@@ -23,9 +23,9 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import {
-  chatPluginEditingState,
   editChatPlugins,
   inheritedDefaultLayers,
+  renderedChatPluginEditingState,
 } from '@/lib/chatPluginEditing';
 import { PanelSection } from '@/components/shared/panel-section';
 import {
@@ -174,11 +174,11 @@ export function useChatPluginsHasContent(
     chatId !== undefined &&
     (used.length > 0 ||
       selectedRows(
-        chatPluginEditingState(useChatStore.getState(), {
+        renderedChatPluginEditingState(useChatStore.getState(), {
           projectId,
           worktreeId,
           chatId,
-        }).effective,
+        })?.effective,
       ).length > 0)
   );
 }
@@ -319,7 +319,7 @@ export function ChatPluginsSection({
     [projectId, worktreeId, snapshot.id],
   );
   const resolved = target
-    ? chatPluginEditingState(useChatStore.getState(), target)
+    ? renderedChatPluginEditingState(useChatStore.getState(), target)
     : null;
   const pluginIdsRef = useRef<string[]>([]);
   pluginIdsRef.current = (resolved?.effective?.pluginRefs ?? []).map(

@@ -3,7 +3,7 @@ import {
   CUSTOM_ACCOUNT_MCP_ID,
   startAccountMcpCloud,
 } from './fixtures/accountMcpCloud.mjs';
-import { mkdtempSync, unlinkSync, readFileSync } from 'node:fs';
+import { mkdtempSync, unlinkSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -20,17 +20,154 @@ import {
 
 // Doc 3 — G7: Plugins → MCP Servers add / edit / remove.
 //
-// Exercises the standalone MCP server CRUD surface (`McpServersTab.tsx`) end to
-// end through the real local-file IPC handlers in
+// Exercises device MCP server CRUD on the Customize MCP servers tab (CAN-4267
+// retired the Marketplace management table): the header's Add custom menu
+// opens `McpServerDialog`, an Installed row opens the server's detail page,
+// whose Advanced configuration edits it and whose management section deletes
+// it. Everything runs through the real local-file IPC handlers in
 // `apps/desktop-app/src/main/ipc/mcp-servers.ts`. The create flow uses a
 // `command` server with `npx` (which is in the main-process command allowlist),
 // then verifies custom HTTP OAuth callback-port persistence. Saving never
 // spawns either server process. The test never clicks Health Check / Test
 // Connection. Mount reads cached status without contacting either server.
+//
+// The signed-in account connections table (`McpServersTab`) now lives only in
+// Settings > MCP servers > Account connections; the account tests below drive
+// it there.
 
 const SERVER_NAME = 'E2E Postgres MCP';
 const RENAMED_SERVER_NAME = 'E2E Renamed MCP';
 const OAUTH_SERVER_NAME = 'E2E OAuth MCP';
+
+/** Leaves an MCP detail page for the Customize MCP servers list (CAN-4267). */
+async function backToMcpServers(window) {
+  await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
+  await expect(window.getByTestId('plugins-entry-detail-page')).toHaveCount(0);
+  await expect(window.getByTestId('customize-section-installed')).toBeVisible();
+}
+
+/** Deletes the open MCP detail's device server from its management section. */
+async function deleteFromMcpDetail(window, name) {
+  await window.getByTestId('mcp-management-delete').click();
+  const confirm = window.getByTestId('mcp-management-delete-dialog');
+  await expect(confirm).toContainText(`Delete ${name}?`);
+  await confirm.getByTestId('mcp-management-delete-confirm').click();
+  await expect(confirm).toBeHidden();
+  // A confirmed delete leaves the detail for the list it was opened from.
+  await expect(window.getByTestId('plugins-entry-detail-page')).toHaveCount(0);
+}
+
+test('concurrent device MCP saves and deletion retain the latest inventory', async () => {
+  const { electronApp, userDataDir } = await launchCanopy();
+  try {
+    const window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell();
+    const result = await window.evaluate(async () => {
+      const servers = ['aaa-111', 'bbb-222'].map((id) => ({
+        definition: {
+          id,
+          name: id,
+          description: '',
+          type: 'command',
+          command: 'npx',
+          args: [],
+          createdAt: '',
+          updatedAt: '',
+        },
+        configs: [],
+      }));
+      await Promise.all(
+        servers.map((server) => window.mcpServers.saveServer(server)),
+      );
+      const saved = await window.mcpServers.loadIndex();
+      const survivor = {
+        ...servers[1],
+        definition: { ...servers[1].definition, name: 'Updated survivor' },
+      };
+      await Promise.all([
+        window.mcpServers.deleteServer(servers[0].definition.id),
+        window.mcpServers.saveServer(survivor),
+      ]);
+      return { saved, final: await window.mcpServers.loadIndex() };
+    });
+    expect(result.saved.servers.map((server) => server.id).sort()).toEqual([
+      'aaa-111',
+      'bbb-222',
+    ]);
+    expect(result.final.servers).toHaveLength(1);
+    expect(result.final.servers[0]).toMatchObject({
+      id: 'bbb-222',
+      name: 'Updated survivor',
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+// CAN-5513 (CAN-4486 A2): saves keep unknown fields and never replace a damaged index.
+test('device MCP saves keep unknown fields and refuse a damaged index', async () => {
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-mcp-strict-'));
+  const server = {
+    definition: {
+      id: 'aaa-111',
+      name: 'Strict fixture',
+      description: '',
+      type: 'command',
+      command: 'npx',
+      args: [],
+      createdAt: '',
+      updatedAt: '',
+    },
+    configs: [],
+  };
+  const { indexFilePath, serverFilePaths } = seedMcpServers({
+    userDataDir,
+    servers: [server],
+  });
+  const serverFilePath = serverFilePaths['aaa-111'];
+  writeJson(serverFilePath, {
+    version: 1,
+    envelopeNote: 'keep',
+    server: { ...server, serverNote: 'keep' },
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell();
+    const renamed = {
+      ...server,
+      definition: { ...server.definition, name: 'Renamed fixture' },
+    };
+    await window.evaluate(
+      (request) => window.mcpServers.saveServer(request),
+      renamed,
+    );
+    expect(JSON.parse(readFileSync(serverFilePath, 'utf8'))).toMatchObject({
+      envelopeNote: 'keep',
+      server: { serverNote: 'keep', definition: { name: 'Renamed fixture' } },
+    });
+
+    const damaged = '{"version":1,"servers":[';
+    writeFileSync(indexFilePath, damaged);
+    const refusal = await window.evaluate(async (request) => {
+      try {
+        await window.mcpServers.saveServer(request);
+        return 'saved';
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }, renamed);
+    expect(refusal).toContain('The MCP server list is damaged');
+    expect(readFileSync(indexFilePath, 'utf8')).toBe(damaged);
+    // Display keeps its fallback without rewriting the index.
+    await expect(
+      window.evaluate(() => window.mcpServers.loadIndex()),
+    ).resolves.toMatchObject({ servers: [] });
+    expect(readFileSync(indexFilePath, 'utf8')).toBe(damaged);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
 
 test('Plugins → MCP Servers supports add, edit, and remove', async ({}, testInfo) => {
   test.setTimeout(120_000);
@@ -42,23 +179,26 @@ test('Plugins → MCP Servers supports add, edit, and remove', async ({}, testIn
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
 
-    // Navigate to Plugins → MCP tab.
+    // Navigate to Customize → MCP servers, Installed expanded.
     await app.openPluginsPage();
     await app.openPluginsTab('mcp');
     await app.expectPluginsTab('mcp');
 
-    const panel = window.getByTestId('plugins-management-section-mcp');
+    const installed = window.getByTestId('customize-section-installed');
+    const serverRows = installed.locator(
+      '[data-testid^="customize-row-mcp-local:"]',
+    );
 
     // Empty state on a fresh data dir.
-    await expect(panel.getByText('No MCP servers registered')).toBeVisible();
+    await expect(
+      installed.getByTestId('customize-installed-empty'),
+    ).toBeVisible();
 
     // --- Add a new server -------------------------------------------------
-    // The e2e runs unauthenticated → the curated catalog is empty, so the
-    // toolbar renders the plain "Add custom" button (the dropdown only appears
-    // when the catalog is non-empty).
-    await panel
-      .getByRole('button', { name: 'Add custom', exact: true })
-      .click();
+    // The Customize header's Add custom menu opens the same editor the
+    // retired management toolbar did.
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-mcp').click();
 
     const dialog = window.getByRole('dialog', { name: 'New MCP server' });
     await expect(
@@ -75,16 +215,22 @@ test('Plugins → MCP Servers supports add, edit, and remove', async ({}, testIn
 
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
 
-    // Dialog closes and the new row renders in the table.
+    // Dialog closes, the new row renders in Installed, and its detail opens.
     await expect(
       window.getByRole('dialog', { name: 'New MCP server' }),
     ).toBeHidden();
-    const serverRow = panel.locator('tr', { hasText: SERVER_NAME });
+    await app.expectCreatedCustomizeDetail(SERVER_NAME);
+    await backToMcpServers(window);
+    const serverRow = serverRows.filter({ hasText: SERVER_NAME });
     await expect(serverRow).toBeVisible();
-    await expect(panel.getByText('1 server', { exact: true })).toBeVisible();
+    await expect(
+      installed.getByTestId('customize-section-installed-count'),
+    ).toHaveText('1');
 
-    // --- Edit the server name (via the Actions column edit button) --------
-    await serverRow.getByTestId('mcp-server-edit-button').click();
+    // --- Edit the server name (detail page → Advanced configuration) ------
+    await serverRow.click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await window.getByTestId('plugin-advanced-configuration').click();
     const editDialog = window.getByRole('dialog', { name: 'Edit MCP server' });
     await expect(
       editDialog.getByRole('heading', { name: 'Edit MCP server' }),
@@ -98,41 +244,35 @@ test('Plugins → MCP Servers supports add, edit, and remove', async ({}, testIn
     await expect(
       window.getByRole('dialog', { name: 'Edit MCP server' }),
     ).toBeHidden();
+    await backToMcpServers(window);
     await expect(
-      panel.locator('tr', { hasText: RENAMED_SERVER_NAME }),
+      serverRows.filter({ hasText: RENAMED_SERVER_NAME }),
     ).toBeVisible();
-    await expect(panel.getByText(SERVER_NAME, { exact: true })).toHaveCount(0);
+    await expect(installed.getByText(SERVER_NAME, { exact: true })).toHaveCount(
+      0,
+    );
 
     await window.screenshot({
       path: testInfo.outputPath('mcp-servers-after-edit.png'),
     });
 
     // --- Delete the server -----------------------------------------------
-    await panel.locator('tr', { hasText: RENAMED_SERVER_NAME }).click();
-    const deleteDialog = window.getByRole('dialog', {
-      name: 'Edit MCP server',
-    });
-    await deleteDialog
-      .getByRole('button', { name: 'Delete', exact: true })
-      .click();
-    // Inline confirm appears in the footer.
-    await expect(deleteDialog.getByText('Are you sure?')).toBeVisible();
-    await deleteDialog
-      .getByRole('button', { name: 'Confirm', exact: true })
-      .click();
-
-    await expect(deleteDialog).toBeHidden();
+    await serverRows.filter({ hasText: RENAMED_SERVER_NAME }).click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    // Delete asks for confirmation before removing the device server.
+    await deleteFromMcpDetail(window, RENAMED_SERVER_NAME);
 
     // Back to the empty state.
-    await expect(panel.getByText('No MCP servers registered')).toBeVisible();
     await expect(
-      panel.locator('tr', { hasText: RENAMED_SERVER_NAME }),
+      installed.getByTestId('customize-installed-empty'),
+    ).toBeVisible();
+    await expect(
+      serverRows.filter({ hasText: RENAMED_SERVER_NAME }),
     ).toHaveCount(0);
 
     // --- Persist a dedicated OAuth callback port -------------------------
-    await panel
-      .getByRole('button', { name: 'Add custom', exact: true })
-      .click();
+    await window.getByTestId('plugins-add-custom-menu').click();
+    await window.getByTestId('plugins-add-custom-mcp').click();
     const oauthDialog = window.getByRole('dialog', { name: 'New MCP server' });
     await oauthDialog
       .getByRole('button', { name: 'HTTP', exact: true })
@@ -153,25 +293,23 @@ test('Plugins → MCP Servers supports add, edit, and remove', async ({}, testIn
       .click();
     await expect(oauthDialog).toBeHidden();
 
-    const oauthRow = panel.locator('tr', { hasText: OAUTH_SERVER_NAME });
-    await expect(oauthRow).toBeVisible();
-    await oauthRow.getByTestId('mcp-server-edit-button').click();
+    await app.expectCreatedCustomizeDetail(OAUTH_SERVER_NAME);
+    await window.getByTestId('plugin-advanced-configuration').click();
     const oauthEditDialog = window.getByRole('dialog', {
       name: 'Edit MCP server',
     });
     await expect(
       oauthEditDialog.getByTestId('mcp-server-oauth-callback-port'),
     ).toHaveValue('3118');
-
     await oauthEditDialog
-      .getByRole('button', { name: 'Delete', exact: true })
-      .click();
-    await expect(oauthEditDialog.getByText('Are you sure?')).toBeVisible();
-    await oauthEditDialog
-      .getByRole('button', { name: 'Confirm', exact: true })
+      .getByRole('button', { name: 'Cancel', exact: true })
       .click();
     await expect(oauthEditDialog).toBeHidden();
-    await expect(panel.getByText('No MCP servers registered')).toBeVisible();
+
+    await deleteFromMcpDetail(window, OAUTH_SERVER_NAME);
+    await expect(
+      installed.getByTestId('customize-installed-empty'),
+    ).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -201,14 +339,13 @@ test('vendor-registered MCP OAuth callback serves the branded completion page', 
     await app.openPluginsTab('mcp');
     await app.expectPluginsTab('mcp');
 
-    const panel = window.getByTestId('plugins-management-section-mcp');
-    await panel.getByTestId('mcp-add-menu-trigger').click();
-    await window.getByTestId('mcp-add-browse').click();
+    // CAN-4267: the catalog card opens its Customize detail, whose Advanced
+    // configuration opens the catalog-prefilled editor.
     await window
-      .getByTestId('mcp-browse-card')
-      .filter({ hasText: 'Vendor OAuth Callback' })
+      .getByTestId('plugins-entry-mcp-catalog:vendor-oauth-callback')
       .click();
-    await window.getByTestId('mcp-browse-detail-add').click();
+    await expect(window.getByTestId('plugins-entry-detail-page')).toBeVisible();
+    await window.getByTestId('plugin-advanced-configuration').click();
 
     const addDialog = window.getByRole('dialog', { name: 'New MCP server' });
     await expect(addDialog.getByTestId('mcp-server-use-oauth')).toBeChecked();
@@ -250,8 +387,11 @@ test('vendor-registered MCP OAuth callback serves the branded completion page', 
       },
     });
 
-    const row = panel.locator('tr', { hasText: 'Vendor OAuth Callback' });
-    await row.getByTestId('mcp-server-edit-button').click();
+    // The detail now backs the saved server; its editor edits that server.
+    await expect(
+      window.getByTestId('mcp-browse-detail-management'),
+    ).toBeVisible();
+    await window.getByTestId('plugin-advanced-configuration').click();
     const editDialog = window.getByRole('dialog', { name: 'Edit MCP server' });
     await editDialog.getByTestId('mcp-server-connect').click();
     const authorizationUrl = await expect
@@ -442,14 +582,11 @@ test('curated MCP details render host-fed tools and getTools failures', async ()
     await app.openPluginsTab('mcp');
     await app.expectPluginsTab('mcp');
 
-    const panel = window.getByTestId('plugins-management-section-mcp');
-    await panel.getByTestId('mcp-add-menu-trigger').click();
-    await window.getByTestId('mcp-add-browse').click();
-
-    const dialog = window.getByTestId('mcp-browse-dialog');
-    await dialog
-      .getByTestId('mcp-browse-card')
-      .filter({ hasText: 'GitHub Tools' })
+    // CAN-4267: installed catalog servers are Customize Installed rows whose
+    // detail page renders the same curated detail and tools.
+    const installed = window.getByTestId('customize-section-installed');
+    await installed
+      .getByTestId('customize-row-mcp-catalog:github-tools')
       .click();
 
     const resolvedDetail = window.getByTestId('mcp-browse-detail');
@@ -457,17 +594,10 @@ test('curated MCP details render host-fed tools and getTools failures', async ()
       ['search_issues', 'create_pull_request'],
     );
 
-    // The browse dialog has no back-to-catalog control — drilling in is
-    // one-way and the only exit is closing the dialog. Close and reopen to
-    // reach the failing entry.
-    await window.keyboard.press('Escape');
-    await expect(dialog).toHaveCount(0);
-    await panel.getByTestId('mcp-add-menu-trigger').click();
-    await window.getByTestId('mcp-add-browse').click();
-    await window
-      .getByTestId('mcp-browse-dialog')
-      .getByTestId('mcp-browse-card')
-      .filter({ hasText: 'Broken Tools' })
+    // Leave the detail for the list to reach the failing entry.
+    await backToMcpServers(window);
+    await installed
+      .getByTestId('customize-row-mcp-catalog:broken-tools')
       .click();
 
     const failingDetail = window.getByTestId('mcp-browse-detail');
@@ -483,7 +613,7 @@ test('refreshable OAuth access does not show an expired account in activity or d
   test.setTimeout(120_000);
   const { launchMcpAuthStatusFixture } =
     await import('./mcpAuthStatusFixture.mjs');
-  const { electronApp, userDataDir, window, section } =
+  const { electronApp, userDataDir, window, app, section } =
     await launchMcpAuthStatusFixture();
   try {
     await expect(
@@ -493,23 +623,30 @@ test('refreshable OAuth access does not show an expired account in activity or d
     await expect(
       section.getByRole('button', { name: /^(Refresh|Reconnect|Connect)$/ }),
     ).toHaveCount(0);
-    await section.getByRole('button', { name: 'Refreshable Account' }).click();
-    const dialog = window.getByRole('dialog');
+    // The activity row's name opens the server's Customize detail page.
+    await section
+      .getByRole('button', { name: 'Refreshable Account', exact: true })
+      .click();
+    const detailAuth = window.getByTestId('mcp-health-auth-ddeeff');
     await expect(
-      dialog.getByText('Renews automatically', { exact: true }),
+      detailAuth.getByText('Renews automatically', { exact: true }),
     ).toBeVisible();
-    // A credential change can originate in another surface while this dialog is open.
+    // A credential change can originate in another surface while the detail is open.
     await window.evaluate(() =>
       window.mcpServers.clearOAuthToken({
         serverId: 'aabbcc',
         configId: 'ddeeff',
       }),
     );
-    await expect(dialog.getByText('Needs auth', { exact: true })).toBeVisible();
-    await window.keyboard.press('Escape');
     await expect(
-      section.getByText('Needs auth', { exact: true }),
+      detailAuth.getByText('Needs auth', { exact: true }),
     ).toBeVisible();
+    // Back on the chat, the activity card names the state in sign-in words.
+    await app.openMainPage();
+    await app.selectWorktree('demo-main');
+    await expect(section.getByTestId('mcp-servers-card-badge')).toHaveText(
+      'Sign-in needed',
+    );
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -558,26 +695,37 @@ test('plain HTTP MCP stays no-auth when secure storage is unavailable', async ()
   }
 });
 
-for (const state of [{ lastError: 'invalid_grant' }, { canRefresh: false }]) {
-  test(`MCP offers Reconnect only when silent renewal needs authorization: ${JSON.stringify(state)}`, async () => {
+// A failed renewal keeps Reconnect; access that can't renew asks to sign in.
+for (const { state, action, status } of [
+  {
+    state: { lastError: 'invalid_grant' },
+    action: 'Reconnect',
+    status: 'Error',
+  },
+  { state: { canRefresh: false }, action: 'Sign in', status: 'Expired' },
+]) {
+  test(`MCP asks for authorization only when silent renewal needs it: ${JSON.stringify(state)}`, async () => {
     test.setTimeout(120_000);
     const { launchMcpAuthStatusFixture } =
       await import('./mcpAuthStatusFixture.mjs');
     const { electronApp, userDataDir, window, section } =
       await launchMcpAuthStatusFixture(state);
     try {
-      await expect(
-        section.getByRole('button', { name: 'Reconnect', exact: true }),
-      ).toBeVisible();
+      await expect(section.getByTestId('mcp-servers-card-connect')).toHaveText(
+        action,
+      );
       await expect(
         section.getByRole('button', { name: 'Refresh', exact: true }),
       ).toHaveCount(0);
+      // The activity row's name opens the server's Customize detail page.
       await section
-        .getByRole('button', { name: 'Refreshable Account' })
+        .getByRole('button', { name: 'Refreshable Account', exact: true })
         .click();
       await expect(
-        window.getByTestId('mcp-server-details-auth-badge'),
-      ).toHaveText(state.lastError ?? 'Expired');
+        window
+          .getByTestId('mcp-health-auth-ddeeff')
+          .getByText(status, { exact: true }),
+      ).toBeVisible();
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -641,11 +789,13 @@ test('Reconnect keeps polling past the error that preceded the new login attempt
     const reconnect = section.getByTestId('mcp-servers-card-connect');
     await expect(reconnect).toHaveText('Reconnect');
     await reconnect.click();
-    await expect(reconnect).toHaveText('Connecting…');
-    await expect(reconnect).toBeDisabled();
+    // A pending browser sign-in replaces the action with its waiting state.
+    const badge = section.getByTestId('mcp-servers-card-badge');
+    await expect(badge).toContainText('Waiting for sign-in');
+    await expect(reconnect).toHaveCount(0);
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    await expect(reconnect).toHaveText('Connecting…');
-    await expect(reconnect).toBeDisabled();
+    await expect(badge).toContainText('Waiting for sign-in');
+    await expect(reconnect).toHaveCount(0);
 
     await electronApp.evaluate(() => {
       globalThis.__mcpReconnectFixtureConnected = true;
@@ -658,7 +808,7 @@ test('Reconnect keeps polling past the error that preceded the new login attempt
   }
 });
 
-test('MCP details credit an official plugin server to its product vendor', async () => {
+test('Plugin detail credits an official plugin server to its product vendor', async () => {
   test.setTimeout(120_000);
   const { launchMcpAuthStatusFixture } =
     await import('./mcpAuthStatusFixture.mjs');
@@ -754,16 +904,11 @@ test('MCP details credit an official plugin server to its product vendor', async
     });
 
     await section.getByLabel('Refresh MCP servers').click();
-    await section.getByRole('button', { name: 'GitHub' }).click();
-
-    const pluginSection = window.getByTestId(
-      'mcp-server-details-plugin-section',
+    // A plugin server's name opens its owning plugin's detail page.
+    await section.getByRole('button', { name: 'GitHub', exact: true }).click();
+    await expect(window.getByTestId('plugin-detail-author')).toHaveText(
+      'by GitHub',
     );
-    await expect(pluginSection).toBeVisible();
-    const author = pluginSection
-      .locator('dt', { hasText: 'Author:' })
-      .locator('xpath=following-sibling::dd[1]');
-    await expect(author).toHaveText('GitHub');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -795,11 +940,18 @@ test('opening MCP management reads status without probing accounts; Health Check
     });
     await app.openPluginsPage();
     await app.openPluginsTab('mcp');
+    // CAN-4267: the device server is a Customize Installed row. Neither the
+    // list nor its detail page probes it; Health check stays in the editor
+    // that Advanced configuration opens.
     const row = window
-      .getByTestId('plugins-management-section-mcp')
-      .locator('tr', { hasText: 'Refreshable Account' });
+      .getByTestId('customize-section-installed')
+      .getByTestId('customize-row-mcp-local:aabbcc');
     await expect(row).toBeVisible();
-    await row.getByTestId('mcp-server-edit-button').click();
+    await row.click();
+    await expect(
+      window.getByTestId('mcp-browse-detail-management'),
+    ).toBeVisible();
+    await window.getByTestId('plugin-advanced-configuration').click();
     const dialog = window.getByRole('dialog', { name: 'Edit MCP server' });
     await expect(
       dialog.getByRole('button', { name: 'Health check', exact: true }),
@@ -894,25 +1046,27 @@ test('Test Connection contains a broken MCP stdin pipe', async ({}, testInfo) =>
     }, testInfo.outputPath('pipe-fault.log'));
     await app.openPluginsPage();
     await app.openPluginsTab('mcp');
-    const panel = window.getByTestId('plugins-management-section-mcp');
-    await panel
-      .locator('tr', { hasText: 'Pipe Failure Fixture' })
-      .getByTestId('mcp-server-edit-button')
+    // CAN-4267: Test connection now lives in the shared Health section of
+    // the server's Customize detail page.
+    await window
+      .getByTestId('customize-section-installed')
+      .getByTestId(
+        'customize-row-mcp-local:28180000-0000-4000-8000-000000000001',
+      )
       .click();
-    const dialog = window.getByRole('dialog', { name: 'Edit MCP server' });
-    await expect(
-      dialog.getByRole('button', { name: 'Test connection', exact: true }),
-    ).toBeEnabled();
+    const health = window.getByTestId('mcp-health-section');
+    const testButton = health.getByTestId('mcp-health-test');
+    await expect(testButton).toHaveText('Test connection');
+    await expect(testButton).toBeEnabled();
     await electronApp.evaluate(() => {
       globalThis.__can2818McpArmed = true;
     });
-    await dialog
-      .getByRole('button', { name: 'Test connection', exact: true })
-      .click();
-    await expect(dialog.getByText('write EOF', { exact: false })).toBeVisible();
-    await expect(
-      dialog.getByRole('button', { name: 'Test connection', exact: true }),
-    ).toBeEnabled();
+    await testButton.click();
+    await expect(health.getByTestId('mcp-health-result')).toContainText(
+      'write EOF',
+    );
+    await expect(testButton).toHaveText('Test connection');
+    await expect(testButton).toBeEnabled();
     expect(readFileSync(testInfo.outputPath('pipe-fault.log'), 'utf8')).toBe(
       'Injected MCP stdin EOF\n',
     );
@@ -964,10 +1118,12 @@ for (const choice of ['', 'provider', 'canopy']) {
           server.definition.id,
         ),
       ).toMatchObject({ server });
-      await app.openPluginsPage();
-      await app.openPluginsTab('mcp');
+      // CAN-4267: index-owned account routing shows in the account
+      // connections table, now in Settings > MCP servers.
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
       const row = window
-        .getByTestId('plugins-management-section-mcp')
+        .getByTestId('settings-mcp-account-connections')
         .locator('tr', { hasText: server.definition.name });
       await row.getByTestId('mcp-server-edit-button').click();
       const dialog = window.getByRole('dialog', { name: 'Edit MCP server' });
@@ -1253,18 +1409,38 @@ for (const scenario of [
         );
         return;
       }
-      await app.openPluginsPage();
-      await app.openPluginsTab('mcp');
-      const panel = window.getByTestId('plugins-management-section-mcp');
       if (scenario === 'flag-off') {
+        // CAN-4267: without the flag there is no Account connections table
+        // in Settings; Customize still lists the device server with no cloud
+        // placement or account controls.
+        await app.openPluginsPage();
+        await app.openPluginsTab('mcp');
+        const installed = window.getByTestId('customize-section-installed');
         await expect(
-          panel.getByText('Device GitHub', { exact: true }),
+          installed.locator('[data-testid^="customize-row-mcp-"]', {
+            hasText: 'GitHub',
+          }),
         ).toBeVisible();
-        await expect(panel.getByTestId('mcp-tier-badge')).toHaveCount(0);
-        await expect(panel.getByTestId('mcp-account-connect')).toHaveCount(0);
+        await expect(
+          installed.locator('[data-testid^="plugins-surface-"]', {
+            hasText: 'Cloud + desktop',
+          }),
+        ).toHaveCount(0);
+        await expect(window.getByTestId('mcp-account-connect')).toHaveCount(0);
+        await app.openSettings();
+        await app.openSettingsSection('mcp');
+        await expect(
+          window.getByTestId('settings-mcp-account-connections'),
+        ).toHaveCount(0);
+        await expect(window.getByTestId('mcp-tier-badge')).toHaveCount(0);
         expect(cloud.calls).toHaveLength(0);
         return;
       }
+      // CAN-4267: the account connections table moved from the retired
+      // Marketplace management view to Settings > MCP servers.
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
+      const panel = window.getByTestId('settings-mcp-account-connections');
       if (['provider', 'offline', '401', '503'].includes(scenario)) {
         await expect(
           panel.getByText('Device GitHub', { exact: true }),
@@ -1359,6 +1535,9 @@ for (const scenario of [
       const providerLaunch = await electronApp.evaluate(
         () => globalThis.__CANOPY_E2E_MCP_OAUTH_AUTHORIZATION_URL__,
       );
+      // Settings mints its own `/` link for its hosted web session
+      // (settings-session.ts); only MCP sign-in links are counted here.
+      const mcpAuthLinks = () => cloud.authLinks.filter((link) => link !== '/');
       if (scenario === 'browser-sign-in') {
         // The cloud names its sign-in page, so the browser opens it through
         // an auth link for this desktop's account instead of going straight
@@ -1372,12 +1551,12 @@ for (const scenario of [
               ),
             ),
           ]);
-        expect(cloud.authLinks).toEqual([ACCOUNT_MCP_FIXTURE_SIGN_IN_PATH]);
+        expect(mcpAuthLinks()).toEqual([ACCOUNT_MCP_FIXTURE_SIGN_IN_PATH]);
         expect(providerLaunch).toBeUndefined();
       } else {
         // An older cloud names no sign-in page: the provider opens directly.
         expect(providerLaunch).toBe('https://auth.example.test/authorize');
-        expect(cloud.authLinks).toEqual([]);
+        expect(mcpAuthLinks()).toEqual([]);
       }
       cloud.complete();
       await expect(panel.getByTestId('mcp-account-status')).toHaveText(
@@ -1531,9 +1710,11 @@ for (const scenario of ['create', 'promote']) {
       expect(signIn.status.authenticated, JSON.stringify(signIn.status)).toBe(
         true,
       );
-      await app.openPluginsPage();
-      await app.openPluginsTab('mcp');
-      const panel = window.getByTestId('plugins-management-section-mcp');
+      // CAN-4267: the account connections table and its Add menu live in
+      // Settings > MCP servers.
+      await app.openSettings();
+      await app.openSettingsSection('mcp');
+      const panel = window.getByTestId('settings-mcp-account-connections');
       if (scenario === 'create') {
         await panel.getByTestId('mcp-add-menu-trigger').click();
         await window.getByTestId('mcp-add-custom').click();
@@ -1779,9 +1960,10 @@ test('Settings summary counts account and device MCP servers', async () => {
       window.getByTestId('active-items-summary-counts'),
     ).toContainText('2 MCP servers');
     await window.getByTestId('active-items-summary-manage').click();
+    // CAN-4267: Manage opens Customize Installed, filtered to Active items.
     await expect(
-      window.getByTestId('plugins-installed-status-filter'),
-    ).toBeVisible();
+      window.getByTestId('customize-installed-status-filter'),
+    ).toHaveAttribute('data-status', 'active');
   } finally {
     if (electronApp) await closeCanopy(electronApp, userDataDir);
     await cloud.close();
@@ -1808,9 +1990,11 @@ test('custom HTTP MCP server moves between this device and the cloud account', a
       userDataDir,
       cloud,
     ));
-    await app.openPluginsPage();
-    await app.openPluginsTab('mcp');
-    const panel = window.getByTestId('plugins-management-section-mcp');
+    // CAN-4267: the account connections table lives in Settings > MCP
+    // servers.
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
+    const panel = window.getByTestId('settings-mcp-account-connections');
     const globalMcpRefs = () =>
       window.evaluate(
         async () =>
@@ -1989,9 +2173,11 @@ test('moving a cloud MCP server to this device on an older cloud says it was onl
       userDataDir,
       cloud,
     ));
-    await app.openPluginsPage();
-    await app.openPluginsTab('mcp');
-    const panel = window.getByTestId('plugins-management-section-mcp');
+    // CAN-4267: the account connections table lives in Settings > MCP
+    // servers.
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
+    const panel = window.getByTestId('settings-mcp-account-connections');
 
     // No curated catalog is seeded, so the toolbar shows the plain Add Custom
     // button rather than the Add menu.
@@ -2069,9 +2255,11 @@ test('moving a cloud-only MCP server with stored headers asks before leaving the
       userDataDir,
       cloud,
     ));
-    await app.openPluginsPage();
-    await app.openPluginsTab('mcp');
-    const panel = window.getByTestId('plugins-management-section-mcp');
+    // CAN-4267: the account connections table lives in Settings > MCP
+    // servers.
+    await app.openSettings();
+    await app.openSettingsSection('mcp');
+    const panel = window.getByTestId('settings-mcp-account-connections');
     await expect(panel.getByTestId('mcp-account-status')).toHaveText(
       'Connected',
       { timeout: 15_000 },

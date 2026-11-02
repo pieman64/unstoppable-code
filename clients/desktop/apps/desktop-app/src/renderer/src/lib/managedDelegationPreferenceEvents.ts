@@ -1,4 +1,7 @@
-import type { ManagedDelegationMode } from '@canopy/protocol/delegation/discovery';
+import {
+  managedDelegationLifetimeLimitChoices,
+  type ManagedDelegationMode,
+} from '@canopy/protocol/delegation/discovery';
 
 export const MANAGED_DELEGATION_PREFERENCE_UPDATED_EVENT =
   'canopy:managed-delegation-preference-updated';
@@ -7,6 +10,7 @@ export interface ManagedDelegationPreferenceUpdate {
   mode: ManagedDelegationMode;
   maxConcurrent?: number;
   maxDepth?: number;
+  lifetimeLimit?: number;
   revocationIncomplete: boolean;
 }
 
@@ -39,6 +43,11 @@ export function subscribeManagedDelegationPreferenceUpdated(
     ) {
       listener({
         mode: detail.mode,
+        ...('lifetimeLimit' in detail &&
+        typeof detail.lifetimeLimit === 'number' &&
+        managedDelegationLifetimeLimitChoices().includes(detail.lifetimeLimit)
+          ? { lifetimeLimit: detail.lifetimeLimit }
+          : {}),
         ...('maxConcurrent' in detail &&
         typeof detail.maxConcurrent === 'number' &&
         Number.isInteger(detail.maxConcurrent) &&

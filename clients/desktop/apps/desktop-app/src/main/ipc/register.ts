@@ -18,6 +18,7 @@ const SLOW_ACTION_LABELS: Record<string, string> = {
   [IPC_CHANNELS.worktreeCreate]: 'Creating worktree',
   [IPC_CHANNELS.workspaceCreateWorktree]: 'Creating project worktree',
   [IPC_CHANNELS.worktreeArchive]: 'Archiving worktree',
+  [IPC_CHANNELS.worktreeDiscard]: 'Discarding worktree',
   [IPC_CHANNELS.workspaceArchiveWorktree]: 'Archiving project worktree',
   [IPC_CHANNELS.worktreeDiffStats]: 'Loading worktree diff stats',
   [IPC_CHANNELS.worktreeDiffStatsBatch]: 'Loading worktree diff stats',

@@ -89,6 +89,10 @@ async function openChat(electronApp) {
   const window = await electronApp.firstWindow();
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
+  // Inspect individual steps without changing the product's Recent default.
+  await window.evaluate(() =>
+    window.api.savePreferences({ chatDetail: 'detailed' }),
+  );
   await app.openMainPage();
   await app.selectWorktree(WORKTREE_ID);
   await expect(
@@ -191,6 +195,10 @@ test('Codex MCP calls render as tool cards in a Cowork project chat', async () =
     const window = await launched.electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
+    // Inspect individual steps without changing the product's Recent default.
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
     await app.openChatPage();
 
     const workspaceToggle = window.getByTestId(
@@ -288,7 +296,6 @@ test('Codex MCP calls render as tool cards in a Cowork project chat', async () =
     );
     await expect(card).toHaveAttribute('data-tool-status', 'success');
     await card.getByRole('button').click();
-    await expect(card).toContainText('Result');
     await expect(card).toContainText(SUCCESS_RESULT_TEXT);
 
     await injectChatEvent(
@@ -316,12 +323,16 @@ test('Codex MCP calls render as tool cards in a Cowork project chat', async () =
     await expect(restartCard).toBeVisible();
     await expect(restartCard).toHaveAttribute('data-tool-status', 'success');
     await expect(restartCard.getByRole('button')).toHaveAttribute(
-      'data-tool-family',
-      'canopy',
+      'data-step-row',
+      '',
     );
     await expect(restartCard).toContainText('Refresh and resume');
     await expect(
-      restartCard.locator('span[aria-hidden="true"] svg'),
+      restartCard
+        .getByRole('button')
+        .locator(':scope > span[aria-hidden="true"]')
+        .first()
+        .locator('svg'),
     ).toHaveCount(1);
 
     await injectChatEvent(
@@ -457,7 +468,9 @@ test('Codex MCP calls render lifecycle-accurate tool cards that persist across r
         'false',
       );
       await expect(successCard).not.toContainText('operationId');
-      await expect(successCard.getByLabel('Thinking')).toBeVisible();
+      await expect(
+        successCard.locator('[data-step-row-words].canopy-text-shimmer-strong'),
+      ).toBeVisible();
 
       // `item.updated` must not duplicate the card or complete it.
       await injectChatEvent(
@@ -580,8 +593,12 @@ test('Codex MCP calls render lifecycle-accurate tool cards that persist across r
       await expect(successCard).toHaveCount(1);
       await expect(failureCard).toHaveCount(1);
       await expect(allCards).toHaveCount(2);
-      await expect(successCard.getByLabel('Thinking')).toHaveCount(0);
-      await expect(failureCard.getByLabel('Thinking')).toHaveCount(0);
+      await expect(
+        successCard.locator('[data-step-row-words].canopy-text-shimmer-strong'),
+      ).toHaveCount(0);
+      await expect(
+        failureCard.locator('[data-step-row-words].canopy-text-shimmer-strong'),
+      ).toHaveCount(0);
 
       // Success expansion: serialized input, "Result" heading, text result,
       // and no structured-content duplicate.
@@ -591,9 +608,8 @@ test('Codex MCP calls render lifecycle-accurate tool cards that persist across r
         'true',
       );
       await expect(successCard).toContainText(
-        '{"filter":"operationId=\\"fixture-operation\\""}',
+        'filter: operationId="fixture-operation"',
       );
-      await expect(successCard).toContainText('Result');
       await expect(successCard).toContainText(SUCCESS_RESULT_TEXT);
       await expect(successCard).not.toContainText(STRUCTURED_SENTINEL);
       await successCard.getByRole('button').click();
@@ -603,13 +619,12 @@ test('Codex MCP calls render lifecycle-accurate tool cards that persist across r
       );
       await expect(successCard).not.toContainText(SUCCESS_RESULT_TEXT);
 
-      // Failure expansion: "Error" heading plus the transport message.
+      // Failure expansion preserves the transport error message.
       await failureCard.getByRole('button').click();
       await expect(failureCard.getByRole('button')).toHaveAttribute(
         'aria-expanded',
         'true',
       );
-      await expect(failureCard).toContainText('Error');
       await expect(failureCard).toContainText(FAILURE_MESSAGE);
 
       // Terminal persistence: exactly one paired tool_use/tool_result per
@@ -671,12 +686,10 @@ test('Codex MCP calls render lifecycle-accurate tool cards that persist across r
       ).toHaveCount(2);
 
       await successCard.getByRole('button').click();
-      await expect(successCard).toContainText('Result');
       await expect(successCard).toContainText(SUCCESS_RESULT_TEXT);
       await expect(successCard).not.toContainText(STRUCTURED_SENTINEL);
 
       await failureCard.getByRole('button').click();
-      await expect(failureCard).toContainText('Error');
       await expect(failureCard).toContainText(FAILURE_MESSAGE);
     } finally {
       await closeCanopy(secondLaunch.electronApp, userDataDir, {

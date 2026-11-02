@@ -6,28 +6,31 @@ import {
   GitIgnoreHostError,
   type GitIgnoreHostFailureCode,
   getLinuxGitCandidates,
+  getGitExecutableDetectionMode,
   getMacGitCandidates,
   getWindowsGitCandidates,
   isMacGitShim,
   parseGitVersion,
   parseWhereExeOutput,
 } from '@canopy/core-runtime/node';
+import type {
+  GitExecutableSelectionFacts,
+  GitExecutableSelectionOrigin,
+} from '@canopy/core-runtime/node/git';
 import {
+  type ExecutableStats,
+  executableIdentity,
   GitReadError,
   type GitReadCommand,
   type GitReadEnvironment,
   isHostAbsolute,
+  type SelectedGit,
   windowsEnvironmentValue,
 } from './commands';
 import type { GitReadOutput, GitReadRunner } from './runner';
 
 /** The `stat` fields selection reads; Node's `Stats` satisfies it. */
-export interface SelectionStats {
-  readonly dev: number;
-  readonly ino: number;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly ctimeMs: number;
+export interface SelectionStats extends ExecutableStats {
   isFile(): boolean;
 }
 
@@ -69,7 +72,7 @@ export interface SelectionAccount {
 
 export interface SelectionOptions {
   readonly os: PlatformOperatingSystem;
-  /** `process.arch`; Linux login-shell discovery is x64 only, as in desktop. */
+  /** `process.arch`; Linux x64/arm64 share the desktop discovery eligibility policy. */
   readonly arch: string;
   /** The validated startup snapshot. */
   readonly environment: GitReadEnvironment;
@@ -86,12 +89,28 @@ export interface SelectionOptions {
 }
 
 export interface GitSelection {
-  /** The executable for one chunk; reads the saved value only when needed. */
+  /**
+   * The executable for one chunk; reads the saved value only when needed.
+   * Its version is the one validation parsed, kept only while the file's
+   * `stat` identity is unchanged.
+   */
   select(
     this: void,
     readSaved: (signal: AbortSignal) => Promise<unknown>,
     signal: AbortSignal,
-  ): Promise<string>;
+  ): Promise<SelectedGit>;
+  /**
+   * The selection `select` would make, as facts without its path. `recheck`
+   * skips the fast path that keeps an unchanged earlier selection. A
+   * selection failure is a result; an abort or a failed saved-value read
+   * rejects.
+   */
+  observe(
+    this: void,
+    readSaved: (signal: AbortSignal) => Promise<unknown>,
+    signal: AbortSignal,
+    recheck: boolean,
+  ): Promise<GitExecutableSelectionFacts>;
   /** Starts a stale login-PATH refresh where discovery uses one. */
   prewarm(this: void): void;
   /** `idle` once no detection or login-PATH refresh runs. */
@@ -168,24 +187,35 @@ function throwIfEnded(signals: readonly AbortSignal[]): void {
   signals.forEach((signal) => signal.throwIfAborted());
 }
 
+/**
+ * A validated Git: its path, parsed version, and `stat` identity from before
+ * the version probe. A replacement during or after the probe therefore fails
+ * the runner's spawn-time identity check, which binds the version.
+ */
+interface Validated {
+  readonly path: string;
+  readonly version: string;
+  readonly identity: string;
+}
+
 type Verdict =
-  | { readonly path: string }
+  | Validated
   /** `identity`: the validated file's, when validation reached its `stat`. */
   | { readonly rejected: true; readonly identity: string | undefined };
 
 type Detected =
-  | {
-      readonly path: string;
+  | (Validated & {
       readonly fromSaved: boolean;
+      readonly origin: GitExecutableSelectionOrigin;
       readonly revalidateAt: number;
-    }
+    })
   | { readonly failure: GitIgnoreHostFailureCode };
 
-interface Accepted {
+interface Accepted extends Validated {
   readonly key: string;
   readonly saved: string;
-  readonly path: string;
   readonly fromSaved: boolean;
+  readonly origin: GitExecutableSelectionOrigin;
   /** A rejected explicit value is retried from here, through detection. */
   readonly revalidateAt: number;
 }
@@ -200,12 +230,6 @@ const missing = (code: string | undefined): boolean =>
 
 const exitedZero = (output: GitReadOutput | null): output is GitReadOutput =>
   output !== null && output.code === 0 && output.signal === null;
-
-function identityOfStats(found: SelectionStats): string {
-  return [found.dev, found.ino, found.size, found.mtimeMs, found.ctimeMs].join(
-    ':',
-  );
-}
 
 const identityOfError = (error: unknown): string =>
   `error:${errnoCode(error) ?? 'unknown'}`;
@@ -255,7 +279,8 @@ function createWork(): {
  */
 export function createGitSelection(options: SelectionOptions): GitSelection {
   const { os, environment, probeDirectory, runner, io, now, timing } = options;
-  const linuxDiscovery = os === 'linux' && options.arch === 'x64';
+  const linuxDiscovery =
+    getGitExecutableDetectionMode(os, options.arch) === 'linux';
   const work = createWork();
   const override = (
     (os === 'win32'
@@ -482,7 +507,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     return loginPath ?? loginPathFallback();
   }
 
-  /** Linux x64: desktop awaits `prewarmLoginShellPath` before discovery. */
+  /** Linux x64/arm64: desktop awaits `prewarmLoginShellPath` before discovery. */
   async function awaitedLoginPath(scope: Scope): Promise<string> {
     if (!loginPathFresh()) await scoped(scope, refreshLoginPath);
     return loginPath ?? loginPathFallback();
@@ -500,13 +525,14 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     if (os === 'win32' && path.win32.basename(value).toLowerCase() !== 'git.exe') return reject(); // prettier-ignore
 
     let target = value;
+    let validated: string;
     try {
       if (os === 'darwin') {
         target = await scoped(scope, () => io.realpath(value));
         if (isMacGitShim(target)) return reject();
       }
       const found = await scoped(scope, () => io.stat(target));
-      identity = identityOfStats(found);
+      validated = identity = executableIdentity(found);
       if (!found.isFile()) return reject();
       if (os === 'linux') await scoped(scope, () => io.access(target));
     } catch (error) {
@@ -515,14 +541,13 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       return reject();
     }
 
-    const version = await probe({ kind: 'git-version', executable: target }, scope); // prettier-ignore
-    if (
-      !exitedZero(version) ||
-      !parseGitVersion(`${version.stdout}\n${version.stderr}`, {
-        numeric: os === 'linux',
-      })
-    )
-      return reject();
+    const probed = await probe({ kind: 'git-version', executable: target }, scope); // prettier-ignore
+    const version = exitedZero(probed)
+      ? parseGitVersion(`${probed.stdout}\n${probed.stderr}`, {
+          numeric: os === 'linux',
+        })
+      : null;
+    if (!version) return reject();
     if (os === 'darwin') {
       const smoke = await probe(
         {
@@ -534,7 +559,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       );
       if (!exitedZero(smoke)) return reject();
     }
-    return { path: target };
+    return { path: target, version, identity: validated };
   }
 
   // -------------------------------------------------------------- discovery
@@ -603,7 +628,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     if (!value) return 'none';
     if (!isHostAbsolute(os, value)) return 'relative';
     try {
-      return identityOfStats(await within(() => io.stat(value), signals));
+      return executableIdentity(await within(() => io.stat(value), signals));
     } catch (error) {
       throwIfEnded(signals);
       return identityOfError(error);
@@ -619,7 +644,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     knownIdentity: string | undefined,
     scope: Scope,
     isCurrent: () => boolean,
-  ): Promise<{ readonly path: string } | { readonly rejectedAt: number }> {
+  ): Promise<Validated | { readonly rejectedAt: number }> {
     const prior = rejections.get(value);
     if (prior && now() - prior.at < timing.revalidateMs) {
       const identity =
@@ -657,7 +682,12 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     for (const [value, identity] of explicit) {
       const outcome = await tryExplicit(value, identity, scope, isCurrent);
       if ('path' in outcome)
-        return { path: outcome.path, fromSaved: value === saved, revalidateAt };
+        return {
+          ...outcome,
+          fromSaved: value === saved,
+          origin: value === saved ? 'saved' : 'override',
+          revalidateAt,
+        };
       revalidateAt = Math.min(
         revalidateAt,
         outcome.rejectedAt + timing.revalidateMs,
@@ -676,7 +706,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       seen.add(key);
       const verdict = await validate(candidate, scope);
       if ('path' in verdict)
-        return { path: verdict.path, fromSaved: false, revalidateAt };
+        return { ...verdict, fromSaved: false, origin: 'discovered', revalidateAt }; // prettier-ignore
     }
     return { failure: 'git_unavailable' };
   }
@@ -704,27 +734,31 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       );
       if ('path' in outcome)
         return {
-          path: outcome.path,
+          ...outcome,
           fromSaved: Boolean(saved),
+          origin: saved ? 'saved' : 'override',
           revalidateAt: Number.POSITIVE_INFINITY,
         };
       return { failure: 'git_unavailable' };
     }
-    const accept = (found: string): Detected => {
-      if (isCurrent()) linuxDiscovered = found;
-      return { path: found, fromSaved: false, revalidateAt: Number.POSITIVE_INFINITY }; // prettier-ignore
+    const accept = (
+      found: Validated,
+      origin: GitExecutableSelectionOrigin,
+    ): Detected => {
+      if (isCurrent()) linuxDiscovered = found.path;
+      return { ...found, fromSaved: false, origin, revalidateAt: Number.POSITIVE_INFINITY }; // prettier-ignore
     };
     const cached = linuxDiscovered;
     if (cached) {
       const verdict = await validate(cached, scope);
-      if ('path' in verdict) return accept(verdict.path);
+      if ('path' in verdict) return accept(verdict, 'discovery-cache');
       if (isCurrent() && linuxDiscovered === cached) linuxDiscovered = null;
     }
-    for (const { path: candidate } of getLinuxGitCandidates(
+    for (const { path: candidate, source } of getLinuxGitCandidates(
       await awaitedLoginPath(scope),
     )) {
       const verdict = await validate(candidate, scope);
-      if ('path' in verdict) return accept(verdict.path);
+      if ('path' in verdict) return accept(verdict, source);
     }
     return { failure: 'git_unavailable' };
   }
@@ -779,16 +813,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
       runDetection(saved, savedIdentity, isServing).then((detected) => {
         if (inFlight.get(key)?.token === token) inFlight.delete(key);
         if (isServing())
-          accepted =
-            'path' in detected
-              ? {
-                  key,
-                  saved,
-                  path: detected.path,
-                  fromSaved: detected.fromSaved,
-                  revalidateAt: detected.revalidateAt,
-                }
-              : null;
+          accepted = 'path' in detected ? { ...detected, key, saved } : null;
         return detected;
       }),
     );
@@ -797,37 +822,70 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
   }
 
   /**
-   * desktop's spawn fast path: `true` keeps the selection, `false` re-runs
-   * detection (ENOENT, ENOTDIR, or no longer the validated file). Any other
-   * lookup error does not prove the installation gone and is surfaced.
+   * desktop's spawn fast path: the file's `stat` keeps the selection, `null`
+   * re-runs detection (ENOENT, ENOTDIR, or no longer the validated file). Any
+   * other lookup error does not prove the installation gone and is surfaced.
    */
   async function stillSelected(
     selected: string,
     signals: readonly AbortSignal[],
-  ): Promise<boolean> {
+  ): Promise<SelectionStats | null> {
     const look = <T>(work: () => Promise<T>): Promise<T> =>
       within(work, signals);
     try {
-      if (os === 'darwin') {
-        const real = await look(() => io.realpath(selected));
-        if (real !== selected || isMacGitShim(real)) return false;
-        return (await look(() => io.stat(real))).isFile();
-      }
-      if (!(await look(() => io.stat(selected))).isFile()) return false;
+      const real =
+        os === 'darwin' ? await look(() => io.realpath(selected)) : selected;
+      if (real !== selected || (os === 'darwin' && isMacGitShim(real)))
+        return null;
+      const found = await look(() => io.stat(real));
+      if (!found.isFile()) return null;
       if (os === 'linux') await look(() => io.access(selected));
-      return true;
+      return found;
     } catch (error) {
       throwIfEnded(signals);
-      if (missing(errnoCode(error))) return false;
+      if (missing(errnoCode(error))) return null;
       throw new GitIgnoreHostError('selection_rejected');
     }
+  }
+
+  /**
+   * A replaced file keeps the selection, as desktop, but not its version. The
+   * file can still change before its spawn, so the identity goes with it.
+   */
+  function selectedGit(
+    selected: Accepted,
+    current: SelectionStats,
+  ): SelectedGit {
+    return executableIdentity(current) === selected.identity
+      ? {
+          executable: selected.path,
+          version: selected.version,
+          identity: selected.identity,
+        }
+      : { executable: selected.path, version: undefined };
+  }
+
+  /** The fast path's selection, unless rechecked or no longer selected. */
+  async function keptSelection(
+    selected: Accepted,
+    requested: readonly AbortSignal[],
+    recheck: boolean,
+  ): Promise<
+    (SelectedGit & { readonly origin: GitExecutableSelectionOrigin }) | null
+  > {
+    if (recheck) return null;
+    const found = await stillSelected(selected.path, requested);
+    return found
+      ? { ...selectedGit(selected, found), origin: selected.origin }
+      : null;
   }
 
   /** The request's own lookups end with the stop or the request's signal. */
   async function selectOnce(
     readSaved: (signal: AbortSignal) => Promise<unknown>,
     signal: AbortSignal,
-  ): Promise<string> {
+    recheck = false,
+  ): Promise<SelectedGit & { readonly origin: GitExecutableSelectionOrigin }> {
     const raw = await readSaved(signal);
     const read = ++savedReads;
     if (typeof raw !== 'string')
@@ -857,7 +915,8 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     const isLatest = (): boolean => read === latestRequest;
     const selected = accepted;
     if (selected?.key === key && now() < selected.revalidateAt) {
-      if (await stillSelected(selected.path, requested)) return selected.path;
+      const kept = await keptSelection(selected, requested, recheck);
+      if (kept) return kept;
     } else if (
       selected?.fromSaved &&
       selected.saved === saved &&
@@ -870,20 +929,73 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     throwIfEnded(requested);
     const detected = await detect(key, saved, savedIdentity, isLatest);
     if ('failure' in detected) throw new GitIgnoreHostError(detected.failure);
-    return detected.path;
+    return {
+      executable: detected.path,
+      version: detected.version,
+      identity: detected.identity,
+      origin: detected.origin,
+    };
   }
 
   async function select(
     readSaved: (signal: AbortSignal) => Promise<unknown>,
     signal: AbortSignal,
-  ): Promise<string> {
+  ): Promise<SelectedGit> {
     // desktop: an unrequired platform spawns the override or `git` unvalidated.
-    if (os === 'linux' && !linuxDiscovery) return override || 'git';
+    if (os === 'linux' && !linuxDiscovery)
+      return { executable: override || 'git', version: undefined };
     try {
-      return await selectOnce(readSaved, signal);
+      const { executable, version, identity } = await selectOnce(
+        readSaved,
+        signal,
+      );
+      return identity === undefined
+        ? { executable, version }
+        : { executable, version, identity };
     } catch (error) {
       if (options.hostSignal.aborted) throw new GitIgnoreHostError('stopped');
       throw error;
+    }
+  }
+
+  async function observe(
+    readSaved: (signal: AbortSignal) => Promise<unknown>,
+    signal: AbortSignal,
+    recheck: boolean,
+  ): Promise<GitExecutableSelectionFacts> {
+    if (os === 'linux' && !linuxDiscovery)
+      return { ready: true, version: null, origin: 'unvalidated', override: Boolean(override) }; // prettier-ignore
+    let saved = '';
+    const reading = async (readSignal: AbortSignal): Promise<unknown> => {
+      const raw = await readSaved(readSignal);
+      if (typeof raw === 'string') saved = raw.trim();
+      return raw;
+    };
+    try {
+      const chosen = await selectOnce(reading, signal, recheck);
+      return {
+        ready: true,
+        version: chosen.version ?? null,
+        origin: chosen.origin,
+        override: Boolean(override),
+      };
+    } catch (error) {
+      if (options.hostSignal.aborted)
+        return { ready: false, code: 'stopped', explicit: false };
+      if (!(error instanceof GitIgnoreHostError)) throw error;
+      // A kept selection that cannot be looked up is the explicit choice's
+      // failure only when that choice was selected (a discovered fallback
+      // is a candidate's); Linux x64/arm64 also report any broken explicit
+      // choice instead of replacing it.
+      const rejectedOrigin = accepted?.origin;
+      return {
+        ready: false,
+        code: error.code,
+        explicit:
+          (error.code === 'selection_rejected' &&
+            (rejectedOrigin === 'saved' || rejectedOrigin === 'override')) ||
+          (linuxDiscovery && Boolean(saved || override)),
+      };
     }
   }
 
@@ -894,6 +1006,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
 
   return Object.freeze({
     select,
+    observe,
     prewarm,
     whenIdle: (signal: AbortSignal) => work.whenIdle(signal),
   });

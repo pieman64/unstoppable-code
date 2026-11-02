@@ -1,11 +1,21 @@
+import { supersedeToolInterruptions } from '@canopy/agent-transcript/settlement';
+import { readAutoResumeMetadata } from '@canopy/protocol/portal';
+import type {
+  ChildStreamCompatibilityPageRequest,
+  ChildStreamCompatibilityPageReply,
+} from '../agents/delegation/record-reader-contract';
+import type { DelegationRegistryOperations } from '../lib/chat-delta-journal/delegation-registry-api';
 import { checkWatcherDeliveryIngress } from './active-chat-input';
 import { assertUntrustedChatInput } from '../agent-messaging/untrusted-input';
+import { automationDispatchRequestFields } from '../agent-messaging/automation-dispatch';
 import {
   revalidateAgentSenderRequest,
+  parseAgentSenderProvenance,
   agentSendTargetReadiness,
   withAgentSenderAuthority,
   isAgentSenderContextError,
   AgentSenderContextError,
+  changesAuthority,
 } from '../agent-messaging/sender-context';
 import {
   withLegacyChatMessageCommand,
@@ -23,12 +33,19 @@ import {
 } from './mcp-activation-message';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import {
+  hasChatContinuationSession,
+  resolveChatModelChangeHarness,
+  supportsChatHarnessChoice,
+  isNativeOpenCodeSelection,
+} from '@canopy/desktop-shared/lib/chat-model-selection';
+import {
   clearOpenCodeForkPlanReview,
   prepareOpenCodeVisibleFork,
 } from '@canopy/desktop-shared/lib/opencode-fork-context';
 import type { ChatPlanReviewApproval } from '@canopy/protocol/portal';
 import {
   DELEGATION_TRANSCRIPT_CHAT_LOG,
+  DELEGATION_TRANSCRIPT_CHAT_STREAM,
   isAgentDelegationTranscript,
   type AgentDelegationTranscriptItem,
 } from '@canopy/protocol/delegation';
@@ -39,6 +56,33 @@ import type {
 import { persistedDelegationSnapshot } from '../agents/delegation/card-persistence';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
 import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
+import type { ChatTurnLifecycleEvent } from '@canopy/protocol/canopy-core';
+import {
+  setTurnLifecycleEndedLookup,
+  setTurnLifecycleSink,
+} from '../agents/provider-turn-lifecycle';
+import {
+  bindChatTurnOwnership,
+  getChatTurnOwnership,
+} from './chat-turn-ownership';
+import {
+  applyTurnEffects,
+  projectTurnRuntime,
+  snapshotTimerRows,
+} from './chat-turn-effects';
+import {
+  ChatTurnStateHandoff,
+  isBackgroundTurnState,
+  type ChatTurnStateChange,
+  type ChatTurnStateCommit,
+  type ChatTurnStateScope,
+  type ChatTurnStateHandoffSnapshot,
+} from './chat-turn-state-handoff';
+export type {
+  ChatTurnStateChange,
+  ChatTurnStateCommit,
+  ChatTurnStateScope,
+} from './chat-turn-state-handoff';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import {
   hasTrustedVisualToolUse,
@@ -47,19 +91,32 @@ import {
 import { publishForeignChatActivity } from './foreign-activity-sources';
 import type { AgentSession } from '../agents/types';
 import { settleInputExecution } from './chat-input-delivery-state';
-import { detachInputDelivery } from '@canopy/desktop-shared/chat-input-delivery';
 import {
+  detachInputDelivery,
+  validOrdinaryContinuation,
+} from '@canopy/desktop-shared/chat-input-delivery';
+import {
+  recordDelegationSnapshot,
   recordProviderEventApplied,
   recordProviderEventIngested,
 } from '@canopy/desktop-shared/node/work-counters';
 import { searchTranscriptMessages } from '../lib/chat-transcript-search';
 import type {
   ChatStateV2Backend as ChatStateV2BackendType,
+  ChildStreamContentRange,
+  ChildStreamRowsPage,
   ChatStorageImportOptions,
 } from './chat-state-v2-backend';
+import type { DelegationChildRow } from '@canopy/agent-transcript';
+import type {
+  TranscriptContentField,
+  TranscriptTarget,
+  TranscriptStreamDescriptor,
+} from '@canopy/protocol/canopy-core';
 import type { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { createHash, randomUUID } from 'node:crypto';
-import { hasLiveDelegations } from '../agents/delegation/activity';
+import { isE2eBuild } from '../lib/e2e-gate';
+import { BACKGROUND_WORK_CHAT_REFUSAL } from '../agents/delegation/activity';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -72,9 +129,26 @@ import {
   ChatInputDeliveryCoordinator,
   type InputPickupObserver,
 } from './chat-input-delivery-coordinator';
-import { isInputLedger, type InputRow } from './chat-input-delivery-state';
-import type { ChatInputDeliveryEvent } from '@canopy/protocol/portal';
+import { isHistoryCandidate, isInputLedger } from './chat-input-delivery-state';
+import type { InputRow } from './chat-input-delivery-state';
+import { reopenAsyncQuestionMutations } from './async-question-reopen';
+import type {
+  ChatInputDeliveryEvent,
+  ChatSteeringCapabilities,
+} from '@canopy/protocol/portal';
+import { readChatInputDeliveryFailure } from '@canopy/protocol/portal/input-delivery';
+import { prepareCodexItemFields } from './chat-transcript-field-preparation';
+import { admittedResultCall } from '@canopy/agent-transcript/lib/admitted-result-call';
+import { toolResultNeedsRead } from '../lib/chat-transcript-artifacts';
+import { portalToolOccurrenceId } from '@canopy/protocol/portal';
 import {
+  PROVIDER_EVENT_ADMISSION_MAX_TOOLS,
+  PROVIDER_EVENT_ADMISSION_MAX_BYTES,
+  type ToolOccurrenceAdmission,
+  type ProviderEventIngestResult,
+} from './provider-event-admission';
+import {
+  CHILD_TOOLS_ENDED_EVENT_TYPE,
   applyClaudeTranscriptEvent,
   applyCodexTranscriptEvent,
   claudeResultErrorMessage,
@@ -82,8 +156,20 @@ import {
   setTranscriptModelResolver,
   type TranscriptReducerState,
 } from '@canopy/agent-transcript';
+import {
+  hydrateChatTurnState,
+  initialChatTurnState,
+  serializeChatTurnState,
+} from '@canopy/agent-transcript/turn';
+import type {
+  ChatTurnRecord,
+  PersistedChatTurnState,
+} from '@canopy/agent-transcript/turn';
 import type {
   ChatTranscriptPageRequest,
+  ChatTranscriptContentRequest,
+  ChatTranscriptBlocksRequest,
+  ChatTranscriptBlocksPage,
   ChatTranscriptSearchRequest,
   ChatTranscriptSearchResult,
   ChatToolOutputRequest,
@@ -91,8 +177,10 @@ import type {
   ChatVisualReadRequest,
   ChatVisualReadResponse,
   AgentModelConfig,
+  ApprovalMode,
   ArchivedChatEntry,
   ArchivedChatsFile,
+  ArchivedTurnFence,
   ChatCommand,
   ChatCommandEnvelope,
   ChatCommandExecutionOptions,
@@ -101,7 +189,9 @@ import type {
   ChatQueueOrigin,
   ChatQueueEditRequest,
   ChatRuntimeState,
+  ChatSendAdmittedApproval,
   ChatSendMessageRequest,
+  ChatSendTurnOverride,
   ChatStateChangedEvent,
   ChatStateCommandPort,
   ChatStateSnapshot,
@@ -127,6 +217,7 @@ import {
   isRetiredPlanChatScope,
   RETIRED_PLAN_CHAT_MESSAGE,
 } from '@canopy/desktop-shared/lib/retired-chat-scopes';
+import { readMetadataOfRecord } from '@canopy/desktop-shared/node/delegation/record-v3';
 import type {
   TranscriptDescriptor,
   TranscriptPage,
@@ -137,13 +228,14 @@ import {
   type TranscriptPreviewOptions,
   type TranscriptPreviewRead,
 } from './chat-state-v2-repository';
+import { applyMutation } from './chat-state-reducer';
 import {
   APP_ADVISOR_PROJECT_ID,
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   CODE_REVIEW_CHAT_PROJECT_ID,
+  FAIL_CLOSED_APPROVAL_MODE,
   getEffectiveModelContextWindow,
   getExecutionHarnessForModel,
-  getChatHarnessOptions,
   getModelContextWindow,
   getModelDisplayName,
   getProviderForModel,
@@ -168,6 +260,7 @@ import {
   persistedTabProvider,
   resolveTerminalDrivenChat,
 } from '../lib/terminal-driven-chat';
+import { getEffectiveClaudeChatInterfaceMode } from '../lib/claude-tui-chats';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { formatAskUserAnswers } from '@canopy/desktop-shared/lib/ask-user-answers';
@@ -182,19 +275,32 @@ import {
   defineChatTabMetadataProperty,
   isSafeChatTabMetadataKey,
 } from '@canopy/desktop-shared/chat-tab-metadata';
-import { resolveRequest, rejectRequest } from '../mcp/pending-requests';
+import {
+  clearAskUserRequestCancellation,
+  isAskUserRequestCancelled,
+  rejectRequest,
+  resolveRequest,
+} from '../mcp/pending-requests';
 import { toArchivedChatSummary } from '../lib/chat-archives';
 import {
-  isAgentContinuationEvent,
+  isClaudeChildFrame,
   isCodexSubagentFollowupEvent,
   isCodexSubagentTerminalEvent,
+  isRootAgentContinuationEvent,
   isPlanHandoffResult,
   isRootTerminalChatEventData,
   isTerminalChatEventData,
   isUserAbortResult,
 } from '../lib/chat-turn-audit';
-import { projectChatStateChanges } from './chat-state-projection';
-import { notifyChatTabsMaterialized } from '../lib/chat-tabs';
+import {
+  projectChatRuntime,
+  projectChatStateChanges,
+} from './chat-state-projection';
+import {
+  ensureChatTabsRequiredDurability,
+  notifyChatTabsMaterialized,
+  type ChatTabsWriteDelta,
+} from '../lib/chat-tabs';
 import {
   isPersistedChatMessage,
   isPersistedChatTab,
@@ -203,7 +309,7 @@ import { validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 import {
   buildPersistedTurnInterruptedMutations,
-  closeOpenPersistedToolUses,
+  settlePersistedInterruptedMessages,
   closeOpenPersistedTurnTimers,
   settlePersistedForkMessages,
 } from '../lib/persisted-chat-settle';
@@ -222,12 +328,18 @@ import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { preserveSettledTurnTimers } from '../lib/settled-turn-timer-guard';
 import { recordInterruptedChats } from '../lib/usage-limited-chats-registry';
 import { installChatTranscriptRewriteDiagnosticSink } from './chat-transcript-rewrite-diagnostics';
+import { chatEventDroppedDiagnostic } from '../lib/chat-event-drop-diagnostics';
 import { isRealWorkspaceTarget } from '../lib/chat-targets';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
+import { classifyProviderRunEvent } from '../lib/provider-run-reconciliation';
 // Type-only: erased at compile time, so it cannot create the import cycle
 // the lazy `recordDiagnostic` default below deliberately avoids.
 import type { SessionDiagnosticRecord } from '../observability/service';
+import {
+  startChatWaitOperation,
+  type ChatWaitOperation,
+} from '../observability/chat-wait-diagnostics';
 import type {
   ChatReadSelection,
   TranscriptConsumeOptions,
@@ -237,7 +349,9 @@ import { ChatScopeDeletingError } from './chat-scope-lifecycle';
 import {
   chatSendAdmissionCheck,
   type ChatSendAdmissionCheck,
+  type ChatSendAdmissionTab,
 } from './chat-send-admission';
+import { getApprovalSettingsRevision } from '../approvals/rule-revisions';
 import {
   claimWorktreeGitSetup,
   type WorktreeGitSetupOutcome,
@@ -255,6 +369,7 @@ import {
   type ChatScopeKey,
   type ChatStateCommit,
   type ChatStateStorageDiagnostic,
+  type ChatStateTransactionContext,
 } from './chat-state-contracts';
 import type { ChatQueuePersistenceMutation } from './chat-queue-service';
 import {
@@ -311,6 +426,30 @@ export type ProviderEventIngestOutcome =
   | 'activity-only'
   | 'not-applied';
 
+export type { ChatPickupVerdict } from './chat-input-delivery-state';
+
+// One result for both consumers: the pickup verdict for turn dispatch and the
+// tool admission for the Portal projection.
+export type { ProviderEventIngestResult } from './provider-event-admission';
+
+interface ProviderEventReduction {
+  mutations: ChatCoreMutation[];
+  activityOnly: boolean;
+  canonicalAdmissionRejectionReason?: string;
+  canonicalAdmissionOwnerTurnUserMessageId?: string;
+  shouldResolveInputHistory: boolean;
+  emptyCompletionDiagnostic?: SessionDiagnosticRecord;
+  /** Canonical mode: the receipt turn this root terminal ends; fenced once committed. */
+  rootTerminalTurnId?: string;
+  terminalAttributionAmbiguous?: boolean;
+  /** Interrupted turns this prompt started instead of resuming. */
+  abandonedTurns?: string[];
+  /** Tool occurrences this event's committed blocks map to, for the Portal. */
+  admissionTools: ToolOccurrenceAdmission[];
+  /** A mapping bound stopped the capture; the excess stays preview-only. */
+  admissionLimited: boolean;
+}
+
 type ChatStateRepositoryPort = Pick<
   ChatStateV2Repository,
   keyof ChatStateV2Repository
@@ -321,6 +460,34 @@ interface PlanReviewApprovalRecordRequest extends ChatScopeKey {
   planId: string;
   revisionNumber: number;
   approvedAt: string;
+}
+
+/** A new turn retires the tab's waiting non-proposal plan request. */
+function retiresSupersededPlanExit(tab: PersistedChatTab | undefined): boolean {
+  return (
+    tab?.pendingPlanExit !== undefined &&
+    !isPlanProposal({
+      ...tab.pendingPlanExit,
+      source: tab.pendingPlanExit.source ?? tab.trackedPlanSource,
+    })
+  );
+}
+
+/** Retire only the request; revision tracking remains available during work. */
+function retireSupersededPlanExitMutations(
+  tab: PersistedChatTab | undefined,
+): ChatCoreMutation[] {
+  if (!tab || !retiresSupersededPlanExit(tab)) return [];
+  return [
+    {
+      type: 'tab.metadata_patched',
+      tabId: tab.id,
+      patch: {
+        pendingPlanExit: null,
+        pendingPlanExitRequestId: null,
+      },
+    },
+  ];
 }
 
 function matchesOpenCodePlanReview(
@@ -368,10 +535,18 @@ export interface ChatStateServiceOptions {
   repository?: ChatStateRepositoryPort;
   now?: () => number;
   createId?: () => string;
-  steer?: (request: ChatSendMessageRequest) => Promise<boolean>;
   dispatch?: (
     request: ChatSendMessageRequest,
     origin: ChatQueueOrigin,
+  ) => Promise<void>;
+  /** Queue-aware adapter; invoke the callback only for immediate admission. */
+  submit?: (
+    request: ChatSendMessageRequest,
+    origin: ChatQueueOrigin,
+    beforeImmediateDispatch: (options: {
+      cancelledBeforeDispatch: boolean;
+      startsTurn: boolean;
+    }) => Promise<void>,
   ) => Promise<void>;
   authorizeSend?: (
     target: ChatScopeKey & {
@@ -399,6 +574,11 @@ export interface ChatStateServiceOptions {
     requested: string | undefined,
   ) => Promise<string | undefined>;
   cleanupSession?: (target: ChatScopeKey & { chatId: string }) => Promise<void>;
+  chatCloseBlockReason?: (
+    projectId: string,
+    worktreeId: string,
+    chatId: string,
+  ) => 'delegates' | 'background' | null;
   schedule?: (
     callback: () => void,
     delayMs: number,
@@ -410,6 +590,11 @@ export interface ChatStateServiceOptions {
   codexToolNames?: ReadonlySet<string>;
   /** Trusted Cursor session ledger lookup; absent by default (fail closed). */
   cursorToolUse?: (target: VisualToolTarget, toolUseId: string) => boolean;
+}
+
+export interface ChatHostRuntimeRecovery {
+  tabs: PersistedChatTab[];
+  runtimeByChatId: Record<string, ChatRuntimeState>;
 }
 
 /** Trusted host-only execution metadata that must never come from renderer input. */
@@ -455,8 +640,20 @@ function withCardOnlyDelegation(input: ProviderEventInput): ProviderEventInput {
 
 type ArchiveChatBackend = Pick<
   ChatStateV2BackendType,
-  'page' | 'toolOutput' | 'visual' | 'readDelegationItems'
+  | 'page'
+  | 'toolOutput'
+  | 'visual'
+  | 'readDelegationItems'
+  | 'content'
+  | 'blocks'
+  | 'search'
 >;
+type ChatCloseBlockReason = 'delegates' | 'background' | null;
+type ChatCloseBlockReasonChecker = (
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+) => ChatCloseBlockReason;
 
 const ARCHIVE_BACKEND_CACHE_LIMIT = 16;
 /** Longest a streaming chat's persisted runtime.lastActivityAt may lag. */
@@ -615,6 +812,46 @@ export function preserveProviderVisualReferences(
       return safe;
     });
     return changed ? { ...message, blocks } : message;
+  });
+}
+
+/** Carries a handoff snapshot on the chat's runtime patch, adding one if absent. */
+/** The tab's Auto-routed models, which the Portal's live timer chip reads. */
+function tabAutoRoutedModels(
+  current: CanonicalChatState,
+  chatId: string,
+): Readonly<Record<string, string>> | undefined {
+  return current.tabsFile.tabs.find((tab) => tab.id === chatId)
+    ?.autoRoutedModels;
+}
+
+function withTurnSnapshot(
+  mutations: ChatCoreMutation[],
+  current: Pick<CanonicalChatState, 'runtimeByChatId'>,
+  chatId: string,
+  snapshot: ChatTurnStateHandoffSnapshot,
+  project: (runtime: ChatRuntimeState) => ChatRuntimeState = (runtime) => ({
+    ...runtime,
+    turn: snapshot.turn,
+  }),
+): void {
+  const index = mutations.findIndex(
+    (mutation) =>
+      mutation.type === 'runtime.patched' && mutation.chatId === chatId,
+  );
+  const existing = index >= 0 ? mutations[index] : undefined;
+  if (existing?.type === 'runtime.patched') {
+    mutations[index] = { ...existing, runtime: project(existing.runtime) };
+    return;
+  }
+  const runtime = current.runtimeByChatId[chatId] ?? {
+    status: 'idle' as const,
+    queuedMessageIds: [],
+  };
+  mutations.push({
+    type: 'runtime.patched',
+    chatId,
+    runtime: project(runtime),
   });
 }
 
@@ -786,7 +1023,10 @@ function rememberedEditableTabAfterClose(
 
 function tabWithSendModel(
   tab: PersistedChatTab,
-  command: Extract<ChatCommand, { type: 'chat.send_message' }>,
+  command: Pick<
+    Extract<ChatCommand, { type: 'chat.send_message' }>,
+    'model' | 'providerType'
+  >,
 ): PersistedChatTab {
   if (command.model === undefined && command.providerType === undefined) {
     return tab;
@@ -902,6 +1142,22 @@ function isChatInputDeliveryEvent(
   );
 }
 
+/**
+ * The event with its failure rebuilt from the code alone, and only on an
+ * unknown event: malformed metadata never forges a class or summary.
+ */
+function withTrustedDeliveryFailure(
+  event: ChatInputDeliveryEvent,
+): ChatInputDeliveryEvent {
+  const failure =
+    event.phase === 'unknown'
+      ? readChatInputDeliveryFailure(event.failure)
+      : undefined;
+  const trusted: ChatInputDeliveryEvent = { ...event };
+  delete trusted.failure;
+  return failure ? { ...trusted, failure } : trusted;
+}
+
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === 'string';
 }
@@ -1011,6 +1267,8 @@ interface SetupHold {
   readonly chatId: string;
   acquired: Promise<void>;
   owner: HeldSend | undefined;
+  /** The prompt commit of the send becoming `owner`, which settling awaits. */
+  installing?: Promise<boolean>;
 }
 
 const UNFINISHED_RUNTIME_STATUSES: readonly string[] = [
@@ -1056,6 +1314,121 @@ function settleTurnEnds(
   return settles
     ? withTurnEnd(ends, turnUserMessageId, outcome, endedAt)
     : ends;
+}
+
+/**
+ * The chat's turn ends as a canonical snapshot places them: each `turn.ended`
+ * effect records how its turn ended, and the turn that runs drops its
+ * record. The canonical reducer owns turn ends, so these records follow its
+ * outbox rather than a runtime status change; only an empty completion,
+ * which the runtime fails, records `failed` for a completed end.
+ */
+function recordSnapshotTurnEnds(
+  mutations: ChatCoreMutation[],
+  current: CanonicalChatState,
+  chatId: string,
+  snapshot: ChatTurnStateHandoffSnapshot,
+  now: number,
+): void {
+  const tab = current.tabsFile.tabs.find(
+    (candidate) => candidate.id === chatId,
+  );
+  if (!tab) return;
+  const records = new Map<string, ChatTurnRecord>();
+  for (const record of [
+    ...(snapshot.turnRecords ?? []),
+    snapshot.turn.lastEnded,
+    snapshot.turn.current,
+  ])
+    if (record) records.set(record.id, record);
+  // This commit's own runtime and turn ends, when it writes them, are newer.
+  let runtime = current.runtimeByChatId[chatId];
+  let recorded = tab.turnEnds;
+  for (const mutation of mutations)
+    if (mutation.type === 'runtime.patched' && mutation.chatId === chatId)
+      runtime = mutation.runtime;
+    else if (
+      mutation.type === 'tab.metadata_patched' &&
+      mutation.tabId === chatId &&
+      'turnEnds' in mutation.patch
+    )
+      recorded = mutation.patch.turnEnds ?? undefined;
+  const empty = emptyCompletionTurn(runtime);
+  let ends = recorded;
+  for (const effect of snapshot.effects ?? []) {
+    if (effect.type !== 'turn.ended') continue;
+    const record = records.get(effect.turnId);
+    if (record?.userMessageId === undefined) continue;
+    ends = withTurnEnd(
+      ends,
+      record.userMessageId,
+      effect.outcome === 'completed' && record.userMessageId === empty
+        ? 'failed'
+        : effect.outcome,
+      record.endedAtMs ?? now,
+    );
+  }
+  const running = snapshot.turn.current?.userMessageId;
+  if (running !== undefined) ends = withoutTurnEnd(ends, running);
+  if (ends !== recorded)
+    mutations.push({
+      type: 'tab.metadata_patched',
+      tabId: chatId,
+      patch: { turnEnds: ends ?? null },
+    });
+  const inputIds = { ...tab.rootTurnInputIds };
+  for (const record of Array.from(records.values()))
+    if (record.inputIds !== undefined || record.userMessageId === undefined)
+      inputIds[record.id] = [...(record.inputIds ?? [])];
+  if (!isDeepStrictEqual(tab.rootTurnInputIds, inputIds))
+    mutations.push({
+      type: 'tab.metadata_patched',
+      tabId: chatId,
+      patch: { rootTurnInputIds: inputIds },
+    });
+}
+
+/** The turn the runtime holds as an empty completion, which failed. */
+function emptyCompletionTurn(
+  runtime: ChatRuntimeState | undefined,
+): string | undefined {
+  return runtime?.error?.code === 'empty_completion'
+    ? runtime.emptyCompletionRecovery?.turnUserMessageId
+    : undefined;
+}
+
+/**
+ * A provider can complete a turn without output, which fails it, and its
+ * late output recovers it. Either can follow the turn's canonical end, so
+ * the end it recorded follows the runtime.
+ */
+function reclassifyEmptyCompletionEnd(
+  ends: TurnEnds | undefined,
+  previous: ChatRuntimeState | undefined,
+  next: ChatRuntimeState,
+  turnUserMessageId: string | undefined,
+): TurnEnds | undefined {
+  const emptied = emptyCompletionTurn(next);
+  const recovered =
+    emptied === undefined &&
+    next.status === 'completed' &&
+    turnUserMessageId !== undefined &&
+    emptyCompletionTurn(previous) === turnUserMessageId
+      ? turnUserMessageId
+      : undefined;
+  const id = emptied ?? recovered;
+  if (
+    id === undefined ||
+    !ends ||
+    recordedTurnEnd(ends, id) !== (emptied ? 'completed' : 'failed')
+  )
+    return ends;
+  return withTurnEnd(
+    ends,
+    id,
+    emptied ? 'failed' : 'completed',
+    ends[id].endedAt,
+  );
 }
 
 const UNACCEPTED_TURN_END_RETRIES = 8;
@@ -1172,6 +1545,8 @@ function recordUnacceptedTurnEnds(
       ...(ended?.queuedMessages
         ? { queuedMessages: ended.queuedMessages }
         : {}),
+      // The canonical turn state never saw this turn; keep it as it was.
+      ...(ended?.turn !== undefined ? { turn: ended.turn } : {}),
       activeTurn: {
         userMessageId: end.userMessageId,
         startedAt: end.startedAt,
@@ -1241,6 +1616,133 @@ function provisionalTurnIds(
   return ids;
 }
 
+/** A chat's default approval mode and the settings revision it was read at. */
+interface AdmissionDefaultRead {
+  approvalMode: ApprovalMode;
+  settingsRevision: number;
+}
+
+/**
+ * Reads, before a send commits, the default its admission check can admit it
+ * at: the default cannot be read in the check's synchronous step.
+ */
+async function readAdmissionDefault(
+  scope: ChatScopeKey,
+): Promise<AdmissionDefaultRead> {
+  const settingsRevision = getApprovalSettingsRevision();
+  // Lazy: the approval reads stay off the chat state graph's load path.
+  const { resolvePersistedApprovalMode } =
+    await import('../lib/approval-mode-resolution');
+  return {
+    approvalMode: await resolvePersistedApprovalMode(
+      scope.projectId,
+      scope.worktreeId,
+    ),
+    settingsRevision,
+  };
+}
+
+/**
+ * The approval a send's admission check admitted it against
+ * (`admittedApproval`), which its turn, even a queued one, never exceeds. Taken
+ * from the tab the check passed, in the check's synchronous step, so nothing
+ * that changes after the check reaches it. A chat without a saved mode was
+ * admitted at its default, read before the check; that read counts only if no
+ * approval setting changed since, otherwise the send is admitted at Ask. Root
+ * agent sends' checks already refuse once the settings changed, so they never
+ * reach that fallback.
+ */
+function admittedApprovalOf(
+  tab: ChatSendAdmissionTab,
+  defaultRead: AdmissionDefaultRead | undefined,
+): ChatSendAdmittedApproval {
+  const defaultMode =
+    defaultRead?.settingsRevision === getApprovalSettingsRevision()
+      ? defaultRead.approvalMode
+      : FAIL_CLOSED_APPROVAL_MODE;
+  return {
+    approvalMode: tab.approvalMode ?? defaultMode,
+    sessionApprovalRules: tab.sessionApprovalRules ?? [],
+  };
+}
+
+/**
+ * A pipeline send's override (D2) commits its model and composer settings to
+ * the tab with the message, as the automation session prompt does, so the chat
+ * keeps them afterwards.
+ */
+function withTurnOverrideTabSettings(
+  command: SendMessageCommand,
+): SendMessageCommand {
+  const override = command.turnOverride;
+  if (!override) return command;
+  return {
+    ...command,
+    ...(override.model !== undefined ? { model: override.model } : {}),
+    ...(override.providerType !== undefined
+      ? { providerType: override.providerType }
+      : {}),
+    ...(override.modelConfig !== undefined
+      ? { modelConfig: override.modelConfig }
+      : {}),
+    ...(override.planMode !== undefined ? { planMode: override.planMode } : {}),
+  };
+}
+
+/**
+ * The override's fields on the request: its model settings, reapplied over the
+ * tab so a request rebuilt after a setup hold keeps them; its harness, plugins
+ * and approval mode, the last also its admitted approval; and a changed
+ * runtime's session reset. A named model runs as named, so Auto routing skips
+ * the turn.
+ */
+function turnOverrideRequestFields(
+  override: ChatSendTurnOverride | undefined,
+  canonical: PersistedChatTab,
+): Partial<ChatSendMessageRequest> {
+  if (!override) return {};
+  const sessionApprovalRules = canonical.sessionApprovalRules ?? [];
+  return {
+    turnOverride: override,
+    ...(override.model !== undefined
+      ? { model: override.model, modelSelectionMode: undefined }
+      : {}),
+    ...(override.providerType !== undefined
+      ? { providerType: override.providerType }
+      : {}),
+    ...(override.modelConfig !== undefined
+      ? { modelConfig: override.modelConfig }
+      : {}),
+    ...(override.planMode !== undefined ? { planMode: override.planMode } : {}),
+    ...(override.executionHarness
+      ? { executionHarness: override.executionHarness }
+      : {}),
+    ...(override.pluginSelections
+      ? { pluginSelections: override.pluginSelections }
+      : {}),
+    ...(override.approvalMode
+      ? {
+          approvalMode: override.approvalMode,
+          sessionApprovalRules,
+          admittedApproval: {
+            approvalMode: override.approvalMode,
+            sessionApprovalRules,
+          },
+        }
+      : {}),
+    ...(override.resetRuntime
+      ? {
+          sdkSessionId: undefined,
+          globalInstructionsSnapshot: undefined,
+          codexReconstructionSeedId: undefined,
+          claudeForkSession: undefined,
+          claudeForkResumeAt: undefined,
+          claudeForkStartsFresh: undefined,
+        }
+      : {}),
+  };
+}
+
 function admittedSendRequest(
   scope: ChatScopeKey,
   command: SendMessageCommand,
@@ -1253,28 +1755,37 @@ function admittedSendRequest(
     asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] };
   },
 ): ChatSendMessageRequest {
+  // An automation's own send (CAN-4549) keeps the native send's reading of a
+  // terminal tab: with Claude TUI chats off, its terminal-owned session and
+  // saved instructions are ignored, so the turn starts clean.
+  const nativeAutomationTab =
+    command.automationDispatch !== undefined &&
+    isTerminalBackedInterfaceMode(canonical.interfaceMode) &&
+    getEffectiveClaudeChatInterfaceMode(canonical.interfaceMode) === 'canopy';
+  const sdkSessionId = nativeAutomationTab ? undefined : canonical.sdkSessionId;
+  const interfaceMode = nativeAutomationTab
+    ? undefined
+    : canonical.interfaceMode;
   const resumePointRequired =
     canonical.forkedFrom?.resumePointRequired === true &&
-    canonical.sdkSessionId !== undefined &&
+    sdkSessionId !== undefined &&
     canonical.claudeForkSessionOnNextSend === true;
   const claudeForkResumeAt =
-    canonical.sdkSessionId &&
-    canonical.claudeForkSessionOnNextSend &&
-    resumePointRequired
+    sdkSessionId && canonical.claudeForkSessionOnNextSend && resumePointRequired
       ? resolveClaudeForkResumePoint(
           canonical.messages,
           canonical.forkedFrom?.atMessageId,
         )
       : undefined;
   const safeSdkSessionId =
-    canonical.sdkSessionId &&
+    sdkSessionId &&
     canonical.claudeForkSessionOnNextSend &&
     resumePointRequired &&
     !claudeForkResumeAt
       ? undefined
-      : canonical.sdkSessionId;
+      : sdkSessionId;
   const claudeForkStartsFresh =
-    Boolean(canonical.sdkSessionId) &&
+    Boolean(sdkSessionId) &&
     canonical.claudeForkSessionOnNextSend === true &&
     resumePointRequired &&
     !claudeForkResumeAt;
@@ -1317,7 +1828,7 @@ function admittedSendRequest(
     ...(canonical.codexFastModeEnabled !== undefined
       ? { codexFastModeEnabled: canonical.codexFastModeEnabled }
       : {}),
-    ...(canonical.globalInstructionsSnapshot
+    ...(canonical.globalInstructionsSnapshot && !nativeAutomationTab
       ? { globalInstructionsSnapshot: canonical.globalInstructionsSnapshot }
       : {}),
     ...(canonical.providerType ? { providerType: canonical.providerType } : {}),
@@ -1344,9 +1855,7 @@ function admittedSendRequest(
     ...(canonical.sessionApprovalRules
       ? { sessionApprovalRules: canonical.sessionApprovalRules }
       : {}),
-    ...(canonical.interfaceMode
-      ? { interfaceMode: canonical.interfaceMode }
-      : {}),
+    ...(interfaceMode ? { interfaceMode } : {}),
     ...(safeSdkSessionId ? { sdkSessionId: safeSdkSessionId } : {}),
     ...(canonical.codexReconstructionSeedId
       ? { codexReconstructionSeedId: canonical.codexReconstructionSeedId }
@@ -1371,6 +1880,8 @@ function admittedSendRequest(
       ? { subscriptionBillingOverride: true }
       : {}),
     ...(startsNewTrackedChat ? { startsNewTrackedChat: true } : {}),
+    ...turnOverrideRequestFields(command.turnOverride, canonical),
+    ...automationDispatchRequestFields(command.automationDispatch),
   };
 }
 
@@ -1486,6 +1997,7 @@ function requiresExpectedRevision(command: ChatCommand): boolean {
     case 'chat.archive_tab':
     case 'chat.restore_archive':
     case 'chat.edit_queued_message':
+    case 'chat.move_queued_message':
     case 'chat.cancel_queued_message':
     case 'chat.force_queued_message':
     case 'chat.answer_question':
@@ -1531,12 +2043,17 @@ function buildUserMessage(
       >,
   timestamp: number,
 ): PersistedChatMessage {
+  const autoResume = readAutoResumeMetadata(
+    'autoResume' in command ? command.autoResume : undefined,
+  );
   return {
     id: command.userMessageId,
     role: 'user',
     // A message an external MCP agent sent stays the person's own.
-    userMessageSource:
-      'agentSent' in command && chatAgentSent(command.agentSent)
+    ...(autoResume ? { autoResume } : {}),
+    userMessageSource: autoResume
+      ? 'auto_resume'
+      : 'agentSent' in command && chatAgentSent(command.agentSent)
         ? 'agent'
         : 'watcherFired' in command && command.watcherFired
           ? 'watcher'
@@ -1564,7 +2081,9 @@ function buildUserMessage(
     ...(command.attachmentPromptContexts?.length
       ? { attachmentPromptContexts: command.attachmentPromptContexts }
       : {}),
-    ...(command.inputMode ? { inputMode: command.inputMode } : {}),
+    ...(command.inputMode && !(autoResume && !autoResume.resendsUserMessage)
+      ? { inputMode: command.inputMode }
+      : {}),
     ...('watcherFired' in command && command.watcherFired
       ? { watcherFired: command.watcherFired }
       : {}),
@@ -1615,6 +2134,7 @@ function transcriptState(
 function mergePromptMessages(
   messages: readonly PersistedChatMessage[],
   data: Record<string, unknown>,
+  pendingQuestions: readonly PersistedPendingQuestion[] = [],
 ): PersistedChatMessage[] {
   const next = [...messages];
   const imported = Array.isArray(data.canopy_persisted_messages)
@@ -1622,27 +2142,114 @@ function mergePromptMessages(
     : [];
   for (const candidate of imported) {
     if (!isPersistedChatMessage(candidate)) continue;
-    const message = candidate;
+    const question = pendingQuestions.find(
+      (pending) =>
+        pending.answeredAt !== undefined &&
+        (pending.requestId === data.canopy_async_question_id ||
+          ('answerUserMessageId' in pending &&
+            pending.answerUserMessageId === data.canopy_turn_user_message_id)),
+    );
+    const answers = question?.answers;
+    const message: PersistedChatMessage =
+      question && answers && candidate.id === data.canopy_turn_user_message_id
+        ? {
+            ...candidate,
+            blocks: candidate.blocks.map((block) =>
+              block.type === 'text'
+                ? {
+                    ...block,
+                    asyncQuestionAnswer: {
+                      requestId: question.requestId,
+                      startsTurn: true,
+                      answers,
+                    },
+                    ...(block.steering
+                      ? {
+                          steering: {
+                            ...block.steering,
+                            startsTurn: true,
+                          },
+                        }
+                      : {}),
+                  }
+                : block,
+            ),
+          }
+        : candidate;
     const index = next.findIndex((current) => current.id === message.id);
     if (index < 0) next.push(message);
     else {
-      const answerBlock = next[index].blocks.find(
+      const existing = next[index];
+      if (!existing) {
+        next.push(message);
+        continue;
+      }
+      const answerBlock = existing.blocks.find(
         (block) => block.type === 'text' && block.asyncQuestionAnswer,
       );
-      next[index] =
-        answerBlock?.type === 'text' && answerBlock.asyncQuestionAnswer
-          ? {
-              ...message,
-              blocks: message.blocks.map((block) =>
-                block.type === 'text'
-                  ? {
-                      ...block,
-                      asyncQuestionAnswer: answerBlock.asyncQuestionAnswer,
-                    }
-                  : block,
-              ),
-            }
-          : message;
+      const asyncQuestionAnswer =
+        answerBlock?.type === 'text'
+          ? answerBlock.asyncQuestionAnswer
+          : undefined;
+      const steering =
+        answerBlock?.type === 'text' ? answerBlock.steering : undefined;
+      const withAnswerDecoration: PersistedChatMessage = asyncQuestionAnswer
+        ? {
+            ...message,
+            blocks: message.blocks.map((block) =>
+              block.type === 'text'
+                ? {
+                    ...block,
+                    asyncQuestionAnswer,
+                    ...(steering
+                      ? {
+                          steering: {
+                            ...steering,
+                            startsTurn: asyncQuestionAnswer.startsTurn,
+                          },
+                        }
+                      : {}),
+                  }
+                : block,
+            ),
+          }
+        : message;
+      const {
+        inputMode: candidateInputMode,
+        userMessageSource: candidateUserMessageSource,
+        timestamp: _candidateTimestamp,
+        ...candidateFields
+      } = withAnswerDecoration;
+      void _candidateTimestamp;
+      const normalized: PersistedChatMessage = {
+        ...candidateFields,
+        timestamp: existing.timestamp,
+        ...(existing.userMessageSource !== undefined
+          ? { userMessageSource: existing.userMessageSource }
+          : candidateUserMessageSource !== undefined
+            ? { userMessageSource: candidateUserMessageSource }
+            : {}),
+        ...(existing.inputMode !== undefined
+          ? { inputMode: existing.inputMode }
+          : candidateInputMode !== undefined && candidateInputMode !== 'typed'
+            ? { inputMode: candidateInputMode }
+            : {}),
+        ...(existing.autoResume !== undefined
+          ? { autoResume: existing.autoResume }
+          : {}),
+        ...(existing.watcherFired !== undefined
+          ? { watcherFired: existing.watcherFired }
+          : {}),
+        ...(existing.attachmentPaths !== undefined
+          ? { attachmentPaths: existing.attachmentPaths }
+          : {}),
+        ...(existing.attachmentPromptContexts !== undefined
+          ? { attachmentPromptContexts: existing.attachmentPromptContexts }
+          : {}),
+      };
+      next[index] = isSamePersistedValue(existing, normalized)
+        ? existing
+        : normalized;
     }
   }
   // Only a real user-prompt event establishes a new turn. Queued prompts and
@@ -1672,6 +2279,14 @@ function mergePromptMessages(
                 ...block.asyncQuestionAnswer,
                 startsTurn: true,
               },
+              ...(block.steering
+                ? {
+                    steering: {
+                      ...block.steering,
+                      startsTurn: true,
+                    },
+                  }
+                : {}),
             }
           : block,
       ),
@@ -1721,6 +2336,27 @@ function isRecentActivityOnlyRuntime(
   );
 }
 
+function removeAdmittingRuntimeEntry(
+  runtime: ChatRuntimeState | undefined,
+  userMessageId: string,
+): ChatRuntimeState | undefined {
+  if (!runtime?.queuedMessages) return runtime;
+  const queuedMessages = runtime.queuedMessages.filter(
+    (message) =>
+      message.admitting !== true ||
+      message.request.userMessageId !== userMessageId,
+  );
+  if (queuedMessages.length === runtime.queuedMessages.length) return runtime;
+  const {
+    queuedMessages: _previousQueuedMessages,
+    ...runtimeWithoutQueuedMessages
+  } = runtime;
+  void _previousQueuedMessages;
+  return queuedMessages.length > 0
+    ? { ...runtimeWithoutQueuedMessages, queuedMessages }
+    : runtimeWithoutQueuedMessages;
+}
+
 function runtimeForEvent(
   current: ChatRuntimeState | undefined,
   data: unknown,
@@ -1748,6 +2384,12 @@ function runtimeForEvent(
   const settledTurnRevival =
     ['completed', 'failed', 'cancelled', 'interrupted'].includes(base.status) &&
     isSettledProviderTurnRevival(data, turnUserMessageId);
+  if (
+    ['completed', 'failed', 'cancelled', 'interrupted'].includes(base.status) &&
+    isClaudeChildFrame(data)
+  ) {
+    return base;
+  }
   const buildEmptyCompletionRuntime = (): ChatRuntimeState | null => {
     if (!effectiveTurnUserMessageId || turnHasVisibleOutput !== false) {
       return null;
@@ -1883,7 +2525,10 @@ function runtimeForEvent(
           message:
             typeof data.event.message === 'string'
               ? data.event.message
-              : 'Codex turn failed',
+              : isRecord(data.event.error) &&
+                  typeof data.event.error.message === 'string'
+                ? data.event.error.message
+                : 'Codex turn failed',
           retryable: true,
           occurredAt: new Date(now).toISOString(),
         },
@@ -1959,6 +2604,20 @@ function runtimeForEvent(
     };
   }
   if (data.type === 'canopy_user_prompt') {
+    const committedPromptQueueIds = new Set(
+      (base.queuedMessages ?? [])
+        .filter(
+          (message) =>
+            message.request.userMessageId === effectiveTurnUserMessageId,
+        )
+        .map(({ id }) => id),
+    );
+    const queuedMessageIds = base.queuedMessageIds.filter(
+      (id) => !committedPromptQueueIds.has(id),
+    );
+    const queuedMessages = (base.queuedMessages ?? []).filter(
+      (message) => message.request.userMessageId !== effectiveTurnUserMessageId,
+    );
     const promptTurn =
       turnUserMessageId && base.activeTurn?.userMessageId !== turnUserMessageId
         ? { userMessageId: turnUserMessageId, startedAt: now }
@@ -1969,8 +2628,8 @@ function runtimeForEvent(
         : promptTurn?.sessionId;
     return {
       status: 'starting',
-      queuedMessageIds: base.queuedMessageIds,
-      ...(base.queuedMessages ? { queuedMessages: base.queuedMessages } : {}),
+      queuedMessageIds,
+      ...(base.queuedMessages ? { queuedMessages } : {}),
       ...(base.steeringCapabilities
         ? { steeringCapabilities: base.steeringCapabilities }
         : {}),
@@ -2157,7 +2816,8 @@ function applyTrustedEventMetadata(
         ...tab.inputDelivery,
         rows: tab.inputDelivery.rows.map((row) =>
           row.id === data.canopy_turn_user_message_id &&
-          row.payload.agentSenderProvenance
+          // A queued row's turn consumed the queue's only copy of the input.
+          (row.payload.agentSenderProvenance || row.state === 'queued')
             ? { ...row, state: 'picked-up', revision: row.revision + 1 }
             : row,
         ),
@@ -2239,15 +2899,19 @@ function canFollowSettledProviderTurn(
   turnUserMessageId?: string,
   activeTurnUserMessageId?: string,
   codexRootThreadId?: string,
+  followsRevivalInit = true,
 ): boolean {
   return (
     data.type === 'canopy_delegation' ||
+    data.type === CHILD_TOOLS_ENDED_EVENT_TYPE ||
     data.type === 'turn_diff' ||
     data.type === 'claude_terminal_transcript_sync' ||
     data.type === 'org_memory_used' ||
     data.type === 'canopy_org_memory_used' ||
+    isClaudeChildFrame(data) ||
     isCodexSubagentFollowupEvent(data, codexRootThreadId) ||
-    (data.type === 'system' &&
+    (followsRevivalInit &&
+      data.type === 'system' &&
       data.subtype === 'init' &&
       data.canopy_turn_revival === true &&
       (typeof data.canopy_turn_user_message_id !== 'string' ||
@@ -2258,11 +2922,48 @@ function canFollowSettledProviderTurn(
   );
 }
 
+/** An archive incarnation and cutoff (contracts §5), never a start permit. */
+function archiveTurnFence(
+  tab: PersistedChatTab,
+  turn: PersistedChatTurnState | undefined,
+  archivedAtMs: number,
+): ArchivedTurnFence {
+  const closedTurnId = turn?.current?.id ?? turn?.lastEnded?.id;
+  return {
+    version: 1,
+    archiveEpoch: randomUUID(),
+    archivedAtMs,
+    ...(closedTurnId ? { closedTurnId } : {}),
+    ...(tab.sdkSessionId ? { providerSessionId: tab.sdkSessionId } : {}),
+  };
+}
+
+/**
+ * A fresh start for this auto-archive incarnation: not the turn it closed,
+ * not a recovered restart, and started after its cutoff. A legacy or unknown
+ * fence authorizes no automatic restoration.
+ */
+function isFreshArchivedStart(
+  entry: ArchivedChatEntry | undefined,
+  turn: Pick<PersistedChatTurnState, 'current'> | undefined,
+): boolean {
+  const fence = entry?.turnFence;
+  const start = turn?.current;
+  return (
+    entry?.tab.autoArchive === true &&
+    fence?.version === 1 &&
+    start !== undefined &&
+    start.id !== fence.closedTurnId &&
+    start.origin !== 'restart' &&
+    start.startedAtMs > fence.archivedAtMs
+  );
+}
+
 function shouldResumeAutoArchivedChat(data: Record<string, unknown>): boolean {
   return (
     data.type === 'canopy_user_prompt' ||
     data.type === CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE ||
-    isAgentContinuationEvent(data) ||
+    isRootAgentContinuationEvent(data) ||
     (data.type === 'system' &&
       data.subtype === 'init' &&
       data.canopy_turn_revival === true)
@@ -2273,6 +2974,7 @@ function isSettledProviderTurnRevival(
   data: Record<string, unknown>,
   turnUserMessageId?: string,
 ): boolean {
+  if (isClaudeChildFrame(data)) return false;
   const eventTurnUserMessageId =
     typeof data.canopy_turn_user_message_id === 'string'
       ? data.canopy_turn_user_message_id
@@ -2282,7 +2984,7 @@ function isSettledProviderTurnRevival(
       (eventTurnUserMessageId === undefined ||
         turnUserMessageId === undefined ||
         eventTurnUserMessageId === turnUserMessageId)) ||
-    (eventTurnUserMessageId === undefined && isAgentContinuationEvent(data))
+    (eventTurnUserMessageId === undefined && isRootAgentContinuationEvent(data))
   );
 }
 
@@ -2389,19 +3091,36 @@ class ChatSendAuthorizationRevokedError extends Error {
   }
 }
 
+interface PendingChatTabsProjection {
+  projectId: string;
+  worktreeId: string;
+  revision: number;
+  data: ChatTabsFile;
+  changedTabIds: Set<string>;
+  removedTabIds: Set<string>;
+  changedTabs: Map<string, PersistedChatTab>;
+}
+
 export class ChatStateService implements ChatStateCommandPort {
   public readonly inputDelivery: ChatInputDeliveryCoordinator;
   private readonly repository: ChatStateRepositoryPort;
+  private readonly getChatCloseBlockReasonChecker: () => Promise<ChatCloseBlockReasonChecker>;
+  private defaultChatCloseBlockReasonChecker:
+    | Promise<ChatCloseBlockReasonChecker>
+    | undefined;
   private readonly nativeClaimRollback = new WeakMap<
     ChatSendMessageRequest,
     { row: InputRow; revision: number }
   >();
   private readonly now: () => number;
   private readonly createId: () => string;
-  private readonly steer: (request: ChatSendMessageRequest) => Promise<boolean>;
   private readonly dispatch: (
     request: ChatSendMessageRequest,
     origin: ChatQueueOrigin,
+    beforeImmediateDispatch: (options: {
+      cancelledBeforeDispatch: boolean;
+      startsTurn: boolean;
+    }) => Promise<void>,
   ) => Promise<void>;
   private readonly withPlanReviewRevision: NonNullable<
     ChatStateServiceOptions['withPlanReviewRevision']
@@ -2442,6 +3161,16 @@ export class ChatStateService implements ChatStateCommandPort {
    */
   private readonly settledInitialTitleChats = new Set<string>();
   private readonly recordDiagnostic: (record: SessionDiagnosticRecord) => void;
+  private readonly turnHandoff: ChatTurnStateHandoff;
+  /** Canonical mode: per chat, the receipt turn whose root terminal event was reduced. */
+  private readonly reducedRootTerminals = new Map<string, Set<string>>();
+  private readonly retainedTerminalTurns = new Map<
+    string,
+    Map<string, ChatTurnRecord>
+  >();
+  private readonly turnHandoffNonce = randomUUID();
+  private turnHandoffCommitSequence = 0;
+  private readonly persistedBackgroundSnapshotRequests = new Set<string>();
   private readonly claudeToolNames: ReadonlySet<string>;
   private readonly codexToolNames: ReadonlySet<string>;
   private readonly cursorToolUse?: (
@@ -2452,14 +3181,35 @@ export class ChatStateService implements ChatStateCommandPort {
   private readonly listeners = new Set<
     (event: ChatStateChangedEvent) => void
   >();
+  private readonly turnStateChangeListeners = new Set<
+    (change: ChatTurnStateChange) => void
+  >();
+  private readonly turnStateCommittedListeners = new Set<
+    (commit: ChatTurnStateCommit) => void
+  >();
   private readonly pendingQuestionScopes = new Map<
     string,
     ChatScopeKey & { chatId: string }
+  >();
+  private readonly pendingChatTabsProjections = new Map<
+    string,
+    PendingChatTabsProjection
   >();
   private readonly latestProjectionCommitRevisionByScope = new Map<
     string,
     number
   >();
+  private readonly projectionGenerationByScope = new Map<string, number>();
+  private readonly scopesAwaitingProjectionReadmission = new Map<
+    string,
+    Set<string>
+  >();
+  private readonly runningChatTabsProjections = new Map<string, number>();
+  private readonly activeChatTabsProjections = new Map<
+    string,
+    { generation: number; projection: PendingChatTabsProjection }
+  >();
+  private readonly chatTabsProjectionFailures = new Map<string, number>();
 
   public async getCommandReceipt(request: {
     projectId: string;
@@ -2507,8 +3257,14 @@ export class ChatStateService implements ChatStateCommandPort {
   }
   /** Accepted sends not yet guaranteed visible in the queue/session hosts. */
   private readonly dispatchesInFlight = new Map<string, number>();
+  private readonly acceptedSendsInFlight = new Map<
+    string,
+    Promise<ChatCommandResult>
+  >();
   private readonly heldSends = new Map<string, HeldSend>();
   private readonly setupHolds = new Map<string, SetupHold>();
+  /** Unaccepted turns whose end is not durable yet (`awaitingSetupKey`). */
+  private readonly unrecordedTurnEnds = new Set<string>();
   private draining = false;
   /** Commands currently claiming a scope/commandId idempotency key. */
   private readonly commandsInFlight = new Map<
@@ -2537,7 +3293,34 @@ export class ChatStateService implements ChatStateCommandPort {
     Promise<ArchiveChatBackend>
   >();
 
+  private childStreamRepository(): ChatStateV2Repository {
+    if (!(this.repository instanceof ChatStateV2Repository))
+      throw new Error(
+        'Child transcript streams require the V2 chat repository',
+      );
+    return this.repository;
+  }
+
   public constructor(options: ChatStateServiceOptions = {}) {
+    if (options.chatCloseBlockReason) {
+      const injectedChatCloseBlockReason = options.chatCloseBlockReason;
+      this.getChatCloseBlockReasonChecker =
+        (): Promise<ChatCloseBlockReasonChecker> =>
+          Promise.resolve(injectedChatCloseBlockReason);
+    } else {
+      this.getChatCloseBlockReasonChecker =
+        (): Promise<ChatCloseBlockReasonChecker> => {
+          // `background-work` imports session-manager, whose provider runtime
+          // graph reaches this service. Keep that graph lazy and resolve it
+          // before entering the synchronous repository transaction callback.
+          this.defaultChatCloseBlockReasonChecker ??=
+            import('../agents/background-work').then(
+              ({ chatCloseBlockReason }): ChatCloseBlockReasonChecker =>
+                chatCloseBlockReason,
+            );
+          return this.defaultChatCloseBlockReasonChecker;
+        };
+    }
     this.claudeToolNames =
       options.claudeToolNames ?? EMPTY_SHOW_VISUAL_TOOL_NAMES;
     this.codexToolNames =
@@ -2561,6 +3344,10 @@ export class ChatStateService implements ChatStateCommandPort {
     this.repository =
       options.repository ??
       new ChatStateV2Repository({
+        // Test-only opt-in for retained stream fixtures; normal builds never write format 4.
+        enableFormat4:
+          isE2eBuild() && process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
+        delegationReadMetadata: readMetadataOfRecord,
         hasLiveDependency: async (scope): Promise<boolean> => {
           // Lazy by design: these local services import the chat-state singleton,
           // so static imports here would reintroduce an initialization cycle.
@@ -2585,33 +3372,27 @@ export class ChatStateService implements ChatStateCommandPort {
     this.reconcileHostRuntime = options.repository === undefined;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? randomUUID;
-    this.steer =
-      options.steer ??
-      (async (request): Promise<boolean> => {
-        // Lazy by design: session-manager imports the chat-state singleton;
-        // a static import here would reintroduce that initialization cycle.
-        const { getSession } = await import('../agents/session-manager');
-        const session = getSession(
-          request.projectId,
-          request.worktreeId,
-          request.chatId,
-        );
-        if (!session || session.isDisposed?.()) return false;
-        return (
-          (await session.steerActiveTurn?.(
-            request.text,
-            request.clientUserMessageId ?? request.userMessageId,
-          )) ?? false
-        );
-      });
+    const directDispatch = options.dispatch;
     this.dispatch =
-      options.dispatch ??
-      (async (request, origin): Promise<void> => {
-        // Lazy by design: chat-queue-service imports the chat state port during
-        // startup, so a static import would reintroduce an initialization cycle.
-        const { getChatQueueService } = await import('./chat-queue-service');
-        await getChatQueueService().submit(request, origin);
-      });
+      options.submit ??
+      (directDispatch
+        ? async (request, origin, beforeImmediateDispatch): Promise<void> => {
+            await beforeImmediateDispatch({
+              cancelledBeforeDispatch: false,
+              startsTurn: true,
+            });
+            await directDispatch(request, origin);
+          }
+        : async (request, origin, beforeImmediateDispatch): Promise<void> => {
+            // Lazy to preserve the chat-state/queue startup boundary.
+            const { getChatQueueService } =
+              await import('./chat-queue-service');
+            await getChatQueueService().submit(
+              request,
+              origin,
+              beforeImmediateDispatch,
+            );
+          });
     this.awaitWorktreeSetup =
       options.awaitWorktreeSetup ??
       ((target): Promise<WorktreeGitSetupOutcome> | undefined =>
@@ -2721,8 +3502,128 @@ export class ChatStateService implements ChatStateCommandPort {
           );
         }
       });
+    this.turnHandoff = new ChatTurnStateHandoff({
+      load: async (target): Promise<unknown> =>
+        (
+          await this.repository.getState(
+            {
+              projectId: target.projectId,
+              worktreeId: target.worktreeId,
+            },
+            // Runtime comes from the index; selecting no chat reads no transcript.
+            { chatIds: [] },
+          )
+        ).runtimeByChatId[target.chatId]?.turn,
+      commit: async (
+        snapshot: ChatTurnStateHandoffSnapshot,
+      ): Promise<{
+        applied: boolean;
+        written?: ChatTurnStateHandoffSnapshot;
+        timerMessages?: readonly PersistedChatMessage[];
+        autoRoutedModels?: Readonly<Record<string, string>>;
+      }> => {
+        if (!this.turnHandoff.isCurrent(snapshot)) return { applied: false };
+        let written: ChatTurnStateHandoffSnapshot | undefined;
+        let timerMessages: PersistedChatMessage[] = [];
+        let autoRoutedModels: Readonly<Record<string, string>> | undefined;
+        this.turnHandoffCommitSequence += 1;
+        const commit = await this.repository.transactWith(
+          {
+            projectId: snapshot.scope.projectId,
+            worktreeId: snapshot.scope.worktreeId,
+          },
+          (current) => {
+            if (!this.turnHandoff.isCurrent(snapshot)) return [];
+            const exists = current.tabsFile.tabs.some(
+              (tab) => tab.id === snapshot.scope.chatId,
+            );
+            if (!exists) {
+              // A fresh start on an auto-archived chat stays staged: its
+              // content restores the chat and commits this turn with it.
+              const archived = current.archivesFile.archived.find(
+                (entry) => entry.tab.id === snapshot.scope.chatId,
+              );
+              if (!isFreshArchivedStart(archived, snapshot.turn))
+                this.turnHandoff.invalidate(snapshot.scope);
+              return [];
+            }
+            // A transaction queued ahead may already have made newer state
+            // durable; write only what is still unacknowledged at this point.
+            written = this.turnHandoff.snapshotNow(snapshot.scope);
+            if (!written) return [];
+            const mutations: ChatCoreMutation[] = [];
+            if (
+              this.attachTurnSnapshot(
+                mutations,
+                current,
+                snapshot.scope.chatId,
+                written,
+                'skip',
+              )
+            ) {
+              timerMessages = snapshotTimerRows(mutations, written);
+              autoRoutedModels = tabAutoRoutedModels(
+                current,
+                snapshot.scope.chatId,
+              );
+            } else {
+              // These timer effects cannot apply at all (for example, a chat
+              // that is gone): commit the turn without its rows rather than
+              // retrying the same snapshot forever.
+              const ownership = getChatTurnOwnership().getSnapshot(
+                snapshot.scope,
+              );
+              const turn = written.turn;
+              mutations.length = 0;
+              withTurnSnapshot(
+                mutations,
+                current,
+                snapshot.scope.chatId,
+                written,
+                (runtime) => projectTurnRuntime(runtime, turn, ownership),
+              );
+            }
+            return mutations;
+          },
+          {
+            source: 'automation',
+            // A timer row being closed can lie outside the active window of
+            // a long transcript; outside it, the row would look absent.
+            fullTranscript: true,
+            // A recreated entry restarts its generations, so ids carry this
+            // service instance and a commit sequence instead.
+            mutationId: `turn-state-handoff:${snapshot.scope.chatId}:${this.turnHandoffNonce}:${this.turnHandoffCommitSequence}`,
+            chatIds: [snapshot.scope.chatId],
+          },
+        );
+        return {
+          applied: commit.applied,
+          ...(written ? { written } : {}),
+          timerMessages,
+          ...(autoRoutedModels ? { autoRoutedModels } : {}),
+        };
+      },
+      now: this.now,
+      onChange: (change): void => this.publishTurnStateChange(change),
+      onCommitted: (commit): void => this.publishTurnStateCommitted(commit),
+      onError: (error): void =>
+        logMainProcessWarn('[chat-state] Turn-state handoff failed:', error),
+    });
     this.inputDelivery = new ChatInputDeliveryCoordinator(
-      this.repository,
+      {
+        // Late-bound so repository spies installed after construction still apply.
+        getRevision: (
+          ...args: Parameters<ChatStateRepositoryPort['getRevision']>
+        ): ReturnType<ChatStateRepositoryPort['getRevision']> =>
+          this.repository.getRevision(...args),
+        getState: (
+          ...args: Parameters<ChatStateRepositoryPort['getState']>
+        ): ReturnType<ChatStateRepositoryPort['getState']> =>
+          this.repository.getState(...args),
+        transactWith: (
+          ...args: Parameters<ChatStateRepositoryPort['transactWith']>
+        ): Promise<ChatStateCommit> => this.transactWithTurnHandoff(...args),
+      },
       options.inputSession ??
         (async (target): Promise<AgentSession | undefined> => {
           // Lazy by design: session-manager imports this chat-state singleton;
@@ -2753,6 +3654,15 @@ export class ChatStateService implements ChatStateCommandPort {
               fileReferences: payload.fileReferences,
               planMode: payload.planMode ?? false,
               initiationSource: payload.initiationSource ?? 'user',
+              ...(payload.internalRow !== undefined
+                ? { internalRow: payload.internalRow }
+                : {}),
+              ...(payload.managedDelegationDeliveryId !== undefined
+                ? {
+                    managedDelegationDeliveryId:
+                      payload.managedDelegationDeliveryId,
+                  }
+                : {}),
               startsTurn:
                 event.startsTurn === true && event.turnRootAccepted !== false,
             });
@@ -2761,12 +3671,485 @@ export class ChatStateService implements ChatStateCommandPort {
             logMainProcessWarn('Failed to record steering pickup audit', error);
           }
         }),
+      async (target): Promise<string | undefined> => {
+        try {
+          const state = await this.repository.getState(target, {
+            chatIds: [target.chatId],
+            pageOnly: true,
+          });
+          const tab =
+            state.tabsFile.tabs.find(
+              (candidate) => candidate.id === target.chatId,
+            ) ??
+            state.archivesFile.archived.find(
+              (entry) => entry.tab.id === target.chatId,
+            )?.tab;
+          if (!tab || tab.kind === 'file') return undefined;
+          const { resolveWorktreeCwd } =
+            await import('../lib/resolve-worktree');
+          return resolveWorktreeCwd(
+            target.projectId,
+            target.worktreeId,
+            tab.selectedRepoId,
+          );
+        } catch {
+          // History recovery is best effort. A missing chat or unresolvable
+          // worktree must not make ordinary chat-state reads fail.
+          return undefined;
+        }
+      },
       checkWatcherDeliveryIngress,
     );
     this.schedule = options.schedule ?? setTimeout;
     this.repository.setCommitListener(
-      (commit): Promise<void> => this.publishCommit(commit),
+      (commit, wait): Promise<void> => this.publishCommit(commit, wait),
+      (commit): ChatWaitOperation => this.startCommitWait(commit),
     );
+  }
+
+  /** Whether canonical turn state already ended this turn id, receipt first. */
+  public hasEndedTurn(scope: ChatTurnStateScope, turnId: string): boolean {
+    const state =
+      this.turnHandoff.getState(scope) ??
+      getChatTurnOwnership().getSnapshot(scope).committed?.state;
+    return state?.endedTurnIds.includes(turnId) === true;
+  }
+
+  public observeTurnLifecycle(event: ChatTurnLifecycleEvent): void {
+    try {
+      this.turnHandoff.observeLifecycle(event);
+    } catch {
+      // Reducer, timer and diagnostic failures cannot escape into a producer.
+    }
+  }
+
+  /**
+   * The scope's durable turn state, for ownership hydration. A failed or
+   * unrecoverable read rejects, so it can never certify a chat idle.
+   */
+  public async loadCommittedTurnState(
+    scope: ChatTurnStateScope,
+  ): Promise<PersistedChatTurnState> {
+    const target = { projectId: scope.projectId, worktreeId: scope.worktreeId };
+    // Runtime comes from the index; selecting no chat reads no transcript.
+    const state = await this.repository.getState(target, { chatIds: [] });
+    const recoveryError = this.repository
+      .getDiagnostics(target)
+      .find(
+        (diagnostic) =>
+          diagnostic.kind === 'unrecoverable_snapshot' ||
+          diagnostic.kind === 'unrecoverable_journal',
+      );
+    if (recoveryError) throw new Error(recoveryError.message);
+    return (
+      state.runtimeByChatId[scope.chatId]?.turn ??
+      serializeChatTurnState(initialChatTurnState())
+    );
+  }
+
+  /**
+   * Carry a handoff snapshot on a transaction. In canonical mode, also apply
+   * its ordered timer effects and project root runtime from canonical state.
+   * Returns false when the effects cannot be placed in this view (a turn
+   * anchor outside the selected window, say); the snapshot then stays
+   * unacknowledged and the fallback commit places it over the full transcript.
+   */
+  private attachTurnSnapshot(
+    mutations: ChatCoreMutation[],
+    current: CanonicalChatState,
+    chatId: string,
+    snapshot: ChatTurnStateHandoffSnapshot,
+    /** `skip` (fallback commit): drop only a turn whose timer cannot apply. */
+    placement: 'defer' | 'skip' = 'defer',
+  ): boolean {
+    try {
+      const skipped = applyTurnEffects(current, mutations, snapshot, {
+        skipUnplaceable: placement === 'skip',
+      });
+      if (skipped.length > 0)
+        logMainProcessWarn(
+          '[chat-state] Canonical timers could not be placed:',
+          skipped,
+        );
+    } catch {
+      return false;
+    }
+    recordSnapshotTurnEnds(mutations, current, chatId, snapshot, this.now());
+    const ownership = getChatTurnOwnership().getSnapshot(snapshot.scope);
+    withTurnSnapshot(mutations, current, chatId, snapshot, (runtime) =>
+      projectTurnRuntime(runtime, snapshot.turn, ownership),
+    );
+    return true;
+  }
+
+  /**
+   * Canonical mode: an event can report its own failure, but only canonical
+   * state starts, runs or revives a root turn. While a canonical turn runs,
+   * status and the active turn come from receipt-time state. The durable
+   * `turn` stays as committed; only a handoff snapshot advances it.
+   */
+  private projectReceiptRuntime(
+    scope: ChatTurnStateScope,
+    runtime: ChatRuntimeState,
+    /** Host writers: project only while a canonical turn runs. */
+    onlyRunning = false,
+  ): ChatRuntimeState {
+    // Receipt state can still be loading, and an end receipt precedes its
+    // durable settle: a running committed turn stays authoritative until the
+    // snapshot that settles it commits, together with its timer close.
+    const receipt = this.turnHandoff.getState(scope);
+    const turn = receipt?.current
+      ? receipt
+      : runtime.turn?.current
+        ? runtime.turn
+        : (receipt ??
+          runtime.turn ??
+          serializeChatTurnState(initialChatTurnState()));
+    const live =
+      runtime.status === 'starting' ||
+      runtime.status === 'streaming' ||
+      runtime.status === 'awaiting_input' ||
+      runtime.status === 'completing';
+    if (!turn.current && (onlyRunning || !live)) return runtime;
+    const { turn: _projectedTurn, ...projected } = projectTurnRuntime(
+      runtime,
+      turn,
+      getChatTurnOwnership().getSnapshot(scope),
+    );
+    void _projectedTurn;
+    return runtime.turn === undefined
+      ? projected
+      : { ...projected, turn: runtime.turn };
+  }
+
+  /**
+   * Canonical status follows lifecycle receipts, which precede delivery of a
+   * turn's own output: a committed settled status is not yet a settled
+   * provider stream. Output is admitted (content only) while a receipt turn
+   * runs, and for the turn that just ended on its own until its root terminal
+   * event is reduced; a stopped turn's output, and later frames, are not.
+   */
+  private deliversReceiptTurnOutput(
+    scope: ChatTurnStateScope,
+    runtime: ChatRuntimeState,
+    tab?: PersistedChatTab,
+  ): boolean {
+    const turn = this.turnHandoff.getState(scope) ?? runtime.turn;
+    if (turn?.current) return true;
+    return this.trailingEndedTurn(scope, turn, tab) !== undefined;
+  }
+
+  /**
+   * The turn that just ended on its own, while its root terminal is still
+   * unreduced. Receipt runs ahead of admission, so its last frames can arrive
+   * after the next turn's start commits; they are still that turn's output.
+   */
+  private trailingEndedTurn(
+    scope: ChatTurnStateScope,
+    turn: PersistedChatTurnState | undefined,
+    tab?: PersistedChatTab,
+  ): PersistedChatTurnState['lastEnded'] {
+    const ended = turn?.lastEnded;
+    return ended !== undefined &&
+      ended.outcome !== 'cancelled' &&
+      tab?.reducedRootTerminalTurnIds?.includes(ended.id) !== true &&
+      !this.reducedRootTerminals
+        .get(JSON.stringify([scope.projectId, scope.worktreeId, scope.chatId]))
+        ?.has(ended.id)
+      ? ended
+      : undefined;
+  }
+
+  /** Read the installed reducer state; returns undefined while its entry loads. */
+  public getTurnState(
+    scope: ChatTurnStateScope,
+  ): PersistedChatTurnState | undefined {
+    return this.turnHandoff.getState(scope);
+  }
+
+  public onTurnStateChange(
+    listener: (change: ChatTurnStateChange) => void,
+  ): () => void {
+    this.turnStateChangeListeners.add(listener);
+    return (): void => {
+      this.turnStateChangeListeners.delete(listener);
+    };
+  }
+
+  public onTurnStateCommitted(
+    listener: (commit: ChatTurnStateCommit) => void,
+  ): () => void {
+    this.turnStateCommittedListeners.add(listener);
+    return (): void => {
+      this.turnStateCommittedListeners.delete(listener);
+    };
+  }
+
+  private publishTurnStateChange(change: ChatTurnStateChange): void {
+    const key = JSON.stringify([
+      change.scope.projectId,
+      change.scope.worktreeId,
+      change.scope.chatId,
+    ]);
+    const previous = this.retainedTerminalTurns.get(key);
+    if (change.cause === 'reset') this.reducedRootTerminals.delete(key);
+    const records =
+      change.cause === 'reset' || previous === undefined
+        ? new Map<string, ChatTurnRecord>()
+        : previous;
+    for (const record of [change.state.lastEnded, change.state.current])
+      if (record)
+        records.set(record.id, {
+          ...record,
+          inputIds: record.inputIds ? [...record.inputIds] : undefined,
+          pauses: record.pauses.map((pause) => ({ ...pause })),
+        });
+    while (records.size > 64) records.delete(records.keys().next().value ?? '');
+    this.retainedTerminalTurns.set(key, records);
+    for (const listener of Array.from(this.turnStateChangeListeners)) {
+      try {
+        listener({
+          ...change,
+          scope: { ...change.scope },
+          state: serializeChatTurnState(
+            hydrateChatTurnState(change.state) ?? initialChatTurnState(),
+          ),
+          effects: change.effects.map((effect) => ({ ...effect })),
+        });
+      } catch {
+        // An observational listener cannot block another listener or producer.
+      }
+    }
+  }
+
+  private publishTurnStateCommitted(commit: ChatTurnStateCommit): void {
+    for (const listener of Array.from(this.turnStateCommittedListeners)) {
+      try {
+        listener({
+          ...commit,
+          scope: { ...commit.scope },
+          state: serializeChatTurnState(
+            hydrateChatTurnState(commit.state) ?? initialChatTurnState(),
+          ),
+          ...(commit.effects
+            ? { effects: commit.effects.map((effect) => ({ ...effect })) }
+            : {}),
+          ...(commit.lifecycle
+            ? {
+                lifecycle: commit.lifecycle.map((owner) => ({
+                  ...owner,
+                  inputIds: [...owner.inputIds],
+                })),
+              }
+            : {}),
+          ...(commit.timerMessages
+            ? { timerMessages: structuredClone(commit.timerMessages) }
+            : {}),
+          ...(commit.autoRoutedModels
+            ? { autoRoutedModels: { ...commit.autoRoutedModels } }
+            : {}),
+        });
+      } catch {
+        // A committed observer cannot change acknowledgement or later listeners.
+      }
+    }
+  }
+
+  /** Host pause observations are best effort and never escape to the caller. */
+  public observeTurnPause(input: {
+    projectId: string;
+    worktreeId: string;
+    chatId: string;
+    type: 'PauseOpened' | 'PauseClosed';
+    ownerKind: 'approval' | 'question';
+    ownerId: string;
+    turnId?: string;
+    atMs?: number;
+  }): void {
+    try {
+      const { projectId, worktreeId, chatId, ...observation } = input;
+      this.turnHandoff.observePause(
+        { projectId, worktreeId, chatId },
+        observation,
+      );
+    } catch {
+      // A local reducer or scheduling failure must not block host work.
+    }
+  }
+
+  /** Commit a host pause before publishing a request or continuing execution.
+   * Call outside repository transactions: preparing the handoff can load state.
+   */
+  public async commitTurnPause(
+    input: Parameters<ChatStateService['observeTurnPause']>[0],
+  ): Promise<void> {
+    const { projectId, worktreeId, chatId, ...observation } = input;
+    const scope = { projectId, worktreeId, chatId };
+    // Unlike best-effort observations, approval initialization must fail closed.
+    this.turnHandoff.observePause(scope, observation);
+    await this.turnHandoff.prepare(scope);
+    await this.transactWithTurnHandoff(
+      scope,
+      (current) => {
+        if (!current.tabsFile.tabs.some((tab) => tab.id === chatId))
+          throw new Error('Canonical turn pause could not be committed');
+        return [];
+      },
+      { source: 'provider', chatIds: [chatId], fullTranscript: true },
+      undefined,
+      true,
+    );
+  }
+
+  private async transactWithTurnHandoff(
+    scope: ChatScopeKey,
+    build: Parameters<ChatStateRepositoryPort['transactWith']>[1],
+    options: Parameters<ChatStateRepositoryPort['transactWith']>[2],
+    visualAdmission?: { resolveToolKey: VisualToolIdentityResolver },
+    requireTurnPlacement = false,
+  ): Promise<ChatStateCommit> {
+    const snapshots: Array<{
+      snapshot: ChatTurnStateHandoffSnapshot;
+      timerMessages: PersistedChatMessage[];
+      autoRoutedModels: Readonly<Record<string, string>> | undefined;
+    }> = [];
+    const withTurnState: typeof build = async (
+      current,
+      revision,
+      transaction,
+    ) => {
+      const mutations = await build(current, revision, transaction);
+      for (const mutation of mutations) {
+        if (
+          mutation.type === 'pending_question.upserted' &&
+          mutation.question.answeredAt === undefined &&
+          mutation.question.delivery !== 'async'
+        ) {
+          this.turnHandoff.observePauseFromState(
+            {
+              projectId: scope.projectId,
+              worktreeId: scope.worktreeId,
+              chatId: mutation.question.chatId,
+            },
+            {
+              type: 'PauseOpened',
+              ownerKind: 'question',
+              ownerId: mutation.question.requestId,
+              atMs: this.now(),
+            },
+            current.runtimeByChatId[mutation.question.chatId]?.turn,
+          );
+        } else if (mutation.type === 'pending_question.removed') {
+          this.turnHandoff.observePauseFromState(
+            {
+              projectId: scope.projectId,
+              worktreeId: scope.worktreeId,
+              chatId: mutation.chatId,
+            },
+            {
+              type: 'PauseClosed',
+              ownerKind: 'question',
+              ownerId: mutation.requestId,
+              atMs: this.now(),
+            },
+            current.runtimeByChatId[mutation.chatId]?.turn,
+          );
+        }
+      }
+      const chatIds = new Set(options.chatIds ?? []);
+      for (const mutation of mutations) {
+        if (mutation.type === 'tab.created') chatIds.add(mutation.tab.id);
+        if ('chatId' in mutation) chatIds.add(mutation.chatId);
+        if (mutation.type === 'tab.removed') chatIds.add(mutation.tabId);
+      }
+      const merged = mutations.map((mutation): ChatCoreMutation => {
+        if (mutation.type !== 'runtime.patched') return mutation;
+        const previousTurn = current.runtimeByChatId[mutation.chatId]?.turn;
+        return mutation.runtime.turn === undefined && previousTurn !== undefined
+          ? {
+              ...mutation,
+              runtime: { ...mutation.runtime, turn: previousTurn },
+            }
+          : mutation;
+      });
+      for (const chatId of Array.from(chatIds)) {
+        if (
+          mutations.some(
+            (mutation) =>
+              (mutation.type === 'tab.removed' && mutation.tabId === chatId) ||
+              (mutation.type === 'archive.upserted' &&
+                mutation.entry.tab.id === chatId),
+          )
+        ) {
+          continue;
+        }
+        // Never await the handoff here: its first load reads this scope, which
+        // queues behind this transaction. Unreduced events ride a later commit.
+        const target = {
+          projectId: scope.projectId,
+          worktreeId: scope.worktreeId,
+          chatId,
+        };
+        this.turnHandoff.seedFromState(
+          target,
+          current.runtimeByChatId[chatId]?.turn,
+        );
+        const snapshot = this.turnHandoff.snapshotNow(target);
+        if (!snapshot || !this.turnHandoff.isCurrent(snapshot)) continue;
+        // An unplaced snapshot stays unacknowledged for the fallback commit.
+        if (!this.attachTurnSnapshot(merged, current, chatId, snapshot)) {
+          if (requireTurnPlacement)
+            throw new Error('Canonical turn pause could not be committed');
+          continue;
+        }
+        snapshots.push({
+          snapshot,
+          timerMessages: snapshotTimerRows(merged, snapshot),
+          autoRoutedModels: tabAutoRoutedModels(current, chatId),
+        });
+      }
+      return merged;
+    };
+    const commit = visualAdmission
+      ? await this.repository.transactProviderEventWith(
+          scope,
+          withTurnState,
+          options,
+          visualAdmission,
+        )
+      : await this.repository.transactWith(scope, withTurnState, options);
+    for (const { snapshot, timerMessages, autoRoutedModels } of snapshots) {
+      this.turnHandoff.acknowledge(
+        snapshot,
+        commit.applied,
+        timerMessages,
+        autoRoutedModels,
+      );
+    }
+    return commit;
+  }
+
+  public disposeTurnHandoff(): void {
+    this.turnHandoff.dispose();
+    this.persistedBackgroundSnapshotRequests.clear();
+  }
+
+  private scheduleRecoveredHistoryResolution(
+    scope: ChatScopeKey,
+    tabs: readonly PersistedChatTab[],
+  ): void {
+    for (const tab of tabs) {
+      // Every read hydrates: schedule only chats with a row history could settle.
+      if (
+        !isInputLedger(tab.inputDelivery) ||
+        !tab.inputDelivery.rows.some((row) => isHistoryCandidate(row))
+      )
+        continue;
+      this.inputDelivery.scheduleHistoryResolution({
+        ...scope,
+        chatId: tab.id,
+      });
+    }
   }
 
   /** Claim only a committed visible first input; serialize with all chat writes. */
@@ -2828,13 +4211,19 @@ export class ChatStateService implements ChatStateCommandPort {
       : undefined;
     try {
       let state = await this.repository.getState(request);
+      await this.requestPersistedBackgroundSnapshots(request, state);
       if (this.reconcileHostRuntime) {
         state = await this.reconcileRuntimeHosts(request, state);
         for (const tab of state.tabsFile.tabs) {
           if (isInputLedger(tab.inputDelivery))
-            await this.inputDelivery.recover({ ...request, chatId: tab.id });
+            await this.inputDelivery.recover(
+              { ...request, chatId: tab.id },
+              tab.inputDelivery,
+            );
         }
         state = await this.repository.getState(request);
+        await this.requestPersistedBackgroundSnapshots(request, state);
+        this.scheduleRecoveredHistoryResolution(request, state.tabsFile.tabs);
       }
       if (state.tabsFile.activeTabId)
         state = await this.repository.getState(request, {
@@ -2873,6 +4262,12 @@ export class ChatStateService implements ChatStateCommandPort {
             };
           }),
         );
+      for (const chatId of Object.keys(runtimeByChatId)) {
+        const runtime = runtimeByChatId[chatId];
+        if (runtime !== undefined) {
+          runtimeByChatId[chatId] = projectChatRuntime(runtime);
+        }
+      }
       // Canonical publication can queue behind a watcher mutation awaiting
       // this snapshot. Start recovery only after the read has returned; failed
       // publication retains its durable pending marker for the next read.
@@ -2941,6 +4336,96 @@ export class ChatStateService implements ChatStateCommandPort {
     }
   }
 
+  private async requestPersistedBackgroundSnapshots(
+    scope: ChatScopeKey,
+    state: CanonicalChatState,
+  ): Promise<void> {
+    for (const tab of state.tabsFile.tabs) {
+      if (tab.kind === 'file') continue;
+      // Persisted input is untrusted: a malformed value must not stop the load.
+      const turn = hydrateChatTurnState(state.runtimeByChatId[tab.id]?.turn);
+      if (
+        !isBackgroundTurnState(turn) &&
+        !(
+          turn?.background.native.length ||
+          turn?.background.managed.live ||
+          turn?.background.managed.queued
+        )
+      ) {
+        continue;
+      }
+      const tabProvider =
+        tab.providerType ??
+        (tab.model ? getProviderForModel(tab.model) : undefined);
+      // Ollama publishes its lifecycle through its execution harness.
+      const provider =
+        tabProvider === 'ollama'
+          ? tab.model
+            ? getExecutionHarnessForModel(tab.model, tab.executionHarness)
+            : tab.executionHarness
+          : tabProvider;
+      if (
+        provider !== 'claude' &&
+        provider !== 'codex' &&
+        provider !== 'cursor' &&
+        provider !== 'copilot' &&
+        provider !== 'opencode'
+      ) {
+        continue;
+      }
+      const key = JSON.stringify([scope.projectId, scope.worktreeId, tab.id]);
+      if (this.persistedBackgroundSnapshotRequests.has(key)) continue;
+      this.persistedBackgroundSnapshotRequests.add(key);
+      try {
+        const { requestBackgroundSnapshot } =
+          await import('../agents/claude-turn-lifecycle');
+        requestBackgroundSnapshot({
+          provider,
+          ...scope,
+          chatId: tab.id,
+        });
+      } catch {
+        this.persistedBackgroundSnapshotRequests.delete(key);
+      }
+    }
+  }
+
+  public async recoverHostRuntime(
+    scope: ChatScopeKey,
+  ): Promise<ChatHostRuntimeRecovery> {
+    const { getChatQueueService } = await import('./chat-queue-service');
+    const releaseInputHydration = this.reconcileHostRuntime
+      ? getChatQueueService().beginInputHydration(
+          scope.projectId,
+          scope.worktreeId,
+        )
+      : undefined;
+    try {
+      let state = await this.repository.getState(scope);
+      await this.requestPersistedBackgroundSnapshots(scope, state);
+      if (this.reconcileHostRuntime) {
+        state = await this.reconcileRuntimeHosts(scope, state);
+        for (const tab of state.tabsFile.tabs) {
+          if (isInputLedger(tab.inputDelivery)) {
+            await this.inputDelivery.recover(
+              { ...scope, chatId: tab.id },
+              tab.inputDelivery,
+            );
+          }
+        }
+        state = await this.repository.getState(scope);
+        await this.requestPersistedBackgroundSnapshots(scope, state);
+        this.scheduleRecoveredHistoryResolution(scope, state.tabsFile.tabs);
+      }
+      return {
+        tabs: state.tabsFile.tabs,
+        runtimeByChatId: state.runtimeByChatId,
+      };
+    } finally {
+      releaseInputHydration?.();
+    }
+  }
+
   public hasMutation(
     request: ChatScopeKey,
     mutationId: string,
@@ -2948,11 +4433,29 @@ export class ChatStateService implements ChatStateCommandPort {
     return this.repository.hasMutation(request, mutationId);
   }
 
+  /** Whether the committed runtime still shows this turn as the chat's open
+   * turn. Reads canonical state only; it does not reconcile host runtimes. */
+  public async isTurnOpen(
+    scope: ChatScopeKey,
+    chatId: string,
+    turnUserMessageId: string,
+  ): Promise<boolean> {
+    const state = await this.repository.getState(scope);
+    const runtime = state.runtimeByChatId[chatId];
+    return (
+      runtime !== undefined &&
+      ['starting', 'streaming', 'awaiting_input', 'completing'].includes(
+        runtime.status,
+      ) &&
+      runtime.activeTurn?.userMessageId === turnUserMessageId
+    );
+  }
+
   /**
    * How the turn of one user message ended, or `pending` while it has not.
    * Answered from durable chat state, never from the bounded mutation
-   * index: a turn that ran reports the end its chat recorded when its
-   * runtime settled (`turnEnds`), and a turn that ended before any provider
+   * index: a turn that ran reports the end its chat recorded when the turn
+   * ended (`turnEnds`), and a turn that ended before any provider
    * accepted it reports the outcome recorded for it (`unacceptedTurnEnds`).
    * Otherwise it is pending while the chat queue holds it as the dispatching
    * turn or a queued row, or the chat queues it or runs or can resume it as
@@ -3200,10 +4703,289 @@ export class ChatStateService implements ChatStateCommandPort {
     return this.repository.hasMessage(request, chatId, messageId);
   }
 
+  public result(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['result']>
+  ): Promise<Awaited<ReturnType<DelegationRegistryOperations['result']>>> {
+    return this.childStreamRepository().result(scope, ...args);
+  }
+
+  public receipt(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['receipt']>
+  ): Promise<Awaited<ReturnType<DelegationRegistryOperations['receipt']>>> {
+    return this.childStreamRepository().receipt(scope, ...args);
+  }
+
+  public resultBySettlementKey(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultBySettlementKey']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['resultBySettlementKey']>>
+  > {
+    return this.childStreamRepository().resultBySettlementKey(scope, ...args);
+  }
+
+  public resultByGeneration(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultByGeneration']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['resultByGeneration']>>
+  > {
+    return this.childStreamRepository().resultByGeneration(scope, ...args);
+  }
+
+  public generation(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['generation']>
+  ): Promise<Awaited<ReturnType<DelegationRegistryOperations['generation']>>> {
+    return this.childStreamRepository().generation(scope, ...args);
+  }
+
+  public resultsPage(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultsPage']>
+  ): Promise<Awaited<ReturnType<DelegationRegistryOperations['resultsPage']>>> {
+    return this.childStreamRepository().resultsPage(scope, ...args);
+  }
+
+  public generationsPage(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['generationsPage']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['generationsPage']>>
+  > {
+    return this.childStreamRepository().generationsPage(scope, ...args);
+  }
+
+  public resultAnswerRange(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['resultAnswerRange']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['resultAnswerRange']>>
+  > {
+    return this.childStreamRepository().resultAnswerRange(scope, ...args);
+  }
+
+  public itemAdmission(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['itemAdmission']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['itemAdmission']>>
+  > {
+    return this.childStreamRepository().itemAdmission(scope, ...args);
+  }
+
+  /**
+   * The selected format after the scope's ordered load and promotion attempt.
+   * A non-V2 repository can hold neither format 4 nor the option.
+   */
+  public generationStoreReadiness(
+    scope: ChatScopeKey,
+  ): ReturnType<ChatStateV2Repository['generationStoreReadiness']> {
+    if (!(this.repository instanceof ChatStateV2Repository))
+      return Promise.resolve({ formatVersion: 2, enableFormat4: false });
+    return this.repository.generationStoreReadiness(scope);
+  }
+
+  public subscribeChildSearchDirty(
+    listener: Parameters<ChatStateV2Repository['subscribeChildSearchDirty']>[0],
+  ): () => void {
+    if (!(this.repository instanceof ChatStateV2Repository))
+      return (): void => undefined;
+    return this.repository.subscribeChildSearchDirty(listener);
+  }
+
+  public listChildSearchDocuments(
+    ...args: Parameters<ChatStateV2Repository['listChildSearchDocuments']>
+  ): ReturnType<ChatStateV2Repository['listChildSearchDocuments']> {
+    if (!(this.repository instanceof ChatStateV2Repository))
+      return Promise.resolve([]);
+    return this.repository.listChildSearchDocuments(...args);
+  }
+
+  public readChildSearchDocument(
+    ...args: Parameters<ChatStateV2Repository['readChildSearchDocument']>
+  ): ReturnType<ChatStateV2Repository['readChildSearchDocument']> {
+    return this.childStreamRepository().readChildSearchDocument(...args);
+  }
+
+  public commitChildSearchDocuments(
+    ...args: Parameters<ChatStateV2Repository['commitChildSearchDocuments']>
+  ): ReturnType<ChatStateV2Repository['commitChildSearchDocuments']> {
+    return this.childStreamRepository().commitChildSearchDocuments(...args);
+  }
+
+  public registerGeneration(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['registerGeneration']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['registerGeneration']>>
+  > {
+    return this.childStreamRepository().registerGeneration(scope, ...args);
+  }
+
+  public updateCardState(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['updateCardState']>
+  ): ReturnType<DelegationRegistryOperations['updateCardState']> {
+    return this.childStreamRepository().updateCardState(scope, ...args);
+  }
+
+  public settleDelegationResult(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['settleDelegationResult']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['settleDelegationResult']>>
+  > {
+    return this.childStreamRepository().settleDelegationResult(scope, ...args);
+  }
+
+  public appendDelegationReceipt(
+    scope: ChatScopeKey,
+    ...args: Parameters<DelegationRegistryOperations['appendDelegationReceipt']>
+  ): Promise<
+    Awaited<ReturnType<DelegationRegistryOperations['appendDelegationReceipt']>>
+  > {
+    return this.childStreamRepository().appendDelegationReceipt(scope, ...args);
+  }
+
+  /** Serialize a complete target operation without holding the scope lease. */
+  public withChildStreamTarget<T>(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.childStreamRepository().withChildStreamTarget(
+      scope,
+      target,
+      operation,
+    );
+  }
+
+  /** Register a child stream by its complete target, idempotently. */
+  public openChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+  ): Promise<TranscriptStreamDescriptor> {
+    return this.childStreamRepository().openChildStream(scope, target);
+  }
+
+  /** Read the projected child descriptor, including pending journal updates. */
+  public getChildStreamState(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+  ): Promise<TranscriptStreamDescriptor | undefined> {
+    return this.childStreamRepository().getChildStreamState(scope, target);
+  }
+
+  /** Read the stored parent row without applying its child stream overlay. */
+  public readStoredParentMessage(
+    scope: ChatScopeKey,
+    chatId: string,
+    messageId: string,
+  ): Promise<PersistedChatMessage | undefined> {
+    return this.childStreamRepository().readStoredParentMessage(
+      scope,
+      chatId,
+      messageId,
+    );
+  }
+
+  /** Persist child rows with a deterministic journal mutation identity. */
+  public commitChildStream(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    mutationKey: string,
+    rows: readonly DelegationChildRow[],
+  ): Promise<{
+    applied: boolean;
+    revision: number;
+    descriptor: TranscriptStreamDescriptor;
+  }> {
+    return this.childStreamRepository().commitChildStream(
+      scope,
+      target,
+      mutationKey,
+      rows,
+    );
+  }
+
+  /** Read one logical row only at the stream revision the caller observed. */
+  public getChildStreamMessage(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    messageId: string,
+    streamRevision: number,
+  ): Promise<DelegationChildRow | undefined> {
+    return this.childStreamRepository().getChildStreamMessage(
+      scope,
+      target,
+      messageId,
+      streamRevision,
+    );
+  }
+
+  /** Read one bounded stored compatibility page, without hydrating answers. */
+  public childStreamCompatibilityPage(
+    scope: ChatScopeKey,
+    request: ChildStreamCompatibilityPageRequest,
+  ): Promise<ChildStreamCompatibilityPageReply> {
+    return this.childStreamRepository().childStreamCompatibilityPage(
+      scope,
+      request,
+    );
+  }
+
+  public getChildStreamPage(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    streamRevision: number,
+    cursor?: string,
+    limit?: number,
+  ): Promise<ChildStreamRowsPage> {
+    return this.childStreamRepository().getChildStreamPage(
+      scope,
+      target,
+      streamRevision,
+      cursor,
+      limit,
+    );
+  }
+
+  /** Read a pinned inline/referenced child field range in stored encoding. */
+  public readChildStreamContent(
+    scope: ChatScopeKey,
+    target: TranscriptTarget,
+    streamRevision: number,
+    messageId: string,
+    blockOrdinal: number,
+    field: TranscriptContentField,
+    offset: number,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<ChildStreamContentRange> {
+    return this.childStreamRepository().readChildStreamContent(
+      scope,
+      target,
+      streamRevision,
+      messageId,
+      blockOrdinal,
+      field,
+      offset,
+      limit,
+      signal,
+    );
+  }
+
   public searchTranscript(
     request: ChatTranscriptSearchRequest,
     signal?: AbortSignal,
   ): Promise<ChatTranscriptSearchResult> {
+    if (request.target && request.target.chatId !== request.chatId)
+      return Promise.reject(new Error('Unknown child stream'));
+    if (request.target?.kind === 'delegation')
+      return this.repository.search(request, signal);
     return this.consumeTranscript(request, request.chatId, false, (messages) =>
       searchTranscriptMessages(messages, request.query, signal),
     );
@@ -3301,6 +5083,7 @@ export class ChatStateService implements ChatStateCommandPort {
         request.offset,
         request.limit,
         signal,
+        request,
       );
     }
     return this.repository.toolOutput(
@@ -3312,7 +5095,52 @@ export class ChatStateService implements ChatStateCommandPort {
       request.offset,
       request.limit,
       signal,
+      request,
     );
+  }
+
+  /** A verified byte range from the selected row's stored body. */
+  public async readTranscriptContent(
+    request: ChatTranscriptContentRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatToolOutputResponse> {
+    if (request.standaloneHistory) {
+      const backend = await this.standaloneArchiveBackend(
+        request.projectId,
+        request.chatId,
+      );
+      return backend.content(request, signal);
+    }
+    if (request.archivedContainerId) {
+      const backend = await this.archivedContainerBackend(
+        request.projectId,
+        request.archivedContainerId,
+      );
+      return backend.content(request, signal);
+    }
+    return this.repository.content(request, signal);
+  }
+
+  /** A bounded ordinal page of the selected row's logical blocks. */
+  public async getTranscriptBlocks(
+    request: ChatTranscriptBlocksRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatTranscriptBlocksPage> {
+    if (request.standaloneHistory) {
+      const backend = await this.standaloneArchiveBackend(
+        request.projectId,
+        request.chatId,
+      );
+      return backend.blocks(request, signal);
+    }
+    if (request.archivedContainerId) {
+      const backend = await this.archivedContainerBackend(
+        request.projectId,
+        request.archivedContainerId,
+      );
+      return backend.blocks(request, signal);
+    }
+    return this.repository.blocks(request, signal);
   }
 
   public async readVisual(
@@ -3442,6 +5270,14 @@ export class ChatStateService implements ChatStateCommandPort {
       import('../integration/claude-terminal-session-service'),
     ]);
     const queueService = getChatQueueService();
+    const memoryQueueIds = new Map(
+      queueService
+        .getWorktreeSnapshots(scope.projectId, scope.worktreeId)
+        .map((snapshot) => [
+          snapshot.chatId,
+          new Set(snapshot.queue.map((message) => message.id)),
+        ]),
+    );
     const hydratedTargets = new Map<
       string,
       ChatScopeKey & { chatId: string }
@@ -3450,7 +5286,59 @@ export class ChatStateService implements ChatStateCommandPort {
       if (tab.kind === 'file') continue;
       const runtime = state.runtimeByChatId[tab.id];
       const durableQueueIds = new Set(runtime?.queuedMessageIds ?? []);
+      const inputLedger = isInputLedger(tab.inputDelivery)
+        ? tab.inputDelivery
+        : undefined;
+      const queuedLedgerRowFor = (
+        message: PersistedHostQueuedMessage,
+      ): InputRow | undefined => {
+        if (!inputLedger) return undefined;
+        const byMessageId = inputLedger.rows.find(
+          (row) => row.id === message.id && row.state === 'queued',
+        );
+        if (byMessageId) return byMessageId;
+        return inputLedger.rows.find(
+          (row) =>
+            row.id === message.request.userMessageId && row.state === 'queued',
+        );
+      };
       for (const message of runtime?.queuedMessages ?? []) {
+        const ledgerRow = queuedLedgerRowFor(message);
+        const hydrationOptions:
+          | []
+          | [{ ordinaryOnly?: true; creditRefused?: true }] =
+          ledgerRow?.ordinaryOnly === true ||
+          tab.aiCreditsNoBillingSource !== undefined
+            ? [
+                {
+                  ...(ledgerRow?.ordinaryOnly === true
+                    ? { ordinaryOnly: true }
+                    : {}),
+                  ...(tab.aiCreditsNoBillingSource
+                    ? { creditRefused: true }
+                    : {}),
+                },
+              ]
+            : [];
+        // A flagged row was dispatching when this state was written. Its
+        // prompt commit would have removed it, so it never reached the
+        // transcript: return it to the head of the queue.
+        if (message.dispatching === true && !durableQueueIds.has(message.id)) {
+          queueService.hydratePersistedInput(
+            message.request,
+            message.id,
+            message.origin,
+            message.enqueuedAtMs,
+            message.authenticationAttemptId,
+            message.requiredAccountProxyConnectionId,
+            {
+              atHead: true,
+              ...hydrationOptions[0],
+            },
+          );
+          hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
+          continue;
+        }
         if (!durableQueueIds.has(message.id)) continue;
         queueService.hydratePersistedInput(
           message.request,
@@ -3459,23 +5347,158 @@ export class ChatStateService implements ChatStateCommandPort {
           message.enqueuedAtMs,
           message.authenticationAttemptId,
           message.requiredAccountProxyConnectionId,
+          ...hydrationOptions,
         );
         hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
       }
-      if (!isInputLedger(tab.inputDelivery)) continue;
-      for (const row of [...tab.inputDelivery.rows]
-        .filter(
-          (candidate) =>
-            candidate.state === 'queued' && durableQueueIds.has(candidate.id),
+      if (inputLedger) {
+        for (const row of [...inputLedger.rows]
+          .filter(
+            (candidate) =>
+              candidate.state === 'queued' && durableQueueIds.has(candidate.id),
+          )
+          .sort((left, right) => left.createdAt - right.createdAt)) {
+          if (row.ordinaryOnly === true) {
+            queueService.hydratePersistedInput(
+              row.payload,
+              row.id,
+              row.origin ?? 'desktop',
+              row.createdAt,
+              undefined,
+              undefined,
+              {
+                ordinaryOnly: true,
+                ...(tab.aiCreditsNoBillingSource
+                  ? { creditRefused: true }
+                  : {}),
+              },
+            );
+          } else {
+            const hydration: Parameters<
+              typeof queueService.hydratePersistedInput
+            > = tab.aiCreditsNoBillingSource
+              ? [
+                  row.payload,
+                  row.id,
+                  row.origin ?? 'desktop',
+                  row.createdAt,
+                  undefined,
+                  undefined,
+                  { creditRefused: true },
+                ]
+              : [row.payload, row.id, row.origin ?? 'desktop', row.createdAt];
+            queueService.hydratePersistedInput(...hydration);
+          }
+          hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
+        }
+      }
+      for (const message of runtime?.queuedMessages ?? []) {
+        if (message.admitting !== true || durableQueueIds.has(message.id))
+          continue;
+        const userMessageId = message.request.userMessageId;
+        if (await this.repository.hasMessage(scope, tab.id, userMessageId))
+          continue;
+        if (
+          isInputLedger(tab.inputDelivery) &&
+          tab.inputDelivery.rows.some(
+            (row) => row.payload.userMessageId === userMessageId,
+          )
         )
-        .sort((left, right) => left.createdAt - right.createdAt)) {
+          continue;
+        if (
+          (runtime?.queuedMessages ?? []).some(
+            (queued) =>
+              durableQueueIds.has(queued.id) &&
+              queued.request.userMessageId === userMessageId,
+          )
+        )
+          continue;
+        // Every read hydrates, and an admission still running in this process
+        // owns its message; a snapshot read during it can also be stale by
+        // now. Recover only an entry the current state still holds with no
+        // admission in flight, i.e. one a crash or quit left behind.
+        const currentRuntime = (
+          await this.repository.getState(scope, { chatIds: [tab.id] })
+        ).runtimeByChatId[tab.id];
+        if (
+          this.acceptedSendsInFlight.has(
+            JSON.stringify([
+              scope.projectId,
+              scope.worktreeId,
+              tab.id,
+              userMessageId,
+            ]),
+          ) ||
+          !currentRuntime?.queuedMessages?.some(
+            (entry) => entry.id === message.id && entry.admitting === true,
+          )
+        )
+          continue;
+        const hydrationOptions:
+          | []
+          | [{ ordinaryOnly?: true; creditRefused?: true }] =
+          queuedLedgerRowFor(message)?.ordinaryOnly === true ||
+          tab.aiCreditsNoBillingSource !== undefined
+            ? [
+                {
+                  ...(queuedLedgerRowFor(message)?.ordinaryOnly === true
+                    ? { ordinaryOnly: true }
+                    : {}),
+                  ...(tab.aiCreditsNoBillingSource
+                    ? { creditRefused: true }
+                    : {}),
+                },
+              ]
+            : [];
         queueService.hydratePersistedInput(
-          row.payload,
-          row.id,
-          row.origin ?? 'desktop',
-          row.createdAt,
+          message.request,
+          message.id,
+          message.origin,
+          message.enqueuedAtMs,
+          message.authenticationAttemptId,
+          message.requiredAccountProxyConnectionId,
+          ...hydrationOptions,
         );
         hydratedTargets.set(tab.id, { ...scope, chatId: tab.id });
+      }
+      if (inputLedger) {
+        const durableMessages = runtime?.queuedMessages ?? [];
+        const inMemoryIds = memoryQueueIds.get(tab.id) ?? new Set<string>();
+        for (const row of inputLedger.rows) {
+          const continuation = validOrdinaryContinuation(inputLedger, row);
+          if (row.state !== 'cancelled' || !continuation) continue;
+          const presentDurably =
+            durableQueueIds.has(row.id) ||
+            durableMessages.some(
+              (message) =>
+                durableQueueIds.has(message.id) &&
+                (message.id === row.id ||
+                  message.request.userMessageId === row.id),
+            );
+          if (presentDurably || inMemoryIds.has(row.id)) continue;
+          void Promise.resolve()
+            .then(() =>
+              queueService.restoreWithdrawnInput(
+                row.payload,
+                row.id,
+                undefined,
+                continuation.epoch,
+                row.origin ?? 'desktop',
+                undefined,
+                {
+                  ordinaryOnly: true,
+                  waitForQueue: true,
+                  continuation,
+                },
+              ),
+            )
+            .catch((error: unknown) =>
+              logMainProcessWarn(
+                'Failed to restore cancelled generated input after chat hydration',
+                error,
+              ),
+            );
+        }
       }
     }
     // The transaction checks transcript timers before it can classify idle
@@ -3483,144 +5506,183 @@ export class ChatStateService implements ChatStateCommandPort {
     // transcripts were selected from this snapshot. A runtime accepted
     // between the read and the lease is reconciled by the next snapshot.
     const selectedChatIds = new Set(Object.keys(state.runtimeByChatId));
-    const commit = await this.repository.transactWith(
-      scope,
-      async (current) => {
-        // Resolve every liveness source inside the serialized transaction so
-        // a stale pre-transaction snapshot cannot interrupt a newly accepted
-        // turn. Queue turnActive covers the period after dispatch returns;
-        // dispatchesInFlight covers durable acceptance through host exposure.
-        const activeChatIds = new Set(
-          getActiveChatIds(scope.projectId, scope.worktreeId),
-        );
-        const hostQueueIds = new Map(
-          queueService
-            .getWorktreeSnapshots(scope.projectId, scope.worktreeId)
-            .map((snapshot) => [
-              snapshot.chatId,
-              snapshot.queue.map((message) => message.id),
-            ]),
-        );
-        const mutations: ChatCoreMutation[] = [];
-        for (const [chatId, runtime] of Object.entries(
-          current.runtimeByChatId,
-        )) {
-          if (!selectedChatIds.has(chatId)) continue;
-          const tab = current.tabsFile.tabs.find(
-            (candidate) => candidate.id === chatId,
+    const restartChatIds = new Set<string>();
+    let commit: ChatStateCommit;
+    try {
+      commit = await this.repository.transactWith(
+        scope,
+        async (current) => {
+          // Resolve every liveness source inside the serialized transaction so
+          // a stale pre-transaction snapshot cannot interrupt a newly accepted
+          // turn. Queue turnActive covers the period after dispatch returns;
+          // dispatchesInFlight covers durable acceptance through host exposure.
+          const activeChatIds = new Set(
+            getActiveChatIds(scope.projectId, scope.worktreeId),
           );
-          if (!tab || tab.kind === 'file') continue;
-          const openTimer = tab.messages.some((message) =>
-            message.blocks.some(
-              (block) =>
-                block.type === 'turn_timer' &&
-                block.completedAt == null &&
-                (block.pausedAt == null || block.resumedAt != null),
-            ),
+          const hostQueueIds = new Map(
+            queueService
+              .getWorktreeSnapshots(scope.projectId, scope.worktreeId)
+              .map((snapshot) => [
+                snapshot.chatId,
+                snapshot.queue.map((message) => message.id),
+              ]),
           );
-          const terminalActive =
-            tab.claudeTerminal &&
-            ['running', 'starting'].includes(tab.claudeTerminal.turnState);
-          const unfinished = [
-            'queued',
-            'starting',
-            'streaming',
-            'awaiting_input',
-            'completing',
-          ].includes(runtime.status);
-          if (
-            !unfinished &&
-            !terminalActive &&
-            !(openTimer && ['idle', 'interrupted'].includes(runtime.status))
-          )
-            continue;
-          const queuedMessageIds = hostQueueIds.get(chatId) ?? [];
-          if (runtime.status === 'queued' && queuedMessageIds.length > 0) {
+          const mutations: ChatCoreMutation[] = [];
+          for (const [chatId, runtime] of Object.entries(
+            current.runtimeByChatId,
+          )) {
+            if (!selectedChatIds.has(chatId)) continue;
+            const tab = current.tabsFile.tabs.find(
+              (candidate) => candidate.id === chatId,
+            );
+            if (!tab || tab.kind === 'file') continue;
+            const openTimer = tab.messages.some((message) =>
+              message.blocks.some(
+                (block) =>
+                  block.type === 'turn_timer' &&
+                  block.completedAt == null &&
+                  (block.pausedAt == null || block.resumedAt != null),
+              ),
+            );
+            const terminalActive =
+              tab.claudeTerminal &&
+              ['running', 'starting'].includes(tab.claudeTerminal.turnState);
+            const unfinished = [
+              'queued',
+              'starting',
+              'streaming',
+              'awaiting_input',
+              'completing',
+            ].includes(runtime.status);
+            const reducerTurn = hydrateChatTurnState(runtime.turn);
+            const openTurnPauseOwner = [
+              reducerTurn?.current,
+              reducerTurn?.lastEnded,
+            ].some((turn) =>
+              turn?.pauses.some((pause) => pause.endedAtMs === undefined),
+            );
+            const reducerTurnNeedsRestart =
+              reducerTurn?.current !== undefined || openTurnPauseOwner;
             if (
-              JSON.stringify(queuedMessageIds) !==
-              JSON.stringify(runtime.queuedMessageIds)
-            ) {
-              mutations.push({
-                type: 'runtime.patched',
-                chatId,
-                runtime: { ...runtime, queuedMessageIds },
-              });
+              !unfinished &&
+              !terminalActive &&
+              !(
+                openTimer && ['idle', 'interrupted'].includes(runtime.status)
+              ) &&
+              !reducerTurnNeedsRestart
+            )
+              continue;
+            const queuedMessageIds = hostQueueIds.get(chatId) ?? [];
+            if (runtime.status === 'queued' && queuedMessageIds.length > 0) {
+              if (
+                JSON.stringify(queuedMessageIds) !==
+                JSON.stringify(runtime.queuedMessageIds)
+              ) {
+                mutations.push({
+                  type: 'runtime.patched',
+                  chatId,
+                  runtime: { ...runtime, queuedMessageIds },
+                });
+              }
+              continue;
             }
-            continue;
-          }
-          const target = { ...scope, chatId };
-          const terminal = getClaudeTerminalSessionService().getState(
-            scope.projectId,
-            scope.worktreeId,
-            chatId,
-          );
-          if (
-            activeChatIds.has(chatId) ||
-            (terminal && !['exited', 'error'].includes(terminal.turnState)) ||
-            queueService.isTurnActive(target) ||
-            this.dispatchesInFlight.has(chatRuntimeHostKey(scope, chatId))
-          ) {
-            continue;
-          }
-          const now = this.now();
-          // Persist the resume target before closing its durable running marker.
-          // A registry failure leaves the original state available for a retry.
-          if (isRealWorkspaceTarget(target)) {
-            await recordInterruptedChats([
-              {
-                ...target,
-                provider:
-                  tab.providerType ??
-                  (tab.model ? getProviderForModel(tab.model) : undefined) ??
-                  'claude',
-                detectedAt: now,
-                resumeReason: 'app_shutdown',
-                workspaceName: '',
-                chatTitle: tab.title ?? '',
-              },
-            ]);
-          }
-          if (terminalActive && tab.claudeTerminal)
-            mutations.push({
-              type: 'tab.metadata_patched',
-              tabId: chatId,
-              patch: {
-                claudeTerminal: { ...tab.claudeTerminal, turnState: 'exited' },
-              },
-            });
-          for (const question of current.tabsFile.pendingQuestions ?? []) {
-            // Synchronous questions belong to the interrupted provider turn,
-            // but Codex async questions remain actionable after that turn has
-            // settled and must survive restart reconciliation.
-            if (question.chatId === chatId && question.delivery !== 'async')
-              mutations.push({
-                type: 'pending_question.removed',
-                chatId,
-                requestId: question.requestId,
-              });
-          }
-          mutations.push(
-            ...buildPersistedTurnInterruptedMutations(
+            const target = { ...scope, chatId };
+            const terminal = getClaudeTerminalSessionService().getState(
+              scope.projectId,
+              scope.worktreeId,
               chatId,
-              tab.messages,
-              runtime,
-              now,
-              queuedMessageIds,
-              tab,
-            ),
-          );
-        }
-        return mutations;
-      },
-      {
-        ...{
-          source: 'automation',
-          mutationId: `host-reconcile:${state.tabsFile.revision ?? 0}`,
-          checkpoint: true,
+            );
+            if (
+              activeChatIds.has(chatId) ||
+              (terminal && !['exited', 'error'].includes(terminal.turnState)) ||
+              queueService.isTurnActive(target) ||
+              this.dispatchesInFlight.has(chatRuntimeHostKey(scope, chatId))
+            ) {
+              continue;
+            }
+            const now = this.now();
+            // Persist the resume target before closing its durable running marker.
+            // A registry failure leaves the original state available for a retry.
+            if (isRealWorkspaceTarget(target)) {
+              await recordInterruptedChats([
+                {
+                  ...target,
+                  provider:
+                    tab.providerType ??
+                    (tab.model ? getProviderForModel(tab.model) : undefined) ??
+                    'claude',
+                  detectedAt: now,
+                  resumeReason: 'app_shutdown',
+                  interruptedUserMessageId:
+                    runtime.activeTurn?.userMessageId ??
+                    runtime.turn?.current?.userMessageId,
+                  workspaceName: '',
+                  chatTitle: tab.title ?? '',
+                },
+              ]);
+            }
+            if (reducerTurnNeedsRestart) {
+              this.turnHandoff.prepareRestart(target);
+              restartChatIds.add(chatId);
+            }
+            if (terminalActive && tab.claudeTerminal)
+              mutations.push({
+                type: 'tab.metadata_patched',
+                tabId: chatId,
+                patch: {
+                  claudeTerminal: {
+                    ...tab.claudeTerminal,
+                    turnState: 'exited',
+                  },
+                },
+              });
+            for (const question of current.tabsFile.pendingQuestions ?? []) {
+              // Synchronous questions belong to the interrupted provider turn,
+              // but Codex async questions remain actionable after that turn has
+              // settled and must survive restart reconciliation.
+              if (question.chatId === chatId && question.delivery !== 'async')
+                mutations.push({
+                  type: 'pending_question.removed',
+                  chatId,
+                  requestId: question.requestId,
+                });
+            }
+            mutations.push(
+              ...buildPersistedTurnInterruptedMutations(
+                chatId,
+                tab.messages,
+                runtime,
+                now,
+                queuedMessageIds,
+                tab,
+              ),
+            );
+          }
+          return mutations;
         },
-        chatIds: Array.from(selectedChatIds),
-      },
-    );
+        {
+          ...{
+            source: 'automation',
+            mutationId: `host-reconcile:${state.tabsFile.revision ?? 0}`,
+            checkpoint: true,
+          },
+          chatIds: Array.from(selectedChatIds),
+        },
+      );
+    } catch (error) {
+      for (const chatId of Array.from(restartChatIds))
+        this.turnHandoff.cancelRestart({ ...scope, chatId });
+      throw error;
+    }
+    for (const chatId of Array.from(restartChatIds)) {
+      const target = { ...scope, chatId };
+      if (commit.applied)
+        this.turnHandoff.restartFromState(
+          target,
+          commit.state.runtimeByChatId[chatId]?.turn,
+        );
+      else this.turnHandoff.cancelRestart(target);
+    }
     for (const target of Array.from(hydratedTargets.values()))
       queueService.releaseInputOwnership(target);
     return commit.state;
@@ -3972,6 +6034,8 @@ export class ChatStateService implements ChatStateCommandPort {
         return this.patchTabSettings(scope, envelope, envelope.command);
       case 'chat.set_model':
         return this.setModel(scope, envelope);
+      case 'chat.set_approval_mode':
+        return this.setApprovalMode(scope, envelope, envelope.command);
       case 'chat.mark_read':
         return this.patchWholeTab(
           scope,
@@ -3980,9 +6044,13 @@ export class ChatStateService implements ChatStateCommandPort {
           (tab) => ({
             ...tab,
             unread: false,
+            unreadMarkedManually: undefined,
           }),
         );
-      case 'chat.mark_unread':
+      case 'chat.mark_unread': {
+        // An automatic mark replaces an earlier manual one, so a new reply
+        // restores the reply preview.
+        const manual = envelope.command.manual === true;
         return this.patchWholeTab(
           scope,
           envelope,
@@ -3990,9 +6058,11 @@ export class ChatStateService implements ChatStateCommandPort {
           (tab) => ({
             ...tab,
             unread: true,
+            unreadMarkedManually: manual ? true : undefined,
             attentionDismissedAt: undefined,
           }),
         );
+      }
       case 'chat.dismiss_attention':
         return this.patchWholeTab(
           scope,
@@ -4008,6 +6078,7 @@ export class ChatStateService implements ChatStateCommandPort {
       case 'chat.commit_terminal_initial_prompt':
         return this.commitTerminalInitialPrompt(scope, envelope);
       case 'chat.edit_queued_message':
+      case 'chat.move_queued_message':
       case 'chat.cancel_queued_message':
       case 'chat.steer_queued_message':
       case 'chat.force_queued_message':
@@ -4074,6 +6145,40 @@ export class ChatStateService implements ChatStateCommandPort {
     }
   }
 
+  /** Records a rejected provider event without changing canonical admission. */
+  private recordCanonicalAdmissionRejection(
+    input: ProviderEventInput,
+    reason: string,
+    ownerTurnUserMessageId?: string,
+  ): void {
+    const data = isRecord(input.data) ? input.data : undefined;
+    const eventTurnUserMessageId =
+      typeof data?.canopy_turn_user_message_id === 'string'
+        ? data.canopy_turn_user_message_id
+        : input.turnUserMessageId;
+    const turnUserMessageId =
+      ownerTurnUserMessageId &&
+      ownerTurnUserMessageId !== eventTurnUserMessageId
+        ? ownerTurnUserMessageId
+        : undefined;
+    try {
+      this.recordDiagnostic(
+        chatEventDroppedDiagnostic({
+          projectId: input.projectId,
+          worktreeId: input.worktreeId,
+          chatId: input.chatId,
+          ...(input.providerType ? { providerType: input.providerType } : {}),
+          gate: 'canonical_admission_rejected',
+          reason,
+          data: input.data,
+          ...(turnUserMessageId ? { turnUserMessageId } : {}),
+        }),
+      );
+    } catch {
+      // Diagnostics are best-effort and must never change provider admission.
+    }
+  }
+
   /** Stage one prepared visual through the trusted scope route. */
   public stageVisual(
     scope: ChatScopeKey,
@@ -4091,43 +6196,97 @@ export class ChatStateService implements ChatStateCommandPort {
   }
 
   public async ingestProviderEventWithOutcome(
-    providerInput: ProviderEventInput,
+    input: ProviderEventInput,
   ): Promise<ProviderEventIngestOutcome> {
+    return (await this.ingestProviderEventWithResult(input)).outcome;
+  }
+
+  public async ingestProviderEventWithResult(
+    providerInput: ProviderEventInput,
+  ): Promise<ProviderEventIngestResult> {
     recordProviderEventIngested();
     const input = withCardOnlyDelegation(providerInput);
+    const providerRunClassification = classifyProviderRunEvent(input.data, {
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+      chatId: input.chatId,
+    });
+    if (providerRunClassification.kind === 'reject') {
+      this.recordCanonicalAdmissionRejection(
+        input,
+        providerRunClassification.reason,
+      );
+      return { outcome: 'not-applied' };
+    }
     if (isRecord(input.data) && input.data.type === 'canopy_input_delivery') {
       const event = input.data;
-      if (!isChatInputDeliveryEvent(event)) return 'not-applied';
-      const observed = await this.inputDelivery.observe(input, event);
-      if (observed) recordProviderEventApplied();
-      return observed ? 'applied' : 'not-applied';
+      const startingPickup =
+        event.phase === 'picked-up' && event.startsTurn === true;
+      if (!isChatInputDeliveryEvent(event)) {
+        this.recordCanonicalAdmissionRejection(
+          input,
+          'invalid_input_delivery_event',
+        );
+        return {
+          outcome: 'not-applied',
+          ...(startingPickup ? { pickup: 'rejected' } : {}),
+        };
+      }
+      const { observed, pickup } = await this.inputDelivery.observeWithResult(
+        input,
+        withTrustedDeliveryFailure(event),
+      );
+      if (observed) {
+        recordProviderEventApplied();
+      } else {
+        this.recordCanonicalAdmissionRejection(
+          input,
+          'input_delivery_not_observed',
+        );
+      }
+      const outcome = observed ? 'applied' : 'not-applied';
+      return {
+        outcome,
+        ...(startingPickup ? { pickup: pickup ?? 'rejected' } : {}),
+      };
     }
     const data = isRecord(input.data) ? input.data : {};
     const delegation =
       data.type === 'canopy_delegation' && isRecord(data.delegation)
         ? data.delegation
         : undefined;
+    const streamDelegation =
+      delegation?.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_STREAM;
     // Delegates can finish many parent turns later. Hydrate their own card
     // for sequence checks; a new run falls back to its retained parent turn.
     // This is only a read hint. The shared reducer still validates the whole
     // event once, including its transcript; do not walk that transcript twice.
     const messageAnchor =
-      delegation &&
-      typeof delegation.delegationId === 'string' &&
-      typeof delegation.runGeneration === 'number' &&
-      Number.isSafeInteger(delegation.runGeneration) &&
-      delegation.runGeneration >= 1 &&
-      typeof delegation.parentTurnId === 'string'
+      providerRunClassification.kind === 'transcript_only' &&
+      providerRunClassification.run.item
         ? {
-            messageId: `delegated-agent-${delegation.delegationId}${delegation.runGeneration > 1 ? `-run-${delegation.runGeneration}` : ''}`,
-            fallbackMessageId: delegation.parentTurnId,
-            ...(delegation.runGeneration > 1
-              ? {
-                  previousRunMessageId: `delegated-agent-${delegation.delegationId}${delegation.runGeneration > 2 ? `-run-${delegation.runGeneration - 1}` : ''}`,
-                }
-              : {}),
+            messageId: `codex-${providerRunClassification.run.item.id}`,
+            fallbackMessageId:
+              providerRunClassification.run.executionUserMessageId,
           }
-        : undefined;
+        : delegation &&
+            typeof delegation.delegationId === 'string' &&
+            typeof delegation.runGeneration === 'number' &&
+            Number.isSafeInteger(delegation.runGeneration) &&
+            delegation.runGeneration >= 1 &&
+            typeof delegation.parentTurnId === 'string'
+          ? {
+              messageId: `delegated-agent-${delegation.delegationId}${delegation.runGeneration > 1 ? `-run-${delegation.runGeneration}` : ''}`,
+              ...(streamDelegation
+                ? {}
+                : { fallbackMessageId: delegation.parentTurnId }),
+              ...(!streamDelegation && delegation.runGeneration > 1
+                ? {
+                    previousRunMessageId: `delegated-agent-${delegation.delegationId}${delegation.runGeneration > 2 ? `-run-${delegation.runGeneration - 1}` : ''}`,
+                  }
+                : {}),
+            }
+          : undefined;
     const checkpoint =
       isRecord(input.data) &&
       (isTerminalChatEventData(input.data) ||
@@ -4142,442 +6301,126 @@ export class ChatStateService implements ChatStateCommandPort {
         ['turn.started', 'turn.completed', 'turn.failed'].includes(
           String(data.event.type),
         ));
+    const scope = {
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+    };
+    let fullTranscript = false;
+    if (
+      data.type === 'canopy_user_prompt' &&
+      !(await this.repository.hasMutation(scope, eventMutationId(input)))
+    ) {
+      const promptMessageId = data.canopy_turn_user_message_id;
+      if (typeof promptMessageId === 'string') {
+        const location = await this.repository.locateMessage(
+          scope,
+          input.chatId,
+          promptMessageId,
+        );
+        if (typeof location === 'object' && !location.last) {
+          fullTranscript = true;
+        } else if (location === 'active') {
+          const snapshot = await this.repository.getState(scope, {
+            chatIds: [input.chatId],
+          });
+          const tab = snapshot.tabsFile.tabs.find(
+            (candidate) => candidate.id === input.chatId,
+          );
+          const promptIndex =
+            tab?.messages.findIndex(
+              (message) => message.id === promptMessageId,
+            ) ?? -1;
+          fullTranscript =
+            promptIndex >= 0 && promptIndex < (tab?.messages.length ?? 0) - 1;
+        }
+      }
+    }
     const capabilities = refreshCapabilities
       ? await this.inputDelivery.capabilities(input)
       : undefined;
     const mutationId = eventMutationId(input);
     let emptyCompletionDiagnostic: SessionDiagnosticRecord | undefined;
     let activityOnly = false;
+    let shouldResolveInputHistory = false;
+    let canonicalAdmissionRejectionReason: string | undefined;
+    let canonicalAdmissionOwnerTurnUserMessageId: string | undefined;
+    let rootTerminalTurnId: string | undefined;
+    let terminalAttributionAmbiguous = false;
     let abandonedTurns: string[] = [];
-    const build = (current: CanonicalChatState): ChatCoreMutation[] => {
-      activityOnly = false;
-      const data = isRecord(input.data) ? input.data : {};
-      let tab = current.tabsFile.tabs.find(
-        (candidate) => candidate.id === input.chatId,
-      );
-      const archivedCandidate = tab
-        ? undefined
-        : current.archivesFile.archived.find(
-            (entry) =>
-              entry.tab.id === input.chatId && entry.tab.autoArchive === true,
-          );
-      const resumesArchive =
-        archivedCandidate !== undefined && shouldResumeAutoArchivedChat(data);
-      if (archivedCandidate) {
-        tab = archivedCandidate.tab;
-      }
-      if (!tab || tab.kind === 'file') {
-        throw new Error(`Provider event targets missing chat ${input.chatId}`);
-      }
-      const runtime = current.runtimeByChatId[input.chatId];
-      const activeTurnUserMessageId = runtime?.activeTurn?.userMessageId;
-      const providerTurnIsSettled =
-        runtime !== undefined &&
-        ['completed', 'failed', 'cancelled', 'interrupted'].includes(
-          runtime.status,
-        );
-      const revivesSettledProviderTurn =
-        providerTurnIsSettled &&
-        isSettledProviderTurnRevival(data, input.turnUserMessageId);
-      const startsOrAcknowledgesTurn =
-        data.type === 'canopy_user_prompt' ||
-        data.type === CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE;
-      const reconcilesEmptyCompletion =
-        runtime?.error?.code === 'empty_completion' &&
-        activeTurnUserMessageId === input.turnUserMessageId;
-      if (
-        input.turnUserMessageId &&
-        !startsOrAcknowledgesTurn &&
-        !reconcilesEmptyCompletion &&
-        !canFollowSettledProviderTurn(
-          data,
-          input.turnUserMessageId,
-          activeTurnUserMessageId,
-          tab.sdkSessionId,
-        ) &&
-        ((activeTurnUserMessageId !== undefined &&
-          activeTurnUserMessageId !== input.turnUserMessageId) ||
-          (providerTurnIsSettled && !revivesSettledProviderTurn))
-      ) {
-        return [];
-      }
-      const now = this.now();
-      const succession =
-        data.type === 'canopy_user_prompt' &&
-        typeof data.canopy_turn_user_message_id === 'string'
-          ? succeedInterruptedTurns(
-              tab.interruptedTurns,
-              data.canopy_turn_user_message_id,
-              data.canopy_resumes_interrupted_turn === true,
-            )
-          : undefined;
-      abandonedTurns = succession?.abandoned ?? [];
-      const trustedTab = applyTrustedEventMetadata(tab, data, now);
-      const eventTab =
-        succession && succession.turns !== tab.interruptedTurns
-          ? { ...trustedTab, interruptedTurns: succession.turns }
-          : trustedTab;
-      let base = transcriptState(
-        eventTab,
-        current.runtimeByChatId[input.chatId],
-      );
-      const existingPromptIndex = eventTab.messages.findIndex(
-        (message) => message.id === data.canopy_turn_user_message_id,
-      );
-      const reordersExistingPrompt =
-        data.type === 'canopy_user_prompt' &&
-        existingPromptIndex >= 0 &&
-        existingPromptIndex < eventTab.messages.length - 1;
-      if (data.type === 'canopy_user_prompt') {
-        base = {
-          ...base,
-          messages: mergePromptMessages(base.messages, data),
-        };
-      }
-      let messageSequence = 0;
-      const createMessageId = (): string =>
-        `${input.chatId}:${mutationId}:${messageSequence++}`;
-      const provider =
-        input.providerType ??
-        tab.providerType ??
-        (tab.model ? getProviderForModel(tab.model) : 'claude');
-      const reduced =
-        data.type === 'claude_terminal_transcript_sync' &&
-        Array.isArray(data.messages)
-          ? {
-              ...base,
-              messages: mergePersistedMessagesById(
-                base.messages,
-                data.messages.filter(isPersistedChatMessage),
-              ),
-            }
-          : data.type === 'codex' && isRecord(data.event)
-            ? applyCodexTranscriptEvent(base, data.event, {
-                now,
-                createMessageId,
-                aiCreditsRouted: tab.aiCreditsRouted,
-              })
-            : applyClaudeTranscriptEvent(base, data, {
-                now,
-                createMessageId,
-                aiCreditsRouted: tab.aiCreditsRouted,
-              });
-      const {
-        status: _status,
-        error: _error,
-        currentTodos: _todos,
-        currentTaskTodos: _taskTodos,
-        lastEventAt: _lastEventAt,
-        codexThreads: _codexThreads,
-        messages: reducedMessages,
-        ...persistedMetadata
-      } = reduced;
-      void _status;
-      void _error;
-      void _todos;
-      void _taskTodos;
-      void _lastEventAt;
-      void _codexThreads;
-      const trustedReducedMessages = preserveProviderVisualReferences(
-        tab.messages,
-        reducedMessages,
-      );
-      const stickyPlanReview =
-        Boolean(eventTab.trackedPlanId) &&
-        eventTab.trackedPlanReviewStatus === 'pending';
-      const pendingPlanSource =
-        eventTab.pendingPlanExit?.source ?? eventTab.trackedPlanSource;
-      const codexRootThreadId =
-        typeof persistedMetadata.sdkSessionId === 'string'
-          ? persistedMetadata.sdkSessionId
-          : tab.sdkSessionId;
-      const effectiveTurnUserMessageId =
-        input.turnUserMessageId ??
-        (typeof data.canopy_turn_user_message_id === 'string'
-          ? data.canopy_turn_user_message_id
-          : runtime?.activeTurn?.userMessageId);
-      const turnHasVisibleOutput = effectiveTurnUserMessageId
-        ? hasVisibleTurnOutput(
-            trustedReducedMessages,
-            effectiveTurnUserMessageId,
-            eventTab.turnDiffs?.[effectiveTurnUserMessageId],
-          )
-        : undefined;
-      const clearPendingPlanExit =
-        isRootTerminalChatEventData(input.data, codexRootThreadId) &&
-        !stickyPlanReview &&
-        !isPlanProposal({
-          ...eventTab.pendingPlanExit,
-          source: pendingPlanSource,
-        });
-      const metadataTab: PersistedChatTab = {
-        ...eventTab,
-        ...persistedMetadata,
-        ...(hasPlaceholderChatTitle(eventTab.title)
-          ? {
-              title: terminalTranscriptTitle(data) ?? eventTab.title,
-              automaticTitleState:
-                eventTab.automaticTitleState === 'closed'
-                  ? 'closed'
-                  : 'pending',
-            }
-          : {}),
-        providerType: reduced.providerType ?? provider,
-        messages: eventTab.messages,
-        ...(clearPendingPlanExit ? { pendingPlanExit: undefined } : {}),
-        ...(clearPendingPlanExit
-          ? { pendingPlanExitRequestId: undefined }
-          : {}),
-      };
-      // Init publishes the child's own session id. Consume the one-shot
-      // source cutoff in that same durable commit: compatibility callbacks
-      // run after ingestion and can already see the new id, so they cannot
-      // reliably distinguish a pending fork from an initialized child.
-      if (
-        data.type === 'system' &&
-        data.subtype === 'init' &&
-        typeof data.session_id === 'string' &&
-        data.session_id.length > 0 &&
-        metadataTab.claudeForkSessionOnNextSend === true
-      ) {
-        delete metadataTab.claudeForkSessionOnNextSend;
-        if (metadataTab.forkedFrom?.resumePointRequired === true) {
-          metadataTab.forkedFrom = { ...metadataTab.forkedFrom };
-          delete metadataTab.forkedFrom.resumePointRequired;
-        }
-      }
-      const nextRuntime = runtimeForEvent(
-        current.runtimeByChatId[tab.id],
-        input.data,
-        now,
-        input.turnUserMessageId,
-        codexRootThreadId,
-        turnHasVisibleOutput,
-      );
-      const turnEnds = settleTurnEnds(
-        metadataTab.turnEnds,
-        runtime,
-        nextRuntime,
-        effectiveTurnUserMessageId,
-        now,
-      );
-      if (turnEnds !== metadataTab.turnEnds) {
-        if (turnEnds) metadataTab.turnEnds = turnEnds;
-        else delete metadataTab.turnEnds;
-      }
-      // The shared reducer reopens a settled turn's timer in place; main
-      // never commits that edit to settled history (see the guard).
-      const messages = preserveSettledTurnTimers({
-        previous: tab.messages,
-        next: trustedReducedMessages,
-        previousRuntime: runtime,
-        nextRuntime,
-        now,
-        createMessageId,
-      });
-      if (
-        isInputLedger(metadataTab.inputDelivery) &&
-        isRootTerminalChatEventData(input.data, codexRootThreadId)
-      )
-        metadataTab.inputDelivery = settleInputExecution(
-          metadataTab.inputDelivery,
-          input.turnUserMessageId ?? activeTurnUserMessageId,
-          nextRuntime.status,
-          now,
-        );
-      if (archivedCandidate && !resumesArchive) {
-        const updatedArchivedTab = { ...metadataTab, messages };
-        return [
-          {
-            type: 'archive.upserted',
-            entry: {
-              ...archivedCandidate,
-              tab: updatedArchivedTab,
-              turnCount: countTurns(updatedArchivedTab),
-            },
-          },
-        ];
-      }
-      const mutations: ChatCoreMutation[] = archivedCandidate
-        ? [
-            {
-              type: 'archive.removed',
-              archiveEntryId: archivedCandidate.tab.id,
-              chatId: archivedCandidate.tab.id,
-            },
-            { type: 'tab.created', tab: archivedCandidate.tab },
-          ]
-        : [];
-      const metadataPatch = buildTabMetadataPatch(tab, metadataTab);
-      if (Object.keys(metadataPatch).length > 0) {
-        mutations.push({
-          type: 'tab.metadata_patched',
-          tabId: tab.id,
-          patch: metadataPatch,
-        });
-      }
-      if (reordersExistingPrompt) {
-        mutations.push({
-          type: 'messages.replaced',
-          chatId: tab.id,
-          messages,
-          removedMessageIds: [],
-        });
-      }
-      const nextById = new Map(
-        messages.map((message) => [message.id, message]),
-      );
-      const currentById = new Map(
-        tab.messages.map((message) => [message.id, message]),
-      );
-      for (let index = 0; index < messages.length; index += 1) {
-        const message = messages[index];
-        if (!message) continue;
-        const existing = currentById.get(message.id);
-        if (
-          !existing ||
-          (existing !== message &&
-            JSON.stringify(existing) !== JSON.stringify(message))
-        ) {
-          // A delegation card and its rows can update after this window or
-          // a renderer page has moved on. Position them so neither storage
-          // nor a client appends them to the tail. Storage ignores the
-          // position for rows it already holds.
-          const afterMessageId =
-            messageAnchor !== undefined &&
-            (message.id === messageAnchor.messageId ||
-              message.parentBlockId === messageAnchor.messageId)
-              ? existing
-                ? (messages[index - 1]?.id ?? messageAnchor.fallbackMessageId)
-                : index > 0 &&
-                    messages
-                      .slice(index + 1)
-                      .some((later) => currentById.has(later.id))
-                  ? messages[index - 1]?.id
-                  : undefined
-              : undefined;
-          mutations.push({
-            type: 'message.upserted',
-            chatId: tab.id,
-            message,
-            ...(afterMessageId ? { afterMessageId } : {}),
-          });
-          if (
-            !message.parentBlockId &&
-            (!message.codexThreadId ||
-              message.codexThreadId === codexRootThreadId)
-          ) {
-            for (const block of message.blocks) {
-              if (block.type !== 'text' || !block.asyncQuestion) continue;
-              const { requestId, questions } = block.asyncQuestion;
-              // Started/completed/replayed events share one durable request.
-              // Settled records are deliberately retained so replay cannot
-              // make a previously answered or dismissed question actionable.
-              if (
-                (current.tabsFile.pendingQuestions ?? []).some(
-                  (question) =>
-                    question.requestId === requestId &&
-                    question.chatId === tab.id,
-                )
-              )
-                continue;
-              mutations.push({
-                type: 'pending_question.upserted',
-                question: {
-                  requestId,
-                  chatId: tab.id,
-                  delivery: 'async',
-                  questions: questions.map((question, index) => ({
-                    id: String(index),
-                    question: question.title,
-                    options: question.options ?? [],
-                    multiSelect: false,
-                    allowOther: true,
-                  })),
-                },
-              });
-            }
-          }
-        }
-      }
-      for (const existing of tab.messages) {
-        if (!nextById.has(existing.id)) {
-          mutations.push({
-            type: 'message.removed',
-            chatId: tab.id,
-            messageId: existing.id,
-          });
-        }
-      }
-      if (
-        nextRuntime.error?.code === 'empty_completion' &&
-        nextRuntime.emptyCompletionRecovery &&
-        runtime?.error?.code !== 'empty_completion'
-      ) {
-        emptyCompletionDiagnostic = {
-          version: 1,
-          timestamp: new Date(now).toISOString(),
-          kind: 'empty_turn_completion',
-          sessionKey: `${input.projectId}/${input.worktreeId}/${input.chatId}`,
-          projectId: input.projectId,
-          worktreeId: input.worktreeId,
-          chatId: input.chatId,
-          providerType: provider ?? 'unknown',
-          emptyCompletionTurnUserMessageId:
-            nextRuntime.emptyCompletionRecovery.turnUserMessageId,
-          ...(typeof data.duration_ms === 'number'
-            ? { emptyCompletionDurationMs: data.duration_ms }
-            : {}),
-        };
-      }
-      const runtimePatch: ChatRuntimeState = {
-        ...nextRuntime,
-        ...(refreshCapabilities ? { steeringCapabilities: capabilities } : {}),
-      };
-      // Every commit journals and rewrites the scope indexes, so an event
-      // whose only change is a fresher lastActivityAt is not committed; the
-      // next other commit, or the persist interval, carries it. Turn-boundary
-      // events always commit: their mutation IDs record prompt acceptance.
-      if (
-        mutations.length === 0 &&
-        !checkpoint &&
-        !refreshCapabilities &&
-        isRecentActivityOnlyRuntime(runtime, runtimePatch, now)
-      ) {
-        activityOnly = true;
-        return mutations;
-      }
-      mutations.push({
-        type: 'runtime.patched',
-        chatId: tab.id,
-        runtime: runtimePatch,
-      });
-      return mutations;
-    };
-    const transactionOptions = {
-      source: input.source ?? 'provider',
-      mutationId,
-      checkpoint,
-      chatIds: [input.chatId],
-      fullTranscript: data.type === 'canopy_user_prompt',
-      ...(messageAnchor ? { messageAnchor } : {}),
-      ...(input.onCommitQueued ? { onQueued: input.onCommitQueued } : {}),
-    };
-    const commit = isNativeVisualToolResultEvent(input)
-      ? await this.repository.transactProviderEventWith(
+    let admissionTools: ToolOccurrenceAdmission[] = [];
+    let admissionLimited = false;
+    const commit = await this.transactWithTurnHandoff(
+      input,
+      async (current, _revision, context) => {
+        const reduction = await this.reduceProviderEvent(
+          current,
           input,
-          build,
-          transactionOptions,
-          {
+          mutationId,
+          checkpoint,
+          refreshCapabilities,
+          capabilities,
+          messageAnchor,
+          streamDelegation,
+          context,
+        );
+        activityOnly = reduction.activityOnly;
+        admissionTools = reduction.admissionTools;
+        admissionLimited = reduction.admissionLimited;
+        shouldResolveInputHistory = reduction.shouldResolveInputHistory;
+        canonicalAdmissionRejectionReason =
+          reduction.canonicalAdmissionRejectionReason;
+        canonicalAdmissionOwnerTurnUserMessageId =
+          reduction.canonicalAdmissionOwnerTurnUserMessageId;
+        emptyCompletionDiagnostic = reduction.emptyCompletionDiagnostic;
+        rootTerminalTurnId = reduction.rootTerminalTurnId;
+        terminalAttributionAmbiguous =
+          reduction.terminalAttributionAmbiguous === true;
+        abandonedTurns = reduction.abandonedTurns ?? [];
+        return reduction.mutations;
+      },
+      {
+        ...{
+          source: input.source ?? 'provider',
+          mutationId,
+          checkpoint,
+        },
+        chatIds: [input.chatId],
+        fullTranscript,
+        ...(fullTranscript ? { rewriteReason: 'prompt_relocation' } : {}),
+        ...(streamDelegation ? { rawStreamCards: true } : {}),
+        ...(messageAnchor ? { messageAnchor } : {}),
+        ...(input.onCommitQueued ? { onQueued: input.onCommitQueued } : {}),
+      },
+      isNativeVisualToolResultEvent(input)
+        ? {
             resolveToolKey: visualResolverForEvent(
               input,
               this.claudeToolNames,
               this.codexToolNames,
               this.cursorToolUse,
             ),
-          },
-        )
-      : await this.repository.transactWith(input, build, transactionOptions);
+          }
+        : undefined,
+    );
+    // Fence later frames only once the terminal is durable (a failed write
+    // throws above, so its retry is still admitted).
+    if (rootTerminalTurnId !== undefined) {
+      const key = JSON.stringify([
+        input.projectId,
+        input.worktreeId,
+        input.chatId,
+      ]);
+      const reduced = this.reducedRootTerminals.get(key) ?? new Set<string>();
+      reduced.add(rootTerminalTurnId);
+      this.reducedRootTerminals.set(key, reduced);
+    }
+    if (commit.applied && terminalAttributionAmbiguous)
+      logMainProcessWarn('[chat-state] Root terminal attribution ambiguous', {
+        projectId: input.projectId,
+        worktreeId: input.worktreeId,
+        chatId: input.chatId,
+        mutationId,
+      });
     if (commit.applied && emptyCompletionDiagnostic) {
       try {
         this.recordDiagnostic(emptyCompletionDiagnostic);
@@ -4585,8 +6428,30 @@ export class ChatStateService implements ChatStateCommandPort {
         // Diagnostics are best-effort and must never change provider ingestion.
       }
     }
+    // Only the turn gate rejects; other unapplied commits are no-op events.
+    if (!commit.applied && canonicalAdmissionRejectionReason !== undefined) {
+      this.recordCanonicalAdmissionRejection(
+        input,
+        canonicalAdmissionRejectionReason,
+        canonicalAdmissionOwnerTurnUserMessageId,
+      );
+    }
     if (commit.applied) {
       recordProviderEventApplied();
+      if (admissionLimited) {
+        try {
+          logMainProcessWarn('Provider event admission mapping limit reached');
+        } catch {
+          /* Best effort, never change durable admission. */
+        }
+      }
+      if (shouldResolveInputHistory)
+        this.inputDelivery.scheduleHistoryResolution({
+          projectId: input.projectId,
+          worktreeId: input.worktreeId,
+          chatId: input.chatId,
+        });
+      if (delegation) recordDelegationSnapshot('admitted', delegation);
       for (const userMessageId of abandonedTurns) {
         this.deliverUnacceptedTurnEnd(
           { projectId: input.projectId, worktreeId: input.worktreeId },
@@ -4596,9 +6461,915 @@ export class ChatStateService implements ChatStateCommandPort {
           { canopy_turn_abandoned: true },
         );
       }
-      return 'applied';
+      return {
+        outcome: 'applied',
+        ...(admissionTools.length > 0
+          ? {
+              admission: {
+                projectId: input.projectId,
+                worktreeId: input.worktreeId,
+                chatId: input.chatId,
+                mutationId,
+                ...(input.turnUserMessageId !== undefined
+                  ? { turnUserMessageId: input.turnUserMessageId }
+                  : {}),
+                revision: commit.revision,
+                tools: admissionTools,
+              },
+            }
+          : {}),
+      };
     }
-    return activityOnly ? 'activity-only' : 'not-applied';
+    return { outcome: activityOnly ? 'activity-only' : 'not-applied' };
+  }
+
+  private async reduceProviderEvent(
+    current: Readonly<CanonicalChatState>,
+    input: ProviderEventInput,
+    mutationId: string,
+    checkpoint: boolean,
+    refreshCapabilities: boolean,
+    capabilities: ChatSteeringCapabilities | undefined,
+    messageAnchor: ChatReadSelection['messageAnchor'],
+    streamDelegation: boolean,
+    context: ChatStateTransactionContext,
+  ): Promise<ProviderEventReduction> {
+    let activityOnly = false;
+    const admissionTools: ToolOccurrenceAdmission[] = [];
+    let admissionLimited = false;
+    let admissionBytes = 2; // JSON array brackets, plus separators below.
+    let shouldResolveInputHistory = false;
+    let canonicalAdmissionRejectionReason: string | undefined;
+    let canonicalAdmissionOwnerTurnUserMessageId: string | undefined;
+    let emptyCompletionDiagnostic: SessionDiagnosticRecord | undefined;
+    let rootTerminalTurnId: string | undefined;
+    let terminalAttributionAmbiguous = false;
+    let abandonedTurns: string[] = [];
+    const finish = (mutations: ChatCoreMutation[]): ProviderEventReduction => ({
+      mutations,
+      activityOnly,
+      ...(canonicalAdmissionRejectionReason !== undefined
+        ? { canonicalAdmissionRejectionReason }
+        : {}),
+      ...(canonicalAdmissionOwnerTurnUserMessageId !== undefined
+        ? { canonicalAdmissionOwnerTurnUserMessageId }
+        : {}),
+      shouldResolveInputHistory,
+      ...(emptyCompletionDiagnostic !== undefined
+        ? { emptyCompletionDiagnostic }
+        : {}),
+      ...(rootTerminalTurnId !== undefined ? { rootTerminalTurnId } : {}),
+      ...(terminalAttributionAmbiguous ? { terminalAttributionAmbiguous } : {}),
+      ...(abandonedTurns.length > 0 ? { abandonedTurns } : {}),
+      admissionTools,
+      admissionLimited,
+    });
+    const data = isRecord(input.data) ? input.data : {};
+    const delegation =
+      data.type === 'canopy_delegation' && isRecord(data.delegation)
+        ? data.delegation
+        : undefined;
+    const providerRunClassification = classifyProviderRunEvent(input.data, {
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+      chatId: input.chatId,
+    });
+    if (providerRunClassification.kind === 'reject') {
+      canonicalAdmissionRejectionReason = providerRunClassification.reason;
+      return finish([]);
+    }
+    if (providerRunClassification.kind === 'transcript_only') {
+      const run = providerRunClassification.run;
+      const item = run.item;
+      const event = isRecord(data.event) ? data.event : undefined;
+      const nativeItem = event && isRecord(event.item) ? event.item : undefined;
+      if (
+        !item ||
+        !nativeItem ||
+        typeof nativeItem.aggregated_output !== 'string'
+      ) {
+        canonicalAdmissionRejectionReason = 'late_command_identity_missing';
+        return finish([]);
+      }
+      const lateMessageId = `codex-${item.id}`;
+      if (
+        messageAnchor?.messageId !== lateMessageId ||
+        messageAnchor.fallbackMessageId !== run.executionUserMessageId
+      ) {
+        canonicalAdmissionRejectionReason = 'late_command_anchor_mismatch';
+        return finish([]);
+      }
+      const liveTab = current.tabsFile.tabs.find(
+        (candidate) => candidate.id === input.chatId,
+      );
+      const archivedCandidate = liveTab
+        ? undefined
+        : current.archivesFile.archived.find(
+            (entry) =>
+              entry.tab.id === input.chatId && entry.tab.autoArchive === true,
+          );
+      const tab = liveTab ?? archivedCandidate?.tab;
+      if (!tab || tab.kind === 'file') {
+        canonicalAdmissionRejectionReason = 'late_command_row_missing';
+        return finish([]);
+      }
+      const row = tab.messages.find((message) => message.id === lateMessageId);
+      if (!row) {
+        canonicalAdmissionRejectionReason = 'late_command_row_missing';
+        return finish([]);
+      }
+      if (
+        row.codexThreadId !== run.threadId ||
+        row.codexTurnId !== run.turnId
+      ) {
+        canonicalAdmissionRejectionReason = 'late_command_row_owner_mismatch';
+        return finish([]);
+      }
+      const commandUses = row.blocks.filter(
+        (block) =>
+          block.type === 'tool_use' &&
+          block.toolUseId === lateMessageId &&
+          block.toolName === 'command',
+      );
+      if (commandUses.length !== 1) {
+        canonicalAdmissionRejectionReason = 'late_command_tool_use_mismatch';
+        return finish([]);
+      }
+      const matchingResultIndices: number[] = [];
+      row.blocks.forEach((block, index) => {
+        if (block.type === 'tool_result' && block.toolUseId === lateMessageId)
+          matchingResultIndices.push(index);
+      });
+      if (matchingResultIndices.length > 1) {
+        canonicalAdmissionRejectionReason = 'late_command_result_ambiguous';
+        return finish([]);
+      }
+      const status = nativeItem.status;
+      const exitCode = nativeItem.exit_code;
+      const resultBlock: Extract<
+        PersistedChatMessage['blocks'][number],
+        { type: 'tool_result' }
+      > = {
+        type: 'tool_result',
+        toolUseId: lateMessageId,
+        toolName: 'command',
+        // Same fallback as the shared parser's command_execution result.
+        output:
+          nativeItem.aggregated_output.length > 0
+            ? nativeItem.aggregated_output
+            : status === 'completed'
+              ? 'Done'
+              : typeof status === 'string'
+                ? status
+                : '',
+        isError:
+          status === 'failed' ||
+          status === 'declined' ||
+          (typeof exitCode === 'number' && exitCode !== 0),
+      };
+      const matchingResultIndex = matchingResultIndices[0];
+      const blocks =
+        matchingResultIndex === undefined
+          ? [...row.blocks, resultBlock]
+          : row.blocks.map((block, index) =>
+              index === matchingResultIndex ? resultBlock : block,
+            );
+      const updatedRow: PersistedChatMessage = { ...row, blocks };
+      if (isDeepStrictEqual(row, updatedRow)) return finish([]);
+      if (archivedCandidate) {
+        return finish([
+          {
+            type: 'archive.upserted',
+            entry: {
+              ...archivedCandidate,
+              tab: {
+                ...tab,
+                messages: tab.messages.map((message) =>
+                  message.id === row.id ? updatedRow : message,
+                ),
+              },
+            },
+          },
+        ]);
+      }
+      return finish([
+        {
+          type: 'message.upserted',
+          chatId: tab.id,
+          message: updatedRow,
+          afterMessageId: row.id,
+        },
+      ]);
+    }
+    let tab = current.tabsFile.tabs.find(
+      (candidate) => candidate.id === input.chatId,
+    );
+    const archivedCandidate = tab
+      ? undefined
+      : current.archivesFile.archived.find(
+          (entry) =>
+            entry.tab.id === input.chatId && entry.tab.autoArchive === true,
+        );
+    // Canonically only a host prompt or a fresh start after the archive cutoff
+    // restores the chat; content shape alone is replayable (contracts §5).
+    const resumesArchive =
+      archivedCandidate !== undefined &&
+      shouldResumeAutoArchivedChat(data) &&
+      (data.type === 'canopy_user_prompt' ||
+        data.type === CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE ||
+        isFreshArchivedStart(
+          archivedCandidate,
+          this.turnHandoff.getState({
+            projectId: input.projectId,
+            worktreeId: input.worktreeId,
+            chatId: input.chatId,
+          }),
+        ));
+    if (archivedCandidate) {
+      tab = archivedCandidate.tab;
+    }
+    if (!tab || tab.kind === 'file') {
+      throw new Error(`Provider event targets missing chat ${input.chatId}`);
+    }
+    // The own-card point lookup also hydrates paged-out/restarted cards.
+    // Stream rows are immutable after creation, including in archives;
+    // descriptor publication, not ingestion, owns their durable display.
+    if (
+      streamDelegation &&
+      messageAnchor &&
+      tab.messages.some(
+        (message) =>
+          message.id === messageAnchor.messageId &&
+          message.blocks.some(
+            (block) =>
+              block.type === 'delegated_agent_call' &&
+              block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_STREAM &&
+              block.delegationId === delegation?.delegationId &&
+              block.runGeneration === delegation?.runGeneration,
+          ),
+      )
+    )
+      return finish([]);
+    const runtime = current.runtimeByChatId[input.chatId];
+    const activeTurnUserMessageId = runtime?.activeTurn?.userMessageId;
+    const providerTurnIsSettled =
+      runtime !== undefined &&
+      ['completed', 'failed', 'cancelled', 'interrupted'].includes(
+        runtime.status,
+      ) &&
+      !this.deliversReceiptTurnOutput(
+        {
+          projectId: input.projectId,
+          worktreeId: input.worktreeId,
+          chatId: input.chatId,
+        },
+        runtime,
+        tab,
+      );
+    // Only a current turn admits settled content (contracts §1): a revival
+    // flag or an untagged continuation is not one.
+    const startsOrAcknowledgesTurn =
+      data.type === 'canopy_user_prompt' ||
+      data.type === CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE;
+    const reconcilesEmptyCompletion =
+      runtime?.error?.code === 'empty_completion' &&
+      activeTurnUserMessageId === input.turnUserMessageId;
+    // Canonical binding can name a merged steer instead of the dispatch that
+    // started the turn; a dispatch that still holds its owner is not stale,
+    // and neither is the trailing output of the turn that just ended.
+    const scope = {
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+      chatId: input.chatId,
+    };
+    const staleOwner =
+      activeTurnUserMessageId !== undefined &&
+      activeTurnUserMessageId !== input.turnUserMessageId &&
+      !(
+        getChatTurnOwnership()
+          .getSnapshot(scope)
+          .dispatchOwners.some(
+            (owner) => owner.userMessageId === input.turnUserMessageId,
+          ) ||
+        (input.turnUserMessageId !== undefined &&
+          this.trailingEndedTurn(
+            scope,
+            this.turnHandoff.getState(scope) ?? runtime?.turn,
+            tab,
+          )?.userMessageId === input.turnUserMessageId)
+      );
+    if (
+      input.turnUserMessageId &&
+      !startsOrAcknowledgesTurn &&
+      !reconcilesEmptyCompletion &&
+      !canFollowSettledProviderTurn(
+        data,
+        input.turnUserMessageId,
+        activeTurnUserMessageId,
+        tab.sdkSessionId,
+        false,
+      ) &&
+      (staleOwner || providerTurnIsSettled)
+    ) {
+      canonicalAdmissionRejectionReason = staleOwner
+        ? 'stale_turn_mismatch'
+        : 'settled_turn_rejected';
+      canonicalAdmissionOwnerTurnUserMessageId = activeTurnUserMessageId;
+      return finish([]);
+    }
+    // Format 4 scopes only: stream a final Codex tool body into its
+    // artifact here, under this transaction, so the reducer below never
+    // builds the whole body. Absent port: unchanged legacy reduction.
+    const transcriptFields = context.transcriptFields;
+    const preparedCodexItem =
+      transcriptFields && data.type === 'codex'
+        ? await prepareCodexItemFields(
+            transcriptFields,
+            input.chatId,
+            data.event,
+          )
+        : undefined;
+    const onToolBlock: NonNullable<
+      Parameters<typeof applyClaudeTranscriptEvent>[2]['onToolBlock']
+    > = (sourceToken, row, blockOrdinal, previousMessages): void => {
+      if (admissionLimited || row.blocksRef !== undefined) return;
+      const block = row.blocks[blockOrdinal];
+      if (block.type !== 'tool_use' && block.type !== 'tool_result') return;
+      const address = { rowId: row.id, blockOrdinal };
+      const pairing =
+        block.type === 'tool_result'
+          ? admittedResultCall(
+              row,
+              blockOrdinal,
+              previousMessages,
+              block.toolUseId,
+            )
+          : { authoritative: true, call: address };
+      if (!pairing.authoritative) return;
+      const anchor = pairing.call ?? address;
+      const occurrenceId = portalToolOccurrenceId(
+        anchor.rowId,
+        anchor.blockOrdinal,
+      );
+      if (occurrenceId === undefined) return;
+      const mapping: ToolOccurrenceAdmission = {
+        sourceToken,
+        occurrenceId,
+        ...(pairing.call ? { call: pairing.call } : {}),
+        ...(block.type === 'tool_result'
+          ? {
+              result: {
+                ...address,
+                needsRead:
+                  preparedCodexItem?.output.needsRead === true ||
+                  toolResultNeedsRead(block),
+              },
+            }
+          : {}),
+      };
+      const bytes =
+        Buffer.byteLength(JSON.stringify(mapping)) +
+        (admissionTools.length === 0 ? 0 : 1);
+      if (
+        admissionTools.length >= PROVIDER_EVENT_ADMISSION_MAX_TOOLS ||
+        admissionBytes + bytes > PROVIDER_EVENT_ADMISSION_MAX_BYTES
+      ) {
+        admissionLimited = true;
+        return;
+      }
+      admissionBytes += bytes;
+      admissionTools.push(mapping);
+    };
+    const now = this.now();
+    const succession =
+      data.type === 'canopy_user_prompt' &&
+      typeof data.canopy_turn_user_message_id === 'string'
+        ? succeedInterruptedTurns(
+            tab.interruptedTurns,
+            data.canopy_turn_user_message_id,
+            data.canopy_resumes_interrupted_turn === true,
+            typeof data.canopy_resumes_user_message_id === 'string'
+              ? data.canopy_resumes_user_message_id
+              : undefined,
+          )
+        : undefined;
+    abandonedTurns = succession?.abandoned ?? [];
+    const trustedTab = applyTrustedEventMetadata(tab, data, now);
+    const eventTab =
+      succession && succession.turns !== tab.interruptedTurns
+        ? { ...trustedTab, interruptedTurns: succession.turns }
+        : trustedTab;
+    let base = transcriptState(eventTab, current.runtimeByChatId[input.chatId]);
+    const existingPromptIndex = eventTab.messages.findIndex(
+      (message) => message.id === data.canopy_turn_user_message_id,
+    );
+    const reordersExistingPrompt =
+      data.type === 'canopy_user_prompt' &&
+      existingPromptIndex >= 0 &&
+      existingPromptIndex < eventTab.messages.length - 1;
+    if (data.type === 'canopy_user_prompt') {
+      base = {
+        ...base,
+        messages: mergePromptMessages(
+          base.messages,
+          data,
+          (current.tabsFile.pendingQuestions ?? []).filter(
+            (question) => question.chatId === input.chatId,
+          ),
+        ),
+      };
+    }
+    let messageSequence = 0;
+    const createMessageId = (): string =>
+      `${input.chatId}:${mutationId}:${messageSequence++}`;
+    const provider =
+      input.providerType ??
+      tab.providerType ??
+      (tab.model ? getProviderForModel(tab.model) : 'claude');
+    // Canonical turn state owns root timers and status; the parser folds content.
+    const rootTurnOptions: { rootTurnMode: 'canonical-content-only' } = {
+      rootTurnMode: 'canonical-content-only',
+    };
+    const reduced =
+      data.type === 'claude_terminal_transcript_sync' &&
+      Array.isArray(data.messages)
+        ? {
+            ...base,
+            messages: mergePersistedMessagesById(
+              base.messages,
+              data.messages.filter(isPersistedChatMessage),
+            ),
+          }
+        : data.type === 'codex' && isRecord(data.event)
+          ? applyCodexTranscriptEvent(base, data.event, {
+              now,
+              onToolBlock,
+              toolBlockCaptureLimit: PROVIDER_EVENT_ADMISSION_MAX_TOOLS + 1,
+              createMessageId,
+              aiCreditsRouted: tab.aiCreditsRouted,
+              childToolLiveness: { kind: 'unknown' },
+              ...rootTurnOptions,
+              ...(transcriptFields
+                ? { transcriptStorageFormat: transcriptFields.format }
+                : {}),
+              ...(preparedCodexItem ? { preparedCodexItem } : {}),
+            })
+          : applyClaudeTranscriptEvent(base, data, {
+              now,
+              onToolBlock,
+              toolBlockCaptureLimit: PROVIDER_EVENT_ADMISSION_MAX_TOOLS + 1,
+              createMessageId,
+              aiCreditsRouted: tab.aiCreditsRouted,
+              childToolLiveness: { kind: 'unknown' },
+              ...rootTurnOptions,
+            });
+    const {
+      status: _status,
+      error: _error,
+      currentTodos: _todos,
+      currentTaskTodos: _taskTodos,
+      lastEventAt: _lastEventAt,
+      codexThreads: _codexThreads,
+      messages: reducedMessages,
+      ...persistedMetadata
+    } = reduced;
+    void _status;
+    void _error;
+    void _todos;
+    void _taskTodos;
+    void _lastEventAt;
+    void _codexThreads;
+    const trustedReducedMessages = preserveProviderVisualReferences(
+      tab.messages,
+      reducedMessages,
+    );
+    const stickyPlanReview =
+      Boolean(eventTab.trackedPlanId) &&
+      eventTab.trackedPlanReviewStatus === 'pending';
+    const pendingPlanSource =
+      eventTab.pendingPlanExit?.source ?? eventTab.trackedPlanSource;
+    const codexRootThreadId =
+      typeof persistedMetadata.sdkSessionId === 'string'
+        ? persistedMetadata.sdkSessionId
+        : tab.sdkSessionId;
+    const effectiveTurnUserMessageId =
+      input.turnUserMessageId ??
+      (typeof data.canopy_turn_user_message_id === 'string'
+        ? data.canopy_turn_user_message_id
+        : runtime?.activeTurn?.userMessageId);
+    const turnHasVisibleOutput = effectiveTurnUserMessageId
+      ? hasVisibleTurnOutput(
+          trustedReducedMessages,
+          effectiveTurnUserMessageId,
+          eventTab.turnDiffs?.[effectiveTurnUserMessageId],
+        )
+      : undefined;
+    const clearPendingPlanExit =
+      (isRootTerminalChatEventData(input.data, codexRootThreadId) &&
+        !stickyPlanReview &&
+        !isPlanProposal({
+          ...eventTab.pendingPlanExit,
+          source: pendingPlanSource,
+        })) ||
+      // A provider prompt that first writes an admitted send retires its
+      // waiting request (CAN-5431). A replayed
+      // prompt is already committed and leaves any newer request alone.
+      (data.type === 'canopy_user_prompt' &&
+        typeof data.canopy_turn_user_message_id === 'string' &&
+        existingPromptIndex < 0 &&
+        retiresSupersededPlanExit(eventTab));
+    const metadataTab: PersistedChatTab = {
+      ...eventTab,
+      ...persistedMetadata,
+      ...(hasPlaceholderChatTitle(eventTab.title)
+        ? {
+            title: terminalTranscriptTitle(data) ?? eventTab.title,
+            automaticTitleState:
+              eventTab.automaticTitleState === 'closed' ? 'closed' : 'pending',
+          }
+        : {}),
+      providerType: reduced.providerType ?? provider,
+      messages: eventTab.messages,
+      ...(clearPendingPlanExit ? { pendingPlanExit: undefined } : {}),
+      ...(clearPendingPlanExit ? { pendingPlanExitRequestId: undefined } : {}),
+    };
+    // Init publishes the child's own session id. Consume the one-shot
+    // source cutoff in that same durable commit: compatibility callbacks
+    // run after ingestion and can already see the new id, so they cannot
+    // reliably distinguish a pending fork from an initialized child.
+    if (
+      data.type === 'system' &&
+      data.subtype === 'init' &&
+      typeof data.session_id === 'string' &&
+      data.session_id.length > 0 &&
+      metadataTab.claudeForkSessionOnNextSend === true
+    ) {
+      delete metadataTab.claudeForkSessionOnNextSend;
+      if (metadataTab.forkedFrom?.resumePointRequired === true) {
+        metadataTab.forkedFrom = { ...metadataTab.forkedFrom };
+        delete metadataTab.forkedFrom.resumePointRequired;
+      }
+    }
+    const currentRuntime = current.runtimeByChatId[tab.id];
+    const reducedRuntime = runtimeForEvent(
+      currentRuntime,
+      input.data,
+      now,
+      input.turnUserMessageId,
+      codexRootThreadId,
+      turnHasVisibleOutput,
+    );
+    const eventRuntime: ChatRuntimeState =
+      reducedRuntime.turn === undefined && currentRuntime?.turn !== undefined
+        ? { ...reducedRuntime, turn: currentRuntime.turn }
+        : reducedRuntime;
+    const nextRuntime = this.projectReceiptRuntime(
+      {
+        projectId: input.projectId,
+        worktreeId: input.worktreeId,
+        chatId: tab.id,
+      },
+      eventRuntime,
+    );
+    const turnEnds = reclassifyEmptyCompletionEnd(
+      metadataTab.turnEnds,
+      currentRuntime,
+      nextRuntime,
+      effectiveTurnUserMessageId,
+    );
+    if (turnEnds !== metadataTab.turnEnds) metadataTab.turnEnds = turnEnds;
+    if (isRootTerminalChatEventData(input.data, codexRootThreadId)) {
+      const scope = {
+        projectId: input.projectId,
+        worktreeId: input.worktreeId,
+        chatId: tab.id,
+      };
+      const receipt = this.turnHandoff.getState(scope);
+      const history = this.turnHandoff.snapshotNow(scope)?.turnRecords ?? [];
+      const candidates = new Map<
+        string,
+        { inputIds: Set<string>; complete: boolean; autonomous: boolean }
+      >();
+      const retain = (
+        turnId: string,
+        inputIds: readonly string[] = [],
+        complete = false,
+        autonomous = false,
+      ): void => {
+        const candidate = candidates.get(turnId) ?? {
+          inputIds: new Set<string>(),
+          complete: false,
+          autonomous: false,
+        };
+        for (const id of inputIds) candidate.inputIds.add(id);
+        candidate.complete ||= complete;
+        candidate.autonomous ||= autonomous;
+        candidates.set(turnId, candidate);
+      };
+      for (const id of [
+        ...(runtime?.turn?.endedTurnIds ?? []),
+        ...(receipt?.endedTurnIds ?? []),
+      ])
+        retain(id);
+      for (const [id, inputIds] of Object.entries(tab.rootTurnInputIds ?? {}))
+        retain(id, inputIds, true);
+      for (const turn of [
+        runtime?.turn?.current,
+        runtime?.turn?.lastEnded,
+        ...Array.from(
+          this.retainedTerminalTurns
+            .get(
+              JSON.stringify([scope.projectId, scope.worktreeId, scope.chatId]),
+            )
+            ?.values() ?? [],
+        ),
+        ...history,
+        receipt?.current,
+        receipt?.lastEnded,
+      ])
+        if (turn)
+          retain(
+            turn.id,
+            [
+              ...(turn.userMessageId ? [turn.userMessageId] : []),
+              ...(turn.inputIds ?? []),
+            ],
+            turn.inputIds !== undefined || turn.userMessageId === undefined,
+            turn.origin === 'autonomous',
+          );
+      const taggedInputId =
+        input.turnUserMessageId ??
+        (typeof data.canopy_turn_user_message_id === 'string'
+          ? data.canopy_turn_user_message_id
+          : undefined);
+      const executionId =
+        typeof data.canopy_execution_turn_id === 'string'
+          ? data.canopy_execution_turn_id
+          : typeof data.canopy_wake_turn_id === 'string'
+            ? data.canopy_wake_turn_id
+            : undefined;
+      const matches =
+        taggedInputId === undefined
+          ? []
+          : Array.from(candidates).filter(([, candidate]) =>
+              candidate.inputIds.has(taggedInputId),
+            );
+      if (executionId !== undefined) {
+        const candidate = candidates.get(executionId);
+        // An autonomous or unbound execution's tag is only the anchor it ran
+        // under (a Codex provider-owned run's), so its marker decides.
+        if (
+          candidate !== undefined &&
+          (taggedInputId === undefined ||
+            candidate.inputIds.has(taggedInputId) ||
+            candidate.autonomous ||
+            candidate.inputIds.size === 0 ||
+            !candidate.complete)
+        )
+          rootTerminalTurnId = executionId;
+        else terminalAttributionAmbiguous = candidates.size > 0;
+      } else if (taggedInputId !== undefined) {
+        // A complete owner's recorded inputs prove the match; candidates with
+        // unknown inputs (turns from before input retention) then can't take it.
+        if (
+          matches.length === 1 &&
+          (matches[0]?.[1].complete === true ||
+            !Array.from(candidates).some(
+              ([turnId, candidate]) =>
+                turnId !== matches[0]?.[0] && !candidate.complete,
+            ))
+        )
+          rootTerminalTurnId = matches[0]?.[0];
+        else terminalAttributionAmbiguous = candidates.size > 0;
+      } else if (candidates.size === 1) {
+        rootTerminalTurnId = candidates.keys().next().value;
+      } else {
+        terminalAttributionAmbiguous = candidates.size > 1;
+      }
+      if (rootTerminalTurnId !== undefined)
+        metadataTab.reducedRootTerminalTurnIds = Array.from(
+          new Set([
+            ...(metadataTab.reducedRootTerminalTurnIds ?? []),
+            rootTerminalTurnId,
+          ]),
+        );
+      // A turn that failed before its provider started it has no canonical
+      // turn to record its end, so its terminal records it, as develop did.
+      if (
+        effectiveTurnUserMessageId !== undefined &&
+        recordedTurnEnd(metadataTab.turnEnds, effectiveTurnUserMessageId) ===
+          undefined &&
+        receipt?.current?.userMessageId !== effectiveTurnUserMessageId &&
+        receipt?.lastEnded?.userMessageId !== effectiveTurnUserMessageId
+      )
+        metadataTab.turnEnds = settleTurnEnds(
+          metadataTab.turnEnds,
+          currentRuntime,
+          nextRuntime,
+          effectiveTurnUserMessageId,
+          now,
+        );
+    }
+    // The shared reducer reopens a settled turn's timer in place; main
+    // never commits that edit to settled history (see the guard).
+    const mayRecoverInterruptedTurn =
+      runtime?.status === 'interrupted' ||
+      (effectiveTurnUserMessageId !== undefined &&
+        tab.interruptedTurns?.[effectiveTurnUserMessageId] !== undefined) ||
+      archivedCandidate !== undefined;
+    const messages = preserveSettledTurnTimers({
+      previous: tab.messages,
+      next: mayRecoverInterruptedTurn
+        ? supersedeToolInterruptions(trustedReducedMessages)
+        : trustedReducedMessages,
+      previousRuntime: runtime,
+      nextRuntime,
+      now,
+      createMessageId,
+    });
+    if (
+      isInputLedger(metadataTab.inputDelivery) &&
+      isRootTerminalChatEventData(input.data, codexRootThreadId)
+    ) {
+      const previousInputDelivery = metadataTab.inputDelivery;
+      const nextInputDelivery = settleInputExecution(
+        previousInputDelivery,
+        input.turnUserMessageId ?? activeTurnUserMessageId,
+        nextRuntime.status,
+        now,
+      );
+      metadataTab.inputDelivery = nextInputDelivery;
+      shouldResolveInputHistory =
+        nextInputDelivery !== previousInputDelivery ||
+        nextInputDelivery.rows.some((row) => isHistoryCandidate(row));
+    }
+    if (archivedCandidate && !resumesArchive) {
+      const updatedArchivedTab = { ...metadataTab, messages };
+      return finish([
+        {
+          type: 'archive.upserted',
+          entry: {
+            ...archivedCandidate,
+            tab: updatedArchivedTab,
+            turnCount: countTurns(updatedArchivedTab),
+          },
+        },
+      ]);
+    }
+    const mutations: ChatCoreMutation[] = archivedCandidate
+      ? [
+          {
+            type: 'archive.removed',
+            archiveEntryId: archivedCandidate.tab.id,
+            chatId: archivedCandidate.tab.id,
+          },
+          { type: 'tab.created', tab: archivedCandidate.tab },
+        ]
+      : [];
+    const metadataPatch = buildTabMetadataPatch(tab, metadataTab);
+    if (Object.keys(metadataPatch).length > 0) {
+      mutations.push({
+        type: 'tab.metadata_patched',
+        tabId: tab.id,
+        patch: metadataPatch,
+      });
+    }
+    if (reordersExistingPrompt) {
+      mutations.push({
+        type: 'messages.replaced',
+        chatId: tab.id,
+        messages,
+        removedMessageIds: [],
+      });
+    }
+    const nextById = new Map(messages.map((message) => [message.id, message]));
+    const currentById = new Map(
+      tab.messages.map((message) => [message.id, message]),
+    );
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (!message) continue;
+      const existing = currentById.get(message.id);
+      if (
+        !existing ||
+        (existing !== message &&
+          JSON.stringify(existing) !== JSON.stringify(message))
+      ) {
+        // A delegation card and its rows can update after this window or
+        // a renderer page has moved on. Position them so neither storage
+        // nor a client appends them to the tail. Storage ignores the
+        // position for rows it already holds.
+        const afterMessageId =
+          !streamDelegation &&
+          messageAnchor !== undefined &&
+          (message.id === messageAnchor.messageId ||
+            message.parentBlockId === messageAnchor.messageId)
+            ? existing
+              ? (messages[index - 1]?.id ?? messageAnchor.fallbackMessageId)
+              : index > 0 &&
+                  messages
+                    .slice(index + 1)
+                    .some((later) => currentById.has(later.id))
+                ? messages[index - 1]?.id
+                : undefined
+            : undefined;
+        mutations.push({
+          type: 'message.upserted',
+          chatId: tab.id,
+          message,
+          ...(afterMessageId ? { afterMessageId } : {}),
+        });
+        if (
+          !message.parentBlockId &&
+          (!message.codexThreadId ||
+            message.codexThreadId === codexRootThreadId)
+        ) {
+          for (const block of message.blocks) {
+            if (block.type !== 'text' || !block.asyncQuestion) continue;
+            const { requestId, questions } = block.asyncQuestion;
+            // Started/completed/replayed events share one durable request.
+            // Settled records are deliberately retained so replay cannot
+            // make a previously answered or dismissed question actionable.
+            if (
+              (current.tabsFile.pendingQuestions ?? []).some(
+                (question) =>
+                  question.requestId === requestId &&
+                  question.chatId === tab.id,
+              )
+            )
+              continue;
+            mutations.push({
+              type: 'pending_question.upserted',
+              question: {
+                requestId,
+                chatId: tab.id,
+                delivery: 'async',
+                questions: questions.map((question, index) => ({
+                  id: String(index),
+                  question: question.title,
+                  options: question.options ?? [],
+                  multiSelect: false,
+                  allowOther: true,
+                })),
+              },
+            });
+          }
+        }
+      }
+    }
+    for (const existing of tab.messages) {
+      if (!nextById.has(existing.id)) {
+        mutations.push({
+          type: 'message.removed',
+          chatId: tab.id,
+          messageId: existing.id,
+        });
+      }
+    }
+    if (
+      nextRuntime.error?.code === 'empty_completion' &&
+      nextRuntime.emptyCompletionRecovery &&
+      runtime?.error?.code !== 'empty_completion'
+    ) {
+      emptyCompletionDiagnostic = {
+        version: 1,
+        timestamp: new Date(now).toISOString(),
+        kind: 'empty_turn_completion',
+        sessionKey: `${input.projectId}/${input.worktreeId}/${input.chatId}`,
+        projectId: input.projectId,
+        worktreeId: input.worktreeId,
+        chatId: input.chatId,
+        providerType: provider ?? 'unknown',
+        emptyCompletionTurnUserMessageId:
+          nextRuntime.emptyCompletionRecovery.turnUserMessageId,
+        ...(typeof data.duration_ms === 'number'
+          ? { emptyCompletionDurationMs: data.duration_ms }
+          : {}),
+      };
+    }
+    const runtimePatch: ChatRuntimeState = {
+      ...nextRuntime,
+      ...(refreshCapabilities ? { steeringCapabilities: capabilities } : {}),
+    };
+    // Every commit journals and rewrites the scope indexes, so an event
+    // whose only change is a fresher lastActivityAt is not committed; the
+    // next other commit, or the persist interval, carries it. Turn-boundary
+    // events always commit: their mutation IDs record prompt acceptance.
+    if (
+      mutations.length === 0 &&
+      !checkpoint &&
+      !refreshCapabilities &&
+      isRecentActivityOnlyRuntime(runtime, runtimePatch, now)
+    ) {
+      activityOnly = true;
+      return finish(mutations);
+    }
+    mutations.push({
+      type: 'runtime.patched',
+      chatId: tab.id,
+      runtime: runtimePatch,
+    });
+    return finish(mutations);
   }
 
   /**
@@ -4732,10 +7503,9 @@ export class ChatStateService implements ChatStateCommandPort {
             (existing.model === undefined &&
               (existing.executionHarness === undefined ||
                 existing.executionHarness === requestHarness)));
-        const backfillApprovalMode =
-          existing.approvalMode === undefined &&
-          request.approvalMode !== undefined;
-        if (retitle || name || backfillRouting || backfillApprovalMode) {
+        // A send never saves its approval mode onto an existing chat: the
+        // chat's own setting or its defaults stay its authority (CAN-4469).
+        if (retitle || name || backfillRouting) {
           return [
             {
               type: 'tab.created' as const,
@@ -4765,9 +7535,6 @@ export class ChatStateService implements ChatStateCommandPort {
                   : {}),
                 ...(backfillRouting
                   ? canonicalModelConfigField(request.modelConfig)
-                  : {}),
-                ...(backfillApprovalMode
-                  ? { approvalMode: request.approvalMode }
                   : {}),
               },
             },
@@ -4844,21 +7611,28 @@ export class ChatStateService implements ChatStateCommandPort {
     scope: ChatScopeKey,
     question: PersistedPendingQuestion,
   ): Promise<void> {
-    await this.repository.transact(
+    await this.transactWithTurnHandoff(
       scope,
-      [
+      (current) => [
         { type: 'pending_question.upserted', question },
         {
           type: 'runtime.patched',
           chatId: question.chatId,
+          // A question pauses the turn: its queued input and active turn stay.
           runtime: {
+            ...(current.runtimeByChatId[question.chatId] ?? {
+              queuedMessageIds: [],
+            }),
             status: 'awaiting_input',
-            queuedMessageIds: [],
             lastActivityAt: this.now(),
           },
         },
       ],
-      { source: 'provider', mutationId: `question:${question.requestId}` },
+      {
+        source: 'provider',
+        mutationId: `question:${question.requestId}`,
+        chatIds: [question.chatId],
+      },
     );
     this.pendingQuestionScopes.set(question.requestId, {
       ...scope,
@@ -4877,16 +7651,43 @@ export class ChatStateService implements ChatStateCommandPort {
         candidate.requestId === requestId && candidate.chatId === chatId,
     );
     if (!question) {
+      this.observeTurnPause({
+        ...scope,
+        chatId,
+        type: 'PauseClosed',
+        ownerKind: 'question',
+        ownerId: requestId,
+        atMs: this.now(),
+      });
+      const pause = await this.turnHandoff.prepare({ ...scope, chatId });
+      if (pause) {
+        await this.transactWithTurnHandoff(scope, () => [], {
+          source: 'provider',
+          mutationId: `question-pause-close:${chatId}:${requestId}:${pause.generation}`,
+          chatIds: [chatId],
+        });
+      }
       this.pendingQuestionScopes.delete(requestId);
+      clearAskUserRequestCancellation(requestId);
       return;
+    }
+    if (question.delivery !== 'async') {
+      this.observeTurnPause({
+        ...scope,
+        chatId,
+        type: 'PauseClosed',
+        ownerKind: 'question',
+        ownerId: requestId,
+        atMs: this.now(),
+      });
     }
     const previousRuntime = state.runtimeByChatId[chatId] ?? {
       status: 'streaming' as const,
       queuedMessageIds: [],
     };
-    await this.repository.transact(
+    await this.transactWithTurnHandoff(
       scope,
-      [
+      () => [
         // Answered records are retained: portal answered-question bubbles and
         // reload idempotence project from the committed `answeredAt` state.
         // Only an unanswered consume (timeout/cancel/abort) removes the record.
@@ -4909,6 +7710,7 @@ export class ChatStateService implements ChatStateCommandPort {
       {
         source: 'provider',
         mutationId: `question-consumed:${requestId}`,
+        chatIds: [chatId],
       },
     );
     this.pendingQuestionScopes.delete(requestId);
@@ -5644,6 +8446,7 @@ export class ChatStateService implements ChatStateCommandPort {
     mutation?: ChatQueuePersistenceMutation,
     queuedMessages?: readonly PersistedHostQueuedMessage[],
     activeTurnUserMessageId?: string,
+    inFlight?: PersistedHostQueuedMessage,
   ): Promise<void> {
     const loaded = await this.repository.getState(scope, {
       chatIds: [scope.chatId],
@@ -5697,57 +8500,208 @@ export class ChatStateService implements ChatStateCommandPort {
           status: 'idle' as const,
           queuedMessageIds: [],
         };
-        const reconciled: ChatRuntimeState = {
-          ...previous,
-          status:
-            !turnActive && queuedMessageIds.length > 0
+        const tab = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === scope.chatId,
+        );
+        // A dispatching row leaves `queuedMessageIds` at dequeue, which is
+        // how the renderer recognizes a dispatch. Its payload stays durable,
+        // flagged, until the prompt commit removes it; once its row exists it
+        // must not be written back.
+        const keepInFlight =
+          inFlight !== undefined &&
+          !queuedMessageIds.includes(inFlight.id) &&
+          !tab?.messages.some(
+            (message) => message.id === inFlight.request.userMessageId,
+          );
+        const dispatchingInFlight =
+          keepInFlight &&
+          turnActive &&
+          inFlight !== undefined &&
+          activeTurnUserMessageId === inFlight.request.userMessageId;
+        const previousDispatchingRow = previous.queuedMessages?.find(
+          (message) =>
+            message.dispatching === true &&
+            message.request.userMessageId ===
+              previous.activeTurn?.userMessageId,
+        );
+        const canStartQueuedDispatch =
+          previous.status === 'idle' ||
+          previous.status === 'queued' ||
+          previous.status === 'completed' ||
+          previous.status === 'cancelled' ||
+          previous.status === 'interrupted' ||
+          previous.status === 'failed';
+        const installsDispatchStarting =
+          dispatchingInFlight && canStartQueuedDispatch;
+        const nextQueuedMessageIds = [...queuedMessageIds];
+        const nextQueuedMessages = queuedMessages ? [...queuedMessages] : [];
+        if (keepInFlight && inFlight)
+          nextQueuedMessages.unshift({ ...inFlight, dispatching: true });
+        const representedUserMessageIds = new Set(
+          nextQueuedMessages.map((message) => message.request.userMessageId),
+        );
+        // Keep the durable handoff marker while its prompt has not reached the
+        // transcript. In particular, a later stale-gate release needs to
+        // distinguish this dispatch's provisional `starting` from a direct
+        // send that is still starting.
+        if (
+          turnActive &&
+          activeTurnUserMessageId !== undefined &&
+          previousDispatchingRow?.request.userMessageId ===
+            activeTurnUserMessageId &&
+          !representedUserMessageIds.has(
+            previousDispatchingRow.request.userMessageId,
+          ) &&
+          !tab?.messages.some(
+            (message) =>
+              message.id === previousDispatchingRow.request.userMessageId,
+          )
+        ) {
+          nextQueuedMessages.unshift(previousDispatchingRow);
+          representedUserMessageIds.add(
+            previousDispatchingRow.request.userMessageId,
+          );
+        }
+        for (const message of previous.queuedMessages ?? []) {
+          if (
+            message.admitting !== true ||
+            representedUserMessageIds.has(message.request.userMessageId) ||
+            tab?.messages.some(
+              (row) => row.id === message.request.userMessageId,
+            )
+          )
+            continue;
+          nextQueuedMessages.push(message);
+          representedUserMessageIds.add(message.request.userMessageId);
+        }
+        const dispatchedUserMessageId = previous.activeTurn?.userMessageId;
+        const dispatchRowReturnedToQueue =
+          dispatchedUserMessageId !== undefined &&
+          nextQueuedMessages.some(
+            (message) =>
+              message.request.userMessageId === dispatchedUserMessageId,
+          );
+        const dispatchWasReleased =
+          !turnActive &&
+          previous.status === 'starting' &&
+          (previousDispatchingRow !== undefined || dispatchRowReturnedToQueue);
+        const {
+          error: _previousError,
+          emptyCompletionRecovery: _previousEmptyCompletionRecovery,
+          ...runtimeWithoutPreviousTurnError
+        } = previous;
+        void _previousError;
+        void _previousEmptyCompletionRecovery;
+        const runtimeBase = installsDispatchStarting
+          ? runtimeWithoutPreviousTurnError
+          : previous;
+        const status = installsDispatchStarting
+          ? 'starting'
+          : dispatchWasReleased
+            ? nextQueuedMessageIds.length > 0
+              ? 'queued'
+              : 'idle'
+            : !turnActive && nextQueuedMessageIds.length > 0
               ? 'queued'
               : previous.status === 'queued'
                 ? 'idle'
-                : previous.status,
-          queuedMessageIds: [...queuedMessageIds],
-          queuedMessages: queuedMessages ? [...queuedMessages] : [],
-          ...(turnActive && activeTurnUserMessageId
-            ? {
-                activeTurn:
-                  previous.activeTurn?.userMessageId === activeTurnUserMessageId
-                    ? previous.activeTurn
-                    : {
-                        userMessageId: activeTurnUserMessageId,
-                        startedAt: previous.activeTurn?.startedAt ?? this.now(),
-                      },
-              }
-            : {}),
-          lastActivityAt: this.now(),
-          ...(mutation?.type === 'cancel' && mutation.lastErrorMessage
-            ? {
-                error: {
-                  code: 'cancelled',
-                  message: mutation.lastErrorMessage,
-                  retryable: false,
-                  occurredAt: new Date(this.now()).toISOString(),
-                },
-              }
-            : {}),
-        };
-        const setupTab =
-          setupEnds.length > 0
-            ? current.tabsFile.tabs.find((t) => t.id === scope.chatId)
-            : undefined;
-        const ended = setupTab
-          ? recordUnacceptedTurnEnds(
-              setupTab,
-              reconciled,
-              setupEnds,
-              this.now(),
+                : previous.status;
+        // A canonical `starting` outlives its dispatch once the turn it
+        // started ends (35c4 binds dispatches at start). With no dispatch
+        // still awaiting its start, settle it from canonical state.
+        const settlesStaleStart =
+          status === 'starting' &&
+          !installsDispatchStarting &&
+          // A worktree setup holding this chat's turn owns its start.
+          this.setupHolds.get(chatRuntimeHostKey(scope, scope.chatId))?.owner
+            ?.state !== 'held' &&
+          // An unaccepted end that cannot commit yet leaves the turn as
+          // durably recorded, for restart recovery to interrupt.
+          !(
+            previous.activeTurn !== undefined &&
+            this.unrecordedTurnEnds.has(
+              awaitingSetupKey(scope, {
+                chatId: scope.chatId,
+                userMessageId: previous.activeTurn.userMessageId,
+              }),
             )
-          : undefined;
+          ) &&
+          !getChatTurnOwnership()
+            .getSnapshot(scope)
+            .dispatchOwners.some((owner) => owner.reason === 'awaiting-start');
+        // A running canonical turn owns root status, not the host gate.
+        const reconciled = this.projectReceiptRuntime(
+          scope,
+          {
+            ...runtimeBase,
+            status,
+            queuedMessageIds: nextQueuedMessageIds,
+            queuedMessages: nextQueuedMessages,
+            ...(turnActive && activeTurnUserMessageId
+              ? {
+                  activeTurn:
+                    previous.activeTurn?.userMessageId ===
+                    activeTurnUserMessageId
+                      ? previous.activeTurn
+                      : {
+                          userMessageId: activeTurnUserMessageId,
+                          startedAt:
+                            previous.activeTurn?.startedAt ?? this.now(),
+                        },
+                }
+              : {}),
+            lastActivityAt: this.now(),
+            ...(mutation?.type === 'cancel' && mutation.lastErrorMessage
+              ? {
+                  error: {
+                    code: 'cancelled',
+                    message: mutation.lastErrorMessage,
+                    retryable: false,
+                    occurredAt: new Date(this.now()).toISOString(),
+                  },
+                }
+              : {}),
+          },
+          !settlesStaleStart,
+        );
+        // Host-queued prompts enter the transcript at dispatch. A send its
+        // setup ended never dispatches, so its prompt is kept with its end.
+        const setupPrompts =
+          tab && mutation?.type === 'end-setup-held'
+            ? mutation.requests
+                .filter(
+                  (request) =>
+                    !tab.messages.some(
+                      (message) => message.id === request.userMessageId,
+                    ),
+                )
+                .map((request) => buildUserMessage(request, this.now()))
+            : [];
+        const ended =
+          tab && setupEnds.length > 0
+            ? recordUnacceptedTurnEnds(
+                { ...tab, messages: [...tab.messages, ...setupPrompts] },
+                reconciled,
+                setupEnds,
+                this.now(),
+              )
+            : undefined;
+        // Dequeue is provisional: authentication or dispatch admission may
+        // still return the row to the queue. Only the admitted prompt's
+        // transcript write retires its plan review.
         const mutations: ChatCoreMutation[] = [
           {
             type: 'runtime.patched',
             chatId: scope.chatId,
             runtime: ended?.runtime ?? reconciled,
           },
+          ...setupPrompts.map(
+            (message): ChatCoreMutation => ({
+              type: 'message.upserted',
+              chatId: scope.chatId,
+              message,
+            }),
+          ),
           ...(ended?.mutations ?? []),
         ];
         if (mutation?.type === 'agent-send-accepted') {
@@ -5798,63 +8752,63 @@ export class ChatStateService implements ChatStateCommandPort {
             !isInputLedger(ledger) ||
             ledger.epoch !== mutation.epoch ||
             !row ||
-            !['cancelled', 'editing'].includes(row.state)
+            (!['cancelled', 'editing'].includes(row.state) &&
+              !(mutation.allowUncertain === true && row.state === 'uncertain'))
           )
             throw new Error('The input is no longer available to queue');
+          if (mutation.continuation) {
+            const continuation = validOrdinaryContinuation(ledger, row);
+            if (
+              !continuation ||
+              continuation.attemptId !== mutation.continuation.attemptId ||
+              continuation.epoch !== mutation.continuation.epoch
+            )
+              throw new Error('The input is no longer available to queue');
+          }
           mutations.push({
             type: 'tab.metadata_patched',
             tabId: scope.chatId,
             patch: {
               inputDelivery: {
                 ...ledger,
-                rows: ledger.rows.map((r) =>
-                  r.id === row.id
-                    ? {
-                        ...r,
-                        state: 'queued',
-                        revision: r.revision + 1,
-                        text: mutation.request.text,
-                        payload: mutation.request,
-                        draft: undefined,
-                        queueIntent: undefined,
-                      }
-                    : r,
-                ),
+                rows: ledger.rows.map((r) => {
+                  if (r.id !== row.id) return r;
+                  const {
+                    ordinaryContinuation: _ordinaryContinuation,
+                    ...rowWithoutContinuation
+                  } = r;
+                  void _ordinaryContinuation;
+                  return {
+                    ...rowWithoutContinuation,
+                    state: 'queued',
+                    revision: r.revision + 1,
+                    text: mutation.request.text,
+                    payload: mutation.request,
+                    ...(mutation.ordinaryOnly === true
+                      ? { ordinaryOnly: true }
+                      : {}),
+                    draft: undefined,
+                    queueIntent: undefined,
+                  };
+                }),
               },
             },
           });
         }
         const restoredAsyncQuestionId =
-          mutation?.type === 'edit'
+          mutation?.type === 'edit' || mutation?.type === 'restore-input'
             ? mutation.restoredAsyncQuestionId
             : mutation?.type === 'cancel'
               ? mutation.request.asyncQuestionId
               : undefined;
         if (restoredAsyncQuestionId) {
-          const answeredQuestion = (
-            current.tabsFile.pendingQuestions ?? []
-          ).find(
-            (question) =>
-              question.requestId === restoredAsyncQuestionId &&
-              question.chatId === scope.chatId &&
-              question.delivery === 'async' &&
-              question.answeredAt !== undefined,
+          mutations.push(
+            ...reopenAsyncQuestionMutations(
+              current.tabsFile.pendingQuestions,
+              scope.chatId,
+              restoredAsyncQuestionId,
+            ),
           );
-          if (answeredQuestion) {
-            const {
-              answeredAt: _answeredAt,
-              answers: _answers,
-              dismissedAt: _dismissedAt,
-              ...pendingQuestion
-            } = answeredQuestion;
-            void _answeredAt;
-            void _answers;
-            void _dismissedAt;
-            mutations.push({
-              type: 'pending_question.upserted',
-              question: pendingQuestion,
-            });
-          }
         }
         if (mutation?.type === 'edit') {
           const editedTab = current.tabsFile.tabs.find(
@@ -6202,6 +9156,42 @@ export class ChatStateService implements ChatStateCommandPort {
           ? { preparePublish: options.preparePublish }
           : {}),
         source: 'migration',
+        additionalTabMutations: (tab, current): ChatCoreMutation[] => {
+          if (options?.authoritative) return [];
+          const runtime = current.runtimeByChatId[tab.id];
+          const dispatching = runtime?.queuedMessages?.find(
+            (row) =>
+              row.dispatching === true &&
+              row.request.userMessageId === runtime.activeTurn?.userMessageId &&
+              tab.messages.some(
+                (message) =>
+                  message.role === 'user' &&
+                  message.id === row.request.userMessageId,
+              ),
+          );
+          if (!runtime || !dispatching) return [];
+          // Portal commits its admitted prompt before the provider event.
+          // Consume the dispatch marker with that write, so replaying an old
+          // compatibility snapshot cannot retire a replacement review.
+          return [
+            ...retireSupersededPlanExitMutations(
+              current.tabsFile.tabs.find((previous) => previous.id === tab.id),
+            ),
+            {
+              type: 'runtime.patched',
+              chatId: tab.id,
+              runtime: {
+                ...runtime,
+                queuedMessageIds: runtime.queuedMessageIds.filter(
+                  (id) => id !== dispatching.id,
+                ),
+                queuedMessages: (runtime.queuedMessages ?? []).filter(
+                  (row) => row.id !== dispatching.id,
+                ),
+              },
+            },
+          ];
+        },
       },
     );
     return state.tabsFile;
@@ -6566,11 +9556,51 @@ export class ChatStateService implements ChatStateCommandPort {
     return this.repository.activeTurnDelta(scope, chatId, since);
   }
 
+  /** An accepted send to the chat is between acceptance and host exposure. */
+  public isDispatchInFlight(
+    target: ChatScopeKey & { chatId: string },
+  ): boolean {
+    return this.dispatchesInFlight.has(
+      chatRuntimeHostKey(target, target.chatId),
+    );
+  }
+
+  /** The scope's revision, read behind every commit admitted before the call. */
+  public getCommittedRevision(scope: ChatScopeKey): Promise<number> {
+    return this.repository.getRevision(scope);
+  }
+
   public async getCompatibilityTabs(
     scope: ChatScopeKey,
     selection: ChatReadSelection = {},
   ): Promise<ChatTabsFile> {
     return (await this.repository.getState(scope, selection)).tabsFile;
+  }
+
+  /** Committed watcher evidence without host recovery or transcript projection. */
+  public async getCommittedWatcherSnapshot(
+    scope: ChatScopeKey,
+  ): Promise<ChatStateSnapshot> {
+    const state = await this.repository.getState(scope, { chatIds: [] });
+    const { getChatQueueService } = await import('./chat-queue-service');
+    const runtimeByChatId: ChatStateSnapshot['runtimeByChatId'] = {};
+    for (const [chatId, runtime] of Object.entries(state.runtimeByChatId)) {
+      runtimeByChatId[chatId] = projectChatRuntime(runtime);
+    }
+    return {
+      schemaVersion: 1,
+      projectId: scope.projectId,
+      worktreeId: scope.worktreeId,
+      revision: state.tabsFile.revision ?? 0,
+      tabsFile: state.tabsFile,
+      // Archived chats leave live tabs; eligibility only needs retained tabs.
+      archives: [],
+      runtimeByChatId,
+      queue: getChatQueueService().getWorktreeSnapshots(
+        scope.projectId,
+        scope.worktreeId,
+      ),
+    };
   }
 
   /** Trusted adapter for the deprecated renderer-snapshot archive channel. */
@@ -6590,9 +9620,10 @@ export class ChatStateService implements ChatStateCommandPort {
         const completedAt = Number.isFinite(Date.parse(entry.archivedAt))
           ? Date.parse(entry.archivedAt)
           : this.now();
-        const messages = closeOpenPersistedToolUses(
-          closeOpenPersistedTurnTimers(currentTab.messages, completedAt),
+        const messages = settlePersistedInterruptedMessages(
+          currentTab.messages,
           completedAt,
+          current.runtimeByChatId[currentTab.id],
         );
         const finalizedTab =
           messages === currentTab.messages
@@ -6605,6 +9636,14 @@ export class ChatStateService implements ChatStateCommandPort {
             entry: {
               ...entry,
               tab: finalizedTab,
+              turnFence: archiveTurnFence(
+                finalizedTab,
+                this.turnHandoff.getState({
+                  ...scope,
+                  chatId: currentTab.id,
+                }) ?? current.runtimeByChatId[currentTab.id]?.turn,
+                completedAt,
+              ),
               turnCount: countTurns(finalizedTab),
             },
           },
@@ -6785,6 +9824,7 @@ export class ChatStateService implements ChatStateCommandPort {
     ) {
       return;
     }
+    this.turnHandoff.invalidateScope(scope);
     await this.repository.transactWith(
       scope,
       (current) => {
@@ -6970,6 +10010,8 @@ export class ChatStateService implements ChatStateCommandPort {
               'lastAcceptedUserMessageId',
               'unacceptedTurnEnds',
               'turnEnds',
+              'rootTurnInputIds',
+              'reducedRootTerminalTurnIds',
               'interruptedTurns',
             ] as const) {
               if (canonical.tab[key] === undefined) delete tab[key];
@@ -6977,6 +10019,9 @@ export class ChatStateService implements ChatStateCommandPort {
             }
             next = { ...next, tab };
           }
+          // The fence is host metadata no compatibility file carries.
+          if (canonical?.turnFence && !next.turnFence)
+            next = { ...next, turnFence: canonical.turnFence };
           mutations.push({
             type: 'archive.upserted',
             ...(options.authoritative
@@ -7086,6 +10131,7 @@ export class ChatStateService implements ChatStateCommandPort {
     archivesFile: ArchivedChatsFile,
     options: ChatStorageImportOptions = {},
   ): Promise<void> {
+    this.turnHandoff.invalidateScope(scope);
     await this.repository.importScope(
       scope,
       source,
@@ -7111,8 +10157,15 @@ export class ChatStateService implements ChatStateCommandPort {
   public async drain(): Promise<void> {
     this.draining = true;
     try {
+      await this.turnHandoff.flushAll();
       await this.repository.drainAll();
     } finally {
+      // Stay installed: a late caller must reach this drained repository.
+      this.disposeTurnHandoff();
+      if (chatStateService === this) {
+        setTurnLifecycleSink(null);
+        setTurnLifecycleEndedLookup(null);
+      }
       this.unsubscribeStorageDiagnostics();
     }
   }
@@ -7228,23 +10281,27 @@ export class ChatStateService implements ChatStateCommandPort {
    */
   public async deleteScope(scope: ChatScopeKey): Promise<void> {
     await this.runWithScopeDeletion(scope, async () => {
+      const removedTabIds = new Set<string>();
       await this.repository.transactWith(
         scope,
-        (current) => [
-          ...current.tabsFile.tabs.map(
-            (tab): ChatCoreMutation => ({
-              type: 'tab.removed',
-              tabId: tab.id,
-            }),
-          ),
-          ...current.archivesFile.archived.map(
-            (entry): ChatCoreMutation => ({
-              type: 'archive.removed',
-              archiveEntryId: entry.tab.id,
-              chatId: entry.tab.id,
-            }),
-          ),
-        ],
+        (current) => {
+          for (const tab of current.tabsFile.tabs) removedTabIds.add(tab.id);
+          return [
+            ...current.tabsFile.tabs.map(
+              (tab): ChatCoreMutation => ({
+                type: 'tab.removed',
+                tabId: tab.id,
+              }),
+            ),
+            ...current.archivesFile.archived.map(
+              (entry): ChatCoreMutation => ({
+                type: 'archive.removed',
+                archiveEntryId: entry.tab.id,
+                chatId: entry.tab.id,
+              }),
+            ),
+          ];
+        },
         {
           source: 'migration',
           mutationId: `scope-delete:${scope.projectId}:${scope.worktreeId}`,
@@ -7253,6 +10310,18 @@ export class ChatStateService implements ChatStateCommandPort {
         },
       );
       await this.repository.deleteEmptyScope(scope);
+      const key = `${scope.projectId}\u0000${scope.worktreeId}`;
+      const active = this.activeChatTabsProjections.get(key);
+      if (
+        active?.generation === (this.projectionGenerationByScope.get(key) ?? 0)
+      ) {
+        active.projection.changedTabIds.forEach((id) => removedTabIds.add(id));
+        active.projection.removedTabIds.forEach((id) => removedTabIds.add(id));
+      }
+      this.scopesAwaitingProjectionReadmission
+        .get(key)
+        ?.forEach((id) => removedTabIds.add(id));
+      this.scopesAwaitingProjectionReadmission.set(key, removedTabIds);
     });
   }
 
@@ -7430,6 +10499,7 @@ export class ChatStateService implements ChatStateCommandPort {
       ...(parsed.usage ? { usage: parsed.usage } : {}),
       ...(parsed.agentUsage ? { agentUsage: parsed.agentUsage } : {}),
     };
+    this.turnHandoff.invalidate({ ...scope, chatId: targetChatId });
     return this.commit(
       scope,
       envelope,
@@ -7443,6 +10513,7 @@ export class ChatStateService implements ChatStateCommandPort {
             status: 'completed',
             queuedMessageIds: [],
             lastActivityAt: now,
+            turn: serializeChatTurnState(initialChatTurnState()),
           },
         },
       ],
@@ -7578,6 +10649,18 @@ export class ChatStateService implements ChatStateCommandPort {
     envelope: ChatCommandEnvelope,
     command: Extract<ChatCommand, { type: 'chat.patch_tab_settings' }>,
   ): Promise<ChatCommandResult> {
+    // Trusted callers bypass IPC validation, and a patch the core schema
+    // rejects falls through to this port.
+    if (Object.prototype.hasOwnProperty.call(command.patch, 'approvalMode')) {
+      return commandResult(
+        envelope,
+        await this.repository.getRevision(scope),
+        'rejected',
+        {
+          reason: 'Approval mode changes only through chat.set_approval_mode.',
+        },
+      );
+    }
     let outcome: ChatCommandResult['outcome'] = 'applied';
     try {
       const commit = await this.repository.transactWith(
@@ -7642,6 +10725,58 @@ export class ChatStateService implements ChatStateCommandPort {
                   ? { automaticTitleState: 'closed' as const }
                   : {}),
               },
+            },
+          ];
+        },
+        {
+          source: 'renderer-command',
+          mutationId: envelope.commandId,
+          commandResult: {
+            commandId: envelope.commandId,
+            outcome: 'applied',
+            entityId: command.tabId,
+          },
+          ...expectedRevisionOption(envelope),
+        },
+      );
+      if (!commit.applied && outcome === 'applied') {
+        outcome = 'already_applied';
+      }
+      return commandResult(envelope, commit.revision, outcome, {
+        entityId: command.tabId,
+      });
+    } catch (error) {
+      const revision = await this.repository.getRevision(scope);
+      return commandResult(
+        envelope,
+        revision,
+        error instanceof ChatStateRevisionConflictError
+          ? 'conflict'
+          : 'rejected',
+        { reason: error instanceof Error ? error.message : String(error) },
+      );
+    }
+  }
+
+  private async setApprovalMode(
+    scope: ChatScopeKey,
+    envelope: ChatCommandEnvelope,
+    command: Extract<ChatCommand, { type: 'chat.set_approval_mode' }>,
+  ): Promise<ChatCommandResult> {
+    let outcome: ChatCommandResult['outcome'] = 'applied';
+    try {
+      const commit = await this.repository.transactWith(
+        scope,
+        (current) => {
+          if (!current.tabsFile.tabs.some((tab) => tab.id === command.tabId)) {
+            outcome = 'not_found';
+            return [];
+          }
+          return [
+            {
+              type: 'tab.metadata_patched',
+              tabId: command.tabId,
+              patch: { approvalMode: command.approvalMode },
             },
           ];
         },
@@ -7773,11 +10908,39 @@ export class ChatStateService implements ChatStateCommandPort {
       envelope,
       command.tabId,
       (tab, runtime) => {
-        if (command.executionHarness !== undefined) {
+        const currentProvider =
+          tab.providerType ??
+          (tab.model ? getProviderForModel(tab.model) : command.providerType);
+        const currentHarness =
+          tab.executionHarness ??
+          (currentProvider === 'opencode' ? 'opencode' : undefined) ??
+          (tab.model ? getExecutionHarnessForModel(tab.model) : undefined);
+        const targetHarness = resolveChatModelChangeHarness(
+          tab,
+          command.model,
+          command.executionHarness,
+        );
+        const started =
+          hasChatContinuationSession(tab) ||
+          tab.messages.length > 0 ||
+          (runtime?.queuedMessageIds.length ?? 0) > 0 ||
+          Boolean(
+            runtime &&
+            [
+              'queued',
+              'starting',
+              'streaming',
+              'awaiting_input',
+              'completing',
+            ].includes(runtime.status),
+          );
+        if (
+          command.executionHarness !== undefined ||
+          targetHarness === 'opencode'
+        ) {
           if (
-            !getChatHarnessOptions(command.model).includes(
-              command.executionHarness,
-            )
+            !targetHarness ||
+            !supportsChatHarnessChoice(command.model, targetHarness)
           ) {
             throw new Error(
               'This model does not support the selected harness.',
@@ -7790,33 +10953,31 @@ export class ChatStateService implements ChatStateCommandPort {
             runtime?.status === 'starting';
           if (
             !autoStartingFirstTurn &&
-            (tab.messages.length > 0 ||
-              (runtime?.queuedMessageIds.length ?? 0) > 0 ||
-              (runtime &&
-                [
-                  'queued',
-                  'starting',
-                  'streaming',
-                  'awaiting_input',
-                  'completing',
-                ].includes(runtime.status)))
+            started &&
+            currentHarness !== targetHarness
           ) {
             throw new Error('Start a new chat to change its harness.');
           }
         }
-        const currentProvider =
-          tab.providerType ??
-          (tab.model ? getProviderForModel(tab.model) : command.providerType);
-        const currentHarness =
-          tab.executionHarness ??
-          (tab.model ? getExecutionHarnessForModel(tab.model) : undefined);
-        const targetHarness =
-          command.executionHarness ??
-          (tab.model === command.model &&
-          tab.executionHarnessExplicitlyChosen === true
-            ? tab.executionHarness
-            : undefined) ??
-          getExecutionHarnessForModel(command.model);
+        if (
+          targetHarness === 'opencode' &&
+          command.providerType !== 'opencode'
+        ) {
+          throw new Error(
+            'The selected provider does not match the OpenCode harness.',
+          );
+        }
+        if (
+          currentHarness === 'opencode' &&
+          started &&
+          (targetHarness !== 'opencode' ||
+            isNativeOpenCodeSelection(tab.model) !==
+              isNativeOpenCodeSelection(command.model))
+        ) {
+          throw new Error(
+            'Start a new chat to change the OpenCode billing selection.',
+          );
+        }
         const harnessChanged =
           currentHarness !== undefined &&
           targetHarness !== undefined &&
@@ -7939,7 +11100,10 @@ export class ChatStateService implements ChatStateCommandPort {
             delete next.interfaceMode;
           }
         }
-        if (tab.messages.length === 0) {
+        if (targetHarness === 'opencode') {
+          next.executionHarness = 'opencode';
+          next.executionHarnessExplicitlyChosen = true;
+        } else if (tab.messages.length === 0) {
           if (
             command.executionHarness !== undefined ||
             (tab.model === command.model &&
@@ -8006,6 +11170,18 @@ export class ChatStateService implements ChatStateCommandPort {
     return this.heldSends.has(awaitingSetupKey(target, target));
   }
 
+  /**
+   * Mark a chat's turn as being dispatched by this process, so a snapshot read
+   * meanwhile cannot settle its runtime as interrupted by an app restart.
+   * Callers outside the send command (hook, rebase, builtin chats) hold this
+   * until the provider owns the turn.
+   */
+  public holdRuntimeHost(
+    target: ChatScopeKey & { chatId: string },
+  ): () => void {
+    return this.holdDispatch(chatRuntimeHostKey(target, target.chatId));
+  }
+
   private holdDispatch(runtimeHostKey: string): () => void {
     this.dispatchesInFlight.set(
       runtimeHostKey,
@@ -8024,6 +11200,74 @@ export class ChatStateService implements ChatStateCommandPort {
     };
   }
 
+  /**
+   * Whether an async answer crossed into durable delivery ownership. A failed
+   * inspection is conservative: failure cannot prove that the provider never
+   * accepted the already-claimed input.
+   */
+  private async hasDurableAsyncAnswerOwnership(
+    scope: ChatScopeKey,
+    chatId: string,
+    userMessageId: string,
+  ): Promise<boolean> {
+    try {
+      const current = await this.repository.getState(scope, {
+        chatIds: [chatId],
+      });
+      const tab = current.tabsFile.tabs.find(
+        (candidate) => candidate.id === chatId,
+      );
+      const ledger = tab?.inputDelivery;
+      const row = isInputLedger(ledger)
+        ? ledger.rows.find(
+            (candidate) =>
+              candidate.id === userMessageId ||
+              candidate.payload.userMessageId === userMessageId,
+          )
+        : undefined;
+      // Even a cancelled row can own a queue-restoration or user-edit handoff;
+      // only the absence of a durable row proves no claim crossed this boundary.
+      if (row) return true;
+      if (tab?.messages.some((message) => message.id === userMessageId))
+        return true;
+      const runtime = current.runtimeByChatId[chatId];
+      return (
+        runtime?.queuedMessageIds.includes(userMessageId) === true ||
+        runtime?.queuedMessages?.some(
+          (message) =>
+            message.request.userMessageId === userMessageId &&
+            message.admitting !== true,
+        ) === true
+      );
+    } catch {
+      return true;
+    }
+  }
+
+  /** Remove only the transient acceptance marker, never a durable queue row. */
+  private async retireAsyncAnswerAdmission(
+    scope: ChatScopeKey,
+    chatId: string,
+    userMessageId: string,
+    mutationId: string,
+  ): Promise<void> {
+    await this.repository.transactWith(
+      scope,
+      (current): ChatCoreMutation[] => {
+        const runtime = current.runtimeByChatId[chatId];
+        const next = removeAdmittingRuntimeEntry(runtime, userMessageId);
+        return next && next !== runtime
+          ? [{ type: 'runtime.patched', chatId, runtime: next }]
+          : [];
+      },
+      {
+        source: 'renderer-command',
+        mutationId,
+        chatIds: [chatId],
+      },
+    );
+  }
+
   private async sendAcceptedMessage(
     scope: ChatScopeKey,
     envelope: ChatCommandEnvelope,
@@ -8032,6 +11276,50 @@ export class ChatStateService implements ChatStateCommandPort {
       { type: 'chat.send_message' }
     >,
     options: TrustedChatCommandExecutionOptions,
+    asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] },
+  ): Promise<ChatCommandResult> {
+    const key = JSON.stringify([
+      scope.projectId,
+      scope.worktreeId,
+      command.chatId,
+      command.userMessageId,
+    ]);
+    // The transcript no longer fences a queued row. Serialize acceptance of
+    // the same stable message identity until its row or durable queue entry
+    // exists, including callers retrying with a different command identity.
+    let previous = this.acceptedSendsInFlight.get(key);
+    while (previous) {
+      try {
+        await previous;
+      } catch {
+        // A failed reservation does not prevent a later canonical retry.
+      }
+      previous = this.acceptedSendsInFlight.get(key);
+    }
+    const send = this.sendAcceptedMessageOnce(
+      scope,
+      envelope,
+      command,
+      options,
+      asyncAnswer,
+    );
+    this.acceptedSendsInFlight.set(key, send);
+    try {
+      return await send;
+    } finally {
+      if (this.acceptedSendsInFlight.get(key) === send)
+        this.acceptedSendsInFlight.delete(key);
+    }
+  }
+
+  private async sendAcceptedMessageOnce(
+    scope: ChatScopeKey,
+    envelope: ChatCommandEnvelope,
+    command: Extract<
+      ChatCommandEnvelope['command'],
+      { type: 'chat.send_message' }
+    >,
+    options: ChatCommandExecutionOptions,
     asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] },
   ): Promise<ChatCommandResult> {
     const trustedRequest: ChatSendMessageRequest = {
@@ -8046,6 +11334,40 @@ export class ChatStateService implements ChatStateCommandPort {
       agentSendSetup: command.agentSendSetup,
     };
     if (command.agentSendSetup) await agentSendTargetReadiness(trustedRequest);
+    if (command.turnOverride) {
+      // D2: only a pipeline send carries per-turn settings, whoever dispatches it.
+      const provenance = parseAgentSenderProvenance(
+        command.agentSenderProvenance,
+      );
+      if (provenance?.sender.kind !== 'pipeline')
+        throw new AgentSenderContextError(
+          'validation_failed',
+          'Only a pipeline send carries per-turn settings.',
+        );
+      // D11: an agent-originated run never changes the target's authority.
+      if (
+        'agentOrigin' in provenance &&
+        provenance.agentOrigin &&
+        changesAuthority(command.turnOverride)
+      )
+        throw new AgentSenderContextError(
+          'authorization_conflict',
+          'An agent-originated run cannot change the target chat’s model, plan mode, plugins or approvals.',
+        );
+    }
+    if (command.automationDispatch) {
+      // An automation's own send (CAN-4549), or a step in a run an
+      // automation started (CAN-4551): the sender names the automation.
+      const sender = parseAgentSenderProvenance(
+        command.agentSenderProvenance,
+      )?.sender;
+      if (sender?.kind !== 'pipeline' || sender.automationId === undefined)
+        throw new AgentSenderContextError(
+          'validation_failed',
+          'Only an automation’s own send carries automation dispatch facts.',
+        );
+    }
+    command = withTurnOverrideTabSettings(command);
     if (
       command.agentSent ||
       command.agentSenderProvenance ||
@@ -8060,12 +11382,14 @@ export class ChatStateService implements ChatStateCommandPort {
       (candidate) => candidate.id === command.chatId,
     );
     // Settle the model, including one stored on the chat, before authorization
-    // judges it and before the prompt is committed. Auto picks its own model.
+    // judges it and before the prompt is committed. Auto picks its own model,
+    // except for a turn whose override names one.
     const storedModel =
       tabBeforeAuthorization?.kind === 'file'
         ? undefined
         : tabBeforeAuthorization?.model;
     const sendModel =
+      command.turnOverride?.model === undefined &&
       (command.modelSelectionMode ??
         tabBeforeAuthorization?.modelSelectionMode) === 'auto'
         ? undefined
@@ -8145,18 +11469,27 @@ export class ChatStateService implements ChatStateCommandPort {
         );
       }
     }
+    const admissionDefault = chatSendAdmissionCheck({
+      ...scope,
+      chatId: command.chatId,
+      userMessageId: command.userMessageId,
+    })
+      ? await readAdmissionDefault(scope)
+      : undefined;
     const timestamp = this.now();
     const firstMessageTitle = initialChatTitle(command.text);
     const newChatStartedWatcherFiredAt = new Date(timestamp).toISOString();
     let startsNewTrackedChat = false;
-    let installedStartingRuntime = false;
+    let startsHeldTurn = false;
     let admissionCheck: ChatSendAdmissionCheck | undefined;
+    let admittedApproval: ChatSendAdmittedApproval | undefined;
     let precommitResult:
       | {
           outcome: 'not_found' | 'already_applied' | 'rejected';
           reason?: string;
         }
       | undefined;
+    let acceptedRequest: ChatSendMessageRequest | undefined;
     const commitSend = (): Promise<ChatStateCommit> =>
       this.repository.transactWith(
         scope,
@@ -8216,8 +11549,16 @@ export class ChatStateService implements ChatStateCommandPort {
             return [];
           }
           if (
-            tab.messages.some(({ id }) => id === command.userMessageId) &&
-            !command.agentSenderProvenance
+            (tab.messages.some(({ id }) => id === command.userMessageId) &&
+              // Core precommits an agent's message before it is accepted.
+              !command.agentSenderProvenance) ||
+            current.runtimeByChatId[tab.id]?.queuedMessages?.some(
+              ({ request }) => request.userMessageId === command.userMessageId,
+            ) ||
+            (isInputLedger(tab.inputDelivery) &&
+              tab.inputDelivery.rows.some(
+                (row) => row.payload.userMessageId === command.userMessageId,
+              ))
           ) {
             precommitResult = options.portalSend
               ? {
@@ -8252,24 +11593,23 @@ export class ChatStateService implements ChatStateCommandPort {
             precommitResult = { outcome: 'rejected', reason: admissionRefusal };
             return [];
           }
+          admittedApproval = admissionCheck
+            ? admittedApprovalOf(tab, admissionDefault)
+            : undefined;
           startsNewTrackedChat =
             tab.newChatStartedWatcherFiredAt === undefined &&
             (tab.newChatStartedWatcherPending === true ||
               tab.messages.length === 0);
-          const runtime = current.runtimeByChatId[tab.id];
-          // Persist queued input without superseding the running provider turn.
-          // Its events can arrive before dispatch reconciles the host queue.
-          const turnAlreadyActive =
-            runtime !== undefined &&
-            ['starting', 'streaming', 'awaiting_input', 'completing'].includes(
-              runtime.status,
-            );
           const approval = command.planReviewApproval;
           if (
             approval &&
             (asyncAnswer ||
               command.planMode === true ||
-              !matchesOpenCodePlanReview(tab, runtime, approval))
+              !matchesOpenCodePlanReview(
+                tab,
+                current.runtimeByChatId[tab.id],
+                approval,
+              ))
           ) {
             precommitResult = {
               outcome: 'rejected',
@@ -8278,23 +11618,29 @@ export class ChatStateService implements ChatStateCommandPort {
             };
             return [];
           }
-          installedStartingRuntime =
-            !asyncAnswer &&
-            !turnAlreadyActive &&
-            !this.setupHolds.has(chatRuntimeHostKey(scope, tab.id));
-          return [
+          // Optional additive metadata on the retained answered question lets
+          // every native prompt builder recover the answer after durable dequeue,
+          // even builders that do not echo the request's asyncQuestionId.
+          const answeredQuestion:
+            | (PersistedPendingQuestion & { answerUserMessageId: string })
+            | undefined =
+            question && asyncAnswer
+              ? {
+                  ...question,
+                  answers: asyncAnswer.answers,
+                  answeredAt: timestamp,
+                  answerUserMessageId: command.userMessageId,
+                }
+              : undefined;
+          const acceptanceMutations: ChatCoreMutation[] = [
             ...(tab !== persistedTab
               ? [{ type: 'tab.created' as const, tab }]
               : []),
-            ...(question && asyncAnswer
+            ...(answeredQuestion
               ? [
                   {
                     type: 'pending_question.upserted' as const,
-                    question: {
-                      ...question,
-                      answers: asyncAnswer.answers,
-                      answeredAt: timestamp,
-                    },
+                    question: answeredQuestion,
                   },
                 ]
               : []),
@@ -8371,46 +11717,63 @@ export class ChatStateService implements ChatStateCommandPort {
                   },
                 ]
               : []),
-            {
-              type: 'message.upserted',
-              chatId: tab.id,
-              message: {
-                ...buildUserMessage(command, timestamp),
-                ...(asyncAnswer
-                  ? {
-                      blocks: [
-                        {
-                          type: 'text' as const,
-                          text: command.text,
-                          asyncQuestionAnswer: {
-                            requestId: asyncAnswer.questionId,
-                            startsTurn: false,
-                            answers: asyncAnswer.answers,
-                          },
-                        },
-                      ],
-                    }
-                  : {}),
-              },
-            },
-            ...(installedStartingRuntime
-              ? [
-                  {
-                    type: 'runtime.patched' as const,
-                    chatId: tab.id,
-                    runtime: {
-                      status: 'starting' as const,
-                      queuedMessageIds: [],
-                      activeTurn: {
-                        userMessageId: command.userMessageId,
-                        startedAt: timestamp,
-                      },
-                      lastActivityAt: timestamp,
-                    },
-                  },
-                ]
-              : []),
           ];
+          // An unchanged title/settings send still needs a durable command
+          // receipt. Without this fence an empty transaction is unapplied and
+          // the send would disappear before real queue admission.
+          if (acceptanceMutations.length === 0) {
+            acceptanceMutations.push({
+              type: 'tab.metadata_patched',
+              tabId: tab.id,
+              patch: {},
+            });
+          }
+          const acceptedTab = acceptanceMutations
+            .reduce(applyMutation, current)
+            .tabsFile.tabs.find((candidate) => candidate.id === tab.id);
+          if (!acceptedTab || acceptedTab.kind === 'file') {
+            throw new Error(
+              `Accepted chat ${tab.id} is missing from its transaction`,
+            );
+          }
+          const request = {
+            ...admittedSendRequest(scope, command, acceptedTab, {
+              startsNewTrackedChat,
+              asyncAnswer,
+            }),
+            ...(admittedApproval ? { admittedApproval } : {}),
+          };
+          acceptedRequest = request;
+          const runtime = current.runtimeByChatId[tab.id] ?? {
+            status: 'idle' as const,
+            queuedMessageIds: [],
+          };
+          // Only a send that starts the chat's turn before any setup holds the
+          // chat can become the turn a worktree setup holds.
+          startsHeldTurn =
+            !asyncAnswer &&
+            !['starting', 'streaming', 'awaiting_input', 'completing'].includes(
+              runtime.status,
+            ) &&
+            !this.setupHolds.has(chatRuntimeHostKey(scope, tab.id));
+          acceptanceMutations.push({
+            type: 'runtime.patched',
+            chatId: tab.id,
+            runtime: {
+              ...runtime,
+              queuedMessages: [
+                ...(runtime.queuedMessages ?? []),
+                {
+                  id: `admission:${command.userMessageId}`,
+                  request,
+                  origin: envelope.origin ?? 'desktop',
+                  enqueuedAtMs: timestamp,
+                  admitting: true,
+                },
+              ],
+            },
+          });
+          return acceptanceMutations;
         },
         {
           ...{
@@ -8493,13 +11856,45 @@ export class ChatStateService implements ChatStateCommandPort {
         messageId: command.userMessageId,
       });
     }
+    // A replayed agent send's input committed in an earlier attempt, so its
+    // builder did not run again; rebuild the request from canonical state.
+    const request =
+      acceptedRequest ??
+      (command.agentSenderProvenance
+        ? {
+            ...admittedSendRequest(scope, command, canonical, {
+              startsNewTrackedChat,
+              asyncAnswer,
+            }),
+            ...(admittedApproval ? { admittedApproval } : {}),
+          }
+        : undefined);
+    if (!request)
+      throw new Error(
+        `Accepted chat request ${command.userMessageId} is missing`,
+      );
     const setupHold = asyncAnswer
       ? undefined
       : (this.setupHolds.get(chatRuntimeHostKey(scope, command.chatId)) ??
         this.beginSetupHold(scope, command.chatId));
     if (setupHold) {
       await setupHold.acquired;
-      if (installedStartingRuntime && setupHold.owner === undefined) {
+      // The held turn shows as starting, its prompt committed, until setup
+      // ends; later sends queue behind it through admission. A setup that
+      // already ended waits for this commit, so it still settles this turn.
+      const installing =
+        startsHeldTurn && setupHold.owner === undefined
+          ? this.commitAdmittedPrompt(
+              scope,
+              envelope,
+              command,
+              timestamp,
+              undefined,
+              { cancelledBeforeDispatch: false, startsTurn: true },
+            )
+          : undefined;
+      if (installing) setupHold.installing = installing;
+      if (installing && (await installing)) {
         this.holdTurnForSetup(setupHold, {
           key: awaitingSetupKey(scope, command),
           scope,
@@ -8522,14 +11917,7 @@ export class ChatStateService implements ChatStateCommandPort {
       envelope,
       command,
       commit.revision,
-      {
-        request: admittedSendRequest(scope, command, canonical, {
-          startsNewTrackedChat,
-          asyncAnswer,
-        }),
-        timestamp,
-        installedStartingRuntime,
-      },
+      { request, timestamp, installedStartingRuntime: false },
       asyncAnswer,
     );
   }
@@ -8622,6 +12010,7 @@ export class ChatStateService implements ChatStateCommandPort {
     outcome: WorktreeGitSetupOutcome,
   ): Promise<void> {
     await hold.acquired;
+    await hold.installing?.catch(() => false);
     if (this.draining) return;
     const target = { ...hold.scope, chatId: hold.chatId };
     const key = chatRuntimeHostKey(hold.scope, hold.chatId);
@@ -8696,6 +12085,9 @@ export class ChatStateService implements ChatStateCommandPort {
       command.chatId,
       command.userMessageId,
     );
+    const admissionDefault = held.admissionCheck
+      ? await readAdmissionDefault(scope)
+      : undefined;
     const state = await this.repository.getState(scope, {
       chatIds: [command.chatId],
     });
@@ -8722,17 +12114,97 @@ export class ChatStateService implements ChatStateCommandPort {
       await this.settleHeldSend(held, 'failed', admissionRefusal);
       return;
     }
+    // A pipeline override's model commits again over a change made during
+    // setup, as at acceptance: host routing and the session follow the chat.
+    const routedTab = command.turnOverride
+      ? await this.commitTurnOverrideModel(scope, command, tab)
+      : tab;
+    const request = {
+      ...admittedSendRequest(scope, command, routedTab, {
+        startsNewTrackedChat: held.startsNewTrackedChat,
+      }),
+      ...(held.admissionCheck
+        ? { admittedApproval: admittedApprovalOf(tab, admissionDefault) }
+        : {}),
+    };
     held.state = 'dispatching';
     const key = chatRuntimeHostKey(hold.scope, hold.chatId);
     if (this.setupHolds.get(key) === hold) this.setupHolds.delete(key);
     await this.dispatchAdmitted(scope, held.envelope, command, held.revision, {
-      request: admittedSendRequest(scope, command, tab, {
-        startsNewTrackedChat: held.startsNewTrackedChat,
-      }),
+      request,
       timestamp: held.timestamp,
       installedStartingRuntime: ownsRuntime,
       acknowledged: true,
     });
+  }
+
+  /**
+   * Commits a queued pipeline send's override model to its chat when the chat
+   * moved off it while the send waited, so host routing follows the override.
+   */
+  public async commitTurnOverrideModelFor(
+    request: ChatSendMessageRequest,
+  ): Promise<void> {
+    const override = request.turnOverride;
+    const { userMessageId } = request;
+    if (
+      userMessageId === undefined ||
+      (override?.model === undefined && override?.providerType === undefined)
+    )
+      return;
+    const scope = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
+    const state = await this.repository.getState(scope, {
+      chatIds: [request.chatId],
+    });
+    const tab = state.tabsFile.tabs.find(
+      (candidate) => candidate.id === request.chatId,
+    );
+    if (!tab || tab.kind === 'file') return;
+    await this.commitTurnOverrideModel(
+      scope,
+      {
+        chatId: request.chatId,
+        userMessageId,
+        model: override.model,
+        providerType: override.providerType,
+      },
+      tab,
+    );
+  }
+
+  /** The chat with its send's model committed, when the chat has moved off it. */
+  private async commitTurnOverrideModel(
+    scope: ChatScopeKey,
+    command: Pick<
+      SendMessageCommand,
+      'chatId' | 'userMessageId' | 'model' | 'providerType'
+    >,
+    tab: PersistedChatTab,
+  ): Promise<PersistedChatTab> {
+    if (tabWithSendModel(tab, command) === tab) return tab;
+    const commit = await this.repository.transactWith(
+      scope,
+      (current) => {
+        const latest = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === command.chatId,
+        );
+        if (!latest || latest.kind === 'file') return [];
+        const next = tabWithSendModel(latest, command);
+        return next === latest ? [] : [{ type: 'tab.created', tab: next }];
+      },
+      {
+        source: 'automation',
+        mutationId: `${command.chatId}:${command.userMessageId}:override-model`,
+        chatIds: [command.chatId],
+      },
+    );
+    const committed = commit.state.tabsFile.tabs.find(
+      (candidate) => candidate.id === command.chatId,
+    );
+    return committed && committed.kind !== 'file' ? committed : tab;
   }
 
   private async settleHeldSend(
@@ -8769,6 +12241,8 @@ export class ChatStateService implements ChatStateCommandPort {
     attempt = 0,
   ): Promise<void> {
     const occurredAt = this.now();
+    const endKey = awaitingSetupKey(scope, command);
+    this.unrecordedTurnEnds.add(endKey);
     let acceptedMeanwhile = false;
     try {
       await this.repository.transactWith(
@@ -8842,6 +12316,7 @@ export class ChatStateService implements ChatStateCommandPort {
       }
       return;
     }
+    this.unrecordedTurnEnds.delete(endKey);
     if (acceptedMeanwhile) return;
     this.deliverUnacceptedTurnEnd(scope, command, outcome, reason);
   }
@@ -8889,6 +12364,143 @@ export class ChatStateService implements ChatStateCommandPort {
     );
   }
 
+  /**
+   * Commits an admitted send's prompt, with its turn's starting runtime when
+   * the send starts a turn: at immediate admission, or when a worktree setup
+   * holds the turn. Returns whether it installed that runtime.
+   */
+  private async commitAdmittedPrompt(
+    scope: ChatScopeKey,
+    envelope: ChatCommandEnvelope,
+    command: SendMessageCommand,
+    timestamp: number,
+    asyncAnswer:
+      | { questionId: string; answers: McpQuestionAnswer[] }
+      | undefined,
+    options: { cancelledBeforeDispatch: boolean; startsTurn: boolean },
+  ): Promise<boolean> {
+    let installed = false;
+    await this.repository.transactWith(
+      scope,
+      (current, _revision, transaction) => {
+        const tab = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === command.chatId,
+        );
+        if (
+          !tab ||
+          tab.kind === 'file' ||
+          tab.readOnly ||
+          transaction.hasRemovedMessage(command.userMessageId)
+        ) {
+          throw new Error('Target chat no longer accepts this message');
+        }
+        const runtime = current.runtimeByChatId[tab.id];
+        const runtimeAfterAdmission = removeAdmittingRuntimeEntry(
+          runtime,
+          command.userMessageId,
+        );
+        const hasAdmittingEntry = runtimeAfterAdmission !== runtime;
+        if (tab.messages.some(({ id }) => id === command.userMessageId)) {
+          return runtimeAfterAdmission && hasAdmittingEntry
+            ? [
+                {
+                  type: 'runtime.patched',
+                  chatId: tab.id,
+                  runtime: runtimeAfterAdmission,
+                },
+              ]
+            : [];
+        }
+        const turnAlreadyActive =
+          runtime !== undefined &&
+          ['starting', 'streaming', 'awaiting_input', 'completing'].includes(
+            runtime.status,
+          );
+        installed =
+          options.startsTurn &&
+          !options.cancelledBeforeDispatch &&
+          !asyncAnswer &&
+          !turnAlreadyActive;
+        // An automation's own send (CAN-4549) keeps its banner directly ahead
+        // of the prompt; the dispatch funnels skip it once the prompt exists.
+        const automationBanner = command.automationDispatch
+          ? buildAutomationInfoMessage(
+              automationDispatchRequestFields(command.automationDispatch),
+              command.userMessageId,
+              tab.messages,
+              timestamp,
+            )
+          : null;
+        const mutations: ChatCoreMutation[] = [
+          ...(automationBanner &&
+          !tab.messages.some(({ id }) => id === automationBanner.id)
+            ? [
+                {
+                  type: 'message.upserted' as const,
+                  chatId: tab.id,
+                  message: automationBanner,
+                },
+              ]
+            : []),
+          {
+            type: 'message.upserted',
+            chatId: tab.id,
+            message: {
+              ...buildUserMessage(command, timestamp),
+              ...(asyncAnswer
+                ? {
+                    blocks: [
+                      {
+                        type: 'text',
+                        text: command.text,
+                        asyncQuestionAnswer: {
+                          requestId: asyncAnswer.questionId,
+                          startsTurn: options.startsTurn,
+                          answers: asyncAnswer.answers,
+                        },
+                      },
+                    ],
+                  }
+                : {}),
+            },
+          },
+        ];
+        if (installed) {
+          if (!command.planReviewApproval)
+            mutations.push(...retireSupersededPlanExitMutations(tab));
+          const nextRuntime: ChatRuntimeState = {
+            ...runtimeAfterAdmission,
+            status: 'starting',
+            queuedMessageIds: runtime?.queuedMessageIds ?? [],
+            activeTurn: {
+              userMessageId: command.userMessageId,
+              startedAt: timestamp,
+            },
+            lastActivityAt: timestamp,
+          };
+          mutations.push({
+            type: 'runtime.patched',
+            chatId: tab.id,
+            runtime: nextRuntime,
+          });
+        } else if (runtimeAfterAdmission && hasAdmittingEntry) {
+          mutations.push({
+            type: 'runtime.patched',
+            chatId: tab.id,
+            runtime: runtimeAfterAdmission,
+          });
+        }
+        return mutations;
+      },
+      {
+        source: 'renderer-command',
+        mutationId: `${envelope.commandId}:immediate-prompt`,
+        chatIds: [command.chatId],
+      },
+    );
+    return installed;
+  }
+
   private async dispatchAdmitted(
     scope: ChatScopeKey,
     envelope: ChatCommandEnvelope,
@@ -8902,12 +12514,40 @@ export class ChatStateService implements ChatStateCommandPort {
     },
     asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] },
   ): Promise<ChatCommandResult> {
-    const { request, timestamp, installedStartingRuntime } = admitted;
+    const { request, timestamp } = admitted;
+    let { installedStartingRuntime } = admitted;
+    const commitImmediatePrompt = async (options: {
+      cancelledBeforeDispatch: boolean;
+      startsTurn: boolean;
+    }): Promise<void> => {
+      if (
+        await this.commitAdmittedPrompt(
+          scope,
+          envelope,
+          command,
+          timestamp,
+          asyncAnswer,
+          options,
+        )
+      )
+        installedStartingRuntime = true;
+    };
     try {
-      // The live provider owns turn liveness. Async questions themselves never
-      // pause a turn, and a persisted "streaming" status can be stale on resume.
-      if (!asyncAnswer || !(await this.steer(request))) {
-        await this.dispatch(request, envelope.origin ?? 'desktop');
+      // Answers use the same queue-aware dispatch hook as every other input.
+      // It owns active-session delivery and calls the prompt commit only after
+      // immediate admission; ChatStateService never reaches into a session.
+      await this.dispatch(
+        request,
+        envelope.origin ?? 'desktop',
+        commitImmediatePrompt,
+      );
+      if (asyncAnswer) {
+        await this.retireAsyncAnswerAdmission(
+          scope,
+          command.chatId,
+          command.userMessageId,
+          `${envelope.commandId}:answer-admission-retired`,
+        );
       }
     } catch (error) {
       if (isAgentSenderContextError(error)) {
@@ -8975,6 +12615,66 @@ export class ChatStateService implements ChatStateCommandPort {
       }
       const reason = error instanceof Error ? error.message : String(error);
       if (asyncAnswer) {
+        if (
+          await this.hasDurableAsyncAnswerOwnership(
+            scope,
+            command.chatId,
+            command.userMessageId,
+          )
+        ) {
+          // A queue/input-delivery owner or a committed prompt is now the only
+          // copy allowed to settle this answer. Preserve the answered question
+          // even when the claim's later settlement failed.
+          let rejectedRevision = revision;
+          try {
+            const retained = await this.repository.transactWith(
+              scope,
+              (current): ChatCoreMutation[] => {
+                const tab = current.tabsFile.tabs.find(
+                  (candidate) => candidate.id === command.chatId,
+                );
+                if (!tab) return [];
+                const mutations: ChatCoreMutation[] = [
+                  {
+                    type: 'tab.metadata_patched',
+                    tabId: tab.id,
+                    patch: {},
+                  },
+                ];
+                const runtime = current.runtimeByChatId[tab.id];
+                const nextRuntime = removeAdmittingRuntimeEntry(
+                  runtime,
+                  command.userMessageId,
+                );
+                if (nextRuntime && nextRuntime !== runtime) {
+                  mutations.push({
+                    type: 'runtime.patched',
+                    chatId: tab.id,
+                    runtime: nextRuntime,
+                  });
+                }
+                return mutations;
+              },
+              {
+                source: 'renderer-command',
+                mutationId: `${envelope.commandId}:answer-delivery-failed`,
+                commandResult: {
+                  commandId: envelope.commandId,
+                  outcome: 'rejected',
+                  reason,
+                },
+                chatIds: [command.chatId],
+              },
+            );
+            rejectedRevision = retained.revision;
+          } catch {
+            // The original accepted receipt and delivery evidence remain
+            // authoritative if recording the failure result also fails.
+          }
+          return commandResult(envelope, rejectedRevision, 'rejected', {
+            reason,
+          });
+        }
         const rollback = await this.repository.transactWith(
           scope,
           (current) => {
@@ -8983,22 +12683,37 @@ export class ChatStateService implements ChatStateCommandPort {
                 candidate.requestId === asyncAnswer.questionId &&
                 candidate.chatId === command.chatId,
             );
-            if (!question || question.answeredAt !== timestamp) return [];
-            const {
-              answeredAt: _answeredAt,
-              answers: _answers,
-              ...pending
-            } = question;
-            void _answeredAt;
-            void _answers;
-            return [
-              { type: 'pending_question.upserted', question: pending },
-              {
-                type: 'message.removed',
+            const mutations: ChatCoreMutation[] = [];
+            if (question?.answeredAt === timestamp) {
+              const {
+                answeredAt: _answeredAt,
+                answers: _answers,
+                ...pending
+              } = question;
+              void _answeredAt;
+              void _answers;
+              mutations.push(
+                { type: 'pending_question.upserted', question: pending },
+                {
+                  type: 'message.removed',
+                  chatId: command.chatId,
+                  messageId: command.userMessageId,
+                },
+              );
+            }
+            const runtime = current.runtimeByChatId[command.chatId];
+            const runtimeAfterAdmission = removeAdmittingRuntimeEntry(
+              runtime,
+              command.userMessageId,
+            );
+            if (runtimeAfterAdmission && runtimeAfterAdmission !== runtime) {
+              mutations.push({
+                type: 'runtime.patched',
                 chatId: command.chatId,
-                messageId: command.userMessageId,
-              },
-            ];
+                runtime: runtimeAfterAdmission,
+              });
+            }
+            return mutations;
           },
           {
             source: 'renderer-command',
@@ -9019,18 +12734,38 @@ export class ChatStateService implements ChatStateCommandPort {
       if (!installedStartingRuntime && admitted.acknowledged !== true) {
         const rollback = await this.repository.transactWith(
           scope,
-          (current) =>
-            current.tabsFile.tabs
-              .find((candidate) => candidate.id === command.chatId)
-              ?.messages.some((message) => message.id === command.userMessageId)
+          (current): ChatCoreMutation[] => {
+            const tab = current.tabsFile.tabs.find(
+              (candidate) => candidate.id === command.chatId,
+            );
+            if (!tab) return [];
+            const mutations: ChatCoreMutation[] = tab.messages.some(
+              (message) => message.id === command.userMessageId,
+            )
               ? [
                   {
-                    type: 'message.removed' as const,
+                    type: 'message.removed',
                     chatId: command.chatId,
                     messageId: command.userMessageId,
                   },
                 ]
-              : [],
+              : // Deferred rows do not exist to remove. Still write the rejected
+                // command receipt rather than leaving acceptance recorded as applied.
+                [{ type: 'tab.metadata_patched', tabId: tab.id, patch: {} }];
+            const runtime = current.runtimeByChatId[tab.id];
+            const runtimeAfterAdmission = removeAdmittingRuntimeEntry(
+              runtime,
+              command.userMessageId,
+            );
+            if (runtimeAfterAdmission && runtimeAfterAdmission !== runtime) {
+              mutations.push({
+                type: 'runtime.patched',
+                chatId: tab.id,
+                runtime: runtimeAfterAdmission,
+              });
+            }
+            return mutations;
+          },
           {
             source: 'renderer-command',
             mutationId: `${envelope.commandId}:queue-rejected`,
@@ -9052,7 +12787,7 @@ export class ChatStateService implements ChatStateCommandPort {
           `${command.chatId}:${command.userMessageId}:accepted`,
         )
       ) {
-        await this.repository.transactWith(
+        await this.transactWithTurnHandoff(
           scope,
           (current) => {
             const runtime = current.runtimeByChatId[command.chatId];
@@ -9068,6 +12803,7 @@ export class ChatStateService implements ChatStateCommandPort {
               ...(runtime?.queuedMessages
                 ? { queuedMessages: runtime.queuedMessages }
                 : {}),
+              ...(runtime?.turn !== undefined ? { turn: runtime.turn } : {}),
               activeTurn: {
                 userMessageId: command.userMessageId,
                 startedAt: timestamp,
@@ -9083,6 +12819,7 @@ export class ChatStateService implements ChatStateCommandPort {
             const tab = current.tabsFile.tabs.find(
               (candidate) => candidate.id === command.chatId,
             );
+            // The host settles this turn, so it records the turn's end too.
             const turnEnds = tab
               ? settleTurnEnds(
                   tab.turnEnds,
@@ -9324,6 +13061,7 @@ export class ChatStateService implements ChatStateCommandPort {
     const command = envelope.command;
     if (
       command.type !== 'chat.edit_queued_message' &&
+      command.type !== 'chat.move_queued_message' &&
       command.type !== 'chat.cancel_queued_message' &&
       command.type !== 'chat.steer_queued_message' &&
       command.type !== 'chat.force_queued_message'
@@ -9373,6 +13111,13 @@ export class ChatStateService implements ChatStateCommandPort {
         durableCommandResult,
         envelope.origin === 'portal' ? 'preserve' : 'replace',
       );
+    } else if (command.type === 'chat.move_queued_message') {
+      queueResult = await queue.move(
+        { ...scope, chatId: command.chatId },
+        command.queuedMessageId,
+        command.beforeQueuedMessageId,
+        durableCommandResult,
+      );
     } else if (command.type === 'chat.cancel_queued_message') {
       queueResult = await queue.cancel(
         { ...scope, chatId: command.chatId },
@@ -9397,9 +13142,14 @@ export class ChatStateService implements ChatStateCommandPort {
         envelope,
         await this.repository.getRevision(scope),
         queueResult === 'not_found' ? 'not_found' : 'rejected',
-        queueResult === 'busy'
-          ? { reason: 'The queued message is currently being dispatched' }
-          : undefined,
+        queueResult !== 'busy'
+          ? undefined
+          : command.type === 'chat.move_queued_message'
+            ? {
+                reason:
+                  'The queue cannot be reordered while a message is being edited or dispatched',
+              }
+            : { reason: 'The queued message is currently being dispatched' },
       );
     }
     return commandResult(
@@ -9428,7 +13178,7 @@ export class ChatStateService implements ChatStateCommandPort {
       );
     }
     let question: PersistedPendingQuestion | undefined;
-    let noOpOutcome: 'not_found' | 'already_applied' | undefined;
+    let noOpOutcome: 'not_found' | 'already_applied' | 'rejected' | undefined;
     try {
       const state = await this.repository.getState(scope);
       if (!dismiss && command.type === 'chat.answer_question') {
@@ -9483,7 +13233,21 @@ export class ChatStateService implements ChatStateCommandPort {
           );
         }
       }
-      const commit = await this.repository.transactWith(
+      const pauseQuestion = (state.tabsFile.pendingQuestions ?? []).find(
+        (candidate) =>
+          candidate.chatId === command.chatId &&
+          (candidate.requestId === command.questionId ||
+            candidate.toolUseId === command.questionId),
+      );
+      this.observeTurnPause({
+        ...scope,
+        chatId: command.chatId,
+        type: 'PauseClosed',
+        ownerKind: 'question',
+        ownerId: pauseQuestion?.requestId ?? command.questionId,
+        atMs: this.now(),
+      });
+      const commit = await this.transactWithTurnHandoff(
         scope,
         (current) => {
           const currentQuestion = (
@@ -9497,6 +13261,13 @@ export class ChatStateService implements ChatStateCommandPort {
           question = currentQuestion;
           if (!currentQuestion) {
             noOpOutcome = 'not_found';
+            return [];
+          }
+          if (
+            command.type === 'chat.answer_question' &&
+            isAskUserRequestCancelled(currentQuestion.requestId)
+          ) {
+            noOpOutcome = 'rejected';
             return [];
           }
           if (currentQuestion.answeredAt !== undefined) {
@@ -9568,6 +13339,7 @@ export class ChatStateService implements ChatStateCommandPort {
             outcome: 'applied',
           },
           ...expectedRevisionOption(envelope),
+          chatIds: [command.chatId],
         },
       );
       if (noOpOutcome) {
@@ -9614,6 +13386,7 @@ export class ChatStateService implements ChatStateCommandPort {
     let reason: string | undefined;
     let result: ChatCommandResult;
     try {
+      const chatCloseBlockReason = await this.getChatCloseBlockReasonChecker();
       const commit = await this.repository.transactWith(
         scope,
         (state) => {
@@ -9634,21 +13407,25 @@ export class ChatStateService implements ChatStateCommandPort {
               'awaiting_input',
               'completing',
             ].includes(runtime.status);
-          if (
+          const blockReason = chatCloseBlockReason(
+            scope.projectId,
+            scope.worktreeId,
+            tabId,
+          );
+          const hasOtherActiveWork =
             runtimeActive ||
-            hasLiveDelegations(
-              `${scope.projectId}/${scope.worktreeId}/${tabId}`,
-            ) ||
             (isInputLedger(tab.inputDelivery) &&
               tab.inputDelivery.rows.some((row) =>
                 ['sending', 'pending', 'cancelling'].includes(row.state),
               )) ||
             (runtime?.queuedMessageIds.length ?? 0) > 0 ||
-            tab.pendingPlanExit !== undefined
-          ) {
+            tab.pendingPlanExit !== undefined;
+          if (hasOtherActiveWork || blockReason !== null) {
             outcome = 'rejected';
             reason =
-              'The chat cannot be closed while it has active, queued, or pending plan work';
+              blockReason === 'background'
+                ? BACKGROUND_WORK_CHAT_REFUSAL
+                : 'The chat cannot be closed while it has active, queued, or pending plan work';
             return [];
           }
           if (mode === 'discard_empty' && tab.messages.length > 0) {
@@ -9670,9 +13447,10 @@ export class ChatStateService implements ChatStateCommandPort {
           ];
           if (mode === 'archive') {
             const archivedAt = this.now();
-            const messages = closeOpenPersistedToolUses(
-              closeOpenPersistedTurnTimers(tab.messages, archivedAt),
+            const messages = settlePersistedInterruptedMessages(
+              tab.messages,
               archivedAt,
+              runtime,
             );
             const finalizedTab =
               messages === tab.messages ? tab : { ...tab, messages };
@@ -9681,6 +13459,12 @@ export class ChatStateService implements ChatStateCommandPort {
               entry: {
                 tab: finalizedTab,
                 archivedAt: new Date(archivedAt).toISOString(),
+                turnFence: archiveTurnFence(
+                  finalizedTab,
+                  this.turnHandoff.getState({ ...scope, chatId: tabId }) ??
+                    runtime?.turn,
+                  archivedAt,
+                ),
                 turnCount: countTurns(finalizedTab),
                 ...('unread' in envelope.command && envelope.command.unread
                   ? { unread: true }
@@ -9778,9 +13562,15 @@ export class ChatStateService implements ChatStateCommandPort {
       if (keepSession) {
         // session-manager owns provider sessions that call back into this
         // service, so resolve it only after the archive commit is complete.
-        const { markChatSessionIdle } =
-          await import('../agents/session-manager');
+        const [
+          { markChatSessionIdle },
+          { releaseArchivedChatSessionWhenIdle },
+        ] = await Promise.all([
+          import('../agents/session-manager'),
+          import('../lib/archived-chat-session-release'),
+        ]);
         markChatSessionIdle(scope.projectId, scope.worktreeId, tabId);
+        releaseArchivedChatSessionWhenIdle({ ...scope, chatId: tabId }, this);
       } else {
         const target = { ...scope, chatId: tabId };
         try {
@@ -9816,6 +13606,7 @@ export class ChatStateService implements ChatStateCommandPort {
     let resultEntityId: string | undefined = command.targets[0]?.tabId;
     let result: ChatCommandResult;
     try {
+      const chatCloseBlockReason = await this.getChatCloseBlockReasonChecker();
       const commit = await this.repository.transactWith(
         scope,
         (state) => {
@@ -9850,21 +13641,25 @@ export class ChatStateService implements ChatStateCommandPort {
                 'awaiting_input',
                 'completing',
               ].includes(runtime.status);
-            if (
+            const blockReason = chatCloseBlockReason(
+              scope.projectId,
+              scope.worktreeId,
+              target.tabId,
+            );
+            const hasOtherActiveWork =
               runtimeActive ||
-              hasLiveDelegations(
-                `${scope.projectId}/${scope.worktreeId}/${target.tabId}`,
-              ) ||
               (isInputLedger(tab.inputDelivery) &&
                 tab.inputDelivery.rows.some((row) =>
                   ['sending', 'pending', 'cancelling'].includes(row.state),
                 )) ||
               (runtime?.queuedMessageIds.length ?? 0) > 0 ||
-              tab.pendingPlanExit !== undefined
-            ) {
+              tab.pendingPlanExit !== undefined;
+            if (hasOtherActiveWork || blockReason !== null) {
               outcome = 'rejected';
               reason =
-                'The chat cannot be closed while it has active, queued, or pending plan work';
+                blockReason === 'background'
+                  ? BACKGROUND_WORK_CHAT_REFUSAL
+                  : 'The chat cannot be closed while it has active, queued, or pending plan work';
               resultEntityId = target.tabId;
               return [];
             }
@@ -9887,9 +13682,10 @@ export class ChatStateService implements ChatStateCommandPort {
 
             mutations.push({ type: 'tab.removed', tabId: target.tabId });
             if (target.mode === 'archive') {
-              const messages = closeOpenPersistedToolUses(
-                closeOpenPersistedTurnTimers(tab.messages, archivedAt),
+              const messages = settlePersistedInterruptedMessages(
+                tab.messages,
                 archivedAt,
+                runtime,
               );
               const finalizedTab =
                 messages === tab.messages ? tab : { ...tab, messages };
@@ -9898,6 +13694,14 @@ export class ChatStateService implements ChatStateCommandPort {
                 entry: {
                   tab: finalizedTab,
                   archivedAt: new Date(archivedAt).toISOString(),
+                  turnFence: archiveTurnFence(
+                    finalizedTab,
+                    this.turnHandoff.getState({
+                      ...scope,
+                      chatId: target.tabId,
+                    }) ?? runtime?.turn,
+                    archivedAt,
+                  ),
                   turnCount: countTurns(finalizedTab),
                 },
               });
@@ -10028,6 +13832,8 @@ export class ChatStateService implements ChatStateCommandPort {
   ): Promise<ChatCommandResult> {
     let outcome: ChatCommandResult['outcome'] = 'applied';
     const targetTabId = command.targetTabId ?? command.archiveEntryId;
+    this.turnHandoff.invalidate({ ...scope, chatId: command.archiveEntryId });
+    this.turnHandoff.invalidate({ ...scope, chatId: targetTabId });
     try {
       const commit = await this.repository.transactWith(
         scope,
@@ -10061,6 +13867,15 @@ export class ChatStateService implements ChatStateCommandPort {
               ...(targetTabId !== entry.tab.id
                 ? { transcriptSourceChatId: entry.tab.id }
                 : {}),
+            },
+            {
+              type: 'runtime.patched',
+              chatId: targetTabId,
+              runtime: {
+                status: 'idle',
+                queuedMessageIds: [],
+                turn: serializeChatTurnState(initialChatTurnState()),
+              },
             },
             { type: 'tab.active_changed', activeTabId: targetTabId },
           ];
@@ -10268,6 +14083,7 @@ export class ChatStateService implements ChatStateCommandPort {
         delete fork.attentionDismissedAt;
         delete fork.autoArchive;
         delete fork.unread;
+        delete fork.unreadMarkedManually;
         delete fork.codexReconstructionSeedId;
         delete fork.claudeTerminal;
         const providerType =
@@ -10442,6 +14258,7 @@ export class ChatStateService implements ChatStateCommandPort {
         requestId: question.requestId,
         chatId: tab.id,
       }));
+    this.turnHandoff.invalidate({ ...scope, chatId: tab.id });
     return this.commit(
       scope,
       envelope,
@@ -10456,15 +14273,72 @@ export class ChatStateService implements ChatStateCommandPort {
         {
           type: 'runtime.patched',
           chatId: tab.id,
-          runtime: { status: 'idle', queuedMessageIds: [] },
+          runtime: {
+            status: 'idle',
+            queuedMessageIds: [],
+            turn: serializeChatTurnState(initialChatTurnState()),
+          },
         },
       ],
       { entityId: tab.id },
     );
   }
 
-  private async publishCommit(commit: ChatStateCommit): Promise<void> {
+  private startCommitWait(commit: ChatStateCommit): ChatWaitOperation {
+    return startChatWaitOperation({
+      name: 'chat_state.publish_commit',
+      scope: { projectId: commit.projectId, worktreeId: commit.worktreeId },
+      queueDepth: 0,
+      bounded: true,
+      record: this.recordDiagnostic,
+    });
+  }
+
+  /** `wait` is the repository's timing, started when publication was reserved. */
+  private async publishCommit(
+    commit: ChatStateCommit,
+    wait: ChatWaitOperation = this.startCommitWait(commit),
+  ): Promise<void> {
+    wait.phase('commit_projection');
+    try {
+      const publicationCompleted = await this.publishCommitStages(commit, wait);
+      wait.finish(publicationCompleted ? 'completed' : 'failed');
+    } catch (error) {
+      wait.finish('failed');
+      throw error;
+    }
+  }
+
+  private async publishCommitStages(
+    commit: ChatStateCommit,
+    wait: ChatWaitOperation,
+  ): Promise<boolean> {
     const projectionScopeKey = `${commit.projectId}\u0000${commit.worktreeId}`;
+    const readmissionRemovedTabIds =
+      this.scopesAwaitingProjectionReadmission.get(projectionScopeKey);
+    if (readmissionRemovedTabIds) {
+      // Revisions restart on readmission; retain deletion deltas while fencing
+      // observers and retries from the previous incarnation.
+      this.scopesAwaitingProjectionReadmission.delete(projectionScopeKey);
+      const abandoned = this.pendingChatTabsProjections.get(projectionScopeKey);
+      if (abandoned) {
+        abandoned.changedTabIds.forEach((id) =>
+          readmissionRemovedTabIds.add(id),
+        );
+        abandoned.removedTabIds.forEach((id) =>
+          readmissionRemovedTabIds.add(id),
+        );
+        this.pendingChatTabsProjections.delete(projectionScopeKey);
+      }
+      this.projectionGenerationByScope.set(
+        projectionScopeKey,
+        (this.projectionGenerationByScope.get(projectionScopeKey) ?? 0) + 1,
+      );
+      this.latestProjectionCommitRevisionByScope.delete(projectionScopeKey);
+      this.runningChatTabsProjections.delete(projectionScopeKey);
+      this.activeChatTabsProjections.delete(projectionScopeKey);
+      this.chatTabsProjectionFailures.delete(projectionScopeKey);
+    }
     this.latestProjectionCommitRevisionByScope.set(
       projectionScopeKey,
       Math.max(
@@ -10479,6 +14353,30 @@ export class ChatStateService implements ChatStateCommandPort {
         case 'tab.created':
           changedTabIds.add(mutation.tab.id);
           break;
+        case 'archive.upserted': {
+          const archivedScope = {
+            projectId: commit.projectId,
+            worktreeId: commit.worktreeId,
+            chatId: mutation.entry.tab.id,
+          };
+          // An archive-only update keeps a fresh start staged for the restore;
+          // the check runs against this entry's fence, so a new one drops it.
+          if (
+            !isFreshArchivedStart(
+              mutation.entry,
+              this.turnHandoff.getState(archivedScope),
+            )
+          )
+            this.turnHandoff.invalidate(archivedScope);
+          this.persistedBackgroundSnapshotRequests.delete(
+            JSON.stringify([
+              commit.projectId,
+              commit.worktreeId,
+              mutation.entry.tab.id,
+            ]),
+          );
+          break;
+        }
         case 'tab.metadata_patched':
           changedTabIds.add(mutation.tabId);
           break;
@@ -10498,9 +14396,22 @@ export class ChatStateService implements ChatStateCommandPort {
           break;
         case 'pending_question.removed':
           this.pendingQuestionScopes.delete(mutation.requestId);
+          clearAskUserRequestCancellation(mutation.requestId);
           changedTabIds.add(mutation.chatId);
           break;
         case 'tab.removed':
+          this.turnHandoff.invalidate({
+            projectId: commit.projectId,
+            worktreeId: commit.worktreeId,
+            chatId: mutation.tabId,
+          });
+          this.persistedBackgroundSnapshotRequests.delete(
+            JSON.stringify([
+              commit.projectId,
+              commit.worktreeId,
+              mutation.tabId,
+            ]),
+          );
           changedTabIds.delete(mutation.tabId);
           removedTabIds.add(mutation.tabId);
           break;
@@ -10521,33 +14432,32 @@ export class ChatStateService implements ChatStateCommandPort {
       changedTabIds: Array.from(changedTabIds),
       removedTabIds: Array.from(removedTabIds),
     };
+    wait.phase('required_materialization');
+    let publicationCompleted = true;
     try {
-      await notifyChatTabsMaterialized(
+      await ensureChatTabsRequiredDurability(
         commit.projectId,
         commit.worktreeId,
         commit.state.tabsFile,
         delta,
+        commit.revision,
       );
     } catch (error) {
+      publicationCompleted = false;
+      wait.failPhase();
       const retry = this.schedule(() => {
         void (async (): Promise<void> => {
-          if (
-            (this.latestProjectionCommitRevisionByScope.get(
-              projectionScopeKey,
-            ) ?? 0) > commit.revision
-          ) {
-            return;
-          }
           try {
-            await notifyChatTabsMaterialized(
+            await ensureChatTabsRequiredDurability(
               commit.projectId,
               commit.worktreeId,
               commit.state.tabsFile,
               delta,
+              commit.revision,
             );
           } catch (retryError) {
             logMainProcessWarn(
-              `[chat-state] Projection retry failed at revision ${commit.revision}:`,
+              `[chat-state] Required durability retry failed at revision ${commit.revision}:`,
               retryError,
             );
           }
@@ -10555,10 +14465,21 @@ export class ChatStateService implements ChatStateCommandPort {
       }, 100);
       retry.unref?.();
       logMainProcessWarn(
-        `[chat-state] Projection failed; scheduled retry at revision ${commit.revision}:`,
+        `[chat-state] Required durability failed; scheduled retry at revision ${commit.revision}:`,
         error,
       );
     }
+    const transcriptResetChatIds =
+      commit.transcriptResets === undefined
+        ? new Set(
+            commit.record.mutations.flatMap((mutation) =>
+              mutation.type === 'messages.replaced' ||
+              mutation.type === 'message.removed'
+                ? [mutation.chatId]
+                : [],
+            ),
+          )
+        : new Set(commit.transcriptResets);
     const event: ChatStateChangedEvent = {
       schemaVersion: 1,
       eventId: this.createId(),
@@ -10568,7 +14489,10 @@ export class ChatStateService implements ChatStateCommandPort {
       baseRevision: commit.baseRevision,
       revision: commit.revision,
       changes: [
-        ...projectChatStateChanges(commit.record.mutations),
+        ...projectChatStateChanges(commit.record.mutations, {
+          snapshot: commit.state,
+        }),
+        ...(commit.cardChanges ?? []),
         ...commit.state.tabsFile.tabs.flatMap((tab) =>
           tab.transcript && changedTabIds.has(tab.id)
             ? [
@@ -10576,22 +14500,19 @@ export class ChatStateService implements ChatStateCommandPort {
                   type: 'transcript.updated' as const,
                   chatId: tab.id,
                   transcript: tab.transcript,
-                  reset: commit.record.mutations.some(
-                    (mutation) =>
-                      (mutation.type === 'messages.replaced' ||
-                        mutation.type === 'message.removed') &&
-                      mutation.chatId === tab.id,
-                  ),
+                  reset: transcriptResetChatIds.has(tab.id),
                 },
               ]
             : [],
         ),
       ],
     };
+    wait.phase('subscriber_publication');
     for (const listener of Array.from(this.listeners)) {
       try {
         listener(event);
       } catch {
+        publicationCompleted = false;
         const retry = setTimeout(() => {
           try {
             if (this.listeners.has(listener)) listener(event);
@@ -10602,14 +14523,208 @@ export class ChatStateService implements ChatStateCommandPort {
         retry.unref?.();
       }
     }
+    this.queueChatTabsProjection(commit, delta, readmissionRemovedTabIds);
+    return publicationCompleted;
+  }
+
+  private queueChatTabsProjection(
+    commit: ChatStateCommit,
+    delta: ChatTabsWriteDelta,
+    readmissionRemovedTabIds?: ReadonlySet<string>,
+  ): void {
+    const key = `${commit.projectId}\u0000${commit.worktreeId}`;
+    let pending = this.pendingChatTabsProjections.get(key);
+    if (!pending) {
+      pending = {
+        projectId: commit.projectId,
+        worktreeId: commit.worktreeId,
+        revision: commit.revision,
+        data: commit.state.tabsFile,
+        changedTabIds: new Set(),
+        removedTabIds: new Set(),
+        changedTabs: new Map(),
+      };
+      this.pendingChatTabsProjections.set(key, pending);
+    }
+    pending.revision = commit.revision;
+    pending.data = commit.state.tabsFile;
+    readmissionRemovedTabIds?.forEach((id) => {
+      pending.changedTabIds.delete(id);
+      pending.changedTabs.delete(id);
+      pending.removedTabIds.add(id);
+    });
+    const tabsById = new Map(
+      commit.state.tabsFile.tabs.map((tab) => [tab.id, tab]),
+    );
+    for (const id of delta.changedTabIds) {
+      pending.removedTabIds.delete(id);
+      pending.changedTabIds.add(id);
+      const tab = tabsById.get(id);
+      if (tab) pending.changedTabs.set(id, tab);
+      else pending.changedTabs.delete(id);
+    }
+    for (const id of delta.removedTabIds) {
+      pending.changedTabIds.delete(id);
+      pending.changedTabs.delete(id);
+      pending.removedTabIds.add(id);
+    }
+    if (!this.runningChatTabsProjections.has(key)) {
+      queueMicrotask(() => void this.drainChatTabsProjections(key));
+    }
+  }
+
+  private async drainChatTabsProjections(key: string): Promise<void> {
+    const generation = this.projectionGenerationByScope.get(key) ?? 0;
+    if (this.runningChatTabsProjections.has(key)) return;
+    this.runningChatTabsProjections.set(key, generation);
+    try {
+      let pending = this.pendingChatTabsProjections.get(key);
+      while (pending) {
+        if ((this.projectionGenerationByScope.get(key) ?? 0) !== generation)
+          return;
+        this.pendingChatTabsProjections.delete(key);
+        if (
+          (this.latestProjectionCommitRevisionByScope.get(key) ?? 0) >
+          pending.revision
+        ) {
+          const newer = this.pendingChatTabsProjections.get(key);
+          if (!newer) {
+            this.pendingChatTabsProjections.set(key, pending);
+            return;
+          }
+          this.mergeChatTabsProjectionDeltas(pending, newer);
+          pending = newer;
+          continue;
+        }
+        const projection = pending;
+        const data = {
+          ...projection.data,
+          tabs: projection.data.tabs.map(
+            (tab) => projection.changedTabs.get(tab.id) ?? tab,
+          ),
+        };
+        const delta = {
+          changedTabIds: Array.from(projection.changedTabIds),
+          removedTabIds: Array.from(projection.removedTabIds),
+        };
+        const active = { generation, projection };
+        this.activeChatTabsProjections.set(key, active);
+        try {
+          await notifyChatTabsMaterialized(
+            projection.projectId,
+            projection.worktreeId,
+            data,
+            delta,
+            projection.revision,
+            () =>
+              (this.projectionGenerationByScope.get(key) ?? 0) === generation &&
+              this.latestProjectionCommitRevisionByScope.get(key) ===
+                projection.revision,
+          );
+          if ((this.projectionGenerationByScope.get(key) ?? 0) !== generation)
+            return;
+          this.chatTabsProjectionFailures.delete(key);
+          if (
+            (this.latestProjectionCommitRevisionByScope.get(key) ?? 0) >
+            projection.revision
+          ) {
+            // A stale observer may skip its late nudges without throwing.
+            const newer = this.pendingChatTabsProjections.get(key);
+            if (newer) {
+              this.mergeChatTabsProjectionDeltas(projection, newer);
+            } else {
+              this.pendingChatTabsProjections.set(key, projection);
+              return;
+            }
+          }
+        } catch (error) {
+          if ((this.projectionGenerationByScope.get(key) ?? 0) !== generation)
+            return;
+          const newer = this.pendingChatTabsProjections.get(key);
+          if (newer) {
+            this.mergeChatTabsProjectionDeltas(projection, newer);
+          } else {
+            this.pendingChatTabsProjections.set(key, projection);
+          }
+          const failures = (this.chatTabsProjectionFailures.get(key) ?? 0) + 1;
+          this.chatTabsProjectionFailures.set(key, failures);
+          const delay = Math.min(100 * 2 ** Math.min(failures - 1, 9), 30_000);
+          const retry = this.schedule(() => {
+            if ((this.projectionGenerationByScope.get(key) ?? 0) === generation)
+              void this.drainChatTabsProjections(key);
+          }, delay);
+          retry.unref?.();
+          logMainProcessWarn(
+            `[chat-state] Auxiliary projection failed at revision ${projection.revision}; retry scheduled:`,
+            error,
+          );
+          return;
+        } finally {
+          if (this.activeChatTabsProjections.get(key) === active)
+            this.activeChatTabsProjections.delete(key);
+        }
+        pending = this.pendingChatTabsProjections.get(key);
+      }
+    } finally {
+      if (this.runningChatTabsProjections.get(key) === generation)
+        this.runningChatTabsProjections.delete(key);
+    }
+  }
+
+  private mergeChatTabsProjectionDeltas(
+    older: PendingChatTabsProjection,
+    newer: PendingChatTabsProjection,
+  ): void {
+    for (const id of Array.from(older.changedTabIds)) {
+      if (newer.changedTabIds.has(id) || newer.removedTabIds.has(id)) continue;
+      newer.changedTabIds.add(id);
+      const tab = older.changedTabs.get(id);
+      if (tab) newer.changedTabs.set(id, tab);
+    }
+    for (const id of Array.from(older.removedTabIds)) {
+      if (newer.changedTabIds.has(id) || newer.removedTabIds.has(id)) continue;
+      newer.removedTabIds.add(id);
+    }
   }
 }
 
 let chatStateService: ChatStateService | undefined;
 
+function forwardTurnLifecycle(event: ChatTurnLifecycleEvent): void {
+  try {
+    chatStateService?.observeTurnLifecycle(event);
+  } catch {
+    // This is an observational sink, including when replaced by a test spy.
+  }
+}
+
+function lookupEndedTurn(scope: ChatTurnStateScope, turnId: string): boolean {
+  return chatStateService?.hasEndedTurn(scope, turnId) === true;
+}
+
+let unbindTurnOwnership: (() => void) | undefined;
+
+/** One sink, always forwarding to the current service, never to a stale one. */
+function replaceChatStateService(next: ChatStateService | undefined): void {
+  if (chatStateService !== next) {
+    unbindTurnOwnership?.();
+    unbindTurnOwnership = undefined;
+    chatStateService?.disposeTurnHandoff();
+  }
+  chatStateService = next;
+  if (next && !unbindTurnOwnership)
+    unbindTurnOwnership = bindChatTurnOwnership(next, (scope) =>
+      next.loadCommittedTurnState(scope),
+    );
+  // The background publisher loads with the Claude session module or the
+  // first persisted background snapshot request, and activates then.
+  setTurnLifecycleSink(next ? forwardTurnLifecycle : null);
+  setTurnLifecycleEndedLookup(next ? lookupEndedTurn : null);
+}
+
 export function getChatStateService(): ChatStateService {
   if (!chatStateService) {
-    chatStateService = new ChatStateService({
+    const service = new ChatStateService({
       claudeToolNames: new Set([
         CANOPY_INJECTED_TOOL_REGISTRY.show_visual.claudeToolName,
       ]),
@@ -10618,6 +14733,7 @@ export function getChatStateService(): ChatStateService {
       ]),
       cursorToolUse: hasTrustedVisualToolUse,
     });
+    replaceChatStateService(service);
     // Lazy for the same initialization cycle as `recordDiagnostic` above.
     installChatTranscriptRewriteDiagnosticSink((record): void => {
       void import('../observability')
@@ -10628,6 +14744,7 @@ export function getChatStateService(): ChatStateService {
           // A rewrite diagnostic never changes a committed transaction.
         });
     });
+    return service;
   }
   return chatStateService;
 }
@@ -10637,7 +14754,7 @@ export function getChatStateService(): ChatStateService {
  * or install `next` (a service built with test-specific repository options).
  */
 export function resetChatStateServiceForTests(next?: ChatStateService): void {
-  chatStateService = next;
+  replaceChatStateService(next);
 }
 
 /** Main-only watcher producer reads; never an interface command port. */

@@ -1,6 +1,12 @@
 // CAN-3819: core.workspace.sourceRepo.initialize. Runs the real sidebar,
 // persistence and source-control modules against a temporary data dir; only
-// Git is mocked.
+// Git and pipeline policy are mocked.
+const mockPipelineBindingsEnabled = jest.fn(() => false);
+jest.mock('../../feature-flags', () => ({
+  getFeatureFlagService: (): {
+    isEnabled: typeof mockPipelineBindingsEnabled;
+  } => ({ isEnabled: mockPipelineBindingsEnabled }),
+}));
 jest.mock('../../observability', () => ({
   getObservabilityService: jest.fn(() => ({
     recordAppDiagnostic: jest.fn(),
@@ -34,6 +40,8 @@ import {
   writeAllSidebarItems,
 } from '../sidebar-items';
 import { updateWorkspaceConfig } from '../workspace-persistence';
+import * as persistence from '../workspace-persistence';
+import { applyWorkspaceManifestDecision } from '../workspace-record-decision-port';
 import {
   initializeWorkspaceSourceRepo,
   WorkspaceSourceRepoRefusedError,
@@ -41,6 +49,14 @@ import {
 } from '../workspace-source-control';
 
 type JsonRecord = Record<string, unknown>;
+
+function signal(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = (): void => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 const REPO_A = { id: 'repo-a', name: 'Repo A', repoPath: '/repos/a' };
 const REPO_B = { id: 'repo-b', name: 'Repo B', repoPath: '/repos/b' };
@@ -88,6 +104,7 @@ describe('source repository initialization (real fs)', () => {
   let originalDataDir: string | undefined;
 
   beforeEach(async () => {
+    mockPipelineBindingsEnabled.mockReset().mockReturnValue(false);
     __resetSidebarItemsStateForTests();
     originalDataDir = process.env.CANOPY_DATA_DIR;
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'canopy-ws-source-init-'));
@@ -96,6 +113,7 @@ describe('source repository initialization (real fs)', () => {
   });
 
   afterEach(async () => {
+    jest.restoreAllMocks();
     if (originalDataDir === undefined) {
       delete process.env.CANOPY_DATA_DIR;
     } else {
@@ -109,6 +127,7 @@ describe('source repository initialization (real fs)', () => {
       await updateWorkspaceConfig('suite', (config): void => {
         config.repos.push({ ...REPO_B });
       });
+      return 'test-commit-sha';
     });
 
     const result = await initializeWorkspaceSourceRepo({
@@ -120,6 +139,93 @@ describe('source repository initialization (real fs)', () => {
     expect(manifest.sourceRepoPath).toBe(result.sourceRepoPath);
     expect(manifest.repos).toEqual([{ ...REPO_A, source: 'local' }, REPO_B]);
   });
+
+  it.each([true, false])(
+    'observes pipeline policy inside the contended manifest updater (enabled=%s)',
+    async (enabled) => {
+      mockPipelineBindingsEnabled.mockReturnValue(true);
+      await updateWorkspaceConfig('suite', (config) => {
+        config.hooks = {
+          setup: [
+            { type: 'chat', prompt: 'run', executionContext: 'local:machine' },
+          ],
+        };
+      });
+      mockPipelineBindingsEnabled.mockReturnValue(!enabled);
+      const entered = signal();
+      const release = signal();
+      const held = updateWorkspaceConfig('suite', async () => {
+        entered.resolve();
+        await release.promise;
+      });
+      await entered.promise;
+      const queued = signal();
+      const update = persistence.updateWorkspaceConfig;
+      jest
+        .spyOn(persistence, 'updateWorkspaceConfig')
+        .mockImplementationOnce((...args) => {
+          const pending = update(...args);
+          queued.resolve();
+          return pending;
+        });
+      const initialization = initializeWorkspaceSourceRepo({
+        workspaceId: 'suite',
+        source: 'workspace_settings',
+      });
+      try {
+        await Promise.race([
+          queued.promise,
+          initialization.then(() => {
+            throw new Error('Expected a queued source record');
+          }),
+        ]);
+        mockPipelineBindingsEnabled.mockReturnValue(enabled);
+      } finally {
+        release.resolve();
+        await held;
+      }
+      await initialization;
+      expect((await readManifest('suite')).hooks).toEqual(
+        enabled
+          ? {
+              setup: [
+                {
+                  type: 'chat',
+                  prompt: 'run',
+                  executionContext: 'local:machine',
+                  localExecutionContextOverlay: true,
+                },
+              ],
+            }
+          : undefined,
+      );
+    },
+  );
+
+  it.each(['absent', 'bound'] as const)(
+    'refuses a %s source record before observing pipeline policy',
+    async (state) => {
+      if (state === 'bound') {
+        await updateWorkspaceConfig('suite', (config) => {
+          config.sourceRepoPath = '/existing';
+        });
+      }
+      mockPipelineBindingsEnabled.mockClear();
+      await expect(
+        applyWorkspaceManifestDecision(
+          state === 'absent' ? 'missing' : 'suite',
+          {
+            kind: 'workspace.source.initialize',
+            repositories: [],
+            sourceRepoPath: '/new',
+          },
+        ),
+      ).rejects.toMatchObject({
+        reason: state === 'absent' ? 'not-found' : 'already-initialized',
+      });
+      expect(mockPipelineBindingsEnabled).not.toHaveBeenCalled();
+    },
+  );
 
   it('names the repository after the project and records it', async () => {
     const result = await initializeWorkspaceSourceRepo({
@@ -182,6 +288,7 @@ describe('source repository initialization (real fs)', () => {
       await updateWorkspaceConfig('suite', (config): void => {
         config.sourceRepoPath = '/repos/other-source';
       });
+      return 'test-commit-sha';
     });
 
     await expectRefusal(

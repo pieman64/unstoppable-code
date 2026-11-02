@@ -6,22 +6,32 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
+const mockRefreshChargedTurn = jest.fn();
 const mockInvalidateAvailability = jest.fn();
 const mockInvalidateUsage = jest.fn();
 const mockInvalidateSharedRead = jest.fn();
 
 jest.mock('@/hooks/useAiCreditsAvailability', () => ({
-  invalidateAiCreditsAvailabilityCache: mockInvalidateAvailability,
+  get invalidateAiCreditsAvailabilityCache(): typeof mockInvalidateAvailability {
+    return mockInvalidateAvailability;
+  },
 }));
 jest.mock('@/hooks/useAiCreditsUsage', () => ({
-  invalidateAiCreditsUsageCache: mockInvalidateUsage,
+  get invalidateAiCreditsUsageCache(): typeof mockInvalidateUsage {
+    return mockInvalidateUsage;
+  },
+  get refreshAiCreditsAfterChargedTurn(): typeof mockRefreshChargedTurn {
+    return mockRefreshChargedTurn;
+  },
 }));
 // The THIRD AI-Credits cache. It gates whether `ModelRecoveryModal` auto-commits
 // a model on coverage, so an exhaustion event that dropped the other two but not
 // this one would leave a click after exhaustion able to commit a model whose
 // credits are gone.
 jest.mock('@/lib/openBillingPage', () => ({
-  invalidateSharedAiCreditsRead: mockInvalidateSharedRead,
+  get invalidateSharedAiCreditsRead(): typeof mockInvalidateSharedRead {
+    return mockInvalidateSharedRead;
+  },
 }));
 
 import { act, createElement } from 'react';
@@ -29,9 +39,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { useChatEventSubscriptions } from '../useChatEventSubscriptions';
 import { useChatStore } from '@/stores/chatStore';
 import { useTransientRetryBannerStore } from '@/stores/transientRetryBannerStore';
+import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import { useAiCreditsBannerStore } from '@/stores/aiCreditsBannerStore';
 import type { ChatEvent } from '@canopy/desktop-shared/types';
 import { AI_CREDITS_NO_BILLING_SOURCE_EVENT_TYPE } from '@canopy/desktop-shared/types';
+
+const defaultHandleChatEvent = useChatStore.getState().handleChatEvent;
 
 function HookHarness(): null {
   useChatEventSubscriptions();
@@ -51,7 +64,13 @@ describe('useChatEventSubscriptions', () => {
     jest.clearAllMocks();
     chatEventHandler = null;
     pendingRequests.mockResolvedValue([]);
-    useChatStore.setState({ pendingApprovals: {}, worktreeChats: {} });
+    useChatStore.setState({
+      pendingApprovals: {},
+      worktreeChats: {},
+      selectedWorktree: null,
+      handleChatEvent: defaultHandleChatEvent,
+    });
+    useIngestionLagStore.setState({ lagByChat: {} });
     getTransientRetrySnapshot.mockResolvedValue([
       {
         projectId: 'project-1',
@@ -325,6 +344,63 @@ describe('useChatEventSubscriptions', () => {
     expect(mockInvalidateUsage).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { type: 'result', is_error: false },
+    { type: 'result', is_error: true },
+    { type: 'result', is_error: true, terminal_reason: 'aborted_streaming' },
+    { type: 'codex', event: { type: 'turn.completed' } },
+    { type: 'codex', event: { type: 'turn.failed' } },
+  ])(
+    'refreshes a charged terminal event once without a mounted composer: %j',
+    async (data) => {
+      await act(async () => {
+        root.render(createElement(HookHarness));
+        await Promise.resolve();
+      });
+      const emit = (eventData: unknown): void => {
+        chatEventHandler?.({
+          projectId: 'no-project',
+          worktreeId: 'w',
+          chatId: 'c',
+          data: eventData,
+        });
+      };
+      act(() => {
+        emit({ type: 'canopy_user_prompt', text: 'hello' });
+        // Fallback can start after the native turn, and turn off before the terminal event.
+        emit({
+          type: 'canopy_ai_credits_routing',
+          provider: 'codex',
+          active: true,
+        });
+        emit({
+          type: 'canopy_ai_credits_routing',
+          provider: 'codex',
+          active: false,
+        });
+        emit(data);
+        emit(data);
+      });
+      expect(mockRefreshChargedTurn).toHaveBeenCalledTimes(1);
+      act(() => {
+        emit({
+          type: 'canopy_ai_credits_routing',
+          provider: 'codex',
+          active: true,
+        });
+        emit(data);
+      });
+      mockRefreshChargedTurn.mockClear();
+      // Persistent provider sessions report routing at spawn, not every turn.
+      act(() => {
+        emit({ type: 'canopy_user_prompt', text: 'follow-up' });
+        emit(data);
+        emit(data);
+      });
+      expect(mockRefreshChargedTurn).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('leaves the AI Credits caches alone for an unrelated chat error', async () => {
     await act(async () => {
       root.render(createElement(HookHarness));
@@ -343,5 +419,116 @@ describe('useChatEventSubscriptions', () => {
     expect(mockInvalidateAvailability).not.toHaveBeenCalled();
     expect(mockInvalidateUsage).not.toHaveBeenCalled();
     expect(mockInvalidateSharedRead).not.toHaveBeenCalled();
+  });
+
+  it('stores ingestion-lag events before chat routing, including a clear', async () => {
+    const handleChatEvent = jest.fn<void, [ChatEvent]>();
+    useChatStore.setState({ handleChatEvent });
+
+    await act(async () => {
+      root.render(createElement(HookHarness));
+      await Promise.resolve();
+    });
+
+    const target = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'not-hydrated',
+    };
+    expect(useChatStore.getState().worktreeChats).toEqual({});
+    act(() => {
+      chatEventHandler?.({
+        ...target,
+        data: {
+          type: 'canopy_ingestion_lag',
+          lag: {
+            lagMs: 750,
+            source: 'provider',
+            sampledAtMs: 1234,
+            catchingUp: true,
+          },
+        },
+      });
+    });
+
+    expect(
+      useIngestionLagStore.getState().lagByChat[
+        'project-1/worktree-1/not-hydrated'
+      ],
+    ).toMatchObject({ ...target, lag: { lagMs: 750, catchingUp: true } });
+    expect(handleChatEvent).not.toHaveBeenCalled();
+
+    act(() => {
+      chatEventHandler?.({
+        ...target,
+        data: { type: 'canopy_ingestion_lag', lag: null },
+      });
+    });
+
+    expect(
+      useIngestionLagStore.getState().lagByChat[
+        'project-1/worktree-1/not-hydrated'
+      ],
+    ).toBeUndefined();
+    expect(handleChatEvent).not.toHaveBeenCalled();
+  });
+
+  it('ignores invalid ingestion-lag payloads but routes unrelated events', async () => {
+    const handleChatEvent = jest.fn<void, [ChatEvent]>();
+    useChatStore.setState({ handleChatEvent });
+    const target = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'not-hydrated',
+    };
+    useIngestionLagStore.getState().setLag(target, {
+      lagMs: 400,
+      source: 'receipt',
+      sampledAtMs: 1200,
+      catchingUp: true,
+    });
+    const priorEntry =
+      useIngestionLagStore.getState().lagByChat[
+        'project-1/worktree-1/not-hydrated'
+      ];
+
+    await act(async () => {
+      root.render(createElement(HookHarness));
+      await Promise.resolve();
+    });
+
+    act(() => {
+      chatEventHandler?.({
+        ...target,
+        data: {
+          type: 'canopy_ingestion_lag',
+          lag: {
+            lagMs: -1,
+            source: 'provider',
+            sampledAtMs: 1300,
+            catchingUp: true,
+          },
+        },
+      });
+      chatEventHandler?.({
+        ...target,
+        data: { type: 'canopy_ingestion_lag' },
+      });
+    });
+
+    expect(
+      useIngestionLagStore.getState().lagByChat[
+        'project-1/worktree-1/not-hydrated'
+      ],
+    ).toBe(priorEntry);
+    expect(handleChatEvent).not.toHaveBeenCalled();
+
+    const unrelatedEvent: ChatEvent = {
+      ...target,
+      data: { type: 'ordinary_chat_event' },
+    };
+    act(() => chatEventHandler?.(unrelatedEvent));
+
+    expect(handleChatEvent).toHaveBeenCalledWith(unrelatedEvent);
   });
 });

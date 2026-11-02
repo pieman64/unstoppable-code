@@ -48,6 +48,10 @@ const REMOVE_OPTIONS = {
   retryDelay: 100,
 };
 const DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS = 5_000;
+// The Windows launcher closes only after its supervisor finishes bounded
+// cleanup (15 s PowerShell enumerations, a 45 s release acknowledgement).
+const DEFAULT_WINDOWS_LAUNCHER_CLOSE_TIMEOUT_MS = 60_000;
+const SUPERVISED_PID_FILE_TIMEOUT_MS = 5_000;
 const CLOSE_TRACE_PATH_ENV = 'CANOPY_E2E_CLOSE_TRACE_PATH';
 
 function traceCloseCanopy(event, detail = {}) {
@@ -180,6 +184,10 @@ const defaultViewportSize = { width: 1400, height: 900 };
 //   LaunchDarkly; its spec drives it off explicitly.
 const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-desktop-labs-early-access': 'offered',
+  // Keep ordinary UI specs direct; Files acceptance opts in through Labs.
+  'canopy-desktop-labs-daemon-files-reads': 'offered',
+  // Chat automations save natively unless a spec opts in through Labs.
+  'canopy-desktop-labs-chat-automation-pipelines': 'offered',
   // The Labs page experiments are `offered` (off until switched on) in
   // production (CAN-3678). Pin them `on` so specs that drive these pages keep
   // them without per-spec seeding; labs-pages.spec.mjs sets them back to
@@ -238,8 +246,8 @@ function launchMeasurementDetails(options) {
       viewportSize: options.viewportSize ?? defaultViewportSize,
       reusesUserDataDir: options.userDataDir !== undefined,
       freshOnboarding: options.freshOnboarding === true,
-      freshOnboardingChecklist: options.freshOnboardingChecklist === true,
       freshApprovalsUpgradeNotice: options.freshApprovalsUpgradeNotice === true,
+      freshOnboardingTips: options.freshOnboardingTips === true,
       preserveProviderState: options.preserveProviderState === true,
       seedDemoWorkspaces: options.seedDemoWorkspaces === true,
       demoWorkspaceSet: options.demoWorkspaceSet,
@@ -261,6 +269,37 @@ export function parseSupervisedTreePid(rawPid) {
     throw new Error('E2E supervisor did not record a valid process-tree PID.');
   }
   return pid;
+}
+
+/**
+ * Read the supervisor's process-tree PID file. On Windows a missing or still
+ * empty file is retried until a short deadline before the original read error
+ * is reported; other platforms read once.
+ */
+export async function readSupervisedTreePid(
+  pidFile,
+  {
+    platform = process.platform,
+    readFile = readFileSync,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    timeoutMs = SUPERVISED_PID_FILE_TIMEOUT_MS,
+    pollIntervalMs = 50,
+  } = {},
+) {
+  const read = () => parseSupervisedTreePid(readFile(pidFile, 'utf8'));
+  if (platform !== 'win32') return read();
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    try {
+      const raw = String(readFile(pidFile, 'utf8'));
+      if (raw.trim()) return parseSupervisedTreePid(raw);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    await wait(Math.min(pollIntervalMs, Math.max(0, deadline - now())));
+  }
+  return read();
 }
 
 export function createAbruptTreeKiller(
@@ -285,18 +324,86 @@ function boundedTerminalError(error) {
   };
 }
 
+const LAUNCHER_OUTPUT_TAIL_LINES = 30;
+const LAUNCHER_OUTPUT_PINNED_LINES = 12;
+const LAUNCHER_OUTPUT_LINE_LIMIT = 400;
+// Supervisor and watchdog exit reasons, and the main process's fatal errors.
+const LAUNCHER_OUTPUT_PINNED_PATTERN =
+  /\[e2e-(?:supervisor|watchdog)\]|Fatal uncaught exception|Unhandled rejection|Application shutdown could not/;
+
+function boundedOutputLine(line) {
+  return line.length <= LAUNCHER_OUTPUT_LINE_LIMIT
+    ? line
+    : `${line.slice(0, LAUNCHER_OUTPUT_LINE_LIMIT - 1)}…`;
+}
+
+/**
+ * Retain a bounded record of the launcher's stdout and stderr: the last lines
+ * plus every supervisor or fatal-error line. The listeners only read streams
+ * Playwright already consumes.
+ */
+function collectLauncherOutput(child) {
+  const output = { pinned: [], tail: [] };
+  const accept = (label, raw) => {
+    const line = raw.replace(/\r$/, '');
+    if (!line.trim()) return;
+    const entry = `${label}: ${boundedOutputLine(line)}`;
+    output.tail.push(entry);
+    if (output.tail.length > LAUNCHER_OUTPUT_TAIL_LINES) output.tail.shift();
+    if (
+      output.pinned.length < LAUNCHER_OUTPUT_PINNED_LINES &&
+      LAUNCHER_OUTPUT_PINNED_PATTERN.test(line)
+    )
+      output.pinned.push(entry);
+  };
+  for (const [label, stream] of [
+    ['out', child?.stdout],
+    ['err', child?.stderr],
+  ]) {
+    if (!stream || typeof stream.on !== 'function') continue;
+    const decoder = new TextDecoder();
+    let partial = '';
+    stream.on('data', (chunk) => {
+      partial +=
+        typeof chunk === 'string'
+          ? chunk
+          : decoder.decode(chunk, { stream: true });
+      const lines = partial.split('\n');
+      partial = lines.pop() ?? '';
+      for (const line of lines) accept(label, line);
+      if (partial.length > LAUNCHER_OUTPUT_LINE_LIMIT) {
+        accept(label, partial);
+        partial = '';
+      }
+    });
+    stream.on('end', () => {
+      partial += decoder.decode();
+      if (partial) accept(label, partial);
+      partial = '';
+    });
+  }
+  return output;
+}
+
 /**
  * Passively retain the terminal events emitted by Playwright's real Electron
  * launch child. This is a per-launch, in-memory observation only: it neither
- * waits for, signals, nor reaps the process.
+ * waits for, signals, nor reaps the process. On Windows it also keeps the
+ * launcher's bounded output, non-enumerably, so a nonzero result can report
+ * why the supervisor or Electron exited. A result that could not listen for
+ * `close` is marked `closeUnobservable`, also non-enumerably.
  */
-export function observeElectronTerminalResult(electronApp) {
+export function observeElectronTerminalResult(
+  electronApp,
+  { platform = process.platform } = {},
+) {
   const result = {
     pid: undefined,
     exit: undefined,
     close: undefined,
     error: undefined,
   };
+  let closeObservable = false;
   try {
     const child = electronApp.process();
     result.pid = child?.pid;
@@ -308,17 +415,25 @@ export function observeElectronTerminalResult(electronApp) {
       );
       return result;
     }
+    if (platform === 'win32')
+      Object.defineProperty(result, 'launcherOutput', {
+        value: collectLauncherOutput(child),
+      });
     child.once('exit', (code, signal) => {
       result.exit = { code, signal };
     });
     child.once('close', (code, signal) => {
       result.close = { code, signal };
     });
+    closeObservable = true;
     child.once('error', (error) => {
       result.error = boundedTerminalError(error);
     });
   } catch (error) {
     result.error = boundedTerminalError(error);
+  } finally {
+    if (!closeObservable)
+      Object.defineProperty(result, 'closeUnobservable', { value: true });
   }
   return result;
 }
@@ -392,19 +507,61 @@ function terminalReportSuffix(result) {
   return `${suffix.slice(0, TERMINAL_REPORT_SUFFIX_LIMIT - TERMINAL_REPORT_TRUNCATION_MARKER.length)}${TERMINAL_REPORT_TRUNCATION_MARKER}`;
 }
 
+const TERMINAL_DIAGNOSTICS_SUFFIX_LIMIT = 6144;
+
+function stringEntries(value) {
+  return Array.isArray(value)
+    ? value.filter((entry) => typeof entry === 'string')
+    : [];
+}
+
+/**
+ * Close steps and launcher output for a failed terminal result, or undefined
+ * when neither was recorded (every non-Windows close).
+ */
+function terminalDiagnostics(observation, closeSteps) {
+  const output = observation?.launcherOutput;
+  const diagnostics = {
+    closeSteps: stringEntries(closeSteps),
+    launcherOutput: {
+      pinned: stringEntries(output?.pinned),
+      tail: stringEntries(output?.tail),
+    },
+  };
+  return diagnostics.closeSteps.length > 0 ||
+    diagnostics.launcherOutput.pinned.length > 0 ||
+    diagnostics.launcherOutput.tail.length > 0
+    ? diagnostics
+    : undefined;
+}
+
+function terminalDiagnosticsSuffix(diagnostics) {
+  if (!diagnostics) return '';
+  const { closeSteps, launcherOutput } = diagnostics;
+  const suffix =
+    ` [terminal.close-steps=${closeSteps.join(' > ') || 'missing'}]` +
+    ` [terminal.launcher-output.pinned=${launcherOutput.pinned.join(' | ') || 'none'}]` +
+    ` [terminal.launcher-output.tail=${launcherOutput.tail.join(' | ') || 'none'}]`;
+  if (suffix.length <= TERMINAL_DIAGNOSTICS_SUFFIX_LIMIT) return suffix;
+  return `${suffix.slice(0, TERMINAL_DIAGNOSTICS_SUFFIX_LIMIT - TERMINAL_REPORT_TRUNCATION_MARKER.length)}${TERMINAL_REPORT_TRUNCATION_MARKER}`;
+}
+
 export class ElectronTerminalResultError extends Error {
-  constructor(observation) {
+  constructor(observation, { closeSteps } = {}) {
     const result = terminalObservationSnapshot(observation);
+    const diagnostics = terminalDiagnostics(observation, closeSteps);
     super(
       'Electron launch did not complete with matching exit(0, null) and close(0, null).' +
-        terminalReportSuffix(result),
+        terminalReportSuffix(result) +
+        terminalDiagnosticsSuffix(diagnostics),
     );
     this.name = 'ElectronTerminalResultError';
     this.result = result;
+    if (diagnostics) this.diagnostics = diagnostics;
   }
 }
 
-function assertSuccessfulElectronTerminalResult(observation) {
+function assertSuccessfulElectronTerminalResult(observation, details) {
   const result = terminalObservationSnapshot(observation);
   const hasZeroExit = result.exit?.code === 0 && result.exit.signal === null;
   const hasZeroClose = result.close?.code === 0 && result.close.signal === null;
@@ -419,7 +576,7 @@ function assertSuccessfulElectronTerminalResult(observation) {
     !hasZeroClose ||
     !matchingTuples
   )
-    throw new ElectronTerminalResultError(observation);
+    throw new ElectronTerminalResultError(observation, details);
 }
 
 let playwrightTargetClosedClassifier;
@@ -614,6 +771,33 @@ async function waitForSupervisedProcessExit(
     await wait(Math.min(pollIntervalMs, deadline - now()));
   }
   return !treeExists(supervisedTreePid);
+}
+
+/**
+ * Wait, bounded, for the observed launcher's `close`. On Windows Playwright's
+ * launched process is the `cmd.exe` running the supervisor, which closes only
+ * after the supervisor's cleanup. Once Electron has exited,
+ * `electronApp.close()` resolves on the CDP disconnect without waiting for
+ * that launcher. A child `error` does not settle the wait: it can report an
+ * undeliverable signal while the launcher keeps running. An observation
+ * without a `close` listener returns unsettled at once.
+ */
+export async function waitForElectronTerminalResult(
+  observation,
+  {
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    timeoutMs = DEFAULT_WINDOWS_LAUNCHER_CLOSE_TIMEOUT_MS,
+    pollIntervalMs = 50,
+  } = {},
+) {
+  const settled = () => Boolean(observation?.close);
+  if (observation?.closeUnobservable) return settled();
+  const deadline = now() + timeoutMs;
+  while (!settled() && now() < deadline) {
+    await wait(Math.min(pollIntervalMs, Math.max(0, deadline - now())));
+  }
+  return settled();
 }
 
 async function closeElectronAppWithDeadline(
@@ -1416,6 +1600,8 @@ export function buildElectronEnv(
   // setting into ordinary UI automation or performance runs.
   env.CANOPY_E2E_SHOW_WINDOW =
     extraEnv.CANOPY_E2E_SHOW_WINDOW === '1' ? '1' : '0';
+  if (extraEnv.CANOPY_E2E_OFFSCREEN_WINDOW !== '1')
+    delete env.CANOPY_E2E_OFFSCREEN_WINDOW;
   const inheritedHome = env.HOME;
   if (
     typeof inheritedHome === 'string' &&
@@ -1431,10 +1617,24 @@ export function buildElectronEnv(
   // Agent shells launched by a running desktop inherit its Crashpad pipe.
   // A disposable test renderer must never report into that desktop's database.
   delete env.CHROME_CRASHPAD_PIPE_NAME;
-  // Never honor an inherited LaunchDarkly client-side ID in tests: an unpackaged
-  // build would otherwise open a live streaming connection. Unset, the flag
-  // service stays in its deterministic not-configured defaults.
+  // Never inherit a live LaunchDarkly client. Startup fixtures may explicitly
+  // select a dummy client id only when all LD traffic uses a loopback server.
   delete env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID;
+  const fixtureClientId = extraEnv.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID?.trim();
+  if (fixtureClientId) {
+    const fixtureUrl = new URL(
+      extraEnv.CANOPY_E2E_LAUNCHDARKLY_BASE_URL ?? 'http://invalid',
+    );
+    if (
+      fixtureUrl.protocol !== 'http:' ||
+      !['127.0.0.1', 'localhost', '[::1]'].includes(fixtureUrl.hostname)
+    ) {
+      throw new Error(
+        'Explicit LaunchDarkly test client ids require an HTTP loopback endpoint',
+      );
+    }
+    env.LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID = fixtureClientId;
+  }
   // An API key outranks the claude.ai login, so Claude reports zero account
   // connectors and every connector row renders "unavailable". A developer or
   // runner exporting one would fail provider-connector specs for a reason that
@@ -1510,22 +1710,6 @@ export function buildElectronEnv(
  */
 function pickEphemeralMcpProxyPort() {
   return 20000 + Math.floor(Math.random() * 15000);
-}
-
-/**
- * Whether the user data dir already carries Home onboarding suggestions
- * module state — a spec that seeded it (`seedWelcomeChecklist`) or a relaunch
- * of a dir the module started in wants the module live.
- */
-function hasSeededOnboardingSuggestions(userDataDir) {
-  const preferencesPath = path.join(userDataDir, 'preferences.json');
-  if (!existsSync(preferencesPath)) return false;
-  try {
-    const persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
-    return Boolean(persisted?.preferences?.homeOnboardingSuggestions);
-  } catch {
-    return false;
-  }
 }
 
 function seedOnboardingCompleted(userDataDir) {
@@ -1622,40 +1806,6 @@ function seedOnboardingCompleted(userDataDir) {
 }
 
 /**
- * Seed a dismissed sidebar onboarding checklist (CAN-788) so the footer card
- * never mounts mid-test. The checklist hydrates asynchronously several
- * seconds after launch; mounting its card re-triggers the sidebar nav's
- * collapse-into-"More" measurement pass, which shifts every workspace row
- * after a spec has already measured one (CAN-2583: the shifted geometry put
- * a held pointer inside dnd-kit's auto-scroll activation band and drove the
- * sidebar to max scroll). Specs that assert the checklist itself opt out
- * with `freshOnboardingChecklist: true`.
- */
-function seedDismissedOnboardingChecklist(userDataDir) {
-  const checklistPath = path.join(userDataDir, 'onboarding-checklist.json');
-  // Never clobber a reused user data dir's real checklist state.
-  if (existsSync(checklistPath)) return;
-  const dismissedAt = '2026-08-27T00:00:00.000Z';
-  mkdirSync(userDataDir, { recursive: true });
-  writeFileSync(
-    checklistPath,
-    `${JSON.stringify(
-      {
-        version: 1,
-        updatedAt: dismissedAt,
-        completedItems: {},
-        dismissedAt,
-        snoozedUntil: null,
-        providersNotUsed: [],
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  );
-}
-
-/**
  * Seed the one-time "Agents can act without asking" approvals notice as
  * already dismissed. Full Access is the product default (CAN-3055), so a fresh
  * profile shows that notice in every composer's banner stack; left in place it
@@ -1688,6 +1838,52 @@ function seedDismissedApprovalsUpgradeNotice(userDataDir) {
       {
         ...persisted,
         preferences: { ...preferences, approvalsUpgradeNoticeDismissed: true },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+/**
+ * Seed every one-time onboarding tip (CAN-4904) as dismissed. A fresh profile
+ * shows one on Workflows and above every worktree chat composer, which would
+ * shift the layouts and banner stacks other specs measure. Like the approvals
+ * notice above, it only fills a missing field and only patches an existing
+ * preferences file. Specs about the tips opt out with
+ * `freshOnboardingTips: true`.
+ */
+function seedDismissedOnboardingTips(userDataDir) {
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  if (!existsSync(preferencesPath)) return;
+  let persisted;
+  try {
+    persisted = JSON.parse(readFileSync(preferencesPath, 'utf8'));
+  } catch {
+    // Recovery specs intentionally launch with invalid preferences.
+    return;
+  }
+  if (!persisted || typeof persisted !== 'object') return;
+  const preferences =
+    persisted.preferences && typeof persisted.preferences === 'object'
+      ? persisted.preferences
+      : {};
+  if (preferences.onboardingTipsDismissed !== undefined) return;
+  const at = '2026-01-01T00:00:00.000Z';
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        ...persisted,
+        preferences: {
+          ...preferences,
+          onboardingTipsDismissed: {
+            workflows: at,
+            'worktree-chat': at,
+            'workflows-schedule': at,
+          },
+        },
       },
       null,
       2,
@@ -1948,6 +2144,27 @@ export function resolveLaunchRuntimeRoot(rootPath) {
  * Helper-created data roots are removed by `closeCanopy` after the supervised
  * process tree is reaped.
  */
+const RENDERER_GONE_MARKER = '[canopy-e2e] render-process-gone';
+
+/**
+ * Only main learns why a renderer died. Relay it to the test's stderr so a
+ * `page.reload: Page crashed` failure names its cause in the job log.
+ */
+async function relayRendererCrashes(electronApp) {
+  electronApp.on('console', (message) => {
+    const text = message.text();
+    if (text.startsWith(RENDERER_GONE_MARKER))
+      process.stderr.write(`${text}\n`);
+  });
+  await electronApp.evaluate(({ app }, marker) => {
+    app.on('render-process-gone', (_event, contents, details) => {
+      console.error(
+        `${marker} ${JSON.stringify({ url: contents.getURL(), ...details })}`,
+      );
+    });
+  }, RENDERER_GONE_MARKER);
+}
+
 export async function launchCanopyApp(
   options = {},
   {
@@ -2050,13 +2267,8 @@ async function launchCanopyUnmeasured(options) {
     if (!options.freshApprovalsUpgradeNotice) {
       seedDismissedApprovalsUpgradeNotice(userDataDir);
     }
-    // Independent of `freshOnboarding`: the checklist is a sidebar footer
-    // surface, not part of the first-run wizard, and no onboarding spec
-    // asserts it — so wizard specs want the settled sidebar too.
-    // `freshOnboardingChecklist: true` is the single opt-out, and it also
-    // lets the Home/sidebar suggestions module start (see the launch env).
-    if (!options.freshOnboardingChecklist) {
-      seedDismissedOnboardingChecklist(userDataDir);
+    if (!options.freshOnboardingTips) {
+      seedDismissedOnboardingTips(userDataDir);
     }
     seedCaptureColorMode(userDataDir, { ...process.env, ...options.env });
     seedRendererCodeCacheScheme(userDataDir, {
@@ -2085,12 +2297,6 @@ async function launchCanopyUnmeasured(options) {
     const electronEnv = buildElectronEnv(
       userDataDir,
       {
-        CANOPY_E2E_ONBOARDING_SUGGESTIONS:
-          options.freshOnboarding ||
-          options.freshOnboardingChecklist ||
-          hasSeededOnboardingSuggestions(userDataDir)
-            ? ''
-            : 'hidden',
         ...options.env,
         ...buildE2eLaunchMarkerEnv(options.buildKind, showWindow),
         CANOPY_E2E_OWNER_PID: String(process.pid),
@@ -2155,13 +2361,13 @@ async function launchCanopyUnmeasured(options) {
       electronEnv.ELECTRON_RENDERER_URL ||
         packagedMainWindowRendererUrl(mainEntryPath, electronEnv),
     );
-    supervisedTreePid = parseSupervisedTreePid(
-      readFileSync(supervisedPidFile, 'utf8'),
-    );
+    supervisedTreePid = await readSupervisedTreePid(supervisedPidFile);
     registerSupervisedProcessTree(electronApp, supervisedTreePid, {
       trackedGroupsFile: supervisedGroupsFile,
       runNonce: supervisedRunNonce,
     });
+    // Diagnostics only: a failed relay must never fail the launch.
+    await relayRendererCrashes(electronApp).catch(() => undefined);
     if (sidecar)
       sidecar.evidence = { ...sidecar.identity, pid: supervisedTreePid };
 
@@ -2221,12 +2427,7 @@ async function launchCanopyUnmeasured(options) {
           ),
       );
     }
-    if (electronApp) await electronApp.close().catch(() => undefined);
-    if (!reuseDir) {
-      await removeTestDataDir(userDataDir);
-      await removeTestDataDir(`${userDataDir}-secure`);
-    }
-    throw error;
+    await cleanupFailedLaunch(electronApp, userDataDir, error, { reuseDir });
   }
 
   return {
@@ -2239,6 +2440,64 @@ async function launchCanopyUnmeasured(options) {
     supervisedTreePid,
     killAbruptly: createAbruptTreeKiller(supervisedTreePid),
   };
+}
+
+/**
+ * Close a non-headless launch that failed, remove its data roots, and rethrow.
+ * On Windows the roots are removed only after the observed launcher's `close`,
+ * as in `closeCanopy`; if it does not close in time they are kept and the
+ * failure names them.
+ */
+export async function cleanupFailedLaunch(
+  electronApp,
+  userDataDir,
+  launchError,
+  {
+    reuseDir = false,
+    removeDataDir = removeTestDataDir,
+    platform = process.platform,
+    windowsLauncherCloseTimeoutMs = DEFAULT_WINDOWS_LAUNCHER_CLOSE_TIMEOUT_MS,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  } = {},
+) {
+  const closeStartedAt = now();
+  if (electronApp) await electronApp.close().catch(() => undefined);
+  if (reuseDir) throw launchError;
+  const terminalObservation =
+    platform === 'win32' && electronApp
+      ? electronTerminalObservations.get(electronApp)
+      : undefined;
+  if (terminalObservation) {
+    const waitStartedAt = now();
+    const launcherClosed = await waitForElectronTerminalResult(
+      terminalObservation,
+      { wait, now, timeoutMs: windowsLauncherCloseTimeoutMs },
+    );
+    if (!launcherClosed) {
+      // Report the result seen at the deadline, even if the launcher closes
+      // while the failure is built.
+      const observedAtDeadline = {
+        ...terminalObservationSnapshot(terminalObservation),
+        launcherOutput: terminalObservation.launcherOutput,
+      };
+      const completedAt = now();
+      const sinceClose = completedAt - closeStartedAt;
+      const retained = new ElectronTerminalResultError(observedAtDeadline, {
+        closeSteps: [
+          `launcher-close-wait-complete@${sinceClose}ms(launcherClosed=false,waitedMs=${completedAt - waitStartedAt})`,
+          `user-data-retained@${sinceClose}ms(reason=launcher-open,userDataDir=${userDataDir})`,
+        ],
+      });
+      throw new AggregateError(
+        [launchError, retained],
+        `Electron launch failed and its data roots were kept: ${launchError?.message ?? String(launchError)}; ${retained.message}`,
+      );
+    }
+  }
+  await removeDataDir(userDataDir);
+  await removeDataDir(`${userDataDir}-secure`);
+  throw launchError;
 }
 
 async function finalizeProductionSidecar(sidecar, pid) {
@@ -2306,6 +2565,7 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
     reapTree = reapSupervisedProcessTree,
     removeDataDir = removeTestDataDir,
     gracefulCloseTimeoutMs = DEFAULT_GRACEFUL_CLOSE_TIMEOUT_MS,
+    windowsLauncherCloseTimeoutMs = DEFAULT_WINDOWS_LAUNCHER_CLOSE_TIMEOUT_MS,
     forcedCloseTimeoutMs = 2_000,
     scheduleTimeout = setTimeout,
     cancelTimeout = clearTimeout,
@@ -2329,12 +2589,31 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
         record?.observe ? record.observe(stage, action) : action();
       const supervisedTree = supervisedProcessTrees.get(electronApp);
       const supervisedTreePid = supervisedTree?.pid;
-      traceCloseCanopy('start', {
+      const terminalObservation = electronTerminalObservations.get(electronApp);
+      // A Windows terminal failure reports these steps, so the next run shows
+      // whether the harness forced Electron or its launcher.
+      const closeSteps = [];
+      const closeStartedAt = now();
+      const trace = (event, detail = {}) => {
+        if (platform === 'win32') {
+          const fields = Object.entries(detail)
+            .filter(([, value]) =>
+              ['string', 'number', 'boolean'].includes(typeof value),
+            )
+            .map(([key, value]) => `${key}=${value}`);
+          closeSteps.push(
+            `${event}@${now() - closeStartedAt}ms${fields.length > 0 ? `(${fields.join(',')})` : ''}`,
+          );
+        }
+        traceCloseCanopy(event, detail);
+      };
+      trace('start', {
         platform,
         supervisedTreePid,
         controllerPid: process.pid,
       });
       let playwrightCloseStatus;
+      let expiredLauncherObservation;
       const close = async () => {
         if (platform === 'win32' && supervisedTreePid !== undefined) {
           // Playwright closes Electron by calling app.quit() and then waiting
@@ -2349,7 +2628,7 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
           await electronApp
             .evaluate(({ app }) => app.quit())
             .catch(() => undefined);
-          traceCloseCanopy('quit-requested');
+          trace('quit-requested');
           const gracefullyExited = await waitForSupervisedProcessExit(
             supervisedTreePid,
             {
@@ -2359,12 +2638,12 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
               timeoutMs: gracefulCloseTimeoutMs,
             },
           );
-          traceCloseCanopy('quit-wait-complete', { gracefullyExited });
+          trace('quit-wait-complete', { gracefullyExited });
           if (!gracefullyExited) {
             await electronApp
               .evaluate(({ app }) => app.exit(0))
               .catch(() => undefined);
-            traceCloseCanopy('exit-requested');
+            trace('exit-requested');
             const forciblyExited = await waitForSupervisedProcessExit(
               supervisedTreePid,
               {
@@ -2374,10 +2653,10 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
                 timeoutMs: forcedCloseTimeoutMs,
               },
             );
-            traceCloseCanopy('exit-wait-complete', { forciblyExited });
+            trace('exit-wait-complete', { forciblyExited });
           }
         }
-        traceCloseCanopy('playwright-close-start');
+        trace('playwright-close-start');
         playwrightCloseStatus = await observed('electronApp.close', () =>
           closeElectronAppWithDeadline(electronApp, {
             timeoutMs: gracefulCloseTimeoutMs,
@@ -2385,7 +2664,7 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
             cancelTimeout,
           }),
         );
-        traceCloseCanopy('playwright-close-complete', {
+        trace('playwright-close-complete', {
           status: playwrightCloseStatus,
         });
       };
@@ -2394,20 +2673,48 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
           supervisedTreePid !== undefined &&
           !(platform === 'win32' && playwrightCloseStatus === 'closed');
         if (shouldReap) {
-          traceCloseCanopy('reap-start');
+          trace('reap-start');
           await observed('owned-tree-reap', () =>
             reapTree(supervisedTreePid, {
               trackedGroupsFile: supervisedTree.trackedGroupsFile,
               runNonce: supervisedTree.runNonce,
             }),
           );
-          traceCloseCanopy('reap-complete');
+          trace('reap-complete');
         } else if (supervisedTreePid !== undefined) {
-          // A successful Playwright close means its Windows supervisor has
-          // retired and its watchdog owns any remaining descendants. Do not
+          // A successful Playwright close means Electron has exited; the
+          // supervisor and its watchdog own any remaining descendants. Do not
           // act on the old numeric PID: Windows can immediately reuse it for
           // an unrelated process in this test task.
-          traceCloseCanopy('reap-skipped-retired-windows-pid');
+          trace('reap-skipped-retired-windows-pid');
+        }
+        if (platform === 'win32' && terminalObservation && !sidecar) {
+          // The terminal check below and the data-root removal both need the
+          // supervisor to have finished its cleanup.
+          const startedAt = now();
+          const launcherClosed = await waitForElectronTerminalResult(
+            terminalObservation,
+            { wait, now, timeoutMs: windowsLauncherCloseTimeoutMs },
+          );
+          // An open launcher means its supervisor may still be cleaning up
+          // and using the data roots. Keep them for diagnosis and fail with
+          // the result seen at the deadline, even if the launcher closes
+          // before validation.
+          if (!launcherClosed) {
+            expiredLauncherObservation = {
+              ...terminalObservationSnapshot(terminalObservation),
+              launcherOutput: terminalObservation.launcherOutput,
+            };
+          }
+          trace('launcher-close-wait-complete', {
+            launcherClosed,
+            waitedMs: now() - startedAt,
+          });
+          if (expiredLauncherObservation && !keepUserData)
+            trace('user-data-retained', {
+              reason: 'launcher-open',
+              userDataDir,
+            });
         }
         if (sidecar) {
           assert(
@@ -2422,23 +2729,28 @@ export async function closeCanopy(electronApp, userDataDir, options = {}) {
               productionSidecars.delete(electronApp);
           }
         }
-        if (!keepUserData) {
+        if (!keepUserData && !expiredLauncherObservation) {
           await observed('user-data-remove', () => removeDataDir(userDataDir));
           await observed('secure-user-data-remove', () =>
             removeDataDir(`${userDataDir}-secure`),
           );
         }
-        traceCloseCanopy('complete');
+        trace('complete');
       };
       if (sidecar) {
         await closeWithRetainedFailures(close, cleanup);
         return;
       }
-      const terminalObservation = electronTerminalObservations.get(electronApp);
       if (terminalObservation) {
-        await closeWithRetainedFailures(close, cleanup, () =>
-          assertSuccessfulElectronTerminalResult(terminalObservation),
-        );
+        await closeWithRetainedFailures(close, cleanup, () => {
+          if (expiredLauncherObservation)
+            throw new ElectronTerminalResultError(expiredLauncherObservation, {
+              closeSteps,
+            });
+          assertSuccessfulElectronTerminalResult(terminalObservation, {
+            closeSteps,
+          });
+        });
         return;
       }
       // Preserve ordinary E2E teardown behavior; the retained-failure branch is

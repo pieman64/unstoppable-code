@@ -41,7 +41,7 @@ test.describe('integrated terminal shell selector', () => {
 
       const selectedProfile =
         profiles.find((profile) => !profile.isDefault) ?? profiles[0];
-      await window.getByTestId('panel-add-panel-group-terminal').click();
+      await window.getByTestId('panel-add-tab-group-terminal').click();
       const menu = window.getByTestId('panel-add-menu');
       await expect(menu).toBeVisible();
       await expect(menu).toHaveAttribute('role', 'menu');

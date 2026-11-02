@@ -1,5 +1,5 @@
 import { useState, type JSX } from 'react';
-import { DialogModal } from '@/components/shared';
+import { ConfirmDialog } from '@canopy/ui-shared/components';
 import { useChatStore } from '@/stores/chatStore';
 import {
   useFileTabUiStore,
@@ -77,7 +77,22 @@ function FileTabCloseGuardModal({
     setIsSaving(true);
     try {
       const saved = await desktopFileSessionController.saveTab(pending.tabId);
-      if (!saved) return; // keep modal open; the shared error is already shown
+      if (!saved) {
+        if (
+          desktopFileSessionController.matches(
+            pending.tabId,
+            pending.fileKey,
+          ) &&
+          useFileTabUiStore.getState().pendingUnsavedClose === pending &&
+          desktopFileSessionController.getSession(pending.tabId)?.saveConflict
+        ) {
+          // Recovery lives in the shared viewer. Remove the blocking modal
+          // without closing the dirty tab, then request focus on its choices.
+          useFileTabUiStore.getState().clearPendingUnsavedClose();
+          void desktopFileSessionController.saveTab(pending.tabId);
+        }
+        return;
+      }
       // If the user kept typing into the (still-mounted) editor while the save
       // was in flight, the latest buffer is unsaved. Don't drop those edits —
       // leave the modal open so the user can Save again or Cancel/Don't Save.
@@ -114,57 +129,25 @@ function FileTabCloseGuardModal({
   }
 
   return (
-    <DialogModal
-      onClose={handleDismiss}
-      title={`Save changes to ${pending.title}?`}
-      maxWidth="md"
-      closeOnBackdrop={!isSaving}
+    <ConfirmDialog
+      title={`Save changes to “${pending.title}”?`}
+      message="Discarding loses the edits you haven’t saved."
+      confirmLabel="Save changes"
+      busyLabel="Saving…"
+      busy={isSaving}
+      errorMessage={error}
+      onConfirm={() => {
+        void handleSave();
+      }}
+      onCancel={handleDismiss}
+      secondaryAction={{
+        label: 'Discard',
+        onSelect: handleDontSave,
+        testId: 'file-tab-close-guard-discard',
+      }}
       dataTestId="file-tab-close-guard"
-    >
-      <div className="space-y-4 px-5 pb-5 pt-2">
-        <p className="text-s fg-secondary">
-          Your changes will be lost if you close this tab without saving.
-        </p>
-        {error && (
-          <p
-            className="text-s fg-destructive"
-            data-testid="file-tab-close-guard-error"
-          >
-            {error}
-          </p>
-        )}
-        <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={handleDismiss}
-            disabled={isSaving}
-            data-testid="file-tab-close-guard-cancel"
-            className="rounded-md border bg-base px-3 py-1.5 text-s fg-primary transition hover:bg-accent-subtle disabled:cursor-default disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleDontSave}
-            disabled={isSaving}
-            data-testid="file-tab-close-guard-discard"
-            className="rounded-md border bg-secondary px-3 py-1.5 text-s fg-primary transition hover:bg-accent-subtle disabled:cursor-default disabled:opacity-50"
-          >
-            Don&apos;t save
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void handleSave();
-            }}
-            disabled={isSaving}
-            data-testid="file-tab-close-guard-save"
-            className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition hover:bg-accent/90 disabled:cursor-default disabled:opacity-50"
-          >
-            {isSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </DialogModal>
+      confirmTestId="file-tab-close-guard-save"
+      cancelTestId="file-tab-close-guard-cancel"
+    />
   );
 }

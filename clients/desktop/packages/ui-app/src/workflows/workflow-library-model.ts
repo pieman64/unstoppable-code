@@ -1,5 +1,8 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import type { PipelineTriggerType } from '@canopy/protocol/pipelines';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import { isFeatureSurfaceAvailable } from '@canopy/app-core/gating';
+import type { WorkflowLastRun } from '@canopy/ui-shared/lib';
 
 /**
  * The Workflows Library's row model (CAN-3981): every automation is a row and
@@ -52,13 +55,13 @@ export type WorkflowStepGlyph =
 export const WORKFLOW_STEP_LABELS: Readonly<Record<WorkflowStepGlyph, string>> =
   {
     gate: 'Only if',
-    advisor: 'Ask Advisor',
+    advisor: `Ask ${ORCHESTRATOR_LABEL}`,
     chat: 'Start chat',
     message: 'Send message',
     agent: 'Ask an agent',
     script: 'Run script',
     input: 'Ask for input',
-    pipeline: 'Run a pipeline',
+    pipeline: 'Run a workflow',
     step: 'Step',
   };
 
@@ -78,23 +81,6 @@ export const WORKFLOW_LIBRARY_SOURCE_LABELS: Readonly<
   project: 'From project',
   'built-in': 'Built-in',
   shared: 'Shared',
-};
-
-export type WorkflowLastRunState =
-  | 'success'
-  | 'failure'
-  | 'running'
-  | 'skipped'
-  | 'canceled';
-
-export const WORKFLOW_LAST_RUN_LABELS: Readonly<
-  Record<WorkflowLastRunState, string>
-> = {
-  success: 'Succeeded',
-  failure: 'Failed',
-  running: 'Running',
-  skipped: 'Skipped',
-  canceled: 'Canceled',
 };
 
 /**
@@ -126,6 +112,29 @@ export const WORKFLOW_LIBRARY_ACTION_LABELS: Readonly<
   'copy-link': 'Copy share link',
   delete: 'Delete',
 };
+
+/**
+ * Menu labels on a Customize Workflows row (CAN-4845). The Library's labels
+ * where it has the action; `Run now` and `Delete…` are the row's own because
+ * Delete opens a confirmation there.
+ */
+export const WORKFLOW_ROW_MENU_LABELS = {
+  edit: WORKFLOW_LIBRARY_ACTION_LABELS.edit,
+  viewRuns: WORKFLOW_LIBRARY_ACTION_LABELS['view-runs'],
+  runNow: 'Run now',
+  share: WORKFLOW_LIBRARY_ACTION_LABELS.share,
+  delete: 'Delete…',
+} as const;
+
+/** Why a workflow cannot be run on this host or row. */
+export const WORKFLOW_RUN_UNAVAILABLE_HERE = 'Cannot be started from here';
+
+/** Why a host without workflow management cannot edit or delete a row. */
+export const WORKFLOW_MANAGE_UNAVAILABLE_REASON =
+  'Available in the desktop app';
+
+/** The toast after a pipeline run was accepted. */
+export const WORKFLOW_RUN_STARTED_TOAST = 'Pipeline started.';
 
 const LIBRARY_MENU_ORDER: readonly WorkflowLibraryAction[] = [
   'edit',
@@ -161,11 +170,7 @@ export interface WorkflowLibraryRow {
   readonly sourceIsPerson?: boolean;
   /** Third line in warning ink: `Failed the last 3 runs`. */
   readonly attention?: string;
-  readonly lastRun?: {
-    readonly state: WorkflowLastRunState;
-    /** Epoch milliseconds. */
-    readonly at?: number;
-  };
+  readonly lastRun?: WorkflowLastRun;
   /** Epoch milliseconds; absent for pipelines and anything switched off. */
   readonly nextRunAt?: number;
   /** Epoch milliseconds of the last edit, when the host knows it. */
@@ -229,6 +234,31 @@ export function workflowLibraryFiltersActive(
     filters.project !== null ||
     filters.source !== null
   );
+}
+
+/** Facets other than the query that are on: the Filter button's fill. */
+export function countActiveLibraryFacets(
+  filters: WorkflowLibraryFilters,
+): number {
+  return [
+    filters.triggers.length > 0,
+    filters.status !== null,
+    filters.project !== null,
+    filters.source !== null,
+  ].filter(Boolean).length;
+}
+
+/**
+ * The filtered empty state's one action, named by what it clears: `Clear
+ * search`, `Clear filters`, or both.
+ */
+export function describeClearLibraryFilters(
+  filters: WorkflowLibraryFilters,
+): string {
+  const query = filters.query.trim() !== '';
+  const facets = countActiveLibraryFacets(filters) > 0;
+  if (query && facets) return 'Clear search and filters';
+  return query ? 'Clear search' : 'Clear filters';
 }
 
 export type WorkflowLibrarySort =
@@ -492,6 +522,20 @@ export function describePipelineTriggers(
     : `When ${phrase}`;
 }
 
+/**
+ * A pipeline's declared trigger types as trigger kinds, in Library order. A
+ * pipeline that declares no trigger is started by hand.
+ */
+export function pipelineTriggerKinds(
+  types: readonly PipelineTriggerType[],
+): readonly WorkflowTriggerKind[] {
+  const triggers: WorkflowTriggerKind[] = [];
+  if (types.includes('dispatch')) triggers.push('manual');
+  if (types.includes('plan_ready')) triggers.push('plan-approved');
+  if (types.includes('task_ready')) triggers.push('task-ready');
+  return triggers.length === 0 ? ['manual'] : triggers;
+}
+
 /** `6 steps`, `1 step`. */
 export function describeStepCount(count: number): string {
   return `${String(count)} ${count === 1 ? 'step' : 'steps'}`;
@@ -505,7 +549,7 @@ export function describeRunUnavailable(
   if (triggers.includes('plan-approved')) events.push('an approved plan');
   if (triggers.includes('task-ready')) events.push('a new task');
   return events.length === 0
-    ? 'Cannot be started from here'
+    ? WORKFLOW_RUN_UNAVAILABLE_HERE
     : `Starts from ${events.join(' or ')}`;
 }
 
@@ -543,16 +587,6 @@ export function describeNoLibraryMatches(
   return parts.join(' ');
 }
 
-/** The Trigger capsule's label for the current selection. */
-export function describeTriggerFilter(
-  triggers: readonly WorkflowTriggerKind[],
-): string {
-  const first = triggers[0];
-  if (first === undefined) return 'Any trigger';
-  if (triggers.length === 1) return WORKFLOW_TRIGGER_LABELS[first];
-  return `${String(triggers.length)} triggers`;
-}
-
 /** The More menu's items for a row, in menu order. */
 export function menuWorkflowLibraryActions(
   actions: readonly WorkflowLibraryAction[],
@@ -569,5 +603,19 @@ export function availableWorkflowTriggerKinds(
   }
   return WORKFLOW_TRIGGER_KINDS.filter(
     (trigger) => trigger !== 'schedule' && trigger !== 'once',
+  );
+}
+
+/**
+ * The pipelines a list shows, without the user pipelines an automation owns
+ * (CAN-4551): each folds into its automation's row. `ownedIds` holds only
+ * owners the host confirmed are live and still run the pipeline, so a stale
+ * marker unfolds its pipeline.
+ */
+export function withoutAutomationOwnedPipelines<
+  T extends { id: string; source?: string },
+>(pipelines: readonly T[], ownedIds: ReadonlySet<string>): T[] {
+  return pipelines.filter(
+    (pipeline) => pipeline.source !== 'user' || !ownedIds.has(pipeline.id),
   );
 }

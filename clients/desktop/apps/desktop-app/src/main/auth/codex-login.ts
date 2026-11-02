@@ -1,3 +1,4 @@
+import { recordProviderConnectionFailure } from '../lib/provider-connection-events';
 import { randomUUID } from 'node:crypto';
 import type {
   CodexLoginState,
@@ -56,6 +57,8 @@ export class CodexLoginManager {
   private cancelled = false;
   private verificationEpoch = 0;
   private abandoning: Promise<void> | null = null;
+  private lastFailedAttemptId: string | null = null;
+  private attemptTimedOut = false;
   private readonly listeners = new Set<(state: CodexLoginState) => void>();
 
   onState(listener: (state: CodexLoginState) => void): () => void {
@@ -67,6 +70,27 @@ export class CodexLoginManager {
 
   private publish(update: Partial<CodexLoginState>): void {
     this.state = { ...this.state, ...update };
+    if (
+      this.state.attemptId &&
+      this.lastFailedAttemptId !== this.state.attemptId &&
+      (this.state.phase === 'verification-failed' ||
+        (this.state.phase === 'complete' &&
+          (this.state.outcome === 'cancelled' ||
+            this.state.outcome === 'failed')))
+    ) {
+      // Verification and abandonment can publish several terminal states for
+      // one attempt. Classify its merged outcome and report only the first.
+      this.lastFailedAttemptId = this.state.attemptId;
+      recordProviderConnectionFailure(
+        'codex',
+        'native_login',
+        this.state.outcome === 'cancelled'
+          ? 'cancelled'
+          : this.attemptTimedOut
+            ? 'timeout'
+            : 'authentication',
+      );
+    }
     for (const listener of Array.from(this.listeners)) listener(this.state);
   }
 
@@ -142,6 +166,7 @@ export class CodexLoginManager {
     this.session = session;
     this.releaseSessions = pause.release;
     this.cancelled = false;
+    this.attemptTimedOut = false;
     this.settling = null;
     this.state = {
       attemptId,
@@ -151,6 +176,7 @@ export class CodexLoginManager {
     };
     this.publish({});
     this.timeout = setTimeout(() => {
+      this.attemptTimedOut = true;
       void this.finish('failed');
     }, 10 * 60_000);
     this.timeout.unref?.();

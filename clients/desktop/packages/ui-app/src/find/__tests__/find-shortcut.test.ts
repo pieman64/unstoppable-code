@@ -32,7 +32,7 @@ function register(
 
 function cmdF(
   target: EventTarget | null,
-  overrides: Partial<FindShortcutEvent> = {},
+  overrides: Omit<Partial<FindShortcutEvent>, 'preventDefault'> = {},
 ): FindShortcutEvent & { preventDefault: jest.Mock } {
   return {
     // jsdom reports a non-mac platform, so the primary modifier is Ctrl.
@@ -43,8 +43,8 @@ function cmdF(
     shiftKey: false,
     isComposing: false,
     target,
-    preventDefault: jest.fn(),
     ...overrides,
+    preventDefault: jest.fn(),
   };
 }
 

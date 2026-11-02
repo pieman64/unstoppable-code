@@ -5,8 +5,8 @@ import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
  * connector suite so the copies cannot drift from each other.
  *
  * The annotation is deliberate but does not reach a gate: `tsconfig.web.json`
- * excludes `__tests__/**`, and ts-jest runs with `isolatedModules: true`
- * (transpile-only), so neither `tsc:check` nor `jest` type-checks this file.
+ * excludes `__tests__/**`, and Jest's SWC transform does not type-check, so
+ * neither `tsc:check` nor `jest` type-checks this file.
  * It documents the production shape and holds in the editor; the reason the
  * fixture lives in one place is that a single shared copy is the part that
  * actually prevents drift.

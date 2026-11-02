@@ -52,7 +52,9 @@ jest.mock('@/lib/script-actions-terminal-host', () => ({
     hydrate: (): Promise<void> => Promise.resolve(),
     reveal: mockReveal,
   }),
-  revealDesktopTerminal: mockRevealExisting,
+  get revealDesktopTerminal(): typeof mockRevealExisting {
+    return mockRevealExisting;
+  },
 }));
 
 import { useWorktreeScriptActions } from '../useWorktreeScriptActions';

@@ -29,6 +29,9 @@ const snapshot: DesktopOrgProjectCatalogSnapshot = {
       name: 'Catalog project',
       description: null,
       kind: 'CODE',
+      purpose: 'project',
+      visibility: 'organization',
+      memberOwned: false,
       location: 'LOCAL',
       repository: {
         provider: 'github',

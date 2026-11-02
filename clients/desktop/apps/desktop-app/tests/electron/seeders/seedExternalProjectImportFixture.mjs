@@ -117,12 +117,16 @@ function writeTranscript(claudeDir, cwd, sessionId, title, prompt, timestamp) {
 /**
  * @param {object} options
  * @param {string} options.userDataDir
+ * @param {{ gitApp?: string; notes?: string }} [options.activityTimestamps]
+ * @param {Array<{ name: string; lastActivityAt: string; rules?: string }>} [options.extraGitProjects]
  * @param {Array<{ id: string; title: string; prompt: string; lastActivityAt: string }>} [options.scratchSessions]
  *   Folder-less Cowork sessions, newest first as listed.
  */
 export function seedExternalProjectImportFixture({
   userDataDir,
   scratchSessions = [],
+  activityTimestamps = {},
+  extraGitProjects = [],
 }) {
   const fixturesRoot = mkdtempSync(path.join(os.tmpdir(), 'can2439-fixtures-'));
 
@@ -148,6 +152,37 @@ export function seedExternalProjectImportFixture({
   mkdirSync(notes, { recursive: true });
   writeFileSync(path.join(notes, 'notes.md'), '# Notes\n');
 
+  // Opt-in committed repositories let import flows distinguish recency from
+  // a rules offer without changing the original fixture's two projects.
+  const extraProjects = extraGitProjects.map((project, index) => {
+    const dir = path.join(fixturesRoot, project.name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'README.md'), `# ${project.name}\n`);
+    if (project.rules)
+      writeFileSync(path.join(dir, '.cursorrules'), project.rules);
+    execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=E2E',
+        '-c',
+        'user.email=e2e@example.com',
+        'commit',
+        '-q',
+        '-m',
+        'init',
+      ],
+      { cwd: dir },
+    );
+    return {
+      ...project,
+      dir,
+      sessionId: `77777777-2222-4333-8444-${String(index + 1).padStart(12, '0')}`,
+    };
+  });
+
   const claudeDir = path.join(userDataDir, 'provider-state', 'claude');
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(
@@ -156,6 +191,9 @@ export function seedExternalProjectImportFixture({
       projects: {
         [gitApp]: { allowedTools: [] },
         [notes]: { allowedTools: [] },
+        ...Object.fromEntries(
+          extraProjects.map(({ dir }) => [dir, { allowedTools: [] }]),
+        ),
       },
     }),
   );
@@ -165,7 +203,7 @@ export function seedExternalProjectImportFixture({
     IMPORT_FIXTURE_GIT_SESSION_ID,
     'Login bug',
     'Fix the login bug',
-    '2026-09-01T10:00:00.000Z',
+    activityTimestamps.gitApp ?? '2026-09-01T10:00:00.000Z',
   );
   writeTranscript(
     claudeDir,
@@ -173,8 +211,18 @@ export function seedExternalProjectImportFixture({
     IMPORT_FIXTURE_FOLDER_SESSION_ID,
     'Meeting notes',
     'Summarize my meeting notes',
-    '2026-09-01T10:00:00.000Z',
+    activityTimestamps.notes ?? '2026-09-01T10:00:00.000Z',
   );
+  for (const project of extraProjects) {
+    writeTranscript(
+      claudeDir,
+      project.dir,
+      project.sessionId,
+      `${project.name} task`,
+      `Work in ${project.name}`,
+      project.lastActivityAt,
+    );
+  }
 
   // Claude Desktop's data root: `local-agent-mode-sessions/<account>/<org>/`
   // holds one `local_<id>.json` record per Cowork session and, for a
@@ -225,6 +273,7 @@ export function seedExternalProjectImportFixture({
     claudeDir,
     desktopDataDir,
     scratch,
+    extraProjects,
     env: {
       CANOPY_E2E_ALLOW_TEMP_PROJECT_IMPORT: '1',
       CANOPY_CLAUDE_DESKTOP_DATA_DIR: desktopDataDir,

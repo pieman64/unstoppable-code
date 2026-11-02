@@ -5,7 +5,7 @@ import type { CodeGraphRepositoryInput } from '@canopy/desktop-shared/types/code
 import type {
   CodeGraphSummaryProjectionV1,
   ReadCodeGraphSummaryProjectionResult,
-} from '@canopy/desktop-shared/node/code-graph/summary-projection';
+} from '@canopy/code-graph/summary-projection';
 import type { CodeGraphWorkerReadResponse } from '../code-graph/read-runner';
 import type {
   CodeGraphWorkerBuildRequest,

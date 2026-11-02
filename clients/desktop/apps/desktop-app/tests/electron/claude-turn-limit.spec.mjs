@@ -1,3 +1,4 @@
+import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -68,6 +69,10 @@ test('Claude turn limit survives reload and Resume continues without replaying t
     const window = await electronApp.firstWindow();
     const app = new CanopyAppDriver(window);
     await app.waitForShell();
+    await connectMockCloudAccount(
+      window,
+      'csk_claude_turn_limit_attachments_e2e',
+    );
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
     await injectTurnLimit(electronApp);

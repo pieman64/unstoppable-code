@@ -16,8 +16,16 @@
     ]
   },
   "worktrees": [
-    { "worktreeId": "t1", "name": "Main", "branch": "main" },
-    { "worktreeId": "t2", "name": "Feature", "branch": "feature" }
+    {
+      "worktreeId": "t1",
+      "name": "Main",
+      "branch": "main"
+    },
+    {
+      "worktreeId": "t2",
+      "name": "Feature",
+      "branch": "feature"
+    }
   ],
   "chats": [
     {
@@ -67,6 +75,75 @@
     "chatId": "cx",
     "organizationId": "ox"
   },
-  "current": { "workspaceId": "w1", "worktreeId": "t1", "chatId": "c1" },
-  "callerDepth": 0
+  "current": {
+    "workspaceId": "w1",
+    "worktreeId": "t1",
+    "chatId": "c1"
+  },
+  "callerDepth": 0,
+  "transcript": {
+    "target": {
+      "kind": "delegation",
+      "chatId": "c3",
+      "delegationId": "retained-child",
+      "runGeneration": 1
+    },
+    "pageSize": 2,
+    "blockPageSize": 2,
+    "revision": 7,
+    "rows": [
+      {
+        "id": "retained-older",
+        "role": "assistant",
+        "timestamp": 1,
+        "blocks": [
+          {
+            "type": "text",
+            "text": "début 🌿 retained child -- VCONF-MIDDLE -- café 漢字 -- VCONF-END"
+          },
+          {
+            "type": "thinking",
+            "text": "Second block."
+          },
+          {
+            "type": "text",
+            "text": "Final block."
+          }
+        ]
+      },
+      {
+        "id": "retained-second",
+        "role": "user",
+        "timestamp": 2,
+        "blocks": [
+          {
+            "type": "text",
+            "text": "Older prompt."
+          }
+        ]
+      },
+      {
+        "id": "retained-third",
+        "role": "assistant",
+        "timestamp": 3,
+        "blocks": [
+          {
+            "type": "text",
+            "text": "Newer reply."
+          }
+        ]
+      },
+      {
+        "id": "retained-newest",
+        "role": "assistant",
+        "timestamp": 4,
+        "blocks": [
+          {
+            "type": "text",
+            "text": "Newest reply."
+          }
+        ]
+      }
+    ]
+  }
 }

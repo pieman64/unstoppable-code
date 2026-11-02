@@ -127,6 +127,76 @@ describe('archive I/O worker', () => {
     );
   });
 
+  it.each([
+    ['without a pre-move path', {}, true],
+    ['with an absolute pre-move path', { preMoveWorktreePath: '/moved' }, true],
+    ['with a relative pre-move path', { preMoveWorktreePath: 'moved' }, false],
+  ])(
+    'validates a remove-worktree request %s',
+    (_case, preMove: { preMoveWorktreePath?: string }, valid) => {
+      expect(
+        isArchiveIoRequest({
+          version: 1,
+          type: 'remove-worktree',
+          requestId: 'request-1',
+          operationId: 'operation-1',
+          projectId: 'project-1',
+          containerId: 'container-1',
+          expectedCreatedAt: '2026-07-21T00:00:00.000Z',
+          input: {
+            git: { executable: 'git', env: {} },
+            referenceRepoPath: root,
+            expectedRepositoryIdentity: join(root, '.git'),
+            worktreePath: join(root, 'checkout'),
+            ...preMove,
+          },
+        }),
+      ).toBe(valid);
+    },
+  );
+
+  it.each([
+    ['unbound', {}, true],
+    [
+      'bound with its aside',
+      {
+        expectedIdentity: { dev: 1, ino: 2, birthtimeMs: 3 },
+        asidePath: '/aside',
+      },
+      true,
+    ],
+    [
+      'bound without an aside',
+      { expectedIdentity: { dev: 1, ino: 2, birthtimeMs: 3 } },
+      false,
+    ],
+    ['an aside without an identity', { asidePath: '/aside' }, false],
+    [
+      'bound with a relative aside',
+      {
+        expectedIdentity: { dev: 1, ino: 2, birthtimeMs: 3 },
+        asidePath: 'aside',
+      },
+      false,
+    ],
+  ])(
+    'validates a remove-directory request %s (CAN-5334)',
+    (_case, binding: Record<string, unknown>, valid) => {
+      expect(
+        isArchiveIoRequest({
+          version: 1,
+          type: 'remove-directory',
+          requestId: 'request-1',
+          operationId: 'operation-1',
+          projectId: 'project-1',
+          containerId: 'container-1',
+          expectedCreatedAt: '2026-07-21T00:00:00.000Z',
+          input: { path: join(root, 'target'), allowedRoot: root, ...binding },
+        }),
+      ).toBe(valid);
+    },
+  );
+
   it('validates typed request identities and operation-specific results', () => {
     expect(
       isArchiveIoResponse({

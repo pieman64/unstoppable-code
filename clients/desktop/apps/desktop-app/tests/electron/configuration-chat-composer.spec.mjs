@@ -21,6 +21,7 @@ import {
   seedWorktreeChat,
   writeJson,
 } from './seeders/index.mjs';
+import { openProjectSettingsPage } from './projectSettingsDriver.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const MARKETPLACE_ID = 'demo/market';
@@ -131,9 +132,14 @@ async function openNewCodeAutomation(window) {
   await app.openAutomationsPage();
   await app.startNewWorkflow('schedule');
   await window.getByTestId('automations-form-name').fill('Configured chat');
+  // A new workflow opens as a pipeline with no project; choosing a project
+  // keeps Pipeline mode, so pick Chat.
   await window.getByTestId('automations-form-action-type-workspace').click();
   await window.getByTestId('automations-form-workspace').click();
   await window.getByRole('option').first().click();
+  await window
+    .getByTestId('automations-form-workspace-action-mode-chat')
+    .click();
   await expect(window.getByTestId('automations-form-prompt')).toBeVisible();
   return window.getByTestId('automations-form-prompt');
 }
@@ -483,9 +489,14 @@ test('cowork automation searches the live cowork directory', async () => {
     await window
       .getByTestId('automations-form-name')
       .fill('Cowork file search');
+    // A new workflow opens as a pipeline with no project; choosing a
+    // project keeps Pipeline mode, so pick Chat.
     await window.getByTestId('automations-form-action-type-workspace').click();
     await window.getByTestId('automations-form-workspace').click();
     await window.getByRole('option', { name: 'Live Cowork' }).click();
+    await window
+      .getByTestId('automations-form-workspace-action-mode-chat')
+      .click();
     const editor = window.getByTestId('automations-form-prompt');
     await expect(editor).toBeVisible();
     await editor.fill('@context-cowork');
@@ -558,8 +569,19 @@ test('hook source follows selected worktree while local override searches the de
     const settings = window.getByRole('dialog', {
       name: 'TypeScript pnpm Vite',
     });
-    await settings.getByRole('tab', { name: 'Hooks' }).click();
-    await settings.getByRole('button', { name: 'Source controlled' }).click();
+    // Hooks live on Scripts and hooks; each hook opens on its own page.
+    await openProjectSettingsPage(app, 'scripts');
+    const openHook = async () => {
+      await settings
+        .getByTestId('project-settings-hook-pr:create')
+        .getByRole('button', { name: 'Edit' })
+        .click();
+    };
+    const backToScripts = async () => {
+      await settings.getByTestId('settings-page-back').click();
+    };
+    await settings.getByTestId('project-settings-scope-source').click();
+    await openHook();
     const sourcePrompt = settings
       .locator('[data-testid^="hook-chat-"][contenteditable="true"]')
       .filter({ hasText: 'Source hook prompt.' });
@@ -579,12 +601,14 @@ test('hook source follows selected worktree while local override searches the de
 
     await sourceEditor.press('Escape');
     await expect(window.getByTestId(`${sourceId}-plus-menu`)).toBeHidden();
+    await backToScripts();
     await window.getByTestId('source-worktree-picker-trigger').click();
     await window
       .getByTestId('source-worktree-picker-menu')
       .getByRole('option')
       .last()
       .click();
+    await openHook();
     const selectedSourcePrompt = settings.locator(
       '[data-testid^="hook-chat-"][contenteditable="true"]',
     );
@@ -605,7 +629,9 @@ test('hook source follows selected worktree while local override searches the de
 
     await sourceEditor.press('Escape');
     await expect(window.getByTestId(`${sourceId}-plus-menu`)).toBeHidden();
-    await settings.getByRole('button', { name: 'Local override' }).click();
+    await backToScripts();
+    await settings.getByTestId('project-settings-scope-local').click();
+    await openHook();
     const localPrompt = settings
       .locator('[data-testid^="hook-chat-"][contenteditable="true"]')
       .filter({ hasText: 'Local hook prompt.' });
@@ -635,23 +661,30 @@ test('hook source follows selected worktree while local override searches the de
     await localEditor.press('Escape');
     await expect(window.getByTestId(`${localId}-plus-menu`)).toBeHidden();
     await expect(settings).toBeVisible();
-    const addHook = settings.locator('div.border-dashed').filter({
-      hasText: 'Add hook action',
-    });
+    await backToScripts();
+    await settings.getByTestId('project-settings-add-hook').click();
+    let addHook = settings.getByTestId('hook-add-form');
     await expect(addHook).toHaveCount(1);
     await addHook.locator('select').nth(1).selectOption('chat');
-    const draft = addHook.locator(
+    let draft = addHook.locator(
       '[data-testid^="hook-chat-draft-"][contenteditable="true"]',
     );
     await expect(draft).toBeVisible();
     await draft.fill('First drafted action.');
     await addHook.getByRole('button', { name: 'Add action' }).click();
-    await expect(draft.locator('[data-slate-placeholder]')).toBeVisible();
+    // The new hook opens on its own page with the added action.
     await expect(
       settings
         .locator('[data-testid^="hook-chat-"][contenteditable="true"]')
         .filter({ hasText: 'First drafted action.' }),
     ).toHaveCount(1);
+    await settings.getByTestId('hook-add-another').click();
+    addHook = settings.getByTestId('hook-add-form');
+    await addHook.locator('select').nth(1).selectOption('chat');
+    draft = addHook.locator(
+      '[data-testid^="hook-chat-draft-"][contenteditable="true"]',
+    );
+    await expect(draft).toBeVisible();
     await draft.fill('Second drafted action.');
     await addHook.getByRole('button', { name: 'Add action' }).click();
     await expect(draft.locator('[data-slate-placeholder]')).toBeVisible();
@@ -666,10 +699,11 @@ test('hook source follows selected worktree while local override searches the de
   }
 });
 
+// 'Orchestrator' is ORCHESTRATOR_LABEL; .mjs specs cannot import the constant.
 for (const destination of [
   'new project chat',
   'existing project chat',
-  'App Advisor',
+  'Orchestrator',
 ]) {
   test(`automation ${destination} opens file mentions after clicking the prompt`, async () => {
     test.setTimeout(150_000);
@@ -697,7 +731,7 @@ for (const destination of [
         activeTabId: 'mention-target',
       });
     }
-    if (destination === 'App Advisor') {
+    if (destination === 'Orchestrator') {
       const advisorHome = path.join(
         userDataDir,
         'app-workspaces',
@@ -719,12 +753,22 @@ for (const destination of [
       await app.waitForShell({ timeout: 30_000 });
       await app.openAutomationsPage();
       await app.startNewWorkflow('schedule');
-      if (destination !== 'App Advisor') {
+      // A new workflow opens as a pipeline with no project, so every
+      // destination is chosen explicitly; a project keeps Pipeline mode
+      // until Chat is picked.
+      if (destination === 'Orchestrator') {
+        await window
+          .getByTestId('automations-form-action-type-app_advisor')
+          .click();
+      } else {
         await window
           .getByTestId('automations-form-action-type-workspace')
           .click();
         await window.getByTestId('automations-form-workspace').click();
         await window.getByRole('option').first().click();
+        await window
+          .getByTestId('automations-form-workspace-action-mode-chat')
+          .click();
       }
       if (destination === 'existing project chat') {
         await window
@@ -741,7 +785,7 @@ for (const destination of [
       const editor = window.getByTestId('automations-form-prompt');
       const menu = window.getByTestId('automations-form-prompt-plus-menu');
       const expectedFile =
-        destination === 'App Advisor' ? 'mention-advisor.md' : 'README.md';
+        destination === 'Orchestrator' ? 'mention-advisor.md' : 'README.md';
       await expect(editor).toBeVisible();
       await editor.click();
       // A click on the editor must not activate its neighboring + button.

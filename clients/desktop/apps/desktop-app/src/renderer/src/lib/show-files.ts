@@ -8,11 +8,16 @@ import type {
   ShowFilesRendererResult,
 } from '@canopy/desktop-shared/types';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  isRichDocumentRenderKind,
+  resolveFileRenderKind,
+} from '@canopy/ui-app';
 import { useChatStore } from '@/stores/chatStore';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
 import {
   placeFilePanelsBesideChat,
   requestFilePanelPlacementBesideChat,
+  settleFilePanelOpen,
 } from '@/lib/panels/chat-panel-sync';
 import { openFileInBrowserPanel } from '@/lib/openFileInBrowserPanel';
 import { requestBrowserPanel } from '@/lib/browserPanelActivation';
@@ -361,7 +366,15 @@ export async function showFilesInRenderer(
       });
       continue;
     }
-    if (file.kind === 'missing' || file.kind === 'unsupported') {
+    // Videos, PDFs and Office files read as unsupported text, but the file tab
+    // previews them from their bytes.
+    const previewsBytes =
+      file.kind === 'unsupported' &&
+      isRichDocumentRenderKind(resolveFileRenderKind({ path: file.filename }));
+    if (
+      file.kind === 'missing' ||
+      (file.kind === 'unsupported' && !previewsBytes)
+    ) {
       results.push({
         path: request.path,
         ok: false,
@@ -387,6 +400,11 @@ export async function showFilesInRenderer(
       continue;
     }
 
+    const alreadyOpen = useChatStore
+      .getState()
+      .worktreeChats[
+        `${projectId}/${worktreeId}`
+      ]?.tabs.some((tab) => tab.kind === 'file' && tab.filePath === absolutePath);
     const tabId = useChatStore.getState().openFileTab(
       {
         absolutePath,
@@ -406,8 +424,16 @@ export async function showFilesInRenderer(
       });
       continue;
     }
+    const cancelPlacement =
+      payload.origin.projectId === projectId &&
+      payload.origin.worktreeId === worktreeId
+        ? requestFilePanelPlacementBesideChat(tabId, payload.origin.chatTabId, {
+            activate: !presentsInBackground(payload),
+          })
+        : undefined;
     const creation = await pendingTabCreation(projectId, worktreeId, tabId);
     if (creation !== undefined && creation !== 'accepted') {
+      cancelPlacement?.();
       results.push({
         path: request.path,
         absolutePath,
@@ -417,10 +443,34 @@ export async function showFilesInRenderer(
       continue;
     }
     if (
-      payload.origin.projectId === projectId &&
-      payload.origin.worktreeId === worktreeId
+      !settleFilePanelOpen(`${projectId}/${worktreeId}`, tabId, {
+        activate: !presentsInBackground(payload),
+        originChatTabId,
+      })
     ) {
-      requestFilePanelPlacementBesideChat(tabId, payload.origin.chatTabId);
+      cancelPlacement?.();
+      if (
+        !alreadyOpen &&
+        useChatStore
+          .getState()
+          .worktreeChats[
+            `${projectId}/${worktreeId}`
+          ]?.tabs.some((tab) => tab.id === tabId)
+      ) {
+        useChatStore.getState().closeTab(tabId, target);
+      }
+      const selection = useChatStore.getState().selectedWorktree;
+      results.push({
+        path: request.path,
+        absolutePath,
+        ok: false,
+        error:
+          selection?.projectId !== projectId ||
+          selection.worktreeId !== worktreeId
+            ? 'Open the project to view this file, then try again.'
+            : 'The file could not be placed beside the chat. Close a tab and try again.',
+      });
+      continue;
     }
 
     if (request.view === 'raw' && file.kind !== 'image') {
@@ -439,7 +489,9 @@ export async function showFilesInRenderer(
           target,
         );
     }
-    const presentation = normalizedPresentation(request, file);
+    const presentation = previewsBytes
+      ? {}
+      : normalizedPresentation(request, file);
     useAgentFilePresentationStore.getState().present(tabId, {
       line: presentation.line,
       origin: payload.origin,

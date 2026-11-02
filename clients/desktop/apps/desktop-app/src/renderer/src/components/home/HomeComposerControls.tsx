@@ -1,12 +1,17 @@
+import { isPlanModeReadOnly } from '@canopy/ui-shared/lib/plan-mode-suggestion';
+import {
+  usePlanModeSuggestion,
+  useComposerHintActivity,
+  type PlanModeSuggestion,
+} from '@canopy/ui-app';
+import { getPlanModeHintStore } from '@/lib/planModeHint';
+import { trackPlanModeHintAction } from '@/lib/planModeHintTelemetry';
+import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
 import { useVoiceDictationGate } from '@/hooks/useVoiceDictationGate';
 import {
   getExecutionHarnessForModel,
   getProviderForModel,
 } from '@canopy/desktop-shared/types';
-import {
-  ComposerControlHighlight,
-  PlanModeHighlight,
-} from './PlanModeHighlight';
 import { mergeChatPluginSelections } from '@/lib/chatPluginSelections';
 import type { ComposerPlusMenuProps } from '../shared/ComposerPlusMenu';
 import type { ComposerMenuController } from '@/hooks/useComposerMenu';
@@ -33,7 +38,6 @@ import type {
   SlashCommandData,
 } from '@canopy/desktop-shared/types';
 import {
-  ArrowUp,
   PipelineIcon,
   PlanModeIcon,
   PluginsIcon,
@@ -47,6 +51,7 @@ import { importChatAttachments } from '@/lib/chatAttachments';
 import { stageLinearTicketAttachment } from '@/lib/linearTicketStaging';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useProviderAvailability } from '@/hooks/useProviderAvailability';
+import { resolveChatBillingFramework } from '@/lib/chatBillingFramework';
 import { useVoiceTranscription } from '@/hooks/useVoiceTranscription';
 import { createSlateVoiceTarget } from '@/lib/voice/insert-into-slate';
 import {
@@ -75,6 +80,7 @@ import { useComposerChipsCompact } from '@/components/chat/ComposerLayout';
 import {
   buildPlanModeChip,
   ChatComposerToolbarChip,
+  ComposerSendButton,
   ThinkingLevelPanelPicker,
   nextCodexSpeed,
 } from '@canopy/ui-shared';
@@ -88,7 +94,6 @@ import { VoiceDictationErrorModal } from '@/components/shared/VoiceDictationErro
 import { ComposerPlusMenu } from '@/components/shared/ComposerPlusMenu';
 import { LinearTicketPickerModal } from '@/components/shared/linear/LinearTicketPickerModal';
 import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
-import { useOnboardingSuggestionSurfaces } from '@/stores/onboardingSuggestionSurfacesStore';
 
 interface HomeComposerActionMenuProps {
   composerMenu?: ComposerMenuController;
@@ -169,9 +174,9 @@ function HomeComposerActionMenu({
   const pipelineItem = {
     id: 'pipeline',
     group: 'settings' as const,
-    label: 'Pipeline',
+    label: 'Workflow',
     description: pipelineMode
-      ? 'Turn pipeline mode off'
+      ? 'Turn workflow mode off'
       : 'Run the task through predefined automated steps',
     value: pipelineMode ? 'On' : undefined,
     icon: <PipelineIcon width={16} height={16} />,
@@ -244,13 +249,15 @@ function HomeComposerActionMenu({
         capsuleTrigger
         // Plan shows its own tile beside +; + lights only for Pipeline.
         active={pipelineMode}
-        activeLabel="Pipeline mode active"
+        activeLabel="Workflow mode active"
       />
     </div>
   );
 }
 
 export interface HomeComposerControlsProps {
+  /** Text-only replacements reset the hint without invalidating attachment imports. */
+  hintDraftRevision?: number;
   composerMenu?: ComposerMenuController;
   searchFiles?: (query: string) => FileMentionOption[];
   onSelectFile?: (file: FileMentionOption) => void;
@@ -287,6 +294,11 @@ export interface HomeComposerControlsProps {
   composerBoxRef?: RefObject<HTMLElement | null>;
   /** Reports when dictation starts and ends, so the editor can prompt for it. */
   onVoiceRecordingChange?: (recording: boolean) => void;
+  /**
+   * The plan mode suggestion (CAN-4008), for the surface to draw as the tip
+   * in the composer's top drawer; null once this composer unmounts.
+   */
+  onPlanModeHintChange?: (hint: PlanModeSuggestion | null) => void;
 }
 
 /**
@@ -299,6 +311,7 @@ export interface HomeComposerControlsProps {
  * Project and branch context remain above—not inside—the composer.
  */
 export function HomeComposerControls({
+  hintDraftRevision = 0,
   composerMenu,
   searchFiles,
   onSelectFile,
@@ -314,11 +327,13 @@ export function HomeComposerControls({
   onSelectCommand,
   composerBoxRef,
   onVoiceRecordingChange,
+  onPlanModeHintChange,
 }: HomeComposerControlsProps): JSX.Element {
   const providerAvailability = useProviderAvailability();
 
   const {
     workspaceId,
+    draftGeneration,
     mode,
     model,
     modelSelectionMode,
@@ -352,6 +367,7 @@ export function HomeComposerControls({
   } = useHomeComposerStore(
     useShallow((s) => ({
       workspaceId: s.workspaceId,
+      draftGeneration: s.draftGeneration,
       mode: s.mode,
       model: s.model,
       modelSelectionMode: s.modelSelectionMode,
@@ -391,13 +407,6 @@ export function HomeComposerControls({
   const [linearPickerOpen, setLinearPickerOpen] = useState(false);
   const [pluginsModalOpen, setPluginsModalOpen] = useState(false);
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
-  const modelPickerHighlightRef = useRef<HTMLDivElement>(null);
-  const planModeHighlight = useOnboardingSuggestionSurfaces(
-    (state) => state.planModeHighlight,
-  );
-  const modelPickerHighlight = useOnboardingSuggestionSurfaces(
-    (state) => state.modelPickerHighlightTarget?.scope === 'home',
-  );
 
   const isCowork = workspaceId !== null && isCoworkChatTarget(workspaceId);
   const autoRouting = useAutoModelRoutingAvailability();
@@ -457,6 +466,18 @@ export function HomeComposerControls({
   const nextChatBilling = useChatStore(
     (s) => s.modelDefaults?.billingFramework,
   );
+  // Home obeys the same eligibility as an existing chat. A remembered explicit
+  // subscription choice stays honored; a fresh signed-out choice cannot bypass
+  // the credits lock merely because its chat has not been created (CAN-5349).
+  const billingProvider = getProviderForModel(effectiveModel) ?? 'claude';
+  const billingResolution = resolveChatBillingFramework({
+    model: effectiveModel,
+    provider: billingProvider,
+    availability: providerAvailability[billingProvider],
+    aiCreditsRoutingActive: nextChatBilling === 'ai-credits',
+    subscriptionBillingOverride: nextChatBilling === 'subscription',
+    routingActiveForChat: false,
+  });
   // The exact speed the next chat requests: the staged choice, then the
   // Codex default; `undefined` for providers without a Codex speed.
   const resolvedSpeed = resolveHomeSpeed(
@@ -650,17 +671,38 @@ export function HomeComposerControls({
     branchTarget,
   );
 
+  const filesGuestGate = useDesktopFilesGuestGate(
+    `${workspaceId}/${branchTargetKey}`,
+  );
   async function handleImportAttachments(): Promise<void> {
-    if (!workspaceId) return;
+    if (filesGuestGate.interceptAttachment() || disabled || !workspaceId)
+      return;
+    const isCurrent = filesGuestGate.captureAccess();
+    const importToken = useHomeComposerStore.getState().beginAttachmentImport();
     const target = { projectId: workspaceId, worktreeId: draftWorktreeId };
     try {
-      const imported = await importChatAttachments(target, []);
+      const imported = await importChatAttachments(
+        target,
+        [],
+        undefined,
+        isCurrent,
+      );
+      const store = useHomeComposerStore.getState();
+      if (!isCurrent() || store.draftGeneration !== importToken.draftGeneration)
+        return;
       addAttachments(imported);
       setSendError(null);
     } catch {
       // Surface the failure instead of letting the fire-and-forget `void`
       // swallow it — a rejected import otherwise leaves no UI trace at all.
-      setSendError('Failed to import attachments. Please try again.');
+      if (
+        isCurrent() &&
+        useHomeComposerStore.getState().draftGeneration ===
+          importToken.draftGeneration
+      )
+        setSendError('Failed to import attachments. Please try again.');
+    } finally {
+      useHomeComposerStore.getState().finishAttachmentImport(importToken);
     }
   }
 
@@ -759,11 +801,8 @@ export function HomeComposerControls({
     onSend();
   }, [voice.state, onSend]);
 
-  // Picking Plan mode from + also retires its onboarding highlight.
+  // Plan controls retain their existing toggle behavior.
   const handleTogglePlanMode = useCallback((): void => {
-    if (useOnboardingSuggestionSurfaces.getState().planModeHighlight) {
-      useOnboardingSuggestionSurfaces.setState({ planModeHighlight: false });
-    }
     togglePlanMode();
   }, [togglePlanMode]);
 
@@ -774,8 +813,7 @@ export function HomeComposerControls({
     model,
     executionHarness,
   );
-  const planReadOnly =
-    effectiveProviderType === 'cursor' || effectiveProviderType === 'copilot';
+  const planReadOnly = isPlanModeReadOnly(effectiveProviderType);
   // While Plan is on, its tile sits beside + and turns it off in one click,
   // as in a chat. Pipeline hides it; Plan stays on for the way back. A narrow
   // box draws it as the glyph alone, at the chat composer's breakpoint.
@@ -783,6 +821,56 @@ export function HomeComposerControls({
     null,
   );
   const chipsCompact = useComposerChipsCompact(toolbarElement);
+  const hintRootRef = useRef<HTMLDivElement>(null);
+  const activity = useComposerHintActivity(
+    composerBoxRef ?? hintRootRef,
+    !disabled,
+  );
+  const hint = usePlanModeSuggestion({
+    text,
+    draftKey: `home:${workspaceId}:${selectedRepoId}:${draftGeneration}:${hintDraftRevision}`,
+    activationKey: effectiveProviderType,
+    planMode,
+    planAvailable: isChatMode && !isCowork && !disabled,
+    planReadOnly,
+    pipelineMode: !isChatMode,
+    ...activity,
+    store: getPlanModeHintStore(),
+    onEnablePlanMode: () => {
+      const current = useHomeComposerStore.getState();
+      if (
+        current.workspaceId !== workspaceId ||
+        current.mode !== 'chat' ||
+        resolveHomeEffectiveProviderType(
+          current.workspaceId,
+          current.model,
+          current.executionHarness,
+        ) !== effectiveProviderType
+      )
+        return false;
+      if (!current.planMode) current.togglePlanMode();
+      return useHomeComposerStore.getState().planMode;
+    },
+    focusComposer: () => focusEditor(editor),
+    onShown: () => trackPlanModeHintAction('shown', 'home'),
+    onAccepted: () => trackPlanModeHintAction('accepted', 'home'),
+    onDismissed: () => trackPlanModeHintAction('dismissed', 'home'),
+  });
+  // The drawer that holds the tip belongs to the surface, outside this box.
+  const { visible: hintVisible, pending: hintPending } = hint;
+  const { accept: acceptHint, dismiss: dismissHint } = hint;
+  useEffect(() => {
+    onPlanModeHintChange?.({
+      visible: hintVisible,
+      pending: hintPending,
+      accept: acceptHint,
+      dismiss: dismissHint,
+    });
+  }, [onPlanModeHintChange, hintVisible, hintPending, acceptHint, dismissHint]);
+  useEffect(
+    () => (): void => onPlanModeHintChange?.(null),
+    [onPlanModeHintChange],
+  );
   const planChip =
     isChatMode && planMode
       ? buildPlanModeChip({
@@ -799,6 +887,8 @@ export function HomeComposerControls({
 
   return (
     <>
+      {/* Measures visibility when the surface passes no composer box. */}
+      <div ref={hintRootRef} />
       {attachments.length > 0 && (
         <AttachmentPillCarousel
           attachments={attachments}
@@ -872,9 +962,6 @@ export function HomeComposerControls({
             scheduleDisabledDescription={scheduleDisabledDescription}
             onOpenSchedule={() => setScheduleModalOpen(true)}
           />
-          {planModeHighlight && isChatMode && (
-            <PlanModeHighlight target={plusTriggerRef} />
-          )}
           {planChip ? (
             <div className="flex shrink-0 items-center">
               <ChatComposerToolbarChip {...planChip} />
@@ -891,19 +978,12 @@ export function HomeComposerControls({
             {isChatMode && (
               <>
                 <div
-                  ref={modelPickerHighlightRef}
                   // Nothing on the row collapses: the model name truncates as
                   // the row narrows, its icon folding away at the first ellipsis.
                   className="relative flex min-w-0 items-center"
-                  onClickCapture={(): void => {
-                    if (modelPickerHighlight) {
-                      useOnboardingSuggestionSurfaces.setState({
-                        modelPickerHighlightTarget: null,
-                      });
-                    }
-                  }}
                 >
                   <ModelPicker
+                    key={draftGeneration}
                     browserLayout="harnesses"
                     allowCursor={Boolean(workspaceId)}
                     allowCopilot={Boolean(workspaceId)}
@@ -920,8 +1000,11 @@ export function HomeComposerControls({
                       if (harness) setExecutionHarness(harness);
                     }}
                     billing={{
-                      value: nextChatBilling ?? 'subscription',
-                      provider: getProviderForModel(effectiveModel) ?? 'claude',
+                      value: billingResolution.framework ?? nextChatBilling,
+                      provider: billingProvider,
+                      disabled: billingResolution.toggleDisabled,
+                      lockedReason: billingResolution.lockedReason,
+                      lockKind: billingResolution.lockKind,
                       onChange: (framework): void =>
                         useChatStore
                           .getState()
@@ -951,12 +1034,6 @@ export function HomeComposerControls({
                     triggerTooltip="Model for this task"
                   />
                 </div>
-                {modelPickerHighlight && (
-                  <ComposerControlHighlight
-                    target={modelPickerHighlightRef}
-                    testId="home-model-picker-highlight"
-                  />
-                )}
                 {/* Tri-state contract: an explicit empty supported set
                       means the model does not think, so the control is
                       hidden entirely (matching the web composer). An absent
@@ -1037,16 +1114,13 @@ export function HomeComposerControls({
                 shortcut={DICTATION_SHORTCUT_LABEL}
               />
             )}
-            <button
-              type="button"
-              onClick={onSend}
+            <ComposerSendButton
+              kind="send"
+              onSend={onSend}
               disabled={sendDisabled}
-              data-testid="home-send-button"
-              aria-label="Send"
-              className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full bg-accent fg-emphasis transition enabled:hover:bg-accent/90 disabled:cursor-not-allowed disabled:bg-muted disabled:fg-tertiary disabled:opacity-100"
-            >
-              <ArrowUp width={16} height={16} />
-            </button>
+              pending={false}
+              dataTestId="home-send-button"
+            />
           </div>
         </div>
       )}

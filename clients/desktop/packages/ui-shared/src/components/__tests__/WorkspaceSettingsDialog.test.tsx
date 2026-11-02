@@ -3,11 +3,12 @@ import { act, type JSX } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   WORKSPACE_COLOR_PALETTE,
+  WORKSPACE_SETTINGS_DIALOG_MIN_HEIGHT,
   WorkspaceSettingsDialog,
 } from '../WorkspaceSettingsDialog';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
-it('saves retention days and renders a second danger confirmation', async () => {
+it('saves retention days and shows both remove actions at the end of General', async () => {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -59,8 +60,20 @@ it('saves retention days and renders a second danger confirmation', async () => 
   expect(onSave).toHaveBeenCalledWith(
     expect.objectContaining({ deletionRetentionDays: 30 }),
   );
-  click('Danger');
-  expect(document.body.textContent).toContain('Delete workspace…');
+  // Removing is the last rows of General, not a Danger tab or a titled
+  // Manage card.
+  expect(
+    Array.from(document.querySelectorAll('[role="tab"]')).map(
+      (tab) => tab.textContent,
+    ),
+  ).toEqual(['General', 'CLAUDE.md', 'Scripts']);
+  expect(document.body.textContent).not.toContain('Manage');
+  const rows = document.querySelector('[role="tabpanel"] [data-surface]');
+  const lastRows = Array.from(rows?.children ?? [])
+    .slice(-2)
+    .map((row) => row.textContent);
+  expect(lastRows[0]).toContain('Delete project');
+  expect(lastRows[1]).toContain('Delete workspace…');
   act(() => root.unmount());
   container.remove();
 });
@@ -441,4 +454,125 @@ it('retains a saved unavailable model until the user clears it', async () => {
     act(() => root.unmount());
     container.remove();
   }
+});
+
+it('never asks for more height than the dialog may take on a short screen', () => {
+  // DialogModal caps its card at min(80vh, 85dvh); the minimum stays under it.
+  expect(WORKSPACE_SETTINGS_DIALOG_MIN_HEIGHT).toBe('min(30rem, 80vh, 85dvh)');
+});
+
+it('shows the pages as tabs above plain rows, with one Save and no Done', () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    act(() =>
+      root.render(
+        <WorkspaceSettingsDialog
+          workspaceName="Project"
+          initialValues={{ name: 'Project', content: '', scripts: {} }}
+          onSave={() => Promise.resolve()}
+          onClose={() => undefined}
+          onDelete={() => Promise.resolve()}
+          testIds={{ save: 'save' }}
+        />,
+      ),
+    );
+    const tablist = document.querySelector('[role="tablist"]');
+    expect(tablist).toBeInstanceOf(HTMLElement);
+    expect(tablist?.getAttribute('aria-orientation')).not.toBe('vertical');
+    // No page title or subtitle over the rows: the tab names the page.
+    const panel = document.querySelector('[role="tabpanel"]');
+    expect(panel?.querySelector('h2, h3')).toBeNull();
+    expect(document.body.textContent).not.toContain('Name, color and');
+    // Rows sit on the dialog, separated by hairlines, not in a box.
+    const rows = panel?.querySelector('[data-surface]');
+    expect(rows?.getAttribute('data-surface')).toBe('plain');
+    expect(rows?.className).not.toContain('bg-secondary');
+    const buttons = Array.from(document.querySelectorAll('button')).map(
+      (button) => button.textContent,
+    );
+    expect(buttons).not.toContain('Done');
+    expect(buttons.filter((label) => label === 'Save')).toHaveLength(1);
+    expect(document.querySelector('[data-testid="save"]')?.className).toContain(
+      'bg-accent',
+    );
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});
+
+it('deletes from a quiet last row that confirms in place', async () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const onDelete = jest.fn(() => Promise.resolve());
+  const onClose = jest.fn();
+  try {
+    act(() =>
+      root.render(
+        <WorkspaceSettingsDialog
+          workspaceName="Project"
+          initialValues={{ name: 'Project', content: '', scripts: {} }}
+          onSave={() => Promise.resolve()}
+          onClose={onClose}
+          onDelete={onDelete}
+          testIds={{ danger: 'danger' }}
+        />,
+      ),
+    );
+    const row = document.querySelector('[data-testid="danger"]');
+    const trigger = row?.querySelector('button');
+    if (!(trigger instanceof HTMLButtonElement))
+      throw new Error('Missing delete trigger');
+    expect(trigger.textContent).toBe('Delete…');
+    // A danger text button, not a filled or outlined one.
+    expect(trigger.className).toContain('fg-destructive');
+    expect(trigger.className).toContain('bg-transparent');
+    act(() => trigger.click());
+    expect(row?.textContent).toContain("This can't be undone.");
+    const confirm = Array.from(row?.querySelectorAll('button') ?? []).find(
+      (button) => button.textContent === 'Delete',
+    );
+    if (!(confirm instanceof HTMLButtonElement))
+      throw new Error('Missing confirm');
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+    });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});
+
+it('scrolls the tabs sideways and wraps controls on a phone-width screen', () => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() =>
+    root.render(
+      <WorkspaceSettingsDialog
+        workspaceName="Project"
+        initialValues={{ name: 'Project', content: '', scripts: {} }}
+        onSave={() => Promise.resolve()}
+        onClose={() => undefined}
+      />,
+    ),
+  );
+  const pages = document.querySelector<HTMLElement>(
+    '[data-testid="workspace-settings-pages"]',
+  );
+  expect(pages?.className).toContain('overflow-x-auto');
+  // The page can shrink, so its body scrolls and Save stays visible.
+  expect(pages?.nextElementSibling?.className).toContain('min-h-0');
+  const nameLabel = Array.from(document.querySelectorAll('label')).find(
+    (label) => label.textContent === 'Name',
+  );
+  expect(nameLabel?.closest('.max-sm\\:flex-wrap')).not.toBeNull();
+  act(() => root.unmount());
+  container.remove();
 });

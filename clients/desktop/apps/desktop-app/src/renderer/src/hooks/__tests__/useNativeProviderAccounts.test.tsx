@@ -3,10 +3,7 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type {
-  CanopyApi,
-  PreferencesLoadResult,
-} from '@canopy/desktop-shared/types';
+import type { PreferencesLoadResult } from '@canopy/desktop-shared/types';
 import {
   useNativeProviderAccounts,
   type NativeProviderAccounts,
@@ -60,7 +57,7 @@ describe('useNativeProviderAccounts', () => {
           changed = cb;
           return unsubscribe;
         },
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 

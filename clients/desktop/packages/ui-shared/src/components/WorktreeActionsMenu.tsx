@@ -13,6 +13,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { focusMenuRow } from '../lib/input-modality';
 import type { AppIcon } from '../icons/AppIcons';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
 import {
@@ -66,6 +67,12 @@ export type WorktreeMenuItemKey =
   | 'bulk-archive'
   | 'bulk-delete'
   | 'clear-selection'
+  | 'bulk-pin'
+  | 'bulk-done'
+  | 'bulk-hide'
+  | 'bulk-notifications'
+  /** The bulk Notifications submenu's choice rows: `bulk-notify-mute`. */
+  | `bulk-${SpaceNotificationMenuChoiceKey}`
   | 'share-chat'
   | 'more'
   | 'notifications'
@@ -421,9 +428,12 @@ export const WorktreeActionsMenu = forwardRef<
     };
   }, [itemCount, open, updatePosition]);
 
+  // A click open leaves the row unpainted until the first arrow; see
+  // `focusMenuRow`.
   useEffect(() => {
     if (open && position) {
-      if (activeIndex >= 0) itemRefs.current[activeIndex]?.focus();
+      const row = activeIndex >= 0 ? itemRefs.current[activeIndex] : null;
+      if (row) focusMenuRow(row);
       else menuRef.current?.focus();
     }
   }, [activeIndex, open, position]);

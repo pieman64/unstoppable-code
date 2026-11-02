@@ -24,20 +24,25 @@ import {
   Notice,
   NoticeButton,
   SegmentedControl,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
+import { formatDate } from '@canopy/ui-shared/lib';
 import { formatRelativeTime } from '@canopy/ui-shared/lib/format-relative-time';
 import {
   accessFormStateFromDetail,
+  accessHostsMissing,
   accessPresets,
   applyAccessPreset,
   buildAccess,
   countAccessTools,
   countEnabledAccessTools,
   isExternalAgentToolGroup,
-  setAccessDesktopMode,
-  setAccessDesktopSelected,
   setAccessDestructive,
+  setAccessDeviceChoice,
+  setAccessDeviceSelected,
+  setAccessExposeNames,
   setAccessGroupLevel,
+  setAccessManagedHost,
   setAccessToolEnabled,
   toAccessEditorGroups,
   type AccessFormState,
@@ -54,9 +59,19 @@ import {
   SettingsRow,
   SettingsSection,
   ExternalAgentsUnavailable,
+  TextContentCompatibilityChoice,
   WaitingRows,
 } from './external-agents-parts';
-import { EXTERNAL_AGENT_CONFIRMATION_CLASS_LABELS } from './display';
+import {
+  CLOUD_AGENTS_FALLBACK_LABEL,
+  cloudProductName,
+  EXTERNAL_AGENT_CONFIRMATION_CLASS_LABELS,
+  TEXT_CONTENT_COMPATIBILITY_COPY,
+} from './display';
+import {
+  useOptionalSettingsHost,
+  type SettingsUiHost,
+} from '../settings/host/settings-host';
 import { EXTERNAL_AGENTS_PATH } from './paths';
 import { useMountedStore } from './use-mounted-store';
 
@@ -67,39 +82,72 @@ export interface ExternalAgentPageProps {
 
 type AccessExpiry = 'keep' | 'never' | '7' | '30' | '90' | '365';
 
+const EXPOSE_NAMES_LABEL = 'Show device names to this agent';
+const EXPOSE_NAMES_DESCRIPTION =
+  'The agent sees each device’s name next to its host ID. Device names often include your name. Leave this off unless the agent needs it.';
+
+/** Reads the brand's cloud product name from the settings host's brand helpers. */
+function HostCloudName({
+  host,
+  children,
+}: {
+  readonly host: SettingsUiHost;
+  readonly children: (cloudName: string) => JSX.Element;
+}): JSX.Element {
+  const brand = host.useBrand();
+  return children(cloudProductName(brand.displayName));
+}
+
 export function ExternalAgentPage({
   connectionId,
   onOpenPath,
 }: ExternalAgentPageProps): JSX.Element {
   const client = useCanopyClient();
   const capabilities = useCapabilities();
+  const settingsHost = useOptionalSettingsHost();
   const externalAgents = client.externalAgents;
   if (capabilities.externalAgents !== true || externalAgents === undefined) {
     return <ExternalAgentsUnavailable />;
   }
 
-  return (
+  const view = (cloudName: string): JSX.Element => (
     <ExternalAgentStoreView
       key={connectionId}
       client={externalAgents}
       connectionId={connectionId}
+      cloudName={cloudName}
       onOpenPath={onOpenPath}
     />
+  );
+  // Every web mount renders inside a settings host; outside one the switch
+  // reads "Cloud agents" rather than a literal product name.
+  return settingsHost === null ? (
+    view(CLOUD_AGENTS_FALLBACK_LABEL)
+  ) : (
+    <HostCloudName host={settingsHost}>{view}</HostCloudName>
   );
 }
 
 function ExternalAgentStoreView({
   client,
   connectionId,
+  cloudName,
   onOpenPath,
 }: {
   readonly client: ExternalAgentsClient;
   readonly connectionId: string;
+  readonly cloudName: string;
   readonly onOpenPath: (path: string) => void;
 }): JSX.Element {
   const store = useMountedStore(client, connectionId, createExternalAgentStore);
   if (store === null) return <ExternalAgentLoading />;
-  return <ExternalAgentStoreContent store={store} onOpenPath={onOpenPath} />;
+  return (
+    <ExternalAgentStoreContent
+      store={store}
+      cloudName={cloudName}
+      onOpenPath={onOpenPath}
+    />
+  );
 }
 
 function ExternalAgentLoading(): JSX.Element {
@@ -119,9 +167,11 @@ function ExternalAgentLoading(): JSX.Element {
 
 function ExternalAgentStoreContent({
   store,
+  cloudName,
   onOpenPath,
 }: {
   readonly store: ExternalAgentStore;
+  readonly cloudName: string;
   readonly onOpenPath: (path: string) => void;
 }): JSX.Element {
   const state = useStore(store);
@@ -154,7 +204,7 @@ function ExternalAgentStoreContent({
         <Notice intent="attention">This agent isn’t connected anymore.</Notice>
         <Button
           variant="secondary"
-          size="control"
+          size="compact"
           onClick={(): void => onOpenPath(EXTERNAL_AGENTS_PATH)}
         >
           Back to External agents
@@ -171,7 +221,7 @@ function ExternalAgentStoreContent({
             intent="attention"
             actions={
               <NoticeButton
-                variant="primary"
+                variant="secondary"
                 onClick={(): void => void state.load()}
               >
                 Try again
@@ -195,6 +245,7 @@ function ExternalAgentStoreContent({
       state={state}
       store={store}
       desktops={desktops}
+      cloudName={cloudName}
       onOpenPath={onOpenPath}
     />
   );
@@ -205,12 +256,15 @@ function ExternalAgentDetailView({
   state,
   store,
   desktops,
+  cloudName,
   onOpenPath,
 }: {
   readonly detail: ExternalAgentConnectionDetail;
   readonly state: ExternalAgentState;
   readonly store: ExternalAgentStore;
   readonly desktops: DesktopListState;
+  /** The brand's cloud product name, which labels the Cloud agents switch. */
+  readonly cloudName: string;
   readonly onOpenPath: (path: string) => void;
 }): JSX.Element {
   const [draft, setDraft] = useState<AccessFormState>(() =>
@@ -220,7 +274,11 @@ function ExternalAgentDetailView({
     ExternalAgentConnectionDetail['confirmation']
   >(() => ({ ...detail.confirmation }));
   const [expiry, setExpiry] = useState<AccessExpiry>('keep');
+  const [textContentCompatibility, setTextContentCompatibility] = useState(
+    detail.textContentCompatibility,
+  );
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
+  const [confirmingExposeNames, setConfirmingExposeNames] = useState(false);
   const source: AccessModelSource = {
     server: detail.server,
     groups: detail.groups,
@@ -248,16 +306,29 @@ function ExternalAgentDetailView({
     }
   }
   const hasConfirmationChanges = Object.keys(confirmationChange).length > 0;
+  const hasCompatibilityChange =
+    textContentCompatibility !== detail.textContentCompatibility;
+  // A Tasks connection must reach at least one host.
+  const hostsMissing = accessHostsMissing(source, draft, {
+    keepUnusedScope: true,
+  });
   const canSave =
-    (hasAccessChanges || hasConfirmationChanges || expiry !== 'keep') &&
+    (hasAccessChanges ||
+      hasConfirmationChanges ||
+      hasCompatibilityChange ||
+      expiry !== 'keep') &&
     !overToolLimit &&
+    !hostsMissing &&
     state.pending === null;
   const disabled = state.pending !== null;
   const editorDisabled = disabled || detail.status === 'expired';
   // Pausing or resuming reloads the agent, so it waits until edits are saved
   // or discarded rather than dropping them silently.
   const hasUnsavedEdits =
-    hasAccessChanges || hasConfirmationChanges || expiry !== 'keep';
+    hasAccessChanges ||
+    hasConfirmationChanges ||
+    hasCompatibilityChange ||
+    expiry !== 'keep';
 
   const setOrganizationMode = (mode: 'all' | 'selected'): void => {
     setDraft((current) => ({
@@ -281,6 +352,19 @@ function ExternalAgentDetailView({
     });
   };
 
+  const changeExposeNames = (next: boolean): void => {
+    if (next) {
+      setConfirmingExposeNames(true);
+      return;
+    }
+    setDraft((current) => setAccessExposeNames(current, false));
+  };
+
+  const confirmExposeNames = (): void => {
+    setDraft((current) => setAccessExposeNames(current, true));
+    setConfirmingExposeNames(false);
+  };
+
   const changeExpiry = (event: ChangeEvent<HTMLSelectElement>): void => {
     setExpiry(expiryValue(event.currentTarget.value));
   };
@@ -290,6 +374,7 @@ function ExternalAgentDetailView({
       access: buildAccess(source, draft, { keepUnusedScope: true }),
       expiry: expiryChange(expiry),
       ...(hasConfirmationChanges ? { confirmation: confirmationChange } : {}),
+      ...(hasCompatibilityChange ? { textContentCompatibility } : {}),
     });
   };
 
@@ -313,6 +398,7 @@ function ExternalAgentDetailView({
   const discard = (): void => {
     setDraft(accessFormStateFromDetail(detail));
     setConfirmationDraft({ ...detail.confirmation });
+    setTextContentCompatibility(detail.textContentCompatibility);
     setExpiry('keep');
   };
 
@@ -344,7 +430,7 @@ function ExternalAgentDetailView({
             <>
               <Button
                 variant="destructive"
-                size="control"
+                size="compact"
                 disabled={disabled}
                 data-testid="external-agent-remove"
                 onClick={(): void => setConfirmingRemoval(true)}
@@ -354,7 +440,7 @@ function ExternalAgentDetailView({
               {detail.status === 'paused' ? (
                 <Button
                   variant="secondary"
-                  size="control"
+                  size="compact"
                   disabled={disabled || hasUnsavedEdits}
                   data-testid="external-agent-resume"
                   onClick={resume}
@@ -364,7 +450,7 @@ function ExternalAgentDetailView({
               ) : (
                 <Button
                   variant="secondary"
-                  size="control"
+                  size="compact"
                   disabled={disabled || hasUnsavedEdits}
                   data-testid="external-agent-pause"
                   onClick={pause}
@@ -382,7 +468,7 @@ function ExternalAgentDetailView({
             intent="attention"
             actions={
               <NoticeButton
-                variant="primary"
+                variant="secondary"
                 onClick={(): void => void state.load()}
               >
                 Try again
@@ -420,7 +506,7 @@ function ExternalAgentDetailView({
               title="Paused."
               actions={
                 <NoticeButton
-                  variant="primary"
+                  variant="secondary"
                   disabled={disabled || hasUnsavedEdits}
                   onClick={resume}
                 >
@@ -508,6 +594,28 @@ function ExternalAgentDetailView({
                   }
                 />
               )}
+              {detail.server === 'tasks' ? (
+                <SettingsRow
+                  label={EXPOSE_NAMES_LABEL}
+                  description={
+                    <span id="external-agent-expose-names-note">
+                      {EXPOSE_NAMES_DESCRIPTION}
+                    </span>
+                  }
+                  testId="external-agent-expose-names-row"
+                  control={
+                    <ToggleSwitch
+                      id="external-agent-expose-names"
+                      label={EXPOSE_NAMES_LABEL}
+                      checked={draft.hosts.exposeNames}
+                      disabled={editorDisabled}
+                      describedBy="external-agent-expose-names-note"
+                      dataTestId="external-agent-expose-names"
+                      onChange={changeExposeNames}
+                    />
+                  }
+                />
+              ) : null}
             </SettingsGroup>
           </SettingsSection>
         </div>
@@ -518,16 +626,20 @@ function ExternalAgentDetailView({
           organizations={detail.organizations}
           initialOrganizationIds={detail.current.organizations.organizationIds}
           remoteControlEnabled={detail.remoteControlEnabled}
+          cloudName={cloudName}
           disabled={editorDisabled}
           setOrganizationMode={setOrganizationMode}
           setOrganizationEnabled={setOrganizationEnabled}
           desktops={desktops}
-          setDesktopMode={(mode): void =>
-            setDraft((current) => setAccessDesktopMode(current, mode))
+          setManagedHost={(managed): void =>
+            setDraft((current) => setAccessManagedHost(current, managed))
           }
-          setDesktopSelected={(remoteId, selected): void =>
+          setDeviceChoice={(choice): void =>
+            setDraft((current) => setAccessDeviceChoice(current, choice))
+          }
+          setDeviceSelected={(remoteId, selected): void =>
             setDraft((current) =>
-              setAccessDesktopSelected(current, remoteId, selected),
+              setAccessDeviceSelected(current, remoteId, selected),
             )
           }
           onRetryDesktops={(): void => void store.getState().loadDesktops()}
@@ -610,11 +722,22 @@ function ExternalAgentDetailView({
             </SettingsGroup>
           </SettingsSection>
         ) : null}
+        <SettingsSection
+          title={TEXT_CONTENT_COMPATIBILITY_COPY.title}
+          testId="external-agent-compatibility"
+        >
+          <TextContentCompatibilityChoice
+            idPrefix="external-agent"
+            checked={textContentCompatibility}
+            disabled={editorDisabled}
+            onChange={setTextContentCompatibility}
+          />
+        </SettingsSection>
         {detail.status !== 'expired' ? (
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               variant="secondary"
-              size="control"
+              size="compact"
               disabled={disabled}
               data-testid="external-agent-discard"
               onClick={discard}
@@ -622,8 +745,8 @@ function ExternalAgentDetailView({
               Discard
             </Button>
             <Button
-              variant="primary"
-              size="control"
+              variant="secondary"
+              size="compact"
               disabled={!canSave}
               data-testid="external-agent-save"
               onClick={save}
@@ -643,6 +766,19 @@ function ExternalAgentDetailView({
           <ActivityList items={detail.activity} />
         </SettingsSection>
       </div>
+      {confirmingExposeNames ? (
+        <ConfirmDialog
+          title="Show device names to this agent?"
+          message={`${detail.clientName} will see each device’s name next to its host ID. Device names often include your name.`}
+          confirmLabel="Show device names"
+          onConfirm={confirmExposeNames}
+          onCancel={(): void => setConfirmingExposeNames(false)}
+          confirmTestId="external-agent-expose-names-confirm"
+          cancelTestId="external-agent-expose-names-cancel"
+          dataTestId="external-agent-expose-names-dialog"
+          focusCancel
+        />
+      ) : null}
       {confirmingRemoval ? (
         <ConfirmDialog
           title={`Remove ${detail.clientName}?`}
@@ -775,10 +911,4 @@ function expiryChange(value: AccessExpiry): ExternalAgentExpiryChange {
   if (value === 'keep') return { kind: 'keep' };
   if (value === 'never') return { kind: 'never' };
   return { kind: 'days', days: Number(value) };
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'long' }).format(
-    new Date(value),
-  );
 }

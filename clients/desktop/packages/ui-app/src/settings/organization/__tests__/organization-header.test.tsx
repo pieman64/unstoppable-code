@@ -16,7 +16,6 @@ import {
 import type {
   OrganizationDetail,
   OrganizationSettingsRoute,
-  OrganizationSummary,
   SettingsBootstrap,
   SettingsOrganizationMembership,
 } from '@canopy/protocol/settings';
@@ -58,15 +57,6 @@ const MEMBERSHIPS: SettingsOrganizationMembership[] = [
     isPersonal: false,
   },
 ];
-
-const SUMMARIES: OrganizationSummary[] = MEMBERSHIPS.map((membership) => ({
-  id: membership.id,
-  name: membership.name,
-  role: membership.role,
-  memberCount: 1,
-  subTeamCount: 0,
-  logoUrl: null,
-}));
 
 function detail(
   overrides: Partial<OrganizationDetail> = {},
@@ -119,7 +109,7 @@ const ROUTE: OrganizationSettingsRoute = {
 };
 
 describe('organizationHeaderModel', () => {
-  it('prefers the detail, with its counts', () => {
+  it('prefers the detail', () => {
     expect(
       organizationHeaderModel(
         'org-1',
@@ -132,20 +122,16 @@ describe('organizationHeaderModel', () => {
       logoUrl: null,
       viewerRole: 'OWNER',
       isPersonal: false,
-      memberCount: 2,
-      teamCount: 1,
     });
   });
 
-  it('falls back to the bootstrap membership, without counts', () => {
+  it('falls back to the bootstrap membership', () => {
     expect(organizationHeaderModel('org-2', null, MEMBERSHIPS)).toEqual({
       id: 'org-2',
       name: 'Beta',
       logoUrl: null,
       viewerRole: 'MEMBER',
       isPersonal: false,
-      memberCount: null,
-      teamCount: null,
     });
   });
 
@@ -239,17 +225,18 @@ describe('OrganizationSettingsPlaceholder', () => {
     return store;
   }
 
-  function teamPage(organizationDetail: OrganizationDetail): JSX.Element {
+  function teamPage(
+    organizationDetail: OrganizationDetail,
+    activeTab: 'memory' | 'settings' = 'memory',
+  ): JSX.Element {
     return (
       <TeamPage
         initialDetail={organizationDetail}
-        organizations={SUMMARIES}
         viewerEmail="ada@example.com"
         billingEnabled
         memoryEnabled
         projectsEnabled
-        billingNeedsAttention={false}
-        activeTab="memory"
+        activeTab={activeTab}
         mobileBrowser={false}
       />
     );
@@ -259,23 +246,16 @@ describe('OrganizationSettingsPlaceholder', () => {
     return container.querySelector(`[data-testid="${testId}"]`)?.outerHTML;
   }
 
-  function switcherHtml(): string | undefined {
-    return container
-      .querySelector('[data-testid="team-org-switcher"]')
-      ?.closest('label')?.outerHTML;
-  }
-
-  it('draws the live header’s markup from the cached detail', async () => {
+  it('draws the live page header, with no organization block', async () => {
     const client = createFakeSettingsClient({
       'settings.bootstrap': () => bootstrap(),
     });
     const organizationDetail = detail();
 
     await render(client, teamPage(organizationDetail));
-    const liveHeader = html('team-overview-section');
-    const liveSwitcher = switcherHtml();
+    const liveHeader = html('page-header');
     expect(liveHeader).toBeDefined();
-    expect(liveSwitcher).toBeDefined();
+    expect(html('team-overview-section')).toBeUndefined();
 
     await act(async () => {
       await currentStore().getState().loadBootstrap('org-1');
@@ -285,8 +265,9 @@ describe('OrganizationSettingsPlaceholder', () => {
       .rememberOrganizationDetail('org-1', organizationDetail);
     await render(client, <OrganizationSettingsPlaceholder route={ROUTE} />);
 
-    expect(html('team-overview-section')).toBe(liveHeader);
-    expect(switcherHtml()).toBe(liveSwitcher);
+    expect(html('page-header')).toBe(liveHeader);
+    expect(html('team-overview-section')).toBeUndefined();
+    expect(html('team-org-switcher')).toBeUndefined();
     const item = teamNavItem('memory');
     expect(
       container.querySelector('[data-testid="page-header-title"]')?.textContent,
@@ -295,12 +276,6 @@ describe('OrganizationSettingsPlaceholder', () => {
       container.querySelector('[data-testid="page-header-description"]')
         ?.textContent,
     ).toBe(item.description);
-    // Read-only: nothing in the header acts on a page that has not loaded.
-    expect(
-      container
-        .querySelector('[data-testid="team-overview-section"]')
-        ?.closest('[inert]'),
-    ).not.toBeNull();
     // The body is the tab's skeleton: Memory's facts load as a list.
     expect(
       container.querySelector(
@@ -310,25 +285,6 @@ describe('OrganizationSettingsPlaceholder', () => {
     expect(
       container.querySelector('[data-testid="centered-loading-spinner"]'),
     ).toBeNull();
-  });
-
-  it('holds the name and counts with placeholder bars when nothing is cached', async () => {
-    const client = createFakeSettingsClient({
-      'settings.bootstrap': () => new Promise<never>(() => {}),
-    });
-    await render(client, <OrganizationSettingsPlaceholder route={ROUTE} />);
-
-    const header = container.querySelector(
-      '[data-testid="team-overview-section"]',
-    );
-    expect(header).not.toBeNull();
-    expect(header?.querySelector('h1')?.textContent).toBe('');
-    expect(
-      header?.querySelectorAll('.canopy-inline-skeleton').length,
-    ).toBeGreaterThanOrEqual(3);
-    expect(
-      header?.querySelector('[data-testid="team-overview-member-count"]'),
-    ).toBeNull();
     // No visible loading copy; "Loading" is announced to assistive tech only.
     const visible = container.cloneNode(true);
     if (!(visible instanceof HTMLElement)) throw new Error('No clone');
@@ -336,23 +292,83 @@ describe('OrganizationSettingsPlaceholder', () => {
     expect(visible.textContent).not.toMatch(/Loading/);
   });
 
-  it('draws a membership without counts until a tab loads the detail', async () => {
+  it('names a Settings page by its own title while it loads', async () => {
     const client = createFakeSettingsClient({
-      'settings.bootstrap': () => bootstrap(),
+      'settings.bootstrap': () => new Promise<never>(() => {}),
+    });
+    await render(
+      client,
+      <OrganizationSettingsPlaceholder
+        route={{ ...ROUTE, page: 'settings', subtab: 'policies' }}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="page-header-title"]')?.textContent,
+    ).toBe('Policies');
+    expect(
+      container.querySelector('[data-testid="page-header-title"]')?.tagName,
+    ).toBe('H1');
+  });
+
+  function organizationBootstrap(
+    organization: Partial<NonNullable<SettingsBootstrap['organization']>>,
+  ): SettingsBootstrap {
+    return {
+      ...bootstrap(),
+      organization: {
+        id: 'org-1',
+        name: 'Acme',
+        viewerRole: 'OWNER',
+        isPersonal: false,
+        visibleTabs: ['members', 'settings'],
+        disabledTabs: [],
+        billingNeedsAttention: false,
+        billingEnabled: true,
+        memoryEnabled: false,
+        digestsEnabled: false,
+        projectsEnabled: false,
+        canViewUsageStats: true,
+        freeAccess: false,
+        githubConnected: true,
+        lapse: null,
+        ...organization,
+      },
+    };
+  }
+
+  async function placeholderTitle(
+    organization: Partial<NonNullable<SettingsBootstrap['organization']>>,
+    route: OrganizationSettingsRoute,
+  ): Promise<string | null | undefined> {
+    const client = createFakeSettingsClient({
+      'settings.bootstrap': () => organizationBootstrap(organization),
     });
     await render(client, <CaptureStore />);
     await act(async () => {
       await currentStore().getState().loadBootstrap('org-1');
     });
-    await render(client, <OrganizationSettingsPlaceholder route={ROUTE} />);
+    await render(client, <OrganizationSettingsPlaceholder route={route} />);
+    return container.querySelector('[data-testid="page-header-title"]')
+      ?.textContent;
+  }
 
-    const header = container.querySelector(
-      '[data-testid="team-overview-section"]',
-    );
-    expect(header?.querySelector('h1')?.textContent).toBe('Acme');
+  it('names Billing as the loaded page will with free access on', async () => {
     expect(
-      header?.querySelector('[data-testid="team-overview-member-count"]'),
-    ).toBeNull();
+      await placeholderTitle(
+        { freeAccess: true },
+        { ...ROUTE, page: 'settings', subtab: 'billing' },
+      ),
+    ).toBe('AI Credits');
+  });
+
+  it('names the first page a member gets on a bare Settings route', async () => {
+    // A member has no General; the loaded page opens Usage instead.
+    expect(
+      await placeholderTitle(
+        { viewerRole: 'MEMBER' },
+        { ...ROUTE, page: 'settings' },
+      ),
+    ).toBe('Usage');
   });
 
   it('draws the Personal header for the personal organization', async () => {
@@ -397,13 +413,8 @@ describe('OrganizationSettingsPlaceholder', () => {
     const client = createFakeSettingsClient({
       'organization.rename': () => detail({ name: 'Renamed' }),
     });
-    await render(client, teamPage(detail()));
+    await render(client, teamPage(detail(), 'settings'));
 
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('[data-testid="team-name-edit"]')
-        ?.click();
-    });
     const input = container.querySelector<HTMLInputElement>(
       '[data-testid="team-name-input"]',
     );
@@ -421,6 +432,9 @@ describe('OrganizationSettingsPlaceholder', () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    expect(
+      client.calls.filter((call) => call.operation === 'organization.rename'),
+    ).toHaveLength(1);
 
     expect(currentStore().getState().organizationDetails['org-1']?.name).toBe(
       'Renamed',

@@ -143,7 +143,7 @@ function CostActivityPreviewContent({
                       {runs.length > 0 ? (
                         <div className="flex min-h-7 items-center gap-2 px-2 pt-1">
                           <span className="text-xs fg-secondary">
-                            Pipeline runs{' '}
+                            Workflow runs{' '}
                             <span className="tabular-nums fg-tertiary">
                               {runs.length}
                             </span>

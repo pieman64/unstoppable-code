@@ -8,9 +8,9 @@
 // docs/ui-automation-coverage/11-build-time-gating-principle.md) via
 // `CANOPY_MOCK_LLM_BASE_URL`.
 //
-// The server is STATELESS: every turn the SDK resends full history, so this
-// module resolves which scripted step to return purely from the request body
-// (Doc 5 §2):
+// Legacy step selection is STATELESS: every turn the SDK resends full history,
+// so this module selects scripted steps from the request body (Doc 5 §2).
+// Optional C1 v2 attempts, barriers and observations use per-scenario state:
 //
 //   1. Conversation id — scan user-role message text for a `[Canopy-C<id>]`
 //      marker. If present, look up that conversation script (from
@@ -45,9 +45,15 @@ import { dirname, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import {
+  DEFAULT_SCENARIO,
   getScenario,
+  keyFromApiKey,
+  keyFromBearer,
   markerFromText,
+  recordRequest,
   recordScenarioActivity,
+  resolveStepAttempt,
+  waitForBarrier,
 } from '../control-plane.mjs';
 
 const require = createRequire(import.meta.url);
@@ -165,6 +171,13 @@ const HELPER_FINGERPRINTS = [
       }),
       stopReason: 'end_turn',
     },
+  },
+  {
+    // Claude Agent SDK session titles wrap the chat's own message, marker and
+    // request tag included, so they would otherwise take the chat's script.
+    id: 'session-title',
+    matches: (text) => /You are naming a coding session/i.test(text),
+    step: { text: 'Mock session title', stopReason: 'end_turn' },
   },
   {
     id: 'topic-summary',
@@ -731,7 +744,7 @@ function findPromptScenario(userText) {
     if (!line) continue;
     const key = `${PROMPT_SCENARIO_KEY_PREFIX}${line}`;
     const scenario = getScenario(key);
-    if (scenario?.llm) return { key, scenario };
+    if (scenario?.llm || scenario?.strict === true) return { key, scenario };
   }
   return undefined;
 }
@@ -743,27 +756,50 @@ function findPromptScenario(userText) {
  * @param {string} userText
  * @returns {{ scenario: object, conversationKey?: string }}
  */
-function resolveScenarioForUserText(userText) {
+function resolveScenarioForUserText(userText, fallbackKey) {
   const marker = markerFromText(userText);
   if (!marker) {
     const matched = findPromptScenario(userText);
     if (matched) {
-      return { scenario: matched.scenario, conversationKey: matched.key };
+      return {
+        scenario: matched.scenario,
+        conversationKey: matched.key,
+        scenarioKey: matched.key,
+      };
     }
+    return {
+      scenario: getScenario(fallbackKey),
+      // A credential-keyed scenario can use the same inlined `llm.steps`
+      // shape as a marker-keyed conversation, even when the prompt is opaque.
+      conversationKey: fallbackKey,
+      scenarioKey: fallbackKey,
+    };
   }
-  return { scenario: resolveScenarioForMarker(marker) };
+  return resolveScenarioForMarker(marker);
 }
 
 function resolveScenarioForMarker(marker) {
   if (!marker) {
-    return getScenario(undefined);
+    return { scenario: getScenario(undefined), scenarioKey: undefined };
   }
   const direct = getScenario(marker);
-  if (direct && direct.llm) {
-    return direct;
+  if (direct?.llm || direct?.strict === true) {
+    return { scenario: direct, scenarioKey: marker };
   }
   const bare = marker.replace(/^Canopy-/, '');
-  return getScenario(bare);
+  const scenario = getScenario(bare);
+  if (scenario?.llm || scenario?.strict === true) {
+    return { scenario, scenarioKey: bare };
+  }
+  return {
+    scenario: direct !== DEFAULT_SCENARIO ? direct : scenario,
+    scenarioKey:
+      direct !== DEFAULT_SCENARIO
+        ? marker
+        : scenario !== DEFAULT_SCENARIO
+          ? bare
+          : marker,
+  };
 }
 
 function resolveOpenAiStepCursor(assistantTurns, completedToolNames, scenario) {
@@ -807,17 +843,184 @@ function resolveOpenAiStepCursor(assistantTurns, completedToolNames, scenario) {
   return assistantTurns;
 }
 
+function isStrictScenario(scenario) {
+  return scenario?.strict === true || scenario?.llm?.strict === true;
+}
+
+function unmatchedStep() {
+  return {
+    error: {
+      code: 'mock_unmatched',
+      type: 'mock_unmatched',
+      message: 'No mock LLM step matched the request.',
+    },
+    stopReason: 'end_turn',
+  };
+}
+
+/**
+ * Apply request-scoped attempt resolution only when a transport context is
+ * supplied. The context-free resolver remains a pure legacy projection.
+ */
+function resolveContextStep(step, usage, scenario, scenarioKey, context) {
+  if (!context) {
+    return { step, usage, attempt: undefined };
+  }
+
+  let selectedStep = step;
+  let selectedUsage = usage;
+  if (isStrictScenario(scenario) && selectedStep === DEFAULT_STEP) {
+    selectedStep = unmatchedStep();
+  }
+
+  const resolution = resolveStepAttempt(scenarioKey, selectedStep);
+  if (resolution?.step && typeof resolution.step === 'object') {
+    selectedStep = resolution.step;
+    if (selectedStep.usage && typeof selectedStep.usage === 'object') {
+      selectedUsage = { ...selectedUsage, ...selectedStep.usage };
+    }
+  }
+  return {
+    step: selectedStep,
+    usage: selectedUsage,
+    attempt: resolution?.attempt,
+  };
+}
+
+function toolDefinitionName(tool) {
+  if (typeof tool?.name === 'string') return tool.name;
+  if (typeof tool?.function?.name === 'string') return tool.function.name;
+  return undefined;
+}
+
+// Namespaced tool lists (Codex `additional_tools`) nest their functions.
+function toolDefinitionNames(tool) {
+  const name = toolDefinitionName(tool);
+  const nested = Array.isArray(tool?.tools)
+    ? tool.tools.flatMap(toolDefinitionNames)
+    : [];
+  return typeof name === 'string' ? [name, ...nested] : nested;
+}
+
+function currentRequestToolNames(body) {
+  return currentRequestTools(body).flatMap(toolDefinitionNames);
+}
+
+function collectToolResultIds(body, protocol) {
+  const ids = [];
+  if (protocol === 'anthropic') {
+    for (const message of Array.isArray(body.messages) ? body.messages : []) {
+      if (!Array.isArray(message?.content)) continue;
+      for (const block of message.content) {
+        if (
+          block?.type === 'tool_result' &&
+          typeof block.tool_use_id === 'string'
+        ) {
+          ids.push(block.tool_use_id);
+        }
+      }
+    }
+    return ids;
+  }
+
+  const items = Array.isArray(body.input)
+    ? body.input
+    : Array.isArray(body.messages)
+      ? body.messages
+      : [];
+  for (const item of items) {
+    const id =
+      item?.type === 'function_call_output' ||
+      item?.type === 'custom_tool_call_output'
+        ? (item.call_id ?? item.id)
+        : item?.type === 'tool_result'
+          ? (item.tool_use_id ?? item.call_id ?? item.id)
+          : item?.role === 'tool'
+            ? item.tool_call_id
+            : undefined;
+    if (typeof id === 'string') ids.push(id);
+  }
+  return ids;
+}
+
+function observationRoute(route) {
+  if (typeof route !== 'string') return undefined;
+  if (
+    route === '/responses' ||
+    route === 'responses' ||
+    route.endsWith('/v1/responses') ||
+    route.endsWith('/responses/responses')
+  ) {
+    return '/v1/responses';
+  }
+  return route;
+}
+
+function recordLlmRequest(body, protocol, context, scenarioKey, metadata) {
+  if (!context) return undefined;
+  return recordRequest(scenarioKey, {
+    transport: context.transport,
+    route: observationRoute(context.route),
+    stepId: metadata.stepId,
+    tag: metadata.requestTag,
+    attempt: metadata.attempt,
+    toolNames: currentRequestToolNames(body),
+    toolResultIds: collectToolResultIds(body, protocol),
+  });
+}
+
+function recordRequestTextObservers(
+  scenarioKey,
+  scenario,
+  body,
+  userText,
+  systemText,
+) {
+  const requestText = `${systemText}\n${userText}\n${JSON.stringify(body)}`;
+  const messages = Array.isArray(body.input)
+    ? body.input
+    : Array.isArray(body.messages)
+      ? body.messages
+      : [];
+  for (const observer of scenario?.llm?.requestTextObservers ?? []) {
+    if (
+      observer &&
+      typeof observer.key === 'string' &&
+      observer.key.length > 0 &&
+      typeof observer.text === 'string' &&
+      observer.text.length > 0 &&
+      (observer.scope === 'tools'
+        ? JSON.stringify(currentRequestTools(body))
+        : typeof observer.lastMessageContaining === 'string'
+          ? JSON.stringify(
+              messages.findLast((message) =>
+                JSON.stringify(message).includes(
+                  observer.lastMessageContaining,
+                ),
+              ) ?? '',
+            )
+          : requestText
+      ).includes(observer.text)
+    ) {
+      recordScenarioActivity(scenarioKey, `llmObserved:${observer.key}`);
+    }
+  }
+}
+
 // Resolve a canned reply for an OpenAI Responses-shaped request body. Shared by
 // the HTTP `/v1/responses` route and the WebSocket `/responses` transport
 // (`responsesWs.mjs`), so both surfaces honor the same marker/fingerprint tiers.
-export function resolveResponsesReply(body) {
+export function resolveResponsesReply(body, context) {
   const userText = collectOpenAiUserText(body);
   const systemText = collectOpenAiSystemText(body);
   const assistantTurns = countOpenAiAssistantTurns(body);
   const assistantToolNames = collectOpenAiAssistantToolNames(body);
   const completedToolNames = collectOpenAiCompletedToolNames(body);
-  const { scenario, conversationKey } = resolveScenarioForUserText(userText);
-  const { step, usage } = resolveCannedStep({
+  const { scenario, conversationKey, scenarioKey } = resolveScenarioForUserText(
+    userText,
+    context?.key,
+  );
+  const resolved = resolveCannedStep({
     userText,
     systemText,
     conversationKey,
@@ -829,8 +1032,40 @@ export function resolveResponsesReply(body) {
     assistantToolNames,
     scenario,
   });
+  const { step, usage, attempt } = resolveContextStep(
+    resolved.step,
+    resolved.usage,
+    scenario,
+    scenarioKey,
+    context,
+  );
+  const requestTag = mockRequestTagFromText(userText);
+  const observation = recordLlmRequest(body, 'openai', context, scenarioKey, {
+    stepId: step.stepId,
+    attempt,
+    requestTag,
+  });
+  if (context) {
+    recordRequestTextObservers(
+      resolved.conversationId ?? scenarioKey,
+      scenario,
+      body,
+      userText,
+      systemText,
+    );
+  }
   const model = typeof body.model === 'string' ? body.model : undefined;
-  return { step: materializeCannedStep(step, body), usage, model };
+  const reply = {
+    step: materializeCannedStep(step, body),
+    usage,
+    model,
+  };
+  if (context) {
+    reply.scenarioKey = scenarioKey;
+    reply.observation = observation;
+    reply.conversationId = resolved.conversationId;
+  }
+  return reply;
 }
 
 // Map a canned step's `error` directive to a Responses-style failure payload for
@@ -841,6 +1076,12 @@ export function classifyResponsesStepError(step) {
   const error = step?.error;
   if (!error) {
     return null;
+  }
+  if (error.kind === 'disconnect' || error.kind === 'midstream') {
+    return null;
+  }
+  if (typeof error.code === 'string' && error.code.length > 0) {
+    return { code: error.code, message: error.message ?? 'Mock error.' };
   }
   if (error === 'usage_limit' || error.type === 'usage_limit') {
     return { code: 'usage_limit_exceeded', message: 'Usage limit reached.' };
@@ -970,10 +1211,29 @@ function materializeCannedStep(step, body) {
 
 // ── SSE rendering helpers ────────────────────────────────────────────────────
 
-function scriptedToolUseId(toolCall, index) {
-  return typeof toolCall?.id === 'string' && toolCall.id.length > 0
-    ? toolCall.id
+// Real providers never reuse a tool_use id within a conversation, and the app
+// keeps only the latest result per id. Ids after the first tool-using step
+// therefore carry the count of tool_use blocks already in the history.
+function scriptedToolUseId(toolCall, index, priorToolUses = 0) {
+  if (typeof toolCall?.id === 'string' && toolCall.id.length > 0) {
+    return toolCall.id;
+  }
+  return priorToolUses > 0
+    ? `toolu_mock_${priorToolUses}_${index}`
     : `toolu_mock_${index}`;
+}
+
+function countPriorToolUses(body) {
+  let count = 0;
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) {
+      continue;
+    }
+    for (const block of message.content) {
+      if (block?.type === 'tool_use') count += 1;
+    }
+  }
+  return count;
 }
 
 function sseWrite(response, event, data) {
@@ -1036,7 +1296,13 @@ function mapStopReasonAnthropic(stopReason) {
 
 // ── Anthropic Messages rendering ─────────────────────────────────────────────
 
-async function renderAnthropicStream(response, step, usage, model) {
+async function renderAnthropicStream(
+  response,
+  step,
+  usage,
+  model,
+  priorToolUses = 0,
+) {
   startSseResponse(response);
   const messageId = `msg_mock_${Date.now()}`;
 
@@ -1107,7 +1373,7 @@ async function renderAnthropicStream(response, step, usage, model) {
   }
 
   for (const toolCall of Array.isArray(step.toolCalls) ? step.toolCalls : []) {
-    const toolId = scriptedToolUseId(toolCall, blockIndex);
+    const toolId = scriptedToolUseId(toolCall, blockIndex, priorToolUses);
     sseWrite(response, 'content_block_start', {
       type: 'content_block_start',
       index: blockIndex,
@@ -1147,7 +1413,7 @@ async function renderAnthropicStream(response, step, usage, model) {
   response.end();
 }
 
-function renderAnthropicJson(response, step, usage, model) {
+function renderAnthropicJson(response, step, usage, model, priorToolUses = 0) {
   const content = [];
   if (step.thinking) {
     content.push({ type: 'thinking', thinking: step.thinking });
@@ -1161,7 +1427,7 @@ function renderAnthropicJson(response, step, usage, model) {
   ).entries()) {
     content.push({
       type: 'tool_use',
-      id: scriptedToolUseId(toolCall, i),
+      id: scriptedToolUseId(toolCall, i, priorToolUses),
       name: toolCall.name,
       input: toolCall.input ?? {},
     });
@@ -1520,6 +1786,22 @@ function maybeRenderError(response, step) {
   if (!error) {
     return false;
   }
+  if (
+    typeof error === 'object' &&
+    (error.kind === 'disconnect' || error.kind === 'midstream')
+  ) {
+    return false;
+  }
+  if (typeof error === 'object' && error.code === 'mock_unmatched') {
+    jsonResponse(response, 500, {
+      error: {
+        type: 'mock_unmatched',
+        code: 'mock_unmatched',
+        message: error.message ?? 'No mock LLM step matched the request.',
+      },
+    });
+    return true;
+  }
   if (error === 'usage_limit' || error.type === 'usage_limit') {
     jsonResponse(response, 429, {
       type: 'error',
@@ -1538,11 +1820,136 @@ function maybeRenderError(response, step) {
     return true;
   }
   const status = typeof error.status === 'number' ? error.status : 500;
+  const responseError = {
+    type: 'api_error',
+    ...(typeof error.code === 'string' ? { code: error.code } : {}),
+    message: error.message ?? 'Mock error.',
+  };
   jsonResponse(response, status, {
     type: 'error',
-    error: { type: 'api_error', message: error.message ?? 'Mock error.' },
+    error: responseError,
   });
   return true;
+}
+
+function setObservationError(observation, errorClass) {
+  if (observation && typeof observation === 'object' && errorClass) {
+    observation.errorClass = errorClass;
+  }
+}
+
+function stepErrorClass(step) {
+  const error = step?.error;
+  if (!error) return undefined;
+  if (error.kind === 'disconnect' || error.kind === 'midstream') {
+    return `mock_${error.kind}`;
+  }
+  return classifyResponsesStepError(step)?.code ?? 'server_error';
+}
+
+async function waitBeforeRendering(step, scenarioKey, observation, response) {
+  if (step?.waitFor !== undefined) {
+    try {
+      const timeoutMs =
+        typeof step.barrierTimeoutMs === 'number'
+          ? step.barrierTimeoutMs
+          : 30_000;
+      await waitForBarrier(scenarioKey, step.waitFor, timeoutMs);
+    } catch (error) {
+      const code =
+        typeof error?.code === 'string' ? error.code : 'mock_barrier_error';
+      const message =
+        typeof error?.message === 'string'
+          ? error.message
+          : 'Mock barrier failed.';
+      setObservationError(observation, code);
+      jsonResponse(response, 500, {
+        error: { type: code, code, message },
+      });
+      return false;
+    }
+  }
+
+  if (typeof step?.delayMs === 'number' && step.delayMs > 0) {
+    await delay(step.delayMs);
+  }
+  return true;
+}
+
+function isStructuralSseFrame(frame) {
+  const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+  if (!dataLine) return false;
+  const value = dataLine.slice('data:'.length).trim();
+  if (value === '[DONE]') return true;
+  try {
+    const payload = JSON.parse(value);
+    if (
+      payload.type === 'content_block_delta' ||
+      (typeof payload.type === 'string' && payload.type.endsWith('.delta'))
+    ) {
+      return false;
+    }
+    if (Array.isArray(payload.choices)) {
+      if (payload.usage) return true;
+      return payload.choices.some(
+        (choice) =>
+          choice?.finish_reason != null ||
+          choice?.delta?.role !== undefined ||
+          !choice?.delta,
+      );
+    }
+  } catch {
+    // Non-JSON SSE frames are structural unless they are a known delta.
+  }
+  return true;
+}
+
+/** Close an SSE connection immediately after the requested number of structural frames. */
+function closeSseAfterStructuralFrames(response, afterFrames) {
+  const limit =
+    Number.isSafeInteger(afterFrames) && afterFrames >= 0 ? afterFrames : 1;
+  const originalWrite = response.write.bind(response);
+  const originalEnd = response.end.bind(response);
+  let buffered = '';
+  let structuralFrames = 0;
+  let closed = false;
+
+  response.write = (chunk, encoding, callback) => {
+    if (closed) {
+      if (typeof encoding === 'function') encoding();
+      else if (typeof callback === 'function') callback();
+      return false;
+    }
+    buffered += Buffer.isBuffer(chunk)
+      ? chunk.toString(typeof encoding === 'string' ? encoding : 'utf8')
+      : String(chunk);
+
+    let frameEnd = buffered.indexOf('\n\n');
+    while (frameEnd !== -1) {
+      const frame = buffered.slice(0, frameEnd + 2);
+      buffered = buffered.slice(frameEnd + 2);
+      const structural = isStructuralSseFrame(frame);
+      if (structural && limit === 0) {
+        closed = true;
+        response.destroy();
+        return false;
+      }
+
+      const result = originalWrite(frame, encoding, callback);
+      if (structural) {
+        structuralFrames += 1;
+        if (structuralFrames >= limit) {
+          closed = true;
+          response.destroy();
+          return false;
+        }
+      }
+      frameEnd = buffered.indexOf('\n\n');
+    }
+    return true;
+  };
+
+  response.end = (...args) => (closed ? response : originalEnd(...args));
 }
 
 // ── AI Credits gateway proxy prefixes ────────────────────────────────────────
@@ -1597,20 +2004,90 @@ export function normalizeLlmProxyPath(pathname) {
   return { pathname, proxyTag: null };
 }
 
+// Codex 0.164 `incremental_tools` removal notices
+// (codex-rs/prompts/src/model_messages/incremental_tools.rs).
+const CODEX_REMOVED_TOOLS_HEADER =
+  'The following tools are no longer available. Do not call them:';
+const CODEX_REMOVED_NAMESPACES_HEADER =
+  'The following namespaces are no longer available. Do not call tools in them unless those tools are declared in a later update:';
+
+function developerMessageText(item) {
+  if (item?.role !== 'developer') return '';
+  if (typeof item.content === 'string') return item.content;
+  return Array.isArray(item.content)
+    ? item.content
+        .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+        .join('\n')
+    : '';
+}
+
+function removedToolSections(text) {
+  const removed = { namespaces: [], tools: [] };
+  let section;
+  for (const line of text.split('\n')) {
+    if (line === CODEX_REMOVED_NAMESPACES_HEADER) section = removed.namespaces;
+    else if (line === CODEX_REMOVED_TOOLS_HEADER) section = removed.tools;
+    else if (section && line.startsWith('- ')) section.push(line.slice(2));
+    else section = undefined;
+  }
+  return removed;
+}
+
 /**
  * The tools a request currently offers. Codex 0.159+ sends no top-level
- * `tools` on Responses requests; it carries them in an `additional_tools`
- * input item instead, so only the latest such item counts as current.
+ * `tools` on Responses requests; it declares them in `additional_tools` input
+ * items. With Codex 0.164 `incremental_tools`, later items add only changed
+ * declarations and removals arrive as developer notices, so every item is
+ * folded in input order.
  */
-function currentRequestTools(body) {
+export function currentRequestTools(body) {
   const topLevel = Array.isArray(body.tools) ? body.tools : [];
-  const additional = Array.isArray(body.input)
-    ? body.input.findLast(
-        (item) =>
-          item?.type === 'additional_tools' && Array.isArray(item.tools),
-      )
-    : undefined;
-  return [...topLevel, ...(additional?.tools ?? [])];
+  const catalog = new Map();
+  const nameOf = (tool) => toolDefinitionName(tool) ?? tool?.type;
+  for (const item of Array.isArray(body.input) ? body.input : []) {
+    if (item?.type === 'additional_tools' && Array.isArray(item.tools)) {
+      for (const tool of item.tools) {
+        const name = nameOf(tool);
+        if (typeof name !== 'string') continue;
+        if (!Array.isArray(tool.tools)) {
+          catalog.set(name, { kind: 'tool', definition: tool });
+          continue;
+        }
+        const previous = catalog.get(name);
+        const members = new Map(
+          previous?.kind === 'namespace' ? previous.members : [],
+        );
+        for (const member of tool.tools) {
+          const memberName = nameOf(member);
+          if (typeof memberName === 'string') members.set(memberName, member);
+        }
+        catalog.set(name, { kind: 'namespace', header: tool, members });
+      }
+      continue;
+    }
+    const { namespaces, tools } = removedToolSections(
+      developerMessageText(item),
+    );
+    for (const namespace of namespaces) catalog.delete(namespace);
+    for (const qualified of tools) {
+      const dot = qualified.indexOf('.');
+      if (dot === -1) {
+        catalog.delete(qualified);
+        continue;
+      }
+      const entry = catalog.get(qualified.slice(0, dot));
+      if (entry?.kind === 'namespace')
+        entry.members.delete(qualified.slice(dot + 1));
+    }
+  }
+  const folded = [...catalog.values()].flatMap((entry) =>
+    entry.kind === 'tool'
+      ? [entry.definition]
+      : entry.members.size > 0
+        ? [{ ...entry.header, tools: [...entry.members.values()] }]
+        : [],
+  );
+  return [...topLevel, ...folded];
 }
 
 // ── Public route handler ─────────────────────────────────────────────────────
@@ -1665,22 +2142,14 @@ export async function handleLlmRequest(request, response, url) {
   // Both spellings: a native turn sends the bare id, while a credits-routed
   // turn sends `entry.gatewayId` (`ai-credits-routing.ts`). Matching only the
   // bare id would leave the whole proxy lane unvalidated.
-  if (
+  const invalidLunaReasoningEffort =
     isResponses &&
     (model === 'gpt-5.6-luna' || model === 'openai/gpt-5.6-luna') &&
-    body.reasoning?.effort === 'minimal'
-  ) {
-    jsonResponse(response, 400, {
-      error: {
-        code: 'invalid_value',
-        message:
-          "Invalid 'reasoning.effort': 'minimal' is not supported for gpt-5.6-luna",
-        param: 'reasoning.effort',
-        type: 'invalid_request_error',
-      },
-    });
-    return true;
-  }
+    body.reasoning?.effort === 'minimal';
+
+  const credentialKey =
+    keyFromBearer(request) ?? keyFromApiKey(request, { header: 'x-api-key' });
+  const context = { key: credentialKey, transport: 'http', route: pathname };
 
   const userText = isAnthropic
     ? collectAnthropicUserText(body)
@@ -1705,58 +2174,98 @@ export async function handleLlmRequest(request, response, url) {
     ? countAnthropicAssistantTurnsAfterRequestTag(body, requestTag)
     : null;
 
-  // Scenario keying: an LLM conversation is keyed off its `[Canopy-C<id>]`
-  // marker (per-conversation) rather than a credential, so resolve the scenario
-  // registered under that marker (Doc 5 §2 / control-plane key extraction).
-  // Tests may register under either the full marker (`Canopy-C<id>`) or the bare
-  // conversation id (`C<id>`), so resolve a non-default scenario for whichever.
-  const { scenario, conversationKey } = resolveScenarioForUserText(userText);
+  if (invalidLunaReasoningEffort) {
+    const { scenarioKey } = resolveScenarioForUserText(userText, credentialKey);
+    const observation = recordLlmRequest(body, 'openai', context, scenarioKey, {
+      requestTag,
+    });
+    setObservationError(observation, 'invalid_value');
+    jsonResponse(response, 400, {
+      error: {
+        code: 'invalid_value',
+        message:
+          "Invalid 'reasoning.effort': 'minimal' is not supported for gpt-5.6-luna",
+        param: 'reasoning.effort',
+        type: 'invalid_request_error',
+      },
+    });
+    return true;
+  }
 
-  const openAiStepCursor = isAnthropic
-    ? assistantTurns
-    : resolveOpenAiStepCursor(assistantTurns, completedToolNames, scenario);
-  const { step, usage, conversationId } = resolveCannedStep({
-    conversationKey,
-    userText,
-    systemText,
-    assistantTurns: openAiStepCursor,
-    assistantToolNames,
-    assistantTurnsAfterResume,
-    assistantTurnsAfterRequestTag,
-    scenario,
-  });
+  let scenario;
+  let scenarioKey;
+  let conversationId;
+  let openAiStepCursor = assistantTurns;
+  let step;
+  let usage;
+  let observation;
+
+  if (isAnthropic) {
+    const resolvedScenario = resolveScenarioForUserText(
+      userText,
+      credentialKey,
+    );
+    scenario = resolvedScenario.scenario;
+    scenarioKey = resolvedScenario.scenarioKey;
+    const resolved = resolveCannedStep({
+      conversationKey: resolvedScenario.conversationKey,
+      userText,
+      systemText,
+      assistantTurns,
+      assistantToolNames,
+      assistantTurnsAfterResume,
+      assistantTurnsAfterRequestTag,
+      scenario,
+    });
+    const selected = resolveContextStep(
+      resolved.step,
+      resolved.usage,
+      scenario,
+      scenarioKey,
+      context,
+    );
+    step = selected.step;
+    usage = selected.usage;
+    conversationId = resolved.conversationId;
+    observation = recordLlmRequest(body, 'anthropic', context, scenarioKey, {
+      stepId: step.stepId,
+      attempt: selected.attempt,
+      requestTag,
+    });
+    recordRequestTextObservers(
+      conversationId ?? scenarioKey,
+      scenario,
+      body,
+      userText,
+      systemText,
+    );
+  } else {
+    const reply = resolveResponsesReply(body, context);
+    step = reply.step;
+    usage = reply.usage;
+    conversationId = reply.conversationId;
+    scenarioKey = reply.scenarioKey;
+    observation = reply.observation;
+    scenario = resolveScenarioForUserText(userText, credentialKey).scenario;
+    openAiStepCursor = resolveOpenAiStepCursor(
+      assistantTurns,
+      completedToolNames,
+      scenario,
+    );
+  }
+
   recordScenarioActivity(conversationId, 'llmRequests');
   if (model !== undefined) {
     recordScenarioActivity(conversationId, `llmModel:${model}`);
   }
-  const requestText = `${systemText}\n${userText}\n${JSON.stringify(body)}`;
-  const openAiMessages = Array.isArray(body.input)
-    ? body.input
-    : Array.isArray(body.messages)
-      ? body.messages
-      : [];
-  for (const observer of scenario?.llm?.requestTextObservers ?? []) {
-    if (
-      observer &&
-      typeof observer.key === 'string' &&
-      observer.key.length > 0 &&
-      typeof observer.text === 'string' &&
-      observer.text.length > 0 &&
-      (observer.scope === 'tools'
-        ? JSON.stringify(currentRequestTools(body))
-        : typeof observer.lastMessageContaining === 'string'
-          ? JSON.stringify(
-              openAiMessages.findLast((message) =>
-                JSON.stringify(message).includes(
-                  observer.lastMessageContaining,
-                ),
-              ) ?? '',
-            )
-          : requestText
-      ).includes(observer.text)
-    ) {
-      recordScenarioActivity(conversationId, `llmObserved:${observer.key}`);
-    }
+  // Helper traffic is counted under the scenario it wraps, apart from the
+  // chat's own requests.
+  const helperId = matchHelperFingerprint(systemText)?.id;
+  if (helperId) {
+    recordScenarioActivity(
+      markerFromText(userText) ?? scenarioKey,
+      `helperRequests:${helperId}`,
+    );
   }
   if (proxyTag) {
     // Lets a spec assert the turn was carried by the AI Credits gateway rather
@@ -1775,16 +2284,47 @@ export async function handleLlmRequest(request, response, url) {
   if (requestTag) {
     recordScenarioActivity(conversationId, `llmRequests:${requestTag}`);
   }
+
+  if (!(await waitBeforeRendering(step, scenarioKey, observation, response))) {
+    return true;
+  }
+  setObservationError(observation, stepErrorClass(step));
+  const lifecycleError = step?.error;
+  if (lifecycleError?.kind === 'disconnect') {
+    response.destroy();
+    return true;
+  }
+  if (lifecycleError?.kind === 'midstream') {
+    if (!stream) {
+      response.destroy();
+      return true;
+    }
+    closeSseAfterStructuralFrames(response, lifecycleError.afterFrames);
+  }
+
   const materializedStep = materializeCannedStep(step, body);
   if (maybeRenderError(response, materializedStep)) {
     return true;
   }
 
   if (isAnthropic) {
+    const priorToolUses = countPriorToolUses(body);
     if (stream) {
-      await renderAnthropicStream(response, materializedStep, usage, model);
+      await renderAnthropicStream(
+        response,
+        materializedStep,
+        usage,
+        model,
+        priorToolUses,
+      );
     } else {
-      renderAnthropicJson(response, materializedStep, usage, model);
+      renderAnthropicJson(
+        response,
+        materializedStep,
+        usage,
+        model,
+        priorToolUses,
+      );
     }
     return true;
   }

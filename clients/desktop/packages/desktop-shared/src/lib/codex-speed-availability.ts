@@ -39,6 +39,7 @@ export type CodexKnownServiceTierId = 'priority' | 'ultrafast';
 const MAX_CATALOG_MODELS = 2_000;
 const MAX_CATALOG_DENIALS = 2_000;
 const MAX_CATALOG_STRING_LENGTH = 512;
+const MAX_REASONING_EFFORTS = 16;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -114,7 +115,48 @@ export function parseCodexSpeedCatalogModel(
     typeof entry.model === 'string' && entry.model ? entry.model : null;
   if (!id && !model) return null;
   const { tiers, source } = readCodexModelSpeedTiers(entry);
-  return { id: id ?? model ?? '', model: model ?? id ?? '', tiers, source };
+  const displayName =
+    typeof entry.displayName === 'string' ? entry.displayName.trim() : '';
+  const reasoningEfforts = readCodexModelReasoningEfforts(
+    entry.supportedReasoningEfforts,
+  );
+  return {
+    id: id ?? model ?? '',
+    model: model ?? id ?? '',
+    tiers,
+    source,
+    ...(isBoundedString(displayName) ? { displayName } : {}),
+    ...(typeof entry.hidden === 'boolean' ? { hidden: entry.hidden } : {}),
+    ...(typeof entry.isDefault === 'boolean'
+      ? { isDefault: entry.isDefault }
+      : {}),
+    ...(reasoningEfforts ? { reasoningEfforts } : {}),
+  };
+}
+
+/**
+ * Read `supportedReasoningEfforts`, whose entries are either effort ids or
+ * `{ reasoningEffort }` objects. Malformed entries are skipped rather than
+ * rejecting the model; a missing or wholly malformed list is `undefined`.
+ */
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function readCodexModelReasoningEfforts(value: unknown): string[] | undefined {
+  if (!isUnknownArray(value)) return undefined;
+  const efforts: string[] = [];
+  for (const entry of value) {
+    const effort = isRecord(entry) ? entry.reasoningEffort : entry;
+    if (
+      isBoundedString(effort) &&
+      !efforts.includes(effort) &&
+      efforts.length < MAX_REASONING_EFFORTS
+    ) {
+      efforts.push(effort);
+    }
+  }
+  return efforts.length > 0 ? efforts : undefined;
 }
 
 /**
@@ -178,6 +220,27 @@ function isCatalogModel(value: unknown): value is CodexSpeedCatalogModel {
     return false;
   }
   if (!isTierSource(value.source)) return false;
+  // The account metadata fields are optional, so catalogs cached before they
+  // existed still validate.
+  if (value.displayName !== undefined && !isBoundedString(value.displayName)) {
+    return false;
+  }
+  if (value.hidden !== undefined && typeof value.hidden !== 'boolean') {
+    return false;
+  }
+  if (value.isDefault !== undefined && typeof value.isDefault !== 'boolean') {
+    return false;
+  }
+  if (
+    value.reasoningEfforts !== undefined &&
+    !(
+      Array.isArray(value.reasoningEfforts) &&
+      value.reasoningEfforts.length <= MAX_REASONING_EFFORTS &&
+      value.reasoningEfforts.every((effort) => isBoundedString(effort))
+    )
+  ) {
+    return false;
+  }
   if (value.tiers === null) return true;
   return (
     Array.isArray(value.tiers) &&

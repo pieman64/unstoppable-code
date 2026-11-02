@@ -65,6 +65,7 @@ ${source}`;
       alias: {
         '@': path.join(repo, 'apps/desktop-app/src/renderer/src'),
         '@canopy/protocol': path.join(repo, 'packages/protocol/src'),
+        '@canopy/code-graph': path.join(repo, 'packages/code-graph/src'),
         '@canopy/desktop-shared': path.join(
           repo,
           'packages/desktop-shared/src',

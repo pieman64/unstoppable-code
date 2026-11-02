@@ -40,6 +40,7 @@ describe('capability package binding filters', () => {
           rootPath: '/one',
           kind: 'standalone_skill' as const,
           displayName: 'One',
+          invocationKeys: [],
         },
         {
           virtualSourceId: 'two',
@@ -48,6 +49,7 @@ describe('capability package binding filters', () => {
           rootPath: '/two',
           kind: 'standalone_skill' as const,
           displayName: 'Two',
+          invocationKeys: [],
         },
       ],
     };

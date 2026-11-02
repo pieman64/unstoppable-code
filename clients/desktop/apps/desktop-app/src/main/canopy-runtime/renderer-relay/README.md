@@ -45,4 +45,8 @@ The interim wire cap is 2 MiB to leave room around the 1 MiB renderer value
 cap. Oversized replies fail individually and oversized streams end at the last
 delivered cursor. A keyed instruction's unknown outcome keeps
 `same_idempotency_key` recovery across deadlines, disconnects, lost IPC replies,
-and reply limits.
+and reply limits. The exception is a keyed instruction the host serves without
+a retained outcome (`worker.filesystem.entry.delete`, `.copy` and `.move`,
+and `worker.filesystem.file.write` and `.directory.create`, until CAN-4733):
+the relay and preload answer its every retry as `never`, since a same-key
+replay would act again.

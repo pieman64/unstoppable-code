@@ -11,7 +11,34 @@ import {
 } from '../runtime-profile-graph';
 import type { RuntimeService } from '../service-container';
 import { serializingWorkerPair } from '../../runtime/__tests__/serializing-worker-pair';
+import {
+  WORKER_EXAMPLE_INSTRUCTIONS,
+  WORKER_EXAMPLE_STREAMS,
+} from '../../runtime/__tests__/worker-example-definitions';
 import { canopyUnavailableError } from '../../runtime/errors';
+import type {
+  CanopyDispatcherInstructionHandlerMap,
+  CanopyDispatcherStreamHandlerMap,
+  CanopyStreamFrame,
+  CanopyStreamHandle,
+} from '../../runtime/types';
+import type * as Manifest from '../runtime-profile-manifest';
+
+jest.mock('../runtime-profile-manifest', () => {
+  const actual = jest.requireActual<typeof Manifest>(
+    '../runtime-profile-manifest',
+  );
+  return {
+    ...actual,
+    // Installs this file's test-only worker operations wherever a worker runs.
+    runtimeProfileInstalls: (
+      ...[profile, name, kind]: Parameters<typeof actual.runtimeProfileInstalls>
+    ): boolean =>
+      name.startsWith('worker.example.')
+        ? profile !== 'core'
+        : actual.runtimeProfileInstalls(profile, name, kind),
+  };
+});
 
 const caller: CanopyCallerDescriptor = {
   principalId: 'test',
@@ -48,6 +75,32 @@ const files = (): RuntimeModule =>
       queries: {
         'worker.filesystem.roots.list': () => roots,
         'worker.filesystem.directory.list': () => ({ entries: [] }),
+        'worker.filesystem.file.read': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.search': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.filesystem.link.resolve': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.branch.list': () => ({
+          branches: [],
+          defaultBranch: null,
+          defaultBranchSource: null,
+        }),
+        'worker.git.executable.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.remote.get': () => ({
+          origin: { state: 'absent' as const },
+        }),
+        'worker.git.worktree.health.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     },
   });
@@ -355,4 +408,203 @@ it('fails closed when the host supplies no principal resolver', async () => {
     graph.dispatcher.query('core.runtime.manifest.get', {}, { caller }),
   ).resolves.toMatchObject({ operations: [] });
   await graph.shutdown('test');
+});
+
+type Write = CanopyDispatcherInstructionHandlerMap<
+  typeof WORKER_EXAMPLE_INSTRUCTIONS
+>['worker.example.write'];
+type Events = CanopyDispatcherStreamHandlerMap<
+  typeof WORKER_EXAMPLE_STREAMS
+>['worker.example.events'];
+const exampleCaller: CanopyCallerDescriptor = {
+  ...caller,
+  grants: [...caller.grants, 'worker.example.read', 'worker.example.write'],
+};
+const write = { daemonEpoch: 'epoch', sequence: 1 };
+const keyed = { idempotencyKey: 'key' };
+const example = (
+  handlers: { write?: Write; events?: Events } = {},
+): RuntimeModule =>
+  defineRuntimeModule({
+    name: 'worker.example',
+    plane: 'worker',
+    definitions: {
+      queries: {},
+      instructions: WORKER_EXAMPLE_INSTRUCTIONS,
+      streams: WORKER_EXAMPLE_STREAMS,
+    },
+    handlers: {
+      queries: {},
+      instructions: {
+        'worker.example.write':
+          handlers.write ?? ((params): typeof write => params),
+      },
+      streams: {
+        'worker.example.events':
+          handlers.events ??
+          ((_params, _context, sink): Promise<void> => {
+            sink.emit({ daemonEpoch: 'one' });
+            sink.end('completed');
+            return Promise.resolve();
+          }),
+      },
+    },
+  });
+const bundled = (
+  modules: RuntimeModule[],
+  pair = serializingWorkerPair(),
+): ReturnType<typeof createRuntimeProfileGraph> =>
+  createRuntimeProfileGraph({
+    profile: 'core+worker',
+    modules,
+    workerCaller: exampleCaller,
+    workerBinding: pair,
+    identity: { runtimeId: 'runtime', hostId: 'host', authorityId: null },
+    phaseDeadlineMs: 1000,
+    shutdownTimeoutMs: 50,
+  });
+const instruct = (dispatcher: CanopyDispatcher): Promise<unknown> =>
+  dispatcher.instruction('worker.example.write', write, {
+    caller: exampleCaller,
+    metadata: keyed,
+  });
+const subscribe = (
+  dispatcher: CanopyDispatcher,
+): Promise<CanopyStreamHandle<unknown, unknown>> =>
+  dispatcher.openStream(
+    'worker.example.events',
+    { daemonEpoch: 'scope', cursor: null },
+    { caller: exampleCaller },
+  );
+async function frames(
+  handle: CanopyStreamHandle<unknown, unknown>,
+): Promise<CanopyStreamFrame<unknown, unknown>[]> {
+  const collected: CanopyStreamFrame<unknown, unknown>[] = [];
+  for await (const frame of handle.frames) collected.push(frame);
+  return collected;
+}
+
+it('carries bundled worker instructions and streams across the binding', async () => {
+  const pair = serializingWorkerPair();
+  const graph = bundled([files(), example()], pair);
+  try {
+    await expect(instruct(graph.dispatcher)).resolves.toEqual(write);
+    expect(await frames(await subscribe(graph.dispatcher))).toMatchObject([
+      { kind: 'item', item: { daemonEpoch: 'one' } },
+      { kind: 'end', outcome: 'completed' },
+    ]);
+    expect(
+      pair.client.send.mock.calls.map(
+        ([message]) => 'method' in message && message.method,
+      ),
+    ).toEqual(['worker.example.write', 'worker.example.events']);
+    expect(pair.server.send).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'worker.example.events.item' }),
+    );
+  } finally {
+    await graph.shutdown('test');
+  }
+});
+
+it('cannot bypass a failed binding to reach worker instruction or stream handlers', async () => {
+  const pair = serializingWorkerPair();
+  pair.client.send.mockRejectedValue(canopyUnavailableError());
+  const writeHandler = jest.fn((params: typeof write) => params);
+  const eventsHandler = jest.fn((): Promise<void> => Promise.resolve());
+  const graph = bundled(
+    [example({ write: writeHandler, events: eventsHandler })],
+    pair,
+  );
+  try {
+    expect(await kind(instruct(graph.dispatcher))).toBe('unavailable');
+    expect(await frames(await subscribe(graph.dispatcher))).toMatchObject([
+      { kind: 'end', outcome: 'error', error: { kind: 'unavailable' } },
+    ]);
+    expect(writeHandler).not.toHaveBeenCalled();
+    expect(eventsHandler).not.toHaveBeenCalled();
+  } finally {
+    await graph.shutdown('test');
+  }
+});
+
+it('refuses new bundled instructions after drain while queries and streams continue', async () => {
+  const graph = bundled([files(), example()]);
+  try {
+    graph.dispatcher.drainInstructions();
+    await expect(instruct(graph.dispatcher)).rejects.toMatchObject({
+      payload: { kind: 'unavailable', retry: { kind: 'same_idempotency_key' } },
+    });
+    expect(await list(graph.dispatcher)).toEqual(roots);
+    expect(await frames(await subscribe(graph.dispatcher))).toMatchObject([
+      { kind: 'item' },
+      { kind: 'end', outcome: 'completed' },
+    ]);
+  } finally {
+    await graph.shutdown('test');
+  }
+});
+
+it('rejects a worker definition filed under another kind or one the wire cannot carry', () => {
+  const module = example();
+  const mislabeled = { ...WORKER_EXAMPLE_INSTRUCTIONS['worker.example.write'] };
+  Object.defineProperty(mislabeled, 'kind', { value: 'stream' });
+  expect(() =>
+    bundled([
+      {
+        ...module,
+        definitions: {
+          ...module.definitions,
+          instructions: { 'worker.example.write': mislabeled },
+        },
+      },
+    ]),
+  ).toThrow('declares worker.example.write as a stream in its instructions');
+  expect(() =>
+    bundled([
+      {
+        ...module,
+        definitions: {
+          ...module.definitions,
+          streams: {
+            'worker.example.events': {
+              ...WORKER_EXAMPLE_STREAMS['worker.example.events'],
+              openResult: undefined,
+            },
+          },
+        },
+      },
+    ]),
+  ).toThrow('needs an open result');
+});
+
+it('shares a host-supplied daemon epoch with every journal the host composes', async () => {
+  const graph = createRuntimeProfileGraph({
+    profile: 'core',
+    modules: [store],
+    daemonEpoch: 'runtime:shared-epoch',
+    identity: { runtimeId: 'runtime', hostId: 'host', authorityId: null },
+    phaseDeadlineMs: 1000,
+  });
+  await graph.start();
+  try {
+    const health = await graph.dispatcher.query(
+      'core.runtime.health.get',
+      {},
+      { caller: { ...caller, grants: ['core.runtime.read'] } },
+    );
+    expect(health).toMatchObject({
+      runtime: { daemonEpoch: 'runtime:shared-epoch' },
+    });
+  } finally {
+    await graph.shutdown('test');
+  }
+  expect(() =>
+    createRuntimeProfileGraph({
+      profile: 'core',
+      modules: [store],
+      daemonEpoch: '',
+      identity: { runtimeId: 'runtime', hostId: 'host', authorityId: null },
+      phaseDeadlineMs: 1000,
+    }),
+  ).toThrow(RangeError);
 });

@@ -19,7 +19,7 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { notifyLedgerEntryChanged } from './change-events';
 import { ledgerDatabaseMayExist } from './lifecycle';
 import { getLedgerStoreClient } from './storage-client';
-import { ledgerViewScopeForContainer } from './view-scope';
+import { ledgerTaskViewScopeForContainer } from './view-scope';
 
 export const PENDING_TITLE_MAX_ATTEMPTS = 3;
 export const PENDING_TITLE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -84,11 +84,15 @@ export interface PendingTitleSummarySettings {
 
 export interface PendingTitleSummaryGeneratorHost {
   readSettings(): Promise<PendingTitleSummarySettings>;
+  /**
+   * The task a container's title helper runs in; null for a global
+   * (workflow) Ledger, which has no worktree to run it in.
+   */
   resolveScope(container: LedgerContainer): {
     readonly projectId: string;
     readonly worktreeId: string;
     readonly cwd: string;
-  };
+  } | null;
   resolveWorkOwner(scope: {
     readonly projectId: string;
     readonly worktreeId: string;
@@ -108,8 +112,10 @@ export function createPendingTitleSummaryGenerator(
   host: PendingTitleSummaryGeneratorHost,
 ): PendingTitleSummaryGenerator {
   return async (input: PendingTitleGenerationInput): Promise<string | null> => {
-    const settings = await host.readSettings();
     const scope = host.resolveScope(input.container);
+    // A global entry keeps its provisional title: no task to generate in.
+    if (scope === null) return null;
+    const settings = await host.readSettings();
     let workOwner: WorkOwner | undefined;
     try {
       workOwner = await host.resolveWorkOwner({
@@ -152,6 +158,7 @@ export interface PendingTitleOrchestratorOptions {
   ) => Promise<unknown> | void;
   readonly notifyResolved: (change: {
     readonly container: LedgerContainer;
+    readonly ledgerId: string;
     readonly entryId: string;
     readonly revision: number;
     readonly titleResolved: true;
@@ -284,7 +291,7 @@ export class PendingTitleOrchestrator {
     for (const record of records) {
       if (this.needsCleanup(record)) {
         try {
-          await this.resolve(record.entryId, null);
+          await this.resolve(record, null);
         } catch {
           // A future sweep will retry direct stale/exhaustion cleanup.
         }
@@ -297,7 +304,7 @@ export class PendingTitleOrchestrator {
   private async process(record: LedgerPendingTitleRecord): Promise<void> {
     if (this.stopped) return;
     if (this.isStale(record) || record.attempts >= PENDING_TITLE_MAX_ATTEMPTS) {
-      await this.resolve(record.entryId, null);
+      await this.resolve(record, null);
       return;
     }
     if (!this.isEnabled()) return;
@@ -307,7 +314,7 @@ export class PendingTitleOrchestrator {
     );
     if (this.stopped || attempted === null) return;
     if (attempted.attempts > PENDING_TITLE_MAX_ATTEMPTS) {
-      await this.resolve(record.entryId, null);
+      await this.resolve(record, null);
       return;
     }
 
@@ -316,7 +323,7 @@ export class PendingTitleOrchestrator {
     );
     if (this.stopped) return;
     if (context === null || !context.titlePending) {
-      await this.resolve(record.entryId, null);
+      await this.resolve(record, null);
       return;
     }
 
@@ -333,15 +340,15 @@ export class PendingTitleOrchestrator {
       title = outcome.timedOut ? null : outcome.title;
     } catch {
       if (attempted.attempts >= PENDING_TITLE_MAX_ATTEMPTS) {
-        await this.resolve(record.entryId, null);
+        await this.resolve(record, null);
       }
       return;
     }
     if (!this.stopped) {
       if (title !== null && title.trim().length > 0) {
-        await this.resolve(record.entryId, title.trim());
+        await this.resolve(record, title.trim());
       } else {
-        await this.resolve(record.entryId, null);
+        await this.resolve(record, null);
       }
     }
     // The helper can't be cancelled, so a timed-out task keeps its queue slot
@@ -373,8 +380,12 @@ export class PendingTitleOrchestrator {
     }
   }
 
-  private async resolve(entryId: string, title: string | null): Promise<void> {
+  private async resolve(
+    record: Pick<LedgerPendingTitleRecord, 'entryId' | 'ledgerId'>,
+    title: string | null,
+  ): Promise<void> {
     if (this.stopped) return;
+    const { entryId } = record;
     const result = await this.withStorage(() =>
       this.options.host.resolvePendingTitle({ entryId, title }),
     );
@@ -382,6 +393,7 @@ export class PendingTitleOrchestrator {
     try {
       this.options.notifyResolved({
         container: result.entry.scope.container,
+        ledgerId: record.ledgerId,
         entryId: result.entry.entryId,
         revision: result.entry.revision,
         titleResolved: true,
@@ -460,12 +472,14 @@ export function startDesktopPendingTitleOrchestrator(options: {
       readonly projectId: string;
       readonly worktreeId: string;
       readonly cwd: string;
-    } => {
-      const scope = ledgerViewScopeForContainer(container);
-      return {
-        ...scope,
-        cwd: resolveWorktreeCwd(scope.projectId, scope.worktreeId),
-      };
+    } | null => {
+      const scope = ledgerTaskViewScopeForContainer(container);
+      return scope === null
+        ? null
+        : {
+            ...scope,
+            cwd: resolveWorktreeCwd(scope.projectId, scope.worktreeId),
+          };
     },
     resolveWorkOwner: async (scope: {
       readonly projectId: string;

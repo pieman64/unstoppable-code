@@ -164,7 +164,7 @@ describe('ProfilePlansSection', () => {
     expect(
       container.querySelector('[data-testid="profile-plans-empty"]'),
     ).toBeNull();
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
   });
 
@@ -185,7 +185,7 @@ describe('ProfilePlansSection', () => {
     await flush();
 
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     expect(retry).toBeDefined();
     await act(async () => {

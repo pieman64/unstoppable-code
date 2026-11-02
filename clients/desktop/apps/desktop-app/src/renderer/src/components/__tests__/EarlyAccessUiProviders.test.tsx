@@ -13,6 +13,9 @@ import {
   LoadingPlaceholder,
   useIconStyle,
   usePrHoverCards,
+  useSmoothStreaming,
+  useCompactQueue,
+  useSpinnerStyle,
 } from '@canopy/ui-shared/components';
 
 import { useContextMenuPlacement } from '@canopy/ui-shared/components/context-menu-placement';
@@ -26,6 +29,23 @@ function IconStyleProbe(): JSX.Element {
 
 function PrHoverCardsProbe(): JSX.Element {
   return <span>{usePrHoverCards() ? 'on' : 'off'}</span>;
+}
+
+function SmoothStreamingProbe(): JSX.Element {
+  return <span>{useSmoothStreaming() ? 'on' : 'off'}</span>;
+}
+
+function StandardPresentationProbe(): JSX.Element {
+  return (
+    <span>
+      {[
+        useSpinnerStyle(),
+        usePrHoverCards(),
+        useSmoothStreaming(),
+        useCompactQueue(),
+      ].join(',')}
+    </span>
+  );
 }
 
 function MenuPlacementProbe(): JSX.Element {
@@ -67,6 +87,28 @@ describe('EarlyAccessUiProviders', () => {
     });
     return container.innerHTML;
   }
+
+  it('enables graduated presentation before Labs hydration and despite old opt-outs', () => {
+    setTestEarlyAccessFeatures({ enabled: false, hydrated: false });
+    act(() =>
+      root.render(
+        <EarlyAccessUiProviders>
+          <StandardPresentationProbe />
+        </EarlyAccessUiProviders>,
+      ),
+    );
+    expect(container.textContent).toBe('comet,true,true,true');
+    act(() =>
+      setTestLabsFeatures({
+        'comet-spinners': false,
+        'subagents-view': false,
+        'pr-hover-cards': false,
+        'smooth-streaming': false,
+        'compact-queue': false,
+      }),
+    );
+    expect(container.textContent).toBe('comet,true,true,true');
+  });
 
   it('uses loading indicators even with the old preference off', () => {
     const markup = render(false);
@@ -111,7 +153,7 @@ describe('EarlyAccessUiProviders', () => {
     expect(container.textContent).toBe('central');
   });
 
-  it('follows the Pull request cards choice, off by default', () => {
+  it('keeps Pull request cards on regardless of legacy Labs choices', () => {
     act(() => {
       root.render(
         <EarlyAccessUiProviders>
@@ -119,10 +161,23 @@ describe('EarlyAccessUiProviders', () => {
         </EarlyAccessUiProviders>,
       );
     });
-    expect(container.textContent).toBe('off');
-    act(() => setTestLabsFeatures({ 'pr-hover-cards': true }));
+    expect(container.textContent).toBe('on');
     expect(container.textContent).toBe('on');
     act(() => setTestLabsFeatures({}));
-    expect(container.textContent).toBe('off');
+    expect(container.textContent).toBe('on');
+  });
+
+  it('keeps smooth streaming on regardless of legacy Labs choices', () => {
+    act(() => {
+      root.render(
+        <EarlyAccessUiProviders>
+          <SmoothStreamingProbe />
+        </EarlyAccessUiProviders>,
+      );
+    });
+    expect(container.textContent).toBe('on');
+    expect(container.textContent).toBe('on');
+    act(() => setTestLabsFeatures({}));
+    expect(container.textContent).toBe('on');
   });
 });

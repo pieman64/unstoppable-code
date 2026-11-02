@@ -15,10 +15,7 @@ import {
   type WorktreeRecordOutcome,
 } from './worktree-repair';
 
-export {
-  applyWorktreeBranchChange,
-  areEquivalentPrStatuses,
-} from './worktree-record-decision-apply';
+export { areEquivalentPrStatuses } from './worktree-record-decision-apply';
 export type { WorktreeBaseRetargetOutcome } from './worktree-record-decisions';
 
 /**

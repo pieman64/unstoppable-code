@@ -138,8 +138,10 @@ test.describe('in-process Codex pipeline runtime', () => {
         const app = new CanopyAppDriver(restartedWindow);
         await app.waitForShell();
         await app.openUsagePage();
+        // The Usage page's one interrupted-sessions notice opens the same
+        // review as Home's Continue row, which lists interrupted pipelines too.
         await restartedWindow
-          .getByTestId('usage-provider-codex-resume')
+          .getByTestId('usage-interrupted-sessions-resume')
           .click();
         const modal = restartedWindow.getByTestId('usage-limit-resume-modal');
         await expect(modal).toContainText(name);
@@ -431,7 +433,7 @@ test.describe('in-process Codex pipeline runtime', () => {
       );
       expect(state.jobs?.verify?.steps?.codex?.status).toBe('failure');
       expect(state.jobs?.verify?.steps?.codex?.error).toBe(
-        'Codex pipeline turn was interrupted before completion',
+        'Codex workflow turn was interrupted before completion',
       );
     } finally {
       await closeFixture(electronApp, userDataDir, fixture.runtimeDir);

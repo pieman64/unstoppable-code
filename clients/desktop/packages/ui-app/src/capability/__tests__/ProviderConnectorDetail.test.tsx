@@ -23,12 +23,12 @@ function mount(element: JSX.Element): {
 const results: ProviderConnectorListResult[] = [
   {
     provider: 'claude',
-    status: 'ok',
     connectors: [
       {
-        key: 'slack',
+        name: 'claude.ai Slack',
         displayName: 'Slack',
         connected: false,
+        status: 'not connected',
         installUrl: 'https://claude.ai/settings/connectors/slack',
       },
     ],

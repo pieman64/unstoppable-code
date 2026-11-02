@@ -1,19 +1,16 @@
 const mockWakeLockAcquire = jest.fn();
 const mockWakeLockRelease = jest.fn();
 
-jest.mock('../power/wake-lock-service', () => ({
-  getWakeLockService: jest.fn(() => ({
-    acquire: mockWakeLockAcquire,
-    release: mockWakeLockRelease,
-  })),
-}));
-
 const mockStartPipelineExecutionTelemetry = jest.fn();
 const mockFinishPipelineExecutionTelemetry = jest.fn();
 
 jest.mock('../pipelines/instrumentation', () => ({
-  startPipelineExecutionTelemetry: mockStartPipelineExecutionTelemetry,
-  finishPipelineExecutionTelemetry: mockFinishPipelineExecutionTelemetry,
+  get startPipelineExecutionTelemetry(): typeof mockStartPipelineExecutionTelemetry {
+    return mockStartPipelineExecutionTelemetry;
+  },
+  get finishPipelineExecutionTelemetry(): typeof mockFinishPipelineExecutionTelemetry {
+    return mockFinishPipelineExecutionTelemetry;
+  },
 }));
 
 const mockTriggerWorktreePrecommitFailureHook = jest.fn(() =>
@@ -21,12 +18,16 @@ const mockTriggerWorktreePrecommitFailureHook = jest.fn(() =>
 );
 
 jest.mock('../lib/worktree-precommit-failure-hook', () => ({
-  triggerWorktreePrecommitFailureHook: mockTriggerWorktreePrecommitFailureHook,
+  get triggerWorktreePrecommitFailureHook(): typeof mockTriggerWorktreePrecommitFailureHook {
+    return mockTriggerWorktreePrecommitFailureHook;
+  },
 }));
 
 const mockShowOsNotification = jest.fn(() => ({ shown: true }));
 jest.mock('../ipc/os-notifications', () => ({
-  showOsNotification: mockShowOsNotification,
+  get showOsNotification(): typeof mockShowOsNotification {
+    return mockShowOsNotification;
+  },
 }));
 
 import type { BrowserWindow } from 'electron';
@@ -43,19 +44,24 @@ import {
   createDesktopLifecycleHooks,
   createDesktopStepPostProcess,
 } from '../pipelines/execution-runtime-hooks';
+import { installExecutionAccountingHost } from '../execution-accounting';
 
 function createExecutionState(): ExecutionState {
   return {
     version: 5,
     id: 'exec-1',
     pipeline_id: 'pipeline-1',
-    pipeline_snapshot: { name: 'Pipeline 1', jobs: {} },
+    pipeline_snapshot: { name: 'Pipeline 1', scope: ['directory'], jobs: {} },
     status: 'running',
     jobs: {},
+    job_definitions: {},
+    job_groups: {},
     started_at: '2026-05-31T00:00:00.000Z',
     cwd: '/repo',
     env: {},
     inputs: {},
+    pending_pauses: [],
+    status_reasons: [],
   };
 }
 
@@ -73,6 +79,14 @@ function createStep(id: string, uses: string): NormalizedStep {
 describe('execution-runtime-hooks', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    installExecutionAccountingHost({
+      wakeLock: { acquire: mockWakeLockAcquire, release: mockWakeLockRelease },
+      recordDiagnostic: jest.fn(),
+    });
+  });
+
+  afterEach(() => {
+    installExecutionAccountingHost(null);
   });
 
   it('acquires wake lock and starts telemetry when execution starts', () => {
@@ -92,6 +106,7 @@ describe('execution-runtime-hooks', () => {
     const hooks = createDesktopLifecycleHooks();
     const state = createExecutionState();
 
+    hooks.onExecutionStart?.(state);
     hooks.onExecutionSettled?.(state);
     hooks.onExecutionSettled?.(state);
 

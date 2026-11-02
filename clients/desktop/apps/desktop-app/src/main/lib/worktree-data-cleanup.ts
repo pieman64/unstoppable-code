@@ -1,5 +1,9 @@
-import { destructiveStep } from './w5-destructive-recovery';
+import {
+  destructiveStep,
+  lifecycleTreeRemoval,
+} from './w5-destructive-recovery';
 import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { removeEntryCost } from '../cost-index/lifecycle';
 import { getCodeGraphWorktreeService } from '@canopy/desktop-shared/node/code-graph/service';
 import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
@@ -15,6 +19,8 @@ import { clearPortalPrTracking } from '../services/pr-creation-progress';
 import { clearPrMergeTracking } from '../services/pr-merge-progress';
 import { cleanupWorktreeChatPluginDirs } from '../plugins/plugin-cleanup';
 import { getBrowserService } from '../browser/browser-service-registry';
+import { panelLayoutPersistenceStore } from '../panels/persistence';
+import { terminalPersistenceStore } from '../terminal/persistence';
 import {
   BrowserRetirementTimeoutError,
   withBrowserRetirementDeadline,
@@ -39,6 +45,7 @@ import { validateId } from './validation';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
 import { getChatStateService } from '../services/chat-state-service';
 import { releaseCodeReviewTasks } from './code-review-deletion-fence';
+import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
 
 interface CleanupTask {
   label: string;
@@ -325,13 +332,24 @@ function buildCleanupTasks(
     },
     {
       label: 'worktree metadata',
-      run: (): Promise<void> =>
+      run: (): Promise<void> => {
+        // Cancel a layout save still in its debounce window right before the
+        // removal: its timer would otherwise recreate panel-layout.json under
+        // the removed tree. Earlier cleanup tasks can run for seconds, so an
+        // earlier cancel would miss saves that arrive while they run. Only the
+        // timer is cancelled; the retrying tree removal deletes the file.
+        panelLayoutPersistenceStore.cancelPendingWrite(projectId, worktreeId);
+        terminalPersistenceStore.forgetWorktree(projectId, worktreeId);
         // App-managed chat workspaces live under app-workspaces/, not
         // workspaces/ — the resolved root keeps their metadata reclaimable.
-        removePersistedWorktreeDataDirectory(projectId, worktreeId, {
+        return removePersistedWorktreeDataDirectory(projectId, worktreeId, {
           worktreeDataRootDir: getWorktreeDataRootDir(projectId),
-          removeTree: removeTreeWithoutAsar,
-        }),
+          removeTree: lifecycleTreeRemoval(
+            join(getWorktreeDataRootDir(projectId), worktreeId),
+            removeTreeWithoutAsar,
+          ),
+        });
+      },
     },
     {
       label: 'chat plugin state',
@@ -357,6 +375,15 @@ function buildCleanupTasks(
           return;
         }
 
+        // A running service's unwritten session diagnostics, such as the
+        // record of this cleanup's scope cancellation, go with the purge.
+        // Peek rather than get: this purge never brings the service up.
+        const { peekObservabilityService } = await import('../observability');
+        const liveService = peekObservabilityService();
+        if (liveService) {
+          await liveService.purgePersistedWorktreeData(projectId, worktreeId);
+          return;
+        }
         await purgePersistedWorktreeObservabilityData(projectId, worktreeId);
       },
     },
@@ -364,6 +391,19 @@ function buildCleanupTasks(
 }
 
 export async function cleanupPersistedWorktreeData(
+  projectId: string,
+  worktreeId: string,
+  options?: CleanupPersistedWorktreeDataOptions,
+): Promise<string[]> {
+  // A deferred commit leaves the scope fence with the caller's holder.
+  if (options?.deferLocalWatcherCancellationCommit)
+    return cleanupPersistedWorktreeDataAsHolder(projectId, worktreeId, options);
+  return runAsLocalFenceHolder(() =>
+    cleanupPersistedWorktreeDataAsHolder(projectId, worktreeId, options),
+  );
+}
+
+async function cleanupPersistedWorktreeDataAsHolder(
   projectId: string,
   worktreeId: string,
   options?: CleanupPersistedWorktreeDataOptions,

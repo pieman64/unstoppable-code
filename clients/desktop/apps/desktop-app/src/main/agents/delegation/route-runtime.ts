@@ -5,14 +5,18 @@ import {
 } from './home-overlay';
 
 import type { AccountProxyQuotaWait } from '../../account-proxy/quota-wait';
+import { resolveSessionAiCreditsAttribution } from '../ai-credits-routing';
 import { getRawOpenCodeModelId } from '@canopy/desktop-shared/lib/opencode-models';
 import { OPENCODE_RUNTIME_VERSION } from '@canopy/desktop-shared/node/opencode/runtime-metadata';
-import { assertOpenCodeModelAvailable } from '../../opencode/connection';
+import {
+  assertOpenCodeSelectionAvailable,
+  type OpenCodeSelection,
+} from '../../opencode/selection';
 import type { OpenCodeDelegationPreparation } from './opencode-runner';
 import type { CopilotAccount } from '@canopy/desktop-shared/types';
 import { getRawCopilotModelId } from '@canopy/desktop-shared/lib/copilot-models';
 import { COPILOT_RUNTIME_VERSION } from '@canopy/desktop-shared/node/copilot/runtime-metadata';
-import { openManagedCopilotRuntime } from '../../copilot/connection';
+import { readCopilotAccount } from '../../copilot/connection';
 import { isCopilotHarnessEnabled } from '../../copilot/feature-flag';
 import type { CopilotDelegationPreparation } from './copilot-runner';
 import { getRawCursorModelId } from '@canopy/desktop-shared/lib/cursor-models';
@@ -110,7 +114,13 @@ import {
   createApprovalSession,
   type ApprovalSessionHandle,
 } from '../../approvals/approval-service';
-import { openDelegationFiles } from './file-process';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
+  DELEGATION_FILE_HELPER_MISSING_MESSAGE,
+  delegationFileBoundaryAvailable,
+  openDelegationFiles,
+} from './file-process';
+import { delegationRuntimeUnavailableReason } from './runtime-support';
 import {
   materializeDelegationCapabilities,
   type DelegationCapabilityLayer,
@@ -351,15 +361,17 @@ function unavailable(
     | 'route_unavailable'
     | 'auth_required'
     | 'capability_unavailable' = 'route_unavailable',
+  message?: string,
 ): Extract<AgentDelegationResult<never>, { ok: false }> {
   return {
     ok: false,
     error: {
       code,
       message:
-        code === 'auth_required'
+        message ??
+        (code === 'auth_required'
           ? 'Sign in to the selected child provider before delegating this task.'
-          : 'The selected model, account, or confined runner is unavailable.',
+          : 'The selected model, account, or confined runner is unavailable.'),
       retryable: false,
     },
   };
@@ -496,6 +508,8 @@ export function liveSessionRuleApproval(
       synchronize();
       return JSON.stringify([handle.policyContextKey?.() ?? '', revision]);
     },
+    fileWriteNarrowingInFlight: (): boolean =>
+      handle.fileWriteNarrowingInFlight?.() === true,
     reevaluatePendingApprovals: (mode, previousMode): Promise<void> =>
       handle.reevaluatePendingApprovals(mode, previousMode),
     invalidatePending: (): void => handle.invalidatePending?.(),
@@ -682,8 +696,16 @@ export class DelegationRouteRuntime {
   ): Promise<AgentDelegationResult<ResolvedDelegationRoute>> {
     const owner = this.options.owner(parent);
     if (!owner || signal.aborted) return unavailable();
-    if (process.platform !== 'darwin' && process.platform !== 'win32')
+    if (hostOperatingSystem() === null)
       return unavailable('capability_unavailable');
+    // A direct spawn bypasses advisory discovery, so reject a missing or
+    // invalid staged helper here, before any provider route is captured, with
+    // the same actionable copy. The launch still rechecks in openNativeFiles.
+    if (!(await delegationFileBoundaryAvailable()))
+      return unavailable(
+        'capability_unavailable',
+        DELEGATION_FILE_HELPER_MISSING_MESSAGE,
+      );
     // A continuation reuses its retained overlays; the grant is fixed at spawn.
     const retainedOverlay =
       retainedRoute?.agentOverlay || retainedRoute?.capabilityOverlay
@@ -737,6 +759,14 @@ export class DelegationRouteRuntime {
           !model?.enabled
         )
           return unavailable('capability_unavailable');
+        // No pinned managed runtime for this provider on this host (e.g. Linux
+        // Cursor/Copilot/OpenCode). Reject before any provider auth or billing
+        // probe, with the same reason advisory discovery shows. Static pin
+        // check only — never installs a runtime or probes an account.
+        const runtimeUnavailable =
+          await delegationRuntimeUnavailableReason(harness);
+        if (runtimeUnavailable)
+          return unavailable('capability_unavailable', runtimeUnavailable);
         if (
           await isModelBlockedByStoredPolicy(
             runtime.runtimeModel,
@@ -753,19 +783,15 @@ export class DelegationRouteRuntime {
           | Awaited<ReturnType<typeof readCursorAccount>>
           | undefined;
         let copilotAccount: CopilotAccount | null = null;
+        let openCodeSelection: OpenCodeSelection | undefined;
         if (harness === 'opencode')
-          await assertOpenCodeModelAvailable(runtime.runtimeModel, signal);
-        if (harness === 'copilot') {
-          const probe = await openManagedCopilotRuntime({
+          openCodeSelection = await assertOpenCodeSelectionAvailable({
+            model: runtime.runtimeModel,
+            session: owner,
             signal,
-            cwd: owner.cwd,
-            workspaceId: owner.projectId,
           });
-          try {
-            copilotAccount = probe.account;
-          } finally {
-            await probe.close();
-          }
+        if (harness === 'copilot') {
+          copilotAccount = await readCopilotAccount();
           if (!copilotAccount) return unavailable('auth_required');
         }
         if (harness === 'cursor') {
@@ -789,7 +815,9 @@ export class DelegationRouteRuntime {
                     : harness === 'copilot'
                       ? getRawCopilotModelId(runtime.runtimeModel)
                       : getRawCursorModelId(runtime.runtimeModel),
-                aiCreditsRouted: false,
+                aiCreditsRouted:
+                  openCodeSelection?.kind === 'gateway' &&
+                  openCodeSelection.funding === 'ai-credits',
                 dispose: (): void => undefined,
                 codexConfig: undefined,
                 envOverride: undefined,
@@ -855,11 +883,14 @@ export class DelegationRouteRuntime {
           // Both routes bring their own provider credential, so neither needs
           // a native login or counts as the user's own key.
           const brokerRouted = routed.aiCreditsRouted || accountProxyRouted;
-          let billingAuthority = routed.aiCreditsRouted
-            ? 'ai-credits'
-            : accountProxyRouted
-              ? 'account-proxy'
-              : 'native';
+          let billingAuthority =
+            openCodeSelection?.kind === 'gateway'
+              ? openCodeSelection.funding
+              : routed.aiCreditsRouted
+                ? 'ai-credits'
+                : accountProxyRouted
+                  ? 'account-proxy'
+                  : 'native';
           if (harness === 'claude') {
             const routedEnvironment = routed.envOverride;
             const apiKey =
@@ -927,9 +958,10 @@ export class DelegationRouteRuntime {
             harness !== 'opencode'
           )
             billingAuthority = 'e2e';
-          const supported = model.supportedThinkingLevels.filter(
-            (level) => level !== 'ultra',
-          );
+          const supported = (
+            openCodeSelection?.supportedThinkingLevels ??
+            model.supportedThinkingLevels
+          ).filter((level) => level !== 'ultra');
           const runtimeVersion =
             harness === 'opencode'
               ? OPENCODE_RUNTIME_VERSION
@@ -999,7 +1031,9 @@ export class DelegationRouteRuntime {
             policyRevision: 'delegation-explicit-grants-v2',
             authAccountKey:
               harness === 'opencode'
-                ? undefined
+                ? openCodeSelection?.kind === 'gateway'
+                  ? openCodeSelection.inferenceBindingKey
+                  : undefined
                 : harness === 'copilot'
                   ? fingerprint(copilotAccount)
                   : harness === 'cursor'
@@ -1026,7 +1060,7 @@ export class DelegationRouteRuntime {
             route,
             credentials,
             commandPath: getLoginShellPath(),
-            ...(process.platform === 'win32'
+            ...(hostOperatingSystem() === 'win32'
               ? { windowsHost: captureWindowsClaudeHost() }
               : {}),
             config,
@@ -1298,6 +1332,9 @@ export class DelegationRouteRuntime {
     );
     return {
       model: session.captured.model,
+      attribution: getRawOpenCodeModelId(context.request.route.runtimeModelId)
+        ? undefined
+        : await resolveSessionAiCreditsAttribution(session.owner),
       profileDir,
       tools: session.tools,
       retainedReadRoots,

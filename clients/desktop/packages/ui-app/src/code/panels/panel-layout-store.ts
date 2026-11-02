@@ -64,7 +64,6 @@ import {
   getCollapseAffordance,
   getCollapseAffordances,
   getInnerCollapseSibling,
-  hasRoomForTab,
   isGridBranchNode,
   isPanelLeafViewJson,
   Orientation,
@@ -243,16 +242,6 @@ export interface PanelLayoutState {
    * persistence still needs a store-visible dirty signal.
    */
   layoutSizeRevisions: Record<string, number>;
-  /**
-   * The most tabs one group takes from the user, or `null` (the default) for
-   * no limit. Set by the host while its tab rows cannot scroll (the `fill`
-   * tab style). User actions check {@link canAddTabToGroup}; a center dock
-   * into a different full group is refused. Tabs that arrive on their own are
-   * still placed, so a row can exceed it.
-   */
-  tabRowLimit: number | null;
-  /** Sets {@link tabRowLimit}. Groups already over it keep their tabs. */
-  setTabRowLimit(limit: number | null): void;
 
   /** Builds the layout for a worktree. No-op when one already exists. */
   initializeLayout(
@@ -265,12 +254,14 @@ export interface PanelLayoutState {
    * panels are per-entity units, so cloning the active tab would duplicate
    * an entity binding); pass `seed` to seed it with a fresh tab of an
    * explicit kind (and optionally stable ids / an instance binding) instead.
+   * `activate: false` preserves focus, MRU and maximized/collapsed presentation.
    */
   splitGroup(
     worktreeKey: string,
     groupId: string,
     direction: PanelSplitDirection,
     seed?: SplitGroupSeed,
+    options?: { readonly activate?: boolean },
   ): string | null;
   /**
    * Appends a fresh tab of `kind` to an existing group, activates it, and
@@ -278,10 +269,7 @@ export interface PanelLayoutState {
    * layout/group is unknown, a seeded `opts.panelId` already exists anywhere
    * in the worktree's layout family, the tab violates its kind's instance
    * contract, or a tab with the same instance key ({@link getPanelInstanceKey})
-   * is already open anywhere in the family. It does not enforce
-   * {@link tabRowLimit}: a tab that arrives on its own (an agent's terminal, a
-   * delegated chat) always gets a place. Actions the user starts into a group
-   * check {@link canAddTabToGroup} first.
+   * is already open anywhere in the family.
    * Pure tab-metadata mutation: no topology change, so `revision` (and the
    * controller) stay put while the view-model updates.
    */
@@ -380,8 +368,10 @@ export interface PanelLayoutState {
    * values split the target group and move the panel into the new group. A
    * source group left empty is closed. `targetIndex` requests the final index
    * for a cross-group center dock and is clamped to the moved tab's pinned
-   * partition; omitted docks append within that partition. A center dock into
-   * a different group that already holds {@link tabRowLimit} tabs is refused.
+   * partition; omitted docks append within that partition.
+   * `activate: false` moves an inactive tab between groups with a center dock
+   * while preserving selection, focus and collapsed state in one commit.
+   * Moving a selected tab or creating a split with that option is refused.
    * Returns whether the layout changed.
    */
   movePanel(
@@ -390,6 +380,9 @@ export interface PanelLayoutState {
     targetGroupId: string,
     edge: PanelDropEdge,
     targetIndex?: number,
+    options?: {
+      readonly activate?: boolean;
+    },
   ): boolean;
   /**
    * Whether {@link movePanel} would accept this move (pure query; same
@@ -447,13 +440,6 @@ export interface PanelLayoutState {
     panelId: string,
     edge: PanelRootDropEdge,
   ): boolean;
-  /**
-   * Whether the group exists and has room for one more tab (fewer than
-   * {@link tabRowLimit}). Pure query: callers check it before creating
-   * the entity a tab would show (a chat, a terminal session), so a full row
-   * refuses up front instead of leaving that entity without a tab.
-   */
-  canAddTabToGroup(worktreeKey: string, groupId: string): boolean;
   /** Makes a group the active group and promotes it in the MRU list. */
   focusGroup(worktreeKey: string, groupId: string): void;
   /**
@@ -2147,8 +2133,8 @@ interface PanelMovePlan {
 /**
  * Validates moving `panelId` onto `targetGroupId` at `edge`, returning what
  * the move needs, or `null` when it is refused: unknown panel or target, a
- * restricted chat leaving the chat group ({@link refusesChatDestination}),
- * or a full target row for a cross-group dock. Shared by `movePanel` and
+ * restricted chat leaving the chat group ({@link refusesChatDestination}).
+ * Shared by `movePanel` and
  * `canMovePanel` (the drag and menu predicate), so an offered move is never
  * refused.
  */
@@ -2157,7 +2143,6 @@ function planPanelMove(
   panelId: string,
   targetGroupId: string,
   edge: PanelDropEdge,
-  tabRowLimit: number | null,
 ): PanelMovePlan | null {
   const targetGroup = layout.groups[targetGroupId];
   const targetView = layout.leafViews.get(targetGroupId);
@@ -2180,13 +2165,6 @@ function planPanelMove(
     refusesChatDestination(layout, movedTab, { groupId: targetGroupId, edge })
   ) {
     return null; // A restricted chat stays in the chat group.
-  }
-  if (
-    edge === 'center' &&
-    sourceGroupId !== targetGroupId &&
-    !hasRoomForTab(targetGroup, tabRowLimit)
-  ) {
-    return null; // The target row is full.
   }
   return { sourceGroupId, movedTab, targetGroup, targetView };
 }
@@ -2343,11 +2321,6 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
   return {
     layouts: {},
     layoutSizeRevisions: {},
-    tabRowLimit: null,
-
-    setTabRowLimit: (limit): void => {
-      if (get().tabRowLimit !== limit) set({ tabRowLimit: limit });
-    },
 
     initializeLayout: (worktreeKey, descriptor): void => {
       if (get().layouts[worktreeKey] || descriptor.groups.length === 0) {
@@ -2417,7 +2390,13 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       });
     },
 
-    splitGroup: (worktreeKey, groupId, direction, seed): string | null => {
+    splitGroup: (
+      worktreeKey,
+      groupId,
+      direction,
+      seed,
+      options,
+    ): string | null => {
       if (hasFixedTopology(worktreeKey)) return null;
       const layout = get().layouts[worktreeKey];
       if (!layout) {
@@ -2439,8 +2418,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         return null; // A restricted chat never seeds a split.
       }
 
+      const activate = options?.activate !== false;
       const work = startWork(layout);
-      if (sourceGroup.collapsed !== undefined) {
+      if (activate && sourceGroup.collapsed !== undefined) {
         expandGroupInWork(work.grid, work, groupId);
       }
       const newView = createLeafView(newGroupId);
@@ -2453,6 +2433,10 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         splitDirectionToGridDirection(direction),
       );
       work.leafViews.set(newGroupId, newView);
+      if (!activate && layout.maximizedGroupId !== null) {
+        const maximized = work.leafViews.get(layout.maximizedGroupId);
+        if (maximized !== undefined) work.grid.maximizeView(maximized);
+      }
 
       // Per-entity split decision: an unseeded split creates an EMPTY group
       // (cloning the active tab would duplicate an entity binding); an
@@ -2477,7 +2461,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
         activePanelId: tabs.length > 0 ? tabs[0].panelId : null,
       };
       work.revision += 1;
-      workFocusGroup(work, newGroupId);
+      if (activate) workFocusGroup(work, newGroupId);
 
       commitWork(worktreeKey, work);
       return newGroupId;
@@ -2877,26 +2861,30 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       targetGroupId,
       edge,
       targetIndex,
+      options,
     ): boolean => {
       if (hasFixedTopology(worktreeKey)) return false;
       const layout = get().layouts[worktreeKey];
       if (!layout) {
         return false;
       }
-      const plan = planPanelMove(
-        layout,
-        panelId,
-        targetGroupId,
-        edge,
-        get().tabRowLimit,
-      );
+      const plan = planPanelMove(layout, panelId, targetGroupId, edge);
       if (plan === null) {
         return false;
       }
       const { sourceGroupId, movedTab, targetGroup, targetView } = plan;
+      const activate = options?.activate !== false;
+      if (
+        !activate &&
+        (edge !== 'center' ||
+          sourceGroupId === targetGroupId ||
+          layout.groups[sourceGroupId]?.activePanelId === panelId)
+      ) {
+        return false;
+      }
 
       const work = startWork(layout);
-      if (targetGroup.collapsed !== undefined) {
+      if (activate && targetGroup.collapsed !== undefined) {
         expandGroupInWork(work.grid, work, targetGroupId);
       }
 
@@ -2927,10 +2915,9 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
           );
           tabs.splice(clampedIndex, 0, movedTab);
 
-          work.groups[targetGroupId] = {
-            tabs,
-            activePanelId: movedTab.panelId,
-          };
+          work.groups[targetGroupId] = activate
+            ? { tabs, activePanelId: movedTab.panelId }
+            : { ...targetGroup, tabs };
           if (
             workDetachTab(
               work,
@@ -2941,7 +2928,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
           ) {
             expandStaleCollapsesInWork(work);
           }
-          workFocusGroup(work, targetGroupId);
+          if (activate) workFocusGroup(work, targetGroupId);
         }
         commitWork(worktreeKey, work);
         return true;
@@ -3128,13 +3115,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       if (hasFixedTopology(worktreeKey)) return false;
       const layout = get().layouts[worktreeKey];
       return layout !== undefined
-        ? planPanelMove(
-            layout,
-            panelId,
-            targetGroupId,
-            edge,
-            get().tabRowLimit,
-          ) !== null
+        ? planPanelMove(layout, panelId, targetGroupId, edge) !== null
         : false;
     },
 
@@ -3143,11 +3124,6 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       return layout !== undefined
         ? planRootEdgeMove(layout, panelId, edge) !== null
         : false;
-    },
-
-    canAddTabToGroup: (worktreeKey, groupId): boolean => {
-      const group = get().layouts[worktreeKey]?.groups[groupId];
-      return group !== undefined && hasRoomForTab(group, get().tabRowLimit);
     },
 
     focusGroup: (worktreeKey, groupId): void => {

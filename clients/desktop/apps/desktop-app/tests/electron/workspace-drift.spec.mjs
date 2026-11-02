@@ -123,6 +123,16 @@ async function openSettings(app, window, workspaceName) {
   return dialog;
 }
 
+/** Single-repo project settings is a page that opens on General. */
+async function openProjectSettings(app, window, workspaceName) {
+  await app.workspaceHeaderLabel(workspaceName).hover();
+  await app.workspaceSettingsButton(workspaceName).click();
+  const page = window.getByRole('dialog', { name: workspaceName });
+  await expect(page).toBeVisible();
+  await expect(page.getByTestId('project-settings-page-general')).toBeVisible();
+  return page;
+}
+
 test('project health is checked on demand and reflects repaired or missing manifests', async () => {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-electron-'));
   const fixture = seedDriftFixture(userDataDir);
@@ -163,7 +173,11 @@ test('project health is checked on demand and reflects repaired or missing manif
     await repairedMultiDialog.getByRole('button', { name: 'Close' }).click();
 
     rmSync(path.join(fixture.singleRepoPath, 'canopy.json'));
-    const singleDialog = await openSettings(app, window, 'Drift Project');
+    const singleDialog = await openProjectSettings(
+      app,
+      window,
+      'Drift Project',
+    );
     await expect(singleDialog.getByText('Project health')).toBeVisible();
     await expect(singleDialog.getByText('Warning')).toBeVisible();
     await expect(
@@ -175,7 +189,7 @@ test('project health is checked on demand and reflects repaired or missing manif
       }),
     ).toBeVisible();
 
-    await singleDialog.getByRole('button', { name: 'Close' }).click();
+    await singleDialog.getByTestId('project-settings-back').click();
     const sidebar = window.getByTestId('app-sidebar');
     const lateWorktree = sidebar.locator(
       '[data-project-id="drift-project"][data-worktree-id="wt-drift"]',

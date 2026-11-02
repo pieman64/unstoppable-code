@@ -33,7 +33,7 @@ function activity(overrides: Partial<ScheduledActivity>): ScheduledActivity {
     nextRunAt: '2026-06-05T13:00:00.000Z',
     failureCount: 0,
     ...overrides,
-  } as ScheduledActivity;
+  };
 }
 
 const TARGET = {

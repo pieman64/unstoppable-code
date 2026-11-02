@@ -41,6 +41,7 @@ describe('job-runner', () => {
   const mockRunStep = jest.spyOn(stepRunner, 'runStep');
   const pipeline: NormalizedPipeline = {
     name: 'Test',
+    scope: ['directory'],
     jobs: {},
   };
 
@@ -213,6 +214,7 @@ describe('job-runner', () => {
             rootPath: '/package/resource-1',
             kind: 'standalone_skill',
             displayName: 'Resource 1',
+            invocationKeys: [],
           },
           {
             virtualSourceId: 'pipeline-package:resource-2',
@@ -221,6 +223,7 @@ describe('job-runner', () => {
             rootPath: '/package/resource-2',
             kind: 'standalone_skill',
             displayName: 'Resource 2',
+            invocationKeys: [],
           },
         ],
       },

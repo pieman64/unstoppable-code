@@ -328,8 +328,11 @@ describe('AccountProxyQuotaUsage', () => {
       const projected = projectAccountProxyUsageAccount({
         authIndex: 'claude-a',
         provider: 'claude',
+        label: 'Claude account',
         source: 'sign-in',
+        planType: null,
         status: 'active',
+        availableAt: null,
         limits: [],
         usage: updated,
       });

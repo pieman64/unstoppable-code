@@ -100,7 +100,7 @@ describe('CloudSyncModal', () => {
             makeTestPreferences({ telemetrySharingPromptSeen: true }),
           ),
         ),
-        savePreferences: jest.fn(() => Promise.resolve()),
+        savePreferences: jest.fn(() => Promise.resolve(makeTestPreferences())),
         loadCanopyCloudAccount,
         loadCanopyCloudApiKey: jest.fn(() => Promise.resolve('')),
         saveCanopyCloudApiKey: jest.fn(() =>
@@ -111,6 +111,8 @@ describe('CloudSyncModal', () => {
               capabilities: [],
               missingCapabilities: [],
               error: null,
+              organizations: [],
+              teams: [],
             },
             account: disconnectedAccount(),
           }),
@@ -688,23 +690,18 @@ function manualConnectedAccount(): CanopyCloudAccountPublicState {
   };
 }
 
-function connectedResult(): {
-  status: {
-    authenticated: boolean;
-    account: CanopyCloudAccountPublicState['account'];
-    capabilities: string[];
-    missingCapabilities: string[];
-    error: string | null;
-  };
-  account: CanopyCloudAccountPublicState;
-} {
+function connectedResult(): Awaited<
+  ReturnType<CanopyApi['startCanopyCloudOAuthLogin']>
+> {
   return {
     status: {
       authenticated: true,
-      account: connectedAccount().account,
+      account: connectedAccount().account ?? null,
       capabilities: ['portal-v1'],
       missingCapabilities: [],
       error: null,
+      organizations: [],
+      teams: [],
     },
     account: connectedAccount(),
   };

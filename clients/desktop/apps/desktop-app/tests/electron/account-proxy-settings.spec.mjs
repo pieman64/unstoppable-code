@@ -5,6 +5,10 @@ import {
   FAKE_PROXY_MANAGEMENT_KEY,
   startFakeAccountProxy,
 } from './fixtures/fake-account-proxy.mjs';
+import {
+  chooseSettingsOption,
+  settingsOptionLabels,
+} from './helpers/settingsSelect.mjs';
 
 /**
  * Account proxy settings (CAN-4019).
@@ -110,13 +114,13 @@ test('opting in, connecting to a server, and managing its accounts', async () =>
     await expect(page).not.toContainText('sk-must-never-appear');
     // Account order is the server's own setting, changed on the server.
     const strategy = window.getByTestId('account-proxy-strategy-select');
-    await expect(strategy).toHaveValue('round-robin');
-    await strategy.selectOption('fill-first');
+    await expect(strategy).toHaveAttribute('data-value', 'round-robin');
+    await chooseSettingsOption(strategy, 'fill-first');
     await expect
       .poll(() => proxy.state.config.routing.strategy)
       .toBe('fill-first');
     await expect(strategy).toBeEnabled();
-    await expect(strategy).toHaveValue('fill-first');
+    await expect(strategy).toHaveAttribute('data-value', 'fill-first');
     expect(
       proxy.requests.find(
         (request) =>
@@ -124,9 +128,11 @@ test('opting in, connecting to a server, and managing its accounts', async () =>
           request.path === '/v8/management/config/routing/strategy',
       )?.body,
     ).toBe('fill-first');
-    await expect(
-      window.getByTestId('account-proxy-strategy-select').locator('option'),
-    ).toHaveText(['Round robin', 'Weighted round robin', 'Fill first']);
+    expect(
+      await settingsOptionLabels(
+        window.getByTestId('account-proxy-strategy-select'),
+      ),
+    ).toEqual(['Round robin', 'Weighted round robin', 'Fill first']);
     await expect(
       window.getByTestId('account-proxy-keep-chat-toggle'),
     ).toHaveAttribute('aria-checked', 'true');
@@ -138,7 +144,7 @@ test('opting in, connecting to a server, and managing its accounts', async () =>
       window.getByTestId('account-proxy-route-codex-toggle'),
     ).toHaveAttribute('aria-checked', 'true');
     await expect(page).toContainText(
-      "Claude chats, subagents, and pipeline steps on this device use this server's Claude accounts.",
+      "Claude chats, subagents, and workflow steps on this device use this server's Claude accounts.",
     );
     await routeClaude.click();
     await expect

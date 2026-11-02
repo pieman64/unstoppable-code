@@ -5,15 +5,18 @@
   "license": "MIT",
   "main": "./out/main/index.js",
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.4.0",
     "@canopy/agent-actions": "workspace:*",
     "@canopy/agent-transcript": "workspace:*",
     "@canopy/app-core": "workspace:*",
     "@canopy/app-state": "workspace:*",
     "@canopy/artifact-crypto": "workspace:*",
+    "@canopy/code-graph": "workspace:*",
     "@canopy/core-client": "workspace:*",
     "@canopy/core-platform": "workspace:*",
     "@canopy/core-runtime": "workspace:*",
     "@canopy/core-transport": "workspace:*",
+    "@canopy/desktop-instrumentation": "workspace:*",
     "@canopy/desktop-shared": "workspace:*",
     "@canopy/mcp-oauth-core": "workspace:*",
     "@canopy/pipeline-interop": "workspace:*",
@@ -25,6 +28,7 @@
     "@github/copilot-sdk": "1.0.15",
     "@streamparser/json": "0.0.26",
     "@tanstack/react-virtual": "^3.14.8",
+    "@tanstack/virtual-core": "^3.17.8",
     "@xyflow/react": "^12.11.0",
     "ajv": "^8.20.0",
     "dagre": "^0.8.5",
@@ -41,6 +45,9 @@
     "@canopy/desktop-shared": "workspace:*",
     "@canopy/protocol": "workspace:*",
     "@types/dagre": "^0.7.54",
-    "@types/qrcode": "^1.5.6"
+    "@types/qrcode": "^1.5.6",
+    "jsdom": "^26.1.0",
+    "playwright-core": "^1.58.2",
+    "rollup": "^4.59.0"
   }
 }

@@ -22,6 +22,7 @@ import {
   hasHydratedGatewayCatalog,
   getModelDisplayName,
   getThinkingUiOptionsForProvider,
+  modelSupportsThinkingLevel,
   normalizePersistedThinkingLevel,
   normalizeThinkingForProvider,
   defaultSummaryModel,
@@ -38,17 +39,20 @@ import { brandText } from '@/lib/brand';
 import { subscribePreferencesUpdated } from '@/lib/preferences-events';
 import { ModelThinkingPreferenceRow } from './ModelThinkingPreferenceRow';
 import { SettingsPluginPicker } from './SettingsPluginPicker';
-import { ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  SettingsSelect,
+  ToggleSwitch,
+  type SettingsSelectOption,
+} from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsPage,
   SettingsLoading,
   SettingsRow,
   SettingsSection,
-  SettingsSelect,
   SettingsSubRow,
 } from './SettingsLayout';
-import { SETTINGS_CHECK_INPUT_CLASS_NAME } from './settings-classes';
+import { Radio } from '@canopy/ui-shared/components';
 
 function getSelectedThinkingLevel(
   value: string,
@@ -69,6 +73,9 @@ function getSelectedThinkingLevel(
 type DefaultsRowKey =
   | Exclude<AgentProviderType, 'cursor' | 'copilot' | 'opencode'>
   | 'aiCredits';
+
+/** The only model whose default rows offer Low (CAN-4646). */
+const SOL_LOW_MODEL = 'gpt-6.1-sol';
 
 const PROVIDER_LABELS: Record<DefaultsRowKey, string> = {
   claude: 'Claude',
@@ -320,10 +327,6 @@ function ProviderRow({
         ? getExecutionHarnessForModel(selection.model)
         : undefined) ?? 'codex')
     : provider;
-  const thinkingOptions = getThinkingUiOptionsForProvider(
-    thinkingProvider,
-    selection?.model,
-  );
   const hasModels = models.length > 0;
   const radioDisabled = disabled || selection === null;
 
@@ -335,151 +338,187 @@ function ProviderRow({
       ? isModelBlocked(effectiveModel, getRendererModelPolicy()) ||
         (hasHydratedGatewayCatalog() && !isGatewayRoutableModel(effectiveModel))
       : !models.includes(effectiveModel));
+  // The shared UI levels show Low as Medium. Sol is the one model whose
+  // defaults offer Low, and only when its route declares it.
+  const exposeSolLow =
+    !selectedModelUnavailable &&
+    selection?.model === SOL_LOW_MODEL &&
+    modelSupportsThinkingLevel(
+      selection.model,
+      'low',
+      thinkingProvider,
+      isCreditsRow,
+    );
+  const uiThinkingOptions = getThinkingUiOptionsForProvider(
+    thinkingProvider,
+    selection?.model,
+  );
+  const thinkingOptions: { value: ThinkingLevel; label: string }[] =
+    exposeSolLow
+      ? [
+          ...uiThinkingOptions.filter((t) => t.value === 'off'),
+          { value: 'low', label: 'Low' },
+          ...uiThinkingOptions.filter((t) => t.value !== 'off'),
+        ]
+      : uiThinkingOptions;
 
+  const modelOptions: SettingsSelectOption[] = [];
+  if (selectedModelUnavailable) {
+    modelOptions.push({
+      value: effectiveModel,
+      label: `${effectiveModel} (unavailable)`,
+      disabled: true,
+    });
+  }
+  if (!hasModels) {
+    modelOptions.push({
+      value: '',
+      label: isCreditsRow ? 'Automatic' : 'No models available',
+    });
+  } else {
+    // `null` IS the credits-lane sentinel for "pick the current
+    // catalog-backed default", so it needs a real, re-selectable option
+    // rather than a placeholder that vanishes once a concrete model is
+    // chosen. A literal gateway-only id cannot be seeded instead: it is
+    // absent from `package.json`, so a cold or offline launch would
+    // normalize it straight back out.
+    if (isCreditsRow) {
+      modelOptions.push({ value: '', label: 'Automatic' });
+    } else if (selection === null) {
+      modelOptions.push({ value: '', label: 'Select a model…' });
+    }
+    // Only real provider base models are listed here. Custom Agent models
+    // (`agent_model_*`) are intentionally excluded from these
+    // workspace/standalone default selectors: `models` is sourced from the
+    // provider registries (CLAUDE/CODEX/OLLAMA), never from AGENT_MODELS.
+    // Agent presets are offered exclusively in the chat ModelPicker, which
+    // resolves them to a base model at send time.
+    for (const m of models) {
+      if (selectedModelUnavailable && m === effectiveModel) continue;
+      modelOptions.push({
+        value: m,
+        label:
+          isCreditsRow && !AI_GATEWAY_MODELS.includes(m)
+            ? m
+            : getModelDisplayName(m),
+      });
+    }
+  }
+  const thinkingSelectOptions: readonly SettingsSelectOption[] =
+    selectedModelUnavailable
+      ? [
+          {
+            value: effectiveThinking,
+            label:
+              THINKING_UI_OPTIONS.find((t) => t.value === effectiveThinking)
+                ?.label ?? effectiveThinking,
+          },
+        ]
+      : thinkingOptions;
+
+  // The settings row's geometry: the label and its one-line reason leading,
+  // the paired 144px model and effort dropdowns trailing, as in the feature
+  // model rows below it.
   return (
     <div
       data-testid={`chat-defaults-row-${provider}`}
       data-lane-dimmed={dimmed ? 'true' : 'false'}
-      className={`flex items-center justify-between gap-4${
+      className={`flex min-h-10 items-center justify-between gap-6${
         dimmed ? ' opacity-60' : ''
       }`}
     >
-      <label className="flex min-w-0 items-center gap-2.5 text-s font-medium fg-primary">
-        {isCreditsRow ? (
-          // No radio: the credits lane is not an `AgentProviderType`, so it can
-          // never be `defaultProvider`. It is reached by lane resolution when
-          // no native subscription can pay, and configured here.
-          <span aria-hidden="true" className="size-4 shrink-0" />
-        ) : (
-          <input
-            type="radio"
-            name={radioName}
-            checked={isDefault}
-            disabled={radioDisabled}
-            onChange={(): void => onSelectDefault()}
-            className={SETTINGS_CHECK_INPUT_CLASS_NAME}
-          />
-        )}
-        <span className="w-16">{PROVIDER_LABELS[provider]}</span>
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <label className="flex min-w-0 items-center gap-2.5 text-s font-medium fg-primary">
+          {isCreditsRow ? (
+            // No radio: the credits lane is not an `AgentProviderType`, so it can
+            // never be `defaultProvider`. It is reached by lane resolution when
+            // no native subscription can pay, and configured here.
+            <span aria-hidden="true" className="size-4 shrink-0" />
+          ) : (
+            <Radio
+              name={radioName}
+              checked={isDefault}
+              disabled={radioDisabled}
+              onChange={(): void => onSelectDefault()}
+            />
+          )}
+          {PROVIDER_LABELS[provider]}
+        </label>
         {reason && (
-          <span
+          <div
             data-testid={`chat-defaults-reason-${provider}`}
-            className="truncate text-xs font-normal fg-secondary"
+            className="text-xs text-pretty fg-secondary"
           >
             {reason}
-          </span>
+          </div>
         )}
-      </label>
+      </div>
       <div className="flex shrink-0 items-center gap-2">
-        <span className="inline-flex w-40">
+        <span className="inline-flex w-36">
           <SettingsSelect
             width="fill"
             data-testid={`chat-defaults-model-${provider}`}
+            options={modelOptions}
             value={effectiveModel}
             disabled={disabled || !hasModels}
-            onChange={(e: React.ChangeEvent<HTMLSelectElement>): void => {
-              const value = e.target.value;
+            onValueChange={(value): void => {
               if (!value) {
                 onChangeSelection(null);
                 return;
               }
-              const clampedThinking = isCreditsRow
-                ? effectiveThinking
-                : normalizeThinkingForProvider(effectiveThinking, provider);
+              // Leaving a visible Sol Low saves the level the row then shows,
+              // so no hidden `low` reaches new chats on the next model.
+              const clampedThinking =
+                exposeSolLow &&
+                effectiveThinking === 'low' &&
+                value !== SOL_LOW_MODEL
+                  ? getThinkingUiValueForProvider(
+                      'low',
+                      'high',
+                      thinkingProvider,
+                      value,
+                    )
+                  : isCreditsRow
+                    ? effectiveThinking
+                    : normalizeThinkingForProvider(effectiveThinking, provider);
               onChangeSelection({
                 model: value,
                 thinkingLevel: clampedThinking,
               });
             }}
-          >
-            {selectedModelUnavailable && (
-              <option value={effectiveModel} disabled>
-                {effectiveModel} (unavailable)
-              </option>
-            )}
-            {!hasModels ? (
-              <option value="">
-                {isCreditsRow ? 'Automatic' : 'No models available'}
-              </option>
-            ) : (
-              <>
-                {/* `null` IS the credits-lane sentinel for "pick the current
-                  catalog-backed default", so it needs a real, re-selectable
-                  option rather than a placeholder that vanishes once a concrete
-                  model is chosen. A literal gateway-only id cannot be seeded
-                  instead: it is absent from `package.json`, so a cold or
-                  offline launch would normalize it straight back out. */}
-                {isCreditsRow ? (
-                  <option value="">Automatic</option>
-                ) : (
-                  selection === null && (
-                    <option value="">Select a model…</option>
-                  )
-                )}
-                {/*
-                Only real provider base models are listed here. Custom Agent
-                models (`agent_model_*`) are intentionally excluded from these
-                workspace/standalone default selectors: `models` is sourced
-                from the provider registries (CLAUDE/CODEX/OLLAMA), never from
-                AGENT_MODELS. Agent presets are offered exclusively in the chat
-                ModelPicker, which resolves them to a base model at send time.
-              */}
-                {models
-                  .filter(
-                    (m) => !selectedModelUnavailable || m !== effectiveModel,
-                  )
-                  .map((m) => (
-                    <option key={m} value={m}>
-                      {isCreditsRow && !AI_GATEWAY_MODELS.includes(m)
-                        ? m
-                        : getModelDisplayName(m)}
-                    </option>
-                  ))}
-              </>
-            )}
-          </SettingsSelect>
+          />
         </span>
-        <span className="inline-flex w-28">
+        <span className="inline-flex w-36">
           <SettingsSelect
             width="fill"
             data-testid={`chat-defaults-thinking-${provider}`}
+            options={thinkingSelectOptions}
             value={
               selectedModelUnavailable
                 ? effectiveThinking
-                : getThinkingUiValueForProvider(
-                    effectiveThinking,
-                    'high',
-                    thinkingProvider,
-                    selection?.model,
-                  )
+                : exposeSolLow && effectiveThinking === 'low'
+                  ? 'low'
+                  : getThinkingUiValueForProvider(
+                      effectiveThinking,
+                      'high',
+                      thinkingProvider,
+                      selection?.model,
+                    )
             }
             disabled={
               disabled || selection === null || selectedModelUnavailable
             }
-            onChange={(e: React.ChangeEvent<HTMLSelectElement>): void => {
+            onValueChange={(next): void => {
               if (!selection) return;
               onChangeSelection({
                 ...selection,
                 thinkingLevel: getSelectedThinkingLevel(
-                  e.target.value,
+                  next,
                   selection.thinkingLevel,
                 ),
               });
             }}
-          >
-            {selectedModelUnavailable ? (
-              <option value={effectiveThinking}>
-                {THINKING_UI_OPTIONS.find((t) => t.value === effectiveThinking)
-                  ?.label ?? effectiveThinking}
-              </option>
-            ) : (
-              thinkingOptions.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))
-            )}
-          </SettingsSelect>
+          />
         </span>
       </div>
     </div>
@@ -740,8 +779,8 @@ export function ChatTab(): JSX.Element {
             htmlFor="settings-rtk-enabled"
             description={
               cursorHarnessEnabled
-                ? 'The bundled RTK helper rewrites compatible Claude and Cursor shell commands to lower-output equivalents. Applies to Claude chats, Claude pipeline agents, and Cursor chats.'
-                : 'The bundled RTK helper rewrites compatible Claude shell commands to lower-output equivalents. Applies to Claude chats and Claude pipeline agents.'
+                ? 'The bundled RTK helper rewrites compatible Claude and Cursor shell commands to lower-output equivalents. Applies to Claude chats, Claude workflow agents, and Cursor chats.'
+                : 'The bundled RTK helper rewrites compatible Claude shell commands to lower-output equivalents. Applies to Claude chats and Claude workflow agents.'
             }
             control={
               <ToggleSwitch
@@ -773,13 +812,13 @@ export function ChatTab(): JSX.Element {
               }
             />
             <SettingsSubRow
-              label="Pipelines"
+              label="Workflows"
               htmlFor="settings-auto-retry-transient-pipelines"
               control={
                 <ToggleSwitch
                   id="settings-auto-retry-transient-pipelines"
                   checked={prefs.autoRetryTransientErrorsPipelines}
-                  label="Retry transient errors in pipelines"
+                  label="Retry transient errors in workflows"
                   onChange={(next) =>
                     save({ autoRetryTransientErrorsPipelines: next })
                   }

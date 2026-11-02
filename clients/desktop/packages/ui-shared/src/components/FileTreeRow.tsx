@@ -8,6 +8,7 @@ import type {
 } from 'react';
 import { FileIcon } from '../icons/FileIcon';
 import { FolderIcon } from '../icons/FolderIcon';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 const ROW_BASE_CLASS =
   'flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors';
@@ -39,6 +40,8 @@ export interface FileTreeRowProps {
   badge?: ReactNode;
   /** Display-only context alongside the original folder name. */
   secondaryLabel?: string;
+  /** Mask the label text in session replays, for user-authored titles. */
+  replayMaskLabel?: boolean;
   /** Tooltip on the row (defaults to the label). */
   title?: string;
   /** Click handler. */
@@ -97,6 +100,7 @@ export function FileTreeRow({
   trailingAction,
   badge,
   secondaryLabel,
+  replayMaskLabel = false,
   title,
   onClick,
   onContextMenu,
@@ -154,9 +158,12 @@ export function FileTreeRow({
     selected || current ? 'bg-fg-primary/[0.06] fg-primary' : '';
   const rowDisabled = disabled || (!onClick && !onContextMenu);
 
-  const labelClass = isRepoRoot
+  const baseLabelClass = isRepoRoot
     ? 'truncate text-2xs font-semibold fg-primary/80'
     : `truncate ${isIgnored ? 'fg-secondary/70' : ''}`;
+  const labelClass = replayMaskLabel
+    ? `${baseLabelClass} ${REPLAY_MASK_CLASS}`
+    : baseLabelClass;
 
   const folderIcon = (
     <FolderIcon
@@ -195,7 +202,7 @@ export function FileTreeRow({
       onClick={onClick}
       onContextMenu={onContextMenu}
       disabled={rowDisabled}
-      title={tooltip}
+      title={replayMaskLabel ? undefined : tooltip}
       data-testid={dataTestId}
       data-path={dataPath}
       data-file-tree-id={dataNodeId}

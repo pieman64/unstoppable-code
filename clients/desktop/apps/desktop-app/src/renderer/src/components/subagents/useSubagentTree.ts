@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { useShallow } from 'zustand/shallow';
-import type { SubagentTree } from '@canopy/agent-transcript';
+import type { AgentUsage, SubagentTree } from '@canopy/agent-transcript';
 import type { ManagedDelegationTreeEntry } from '@canopy/desktop-shared/types';
 import type { SubagentTreeLoadState } from '@canopy/ui-app/subagents';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
@@ -30,6 +30,7 @@ export interface UseSubagentTreeOptions {
 
 interface RootChatProjection {
   readonly messages: readonly ChatMessage[] | null;
+  readonly agentUsage?: Readonly<Record<string, AgentUsage>>;
   readonly hydrated: boolean;
   readonly rootChatOpen: boolean;
   readonly title: string;
@@ -67,6 +68,9 @@ export function useSubagentTree(
       const rootChatOpen = hydrated && tab !== undefined;
       return {
         messages: rootChatOpen && tab ? tab.messages : null,
+        ...(rootChatOpen && tab?.agentUsage
+          ? { agentUsage: tab.agentUsage }
+          : {}),
         hydrated,
         rootChatOpen,
         title: rootChatOpen && tab ? getChatTabLabel(tab) : (rootChatId ?? ''),

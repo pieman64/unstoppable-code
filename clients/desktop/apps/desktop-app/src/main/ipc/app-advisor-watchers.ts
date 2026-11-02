@@ -1,3 +1,5 @@
+import { emitPortalWatcherProjection } from '../portal/adapters/watchers-adapter';
+import { logMainProcessError } from '../lib/main-process-logging';
 import {
   IPC_CHANNELS,
   type AppAdvisorWatcherChatFiringHoldRequest,
@@ -13,6 +15,7 @@ import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 import type { WindowAccessors } from './index';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import { deliverWatcherMessageToChat } from '../services/watcher-chat-delivery';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -101,7 +104,13 @@ export function registerAppAdvisorWatcherHandlers(
       ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
       sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
       sendChatWindowCommand: accessors.sendChatWindowCommand,
+      deliverWatcherMessage: deliverWatcherMessageToChat,
       onChange: (watchers: AppAdvisorWatcherSummary[]) => {
+        try {
+          emitPortalWatcherProjection(watchers);
+        } catch (error: unknown) {
+          logMainProcessError('Portal watcher projection failed', error);
+        }
         sendToWindow(
           accessors.getMainWindow(),
           IPC_CHANNELS.appAdvisorWatchersChanged,

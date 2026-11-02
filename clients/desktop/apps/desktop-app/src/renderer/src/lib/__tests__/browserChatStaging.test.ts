@@ -49,6 +49,7 @@ describe('browserChatStaging', () => {
   const pendingTarget = {
     projectId: 'project-1',
     worktreeId: 'worktree-1',
+    chatId: 'chat-1',
     tabId: 'tab-1',
   };
   const target = {

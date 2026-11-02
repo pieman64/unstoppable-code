@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
+import { Button } from '@/components/shared/Button';
 
 interface ChartErrorBoundaryProps {
   children: ReactNode;
@@ -63,13 +64,9 @@ export class ChartErrorBoundary extends Component<
               {error.message || error.name || 'Unknown chart error'}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={this.handleRetry}
-            className="rounded-md bg-accent px-3 py-1.5 text-s font-medium fg-emphasis transition hover:opacity-90"
-          >
+          <Button variant="primary" onClick={this.handleRetry}>
             Reload chart
-          </button>
+          </Button>
         </div>
       );
     }

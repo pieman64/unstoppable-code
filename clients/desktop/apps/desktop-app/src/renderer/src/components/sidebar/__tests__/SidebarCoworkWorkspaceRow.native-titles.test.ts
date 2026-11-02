@@ -9,7 +9,8 @@
  * selectors, so they are deliberately not matched.
  *
  * Since CAN-3053 the glyphs live in the shared `WorkEntryRow`, which the
- * desktop row renders; both sources are scanned.
+ * desktop row renders; since turn-state phase 38a its Working spinner is the
+ * shared `AgentStateGlyph`. All three sources are scanned.
  */
 // eslint-disable-next-line no-restricted-imports
 import { readFileSync } from 'node:fs';
@@ -20,11 +21,16 @@ const SOURCE = readFileSync(
   join(__dirname, '..', 'SidebarCoworkWorkspaceRow.tsx'),
   'utf8',
 );
+const SHARED_COMPONENTS = join(
+  __dirname,
+  '../../../../../../../../packages/ui-shared/src/components',
+);
 const SHARED_ROW_SOURCE = readFileSync(
-  join(
-    __dirname,
-    '../../../../../../../../packages/ui-shared/src/components/WorkEntryRow.tsx',
-  ),
+  join(SHARED_COMPONENTS, 'WorkEntryRow.tsx'),
+  'utf8',
+);
+const GLYPH_SOURCE = readFileSync(
+  join(SHARED_COMPONENTS, 'AgentStateGlyph.tsx'),
   'utf8',
 );
 
@@ -34,15 +40,20 @@ describe('SidebarCoworkWorkspaceRow native title attributes', () => {
   });
 
   it('renders no native title on the status glyphs', () => {
-    for (const label of ['Working', 'Question waiting', 'Done']) {
+    for (const label of ['Question waiting', 'Done'])
       expect(SHARED_ROW_SOURCE).toContain(`aria-label="${label}"`);
+    expect(SHARED_ROW_SOURCE).toMatch(/<AgentStateGlyph\s+state="working"/);
+    expect(GLYPH_SOURCE).toContain("state === 'working' ? 'Working'");
+    expect(GLYPH_SOURCE).toContain('aria-label={label}');
+    for (const label of ['Working', 'Question waiting', 'Done']) {
       expect(SHARED_ROW_SOURCE).not.toContain(`title="${label}"`);
       expect(SOURCE).not.toContain(`title="${label}"`);
     }
+    expect(GLYPH_SOURCE).not.toMatch(/\btitle=/);
   });
 
   it('wraps the working and done glyphs in the rich tooltip', () => {
-    expect(SHARED_ROW_SOURCE).toMatch(/<Tooltip label="Working">/);
+    expect(GLYPH_SOURCE).toMatch(/<Tooltip label=\{label\}>/);
     expect(SHARED_ROW_SOURCE).toMatch(/<Tooltip label="Done">/);
   });
 });

@@ -1,3 +1,4 @@
+import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { DropdownMenuSurface } from '@canopy/ui-shared';
@@ -85,29 +86,29 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
           not be included in the new worktree unless you commit them first.
         </p>
         <div className="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => resolveConfirmation(null)}
-            className="focus-ring rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary transition hover:bg-secondary/80"
-          >
+          <Button size="compact" onClick={() => resolveConfirmation(null)}>
             Cancel
-          </button>
+          </Button>
           <div ref={menuRef} className="relative">
-            <button
-              type="button"
+            <Button
+              variant="primary"
+              size="compact"
               onClick={() => setMenuOpen((open) => !open)}
               aria-haspopup="menu"
               aria-expanded={menuOpen}
-              className="focus-ring flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium fg-emphasis transition hover:bg-accent/90"
             >
               Continue
               <ChevronDownIcon
                 width={12}
                 height={12}
                 aria-hidden="true"
-                className={menuOpen ? 'rotate-180 transition' : 'transition'}
+                className={
+                  menuOpen
+                    ? 'rotate-180 transition-transform'
+                    : 'transition-transform'
+                }
               />
-            </button>
+            </Button>
             {menuOpen && (
               <DropdownMenuSurface
                 role="menu"

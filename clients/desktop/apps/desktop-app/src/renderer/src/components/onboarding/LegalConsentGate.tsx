@@ -1,5 +1,8 @@
 import { type JSX, type ReactNode, useId, useState } from 'react';
+import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import { CONSENT_TOS_VERSION } from '@canopy/desktop-shared/constants/consent';
+import { Button } from '@canopy/ui-shared';
 import { BrandLogo } from '@/components/BrandLogo';
 import { brandText } from '@/lib/brand';
 import { useCanopyLegalUrls } from '@/hooks/useCanopyLegalUrls';
@@ -89,7 +92,9 @@ export function LegalConsentGate({
       data-testid="legal-consent-gate"
     >
       {/* Keep the window draggable behind the centered content. */}
-      <div className="electron-drag h-10 shrink-0 w-full" />
+      {!usesNativeWindowFrame(localPlatform()) && (
+        <div className="electron-drag h-10 shrink-0 w-full" />
+      )}
       <div className="flex flex-1 w-full items-center justify-center overflow-y-auto px-6 pb-10">
         <div className="w-full max-w-md flex flex-col items-center gap-8">
           <div className="flex flex-col items-center gap-4 text-center">
@@ -152,15 +157,15 @@ export function LegalConsentGate({
             </p>
           </div>
 
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            className="w-full"
             data-testid="legal-consent-accept"
             disabled={!agreed || submitting}
             onClick={(): void => void handleContinue()}
-            className="w-full rounded-md bg-accent px-4 py-2.5 text-s font-medium fg-emphasis transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? 'Saving…' : 'Agree & continue'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -98,6 +98,31 @@ function buildCapturedLayout(): SerializablePanelLayoutFile {
   };
 }
 
+type SerializedPanelLeaf = Extract<
+  SerializablePanelLayoutFile['grid']['root'],
+  { type: 'leaf' }
+>;
+
+function withUpdatedLeaf(
+  layout: SerializablePanelLayoutFile,
+  groupId: string,
+  update: (leaf: SerializedPanelLeaf) => SerializedPanelLeaf,
+): SerializablePanelLayoutFile {
+  const updateNode = (
+    node: SerializablePanelLayoutFile['grid']['root'],
+  ): SerializablePanelLayoutFile['grid']['root'] => {
+    if (node.type === 'leaf') {
+      return node.groupId === groupId ? update(node) : node;
+    }
+    return { ...node, children: node.children.map(updateNode) };
+  };
+
+  return {
+    ...layout,
+    grid: { ...layout.grid, root: updateNode(layout.grid.root) },
+  };
+}
+
 function leavesOf(file: SerializablePanelLayoutFile): Array<{
   groupId: string;
   kinds: string[];
@@ -202,16 +227,18 @@ describe('templatizeLayoutForDefault', () => {
     // collapsed state. Carrying `auto: true` into the saved default would make
     // every worktree that later adopts it auto-expand the rail once — undoing
     // the very layout the user chose.
-    const captured = buildCapturedLayout();
-    const root = captured.grid.root;
-    if (root.type !== 'branch') throw new Error('expected branch root');
-    const activityLeaf = root.children[1];
-    if (activityLeaf.type !== 'leaf') throw new Error('expected leaf');
-    activityLeaf.collapsed = {
-      edge: 'right',
-      expandedSize: 336,
-      auto: true,
-    };
+    const captured = withUpdatedLeaf(
+      buildCapturedLayout(),
+      'group-activity',
+      (leaf): SerializedPanelLeaf => ({
+        ...leaf,
+        collapsed: {
+          edge: 'right',
+          expandedSize: 336,
+          auto: true,
+        },
+      }),
+    );
 
     const template = templatizeLayoutForDefault(captured);
     const templateRoot = template.grid.root;
@@ -245,23 +272,23 @@ describe('templatizeLayoutForDefault', () => {
   });
 
   it('turns a bound terminal into a portable placeholder', () => {
-    const captured = buildCapturedLayout();
-    const root = captured.grid.root;
-    if (root.type !== 'branch') throw new Error('expected branch root');
-    const nested = root.children[0];
-    if (nested.type !== 'branch') throw new Error('expected nested branch');
-    const terminalLeaf = nested.children[1];
-    if (terminalLeaf.type !== 'leaf') throw new Error('expected leaf');
-    terminalLeaf.panels = [
-      {
-        panelId: 'panel-terminal-session-1',
-        kind: 'terminal',
-        title: 'zsh',
-        instance: { terminalId: 'terminal-session-1' },
-      },
-    ];
-    terminalLeaf.activePanelId = 'panel-terminal-session-1';
-    terminalLeaf.collapsed = { edge: 'bottom', expandedSize: 240 };
+    const captured = withUpdatedLeaf(
+      buildCapturedLayout(),
+      'group-terminal',
+      (leaf): SerializedPanelLeaf => ({
+        ...leaf,
+        panels: [
+          {
+            panelId: 'panel-terminal-session-1',
+            kind: 'terminal',
+            title: 'zsh',
+            instance: { terminalId: 'terminal-session-1' },
+          },
+        ],
+        activePanelId: 'panel-terminal-session-1',
+        collapsed: { edge: 'bottom', expandedSize: 240 },
+      }),
+    );
 
     const template = templatizeLayoutForDefault(captured);
     const templateRoot = template.grid.root;
@@ -293,28 +320,28 @@ describe('templatizeLayoutForDefault', () => {
   });
 
   it('retains at most one portable placeholder for multiple bound terminals', () => {
-    const captured = buildCapturedLayout();
-    const root = captured.grid.root;
-    if (root.type !== 'branch') throw new Error('expected branch root');
-    const nested = root.children[0];
-    if (nested.type !== 'branch') throw new Error('expected nested branch');
-    const terminalLeaf = nested.children[1];
-    if (terminalLeaf.type !== 'leaf') throw new Error('expected leaf');
-    terminalLeaf.panels = [
-      {
-        panelId: 'panel-terminal-session-1',
-        kind: 'terminal',
-        title: 'zsh',
-        instance: { terminalId: 'terminal-session-1' },
-      },
-      {
-        panelId: 'panel-terminal-session-2',
-        kind: 'terminal',
-        title: 'zsh',
-        instance: { terminalId: 'terminal-session-2' },
-      },
-    ];
-    terminalLeaf.activePanelId = 'panel-terminal-session-2';
+    const captured = withUpdatedLeaf(
+      buildCapturedLayout(),
+      'group-terminal',
+      (leaf): SerializedPanelLeaf => ({
+        ...leaf,
+        panels: [
+          {
+            panelId: 'panel-terminal-session-1',
+            kind: 'terminal',
+            title: 'zsh',
+            instance: { terminalId: 'terminal-session-1' },
+          },
+          {
+            panelId: 'panel-terminal-session-2',
+            kind: 'terminal',
+            title: 'zsh',
+            instance: { terminalId: 'terminal-session-2' },
+          },
+        ],
+        activePanelId: 'panel-terminal-session-2',
+      }),
+    );
 
     const template = templatizeLayoutForDefault(captured);
     const templateRoot = template.grid.root;
@@ -344,25 +371,25 @@ describe('templatizeLayoutForDefault', () => {
   it.each(['', '   '])(
     'prefers an existing %j terminal placeholder over an earlier bound terminal',
     (terminalId) => {
-      const captured = buildCapturedLayout();
-      const root = captured.grid.root;
-      if (root.type !== 'branch') throw new Error('expected branch root');
-      const nested = root.children[0];
-      if (nested.type !== 'branch') throw new Error('expected nested branch');
-      const terminalLeaf = nested.children[1];
-      if (terminalLeaf.type !== 'leaf') throw new Error('expected leaf');
-      terminalLeaf.panels = [
-        {
-          panelId: 'panel-terminal-bound',
-          kind: 'terminal',
-          instance: { terminalId: 'terminal-session-1' },
-        },
-        {
-          panelId: 'panel-terminal-placeholder',
-          kind: 'terminal',
-          instance: { terminalId },
-        },
-      ];
+      const captured = withUpdatedLeaf(
+        buildCapturedLayout(),
+        'group-terminal',
+        (leaf): SerializedPanelLeaf => ({
+          ...leaf,
+          panels: [
+            {
+              panelId: 'panel-terminal-bound',
+              kind: 'terminal',
+              instance: { terminalId: 'terminal-session-1' },
+            },
+            {
+              panelId: 'panel-terminal-placeholder',
+              kind: 'terminal',
+              instance: { terminalId },
+            },
+          ],
+        }),
+      );
 
       const template = templatizeLayoutForDefault(captured);
       const templateRoot = template.grid.root;
@@ -833,30 +860,31 @@ describe('findChatHostGroupId remap (via templatizeLayoutForDefault)', () => {
   });
 
   it('remaps an active chat group emptied by terminal placeholder deduplication', () => {
-    const captured = buildCollisionLayout();
-    const root = captured.grid.root;
-    if (root.type !== 'branch') throw new Error('expected branch root');
-    const sourceChatLeaf = root.children[0];
-    const existingChatLeaf = root.children[1];
-    if (sourceChatLeaf.type !== 'leaf' || existingChatLeaf.type !== 'leaf') {
-      throw new Error('expected leaf children');
-    }
-    sourceChatLeaf.panels = [
-      ...sourceChatLeaf.panels,
-      {
-        panelId: 'panel-terminal-bound',
-        kind: 'terminal',
-        instance: { terminalId: 'terminal-session-1' },
-      },
-    ];
-    existingChatLeaf.panels = [
-      ...existingChatLeaf.panels,
-      {
-        panelId: 'panel-terminal-placeholder',
-        kind: 'terminal',
-      },
-    ];
-    existingChatLeaf.activePanelId = 'panel-terminal-placeholder';
+    const captured = withUpdatedLeaf(
+      withUpdatedLeaf(buildCollisionLayout(), 'group-xyz', (leaf) => ({
+        ...leaf,
+        panels: [
+          ...leaf.panels,
+          {
+            panelId: 'panel-terminal-bound',
+            kind: 'terminal',
+            instance: { terminalId: 'terminal-session-1' },
+          },
+        ],
+      })),
+      'group-chat',
+      (leaf) => ({
+        ...leaf,
+        panels: [
+          ...leaf.panels,
+          {
+            panelId: 'panel-terminal-placeholder',
+            kind: 'terminal',
+          },
+        ],
+        activePanelId: 'panel-terminal-placeholder',
+      }),
+    );
 
     const template = templatizeLayoutForDefault(captured);
     const leaves = leavesOf(template);

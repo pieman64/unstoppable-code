@@ -21,7 +21,10 @@ import {
   type LedgerViewStore,
   type LedgerViewStoreFor,
 } from '@canopy/app-state';
-import type { LedgerViewScope } from '@canopy/protocol/ledger-view';
+import type {
+  LedgerTaskViewScope,
+  LedgerViewScope,
+} from '@canopy/protocol/ledger-view';
 import {
   LedgerEntryForm,
   LedgerTargetPicker,
@@ -33,9 +36,12 @@ import {
 } from './LedgerDraftFields';
 import { ledgerSaveProblemText } from './ledger-write-copy';
 
-/** One of this device's scopes a new entry can go to. */
+/**
+ * One of this device's tasks a new entry can go to. A global (workflow) scope
+ * is never one: only agents add to it.
+ */
 export interface LedgerFeedScopeOption {
-  readonly scope: LedgerViewScope;
+  readonly scope: LedgerTaskViewScope;
   /** The worktree or task, as this device names it. */
   readonly label: string;
   /** Its project, shown beneath: one project's tasks may read alike. */

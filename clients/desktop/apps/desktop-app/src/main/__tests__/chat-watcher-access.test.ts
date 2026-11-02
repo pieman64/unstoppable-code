@@ -19,21 +19,32 @@ import {
 import {
   getCallerOwner,
   requireAuthorizedProject,
+  requireAuthorizedProjectIdentity,
   type AuthorizedProject,
 } from '../project-discovery/owner-policy';
 import { listDiscoverableTaskIds } from '../project-discovery/chats-list';
+import type * as ChatsListModule from '../project-discovery/chats-list';
 import { readTaskRuntimeSnapshot } from '../project-discovery/runtime-state';
 import {
   requireBotAccess,
   readBotEntries,
   isBotTaskEligible,
 } from '../project-discovery/bots/target';
-import { readProjectEntries } from '../project-discovery/sources';
+import {
+  readCommittedTaskSnapshot,
+  readProjectEntries,
+  readProjectWorktrees,
+} from '../project-discovery/sources';
 import { isWorkspaceTargetRemovalPending } from '../lib/workspace-target-exclusion';
 
 jest.mock('../project-discovery/owner-policy');
 jest.mock('../project-discovery/sources');
-jest.mock('../project-discovery/chats-list');
+jest.mock('../project-discovery/chats-list', () => ({
+  ...jest.requireActual<typeof ChatsListModule>(
+    '../project-discovery/chats-list',
+  ),
+  listDiscoverableTaskIds: jest.fn(),
+}));
 jest.mock('../project-discovery/runtime-state');
 jest.mock('../project-discovery/bots/target');
 jest.mock('../lib/workspace-target-exclusion');
@@ -108,6 +119,7 @@ function snapshot(taskId = 'task', chatId = 'chat'): ChatStateSnapshot {
     revision: 1,
     tabsFile: {
       version: 1,
+      activeTabId: '',
       tabs: [
         {
           id: chatId,
@@ -128,10 +140,10 @@ beforeEach(() => {
   mockAccount.initialize.mockResolvedValue(undefined);
   mockAccount.whenIdle.mockResolvedValue(undefined);
   jest.mocked(getCallerOwner).mockResolvedValue(personal);
-  jest.mocked(requireAuthorizedProject).mockResolvedValue(project());
+  jest.mocked(requireAuthorizedProjectIdentity).mockResolvedValue(project());
   jest.mocked(listDiscoverableTaskIds).mockResolvedValue(['task']);
   jest
-    .mocked(readTaskRuntimeSnapshot)
+    .mocked(readCommittedTaskSnapshot)
     .mockImplementation((_p, t) => Promise.resolve(snapshot(t)));
   jest.mocked(readProjectEntries).mockResolvedValue({
     version: 1,
@@ -153,7 +165,7 @@ beforeEach(() => {
   );
 });
 it('applies same-owner to roots and delegates using the root origin', async () => {
-  jest.mocked(requireAuthorizedProject).mockResolvedValue(project(org));
+  jest.mocked(requireAuthorizedProjectIdentity).mockResolvedValue(project(org));
   for (const trusted of [
     recipient,
     {
@@ -174,13 +186,13 @@ it('applies same-owner to roots and delegates using the root origin', async () =
   });
 });
 it('Advisor is owner-exempt but not resource-eligibility exempt', async () => {
-  jest.mocked(requireAuthorizedProject).mockResolvedValue(project(org));
+  jest.mocked(requireAuthorizedProjectIdentity).mockResolvedValue(project(org));
   expect(await decideChatWatcherAccess(advisor, target)).toMatchObject({
     allowed: true,
     sourceOwner: org,
   });
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockResolvedValue({ ...project(org), readiness: 'unavailable' });
   expect(await decideChatWatcherAccess(advisor, target)).toEqual({
     allowed: false,
@@ -189,7 +201,7 @@ it('Advisor is owner-exempt but not resource-eligibility exempt', async () => {
 });
 it('fails closed when project inventory membership is revoked', async () => {
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockRejectedValue(new Error('unavailable'));
   expect(await decideChatWatcherAccess(advisor, target)).toEqual({
     allowed: false,
@@ -219,7 +231,7 @@ it('uses the phase05 gate for each recipient, including delegates', async () => 
   });
 });
 it('drains queued account changes and rejects changes during an awaited lookup', async () => {
-  jest.mocked(requireAuthorizedProject).mockImplementation(() => {
+  jest.mocked(requireAuthorizedProjectIdentity).mockImplementation(() => {
     epoch += 1;
     return Promise.resolve(project());
   });
@@ -231,7 +243,7 @@ it('drains queued account changes and rejects changes during an awaited lookup',
 });
 it('rejects a saved-owner or resource binding change without an account change', async () => {
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockResolvedValueOnce(project())
     .mockResolvedValue({ ...project(), incarnation: 'replacement' });
   expect(await decideChatWatcherAccess(recipient, target)).toEqual({
@@ -277,7 +289,7 @@ it('allows completion evidence across a project rename, including pre-change inc
       createdAt,
     });
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockResolvedValue({ ...project(), incarnation: incarnation('Before') });
   const captured = await decideChatWatcherAccess(recipient, target);
   if (!captured.allowed) throw new Error('Capture denied');
@@ -286,7 +298,7 @@ it('allows completion evidence across a project rename, including pre-change inc
     name: 'After',
     incarnation: incarnation('After'),
   };
-  jest.mocked(requireAuthorizedProject).mockResolvedValue(renamed);
+  jest.mocked(requireAuthorizedProjectIdentity).mockResolvedValue(renamed);
   for (const resourceIncarnation of [
     captured.resourceIncarnation,
     incarnation('Before'),
@@ -304,7 +316,7 @@ it('allows completion evidence across a project rename, including pre-change inc
     incarnation('After', 'created', 2),
   ]) {
     jest
-      .mocked(requireAuthorizedProject)
+      .mocked(requireAuthorizedProjectIdentity)
       .mockResolvedValue({ ...project(), incarnation: replacement });
     expect(await decideChatWatcherAccess(recipient, target, captured)).toEqual({
       allowed: false,
@@ -312,7 +324,7 @@ it('allows completion evidence across a project rename, including pre-change inc
     });
   }
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockResolvedValue({ ...project(org), incarnation: incarnation('After') });
   expect(await decideChatWatcherAccess(advisor, target, captured)).toEqual({
     allowed: false,
@@ -353,6 +365,162 @@ it('resolves project type from policy, never from a caller hint', async () => {
       projectType: 'code',
     }),
   ).toEqual({ allowed: false, reason: 'migration_required' });
+});
+
+it('authorizes an explicit target without reading the full project inventory', async () => {
+  jest
+    .mocked(requireAuthorizedProject)
+    .mockRejectedValue(new Error('full project inventory was read'));
+  const entry: CanonicalChatWatcherEntry = {
+    trigger: 'project_task_chat_completion',
+    target: { projectId: 'project', taskId: 'task', chatId: 'chat' },
+  };
+
+  const resolved = await resolveChatWatcherTarget(entry);
+  expect(resolved).toEqual({
+    ...target,
+    address: entry.target,
+  });
+  expect(await decideChatWatcherAccess(recipient, resolved)).toMatchObject({
+    allowed: true,
+  });
+  expect(requireAuthorizedProject).not.toHaveBeenCalled();
+});
+
+it('reads the target task registry once per coherent sample', async () => {
+  const entry: CanonicalChatWatcherEntry = {
+    trigger: 'project_task_chat_completion',
+    target: { projectId: 'project', taskId: 'task', chatId: 'chat' },
+  };
+  const resolved = await resolveChatWatcherTarget(entry);
+  expect(await decideChatWatcherAccess(recipient, resolved)).toMatchObject({
+    allowed: true,
+  });
+  expect(readProjectEntries).toHaveBeenCalledTimes(4);
+  expect(listDiscoverableTaskIds).not.toHaveBeenCalled();
+});
+
+it('keeps hidden code tasks and cowork home out of explicit watcher targets', async () => {
+  jest.mocked(readProjectEntries).mockResolvedValue({
+    version: 1,
+    entries: [{ id: COWORK_HOME_WORKTREE_ID, createdAt: 'date' }],
+  });
+  await expect(
+    resolveChatWatcherTarget({
+      trigger: 'project_new_chat_started',
+      target: { projectId: 'project', taskId: COWORK_HOME_WORKTREE_ID },
+    }),
+  ).rejects.toMatchObject({ reason: 'runtime_unavailable' });
+
+  jest
+    .mocked(requireAuthorizedProjectIdentity)
+    .mockResolvedValue({ ...project(), type: 'code' });
+  jest
+    .mocked(readProjectWorktrees)
+    .mockResolvedValue([
+      { id: 'task', branchName: 'task', createdAt: 'date', hidden: true },
+    ]);
+  await expect(
+    resolveChatWatcherTarget({
+      trigger: 'project_new_chat_started',
+      target: { projectId: 'project', taskId: 'task' },
+    }),
+  ).rejects.toMatchObject({ reason: 'runtime_unavailable' });
+});
+
+it('rejects a legacy project alias in a new explicit watcher entry', async () => {
+  const entry: CanonicalChatWatcherEntry = {
+    trigger: 'project_task_chat_completion',
+    target: {
+      projectId: 'legacy-chat-project',
+      taskId: 'task',
+      chatId: 'chat',
+    },
+  };
+  await expect(resolveChatWatcherTarget(entry)).rejects.toMatchObject({
+    reason: 'runtime_unavailable',
+  });
+  expect(readProjectEntries).not.toHaveBeenCalled();
+  expect(readCommittedTaskSnapshot).not.toHaveBeenCalled();
+});
+
+it('refuses a legacy project alias passed straight to the access decision', async () => {
+  for (const address of [
+    { projectId: 'legacy-chat-project' },
+    { projectId: 'legacy-chat-project', taskId: 'task' },
+    { projectId: 'legacy-chat-project', taskId: 'task', chatId: 'chat' },
+  ]) {
+    for (const trusted of [recipient, advisor]) {
+      expect(
+        await decideChatWatcherAccess(trusted, { ...target, address }),
+      ).toEqual({ allowed: false, reason: 'runtime_unavailable' });
+    }
+  }
+  expect(readProjectEntries).not.toHaveBeenCalled();
+  expect(readCommittedTaskSnapshot).not.toHaveBeenCalled();
+});
+
+it('checks committed chat identity without starting Work Entry runtime recovery', async () => {
+  jest
+    .mocked(readTaskRuntimeSnapshot)
+    .mockRejectedValue(new Error('Work Entry runtime recovery was started'));
+  const entry: CanonicalChatWatcherEntry = {
+    trigger: 'project_task_chat_completion',
+    target: { projectId: 'project', taskId: 'task', chatId: 'chat' },
+  };
+
+  const resolved = await resolveChatWatcherTarget(entry);
+  expect(await decideChatWatcherAccess(recipient, resolved)).toMatchObject({
+    allowed: true,
+  });
+  expect(readTaskRuntimeSnapshot).not.toHaveBeenCalled();
+});
+
+it('refuses missing and archived chats in the committed parent', async () => {
+  const archived = snapshot();
+  archived.tabsFile.tabs = [];
+  archived.archives = [
+    {
+      chatId: 'chat',
+      title: 'Archived',
+      turnCount: 1,
+      archivedAt: '2026-10-16T00:00:00Z',
+      createdAt: '2026-10-16T00:00:00Z',
+      restorable: true,
+      unread: false,
+    },
+  ];
+  jest.mocked(readCommittedTaskSnapshot).mockResolvedValue(archived);
+  const entry: CanonicalChatWatcherEntry = {
+    trigger: 'project_task_chat_completion',
+    target: { projectId: 'project', taskId: 'task', chatId: 'chat' },
+  };
+  await expect(resolveChatWatcherTarget(entry)).rejects.toMatchObject({
+    reason: 'runtime_unavailable',
+  });
+  expect(
+    await decideChatWatcherAccess(recipient, {
+      ...target,
+      address: entry.target,
+    }),
+  ).toEqual({ allowed: false, reason: 'runtime_unavailable' });
+});
+
+it('refuses a Work Entry recreated between coherent parent samples', async () => {
+  jest
+    .mocked(readProjectEntries)
+    .mockResolvedValueOnce({
+      version: 1,
+      entries: [{ id: 'task', createdAt: 'original' }],
+    })
+    .mockResolvedValue({
+      version: 1,
+      entries: [{ id: 'task', createdAt: 'recreated' }],
+    });
+  expect(await decideChatWatcherAccess(recipient, target)).toEqual({
+    allowed: false,
+    reason: 'runtime_unavailable',
+  });
 });
 it('resolves a legacy cowork chat to its real Work Entry, preserving metadata', async () => {
   const result = await resolveLegacyChatWatcher({
@@ -398,7 +566,7 @@ it('preserves unresolved, archived, ambiguous and conflicting legacy identities'
     }),
   ).toEqual({ ok: false, reason: 'migration_required' });
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockResolvedValue({ ...project(), type: 'code' });
   expect(await resolveLegacyChatWatcher(legacy)).toEqual({
     ok: false,
@@ -432,7 +600,7 @@ it('returns a main-only authorized transcript context for the exact parent chat'
 });
 it('accepts eligible code project scopes but not unknown caller owners', async () => {
   jest
-    .mocked(requireAuthorizedProject)
+    .mocked(requireAuthorizedProjectIdentity)
     .mockResolvedValue({ ...project(), type: 'code' });
   const code: ResolvedChatWatcherTarget = {
     kind: 'project',
@@ -449,7 +617,7 @@ it('accepts eligible code project scopes but not unknown caller owners', async (
   });
 });
 it('does not use archive-only chats as live legacy parents', async () => {
-  jest.mocked(readTaskRuntimeSnapshot).mockImplementation((_p, t) => {
+  jest.mocked(readCommittedTaskSnapshot).mockImplementation((_p, t) => {
     const state = snapshot(t);
     state.tabsFile.tabs = [];
     state.archives = [
@@ -514,7 +682,7 @@ it('rejects retired plan project scopes before resource reads', async () => {
       address: { projectId: PLAN_EXPLORE_CHAT_PROJECT_ID },
     }),
   ).toEqual({ allowed: false, reason: 'runtime_unavailable' });
-  expect(jest.mocked(requireAuthorizedProject)).not.toHaveBeenCalled();
+  expect(jest.mocked(requireAuthorizedProjectIdentity)).not.toHaveBeenCalled();
 });
 
 describe('legacy spelling follows authoritative phase03 inventory type', () => {
@@ -568,7 +736,7 @@ describe('legacy spelling follows authoritative phase03 inventory type', () => {
     'rejects $legacy.trigger on inventory $type without rewriting input',
     async ({ type, legacy }) => {
       jest
-        .mocked(requireAuthorizedProject)
+        .mocked(requireAuthorizedProjectIdentity)
         .mockResolvedValue({ ...project(), type });
       const original = structuredClone(legacy);
       expect(await resolveLegacyChatWatcher(legacy)).toEqual({
@@ -576,7 +744,9 @@ describe('legacy spelling follows authoritative phase03 inventory type', () => {
         reason: 'migration_required',
       });
       expect(legacy).toEqual(original);
-      expect(jest.mocked(requireAuthorizedProject)).toHaveBeenCalledWith(
+      expect(
+        jest.mocked(requireAuthorizedProjectIdentity),
+      ).toHaveBeenCalledWith(
         'project',
         expect.objectContaining({ kind: 'app_advisor' }),
       );
@@ -621,7 +791,7 @@ it.each([2, 0])(
   },
 );
 it('re-evaluates a transient account write during one access decision', async () => {
-  jest.mocked(requireAuthorizedProject).mockImplementationOnce(() => {
+  jest.mocked(requireAuthorizedProjectIdentity).mockImplementationOnce(() => {
     epoch += 1;
     return Promise.resolve(project());
   });
@@ -631,7 +801,7 @@ it('re-evaluates a transient account write during one access decision', async ()
 });
 
 it('re-evaluates an account change even when the raced lookup rejects', async () => {
-  jest.mocked(requireAuthorizedProject).mockImplementationOnce(() => {
+  jest.mocked(requireAuthorizedProjectIdentity).mockImplementationOnce(() => {
     epoch += 1;
     return Promise.reject(new Error('stale account lookup'));
   });

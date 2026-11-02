@@ -15,6 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { openProjectSettingsPage } from './projectSettingsDriver.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 function git(cwd, args) {
   execFileSync('git', args, { cwd, stdio: 'pipe' });
@@ -164,13 +166,14 @@ for (const mode of ['Update', 'Replace']) {
       await app.workspaceHeaderLabel('Apply Project').hover();
       await app.workspaceSettingsButton('Apply Project').click();
       const dialog = window.getByRole('dialog', { name: 'Apply Project' });
-      await dialog.getByRole('tab', { name: 'Danger' }).click();
+      // Converting is a row of General; its choices open in a small dialog.
       await dialog
-        .getByRole('button', { name: 'Convert to multi-repo…', exact: true })
+        .getByRole('button', { name: 'Convert…', exact: true })
         .click();
+      const convert = window.getByTestId('project-settings-convert-dialog');
       chmodSync(claudePath, 0o000);
       expect(() => readFileSync(claudePath)).toThrow(/EACCES/);
-      await dialog.getByRole('button', { name: mode, exact: true }).click();
+      await convert.getByRole('button', { name: mode, exact: true }).click();
       await expect(
         window.getByText(/EACCES.*permission denied/).first(),
       ).toBeVisible();
@@ -301,11 +304,14 @@ for (const layout of ['indirect-alias', 'missing-instructions']) {
       await app.workspaceHeaderLabel('Apply Project').hover();
       await app.workspaceSettingsButton('Apply Project').click();
       const dialog = window.getByRole('dialog', { name: 'Apply Project' });
-      await dialog.getByRole('tab', { name: 'Danger' }).click();
+      // Converting is a row of General; its choices open in a small dialog.
       await dialog
-        .getByRole('button', { name: 'Convert to multi-repo…', exact: true })
+        .getByRole('button', { name: 'Convert…', exact: true })
         .click();
-      await dialog.getByRole('button', { name: 'Update', exact: true }).click();
+      const convert = window.getByTestId('project-settings-convert-dialog');
+      await convert
+        .getByRole('button', { name: 'Update', exact: true })
+        .click();
       await expect(dialog).toBeHidden();
       if (layout === 'indirect-alias') {
         expect(readFileSync(localClaudePath, 'utf8')).toBe(
@@ -417,11 +423,12 @@ for (const entryKind of ['directory', 'symlink']) {
       await app.workspaceHeaderLabel('Apply Project').hover();
       await app.workspaceSettingsButton('Apply Project').click();
       const dialog = window.getByRole('dialog', { name: 'Apply Project' });
-      await dialog.getByRole('tab', { name: 'Danger' }).click();
+      // Converting is a row of General; its choices open in a small dialog.
       await dialog
-        .getByRole('button', { name: 'Convert to multi-repo…', exact: true })
+        .getByRole('button', { name: 'Convert…', exact: true })
         .click();
-      await dialog
+      const convert = window.getByTestId('project-settings-convert-dialog');
+      await convert
         .getByRole('button', {
           name: entryKind === 'symlink' ? 'Leave unchanged' : 'Update',
           exact: true,
@@ -693,8 +700,9 @@ test('single-repo project Add to Worktree closes promptly after source script wr
     await expect(
       dialog.getByRole('combobox', { name: 'Default model' }),
     ).toHaveCount(0);
-    await dialog.getByRole('tab', { name: 'Scripts' }).click();
-    await dialog.getByRole('button', { name: 'Source controlled' }).click();
+    // Scripts and hooks: canopy.json changes, read from the worktree.
+    await openProjectSettingsPage(app, 'scripts');
+    await dialog.getByTestId('project-settings-scope-source').click();
     await expect(dialog.getByText('Setup script')).toBeVisible();
     await dialog.getByRole('button', { name: /Default branch/ }).click();
     await window
@@ -702,13 +710,29 @@ test('single-repo project Add to Worktree closes promptly after source script wr
       .getByRole('option', { name: /wt-1/ })
       .click();
 
+    await dialog.getByTestId('project-settings-script-edit-setup').click();
     await dialog.locator('textarea').first().fill('echo fake');
-    const windowsShell = dialog.getByLabel('Setup script Windows shell');
-    const macShell = dialog.getByLabel('Setup script Mac shell');
-    await windowsShell.selectOption('bash');
-    await macShell.selectOption('zsh');
-    await expect(windowsShell).toHaveValue('bash');
-    await expect(macShell).toHaveValue('zsh');
+    const windowsShell = dialog.getByRole('combobox', {
+      name: 'Setup script Windows shell',
+    });
+    const macShell = dialog.getByRole('combobox', {
+      name: 'Setup script Mac shell',
+    });
+    const linuxShell = dialog.getByRole('combobox', {
+      name: 'Setup script Linux shell',
+    });
+    await expect(linuxShell).toHaveAttribute('data-value', '');
+    await expect(linuxShell).toHaveText('Default (Bash)');
+    await chooseSettingsOption(windowsShell, 'bash');
+    await chooseSettingsOption(macShell, 'zsh');
+    await chooseSettingsOption(linuxShell, 'bash');
+    await expect(linuxShell).toHaveAttribute('data-value', 'bash');
+    await chooseSettingsOption(linuxShell, '');
+    await expect(linuxShell).toHaveAttribute('data-value', '');
+    await chooseSettingsOption(linuxShell, 'zsh');
+    await expect(windowsShell).toHaveAttribute('data-value', 'bash');
+    await expect(macShell).toHaveAttribute('data-value', 'zsh');
+    await expect(linuxShell).toHaveAttribute('data-value', 'zsh');
 
     const clickAt = Date.now();
     await dialog.getByRole('button', { name: 'Add to worktree' }).click();
@@ -723,6 +747,7 @@ test('single-repo project Add to Worktree closes promptly after source script wr
       shell: {
         windows: 'bash',
         mac: 'zsh',
+        linux: 'zsh',
       },
     });
     expect(closeAt - clickAt).toBeLessThan(3000);

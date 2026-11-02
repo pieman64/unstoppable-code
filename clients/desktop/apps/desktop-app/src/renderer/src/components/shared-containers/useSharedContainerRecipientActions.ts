@@ -19,6 +19,7 @@ import type {
   SharedContainerForkDestination,
   SharedContainerForkResponse,
 } from '@canopy/desktop-shared/types';
+import type { SharedContainerForkErrorCode } from '@canopy/protocol/shared-containers';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
@@ -39,17 +40,21 @@ export type SharedContainerDismissOutcome =
  * refuses for reasons the recipient can act on. The chosen workspace may not
  * contain the shared repository, or the replica may be mid-promotion. Flattening
  * those into "Couldn't fork this share" would strip the only guidance the user
- * has for choosing a different destination.
+ * has for choosing a different destination. Expected refusals (CAN-4781)
+ * arrive as data with a stable `code`; anything else is an IPC rejection and
+ * has no code.
  */
 export type SharedContainerForkOutcome =
   | { status: 'forked'; response: SharedContainerForkResponse }
-  | { status: 'failed'; message: string }
+  | { status: 'failed'; message: string; code?: SharedContainerForkErrorCode }
   | { status: 'in-flight' };
 
 export interface SharedContainerForkInput {
   revisionId: string;
   sourceOwnerDisplayName: string;
   destination: SharedContainerForkDestination;
+  /** Digest of the capability package the confirmation disclosed, if any. */
+  expectedPackageDigest?: string;
 }
 
 export interface SharedContainerRecipientActions {
@@ -156,7 +161,17 @@ export function useSharedContainerRecipientActions(
           revisionId: input.revisionId,
           sourceOwnerDisplayName: input.sourceOwnerDisplayName,
           destination: input.destination,
+          ...(input.expectedPackageDigest !== undefined
+            ? { expectedPackageDigest: input.expectedPackageDigest }
+            : {}),
         });
+        if ('ok' in response) {
+          return {
+            status: 'failed',
+            message: response.message,
+            code: response.code,
+          };
+        }
         return { status: 'forked', response };
       } catch (cause) {
         // Electron rewraps the rejection as

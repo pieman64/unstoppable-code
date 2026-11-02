@@ -119,6 +119,15 @@ const PIPELINE_ACTION: AutomationAction = {
   pipelineName: 'Dependency check',
 };
 
+const RESUME_ACTION: AutomationAction = {
+  type: 'pipeline_execution_resume',
+  executionId: 'e',
+  statusReasonIds: [],
+  provider: 'claude',
+  purpose: 'usage_limit_resume',
+  pipelineName: 'Release',
+};
+
 describe('automation rows', () => {
   it('describes a cron trigger in plain language and falls back to the expression', () => {
     expect(
@@ -180,7 +189,7 @@ describe('automation rows', () => {
       'app_advisor_prompt',
       { type: 'app_advisor_prompt', prompt: 'x' },
       ['advisor'],
-      'Ask Advisor',
+      'Ask Orchestrator',
     ],
     [
       'standalone_prompt',
@@ -208,11 +217,7 @@ describe('automation rows', () => {
     ],
     [
       'pipeline_execution_resume',
-      {
-        type: 'pipeline_execution_resume',
-        executionId: 'e',
-        pipelineName: 'Release',
-      },
+      RESUME_ACTION,
       ['pipeline'],
       'Resume Release',
     ],
@@ -258,13 +263,13 @@ describe('automation rows', () => {
   it('flags a missing target pipeline, matching source as well as id', () => {
     const row = only(project({ activities: [activity('a', PIPELINE_ACTION)] }));
     expect(row.summary).toBe('Dependency check');
-    expect(row.attention).toBe('The pipeline it runs is missing');
+    expect(row.attention).toBe('The workflow it runs is missing');
     // Same id in another source is a different pipeline.
     const otherSource = project({
       activities: [activity('a', PIPELINE_ACTION)],
       pipelines: [pipeline('deps', { source: 'bundled', readonly: true })],
     }).find((candidate) => candidate.kind === 'automation');
-    expect(otherSource?.attention).toBe('The pipeline it runs is missing');
+    expect(otherSource?.attention).toBe('The workflow it runs is missing');
   });
 
   it('orders the attention lines: review, missing pipeline, target, failures', () => {
@@ -301,7 +306,7 @@ describe('automation rows', () => {
           remoteId: 'r',
         },
       }),
-    ).toBe('Review needed: the shared pipeline changed');
+    ).toBe('Review needed: the shared workflow changed');
   });
 
   it('reads last run from a running run first, then the last result', () => {
@@ -385,6 +390,9 @@ describe('automation row actions', () => {
           activity('a', {
             type: 'pipeline_execution_resume',
             executionId: 'e',
+            statusReasonIds: [],
+            provider: 'claude',
+            purpose: 'usage_limit_resume',
             pipelineName: 'Release',
           }),
         ],
@@ -401,6 +409,35 @@ describe('automation row actions', () => {
 });
 
 describe('pipeline rows', () => {
+  // CAN-4551: a converted automation's own pipeline folds into its row,
+  // which reads as the chat it starts.
+  it('folds a pipeline an automation owns into the automation’s row', () => {
+    const converted = activity(
+      'a',
+      { type: 'standalone_prompt', chatProjectId: 'storefront', prompt: 'x' },
+      {
+        ownedPipeline: {
+          pipelineId: 'owned-1',
+          chatEditable: true,
+          storedAction: {
+            type: 'standalone_prompt',
+            chatProjectId: 'storefront',
+            prompt: 'x',
+          },
+        },
+      },
+    );
+    const rows = project({
+      activities: [converted],
+      pipelines: [pipeline('owned-1'), pipeline('mine')],
+      ownedPipelineIds: new Set(['owned-1']),
+    });
+    expect(rows.map((row) => row.name)).toEqual([
+      'Activity a',
+      'Pipeline mine',
+    ]);
+    expect(rows[0]?.summary).toContain('Start chat in storefront');
+  });
   it('lets the search reach a description the row does not show', () => {
     const row = only(
       project({

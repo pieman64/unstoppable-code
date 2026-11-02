@@ -10,7 +10,8 @@ import {
   type AutomationTargetResolution,
 } from '@canopy/pipeline-interop/automation-target';
 import type { AutomationAction } from '../types';
-import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { automationPipelineDestinationKey } from './automation-pipeline-target';
 
 export type AutomationSessionTargetKind =
   | 'cowork'
@@ -59,7 +60,12 @@ export function resolveLocalAutomationTargetRequirement(
       contexts: [],
       error: 'Choose an accessible project or chat in the automation editor.',
     };
-  return resolveAutomationTargetRequirement(type, requirement, pipeline);
+  return resolveAutomationTargetRequirement(
+    type,
+    requirement,
+    pipeline,
+    action.type === 'worktree_pipeline' ? action.target?.kind : undefined,
+  );
 }
 
 export function automationTargetMismatchMessage(
@@ -68,7 +74,7 @@ export function automationTargetMismatchMessage(
   const labels: Record<TargetContext, string> = {
     cowork: `${CHAT_LABEL} project`,
     worktree: 'Code project',
-    app_advisor: 'App Advisor',
+    app_advisor: ORCHESTRATOR_LABEL,
   };
   return `Edit this automation and choose a compatible target: ${contexts.map((context) => labels[context]).join(' or ')}.`;
 }
@@ -89,7 +95,11 @@ function targetBinding(
         action.existingBranch,
       ];
     case 'worktree_pipeline':
-      return [action.workspaceId, action.baseWorktreeId, action.repoId];
+      return [
+        automationPipelineDestinationKey(action),
+        action.baseWorktreeId,
+        action.repoId,
+      ];
     case 'worktree_session_prompt':
       return [action.workspaceId, action.worktreeId, action.chatId];
     case 'pipeline_execution_resume':

@@ -1,5 +1,9 @@
 import { useMemo, type JSX } from 'react';
-import { SearchIcon } from '../shared/SearchIcon';
+import {
+  ChoiceList,
+  ChoiceListRow,
+  SearchField,
+} from '@canopy/ui-shared/components';
 import { WorkspaceBadgeIcon } from '../shared/WorkspaceBadgeIcon';
 import { describeWorkspaceSubtitle } from '../shared/workspaceEntry';
 
@@ -40,10 +44,10 @@ function getWorkspaceOptionDisplayName(option: WorkspacePickerOption): string {
 }
 
 /**
- * Searchable multi-select list of workspaces. Renders a search box plus a
- * scrollable list of workspace rows with a badge, subtitle, and a checkbox-dot
- * indicator; clicking a row toggles its selection. Presentation only — all
- * selection state and the option list are owned by the caller.
+ * Searchable multi-select list of workspaces: the shared search field over
+ * the shared choice list, one row per workspace with its checkbox mark,
+ * badge and subtitle; clicking a row toggles its selection. Presentation
+ * only — all selection state and the option list are owned by the caller.
  */
 export function WorkspaceMultiSelectPicker({
   options,
@@ -54,7 +58,7 @@ export function WorkspaceMultiSelectPicker({
   label = 'Project',
   emptyMessage = 'No matching projects',
   testIdPrefix = 'workspace-picker',
-  listMaxHeightClassName = 'max-h-[20vh]',
+  listMaxHeightClassName = 'max-h-48',
 }: WorkspaceMultiSelectPickerProps): JSX.Element {
   const selectedWorkspaceIdSet = useMemo(
     () => new Set(selectedWorkspaceIds),
@@ -71,82 +75,62 @@ export function WorkspaceMultiSelectPicker({
   return (
     <div className="space-y-1.5">
       <span className="block text-xs fg-secondary">{label}</span>
-      <div className="flex items-center gap-2 rounded-md border bg-base px-2 py-1.5">
-        <SearchIcon />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(event) => onSearchQueryChange(event.target.value)}
-          placeholder="Search projects"
-          className="min-w-0 flex-1 bg-transparent text-s fg-primary outline-none placeholder:fg-secondary"
-          data-testid={`${testIdPrefix}-search`}
-          aria-label="Search projects"
-        />
-      </div>
-      <ul
-        className={`${listMaxHeightClassName} space-y-1 overflow-y-auto rounded-lg border bg-base p-1`}
-        data-testid={`${testIdPrefix}-list`}
-      >
-        {filteredOptions.length === 0 ? (
-          <li
-            className="px-3 py-4 text-center text-xs fg-secondary"
-            data-testid={`${testIdPrefix}-no-matches`}
-          >
-            {emptyMessage}
-          </li>
-        ) : (
-          filteredOptions.map((option) => {
-            const isSelected = selectedWorkspaceIdSet.has(option.id);
-            const subtitle = describeWorkspaceSubtitle({
-              isMultiRepo: option.isMultiRepo,
-              repoCount: option.repoCount,
-              temporary: option.temporary,
-            });
-            const optionName = getWorkspaceOptionDisplayName(option);
-            return (
-              <li key={option.id}>
-                <button
-                  type="button"
+      <SearchField
+        size="sm"
+        value={searchQuery}
+        onValueChange={onSearchQueryChange}
+        placeholder="Search projects"
+        aria-label="Search projects"
+        data-testid={`${testIdPrefix}-search`}
+      />
+      {/* The caller caps the list's height; the list scrolls inside it. */}
+      <div className={`flex flex-col ${listMaxHeightClassName}`}>
+        <ChoiceList
+          aria-label={label}
+          className="min-h-0"
+          data-testid={`${testIdPrefix}-list`}
+        >
+          {filteredOptions.length === 0 ? (
+            <p
+              className="px-3 py-4 text-center text-xs fg-secondary"
+              data-testid={`${testIdPrefix}-no-matches`}
+            >
+              {emptyMessage}
+            </p>
+          ) : (
+            filteredOptions.map((option) => {
+              const subtitle = describeWorkspaceSubtitle({
+                isMultiRepo: option.isMultiRepo,
+                repoCount: option.repoCount,
+                temporary: option.temporary,
+              });
+              const optionName = getWorkspaceOptionDisplayName(option);
+              return (
+                <ChoiceListRow
+                  key={option.id}
+                  selected={selectedWorkspaceIdSet.has(option.id)}
                   onClick={() => onToggleWorkspace(option.id)}
-                  className={`focus-ring flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition ${
-                    isSelected
-                      ? 'bg-accent-subtle fg-primary'
-                      : 'fg-primary hover:bg-secondary/40'
-                  }`}
                   data-testid={`${testIdPrefix}-option-${option.id}`}
-                  aria-pressed={isSelected}
+                  leading={
+                    <WorkspaceBadgeIcon
+                      isMultiRepo={option.isMultiRepo}
+                      temporary={option.temporary === true}
+                      color={option.color}
+                      name={optionName}
+                      repoPath={option.repoPath}
+                    />
+                  }
+                  trailing={subtitle || undefined}
                 >
-                  <WorkspaceBadgeIcon
-                    isMultiRepo={option.isMultiRepo}
-                    temporary={option.temporary === true}
-                    color={option.color}
-                    name={optionName}
-                    repoPath={option.repoPath}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-s font-medium">
+                  <span className="block truncate font-medium">
                     {optionName}
                   </span>
-                  {subtitle && (
-                    <span className="shrink-0 text-xs fg-secondary">
-                      {subtitle}
-                    </span>
-                  )}
-                  <span
-                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-3xs ${
-                      isSelected
-                        ? 'border-line-accent bg-accent fg-emphasis'
-                        : 'text-transparent'
-                    }`}
-                    aria-hidden="true"
-                  >
-                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                  </span>
-                </button>
-              </li>
-            );
-          })
-        )}
-      </ul>
+                </ChoiceListRow>
+              );
+            })
+          )}
+        </ChoiceList>
+      </div>
     </div>
   );
 }

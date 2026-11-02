@@ -1,7 +1,10 @@
 /** @jest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { LOADING_PLACEHOLDER_DELAY_MS } from '../../lib/useDelayedFlag';
+import {
+  LOADING_PLACEHOLDER_DELAY_MS,
+  SLOW_LOAD_NOTE_DELAY_MS,
+} from '../../lib/useDelayedFlag';
 import { DelayedLoadingPlaceholder } from '../DelayedLoadingPlaceholder';
 import { SettingsListSkeleton } from '../SettingsSkeletons';
 
@@ -96,5 +99,49 @@ describe('DelayedLoadingPlaceholder', () => {
     });
     expect(placeholder()).toBeNull();
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('says what is slow below the placeholder once the load runs long', () => {
+    act(() => {
+      root.render(
+        <DelayedLoadingPlaceholder slowNote="Still loading workflows…">
+          <SettingsListSkeleton />
+        </DelayedLoadingPlaceholder>,
+      );
+    });
+    const note = (): HTMLElement | null =>
+      container.querySelector<HTMLElement>('[data-testid="slow-load-note"]');
+    // The live region is there from the start, empty, so it announces once.
+    expect(note()).toBeInstanceOf(HTMLElement);
+    expect(note()?.getAttribute('role')).toBe('status');
+    expect(note()?.textContent).toBe('');
+    act(() => {
+      jest.advanceTimersByTime(SLOW_LOAD_NOTE_DELAY_MS - 1);
+    });
+    expect(note()?.textContent).toBe('');
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(note()?.textContent).toBe('Still loading workflows…');
+    expect(note()?.getAttribute('data-visible')).toBe('true');
+    // Below the skeleton, so the skeleton never moves when it appears.
+    expect(placeholder()?.lastElementChild).toBe(note());
+    expect(note()?.className).toMatch(/fg-tertiary/);
+  });
+
+  it('arms no note clock without a note', () => {
+    act(() => {
+      root.render(
+        <DelayedLoadingPlaceholder>
+          <span />
+        </DelayedLoadingPlaceholder>,
+      );
+    });
+    act(() => {
+      jest.advanceTimersByTime(SLOW_LOAD_NOTE_DELAY_MS);
+    });
+    expect(
+      container.querySelector('[data-testid="slow-load-note"]'),
+    ).toBeNull();
   });
 });

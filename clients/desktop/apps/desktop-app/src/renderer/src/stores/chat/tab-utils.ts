@@ -1,3 +1,4 @@
+import { noteChatCreatedInSession } from './created-in-session';
 // ChatTab transforms and stateful helpers shared by tab lifecycle actions.
 import type { StateCreator } from 'zustand';
 import {
@@ -17,6 +18,7 @@ import {
   type ChatInterfaceMode,
   type ChatModel,
   type ChatTabPluginSelections,
+  isTerminalBackedInterfaceMode,
   type ModelHarness,
   type PluginSelectionTombstones,
   type ThinkingLevel,
@@ -29,6 +31,7 @@ import {
   CHAT_UNIT_LABEL,
   getModelCatalogProviderLabel,
 } from '@canopy/protocol';
+import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { normalizeAgentArtifactCarryByTurn } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
@@ -37,6 +40,7 @@ import {
   readCodexSpeedRecord,
 } from '@canopy/desktop-shared/lib/codex-speed';
 import { isClaudeTerminalEligibleChatTab } from '@/lib/chat-provider';
+import { getEffectiveClaudeChatInterfaceMode } from '@/lib/claude-tui-chats';
 import { draftHasContent } from '@/lib/chat-draft-content';
 import { codexSpeedFields, retainedCodexSpeedFields } from './codex-speed';
 import type {
@@ -64,13 +68,37 @@ export function isTabAiCreditsRouted(
   );
 }
 
+/**
+ * Why a watcher message was refused by this renderer. Main delivers watcher
+ * messages straight into its chat queue; only a terminal-backed Claude chat,
+ * whose terminal lives in this window, still receives them from the renderer.
+ */
+export const WATCHER_TERMINAL_ONLY_MESSAGE =
+  'This window delivers watcher messages only to terminal chats.';
+
+/**
+ * True when the tab's turns run in the managed Claude Code terminal. Matches
+ * main's rule for handing a watcher delivery to the window presenter: a
+ * Claude-managed chat whose effective interface mode is terminal-backed.
+ */
+export function isClaudeTerminalBackedChatTab(
+  tab: Pick<ChatTab, 'interfaceMode' | 'model' | 'providerType'>,
+): boolean {
+  return (
+    isClaudeTerminalEligibleChatTab(tab) &&
+    isTerminalBackedInterfaceMode(
+      getEffectiveClaudeChatInterfaceMode(tab.interfaceMode),
+    )
+  );
+}
+
 export function clearQueuedForSetupFlag(tab: ChatTab): ChatTab {
   const nextTab = { ...tab };
   delete nextTab.queuedForSetup;
   return nextTab;
 }
 
-function isEditableChatTab(tab: ChatTab | undefined): tab is ChatTab {
+export function isEditableChatTab(tab: ChatTab | undefined): tab is ChatTab {
   return tab !== undefined && tab.kind !== 'file' && !tab.readOnly;
 }
 
@@ -239,8 +267,9 @@ export function selectMessagesForForkOrBranch(
   );
   if (userIdx < 0) return null;
 
+  // Steering and async answers fold into the running turn; only a new turn ends the cut.
   for (let i = userIdx + 1; i < source.messages.length; i++) {
-    if (source.messages[i].role === 'user') {
+    if (isUserTurnBoundary(source.messages[i])) {
       return {
         messagesToClone: source.messages.slice(0, i),
         truncated: true,
@@ -468,6 +497,9 @@ export function toQueuedDispatchOptions(
         }
       : {}),
     ...(options.agentSent ? { agentSent: options.agentSent } : {}),
+    ...(options.onDispatchStarted
+      ? { onDispatchStarted: options.onDispatchStarted }
+      : {}),
     ...(includeDispatchAcceptance && options.onDispatchAccepted
       ? { onDispatchAccepted: options.onDispatchAccepted }
       : {}),
@@ -551,6 +583,7 @@ export function createEmptyTab(options: CreateEmptyTabOptions = {}): ChatTab {
     inheritedPluginDefaultsVersion,
   } = options;
   const id = nextTabId();
+  noteChatCreatedInSession(id);
   const providerType = model
     ? (getProviderForModel(model) ?? providerTypeHint)
     : providerTypeHint;

@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { launchCopilotSelectionFixture } from './fixtures/copilot-selection.mjs';
 import { seedDeferredEchoServer } from './seeders/index.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 for (const scenario of [
   'inherit',
@@ -227,9 +228,10 @@ for (const scenario of [
       await f.connect();
       await f.driver.openSettings();
       await f.driver.openSettingsSection('experiments');
-      await f.window
-        .getByTestId('settings-managed-delegation-mode')
-        .selectOption('explicit-only');
+      await chooseSettingsOption(
+        f.window.getByTestId('settings-managed-delegation-mode'),
+        'explicit-only',
+      );
       await f.driver.closeSettings();
       await f.select();
       await f.send(

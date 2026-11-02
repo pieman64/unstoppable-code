@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { DialogModal } from '@canopy/ui-shared/components';
+import { Button, DialogModal } from '@canopy/ui-shared/components';
 
 /**
  * Confirmation before an owner takes access away from people who opened a
@@ -94,25 +94,27 @@ export function LinkSharingConfirmDialog({
         </p>
       </div>
       <div className="flex justify-end gap-2 border-t px-5 py-3">
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="compact"
           onClick={onCancel}
           disabled={busy}
           data-testid={`${p}-link-confirm-cancel`}
-          className="rounded-lg px-4 py-1.5 text-s fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40"
         >
           {CANCEL_LABEL}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="destructive"
+          size="compact"
           onClick={onConfirm}
           disabled={busy}
           data-testid={`${p}-link-confirm-action`}
           data-variant={variant}
-          className="rounded-lg bg-destructive px-4 py-1.5 text-s font-medium fg-emphasis transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? copy.busyLabel : copy.confirmLabel}
-        </button>
+        </Button>
       </div>
     </DialogModal>
   );

@@ -84,7 +84,7 @@ export function ItemMetaInfo({
       <button
         type="button"
         onClick={(e): void => e.stopPropagation()}
-        className="focus-ring rounded p-1 fg-secondary transition hover:bg-fg-primary/[0.06] hover:fg-primary"
+        className="focus-ring rounded p-1 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
         aria-label="Item details"
       >
         <InfoIcon width={12} height={12} />

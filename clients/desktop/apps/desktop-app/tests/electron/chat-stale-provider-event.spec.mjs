@@ -14,7 +14,12 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { injectChatEvent, seedWorktreeChat } from './seeders/index.mjs';
+import {
+  injectChatEvent,
+  publishTurnLifecycle,
+  seedWorktreeChat,
+  turnEventInjector,
+} from './seeders/index.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   closeFixture,
@@ -157,6 +162,13 @@ test('valid continuation revives every chat activity surface and settles consist
     );
     const tab = panelTab(window, SETTLED_CHAT_ID);
     const row = worktreeRow(window);
+    const turn = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: SETTLED_CHAT_ID,
+      turnUserMessageId: SETTLED_TURN_ID,
+    };
+    const inject = turnEventInjector(launched.electronApp, turn);
 
     await injectChatEvent(launched.electronApp, {
       projectId: WORKSPACE_ID,
@@ -169,26 +181,36 @@ test('valid continuation revives every chat activity surface and settles consist
         canopy_turn_user_message_id: SETTLED_TURN_ID,
       },
     });
-    await injectChatEvent(launched.electronApp, {
-      projectId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
-      chatId: SETTLED_CHAT_ID,
-      turnUserMessageId: SETTLED_TURN_ID,
-      data: {
-        type: 'result',
-        is_error: false,
-        result: 'Provider emitted an early terminal event',
-        canopy_turn_user_message_id: SETTLED_TURN_ID,
-      },
+    await publishTurnLifecycle(launched.electronApp, {
+      ...turn,
+      phase: 'start',
+    });
+    await inject({
+      type: 'result',
+      is_error: false,
+      result: 'Provider emitted an early terminal event',
     });
 
-    await expect(panel.getByText(/Completed/).last()).toBeVisible();
+    await expect(
+      panel
+        .locator('[data-testid="turn-timer"][data-state="completed"]')
+        .last(),
+    ).toBeVisible();
     await expect(composerIdleAction(panel)).toBeVisible();
     await expect(tab.getByLabel('Thinking')).toHaveCount(0);
 
     // A retained provider callback can continue without a turn tag after its
-    // early terminal event. This is valid only while the same turn still owns
-    // the stream, and must revive canonical runtime before renderer delivery.
+    // early terminal event. Under canonical root turns (35c6c) a revival opens
+    // its turn before its content arrives; content with no current turn is
+    // rejected, which the settled-tab test above covers.
+    const revival = {
+      ...turn,
+      turnUserMessageId: `${SETTLED_TURN_ID}-revival`,
+    };
+    await publishTurnLifecycle(launched.electronApp, {
+      ...revival,
+      phase: 'start',
+    });
     await injectChatEvent(launched.electronApp, {
       projectId: WORKSPACE_ID,
       worktreeId: WORKTREE_ID,
@@ -214,20 +236,21 @@ test('valid continuation revives every chat activity surface and settles consist
       row.getByTestId('worktree-row-classic-streaming-spinner'),
     ).toBeVisible();
 
-    await injectChatEvent(launched.electronApp, {
-      projectId: WORKSPACE_ID,
-      worktreeId: WORKTREE_ID,
-      chatId: SETTLED_CHAT_ID,
-      turnUserMessageId: SETTLED_TURN_ID,
-      data: {
-        type: 'result',
-        is_error: false,
-        result: 'Continuation completed',
-      },
+    await turnEventInjector(
+      launched.electronApp,
+      revival,
+    )({
+      type: 'result',
+      is_error: false,
+      result: 'Continuation completed',
     });
 
     await expect(panel.getByText(REVIVED_OUTPUT)).toBeVisible();
-    await expect(panel.getByText(/Completed/).last()).toBeVisible();
+    await expect(
+      panel
+        .locator('[data-testid="turn-timer"][data-state="completed"]')
+        .last(),
+    ).toBeVisible();
     await expect(composerIdleAction(panel)).toBeVisible();
     await expect(
       panel.getByRole('button', { name: 'Stop generation' }),
@@ -295,6 +318,17 @@ test('a routed Codex subagent error does not settle the root activity surfaces',
         canopy_turn_user_message_id: SETTLED_TURN_ID,
       },
     });
+    const codexTurn = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: SETTLED_CHAT_ID,
+      turnUserMessageId: SETTLED_TURN_ID,
+      providerType: 'codex',
+    };
+    await publishTurnLifecycle(launched.electronApp, {
+      ...codexTurn,
+      phase: 'start',
+    });
     await injectChatEvent(launched.electronApp, {
       projectId: WORKSPACE_ID,
       worktreeId: WORKTREE_ID,
@@ -323,12 +357,21 @@ test('a routed Codex subagent error does not settle the root activity surfaces',
       row.getByTestId('worktree-row-classic-streaming-spinner'),
     ).toBeVisible();
 
+    // The root turn's end receipt settles the canonical turn.
+    await publishTurnLifecycle(launched.electronApp, {
+      ...codexTurn,
+      phase: 'end',
+    });
     await injectCodexEvent({
       type: 'turn.completed',
       thread_id: 'thread-root',
       turn_id: 'turn-root',
     });
-    await expect(panel.getByText(/Completed/).last()).toBeVisible();
+    await expect(
+      panel
+        .locator('[data-testid="turn-timer"][data-state="completed"]')
+        .last(),
+    ).toBeVisible();
     await expect(composerIdleAction(panel)).toBeVisible();
     await expect(tab.getByLabel('Thinking')).toHaveCount(0);
     await expect(
@@ -382,7 +425,11 @@ test('a live Codex root terminal settles every chat activity surface', async () 
     await expect(
       panel.getByText(LIVE_CODEX_REPLY, { exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-    await expect(panel.getByText(/Completed/).last()).toBeVisible();
+    await expect(
+      panel
+        .locator('[data-testid="turn-timer"][data-state="completed"]')
+        .last(),
+    ).toBeVisible();
     await expect(composerIdleAction(panel)).toBeVisible();
     await expect(tab.getByLabel('Thinking')).toHaveCount(0);
     await expect(

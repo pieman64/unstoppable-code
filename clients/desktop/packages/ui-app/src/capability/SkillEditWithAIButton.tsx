@@ -1,9 +1,8 @@
 'use client';
 
 import { type JSX, useId } from 'react';
-import { ActionTooltip } from '@canopy/ui-shared/components';
+import { ActionTooltip, Button } from '@canopy/ui-shared/components';
 import { SparkleIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { SECONDARY_ACTION_BUTTON_CLASS } from '@canopy/ui-shared/lib/row-chips';
 
 /** The action's visible label (CAN-1259). */
 export const EDIT_WITH_AI_LABEL = 'Edit with AI';
@@ -34,7 +33,6 @@ export interface SkillEditWithAIButtonProps {
 }
 
 /** Matches the secondary actions it sits beside on both pages. */
-const BUTTON_CLASS = `${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5 aria-disabled:cursor-default aria-disabled:opacity-50`;
 
 /**
  * The "Edit with AI" action shared by the installed skill detail and its edit
@@ -49,8 +47,9 @@ export function SkillEditWithAIButton({
   const pending = state.available && state.pending === true;
   const inert = !state.available || pending;
   const button = (
-    <button
+    <Button
       type="button"
+      size="compact"
       onClick={() => {
         if (state.available && !pending) state.onSelect();
       }}
@@ -58,11 +57,10 @@ export function SkillEditWithAIButton({
       aria-busy={pending || undefined}
       aria-describedby={state.available ? undefined : reasonId}
       data-testid={dataTestId}
-      className={BUTTON_CLASS}
     >
       <SparkleIcon width={12} height={12} aria-hidden />
       {EDIT_WITH_AI_LABEL}
-    </button>
+    </Button>
   );
   if (state.available) return button;
   return (

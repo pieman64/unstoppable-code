@@ -5,8 +5,9 @@
  * a right-click, offer All activity (checked by default), Needs my attention,
  * and Mute. A choice is saved through the real producer sync and PATCH routes of
  * a per-test cloud server (which sees only keyed references to local ids),
- * survives a reload, and reports failed and conflicting saves. A muted space raises no popup for a finished turn while
- * its unread dot, notification history, and other spaces are unchanged.
+ * survives a reload, and reports failed and conflicting saves. A muted space raises no popup and shows no blue
+ * unread dot for a finished turn (CAN-4378), while its notification history
+ * and other spaces are unchanged.
  *
  *   pnpm run test:electron:built space-notification-settings.spec.mjs --reporter=line
  */
@@ -172,8 +173,8 @@ test('code worktree menus save, persist, and enforce a space choice', async () =
     await expectChecked(window, NOTIFY, 'notify-mute');
     await closeMenu(window);
 
-    // A finished turn in the muted space raises no popup, but its unread dot
-    // and notification history are recorded as before.
+    // A finished turn in the muted space raises no popup and no blue dot
+    // (CAN-4378), but its notification history is recorded as before.
     await app.openOverviewPage();
     await injectChatEvent(electronApp, {
       projectId: MUTED_WORKSPACE,
@@ -182,17 +183,17 @@ test('code worktree menus save, persist, and enforce a space choice', async () =
       data: { type: 'result', is_error: false, result: 'Done' },
     });
     await expect(
-      projectSection(window, MUTED_WORKSPACE).getByTestId(
-        'worktree-row-unread',
-      ),
-    ).toBeVisible({ timeout: 15_000 });
-    await expect(
       window.getByTestId('overview-notification-card').filter({
         hasText: `Answer from ${MUTED_WORKSPACE}.`,
       }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 15_000 });
     await expect(
-      window.locator('div.pointer-events-auto', {
+      projectSection(window, MUTED_WORKSPACE).getByTestId(
+        'worktree-row-unread',
+      ),
+    ).toHaveCount(0);
+    await expect(
+      window.getByTestId('toast-card').filter({
         hasText: `Answer from ${MUTED_WORKSPACE}.`,
       }),
     ).toHaveCount(0);
@@ -205,12 +206,22 @@ test('code worktree menus save, persist, and enforce a space choice', async () =
       data: { type: 'result', is_error: false, result: 'Done' },
     });
     await expect(
-      window
-        .locator('div.pointer-events-auto', {
-          hasText: `Answer from ${OTHER_WORKSPACE}.`,
-        })
-        .filter({ has: window.locator('button[aria-label="Expand"]') }),
+      window.getByTestId('toast-card').filter({
+        hasText: `Answer from ${OTHER_WORKSPACE}.`,
+      }),
     ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      projectSection(window, OTHER_WORKSPACE).getByTestId(
+        'worktree-row-unread',
+      ),
+    ).toBeVisible();
+    // Both turns have now reached the sidebar, so the muted space's missing
+    // dot is masked rather than not yet projected.
+    await expect(
+      projectSection(window, MUTED_WORKSPACE).getByTestId(
+        'worktree-row-unread',
+      ),
+    ).toHaveCount(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
     await cloud.close();

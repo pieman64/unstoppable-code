@@ -3,6 +3,7 @@ import type {
   TrackedPlanSource,
 } from '@canopy/desktop-shared/types';
 import { getModelCatalogProviderLabel } from '@canopy/protocol';
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 
 export type UiAgentProvider = AgentProviderType;
 export type UiTrackedPlanSource = TrackedPlanSource;
@@ -29,7 +30,7 @@ export function getPlanSourceLabel(source: UiTrackedPlanSource): string {
     case 'ollama':
       return getModelCatalogProviderLabel(source);
     case 'pipeline':
-      return 'Pipeline';
+      return WORKFLOW_ITEM_LABEL;
     case 'imported':
       return 'Imported';
     case 'detected':

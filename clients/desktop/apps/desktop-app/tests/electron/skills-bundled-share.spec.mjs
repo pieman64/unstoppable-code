@@ -6,10 +6,11 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 // a snapshot copy under the sharer's account.
 //
 // Testids exercised:
-//   - `skill-share-builtin:*`         -> bundled row Share action
+//   - `customize-row-skill:builtin:*` -> bundled Customize Installed row
+//   - `customize-row-menu-<id>-share` -> its ⋯ menu Share action (CAN-4267)
 //   - `cloud-sync-modal`              -> disconnected sign-in gate
 //   - `share-skill-modal`             -> Share Skill dialog
-//   - `share-skill-scope-description` -> single usable audience disclosure
+//   - `share-skill-scope-description` -> the selected audience's disclosure
 //   - `share-skill-snapshot-note`     -> bundled snapshot explanation
 test('bundled skill offers snapshot sharing', async () => {
   const { electronApp, userDataDir } = await launchCanopy();
@@ -23,9 +24,17 @@ test('bundled skill offers snapshot sharing', async () => {
     await app.openPluginsTab('skills');
     await app.expectPluginsTab('skills');
 
-    const shareButton = window
-      .locator('[data-testid^="skill-share-builtin"]')
+    const bundledRow = window
+      .getByTestId('customize-section-installed')
+      .locator('[data-testid^="customize-row-skill:builtin:"]')
       .first();
+    await expect(bundledRow).toBeVisible();
+    const menuTestId = (await bundledRow.getAttribute('data-testid')).replace(
+      /^customize-row-/,
+      'customize-row-menu-',
+    );
+    const shareButton = window.getByTestId(`${menuTestId}-share`);
+    await window.getByTestId(menuTestId).click();
     await expect(shareButton).toBeVisible();
     await shareButton.click();
 
@@ -47,16 +56,22 @@ test('bundled skill offers snapshot sharing', async () => {
       window.dispatchEvent(new Event('canopy:cloud-account-changed'));
     });
 
+    await window.getByTestId(menuTestId).click();
     await shareButton.click();
     const shareModal = window.getByTestId('share-skill-modal');
     await expect(shareModal).toBeVisible();
     // This account has no organization, so Public is the only usable
-    // audience. A single usable audience is not a choice: the pills hide and
-    // only that audience's disclosure remains.
+    // audience. The pills stay, Team and Organization disabled, with Public
+    // preselected and its disclosure underneath.
     await expect(
       shareModal.getByTestId('share-skill-scope-description'),
     ).toBeVisible();
-    await expect(shareModal.getByTestId('share-skill-scope')).toHaveCount(0);
+    await expect(
+      shareModal.getByTestId('share-skill-scope-team'),
+    ).toBeDisabled();
+    await expect(
+      shareModal.getByTestId('share-skill-scope-public'),
+    ).toHaveAttribute('aria-checked', 'true');
     await expect(window.getByTestId('share-skill-snapshot-note')).toBeVisible();
     await window
       .getByTestId('share-skill-modal')

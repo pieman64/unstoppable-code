@@ -1,3 +1,16 @@
+/* Swipe offsets are card-local. Pointer moves must not invalidate the text,
+ * buttons and other descendants of a rich toast. */
+@property --toast-swipe-x {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --toast-swipe-y {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 /*
  * Shared notification stack (`ToastStack` in @canopy/ui-shared), drawn over
  * Base UI's headless toast. Base UI publishes per-card geometry as custom
@@ -8,15 +21,21 @@
  * - While the stack is hovered or focused (`data-expanded`), every card
  *   slides to its own row with an 8px gap.
  * - Cards slide in from the stack's side of the screen and leave toward it,
- *   or toward the direction they were swiped.
+ *   or past the window edge they were swiped to.
  *
  * `--toast-dir` is the direction the stack grows: -1 (up) for the bottom
  * corners, 1 (down) for the top corners. `--toast-side` is the side of the
- * screen the stack sits against: 1 (right) or -1 (left). `--toast-wheel-x` is
- * how far a host's own trackpad swipe has carried a card (the desktop sets
- * it, with `data-wheel-swiping` while the fingers move). Motion is transform and opacity
- * only, except the clip height a card animates to when the deck spreads.
- * The shared reduced-motion rule in canopy-tokens.css removes the motion.
+ * screen the stack sits against: 1 (right) or -1 (left).
+ *
+ * Swiping (`toast-swipe.ts`) moves a card by `--toast-swipe-x` /
+ * `--toast-swipe-y`: it follows the input with no transition while
+ * `data-swipe-dragging`, then leaves (`data-swipe-flung`) or returns
+ * (`data-swipe-settling`) on a transition it times to the release speed,
+ * `--toast-swipe-ms` / `--toast-swipe-ease`.
+ *
+ * Motion is transform and opacity only, except the clip height a card
+ * animates to when the deck spreads. The shared reduced-motion rule in
+ * canopy-tokens.css removes the motion; a swiped card still follows the input.
  */
 
 .canopy-toast-viewport {
@@ -63,10 +82,8 @@
     30 - var(--toast-index)
   ); /* z-exception: context-local deck order */
   height: var(--toast-frontmost-height, var(--toast-height, auto));
-  transform: translateX(
-      calc(var(--toast-swipe-movement-x) + var(--toast-wheel-x, 0px))
-    )
-    translateY(calc(var(--toast-y) + var(--toast-swipe-movement-y)))
+  transform: translateX(var(--toast-swipe-x, 0px))
+    translateY(calc(var(--toast-y) + var(--toast-swipe-y, 0px)))
     scale(var(--toast-scale));
   transition:
     transform 400ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -112,9 +129,28 @@
   height: var(--toast-height, auto);
 }
 
-/* The card follows the fingers during a trackpad swipe: no transform lag. */
-.canopy-toast[data-wheel-swiping] {
+/* A swiped card follows the input: no transform lag. */
+.canopy-toast[data-swipe-dragging] {
   transition-duration: 0ms, 400ms, 150ms;
+}
+
+/* Back to its place, starting at the speed it was let go. */
+.canopy-toast[data-swipe-settling] {
+  transition:
+    transform var(--toast-swipe-ms) var(--toast-swipe-ease),
+    opacity 400ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 150ms ease-out;
+}
+
+/* Swiped away: on past the window edge at the speed it was let go, opaque
+ * until it is nearly there. The stack closes the toast a moment later. */
+.canopy-toast[data-swipe-flung] {
+  opacity: 0;
+  transition:
+    transform var(--toast-swipe-ms) var(--toast-swipe-ease),
+    opacity calc(var(--toast-swipe-ms) * 0.25) linear
+      calc(var(--toast-swipe-ms) * 0.75),
+    height 150ms ease-out;
 }
 
 /* In from the side, clear of the corner's inset. A card has no measured
@@ -124,11 +160,9 @@
 }
 
 /* Out to the same side, from wherever the card rests in the deck. */
-.canopy-toast[data-ending-style]:not([data-limited]):not(
-    [data-swipe-direction]
-  ) {
+.canopy-toast[data-ending-style]:not([data-limited]):not([data-swipe-flung]) {
   transform: translateX(
-      calc(var(--toast-wheel-x, 0px) + var(--toast-side) * (100% + 32px))
+      calc(var(--toast-swipe-x, 0px) + var(--toast-side) * (100% + 32px))
     )
     translateY(var(--toast-y)) scale(var(--toast-scale));
 }
@@ -137,28 +171,6 @@
 .canopy-toast[data-ending-style],
 .canopy-toast[data-limited] {
   opacity: 0;
-}
-
-.canopy-toast[data-ending-style][data-swipe-direction='down'] {
-  transform: translateY(
-    calc(var(--toast-y) + var(--toast-swipe-movement-y) + 150%)
-  );
-}
-
-.canopy-toast[data-ending-style][data-swipe-direction='up'] {
-  transform: translateY(
-    calc(var(--toast-y) + var(--toast-swipe-movement-y) - 150%)
-  );
-}
-
-.canopy-toast[data-ending-style][data-swipe-direction='left'] {
-  transform: translateX(calc(var(--toast-swipe-movement-x) - 150%))
-    translateY(var(--toast-y));
-}
-
-.canopy-toast[data-ending-style][data-swipe-direction='right'] {
-  transform: translateX(calc(var(--toast-swipe-movement-x) + 150%))
-    translateY(var(--toast-y));
 }
 
 .canopy-toast-content {

@@ -1,13 +1,10 @@
 import {
-  mergeLatestAgentArtifacts,
+  collapseAgentArtifactsByItem,
+  mergeAgentArtifactsByPrecedence,
   serializeAgentArtifactReceipts,
   type AgentArtifactReceiptV1,
 } from '@canopy/protocol/agent-artifacts';
 import type { PortalChatMessage } from '@canopy/protocol/portal';
-import {
-  isCapabilityTileReceipt,
-  type CapabilityTileReceipt,
-} from '@canopy/ui-shared/components';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -35,13 +32,15 @@ function readResultReceipts(result: unknown): AgentArtifactReceiptV1[] {
  * The capability receipts one turn produced, in transcript order. Reads only
  * the structured `agentArtifacts` metadata on folded `tool_use.data.result`
  * and standalone `tool_result.data` parts (never the truncated text output),
- * counts each tool call once when both representations are present, and
- * collapses repeat mentions of one item to its latest receipt. Pipeline and
- * GitHub workflow runs are left to their specialized desktop rows.
+ * counts each tool call once when both representations are present,
+ * collapses repeat mentions of one item to its latest receipt (a Found never
+ * replaces a Recommended), and keeps one receipt per item (run > created/updated > recommended > found), as the
+ * desktop projection does. Pipeline runs are kept for the shared run card;
+ * GitHub workflow runs stay with their desktop row.
  */
 export function collectTurnAgentArtifacts(
   messages: readonly PortalChatMessage[],
-): CapabilityTileReceipt[] {
+): readonly AgentArtifactReceiptV1[] {
   const seenToolUseIds = new Set<string>();
   let receipts: AgentArtifactReceiptV1[] = [];
   for (const message of messages) {
@@ -56,8 +55,8 @@ export function collectTurnAgentArtifacts(
         if (seenToolUseIds.has(toolUseId)) continue;
         seenToolUseIds.add(toolUseId);
       }
-      receipts = mergeLatestAgentArtifacts(receipts, incoming);
+      receipts = mergeAgentArtifactsByPrecedence(receipts, incoming);
     }
   }
-  return receipts.filter(isCapabilityTileReceipt);
+  return collapseAgentArtifactsByItem(receipts);
 }

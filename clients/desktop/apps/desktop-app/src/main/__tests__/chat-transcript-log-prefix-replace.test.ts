@@ -8,6 +8,10 @@ import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
 import { ChatTranscriptLog } from '../lib/chat-transcript-log';
 import * as cooperativeJson from '../lib/cooperative-json';
 import * as directorySync from '../lib/fsync-directory';
+import {
+  resetWorkCounters,
+  snapshotWorkCounters,
+} from '@canopy/desktop-shared/node/work-counters';
 
 const fsPromises = jest.requireActual<typeof FsPromises>('node:fs/promises');
 
@@ -197,6 +201,26 @@ describe('prefix-preserving transcript replacement', () => {
   let root: string;
   let log: ChatTranscriptLog;
   let references = 0;
+  it('measures precisely the serialized Unicode suffix, excluding the cloned prefix', async () => {
+    const rows = transcript(10);
+    await log.replace(CHAT, rows, 1);
+    const replacement = patched(rows, 8, '🌲 café');
+    const measurements: number[] = [];
+    const stop = log.observeReplacements((measurement) =>
+      measurements.push(measurement.bytesWritten),
+    );
+    await log.replace(CHAT, replacement, 2);
+    expect(measurements).toEqual([
+      Buffer.byteLength(
+        replacement
+          .slice(8)
+          .map((row) => JSON.stringify(row) + '\n')
+          .join(''),
+      ),
+    ]);
+    stop();
+  });
+
   beforeEach(async () => {
     parent = await mkdtemp(join(tmpdir(), 'chat-log-prefix-'));
     root = join(parent, 'store');
@@ -316,6 +340,38 @@ describe('prefix-preserving transcript replacement', () => {
     const after = await stat(join(root, `${CHAT}.jsonl`), { bigint: true });
     expect(after.ino).toBe(before.ino);
     expect((await log.descriptor(CHAT)).transcriptRevision).toBe(2);
+  });
+
+  it('counts the bytes of locator files written by a preserved-prefix replacement', async () => {
+    const canonicalRoot = join(
+      parent,
+      'chat-storage-v2',
+      'scope-1',
+      'transcripts',
+    );
+    const canonicalLog = new ChatTranscriptLog(canonicalRoot);
+    await canonicalLog.initialize(CHAT);
+    await canonicalLog.replace(CHAT, streamed(BASE), 1);
+    resetWorkCounters();
+    const writeFile = fsPromises.writeFile;
+    const locatorBytes: number[] = [];
+    jest
+      .spyOn(fsPromises, 'writeFile')
+      .mockImplementation(async (path, data, options) => {
+        await writeFile(path, data, options);
+        if (pathText(path).includes(join(canonicalRoot, 'message-index'))) {
+          locatorBytes.push(
+            typeof data === 'string' ? Buffer.byteLength(data, 'utf8') : 0,
+          );
+        }
+      });
+
+    await canonicalLog.replace(CHAT, streamed(patched(BASE, 610)), 2);
+
+    expect(locatorBytes.length).toBeGreaterThan(0);
+    expect(
+      snapshotWorkCounters().chatStorage['written.messageIndex.bytes'],
+    ).toBe(locatorBytes.reduce((total, bytes) => total + bytes, 0));
   });
 
   it('appends a new turn by cloning the committed prefix without rewriting its locators', async () => {

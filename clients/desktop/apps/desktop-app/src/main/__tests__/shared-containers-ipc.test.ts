@@ -1,3 +1,12 @@
+const mockRecordInviteSend = jest.fn();
+const mockRecordInviteAccept = jest.fn();
+// Wrappers: SWC hoists jest.mock above the mocks' declarations.
+jest.mock('../lib/desktop-telemetry', () => ({
+  recordInviteSendTelemetry: (...args: unknown[]): unknown =>
+    mockRecordInviteSend(...args),
+  recordInviteAcceptTelemetry: (...args: unknown[]): unknown =>
+    mockRecordInviteAccept(...args),
+}));
 import {
   IPC_CHANNELS,
   type SharedContainerAcceptedIdentity,
@@ -5,6 +14,13 @@ import {
 import { MAX_SHARED_CONTAINER_LIST_LIMIT } from '@canopy/protocol/shared-containers';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import type * as AcceptanceStore from '../shared-containers/acceptance-store';
+import type * as CanopyServerClient from '../shared-containers/canopy-server-client';
+import type * as PublicationState from '../shared-containers/publication-state';
+import type * as RunCopy from '../shared-containers/run/run-copy';
+import type * as RunEnvironmentStore from '../shared-containers/run-env-store';
+import type * as ScriptRunner from '../lib/script-runner';
+import type * as ScriptsService from '../services/scripts-service';
+import type * as WorkerTerminal from '../terminal/worker-terminal';
 
 const sendMock = jest.fn();
 jest.mock('electron', () => ({
@@ -30,7 +46,9 @@ jest.mock('../feature-flags', () => ({
   }),
 }));
 
-const isCoworkWorkspaceMock = jest.fn(() => false);
+const isCoworkWorkspaceMock = jest.fn<boolean, [projectId: string]>(
+  () => false,
+);
 jest.mock('../lib/workspace-registry', () => ({
   isCoworkWorkspace: (projectId: string): boolean =>
     isCoworkWorkspaceMock(projectId),
@@ -48,7 +66,9 @@ const addTrackedPlansWriteListenerMock = jest.fn(
   },
 );
 jest.mock('../lib/plan-persistence', () => ({
-  addTrackedPlansWriteListener: addTrackedPlansWriteListenerMock,
+  get addTrackedPlansWriteListener(): typeof addTrackedPlansWriteListenerMock {
+    return addTrackedPlansWriteListenerMock;
+  },
 }));
 
 const eligibilityMock = jest.fn<Promise<unknown>, unknown[]>();
@@ -72,7 +92,11 @@ const createMock = jest.fn<Promise<unknown>, unknown[]>();
 const membersMock = jest.fn<Promise<unknown>, unknown[]>();
 const recipientsMock = jest.fn<Promise<unknown>, unknown[]>();
 const revokeMock = jest.fn<Promise<unknown>, unknown[]>();
-const listByMeMock = jest.fn<Promise<unknown>, unknown[]>();
+// Keep historical server payloads unvalidated; request calls remain strongly typed.
+const listByMeMock = jest.fn<
+  Promise<unknown>,
+  Parameters<typeof CanopyServerClient.listSharedContainersByMe>
+>();
 const listWithMeMock = jest.fn<Promise<unknown>, unknown[]>();
 const getLinkMock = jest.fn<Promise<unknown>, unknown[]>();
 const createLinkMock = jest.fn<Promise<unknown>, unknown[]>();
@@ -101,8 +125,9 @@ jest.mock('../shared-containers/canopy-server-client', () => ({
     recipientsMock(...args),
   revokeSharedContainerGrant: (...args: unknown[]): Promise<unknown> =>
     revokeMock(...args),
-  listSharedContainersByMe: (...args: unknown[]): Promise<unknown> =>
-    listByMeMock(...args),
+  listSharedContainersByMe: (
+    ...args: Parameters<typeof CanopyServerClient.listSharedContainersByMe>
+  ): Promise<unknown> => listByMeMock(...args),
   getSharedContainerLink: (...args: unknown[]): Promise<unknown> =>
     getLinkMock(...args),
   createSharedContainerLink: (...args: unknown[]): Promise<unknown> =>
@@ -343,56 +368,115 @@ jest.mock('../shared-containers/acceptance-store', () => {
     },
   };
 });
-const readRunEnvironmentMock = jest.fn(() => Promise.resolve([]));
-const writeRunEnvironmentMock = jest.fn((_: string, values: unknown[]) =>
-  Promise.resolve(values),
-);
-const removeRunEnvironmentMock = jest.fn(() => Promise.resolve());
+const readRunEnvironmentMock = jest.fn<
+  ReturnType<typeof RunEnvironmentStore.readSharedContainerRunEnvironment>,
+  Parameters<typeof RunEnvironmentStore.readSharedContainerRunEnvironment>
+>(() => Promise.resolve([]));
+const writeRunEnvironmentMock = jest.fn<
+  ReturnType<typeof RunEnvironmentStore.writeSharedContainerRunEnvironment>,
+  Parameters<typeof RunEnvironmentStore.writeSharedContainerRunEnvironment>
+>((containerId, values) => {
+  void containerId;
+  return Promise.resolve(values);
+});
+const removeRunEnvironmentMock = jest.fn<
+  ReturnType<typeof RunEnvironmentStore.removeSharedContainerRunEnvironment>,
+  Parameters<typeof RunEnvironmentStore.removeSharedContainerRunEnvironment>
+>(() => Promise.resolve());
 jest.mock('../shared-containers/run-env-store', () => ({
-  readSharedContainerRunEnvironment: (...args: unknown[]): Promise<unknown> =>
+  readSharedContainerRunEnvironment: (
+    ...args: Parameters<
+      typeof RunEnvironmentStore.readSharedContainerRunEnvironment
+    >
+  ): ReturnType<typeof RunEnvironmentStore.readSharedContainerRunEnvironment> =>
     readRunEnvironmentMock(...args),
   writeSharedContainerRunEnvironment: (
-    ...args: [string, unknown[]]
-  ): Promise<unknown> => writeRunEnvironmentMock(...args),
-  removeSharedContainerRunEnvironment: (...args: unknown[]): Promise<unknown> =>
-    removeRunEnvironmentMock(...args),
+    ...args: Parameters<
+      typeof RunEnvironmentStore.writeSharedContainerRunEnvironment
+    >
+  ): ReturnType<
+    typeof RunEnvironmentStore.writeSharedContainerRunEnvironment
+  > => writeRunEnvironmentMock(...args),
+  removeSharedContainerRunEnvironment: (
+    ...args: Parameters<
+      typeof RunEnvironmentStore.removeSharedContainerRunEnvironment
+    >
+  ): ReturnType<
+    typeof RunEnvironmentStore.removeSharedContainerRunEnvironment
+  > => removeRunEnvironmentMock(...args),
 }));
-const refreshRunCopyMock = jest.fn(() => Promise.resolve('/run'));
-const measureRunCopyMock = jest.fn(() => Promise.resolve(BigInt(0)));
-const runCopyStateMock = jest.fn(() =>
-  Promise.resolve({ state: 'missing' as const }),
-);
+const refreshRunCopyMock = jest.fn<
+  ReturnType<typeof RunCopy.refreshSharedContainerRunCopy>,
+  Parameters<typeof RunCopy.refreshSharedContainerRunCopy>
+>(() => Promise.resolve('/run'));
+const measureRunCopyMock = jest.fn<
+  ReturnType<typeof RunCopy.measureSharedContainerRunCopyBytes>,
+  Parameters<typeof RunCopy.measureSharedContainerRunCopyBytes>
+>(() => Promise.resolve(BigInt(0)));
+const runCopyStateMock = jest.fn<
+  ReturnType<typeof RunCopy.getSharedContainerRunCopyState>,
+  Parameters<typeof RunCopy.getSharedContainerRunCopyState>
+>(() => Promise.resolve({ state: 'missing' }));
 jest.mock('../shared-containers/run/run-copy', () => ({
-  refreshSharedContainerRunCopy: (...args: unknown[]): Promise<unknown> =>
+  refreshSharedContainerRunCopy: (
+    ...args: Parameters<typeof RunCopy.refreshSharedContainerRunCopy>
+  ): ReturnType<typeof RunCopy.refreshSharedContainerRunCopy> =>
     refreshRunCopyMock(...args),
-  measureSharedContainerRunCopyBytes: (...args: unknown[]): Promise<bigint> =>
+  measureSharedContainerRunCopyBytes: (
+    ...args: Parameters<typeof RunCopy.measureSharedContainerRunCopyBytes>
+  ): ReturnType<typeof RunCopy.measureSharedContainerRunCopyBytes> =>
     measureRunCopyMock(...args),
-  getSharedContainerRunCopyState: (...args: unknown[]): Promise<unknown> =>
+  getSharedContainerRunCopyState: (
+    ...args: Parameters<typeof RunCopy.getSharedContainerRunCopyState>
+  ): ReturnType<typeof RunCopy.getSharedContainerRunCopyState> =>
     runCopyStateMock(...args),
 }));
-const stopWorktreeScriptsMock = jest.fn(() => Promise.resolve());
+const stopWorktreeScriptsMock = jest.fn<
+  ReturnType<typeof ScriptsService.stopWorktreeScripts>,
+  Parameters<typeof ScriptsService.stopWorktreeScripts>
+>(() => Promise.resolve());
 jest.mock('../services/scripts-service', () => ({
-  stopWorktreeScripts: (...args: unknown[]): Promise<void> =>
+  stopWorktreeScripts: (
+    ...args: Parameters<typeof ScriptsService.stopWorktreeScripts>
+  ): ReturnType<typeof ScriptsService.stopWorktreeScripts> =>
     stopWorktreeScriptsMock(...args),
 }));
-const hasWorktreeTerminalsMock = jest.fn(() => false);
-const killWorktreeTerminalsMock = jest.fn();
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
-    hasWorktreeTerminals: (...args: unknown[]): boolean =>
+const hasWorktreeTerminalsMock = jest.fn<
+  ReturnType<typeof WorkerTerminal.workerTerminal.hasLiveTerminals>,
+  Parameters<typeof WorkerTerminal.workerTerminal.hasLiveTerminals>
+>(() => false);
+const killWorktreeTerminalsMock = jest.fn<
+  ReturnType<typeof WorkerTerminal.workerTerminal.killWorktree>,
+  Parameters<typeof WorkerTerminal.workerTerminal.killWorktree>
+>();
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    hasLiveTerminals: (
+      ...args: Parameters<typeof WorkerTerminal.workerTerminal.hasLiveTerminals>
+    ): ReturnType<typeof WorkerTerminal.workerTerminal.hasLiveTerminals> =>
       hasWorktreeTerminalsMock(...args),
-    killWorktreeTerminals: (...args: unknown[]): void => {
+    killWorktree: (
+      ...args: Parameters<typeof WorkerTerminal.workerTerminal.killWorktree>
+    ): ReturnType<typeof WorkerTerminal.workerTerminal.killWorktree> => {
       killWorktreeTerminalsMock(...args);
     },
   },
 }));
-const trackedRunScriptsMock = jest.fn(() => []);
+const trackedRunScriptsMock = jest.fn<
+  ReturnType<typeof ScriptRunner.listTrackedShellScriptsForWorktree>,
+  Parameters<typeof ScriptRunner.listTrackedShellScriptsForWorktree>
+>(() => []);
 jest.mock('../lib/script-runner', () => ({
-  listTrackedShellScriptsForWorktree: (...args: unknown[]): unknown[] =>
+  listTrackedShellScriptsForWorktree: (
+    ...args: Parameters<typeof ScriptRunner.listTrackedShellScriptsForWorktree>
+  ): ReturnType<typeof ScriptRunner.listTrackedShellScriptsForWorktree> =>
     trackedRunScriptsMock(...args),
 }));
 const markNotPublishedMock = jest.fn<unknown, unknown[]>();
-const rehydratePublicationStateMock = jest.fn(() => Promise.resolve([]));
+const rehydratePublicationStateMock = jest.fn<
+  Promise<PublicationState.SharedContainerPublicationRecord[]>,
+  []
+>(() => Promise.resolve([]));
 jest.mock('../shared-containers/publication-state', () => ({
   getSharedContainerPublicationStateStore: (): {
     markNotPublished: typeof markNotPublishedMock;
@@ -442,6 +526,19 @@ jest.mock('../shared-containers/fork', () => ({
   forkSharedContainer: (...args: unknown[]): Promise<unknown> =>
     forkSharedContainerMock(...args),
 }));
+// CAN-4655: only a fork installs a capability package. Viewing, accepting and
+// opening must never reach the installer.
+const installForkCapabilityPackageMock = jest.fn<
+  Promise<string[]>,
+  unknown[]
+>();
+const recoverForkCapabilityInstallsMock = jest.fn(() => Promise.resolve());
+jest.mock('../shared-containers/capability-package/install', () => ({
+  installForkCapabilityPackage: (...args: unknown[]): Promise<string[]> =>
+    installForkCapabilityPackageMock(...args),
+  recoverForkCapabilityInstalls: (): Promise<void> =>
+    recoverForkCapabilityInstallsMock(),
+}));
 
 import {
   classifySharedContainerError,
@@ -452,6 +549,7 @@ import {
   resetSharedContainerListingUnavailableDedupe,
 } from '../shared-containers/listing-diagnostics';
 
+import { SharedContainerForkError } from '../shared-containers/fork/destination';
 describe('shared-container IPC handlers', () => {
   const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
     process,
@@ -677,7 +775,7 @@ describe('shared-container IPC handlers', () => {
   it('hands recoverable persisted publications to the scheduler after rehydration', async () => {
     await Promise.resolve();
     recoverPublicationMock.mockClear();
-    const restored = [
+    const restored: PublicationState.SharedContainerPublicationRecord[] = [
       {
         projectId: 'project-1',
         worktreeId: 'worktree-1',
@@ -697,6 +795,21 @@ describe('shared-container IPC handlers', () => {
     await Promise.resolve();
 
     expect(recoverPublicationMock).toHaveBeenCalledWith(restored);
+  });
+
+  it('finishes or undoes interrupted fork capability installs at startup', async () => {
+    recoverForkCapabilityInstallsMock.mockClear();
+
+    registerSharedContainerHandlers();
+
+    for (
+      let attempt = 0;
+      attempt < 50 && recoverForkCapabilityInstallsMock.mock.calls.length === 0;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(recoverForkCapabilityInstallsMock).toHaveBeenCalledTimes(1);
   });
 
   it('records a worktree-scoped diagnostic when share preview fails', async () => {
@@ -818,6 +931,7 @@ describe('shared-container IPC handlers', () => {
       false,
       undefined,
     );
+    expect(installForkCapabilityPackageMock).not.toHaveBeenCalled();
   });
 
   // A viewer close can land after a later open of the same share. Open, retry
@@ -995,10 +1109,10 @@ describe('shared-container IPC handlers', () => {
         { containerId: 'container-1', viewerSessionId: 'session-1' },
       );
 
-      expect(killWorktreeTerminalsMock).toHaveBeenCalledWith(
-        'shared-container-viewer',
-        'container-1',
-      );
+      expect(killWorktreeTerminalsMock).toHaveBeenCalledWith({
+        projectId: 'shared-container-viewer',
+        worktreeId: 'container-1',
+      });
       expect(stopWorktreeScriptsMock).toHaveBeenCalledWith({
         projectId: 'shared-container-viewer',
         worktreeId: 'container-1',
@@ -1059,7 +1173,11 @@ describe('shared-container IPC handlers', () => {
     } as const;
     await expect(
       handlers.get(IPC_CHANNELS.sharedContainersFork)?.({}, request),
-    ).rejects.toThrow('has not been accepted');
+    ).resolves.toEqual({
+      ok: false,
+      code: 'source-unavailable',
+      message: 'Accept the share before making a copy.',
+    });
     expect(forkSharedContainerMock).not.toHaveBeenCalled();
 
     acceptedContainerIds.add('container-1');
@@ -1080,7 +1198,160 @@ describe('shared-container IPC handlers', () => {
           destination: { kind: 'existing-workspace', workspaceId: '../bad' },
         },
       ),
-    ).rejects.toThrow('Invalid workspaceId');
+    ).resolves.toMatchObject({ ok: false, code: 'invalid-destination' });
+  });
+
+  it.each([
+    { kind: 'new-workspace' },
+    { kind: 'new-workspace', owner: null },
+    { kind: 'new-workspace', owner: { kind: 'organization' } },
+    {
+      kind: 'new-workspace',
+      owner: { kind: 'organization', organizationId: 'not-a-uuid' },
+    },
+    {
+      kind: 'new-workspace',
+      owner: { kind: 'personal', organizationId: 'forged' },
+    },
+    {
+      kind: 'new-workspace',
+      owner: { kind: 'personal' },
+      parentDirectory: '../relative',
+    },
+    {
+      kind: 'existing-workspace',
+      workspaceId: 'workspace-1',
+      owner: { kind: 'personal' },
+    },
+  ])(
+    'returns a typed refusal for malformed fork destination %j',
+    async (destination) => {
+      acceptedContainerIds.add('container-1');
+      await expect(
+        handlers.get(IPC_CHANNELS.sharedContainersFork)?.(
+          {},
+          {
+            containerId: 'container-1',
+            revisionId: 'revision-1',
+            sourceOwnerDisplayName: 'Ada',
+            destination,
+          },
+        ),
+      ).resolves.toMatchObject({ ok: false, code: 'invalid-destination' });
+      expect(forkSharedContainerMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('normalizes and forwards an explicit organization owner', async () => {
+    acceptedContainerIds.add('container-1');
+    const organizationId = '11111111-AAAA-4111-8111-111111111111';
+    await handlers.get(IPC_CHANNELS.sharedContainersFork)?.(
+      {},
+      {
+        containerId: 'container-1',
+        revisionId: 'revision-1',
+        sourceOwnerDisplayName: 'Ada',
+        destination: {
+          kind: 'new-workspace',
+          owner: { kind: 'organization', organizationId },
+        },
+      },
+    );
+    expect(forkSharedContainerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: {
+          kind: 'new-workspace',
+          owner: {
+            kind: 'organization',
+            organizationId: organizationId.toLowerCase(),
+          },
+        },
+      }),
+    );
+  });
+
+  it('preserves the anchored revision in the fork IPC result', async () => {
+    acceptedContainerIds.add('container-1');
+    const result = {
+      containerType: 'COWORK_WORK_ENTRY',
+      projectId: 'workspace-1',
+      worktreeId: 'entry-1',
+      warnings: [],
+      provenance: {
+        sourceContainerId: 'container-1',
+        sourceRevisionId: 'revision-2',
+        sourceOwnerDisplayName: 'Ada',
+        sourceRevisionCreatedAt: '2026-09-02T10:30:00.000Z',
+        forkedAt: '2026-10-23T12:00:00.000Z',
+      },
+    };
+    forkSharedContainerMock.mockResolvedValueOnce(result);
+    const received = await handlers.get(IPC_CHANNELS.sharedContainersFork)?.(
+      {},
+      {
+        containerId: 'container-1',
+        revisionId: 'revision-2',
+        sourceOwnerDisplayName: 'Ada',
+        destination: { kind: 'new-workspace', owner: { kind: 'personal' } },
+      },
+    );
+    expect(JSON.parse(JSON.stringify(received))).toEqual(result);
+  });
+
+  it.each(['source-unavailable', 'organization-creation-unavailable'] as const)(
+    'keeps the stable backend refusal code %s in the IPC response',
+    async (code) => {
+      acceptedContainerIds.add('container-1');
+      forkSharedContainerMock.mockRejectedValueOnce(
+        new SharedContainerForkError(
+          code,
+          "You can't create projects in the organization right now, so the copy wasn't made.",
+        ),
+      );
+      await expect(
+        handlers.get(IPC_CHANNELS.sharedContainersFork)?.(
+          {},
+          {
+            containerId: 'container-1',
+            revisionId: 'revision-1',
+            sourceOwnerDisplayName: 'Ada',
+            destination: { kind: 'new-workspace', owner: { kind: 'personal' } },
+          },
+        ),
+      ).resolves.toEqual({
+        ok: false,
+        code,
+        message:
+          "You can't create projects in the organization right now, so the copy wasn't made.",
+      });
+    },
+  );
+
+  it('forwards only a well-formed disclosed package digest to the fork', async () => {
+    acceptedContainerIds.add('container-1');
+    forkSharedContainerMock.mockResolvedValue({ projectId: 'workspace-1' });
+    const request = {
+      containerId: 'container-1',
+      revisionId: 'revision-1',
+      sourceOwnerDisplayName: 'Ada',
+      destination: { kind: 'new-workspace', owner: { kind: 'personal' } },
+    } as const;
+    await expect(
+      handlers.get(IPC_CHANNELS.sharedContainersFork)?.(
+        {},
+        { ...request, expectedPackageDigest: 'latest' },
+      ),
+    ).rejects.toThrow('Invalid fork expectedPackageDigest');
+    expect(forkSharedContainerMock).not.toHaveBeenCalled();
+
+    const digest = `pp:v1:${'A'.repeat(43)}`;
+    await handlers.get(IPC_CHANNELS.sharedContainersFork)?.(
+      {},
+      { ...request, expectedPackageDigest: digest },
+    );
+    expect(forkSharedContainerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedPackageDigest: digest }),
+    );
   });
 
   it('validates provenance reads before resolving local paths', async () => {
@@ -1912,6 +2183,53 @@ describe('shared-container IPC handlers', () => {
     ).rejects.toThrow('containerType does not match project type');
     expect(eligibilityMock).not.toHaveBeenCalled();
   });
+
+  it.each(['telemetry-throws', 'publication-fails'] as const)(
+    'keeps confirmed grant telemetry independent of %s',
+    async (mode) => {
+      eligibilityMock.mockResolvedValue({
+        eligible: true,
+        serverWorktreeExternalId: 'server-worktree-1',
+      });
+      createMock.mockResolvedValue({
+        container: { id: 'container-1' },
+        grant: { id: 'grant-1' },
+      });
+      if (mode === 'telemetry-throws')
+        mockRecordInviteSend.mockImplementationOnce(() => {
+          throw new Error('telemetry');
+        });
+      else
+        markNotPublishedMock.mockImplementationOnce(() =>
+          Promise.reject(new Error('publication')),
+        );
+      const result = handlers.get(IPC_CHANNELS.sharedContainersInvite)?.(
+        {},
+        {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          organizationId: 'org-1',
+          recipient: { kind: 'member', userId: 'user-1' },
+          containerType: 'CODE_WORKTREE',
+          audience: 'team',
+          capabilities: ['VIEW'],
+        },
+      );
+      if (mode === 'telemetry-throws')
+        await expect(result).resolves.toMatchObject({ invited: true });
+      else await expect(result).rejects.toThrow('publication');
+      expect(mockRecordInviteSend).toHaveBeenCalledTimes(1);
+      expect(mockRecordInviteSend).toHaveBeenCalledWith({
+        inviteType: 'teammate_share',
+        inviteId: 'container-1',
+        grantId: 'grant-1',
+        recipientKind: 'member',
+        sendSurface: 'share_dialog',
+        shareAudience: 'team',
+        containerType: 'WORKTREE',
+      });
+    },
+  );
 
   it('creates an anchored grant and reports not-published', async () => {
     eligibilityMock.mockResolvedValue({

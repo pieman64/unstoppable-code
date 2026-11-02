@@ -10,6 +10,8 @@ import {
   LedgerSequenceSchema,
   LedgerTitleSchema,
   LedgerUuidSchema,
+  isLedgerGlobalContainer,
+  ledgerGlobalOwnerKey,
   toLedgerEntrySearchItem,
   type LedgerActorRef,
   type LedgerChangesListResult,
@@ -43,6 +45,7 @@ import {
 import {
   canPurgeLedgerScope,
   canRebindLedgerScope,
+  hasLedgerContainerLifecycle,
   isLedgerScopeWritable,
   ledgerScopeLifecycleRejection,
   ledgerScopeLifecycleStep,
@@ -67,14 +70,18 @@ import {
 } from './records';
 import {
   assertSameLedgerActorRegistration,
+  ledgerGlobalAccountKey,
   parseLedgerActorRegistration,
   parseLedgerContainerColumns,
+  parseLedgerGlobalScopeBinding,
+  parseLedgerGlobalScopeKey,
   parseLedgerIdInput,
   parseLedgerScopeBinding,
-  parseLedgerScopeIdentity,
   parseLedgerScopeLifecycleChange,
   parseLedgerScopeRebinding,
+  parseLedgerScopeIdentity,
   type LedgerActorRegistration,
+  type LedgerGlobalScopeKey,
   type LedgerScopeBinding,
   type LedgerScopeIdentity,
 } from './registrations';
@@ -130,8 +137,10 @@ import type {
   LedgerAcknowledgeOutboxInput,
   LedgerActorRecord,
   LedgerAddEntryInput,
+  LedgerBindGlobalScopeInput,
   LedgerBindScopeInput,
   LedgerBindScopeResult,
+  LedgerFindGlobalScopeInput,
   LedgerFindScopeInput,
   LedgerGetEntryInput,
   LedgerListChangesInput,
@@ -252,6 +261,16 @@ function assertScopeWritable(scope: LedgerScopeState): void {
   }
 }
 
+/**
+ * A global scope has no container lifecycle (see `lifecycle.ts`): every
+ * lifecycle command for it fails `FORBIDDEN` on `container.kind`.
+ */
+function assertContainerLifecycle(scope: LedgerScopeState): void {
+  if (!hasLedgerContainerLifecycle(scope.record.scope.container)) {
+    throw new LedgerStoreError('FORBIDDEN', { field: 'container.kind' });
+  }
+}
+
 /** A refused lifecycle move; see `ledgerScopeLifecycleRejection`. */
 function lifecycleRejection(from: LedgerScopeLifecycleState): LedgerStoreError {
   const reason = ledgerScopeLifecycleRejection(from);
@@ -365,7 +384,7 @@ function sourceAvailability(
  * The local Agent Ledger store: one exclusive, single-writer `node:sqlite`
  * connection.
  *
- * Every command (`bindScope`, `registerActor`, `addEntry`, `updateEntry`,
+ * Every command (`bindScope`, `bindGlobalScope`, `registerActor`, `addEntry`, `updateEntry`,
  * `publishSummary`, and the lifecycle commands `setScopeLifecycle`,
  * `rebindScope` and `purgeScope`) runs in exactly one `BEGIN IMMEDIATE`
  * transaction and commits before it returns; any failure rolls the whole
@@ -487,7 +506,8 @@ export class LedgerRepository {
    * a reused container ID with a different creation time gets a new ledger.
    * The account is recorded only when the ledger is minted and is never
    * rebound here. Binding an existing ledger under another authority fails
-   * `FORBIDDEN`.
+   * `FORBIDDEN`. A global container fails `INVALID_INPUT` on
+   * `container.kind`: only `bindGlobalScope` binds one.
    */
   bindScope(input: LedgerBindScopeInput): LedgerBindScopeResult {
     return this.command('bindScope', (): LedgerBindScopeResult => {
@@ -503,13 +523,59 @@ export class LedgerRepository {
     });
   }
 
-  /** Looks up a container incarnation's ledger without minting one. */
+  /**
+   * Looks up a container incarnation's ledger without minting one. A global
+   * Ledger is found here by the incarnation its binding minted.
+   */
   findScope(input: LedgerFindScopeInput): LedgerScopeRecord | null {
     return this.query(
       (): LedgerScopeRecord | null =>
         this.selectScopeByIdentity(
           parseLedgerScopeIdentity(input.container, input.containerCreatedAt),
         )?.record ?? null,
+    );
+  }
+
+  /**
+   * Returns the global Ledger of one owner for one account (null: signed
+   * out), minting it on first use. The binding, not the container, is the
+   * identity: each account, and signed-out use, gets its own Ledger of each
+   * owner, so two accounts never share one. A new Ledger's container creation
+   * time is minted from the clock and moved forward a millisecond at a time
+   * past any incarnation of the owner's container that already has it, so a
+   * repeated or regressed clock still mints a new incarnation. The lookup,
+   * the scope, its registration event and the binding commit together.
+   * Binding an existing ledger under another authority fails `FORBIDDEN`.
+   */
+  bindGlobalScope(input: LedgerBindGlobalScopeInput): LedgerBindScopeResult {
+    return this.command('bindGlobalScope', (): LedgerBindScopeResult => {
+      const binding = parseLedgerGlobalScopeBinding(input);
+      const existing = this.selectGlobalScope(binding);
+      if (existing !== null) {
+        if (existing.record.scope.authorityId !== binding.authorityId) {
+          throw new LedgerStoreError('FORBIDDEN', { field: 'authorityId' });
+        }
+        return { scope: existing.record, created: false };
+      }
+      const scope = this.insertScope({
+        ...binding,
+        containerCreatedAt: this.mintIncarnation(binding.columns),
+      });
+      this.prepare(LEDGER_SQL.insertGlobalBinding).run(
+        binding.ownerKey,
+        binding.accountKey,
+        scope.scope.ledgerId,
+      );
+      return { scope, created: true };
+    });
+  }
+
+  /** Looks up one owner's global Ledger for one account without minting one. */
+  findGlobalScope(input: LedgerFindGlobalScopeInput): LedgerScopeRecord | null {
+    return this.query(
+      (): LedgerScopeRecord | null =>
+        this.selectGlobalScope(parseLedgerGlobalScopeKey(input))?.record ??
+        null,
     );
   }
 
@@ -520,7 +586,11 @@ export class LedgerRepository {
     );
   }
 
-  /** Every scope, in the order the scopes were minted. */
+  /**
+   * Every scope, in the order the scopes were minted, global ones included:
+   * callers that follow container lifecycles skip those whose container has
+   * none (`hasLedgerContainerLifecycle`).
+   */
   listScopes(): LedgerScopeRecord[] {
     return this.query((): LedgerScopeRecord[] =>
       this.prepare(LEDGER_SQL.listScopes)
@@ -532,7 +602,9 @@ export class LedgerRepository {
   /**
    * The scopes bound to any incarnation of one container, in the order the
    * scopes were minted. A scope rebound to a restored container is listed
-   * under that container, no longer under the one it was minted for.
+   * under that container, no longer under the one it was minted for. For a
+   * global container these are every account's global Ledger of that owner,
+   * bound or not.
    */
   findContainerScopes(container: LedgerContainer): LedgerScopeRecord[] {
     return this.query((): LedgerScopeRecord[] => {
@@ -548,12 +620,14 @@ export class LedgerRepository {
    * `active` again, or `retirement_pending`. Requesting the current state
    * changes nothing. Archive and restore append a replication event;
    * retirement does not. Fails, changing nothing, with `NOT_FOUND` for an
-   * unknown scope and `SCOPE_RETIRED` for a move out of `retirement_pending`.
+   * unknown scope, `SCOPE_RETIRED` for a move out of `retirement_pending`,
+   * and `FORBIDDEN` on `container.kind` for any request about a global scope.
    */
   setScopeLifecycle(input: LedgerSetScopeLifecycleInput): LedgerScopeRecord {
     return this.command('setScopeLifecycle', (): LedgerScopeRecord => {
       const change = parseLedgerScopeLifecycleChange(input);
       const scope = this.requireScope(change.ledgerId);
+      assertContainerLifecycle(scope);
       const from = scope.record.lifecycleState;
       switch (ledgerScopeLifecycleStep(from, change.state)) {
         case 'unchanged':
@@ -581,12 +655,14 @@ export class LedgerRepository {
    * Fails, changing nothing, with `NOT_FOUND` for an unknown scope,
    * `INVALID_INPUT` for another container kind, `SCOPE_RETIRED` for a
    * retiring scope, and `FORBIDDEN` for an active scope or for an incarnation
-   * that already has a ledger of its own.
+   * that already has a ledger of its own. A global scope is never moved: it
+   * fails `FORBIDDEN` on `container.kind`.
    */
   rebindScope(input: LedgerRebindScopeInput): LedgerScopeRecord {
     return this.command('rebindScope', (): LedgerScopeRecord => {
       const rebinding = parseLedgerScopeRebinding(input);
       const scope = this.requireScope(rebinding.ledgerId);
+      assertContainerLifecycle(scope);
       const from = scope.record.lifecycleState;
       const occupant = this.selectScopeByIdentity(rebinding);
       if (
@@ -620,12 +696,15 @@ export class LedgerRepository {
    * search rows, entry versions, mutations, receipts, entries, outbox events,
    * actors and the scope itself. Returns `purged: false` for an unknown scope.
    * A live scope fails `FORBIDDEN`, changing nothing: it must be retired
-   * first. Nothing drains the outbox yet, so unsent events go with the scope.
+   * first. A global scope is never retired, so it always fails `FORBIDDEN`,
+   * on `container.kind`. Nothing drains the outbox yet, so unsent events go
+   * with the scope.
    */
   purgeScope(ledgerId: string): LedgerPurgeScopeResult {
     return this.command('purgeScope', (): LedgerPurgeScopeResult => {
       const scope = this.selectScope(parseLedgerIdInput(ledgerId));
       if (scope === null) return { purged: false };
+      assertContainerLifecycle(scope);
       const from = scope.record.lifecycleState;
       if (!canPurgeLedgerScope(from)) throw lifecycleRejection(from);
       for (const sql of LEDGER_PURGE_SCOPE_SQL) {
@@ -772,10 +851,24 @@ export class LedgerRepository {
    * server-confirmed merge of a guest account calls it; nothing else ever
    * changes the account a scope syncs to. Events already written still name
    * the account they were written under.
+   *
+   * Global bindings move with their account, in the same transaction. Where
+   * the destination already has a global Ledger of the same owner, that one
+   * keeps receiving new entries and only the guest's redundant binding is
+   * removed: the guest's Ledger keeps its entries, actors, receipts and
+   * outbox, addressed by its ledger ID. Signed-out use has no account, so a
+   * merge never moves it (LD02).
    */
   rebindAccount(input: LedgerRebindAccountInput): LedgerRebindAccountResult {
     return this.command('rebindAccount', (): LedgerRebindAccountResult => {
       const rebinding = parseRebindAccountInput(input);
+      const fromKey = ledgerGlobalAccountKey(rebinding.fromAccountId);
+      const toKey = ledgerGlobalAccountKey(rebinding.toAccountId);
+      this.prepare(LEDGER_SQL.deleteRedundantGlobalBindings).run(
+        fromKey,
+        toKey,
+      );
+      this.prepare(LEDGER_SQL.rebindGlobalBindings).run(toKey, fromKey);
       const result = this.prepare(LEDGER_SQL.rebindAccount).run(
         rebinding.toAccountId,
         rebinding.fromAccountId,
@@ -1210,7 +1303,7 @@ export class LedgerRepository {
   }
 
   private selectScopeByIdentity(
-    identity: LedgerScopeIdentity,
+    identity: Pick<LedgerScopeIdentity, 'columns' | 'containerCreatedAt'>,
   ): LedgerScopeState | null {
     const row = this.prepare(LEDGER_SQL.selectScopeByContainer).get(
       identity.columns.kind,
@@ -1219,6 +1312,48 @@ export class LedgerRepository {
       identity.containerCreatedAt,
     );
     return row === undefined ? null : scopeFromRow(row);
+  }
+
+  /**
+   * The scope a global binding names. A binding that names anything but a
+   * global container of its own owner is a storage fault.
+   */
+  private selectGlobalScope(
+    key: LedgerGlobalScopeKey,
+  ): LedgerScopeState | null {
+    const row = this.prepare(LEDGER_SQL.selectGlobalScope).get(
+      key.ownerKey,
+      key.accountKey,
+    );
+    if (row === undefined) return null;
+    const scope = scopeFromRow(row);
+    const container = scope.record.scope.container;
+    if (
+      !isLedgerGlobalContainer(container) ||
+      ledgerGlobalOwnerKey(container.owner) !== key.ownerKey
+    ) {
+      throw new LedgerStoreError('STORAGE_UNAVAILABLE', {
+        diagnosticCode: 'malformed_global_binding',
+      });
+    }
+    return scope;
+  }
+
+  /**
+   * A creation time no incarnation of the container has yet: now, or the
+   * first millisecond after it that is free when the clock repeated or went
+   * back.
+   */
+  private mintIncarnation(columns: LedgerScopeIdentity['columns']): string {
+    let instantMs = this.now().getTime();
+    let containerCreatedAt = toLedgerTimestamp(new Date(instantMs));
+    while (
+      this.selectScopeByIdentity({ columns, containerCreatedAt }) !== null
+    ) {
+      instantMs += 1;
+      containerCreatedAt = toLedgerTimestamp(new Date(instantMs));
+    }
+    return containerCreatedAt;
   }
 
   private requireScope(ledgerId: string): LedgerScopeState {
@@ -1666,6 +1801,13 @@ export class LedgerRepository {
     draft: LedgerEntryDraft,
   ): void {
     throwIfViolation(checkLedgerCreation(draft));
+    // A global Ledger has no worktree for a file to be relative to.
+    if (
+      isLedgerGlobalContainer(scope.record.scope.container) &&
+      draft.referenceFiles.length > 0
+    ) {
+      throw new LedgerStoreError('INVALID_INPUT', { field: 'referenceFiles' });
+    }
     if (draft.origin.ledgerId !== scope.ledgerId) {
       throw new LedgerStoreError('INVALID_INPUT', { field: 'origin.ledgerId' });
     }

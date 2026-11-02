@@ -9,12 +9,49 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { CanopyApi, UpdateState } from '@canopy/desktop-shared/types';
 import { useUpdateState } from '@/hooks/useUpdateState';
+import { makeTestPreferences } from '@/test-utils/preferences';
 import { CanopyTab } from '../CanopyTab';
 
-const installUpdateMock = jest.fn().mockResolvedValue(undefined);
-const scheduleUpdateMock = jest.fn().mockResolvedValue(undefined);
-const cancelScheduledUpdateMock = jest.fn().mockResolvedValue(undefined);
+type TargetUpdateApiDouble = Pick<
+  CanopyApi,
+  'loadGitHubPat' | 'onPreferencesSynced' | 'loadPreferences'
+> & {
+  cli: Pick<CanopyApi['cli'], 'getStatus'>;
+  update: Pick<
+    CanopyApi['update'],
+    | 'listVersions'
+    | 'checkForVersion'
+    | 'checkForUpdates'
+    | 'installUpdate'
+    | 'scheduleUpdate'
+    | 'cancelScheduledUpdate'
+  >;
+};
 
+const installUpdateMock = jest
+  .fn<
+    ReturnType<CanopyApi['update']['installUpdate']>,
+    Parameters<CanopyApi['update']['installUpdate']>
+  >()
+  .mockResolvedValue(undefined);
+const scheduleUpdateMock = jest
+  .fn<
+    ReturnType<NonNullable<CanopyApi['update']['scheduleUpdate']>>,
+    Parameters<NonNullable<CanopyApi['update']['scheduleUpdate']>>
+  >()
+  .mockResolvedValue(undefined);
+const cancelScheduledUpdateMock = jest
+  .fn<
+    ReturnType<NonNullable<CanopyApi['update']['cancelScheduledUpdate']>>,
+    Parameters<NonNullable<CanopyApi['update']['cancelScheduledUpdate']>>
+  >()
+  .mockResolvedValue(undefined);
+
+// The tips row reads the shared tip store, which needs a client provider;
+// its own coverage is ShowTipsAgainRow.test.tsx.
+jest.mock('../ShowTipsAgainRow', () => ({
+  ShowTipsAgainRow: (): null => null,
+}));
 jest.mock('@/hooks/useGitHubCliStatus', () => ({
   useGitHubCliStatus: jest.fn(() => ({
     authenticated: true,
@@ -35,7 +72,6 @@ jest.mock('@/hooks/useUpdateState', () => ({
       claudeSdk: '1.0.0',
       codexCli: '1.0.0',
       ghCli: '1.0.0',
-      ollamaCli: '1.0.0',
       rtkCli: '1.0.0',
       octokit: '1.0.0',
     },
@@ -76,7 +112,6 @@ describe('CanopyTab targeted update dialogs', () => {
         claudeSdk: '1.0.0',
         codexCli: '1.0.0',
         ghCli: '1.0.0',
-        ollamaCli: '1.0.0',
         rtkCli: '1.0.0',
         octokit: '1.0.0',
       },
@@ -95,8 +130,10 @@ describe('CanopyTab targeted update dialogs', () => {
         loadGitHubPat: jest.fn().mockResolvedValue(''),
         onPreferencesSynced: jest.fn(() => jest.fn()),
         loadPreferences: jest.fn().mockResolvedValue({
-          auditRetentionDays: 7,
-          autoDownloadUpdates: true,
+          ...makeTestPreferences({
+            auditRetentionDays: 7,
+            autoDownloadUpdates: true,
+          }),
           __dataDir: {
             path: '/mock/home/.canopy',
             source: 'fallback',
@@ -120,7 +157,7 @@ describe('CanopyTab targeted update dialogs', () => {
           scheduleUpdate: scheduleUpdateMock,
           cancelScheduledUpdate: cancelScheduledUpdateMock,
         },
-      } as Partial<CanopyApi> as CanopyApi,
+      } satisfies TargetUpdateApiDouble,
     });
 
     container = document.createElement('div');
@@ -192,7 +229,7 @@ describe('CanopyTab targeted update dialogs', () => {
     act(() => usePrimaryFolder?.click());
 
     const confirmation = document.querySelector<HTMLElement>(
-      '[aria-labelledby="settings-data-dir-confirm-title"]',
+      '[data-testid="settings-data-dir-confirm-modal"]',
     );
     expect(confirmation?.parentElement?.classList.contains('z-modal')).toBe(
       true,

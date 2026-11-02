@@ -9,6 +9,12 @@ import type { JSX } from 'react';
 import type * as PipelineEditMocks from './pipelineEditMocks';
 
 const mockRelatedNavigateContinuation = jest.fn();
+const mockAssistantDraft = { present: false, discard: jest.fn() };
+
+jest.mock('@/components/pipeline/pipelineAssistantDraft', () => ({
+  usePipelineAssistantDraft: (): typeof mockAssistantDraft =>
+    mockAssistantDraft,
+}));
 
 jest.mock('@/hooks/usePipelineEditor', () => ({
   usePipelineEditor: (target: {
@@ -36,9 +42,9 @@ jest.mock('@canopy/app-state', () => ({
 }));
 jest.mock('@/components/activity/useDispatchPipelineModal', () => ({
   useDispatchPipelineModal: (): {
-    openDispatchPipelineModal: jest.Mock;
+    openWorkflowsRunModal: jest.Mock;
     dispatchPipelineModal: null;
-  } => ({ openDispatchPipelineModal: jest.fn(), dispatchPipelineModal: null }),
+  } => ({ openWorkflowsRunModal: jest.fn(), dispatchPipelineModal: null }),
 }));
 jest.mock('@/components/pipeline/flow/PipelineFlowDiagram', () => ({
   PipelineFlowDiagram: (): JSX.Element => (
@@ -118,6 +124,7 @@ function pressEscape(): void {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockAssistantDraft.present = false;
   resetMockEditors();
   // Nothing is left from an earlier suite's shell.
   registerNavigationGuard(() => true)();
@@ -204,7 +211,7 @@ describe('PipelineEditAdapter unsaved-changes guard', () => {
     expect(byTestId('workflow-edit-shell')?.dataset.dirty).toBe('true');
     // The error is in the shell, and the shell moved to the section it is in.
     expect(byTestId('pipeline-editor-save-error')?.textContent).toContain(
-      'The pipeline could not be saved.',
+      'The workflow could not be saved.',
     );
     expect(shownTarget()?.section).toBe('definition');
     expect(byTestId('workflow-edit-section-definition')?.hidden).toBe(false);
@@ -276,6 +283,53 @@ describe('PipelineEditAdapter unsaved-changes guard', () => {
     expect(editor.save).toHaveBeenCalledTimes(1);
     expect(byTestId('workflows-unsaved-dialog')).toBeNull();
     expect(shownTarget()).toMatchObject({ pipelineId: 'other' });
+  });
+
+  // Sergii's QA (2026-10-23): text typed into the Pipeline Assistant but not
+  // sent is unsaved work, on a saved pipeline and a new one alike.
+  it('unsent assistant draft triggers the unsaved-changes dialog; Discard drops it', async () => {
+    const editor = setMockEditor('review', { isDirty: false });
+    mockAssistantDraft.present = true;
+    renderShell(REVIEW);
+    act(() => {
+      useNavigationStore.getState().returnToSectionRoot('plugins');
+    });
+
+    expect(byTestId('workflows-unsaved-dialog')?.textContent).toContain(
+      'Review',
+    );
+    expect(useNavigationStore.getState().activePage).toBe('workflows-library');
+
+    click(byTestId('workflows-unsaved-discard'));
+    await flush();
+    expect(mockAssistantDraft.discard).toHaveBeenCalledTimes(1);
+    expect(editor.save).not.toHaveBeenCalled();
+    expect(useNavigationStore.getState().activePage).toBe('plugins');
+  });
+
+  it('leaves without writing a clean pipeline when only the assistant draft is unsaved', async () => {
+    const editor = setMockEditor('review', { isDirty: false });
+    mockAssistantDraft.present = true;
+    renderShell(REVIEW);
+    navigateHome();
+    click(byTestId('workflows-unsaved-save'));
+    await flush();
+
+    expect(editor.save).not.toHaveBeenCalled();
+    expect(mockAssistantDraft.discard).not.toHaveBeenCalled();
+    expect(useNavigationStore.getState().activePage).toBe('home');
+  });
+
+  it('keeps the assistant draft when the prompt is closed', async () => {
+    setMockEditor('review', { isDirty: false });
+    mockAssistantDraft.present = true;
+    renderShell(REVIEW);
+    navigateHome();
+    pressEscape();
+    await flush();
+
+    expect(mockAssistantDraft.discard).not.toHaveBeenCalled();
+    expect(useNavigationStore.getState().activePage).toBe('workflows-library');
   });
 
   it('stops guarding once the shell unmounts', () => {

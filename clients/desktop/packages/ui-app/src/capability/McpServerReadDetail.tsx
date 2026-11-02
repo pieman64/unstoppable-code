@@ -2,6 +2,7 @@
 
 import { Fragment, type JSX, type ReactNode } from 'react';
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
+import { Button } from '@canopy/ui-shared/components';
 
 export interface McpServerReadDetailProps {
   statusSection?: ReactNode;
@@ -64,14 +65,14 @@ export function McpServerReadDetail({
           </p>
         </div>
         {onConfigure && (
-          <button
+          <Button
             type="button"
+            size="compact"
             onClick={onConfigure}
             data-testid="mcp-server-read-configure"
-            className="focus-ring shrink-0 rounded-md border bg-secondary px-3 py-1.5 text-xs font-medium fg-primary"
           >
             Configure
-          </button>
+          </Button>
         )}
       </div>
 

@@ -11,6 +11,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import type { McpProxyState } from '@canopy/desktop-shared/types/mcp-servers';
 import { makeTestPreferences } from '@/test-utils/preferences';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { McpTab } from '../McpTab';
 import {
   MCP_HTTP_AUTH_CANOPY_DESCRIPTION,
@@ -233,6 +234,154 @@ describe('McpTab proxy port UI', () => {
     }
   });
 
+  it('keeps headings and labels while loading, and only the values pulse', async () => {
+    jest.useFakeTimers();
+    const { api } = installMockWindowApis({
+      port: DEFAULT_MCP_PROXY_PORT,
+      status: 'running',
+      portLocked: false,
+    });
+    let resolvePreferences: (prefs: PreferencesData) => void = () => {};
+    api.loadPreferences.mockReturnValue(
+      new Promise<PreferencesData>((resolve) => {
+        resolvePreferences = resolve;
+      }),
+    );
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const values = (): HTMLElement[] =>
+      Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[data-testid="settings-mcp-loading-value"]',
+        ),
+      );
+
+    try {
+      await act(async (): Promise<void> => {
+        root.render(createElement(McpTab));
+        await Promise.resolve();
+      });
+
+      // The real headings and labels are there from the first frame.
+      expect(container.textContent).toContain(MCP_HTTP_AUTH_HEADING);
+      expect(container.textContent).toContain('Default auth path');
+      expect(container.textContent).toContain('Local HTTP proxy');
+      expect(container.textContent).toContain('Proxy port');
+      expect(
+        container.querySelector('[data-testid="settings-mcp-port-input"]'),
+      ).toBeNull();
+      // Nothing pulses inside the first 200ms.
+      expect(values().length).toBeGreaterThan(0);
+      for (const value of values()) {
+        expect(value.classList.contains('invisible')).toBe(true);
+      }
+
+      await act(async (): Promise<void> => {
+        jest.advanceTimersByTime(200);
+        await Promise.resolve();
+      });
+      for (const value of values()) {
+        expect(value.classList.contains('invisible')).toBe(false);
+        expect(value.querySelector('.animate-pulse')).toBeInstanceOf(
+          HTMLElement,
+        );
+      }
+      const note = (): Element | null =>
+        container.querySelector('[data-testid="slow-load-note"]');
+      expect(note()?.textContent).toBe('');
+
+      await act(async (): Promise<void> => {
+        jest.advanceTimersByTime(8_000);
+        await Promise.resolve();
+      });
+      expect(note()?.textContent).toBe('Still loading MCP settings…');
+
+      await act(async (): Promise<void> => {
+        resolvePreferences(makeTestPreferences());
+        await Promise.resolve();
+      });
+      // The values replace the skeleton in place, and the note goes.
+      expect(values()).toHaveLength(0);
+      expect(note()).toBeNull();
+      expect(getInput(container, 'settings-mcp-port-input').value).toBe(
+        String(DEFAULT_MCP_PROXY_PORT),
+      );
+    } finally {
+      act((): void => {
+        root.unmount();
+      });
+      container.remove();
+      jest.useRealTimers();
+    }
+  });
+
+  it('shows Applying… with a spinner inside Apply while the port applies', async () => {
+    const { mcpServers } = installMockWindowApis({
+      port: DEFAULT_MCP_PROXY_PORT,
+      status: 'running',
+      portLocked: false,
+    });
+    let finishApply: (state: McpProxyState) => void = () => {};
+    mcpServers.applyProxyPort.mockReturnValue(
+      new Promise<McpProxyState>((resolve) => {
+        finishApply = resolve;
+      }),
+    );
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+
+    try {
+      await act(async (): Promise<void> => {
+        root.render(createElement(McpTab));
+        await Promise.resolve();
+      });
+      const apply = container.querySelector(
+        '[data-testid="settings-mcp-save"]',
+      );
+      if (!(apply instanceof HTMLButtonElement)) {
+        throw new Error('Expected the MCP apply button.');
+      }
+      expect(apply.getAttribute('aria-busy')).toBe('false');
+
+      await act(async (): Promise<void> => {
+        apply.click();
+        await Promise.resolve();
+      });
+      expect(apply.getAttribute('aria-busy')).toBe('true');
+      const busyLayer = apply.querySelector('[data-busy-layer="busy"]');
+      expect(busyLayer?.textContent).toBe('Applying…');
+      expect(busyLayer?.classList.contains('invisible')).toBe(false);
+      expect(busyLayer?.querySelector('[aria-hidden="true"]')).toBeInstanceOf(
+        Element,
+      );
+      expect(apply.textContent).toBe('Applying…');
+      // A second press while busy does not apply again.
+      await act(async (): Promise<void> => {
+        apply.click();
+        await Promise.resolve();
+      });
+      expect(mcpServers.applyProxyPort).toHaveBeenCalledTimes(1);
+
+      await act(async (): Promise<void> => {
+        finishApply({
+          port: DEFAULT_MCP_PROXY_PORT,
+          status: 'running',
+          portLocked: false,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(apply.getAttribute('aria-busy')).toBe('false');
+    } finally {
+      act((): void => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
   it('resets a customized proxy port to the default and applies it', async () => {
     const customPort = 38942;
     const { api, mcpServers } = installMockWindowApis(
@@ -283,6 +432,47 @@ describe('McpTab proxy port UI', () => {
         root.unmount();
       });
       container.remove();
+    }
+  });
+  it('closes Settings and opens Customize Installed MCP servers (CAN-4267)', async () => {
+    installMockWindowApis({
+      port: DEFAULT_MCP_PROXY_PORT,
+      status: 'running',
+      portLocked: false,
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const close = jest
+      .spyOn(useNavigationStore.getState(), 'closeSettings')
+      .mockImplementation(() => {});
+    const open = jest
+      .spyOn(useNavigationStore.getState(), 'openPluginsNavigation')
+      .mockImplementation(() => {});
+    try {
+      await act(async () => {
+        root.render(createElement(McpTab));
+        await Promise.resolve();
+      });
+      const button = container.querySelector(
+        '[data-testid="settings-mcp-manage"]',
+      );
+      if (!(button instanceof HTMLButtonElement))
+        throw new Error('Manage MCP servers missing');
+      act(() => button.click());
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledWith({
+        kind: 'marketplace-browse',
+        query: '',
+        tab: 'app',
+        focusSection: 'installed',
+        installedExpanded: true,
+      });
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      close.mockRestore();
+      open.mockRestore();
     }
   });
 });

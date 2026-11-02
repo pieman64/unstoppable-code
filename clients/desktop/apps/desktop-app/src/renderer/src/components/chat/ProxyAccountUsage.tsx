@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
   accountProxyAccountKey,
   accountProxyAccountsForHarness,
@@ -23,7 +23,6 @@ import {
 import { ClaudeIcon, CodexIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useMinuteClock } from '@canopy/ui-shared';
 import {
-  formatProxyAccountEstimate,
   formatProxyAccountShare,
   proxyAccountName,
 } from '@canopy/ui-shared/components/cost';
@@ -38,7 +37,6 @@ import {
   refreshAccountProxyStatus,
   useAccountProxyStatus,
 } from '@/stores/accountProxyStore';
-import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProxyUsageExpandedStore } from '@/stores/proxyUsageExpandedStore';
 
@@ -50,28 +48,11 @@ interface ProxyUsageRow {
   readonly provider: string | undefined;
   readonly name: string;
   /** What follows the via label: the share of turns and the estimate. */
-  readonly details: readonly string[];
   /** The account's share of the chat's turns (`75% of turns`). */
   readonly share: string;
   readonly account: AccountProxyAccount | undefined;
 }
 
-function rowStatus(row: ProxyUsageRow, nowMs: number): string {
-  const parts = [ACCOUNT_PROXY_VIA_LABEL, ...row.details];
-  if (row.account?.status === 'cooling' && row.account.availableAt !== null) {
-    parts.push(`back at ${accountProxyClock(row.account.availableAt)}`);
-  }
-  const usage = row.account
-    ? providerAccountUsageStatusText(
-        projectAccountProxyUsageAccount(row.account),
-        nowMs,
-      )
-    : undefined;
-  const via = parts.join(' · ');
-  return usage === undefined ? via : `${via}. ${usage}`;
-}
-
-/** The account's named limits, from the same projection every view uses. */
 function summaryLimits(
   account: AccountProxyAccount | undefined,
 ): UsageIndicatorAccountSummaryProps['limits'] {
@@ -236,7 +217,6 @@ export function ProxyAccountUsage({
   readonly chat?: AccountProxyChatRequest;
 }): JSX.Element {
   const status = useAccountProxyStatus();
-  const cardsOn = useLabsExperimentEnabled('proxy-account-cards');
   const expandedAccounts = useProxyUsageExpandedStore(
     (state) => state.expanded,
   );
@@ -270,10 +250,6 @@ export function ProxyAccountUsage({
       accountKey: row.accountKey,
       provider: account?.provider ?? row.provider,
       name: proxyAccountName({ ...row, label: account?.label ?? row.label }),
-      details: [
-        formatProxyAccountShare(row.turnShare, turns),
-        formatProxyAccountEstimate(row),
-      ],
       share: formatProxyAccountShare(row.turnShare, turns),
       account,
     };
@@ -306,7 +282,6 @@ export function ProxyAccountUsage({
                 label: account?.label ?? current.label ?? '',
                 provider,
               }),
-              details: [],
               share: formatProxyAccountShare(0, turns),
               account,
             },
@@ -318,7 +293,6 @@ export function ProxyAccountUsage({
   // shows as cards too, each without a share.
   let rowsArePool = false;
   if (
-    cardsOn &&
     rows.length === 0 &&
     connectionId !== undefined &&
     accountProxyPoolNotice(status, harness) === null
@@ -339,7 +313,6 @@ export function ProxyAccountUsage({
           label: account.label,
           provider: account.provider,
         }),
-        details: [],
         share: '',
         account,
       });
@@ -367,12 +340,8 @@ export function ProxyAccountUsage({
         account={only?.label}
         status={poolStatus(detail, only, nowMs)}
         limits={summaryLimits(only)}
-        {...(cardsOn ? {} : { onManage })}
       />
     );
-    if (!cardsOn) {
-      return <div data-testid="usage-indicator-proxy-accounts">{summary}</div>;
-    }
     return (
       <ProxyAccountsSection
         collapsed={sectionCollapsed}
@@ -403,79 +372,50 @@ export function ProxyAccountUsage({
       ? 'Account proxy'
       : accountProxyProviderLabel(row.provider);
 
-  if (cardsOn) {
-    const folds = shown.length > 1;
-    return (
-      <ProxyAccountsSection
-        collapsed={sectionCollapsed}
-        onToggle={toggleSection}
-        onManage={onManage}
-      >
-        <div className="flex flex-col gap-1">
-          {shown.map((row) => {
-            const backAt = restingUntil(row.account);
-            return (
-              <UsageIndicatorAccountSummary
-                key={row.accountKey}
-                providerLabel={providerLabel(row)}
-                plan={
-                  row.account ? accountProxyPlanLabel(row.account) : undefined
-                }
-                account={row.name}
-                status={cardStatus(row.account, nowMs)}
-                limits={cardLimits(row.account, backAt)}
-                detail={
-                  backAt === undefined
-                    ? row.share
-                    : `Back at ${accountProxyClock(backAt)}`
-                }
-                icon={providerMark(row.provider)}
-                disclosure={
-                  folds
-                    ? {
-                        expanded: expandedAccounts[row.accountKey] === true,
-                        onToggle: (): void => toggleAccount(row.accountKey),
-                        leadLimitId: row.account
-                          ? providerAccountUsageLeadWindowId(
-                              projectAccountProxyUsageAccount(row.account),
-                            )
-                          : undefined,
-                      }
-                    : undefined
-                }
-              />
-            );
-          })}
-          {moreNote}
-        </div>
-      </ProxyAccountsSection>
-    );
-  }
-
+  const folds = shown.length > 1;
   return (
-    <div
-      data-testid="usage-indicator-proxy-accounts"
-      className="flex flex-col gap-3"
+    <ProxyAccountsSection
+      collapsed={sectionCollapsed}
+      onToggle={toggleSection}
+      onManage={onManage}
     >
-      {shown.map((row, index) => (
-        <Fragment key={row.accountKey}>
-          {index > 0 ? (
-            <div
-              aria-hidden="true"
-              className="h-[var(--border-hairline)] shrink-0 bg-line-quaternary"
+      <div className="flex flex-col gap-1">
+        {shown.map((row) => {
+          const backAt = restingUntil(row.account);
+          return (
+            <UsageIndicatorAccountSummary
+              key={row.accountKey}
+              providerLabel={providerLabel(row)}
+              plan={
+                row.account ? accountProxyPlanLabel(row.account) : undefined
+              }
+              account={row.name}
+              status={cardStatus(row.account, nowMs)}
+              limits={cardLimits(row.account, backAt)}
+              detail={
+                backAt === undefined
+                  ? row.share
+                  : `Back at ${accountProxyClock(backAt)}`
+              }
+              icon={providerMark(row.provider)}
+              disclosure={
+                folds
+                  ? {
+                      expanded: expandedAccounts[row.accountKey] === true,
+                      onToggle: (): void => toggleAccount(row.accountKey),
+                      leadLimitId: row.account
+                        ? providerAccountUsageLeadWindowId(
+                            projectAccountProxyUsageAccount(row.account),
+                          )
+                        : undefined,
+                    }
+                  : undefined
+              }
             />
-          ) : null}
-          <UsageIndicatorAccountSummary
-            providerLabel={providerLabel(row)}
-            plan={row.account ? accountProxyPlanLabel(row.account) : undefined}
-            account={row.name}
-            status={rowStatus(row, nowMs)}
-            limits={summaryLimits(row.account)}
-            onManage={onManage}
-          />
-        </Fragment>
-      ))}
-      {moreNote}
-    </div>
+          );
+        })}
+        {moreNote}
+      </div>
+    </ProxyAccountsSection>
   );
 }

@@ -86,7 +86,7 @@ function validateChildTargetCompatibility(args: {
 
   if (!valid) {
     throw new Error(
-      `${stepLabel(args.step, args.jobId)} targets scope "${args.target.scope}" but child pipeline "${args.childPipelineId}" supports [${formatScopes(args.childScopes)}]`,
+      `${stepLabel(args.step, args.jobId)} targets scope "${args.target.scope}" but child workflow "${args.childPipelineId}" supports [${formatScopes(args.childScopes)}]`,
     );
   }
 }
@@ -125,13 +125,13 @@ export async function validatePipelineScopes(
 
       if (!scopesOverlap(normalizedPipeline.scope, action.definition.scopes)) {
         throw new Error(
-          `${stepLabel(step, jobId)} uses action "${step.uses}" with scopes [${formatScopes(action.definition.scopes)}] but pipeline scopes are [${formatScopes(normalizedPipeline.scope)}]`,
+          `${stepLabel(step, jobId)} uses action "${step.uses}" with scopes [${formatScopes(action.definition.scopes)}] but workflow scopes are [${formatScopes(normalizedPipeline.scope)}]`,
         );
       }
 
       if (step.target && action.definition.runs.using !== 'pipeline') {
         throw new Error(
-          `${stepLabel(step, jobId)} defines target but action "${step.uses}" is not a pipeline action`,
+          `${stepLabel(step, jobId)} defines target but action "${step.uses}" is not a workflow action`,
         );
       }
 

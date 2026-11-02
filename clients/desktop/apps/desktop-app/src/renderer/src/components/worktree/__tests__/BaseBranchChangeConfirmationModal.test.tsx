@@ -152,6 +152,47 @@ describe('BaseBranchChangeConfirmationModalHost', () => {
     expect(queryDialog()).toBeNull();
   });
 
+  // An agent opens this dialog while the user may be typing in the chat
+  // composer. The dialog must take focus so keystrokes stop reaching the
+  // composer behind it, then hand focus back once it resolves.
+  it('takes focus from the composer while open and restores it after', async () => {
+    const composer = document.createElement('textarea');
+    document.body.appendChild(composer);
+    composer.focus();
+    expect(document.activeElement).toBe(composer);
+
+    const { result: resultPromise } = await requestForWorktreeOne();
+    const dialog = queryDialog();
+    expect(dialog).not.toBeNull();
+    // The card, not a button, so a typed space or Enter cannot answer it.
+    expect(document.activeElement).toBe(dialog);
+
+    const tab = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    });
+    const buttons = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+    );
+    buttons[buttons.length - 1]?.focus();
+    document.activeElement?.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(dialog?.contains(document.activeElement)).toBe(true);
+
+    const decline = buttons.find((candidate) =>
+      candidate.textContent?.includes('No, just locally'),
+    );
+    await act(async () => {
+      decline?.click();
+      await Promise.resolve();
+    });
+
+    await expect(resultPromise).resolves.toBe('local-only');
+    expect(queryDialog()).toBeNull();
+    expect(document.activeElement).toBe(composer);
+  });
+
   it('cancels a superseded confirmation so concurrent actions cannot hang', async () => {
     const first = useBaseBranchChangeStore.getState().requestConfirmation({
       projectId: 'project-1',

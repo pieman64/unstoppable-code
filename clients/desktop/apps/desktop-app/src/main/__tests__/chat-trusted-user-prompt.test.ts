@@ -5,6 +5,7 @@ describe('Cowork trusted user prompt persistence', () => {
   it('keeps project-agent provenance in the persisted prompt payload', () => {
     const sender = {
       kind: 'project' as const,
+      projectType: 'cowork' as const,
       projectId: 'orchestrator-project',
       taskId: 'orchestrator-task',
       chatId: 'orchestrator-chat',
@@ -17,11 +18,15 @@ describe('Cowork trusted user prompt persistence', () => {
       text: 'Please complete the delegated task.',
       providerType: 'claude',
       interfaceMode: 'canopy',
-      agentSent: { chatTitle: 'Orchestrator', sender },
+      agentSent: {
+        chatTitle: 'Orchestrator',
+        projectLabel: 'Orchestrator Project',
+        sender,
+      },
       agentSenderProvenance: {
         version: 1,
         sender,
-        owner: { kind: 'none' },
+        owner: { kind: 'personal' },
         capturedAt: '2026-10-18T00:00:00.000Z',
         acceptedInputId: 'accepted-agent-input',
       },
@@ -87,4 +92,22 @@ describe('buildTrustedUserPromptEvent', () => {
       buildTrustedUserPromptEvent(request).canopy_persisted_messages[0],
     ).not.toHaveProperty('agentSent');
   });
+});
+
+it('copies validated automatic-resume provenance without defaulting a nudge to typed', () => {
+  const trusted: Parameters<typeof buildTrustedUserPromptEvent>[0] = {
+    ...request,
+    autoResume: {
+      reason: 'app_shutdown',
+      resumesUserMessageId: 'original',
+      resendsUserMessage: false,
+    },
+  };
+  const message =
+    buildTrustedUserPromptEvent(trusted).canopy_persisted_messages[0];
+  expect(message).toMatchObject({
+    userMessageSource: 'auto_resume',
+    autoResume: trusted.autoResume,
+  });
+  expect(message).not.toHaveProperty('inputMode');
 });

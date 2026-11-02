@@ -30,7 +30,7 @@ describe('getSkillDependencyReadiness', () => {
     jest.mocked(getMcpServerStatusByName).mockReset();
     jest.mocked(loadCachedInventory).mockReset();
     jest.mocked(loadCachedInventory).mockResolvedValue({
-      version: 2,
+      version: 5,
       builtAt: '2026-09-23T00:00:00.000Z',
       entries: [
         {

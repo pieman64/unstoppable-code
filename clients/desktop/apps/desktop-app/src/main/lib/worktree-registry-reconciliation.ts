@@ -7,6 +7,7 @@ import {
 import { cleanupPersistedWorktreeData } from './worktree-data-cleanup';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { notifyLedgerContainerRemovedExternally } from '../ledger/lifecycle';
+import { publishWorktreeLifecycleChange } from './worktree-lifecycle-signals';
 
 const inFlightCleanup = new Map<string, Promise<void>>();
 
@@ -86,6 +87,7 @@ export async function reconcileExternalWorktreeSnapshot(
   // hold (CAN-2830); the in-app write paths notify through
   // schedulePortalStructuralSync, this is the watcher's counterpart.
   notifyDesktopInventoryChanged(['pipelines']);
+  publishWorktreeLifecycleChange('external-snapshot');
   const cleanups: Promise<void>[] = [];
   for (const worktreeId of removedWorktreeIds) {
     const key = `${workspaceId}/${worktreeId}`;

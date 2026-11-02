@@ -3,7 +3,9 @@ import {
   CANOPY_INSTRUCTION_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
   type CanopyCallerDescriptor,
+  type CanopyInstructionHandlerMap,
   type CanopyQueryHandlerMap,
+  type CanopyQueryParams,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyOperationError, createCanopyDispatcher } from '../dispatcher';
@@ -44,7 +46,16 @@ function deferred<T>(): {
 
 type WorkerQueryHandlers = Pick<
   CanopyQueryHandlerMap<CanopyHandlerContext>,
-  'worker.filesystem.roots.list' | 'worker.filesystem.directory.list'
+  | 'worker.filesystem.roots.list'
+  | 'worker.filesystem.directory.list'
+  | 'worker.filesystem.file.read'
+  | 'worker.filesystem.search'
+  | 'worker.filesystem.link.resolve'
+  | 'worker.git.branch.list'
+  | 'worker.git.executable.get'
+  | 'worker.git.remote.get'
+  | 'worker.git.worktree.health.get'
+  | 'worker.git.diff.get'
 >;
 
 function handlers(
@@ -54,6 +65,32 @@ function handlers(
   return {
     'worker.filesystem.roots.list': roots,
     'worker.filesystem.directory.list': () => ({ entries: [] }),
+    'worker.filesystem.file.read': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.filesystem.search': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.filesystem.link.resolve': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.git.branch.list': () => ({
+      branches: [],
+      defaultBranch: null,
+      defaultBranchSource: null,
+    }),
+    'worker.git.executable.get': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.git.remote.get': () => ({
+      origin: { state: 'absent' as const },
+    }),
+    'worker.git.worktree.health.get': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.git.diff.get': (): never => {
+      throw new Error('Not exercised.');
+    },
   };
 }
 
@@ -72,6 +109,39 @@ function createDispatcher(
 const rootsParams = {
   scope: { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
 };
+
+type ChatSendHandler =
+  CanopyInstructionHandlerMap<CanopyHandlerContext>['core.chat.message.send'];
+const emptyRuntimeMap: Record<never, never> = {};
+const chatSendDefinitions: Pick<
+  typeof CANOPY_INSTRUCTION_DEFINITIONS,
+  'core.chat.message.send'
+> = {
+  'core.chat.message.send':
+    CANOPY_INSTRUCTION_DEFINITIONS['core.chat.message.send'],
+};
+
+function createChatSendDispatcher(
+  handler: ChatSendHandler,
+): CanopyDispatcher<
+  Record<never, never>,
+  typeof chatSendDefinitions,
+  Record<never, never>
+> {
+  return createCanopyDispatcher({
+    profile: 'core',
+    definitions: {
+      queries: emptyRuntimeMap,
+      instructions: chatSendDefinitions,
+      streams: emptyRuntimeMap,
+    },
+    handlers: {
+      queries: emptyRuntimeMap,
+      instructions: { 'core.chat.message.send': handler },
+      streams: emptyRuntimeMap,
+    },
+  });
+}
 
 describe('createCanopyDispatcher', () => {
   it('rejects definition/handler maps that disagree with the runtime profile', () => {
@@ -110,7 +180,10 @@ describe('createCanopyDispatcher', () => {
 
   it('dispatches with validated params, caller, metadata, and a runtime context', async () => {
     const rootHandler = jest.fn(
-      (_params: typeof rootsParams, context: CanopyHandlerContext) => {
+      (
+        _params: CanopyQueryParams<'worker.filesystem.roots.list'>,
+        context: CanopyHandlerContext,
+      ) => {
         expect(context.requestId).toEqual(expect.any(String));
         expect(context.caller).toEqual(caller);
         expect(context.metadata).toEqual({ traceparent: '00-trace-parent' });
@@ -200,22 +273,9 @@ describe('createCanopyDispatcher', () => {
   });
 
   it('keeps keyed retry guidance when an instruction deadline expires in flight', async () => {
-    const definition = CANOPY_INSTRUCTION_DEFINITIONS['core.chat.message.send'];
-    const dispatcher = createCanopyDispatcher({
-      profile: 'core',
-      definitions: {
-        queries: {},
-        instructions: { 'core.chat.message.send': definition },
-        streams: {},
-      },
-      handlers: {
-        queries: {},
-        instructions: {
-          'core.chat.message.send': () => new Promise(() => {}),
-        },
-        streams: {},
-      },
-    });
+    const dispatcher = createChatSendDispatcher(
+      () => new Promise<never>(() => {}),
+    );
     await expect(
       dispatcher.instruction(
         'core.chat.message.send',
@@ -244,27 +304,12 @@ describe('createCanopyDispatcher', () => {
   });
 
   it('keeps a handler retry delay when normalizing keyed retry guidance', async () => {
-    const definition = CANOPY_INSTRUCTION_DEFINITIONS['core.chat.message.send'];
-    const dispatcher = createCanopyDispatcher({
-      profile: 'core',
-      definitions: {
-        queries: {},
-        instructions: { 'core.chat.message.send': definition },
-        streams: {},
-      },
-      handlers: {
-        queries: {},
-        instructions: {
-          'core.chat.message.send': () => {
-            throw new CanopyOperationError({
-              kind: 'unavailable',
-              message: 'Chat state is busy.',
-              retry: { kind: 'same_request', delayMs: 5000 },
-            });
-          },
-        },
-        streams: {},
-      },
+    const dispatcher = createChatSendDispatcher(() => {
+      throw new CanopyOperationError({
+        kind: 'unavailable',
+        message: 'Chat state is busy.',
+        retry: { kind: 'same_request', delayMs: 5000 },
+      });
     });
     await expect(
       dispatcher.instruction(
@@ -293,22 +338,12 @@ describe('createCanopyDispatcher', () => {
   it.each(['expired deadline', 'shutdown'])(
     'keeps keyed retry guidance during preparation: %s',
     async (failure) => {
-      const definition =
-        CANOPY_INSTRUCTION_DEFINITIONS['core.chat.message.send'];
-      const handler = jest.fn(() => ({ status: 'committed' }));
-      const dispatcher = createCanopyDispatcher({
-        profile: 'core',
-        definitions: {
-          queries: {},
-          instructions: { 'core.chat.message.send': definition },
-          streams: {},
-        },
-        handlers: {
-          queries: {},
-          instructions: { 'core.chat.message.send': handler },
-          streams: {},
-        },
-      });
+      const handler = jest.fn(() => ({
+        commandId: 'command-1',
+        revision: 1,
+        outcome: 'applied' as const,
+      }));
+      const dispatcher = createChatSendDispatcher(handler);
       if (failure === 'shutdown') await dispatcher.shutdown();
       await expect(
         dispatcher.instruction(
@@ -364,7 +399,6 @@ describe('createCanopyDispatcher', () => {
         { nope: true },
         {
           caller: { ...caller, grants: [] },
-          // @ts-expect-error Intentionally malformed to verify validation ordering.
           metadata: { extra: true },
         },
       ),

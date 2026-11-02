@@ -303,6 +303,7 @@ export default function UsagePopover({
   onSeeDetails,
   contextBreakdown,
   costPreview,
+  hideCost = false,
   anchorRef,
   alignRef,
   popoverRef,
@@ -317,6 +318,7 @@ export default function UsagePopover({
   onSeeDetails?: () => void;
   contextBreakdown?: UsageIndicatorContextBreakdown;
   costPreview?: ReactNode;
+  hideCost?: boolean;
   anchorRef: React.RefObject<HTMLDivElement | null>;
   alignRef?: React.RefObject<HTMLElement | null>;
   popoverRef: React.RefObject<HTMLDivElement | null>;
@@ -387,6 +389,7 @@ export default function UsagePopover({
   // the row unless the host priced the turn itself: cloud Core bills every
   // turn through the gateway and reports the figure regardless of harness.
   const showCost =
+    !hideCost &&
     !responseUsage &&
     usage.totalCostUsd !== undefined &&
     (!isCodex || usage.totalCostUsd > 0);
@@ -414,7 +417,10 @@ export default function UsagePopover({
 
   // The chat's cost, previewed under Context; the host supplies the row.
   const hasCostPreview =
-    costPreview !== undefined && costPreview !== null && !responseUsage;
+    !hideCost &&
+    costPreview !== undefined &&
+    costPreview !== null &&
+    !responseUsage;
   const costRow = hasCostPreview ? costPreview : null;
 
   const sessionFigures = (
@@ -497,12 +503,15 @@ export default function UsagePopover({
                         )}
                       />
                     )}
-                    {responseUsage.usage.estimatedCostUsd !== undefined && (
-                      <DetailRow
-                        label="Estimated cost"
-                        value={formatCost(responseUsage.usage.estimatedCostUsd)}
-                      />
-                    )}
+                    {!hideCost &&
+                      responseUsage.usage.estimatedCostUsd !== undefined && (
+                        <DetailRow
+                          label="Estimated cost"
+                          value={formatCost(
+                            responseUsage.usage.estimatedCostUsd,
+                          )}
+                        />
+                      )}
                     {responseUsage.usage.cacheReadTokens !== undefined && (
                       <DetailRow
                         label="Cache read"

@@ -1,3 +1,4 @@
+import type * as OrgCoworkBindingDeps from '../lib/org-cowork-binding-deps';
 import type * as WorkspaceManifestModule from '../lib/workspace-manifest-repository';
 import type * as WorkspacePersistenceModule from '../lib/workspace-persistence';
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
@@ -37,9 +38,10 @@ jest.mock('../app-advisor/watchers', () => ({
 
 let mockSidebarItems: SidebarItem[] = [];
 let mockFailedCoworkWorkspaceId: string | null = null;
-const mockReadWorkspaceOwnership = jest.fn(() =>
-  Promise.resolve({ authority: 'absent' as const }),
-);
+const mockReadWorkspaceOwnership = jest.fn<
+  ReturnType<typeof WorkspacePersistenceModule.readWorkspaceOwnership>,
+  Parameters<typeof WorkspacePersistenceModule.readWorkspaceOwnership>
+>(() => Promise.resolve({ authority: 'absent' as const }));
 const mockWorkspaceConfigs = new Map<string, WorkspaceConfigFile>();
 const mockPublishedWithoutConfig = new Set<string>();
 function mockConfig(id: string): WorkspaceConfigFile | undefined {
@@ -113,7 +115,10 @@ jest.mock('../lib/workspace-persistence', () => ({
       config: WorkspaceConfigFile,
       read: { authority: 'ok' | 'absent'; ownerMalformed: boolean },
     ) => T | Promise<T>,
-    options?: { ownership?: string; shouldWrite?: (result: T) => boolean },
+    options?: {
+      ownership?: WorkspacePersistenceModule.WorkspaceConfigOwnershipWrite;
+      shouldWrite?: (result: T) => boolean;
+    },
   ) => {
     const existing = mockConfig(id);
     const config: WorkspaceConfigFile = existing
@@ -138,8 +143,11 @@ jest.mock('../lib/workspace-persistence', () => ({
   },
   readWorkspaceConfig: (workspaceId: string) =>
     Promise.resolve(mockWorkspaceConfigs.get(workspaceId)),
-  readWorkspaceOwnership: (...args: unknown[]) =>
-    mockReadWorkspaceOwnership(...args),
+  readWorkspaceOwnership: (
+    ...args: Parameters<
+      typeof WorkspacePersistenceModule.readWorkspaceOwnership
+    >
+  ) => mockReadWorkspaceOwnership(...args),
   writeWorkspaceConfig: jest.fn(
     (workspaceId: string, config: WorkspaceConfigFile) => {
       mockWorkspaceConfigs.set(workspaceId, config);
@@ -150,17 +158,21 @@ jest.mock('../lib/workspace-persistence', () => ({
 let mockWorkspaceContext:
   | { kind: 'personal' }
   | { kind: 'organization'; organizationId: string } = { kind: 'personal' };
-const mockStartOrgDefaultCoworkProvisioning = jest.fn(
-  (): Promise<void> => Promise.resolve(),
-);
+const mockStartOrgDefaultCoworkProvisioning = jest.fn<
+  ReturnType<typeof OrgCoworkBindingDeps.startOrgDefaultCoworkProvisioning>,
+  Parameters<typeof OrgCoworkBindingDeps.startOrgDefaultCoworkProvisioning>
+>(() => Promise.resolve());
 jest.mock('../lib/workspace-context-service', () => ({
   getWorkspaceContextService: () => ({
     getState: () => ({ context: mockWorkspaceContext }),
   }),
 }));
 jest.mock('../lib/org-cowork-binding-deps', () => ({
-  startOrgDefaultCoworkProvisioning: (...args: unknown[]) =>
-    mockStartOrgDefaultCoworkProvisioning(...args),
+  startOrgDefaultCoworkProvisioning: (
+    ...args: Parameters<
+      typeof OrgCoworkBindingDeps.startOrgDefaultCoworkProvisioning
+    >
+  ) => mockStartOrgDefaultCoworkProvisioning(...args),
 }));
 function mockSidebarItemsFile(): {
   version: 1;
@@ -283,7 +295,6 @@ import { sendToAllWindows } from '../lib/window-send';
 import { writeWorkspaceConfig } from '../lib/workspace-persistence';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
-import { listCoworkWorkspacesAsChatProjects } from '../lib/cowork-workspace-crud';
 import {
   getChatProjectProjectFilePath,
   getStandaloneChatDir,
@@ -328,6 +339,20 @@ function coworkItem(overrides: Partial<CoworkSidebarItem>): CoworkSidebarItem {
     collapsed: false,
     order: 0,
     ...overrides,
+  };
+}
+
+/** The caller's index commit, as `deleteWorkspace` passes it. */
+function indexRemoval(workspaceId: string): {
+  commitIndexRemoval: jest.Mock<Promise<void>, []>;
+} {
+  return {
+    commitIndexRemoval: jest.fn(() => {
+      mockIndexCommit(
+        mockIndexEntries().filter((entry) => entry.id !== workspaceId),
+      );
+      return Promise.resolve();
+    }),
   };
 }
 
@@ -390,16 +415,20 @@ describe('deleteCoworkWorkspace (real fs)', () => {
       'utf8',
     );
 
-    await deleteCoworkWorkspace('managed-one');
+    const removal = indexRemoval('managed-one');
+    await deleteCoworkWorkspace('managed-one', removal);
 
     expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalledWith(
       'managed-one',
       COWORK_HOME_WORKTREE_ID,
       { deferLocalWatcherCancellationCommit: true },
     );
-    expect(mockCommitLocalWorkspaceCancellation).toHaveBeenCalledWith(
-      'managed-one',
-    );
+    expect(removal.commitIndexRemoval).toHaveBeenCalledTimes(1);
+    expect(mockedWriteAllSidebarItems).not.toHaveBeenCalled();
+    // The caller, `deleteWorkspace`, owns the project's watcher lifecycle.
+    expect(mockCancelLocalWorkspace).not.toHaveBeenCalled();
+    expect(mockCommitLocalWorkspaceCancellation).not.toHaveBeenCalled();
+    expect(mockReleaseLocalWorkspaceFence).not.toHaveBeenCalled();
     expect(await pathExists(workspaceDir)).toBe(false);
     expect(mockSidebarItems.map((item) => item.id)).toEqual(['kept']);
   });
@@ -423,7 +452,10 @@ describe('deleteCoworkWorkspace (real fs)', () => {
       }),
     );
 
-    await deleteCoworkWorkspace('managed-cached');
+    await deleteCoworkWorkspace(
+      'managed-cached',
+      indexRemoval('managed-cached'),
+    );
 
     const reload = jest.fn(() =>
       Promise.resolve({ defaults: {}, cacheable: true }),
@@ -469,7 +501,7 @@ describe('deleteCoworkWorkspace (real fs)', () => {
         'utf8',
       );
 
-      await deleteCoworkWorkspace('ext-one');
+      await deleteCoworkWorkspace('ext-one', indexRemoval('ext-one'));
 
       expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalledWith(
         'ext-one',
@@ -515,7 +547,7 @@ describe('deleteCoworkWorkspace (real fs)', () => {
     await mkdir(getWorkspaceDir('external-kept'), { recursive: true });
     await mkdir(getWorkspaceDir('managed-gone'), { recursive: true });
 
-    await deleteCoworkWorkspace('managed-gone');
+    await deleteCoworkWorkspace('managed-gone', indexRemoval('managed-gone'));
 
     expect(mockSidebarItems.map((item) => item.id).sort()).toEqual(
       ['external-kept', 'managed-kept'].sort(),
@@ -532,7 +564,7 @@ describe('deleteCoworkWorkspace (real fs)', () => {
     const workspaceDir = getWorkspaceDir('failed-cowork');
     await mkdir(path.join(workspaceDir, 'home'), { recursive: true });
 
-    await deleteCoworkWorkspace('failed-cowork');
+    await deleteCoworkWorkspace('failed-cowork', indexRemoval('failed-cowork'));
 
     expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalledWith(
       'failed-cowork',
@@ -546,94 +578,69 @@ describe('deleteCoworkWorkspace (real fs)', () => {
   it('rejects deleting the default cowork project without touching disk or the index', async () => {
     mockSidebarItems = [coworkItem({ id: DEFAULT_COWORK_WORKSPACE_ID })];
 
+    const removal = indexRemoval(DEFAULT_COWORK_WORKSPACE_ID);
     await expect(
-      deleteCoworkWorkspace(DEFAULT_COWORK_WORKSPACE_ID),
+      deleteCoworkWorkspace(DEFAULT_COWORK_WORKSPACE_ID, removal),
     ).rejects.toThrow('The Chats project cannot be deleted');
 
     expect(mockedCleanupPersistedWorktreeData).not.toHaveBeenCalled();
+    expect(removal.commitIndexRemoval).not.toHaveBeenCalled();
     expect(mockSidebarItems).toHaveLength(1);
   });
 
   it('throws when the project does not exist', async () => {
     mockSidebarItems = [];
 
-    await expect(deleteCoworkWorkspace('missing')).rejects.toThrow(
+    const removal = indexRemoval('missing');
+    await expect(deleteCoworkWorkspace('missing', removal)).rejects.toThrow(
       'Chat project not found',
     );
     expect(mockedCleanupPersistedWorktreeData).not.toHaveBeenCalled();
+    expect(removal.commitIndexRemoval).not.toHaveBeenCalled();
   });
 
-  it('reactivates registry writes when sidebar removal fails', async () => {
+  it('reactivates registry writes and keeps the directory when the index commit fails', async () => {
     const workspaceId = 'delete-rollback';
     mockSidebarItems = [coworkItem({ id: workspaceId, name: 'Rollback' })];
     await mkdir(getWorkspaceDir(workspaceId), { recursive: true });
-    mockedWriteAllSidebarItems.mockRejectedValueOnce(
-      new Error('sidebar write failed'),
+    const removal = indexRemoval(workspaceId);
+    removal.commitIndexRemoval.mockRejectedValueOnce(
+      new Error('index commit failed'),
     );
 
-    await expect(deleteCoworkWorkspace(workspaceId)).rejects.toThrow(
-      'sidebar write failed',
+    await expect(deleteCoworkWorkspace(workspaceId, removal)).rejects.toThrow(
+      'index commit failed',
     );
 
     await expect(
       createWorkEntry(workspaceId, { title: 'Still writable' }),
     ).resolves.toMatchObject({ entry: { title: 'Still writable' } });
-    expect(mockReleaseLocalWorkspaceFence).toHaveBeenCalledWith(workspaceId);
-    expect(mockCommitLocalWorkspaceCancellation).not.toHaveBeenCalled();
-  });
-
-  it('releases the project fence when watcher cancellation itself fails', async () => {
-    const workspaceId = 'cancel-rollback';
-    mockSidebarItems = [coworkItem({ id: workspaceId })];
-    await mkdir(getWorkspaceDir(workspaceId), { recursive: true });
-    mockCancelLocalWorkspace.mockRejectedValueOnce(
-      new Error('watcher cancellation failed'),
-    );
-
-    await expect(deleteCoworkWorkspace(workspaceId)).rejects.toThrow(
-      'watcher cancellation failed',
-    );
-
-    expect(mockReleaseLocalWorkspaceFence).toHaveBeenCalledWith(workspaceId);
     expect(await pathExists(getWorkspaceDir(workspaceId))).toBe(true);
+    expect(mockSidebarItems.map((item) => item.id)).toEqual([workspaceId]);
+    expect(mockReleaseLocalWorkspaceFence).not.toHaveBeenCalled();
   });
 
-  it('defers every entry watcher commit until an outer project deletion commits', async () => {
+  // The project fence itself (cancel, release on failure, retain after
+  // removal) is `deleteWorkspace`'s; see workspace-deletion.test.ts.
+  it('defers every entry watcher commit to the outer project deletion', async () => {
     const workspaceId = 'deferred-watcher-delete';
     mockSidebarItems = [coworkItem({ id: workspaceId })];
     await mkdir(getWorkspaceDir(workspaceId), { recursive: true });
     await createWorkEntry(workspaceId, { title: 'First entry' });
     await createWorkEntry(workspaceId, { title: 'Second entry' });
-    mockedWriteAllSidebarItems.mockRejectedValueOnce(
-      new Error('sidebar write failed'),
+    const removal = indexRemoval(workspaceId);
+    removal.commitIndexRemoval.mockRejectedValueOnce(
+      new Error('index commit failed'),
     );
 
-    await expect(
-      deleteCoworkWorkspace(workspaceId, {
-        deferLocalWatcherCancellationCommit: true,
-      }),
-    ).rejects.toThrow('sidebar write failed');
+    await expect(deleteCoworkWorkspace(workspaceId, removal)).rejects.toThrow(
+      'index commit failed',
+    );
 
-    expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalled();
+    expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalledTimes(3);
     for (const [, , options] of mockedCleanupPersistedWorktreeData.mock.calls) {
       expect(options).toEqual({ deferLocalWatcherCancellationCommit: true });
     }
-  });
-
-  it('retains the project fence when watcher commit fails after cowork removal', async () => {
-    const workspaceId = 'cowork-watcher-commit-failure';
-    mockSidebarItems = [coworkItem({ id: workspaceId })];
-    await mkdir(getWorkspaceDir(workspaceId), { recursive: true });
-    mockCommitLocalWorkspaceCancellation.mockRejectedValueOnce(
-      new Error('watcher commit failed'),
-    );
-
-    await expect(deleteCoworkWorkspace(workspaceId)).rejects.toThrow(
-      'watcher commit failed',
-    );
-
-    expect(await pathExists(getWorkspaceDir(workspaceId))).toBe(false);
-    expect(mockReleaseLocalWorkspaceFence).not.toHaveBeenCalled();
   });
 });
 
@@ -695,9 +702,9 @@ describe('project template install subscriptions', () => {
       }),
       coworkItem({ id: 'local', name: 'Local', order: 1 }),
     ];
-    await deleteCoworkWorkspace('local');
+    await deleteCoworkWorkspace('local', indexRemoval('local'));
     expect(mockedRecordUninstall).not.toHaveBeenCalled();
-    await deleteCoworkWorkspace('installed');
+    await deleteCoworkWorkspace('installed', indexRemoval('installed'));
     expect(mockedRecordUninstall).toHaveBeenCalledWith({
       kind: 'workspace-template',
       remoteId: 'template-share-a',
@@ -714,8 +721,9 @@ describe('project template install subscriptions', () => {
         installedFromTemplateExternalId: 'template-share-a',
       }),
     ];
-    mockedWriteAllSidebarItems.mockRejectedValueOnce(new Error('disk full'));
-    await expect(deleteCoworkWorkspace('installed')).rejects.toThrow(
+    const removal = indexRemoval('installed');
+    removal.commitIndexRemoval.mockRejectedValueOnce(new Error('disk full'));
+    await expect(deleteCoworkWorkspace('installed', removal)).rejects.toThrow(
       'disk full',
     );
     expect(mockedRecordUninstall).not.toHaveBeenCalled();
@@ -864,7 +872,10 @@ describe('createCoworkWorkspace (real fs)', () => {
     );
 
     await updateCoworkWorkspace({ projectId: 'alpha', startPage: null });
-    expect(mockSidebarItems[0]?.cowork).not.toHaveProperty('startPage');
+    const updatedItem = mockSidebarItems[0];
+    if (!updatedItem || !('cowork' in updatedItem))
+      throw new Error('Expected the updated cowork workspace');
+    expect(updatedItem.cowork).not.toHaveProperty('startPage');
   });
 
   it('rejects an invalid cowork start page', async () => {
@@ -1106,26 +1117,28 @@ describe('organization project Cowork staging', () => {
       instanceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       bindingGeneration: 3,
     };
+    const coworkMetadata: NonNullable<WorkspaceConfigFile['cowork']> = {
+      createdAt: '2026-09-29T00:00:00.000Z',
+      archiveRetentionDays: 30,
+      description: 'Keep this description',
+    };
+    // This restage test deliberately preserves the legacy persisted fields.
+    Reflect.set(coworkMetadata, 'starterPrompts', ['Keep this prompt']);
     const existingConfig: WorkspaceConfigFile = {
       version: 1,
       type: 'cowork',
       repos: [],
       externalPath: '/user/project',
-      cowork: {
-        createdAt: '2026-09-29T00:00:00.000Z',
-        archiveRetentionDays: 30,
-        description: 'Keep this description',
-        starterPrompts: ['Keep this prompt'],
-      },
-      defaultPluginSelections: {
-        skills: { 'keep-this-skill': true },
-        mcpServers: {},
-        slashCommands: {},
-        subagents: {},
-      },
+      cowork: coworkMetadata,
       seededFromBlueprintExternalId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
       owner,
     };
+    Reflect.set(existingConfig, 'defaultPluginSelections', {
+      skills: { 'keep-this-skill': true },
+      mcpServers: {},
+      slashCommands: {},
+      subagents: {},
+    });
     mockWorkspaceConfigs.set(workspaceId, existingConfig);
 
     await stageOrgCoworkWorkspace({ id: workspaceId, owner: newerOwner });
@@ -1281,8 +1294,8 @@ describe('organization default Cowork creation', () => {
   });
 
   it('rejects deleting any organization default', async () => {
-    await expect(deleteCoworkWorkspace(workspaceId)).rejects.toThrow(
-      'cannot be deleted',
-    );
+    await expect(
+      deleteCoworkWorkspace(workspaceId, indexRemoval(workspaceId)),
+    ).rejects.toThrow('cannot be deleted');
   });
 });

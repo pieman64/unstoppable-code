@@ -94,7 +94,7 @@ export const LEDGER_ACTOR_KIND_LABELS: Readonly<
 > = {
   user: 'You',
   chat: 'Chat',
-  pipeline_agent: 'Pipeline agent',
+  pipeline_agent: 'Workflow agent',
   managed_delegation: 'Delegate',
   background: 'Background task',
   ledger_sidecar: 'Feed sidecar',
@@ -435,7 +435,7 @@ export function ledgerSourceDescription(
     case 'managed_delegation':
       return 'Recorded by a delegate.';
     case 'pipeline_agent':
-      return 'Recorded by a pipeline agent.';
+      return 'Recorded by a workflow agent.';
     case 'summary':
       return 'Recorded from the Summary panel.';
   }
@@ -495,7 +495,7 @@ export function ledgerOwnerCandidateDescription(
       agent.pausedAt === null
         ? ''
         : `, paused ${formatLedgerTime(agent.pausedAt)}`;
-    return `Pipeline run ${agent.executionId.slice(0, 8)}, job ${agent.jobId}, step ${agent.stepId}${paused}`;
+    return `Workflow run ${agent.executionId.slice(0, 8)}, job ${agent.jobId}, step ${agent.stepId}${paused}`;
   }
   if (candidate.isSelf) return '';
   return OWNER_KIND_DESCRIPTIONS[candidate.actor.kind] ?? '';

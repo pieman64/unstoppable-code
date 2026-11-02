@@ -26,7 +26,7 @@ const SEARCH_ID = '11111111-1111-4111-8111-111111111111';
 const ORG_ID = '33333333-3333-4333-8333-333333333333';
 
 function handler(
-  channel = IPC_CHANNELS.orgMemoryFeedbackSubmit,
+  channel: string = IPC_CHANNELS.orgMemoryFeedbackSubmit,
 ): (...args: unknown[]) => unknown {
   const registeredHandler = registered.get(channel);
   if (!registeredHandler) throw new Error('Handler not registered');

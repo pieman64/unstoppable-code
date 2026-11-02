@@ -236,6 +236,10 @@ export interface NormalizedPipeline {
    * list instead of re-deriving it from the raw manifest.
    */
   dependencies?: NormalizedPipelineDependency[];
+  /** Validated `Pipeline.assets` with `required` and `install` defaulted. */
+  assets?: NormalizedPipelineAssetDeclaration[];
+  /** `Pipeline.local_state` carried through unchanged. */
+  local_state?: string[];
 }
 
 /**
@@ -368,6 +372,42 @@ export interface Pipeline {
    * `required`/`fallback` may be omitted; normalization applies the defaults.
    */
   dependencies?: PipelineDependencyInput[];
+  /**
+   * Files this pipeline reads at run time, shared with it when its automation
+   * is shared. Expressions read the resolved directory through
+   * `${{ assets.<id>.path }}`.
+   */
+  assets?: PipelineAssetDeclaration[];
+  /**
+   * Per-runner state paths (databases, caches, checkouts) that must never
+   * travel with a share. Asset paths may not overlap them.
+   */
+  local_state?: string[];
+}
+
+/** How an installed asset treats files that already exist on the recipient. */
+export type PipelineAssetInstallMode = 'seed' | 'replace';
+
+/** One `assets` entry as written in pipeline YAML. */
+export interface PipelineAssetDeclaration {
+  /** Matches `^[a-z][a-z0-9_]{0,31}$`; unique within the pipeline. */
+  id: string;
+  /** Author-side source directory; `~` expands to the home directory. */
+  path: string;
+  description?: string;
+  /** Defaults to `true`. */
+  required?: boolean;
+  /** Defaults to `seed`. */
+  install?: PipelineAssetInstallMode;
+}
+
+/** An `assets` entry after normalization applies the defaults. */
+export interface NormalizedPipelineAssetDeclaration {
+  id: string;
+  path: string;
+  description?: string;
+  required: boolean;
+  install: PipelineAssetInstallMode;
 }
 
 // ---------------------------------------------------------------------------

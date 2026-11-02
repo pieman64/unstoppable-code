@@ -34,7 +34,7 @@ describe('SecurityAuditSummary', () => {
     });
     const summary = container.querySelector('[data-testid="audit"]');
     expect(summary?.textContent).toContain('Security scan');
-    expect(summary?.textContent).toContain('safe');
+    expect(summary?.textContent).toContain('Safe');
     expect(summary?.textContent).not.toContain('alert');
     // The shared RiskBadge renders the level; the stacked "Risk level"
     // caption it uses in skill rows must not appear inline here.

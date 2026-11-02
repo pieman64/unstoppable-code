@@ -41,10 +41,14 @@ export function auditEntryWorkspaceId(
   return undefined;
 }
 
-export function readAuditTrailProviderFilter(
-  value: string,
-): AgentAuditHistoryRequest['provider'] {
-  return value === 'claude' || value === 'codex' || value === 'ollama'
-    ? value
-    : 'all';
+/** The providers the Audit trail's Provider filter offers, in order. */
+export const AUDIT_TRAIL_PROVIDERS = ['claude', 'codex', 'ollama'] as const;
+
+export type AuditTrailProvider = (typeof AUDIT_TRAIL_PROVIDERS)[number];
+
+/** The filter's pick for a request's provider: none for `all`. */
+export function auditTrailProviderSelection(
+  provider: AgentAuditHistoryRequest['provider'],
+): AuditTrailProvider[] {
+  return AUDIT_TRAIL_PROVIDERS.filter((value) => value === provider);
 }

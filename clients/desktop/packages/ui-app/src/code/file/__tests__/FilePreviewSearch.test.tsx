@@ -55,6 +55,7 @@ describe('FilePreviewSearch', () => {
       controlled?: PreviewSearchControlled;
       onSearchRequest?: (operation: 'open' | 'close') => void;
       remote?: boolean;
+      resetKey?: string;
     } = {},
   ): void {
     act(() => {
@@ -62,6 +63,7 @@ describe('FilePreviewSearch', () => {
         <FilePreviewSearch
           enabled
           remote={props.remote ?? false}
+          resetKey={props.resetKey}
           searchShortcutActive
           header={null}
           presentation={props.presentation}
@@ -109,6 +111,28 @@ describe('FilePreviewSearch', () => {
     const event = pressCmdF(viewer());
 
     expect(event.defaultPrevented).toBe(false);
+    expect(drawer()).toBeNull();
+  });
+
+  it('closes search on a view change while keeping its root mounted', () => {
+    render({ resetKey: 'preview' });
+    const originalViewer = viewer();
+    pressCmdF(originalViewer);
+    expect(drawer()).not.toBeNull();
+
+    render({ resetKey: 'raw' });
+    expect(viewer()).toBe(originalViewer);
+    expect(drawer()).toBeNull();
+    expect(executor.clearHighlights).toHaveBeenCalled();
+    expect(states.at(-1)).toMatchObject({
+      open: false,
+      totalCount: 0,
+      currentIndex: 0,
+    });
+
+    pressCmdF(viewer());
+    expect(drawer()).not.toBeNull();
+    render({ resetKey: 'preview' });
     expect(drawer()).toBeNull();
   });
 

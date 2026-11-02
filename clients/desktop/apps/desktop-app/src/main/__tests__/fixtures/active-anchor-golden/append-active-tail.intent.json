@@ -1,0 +1,25 @@
+{
+  "baselineCommit": "339153ab43be3a6895909afc24ee7cbf0a3a30e1",
+  "write": {
+    "chatId": "chat",
+    "kind": "active-replace",
+    "create": false,
+    "count": 2,
+    "sha256": "74bb7084cb87634486c4ee4646cdc7ee2ae7e775fd19fe567e160c07873cb1cc",
+    "appendCommittedCount": 1
+  },
+  "payload": [
+    {
+      "id": "ready-run",
+      "role": "user",
+      "timestamp": 1,
+      "blocks": [{ "type": "text", "text": "ready-run" }]
+    },
+    {
+      "id": "ordinary-parent-tail",
+      "role": "user",
+      "timestamp": 1,
+      "blocks": [{ "type": "text", "text": "ordinary-parent-tail" }]
+    }
+  ]
+}

@@ -11,8 +11,8 @@
  *   lease lets the store evict the heavy detail snapshot.
  * - A **summary interest** is held by a lightweight consumer that shows one
  *   execution's live status outside the selected run list (chat run cards).
- *   It keeps the cached state across list scope changes and live under
- *   execution events, and never demands detail reads or log output.
+ *   It keeps the slim row across list scope changes and live under execution
+ *   events, and never retains detail, demands detail reads, or reads logs.
  *
  * The registry is plain module state with no store imports, so both the store
  * and its consumers can depend on it without an import cycle. It is
@@ -40,6 +40,30 @@ const OWNERLESS_KEY = 'ownerless';
 const leasesByExecution = new Map<string, Set<LeaseRecord>>();
 const leasesByOwner = new Map<string, Set<LeaseRecord>>();
 const summaryInterestCounts = new Map<string, number>();
+type PipelineInterestChangeListener = (executionId: string) => void;
+const pipelineInterestChangeListeners =
+  new Set<PipelineInterestChangeListener>();
+
+function notifyPipelineInterestChanged(executionId: string): void {
+  pipelineInterestChangeListeners.forEach(
+    (listener: PipelineInterestChangeListener): void => {
+      listener(executionId);
+    },
+  );
+}
+
+/**
+ * Subscribes to demand releases so the store can prune states immediately
+ * instead of waiting for an unrelated list reload or event.
+ */
+export function subscribePipelineInterestChanges(
+  listener: (executionId: string) => void,
+): () => void {
+  pipelineInterestChangeListeners.add(listener);
+  return (): void => {
+    pipelineInterestChangeListeners.delete(listener);
+  };
+}
 
 /** Stable key for an owner; every ownerless consumer shares one key. */
 export function pipelineDetailOwnerKey(
@@ -113,7 +137,11 @@ export function releasePipelineDetailLease(
   lease.released = true;
   removeFromIndex(leasesByExecution, lease.executionId, lease);
   removeFromIndex(leasesByOwner, lease.ownerKey, lease);
-  return !leasesByExecution.has(lease.executionId);
+  const releasedLastLease = !leasesByExecution.has(lease.executionId);
+  if (releasedLastLease) {
+    notifyPipelineInterestChanged(lease.executionId);
+  }
+  return releasedLastLease;
 }
 
 /**
@@ -163,6 +191,7 @@ export function acquirePipelineSummaryInterest(
       summaryInterestCounts.set(executionId, count);
     } else {
       summaryInterestCounts.delete(executionId);
+      notifyPipelineInterestChanged(executionId);
     }
   };
 }
@@ -171,7 +200,7 @@ export function hasPipelineSummaryInterest(executionId: string): boolean {
   return summaryInterestCounts.has(executionId);
 }
 
-/** Leased or summary-interested executions survive list resets. */
+/** Leased or summary-interested rows survive list resets. */
 export function isPipelineExecutionRetainedByInterest(
   executionId: string,
 ): boolean {

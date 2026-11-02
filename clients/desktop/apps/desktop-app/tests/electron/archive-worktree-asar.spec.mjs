@@ -113,15 +113,19 @@ async function archiveFromRowMenu(window, row, action = 'archive') {
   await window.getByTestId(`worktree-actions-menu-${action}`).click();
 
   const dialog = window.getByRole('dialog', {
-    name: action === 'archive' ? 'Archive worktree?' : 'Delete worktree?',
+    name: action === 'archive' ? /^Archive worktree/ : /^Delete worktree/,
   });
   await expect
     .poll(async () => (await dialog.isVisible()) || (await row.count()) === 0)
     .toBe(true);
   if (await dialog.isVisible()) {
     if (USE_PRODUCTION_BUILD) {
+      // The branch switch keeps the local branch by default.
       await dialog
-        .getByRole('button', { name: 'Preserve local', exact: true })
+        .getByRole('button', {
+          name: action === 'archive' ? 'Archive worktree' : 'Delete worktree',
+          exact: true,
+        })
         .click();
       return;
     }

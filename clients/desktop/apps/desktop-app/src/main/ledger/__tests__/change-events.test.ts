@@ -14,6 +14,7 @@ const CHANGE: LedgerEntryChange = {
     workspaceId: 'workspace-1',
     worktreeId: 'worktree-1',
   },
+  ledgerId: '00000000-0000-4000-8000-000000000001',
   entryId: '00000000-0000-4000-8000-000000000101',
   revision: 2,
 };
@@ -62,7 +63,11 @@ describe('Ledger change events', () => {
     });
     const stopSyncs = onLedgerSyncChanged((change) => syncs.push(change));
 
-    notifyLedgerSyncChanged({ kind: 'scope', container: CHANGE.container });
+    notifyLedgerSyncChanged({
+      kind: 'scope',
+      container: CHANGE.container,
+      ledgerId: CHANGE.ledgerId,
+    });
     notifyLedgerSyncChanged({ kind: 'all' });
     stopSyncs();
     stopThrowing();
@@ -70,7 +75,11 @@ describe('Ledger change events', () => {
     notifyLedgerSyncChanged({ kind: 'accounts_rebound' });
 
     expect(syncs).toEqual([
-      { kind: 'scope', container: CHANGE.container },
+      {
+        kind: 'scope',
+        container: CHANGE.container,
+        ledgerId: CHANGE.ledgerId,
+      },
       { kind: 'all' },
     ]);
     expect(entries).toEqual([]);

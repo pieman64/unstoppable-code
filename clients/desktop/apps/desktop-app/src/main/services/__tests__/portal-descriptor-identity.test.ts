@@ -63,18 +63,26 @@ describe('portal descriptor identity', () => {
       workspaceLocalId: 'workspace-1',
       worktreeLocalId: 'worktree-1',
       hookId: 'pre-commit',
+      hookKey: 'pre-commit',
+      name: 'Pre-commit',
+      triggerName: 'pre-commit',
+      target: 'project',
     };
     const planInput: Parameters<typeof planToPortalEntity>[0] = {
       workspaceLocalId: 'workspace-1',
       worktreeLocalId: 'worktree-1',
       planId: 'plan-1',
+      title: 'Plan 1',
+      status: 'active',
     };
     const terminalInput: Parameters<typeof terminalSessionToPortalEntity>[0] = {
       id: 'terminal-1',
       projectId: 'workspace-1',
       worktreeId: 'worktree-1',
       cwd: '/tmp/worktree-1',
+      shell: '/bin/zsh',
       shellBasename: 'zsh',
+      createdAt: 0,
     };
     const hook = hookToPortalEntity(hookInput);
     const plan = planToPortalEntity(planInput);

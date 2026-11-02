@@ -23,7 +23,9 @@ jest.mock('../lib/paths', () => ({
 }));
 jest.mock('../plugins/curated-plugin-sync', () => ({
   getCuratedPluginMarketplaceName: (): string => 'canopy-curated',
-  recoverCuratedPluginPromotions: mockRecoverCuratedPluginPromotions,
+  get recoverCuratedPluginPromotions(): typeof mockRecoverCuratedPluginPromotions {
+    return mockRecoverCuratedPluginPromotions;
+  },
 }));
 
 import {

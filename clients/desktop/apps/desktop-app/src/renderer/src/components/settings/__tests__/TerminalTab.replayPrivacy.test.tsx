@@ -48,6 +48,10 @@ jest.mock('@/lib/terminalShellProfiles', () => ({
 
 import { SettingsReplayPrivacyContext } from '../settings-replay-privacy';
 import { TerminalTab } from '../TerminalTab';
+import {
+  settingsSelectOptionLabels,
+  settingsSelectTrigger,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -124,12 +128,13 @@ describe('TerminalTab session replay (CAN-3119)', () => {
     expect(byTestId('terminal-shell-option-zsh').textContent).toContain('zsh');
 
     act(() => byTestId('terminal-preset-add').click());
-    const options = Array.from(
-      byTestId('terminal-preset-editor').querySelectorAll('option'),
-    );
-    expect(options.map((option) => option.textContent)).toEqual([
-      'my-shell',
-      'zsh',
-    ]);
+    expect(
+      settingsSelectOptionLabels(
+        settingsSelectTrigger(
+          byTestId('terminal-preset-editor'),
+          '[aria-label="Shell"]',
+        ),
+      ),
+    ).toEqual(['my-shell', 'zsh']);
   });
 });

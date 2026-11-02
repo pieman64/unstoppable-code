@@ -9,8 +9,12 @@ jest.mock('../canopy-cloud/client', () => {
   );
   return {
     CanopyCloudClientError: actual.CanopyCloudClientError,
-    requestCanopyCloudJson: requestJsonMock,
-    requestCanopyCloudPublicJson: requestPublicJsonMock,
+    get requestCanopyCloudJson(): typeof requestJsonMock {
+      return requestJsonMock;
+    },
+    get requestCanopyCloudPublicJson(): typeof requestPublicJsonMock {
+      return requestPublicJsonMock;
+    },
   };
 });
 

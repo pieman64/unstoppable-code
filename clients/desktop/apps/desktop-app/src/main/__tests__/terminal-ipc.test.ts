@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/unbound-method */
 import type { ClaudeTerminalChatSummaryScheduler } from '../integration/claude-terminal-session-service';
+import type { TerminalOutputEvent } from '@canopy/desktop-shared/types';
 
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
@@ -9,23 +10,29 @@ jest.mock('../lib/window-send', () => ({
   sendToWindow: jest.fn(),
 }));
 
-jest.mock('../terminal/pty-manager', () => ({
-  ptyManager: {
-    setEventSender: jest.fn(),
-    spawn: jest.fn(),
+jest.mock('../terminal/worker-terminal', () => ({
+  workerTerminal: {
+    setEventSink: jest.fn(),
+    create: jest.fn(),
     restore: jest.fn(),
-    attach: jest.fn(),
+    replay: jest.fn(),
     write: jest.fn(),
-    chatIdOf: jest.fn(),
+    get: jest.fn(),
     resize: jest.fn(),
     kill: jest.fn(),
     list: jest.fn(),
+    prewarmShell: jest.fn(() => Promise.resolve()),
+    profiles: jest.fn(() => [
+      { id: 'zsh', label: 'zsh', isDefault: true },
+      { id: 'bash', label: 'bash', isDefault: false },
+    ]),
   },
-  prewarmLinuxTerminalShell: jest.fn(() => Promise.resolve()),
-  listAvailableTerminalProfiles: jest.fn(() => [
-    { id: 'zsh', label: 'zsh', isDefault: true },
-    { id: 'bash', label: 'bash', isDefault: false },
-  ]),
+  TERMINAL_EVENT_CHANNELS: {
+    spawned: 'terminal:spawned',
+    output: 'terminal:output',
+    exit: 'terminal:exit',
+    runningChanged: 'terminal:running-changed',
+  },
 }));
 
 jest.mock('../remote-control/host/bridge-window', () => ({
@@ -116,7 +123,10 @@ import {
   resetChatDriversForTests,
 } from '../remote-control/host/chat-drivers';
 import { sendToWindow } from '../lib/window-send';
-import { prewarmLinuxTerminalShell, ptyManager } from '../terminal/pty-manager';
+import {
+  TERMINAL_EVENT_CHANNELS,
+  workerTerminal,
+} from '../terminal/worker-terminal';
 import { terminalPersistenceStore } from '../terminal/persistence';
 import {
   acquireSplitLock,
@@ -126,10 +136,23 @@ import {
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedSendToWindow = jest.mocked(sendToWindow);
-const mockedPtyManager = jest.mocked(ptyManager);
+const mockedPtyManager = jest.mocked(workerTerminal);
 const mockedTerminalPersistenceStore = jest.mocked(terminalPersistenceStore);
 
 type HandlerFn = (...args: unknown[]) => unknown;
+
+/** The engine's event sink, called with the renderer channel an event maps to. */
+function terminalEventSender(): (channel: string, payload: unknown) => void {
+  const sink = mockedPtyManager.setEventSink.mock.calls[0]?.[0] as
+    | ((event: { type: string; payload: unknown }) => void)
+    | undefined;
+  return (channel, payload): void => {
+    const type = Object.entries(TERMINAL_EVENT_CHANNELS).find(
+      ([, value]) => value === channel,
+    )?.[0];
+    if (type) sink?.({ type, payload });
+  };
+}
 
 function getRegisteredHandler(channel: string): HandlerFn {
   const call = mockedRegisterIpcHandler.mock.calls.find(
@@ -154,7 +177,7 @@ describe('registerTerminalHandlers', () => {
   });
 
   it('registers the terminal IPC handlers', () => {
-    expect(mockedPtyManager.setEventSender).toHaveBeenCalledTimes(1);
+    expect(mockedPtyManager.setEventSink).toHaveBeenCalledTimes(1);
     expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
       IPC_CHANNELS.terminalSpawn,
       expect.any(Function),
@@ -223,13 +246,14 @@ describe('registerTerminalHandlers', () => {
       mockClaudeTerminalSetChatSummaryScheduler.mock.calls[0]?.[0];
     const workOwner = Promise.resolve({ kind: 'personal' as const });
 
-    scheduler?.({
+    const legacySummaryRequest = {
       projectId: 'project-1',
       worktreeId: 'wt-1',
       chatId: 'chat-1',
       text: 'Summarize this terminal chat.',
       workOwner,
-    });
+    };
+    scheduler?.(legacySummaryRequest);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -281,14 +305,13 @@ describe('registerTerminalHandlers', () => {
       getMainWindow: () => mainWindow,
       getAppAdvisorWindow: () => appAdvisorWindow,
     } as never);
-    const eventSender = mockedPtyManager.setEventSender.mock.calls[0]?.[0] as
-      | ((channel: string, payload: Record<string, unknown>) => void)
-      | undefined;
+    const eventSender = terminalEventSender();
     const appAdvisorPayload = {
       projectId: APP_ADVISOR_PROJECT_ID,
       worktreeId: 'entry-app-advisor',
       terminalId: 'terminal-1',
-      data: 'output',
+      data: new TextEncoder().encode('output'),
+      seq: 1,
     };
 
     eventSender?.(IPC_CHANNELS.terminalOutput, appAdvisorPayload);
@@ -299,7 +322,8 @@ describe('registerTerminalHandlers', () => {
       projectId: 'foreign-project',
       worktreeId: APP_ADVISOR_WORKTREE_ID,
       terminalId: 'terminal-2',
-      data: 'output',
+      data: new TextEncoder().encode('output'),
+      seq: 1,
     };
     eventSender?.(IPC_CHANNELS.terminalOutput, foreignPayload);
 
@@ -317,11 +341,9 @@ describe('registerTerminalHandlers', () => {
       jest.clearAllMocks();
       const mainWindow = {} as never;
       registerTerminalHandlers(() => mainWindow);
-      const eventSender = mockedPtyManager.setEventSender.mock.calls[0]?.[0] as
-        | ((channel: string, payload: Record<string, unknown>) => void)
-        | undefined;
+      const eventSender = terminalEventSender();
       let seq = 0;
-      const output = (text: string): Record<string, unknown> => {
+      const output = (text: string): TerminalOutputEvent => {
         const data = new TextEncoder().encode(text);
         seq += data.length;
         return {
@@ -371,7 +393,7 @@ describe('registerTerminalHandlers', () => {
 
   it('forwards selected repo ids on spawn requests', async () => {
     const spawnHandler = getRegisteredHandler(IPC_CHANNELS.terminalSpawn);
-    mockedPtyManager.spawn.mockReturnValue({
+    mockedPtyManager.create.mockReturnValue({
       id: 'terminal-1',
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -389,13 +411,13 @@ describe('registerTerminalHandlers', () => {
       rows: 40,
     });
 
-    expect(mockedPtyManager.spawn).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-      120,
-      40,
-      'frontend',
-    );
+    expect(mockedPtyManager.create).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 40,
+      repoId: 'frontend',
+    });
     expect(result).toEqual({
       id: 'terminal-1',
       projectId: 'project-1',
@@ -409,11 +431,11 @@ describe('registerTerminalHandlers', () => {
 
   it('awaits the Linux account-shell prewarm before a Default spawn and a profile list, but not for explicit or managed spawns', async () => {
     const order: string[] = [];
-    jest.mocked(prewarmLinuxTerminalShell).mockImplementation(() => {
+    mockedPtyManager.prewarmShell.mockImplementation(() => {
       order.push('prewarm');
       return Promise.resolve();
     });
-    mockedPtyManager.spawn.mockImplementation(() => {
+    mockedPtyManager.create.mockImplementation(() => {
       order.push('spawn');
       return {
         id: 'terminal-1',
@@ -448,7 +470,7 @@ describe('registerTerminalHandlers', () => {
 
   it('forwards explicit terminal profile ids on spawn requests', async () => {
     const spawnHandler = getRegisteredHandler(IPC_CHANNELS.terminalSpawn);
-    mockedPtyManager.spawn.mockReturnValue({
+    mockedPtyManager.create.mockReturnValue({
       id: 'terminal-1',
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -466,16 +488,13 @@ describe('registerTerminalHandlers', () => {
       rows: 40,
     });
 
-    expect(mockedPtyManager.spawn).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-      120,
-      40,
-      undefined,
-      undefined,
-      undefined,
-      'bash',
-    );
+    expect(mockedPtyManager.create).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 40,
+      profileId: 'bash',
+    });
   });
 
   it('rejects invalid terminal profile ids before they reach the PTY manager', async () => {
@@ -490,7 +509,7 @@ describe('registerTerminalHandlers', () => {
         rows: 40,
       }),
     ).rejects.toThrow('Invalid terminal profile id');
-    expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+    expect(mockedPtyManager.create).not.toHaveBeenCalled();
   });
 
   it('lists available terminal profiles', async () => {
@@ -516,7 +535,7 @@ describe('registerTerminalHandlers', () => {
         rows: 40,
       }),
     ).rejects.toThrow('Invalid selectedRepoId');
-    expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+    expect(mockedPtyManager.create).not.toHaveBeenCalled();
   });
 
   it('rejects invalid managed terminal commands before they reach the PTY manager', async () => {
@@ -536,12 +555,12 @@ describe('registerTerminalHandlers', () => {
         },
       }),
     ).rejects.toThrow('must use the bundled Claude binary');
-    expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+    expect(mockedPtyManager.create).not.toHaveBeenCalled();
   });
 
   it('accepts claude-worker managed terminal commands', async () => {
     const spawnHandler = getRegisteredHandler(IPC_CHANNELS.terminalSpawn);
-    mockedPtyManager.spawn.mockReturnValue({
+    mockedPtyManager.create.mockReturnValue({
       id: 'worker-terminal-1',
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -566,14 +585,13 @@ describe('registerTerminalHandlers', () => {
       managedCommand,
     });
 
-    expect(mockedPtyManager.spawn).toHaveBeenCalledWith(
-      'project-1',
-      'wt-1',
-      120,
-      40,
-      undefined,
+    expect(mockedPtyManager.create).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 120,
+      rows: 40,
       managedCommand,
-    );
+    });
     expect(result).toEqual({
       id: 'worker-terminal-1',
       projectId: 'project-1',
@@ -605,7 +623,7 @@ describe('registerTerminalHandlers', () => {
         },
       }),
     ).rejects.toThrow('blocked key PATH');
-    expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+    expect(mockedPtyManager.create).not.toHaveBeenCalled();
   });
 
   it('rejects renderer-supplied managed terminal path overrides', async () => {
@@ -626,7 +644,7 @@ describe('registerTerminalHandlers', () => {
         },
       }),
     ).rejects.toThrow('only internal launches may set path overrides');
-    expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+    expect(mockedPtyManager.create).not.toHaveBeenCalled();
   });
 
   it('rejects oversized terminal writes before they reach the PTY manager', () => {
@@ -700,7 +718,10 @@ describe('registerTerminalHandlers', () => {
         chatId: 'chat-1',
       },
     ]);
-    mockedPtyManager.chatIdOf.mockReturnValue('chat-1');
+    mockedPtyManager.get.mockReturnValue({
+      id: 'terminal-1',
+      chatId: 'chat-1',
+    } as never);
 
     writeHandler(
       { sender: { id: 'bridge' } },
@@ -729,7 +750,7 @@ describe('registerTerminalHandlers', () => {
       },
     );
     expect(chatDriver('chat-1')).toBeNull();
-    mockedPtyManager.chatIdOf.mockReset();
+    mockedPtyManager.get.mockReset();
   });
 
   it('keeps the driver when another window opens a chat whose terminal is live', async () => {
@@ -918,7 +939,7 @@ describe('registerTerminalHandlers', () => {
     killHandler(null, { terminalId: 'terminal-1' });
 
     expect(mockedPtyManager.kill).toHaveBeenCalledWith('terminal-1', {
-      signalOverride: TERMINAL_USER_CLOSE_SIGNAL,
+      signal: TERMINAL_USER_CLOSE_SIGNAL,
     });
   });
 
@@ -941,11 +962,11 @@ describe('registerTerminalHandlers', () => {
       rows: 40,
     });
 
-    expect(mockedPtyManager.restore).toHaveBeenCalledWith(
-      'terminal-1',
-      120,
-      40,
-    );
+    expect(mockedPtyManager.restore).toHaveBeenCalledWith({
+      terminalId: 'terminal-1',
+      cols: 120,
+      rows: 40,
+    });
     expect(result).toEqual({
       id: 'terminal-1',
       projectId: 'project-1',
@@ -1221,7 +1242,7 @@ describe('relative terminal target authority', () => {
     const trees = jest
       .spyOn(persistence, 'readWorkspaceWorktrees')
       .mockResolvedValue([]);
-    mockedPtyManager.spawn.mockClear();
+    mockedPtyManager.create.mockClear();
     try {
       await expect(
         terminal.spawnTerminalAfterShellPrewarm({
@@ -1232,7 +1253,7 @@ describe('relative terminal target authority', () => {
           rows: 24,
         }),
       ).rejects.toMatchObject({ code: 'invalid_target' });
-      expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+      expect(mockedPtyManager.create).not.toHaveBeenCalled();
     } finally {
       config.mockRestore();
       trees.mockRestore();
@@ -1254,7 +1275,7 @@ describe('relative terminal target authority', () => {
       .mockResolvedValue([
         { id: 'wt-1', branchName: 'main', createdAt: '2026-10-21' },
       ]);
-    mockedPtyManager.spawn.mockClear();
+    mockedPtyManager.create.mockClear();
     try {
       await expect(
         terminal.spawnTerminalAfterShellPrewarm({
@@ -1266,7 +1287,7 @@ describe('relative terminal target authority', () => {
           rows: 24,
         }),
       ).rejects.toMatchObject({ code: 'invalid_target' });
-      expect(mockedPtyManager.spawn).not.toHaveBeenCalled();
+      expect(mockedPtyManager.create).not.toHaveBeenCalled();
     } finally {
       config.mockRestore();
       trees.mockRestore();
@@ -1300,7 +1321,7 @@ describe('relative terminal target authority', () => {
         { id: 'wt-1', branchName: 'main', createdAt: '2026-10-21' },
       ]);
     jest.mocked(resolver.resolveWorktreeCwd).mockReturnValue(root);
-    mockedPtyManager.spawn.mockClear();
+    mockedPtyManager.create.mockClear();
     try {
       await terminal.spawnTerminalAfterShellPrewarm({
         projectId: 'project-1',
@@ -1310,17 +1331,14 @@ describe('relative terminal target authority', () => {
         cols: 80,
         rows: 24,
       });
-      expect(mockedPtyManager.spawn).toHaveBeenCalledWith(
-        'project-1',
-        'wt-1',
-        80,
-        24,
-        'repo',
-        undefined,
-        await fs.realpath(path.join(root, 'apps/web')),
-        undefined,
-        undefined,
-      );
+      expect(mockedPtyManager.create).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        cols: 80,
+        rows: 24,
+        repoId: 'repo',
+        cwd: await fs.realpath(path.join(root, 'apps/web')),
+      });
     } finally {
       config.mockRestore();
       trees.mockRestore();

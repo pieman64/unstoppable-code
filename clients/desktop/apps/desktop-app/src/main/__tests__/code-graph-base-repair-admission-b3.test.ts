@@ -1,5 +1,5 @@
 /** PRIVATE UNRUN candidates for the exact immutable-generation pre-staging decision. */
-import type { ReadCodeGraphSummaryProjectionResult } from '@canopy/desktop-shared/node/code-graph/summary-projection';
+import type { ReadCodeGraphSummaryProjectionResult } from '@canopy/code-graph/summary-projection';
 jest.mock('../code-graph/read-runner', () => ({
   runCodeGraphWorkerRead: jest.fn(),
 }));

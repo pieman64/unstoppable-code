@@ -4,10 +4,17 @@
 // held to a golden listing written from the fixture definition, so a defect
 // shared by the direct and daemon readers still fails.
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
+import { DESKTOP_FILE_IMAGE_SAVE_SUPPORT } from '../../../../packages/protocol/src/file-image-save.ts';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
   GOLDEN_DIR,
@@ -16,6 +23,7 @@ import {
   cleanupAbandonedDaemonFilesApp,
   cliDaemonStatus,
   daemonExitState,
+  expandAppManagedRootGroup,
   expandFolder,
   expectDaemonServed,
   expectDirectOnly,
@@ -31,7 +39,7 @@ import {
   panelRoots,
   proveBridgedDaemon,
   readDescriptor,
-  setFilesFlag,
+  setFilesChoice,
   treeItem,
   withDaemonFilesApp,
   writeGoldenFixture,
@@ -184,6 +192,7 @@ async function walkSingleRepoPanel(context) {
   // The same IPC route, from the same window, for the fields the panel
   // does not render.
   expect(await ipcRoots(window, scope)).toEqual({
+    imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
     roots: singleRoots(seeded, false),
   });
   for (const relative of [
@@ -208,6 +217,7 @@ async function walkSingleRepoPanel(context) {
     ]);
   await expectFilesPanelActive(panel);
   expect(await ipcRoots(window, scope)).toEqual({
+    imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
     roots: singleRoots(seeded, true),
   });
   // A directory change inside an expanded folder.
@@ -227,6 +237,16 @@ async function walkSingleRepoPanel(context) {
   return { panel, opened, all: filesTraffic(await counters.read()) };
 }
 
+/**
+ * Everything under `runtime` except `hosts`: Electron main joins that W5 host
+ * cohort at startup whether or not the daemon runs.
+ */
+function daemonRuntimeEntries(canonicalDataRoot) {
+  const runtime = path.join(canonicalDataRoot, 'runtime');
+  if (!existsSync(runtime)) return [];
+  return readdirSync(runtime).filter((name) => name !== 'hosts');
+}
+
 async function daemonChildren(mainPid, executable) {
   const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,command=']);
   return stdout
@@ -240,12 +260,12 @@ async function daemonChildren(mainPid, executable) {
     .map(([, pid]) => Number(pid));
 }
 
-test('flag off: the Files panel matches the golden listing on direct reads with zero daemon contact', async ({}, testInfo) => {
+test('experiment off: the Files panel matches the golden listing on direct reads with zero daemon contact', async ({}, testInfo) => {
   test.setTimeout(240_000);
-  // Unpinned, exactly as every other spec launches: the default is off.
+  // The ordinary suite pins offered with no choice: no daemon contact.
   await withDaemonFilesApp(
     testInfo,
-    { flag: null, seed: seedSingleRepo },
+    { enabled: null, seed: seedSingleRepo },
     async (context) => {
       const { window, counters, report, canonicalDataRoot } = context;
       await counters.reset();
@@ -264,25 +284,26 @@ test('flag off: the Files panel matches the golden listing on direct reads with 
       expectDirectOnly(traffic.opened, ['roots', 'directory']);
       expectDirectOnly(traffic.all, ['roots', 'directory']);
       // Zero contact although the verified daemon is staged where the host
-      // would look: no runtime state and no daemon child of Electron main.
-      expect(existsSync(path.join(canonicalDataRoot, 'runtime'))).toBe(false);
+      // would look: no daemon runtime state and no daemon child of Electron
+      // main.
+      expect(daemonRuntimeEntries(canonicalDataRoot)).toEqual([]);
       expect(
         await daemonChildren(context.mainPid, context.bridge.executable),
       ).toEqual([]);
       Object.assign(report.steps, {
         malformedOwner: unchanged.value,
         panel: { opened: traffic.opened, all: traffic.all },
-        runtimeDirectory: 'absent',
+        daemonRuntimeState: 'absent',
       });
     },
   );
 });
 
-test('flag on: the Files panel is served by the bridged packaged daemon through loss, flag-off return and typed failures', async ({}, testInfo) => {
+test('experiment on: the Files panel is served by the bridged packaged daemon through loss, opt-out return and typed failures', async ({}, testInfo) => {
   test.setTimeout(420_000);
   await withDaemonFilesApp(
     testInfo,
-    { flag: true, seed: seedSingleRepo },
+    { enabled: true, seed: seedSingleRepo },
     async (context) => {
       const { window, counters, report, canonicalDataRoot } = context;
       const scope = { projectId: SINGLE, worktreeId: WORKTREE };
@@ -310,7 +331,7 @@ test('flag on: the Files panel is served by the bridged packaged daemon through 
       report.steps.malformedOwner = { ...malformed, traffic: malformedTraffic };
 
       // The direct reader's own path check refuses a traversal before any
-      // contact, with its error; the flag-off return below compares them.
+      // contact, with its error; the opt-out return below compares them.
       const traversalRequest = {
         ...scope,
         repoId: SINGLE,
@@ -417,11 +438,11 @@ test('flag on: the Files panel is served by the bridged packaged daemon through 
         process: await proveBridgedDaemon(context, replacement),
       };
 
-      // Negative control and flag-off return: with the flag off, a read is
+      // Negative control and opt-out return: with the experiment off, a read is
       // answered while the still-running daemon is stopped, so it cannot
       // have been served by the daemon.
-      await setFilesFlag(context.electronApp, window, false);
-      // Turning the flag off closes the session; stop the daemon only once
+      await setFilesChoice(window, false);
+      // Opting out closes the session; stop the daemon only once
       // its last client connection is gone (the listener alone remains), so
       // the stop never stalls that release.
       await expect
@@ -468,8 +489,10 @@ test('flag on: the Files panel is served by the bridged packaged daemon through 
       }
       const idleExitMs = Date.now() - releasedAt;
       expect(
-        (await window.evaluate(() => window.api.featureFlags.getSnapshot()))
-          .values['canopy-desktop-daemon-files-reads'],
+        (
+          await window.evaluate(() => window.api.experiments.getSnapshot())
+        ).experiments.find((entry) => entry.id === 'daemon-files-reads')
+          ?.enabled,
       ).toBe(false);
       // Recorded, not asserted: whether Electron main reaped the exited
       // daemons while it keeps running (an unreaped one stays a zombie).
@@ -518,7 +541,7 @@ test('flag on: the Files panel is served by the bridged packaged daemon through 
         });
         return;
       }
-      await setFilesFlag(context.electronApp, window, true);
+      await setFilesChoice(window, true);
       expect(context.bridge.remove('packaged daemon')).toBe('removed');
       await counters.reset();
       const failed = await settleIpc(window, 'directory', {
@@ -571,7 +594,7 @@ function coworkHome(dataRoot) {
   );
   const cowork = index.workspaces.filter(({ type }) => type === 'cowork');
   expect(cowork).toHaveLength(1);
-  const { id } = cowork[0];
+  const { id, name } = cowork[0];
   const config = JSON.parse(
     readFileSync(
       path.join(dataRoot, 'workspaces', id, 'workspace.json'),
@@ -580,18 +603,19 @@ function coworkHome(dataRoot) {
   );
   return {
     id,
+    name,
     home: config.externalPath ?? path.join(dataRoot, 'workspaces', id, 'home'),
   };
 }
 
-for (const flag of [null, true])
-  test(`flag ${flag ? 'on' : 'off'}: multi-repo and Cowork panels keep golden roots, order and managed exclusions ${flag ? 'over the daemon' : 'on direct reads'}`, async ({}, testInfo) => {
+for (const enabled of [null, true])
+  test(`experiment ${enabled ? 'on' : 'off'}: multi-repo and Cowork panels keep golden roots, order and managed exclusions ${enabled ? 'over the daemon' : 'on direct reads'}`, async ({}, testInfo) => {
     test.setTimeout(300_000);
-    // Flag off is the legacy baseline for the same scopes and golden rows.
-    const expectServed = flag ? expectDaemonServed : expectDirectOnly;
+    // Opt-out is the direct baseline for the same scopes and golden rows.
+    const expectServed = enabled ? expectDaemonServed : expectDirectOnly;
     await withDaemonFilesApp(
       testInfo,
-      { flag, seed: seedMultiRepo },
+      { enabled, seed: seedMultiRepo },
       async (context) => {
         const { window, app, counters, report, canonicalDataRoot, dataRoot } =
           context;
@@ -634,6 +658,7 @@ for (const flag of [null, true])
         const multiTraffic = filesTraffic(await counters.read());
         expectServed(multiTraffic, ['roots', 'directory']);
         expect(await ipcRoots(window, scope)).toEqual({
+          imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
           roots: [
             {
               repoId: '__workspace_root__',
@@ -658,7 +683,7 @@ for (const flag of [null, true])
         expect(
           await ipcDirectory(window, scope, '__workspace_root__', GOLDEN_DIR),
         ).toEqual({ entries: goldenIpcEntries(worktreePath, GOLDEN_DIR) });
-        const descriptor = flag ? readDescriptor(canonicalDataRoot) : null;
+        const descriptor = enabled ? readDescriptor(canonicalDataRoot) : null;
         if (descriptor) context.seenDescriptors.push(descriptor);
         report.steps.multiRepo = {
           traffic: multiTraffic,
@@ -673,7 +698,7 @@ for (const flag of [null, true])
         await expect(window.getByTestId('cowork-top-bar')).toBeVisible({
           timeout: 30_000,
         });
-        const { id: coworkId, home } = coworkHome(dataRoot);
+        const { id: coworkId, name: coworkName, home } = coworkHome(dataRoot);
         writeGoldenFixture(home);
         const managed = path.join(home, MANAGED_DIR);
         for (const [relative, text] of [
@@ -689,10 +714,15 @@ for (const flag of [null, true])
         }
         await counters.reset();
         const coworkPanel = await openFilesPanel(window);
+        // App-owned roots start inside the collapsed brand group.
+        await expect
+          .poll(() => panelRoots(coworkPanel))
+          .toEqual([{ id: 'workspace', label: coworkName }]);
+        await expandAppManagedRootGroup(coworkPanel);
         await expect
           .poll(() => panelRoots(coworkPanel))
           .toEqual([
-            { id: 'workspace', label: 'Workspace' },
+            { id: 'workspace', label: coworkName },
             { id: 'notes', label: 'notes' },
             { id: 'prompts', label: 'prompts' },
             { id: 'attachments', label: 'attachments' },
@@ -713,8 +743,9 @@ for (const flag of [null, true])
           worktreeId: coworkId,
         };
         expect(await ipcRoots(window, coworkScope)).toEqual({
+          imageSaveSupport: DESKTOP_FILE_IMAGE_SAVE_SUPPORT,
           roots: [
-            ['workspace', 'Workspace', home, 'standalone'],
+            ['workspace', coworkName, home, 'standalone'],
             ['notes', 'notes', path.join(managed, 'notes'), 'standalone'],
             ['prompts', 'prompts', path.join(managed, 'prompts'), 'standalone'],
             [
@@ -735,13 +766,11 @@ for (const flag of [null, true])
         ).toEqual({
           entries: goldenIpcEntries(home, GOLDEN_DIR, { gitAware: false }),
         });
-        if (flag) {
+        if (enabled) {
           // The same daemon served both scopes.
           expect(readDescriptor(canonicalDataRoot).pid).toBe(descriptor.pid);
         } else {
-          expect(existsSync(path.join(canonicalDataRoot, 'runtime'))).toBe(
-            false,
-          );
+          expect(daemonRuntimeEntries(canonicalDataRoot)).toEqual([]);
           expect(
             await daemonChildren(context.mainPid, context.bridge.executable),
           ).toEqual([]);

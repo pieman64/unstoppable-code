@@ -42,6 +42,6 @@ describe('hook actions in session replay', () => {
     ).toBe(true);
     expect(blocked(host, 'Chat: Review the change [if-command]')).toBe(true);
     expect(blocked(host, 'test -n "$TOKEN"')).toBe(true);
-    expect(blocked(host, 'Pipeline: bundled/code-review')).toBe(false);
+    expect(blocked(host, 'Workflow: bundled/code-review')).toBe(false);
   });
 });

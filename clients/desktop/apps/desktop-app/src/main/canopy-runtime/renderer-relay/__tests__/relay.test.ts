@@ -36,6 +36,8 @@ import {
   type RendererRelaySender,
 } from '../relay';
 import { relayAllows, type RendererRelaySurface } from '../surface-allowlist';
+import { INTERFACE_RELAY_ALLOWLIST } from '../interface-allowlist.generated';
+import { PORTAL_COMMAND_TYPES } from '@canopy/protocol/portal';
 
 // --- Definitions: real operation names, test-sized schemas -------------------
 
@@ -93,12 +95,15 @@ const REGISTER = 'core.client.capabilities.register';
 const CHAT_CREATE = 'core.chat.create';
 const EVENTS = 'core.runtime.events';
 const CHAT_EVENTS = 'core.chat.events';
+const GIT_BRANCHES = 'worker.git.branch.list';
 
 const mockDefinitions = {
   queries: {
     'core.runtime.initialize': query('core.runtime.read'),
     [HEALTH]: query('core.runtime.read', z.object({ status: z.string() })),
     [WORKSPACES]: query('core.workspace.read'),
+    // A name whose envelope admits `_execution` (CAN-5496).
+    [GIT_BRANCHES]: query('core.runtime.read'),
   },
   instructions: {
     [REGISTER]: instruction('core.client.manage'),
@@ -112,15 +117,13 @@ const mockDefinitions = {
 };
 
 // The binding worker owns ./definitions; the relay only reads RELAY_DEFINITIONS lazily.
-jest.mock(
-  '../definitions',
-  () => ({
-    get RELAY_DEFINITIONS(): typeof mockDefinitions {
-      return mockDefinitions;
-    },
-  }),
-  { virtual: true },
-);
+// Not `virtual`: a virtual mock of this real module is skipped once another
+// suite in the same Jest worker has resolved it.
+jest.mock('../definitions', () => ({
+  get RELAY_DEFINITIONS(): typeof mockDefinitions {
+    return mockDefinitions;
+  },
+}));
 
 // Records every stream handle the relay opens, so tests can see late closes.
 const mockOpenedHandles: { close: jest.SpyInstance }[] = [];
@@ -479,6 +482,29 @@ describe('surface allowlist', () => {
     expect(relayAllows('main', 'instruction', HEALTH)).toBe(false);
   });
 
+  it('never relays the trusted W5 record port, though the interface profile admits it (W6g)', () => {
+    for (const [kind, method] of [
+      ['query', 'core.workspaceRecords.capture'],
+      ['query', 'core.workspaceRecords.recovery.get'],
+      ['instruction', 'core.workspaceRecords.commit'],
+      // Receipts and reservations (CAN-5506).
+      ['query', 'core.workspaceRecords.receipt.lookup'],
+      ['query', 'core.workspaceRecords.reservation.list'],
+      ['instruction', 'core.workspaceRecords.reservation.reserve'],
+      ['instruction', 'core.workspaceRecords.reservation.updateDiagnostics'],
+      ['instruction', 'core.workspaceRecords.reservation.release'],
+      ['instruction', 'core.workspaceRecords.reservation.markRecoveryRequired'],
+    ] as const) {
+      expect(INTERFACE_RELAY_ALLOWLIST.authority[kind]).toContain(method);
+      for (const surface of ['main', 'app-advisor'] as const)
+        expect(relayAllows(surface, kind, method)).toBe(false);
+    }
+    // Portal commands are their own closed catalog, with no record port entry.
+    expect(
+      PORTAL_COMMAND_TYPES.filter((type) => /workspaceRecords/i.test(type)),
+    ).toEqual([]);
+  });
+
   it('narrows App Advisor to its declared subset', () => {
     expect(relayAllows('app-advisor', 'query', HEALTH)).toBe(true);
     expect(relayAllows('app-advisor', 'stream', EVENTS)).toBe(true);
@@ -670,6 +696,33 @@ describe('renderer relay', () => {
       expect(errorKind(reply)).toBe('invalid_argument');
       expect(h.cores[0].requests.map((request) => request.method)).toEqual([
         'core.runtime.initialize',
+      ]);
+    });
+
+    // CAN-5496: only a trusted host builder supplies host execution.
+    it('refuses a renderer _execution, even for an operation that accepts one', async () => {
+      const h = harness({ handlers: { [GIT_BRANCHES]: () => ({}) } });
+      const sender = h.sender();
+      expect(
+        (
+          await h.call(sender, {
+            kind: 'request',
+            method: GIT_BRANCHES,
+            params: {},
+          })
+        ).ok,
+      ).toBe(true);
+      const reply = await h.call(sender, {
+        kind: 'request',
+        method: GIT_BRANCHES,
+        params: {
+          _execution: { childEnvironment: { GIT_SSH_COMMAND: 'touch /tmp/x' } },
+        },
+      });
+      expect(errorKind(reply)).toBe('invalid_argument');
+      expect(h.cores[0].requests.map((request) => request.method)).toEqual([
+        'core.runtime.initialize',
+        GIT_BRANCHES,
       ]);
     });
 

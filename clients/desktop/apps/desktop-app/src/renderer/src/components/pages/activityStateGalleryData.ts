@@ -523,16 +523,16 @@ export const ACTIVITY_GALLERY_SECTIONS: readonly ActivityGallerySection[] = [
   },
   {
     id: 'pipeline-runs',
-    title: 'Pipeline Runs',
+    title: 'Workflow Runs',
     icon: 'pipeline',
     initialStateId: 'running',
     states: [
       {
         id: 'empty',
         label: 'Action only',
-        note: 'The whole card dispatches a pipeline.',
+        note: 'The whole card dispatches a workflow.',
         presentation: 'action-only',
-        title: 'Dispatch pipeline',
+        title: 'Dispatch workflow',
         action: 'dispatch',
         actionTargetStateId: 'pending',
       },
@@ -550,7 +550,7 @@ export const ACTIVITY_GALLERY_SECTIONS: readonly ActivityGallerySection[] = [
       {
         id: 'running',
         label: 'Running',
-        note: 'Active pipeline uses the warning/attention channel.',
+        note: 'Active workflow uses the warning/attention channel.',
         presentation: 'card',
         subtitle: '1 active, 2 completed',
         action: 'cancel',
@@ -584,7 +584,7 @@ export const ACTIVITY_GALLERY_SECTIONS: readonly ActivityGallerySection[] = [
       {
         id: 'failed',
         label: 'Failed',
-        note: 'Failed pipeline warns while collapsed.',
+        note: 'Failed workflow warns while collapsed.',
         presentation: 'card',
         subtitle: '0 active, 1 failed',
         action: 'dispatch',

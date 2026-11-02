@@ -1,22 +1,22 @@
 'use client';
 
 import { type JSX, type ReactNode } from 'react';
-import { CHAT_UNIT_LABEL } from '@canopy/protocol';
+import { CHAT_UNIT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
+  Button,
   DagProgressBar,
   ExecutionActionButton,
   PauseResumeIcon,
+  PipelineDispatchedTime,
   type DagJobMeta,
   type DagJobStatus,
 } from '@canopy/ui-shared/components';
 import {
-  actionChipClassName,
   canResumeExecution,
   canRetryExecution,
   canRerunExecution,
   compactPipelineStatusReasonLabel,
   computeDagTiers,
-  formatRelativeTime,
   hasRerunReplayData,
   statusBadgeClassName,
   type ExecutionTreeNode,
@@ -319,17 +319,12 @@ function getStepProgress(
   return `${completed}/${total}`;
 }
 
-export function PipelineRunDagProgressBar({
-  executionState,
-  muted = false,
-  onJobClick = (): void => undefined,
-}: {
-  executionState: PipelineRunExecutionState;
-  muted?: boolean;
-  onJobClick?: (jobId: string) => void;
-}): JSX.Element {
+/** A run's jobs as the DAG progress bar draws them, from its execution state. */
+export function pipelineRunDag(executionState: PipelineRunExecutionState): {
+  tiers: string[][];
+  jobs: Record<string, DagJobMeta>;
+} {
   const jobDefinitions = executionState.pipeline_snapshot.jobs;
-  const tiers = computeDagTiers(jobDefinitions);
   const jobs: Record<string, DagJobMeta> = {};
   for (const [jobId, jobDefinition] of Object.entries(jobDefinitions)) {
     const group = executionState.job_groups?.[jobId];
@@ -349,6 +344,19 @@ export function PipelineRunDagProgressBar({
       maxParallel: group?.resolved_max_parallel,
     };
   }
+  return { tiers: computeDagTiers(jobDefinitions), jobs };
+}
+
+export function PipelineRunDagProgressBar({
+  executionState,
+  muted = false,
+  onJobClick = (): void => undefined,
+}: {
+  executionState: PipelineRunExecutionState;
+  muted?: boolean;
+  onJobClick?: (jobId: string) => void;
+}): JSX.Element {
+  const { tiers, jobs } = pipelineRunDag(executionState);
   return (
     <DagProgressBar
       tiers={tiers}
@@ -366,7 +374,7 @@ export function PlanModifiedBadge(): JSX.Element {
 export function InputRequiredBadge(): JSX.Element {
   return (
     <span
-      aria-label="Pipeline input required"
+      aria-label="Workflow input required"
       className={statusBadgeClassName('warning')}
     >
       Input required
@@ -388,16 +396,12 @@ export function RerunLineageLabel({
   const sourceSummary = summaryLookup[sourceId];
   const label = sourceSummary?.pipeline_name ?? sourceId.slice(0, 8);
   return (
-    <button
-      type="button"
-      onClick={(event): void => {
-        event.stopPropagation();
-        onOpenSource(sourceId);
-      }}
-      className={`mt-1 ${actionChipClassName('neutral')}`}
-    >
-      Started over from {label}
-    </button>
+    <ExecutionActionButton
+      label={`Started over from ${label}`}
+      ariaLabel={`Started over from ${label}`}
+      onClick={(): void => onOpenSource(sourceId)}
+      className="mt-1"
+    />
   );
 }
 
@@ -410,18 +414,15 @@ export function SubPipelineBadge({
   expanded: boolean;
   onClick: () => void;
 }): JSX.Element {
+  const subPipelineLabel = `${count} sub-workflow${count !== 1 ? 's' : ''}`;
   return (
-    <button
-      type="button"
-      onClick={(event): void => {
-        event.stopPropagation();
-        onClick();
-      }}
-      className={`mt-1.5 ${actionChipClassName('neutral')}`}
-    >
-      <ChevronIcon open={expanded} />
-      {count} sub-pipeline{count !== 1 ? 's' : ''}
-    </button>
+    <ExecutionActionButton
+      label={subPipelineLabel}
+      ariaLabel={subPipelineLabel}
+      icon={<ChevronIcon open={expanded} />}
+      onClick={onClick}
+      className="mt-1.5"
+    />
   );
 }
 
@@ -447,22 +448,14 @@ export function FollowUpButton({
   dataTestId?: string;
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <ExecutionActionButton
+      label={label}
+      ariaLabel={label}
+      icon={icon}
+      onClick={onClick}
       disabled={disabled}
-      data-testid={dataTestId}
-      onClick={(event): void => {
-        event.stopPropagation();
-        onClick();
-      }}
-      onKeyDown={(event): void => {
-        event.stopPropagation();
-      }}
-      className={`${actionChipClassName('neutral')} disabled:cursor-not-allowed disabled:opacity-50`}
-    >
-      {icon}
-      {label}
-    </button>
+      dataTestId={dataTestId}
+    />
   );
 }
 
@@ -473,10 +466,13 @@ export interface ActiveRunRowProps {
   resumingId: string | null;
   mutationPending?: boolean;
   onOpenDetail: () => void;
-  onCancel: (id: string) => void;
-  onResume: (id: string, pauseResponses?: PipelineRunPauseResponse[]) => void;
+  /** Hosts that cannot cancel omit it, and the Cancel chip is not rendered. */
+  onCancel?: (id: string) => void;
+  /** Optional like `onCancel`: absent hides the Resume chip. */
+  onResume?: (id: string, pauseResponses?: PipelineRunPauseResponse[]) => void;
   onJobClick: (jobId: string) => void;
-  onOpenPlan: (executionId: string) => void;
+  /** Optional like `onCancel`: absent hides the plan chip. */
+  onOpenPlan?: (executionId: string) => void;
   summaryLookup: Readonly<Record<string, PipelineRunSummary>>;
   onOpenSource: (executionId: string) => void;
   renderAdvisorBadge?: PipelineRunRenderSlot;
@@ -512,7 +508,7 @@ export function ActiveRunRow({
     executionState !== undefined &&
     !inputRequested;
   return (
-    <div className="rounded-lg border bg-fg-primary/[0.03] px-3 py-3 transition hover:bg-fg-primary/[0.05]">
+    <div className="rounded-lg border bg-fg-primary/[0.03] px-3 py-3 transition-colors hover:bg-fg-primary/[0.05]">
       <div
         role="button"
         tabIndex={0}
@@ -530,9 +526,10 @@ export function ActiveRunRow({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <PipelineRunStatusPill status={summary.status} />
-              <span className="text-2xs fg-secondary/60">
-                {formatRelativeTime(summary.started_at)}
-              </span>
+              <PipelineDispatchedTime
+                startedAt={summary.started_at}
+                testId={`pipeline-run-dispatched-${summary.id}`}
+              />
               <HookTriggerBadge triggerSource={hookTriggerSource} />
               {summary.plan_modified === true && <PlanModifiedBadge />}
               {inputRequested && <InputRequiredBadge />}
@@ -549,7 +546,7 @@ export function ActiveRunRow({
             />
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            {summary.planId ? (
+            {summary.planId && onOpenPlan !== undefined ? (
               <ExecutionActionButton
                 label=""
                 icon={<PlanModeIcon width={13} height={13} />}
@@ -558,35 +555,30 @@ export function ActiveRunRow({
                 ariaLabel="Open tracked plan"
               />
             ) : null}
-            {canResumeFromPreview && (
-              <button
-                type="button"
-                data-testid={`pipeline-run-resume-${summary.id}`}
-                onClick={(event): void => {
-                  event.stopPropagation();
-                  onResume(summary.id);
-                }}
+            {canResumeFromPreview && onResume !== undefined && (
+              <ExecutionActionButton
+                label={resumingId === summary.id ? 'Resuming…' : 'Resume'}
+                ariaLabel={resumingId === summary.id ? 'Resuming…' : 'Resume'}
+                icon={<PauseResumeIcon paused size={13} />}
+                variant="warning"
+                dataTestId={`pipeline-run-resume-${summary.id}`}
+                onClick={(): void => onResume(summary.id)}
                 disabled={mutationPending || resumingId === summary.id}
-                className={`${actionChipClassName('warning')} disabled:cursor-wait disabled:opacity-60`}
-              >
-                <PauseResumeIcon paused size={13} />
-                {resumingId === summary.id ? 'Resuming…' : 'Resume'}
-              </button>
+              />
             )}
-            {isPipelineExecutionActiveStatus(summary.status) && (
-              <button
-                type="button"
-                data-testid={`pipeline-run-cancel-${summary.id}`}
-                onClick={(event): void => {
-                  event.stopPropagation();
-                  onCancel(summary.id);
-                }}
-                disabled={mutationPending || cancellingId === summary.id}
-                className={`${actionChipClassName('destructive')} disabled:cursor-wait disabled:opacity-60`}
-              >
-                {cancellingId === summary.id ? 'Cancelling…' : 'Cancel'}
-              </button>
-            )}
+            {onCancel !== undefined &&
+              isPipelineExecutionActiveStatus(summary.status) && (
+                <ExecutionActionButton
+                  label={cancellingId === summary.id ? 'Cancelling…' : 'Cancel'}
+                  ariaLabel={
+                    cancellingId === summary.id ? 'Cancelling…' : 'Cancel'
+                  }
+                  variant="destructive-chip"
+                  dataTestId={`pipeline-run-cancel-${summary.id}`}
+                  onClick={(): void => onCancel(summary.id)}
+                  disabled={mutationPending || cancellingId === summary.id}
+                />
+              )}
           </div>
         </div>
         {executionState && (
@@ -605,13 +597,18 @@ export interface CompletedRunRowProps {
   summary: PipelineRunSummary;
   executionState?: PipelineRunExecutionState;
   onOpenDetail: () => void;
-  onChatFollowUp: (executionId: string) => void;
-  onReportChatFollowUp: (executionId: string) => void;
-  onViewReport: (executionId: string) => void;
-  onPipelineFollowUp: (executionId: string) => void;
-  onOpenPlan: (executionId: string) => void;
-  onRetry: (executionId: string) => void;
-  onRerun: (executionId: string) => void;
+  /**
+   * The follow-up, plan, report, retry and start-over actions are optional
+   * like `onDebugFailure`: a host that cannot perform one omits it and its
+   * chip is not rendered.
+   */
+  onChatFollowUp?: (executionId: string) => void;
+  onReportChatFollowUp?: (executionId: string) => void;
+  onViewReport?: (executionId: string) => void;
+  onPipelineFollowUp?: (executionId: string) => void;
+  onOpenPlan?: (executionId: string) => void;
+  onRetry?: (executionId: string) => void;
+  onRerun?: (executionId: string) => void;
   /**
    * Optional: hosts with no App Advisor surface (the web portal) omit it and
    * the Debug chip is not rendered at all. A permanently disabled control is
@@ -660,8 +657,16 @@ export function CompletedRunRow({
   childrenSection,
 }: CompletedRunRowProps): JSX.Element {
   const canResume = canResumeExecution(summary);
-  const canRetry = canRetryExecution(summary);
-  const canRerun = canRerunExecution(summary);
+  const canRetry = onRetry !== undefined && canRetryExecution(summary);
+  const canRerun = onRerun !== undefined && canRerunExecution(summary);
+  const hasPlanActions =
+    summary.has_plan === true &&
+    (onChatFollowUp !== undefined ||
+      onPipelineFollowUp !== undefined ||
+      (summary.planId !== undefined && onOpenPlan !== undefined));
+  const hasReportActions =
+    summary.has_report === true &&
+    (onReportChatFollowUp !== undefined || onViewReport !== undefined);
   const rerunSupported = hasRerunReplayData(executionState);
   const hidden = summary.hidden === true;
   const hookTriggerSource =
@@ -670,20 +675,24 @@ export function CompletedRunRow({
     executionState?.status_reasons ?? summary.status_reasons,
   );
   return (
-    <div className="group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition hover:bg-fg-primary/[0.03]">
+    <div className="group/pipeline-run relative rounded-lg border bg-fg-primary/[0.015] px-3 py-2.5 transition-colors hover:bg-fg-primary/[0.03]">
       {onToggleHidden && (
-        <button
-          type="button"
-          data-testid={`pipeline-run-toggle-hidden-${summary.id}`}
-          onClick={(event): void => {
-            event.stopPropagation();
-            onToggleHidden();
-          }}
-          className="focus-ring absolute right-2 top-2 z-10 rounded-md p-1 fg-secondary opacity-0 transition hover:bg-fg-primary/[0.08] hover:fg-primary group-hover/pipeline-run:opacity-100"
-          aria-label={hidden ? 'Show pipeline run' : 'Hide pipeline run'}
-        >
-          {hidden ? <EyeIcon /> : <EyeOffIcon />}
-        </button>
+        <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover/pipeline-run:opacity-100 focus-within:opacity-100">
+          <Button
+            type="button"
+            variant="ghost-overlay"
+            size="compact"
+            iconOnly
+            data-testid={`pipeline-run-toggle-hidden-${summary.id}`}
+            onClick={(event): void => {
+              event.stopPropagation();
+              onToggleHidden();
+            }}
+            aria-label={hidden ? 'Show workflow run' : 'Hide workflow run'}
+          >
+            {hidden ? <EyeIcon /> : <EyeOffIcon />}
+          </Button>
+        </div>
       )}
       <div
         role="button"
@@ -700,9 +709,10 @@ export function CompletedRunRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <PipelineRunStatusPill status={summary.status} muted />
-          <span className="text-2xs fg-secondary/60">
-            {formatRelativeTime(summary.started_at)}
-          </span>
+          <PipelineDispatchedTime
+            startedAt={summary.started_at}
+            testId={`pipeline-run-dispatched-${summary.id}`}
+          />
           <HookTriggerBadge triggerSource={hookTriggerSource} />
           {summary.plan_modified === true && <PlanModifiedBadge />}
           {renderAdvisorBadge?.(summary)}
@@ -735,7 +745,7 @@ export function CompletedRunRow({
                 onClick={() => onDebugFailure(summary.id)}
                 disabled={debuggingFailureId !== null}
                 dataTestId={`pipeline-run-debug-failure-${summary.id}`}
-                ariaLabel="Debug failed pipeline with App Advisor"
+                ariaLabel={`Debug failed workflow with ${ORCHESTRATOR_LABEL}`}
               />
             )}
             {canResume && (
@@ -743,55 +753,59 @@ export function CompletedRunRow({
                 label={pauseReasonLabel}
                 onClick={onResumePauseReason}
                 dataTestId={`pipeline-run-needs-input-${summary.id}`}
-                ariaLabel={`Open paused pipeline run: ${pauseReasonLabel}`}
+                ariaLabel={`Open paused workflow run: ${pauseReasonLabel}`}
                 variant="warning"
               />
             )}
-            {canRetry && (
+            {canRetry && onRetry !== undefined && (
               <ExecutionActionButton
                 label={retrying ? 'Retrying…' : 'Retry'}
                 icon={<RetryIcon width={13} height={13} />}
                 onClick={() => onRetry(summary.id)}
                 disabled={retrying || mutationPending}
                 dataTestId={`pipeline-run-retry-${summary.id}`}
-                ariaLabel="Retry pipeline run"
+                ariaLabel="Retry workflow run"
                 variant="warning"
               />
             )}
-            {canRerun && (
+            {canRerun && onRerun !== undefined && (
               <ExecutionActionButton
                 label={rerunning ? 'Starting over…' : 'Start over'}
                 icon={<RerunIcon width={13} height={13} />}
                 onClick={() => onRerun(summary.id)}
                 disabled={rerunning || mutationPending || !rerunSupported}
                 dataTestId={`pipeline-run-rerun-${summary.id}`}
-                ariaLabel="Start pipeline run over"
+                ariaLabel="Start workflow run over"
                 variant="destructive-chip"
               />
             )}
           </div>
         )}
-        {(summary.has_plan === true || summary.has_report === true) && (
+        {(hasPlanActions || hasReportActions) && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {summary.has_plan === true && (
+            {hasPlanActions && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-3xs font-medium fg-secondary/60">
                   Plan
                 </span>
-                <FollowUpButton
-                  label={CHAT_UNIT_LABEL}
-                  icon={<ChatIcon />}
-                  onClick={() => onChatFollowUp(summary.id)}
-                  disabled={chatFollowUpDisabled}
-                  dataTestId={`pipeline-run-chat-follow-up-${summary.id}`}
-                />
-                <FollowUpButton
-                  label="Pipeline"
-                  icon={<PipelineIcon />}
-                  onClick={() => onPipelineFollowUp(summary.id)}
-                  dataTestId={`pipeline-run-pipeline-follow-up-${summary.id}`}
-                />
-                {summary.planId ? (
+                {onChatFollowUp !== undefined && (
+                  <FollowUpButton
+                    label={CHAT_UNIT_LABEL}
+                    icon={<ChatIcon />}
+                    onClick={() => onChatFollowUp(summary.id)}
+                    disabled={chatFollowUpDisabled}
+                    dataTestId={`pipeline-run-chat-follow-up-${summary.id}`}
+                  />
+                )}
+                {onPipelineFollowUp !== undefined && (
+                  <FollowUpButton
+                    label="Workflow"
+                    icon={<PipelineIcon />}
+                    onClick={() => onPipelineFollowUp(summary.id)}
+                    dataTestId={`pipeline-run-pipeline-follow-up-${summary.id}`}
+                  />
+                )}
+                {summary.planId && onOpenPlan !== undefined ? (
                   <ExecutionActionButton
                     label=""
                     icon={<PlanModeIcon width={13} height={13} />}
@@ -802,25 +816,29 @@ export function CompletedRunRow({
                 ) : null}
               </div>
             )}
-            {summary.has_report === true && (
+            {hasReportActions && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-3xs font-medium fg-secondary/60">
                   Report
                 </span>
-                <FollowUpButton
-                  label={CHAT_UNIT_LABEL}
-                  icon={<ChatIcon />}
-                  onClick={() => onReportChatFollowUp(summary.id)}
-                  disabled={chatFollowUpDisabled}
-                  dataTestId={`pipeline-run-report-follow-up-${summary.id}`}
-                />
-                <ExecutionActionButton
-                  label=""
-                  icon={<ReportIcon />}
-                  onClick={() => onViewReport(summary.id)}
-                  dataTestId={`pipeline-run-view-report-${summary.id}`}
-                  ariaLabel="View pipeline report"
-                />
+                {onReportChatFollowUp !== undefined && (
+                  <FollowUpButton
+                    label={CHAT_UNIT_LABEL}
+                    icon={<ChatIcon />}
+                    onClick={() => onReportChatFollowUp(summary.id)}
+                    disabled={chatFollowUpDisabled}
+                    dataTestId={`pipeline-run-report-follow-up-${summary.id}`}
+                  />
+                )}
+                {onViewReport !== undefined && (
+                  <ExecutionActionButton
+                    label=""
+                    icon={<ReportIcon />}
+                    onClick={() => onViewReport(summary.id)}
+                    dataTestId={`pipeline-run-view-report-${summary.id}`}
+                    ariaLabel="View workflow report"
+                  />
+                )}
               </div>
             )}
           </div>
@@ -843,15 +861,21 @@ export interface PipelineRunTreeRowProps {
     viewStack: readonly PipelineRunBreadcrumbEntry[],
     jobId?: string,
   ) => void;
-  onCancel: (id: string) => void;
-  onResume: (id: string, pauseResponses?: PipelineRunPauseResponse[]) => void;
-  onChatFollowUp: (id: string) => void;
-  onReportChatFollowUp: (id: string) => void;
-  onViewReport: (id: string) => void;
-  onPipelineFollowUp: (id: string) => void;
-  onOpenPlan: (id: string) => void;
-  onRetry: (id: string) => void;
-  onRerun: (id: string) => void;
+  /** See {@link ActiveRunRowProps.onCancel}. */
+  onCancel?: (id: string) => void;
+  /** See {@link ActiveRunRowProps.onResume}. */
+  onResume?: (id: string, pauseResponses?: PipelineRunPauseResponse[]) => void;
+  /**
+   * The follow-up, plan, report, retry and start-over actions: see
+   * {@link CompletedRunRowProps.onChatFollowUp}.
+   */
+  onChatFollowUp?: (id: string) => void;
+  onReportChatFollowUp?: (id: string) => void;
+  onViewReport?: (id: string) => void;
+  onPipelineFollowUp?: (id: string) => void;
+  onOpenPlan?: (id: string) => void;
+  onRetry?: (id: string) => void;
+  onRerun?: (id: string) => void;
   /** See {@link CompletedRunRowProps.onDebugFailure}. */
   onDebugFailure?: (id: string) => void;
   onToggleHidden?: (id: string, hidden: boolean) => void;

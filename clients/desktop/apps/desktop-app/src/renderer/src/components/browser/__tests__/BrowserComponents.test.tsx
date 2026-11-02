@@ -7,6 +7,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  type BrowserSetBoundsRequest,
   type BrowserJavaScriptDialog,
   type BrowserRecordingResult,
   type BrowserSessionSnapshot,
@@ -19,6 +20,7 @@ import {
   IN_APP_BROWSER_LOCAL_ONLY_URL_MESSAGE,
   IN_APP_BROWSER_NETWORK_PATH_URL_MESSAGE,
 } from '@/lib/browserUrl';
+import { resetBrowserTabPreviewsForTests } from '@/lib/panels/browser-tab-preview';
 import { BrowserBar } from '../BrowserBar';
 import { BrowserConsolePanel } from '../BrowserConsolePanel';
 import { BrowserNetworkPanel } from '../BrowserNetworkPanel';
@@ -200,7 +202,7 @@ beforeEach(() => {
       x: 100.4,
       y: 200.6,
       toJSON: () => ({}),
-    } as DOMRect);
+    });
 });
 
 afterEach(() => {
@@ -246,16 +248,10 @@ function setInputValue(input: HTMLInputElement | null, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-interface SetBoundsArg {
-  browserId: string;
-  visible: boolean;
-  bounds?: { x: number; y: number; width: number; height: number };
-}
-
-function setBoundsArgs(): SetBoundsArg[] {
-  return (browserApi.setBounds.mock.calls as Array<[SetBoundsArg]>).map(
-    (call) => call[0],
-  );
+function setBoundsArgs(): BrowserSetBoundsRequest[] {
+  return (
+    browserApi.setBounds.mock.calls as Array<[BrowserSetBoundsRequest]>
+  ).map((call) => call[0]);
 }
 
 describe('BrowserConsolePanel', () => {
@@ -1307,7 +1303,7 @@ describe('BrowserPane bounds sync', () => {
     }
   });
 
-  it('drops a late freeze frame once the overlay that requested it has closed', async () => {
+  it('keeps a late freeze frame under the live page once its overlay has closed', async () => {
     jest.useFakeTimers();
     const overlay = document.createElement('div');
     overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
@@ -1339,12 +1335,21 @@ describe('BrowserPane bounds sync', () => {
         await Promise.resolve();
       });
 
+      browserApi.setVisible.mockClear();
       await act(async () => {
-        resolveCapture({ dataUrl: 'data:image/jpeg;base64,stale' });
+        resolveCapture({ dataUrl: 'data:image/jpeg;base64,late' });
         await Promise.resolve();
         await Promise.resolve();
       });
-      expect(container.querySelector('img[aria-hidden="true"]')).toBeNull();
+      // Kept for the next overlay, under the live view, which stays shown.
+      const frame = container.querySelector(
+        '[data-testid="browser-pane-freeze-frame-ready"]',
+      );
+      expect(frame?.getAttribute('src')).toBe('data:image/jpeg;base64,late');
+      expect(browserApi.setVisible).not.toHaveBeenCalledWith({
+        browserId: BROWSER_ID,
+        visible: false,
+      });
     } finally {
       act(() => root.unmount());
       container.remove();
@@ -1420,7 +1425,7 @@ describe('BrowserPane bounds sync', () => {
         x: 100.4,
         y: 260.6,
         toJSON: () => ({}),
-      } as DOMRect);
+      });
 
       act(() => {
         window.dispatchEvent(new Event(BROWSER_VIEW_BOUNDS_INVALIDATED_EVENT));
@@ -1455,7 +1460,7 @@ describe('BrowserPane bounds sync', () => {
         x: left,
         y: 100,
         toJSON: () => ({}),
-      } as DOMRect;
+      };
     });
 
     const { container, root } = mount(
@@ -1588,6 +1593,668 @@ describe('BrowserPane bounds sync', () => {
       container.remove();
       overlay.remove();
     }
+  });
+
+  describe('freeze frame timing', () => {
+    // Frames run only when a test flushes them, so the order of "frame on
+    // screen" and "native view hidden/shown" is observable.
+    let frames: FrameRequestCallback[] = [];
+    const flushFrames = async (count: number): Promise<void> => {
+      for (let i = 0; i < count; i += 1) {
+        await act(async () => {
+          // Let pending observers queue their frame callbacks first.
+          await Promise.resolve();
+          const due = frames;
+          frames = [];
+          due.forEach((callback) => callback(0));
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+    };
+    const hiddenCalls = (): number =>
+      browserApi.setVisible.mock.calls.filter(
+        ([arg]: [{ visible: boolean }]) => arg.visible === false,
+      ).length;
+    const freezeFrame = (container: HTMLElement): Element | null =>
+      container.querySelector('[data-testid^="browser-pane-freeze-frame"]');
+
+    beforeEach(() => {
+      frames = [];
+      requestAnimationFrameSpy.mockImplementation(
+        (callback: FrameRequestCallback): number => {
+          frames.push(callback);
+          return frames.length;
+        },
+      );
+    });
+
+    it('keeps the native view shown until the freeze frame has been painted', async () => {
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        browserApi.setVisible.mockClear();
+        document.body.appendChild(overlay);
+        await flushFrames(1);
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(1);
+        // The capture lands: the frame goes up under the native view first.
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(freezeFrame(container)).not.toBeNull();
+        expect(hiddenCalls()).toBe(0);
+        // Hidden only once the frame has made it to the screen.
+        await flushFrames(3);
+        expect(hiddenCalls()).toBeGreaterThan(0);
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+        overlay.remove();
+      }
+    });
+
+    it.each([
+      [false, 1],
+      [true, 0],
+    ])(
+      'keeps a freeze frame as the tab preview only once its page has loaded (loading: %s)',
+      async (loading, previews) => {
+        const scaler = jest.fn(() => 'data:image/jpeg;base64,preview');
+        resetBrowserTabPreviewsForTests(scaler);
+        // Mid-navigation the snapshot has the new URL while the old page is
+        // still on screen, so a frame then would label A's pixels with B.
+        seedLiveBrowser({ loading });
+        const { container, root } = mount(
+          <BrowserPane
+            projectId={PROJECT_ID}
+            worktreeId={WORKTREE_ID}
+            browserId={BROWSER_ID}
+            visible
+          />,
+        );
+        const overlay = document.createElement('div');
+        overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+        try {
+          await flushFrames(1);
+          document.body.appendChild(overlay);
+          await flushFrames(1);
+          expect(browserApi.screenshot).toHaveBeenCalled();
+          await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+            await Promise.resolve();
+          });
+          expect(scaler).toHaveBeenCalledTimes(previews);
+        } finally {
+          act(() => root.unmount());
+          container.remove();
+          overlay.remove();
+          resetBrowserTabPreviewsForTests();
+        }
+      },
+    );
+
+    it('keeps the freeze frame under the page when the overlay closes', async () => {
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        document.body.appendChild(overlay);
+        await flushFrames(1);
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(hiddenCalls()).toBeGreaterThan(0);
+
+        let showView: () => void = () => undefined;
+        browserApi.setBounds.mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              showView = resolve;
+            }),
+        );
+        browserApi.setBounds.mockClear();
+        overlay.remove();
+        await flushFrames(3);
+        expect(
+          setBoundsArgs().some(
+            (arg) => arg.browserId === BROWSER_ID && arg.visible === true,
+          ),
+        ).toBe(true);
+        // Main has not shown the view yet: the frame stays over the page.
+        expect(freezeFrame(container)).not.toBeNull();
+
+        await act(async () => {
+          showView();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        // It stays drawn under the live view, ready for the next overlay.
+        expect(freezeFrame(container)?.getAttribute('data-testid')).toBe(
+          'browser-pane-freeze-frame-ready',
+        );
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+        overlay.remove();
+      }
+    });
+
+    it('covers the page with a frame captured on hover, without a new capture', async () => {
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        // Pointing at a control in the app captures the page ahead of time.
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(1);
+        // Drawn under the live view; the view stays shown.
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('data-testid')).toBe(
+          'browser-pane-freeze-frame-ready',
+        );
+        expect(hiddenCalls()).toBe(0);
+
+        document.body.appendChild(overlay);
+        // Already on screen: the view hides in the overlay's own update.
+        await flushFrames(2);
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(1);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/png;base64,freeze',
+        );
+        expect(hiddenCalls()).toBeGreaterThan(0);
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
+
+    it('takes a first frame after the page loads, so the first overlay has one', async () => {
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        expect(browserApi.screenshot).not.toHaveBeenCalled();
+        await act(async () => {
+          await new Promise((resolve) => window.setTimeout(resolve, 550));
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(1);
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('data-testid')).toBe(
+          'browser-pane-freeze-frame-ready',
+        );
+
+        document.body.appendChild(overlay);
+        await flushFrames(2);
+        expect(hiddenCalls()).toBeGreaterThan(0);
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(1);
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+        overlay.remove();
+      }
+    });
+
+    it('keeps the page steady under an open overlay, taking a newer frame only after it closes', async () => {
+      let now = 1_000;
+      const nowSpy = jest
+        .spyOn(performance, 'now')
+        .mockImplementation(() => now);
+      let landSecond: (value: { dataUrl: string }) => void = () => undefined;
+      browserApi.screenshot
+        .mockResolvedValueOnce({ dataUrl: 'data:image/jpeg;base64,first' })
+        .mockReturnValueOnce(
+          new Promise<{ dataUrl: string }>((resolve) => {
+            landSecond = resolve;
+          }),
+        );
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      const src = (): string | null | undefined =>
+        freezeFrame(container)?.getAttribute('src');
+      const pointAt = async (): Promise<void> => {
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+      try {
+        await flushFrames(1);
+        await pointAt();
+        await flushFrames(3);
+        // A moment later the press that opens the overlay starts a newer
+        // capture; the frame from pointing at the control covers the page.
+        now += 400;
+        browserApi.setVisible.mockClear();
+        control.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(2);
+        document.body.appendChild(overlay);
+        await flushFrames(2);
+        expect(hiddenCalls()).toBeGreaterThan(0);
+        expect(src()).toBe('data:image/jpeg;base64,first');
+
+        // It lands while the overlay is open: the page under it holds still.
+        await act(async () => {
+          landSecond({ dataUrl: 'data:image/jpeg;base64,second' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(src()).toBe('data:image/jpeg;base64,first');
+
+        overlay.remove();
+        await flushFrames(4);
+        // Back under the live view, the newer frame takes its place.
+        expect(src()).toBe('data:image/jpeg;base64,second');
+        expect(freezeFrame(container)?.getAttribute('data-testid')).toBe(
+          'browser-pane-freeze-frame-ready',
+        );
+      } finally {
+        nowSpy.mockRestore();
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
+
+    it('waits for a newer frame than a stale one when the pointer did not open the overlay', async () => {
+      let now = 1_000;
+      const nowSpy = jest
+        .spyOn(performance, 'now')
+        .mockImplementation(() => now);
+      let landSecond: (value: { dataUrl: string }) => void = () => undefined;
+      browserApi.screenshot
+        .mockResolvedValueOnce({ dataUrl: 'data:image/jpeg;base64,first' })
+        .mockReturnValueOnce(
+          new Promise<{ dataUrl: string }>((resolve) => {
+            landSecond = resolve;
+          }),
+        );
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/jpeg;base64,first',
+        );
+
+        // Much later, a toast or a shortcut opens an overlay: the page may
+        // have changed since, so a new frame is taken before covering it.
+        now += 5_000;
+        browserApi.setVisible.mockClear();
+        document.body.appendChild(overlay);
+        await flushFrames(2);
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(2);
+        expect(hiddenCalls()).toBe(0);
+        // Covered but not frozen yet: the above-browser mirror draws the
+        // overlay over the live page meanwhile.
+        const pageArea = container.querySelector(
+          '[data-testid="browser-page-area"]',
+        );
+        expect(pageArea?.getAttribute('data-browser-native-view-covered')).toBe(
+          'true',
+        );
+        expect(pageArea?.getAttribute('data-browser-native-view-frozen')).toBe(
+          'false',
+        );
+
+        await act(async () => {
+          landSecond({ dataUrl: 'data:image/jpeg;base64,second' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/jpeg;base64,second',
+        );
+        expect(hiddenCalls()).toBeGreaterThan(0);
+        expect(
+          container
+            .querySelector('[data-testid="browser-page-area"]')
+            ?.getAttribute('data-browser-native-view-frozen'),
+        ).toBe('true');
+      } finally {
+        nowSpy.mockRestore();
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
+
+    it('waits for a newer frame when a press opens an overlay over an old one', async () => {
+      let now = 1_000;
+      const nowSpy = jest
+        .spyOn(performance, 'now')
+        .mockImplementation(() => now);
+      let landSecond: (value: { dataUrl: string }) => void = () => undefined;
+      browserApi.screenshot
+        .mockResolvedValueOnce({ dataUrl: 'data:image/jpeg;base64,first' })
+        .mockReturnValueOnce(
+          new Promise<{ dataUrl: string }>((resolve) => {
+            landSecond = resolve;
+          }),
+        );
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+
+        // Much later (the page may have scrolled since), a press opens an
+        // overlay: the old frame does not cover the page.
+        now += 5_000;
+        browserApi.setVisible.mockClear();
+        control.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+        document.body.appendChild(overlay);
+        await flushFrames(2);
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(2);
+        expect(hiddenCalls()).toBe(0);
+
+        await act(async () => {
+          landSecond({ dataUrl: 'data:image/jpeg;base64,second' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/jpeg;base64,second',
+        );
+        expect(hiddenCalls()).toBeGreaterThan(0);
+      } finally {
+        nowSpy.mockRestore();
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
+
+    it('drops a frame that no longer fits once the native view is back after a resize under an overlay', async () => {
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        browserApi.setVisible.mockClear();
+        control.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+        document.body.appendChild(overlay);
+        await flushFrames(2);
+        expect(hiddenCalls()).toBeGreaterThan(0);
+
+        // The window is resized while the overlay is open.
+        boundingRectSpy.mockReturnValue({
+          left: 100.4,
+          top: 200.6,
+          width: 500.2,
+          height: 150.9,
+          right: 600,
+          bottom: 351,
+          x: 100.4,
+          y: 200.6,
+          toJSON: () => ({}),
+        });
+        await flushFrames(2);
+        // Still covering the page: it stays until the live view is back, and
+        // fills the larger area from its top-left corner without stretching.
+        const held = freezeFrame(container);
+        expect(held).toBeInstanceOf(HTMLImageElement);
+        expect(held?.getAttribute('data-testid')).toBe(
+          'browser-pane-freeze-frame',
+        );
+        expect(held?.className).toEqual(
+          expect.stringContaining('inset-0 h-full w-full object-cover'),
+        );
+        expect(held instanceof HTMLImageElement ? held.style.width : null).toBe(
+          '',
+        );
+
+        overlay.remove();
+        await flushFrames(4);
+        expect(freezeFrame(container)).toBeNull();
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
+
+    it('captures for the current page while a capture for the previous page is still running', async () => {
+      browserApi.screenshot.mockReturnValueOnce(
+        new Promise<{ dataUrl: string }>(() => undefined),
+      );
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+        });
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(1);
+
+        // The page navigates before that capture returns.
+        act(() => {
+          seedLiveBrowser({ url: 'https://example.com/next' });
+        });
+        await flushFrames(1);
+        document.body.appendChild(overlay);
+        await flushFrames(1);
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(2);
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/png;base64,freeze',
+        );
+        expect(hiddenCalls()).toBeGreaterThan(0);
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
+
+    it('takes newer frames again after an overlay closed before its frame was on screen', async () => {
+      let now = 1_000;
+      const nowSpy = jest
+        .spyOn(performance, 'now')
+        .mockImplementation(() => now);
+      let landFirst: (value: { dataUrl: string }) => void = () => undefined;
+      browserApi.screenshot
+        .mockReturnValueOnce(
+          new Promise<{ dataUrl: string }>((resolve) => {
+            landFirst = resolve;
+          }),
+        )
+        .mockResolvedValueOnce({ dataUrl: 'data:image/jpeg;base64,second' });
+      seedLiveBrowser();
+      const { container, root } = mount(
+        <BrowserPane
+          projectId={PROJECT_ID}
+          worktreeId={WORKTREE_ID}
+          browserId={BROWSER_ID}
+          visible
+        />,
+      );
+      const control = document.createElement('button');
+      document.body.appendChild(control);
+      const overlay = document.createElement('div');
+      overlay.setAttribute(BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE, 'true');
+      try {
+        await flushFrames(1);
+        // A quick overlay with no frame yet opens and closes before its
+        // capture returns; the native view was never hidden.
+        document.body.appendChild(overlay);
+        await flushFrames(1);
+        overlay.remove();
+        await flushFrames(1);
+        await act(async () => {
+          landFirst({ dataUrl: 'data:image/jpeg;base64,first' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/jpeg;base64,first',
+        );
+
+        // Pointing at a control later replaces it with a newer frame.
+        now += 5_000;
+        await act(async () => {
+          control.dispatchEvent(new Event('pointerover', { bubbles: true }));
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await flushFrames(3);
+        expect(browserApi.screenshot).toHaveBeenCalledTimes(2);
+        expect(freezeFrame(container)?.getAttribute('src')).toBe(
+          'data:image/jpeg;base64,second',
+        );
+      } finally {
+        nowSpy.mockRestore();
+        act(() => root.unmount());
+        container.remove();
+        control.remove();
+        overlay.remove();
+      }
+    });
   });
 
   it('marks the page area available from the live view, not from the freeze state', async () => {

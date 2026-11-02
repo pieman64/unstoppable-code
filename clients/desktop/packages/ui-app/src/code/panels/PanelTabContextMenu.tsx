@@ -3,8 +3,9 @@
 /**
  * PanelTabContextMenu — the right-click menu for a panel tab, restoring the
  * VS Code / classic ChatTabBar tab menu on the panel grid: pin/unpin, rename
- * (chat panels, when the host supports it), split, new window / full screen,
- * the chat and file rows, then the close rows (close / close others / close
+ * and mark as unread / read (chat panels, when the host supports them),
+ * split, new window / full screen, the chat and file rows, then the close
+ * rows (close / close others / close
  * to the right / close to the left / close all) as the last group, where the
  * app's action menus keep their removal rows. The split and new window / full
  * screen sections mirror the group overflow menu in `PanelChrome`.
@@ -42,6 +43,8 @@ import {
   DownloadIcon,
   FolderIcon,
   LayoutWindowIcon,
+  MailCheckIcon,
+  MailIcon,
   PencilIcon,
   PinIcon,
   ShareIcon,
@@ -91,6 +94,16 @@ export interface PanelTabContextMenuProps {
    * can persist a chat's custom name; omitted, chat panels offer no Rename.
    */
   onRenameChat?: (chatTabId: string, ownerDocument?: Document) => void;
+  /**
+   * Current read state of a chat panel, read when the menu opens; undefined
+   * where the host has none for that chat, which hides the read item.
+   */
+  getChatReadState?: (chatTabId: string) => 'read' | 'unread' | undefined;
+  /**
+   * Marks a chat panel unread (true) or read (false). Omitted, chat panels
+   * offer no "Mark as unread" / "Mark as read".
+   */
+  onSetChatUnread?: (chatTabId: string, unread: boolean) => void;
   /**
    * Opens only the clicked tab in a new auxiliary window. When omitted, the
    * "New window" item is not rendered.
@@ -143,6 +156,13 @@ export interface PanelTabContextMenuProps {
    * menu described under {@link layoutLocked}.
    */
   tabStyle?: PanelTabStyle;
+  /**
+   * Presentation for hosts in a document-first mode (desktop Work navigation):
+   * a file tab's menu starts with the file-manager item, then Copy path, and
+   * leaves out Split and Copy relative path. Chat and other tabs are
+   * unchanged. Defaults to the developer ordering.
+   */
+  fileActionsFirst?: boolean;
 }
 
 const SPLIT_DIRECTIONS: readonly PanelSplitDirection[] = [
@@ -181,6 +201,8 @@ export function PanelTabContextMenu({
   canShareSession,
   onExportSession,
   onRenameChat,
+  getChatReadState,
+  onSetChatUnread,
   onNewWindow,
   canOpenInNewWindow: canOpenInNewWindowKind,
   onFullScreen,
@@ -196,6 +218,7 @@ export function PanelTabContextMenu({
   onToggleStartPage,
   layoutLocked = false,
   tabStyle = 'classic',
+  fileActionsFirst = false,
 }: PanelTabContextMenuProps): JSX.Element | null {
   // Classic tabs in a fixed layout keep the single Close item.
   const closeOnly = layoutLocked && tabStyle !== 'fill';
@@ -366,27 +389,109 @@ export function PanelTabContextMenu({
           : undefined) ?? tab.instance?.filePath)
       : undefined;
   const startPageState = getStartPageMenuState?.(tab);
+  // The menu mounts on open, so this reads the state at open time.
+  const chatReadState =
+    chatTabId && onSetChatUnread ? getChatReadState?.(chatTabId) : undefined;
+  const readStateItem: TabContextMenuItem | undefined =
+    chatTabId && onSetChatUnread && chatReadState
+      ? chatReadState === 'unread'
+        ? {
+            key: 'mark-read',
+            label: 'Mark as read',
+            icon: <MailCheckIcon />,
+            testId: 'panel-tab-context-mark-read',
+            onSelect: (): void => onSetChatUnread(chatTabId, false),
+          }
+        : {
+            key: 'mark-unread',
+            label: 'Mark as unread',
+            icon: <MailIcon />,
+            testId: 'panel-tab-context-mark-unread',
+            onSelect: (): void => onSetChatUnread(chatTabId, true),
+          }
+      : undefined;
+  const copyPathItem: TabContextMenuItem | undefined =
+    filePath && onCopyFilePath
+      ? {
+          key: 'copy-path',
+          label: 'Copy path',
+          icon: <CopyIcon />,
+          testId: 'panel-tab-context-copy-path',
+          onSelect: (): void => onCopyFilePath(filePath),
+        }
+      : undefined;
+  const copyRelativePathItem: TabContextMenuItem | undefined =
+    filePath && onCopyRelativeFilePath
+      ? {
+          key: 'copy-relative-path',
+          label: 'Copy relative path',
+          icon: <CopyIcon />,
+          testId: 'panel-tab-context-copy-relative-path',
+          onSelect: (): void => onCopyRelativeFilePath(filePath),
+        }
+      : undefined;
+  const openInFileManagerItem: TabContextMenuItem | undefined =
+    filePath && onOpenFileInFileManager
+      ? {
+          key: 'open-in-file-manager',
+          label: openInFileManagerLabel,
+          icon: <FolderIcon />,
+          testId: 'panel-tab-context-open-in-file-manager',
+          onSelect: (): void => onOpenFileInFileManager(filePath),
+        }
+      : undefined;
+  const present = (
+    items: readonly (TabContextMenuItem | undefined)[],
+  ): TabContextMenuItem[] =>
+    items.filter((item): item is TabContextMenuItem => item !== undefined);
+  const pinItem: TabContextMenuItem = {
+    key: 'pin',
+    label: isPinned ? 'Unpin tab' : 'Pin tab',
+    icon: <PinIcon />,
+    testId: 'panel-tab-context-pin',
+    onSelect: (): void => {
+      store().setTabPinned(
+        layoutKey,
+        target.groupId,
+        target.panelId,
+        !isPinned,
+      );
+    },
+  };
+  const startPageItems: TabContextMenuItem[] =
+    startPageState && onToggleStartPage
+      ? [
+          {
+            key: 'start-page',
+            label: startPageState.isStartPage
+              ? 'Remove start page'
+              : 'Set as start page',
+            icon: <LayoutWindowIcon />,
+            testId: 'panel-tab-context-start-page',
+            onSelect: (): void => onToggleStartPage(tab),
+          },
+        ]
+      : [];
+  // Document-first file menu: reveal and Copy path lead, the developer-only
+  // Split and Copy relative path drop out, and the window and close rows stay.
+  const fileFirstGroups: TabContextMenuItem[][] | undefined =
+    fileActionsFirst && filePath && !closeOnly
+      ? [
+          present([openInFileManagerItem, copyPathItem]),
+          [pinItem],
+          layoutLocked ? [] : windowItems,
+          startPageItems,
+          closeItems,
+        ]
+      : undefined;
 
   // Each group starts a new section; empty groups drop out, and the divider
   // goes on the first row of every group after the first.
   const groups: TabContextMenuItem[][] = closeOnly
     ? [[closeItem]]
-    : [
+    : (fileFirstGroups ?? [
         [
-          {
-            key: 'pin',
-            label: isPinned ? 'Unpin tab' : 'Pin tab',
-            icon: <PinIcon />,
-            testId: 'panel-tab-context-pin',
-            onSelect: (): void => {
-              store().setTabPinned(
-                layoutKey,
-                target.groupId,
-                target.panelId,
-                !isPinned,
-              );
-            },
-          },
+          pinItem,
           ...(onRenameChat && chatTabId
             ? [
                 {
@@ -398,6 +503,7 @@ export function PanelTabContextMenu({
                 },
               ]
             : []),
+          ...present([readStateItem]),
         ],
         layoutItems,
         chatTabId
@@ -428,58 +534,10 @@ export function PanelTabContextMenu({
                 : []),
             ]
           : [],
-        filePath
-          ? [
-              ...(onCopyFilePath
-                ? [
-                    {
-                      key: 'copy-path',
-                      label: 'Copy path',
-                      icon: <CopyIcon />,
-                      testId: 'panel-tab-context-copy-path',
-                      onSelect: (): void => onCopyFilePath(filePath),
-                    },
-                  ]
-                : []),
-              ...(onCopyRelativeFilePath
-                ? [
-                    {
-                      key: 'copy-relative-path',
-                      label: 'Copy relative path',
-                      icon: <CopyIcon />,
-                      testId: 'panel-tab-context-copy-relative-path',
-                      onSelect: (): void => onCopyRelativeFilePath(filePath),
-                    },
-                  ]
-                : []),
-              ...(onOpenFileInFileManager
-                ? [
-                    {
-                      key: 'open-in-file-manager',
-                      label: openInFileManagerLabel,
-                      icon: <FolderIcon />,
-                      testId: 'panel-tab-context-open-in-file-manager',
-                      onSelect: (): void => onOpenFileInFileManager(filePath),
-                    },
-                  ]
-                : []),
-            ]
-          : [],
-        startPageState && onToggleStartPage
-          ? [
-              {
-                key: 'start-page',
-                label: startPageState.isStartPage
-                  ? 'Remove start page'
-                  : 'Set as start page',
-                icon: <LayoutWindowIcon />,
-                testId: 'panel-tab-context-start-page',
-                onSelect: (): void => onToggleStartPage(tab),
-              },
-            ]
-          : [],
+        present([copyPathItem, copyRelativePathItem, openInFileManagerItem]),
+        startPageItems,
         closeItems,
-      ];
+      ]);
   const items: TabContextMenuItem[] = groups
     .filter((group) => group.length > 0)
     .flatMap((group, groupIndex) =>

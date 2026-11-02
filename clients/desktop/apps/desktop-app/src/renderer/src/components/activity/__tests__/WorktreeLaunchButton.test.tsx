@@ -18,8 +18,8 @@ const WORKTREE_ID = 'worktree-1';
 const WORKTREE_KEY = `${PROJECT_ID}/${WORKTREE_ID}`;
 
 function makeSingleRepoProject(
-  overrides: Partial<SidebarItem> = {},
-): SidebarItem {
+  overrides: Partial<Extract<SidebarItem, { type: 'single-repo' }>> = {},
+): Extract<SidebarItem, { type: 'single-repo' }> {
   return {
     type: 'single-repo',
     id: PROJECT_ID,
@@ -155,10 +155,16 @@ describe('WorktreeLaunchButton', () => {
       runs: {
         [WORKTREE_KEY]: {
           launch: {
-            scriptKey: 'launch',
             label: 'Launch',
+            scriptName: 'launch',
+            command: 'npm run dev',
+            target: 'project',
             lifecycle: 'launch',
             status: 'running',
+            outputLines: [],
+            exitCode: null,
+            timedOut: false,
+            durationMs: 0,
             startedAt: Date.now(),
             devServerHits: [],
           },

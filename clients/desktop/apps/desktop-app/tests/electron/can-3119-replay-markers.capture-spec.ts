@@ -201,11 +201,13 @@ test(`CAN-3119 replay markers leave the UI unchanged (${STAGE})`, async () => {
 
     await app.openPluginsPage();
     await app.openPluginsTab('mcp');
+    // Customize > MCP servers > Installed row > detail > Advanced
+    // configuration opens the same edit dialog (CAN-4267).
     await window
-      .getByTestId('plugins-management-section-mcp')
-      .locator('tr', { hasText: MCP_SERVER_NAME })
-      .getByTestId('mcp-server-edit-button')
+      .getByTestId('customize-section-installed')
+      .getByTestId('customize-row-mcp-local:c3119b01')
       .click();
+    await window.getByTestId('plugin-advanced-configuration').click();
     const dialog = window.getByRole('dialog', { name: 'Edit MCP server' });
     await expect(dialog.getByPlaceholder('My MCP server')).toHaveValue(
       MCP_SERVER_NAME,
@@ -214,8 +216,6 @@ test(`CAN-3119 replay markers leave the UI unchanged (${STAGE})`, async () => {
     await capture(dialog, 'dialog-edit-mcp-server');
     await window.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
-    await window.getByTestId('plugins-management-back').click();
-    await expect(window.getByTestId('plugins-management-view')).toBeHidden();
 
     await app.openEnvironmentsSettings();
     const environments = window.getByTestId('settings-tab-environment');

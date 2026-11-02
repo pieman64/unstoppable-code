@@ -1,6 +1,7 @@
 // Browser-safe: protocol values plus transport types only.
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import {
+  CANOPY_HOST_EXECUTION_MEMBER,
   CANOPY_JSON_RPC_PROTOCOL_ERROR_CODES,
   CANOPY_JSON_RPC_VERSION,
   CanopyOperationNameSchema,
@@ -79,6 +80,7 @@ type WideClient = CanopyClient<
 interface CallOptions {
   readonly metadata?: object;
   readonly signal?: AbortSignal;
+  readonly execution?: object;
 }
 interface PendingCall {
   respond(response: Response): void;
@@ -670,11 +672,23 @@ class ClientSession {
       }
       this.envelopes.set(cacheKey, envelopes);
     }
-    const wireParams = isRecord(params)
-      ? options.metadata === undefined
-        ? { ...params }
-        : { ...params, _meta: options.metadata }
-      : null;
+    // `_execution` comes only from the typed option, never from params.
+    const wireParams =
+      isRecord(params) &&
+      !Object.prototype.hasOwnProperty.call(
+        params,
+        CANOPY_HOST_EXECUTION_MEMBER,
+      )
+        ? {
+            ...params,
+            ...(options.metadata === undefined
+              ? {}
+              : { _meta: options.metadata }),
+            ...(options.execution === undefined
+              ? {}
+              : { [CANOPY_HOST_EXECUTION_MEMBER]: options.execution }),
+          }
+        : null;
     const request = { jsonrpc: '2.0', id: 0, method: name, params: wireParams };
     if (!wireParams || !envelopes.request.safeParse(request).success)
       throw clientError(

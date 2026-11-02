@@ -1,8 +1,19 @@
+import type { PersistedChatTab } from '@canopy/desktop-shared/types';
 import { hydratePersistedChatTab } from '../chatTabPersistence';
+
+type LegacyUsageLimitBannerTab = PersistedChatTab & {
+  claudeUsageLimitBanner: {
+    provider: 'claude' | 'codex';
+    message: string;
+    detectedAt: number;
+    dismissKey: string;
+  };
+  dismissedClaudeUsageLimitBannerKey: string;
+};
 
 describe('usage-limit banner key read-compat', () => {
   it('reads a tab persisted with the legacy claudeUsageLimitBanner key', () => {
-    const legacyRaw = {
+    const legacyRaw: LegacyUsageLimitBannerTab = {
       id: 'chat-1',
       title: 'Legacy',
       messages: [],

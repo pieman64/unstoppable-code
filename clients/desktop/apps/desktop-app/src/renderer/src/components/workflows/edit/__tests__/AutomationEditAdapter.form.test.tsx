@@ -179,6 +179,8 @@ describe('AutomationEditAdapter form — Definition', () => {
   it('shows and hides action-specific fields as the selected action type changes', async () => {
     env.render();
     await env.openDraft();
+    // A new draft runs a pipeline with no project; these start from App Advisor.
+    await env.click('automations-form-action-type-app_advisor');
 
     // A rich composer contains buttons; a native label would implicitly
     // activate its first button when the non-labelable editor is clicked.
@@ -207,7 +209,7 @@ describe('AutomationEditAdapter form — Definition', () => {
     await pickWorkspaceOption('Canopy');
     expect(
       query('automations-form-workspace-action-mode-chat')?.getAttribute(
-        'aria-checked',
+        'aria-pressed',
       ),
     ).toBe('true');
     expect(query('automations-form-base-worktree')).toBeInstanceOf(
@@ -247,7 +249,7 @@ describe('AutomationEditAdapter form — Definition', () => {
 
     await pickWorkspaceOption('Canopy');
     expect(env.container().textContent).toContain(
-      'Select a dispatch pipeline and configure its inputs.',
+      'Select a dispatch workflow and configure its inputs.',
     );
     expect(query('automations-form-base-worktree')).toBeInstanceOf(
       HTMLButtonElement,
@@ -273,6 +275,8 @@ describe('AutomationEditAdapter form — Definition', () => {
   it('shows sidebar group only for new-chat App Advisor and project prompts', async () => {
     env.render();
     await env.openDraft();
+    // A new draft runs a pipeline with no project; these start from App Advisor.
+    await env.click('automations-form-action-type-app_advisor');
 
     const groupPicker = (): HTMLElement | null =>
       query('automations-form-sidebar-group');
@@ -606,6 +610,8 @@ describe('AutomationEditAdapter form — Save payloads', () => {
 
     await env.click('workflow-edit-back');
     await env.openDraft();
+    // A new draft runs a pipeline with no project; these start from App Advisor.
+    await env.click('automations-form-action-type-app_advisor');
     await env.type('automations-form-name', 'New digest');
     await env.type('automations-form-prompt', 'Summarize today.');
     await save();

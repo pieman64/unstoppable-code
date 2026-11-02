@@ -27,6 +27,7 @@ export async function launchPendingModelFixture({ reject = false } = {}) {
     await app.openMainPage();
     await app.selectWorktree('demo-main');
     await window.getByTestId('panel-add-tab-group-chat').click();
+    await window.getByTestId('panel-add-menu-item-new-chat').click();
     const picker = window
       .locator('[data-testid="chat-model-picker"]:visible')
       .first();

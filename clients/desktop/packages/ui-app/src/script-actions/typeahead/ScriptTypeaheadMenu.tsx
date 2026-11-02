@@ -34,6 +34,12 @@ export interface ScriptTypeaheadMenuProps {
   readonly anchorRef: RefObject<HTMLElement | null>;
   /** The editor surface: presses there do not dismiss the menu. */
   readonly boundaryRef?: RefObject<HTMLElement | null>;
+  /**
+   * The composer box. Presses on its other controls (Run, attach, pickers)
+   * dismiss the menu and still activate the control, so the first click on
+   * Run sends the draft.
+   */
+  readonly composerRef?: RefObject<HTMLElement | null>;
   /** Where focus returns on Escape; defaults to the anchor. */
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
   readonly dataTestIdPrefix?: string;
@@ -49,6 +55,7 @@ export function ScriptTypeaheadMenu({
   typeahead,
   anchorRef,
   boundaryRef,
+  composerRef,
   returnFocusRef,
   dataTestIdPrefix = 'script-typeahead',
 }: ScriptTypeaheadMenuProps): JSX.Element {
@@ -109,6 +116,7 @@ export function ScriptTypeaheadMenu({
       }}
       anchorRef={anchorRef}
       {...(boundaryRef ? { outsidePressBoundaryRef: boundaryRef } : {})}
+      {...(composerRef ? { outsidePressClickThroughRef: composerRef } : {})}
       {...(returnFocusRef ? { returnFocusRef } : {})}
       placement="top-left"
       interaction="manual"

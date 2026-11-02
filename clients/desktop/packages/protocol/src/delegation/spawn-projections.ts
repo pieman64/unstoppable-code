@@ -37,7 +37,7 @@ const grantProperties = {
     enum: ['queue', 'reject'],
     default: 'queue',
     description:
-      'When the delegation limit is reached: queue (default) waits for a free slot and starts automatically; reject fails at once with capacity_exceeded.',
+      'When the concurrency limit is reached: queue (default) waits for a free slot and starts automatically; reject fails at once with capacity_exceeded. The lifetime limit refuses new tasks with lifetime_limit_reached instead of queueing.',
   },
   fast_mode: {
     type: 'boolean',

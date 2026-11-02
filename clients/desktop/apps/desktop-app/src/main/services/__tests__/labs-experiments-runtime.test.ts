@@ -1,3 +1,4 @@
+import { BRAND } from '@canopy/brand/current';
 import type { FeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
 import type { LabsAvailabilityState } from '../../feature-flags/labs-availability';
 import type { LabsExperimentsDependencies } from '../labs-experiments-service';
@@ -7,6 +8,7 @@ import {
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
 import type { CanopyCloudAccountEntry } from '../../lib/canopy-cloud-account-store';
+import { CanopyCloudClientError } from '../../canopy-cloud/client';
 let mockAccount: {
   apiKey: string;
   authMode?: string;
@@ -51,6 +53,7 @@ function accountEntry(apiKey: string, id: string): CanopyCloudAccountEntry {
 }
 
 jest.mock('../../canopy-cloud/client', (): object => ({
+  ...jest.requireActual<object>('../../canopy-cloud/client'),
   requestCanopyCloudJson: (
     ...args: Parameters<typeof mockRequest>
   ): Promise<unknown> => mockRequest(...args),
@@ -104,11 +107,17 @@ jest.mock('../../feature-flags/service', (): object => ({
 }));
 function mockStorage(): Pick<
   LabsExperimentsDependencies,
-  'choicesPath' | 'availabilityPath' | 'read' | 'write' | 'mirror'
+  | 'choicesPath'
+  | 'availabilityPath'
+  | 'pendingSyncPath'
+  | 'read'
+  | 'write'
+  | 'mirror'
 > {
   return {
     choicesPath: 'choices',
     availabilityPath: 'flags',
+    pendingSyncPath: 'pending',
     read: (): unknown => ({
       version: 1,
       accounts: { local: { 'early-access': true } },
@@ -140,6 +149,23 @@ afterEach(async () => {
   await disposeLabsExperimentsService();
 });
 describe('Labs account binding', () => {
+  it('injects bundled-brand Files defaults at desktop composition, not the raw flag snapshot', () => {
+    mockAccount = null;
+    expect(
+      getLabsExperimentsService()
+        .getSnapshot()
+        .experiments.find((entry) => entry.id === 'daemon-files-reads'),
+    ).toMatchObject({
+      availability: BRAND.id === 'canopy' ? 'on' : 'offered',
+      enabled: BRAND.id === 'canopy',
+      choice: null,
+      availabilitySource: 'policy_fallback',
+    });
+    expect(mockFlagState.snapshot.values).toHaveProperty(
+      'canopy-desktop-labs-daemon-files-reads',
+      'offered',
+    );
+  });
   it('retains live flags and session generation through routine same-account notifications', async () => {
     const account = accountEntry('signed-key', 'account-a');
     mockAccount = account;
@@ -191,6 +217,90 @@ describe('Labs account binding', () => {
     expect(getLabsExperimentsService().getSnapshot().generation).toBe(
       generation,
     );
+  });
+  it('pushes a choice saved offline once the account is confirmed', async () => {
+    mockAccount = accountEntry('signed-key', 'account-a');
+    mockRequest.mockRejectedValue(new Error('server unreachable'));
+    await initializeLabsExperimentsService();
+    const service = getLabsExperimentsService();
+    await service.setChoice({ experimentId: 'kanban-page', enabled: true });
+    await service.flush();
+    expect(
+      service.getSnapshot().experiments.find((e) => e.id === 'kanban-page'),
+    ).toMatchObject({ choice: true, enabled: true });
+    mockRequest.mockReset();
+    mockRequest.mockResolvedValue({
+      experimentId: 'kanban-page',
+      enabled: true,
+      updatedAt: '2026-10-27T00:00:00.000Z',
+    });
+    mockAccountConfirmed?.();
+    await service.flush();
+    expect(mockRequest).toHaveBeenCalledWith(
+      '/api/v1/experiments/choices/kanban-page',
+      {
+        method: 'PUT',
+        headers: { 'x-labs-experiments-version': '2' },
+        body: JSON.stringify({ enabled: true }),
+        credentialContext: {
+          baseUrl: 'https://server.example.invalid',
+          apiKey: 'signed-key',
+        },
+      },
+    );
+    mockRequest.mockClear();
+    mockAccountConfirmed?.();
+    await service.flush();
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+  it('drops only validated request refusals from the pending sync', async () => {
+    mockAccount = accountEntry('signed-key', 'account-a');
+    mockRequest.mockRejectedValue(new Error('server unreachable'));
+    await initializeLabsExperimentsService();
+    const service = getLabsExperimentsService();
+    await service.setChoice({ experimentId: 'kanban-page', enabled: true });
+    await service.flush();
+    const putCount = (): number =>
+      mockRequest.mock.calls.filter(
+        ([, init]) =>
+          typeof init === 'object' &&
+          init !== null &&
+          'method' in init &&
+          init.method === 'PUT',
+      ).length;
+    for (const [error, retried] of [
+      [
+        new CanopyCloudClientError(
+          'http-error',
+          'expired',
+          401,
+          undefined,
+          undefined,
+          true,
+        ),
+        true,
+      ],
+      [
+        new CanopyCloudClientError(
+          'http-error',
+          'limit',
+          409,
+          undefined,
+          undefined,
+          true,
+        ),
+        false,
+      ],
+    ] as const) {
+      mockRequest.mockReset();
+      mockRequest.mockRejectedValue(error);
+      await service.retryPendingSync();
+      await service.retryPendingSync();
+      expect(putCount()).toBe(retried ? 2 : 1);
+    }
+    expect(
+      service.getSnapshot().experiments.find((e) => e.id === 'kanban-page'),
+    ).toMatchObject({ choice: true, enabled: true });
   });
   it('ignores membership order but invalidates changed targeting without resetting choices', async () => {
     const account = accountEntry('signed-key', 'account-a');

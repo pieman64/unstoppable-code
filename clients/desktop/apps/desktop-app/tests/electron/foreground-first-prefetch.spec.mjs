@@ -276,14 +276,18 @@ test('pointer, keyboard and idle intent read a stale chat once before the switch
       .poll(() => existsSync(path.join(gates.idle, 'done')))
       .toBe(true);
     await expect(
-      tabHeader(window, 'idle').locator('[data-unread]'),
+      tabHeader(window, 'idle').locator(
+        '[data-testid^="panel-tab-unread-dot-"]',
+      ),
     ).toBeVisible({ timeout: 30_000 });
     await expect.poll(() => pageReads(electronApp)).toBe(1);
     expect(await warmChats(electronApp, webContentsId)).toContain('idle');
     // Reading it changed neither the selection nor its unread state.
     await expect(panel(window, 'keyboard')).toBeVisible();
     await expect(
-      tabHeader(window, 'idle').locator('[data-unread]'),
+      tabHeader(window, 'idle').locator(
+        '[data-testid^="panel-tab-unread-dot-"]',
+      ),
     ).toBeVisible();
 
     await startSpinnerProbe(window, 'idle');

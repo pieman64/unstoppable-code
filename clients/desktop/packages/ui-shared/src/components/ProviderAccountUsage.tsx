@@ -3,7 +3,12 @@ import type {
   PortalProviderUsageAccount,
   PortalProviderUsageWindow,
 } from '@canopy/protocol/portal';
-import { LimitSubCardView, type UsageLimitCard } from './LimitSubCardView';
+import {
+  UsageRow,
+  UsageRowList,
+  UsageWindowRow,
+  type UsageLimitCard,
+} from './UsageGroup';
 import { ProviderUsageAccountRow } from './ProviderUsageAccountRow';
 import type { UsageIndicatorAccountSummaryProps } from './UsageIndicator';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
@@ -38,6 +43,7 @@ function windowCard(window: PortalProviderUsageWindow): UsageLimitCard {
     resetsAt: window.resetsAt,
     windowDurationMs: window.windowDurationMs,
     creditsAreCount: window.credits?.unit === 'credits',
+    spend: window.spend,
     credits: window.credits
       ? {
           usedUsd: window.credits.spent,
@@ -143,52 +149,89 @@ export function providerAccountUsageSummaryLimits(
   });
 }
 
-/**
- * An account's limit windows, how fresh they are, and the last failed read.
- * Cached windows stay beside the error; no windows reads as unavailable,
- * never as 0%.
- */
-export function ProviderAccountUsageDetails({
+/** How fresh an account's limits are, with the full time on hover. */
+function AccountUsageFreshness({
   account,
   nowMs,
-  frameless = false,
-  collapsible = false,
 }: {
   account: PortalProviderUsageAccount;
   nowMs: number;
-  frameless?: boolean;
-  /** Settings keeps quota details behind a closed disclosure. */
-  collapsible?: boolean;
-}): JSX.Element {
-  const error = errorText(account, nowMs);
+}): JSX.Element | null {
   const freshness = freshnessText(account, nowMs);
+  if (!freshness) return null;
   const freshnessTitle =
     account.usageSource === 'live' && account.lastUpdatedAt
       ? fullTime(account.lastUpdatedAt)
       : undefined;
-  const windows = account.windows.map((window) => (
-    <LimitSubCardView
-      key={window.id}
-      card={windowCard(window)}
-      nowMs={nowMs}
-      frameless={frameless}
-    />
-  ));
-  const usage = (
-    <>
-      {windows}
-      {account.windows.length === 0 && !error && (
-        <p className="text-xs fg-secondary">Usage unavailable</p>
-      )}
-    </>
-  );
-  const freshnessLabel = freshness ? (
+  return (
     <p className="text-xs fg-tertiary" title={freshnessTitle}>
       {freshness}
     </p>
-  ) : null;
+  );
+}
+
+/** The last failed read, outside any disclosure so it stays visible. */
+function AccountUsageError({
+  account,
+  nowMs,
+}: {
+  account: PortalProviderUsageAccount;
+  nowMs: number;
+}): JSX.Element | null {
+  const error = errorText(account, nowMs);
+  if (!error) return null;
   return (
-    <div className={`space-y-2 ${frameless ? 'mt-2' : 'mt-3'}`}>
+    <p role="status" className="text-xs text-pretty fg-secondary">
+      {error}
+    </p>
+  );
+}
+
+/** An account's windows as rows. */
+function accountWindowRows(
+  account: PortalProviderUsageAccount,
+  nowMs: number,
+): JSX.Element[] {
+  return account.windows.map((window) => (
+    <UsageWindowRow key={window.id} window={windowCard(window)} nowMs={nowMs} />
+  ));
+}
+
+/** No windows and no failed read: usage is unknown, never 0%. */
+function usageUnavailable(
+  account: PortalProviderUsageAccount,
+  nowMs: number,
+): boolean {
+  return account.windows.length === 0 && !errorText(account, nowMs);
+}
+
+/**
+ * An account's limit windows, how fresh they are, and the last failed read,
+ * for use inside another surface's row (Settings). Cached windows stay
+ * beside the error; no windows reads as unavailable, never as 0%.
+ */
+export function ProviderAccountUsageDetails({
+  account,
+  nowMs,
+  collapsible = false,
+}: {
+  account: PortalProviderUsageAccount;
+  nowMs: number;
+  /** Settings keeps quota details behind a closed disclosure. */
+  collapsible?: boolean;
+}): JSX.Element {
+  const usage = (
+    <>
+      {usageUnavailable(account, nowMs) ? (
+        <p className="text-xs fg-secondary">Usage unavailable</p>
+      ) : (
+        <UsageRowList plain>{accountWindowRows(account, nowMs)}</UsageRowList>
+      )}
+      <AccountUsageFreshness account={account} nowMs={nowMs} />
+    </>
+  );
+  return (
+    <div className="mt-2 space-y-1">
       {collapsible ? (
         <details className="group/account-usage">
           <summary className="focus-ring flex w-fit cursor-pointer list-none items-center gap-1 rounded-md text-xs font-medium fg-secondary hover:fg-primary [&::-webkit-details-marker]:hidden">
@@ -199,56 +242,53 @@ export function ProviderAccountUsageDetails({
             />
             Usage
           </summary>
-          <div className="mt-2 space-y-2">
-            {usage}
-            {freshnessLabel}
-          </div>
+          <div className="mt-1">{usage}</div>
         </details>
       ) : (
         usage
       )}
-      {error && (
-        <p role="status" className="text-xs fg-secondary">
-          {error}
-        </p>
-      )}
-      {!collapsible && freshnessLabel}
+      <AccountUsageError account={account} nowMs={nowMs} />
     </div>
   );
 }
 
 /**
- * One multi-account proxy account with its usage: the account (blocked from
- * session replay), a host-supplied state or action beside it, then its
- * limits. Shared by every host's usage surface.
+ * One multi-account proxy account with its usage: a row per limit window,
+ * then the account (blocked from session replay) with a host-supplied state
+ * or action, then how fresh the limits are and any failed read. Shared by
+ * every host's usage surface.
  */
 export function ProviderAccountUsage({
   account,
   providerLabel,
   nowMs,
-  frameless = false,
   children,
 }: {
   account: PortalProviderUsageAccount;
   providerLabel: string;
   nowMs: number;
-  frameless?: boolean;
   children?: ReactNode;
 }): JSX.Element {
   return (
-    <section data-testid="provider-account-usage">
-      <ProviderUsageAccountRow
-        accountLabel={account.label ?? null}
-        statusLabel={`${providerLabel} account`}
-        frameless={frameless}
-      >
-        {children ?? null}
-      </ProviderUsageAccountRow>
-      <ProviderAccountUsageDetails
-        account={account}
-        nowMs={nowMs}
-        frameless={frameless}
-      />
+    <section data-testid="provider-account-usage" className="min-w-0">
+      <UsageRowList>
+        {accountWindowRows(account, nowMs)}
+        {usageUnavailable(account, nowMs) ? (
+          <UsageRow title="Limits" detail="Usage unavailable" />
+        ) : null}
+        <ProviderUsageAccountRow
+          accountLabel={account.label ?? null}
+          statusLabel={`${providerLabel} account`}
+        >
+          {children ?? null}
+        </ProviderUsageAccountRow>
+      </UsageRowList>
+      {errorText(account, nowMs) || freshnessText(account, nowMs) ? (
+        <div className="mt-1.5 space-y-0.5 px-0.5">
+          <AccountUsageError account={account} nowMs={nowMs} />
+          <AccountUsageFreshness account={account} nowMs={nowMs} />
+        </div>
+      ) : null}
     </section>
   );
 }

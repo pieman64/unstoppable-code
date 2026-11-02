@@ -23,6 +23,98 @@ const CHANGED: PortalChangedFiles = {
   committed: [{ filePath: 'src/b.ts', status: 'A' }],
 };
 
+function installTestVirtualLayout(height = 500): () => void {
+  const view = document.defaultView;
+  if (view === null) throw new Error('Expected a document window');
+  const prototype = view.HTMLElement.prototype;
+  type DimensionProperty =
+    | 'offsetHeight'
+    | 'offsetWidth'
+    | 'clientHeight'
+    | 'clientWidth'
+    | 'scrollHeight';
+  const dimensionProperties: readonly DimensionProperty[] = [
+    'offsetHeight',
+    'offsetWidth',
+    'clientHeight',
+    'clientWidth',
+    'scrollHeight',
+  ];
+  const descriptors: Record<DimensionProperty, PropertyDescriptor | undefined> =
+    {
+      offsetHeight: Object.getOwnPropertyDescriptor(prototype, 'offsetHeight'),
+      offsetWidth: Object.getOwnPropertyDescriptor(prototype, 'offsetWidth'),
+      clientHeight: Object.getOwnPropertyDescriptor(prototype, 'clientHeight'),
+      clientWidth: Object.getOwnPropertyDescriptor(prototype, 'clientWidth'),
+      scrollHeight: Object.getOwnPropertyDescriptor(prototype, 'scrollHeight'),
+    };
+  for (const property of dimensionProperties) {
+    Object.defineProperty(prototype, property, {
+      configurable: true,
+      get: function (this: HTMLElement): number {
+        if (this.hasAttribute('data-index')) {
+          return property.endsWith('Width') ? 400 : 24;
+        }
+        if (this.dataset['testid'] === 'activity-changed-files') {
+          return property === 'scrollHeight'
+            ? 1_000_000
+            : property.endsWith('Width')
+              ? 400
+              : height;
+        }
+        return 0;
+      },
+    });
+  }
+  const rect = jest
+    .spyOn(prototype, 'getBoundingClientRect')
+    .mockImplementation(function (this: HTMLElement): DOMRect {
+      if (this.dataset['testid'] === 'activity-changed-files') {
+        return DOMRect.fromRect({ x: 0, y: 0, width: 400, height });
+      }
+      if (this.hasAttribute('data-index')) {
+        return DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 24 });
+      }
+      if (this.classList.contains('relative')) {
+        let ancestor = this.parentElement;
+        while (ancestor !== null) {
+          if (ancestor.dataset['testid'] === 'activity-changed-files') {
+            return DOMRect.fromRect({
+              x: 0,
+              y: -ancestor.scrollTop,
+              width: 400,
+              height: 0,
+            });
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+      return DOMRect.fromRect({ x: 0, y: 0, width: 400, height: 0 });
+    });
+  return (): void => {
+    rect.mockRestore();
+    for (const property of dimensionProperties) {
+      const descriptor = descriptors[property];
+      if (descriptor === undefined) {
+        Reflect.deleteProperty(prototype, property);
+      } else {
+        Object.defineProperty(prototype, property, descriptor);
+      }
+    }
+  };
+}
+
+function scrollTo(element: HTMLElement, scrollTop: number): void {
+  Object.defineProperty(element, 'scrollTop', {
+    configurable: true,
+    value: scrollTop,
+    writable: true,
+  });
+  act(() => {
+    element.dispatchEvent(new Event('scroll', { bubbles: true }));
+  });
+}
+
 describe('ChangedFilesSection', () => {
   it('renders an empty state with no changes', () => {
     const out = renderToString(
@@ -44,6 +136,305 @@ describe('ChangedFilesSection', () => {
     // Existing container/row test IDs stay stable.
     expect(out).toContain('data-testid="activity-changed-files"');
     expect(out).toContain('data-testid="activity-changed-file"');
+  });
+
+  it('loads the next page after all local rows are revealed', () => {
+    const onLoadMore = jest.fn();
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ChangedFilesSection
+          changedFiles={{
+            ...CHANGED,
+            page: {
+              revision: 'rev-1',
+              uncommitted: { total: 4, nextCursor: 'cursor-u' },
+              committed: { total: 1 },
+            },
+          }}
+          hasMore={{ uncommitted: true }}
+          onLoadMore={onLoadMore}
+          scrollable={false}
+        />,
+      );
+    });
+
+    const control = container.querySelector<HTMLButtonElement>(
+      '[data-testid="activity-changed-files-show-more"][data-group="uncommitted"]',
+    );
+    expect(control?.getAttribute('data-load-more')).toBe('true');
+    act(() => control?.click());
+    expect(onLoadMore).toHaveBeenCalledWith('uncommitted');
+    act(() => root.unmount());
+  });
+
+  it('moves focus from Load more to the first loaded row', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const page = {
+      revision: 'rev-1',
+      uncommitted: { total: 2, nextCursor: 'cursor-u' },
+      committed: { total: 0 },
+    };
+    const render = (
+      uncommitted: { filePath: string; status: string }[],
+      loading: boolean,
+    ): void =>
+      act(() => {
+        root.render(
+          <ChangedFilesSection
+            changedFiles={{
+              worktreeLocalId: 'w',
+              uncommitted,
+              committed: [],
+              page,
+            }}
+            hasMore={{ uncommitted: !loading && uncommitted.length < 2 }}
+            loadingMore={{ uncommitted: loading }}
+            onLoadMore={() => {}}
+            onFileClick={() => {}}
+            scrollable={false}
+          />,
+        );
+      });
+    const first = { filePath: 'src/a.ts', status: 'modified' };
+    const loaded = { filePath: 'src/z.ts', status: 'added' };
+
+    render([first], false);
+    const control = container.querySelector<HTMLButtonElement>(
+      '[data-testid="activity-changed-files-show-more"][data-load-more="true"]',
+    );
+    act(() => {
+      control?.focus();
+      control?.click();
+    });
+    render([first], true);
+    render([first, loaded], false);
+
+    expect(
+      document.activeElement
+        ?.closest('[data-testid="activity-changed-file"]')
+        ?.getAttribute('title'),
+    ).toBe('src/z.ts');
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('shows quiet loading feedback while a page is in flight', () => {
+    const out = renderToString(
+      <ChangedFilesSection
+        changedFiles={{
+          ...CHANGED,
+          page: {
+            revision: 'rev-1',
+            uncommitted: { total: 4, nextCursor: 'cursor-u' },
+            committed: { total: 1 },
+          },
+        }}
+        hasMore={{ uncommitted: true }}
+        loadingMore={{ uncommitted: true }}
+        onLoadMore={() => {}}
+      />,
+    );
+
+    expect(out).toContain('Loading more files');
+    expect(out).toContain('data-testid="activity-changed-files-show-more"');
+    expect(out).toContain('data-load-more="true"');
+  });
+
+  it('shows exact page totals and keeps truncation notice while files remain incomplete', () => {
+    const paged = {
+      ...CHANGED,
+      notices: [{ kind: 'truncated' as const }],
+      page: {
+        revision: 'rev-1',
+        uncommitted: { total: 12, nextCursor: 'cursor-u' },
+        committed: { total: 3 },
+      },
+    };
+    const loadingMoreAvailable = renderToString(
+      <ChangedFilesSection
+        changedFiles={paged}
+        hasMore={{ uncommitted: true }}
+        onLoadMore={() => {}}
+      />,
+    ).replace(/<!-- -->/g, '');
+    const exhausted = renderToString(
+      <ChangedFilesSection
+        changedFiles={{
+          ...paged,
+          uncommitted: Array.from({ length: 12 }, (_, index) => ({
+            filePath: `src/uncommitted-${index}.ts`,
+            status: 'modified',
+          })),
+          committed: Array.from({ length: 3 }, (_, index) => ({
+            filePath: `src/committed-${index}.ts`,
+            status: 'added',
+          })),
+          page: {
+            revision: 'rev-1',
+            uncommitted: { total: 12 },
+            committed: { total: 3 },
+          },
+        }}
+        hasMore={{ uncommitted: false, committed: false }}
+        onLoadMore={() => {}}
+      />,
+    );
+
+    expect(loadingMoreAvailable).toContain('Uncommitted · 12 files');
+    expect(loadingMoreAvailable).toContain('Committed · 3 files');
+    expect(loadingMoreAvailable).toContain('Not every changed file is listed.');
+    expect(exhausted).not.toContain('Not every changed file is listed.');
+  });
+
+  it('keeps the truncation notice when a cursorless page is still incomplete', () => {
+    const out = renderToString(
+      <ChangedFilesSection
+        changedFiles={{
+          worktreeLocalId: 'w',
+          uncommitted: [{ filePath: 'src/a.ts', status: 'modified' }],
+          committed: [{ filePath: 'src/b.ts', status: 'added' }],
+          notices: [{ kind: 'truncated' }],
+          page: {
+            revision: 'rev-1',
+            uncommitted: { total: 2 },
+            committed: { total: 1 },
+          },
+        }}
+        hasMore={{ uncommitted: false, committed: false }}
+        onLoadMore={() => {}}
+      />,
+    );
+
+    expect(out).toContain('Not every changed file is listed.');
+  });
+
+  it('counts files still on the desktop in a paged group as not shown', () => {
+    const uncommitted = Array.from({ length: 250 }, (_, index) => ({
+      filePath: `src/file-${String(index).padStart(3, '0')}.ts`,
+      status: 'modified',
+    }));
+    const out = renderToString(
+      <ChangedFilesSection
+        changedFiles={{
+          worktreeLocalId: 'w',
+          uncommitted,
+          committed: [],
+          page: {
+            revision: 'rev-1',
+            uncommitted: { total: 900, nextCursor: 'cursor-u' },
+            committed: { total: 0 },
+          },
+        }}
+        onLoadMore={() => {}}
+      />,
+    ).replace(/<!-- -->/g, '');
+
+    expect(out).toContain('Show 50 more files');
+    expect(out).toContain('700 files not shown');
+  });
+
+  it('keeps phase 05 local reveal behavior when no page is available', () => {
+    const files = Array.from({ length: 201 }, (_, index) => ({
+      filePath: `src/file-${String(index).padStart(3, '0')}.ts`,
+      status: 'modified',
+    }));
+    const out = renderToString(
+      <ChangedFilesSection
+        changedFiles={{ ...CHANGED, uncommitted: files, committed: [] }}
+      />,
+    );
+
+    expect(out).toContain('Show 1 more file');
+    expect(out).not.toContain('data-load-more="true"');
+  });
+
+  it('auto-reveals the last group by requesting a page when local rows are exhausted', () => {
+    const originalObserver = window.IntersectionObserver;
+    const restoreVirtualLayout = installTestVirtualLayout(20_000);
+    let observeCallback: IntersectionObserverCallback | undefined;
+    class TestIntersectionObserver implements IntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = '';
+      readonly scrollMargin = '';
+      readonly thresholds = [0];
+
+      constructor(callback: IntersectionObserverCallback) {
+        observeCallback = callback;
+      }
+
+      disconnect(): void {}
+      observe(): void {}
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+      unobserve(): void {}
+    }
+    window.IntersectionObserver = TestIntersectionObserver;
+    const onLoadMore = jest.fn();
+    const files = Array.from({ length: 101 }, (_, index) => ({
+      filePath: `src/file-${String(index).padStart(3, '0')}.ts`,
+      status: 'modified',
+    }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ChangedFilesSection
+          changedFiles={{
+            worktreeLocalId: 'w',
+            uncommitted: files,
+            committed: [],
+            page: {
+              revision: 'rev-1',
+              uncommitted: { total: 201, nextCursor: 'cursor-u' },
+              committed: { total: 0 },
+            },
+          }}
+          hasMore={{ uncommitted: true }}
+          onLoadMore={onLoadMore}
+        />,
+      );
+    });
+
+    const scrollElement = container.querySelector<HTMLElement>(
+      '[data-testid="activity-changed-files"]',
+    );
+    if (scrollElement) {
+      scrollTo(scrollElement, 1);
+    }
+    const autoRevealControl = container.querySelector<HTMLElement>(
+      '[data-testid="activity-changed-files-show-more"]',
+    );
+    if (autoRevealControl && scrollElement && observeCallback) {
+      act(() => {
+        observeCallback?.(
+          [
+            {
+              target: autoRevealControl,
+              isIntersecting: true,
+              intersectionRatio: 1,
+              boundingClientRect: autoRevealControl.getBoundingClientRect(),
+              intersectionRect: autoRevealControl.getBoundingClientRect(),
+              rootBounds: scrollElement.getBoundingClientRect(),
+              time: 0,
+            },
+          ],
+          {} as IntersectionObserver,
+        );
+      });
+    }
+
+    expect(onLoadMore).toHaveBeenCalledWith('uncommitted');
+    act(() => root.unmount());
+    container.remove();
+    window.IntersectionObserver = originalObserver;
+    restoreVirtualLayout();
   });
 
   it('positions the overlay scrollbar close to the card edge', () => {
@@ -123,6 +514,44 @@ describe('ChangedFilesSection', () => {
     expect(out).not.toContain('bg-fg-primary/40');
   });
 
+  it('shows only non-zero line counts', () => {
+    const out = renderToString(
+      <ChangedFilesSection
+        changedFiles={{
+          worktreeLocalId: 'w',
+          uncommitted: [
+            {
+              filePath: 'src/added-lines.ts',
+              status: 'modified',
+              insertions: 4,
+              deletions: 0,
+            },
+            {
+              filePath: 'src/removed-lines.ts',
+              status: 'modified',
+              insertions: 0,
+              deletions: 2,
+            },
+            // A new symlink has no line changes at all.
+            {
+              filePath: 'link',
+              status: 'added',
+              insertions: 0,
+              deletions: 0,
+            },
+          ],
+          committed: [],
+        }}
+      />,
+    );
+
+    const text = out.replaceAll('<!-- -->', '');
+    expect(text).toContain('>+4<');
+    expect(text).toContain('>-2<');
+    expect(text).not.toContain('>+0<');
+    expect(text).not.toContain('>-0<');
+  });
+
   it('splits the path into a muted directory prefix and a foreground filename', () => {
     const container = document.createElement('div');
     const root = createRoot(container);
@@ -167,7 +596,9 @@ describe('ChangedFilesSection', () => {
           }}
           workspaceLocalId="ws"
           worktreeLocalId="wt"
-          onSelectFile={(selection): void => selections.push(selection)}
+          onSelectFile={(selection): void => {
+            selections.push(selection);
+          }}
         />,
       );
     });

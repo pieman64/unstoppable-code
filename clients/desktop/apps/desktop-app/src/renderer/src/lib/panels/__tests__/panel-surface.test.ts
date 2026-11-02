@@ -5,7 +5,10 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { registerCoworkWorkspaceIds } from '@/lib/cowork-registry';
-import { panelSurfaceForWorktreeKey } from '../panel-surface';
+import {
+  filePanelPlacementPolicyForWorktreeKey,
+  panelSurfaceForWorktreeKey,
+} from '../panel-surface';
 
 describe('panelSurfaceForWorktreeKey', () => {
   afterEach(() => {
@@ -48,5 +51,31 @@ describe('panelSurfaceForWorktreeKey', () => {
     expect(
       panelSurfaceForWorktreeKey(`other-project/${APP_ADVISOR_WORKTREE_ID}`),
     ).toBe('code');
+  });
+});
+
+describe('filePanelPlacementPolicyForWorktreeKey (CAN-4789)', () => {
+  afterEach(() => {
+    registerCoworkWorkspaceIds([]);
+  });
+
+  it('opens Cowork files in a documents group beside the chat', () => {
+    registerCoworkWorkspaceIds(['cowork-ws-1']);
+    expect(
+      filePanelPlacementPolicyForWorktreeKey(
+        `cowork-ws-1/${COWORK_HOME_WORKTREE_ID}`,
+      ),
+    ).toBe('documents-group');
+    expect(
+      filePanelPlacementPolicyForWorktreeKey(
+        `${STANDALONE_CHAT_PROJECT_ID}/chat-1`,
+      ),
+    ).toBe('documents-group');
+  });
+
+  it('keeps Code worktrees opening files among their chats', () => {
+    expect(filePanelPlacementPolicyForWorktreeKey('project-1/worktree-1')).toBe(
+      'chat-group',
+    );
   });
 });

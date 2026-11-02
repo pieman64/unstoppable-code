@@ -23,6 +23,8 @@ The default working directory is a pipeline-editor scratch directory. It is not 
 
 The bundled ${PIPELINE_EDITOR_REQUIRED_SKILL_NAME} skill is authoritative for pipeline YAML syntax, available actions, portable shell guidance, and authoring conventions. Follow it when writing or revising pipelines.
 
+Host steps (the builtin actions that create projects' tasks, chats or worktrees, send agent messages, wait for replies, or move items between sidebar groups) need the desktop app; the CLI refuses them, except \`builtin/create-worktree\`, which runs its Node fallback on the CLI unless \`existing_branch\`, \`base_task_id\`, \`group\` or \`worktree_setup: run\` or \`run_and_wait\` is set. A pipeline with \`scope: global\` runs with no project, so its steps name every project, task and chat with explicit IDs, usually through its inputs.
+
 Use SearchDeferredTools (Claude: ${getPipelineEditorProviderToolName(
   'search_deferred_tools',
   'claude',

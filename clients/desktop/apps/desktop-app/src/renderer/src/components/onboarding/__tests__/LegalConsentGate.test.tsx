@@ -7,7 +7,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { CanopyApi, PreferencesData } from '@canopy/desktop-shared/types';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { CONSENT_TOS_VERSION } from '@canopy/desktop-shared/constants/consent';
 import { LegalConsentGate } from '../LegalConsentGate';
 
@@ -37,12 +37,13 @@ describe('LegalConsentGate', () => {
     savePreferences.mockResolvedValue({});
     getCanopyCloudBaseUrl.mockResolvedValue('https://app.example.com');
     openExternal.mockResolvedValue(undefined);
-    Object.assign(window, {
-      api: {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
         savePreferences,
         getCanopyCloudBaseUrl,
         browser: { openExternal },
-      } as Partial<CanopyApi> as CanopyApi,
+      },
     });
   });
 

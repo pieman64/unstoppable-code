@@ -1,5 +1,10 @@
+import {
+  isOrchestratorLabel,
+  ORCHESTRATOR_FORMER_LABEL,
+} from '@canopy/protocol';
 import { createHash } from 'node:crypto';
 import {
+  APP_ADVISOR_BOT_ID,
   parseBotAction,
   type BotAction,
   type BotRow,
@@ -22,21 +27,17 @@ import {
   validateCursor,
 } from '../paging';
 import { dispatchBotReadAction } from '../reads';
-import { registeredBots, requireBot } from './registry';
-import { requireBotAccess, readBotEntries } from './target';
+import { registeredBots, requireBot, type RegisteredBot } from './registry';
+import { botAccessAgent, requireBotAccess, readBotEntries } from './target';
 import { listBotChatRows, listBotTaskRows } from './rows';
 
 export async function isBotAccessAllowed(
   caller: ProjectDiscoveryCaller,
 ): Promise<boolean> {
-  if (caller.kind === 'app_advisor') return true;
+  const agent = botAccessAgent(caller);
+  if (!agent) return true;
   try {
-    return (
-      await decideAppAdvisorAccessForCaller({
-        projectId: caller.projectId,
-        worktreeId: caller.worktreeId,
-      })
-    ).allowed;
+    return (await decideAppAdvisorAccessForCaller(agent)).allowed;
   } catch {
     return false;
   }
@@ -101,6 +102,19 @@ function metadataBinding<T>(
   );
 }
 
+/** Orchestrator still answers to its former name for agents that learned it. */
+function botNames(bot: RegisteredBot): readonly string[] {
+  return bot.botId === APP_ADVISOR_BOT_ID
+    ? [bot.name, ORCHESTRATOR_FORMER_LABEL]
+    : [bot.name];
+}
+
+function botNameMatches(bot: RegisteredBot, name: string): boolean {
+  return bot.botId === APP_ADVISOR_BOT_ID
+    ? isOrchestratorLabel(name)
+    : name.toLowerCase() === bot.name.toLowerCase();
+}
+
 async function listBots(action: BotsListAction): Promise<BotRow[]> {
   if (action.botIds) action.botIds.forEach(requireBot);
   const rows: BotRow[] = [];
@@ -108,14 +122,11 @@ async function listBots(action: BotsListAction): Promise<BotRow[]> {
     if (action.botIds && !action.botIds.includes(bot.botId)) continue;
     if (action.availability && !action.availability.includes('available'))
       continue;
-    if (
-      action.name !== undefined &&
-      action.name.toLowerCase() !== bot.name.toLowerCase()
-    )
+    if (action.name !== undefined && !botNameMatches(bot, action.name))
       continue;
     if (
       action.query !== undefined &&
-      ![bot.botId, bot.name].some((value) =>
+      ![bot.botId, ...botNames(bot)].some((value) =>
         value.toLowerCase().includes(action.query?.toLowerCase() ?? ''),
       )
     )

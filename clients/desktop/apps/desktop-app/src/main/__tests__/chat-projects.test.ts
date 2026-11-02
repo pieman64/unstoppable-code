@@ -43,6 +43,8 @@ jest.mock('../ipc/register', () => ({
 }));
 jest.mock('../agents/session-manager', () => ({
   destroyWorktreeSessions: jest.fn().mockResolvedValue(undefined),
+  getLiveBackgroundTasksForChat: jest.fn(),
+  listLiveBackgroundTaskOwners: jest.fn(),
 }));
 jest.mock('../lib/chat-project-utils', () => ({
   ensureCoworkHomeScaffold: jest.fn().mockResolvedValue(undefined),
@@ -64,6 +66,9 @@ jest.mock('../lib/validation', () => ({
 }));
 jest.mock('../lib/desktop-telemetry', () => ({
   recordStandaloneProjectCrudTelemetry: jest.fn(),
+}));
+jest.mock('../lib/workspace-deletion', () => ({
+  deleteWorkspace: jest.fn(),
 }));
 // The real service schedules a timed flush. Left unmocked, it fired later in
 // a reused Jest worker, against the mocked `../lib/paths`, and crashed the
@@ -160,12 +165,18 @@ jest.mock('../lib/workspace-persistence', () => ({
     WorkspaceManifestRepository,
     'read'
   > => ({
-    read: (id: string): Promise<WorkspaceManifestRead> =>
-      Promise.resolve(
-        mockCoworkConfig(id)
-          ? { authority: 'ok', document: { ...mockCoworkConfig(id) } }
+    read: (id: string): Promise<WorkspaceManifestRead> => {
+      const document = mockCoworkConfig(id);
+      return Promise.resolve(
+        document
+          ? {
+              authority: 'ok',
+              document: { ...document },
+              raw: JSON.stringify(document),
+            }
           : { authority: 'absent' },
-      ),
+      );
+    },
   }),
   updateWorkspaceConfig: async <T>(
     id: string,
@@ -245,14 +256,10 @@ import type {
   WorkspaceIndexEntry,
 } from '@canopy/desktop-shared/types';
 import {
-  COWORK_HOME_WORKTREE_ID,
   DEFAULT_COWORK_WORKSPACE_ID,
   IPC_CHANNELS,
-  STANDALONE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
 import { MAX_ARCHIVE_RETENTION_DAYS } from '@canopy/desktop-shared/lib/archive-retention';
-import { destroyWorktreeSessions } from '../agents/session-manager';
-import { setDelegationActivity } from '../agents/delegation/activity';
 import {
   ensureCoworkHomeScaffold,
   syncChatProjectAgentsMd,
@@ -265,6 +272,9 @@ import {
 } from '../lib/sidebar-items';
 import { registerIpcHandler } from '../ipc/register';
 import { registerChatProjectHandlers } from '../ipc/chat-projects';
+import { deleteWorkspace } from '../lib/workspace-deletion';
+import { recordStandaloneProjectCrudTelemetry } from '../lib/desktop-telemetry';
+import { validateId } from '../lib/validation';
 import {
   createWorkspaceTemplateShare,
   getWorkspaceTemplateShareSnapshot,
@@ -288,8 +298,12 @@ const mockedCleanupPersistedWorktreeData = jest.mocked(
 const mockedResolveDesktopWorkspaceTemplate = jest.mocked(
   resolveDesktopWorkspaceTemplate,
 );
-const mockedDestroyWorktreeSessions = jest.mocked(destroyWorktreeSessions);
 const mockedResolveCoworkWorkspaceId = jest.mocked(resolveCoworkWorkspaceId);
+const mockedDeleteWorkspace = jest.mocked(deleteWorkspace);
+const mockedRecordStandaloneProjectCrudTelemetry = jest.mocked(
+  recordStandaloneProjectCrudTelemetry,
+);
+const mockedValidateId = jest.mocked(validateId);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedReadAllSidebarItems = jest.mocked(readAllSidebarItems);
 const mockedWriteAllSidebarItems = jest.mocked(writeAllSidebarItems);
@@ -610,7 +624,7 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
     it('writes the template instructions and syncs AGENTS.md alongside them', async () => {
       mockSidebarItems = [];
 
-      const result = await getHandler(
+      const result = (await getHandler(
         IPC_CHANNELS.chatProjectCreateFromTemplate,
       )(undefined, {
         template: {
@@ -622,7 +636,7 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
           customSkills: [],
         },
         sourceTemplate,
-      });
+      })) as { project: ChatProjectData };
 
       expect(result).toMatchObject({
         project: { id: 'course-workspace', name: 'Course workspace' },
@@ -686,8 +700,14 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
       expect(mockSidebarItems[0]).toMatchObject({
         installedFromTemplateExternalId: sourceTemplate.externalId,
       });
+      const failedInstallItem = mockSidebarItems[0];
+      if (!failedInstallItem || failedInstallItem.type !== 'cowork') {
+        throw new Error(
+          'Expected the failed installation to remain a cowork project.',
+        );
+      }
       expect(
-        mockSidebarItems[0]?.installedFromTemplateContentHash,
+        failedInstallItem.installedFromTemplateContentHash,
       ).toBeUndefined();
 
       const retried = (await getHandler(
@@ -992,7 +1012,7 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
         }),
       ];
 
-      const result = await getHandler(
+      const result = (await getHandler(
         IPC_CHANNELS.chatProjectCreateFromTemplate,
       )(undefined, {
         template: {
@@ -1004,7 +1024,7 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
           customSkills: [],
         },
         sourceTemplate,
-      });
+      })) as { project: ChatProjectData };
 
       expect(result.project).toMatchObject({
         id: 'custom-course',
@@ -1024,7 +1044,7 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
         }),
       ];
 
-      const result = await getHandler(
+      const result = (await getHandler(
         IPC_CHANNELS.chatProjectCreateFromTemplate,
       )(undefined, {
         template: {
@@ -1036,7 +1056,7 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
           customSkills: [],
         },
         sourceTemplate,
-      });
+      })) as { project: ChatProjectData };
 
       expect(result.project).toMatchObject({
         id: 'course-workspace',
@@ -1922,86 +1942,48 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
     });
   });
 
+  // The handler is an adapter over the canonical deletion. Admission, session
+  // teardown, refusal copy and removal run for real in
+  // `ipc/__tests__/chat-project-delete.test.ts`.
   describe('chatProjectDelete', () => {
-    it('cleans up persisted worktree data and removes the project', async () => {
-      mockSidebarItems = [
-        coworkItem({ id: DEFAULT_COWORK_WORKSPACE_ID }),
-        coworkItem({ id: 'alpha' }),
-      ];
-
+    it('routes the deletion to the canonical Cowork deletion, then records the adapter telemetry', async () => {
       await getHandler(IPC_CHANNELS.chatProjectDelete)(undefined, {
         projectId: 'alpha',
-        chatDisposition: 'delete',
+        chatDisposition: 'move',
       });
 
-      expect(mockedDestroyWorktreeSessions).toHaveBeenCalledWith(
-        'alpha',
-        COWORK_HOME_WORKTREE_ID,
-      );
-      expect(mockedDestroyWorktreeSessions).toHaveBeenCalledWith(
-        STANDALONE_CHAT_PROJECT_ID,
-        'alpha',
-      );
-      expect(
-        mockedDestroyWorktreeSessions.mock.invocationCallOrder[0],
-      ).toBeLessThan(mockedRm.mock.invocationCallOrder[0]);
-      expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalledWith(
-        'alpha',
-        'home',
-        { deferLocalWatcherCancellationCommit: true },
-      );
-      expect(mockedRm).toHaveBeenCalledWith('/mock/workspaces/alpha', {
-        recursive: true,
-        force: true,
-      });
-      expect(mockSidebarItems).toEqual([
-        expect.objectContaining({ id: DEFAULT_COWORK_WORKSPACE_ID }),
+      expect(mockedDeleteWorkspace.mock.calls).toEqual([
+        [
+          {
+            workspaceId: 'alpha',
+            source: 'chat_project_delete',
+            coworkProject: true,
+          },
+        ],
       ]);
+      expect(mockedRecordStandaloneProjectCrudTelemetry.mock.calls).toEqual([
+        [{ action: 'delete', projectId: 'alpha', chatDisposition: 'move' }],
+      ]);
+      expect(mockedDeleteWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
+        mockedRecordStandaloneProjectCrudTelemetry.mock
+          .invocationCallOrder[0] ?? 0,
+      );
     });
 
-    it.each([
-      ['a Work Entry chat', 'alpha/entry-1/chat-a'],
-      [
-        'a legacy standalone chat',
-        `${STANDALONE_CHAT_PROJECT_ID}/alpha/chat-a`,
-      ],
-    ])(
-      'refuses while %s in the project has live delegates',
-      async (_label, sessionKey) => {
-        mockSidebarItems = [
-          coworkItem({ id: DEFAULT_COWORK_WORKSPACE_ID }),
-          coworkItem({ id: 'alpha' }),
-        ];
-        setDelegationActivity('cowork-delete-owner', sessionKey, 1);
-        try {
-          await expect(
-            getHandler(IPC_CHANNELS.chatProjectDelete)(undefined, {
-              projectId: 'alpha',
-              chatDisposition: 'delete',
-            }),
-          ).rejects.toThrow(
-            'Delegates are still running here. Stop them first.',
-          );
-        } finally {
-          setDelegationActivity('cowork-delete-owner', sessionKey, 0);
-        }
-        expect(mockedDestroyWorktreeSessions).not.toHaveBeenCalled();
-        expect(mockedCleanupPersistedWorktreeData).not.toHaveBeenCalled();
-        expect(mockedRm).not.toHaveBeenCalled();
-      },
-    );
-
-    it('rejects deleting the default cowork project', async () => {
-      mockSidebarItems = [coworkItem({ id: DEFAULT_COWORK_WORKSPACE_ID })];
+    it('propagates a canonical refusal unchanged and records no telemetry', async () => {
+      const refusal = Object.assign(
+        new Error('Delegates are still running here. Stop them first.'),
+        { code: 'conflict' },
+      );
+      mockedDeleteWorkspace.mockRejectedValueOnce(refusal);
 
       await expect(
         getHandler(IPC_CHANNELS.chatProjectDelete)(undefined, {
-          projectId: DEFAULT_COWORK_WORKSPACE_ID,
+          projectId: 'alpha',
           chatDisposition: 'delete',
         }),
-      ).rejects.toThrow('The Chats project cannot be deleted');
-      expect(mockedCleanupPersistedWorktreeData).not.toHaveBeenCalled();
-      expect(mockedRm).not.toHaveBeenCalled();
+      ).rejects.toBe(refusal);
+      expect(mockedRecordStandaloneProjectCrudTelemetry).not.toHaveBeenCalled();
     });
 
     it('rejects an invalid chatDisposition', async () => {
@@ -2013,25 +1995,27 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
           chatDisposition: 'bogus',
         }),
       ).rejects.toThrow('Invalid chatDisposition');
-      expect(mockedCleanupPersistedWorktreeData).not.toHaveBeenCalled();
+      expect(mockedDeleteWorkspace).not.toHaveBeenCalled();
+      expect(mockedRecordStandaloneProjectCrudTelemetry).not.toHaveBeenCalled();
     });
 
-    it('throws when the project does not exist', async () => {
-      mockSidebarItems = [];
+    it('validates the project id before resolving or deleting it', async () => {
+      mockedValidateId.mockImplementationOnce(() => {
+        throw new Error('Invalid projectId');
+      });
 
       await expect(
         getHandler(IPC_CHANNELS.chatProjectDelete)(undefined, {
-          projectId: 'missing',
+          projectId: '../alpha',
           chatDisposition: 'delete',
         }),
-      ).rejects.toThrow('Chat project not found');
+      ).rejects.toThrow('Invalid projectId');
+      expect(mockedValidateId).toHaveBeenCalledWith('../alpha', 'projectId');
+      expect(mockedResolveCoworkWorkspaceId).not.toHaveBeenCalled();
+      expect(mockedDeleteWorkspace).not.toHaveBeenCalled();
     });
 
     it('resolves a legacy chat-project id to its cowork project id before deleting', async () => {
-      mockSidebarItems = [
-        coworkItem({ id: DEFAULT_COWORK_WORKSPACE_ID }),
-        coworkItem({ id: 'alpha' }),
-      ];
       mockedResolveCoworkWorkspaceId.mockImplementation((id: string) =>
         id === 'legacy-alpha' ? 'alpha' : id,
       );
@@ -2044,18 +2028,14 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
       expect(mockedResolveCoworkWorkspaceId).toHaveBeenCalledWith(
         'legacy-alpha',
       );
-      expect(mockedCleanupPersistedWorktreeData).toHaveBeenCalledWith(
-        'alpha',
-        'home',
-        { deferLocalWatcherCancellationCommit: true },
+      expect(mockedDeleteWorkspace).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'alpha' }),
       );
-      expect(mockedRm).toHaveBeenCalledWith('/mock/workspaces/alpha', {
-        recursive: true,
-        force: true,
+      expect(mockedRecordStandaloneProjectCrudTelemetry).toHaveBeenCalledWith({
+        action: 'delete',
+        projectId: 'alpha',
+        chatDisposition: 'delete',
       });
-      expect(mockSidebarItems).toEqual([
-        expect.objectContaining({ id: DEFAULT_COWORK_WORKSPACE_ID }),
-      ]);
     });
   });
 

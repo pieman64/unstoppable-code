@@ -27,14 +27,32 @@ function skillTitle(name) {
     .join(' ');
 }
 
-// CAN-3482: the installed skill detail offers the same Share and Delete/Remove
-// actions as its list row, with the same eligibility and confirmation flows.
-// CAN-3483: that detail is the Marketplace detail page
-// (`Marketplace > Installed > Skills > <name>`), not a popup, and the Skills
-// breadcrumb returns to the installed Skills list with its state. CAN-4261:
-// the page has no Back control; the breadcrumb is the way out.
+// CAN-4267: the installed Skills table was deleted. Installed skills are rows
+// of the Customize Skills tab's Installed section, keyed by entry id.
+function installedSection(window) {
+  return window.getByTestId('customize-section-installed');
+}
+
+function installedSkillRow(window, name, sourceId = 'custom:app') {
+  return installedSection(window).getByTestId(
+    `customize-row-skill:${sourceId}:${name}`,
+  );
+}
+
+function builtInSkillRow(window) {
+  return installedSection(window)
+    .locator('[data-testid^="customize-row-skill:builtin:app:"]')
+    .first();
+}
+
+// CAN-3482: the installed skill detail offers the Share and Delete/Remove
+// actions, with the same eligibility and confirmation flows.
+// CAN-3483: that detail is the Customize detail page
+// (`Customize > Installed > Skills > <name>`), not a popup, and the Skills
+// breadcrumb returns to the Skills tab's Installed section with its state.
+// CAN-4261: the page has no Back control; the breadcrumb is the way out.
 // CAN-3485: a custom skill's Edit opens its edit page
-// (`Marketplace > Installed > Skills > <name> > Edit`) in place of the
+// (`Customize > Installed > Skills > <name> > Edit`) in place of the
 // detail; Cancel and Back return to the detail, Save to the updated detail.
 //
 // Testids exercised:
@@ -42,7 +60,8 @@ function skillTitle(name) {
 //   - `plugins-entry-detail-breadcrumbs` / `-breadcrumb-type` /
 //     `-breadcrumb-installed`        -> page breadcrumb trail
 //   - `plugins-entry-detail-back`    -> page Back control (absent, CAN-4261)
-//   - `plugins-management-section-skills` -> installed Skills list
+//   - `customize-section-installed`  -> Skills tab Installed section
+//   - `customize-row-skill:<sourceId>:<name>` -> installed skill row
 //   - `skill-read-detail-share`      -> detail Share action
 //   - `skill-read-detail-edit`       -> detail Edit action (custom only)
 //   - `skill-read-detail-remove`     -> detail Delete/Remove action
@@ -50,20 +69,19 @@ function skillTitle(name) {
 //   - `skill-delete-confirm`         -> confirmation button
 //   - `cloud-sync-modal`             -> disconnected share gate
 //   - `share-skill-modal`            -> Share Skill dialog
-//   - `skill-share-builtin:*`        -> bundled row Share action
 //   - `skill-editor-page`            -> custom skill edit page root
 //   - `skill-editor-page-actions`    -> edit page actions row
 //   - `skill-editor-cancel` / `skill-editor-save` -> edit page actions
 //   - `plugins-entry-detail-breadcrumb-entry` / `-breadcrumb-edit`
 //                                    -> edit page's `<name> > Edit` crumbs
-//   - `skill-edit-custom:app-<name>` -> installed Skills row Edit action
-// CAN-1259: "Edit with AI" on the detail, the edit page, and the custom row
-// opens a new Cowork chat with the skill selected and the prompt drafted
-// (not sent); read-only skills explain why it is unavailable.
+//   - `customize-row-menu-skill:custom:app:<name>` (`-edit`)
+//                                    -> installed row menu Edit action
+// CAN-1259: "Edit with AI" on the detail and the edit page opens a new
+// Cowork chat with the skill selected and the prompt drafted (not sent);
+// read-only skills explain why it is unavailable.
 //   - `skill-read-detail-edit-with-ai` -> detail Edit with AI item in the
 //                                       More menu (CAN-4261)
 //   - `skill-editor-edit-with-ai`    -> edit page Edit with AI action
-//   - `skill-edit-with-ai-custom:app-<name>` -> installed row Edit with AI
 //   - `page-chat`                    -> Cowork chat page
 
 const CUSTOM_SKILL = 'detail-custom-skill';
@@ -133,7 +151,7 @@ test('installed skill detail offers the list Share and Delete/Remove flows', asy
 
     const detailTitle = window.locator('#skill-detail-modal-title');
     const detailPage = window.getByTestId('plugins-entry-detail-page');
-    const skillsList = window.getByTestId('plugins-management-section-skills');
+    const skillsList = installedSection(window);
     const shareAction = window.getByTestId('skill-read-detail-share');
     const editAction = window.getByTestId('skill-read-detail-edit');
     const removeAction = window.getByTestId('skill-read-detail-remove');
@@ -149,10 +167,10 @@ test('installed skill detail offers the list Share and Delete/Remove flows', asy
       await expect(moreMenu).toHaveCount(0);
     };
     const confirmModal = window.getByTestId('skill-delete-confirm-modal');
-    const openSkill = async (name) => {
-      await window.locator('tbody button', { hasText: name }).first().click();
+    const openSkill = async (name, sourceId) => {
+      await installedSkillRow(window, name, sourceId).click();
       await expect(detailTitle).toHaveText(skillTitle(name));
-      // A Marketplace page, not a dialog over the list.
+      // A Customize page, not a dialog over the list.
       await expect(detailPage).toBeVisible();
       await expect(window.getByRole('dialog', { name })).toHaveCount(0);
       await expect(skillsList).toBeHidden();
@@ -240,16 +258,13 @@ test('installed skill detail offers the list Share and Delete/Remove flows', asy
       timeout: 30_000,
     });
     await shareModal.getByTestId('share-skill-submit').click();
-    await expect(shareModal).toHaveCount(0);
-    // The shared-link toast stays until dismissed and covers the header's
-    // top-right corner, where a skill with only Try it now keeps its More
-    // button (CAN-4261). Close it so later header actions stay clickable.
-    const shareToast = window
-      .getByTestId('toast-stack-card')
-      .filter({ has: window.getByTestId('toast-copy-link') });
-    await expect(shareToast).toHaveCount(1);
-    await shareToast.getByTestId('toast-dismiss').click();
+    // The dialog stays open on its success notice with the shared link, and
+    // no shared-link toast is left over the header (CAN-4261).
+    await expect(shareModal.getByTestId('share-skill-success')).toBeVisible();
+    await expect(shareModal.getByTestId('share-skill-link')).toBeVisible();
     await expect(window.getByTestId('toast-copy-link')).toHaveCount(0);
+    await shareModal.getByTestId('share-skill-done').click();
+    await expect(shareModal).toHaveCount(0);
     // The local skill is kept, so its detail page stays open and the Skills
     // crumb returns to an installed Skills list that still lists it
     // (CAN-4261: the page has no Back).
@@ -257,9 +272,7 @@ test('installed skill detail offers the list Share and Delete/Remove flows', asy
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
     await expect(detailTitle).toHaveCount(0);
     await expect(skillsList).toBeVisible();
-    await expect(
-      window.locator('tbody button', { hasText: SHARED_CUSTOM_SKILL }),
-    ).toHaveCount(1);
+    await expect(installedSkillRow(window, SHARED_CUSTOM_SKILL)).toHaveCount(1);
 
     await openSkill(CUSTOM_SKILL);
     await expect(shareAction).toBeVisible();
@@ -281,14 +294,12 @@ test('installed skill detail offers the list Share and Delete/Remove flows', asy
     await expect(confirmModal).toHaveCount(0);
     await expect(detailTitle).toHaveCount(0);
     await expect(skillsList).toBeVisible();
-    await expect(
-      window.locator('tbody button', { hasText: CUSTOM_SKILL }),
-    ).toHaveCount(0);
+    await expect(installedSkillRow(window, CUSTOM_SKILL)).toHaveCount(0);
 
     // ---------------------------------------------------------------------
     // Installed skill: Remove only, like its list row.
     // ---------------------------------------------------------------------
-    await openSkill(INSTALLED_SKILL);
+    await openSkill(INSTALLED_SKILL, INSTALLED_SOURCE_ID);
     await expect(shareAction).toHaveCount(0);
     await expect(editAction).toHaveCount(0);
     await openMore();
@@ -303,18 +314,14 @@ test('installed skill detail offers the list Share and Delete/Remove flows', asy
     await expect(detailTitle).toHaveCount(0);
     await expect(skillsList).toBeVisible();
     await expect(
-      window.locator('tbody button', { hasText: INSTALLED_SKILL }),
+      installedSkillRow(window, INSTALLED_SKILL, INSTALLED_SOURCE_ID),
     ).toHaveCount(0);
 
     // ---------------------------------------------------------------------
-    // Bundled skill: Share only; no removal, like its list row.
+    // Bundled skill: Share only; no removal. Every `builtin:app` skill is
+    // shareable.
     // ---------------------------------------------------------------------
-    const bundledRow = window
-      .locator('tbody tr', {
-        has: window.locator('[data-testid^="skill-share-builtin"]'),
-      })
-      .first();
-    await bundledRow.locator('td').first().getByRole('button').click();
+    await builtInSkillRow(window).click();
     await expect(detailPage).toBeVisible();
     await expect(shareAction).toBeVisible();
     // CAN-4261: More holds only the unavailable Edit with AI; no update,
@@ -339,9 +346,10 @@ test('installed skill page returns to the installed Skills list with its scroll'
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-skill-detail-page-return-'),
   );
-  // Enough rows that the installed Skills list scrolls.
+  // Enough rows that the installed Skills list scrolls; Customize lays its
+  // rows out in two columns.
   const names = Array.from(
-    { length: 30 },
+    { length: 60 },
     (_, index) => `page-return-skill-${String(index + 1).padStart(2, '0')}`,
   );
   for (const name of names) {
@@ -362,12 +370,11 @@ test('installed skill page returns to the installed Skills list with its scroll'
     await app.openPluginsTab('skills');
     await app.expectPluginsTab('skills');
 
-    const skillsList = window.getByTestId('plugins-management-section-skills');
-    const scroller = window
-      .getByTestId('plugins-management-content')
-      .locator('.page-scroll-gutter');
+    const skillsList = installedSection(window);
+    // The Customize page root is its only vertical scroller.
+    const scroller = window.getByTestId('page-plugins');
     const detailPage = window.getByTestId('plugins-entry-detail-page');
-    const lastRow = window.locator('tbody button', { hasText: lastSkill });
+    const lastRow = installedSkillRow(window, lastSkill);
 
     await lastRow.scrollIntoViewIfNeeded();
     const scrollTop = await scroller.evaluate((node) => node.scrollTop);
@@ -383,12 +390,7 @@ test('installed skill page returns to the installed Skills list with its scroll'
         window
           .getByTestId('plugins-entry-detail-breadcrumbs')
           .getByRole('listitem'),
-      ).toHaveText([
-        'Customize',
-        'Installed',
-        'Skills',
-        'Page Return Skill 30',
-      ]);
+      ).toHaveText(['Customize', 'Installed', 'Skills', skillTitle(lastSkill)]);
       await expect(
         window.getByTestId('plugins-entry-detail-breadcrumb-type'),
       ).toHaveAttribute('data-entry-kind', 'skill');
@@ -442,14 +444,17 @@ test('installed skill page returns to the installed Skills list with its scroll'
       window.getByTestId('plugins-entry-detail-breadcrumb-installed'),
     ).toBeVisible();
 
-    // The Installed breadcrumb leads to the mixed Installed list.
+    // The Installed breadcrumb leads to the mixed Installed list: the All
+    // tab's Installed section.
     await window
       .getByTestId('plugins-entry-detail-breadcrumb-installed')
       .click();
     await expect(detailPage).toHaveCount(0);
-    await expect(
-      window.getByTestId('plugins-management-section-installed'),
-    ).toBeVisible();
+    await expect(window.getByTestId('plugins-type-tab-all')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(installedSection(window)).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
@@ -485,7 +490,7 @@ test('custom skill Edit opens its Marketplace edit page', async () => {
     const detailTitle = window.locator('#skill-detail-modal-title');
     const detailPage = window.getByTestId('plugins-entry-detail-page');
     const editorPage = window.getByTestId('skill-editor-page');
-    const skillsList = window.getByTestId('plugins-management-section-skills');
+    const skillsList = installedSection(window);
     const crumbs = window
       .getByTestId('plugins-entry-detail-breadcrumbs')
       .getByRole('listitem');
@@ -501,14 +506,20 @@ test('custom skill Edit opens its Marketplace edit page', async () => {
     );
     const nameInput = window.getByPlaceholder('my-skill-name');
     const save = window.getByTestId('skill-editor-save');
+    // CAN-4267: the row's Edit is an item of the Installed row menu.
+    const openRowEdit = async (name) => {
+      await skillsList
+        .getByTestId(`customize-row-menu-skill:custom:app:${name}`)
+        .click();
+      await window
+        .getByTestId(`customize-row-menu-skill:custom:app:${name}-edit`)
+        .click();
+    };
 
     // ---------------------------------------------------------------------
     // Detail Edit -> edit page with the `<name> > Edit` breadcrumb level.
     // ---------------------------------------------------------------------
-    await window
-      .locator('tbody button', { hasText: CUSTOM_SKILL })
-      .first()
-      .click();
+    await installedSkillRow(window, CUSTOM_SKILL).click();
     await expect(detailTitle).toHaveText(skillTitle(CUSTOM_SKILL));
     await window.getByTestId('skill-read-detail-edit').click();
     await expect(editorPage).toBeVisible();
@@ -564,14 +575,15 @@ test('custom skill Edit opens its Marketplace edit page', async () => {
     // CAN-4261: the page has no Back; the Skills crumb returns to the list.
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
     await expect(skillsList).toBeVisible();
-    await expect(
-      window.locator('tbody tr', { hasText: CUSTOM_SKILL }),
-    ).toContainText('Updated from the edit page.');
+    // A custom skill's row reads its last update (CAN-4844).
+    await expect(installedSkillRow(window, CUSTOM_SKILL)).toContainText(
+      /Updated\s\d+[smhd]\sago/,
+    );
 
     // ---------------------------------------------------------------------
-    // The list row's Edit opens the same page; Cancel lands on the details.
+    // The row menu's Edit opens the same page; Cancel lands on the details.
     // ---------------------------------------------------------------------
-    await window.getByTestId(`skill-edit-custom:app-${CUSTOM_SKILL}`).click();
+    await openRowEdit(CUSTOM_SKILL);
     await expect(editorPage).toBeVisible();
     await expect(skillsList).toBeHidden();
     await expect(crumbs).toHaveText(editCrumbs);
@@ -582,7 +594,7 @@ test('custom skill Edit opens its Marketplace edit page', async () => {
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
     await expect(skillsList).toBeVisible();
 
-    await window.getByTestId(`skill-edit-custom:app-${longSkill}`).click();
+    await openRowEdit(longSkill);
     await expect(editorPage).toBeVisible();
     await expect(
       window.getByTestId('plugins-entry-detail-breadcrumb-edit'),
@@ -630,17 +642,19 @@ test('Edit with AI opens a Cowork chat with the skill selected and the prompt dr
     const prompt = `Help me edit ${CUSTOM_SKILL}. Ask what I want to change, use the available skill-editing tools to propose the changes, and save them after I confirm.`;
     const detailTitle = window.locator('#skill-detail-modal-title');
     const detailPage = window.getByTestId('plugins-entry-detail-page');
-    const skillsList = window.getByTestId('plugins-management-section-skills');
+    const skillsList = installedSection(window);
     const chatPage = window.getByTestId('page-chat');
     const composer = chatPage.locator('[data-slate-editor="true"]:visible');
+    // Returning to Customize from a chat restores the detail or edit page the
+    // user left (CAN-4267), so the list is reached through the Skills
+    // destination, which always lands on the Installed list.
     const openSkillsList = async () => {
-      await app.openPluginsPage();
       await app.openPluginsTab('skills');
       await app.expectPluginsTab('skills');
       await expect(skillsList).toBeVisible();
     };
-    const openSkill = async (name) => {
-      await window.locator('tbody button', { hasText: name }).first().click();
+    const openSkill = async (name, sourceId) => {
+      await installedSkillRow(window, name, sourceId).click();
       await expect(detailTitle).toHaveText(skillTitle(name));
       await expect(detailPage).toBeVisible();
     };
@@ -704,22 +718,37 @@ test('Edit with AI opens a Cowork chat with the skill selected and the prompt dr
     // ---------------------------------------------------------------------
     // Installed Skills row -> new Cowork chat.
     // ---------------------------------------------------------------------
+    // Customize rows have no Edit with AI item. A custom skill reaches it
+    // through its row menu's Edit and the edit page's Edit with AI.
     await openSkillsList();
+    const rowMenu = (sourceId, name) =>
+      skillsList.getByTestId(`customize-row-menu-skill:${sourceId}:${name}`);
+    await rowMenu(INSTALLED_SOURCE_ID, INSTALLED_SKILL).click();
     await expect(
       window.getByTestId(
-        `skill-edit-with-ai-${INSTALLED_SOURCE_ID}-${INSTALLED_SKILL}`,
+        `customize-row-menu-skill:${INSTALLED_SOURCE_ID}:${INSTALLED_SKILL}-surface`,
+      ),
+    ).toBeVisible();
+    await expect(
+      window.getByTestId(
+        `customize-row-menu-skill:${INSTALLED_SOURCE_ID}:${INSTALLED_SKILL}-edit`,
       ),
     ).toHaveCount(0);
+    // One press on another row's trigger switches menus.
+    await rowMenu('custom:app', CUSTOM_SKILL).click();
     await window
-      .getByTestId(`skill-edit-with-ai-custom:app-${CUSTOM_SKILL}`)
+      .getByTestId(`customize-row-menu-skill:custom:app:${CUSTOM_SKILL}-edit`)
       .click();
+    await expect(window.getByTestId('skill-editor-page')).toBeVisible();
+    await expect(editorAction).not.toHaveAttribute('aria-disabled', 'true');
+    await editorAction.click();
     await expectDraftedChat(3);
 
     // ---------------------------------------------------------------------
     // Read-only skills explain why and do nothing.
     // ---------------------------------------------------------------------
     await openSkillsList();
-    await openSkill(INSTALLED_SKILL);
+    await openSkill(INSTALLED_SKILL, INSTALLED_SOURCE_ID);
     // CAN-4261: unavailable, it is a disabled More menu item whose reason
     // shows in the menu rather than in a tooltip.
     await moreAction.click();
@@ -738,13 +767,7 @@ test('Edit with AI opens a Cowork chat with the skill selected and the prompt dr
     await expect(moreMenu).toHaveCount(0);
 
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
-    await window
-      .locator('tbody tr', { hasText: 'built-in' })
-      .first()
-      .locator('td')
-      .first()
-      .getByRole('button')
-      .click();
+    await builtInSkillRow(window).click();
     await expect(detailPage).toBeVisible();
     await moreAction.click();
     await expect(moreMenu).toBeVisible();
@@ -760,7 +783,7 @@ test('Edit with AI opens a Cowork chat with the skill selected and the prompt dr
   }
 });
 
-test('CAN-4359 skill detail submits once and reopens its standalone chat after reload', async () => {
+test('CAN-5218 skill detail stages an editable draft and reopens it after reload', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-skill-try-it-'),
@@ -779,16 +802,20 @@ test('CAN-4359 skill detail submits once and reopens its standalone chat after r
     const app = new CanopyAppDriver(window);
     const open = async () => {
       await app.waitForShell();
-      await app.openPluginsPage();
-      await app.openPluginsTab('skills');
-      await window
-        .locator('tbody button', { hasText: CUSTOM_SKILL })
-        .first()
-        .click();
+      await window.getByTestId('sidebar-nav-plugins').click();
+      const primary = window.getByTestId('detail-primary-cta');
+      await expect(
+        primary.or(
+          window.getByRole('heading', { name: 'Customize', exact: true }),
+        ),
+      ).toBeVisible();
+      if (!(await primary.isVisible())) {
+        await app.openPluginsTab('skills');
+        await installedSkillRow(window, CUSTOM_SKILL).click();
+      }
       await expect(window.locator('#skill-detail-modal-title')).toHaveText(
         skillTitle(CUSTOM_SKILL),
       );
-      const primary = window.getByTestId('detail-primary-cta');
       await expect(primary).toHaveText('Try it');
       await primary.click();
     };
@@ -796,15 +823,35 @@ test('CAN-4359 skill detail submits once and reopens its standalone chat after r
     const messages = window
       .getByTestId('page-chat')
       .getByTestId('user-message-content');
-    await expect(messages).toHaveCount(1, { timeout: 60_000 });
-    await expect(messages).toContainText(CUSTOM_SKILL);
+    const editor = window.locator('[data-slate-editor="true"]:visible').first();
+    await expect(editor).toContainText(CUSTOM_SKILL);
+    await expect(messages).toHaveCount(0);
+    await editor.fill('My edited incident prompt');
     await expect
       .poll(() => coworkChatsWithSkill(userDataDir, CUSTOM_SKILL).length)
       .toBe(1);
     const [chat] = coworkChatsWithSkill(userDataDir, CUSTOM_SKILL);
+    // Leaving the first fallback returns to the original empty selection.
+    // Explicit Try it must reopen that saved chat, not cancel or duplicate it.
+    await open();
+    await expect(editor).toHaveText('My edited incident prompt');
+    await expect(messages).toHaveCount(0);
+    expect(
+      coworkChatsWithSkill(userDataDir, CUSTOM_SKILL).map((tab) => tab.id),
+    ).toEqual([chat.id]);
+    await editor.fill('');
+    await open();
+    await expect(editor).toContainText(CUSTOM_SKILL);
+    await editor.fill('My edited incident prompt');
+    await open();
+    await expect(editor).toHaveText('My edited incident prompt');
+    expect(
+      coworkChatsWithSkill(userDataDir, CUSTOM_SKILL).map((tab) => tab.id),
+    ).toEqual([chat.id]);
     await window.reload();
     await open();
-    await expect(messages).toHaveCount(1);
+    await expect(editor).toHaveText('My edited incident prompt');
+    await expect(messages).toHaveCount(0);
     expect(
       coworkChatsWithSkill(userDataDir, CUSTOM_SKILL).map((tab) => tab.id),
     ).toEqual([chat.id]);
@@ -893,8 +940,8 @@ test('CAN-4264 skill page checks, applies once, reloads content and synchronizes
     await app.waitForShell();
     await app.openPluginsPage();
     await app.openPluginsTab('skills');
-    const row = window.locator('tbody tr', { hasText: name });
-    await row.locator('td').first().getByRole('button').click();
+    const row = installedSkillRow(window, name, sourceId);
+    await row.click();
     const detail = window.getByTestId('plugins-entry-detail-page');
     await expect(detail).toContainText('Before the applied update.');
     const more = window.getByTestId('skill-read-detail-more');
@@ -941,11 +988,18 @@ test('CAN-4264 skill page checks, applies once, reloads content and synchronizes
     await expect(status).toContainText('Up to date');
     // CAN-4261: the page has no Back; the Skills crumb returns to the list.
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
-    await expect(row).toContainText('After the applied update.');
+    await expect(row).toContainText('GitHub · e2e');
+    // CAN-4267: the row's "Update available" button became the Customize
+    // update marker and the Updates section.
     await expect(
-      row.getByRole('button', { name: 'Update available', exact: true }),
+      window.getByTestId(
+        `customize-row-update-marker-skill:${sourceId}:${name}`,
+      ),
     ).toHaveCount(0);
-    await row.locator('td').first().getByRole('button').click();
+    await expect(window.getByTestId('customize-section-updates')).toHaveCount(
+      0,
+    );
+    await row.click();
     await expect(detail).toContainText('After the applied update.');
     await expect(notice).toHaveCount(0);
     expect(await checkCalls()).toBe(2);

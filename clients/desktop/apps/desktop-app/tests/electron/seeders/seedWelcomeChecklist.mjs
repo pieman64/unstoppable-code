@@ -1,5 +1,4 @@
-import { mkdtempSync } from 'node:fs';
-import os from 'node:os';
+import { seedUserPreferences } from './seedUserPreferences.mjs';
 import path from 'node:path';
 import { writeJson } from './fsHelpers.mjs';
 import {
@@ -74,20 +73,14 @@ export function seedWelcomeChecklist({
       );
     }
   }
-  const userDataDir = mkdtempSync(
-    path.join(os.tmpdir(), 'canopy-welcome-checklist-'),
-  );
   const at = '2026-09-01T12:00:00.000Z';
   const ids = [
     'focus-shortcut',
     'launch-at-login',
     'add-repo',
     'github',
-    'plugin-examples-preview',
     'agent-connections',
-    'plan-mode',
     'import-projects',
-    'linear',
     'plugin:universal:google',
     'plugin:universal:slack',
     'plugin:universal:notion',
@@ -101,20 +94,12 @@ export function seedWelcomeChecklist({
         )
       : []),
   ];
-  writeJson(path.join(userDataDir, 'preferences.json'), {
-    version: 1,
+  // Compatibility for #5220/#5222 and migration tests. Keep authentic legacy
+  // progress until both sibling seeders use independent preference fixtures.
+  const userDataDir = seedUserPreferences({
+    roles,
+    enabledPlugins,
     preferences: {
-      ...(roles.length > 0
-        ? { profileRole: roles[0], profileRoles: roles }
-        : {}),
-      globalPluginSelections: {
-        collectionIds: [],
-        skillRefs: [],
-        pluginRefs: enabledPlugins.map((pluginName) => ({
-          marketplaceId: 'curated',
-          pluginName,
-        })),
-      },
       // A pre-module install that dismissed the CAN-2411 card: the legacy
       // preference is the only welcome state on disk. The explicit empty
       // `onboardingCompleted` keeps `launchCanopy` from seeding the

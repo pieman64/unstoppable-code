@@ -31,8 +31,10 @@ const FULL_CAPABILITIES: CanopyCapabilities = {
   marketplaceOwnedAutomationShares: true,
   marketplaceOwnedShares: true,
   marketplaceSharedCollectionEdit: true,
+  customSkillEdit: true,
   automations: true,
   watchers: true,
+  workflowManagement: true,
   panelLayoutControls: false,
   costInsights: true,
   workspaceRemoval: 'delete',
@@ -58,6 +60,7 @@ const WEB_CAPABILITIES: CanopyCapabilities = {
   marketplaceOwnedAutomationShares: false,
   marketplaceOwnedShares: true,
   marketplaceSharedCollectionEdit: false,
+  customSkillEdit: false,
   panelLayoutControls: false,
   workspaceRemoval: 'delete',
 };
@@ -436,6 +439,26 @@ describe('feature-surface gating', () => {
     ).toBe(false);
   });
 
+  it('offers custom skill Edit only on a host with a skill editor (CAN-4844)', () => {
+    expect(
+      isFeatureSurfaceAvailable(FULL_CAPABILITIES, 'custom-skill-edit'),
+    ).toBe(true);
+    // Web shows the item disabled with a desktop reason.
+    expect(
+      isFeatureSurfaceAvailable(WEB_CAPABILITIES, 'custom-skill-edit'),
+    ).toBe(false);
+    // Unset (an older payload or an unconfigured host) stays unavailable.
+    expect(
+      isFeatureSurfaceAvailable(
+        { ...FULL_CAPABILITIES, customSkillEdit: undefined },
+        'custom-skill-edit',
+      ),
+    ).toBe(false);
+    expect(
+      isFeatureSurfaceAvailable(MINIMAL_CAPABILITIES, 'custom-skill-edit'),
+    ).toBe(false);
+  });
+
   it('shows the scheduled workflow surfaces only to a host that runs automations', () => {
     for (const surface of ['workflow-schedule', 'workflow-automations']) {
       expect(isFeatureSurfaceAvailable(FULL_CAPABILITIES, surface)).toBe(true);
@@ -470,6 +493,32 @@ describe('feature-surface gating', () => {
       expect(isFeatureSurfaceAvailable(capabilities, 'workflow-watchers')).toBe(
         false,
       );
+    }
+  });
+
+  it('shows Customize workflow management only to a host that reports it', () => {
+    expect(
+      meetsCapabilityRequirement(FULL_CAPABILITIES, {
+        workflowManagement: true,
+      }),
+    ).toBe(true);
+    expect(
+      isFeatureSurfaceAvailable(FULL_CAPABILITIES, 'workflow-management'),
+    ).toBe(true);
+    // Web and minimal leave it unset; explicit `false` also denies, and the
+    // automations axis alone does not unlock it.
+    for (const capabilities of [
+      WEB_CAPABILITIES,
+      MINIMAL_CAPABILITIES,
+      { ...FULL_CAPABILITIES, workflowManagement: false },
+      { ...WEB_CAPABILITIES, automations: true, watchers: true },
+    ]) {
+      expect(
+        meetsCapabilityRequirement(capabilities, { workflowManagement: true }),
+      ).toBe(false);
+      expect(
+        isFeatureSurfaceAvailable(capabilities, 'workflow-management'),
+      ).toBe(false);
     }
   });
 

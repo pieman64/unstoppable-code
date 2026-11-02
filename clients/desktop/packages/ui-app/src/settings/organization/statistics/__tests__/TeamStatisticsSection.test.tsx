@@ -11,6 +11,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { JSX } from 'react';
 import { SettingsOperationError } from '@canopy/protocol/settings';
 import { TestSettingsHost } from '../../../__tests__/helpers/test-settings-host';
+import {
+  chooseSettingsOption,
+  settingsSelectOptionLabels,
+  settingsSelectTrigger,
+} from '../../../__tests__/helpers/settings-select';
 import { TeamStatisticsSection } from '../TeamStatisticsSection';
 import {
   createStatisticsTestHost,
@@ -104,33 +109,25 @@ describe('TeamStatisticsSection range control', () => {
     });
   }
 
-  function rangeSelect(): HTMLSelectElement {
-    const el = container.querySelector<HTMLSelectElement>(
+  function rangeSelect(): HTMLButtonElement {
+    return settingsSelectTrigger(
+      container,
       '[data-testid="usage-range-select"]',
     );
-    if (!el) {
-      throw new Error('range select not found');
-    }
-    return el;
   }
 
-  function granularitySelect(): HTMLSelectElement {
-    const el = container.querySelector<HTMLSelectElement>(
+  function granularitySelect(): HTMLButtonElement {
+    return settingsSelectTrigger(
+      container,
       '[data-testid="usage-granularity-select"]',
     );
-    if (!el) {
-      throw new Error('granularity select not found');
-    }
-    return el;
   }
 
   it('renders all five range options including the short ranges', () => {
     render();
     // Range is now a standalone header control, queryable without opening the
     // popover.
-    const labels = Array.from(rangeSelect().options).map(
-      (option) => option.textContent,
-    );
+    const labels = settingsSelectOptionLabels(rangeSelect());
     expect(labels).toEqual([
       'Last 1 hour',
       'Last 1 day',
@@ -143,29 +140,25 @@ describe('TeamStatisticsSection range control', () => {
   it('defaults to the Last 7 days range with daily granularity', () => {
     render();
     openFilters(container);
-    expect(rangeSelect().value).toBe(String(7 * 24 * 60 * 60 * 1000));
-    expect(granularitySelect().value).toBe('day');
+    expect(rangeSelect().dataset.value).toBe(String(7 * 24 * 60 * 60 * 1000));
+    expect(granularitySelect().dataset.value).toBe('day');
   });
 
-  function changeRange(ms: string): void {
-    act(() => {
-      const select = rangeSelect();
-      select.value = ms;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+  async function changeRange(ms: string): Promise<void> {
+    await chooseSettingsOption(rangeSelect(), ms);
     reflectUrl();
   }
 
-  it('forces hourly granularity when a short range is selected', () => {
+  it('forces hourly granularity when a short range is selected', async () => {
     render();
     openFilters(container);
     const oneHourMs = String(60 * 60 * 1000);
-    changeRange(oneHourMs);
-    expect(rangeSelect().value).toBe(oneHourMs);
-    expect(granularitySelect().value).toBe('hour');
+    await changeRange(oneHourMs);
+    expect(rangeSelect().dataset.value).toBe(oneHourMs);
+    expect(granularitySelect().dataset.value).toBe('hour');
   });
 
-  it('lights the active-filter dot when a short range forces hourly granularity', () => {
+  it('lights the active-filter dot when a short range forces hourly granularity', async () => {
     // Range itself is excluded from the popover active-filter dot, but selecting
     // a sub-day range forces granularity to `hour` (a non-default popover
     // filter), which lights the dot indirectly. This guards the coupling
@@ -176,37 +169,60 @@ describe('TeamStatisticsSection range control', () => {
     expect(
       container.querySelector('[data-testid="usage-filters-active-dot"]'),
     ).toBeNull();
-    changeRange(String(60 * 60 * 1000));
+    await changeRange(String(60 * 60 * 1000));
     expect(
       container.querySelector('[data-testid="usage-filters-active-dot"]'),
     ).not.toBeNull();
   });
 
-  it('leaves granularity untouched for multi-day ranges', () => {
+  it('leaves granularity untouched for multi-day ranges', async () => {
     render();
     openFilters(container);
     const ninetyDaysMs = String(90 * 24 * 60 * 60 * 1000);
-    changeRange(ninetyDaysMs);
-    expect(rangeSelect().value).toBe(ninetyDaysMs);
-    expect(granularitySelect().value).toBe('day');
+    await changeRange(ninetyDaysMs);
+    expect(rangeSelect().dataset.value).toBe(ninetyDaysMs);
+    expect(granularitySelect().dataset.value).toBe('day');
   });
 
-  it('restores daily granularity when returning from a short range to a multi-day range', () => {
+  it('keeps the Filters panel open while a choice is pressed in its dropdown menu', () => {
+    render();
+    openFilters(container);
+    const trigger = granularitySelect();
+    act(() => trigger.click());
+    const listId = trigger.getAttribute('aria-controls');
+    const option = (
+      listId ? document.getElementById(listId) : null
+    )?.querySelector<HTMLElement>('[role="option"][data-value="week"]');
+    if (!option) throw new Error('granularity menu did not open');
+    // The menu renders outside the panel; a real press sends mousedown first.
+    act(() => {
+      option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      option.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      option.click();
+    });
+    reflectUrl();
+    expect(
+      container.querySelector('[data-testid="usage-granularity-select"]'),
+    ).toBeInstanceOf(HTMLButtonElement);
+    expect(granularitySelect().dataset.value).toBe('week');
+  });
+
+  it('restores daily granularity when returning from a short range to a multi-day range', async () => {
     render();
     openFilters(container);
     const oneHourMs = String(60 * 60 * 1000);
     const ninetyDaysMs = String(90 * 24 * 60 * 60 * 1000);
 
     // Selecting a short range forces hourly granularity.
-    changeRange(oneHourMs);
-    expect(granularitySelect().value).toBe('hour');
+    await changeRange(oneHourMs);
+    expect(granularitySelect().dataset.value).toBe('hour');
 
     // Switching back to a multi-day range must step granularity back up to
     // daily rather than leaving it stuck on hourly (which would issue a
     // ~2,160-bucket query over 90 days).
-    changeRange(ninetyDaysMs);
-    expect(rangeSelect().value).toBe(ninetyDaysMs);
-    expect(granularitySelect().value).toBe('day');
+    await changeRange(ninetyDaysMs);
+    expect(rangeSelect().dataset.value).toBe(ninetyDaysMs);
+    expect(granularitySelect().dataset.value).toBe('day');
   });
 });
 
@@ -288,17 +304,10 @@ describe('TeamStatisticsSection URL-driven view state', () => {
   it('writes the range short key (not raw ms) into the URL', async () => {
     render();
     // Range renders in the header now, so no popover open is needed.
-    await act(async () => {
-      const select = container.querySelector<HTMLSelectElement>(
-        '[data-testid="usage-range-select"]',
-      );
-      if (!select) {
-        throw new Error('range select not found');
-      }
-      select.value = String(30 * 24 * 60 * 60 * 1000);
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
+    await chooseSettingsOption(
+      settingsSelectTrigger(container, '[data-testid="usage-range-select"]'),
+      String(30 * 24 * 60 * 60 * 1000),
+    );
     expect(mockReplace()).toHaveBeenCalledWith(
       '/organization/org-1/statistics?range=30d',
       { scroll: false },
@@ -473,12 +482,12 @@ describe('TeamStatisticsSection load errors', () => {
       return new Promise<never>(() => {});
     });
 
-    expect(container.textContent).toContain("Couldn't load this. Try again.");
+    expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
     expect(container.querySelector('[data-testid="usage-empty"]')).toBeNull();
 
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     await act(async () => {
       retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

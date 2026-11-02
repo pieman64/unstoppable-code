@@ -48,16 +48,18 @@ jest.mock('../lib/chat-tabs-reader', () => ({
   readChatTabsFile: (...args: unknown[]): unknown =>
     mockReadChatTabsFile(...args),
 }));
-const mockGatewayRequirement = jest.fn(() =>
-  Promise.resolve({ kind: 'unrestricted' }),
-);
+const mockGatewayRequirement = jest.fn<
+  Promise<ModelGatewayRequirement>,
+  [unknown]
+>(() => Promise.resolve({ kind: 'unrestricted' }));
 jest.mock('../lib/model-gateway-state', () => ({
   getModelGatewayRequirementForOwner: (owner: unknown): unknown =>
     mockGatewayRequirement(owner),
 }));
-const mockResolveScopeOwner = jest.fn(() =>
-  Promise.resolve({ kind: 'personal' }),
-);
+const mockResolveScopeOwner = jest.fn<
+  Promise<WorkOwner | undefined>,
+  [unknown]
+>(() => Promise.resolve({ kind: 'personal' }));
 jest.mock('../agents/work-owner', () => ({
   resolveAiCreditsScopeOwner: (scope: unknown): unknown =>
     mockResolveScopeOwner(scope),
@@ -106,6 +108,8 @@ import {
   readCodexSpeedRouteFacts,
   type ReadCodexSpeedRouteRequest,
 } from '../codex/speed-route-context';
+import type { ModelGatewayRequirement } from '@canopy/desktop-shared/lib/org-model-gateway';
+import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 
 function chatTabs(tab: Record<string, unknown>): unknown {
   return Promise.resolve({ version: 1, activeTabId: 'chat', tabs: [tab] });

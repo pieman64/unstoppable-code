@@ -108,6 +108,11 @@ export interface CapabilityMarketplaceInventory {
   refreshSharedAgents: () => void;
   /** Plugin references shared with a team or organization, in the selected context. */
   sharedPlugins: SharedPluginSummary[];
+  /**
+   * The viewer's own plugin shares for Shared by you (CAN-4842): the deletable
+   * team/organization shares above plus link-only (private) shares.
+   */
+  ownSharedPlugins: SharedPluginSummary[];
   /** Project templates shared with a team or organization. */
   sharedBlueprints: WorkspaceTemplateShareSummary[];
   loading: boolean;
@@ -120,6 +125,10 @@ export interface CapabilityMarketplaceInventory {
   /** Pipelines switched off for launch, curated templates included. */
   disabledPipelineIds: ReadonlySet<string>;
   setPipelineEnabled: (id: string, enabled: boolean) => Promise<void>;
+  /** Deletes a local pipeline; resolves false when it was not deleted. */
+  deletePipeline: (id: string) => Promise<boolean>;
+  /** Deletes a team-shared pipeline; resolves false when it was not deleted. */
+  deleteSharedPipeline: (remoteId: string) => Promise<boolean>;
   refreshSharedSkills: () => Promise<void>;
   refreshSharedCollections: () => Promise<void>;
 }
@@ -210,6 +219,8 @@ export function useCapabilityMarketplaceInventory(
     refreshSharedList,
     disabledPipelineIds,
     setPipelineEnabled,
+    deletePipeline,
+    deleteSharedPipeline,
     shared: {
       rows: sharedPipelineRows,
       nextCursor: sharedPipelineNextCursor,
@@ -271,6 +282,7 @@ export function useCapabilityMarketplaceInventory(
   // Local automations follow the sidebar's Personal/organization context, the
   // same rule the Automations page lists by.
   const automationActivities = useAutomationsStore((state) => state.activities);
+  const automationRecentRuns = useAutomationsStore((state) => state.recentRuns);
   // Unread counts as loading; a failed first read is an error, not loading.
   const automationsLoading = useAutomationsStore(
     (state) => !state.hydrated && state.error === null,
@@ -299,8 +311,15 @@ export function useCapabilityMarketplaceInventory(
     return toMarketplaceLocalAutomations(
       automationActivities.filter(automationScope.inContext),
       nameResolver,
+      { recentRuns: automationRecentRuns },
     );
-  }, [automationActivities, automationScope, chatProjects, projects]);
+  }, [
+    automationActivities,
+    automationRecentRuns,
+    automationScope,
+    chatProjects,
+    projects,
+  ]);
   const viewerId = isCanopyCloudConnected(automationCloudAccount)
     ? (automationCloudAccount?.account?.id ?? null)
     : null;
@@ -785,8 +804,8 @@ export function useCapabilityMarketplaceInventory(
         'Your shared automations',
         ownedEnabled && ownedRead.scope === ownedScope ? ownedRead.error : null,
       ],
-      ['Pipelines', pipelinesError],
-      ['Shared pipelines', sharedPipelinesError],
+      ['Workflows', pipelinesError],
+      ['Shared workflows', sharedPipelinesError],
       ['Collections', collectionsError],
       ['Shared skills', sharedSkillsError],
       ['Shared collections', sharedCollectionsError],
@@ -831,6 +850,21 @@ export function useCapabilityMarketplaceInventory(
       sharedPlugins.filter((row) => !shareWasRemoved('plugin', row.externalId)),
     [sharedPlugins, shareWasRemoved],
   );
+  const ownSharedPlugins = useMemo(
+    () =>
+      sharedMarketplaceShares.sharedPlugins.filter(
+        (plugin) =>
+          plugin.canDelete === true &&
+          !shareWasRemoved('plugin', plugin.externalId) &&
+          // A link-only share is the owner's own, not an organization's, so
+          // no selected-context rule applies to it.
+          ((plugin.shareScope === 'private' && !!plugin.publicShare) ||
+            ((plugin.shareScope === 'team' ||
+              plugin.shareScope === 'organization') &&
+              automationScope.shareInContext(plugin))),
+      ),
+    [automationScope, sharedMarketplaceShares.sharedPlugins, shareWasRemoved],
+  );
 
   return {
     removeSharedResource,
@@ -873,6 +907,7 @@ export function useCapabilityMarketplaceInventory(
     refreshSharedAgents: sharedMarketplaceShares.refreshAgents,
     sharedAgents: visibleSharedAgents,
     sharedPlugins: visibleSharedPlugins,
+    ownSharedPlugins,
     sharedBlueprints,
     loading:
       (options.completeSharedCatalogs === true &&
@@ -898,6 +933,8 @@ export function useCapabilityMarketplaceInventory(
     refreshPipelines,
     disabledPipelineIds,
     setPipelineEnabled,
+    deletePipeline,
+    deleteSharedPipeline,
     refreshSharedSkills,
     refreshSharedCollections,
   };

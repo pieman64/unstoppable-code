@@ -25,8 +25,8 @@ export interface SettingsConfirmDialogProps {
 
 /**
  * The confirmation modal for consequential account and organization actions
- * (leave, remove, revoke, delete). Focus is contained and starts on Cancel,
- * so a reflexive Enter backs out instead of committing.
+ * (leave, remove, revoke, delete). Focus is contained; a destructive one
+ * starts on Cancel, so a reflexive Enter backs out instead of committing.
  */
 export function SettingsConfirmDialog({
   title,
@@ -52,7 +52,6 @@ export function SettingsConfirmDialog({
       onCancel={onCancel}
       dataTestId={dataTestId}
       cancelTestId="confirm-dialog-cancel"
-      focusCancel
       restoreFocusRef={restoreFocusRef}
     />
   );

@@ -135,7 +135,7 @@ describe('UserBubble', () => {
       '[data-testid="reset-to-point-button"]',
     );
     const copy = container.querySelector(
-      'button[aria-label="Copy to clipboard"]',
+      'button[aria-label="Copy your message"]',
     );
 
     for (const element of [leading, revert, copy]) {
@@ -591,7 +591,7 @@ describe('UserBubble', () => {
 
     it('preserves badge pointer menus and reuses their tab stops for keyboard menus', () => {
       const { wrapper, onContextMenu, onKeyDown } = mount(true);
-      const copy = wrapper.querySelector('[aria-label="Copy to clipboard"]');
+      const copy = wrapper.querySelector('[aria-label="Copy your message"]');
       const revert = wrapper.querySelector(
         '[data-testid="reset-to-point-button"]',
       );
@@ -605,5 +605,50 @@ describe('UserBubble', () => {
       expect(onContextMenu).not.toHaveBeenCalled();
       expect(onKeyDown).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('names its copy badge for the message and announces a copy (CAN-5354)', async () => {
+    jest.useFakeTimers();
+    const writeText = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      act(() =>
+        root.render(
+          <UserBubble copyText={'  my words ✓\n'}>
+            <p>my words</p>
+          </UserBubble>,
+        ),
+      );
+      const badge = container.querySelector<HTMLButtonElement>(
+        '[data-testid="user-bubble-copy"]',
+      );
+      expect(badge?.getAttribute('aria-label')).toBe('Copy your message');
+      // The badge is a native button inside the focus-within reveal cluster,
+      // so tabbing to it shows it.
+      expect(badge?.closest('[data-bubble-actions]')?.className).toContain(
+        'group-focus-within:opacity-100',
+      );
+      await act(async () => {
+        badge?.click();
+        await Promise.resolve();
+      });
+      act(() => {
+        jest.advanceTimersByTime(100);
+      });
+      expect(writeText).toHaveBeenCalledWith('  my words ✓\n');
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(
+        'Copied',
+      );
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+      jest.useRealTimers();
+    }
   });
 });

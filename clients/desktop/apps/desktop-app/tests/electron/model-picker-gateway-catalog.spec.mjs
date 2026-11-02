@@ -455,7 +455,10 @@ test('groups gateway-only models by vendor and marks each extra-charge row', asy
     // silently swallowing the click.
     await alpha.click();
     await expect(window.getByTestId('model-recovery-modal')).toBeVisible();
-    await window.getByTestId('model-recovery-cancel').click();
+    await window
+      .getByTestId('model-recovery-modal')
+      .getByRole('button', { name: 'Close', exact: true })
+      .click();
     await expect(window.getByTestId('model-recovery-modal')).toHaveCount(0);
     await picker.click();
     await window.getByTestId('chat-model-harness-tab-codex').click();
@@ -515,6 +518,11 @@ test('filters an organization-blocked model from the picker', async () => {
     await expect(
       window.getByTestId('chat-model-option-gpt-5.6-sol'),
     ).toHaveCount(0);
+    // GPT 5.6 Terra is listed only under Legacy models.
+    await window
+      .locator('[data-testid="chat-model-more-openai"]:visible')
+      .first()
+      .click();
     await expect(
       window.getByTestId('chat-model-option-gpt-5.6-terra'),
     ).toBeVisible();
@@ -723,6 +731,10 @@ for (const surface of ['chat', 'home']) {
         await row.scrollIntoViewIfNeeded();
         await expect(row).toBeInViewport();
       }
+      await window
+        .locator('[data-testid="chat-model-more-openai"]:visible')
+        .first()
+        .click();
       await window.getByTestId('chat-model-option-gpt-5.6-terra').click();
       // Credits for a native model are this chat's billing, set from the
       // model's own menu (Home sets the billing its new chat starts with).

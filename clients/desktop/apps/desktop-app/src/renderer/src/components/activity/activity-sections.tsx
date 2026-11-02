@@ -52,13 +52,19 @@ import type {
   BackgroundProcess,
   ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
-import { useDetectedMcpServers } from '@/hooks/useDetectedMcpServers';
+import {
+  useSelectedMcpSignIn,
+  type SelectedMcpSignInResult,
+} from '@/components/mcp/useSelectedMcpSignIn';
 import { useResolvedChatPluginSelections } from '@/hooks/useResolvedChatPluginSelections';
-import { setChatAuthPreferencesFromEffective } from '@/lib/chatPluginEditing';
+import {
+  chatPluginEditingState,
+  setChatAuthPreferencesFromEffective,
+} from '@/lib/chatPluginEditing';
 import { usePanelHostState } from '@/lib/panels/panel-host-context';
 import { McpServersPanelCard } from '@/components/mcp/McpServersPanelCard';
 import { useActivityStore } from '@/stores/activityStore';
-import { useChatStore } from '@/stores/chatStore';
+import { useChatStore, useWorktreeChatRenderState } from '@/stores/chatStore';
 import {
   AttachmentsSection,
   useAttachmentsHeaderChrome,
@@ -226,32 +232,69 @@ const EMPTY_MCP_SELECTIONS = {
 export function useMcpServersActivityModel({
   projectId,
   worktreeId,
-}: ActivitySectionRenderProps): ReturnType<typeof useDetectedMcpServers> {
+}: ActivitySectionRenderProps): SelectedMcpSignInResult {
+  const chatId =
+    useWorktreeChatRenderState(
+      `${projectId}/${worktreeId}`,
+      (state) => state?.activeTabId,
+    ) ?? null;
   const mcpSelections = useResolvedChatPluginSelections(
     projectId,
     worktreeId,
-    null,
+    chatId,
   );
   const onSelectionsChange = useCallback(
-    (next: ChatTabPluginSelections): void => {
-      const chatId =
+    async (next: ChatTabPluginSelections): Promise<boolean> => {
+      if (!chatId) return false;
+      const active =
         useChatStore.getState().worktreeChats[`${projectId}/${worktreeId}`]
           ?.activeTabId;
-      if (!chatId) return;
-      setChatAuthPreferencesFromEffective(
+      if (active !== chatId) return false;
+      return setChatAuthPreferencesFromEffective(
         useChatStore.getState,
         { projectId, worktreeId, chatId },
         next,
       );
     },
-    [projectId, worktreeId],
+    [projectId, worktreeId, chatId],
   );
-  const detectedMcp = useDetectedMcpServers(
-    mcpSelections ?? (projectId && worktreeId ? EMPTY_MCP_SELECTIONS : null),
-    { onSelectionsChange },
-  );
-
-  return detectedMcp;
+  return useSelectedMcpSignIn({
+    selections:
+      mcpSelections ??
+      (projectId && worktreeId && chatId ? EMPTY_MCP_SELECTIONS : null),
+    ownerKey: `${projectId}/${worktreeId}/${chatId ?? ''}`,
+    getSelections: (): ChatTabPluginSelections | null => {
+      if (
+        !chatId ||
+        useChatStore.getState().worktreeChats[`${projectId}/${worktreeId}`]
+          ?.activeTabId !== chatId
+      )
+        return null;
+      try {
+        return chatPluginEditingState(useChatStore.getState(), {
+          projectId,
+          worktreeId,
+          chatId,
+        }).effective;
+      } catch {
+        return null;
+      }
+    },
+    canChangeRoute: (): boolean => {
+      if (!chatId) return false;
+      try {
+        const { tab } = chatPluginEditingState(useChatStore.getState(), {
+          projectId,
+          worktreeId,
+          chatId,
+        });
+        return !tab.readOnly && tab.status !== 'streaming';
+      } catch {
+        return false;
+      }
+    },
+    onSelectionsChange,
+  });
 }
 
 export type McpServersActivityModel = ReturnType<
@@ -266,23 +309,29 @@ export function McpServersActivitySectionBody({
   model,
 }: McpServersActivitySectionBodyProps): JSX.Element {
   return (
-    <McpServersPanelCard
-      servers={model.servers}
-      warnings={model.warnings}
-      loading={model.loading}
-      error={model.error}
-      connectingKey={model.connectingKey}
-      proxyUpdatingKey={model.proxyUpdatingKey}
-      onConnect={(server): void => {
-        void model.connect(server);
-      }}
-      onRefresh={(): void => {
-        void model.refresh();
-      }}
-      onSetCanopyProxyEnabled={(server, enabled): void => {
-        void model.setCanopyProxyEnabled(server, enabled);
-      }}
-    />
+    <>
+      {model.notice}
+      <McpServersPanelCard
+        servers={model.servers}
+        warnings={model.warnings}
+        loading={model.loading}
+        error={model.notice === undefined ? model.error : null}
+        connectingKey={model.connectingKey}
+        proxyUpdatingKey={model.proxyUpdatingKey}
+        onConnect={model.onConnect}
+        getRowNavigation={model.getRowNavigation}
+        getRowSettings={model.getRowSettings}
+        renderRowExtra={model.renderRowExtra}
+        onCancelSignIn={(): void => model.cancelConnect()}
+        onRefresh={(): void => {
+          void model.refresh();
+        }}
+        onSetCanopyProxyEnabled={(server, enabled): void => {
+          void model.setCanopyProxyEnabled(server, enabled);
+        }}
+      />
+      {model.dialogs}
+    </>
   );
 }
 
@@ -354,7 +403,7 @@ export const ACTIVITY_SECTIONS: readonly ActivitySectionDefinition[] = [
   },
   {
     id: 'pipeline-runs',
-    title: 'Pipeline runs',
+    title: 'Workflow runs',
     icon: <PipelineIcon />,
     render: (): JSX.Element => <PipelineRunsActivitySection />,
   },

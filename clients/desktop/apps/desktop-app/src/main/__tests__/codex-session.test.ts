@@ -1,3 +1,4 @@
+import { DelegationParent } from '@canopy/desktop-shared/node/delegation/parent';
 import {
   recordPresentationTurn,
   clearPresentationTurn,
@@ -8,6 +9,11 @@ import { BrowserWindow } from 'electron';
 import { parseModelPackageConfig } from '@canopy/desktop-shared/model-config';
 import { createAppAdvisorRuntimeFixture } from './fixtures/app-advisor-runtime';
 import type * as WorkOwnerModule from '../agents/work-owner';
+import type * as ModelGatewayCredentialStoreModule from '../lib/model-gateway-credential-store';
+import type * as ModelGatewayStateModule from '../lib/model-gateway-state';
+import type * as ProviderRunReconciliationModule from '../lib/provider-run-reconciliation';
+import type { CodexCompatibleInvocation } from '../agents/codex-session';
+import type { ChatInputSubmitResult, SteeringTarget } from '../agents/types';
 import type {
   AccountProxySessionRoute,
   ResolveAccountProxySessionRouteOptions,
@@ -20,6 +26,10 @@ import {
   omitModelFeatureFlags,
   type ChatModel,
 } from '@canopy/desktop-shared/types';
+import {
+  getCodexTurnEvidence,
+  type CodexTurnEvidence,
+} from '../agents/provider-turn-evidence';
 
 const mockWaitForPendingCodexFork = jest.fn<
   Promise<string | undefined>,
@@ -28,6 +38,63 @@ const mockWaitForPendingCodexFork = jest.fn<
 const mockLoadCodexForkContinuation = jest.fn<Promise<unknown>, unknown[]>(() =>
   Promise.resolve(undefined),
 );
+const providerRunDescriptors = new WeakMap<object, unknown>();
+const mockGetProviderRunDescriptor = jest.fn((data: unknown): unknown => {
+  if (typeof data !== 'object' || data === null) return undefined;
+  return (
+    providerRunDescriptors.get(data) ??
+    jest
+      .requireActual<
+        typeof ProviderRunReconciliationModule
+      >('../lib/provider-run-reconciliation')
+      .getProviderRunDescriptor(data)
+  );
+});
+const mockClassifyProviderRunEvent = jest.fn((data: unknown) => {
+  const descriptor = mockGetProviderRunDescriptor(data);
+  if (
+    typeof descriptor === 'object' &&
+    descriptor !== null &&
+    'phase' in descriptor &&
+    descriptor.phase === 'late'
+  ) {
+    return {
+      kind: 'transcript_only' as const,
+      reason: 'observed_late_command_completion',
+      run: descriptor,
+    };
+  }
+  return jest
+    .requireActual<
+      typeof ProviderRunReconciliationModule
+    >('../lib/provider-run-reconciliation')
+    .classifyProviderRunEvent(data);
+});
+const mockCopyProviderRunProvenance = jest.fn(
+  (source: unknown, target: object): object => {
+    if (typeof source === 'object' && source !== null) {
+      const descriptor = providerRunDescriptors.get(source);
+      if (descriptor !== undefined) {
+        providerRunDescriptors.set(target, descriptor);
+      }
+    }
+    return jest
+      .requireActual<
+        typeof ProviderRunReconciliationModule
+      >('../lib/provider-run-reconciliation')
+      .copyProviderRunProvenance(source, target);
+  },
+);
+// Not virtual: a virtual mock's module id can miss a resolution another test
+// file cached in the same worker, which then loads the real module.
+jest.mock('../lib/provider-run-reconciliation', () => ({
+  classifyProviderRunEvent: (data: unknown): unknown =>
+    mockClassifyProviderRunEvent(data),
+  getProviderRunDescriptor: (data: unknown): unknown =>
+    mockGetProviderRunDescriptor(data),
+  copyProviderRunProvenance: (source: unknown, target: object): object =>
+    mockCopyProviderRunProvenance(source, target),
+}));
 jest.mock('../codex/fork-thread', () => ({
   waitForPendingCodexFork: (...args: unknown[]): Promise<string | undefined> =>
     mockWaitForPendingCodexFork(...args),
@@ -40,12 +107,67 @@ jest.mock('../codex/transcript-seed', () => ({
 
 const registerSessionMock = jest.fn<void, unknown[]>();
 const unregisterSessionMock = jest.fn();
+const codexBackgroundOwnerTokens: CodexBackgroundOwnerToken[] = [];
+const mockRegisterCodexBackgroundOwner = jest.fn<
+  CodexBackgroundOwnerToken | undefined,
+  [scope: CodexBackgroundOwnerToken['scope']]
+>((scope) => {
+  const token = { scope } satisfies CodexBackgroundOwnerToken;
+  codexBackgroundOwnerTokens.push(token);
+  return token;
+});
+const mockReplaceCodexLiveBackgroundTasks = jest.fn<boolean, unknown[]>(
+  () => true,
+);
+const mockRetireCodexLiveBackgroundTasks = jest.fn<boolean, unknown[]>(
+  () => true,
+);
+const mockGetSessionKeyOwnership = jest.fn<string, unknown[]>(
+  () => 'registered',
+);
 const mockMarkSessionForNextTurnRecreation = jest.fn();
 const interruptTurnMock = jest.fn();
 const setApprovalModeMock = jest.fn();
 const disposeMock = jest.fn();
+const hasActiveTurnMock = jest.fn(() => false);
 const startTurnMock = jest.fn();
 const DEFAULT_MOCK_THREAD_ID = 'old-thread-without-tools';
+const defaultCodexBackgroundSnapshot: CodexBackgroundSnapshot = {
+  epoch: 'codex-background-epoch-1',
+  revision: 0,
+  rootThreadId: DEFAULT_MOCK_THREAD_ID,
+  work: [],
+  reconciling: false,
+};
+let codexBackgroundSnapshot = defaultCodexBackgroundSnapshot;
+let hasLiveCodexBackgroundWork = false;
+const codexBackgroundWorkSubscribers = new Set<
+  (snapshot: CodexBackgroundSnapshot) => void
+>();
+const getBackgroundSnapshotMock = jest.fn(
+  (): CodexBackgroundSnapshot => codexBackgroundSnapshot,
+);
+const subscribeBackgroundWorkMock = jest.fn(
+  (listener: (snapshot: CodexBackgroundSnapshot) => void): (() => void) => {
+    codexBackgroundWorkSubscribers.add(listener);
+    return () => {
+      codexBackgroundWorkSubscribers.delete(listener);
+    };
+  },
+);
+const hasLiveBackgroundWorkMock = jest.fn(
+  (): boolean => hasLiveCodexBackgroundWork,
+);
+
+function publishCodexBackgroundSnapshot(
+  snapshot: CodexBackgroundSnapshot,
+): void {
+  codexBackgroundSnapshot = snapshot;
+  hasLiveCodexBackgroundWork = snapshot.work.length > 0 || snapshot.reconciling;
+  for (const listener of Array.from(codexBackgroundWorkSubscribers)) {
+    listener(snapshot);
+  }
+}
 /**
  * Thread id reported by the mocked app-server client. Shared by every mock
  * instance so a test can model a session whose thread id changes across
@@ -54,8 +176,21 @@ const DEFAULT_MOCK_THREAD_ID = 'old-thread-without-tools';
 const getThreadIdMock = jest.fn<string | undefined, []>(
   () => DEFAULT_MOCK_THREAD_ID,
 );
+const getExecutionUserMessageIdMock = jest.fn<string | undefined, []>(
+  () => undefined,
+);
+const submitSteeringInputMock = jest.fn<
+  Promise<ChatInputSubmitResult>,
+  [
+    text: string,
+    attemptId: string,
+    target?: SteeringTarget,
+    userMessageId?: string,
+  ]
+>((_text, attemptId) => Promise.resolve({ kind: 'accepted', attemptId }));
 const mockRecordSessionDiagnostic = jest.fn();
 const stopSessionPhaseTimerMock = jest.fn();
+const mockNotifySteeringEligibilityChanged = jest.fn<void, unknown[]>();
 const mockUnregisterRoutesForSession = jest.fn();
 // The MCP proxy and the Codex gateway proxy both expose
 // `unregisterRoutesForSession`, and most assertions here only care about the
@@ -88,18 +223,26 @@ const mockRegisterGatewayRoute = jest.fn<
     baseUrl: 'http://127.0.0.1:43123/codex-gateway/gateway-route',
   }),
 );
-const mockLoadModelGatewayCredential = jest.fn();
-const mockMarkModelGatewayCredentialRejected = jest.fn(() =>
-  Promise.resolve(true),
-);
+const mockLoadModelGatewayCredential = jest.fn<
+  ReturnType<
+    typeof ModelGatewayCredentialStoreModule.loadModelGatewayCredential
+  >,
+  Parameters<
+    typeof ModelGatewayCredentialStoreModule.loadModelGatewayCredential
+  >
+>();
+const mockMarkModelGatewayCredentialRejected = jest.fn<
+  ReturnType<
+    typeof ModelGatewayCredentialStoreModule.markModelGatewayCredentialRejected
+  >,
+  Parameters<
+    typeof ModelGatewayCredentialStoreModule.markModelGatewayCredentialRejected
+  >
+>(() => Promise.resolve(true));
 const mockResolveCodexMockAppServerOverride = jest.fn(() => null);
 const mockRegisterStdioMcpRoute = jest.fn();
 const mockRevokeStdioMcpRoutes = jest.fn();
 const createManagedDelegationSessionMock = jest.fn();
-const noteChatSessionEventMock = jest.fn<
-  { kind: 'non_retryable_failure'; detail?: string } | null,
-  [target: unknown, provider: unknown, eventData: unknown]
->(() => null);
 const mockRecordUsageLimitedChat = jest.fn(() => Promise.resolve());
 const mockCommitPlanExit = jest.fn(() => Promise.resolve());
 const approvalCheckMock = jest.fn();
@@ -112,15 +255,18 @@ const mockResolveEffectivePluginSelectionRefs = jest.fn();
 const mockCodexAggregateSkillInvocationNamesForRefs = jest.fn();
 const mockAttentionMark = jest.fn();
 const mockAttentionClear = jest.fn();
-const mockResolveSessionAiCreditsAttribution = jest.fn(() =>
-  Promise.resolve({}),
-);
-const mockResolveSessionWorkOwner = jest.fn(() =>
-  Promise.resolve({ kind: 'personal' as const }),
-);
-const mockCheckModelGatewayRoute = jest.fn(() =>
-  Promise.resolve({ ok: true as const, orgRoute: false }),
-);
+const mockResolveSessionAiCreditsAttribution = jest.fn<
+  ReturnType<typeof AiCreditsRoutingModule.resolveSessionAiCreditsAttribution>,
+  Parameters<typeof AiCreditsRoutingModule.resolveSessionAiCreditsAttribution>
+>(() => Promise.resolve({}));
+const mockResolveSessionWorkOwner = jest.fn<
+  ReturnType<typeof WorkOwnerModule.resolveSessionWorkOwner>,
+  Parameters<typeof WorkOwnerModule.resolveSessionWorkOwner>
+>(() => Promise.resolve({ kind: 'personal' as const }));
+const mockCheckModelGatewayRoute = jest.fn<
+  ReturnType<typeof ModelGatewayStateModule.checkModelGatewayRoute>,
+  Parameters<typeof ModelGatewayStateModule.checkModelGatewayRoute>
+>(() => Promise.resolve({ ok: true as const, orgRoute: false }));
 
 const mockStopAccountProxySwitches = jest.fn();
 const mockWatchAccountProxySwitches = jest.fn<
@@ -143,6 +289,8 @@ jest.mock('../agents/session-manager', () => ({
   unregisterSession: jest.fn((...args: unknown[]): void => {
     unregisterSessionMock(...args);
   }),
+  getSessionKeyOwnership: (...args: unknown[]): unknown =>
+    mockGetSessionKeyOwnership(...args),
   buildSessionKey: jest.fn(
     (projectId: string, worktreeId: string, chatId: string) =>
       `${projectId}/${worktreeId}/${chatId}`,
@@ -153,13 +301,30 @@ jest.mock('../agents/session-manager', () => ({
   recordSessionEvent: jest.fn(),
   createSessionPhaseTimer: jest.fn(() => stopSessionPhaseTimerMock),
   isSessionAiCreditsRouted: jest.fn(() => false),
+  getLiveBackgroundTasksForChat: jest.fn(() => undefined),
+  registerCodexBackgroundOwner: (
+    scope: CodexBackgroundOwnerToken['scope'],
+  ): CodexBackgroundOwnerToken | undefined =>
+    mockRegisterCodexBackgroundOwner(scope),
+  replaceCodexLiveBackgroundTasks: (...args: unknown[]): boolean =>
+    mockReplaceCodexLiveBackgroundTasks(...args),
+  retireCodexLiveBackgroundTasks: (...args: unknown[]): boolean =>
+    mockRetireCodexLiveBackgroundTasks(...args),
   isSessionAccountProxyRouted: jest.fn(() => false),
   recordSessionAccountProxyRoute: jest.fn(),
 }));
+jest.mock('../agents/steering-eligibility-events', () => ({
+  notifySteeringEligibilityChanged: (...args: unknown[]): void =>
+    mockNotifySteeringEligibilityChanged(...args),
+}));
 jest.mock('../services/attention-tracker', () => ({
   getAttentionTracker: (): { mark: jest.Mock; clear: jest.Mock } => ({
-    mark: mockAttentionMark,
-    clear: mockAttentionClear,
+    get mark(): typeof mockAttentionMark {
+      return mockAttentionMark;
+    },
+    get clear(): typeof mockAttentionClear {
+      return mockAttentionClear;
+    },
   }),
 }));
 // Local memory is opt-in (CAN-1969); resolve synchronously (no fs I/O) so the
@@ -183,19 +348,31 @@ jest.mock('../account-proxy/routing', () => ({
     mockResolveAccountProxySessionRoute(options),
 }));
 jest.mock('../lib/usage-limited-chats-registry', () => ({
-  recordUsageLimitedChat: mockRecordUsageLimitedChat,
+  get recordUsageLimitedChat(): typeof mockRecordUsageLimitedChat {
+    return mockRecordUsageLimitedChat;
+  },
 }));
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): { commitPlanExit: typeof mockCommitPlanExit } => ({
-    commitPlanExit: mockCommitPlanExit,
+    get commitPlanExit(): typeof mockCommitPlanExit {
+      return mockCommitPlanExit;
+    },
   }),
 }));
 jest.mock('../approvals/approval-service', () => ({
   createApprovalSession: jest.fn(() => ({
-    check: approvalCheckMock,
-    setMode: approvalSetModeMock,
-    invalidatePending: approvalInvalidatePendingMock,
-    dispose: approvalDisposeMock,
+    get check(): typeof approvalCheckMock {
+      return approvalCheckMock;
+    },
+    get setMode(): typeof approvalSetModeMock {
+      return approvalSetModeMock;
+    },
+    get invalidatePending(): typeof approvalInvalidatePendingMock {
+      return approvalInvalidatePendingMock;
+    },
+    get dispose(): typeof approvalDisposeMock {
+      return approvalDisposeMock;
+    },
   })),
 }));
 jest.mock('../lib/resolve-workspace-display-name', () => ({
@@ -207,18 +384,55 @@ jest.mock('../lib/resolve-workspace-display-name', () => ({
 
 jest.mock('../codex/app-server-client', () => ({
   CodexAppServerClient: jest.fn().mockImplementation(() => ({
-    startTurn: startTurnMock,
-    interruptTurn: interruptTurnMock,
-    setApprovalMode: setApprovalModeMock,
-    dispose: disposeMock,
-    getThreadId: getThreadIdMock,
+    get startTurn(): typeof startTurnMock {
+      return startTurnMock;
+    },
+    get interruptTurn(): typeof interruptTurnMock {
+      return interruptTurnMock;
+    },
+    get setApprovalMode(): typeof setApprovalModeMock {
+      return setApprovalModeMock;
+    },
+    get dispose(): typeof disposeMock {
+      return disposeMock;
+    },
+    get getThreadId(): typeof getThreadIdMock {
+      return getThreadIdMock;
+    },
+    get getExecutionUserMessageId(): typeof getExecutionUserMessageIdMock {
+      return getExecutionUserMessageIdMock;
+    },
+    get submitSteeringInput(): typeof submitSteeringInputMock {
+      return submitSteeringInputMock;
+    },
+    get hasActiveTurn(): typeof hasActiveTurnMock {
+      return hasActiveTurnMock;
+    },
+    hasProviderOwnedTurn: jest.fn(() => false),
+    get hasLiveBackgroundWork(): typeof hasLiveBackgroundWorkMock {
+      return hasLiveBackgroundWorkMock;
+    },
+    get getBackgroundSnapshot(): typeof getBackgroundSnapshotMock {
+      return getBackgroundSnapshotMock;
+    },
+    get subscribeBackgroundWork(): typeof subscribeBackgroundWorkMock {
+      return subscribeBackgroundWorkMock;
+    },
+    getActiveTurnInterruptTarget: jest.fn(() => ({
+      threadId: 'thread',
+      turnId: 'turn',
+    })),
   })),
 }));
 
 jest.mock('../codex/runtime-service', () => ({
   getCodexRuntimeService: jest.fn(() => ({
-    registerStdioMcpRoute: mockRegisterStdioMcpRoute,
-    revokeStdioMcpRoutes: mockRevokeStdioMcpRoutes,
+    get registerStdioMcpRoute(): typeof mockRegisterStdioMcpRoute {
+      return mockRegisterStdioMcpRoute;
+    },
+    get revokeStdioMcpRoutes(): typeof mockRevokeStdioMcpRoutes {
+      return mockRevokeStdioMcpRoutes;
+    },
   })),
 }));
 
@@ -253,20 +467,29 @@ jest.mock('../agents/ai-credits-routing', () => {
     getAiCreditsRoutingContext: jest.fn(),
     resolveAiCreditsAttribution: jest.fn().mockResolvedValue({}),
     resolveSessionAiCreditsAttribution: (
-      ...args: unknown[]
-    ): Promise<unknown> => mockResolveSessionAiCreditsAttribution(...args),
+      ...args: Parameters<
+        typeof AiCreditsRoutingModule.resolveSessionAiCreditsAttribution
+      >
+    ): ReturnType<
+      typeof AiCreditsRoutingModule.resolveSessionAiCreditsAttribution
+    > => mockResolveSessionAiCreditsAttribution(...args),
   };
 });
 
 jest.mock('../plugins/plugin-resolver', () => ({
   MISSING_PLUGIN_PATH_WARNING_PREFIX: 'Plugin path does not exist:',
   resolvePlugins: jest.fn(),
-  resolveEffectivePluginSelectionRefs: mockResolveEffectivePluginSelectionRefs,
-  codexAggregateSkillInvocationNamesForRefs:
-    mockCodexAggregateSkillInvocationNamesForRefs,
+  get resolveEffectivePluginSelectionRefs(): typeof mockResolveEffectivePluginSelectionRefs {
+    return mockResolveEffectivePluginSelectionRefs;
+  },
+  get codexAggregateSkillInvocationNamesForRefs(): typeof mockCodexAggregateSkillInvocationNamesForRefs {
+    return mockCodexAggregateSkillInvocationNamesForRefs;
+  },
 }));
 jest.mock('../plugins/invocable-inventory-service', () => ({
-  loadCachedInventory: mockLoadCachedInventory,
+  get loadCachedInventory(): typeof mockLoadCachedInventory {
+    return mockLoadCachedInventory;
+  },
 }));
 jest.mock('../plugins/global-plugin-overlay', () => ({
   resolveEffectiveChatPluginContext: jest.fn(
@@ -287,11 +510,16 @@ jest.mock('../plugins/global-plugin-overlay', () => ({
 }));
 
 jest.mock('@canopy/desktop-shared/node/e2e-mock-env', () => ({
-  resolveCodexMockAppServerOverride: mockResolveCodexMockAppServerOverride,
+  get resolveCodexMockAppServerOverride(): typeof mockResolveCodexMockAppServerOverride {
+    return mockResolveCodexMockAppServerOverride;
+  },
 }));
 
 jest.mock('../lib/transient-error-retry-service', () => ({
-  noteChatSessionEvent: noteChatSessionEventMock,
+  noteChatSessionEvent: jest.fn<
+    { kind: 'non_retryable_failure'; detail?: string } | null,
+    [target: unknown, provider: unknown, eventData: unknown]
+  >(() => null),
 }));
 
 jest.mock('../pipelines/config-paths', () => ({
@@ -304,7 +532,9 @@ jest.mock('../pipelines/config-paths', () => ({
 
 jest.mock('../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: jest.fn(() => ({
-    unregisterRoutesForSession: mockUnregisterMcpRoutesForSession,
+    get unregisterRoutesForSession(): typeof mockUnregisterMcpRoutesForSession {
+      return mockUnregisterMcpRoutesForSession;
+    },
     getCodexCapabilityAuthorityIds: jest.fn(() => []),
     shutdown: jest.fn(() => Promise.resolve()),
   })),
@@ -312,16 +542,30 @@ jest.mock('../mcp/http-proxy-service', () => ({
 
 jest.mock('../agents/codex-gateway-proxy-service', () => ({
   getCodexGatewayProxyService: jest.fn(() => ({
-    registerRoute: mockRegisterGatewayRoute,
-    unregisterRoutesForSession: mockUnregisterRoutesForSession,
+    get registerRoute(): typeof mockRegisterGatewayRoute {
+      return mockRegisterGatewayRoute;
+    },
+    get unregisterRoutesForSession(): typeof mockUnregisterRoutesForSession {
+      return mockUnregisterRoutesForSession;
+    },
     shutdown: jest.fn(() => Promise.resolve()),
   })),
 }));
 jest.mock('../lib/model-gateway-credential-store', () => ({
-  loadModelGatewayCredential: (...args: unknown[]): unknown =>
-    mockLoadModelGatewayCredential(...args),
-  markModelGatewayCredentialRejected: (...args: unknown[]): unknown =>
-    mockMarkModelGatewayCredentialRejected(...args),
+  loadModelGatewayCredential: (
+    ...args: Parameters<
+      typeof ModelGatewayCredentialStoreModule.loadModelGatewayCredential
+    >
+  ): ReturnType<
+    typeof ModelGatewayCredentialStoreModule.loadModelGatewayCredential
+  > => mockLoadModelGatewayCredential(...args),
+  markModelGatewayCredentialRejected: (
+    ...args: Parameters<
+      typeof ModelGatewayCredentialStoreModule.markModelGatewayCredentialRejected
+    >
+  ): ReturnType<
+    typeof ModelGatewayCredentialStoreModule.markModelGatewayCredentialRejected
+  > => mockMarkModelGatewayCredentialRejected(...args),
 }));
 
 jest.mock('../codex/gateway-model-catalog', () => ({
@@ -375,7 +619,9 @@ jest.mock('../codex/capability-store', () => ({
 
 jest.mock('../observability', () => ({
   getObservabilityService: jest.fn(() => ({
-    recordSessionDiagnostic: mockRecordSessionDiagnostic,
+    get recordSessionDiagnostic(): typeof mockRecordSessionDiagnostic {
+      return mockRecordSessionDiagnostic;
+    },
   })),
 }));
 
@@ -397,6 +643,14 @@ const mockAdmitCodexSpeed = jest.fn<Promise<unknown>, [string, unknown]>(
 const mockReportCodexSpeedTurnFailure = jest.fn<boolean, unknown[]>(
   () => false,
 );
+const mockResolveCodexAccountModelAccessFailure = jest.fn<
+  Promise<unknown>,
+  unknown[]
+>(() => Promise.resolve(null));
+jest.mock('../model-routing/codex-account-model-fallback', () => ({
+  resolveCodexAccountModelAccessFailure: (...args: unknown[]): unknown =>
+    mockResolveCodexAccountModelAccessFailure(...args),
+}));
 jest.mock('../codex/speed-policy', () => ({
   ...jest.requireActual<Record<string, unknown>>('../codex/speed-policy'),
   admitCodexSpeed: (...args: [string, unknown]): Promise<unknown> =>
@@ -407,6 +661,9 @@ jest.mock('../codex/speed-policy', () => ({
 
 import {
   IPC_CHANNELS,
+  INGESTION_LAG_EVENT_TYPE,
+  type ChatIngestionLag,
+  type ChatIngestionLagEventData,
   type ChatTabPluginSelections,
 } from '@canopy/desktop-shared/types';
 import {
@@ -414,13 +671,20 @@ import {
   getAppAdvisorLedgerToolNames,
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { skillShareNudgeState } from '../agents/skill-share-nudge-state';
+import * as dynamicToolsModule from '../codex/canopy-dynamic-tools';
 import { CodexProvider } from '../agents/codex-session';
+import {
+  getTurnLifecycleProducer,
+  releaseTurnLifecycleProducer,
+  setTurnLifecycleSink,
+} from '../agents/provider-turn-lifecycle';
 import { CodexSpeedUnsupportedError } from '@canopy/desktop-shared/lib/codex-speed';
 import { CodexAppServerClient } from '../codex/app-server-client';
 import {
   CodexAppServerJsonRpcError,
   CodexAppServerRequestTimeoutError,
   CodexSharedRestartPeerError,
+  CodexSharedRestartRecoveryError,
 } from '@canopy/desktop-shared/node/codex-runtime/connection';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import { resolvePlugins } from '../plugins/plugin-resolver';
@@ -432,7 +696,7 @@ import {
   setAiCreditsRoutingModeCache,
 } from '../agents/ai-credits-routing';
 import type * as AiCreditsRoutingModule from '../agents/ai-credits-routing';
-import type { AgentSessionOptions } from '../agents/types';
+import type { AgentSession, AgentSessionOptions } from '../agents/types';
 import {
   clearAllProviderQuotaReached,
   isProviderQuotaReached,
@@ -443,8 +707,13 @@ import {
 import {
   isSessionAccountProxyRouted,
   isSessionAiCreditsRouted,
+  markTurnIdle,
+  noteSessionMessageQueued,
   recordSessionAccountProxyRoute,
+  recordSessionEvent,
 } from '../agents/session-manager';
+import type { CodexBackgroundOwnerToken } from '../agents/session-manager';
+import type { CodexBackgroundSnapshot } from '@canopy/desktop-shared/node/codex-runtime';
 import {
   AI_CREDITS_NO_BILLING_SOURCE_EVENT_TYPE,
   AI_CREDITS_USAGE_LIMIT_EVENT_TYPE,
@@ -460,12 +729,55 @@ import {
 import type * as PreferencesStoreModule from '../lib/preferences-store';
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import type * as LedgerToolsRuntimeModule from '../canopy-tools/ledger-tools-runtime';
+import type * as TransientErrorRetryServiceModule from '../lib/transient-error-retry-service';
 import type * as CapabilityStoreModule from '../codex/capability-store';
 import {
   LedgerChatToolsSession,
   type LedgerToolsHost,
 } from '../canopy-tools/ledger-tools-runtime';
 import { buildLedgerPlanModeInstruction } from '../canopy-tools/prompting';
+import { ChatTurnFailureEvidence } from '../observability/chat-turn-failure';
+import {
+  DERIVED_FAILURE_NOTICE_TYPES,
+  readFailureSourceScope,
+} from '../agents/failure-source-scope';
+
+/**
+ * Producer-to-consumer check (CAN-4629): every derived failure notice the real
+ * session emits for a sub-agent thread names that thread, and the chat turn
+ * telemetry collector reports the cause only as a sub-agent failure.
+ */
+function expectOnlySubAgentFailure(
+  events: readonly unknown[],
+  category: string,
+): void {
+  const records = events.filter(
+    (event): event is Record<string, unknown> =>
+      typeof event === 'object' && event !== null && !Array.isArray(event),
+  );
+  const derived = records.filter(
+    (event) =>
+      typeof event.type === 'string' &&
+      DERIVED_FAILURE_NOTICE_TYPES.includes(event.type),
+  );
+  expect(derived.length).toBeGreaterThan(0);
+  for (const notice of derived) {
+    expect(readFailureSourceScope(notice)).toEqual({
+      thread_id: 'child-thread',
+    });
+  }
+  const evidence = new ChatTurnFailureEvidence();
+  for (const event of records) evidence.observe(event, 'thread-1');
+  const result = evidence.classify({ provider: 'codex' });
+  expect(result.failure).toBeNull();
+  expect(result.subAgentFailure).toMatchObject({ category });
+}
+
+const noteChatSessionEventMock = jest.mocked(
+  jest.requireMock<typeof TransientErrorRetryServiceModule>(
+    '../lib/transient-error-retry-service',
+  ).noteChatSessionEvent,
+);
 
 const mockedReadLocalMemoryEnabledPreference = jest.mocked(
   readLocalMemoryEnabledPreference,
@@ -503,6 +815,12 @@ function readEventType(event: unknown): string {
   return typeof type === 'string' ? type : '';
 }
 
+function readEventString(event: unknown, key: string): string {
+  if (typeof event !== 'object' || event === null) return '';
+  const value: unknown = Reflect.get(event, key);
+  return typeof value === 'string' ? value : '';
+}
+
 async function flushMicrotasks(): Promise<void> {
   // Drain enough microtasks for the async spawn path to settle, including the
   // AI Credits routing resolver's awaited native-auth probe before the turn
@@ -517,6 +835,82 @@ async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 30; i += 1) {
     await Promise.resolve();
   }
+}
+
+async function waitForStartTurnCallCount(
+  expectedCallCount: number,
+): Promise<void> {
+  for (
+    let attempt = 0;
+    attempt < 10 && startTurnMock.mock.calls.length < expectedCallCount;
+    attempt += 1
+  ) {
+    await flush();
+    await flushMicrotasks();
+  }
+}
+
+function createIngestionLagSample(
+  lagMs: number,
+  catchingUp: boolean,
+): ChatIngestionLag {
+  return {
+    lagMs,
+    source: 'receipt',
+    sampledAtMs: 1_760_000_000_000 + lagMs,
+    catchingUp,
+  };
+}
+
+function invokeClientCallback(
+  clientOptions: unknown,
+  callbackName: string,
+  ...args: unknown[]
+): unknown {
+  if (typeof clientOptions !== 'object' || clientOptions === null) {
+    return undefined;
+  }
+  const callback: unknown = Reflect.get(clientOptions, callbackName);
+  if (typeof callback !== 'function') return undefined;
+  return Reflect.apply(callback, undefined, args);
+}
+
+function firstMockedCallFirstArgument(mock: unknown): unknown {
+  if (
+    (typeof mock !== 'object' || mock === null) &&
+    typeof mock !== 'function'
+  ) {
+    return undefined;
+  }
+  const mockState: unknown = Reflect.get(mock, 'mock');
+  if (typeof mockState !== 'object' || mockState === null) return undefined;
+  const calls: unknown = Reflect.get(mockState, 'calls');
+  if (!Array.isArray(calls)) return undefined;
+  const firstCall: unknown = calls[0];
+  if (typeof firstCall !== 'object' || firstCall === null) return undefined;
+  return Reflect.get(firstCall, '0');
+}
+
+/** Keep session option additions observable without coupling red tests to a type-only field. */
+function expectDispatchedBinding(
+  startTurnOptions: unknown,
+  userMessageId: string,
+): string {
+  if (typeof startTurnOptions !== 'object' || startTurnOptions === null) {
+    throw new Error('Expected Codex startTurn options');
+  }
+  const submissionId: unknown = Reflect.get(startTurnOptions, 'submissionId');
+  const clientUserMessageId: unknown = Reflect.get(
+    startTurnOptions,
+    'clientUserMessageId',
+  );
+  expect({
+    submissionId: typeof submissionId === 'string' && submissionId.length > 0,
+    clientUserMessageId: clientUserMessageId === userMessageId,
+  }).toEqual({ submissionId: true, clientUserMessageId: true });
+  return typeof submissionId === 'string' && submissionId.length > 0
+    ? submissionId
+    : `missing-generated-submission:${userMessageId}`;
 }
 
 type WindowSendMock = jest.MockedFunction<
@@ -600,6 +994,7 @@ function initializeTestModelCatalog(): void {
               {
                 modelId: entry.id,
                 gatewayId: entry.gatewayId,
+                family: entry.gatewayId.split('/')[0] ?? 'openai',
                 recommendedHarness: 'codex' as const,
                 gatewayOnly: false,
                 contextWindow: entry.contextWindow ?? 400_000,
@@ -613,6 +1008,7 @@ function initializeTestModelCatalog(): void {
       {
         modelId: 'deepseek-v4-pro',
         gatewayId: 'deepseek/deepseek-v4-pro',
+        family: 'deepseek',
         recommendedHarness: 'codex',
         gatewayOnly: true,
         contextWindow: 1_000_000,
@@ -632,9 +1028,14 @@ describe('codex-session app-server integration', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    codexBackgroundOwnerTokens.length = 0;
+    codexBackgroundSnapshot = defaultCodexBackgroundSnapshot;
+    hasLiveCodexBackgroundWork = false;
+    codexBackgroundWorkSubscribers.clear();
     mockWaitForPendingCodexFork.mockResolvedValue(undefined);
     mockLoadCodexForkContinuation.mockResolvedValue(undefined);
     getThreadIdMock.mockReturnValue(DEFAULT_MOCK_THREAD_ID);
+    getExecutionUserMessageIdMock.mockReturnValue(undefined);
     interruptTurnMock.mockResolvedValue(undefined);
     setApprovalModeMock.mockResolvedValue(undefined);
     disposeMock.mockResolvedValue(undefined);
@@ -643,10 +1044,12 @@ describe('codex-session app-server integration', () => {
       sdkPlugins: [],
       skillPluginDir: null,
       selectedCapabilityRoots: [],
-      codexProcessEnv: {},
       codexMcpServers: {},
       mcpServers: {},
+      mcpServerBindings: {},
       warnings: [],
+      cursorNotices: [],
+      cursorCapabilities: { skills: [], commands: [] },
     });
     mockResolveCodexMockAppServerOverride.mockReturnValue(null);
     mockLoadCachedInventory.mockResolvedValue(null);
@@ -733,6 +1136,84 @@ describe('codex-session app-server integration', () => {
     } finally {
       await session.destroy();
     }
+  });
+
+  it("leaves a same-key successor's registration and routes when a displaced session tears down (CAN-4833)", async () => {
+    const key = 'project/worktree/displaced';
+    // A successor holds the key for this session's whole teardown, which may
+    // begin before destroy() when the run loop ends on its own.
+    mockGetSessionKeyOwnership.mockReturnValue('replaced');
+    let session: AgentSession | undefined;
+    try {
+      session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'displaced',
+        },
+        jest.fn(),
+        () => null,
+      );
+      await session.destroy();
+    } finally {
+      mockGetSessionKeyOwnership.mockReturnValue('registered');
+    }
+
+    expect(mockUnregisterRoutesForSession).not.toHaveBeenCalledWith(key);
+    expect(unregisterSessionMock).toHaveBeenCalled();
+    for (const call of unregisterSessionMock.mock.calls)
+      expect(call).toEqual([key, session]);
+  });
+
+  it("leaves a same-key successor's turn state when a displaced session's active turn ends (CAN-4833)", async () => {
+    let settleTurn!: (value: { status: string }) => void;
+    startTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          settleTurn = resolve;
+        }),
+    );
+    interruptTurnMock.mockImplementationOnce(() => {
+      settleTurn({ status: 'interrupted' });
+      return Promise.resolve();
+    });
+    const events: unknown[] = [];
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'displaced-turn',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+    session.sendMessage('Start a turn', { userMessageId: 'displaced-turn' });
+    await flushMicrotasks();
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
+    jest.mocked(markTurnIdle).mockClear();
+    jest.mocked(recordSessionEvent).mockClear();
+    jest.mocked(noteSessionMessageQueued).mockClear();
+    // A registration displaced this session mid-turn and destroys it.
+    mockGetSessionKeyOwnership.mockReturnValue('replaced');
+    try {
+      await session.destroy();
+    } finally {
+      mockGetSessionKeyOwnership.mockReturnValue('registered');
+    }
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'result',
+        canopy_turn_user_message_id: 'displaced-turn',
+      }),
+    );
+    expect(markTurnIdle).not.toHaveBeenCalled();
+    expect(recordSessionEvent).not.toHaveBeenCalled();
+    expect(noteSessionMessageQueued).not.toHaveBeenCalled();
   });
 
   it('seeds a failed native fork before sending its continuation', async () => {
@@ -1215,13 +1696,14 @@ describe('codex-session app-server integration', () => {
     await session.destroy();
   });
 
-  it('applies a client release deferred by an active managed delegation', async () => {
+  it('forces a client release after an active delegation even with background work', async () => {
     let activeCount = 1;
     let onActivityChange: ((count: number) => void) | undefined;
     const managedSession = {
       get activeCount(): number {
         return activeCount;
       },
+      applyPolicyGuidance: (text: string): string => text,
       codexTools: [],
       observe: jest.fn(),
       retireTurn: jest.fn(),
@@ -1234,6 +1716,20 @@ describe('codex-session app-server integration', () => {
       },
     );
     startTurnMock.mockResolvedValue({ status: 'completed' });
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 1,
+      rootThreadId: 'root-thread',
+      work: [
+        {
+          kind: 'child',
+          id: 'child-task-id',
+          threadId: 'child-thread',
+          parentThreadId: 'root-thread',
+        },
+      ],
+      reconciling: false,
+    });
     const prepareInvocation = jest.fn(
       (model: string | undefined, reason: 'session-start' | 'model-change') =>
         Promise.resolve({
@@ -1273,7 +1769,201 @@ describe('codex-session app-server integration', () => {
     activeCount = 0;
     onActivityChange?.(0);
     expect(disposeMock).toHaveBeenCalledTimes(1);
+    const ownerToken = codexBackgroundOwnerTokens[0];
+    expect(ownerToken).toBeDefined();
+    expect(mockRetireCodexLiveBackgroundTasks).toHaveBeenCalledWith(ownerToken);
+    expect(codexBackgroundWorkSubscribers.size).toBe(0);
     await session.destroy();
+  });
+
+  it('rebuilds the client after a delegation drains during a later turn that followed a model change', async () => {
+    let activeCount = 1;
+    let onActivityChange: ((count: number) => void) | undefined;
+    let completeSecondTurn:
+      | ((result: { status: 'completed' }) => void)
+      | undefined;
+    const managedSession = {
+      get activeCount(): number {
+        return activeCount;
+      },
+      applyPolicyGuidance: (text: string): string => text,
+      codexTools: [],
+      observe: jest.fn(),
+      retireTurn: jest.fn(),
+      detach: jest.fn(),
+    };
+    createManagedDelegationSessionMock.mockImplementationOnce(
+      (options: { onActivityChange?: (count: number) => void }) => {
+        onActivityChange = options.onActivityChange;
+        return Promise.resolve(managedSession);
+      },
+    );
+    startTurnMock
+      .mockResolvedValueOnce({ status: 'completed' })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeSecondTurn = resolve;
+          }),
+      );
+    const prepareInvocation = jest.fn(
+      (model: string | undefined, reason: 'session-start' | 'model-change') =>
+        Promise.resolve({
+          source: 'ollama' as const,
+          harness: 'codex' as const,
+          runtimeModel: `runtime:${String(model)}`,
+          aiCreditsRouted: false,
+          codexConfig: { model: `runtime:${String(model)}` },
+          reason,
+        }),
+    );
+    const session = onPlatform('darwin', () =>
+      new CodexProvider({
+        providerType: 'ollama',
+        prepareInvocation,
+      }).createSession(
+        {
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'managed-rebuild-after-mid-turn-drain',
+          managedDelegationMode: 'explicit-only',
+          model: 'ollama-old',
+          managedDelegationSurface: 'worktree-chat',
+        },
+        jest.fn(),
+        () => null,
+      ),
+    );
+
+    session.sendMessage('Run once');
+    await waitForStartTurnCallCount(1);
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
+    await flush();
+    await flushMicrotasks();
+    // Idle with a live delegation: the rebuild waits for the delegation.
+    await session.setModel?.('ollama-new');
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    session.sendMessage('Run again');
+    await waitForStartTurnCallCount(2);
+    expect(startTurnMock).toHaveBeenCalledTimes(2);
+    // The delegation drains while that turn still runs.
+    activeCount = 0;
+    onActivityChange?.(0);
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    completeSecondTurn?.({ status: 'completed' });
+    await flush();
+    await flushMicrotasks();
+    expect(disposeMock).toHaveBeenCalledTimes(1);
+    await session.destroy();
+  });
+
+  it('defers background-drain client release while a delegation release is pending', async () => {
+    let activeCount = 1;
+    let onActivityChange: ((count: number) => void) | undefined;
+    let completeTurn: ((result: { status: 'completed' }) => void) | undefined;
+    const managedSession = {
+      get activeCount(): number {
+        return activeCount;
+      },
+      applyPolicyGuidance: (text: string): string => text,
+      codexTools: [],
+      observe: jest.fn(),
+      retireTurn: jest.fn(),
+      detach: jest.fn(),
+    };
+    createManagedDelegationSessionMock.mockImplementationOnce(
+      (options: { onActivityChange?: (count: number) => void }) => {
+        onActivityChange = options.onActivityChange;
+        return Promise.resolve(managedSession);
+      },
+    );
+    startTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeTurn = resolve;
+        }),
+    );
+    const onEvent = jest.fn();
+    const session = onPlatform('darwin', () =>
+      new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'managed-deferred-background-drain',
+          codexAppServerIdleTimeoutMinutes: 1,
+          managedDelegationMode: 'explicit-only',
+          managedDelegationSurface: 'worktree-chat',
+        },
+        onEvent,
+        fakeWindowGetter(),
+      ),
+    );
+
+    session.sendMessage('Start background work');
+    await waitForStartTurnCallCount(1);
+    expect(startTurnMock).toHaveBeenCalledTimes(1);
+    jest.useFakeTimers();
+    completeTurn?.({ status: 'completed' });
+    await flushMicrotasks();
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'result' }),
+    );
+    expect(createManagedDelegationSessionMock).toHaveBeenCalledTimes(1);
+    expect(onActivityChange).toBeDefined();
+    await session.setCodexAppServerIdleTimeoutMinutes?.(1);
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    const activeTurnChecksBeforeIdleRelease =
+      hasActiveTurnMock.mock.calls.length;
+    jest.advanceTimersByTime(60_000);
+    expect(hasActiveTurnMock.mock.calls.length).toBeGreaterThan(
+      activeTurnChecksBeforeIdleRelease,
+    );
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 1,
+      rootThreadId: 'root-thread',
+      work: [
+        {
+          kind: 'child',
+          id: 'child-task-id',
+          threadId: 'child-thread',
+          parentThreadId: 'root-thread',
+        },
+      ],
+      reconciling: false,
+    });
+    expect(codexBackgroundWorkSubscribers.size).toBe(1);
+    activeCount = 0;
+    const activeTurnChecksBeforeDelegationDrain =
+      hasActiveTurnMock.mock.calls.length;
+    onActivityChange?.(0);
+    expect(hasActiveTurnMock).toHaveBeenCalledTimes(
+      activeTurnChecksBeforeDelegationDrain + 1,
+    );
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    // This is delivered while the provider is projecting the raw terminal
+    // item. Releasing synchronously here would dispose the client before the
+    // terminal event reaches the session.
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 2,
+      rootThreadId: 'root-thread',
+      work: [],
+      reconciling: false,
+    });
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(60_000);
+    expect(disposeMock).toHaveBeenCalledTimes(1);
+    await session.destroy();
+    jest.useRealTimers();
   });
 
   it('appends managed delegation steering to the Codex developer instructions', async () => {
@@ -1540,6 +2230,410 @@ describe('codex-session app-server integration', () => {
     await session.destroy();
   });
 
+  it('records Codex ingestion lag in the session diagnostic with chat identity', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-ingestion-lag',
+        model: 'gpt-6-sol',
+      },
+      jest.fn(),
+      () => null,
+    );
+    session.sendMessage('Inspect ingestion lag diagnostics');
+    await flush();
+    await flush();
+
+    const clientArgs = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    expect(clientArgs?.onIngestionLagChange).toBeDefined();
+    void clientArgs?.onIngestionLagChange?.({
+      outcome: 'entered',
+      lagMs: 5_100,
+      peakLagMs: 5_400,
+      episodeMs: 300,
+      thresholdMs: 5_000,
+      source: 'receipt',
+    });
+
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 1,
+        kind: 'ingestion_lag',
+        sessionKey: 'project/worktree/chat-ingestion-lag',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-ingestion-lag',
+        providerType: 'codex',
+        outcome: 'entered',
+        lagMs: 5_100,
+        peakLagMs: 5_400,
+        episodeMs: 300,
+        thresholdMs: 5_000,
+        source: 'receipt',
+      }),
+    );
+    await session.destroy();
+  });
+
+  it('emits lag samples outside provider event admission while it is blocked', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    let releaseEventAdmission: (() => void) | undefined;
+    const blockedAdmission = new Promise<void>((resolve) => {
+      releaseEventAdmission = resolve;
+    });
+    let blockEventAdmission = false;
+    const onEvent = jest.fn(
+      (): Promise<void> =>
+        blockEventAdmission ? blockedAdmission : Promise.resolve(),
+    );
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-ingestion-lag-out-of-band',
+    };
+    const emitIngestionLag = jest.fn<
+      void,
+      [typeof target, ChatIngestionLagEventData]
+    >();
+    const providerOptions = { emitIngestionLag };
+    const session = new CodexProvider(providerOptions).createSession(
+      {
+        cwd: '/tmp/repo',
+        ...target,
+        model: 'gpt-6-sol',
+      },
+      onEvent,
+      () => null,
+    );
+    session.sendMessage('Inspect ingestion lag forwarding');
+    await waitForStartTurnCallCount(1);
+
+    expect(CodexAppServerClient).toHaveBeenCalled();
+    const clientOptions = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    blockEventAdmission = true;
+    invokeClientCallback(clientOptions, 'onEvent', { type: 'turn/started' });
+    const onEventCallsDuringBlockedAdmission = onEvent.mock.calls.length;
+    const firstSample = createIngestionLagSample(5_400, true);
+    const lowerSample = createIngestionLagSample(2_100, true);
+    invokeClientCallback(clientOptions, 'onIngestionLagSample', firstSample);
+    invokeClientCallback(clientOptions, 'onIngestionLagSample', lowerSample);
+
+    expect(onEvent).toHaveBeenCalledTimes(onEventCallsDuringBlockedAdmission);
+    expect(emitIngestionLag).toHaveBeenNthCalledWith(1, target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: firstSample,
+    });
+    expect(emitIngestionLag).toHaveBeenNthCalledWith(2, target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: lowerSample,
+    });
+
+    releaseEventAdmission?.();
+    await flush();
+    await flushMicrotasks();
+    await session.destroy();
+  });
+
+  it('clears a drained or aborted ingestion-lag episode only once', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-ingestion-lag-drained',
+    };
+    const emitIngestionLag = jest.fn<
+      void,
+      [typeof target, ChatIngestionLagEventData]
+    >();
+    const providerOptions = { emitIngestionLag };
+    const session = new CodexProvider(providerOptions).createSession(
+      { cwd: '/tmp/repo', ...target, model: 'gpt-6-sol' },
+      jest.fn(),
+      () => null,
+    );
+    session.sendMessage('Inspect a drained ingestion lag episode');
+    await waitForStartTurnCallCount(1);
+
+    const clientOptions = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    const positiveSample = createIngestionLagSample(5_100, true);
+    const clearedSample = createIngestionLagSample(0, false);
+    invokeClientCallback(clientOptions, 'onIngestionLagSample', positiveSample);
+    invokeClientCallback(clientOptions, 'onIngestionLagChange', {
+      outcome: 'aborted',
+      lagMs: 0,
+      peakLagMs: 5_100,
+      episodeMs: 250,
+      thresholdMs: 5_000,
+      source: 'receipt',
+    });
+    invokeClientCallback(clientOptions, 'onIngestionLagSample', clearedSample);
+    invokeClientCallback(clientOptions, 'onIngestionLagSample', clearedSample);
+
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+    expect(emitIngestionLag).toHaveBeenNthCalledWith(1, target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: positiveSample,
+    });
+    expect(emitIngestionLag).toHaveBeenNthCalledWith(2, target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: null,
+    });
+    expect(mockRecordSessionDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'ingestion_lag',
+        outcome: 'aborted',
+        sessionKey: 'project/worktree/chat-ingestion-lag-drained',
+      }),
+    );
+
+    await session.destroy();
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears and retires the old owner during recovery rebuilds', async () => {
+    let completeFailedTurn:
+      | ((result: { status: 'failed'; error: string }) => void)
+      | undefined;
+    startTurnMock.mockImplementationOnce(
+      () =>
+        new Promise(
+          (resolve: (result: { status: 'failed'; error: string }) => void) => {
+            completeFailedTurn = resolve;
+          },
+        ),
+    );
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-ingestion-lag-rebuild',
+    };
+    const emitIngestionLag = jest.fn<
+      void,
+      [typeof target, ChatIngestionLagEventData]
+    >();
+    const providerOptions = { emitIngestionLag };
+    const session = new CodexProvider(providerOptions).createSession(
+      { cwd: '/tmp/repo', ...target, model: 'gpt-6-sol' },
+      jest.fn(),
+      () => null,
+    );
+    session.sendMessage('Recover a rejected Codex thread');
+    await waitForStartTurnCallCount(1);
+
+    const firstClientOptions =
+      jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    const firstPositiveSample = createIngestionLagSample(5_500, true);
+    invokeClientCallback(
+      firstClientOptions,
+      'onIngestionLagSample',
+      firstPositiveSample,
+    );
+    completeFailedTurn?.({
+      status: 'failed',
+      error: "invalid_type for 'input[0].content'",
+    });
+    await waitForStartTurnCallCount(2);
+
+    const secondClientOptions =
+      jest.mocked(CodexAppServerClient).mock.calls[1]?.[0];
+    expect(secondClientOptions).toBeDefined();
+    const staleSample = createIngestionLagSample(8_000, true);
+    invokeClientCallback(
+      firstClientOptions,
+      'onIngestionLagSample',
+      staleSample,
+    );
+    invokeClientCallback(
+      firstClientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(0, false),
+    );
+
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+    expect(emitIngestionLag).toHaveBeenNthCalledWith(1, target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: firstPositiveSample,
+    });
+    expect(emitIngestionLag).toHaveBeenNthCalledWith(2, target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: null,
+    });
+
+    const secondPositiveSample = createIngestionLagSample(5_200, true);
+    invokeClientCallback(
+      secondClientOptions,
+      'onIngestionLagSample',
+      secondPositiveSample,
+    );
+    expect(emitIngestionLag).toHaveBeenCalledTimes(3);
+    await session.destroy();
+    expect(emitIngestionLag).toHaveBeenCalledTimes(4);
+    expect(emitIngestionLag).toHaveBeenLastCalledWith(target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: null,
+    });
+  });
+
+  it('keeps lag visible after Stop until the owner reports a drained sample', async () => {
+    let completeTurn: ((result: { status: 'interrupted' }) => void) | undefined;
+    startTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve: (result: { status: 'interrupted' }) => void) => {
+          completeTurn = resolve;
+        }),
+    );
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-ingestion-lag-stop',
+    };
+    const emitIngestionLag = jest.fn<
+      void,
+      [typeof target, ChatIngestionLagEventData]
+    >();
+    const providerOptions = { emitIngestionLag };
+    const session = new CodexProvider(providerOptions).createSession(
+      { cwd: '/tmp/repo', ...target, model: 'gpt-6-sol' },
+      jest.fn(),
+      () => null,
+    );
+    session.sendMessage('Stop during a lag episode');
+    await waitForStartTurnCallCount(1);
+
+    const clientOptions = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    invokeClientCallback(
+      clientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(5_300, true),
+    );
+    await session.cancel();
+
+    expect(emitIngestionLag).toHaveBeenCalledTimes(1);
+    invokeClientCallback(
+      clientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(0, false),
+    );
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+    expect(emitIngestionLag).toHaveBeenLastCalledWith(target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: null,
+    });
+
+    completeTurn?.({ status: 'interrupted' });
+    await flush();
+    await flushMicrotasks();
+    await session.destroy();
+  });
+
+  it('clears only a positive episode on disposal and ignores late or fresh-owner callbacks', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-ingestion-lag-dispose',
+    };
+    const emitIngestionLag = jest.fn<
+      void,
+      [typeof target, ChatIngestionLagEventData]
+    >();
+    const providerOptions = { emitIngestionLag };
+    const session = new CodexProvider(providerOptions).createSession(
+      { cwd: '/tmp/repo', ...target, model: 'gpt-6-sol' },
+      jest.fn(),
+      () => null,
+    );
+    session.sendMessage('Dispose during a lag episode');
+    await waitForStartTurnCallCount(1);
+
+    const clientOptions = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    const positiveSample = createIngestionLagSample(5_700, true);
+    invokeClientCallback(clientOptions, 'onIngestionLagSample', positiveSample);
+    await session.destroy();
+    invokeClientCallback(
+      clientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(9_000, true),
+    );
+    invokeClientCallback(
+      clientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(0, false),
+    );
+
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+    expect(emitIngestionLag).toHaveBeenLastCalledWith(target, {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: null,
+    });
+
+    const freshSession = new CodexProvider(providerOptions).createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-ingestion-lag-fresh',
+        model: 'gpt-6-sol',
+      },
+      jest.fn(),
+      () => null,
+    );
+    await freshSession.destroy();
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+  });
+
+  it('isolates synchronous emitter errors and asynchronous emitter rejections', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const target = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-ingestion-lag-emitter-error',
+    };
+    let rejectAsynchronously = false;
+    const emitIngestionLag = jest.fn<
+      void | Promise<void>,
+      [typeof target, ChatIngestionLagEventData]
+    >((_eventTarget, data) => {
+      if (data.lag === null) return;
+      if (rejectAsynchronously) {
+        return Promise.reject(new Error('lag event admission failed'));
+      }
+      throw new Error('lag event emitter failed');
+    });
+    const providerOptions = { emitIngestionLag };
+    const session = new CodexProvider(providerOptions).createSession(
+      { cwd: '/tmp/repo', ...target, model: 'gpt-6-sol' },
+      jest.fn(),
+      () => null,
+    );
+    session.sendMessage('Keep running despite lag emitter failures');
+    await waitForStartTurnCallCount(1);
+
+    const clientOptions = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+    invokeClientCallback(
+      clientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(5_600, true),
+    );
+    rejectAsynchronously = true;
+    invokeClientCallback(
+      clientOptions,
+      'onIngestionLagSample',
+      createIngestionLagSample(5_100, true),
+    );
+    await flushMicrotasks();
+
+    expect(emitIngestionLag).toHaveBeenCalledTimes(2);
+    expect(startTurnMock).toHaveBeenCalled();
+    expect(session.isDisposed?.()).toBe(false);
+    await session.destroy();
+  });
+
   it('reports disposal only after destroy — a canceled Codex session keeps draining its queue', async () => {
     startTurnMock.mockResolvedValue({ status: 'completed' });
     const provider = new CodexProvider();
@@ -1723,13 +2817,29 @@ describe('codex-session app-server integration', () => {
     let downgrade: Promise<void> | undefined;
     jest.mocked(CodexAppServerClient).mockImplementationOnce(() => {
       downgrade = session.setApprovalMode('ask');
-      return {
+      const clientDouble = {
         startTurn: startTurnMock,
         interruptTurn: interruptTurnMock,
         setApprovalMode: setApprovalModeMock,
         dispose: disposeMock,
         getThreadId: (): string => 'thread-after-downgrade',
-      } as InstanceType<typeof CodexAppServerClient>;
+        hasActiveTurn: jest.fn(() => false),
+        hasProviderOwnedTurn: jest.fn(() => false),
+      } satisfies Pick<
+        InstanceType<typeof CodexAppServerClient>,
+        | 'startTurn'
+        | 'interruptTurn'
+        | 'setApprovalMode'
+        | 'dispose'
+        | 'getThreadId'
+        | 'hasActiveTurn'
+        | 'hasProviderOwnedTurn'
+      >;
+      // This constructor double intentionally implements only the methods this
+      // test exercises; keep the partial-client cast at the mock boundary.
+      return clientDouble as unknown as InstanceType<
+        typeof CodexAppServerClient
+      >;
     });
     const session = provider.createSession(
       {
@@ -1836,7 +2946,9 @@ describe('codex-session app-server integration', () => {
         planMode: true,
         model: 'gpt-6-sol',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       fakeWindowGetter(win),
     );
 
@@ -1951,6 +3063,289 @@ describe('codex-session app-server integration', () => {
     await session.destroy();
   });
 
+  it('passes the admitted message id to the Codex adapter as its execution anchor', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-explicit-anchor',
+      },
+      jest.fn(),
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Run this', {
+        userMessageId: 'msg-execution-anchor',
+      });
+      await waitForStartTurnCallCount(1);
+
+      expect(startTurnMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executionUserMessageId: 'msg-execution-anchor',
+        }),
+      );
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it('forwards the originating user-message id with a steering submission', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-steering-binding',
+      },
+      jest.fn(),
+      () => null,
+    );
+    const target = { sessionId: 'root-thread', turnId: 'root-turn' };
+
+    try {
+      session.sendMessage('Start a turn');
+      await waitForStartTurnCallCount(1);
+
+      await session.submitSteeringInput?.(
+        'Follow-up input',
+        'attempt-follow-up',
+        'message-follow-up',
+        target,
+      );
+
+      expect(submitSteeringInputMock).toHaveBeenCalledWith(
+        'Follow-up input',
+        'attempt-follow-up',
+        target,
+        'message-follow-up',
+      );
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it('keeps a failed new submission anchored to itself when the client retains the prior anchor', async () => {
+    const chatId = 'chat-failed-start-anchor';
+    const events: unknown[] = [];
+    startTurnMock
+      .mockResolvedValueOnce({ status: 'completed' })
+      .mockRejectedValueOnce(new Error('new start failed'));
+    getExecutionUserMessageIdMock.mockReturnValue('message-prior-anchor');
+
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId,
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Previous successful input', {
+        userMessageId: 'message-prior-anchor',
+      });
+      await waitForStartTurnCallCount(1);
+      await flushMicrotasks();
+
+      session.sendMessage('New input whose start fails', {
+        userMessageId: 'message-new-anchor',
+      });
+      await waitForStartTurnCallCount(2);
+      await flushMicrotasks();
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'result',
+          is_error: true,
+          canopy_turn_user_message_id: 'message-new-anchor',
+        }),
+      );
+      expect(getCodexTurnEvidence(`project/worktree/${chatId}`)).toMatchObject({
+        terminal: {
+          turnUserMessageId: 'message-new-anchor',
+          outcome: 'failed',
+        },
+      });
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it('delivers queued running output after its generation retires, keeping its stamp', async () => {
+    const reconciliation = jest.requireActual<
+      typeof ProviderRunReconciliationModule
+    >('../lib/provider-run-reconciliation');
+    const generation = reconciliation.createProviderRunGeneration({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'retired-running',
+    });
+    const run = reconciliation.registerProviderRun(generation, {
+      threadId: 'old-root',
+      turnId: 'old-native-turn',
+      executionUserMessageId: 'old-anchor',
+      origin: 'dispatched',
+    });
+    const queuedEvent = reconciliation.attachProviderRunEvent(
+      {
+        type: 'codex',
+        event: {
+          type: 'item.completed',
+          thread_id: 'old-root',
+          turn_id: 'old-native-turn',
+          item: { id: 'text', type: 'agent_message', text: 'queued output' },
+        },
+      },
+      run,
+      'running',
+    );
+    reconciliation.retireProviderRunGeneration(generation);
+    const events: unknown[] = [];
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'retired-running',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    try {
+      session.sendMessage('Newer prompt', { userMessageId: 'new-anchor' });
+      await waitForStartTurnCallCount(1);
+      const clientOptions =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      await Promise.resolve(
+        invokeClientCallback(clientOptions, 'onEvent', queuedEvent),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'codex',
+          canopy_turn_user_message_id: 'old-anchor',
+          event: queuedEvent.event,
+        }),
+      );
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it('stamps a late observed command result from its provider-run anchor, not the newer prompt', async () => {
+    let finishTurn: (result: { status: 'completed' }) => void = () => undefined;
+    startTurnMock.mockImplementation(
+      () =>
+        new Promise<{ status: 'completed' }>((resolveTurn) => {
+          finishTurn = resolveTurn;
+        }),
+    );
+
+    const events: unknown[] = [];
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-late-command-anchor',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+
+    const providerEvent = {
+      type: 'codex',
+      event: {
+        type: 'item.completed',
+        thread_id: 'root-thread',
+        turn_id: 'old-turn',
+        item: {
+          id: 'cmd-late',
+          type: 'command_execution',
+          aggregated_output: 'authoritative output',
+        },
+      },
+    };
+    const descriptor = {
+      provider: 'codex',
+      generation: 'test-generation',
+      threadId: 'root-thread',
+      turnId: 'old-turn',
+      executionUserMessageId: 'msg-origin',
+      origin: 'dispatched',
+      phase: 'late',
+      item: { id: 'cmd-late', type: 'command_execution' },
+    };
+    providerRunDescriptors.set(providerEvent, descriptor);
+
+    try {
+      session.sendMessage('New prompt', { userMessageId: 'msg-current' });
+      await waitForStartTurnCallCount(1);
+      const clientOptions =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      await Promise.resolve(
+        invokeClientCallback(clientOptions, 'onEvent', providerEvent),
+      );
+
+      const deliveredEvent = events.find((candidate): boolean => {
+        if (
+          typeof candidate !== 'object' ||
+          candidate === null ||
+          !('type' in candidate) ||
+          candidate.type !== 'codex' ||
+          !('event' in candidate) ||
+          typeof candidate.event !== 'object' ||
+          candidate.event === null ||
+          !('type' in candidate.event)
+        ) {
+          return false;
+        }
+        return candidate.event.type === 'item.completed';
+      });
+
+      expect(deliveredEvent).toMatchObject({
+        type: 'codex',
+        canopy_turn_user_message_id: 'msg-origin',
+        event: {
+          type: 'item.completed',
+          thread_id: 'root-thread',
+          turn_id: 'old-turn',
+          item: {
+            id: 'cmd-late',
+            type: 'command_execution',
+            aggregated_output: 'authoritative output',
+          },
+        },
+      });
+      expect(deliveredEvent).not.toHaveProperty('canopy_turn_revival');
+      expect(mockCopyProviderRunProvenance).toHaveBeenCalledWith(
+        providerEvent,
+        expect.any(Object),
+      );
+      if (typeof deliveredEvent !== 'object' || deliveredEvent === null) {
+        throw new Error('Expected the late provider event to be delivered');
+      }
+      expect(providerRunDescriptors.get(deliveredEvent)).toEqual(descriptor);
+    } finally {
+      finishTurn({ status: 'completed' });
+      await flush();
+      await session.destroy();
+    }
+  });
+
   it('tags Codex turn events with the active user message id', async () => {
     startTurnMock.mockImplementation(() => {
       const clientOptions =
@@ -1971,7 +3366,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -2354,7 +3751,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
     const nowSpy = jest.spyOn(Date, 'now');
@@ -2366,6 +3765,7 @@ describe('codex-session app-server integration', () => {
         type: AI_CREDITS_USAGE_LIMIT_EVENT_TYPE,
         provider: 'codex',
         resetsAt,
+        thread_id: 'thread-1',
       });
       expect(mockRecordUsageLimitedChat).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2384,6 +3784,147 @@ describe('codex-session app-server integration', () => {
       await session.destroy();
     }
   });
+
+  it('keeps child thread identity on derived quota notices', async () => {
+    startTurnMock.mockImplementation(() => {
+      const options = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      void options?.onEvent({
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'child-thread',
+          error: {
+            message: 'Usage limit exceeded.',
+            codexErrorInfo: 'usageLimitExceeded',
+          },
+        },
+      });
+      return Promise.resolve({ status: 'completed' });
+    });
+    const events: unknown[] = [];
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+    try {
+      session.sendMessage('Continue');
+      await flush();
+      await flush();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: AI_CREDITS_USAGE_LIMIT_EVENT_TYPE,
+          provider: 'codex',
+          thread_id: 'child-thread',
+        }),
+      );
+    } finally {
+      clearAllProviderQuotaReached();
+      await session.destroy();
+    }
+  });
+
+  it('keeps child thread identity on derived auth notices', async () => {
+    startTurnMock.mockImplementation(() => {
+      const options = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      void options?.onEvent({
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'child-thread',
+          error: {
+            message: 'Unauthorized',
+            codexErrorInfo: 'unauthorized',
+          },
+        },
+      });
+      return Promise.resolve({ status: 'completed' });
+    });
+    const events: unknown[] = [];
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+    try {
+      session.sendMessage('Continue');
+      await flush();
+      await flush();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'canopy_auth_failure',
+          thread_id: 'child-thread',
+        }),
+      );
+    } finally {
+      clearAllProviderQuotaReached();
+      await session.destroy();
+    }
+  });
+
+  it.each([
+    {
+      name: 'quota',
+      error: {
+        message: 'Usage limit exceeded.',
+        codexErrorInfo: 'usageLimitExceeded',
+      },
+      category: 'provider_quota',
+    },
+    {
+      name: 'authentication',
+      error: { message: 'Unauthorized', codexErrorInfo: 'unauthorized' },
+      category: 'provider_auth',
+    },
+  ])(
+    'reports a Codex sub-agent $name failure only as a sub-agent failure',
+    async ({ error, category }) => {
+      startTurnMock.mockImplementation(() => {
+        const options = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+        void options?.onEvent({
+          type: 'codex',
+          event: { type: 'turn.failed', thread_id: 'child-thread', error },
+        });
+        return Promise.resolve({ status: 'completed' });
+      });
+      const events: unknown[] = [];
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'chat',
+        },
+        (event) => {
+          events.push(event);
+        },
+        () => null,
+      );
+      try {
+        session.sendMessage('Continue');
+        await flush();
+        await flush();
+        expectOnlySubAgentFailure(events, category);
+      } finally {
+        clearAllProviderQuotaReached();
+        await session.destroy();
+      }
+    },
+  );
 
   it('leaves the account proxy out when AI Credits always route', async () => {
     setAiCreditsRoutingModeCache('on');
@@ -2449,7 +3990,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
     try {
@@ -2497,7 +4040,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -2601,7 +4146,9 @@ describe('codex-session app-server integration', () => {
           worktreeId: 'worktree',
           chatId: 'chat',
         },
-        (event) => events.push(event),
+        (event) => {
+          events.push(event);
+        },
         () => null,
       );
       session.sendMessage('Continue');
@@ -2631,7 +4178,7 @@ describe('codex-session app-server integration', () => {
       const heldNotice = new Promise<void>((resolve) => {
         releaseNotice = resolve;
       });
-      let receipt: void | Promise<void>;
+      let receipt: void | Promise<void> = undefined;
       const events: unknown[] = [];
       startTurnMock.mockImplementation(() => {
         const clientOptions =
@@ -2675,11 +4222,27 @@ describe('codex-session app-server integration', () => {
         await flush();
         expect(settled).toBe(false);
         releaseNotice();
-        await receipt;
+        await Promise.resolve(receipt);
       } finally {
         releaseNotice();
         await session.destroy();
       }
+    });
+
+    it('reports a Codex sub-agent 402 only as a sub-agent failure', async () => {
+      jest.mocked(isSessionAiCreditsRouted).mockReturnValue(true);
+      recordSessionProxyFailure('project/worktree/chat', NO_BILLING_FAILURE);
+
+      const events = await runFailedTurn({
+        type: 'codex',
+        event: {
+          type: 'turn.failed',
+          thread_id: 'child-thread',
+          error: { message: codexRendered402 },
+        },
+      });
+
+      expectOnlySubAgentFailure(events, 'no_credits');
     });
 
     it('raises the recovery banner and stamps the turn the renderer persists', async () => {
@@ -2900,7 +4463,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -2938,6 +4503,7 @@ describe('codex-session app-server integration', () => {
       .mockResolvedValueOnce({ status: 'completed' });
 
     const events: unknown[] = [];
+    const sessionKey = 'project/worktree/chat';
     const provider = new CodexProvider();
     const session = provider.createSession(
       {
@@ -2948,7 +4514,9 @@ describe('codex-session app-server integration', () => {
         assistantMode: 'app-advisor',
         sdkSessionId: 'old-thread-without-tools',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       fakeWindowGetter(),
     );
 
@@ -2957,6 +4525,18 @@ describe('codex-session app-server integration', () => {
     await flush();
     await flush();
 
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+      1,
+      sessionKey,
+    );
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+      2,
+      sessionKey,
+    );
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+      3,
+      sessionKey,
+    );
     expect(CodexAppServerClient).toHaveBeenCalledTimes(2);
     const clientCalls = jest.mocked(CodexAppServerClient).mock.calls as Array<
       [
@@ -3017,6 +4597,11 @@ describe('codex-session app-server integration', () => {
     );
 
     await session.destroy();
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+      4,
+      sessionKey,
+    );
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenCalledTimes(4);
   });
 
   describe('stale proxy route recovery', () => {
@@ -3041,7 +4626,9 @@ describe('codex-session app-server integration', () => {
           chatId: 'chat',
           ...(sdkSessionId ? { sdkSessionId } : {}),
         },
-        (event) => events.push(event),
+        (event) => {
+          events.push(event);
+        },
         () => null,
       );
     const settle = async (): Promise<void> => {
@@ -3262,6 +4849,44 @@ describe('codex-session app-server integration', () => {
       }
     });
 
+    it.each([
+      ['registered', 1],
+      ['replaced', 0],
+    ] as const)(
+      'a retry that fails on destroy flags recreation only while %s (CAN-4833)',
+      async (ownership, recreations) => {
+        let failRetry: (error: Error) => void = () => undefined;
+        startTurnMock
+          .mockResolvedValueOnce({ status: 'failed', error: staleError })
+          .mockImplementationOnce(
+            () =>
+              new Promise((_resolve, reject) => {
+                failRetry = reject;
+              }),
+          );
+        interruptTurnMock.mockImplementationOnce(() => {
+          failRetry(new Error('Turn interrupted'));
+          return Promise.resolve();
+        });
+        const session = makeSession([], 'source');
+        session.sendMessage('First', { userMessageId: 'message-1' });
+        await settle();
+        expect(startTurnMock).toHaveBeenCalledTimes(2);
+        // A displaced session is destroyed after its successor registered.
+        mockGetSessionKeyOwnership.mockReturnValue(ownership);
+        try {
+          await session.destroy();
+          await settle();
+        } finally {
+          mockGetSessionKeyOwnership.mockReturnValue('registered');
+        }
+        expect(interruptTurnMock).toHaveBeenCalled();
+        expect(mockMarkSessionForNextTurnRecreation).toHaveBeenCalledTimes(
+          recreations,
+        );
+      },
+    );
+
     it.each(['cancel', 'destroy'] as const)(
       'stops recovery when %s arrives during disposal',
       async (action) => {
@@ -3442,6 +5067,142 @@ describe('codex-session app-server integration', () => {
     );
   });
 
+  it('carries a Codex account model rejection on the terminal result and never retries it (CAN-4716)', async () => {
+    const rejection =
+      "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
+    const failure = {
+      kind: 'model_unsupported',
+      model: 'gpt-6.1-sol',
+      modelLabel: '6.1 Sol',
+      fallbackModel: 'gpt-6-luna',
+      fallbackModelLabel: 'Luna 6.0',
+    };
+    mockResolveCodexAccountModelAccessFailure.mockResolvedValueOnce(failure);
+    startTurnMock.mockResolvedValueOnce({
+      status: 'failed',
+      error: rejection,
+      codexErrorInfo: 'badRequest',
+    });
+
+    const events: unknown[] = [];
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Hello');
+      await flush();
+      await flush();
+      await flush();
+
+      expect(mockResolveCodexAccountModelAccessFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: rejection,
+          codexErrorInfo: 'badRequest',
+        }),
+      );
+      expect(startTurnMock).toHaveBeenCalledTimes(1);
+      expect(events.filter(isCodexErrorResultEvent)).toEqual([
+        expect.objectContaining({
+          result: rejection,
+          canopy_model_access_failure: failure,
+        }),
+      ]);
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it('leaves an unclassified Codex failure without the model access field', async () => {
+    startTurnMock.mockResolvedValueOnce({
+      status: 'failed',
+      error: 'Codex turn failed for another reason',
+    });
+
+    const events: unknown[] = [];
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Hello');
+      await flush();
+      await flush();
+      await flush();
+
+      const failures = events.filter(isCodexErrorResultEvent);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).not.toHaveProperty('canopy_model_access_failure');
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it('still emits the terminal result when the model access lookup throws', async () => {
+    const rejection =
+      "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockResolveCodexAccountModelAccessFailure.mockRejectedValueOnce(
+      new Error('catalog unavailable'),
+    );
+    startTurnMock.mockResolvedValueOnce({
+      status: 'failed',
+      error: rejection,
+      codexErrorInfo: 'badRequest',
+    });
+
+    const events: unknown[] = [];
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      (event) => {
+        events.push(event);
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Hello');
+      await flush();
+      await flush();
+      await flush();
+
+      const failures = events.filter(isCodexErrorResultEvent);
+      expect(failures).toEqual([
+        expect.objectContaining({ result: rejection }),
+      ]);
+      expect(failures[0]).not.toHaveProperty('canopy_model_access_failure');
+    } finally {
+      await session.destroy();
+      warn.mockRestore();
+    }
+  });
+
   it('rematerializes incompatible reasoning history once and surfaces a repeated failure', async () => {
     const incompatibleReasoningError =
       "[ArrayParam] [input[13].content] [array_above_max_length] Invalid 'input[13].content': array too long";
@@ -3465,7 +5226,9 @@ describe('codex-session app-server integration', () => {
         chatId: 'chat',
         sdkSessionId: 'poisoned-thread',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -3516,7 +5279,9 @@ describe('codex-session app-server integration', () => {
         chatId: 'chat',
         sdkSessionId: 'healthy-thread',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -3563,7 +5328,9 @@ describe('codex-session app-server integration', () => {
         chatId: 'chat',
         sdkSessionId: 'healthy-thread',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -3657,7 +5424,9 @@ describe('codex-session app-server integration', () => {
         chatId: 'chat',
         sdkSessionId: 'poisoned-thread',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -3710,7 +5479,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -4057,7 +5828,9 @@ describe('codex-session app-server integration', () => {
         chatId: 'chat',
         assistantMode: 'app-advisor',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -4127,7 +5900,9 @@ describe('codex-session app-server integration', () => {
           worktreeId: 'worktree',
           chatId: 'chat',
         },
-        (event) => events.push(event),
+        (event) => {
+          events.push(event);
+        },
         () => null,
       );
 
@@ -4155,7 +5930,9 @@ describe('codex-session app-server integration', () => {
         worktreeId: 'worktree',
         chatId: 'chat',
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -4244,17 +6021,10 @@ describe('codex-session app-server integration', () => {
     startTurnMock.mockResolvedValue({
       status: 'completed',
     });
-    mockedResolvePlugins.mockResolvedValue({
+    const resolvedPlugins: Awaited<ReturnType<typeof resolvePlugins>> = {
       sdkPlugins: [],
       skillPluginDir: null,
-      selectedCapabilityRoots: [
-        {
-          id: 'plugin-root',
-          location: { type: 'local', path: '/tmp/plugin-root' },
-          environmentId: 'local',
-        },
-      ],
-      codexProcessEnv: {},
+      selectedCapabilityRoots: [],
       codexMcpServers: {
         'appplugin-linear-linear--claude-plugins-official-linear-linear': {
           command: 'node',
@@ -4262,8 +6032,21 @@ describe('codex-session app-server integration', () => {
         },
       },
       mcpServers: {},
+      mcpServerBindings: {},
       warnings: [],
-    });
+      cursorNotices: [],
+      cursorCapabilities: { skills: [], commands: [] },
+    };
+    // Preserve the legacy local-root payload; this test checks that session
+    // setup forwards resolver output without normalizing the old shape.
+    Reflect.set(resolvedPlugins, 'selectedCapabilityRoots', [
+      {
+        id: 'plugin-root',
+        location: { type: 'local', path: '/tmp/plugin-root' },
+        environmentId: 'local',
+      },
+    ]);
+    mockedResolvePlugins.mockResolvedValue(resolvedPlugins);
 
     const selections: ChatTabPluginSelections = {
       collectionIds: [],
@@ -4406,6 +6189,205 @@ describe('codex-session app-server integration', () => {
     },
   );
 
+  it('does not dispatch a call approved after its request signal aborted', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    let approve: (value: { decision: 'allow' }) => void = () => undefined;
+    approvalCheckMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          approve = resolve;
+        }),
+    );
+    const dispatch = jest.spyOn(
+      dynamicToolsModule,
+      'handleCanopyDynamicToolCall',
+    );
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      jest.fn(),
+      () => null,
+    );
+    try {
+      session.sendMessage('Run a tool');
+      await flush();
+      await flush();
+      const handler =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0]
+          .dynamicToolCallHandler;
+      const controller = new AbortController();
+      const pending = handler?.(
+        {
+          threadId: 'thread',
+          turnId: 'turn',
+          callId: 'call',
+          namespace: null,
+          tool: 'canopy_dispatch_action',
+          arguments: {},
+        },
+        { signal: controller.signal },
+      );
+      controller.abort();
+      approve({ decision: 'allow' });
+      expect(await pending).toMatchObject({ success: false });
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      dispatch.mockRestore();
+      await session.destroy();
+    }
+  });
+
+  it('routes an unlisted resumed watch name through the fenced parent with its request signal', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const broker = {
+      spawn: jest.fn(),
+      getOutput: jest.fn(),
+      inspect: jest.fn(),
+      list: jest.fn(),
+      stop: jest.fn(),
+      closeOwner: jest.fn(),
+      watch: jest.fn(),
+    };
+    const parent = new DelegationParent({
+      owner: {
+        harnessId: 'codex',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'managed-delegation-abort-signal',
+        sessionKey: 'project/worktree/managed-delegation-abort-signal',
+        runtimeGeneration: 1,
+        depth: 0,
+      },
+      harness: 'codex',
+      namespace: BRAND.tools.namespace,
+      names: {
+        spawn: 'Spawn',
+        output: 'Output',
+        inspect: 'Inspect',
+        list: 'List',
+        stop: 'Stop',
+      },
+      broker,
+      currentTurn: (): string => 'turn',
+      removeQueued: (): Promise<void> => Promise.resolve(),
+      reportError: (): void => {},
+    });
+    const invokeCodex = jest.fn(parent.invokeCodex.bind(parent));
+    createManagedDelegationSessionMock.mockResolvedValueOnce({
+      activeCount: 0,
+      codexTools: [],
+      ownsTool: jest.fn(() => false),
+      parent: { invokeCodex },
+      observe: jest.fn(),
+      retireTurn: jest.fn(),
+      detach: jest.fn(),
+    });
+    const session = onPlatform('darwin', () =>
+      new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'managed-delegation-abort-signal',
+          sdkSessionId: 'thread',
+          managedDelegationMode: 'explicit-only',
+          managedDelegationSurface: 'worktree-chat',
+        },
+        jest.fn(),
+        () => null,
+      ),
+    );
+
+    try {
+      session.sendMessage('Watch a delegate');
+      await flush();
+      await flushMicrotasks();
+      const handler =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0]
+          .dynamicToolCallHandler;
+      const controller = new AbortController();
+      const response = await handler?.(
+        {
+          threadId: 'thread',
+          turnId: 'turn',
+          callId: 'watch-call',
+          namespace: null,
+          tool: `${BRAND.tools.namespace}_watch_delegates`,
+          arguments: {
+            delegationIds: ['delegate-1'],
+            mode: 'all',
+            timeoutMs: 60_000,
+          },
+        },
+        { signal: controller.signal },
+      );
+
+      expect(invokeCodex).toHaveBeenCalledWith(
+        `${BRAND.tools.namespace}_watch_delegates`,
+        {
+          delegationIds: ['delegate-1'],
+          mode: 'all',
+          timeoutMs: 60_000,
+        },
+        expect.objectContaining({
+          callId: 'watch-call',
+          threadId: 'thread',
+          turnId: 'turn',
+          signal: controller.signal,
+        }),
+        'thread',
+        'turn',
+      );
+      expect(response).toEqual({
+        success: true,
+        contentItems: [
+          {
+            type: 'inputText',
+            text: JSON.stringify({
+              ok: true,
+              value: {
+                watcherId: 'delegation-notices-automatic',
+                mode: 'all',
+                deadlineAt: 0,
+                targets: [],
+                message:
+                  'Delegate completion notices now arrive automatically; no watch is needed.',
+              },
+            }),
+          },
+        ],
+      });
+      for (const changed of [{ threadId: 'wrong' }, { turnId: 'wrong' }]) {
+        const denied = await handler?.({
+          threadId: 'thread',
+          turnId: 'turn',
+          callId: 'wrong-call',
+          namespace: null,
+          tool: `${BRAND.tools.namespace}_watch_delegates`,
+          arguments: { mode: 'all' },
+          ...changed,
+        });
+        expect(denied?.success).toBe(false);
+        expect(JSON.stringify(denied)).toContain('parent_unavailable');
+      }
+      Object.values(broker).forEach((fn) => expect(fn).not.toHaveBeenCalled());
+      expect(
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0].initialThreadId,
+      ).toBe('thread');
+      expect(
+        jest
+          .mocked(CodexAppServerClient)
+          .mock.calls[0]?.[0].dynamicTools?.map((tool) => tool.name),
+      ).not.toContain(`${BRAND.tools.namespace}_watch_delegates`);
+    } finally {
+      await session.destroy();
+    }
+  });
+
   it('checks Codex dynamic tools through the approval session before dispatch', async () => {
     startTurnMock.mockResolvedValue({ status: 'completed' });
     approvalCheckMock.mockResolvedValueOnce({
@@ -4543,61 +6525,68 @@ describe('codex-session app-server integration', () => {
     },
   );
 
-  it('preserves session deny decisions when Plan mode is disabled during an active Plan turn', async () => {
-    let resolveTurn: (value: { status: 'completed' }) => void = () => undefined;
-    startTurnMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveTurn = resolve;
-        }),
-    );
-    const provider = new CodexProvider();
-    const session = provider.createSession(
-      {
-        cwd: '/tmp/repo',
-        projectId: 'project',
-        worktreeId: 'worktree',
-        chatId: 'chat',
-        planMode: true,
-      },
-      jest.fn(),
-      () => null,
-    );
-
-    session.sendMessage('Try a dynamic tool');
-    await flush();
-    await flush();
-    await session.setPlanMode(false);
-    approvalCheckMock.mockResolvedValueOnce({
-      decision: 'deny',
-      message: 'Blocked by session rule',
-    });
-
-    const clientArgs = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
-    const response = await clientArgs?.dynamicToolCallHandler?.({
-      threadId: 'thread',
-      turnId: 'turn',
-      callId: 'call',
-      namespace: null,
-      tool: 'canopy_dispatch_action',
-      arguments: { type: 'pipeline.list' },
-    });
-
-    expect(approvalCheckMock).toHaveBeenCalledTimes(1);
-    expect(response).toEqual({
-      contentItems: [
+  it.each([
+    'Blocked by session rule',
+    'Blocked by a safety rule (force-push). This call cannot be approved from a prompt. Do not retry or repackage the blocked operation. Choose a safe alternative or explain the block to the user.',
+  ])(
+    'preserves session deny decisions when Plan mode is disabled during an active Plan turn: %s',
+    async (message) => {
+      let resolveTurn: (value: { status: 'completed' }) => void = () =>
+        undefined;
+      startTurnMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveTurn = resolve;
+          }),
+      );
+      const provider = new CodexProvider();
+      const session = provider.createSession(
         {
-          type: 'inputText',
-          text: 'Blocked by session rule',
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'chat',
+          planMode: true,
         },
-      ],
-      success: false,
-    });
+        jest.fn(),
+        () => null,
+      );
 
-    resolveTurn({ status: 'completed' });
-    await flush();
-    await session.destroy();
-  });
+      session.sendMessage('Try a dynamic tool');
+      await flush();
+      await flush();
+      await session.setPlanMode(false);
+      approvalCheckMock.mockResolvedValueOnce({
+        decision: 'deny',
+        message,
+      });
+
+      const clientArgs = jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      const response = await clientArgs?.dynamicToolCallHandler?.({
+        threadId: 'thread',
+        turnId: 'turn',
+        callId: 'call',
+        namespace: null,
+        tool: 'canopy_dispatch_action',
+        arguments: { type: 'pipeline.list' },
+      });
+
+      expect(approvalCheckMock).toHaveBeenCalledTimes(1);
+      expect(response).toEqual({
+        contentItems: [
+          {
+            type: 'inputText',
+            text: message,
+          },
+        ],
+        success: false,
+      });
+
+      resolveTurn({ status: 'completed' });
+      await flush();
+      await session.destroy();
+    },
+  );
 
   it('invalidates sibling approvals before interrupting a denied Codex dynamic-tool turn', async () => {
     startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -4670,10 +6659,12 @@ describe('codex-session app-server integration', () => {
         sdkPlugins: [],
         skillPluginDir: null,
         selectedCapabilityRoots: [],
-        codexProcessEnv: {},
         codexMcpServers: {},
         mcpServers: {},
+        mcpServerBindings: {},
         warnings: [],
+        cursorNotices: [],
+        cursorCapabilities: { skills: [], commands: [] },
       });
 
     const selections: ChatTabPluginSelections = {
@@ -4732,19 +6723,23 @@ describe('codex-session app-server integration', () => {
         sdkPlugins: [],
         skillPluginDir: null,
         selectedCapabilityRoots: [],
-        codexProcessEnv: {},
         codexMcpServers: {},
         mcpServers: {},
+        mcpServerBindings: {},
         warnings: ['Plugin path does not exist: /tmp/plugins/ud-git'],
+        cursorNotices: [],
+        cursorCapabilities: { skills: [], commands: [] },
       })
       .mockResolvedValue({
         sdkPlugins: [],
         skillPluginDir: null,
         selectedCapabilityRoots: [],
-        codexProcessEnv: {},
         codexMcpServers: {},
         mcpServers: {},
+        mcpServerBindings: {},
         warnings: [],
+        cursorNotices: [],
+        cursorCapabilities: { skills: [], commands: [] },
       });
 
     const selections: ChatTabPluginSelections = {
@@ -4799,10 +6794,12 @@ describe('codex-session app-server integration', () => {
       sdkPlugins: [],
       skillPluginDir: null,
       selectedCapabilityRoots: [],
-      codexProcessEnv: {},
       codexMcpServers: {},
       mcpServers: {},
+      mcpServerBindings: {},
       warnings: ['Plugin path does not exist: /tmp/plugins/ud-git'],
+      cursorNotices: [],
+      cursorCapabilities: { skills: [], commands: [] },
     });
 
     const selections: ChatTabPluginSelections = {
@@ -4855,10 +6852,12 @@ describe('codex-session app-server integration', () => {
         sdkPlugins: [],
         skillPluginDir: null,
         selectedCapabilityRoots: [],
-        codexProcessEnv: {},
         codexMcpServers: {},
         mcpServers: {},
+        mcpServerBindings: {},
         warnings: [],
+        cursorNotices: [],
+        cursorCapabilities: { skills: [], commands: [] },
       });
 
     const selections: ChatTabPluginSelections = {
@@ -4929,7 +6928,9 @@ describe('codex-session app-server integration', () => {
         chatId: 'chat',
         pluginSelections: selections,
       },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
       () => null,
     );
 
@@ -4960,6 +6961,300 @@ describe('codex-session app-server integration', () => {
 
     await session.destroy();
     consoleWarnSpy.mockRestore();
+  });
+
+  it('forwards complete revisioned Codex background snapshots to the chat owner', async () => {
+    jest.useFakeTimers();
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    const initialSnapshot: CodexBackgroundSnapshot = {
+      epoch: 'background-epoch-a',
+      revision: 7,
+      rootThreadId: 'root-thread',
+      work: [
+        {
+          kind: 'child',
+          id: 'child-task-id',
+          threadId: 'child-thread',
+          parentThreadId: 'root-thread',
+          toolUseId: 'spawn-tool-use-id',
+        },
+        {
+          kind: 'terminal',
+          id: 'terminal-task-id',
+          threadId: 'root-thread',
+          itemId: 'terminal-item-id',
+          processId: 'terminal-process-id',
+        },
+      ],
+      reconciling: false,
+    };
+    publishCodexBackgroundSnapshot(initialSnapshot);
+    const scope = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'background-snapshot',
+    };
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        ...scope,
+        codexAppServerIdleTimeoutMinutes: 10,
+      },
+      jest.fn(),
+      fakeWindowGetter(),
+    );
+
+    session.sendMessage('Run once');
+    await flushMicrotasks();
+
+    expect(getBackgroundSnapshotMock).toHaveBeenCalledTimes(1);
+    expect(subscribeBackgroundWorkMock).toHaveBeenCalledTimes(1);
+    expect(getBackgroundSnapshotMock.mock.invocationCallOrder[0]).toBeLessThan(
+      subscribeBackgroundWorkMock.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(mockRegisterCodexBackgroundOwner).toHaveBeenCalledWith(scope);
+    const ownerToken = codexBackgroundOwnerTokens[0];
+    expect(ownerToken).toBeDefined();
+    expect(mockReplaceCodexLiveBackgroundTasks).toHaveBeenNthCalledWith(
+      1,
+      ownerToken,
+      {
+        revision: 7,
+        tasks: [
+          {
+            taskId: 'child-task-id',
+            taskType: 'local_agent',
+            description: 'Background agent',
+            toolUseId: 'spawn-tool-use-id',
+          },
+          {
+            taskId: 'terminal-task-id',
+            taskType: 'local_bash',
+            description: 'Background terminal',
+            toolUseId: 'terminal-item-id',
+          },
+        ],
+      },
+    );
+
+    const terminalWork = initialSnapshot.work.find(
+      (work) => work.kind === 'terminal',
+    );
+    if (!terminalWork) throw new Error('Expected terminal background work');
+    publishCodexBackgroundSnapshot({
+      ...initialSnapshot,
+      revision: 8,
+      work: [terminalWork],
+    });
+    expect(mockReplaceCodexLiveBackgroundTasks).toHaveBeenNthCalledWith(
+      2,
+      ownerToken,
+      {
+        revision: 8,
+        tasks: [
+          {
+            taskId: 'terminal-task-id',
+            taskType: 'local_bash',
+            description: 'Background terminal',
+            toolUseId: 'terminal-item-id',
+          },
+        ],
+      },
+    );
+    expect(codexBackgroundWorkSubscribers.size).toBe(1);
+
+    // A command its turn still waits on is not background work yet.
+    publishCodexBackgroundSnapshot({
+      ...initialSnapshot,
+      revision: 9,
+      work: [{ ...terminalWork, foreground: true }],
+    });
+    expect(mockReplaceCodexLiveBackgroundTasks).toHaveBeenNthCalledWith(
+      3,
+      ownerToken,
+      { revision: 9, tasks: [] },
+    );
+
+    await session.destroy();
+    expect(mockRetireCodexLiveBackgroundTasks).toHaveBeenCalledWith(ownerToken);
+    expect(codexBackgroundWorkSubscribers.size).toBe(0);
+    jest.useRealTimers();
+  });
+
+  it('waits for Codex background work and reconciliation to drain before idle release', async () => {
+    jest.useFakeTimers();
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 1,
+      rootThreadId: 'root-thread',
+      work: [
+        {
+          kind: 'child',
+          id: 'child-task-id',
+          threadId: 'child-thread',
+          parentThreadId: 'root-thread',
+        },
+      ],
+      reconciling: false,
+    });
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'background-idle-release',
+        codexAppServerIdleTimeoutMinutes: 1,
+      },
+      jest.fn(),
+      fakeWindowGetter(),
+    );
+
+    session.sendMessage('Run once');
+    await flushMicrotasks();
+    jest.advanceTimersByTime(120_000);
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 2,
+      rootThreadId: 'root-thread',
+      work: [],
+      reconciling: true,
+    });
+    jest.advanceTimersByTime(120_000);
+    expect(disposeMock).not.toHaveBeenCalled();
+
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 3,
+      rootThreadId: 'root-thread',
+      work: [],
+      reconciling: false,
+    });
+    jest.advanceTimersByTime(59_999);
+    expect(disposeMock).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(disposeMock).toHaveBeenCalledTimes(1);
+
+    await session.destroy();
+    jest.useRealTimers();
+  });
+
+  it('retires the Codex background owner immediately on process epoch change and cleanup', async () => {
+    let completeTurn: ((result: { status: 'completed' }) => void) | undefined;
+    startTurnMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeTurn = resolve;
+        }),
+    );
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-a',
+      revision: 1,
+      rootThreadId: 'root-thread',
+      work: [
+        {
+          kind: 'child',
+          id: 'child-task-id',
+          threadId: 'child-thread',
+          parentThreadId: 'root-thread',
+        },
+      ],
+      reconciling: false,
+    });
+    const scope = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'background-epoch-change',
+    };
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        ...scope,
+        codexAppServerIdleTimeoutMinutes: 1,
+      },
+      jest.fn(),
+      fakeWindowGetter(),
+    );
+    session.sendMessage('Run while child is active');
+    await waitForStartTurnCallCount(1);
+    jest.useFakeTimers();
+
+    expect(mockRegisterCodexBackgroundOwner).toHaveBeenCalledTimes(1);
+    const ownerToken = codexBackgroundOwnerTokens[0];
+    expect(ownerToken).toBeDefined();
+    expect(mockRetireCodexLiveBackgroundTasks).not.toHaveBeenCalled();
+
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-b',
+      revision: 0,
+      rootThreadId: 'root-thread',
+      work: [],
+      reconciling: false,
+    });
+    expect(mockRetireCodexLiveBackgroundTasks).toHaveBeenCalledTimes(1);
+    expect(mockRetireCodexLiveBackgroundTasks).toHaveBeenCalledWith(ownerToken);
+    expect(codexBackgroundWorkSubscribers.size).toBe(1);
+
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-b',
+      revision: 1,
+      rootThreadId: 'root-thread',
+      work: [
+        {
+          kind: 'terminal',
+          id: 'new-epoch-terminal-task',
+          threadId: 'root-thread',
+          itemId: 'new-epoch-terminal-item',
+          processId: 'terminal-process-id',
+        },
+      ],
+      reconciling: false,
+    });
+    expect(mockRegisterCodexBackgroundOwner).toHaveBeenCalledTimes(2);
+    const recoveredOwnerToken = codexBackgroundOwnerTokens[1];
+    expect(recoveredOwnerToken).toBeDefined();
+    expect(recoveredOwnerToken).not.toBe(ownerToken);
+    expect(mockReplaceCodexLiveBackgroundTasks).toHaveBeenNthCalledWith(
+      2,
+      recoveredOwnerToken,
+      {
+        revision: 1,
+        tasks: [
+          {
+            taskId: 'new-epoch-terminal-task',
+            taskType: 'local_bash',
+            description: 'Background terminal',
+            toolUseId: 'new-epoch-terminal-item',
+          },
+        ],
+      },
+    );
+
+    publishCodexBackgroundSnapshot({
+      epoch: 'background-epoch-b',
+      revision: 2,
+      rootThreadId: 'root-thread',
+      work: [],
+      reconciling: false,
+    });
+    expect(mockReplaceCodexLiveBackgroundTasks).toHaveBeenNthCalledWith(
+      3,
+      recoveredOwnerToken,
+      { revision: 2, tasks: [] },
+    );
+
+    completeTurn?.({ status: 'completed' });
+    await flushMicrotasks();
+    jest.advanceTimersByTime(59_999);
+    expect(disposeMock).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1);
+    expect(disposeMock).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
+    await session.destroy();
+    expect(mockRetireCodexLiveBackgroundTasks).toHaveBeenCalledTimes(2);
+    expect(codexBackgroundWorkSubscribers.size).toBe(0);
   });
 
   it('releases the idle client after a completed turn using the configured timeout', async () => {
@@ -4995,6 +7290,88 @@ describe('codex-session app-server integration', () => {
     jest.useRealTimers();
   });
 
+  it('forwards Codex steering eligibility across client and session lifecycle', async () => {
+    jest.useFakeTimers();
+    let session: ReturnType<CodexProvider['createSession']> | undefined;
+    try {
+      startTurnMock.mockResolvedValue({ status: 'completed' });
+
+      const sessionKey = 'project/worktree/steering-forward';
+      const activeSession = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          projectId: 'project',
+          worktreeId: 'worktree',
+          chatId: 'steering-forward',
+          codexAppServerIdleTimeoutMinutes: 1,
+        },
+        jest.fn(),
+        fakeWindowGetter(),
+      );
+      session = activeSession;
+
+      activeSession.sendMessage('Run once');
+      await flushMicrotasks();
+
+      expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+        1,
+        sessionKey,
+      );
+      const clientOptions =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      expect(clientOptions?.onSteeringEligibilityChanged).toEqual(
+        expect.any(Function),
+      );
+      clientOptions?.onSteeringEligibilityChanged?.();
+      expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+        2,
+        sessionKey,
+      );
+
+      jest.advanceTimersByTime(60_000);
+      expect(disposeMock).toHaveBeenCalledTimes(1);
+      expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+        3,
+        sessionKey,
+      );
+
+      await activeSession.destroy();
+      expect(mockNotifySteeringEligibilityChanged).toHaveBeenNthCalledWith(
+        4,
+        sessionKey,
+      );
+      expect(mockNotifySteeringEligibilityChanged).toHaveBeenCalledTimes(4);
+    } finally {
+      try {
+        await session?.destroy();
+      } finally {
+        jest.useRealTimers();
+      }
+    }
+  });
+
+  it('notifies steering eligibility when a session is disposed without a client', async () => {
+    const sessionKey = 'project/worktree/steering-dispose-without-client';
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'steering-dispose-without-client',
+      },
+      jest.fn(),
+      () => null,
+    );
+
+    await session.destroy();
+
+    expect(CodexAppServerClient).not.toHaveBeenCalled();
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenCalledTimes(1);
+    expect(mockNotifySteeringEligibilityChanged).toHaveBeenCalledWith(
+      sessionKey,
+    );
+  });
+
   it('recreates a released idle client and resumes its durable thread', async () => {
     jest.useFakeTimers();
     startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -5012,7 +7389,7 @@ describe('codex-session app-server integration', () => {
       fakeWindowGetter(),
     );
 
-    session.sendMessage('Run once');
+    session.sendMessage('Run once', { userMessageId: 'retained-bound-anchor' });
     await flushMicrotasks();
 
     jest.advanceTimersByTime(60_000);
@@ -5025,11 +7402,86 @@ describe('codex-session app-server integration', () => {
     expect(CodexAppServerClient).toHaveBeenCalledTimes(2);
     expect(jest.mocked(CodexAppServerClient).mock.calls[1]?.[0]).toMatchObject({
       initialThreadId: 'old-thread-without-tools',
+      initialExecutionUserMessageId: 'retained-bound-anchor',
     });
     expect(startTurnMock).toHaveBeenCalledTimes(2);
 
     await session.destroy();
     jest.useRealTimers();
+  });
+
+  it('retains the client execution anchor when a merged input has a different message id', async () => {
+    jest.useFakeTimers();
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    getExecutionUserMessageIdMock.mockReturnValue('original-run-anchor');
+    const lifecycleScope = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'retained-merged-anchor',
+    };
+    releaseTurnLifecycleProducer('codex', lifecycleScope);
+
+    const deliveredEvents: unknown[] = [];
+    const session = new CodexProvider().createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'retained-merged-anchor',
+        codexAppServerIdleTimeoutMinutes: 1,
+      },
+      (event) => {
+        deliveredEvents.push(event);
+      },
+      fakeWindowGetter(),
+    );
+    const producer = getTurnLifecycleProducer('codex', lifecycleScope);
+
+    try {
+      session.sendMessage('Merged user input', {
+        userMessageId: 'merged-input-message',
+      });
+      await flushMicrotasks();
+
+      const startTurnOptions = firstMockedCallFirstArgument(startTurnMock);
+      expectDispatchedBinding(startTurnOptions, 'merged-input-message');
+      const executionUserMessageId: unknown =
+        typeof startTurnOptions === 'object' && startTurnOptions !== null
+          ? Reflect.get(startTurnOptions, 'executionUserMessageId')
+          : undefined;
+      expect(executionUserMessageId).toBe('merged-input-message');
+      expect(deliveredEvents).toContainEqual(
+        expect.objectContaining({
+          type: 'result',
+          canopy_turn_user_message_id: 'original-run-anchor',
+        }),
+      );
+
+      jest.advanceTimersByTime(60_000);
+      expect(disposeMock).toHaveBeenCalledTimes(1);
+      expect(getTurnLifecycleProducer('codex', lifecycleScope)).toBe(producer);
+
+      session.sendMessage('Wake after idle release');
+      await flushMicrotasks();
+
+      expect(CodexAppServerClient).toHaveBeenCalledTimes(2);
+      expect(getTurnLifecycleProducer('codex', lifecycleScope)).toBe(producer);
+      const resumedClientOptions =
+        jest.mocked(CodexAppServerClient).mock.calls[1]?.[0];
+      if (resumedClientOptions === undefined) {
+        throw new Error('Expected the resumed Codex client options');
+      }
+      expect(resumedClientOptions).toMatchObject({
+        initialExecutionUserMessageId: 'original-run-anchor',
+      });
+    } finally {
+      await session.destroy();
+      expect(getTurnLifecycleProducer('codex', lifecycleScope)).not.toBe(
+        producer,
+      );
+      releaseTurnLifecycleProducer('codex', lifecycleScope);
+      jest.useRealTimers();
+    }
   });
 
   it('starts pipeline editor on a fresh thread and resumes it after idle release', async () => {
@@ -5051,6 +7503,9 @@ describe('codex-session app-server integration', () => {
       () => null,
     );
 
+    if (!session.getProviderSessionId) {
+      throw new Error('Expected the session to expose its provider session id');
+    }
     expect(session.getProviderSessionId()).toBeUndefined();
 
     session.sendMessage('Run once');
@@ -5291,6 +7746,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -5354,6 +7811,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'a@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -5384,6 +7843,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'a@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       await expect(registration.resolveToken()).resolves.toBe(
@@ -5395,6 +7856,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-b',
         email: 'b@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       await expect(registration.resolveToken()).resolves.toBeNull();
@@ -5466,6 +7929,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: false,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
 
@@ -5479,7 +7944,9 @@ describe('codex-session app-server integration', () => {
           chatId: 'chat',
           model: 'deepseek-v4-pro',
         },
-        (event) => events.push(event),
+        (event) => {
+          events.push(event);
+        },
         () => null,
       );
 
@@ -5525,6 +7992,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -5586,6 +8055,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       mockAdmitCodexSpeed.mockRejectedValueOnce(
@@ -5638,6 +8109,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       mockResolveAccountProxySessionRoute.mockResolvedValueOnce({
@@ -5696,6 +8169,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -5787,6 +8262,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       let completeTurn: ((value: { status: 'completed' }) => void) | undefined;
@@ -5855,6 +8332,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: false,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -6037,6 +8516,8 @@ describe('codex-session app-server integration', () => {
         accountIdentity: 'account-a',
         email: 'user@example.com',
         creditsEligible: true,
+        creditsEligibilityKnown: true,
+        guestPrincipal: false,
         cloudBaseUrl: 'https://cloud.example.com',
       });
       startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -6096,6 +8577,8 @@ describe('codex-session app-server integration', () => {
           accountIdentity: 'account-a',
           email: 'user@example.com',
           creditsEligible: true,
+          creditsEligibilityKnown: true,
+          guestPrincipal: false,
           cloudBaseUrl: 'https://cloud.example.com',
         });
         startTurnMock.mockResolvedValue({ status: 'completed' });
@@ -6280,6 +8763,245 @@ describe('codex-session app-server integration', () => {
     }
   });
 
+  it('holds turn evidence through idle until the synthesized result is handed off', async () => {
+    startTurnMock.mockResolvedValue({ status: 'completed' });
+    let releaseResultAdmission = (): void => undefined;
+    const resultAdmission = new Promise<void>((resolve) => {
+      releaseResultAdmission = resolve;
+    });
+    let observeResult: (evidence: CodexTurnEvidence) => void = () => undefined;
+    const resultObserved = new Promise<CodexTurnEvidence>((resolve) => {
+      observeResult = resolve;
+    });
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+      },
+      (event) => {
+        if (
+          typeof event === 'object' &&
+          event !== null &&
+          'type' in event &&
+          event.type === 'result'
+        ) {
+          observeResult(getCodexTurnEvidence('project/worktree/chat'));
+          return resultAdmission;
+        }
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Run this', {
+        userMessageId: 'msg-held-through-result',
+      });
+      const evidenceAtHandoff = await resultObserved;
+      expect(evidenceAtHandoff).toMatchObject({
+        holdsTurn: true,
+        terminal: {
+          turnUserMessageId: 'msg-held-through-result',
+          outcome: 'completed',
+        },
+      });
+      expect(evidenceAtHandoff.terminal?.endedAtMs).toBeGreaterThan(0);
+
+      releaseResultAdmission();
+      await flushMicrotasks();
+      expect(getCodexTurnEvidence('project/worktree/chat')).toMatchObject({
+        holdsTurn: false,
+        terminal: {
+          turnUserMessageId: 'msg-held-through-result',
+          outcome: 'completed',
+        },
+      });
+      expect(
+        getCodexTurnEvidence('project/worktree/chat').terminal?.endedAtMs,
+      ).toBeGreaterThan(0);
+    } finally {
+      releaseResultAdmission();
+      await session.destroy();
+    }
+  });
+
+  it('records the raw root terminal before failed admission and retains it after disposal', async () => {
+    let settleRootAdmission: (error?: Error) => void = () => undefined;
+    const rootAdmission = new Promise<void>((resolve, reject) => {
+      settleRootAdmission = (error): void => {
+        if (error) reject(error);
+        else resolve();
+      };
+    });
+    void rootAdmission.catch(() => undefined);
+    let observeRootIngress: (evidence: CodexTurnEvidence) => void = () =>
+      undefined;
+    const rootIngressObserved = new Promise<CodexTurnEvidence>((resolve) => {
+      observeRootIngress = resolve;
+    });
+    startTurnMock.mockImplementation(() => {
+      const clientOptions =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      const admission = clientOptions?.onEvent({
+        type: 'codex',
+        event: {
+          type: 'turn.completed',
+          thread_id: 'thread',
+        },
+      });
+      return Promise.resolve(admission).then(() => ({ status: 'completed' }));
+    });
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sdkSessionId: 'thread',
+      },
+      (event) => {
+        if (
+          typeof event === 'object' &&
+          event !== null &&
+          'type' in event &&
+          event.type === 'codex'
+        ) {
+          observeRootIngress(getCodexTurnEvidence('project/worktree/chat'));
+          return rootAdmission;
+        }
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Complete this turn', {
+        userMessageId: 'msg-root-commit-fails',
+      });
+      const evidenceAtIngress = await rootIngressObserved;
+      expect(evidenceAtIngress).toMatchObject({
+        holdsTurn: true,
+        terminal: {
+          turnUserMessageId: 'msg-root-commit-fails',
+          outcome: 'completed',
+        },
+      });
+      expect(evidenceAtIngress.terminal?.endedAtMs).toBeGreaterThan(0);
+
+      settleRootAdmission(new Error('root terminal admission failed'));
+      await flushMicrotasks();
+      await session.destroy();
+      expect(getCodexTurnEvidence('project/worktree/chat')).toMatchObject({
+        holdsTurn: false,
+        terminal: {
+          turnUserMessageId: 'msg-root-commit-fails',
+          outcome: 'completed',
+        },
+      });
+      expect(
+        getCodexTurnEvidence('project/worktree/chat').terminal?.endedAtMs,
+      ).toBeGreaterThan(0);
+    } finally {
+      settleRootAdmission(new Error('test cleanup'));
+      await session.destroy().catch(() => undefined);
+    }
+  });
+
+  it('ignores recoverable root errors and subagent terminals as raw end evidence', async () => {
+    const rawTerminalEvidence: CodexTurnEvidence[] = [];
+    let observeRootCompletion: (evidence: CodexTurnEvidence) => void = () =>
+      undefined;
+    const rootCompletionObserved = new Promise<CodexTurnEvidence>((resolve) => {
+      observeRootCompletion = resolve;
+    });
+    startTurnMock.mockImplementation(async () => {
+      const clientOptions =
+        jest.mocked(CodexAppServerClient).mock.calls[0]?.[0];
+      const emit = clientOptions?.onEvent;
+      if (emit) {
+        await emit({
+          type: 'codex',
+          event: {
+            type: 'error',
+            thread_id: 'root-thread',
+            turn_id: 'turn-1',
+            error: { message: 'recoverable mid-turn error' },
+          },
+        });
+        await emit({
+          type: 'codex',
+          event: {
+            type: 'turn.completed',
+            thread_id: 'subagent-thread',
+          },
+        });
+        await emit({
+          type: 'codex',
+          event: {
+            type: 'turn.completed',
+            thread_id: 'root-thread',
+          },
+        });
+      }
+      return { status: 'completed' };
+    });
+    const provider = new CodexProvider();
+    const session = provider.createSession(
+      {
+        cwd: '/tmp/repo',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat',
+        sdkSessionId: 'root-thread',
+      },
+      (event) => {
+        if (
+          typeof event !== 'object' ||
+          event === null ||
+          !('type' in event) ||
+          event.type !== 'codex' ||
+          !('event' in event) ||
+          typeof event.event !== 'object' ||
+          event.event === null ||
+          !('type' in event.event)
+        ) {
+          return;
+        }
+        const evidence = getCodexTurnEvidence('project/worktree/chat');
+        rawTerminalEvidence.push(evidence);
+        if (
+          event.event.type === 'turn.completed' &&
+          'thread_id' in event.event &&
+          event.event.thread_id === 'root-thread'
+        ) {
+          observeRootCompletion(evidence);
+        }
+      },
+      () => null,
+    );
+
+    try {
+      session.sendMessage('Recover from a transient error', {
+        userMessageId: 'msg-root-error-not-terminal',
+      });
+      const evidenceAtRootCompletion = await rootCompletionObserved;
+      expect(rawTerminalEvidence).toHaveLength(3);
+      expect(rawTerminalEvidence[0]).toEqual({ holdsTurn: true });
+      expect(rawTerminalEvidence[1]).toEqual({ holdsTurn: true });
+      expect(evidenceAtRootCompletion).toMatchObject({
+        holdsTurn: true,
+        terminal: {
+          turnUserMessageId: 'msg-root-error-not-terminal',
+          outcome: 'completed',
+        },
+      });
+    } finally {
+      await session.destroy();
+    }
+  });
+
   it('does not emit a duplicate terminal when Codex result admission rejects', async () => {
     startTurnMock.mockResolvedValue({ status: 'completed' });
     let rejectResult: (error: Error) => void = () => undefined;
@@ -6334,6 +9056,986 @@ describe('codex-session app-server integration', () => {
       rejectResult(new Error('test cleanup'));
       await session.destroy().catch(() => undefined);
     }
+  });
+
+  describe('source-owned turn lifecycle observations', () => {
+    const scope = {
+      projectId: 'lifecycle-project',
+      worktreeId: 'lifecycle-worktree',
+      chatId: 'lifecycle-chat',
+    };
+
+    beforeEach(() => {
+      setTurnLifecycleSink(null);
+      releaseTurnLifecycleProducer('codex', scope);
+    });
+
+    afterEach(() => {
+      setTurnLifecycleSink(null);
+      releaseTurnLifecycleProducer('codex', scope);
+    });
+
+    it('ends a started turn whose client lost it without turn/completed', async () => {
+      const lifecycleEvents: unknown[] = [];
+      setTurnLifecycleSink((event) => {
+        lifecycleEvents.push(event);
+      });
+      let loseTurn: ((error: Error) => void) | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((_resolveTurn, rejectTurn) => {
+            loseTurn = rejectTurn;
+          }),
+      );
+      const session = new CodexProvider().createSession(
+        { cwd: '/tmp/repo', ...scope },
+        jest.fn(),
+        () => null,
+      );
+      const ended = (): boolean =>
+        lifecycleEvents.some((event) => readEventType(event) === 'TurnEnded');
+      try {
+        session.sendMessage('Run this', { userMessageId: 'message-lost' });
+        await waitForStartTurnCallCount(1);
+        const submissionId = expectDispatchedBinding(
+          firstMockedCallFirstArgument(startTurnMock),
+          'message-lost',
+        );
+        invokeClientCallback(
+          firstMockedCallFirstArgument(CodexAppServerClient),
+          'onTurnLifecycleObservation',
+          {
+            type: 'turn-started',
+            threadId: 'root-thread',
+            turnId: 'native-lost',
+            origin: 'user',
+            submissionId,
+            userMessageId: 'message-lost',
+          },
+        );
+        loseTurn?.(new Error('Codex app-server exited'));
+        for (let attempt = 0; attempt < 20 && !ended(); attempt += 1)
+          await flushMicrotasks();
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnEnded',
+            turnId: 'native-lost',
+            outcome: 'failed',
+            source: 'result',
+            userMessageIds: ['message-lost'],
+          }),
+        );
+      } finally {
+        await session.destroy().catch(() => undefined);
+      }
+    });
+
+    // Integration decision D8: when the app-server's in-session recovery
+    // cannot keep a started turn, the turn ends canonically once, as failed,
+    // and its terminal keeps develop's retryable transport marker.
+    it.each([
+      [
+        'a shared restart that failed this bystander',
+        (): Error => new CodexSharedRestartPeerError(),
+      ],
+      [
+        "a bystander's failed shared-restart recovery",
+        (): Error =>
+          new CodexSharedRestartRecoveryError(
+            'Codex app-server background recovery failed: resume failed',
+          ),
+      ],
+    ])(
+      'ends a started turn lost to %s once, failed and marked retryable',
+      async (_label, makeError) => {
+        const lifecycleEvents: unknown[] = [];
+        setTurnLifecycleSink((event) => {
+          lifecycleEvents.push(event);
+        });
+        let loseTurn: ((error: Error) => void) | undefined;
+        startTurnMock.mockImplementation(
+          () =>
+            new Promise((_resolveTurn, rejectTurn) => {
+              loseTurn = rejectTurn;
+            }),
+        );
+        const events: unknown[] = [];
+        const session = new CodexProvider().createSession(
+          { cwd: '/tmp/repo', ...scope },
+          (event) => {
+            events.push(event);
+          },
+          () => null,
+        );
+        const pick = (
+          value: unknown,
+          keys: readonly string[],
+        ): Record<string, unknown> =>
+          Object.fromEntries(
+            keys.map((key) => [
+              key,
+              typeof value === 'object' && value !== null
+                ? Reflect.get(value, key)
+                : undefined,
+            ]),
+          );
+        try {
+          session.sendMessage('Run this', { userMessageId: 'message-lost' });
+          await waitForStartTurnCallCount(1);
+          const submissionId = expectDispatchedBinding(
+            firstMockedCallFirstArgument(startTurnMock),
+            'message-lost',
+          );
+          const clientOptions =
+            firstMockedCallFirstArgument(CodexAppServerClient);
+          invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+            type: 'turn-started',
+            threadId: 'root-thread',
+            turnId: 'native-lost',
+            origin: 'user',
+            submissionId,
+            userMessageId: 'message-lost',
+          });
+          loseTurn?.(makeError());
+          for (
+            let attempt = 0;
+            attempt < 20 && !events.some(isCodexErrorResultEvent);
+            attempt += 1
+          )
+            await flushMicrotasks();
+          // A late native completion of the ended turn changes nothing.
+          invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+            type: 'turn-completed',
+            threadId: 'root-thread',
+            turnId: 'native-lost',
+            status: 'failed',
+          });
+          expect({
+            ends: lifecycleEvents
+              .filter((event) => readEventType(event) === 'TurnEnded')
+              .map((event) =>
+                pick(event, ['turnId', 'outcome', 'source', 'userMessageIds']),
+              ),
+            terminals: events
+              .filter(isCodexErrorResultEvent)
+              .map((event) =>
+                pick(event, [
+                  'canopy_turn_user_message_id',
+                  'codex_error_code',
+                  'codex_error_method',
+                ]),
+              ),
+          }).toEqual({
+            ends: [
+              {
+                turnId: 'native-lost',
+                outcome: 'failed',
+                source: 'result',
+                userMessageIds: ['message-lost'],
+              },
+            ],
+            terminals: [
+              {
+                canopy_turn_user_message_id: 'message-lost',
+                codex_error_code: 'app_server_shared_restart',
+                codex_error_method: undefined,
+              },
+            ],
+          });
+        } finally {
+          await session.destroy().catch(() => undefined);
+        }
+      },
+    );
+
+    it('forwards a dispatched binding to its scoped producer without legacy event, timer, or approval effects', async () => {
+      const lifecycleEvents: unknown[] = [];
+      setTurnLifecycleSink((event) => {
+        lifecycleEvents.push(event);
+      });
+
+      let finishTurn: ((result: { status: 'completed' }) => void) | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+
+      const deliveredEvents: unknown[] = [];
+      const onEvent = jest.fn((event: unknown) => {
+        deliveredEvents.push(event);
+      });
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          ...scope,
+        },
+        onEvent,
+        () => null,
+      );
+
+      try {
+        session.sendMessage('Run this', {
+          userMessageId: 'message-dispatched',
+        });
+        await waitForStartTurnCallCount(1);
+
+        const submissionId = expectDispatchedBinding(
+          firstMockedCallFirstArgument(startTurnMock),
+          'message-dispatched',
+        );
+
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+        const lifecycleCallback: unknown =
+          typeof clientOptions === 'object' && clientOptions !== null
+            ? Reflect.get(clientOptions, 'onTurnLifecycleObservation')
+            : undefined;
+        expect(typeof lifecycleCallback).toBe('function');
+
+        onEvent.mockClear();
+        stopSessionPhaseTimerMock.mockClear();
+        approvalCheckMock.mockClear();
+        approvalSetModeMock.mockClear();
+        approvalInvalidatePendingMock.mockClear();
+        approvalDisposeMock.mockClear();
+
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'root-thread',
+          turnId: 'native-dispatched',
+          origin: 'user',
+          submissionId,
+          userMessageId: 'message-dispatched',
+        });
+
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnStarted',
+            provider: 'codex',
+            ...scope,
+            providerSessionId: 'root-thread',
+            turnId: 'native-dispatched',
+            phase: 'start',
+            origin: 'user',
+            binding: 'bound',
+            submissionIds: [submissionId],
+            userMessageIds: ['message-dispatched'],
+          }),
+        );
+
+        const producer = getTurnLifecycleProducer('codex', scope);
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-completed',
+          threadId: 'root-thread',
+          turnId: 'native-dispatched',
+          status: 'completed',
+        });
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnEnded',
+            provider: 'codex',
+            ...scope,
+            providerSessionId: 'root-thread',
+            turnId: 'native-dispatched',
+            outcome: 'completed',
+            source: 'turn-completed',
+            submissionIds: [submissionId],
+            userMessageIds: ['message-dispatched'],
+          }),
+        );
+        expect(getTurnLifecycleProducer('codex', scope)).toBe(producer);
+        expect(onEvent).not.toHaveBeenCalled();
+        expect(stopSessionPhaseTimerMock).not.toHaveBeenCalled();
+        expect(approvalCheckMock).not.toHaveBeenCalled();
+        expect(approvalSetModeMock).not.toHaveBeenCalled();
+        expect(approvalInvalidatePendingMock).not.toHaveBeenCalled();
+        expect(approvalDisposeMock).not.toHaveBeenCalled();
+
+        finishTurn?.({ status: 'completed' });
+        await flushMicrotasks();
+        await session.destroy();
+        expect(getTurnLifecycleProducer('codex', scope)).not.toBe(producer);
+      } finally {
+        finishTurn?.({ status: 'completed' });
+        await session.destroy().catch(() => undefined);
+      }
+    });
+
+    it('keeps a provider-owned wake unbound and preserves the original execution anchor on output', async () => {
+      const lifecycleEvents: unknown[] = [];
+      setTurnLifecycleSink((event) => {
+        lifecycleEvents.push(event);
+      });
+
+      let finishTurn: ((result: { status: 'completed' }) => void) | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+
+      const deliveredEvents: unknown[] = [];
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          ...scope,
+          chatId: 'lifecycle-wake-chat',
+        },
+        (event) => {
+          deliveredEvents.push(event);
+        },
+        () => null,
+      );
+      const wakeScope = { ...scope, chatId: 'lifecycle-wake-chat' };
+
+      try {
+        session.sendMessage('Original request', {
+          userMessageId: 'message-original',
+        });
+        await waitForStartTurnCallCount(1);
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'wake-thread',
+          turnId: 'provider-wake',
+          origin: 'autonomous',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'input-bound',
+          threadId: 'wake-thread',
+          turnId: 'provider-wake',
+          submissionId: 'submission-picked-up',
+          userMessageId: 'message-picked-up',
+        });
+
+        await Promise.resolve(
+          invokeClientCallback(clientOptions, 'onEvent', {
+            type: 'codex',
+            event: {
+              type: 'item.completed',
+              thread_id: 'wake-thread',
+              turn_id: 'provider-wake',
+              item: {
+                id: 'wake-output',
+                type: 'agent_message',
+                text: 'Provider wake output',
+              },
+            },
+          }),
+        );
+
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnStarted',
+            ...wakeScope,
+            providerSessionId: 'wake-thread',
+            turnId: 'provider-wake',
+            phase: 'start',
+            origin: 'autonomous',
+            binding: 'unbound',
+            submissionIds: [],
+            userMessageIds: [],
+          }),
+        );
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnStarted',
+            ...wakeScope,
+            providerSessionId: 'wake-thread',
+            turnId: 'provider-wake',
+            phase: 'binding-update',
+            origin: 'autonomous',
+            binding: 'bound',
+            submissionIds: ['submission-picked-up'],
+            userMessageIds: ['message-picked-up'],
+          }),
+        );
+        const wakeOutput = deliveredEvents.find(
+          (event) =>
+            readEventType(event) === 'codex' &&
+            readEventString(event, 'canopy_turn_user_message_id') ===
+              'message-original',
+        );
+        expect(wakeOutput).toMatchObject({
+          type: 'codex',
+          canopy_turn_user_message_id: 'message-original',
+        });
+        const providerOutput: unknown =
+          typeof wakeOutput === 'object' && wakeOutput !== null
+            ? Reflect.get(wakeOutput, 'event')
+            : undefined;
+        expect(readEventType(providerOutput)).toBe('item.completed');
+        expect(readEventString(providerOutput, 'turn_id')).toBe(
+          'provider-wake',
+        );
+
+        // The wake's terminal keeps the anchor tag and names its own execution.
+        await Promise.resolve(
+          invokeClientCallback(clientOptions, 'onEvent', {
+            type: 'codex',
+            event: {
+              type: 'turn.completed',
+              status: 'completed',
+              thread_id: 'wake-thread',
+              turn_id: 'provider-wake',
+            },
+          }),
+        );
+        const wakeTerminal = deliveredEvents.find((event) => {
+          const nested: unknown =
+            typeof event === 'object' && event !== null
+              ? Reflect.get(event, 'event')
+              : undefined;
+          return readEventType(nested) === 'turn.completed';
+        });
+        expect(wakeTerminal).toMatchObject({
+          canopy_turn_user_message_id: 'message-original',
+          canopy_execution_turn_id: 'provider-wake',
+        });
+        expect(startTurnMock).toHaveBeenCalledTimes(1);
+      } finally {
+        finishTurn?.({ status: 'completed' });
+        await session.destroy().catch(() => undefined);
+        releaseTurnLifecycleProducer('codex', wakeScope);
+      }
+    });
+
+    it('updates a merged input binding and settles one native run', async () => {
+      const lifecycleEvents: unknown[] = [];
+      const deliveredEvents: unknown[] = [];
+      setTurnLifecycleSink((event) => {
+        lifecycleEvents.push(event);
+      });
+
+      let finishTurn: ((result: { status: 'completed' }) => void) | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          ...scope,
+          chatId: 'lifecycle-merged-chat',
+        },
+        (event) => {
+          deliveredEvents.push(event);
+        },
+        () => null,
+      );
+      const mergedScope = { ...scope, chatId: 'lifecycle-merged-chat' };
+
+      try {
+        session.sendMessage('First input', { userMessageId: 'message-first' });
+        await waitForStartTurnCallCount(1);
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+        const firstSubmissionId = 'submission-first';
+
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'merged-thread',
+          turnId: 'merged-turn',
+          origin: 'user',
+          submissionId: firstSubmissionId,
+          userMessageId: 'message-first',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'input-bound',
+          threadId: 'merged-thread',
+          turnId: 'merged-turn',
+          submissionId: 'submission-merged',
+          userMessageId: 'message-merged',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-completed',
+          threadId: 'merged-thread',
+          turnId: 'merged-turn',
+          status: 'completed',
+        });
+        finishTurn?.({ status: 'completed' });
+        await flush();
+        await flushMicrotasks();
+
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnStarted',
+            ...mergedScope,
+            providerSessionId: 'merged-thread',
+            turnId: 'merged-turn',
+            phase: 'binding-update',
+            binding: 'bound',
+            submissionIds: [firstSubmissionId, 'submission-merged'],
+            userMessageIds: ['message-first', 'message-merged'],
+          }),
+        );
+        const nativeStarts = lifecycleEvents.filter(
+          (event) =>
+            readEventType(event) === 'TurnStarted' &&
+            typeof event === 'object' &&
+            event !== null &&
+            Reflect.get(event, 'phase') === 'start',
+        );
+        expect(nativeStarts).toHaveLength(1);
+        expect(
+          lifecycleEvents.filter(
+            (event) => readEventType(event) === 'TurnEnded',
+          ),
+        ).toHaveLength(1);
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnEnded',
+            ...mergedScope,
+            providerSessionId: 'merged-thread',
+            turnId: 'merged-turn',
+            outcome: 'completed',
+            submissionIds: [firstSubmissionId, 'submission-merged'],
+            userMessageIds: ['message-first', 'message-merged'],
+          }),
+        );
+        expect(startTurnMock).toHaveBeenCalledTimes(1);
+        expect(
+          deliveredEvents.filter(
+            (event) =>
+              readEventType(event) === 'result' &&
+              typeof event === 'object' &&
+              event !== null &&
+              Reflect.get(event, 'is_error') === false,
+          ),
+        ).toHaveLength(1);
+      } finally {
+        finishTurn?.({ status: 'completed' });
+        await session.destroy().catch(() => undefined);
+        releaseTurnLifecycleProducer('codex', mergedScope);
+      }
+    });
+
+    it('stamps each root terminal with its own execution when a resumed turn reuses the input', async () => {
+      const executionScope = { ...scope, chatId: 'lifecycle-execution-chat' };
+      setTurnLifecycleSink(() => undefined);
+      let finishTurn:
+        | ((result: { status: 'completed' | 'interrupted' }) => void)
+        | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+      const deliveredEvents: unknown[] = [];
+      const session = new CodexProvider().createSession(
+        { cwd: '/tmp/repo', ...executionScope },
+        (event) => {
+          deliveredEvents.push(event);
+        },
+        () => null,
+      );
+      const runExecution = async (
+        nativeTurnId: string,
+        status: 'completed' | 'interrupted',
+        calls: number,
+      ): Promise<void> => {
+        session.sendMessage('Run this', { userMessageId: 'shared-input' });
+        await waitForStartTurnCallCount(calls);
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'execution-thread',
+          turnId: nativeTurnId,
+          origin: 'user',
+          submissionId: `submission-${nativeTurnId}`,
+          userMessageId: 'shared-input',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-completed',
+          threadId: 'execution-thread',
+          turnId: nativeTurnId,
+          status,
+        });
+        await Promise.resolve(
+          invokeClientCallback(clientOptions, 'onEvent', {
+            type: 'codex',
+            event: {
+              type: 'turn.completed',
+              status,
+              thread_id: 'execution-thread',
+              turn_id: nativeTurnId,
+            },
+          }),
+        );
+        finishTurn?.({ status });
+        await flush();
+        await flushMicrotasks();
+      };
+      const terminals = (): Array<Record<string, unknown>> =>
+        deliveredEvents.flatMap((event) => {
+          const nested: unknown =
+            typeof event === 'object' && event !== null
+              ? Reflect.get(event, 'event')
+              : undefined;
+          const type =
+            readEventType(event) === 'codex'
+              ? readEventType(nested)
+              : readEventType(event);
+          if (type !== 'result' && type !== 'turn.completed') return [];
+          return [
+            {
+              type,
+              canopy_turn_user_message_id: readEventString(
+                event,
+                'canopy_turn_user_message_id',
+              ),
+              canopy_execution_turn_id: readEventString(
+                event,
+                'canopy_execution_turn_id',
+              ),
+            },
+          ];
+        });
+
+      try {
+        await runExecution('native-stopped', 'interrupted', 1);
+        await runExecution('native-resumed', 'completed', 2);
+        expect(terminals()).toEqual(
+          [
+            'native-stopped',
+            'native-stopped',
+            'native-resumed',
+            'native-resumed',
+          ].map((executionTurnId, index) => ({
+            type: index % 2 === 0 ? 'turn.completed' : 'result',
+            canopy_turn_user_message_id: 'shared-input',
+            canopy_execution_turn_id: executionTurnId,
+          })),
+        );
+      } finally {
+        finishTurn?.({ status: 'completed' });
+        await session.destroy().catch(() => undefined);
+        releaseTurnLifecycleProducer('codex', executionScope);
+      }
+    });
+
+    it('forwards the root provider status sequence to the shared lifecycle sink', async () => {
+      const statusScope = { ...scope, chatId: 'lifecycle-status-chat' };
+      const lifecycleEvents: unknown[] = [];
+      setTurnLifecycleSink((event) => {
+        lifecycleEvents.push(event);
+      });
+
+      let finishTurn: ((result: { status: 'completed' }) => void) | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+
+      const onEvent = jest.fn();
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          ...statusScope,
+        },
+        onEvent,
+        () => null,
+      );
+
+      try {
+        session.sendMessage('Observe provider status', {
+          userMessageId: 'message-status',
+        });
+        await waitForStartTurnCallCount(1);
+        onEvent.mockClear();
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'status-thread',
+          turnId: 'status-turn',
+          origin: 'user',
+          submissionId: 'submission-status',
+          userMessageId: 'message-status',
+        });
+        for (const state of [
+          'running',
+          'requires_action',
+          'idle',
+          'reconnecting',
+        ] as const) {
+          invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+            type: 'session-state',
+            threadId: 'status-thread',
+            turnId: 'status-turn',
+            state,
+          });
+        }
+
+        const sessionStateEvents = lifecycleEvents.filter(
+          (event) => readEventType(event) === 'SessionState',
+        );
+        expect(sessionStateEvents).toHaveLength(4);
+        const expectedStates = [
+          'running',
+          'requires_action',
+          'idle',
+          'reconnecting',
+        ] as const;
+        expectedStates.forEach((state, index) => {
+          expect(sessionStateEvents[index]).toMatchObject({
+            type: 'SessionState',
+            provider: 'codex',
+            ...statusScope,
+            state,
+            source: 'provider',
+            observedDuringTurnId: 'status-turn',
+          });
+        });
+        expect(onEvent).not.toHaveBeenCalled();
+        expect(stopSessionPhaseTimerMock).not.toHaveBeenCalled();
+        expect(approvalCheckMock).not.toHaveBeenCalled();
+        expect(approvalSetModeMock).not.toHaveBeenCalled();
+        expect(approvalInvalidatePendingMock).not.toHaveBeenCalled();
+        expect(approvalDisposeMock).not.toHaveBeenCalled();
+
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-completed',
+          threadId: 'status-thread',
+          turnId: 'status-turn',
+          status: 'completed',
+        });
+        finishTurn?.({ status: 'completed' });
+        await flush();
+        await flushMicrotasks();
+      } finally {
+        finishTurn?.({ status: 'completed' });
+        await session.destroy().catch(() => undefined);
+        releaseTurnLifecycleProducer('codex', statusScope);
+      }
+    });
+
+    it('settles a fatal completion once and dedupes the same shadow turn after recovery', async () => {
+      const lifecycleEvents: unknown[] = [];
+      const deliveredEvents: unknown[] = [];
+      setTurnLifecycleSink((event) => {
+        lifecycleEvents.push(event);
+      });
+
+      let finishTurn:
+        | ((result: { status: 'failed'; error: string }) => void)
+        | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          ...scope,
+          chatId: 'lifecycle-failed-chat',
+        },
+        (event) => {
+          deliveredEvents.push(event);
+        },
+        () => null,
+      );
+      const failedScope = { ...scope, chatId: 'lifecycle-failed-chat' };
+
+      try {
+        session.sendMessage('Fail once', { userMessageId: 'message-fatal' });
+        await waitForStartTurnCallCount(1);
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+        const submissionId = 'submission-fatal';
+
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'failed-thread',
+          turnId: 'failed-turn',
+          origin: 'user',
+          submissionId,
+          userMessageId: 'message-fatal',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'session-state',
+          threadId: 'failed-thread',
+          turnId: 'failed-turn',
+          state: 'reconnecting',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'failed-thread',
+          turnId: 'failed-turn',
+          origin: 'restart',
+          submissionId,
+          userMessageId: 'message-fatal',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'session-state',
+          threadId: 'failed-thread',
+          turnId: 'failed-turn',
+          state: 'running',
+        });
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-completed',
+          threadId: 'failed-thread',
+          turnId: 'failed-turn',
+          status: 'failed',
+          error: 'fatal provider failure',
+        });
+        finishTurn?.({ status: 'failed', error: 'fatal provider failure' });
+        await flush();
+        await flushMicrotasks();
+
+        expect(
+          lifecycleEvents.filter(
+            (event) => readEventType(event) === 'TurnEnded',
+          ),
+        ).toHaveLength(1);
+        expect(lifecycleEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'TurnEnded',
+            ...failedScope,
+            providerSessionId: 'failed-thread',
+            turnId: 'failed-turn',
+            outcome: 'failed',
+            source: 'turn-completed',
+            terminalReason: 'fatal provider failure',
+            submissionIds: [submissionId],
+            userMessageIds: ['message-fatal'],
+          }),
+        );
+        const acceptedStarts = lifecycleEvents.filter((event) => {
+          if (
+            readEventType(event) !== 'TurnStarted' ||
+            typeof event !== 'object' ||
+            event === null ||
+            Reflect.get(event, 'phase') !== 'start'
+          ) {
+            return false;
+          }
+          const submissionIds: unknown = Reflect.get(event, 'submissionIds');
+          return (
+            Array.isArray(submissionIds) && submissionIds.includes(submissionId)
+          );
+        });
+        expect(acceptedStarts).toHaveLength(1);
+        expect(
+          lifecycleEvents.filter(
+            (event) => readEventType(event) === 'SessionState',
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            type: 'SessionState',
+            provider: 'codex',
+            ...failedScope,
+            state: 'reconnecting',
+            source: 'provider',
+            observedDuringTurnId: 'failed-turn',
+          }),
+          expect.objectContaining({
+            type: 'SessionState',
+            provider: 'codex',
+            ...failedScope,
+            state: 'running',
+            source: 'provider',
+            observedDuringTurnId: 'failed-turn',
+          }),
+        ]);
+        expect(
+          deliveredEvents.filter(
+            (event) =>
+              readEventType(event) === 'result' &&
+              typeof event === 'object' &&
+              event !== null &&
+              Reflect.get(event, 'is_error') === true,
+          ),
+        ).toHaveLength(1);
+        expect(startTurnMock).toHaveBeenCalledTimes(1);
+        expect(
+          lifecycleEvents.filter(
+            (event) =>
+              readEventType(event) === 'TurnStarted' &&
+              typeof event === 'object' &&
+              event !== null &&
+              Reflect.get(event, 'phase') === 'binding-update',
+          ),
+        ).toHaveLength(0);
+      } finally {
+        finishTurn?.({ status: 'failed', error: 'test cleanup' });
+        await session.destroy().catch(() => undefined);
+        releaseTurnLifecycleProducer('codex', failedScope);
+      }
+    });
+
+    it('does not require a lifecycle sink for Codex input admission or legacy delivery', async () => {
+      let finishTurn: ((result: { status: 'completed' }) => void) | undefined;
+      startTurnMock.mockImplementation(
+        () =>
+          new Promise((resolveTurn) => {
+            finishTurn = resolveTurn;
+          }),
+      );
+
+      const deliveredEvents: unknown[] = [];
+      const session = new CodexProvider().createSession(
+        {
+          cwd: '/tmp/repo',
+          ...scope,
+          chatId: 'lifecycle-no-sink-chat',
+        },
+        (event) => {
+          deliveredEvents.push(event);
+        },
+        () => null,
+      );
+      const noSinkScope = { ...scope, chatId: 'lifecycle-no-sink-chat' };
+
+      try {
+        session.sendMessage('No sink needed', {
+          userMessageId: 'message-no-sink',
+        });
+        await waitForStartTurnCallCount(1);
+        const clientOptions =
+          firstMockedCallFirstArgument(CodexAppServerClient);
+        invokeClientCallback(clientOptions, 'onTurnLifecycleObservation', {
+          type: 'turn-started',
+          threadId: 'no-sink-thread',
+          turnId: 'no-sink-turn',
+          origin: 'user',
+          submissionId: 'submission-no-sink',
+          userMessageId: 'message-no-sink',
+        });
+        expect(startTurnMock).toHaveBeenCalledTimes(1);
+
+        finishTurn?.({ status: 'completed' });
+        await flush();
+        await flushMicrotasks();
+        expect(deliveredEvents).toContainEqual(
+          expect.objectContaining({
+            type: 'result',
+            is_error: false,
+            canopy_turn_user_message_id: 'message-no-sink',
+          }),
+        );
+      } finally {
+        finishTurn?.({ status: 'completed' });
+        await session.destroy().catch(() => undefined);
+        releaseTurnLifecycleProducer('codex', noSinkScope);
+      }
+    });
   });
 
   describe('Ledger tools', () => {
@@ -6939,11 +10641,15 @@ describe('codex-session app-server integration', () => {
   });
 });
 jest.mock('../lib/model-gateway-state', () => ({
-  checkModelGatewayRoute: (...args: unknown[]): unknown =>
+  checkModelGatewayRoute: (
+    ...args: Parameters<typeof ModelGatewayStateModule.checkModelGatewayRoute>
+  ): ReturnType<typeof ModelGatewayStateModule.checkModelGatewayRoute> =>
     mockCheckModelGatewayRoute(...args),
 }));
 jest.mock('../agents/work-owner', () => ({
   ...jest.requireActual<typeof WorkOwnerModule>('../agents/work-owner'),
-  resolveSessionWorkOwner: (...args: unknown[]): unknown =>
+  resolveSessionWorkOwner: (
+    ...args: Parameters<typeof WorkOwnerModule.resolveSessionWorkOwner>
+  ): ReturnType<typeof WorkOwnerModule.resolveSessionWorkOwner> =>
     mockResolveSessionWorkOwner(...args),
 }));

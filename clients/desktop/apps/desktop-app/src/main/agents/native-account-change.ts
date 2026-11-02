@@ -1,12 +1,14 @@
-// Native account change tracking for AI Credits routing (CAN-4200).
+// Native account and subscription recovery tracking for AI Credits routing.
 //
 // Session-scoped AI Credits routing ("Use AI Credits" from the usage-limit
 // banner) covers the limit of the account that hit it. When the user signs
 // into a different Claude or Codex account, that limit no longer applies, so
 // the routing must stop. This module records the last confirmed native
 // account per billed provider in preferences, and the time it last changed.
-// Main reads the change time synchronously on the routing path; the renderer
-// reads the same preference to hide the routing card.
+// A fresh successful allowance read also records a separate fetch-start
+// watermark. Main reads both synchronously on the routing path; the renderer
+// reads the same preference to hide stale session routing. Persistent choices
+// are never invalidated by allowance recovery.
 
 import type { NativeAccountProvider } from '@canopy/desktop-shared/types';
 import { providerAccountKey } from '@canopy/desktop-shared/ai-credits-routing-state';
@@ -17,15 +19,20 @@ import {
 } from '../lib/preferences-store';
 import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { clearProviderQuotaReached } from './ai-credits-quota-state';
+import {
+  canReconcileProviderQuotaReached,
+  clearProviderQuotaReached,
+  reconcileProviderQuotaReached,
+} from './ai-credits-quota-state';
 
 type ConfirmedProviderAuthSubscribe = (
   listener: (event: ConfirmedProviderAuthEvent) => void,
 ) => () => void;
 
 const changedAtByProvider = new Map<NativeAccountProvider, number>();
-// One chain serializes the seed and every read-compare-write, so a replayed
-// and a live observation can neither race nor double-write.
+const restoredAtByProvider = new Map<NativeAccountProvider, number>();
+// One chain serializes the seed and every read-compare-write, so account
+// changes and allowance observations cannot overwrite each other.
 let trackingChain: Promise<void> = Promise.resolve();
 
 /**
@@ -38,12 +45,23 @@ export function getNativeAccountChangedAt(
   return changedAtByProvider.get(provider);
 }
 
+/** Fetch-start watermark of the latest fresh, successful native allowance read. */
+export function getNativeSubscriptionRestoredAt(
+  provider: NativeAccountProvider,
+): number | undefined {
+  return restoredAtByProvider.get(provider);
+}
+
 async function seedChangedAt(): Promise<void> {
   const accounts = (await readPreferencesFile()).nativeProviderAccounts;
   for (const provider of ['claude', 'codex'] as const) {
     const changedAt = accounts?.[provider]?.changedAt;
     if (changedAt !== undefined && !changedAtByProvider.has(provider)) {
       changedAtByProvider.set(provider, changedAt);
+    }
+    const restoredAt = accounts?.[provider]?.subscriptionRestoredAt;
+    if (restoredAt !== undefined && !restoredAtByProvider.has(provider)) {
+      restoredAtByProvider.set(provider, restoredAt);
     }
   }
 }
@@ -81,9 +99,108 @@ async function recordConfirmedAccount(
   // Main's view first, so a renderer re-reading on the broadcast and the next
   // routing decision agree.
   changedAtByProvider.set(provider, changedAt);
+  restoredAtByProvider.delete(provider);
   broadcastPreferencesChanged();
   clearProviderQuotaReached(provider);
   clearRoutingCaches();
+}
+
+/**
+ * Reconcile only a fresh, successful, same-account subscription read. The
+ * caller has already classified all applicable windows as available; neither
+ * cached/error reads nor usage-fetch 429s call this path. Its fetch-start
+ * watermark protects a routing choice made while the read was in flight.
+ */
+export async function recordNativeSubscriptionRestored(
+  provider: NativeAccountProvider,
+  accountKey: string,
+  fetchStartedAt: number,
+  isCurrentObservation: () => boolean,
+): Promise<boolean> {
+  if (
+    !accountKey.trim() ||
+    !Number.isFinite(fetchStartedAt) ||
+    fetchStartedAt <= 0
+  ) {
+    return false;
+  }
+  let recorded = false;
+  let priorRestoredAt: number | undefined;
+  trackingChain = trackingChain
+    .then(async () => {
+      if (
+        !isCurrentObservation() ||
+        !canReconcileProviderQuotaReached(provider, fetchStartedAt)
+      )
+        return;
+      await updatePreferencesFile((latest) => {
+        recorded = false;
+        const accounts = latest.nativeProviderAccounts ?? {};
+        const previous = accounts[provider];
+        if (
+          (previous !== undefined && previous.accountKey !== accountKey) ||
+          (previous?.subscriptionRestoredAt ?? 0) >= fetchStartedAt ||
+          !isCurrentObservation() ||
+          !canReconcileProviderQuotaReached(provider, fetchStartedAt)
+        ) {
+          return null;
+        }
+        priorRestoredAt = previous?.subscriptionRestoredAt;
+        recorded = true;
+        return {
+          nativeProviderAccounts: {
+            ...accounts,
+            [provider]: {
+              ...previous,
+              accountKey,
+              subscriptionRestoredAt: fetchStartedAt,
+            },
+          },
+        };
+      });
+      if (!recorded) return;
+      if (
+        !isCurrentObservation() ||
+        !reconcileProviderQuotaReached(provider, fetchStartedAt)
+      ) {
+        // A newer observation or rejection arrived during the pending write.
+        // Undo only our own watermark; never erase another newer read.
+        await updatePreferencesFile((latest) => {
+          const accounts = latest.nativeProviderAccounts ?? {};
+          const current = accounts[provider];
+          if (
+            current?.accountKey !== accountKey ||
+            current.subscriptionRestoredAt !== fetchStartedAt
+          ) {
+            return null;
+          }
+          const nextAccount = { ...current };
+          delete nextAccount.subscriptionRestoredAt;
+          if (priorRestoredAt !== undefined) {
+            nextAccount.subscriptionRestoredAt = priorRestoredAt;
+          }
+          return {
+            nativeProviderAccounts: {
+              ...accounts,
+              [provider]: nextAccount,
+            },
+          };
+        });
+        recorded = false;
+        return;
+      }
+      restoredAtByProvider.set(provider, fetchStartedAt);
+      broadcastPreferencesChanged();
+    })
+    .catch((error: unknown) => {
+      recorded = false;
+      logMainProcessWarn(
+        `native-account-change: failed to record ${provider} subscription recovery`,
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  await trackingChain;
+  return recorded;
 }
 
 /**
@@ -139,6 +256,7 @@ export const nativeAccountChangeTestSeams = {
   },
   reset(): void {
     changedAtByProvider.clear();
+    restoredAtByProvider.clear();
     trackingChain = Promise.resolve();
   },
 };

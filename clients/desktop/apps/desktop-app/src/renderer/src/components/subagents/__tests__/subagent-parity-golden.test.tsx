@@ -14,6 +14,8 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { buildSubagentChatTranscript } from '@canopy/agent-transcript';
+import { initClaudeModels } from '@canopy/desktop-shared/types';
+import { CLAUDE_PARITY_MODEL } from '@canopy/agent-transcript/lib/subagent-tree/__tests__/parity/claude-scenario';
 import {
   PARITY_FIXTURES,
   type ParityFixture,
@@ -99,7 +101,7 @@ function rootTab(root: ParityFixture['root']): ChatTab {
     planMode: false,
     proposalMode: 'optional',
     thinkingLevel: 'high',
-    modelConfig: { thinkingLevel: 'high', fastMode: false },
+    modelConfig: { thinkingLevel: 'high', speed: 'standard', fastMode: false },
     fastModeExplicit: false,
   };
 }
@@ -181,6 +183,16 @@ async function desktopProjection(fixture: ParityFixture): Promise<Json> {
     ),
   };
 }
+
+beforeAll(() => {
+  initClaudeModels([
+    { id: CLAUDE_PARITY_MODEL.id, label: CLAUDE_PARITY_MODEL.label },
+  ]);
+});
+
+afterAll(() => {
+  initClaudeModels([]);
+});
 
 beforeEach(() => {
   jest.useFakeTimers();

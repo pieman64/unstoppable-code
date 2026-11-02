@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { app } from 'electron';
-import { z } from 'zod';
 import {
   CANOPY_JSON_RPC_PROTOCOL_ERROR_CODES,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
@@ -23,6 +22,7 @@ import {
 import {
   CanopyOperationError,
   createInProcessCanopyClient,
+  paramsDeclareMeta,
   type CanopyStreamHandle,
   type InProcessCanopyClient,
 } from '@canopy/core-runtime';
@@ -100,9 +100,7 @@ function addRoutes(
       kind,
       requiredGrants: definition.requiredGrants,
       envelopes: composeCanopyOperationEnvelopes(name, definition),
-      paramsKeepMeta:
-        definition.params instanceof z.ZodObject &&
-        '_meta' in definition.params.shape,
+      paramsKeepMeta: paramsDeclareMeta(definition.params),
     });
 }
 addRoutes('query', RELAY_DEFINITIONS.queries);

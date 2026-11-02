@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/require-await */
+import type * as CodeReviewGeneratorModule from '../lib/code-review-generator';
+
 jest.mock('../lib/code-review-diff', () => ({
   listReviewRepos: jest.fn(async () => [
     { repoId: 'default', repoPath: '/tmp/repo' },
@@ -24,7 +26,9 @@ jest.mock('../lib/code-review-persistence', () => ({
     commentThreads: [],
     diagrams: {},
   })),
-  setCodeReviewArtifact: setArtifact,
+  get setCodeReviewArtifact(): typeof setArtifact {
+    return setArtifact;
+  },
   removeCodeReviewDiagramArtifact: jest.fn(async () => null),
   reevaluateReviewAnchors: jest.fn(async () => ({
     version: 1,
@@ -53,24 +57,36 @@ jest.mock('../lib/code-review-registry', () => ({
   ),
 }));
 
-const generateAnnotations = jest.fn(async () => ({
-  value: { schemaVersion: 1, annotations: [] },
-  usage: {},
-}));
-const generateDataModelDiff = jest.fn(async () => ({
-  value: null,
-  usage: {},
-}));
+const generateAnnotations = jest.fn<
+  ReturnType<typeof CodeReviewGeneratorModule.generateReviewAnnotations>,
+  Parameters<typeof CodeReviewGeneratorModule.generateReviewAnnotations>
+>(() =>
+  Promise.resolve({
+    value: { schemaVersion: 1, annotations: [] },
+    usage: {},
+  }),
+);
+const generateDataModelDiff = jest.fn<
+  ReturnType<typeof CodeReviewGeneratorModule.generateReviewDataModelDiff>,
+  Parameters<typeof CodeReviewGeneratorModule.generateReviewDataModelDiff>
+>(() => Promise.resolve({ value: null, usage: {} }));
+type GenerateAnnotationsResult = Awaited<
+  ReturnType<typeof CodeReviewGeneratorModule.generateReviewAnnotations>
+>;
 jest.mock('../lib/code-review-generator', () => ({
   generateReviewAnnotations: (
-    ...args: unknown[]
-  ): Promise<{ value: unknown; usage: unknown }> =>
-    generateAnnotations(...args),
+    options: Parameters<
+      typeof CodeReviewGeneratorModule.generateReviewAnnotations
+    >[0],
+  ): ReturnType<typeof CodeReviewGeneratorModule.generateReviewAnnotations> =>
+    generateAnnotations(options),
   generateReviewLogicDiff: jest.fn(async () => ({ value: null, usage: {} })),
   generateReviewDataModelDiff: (
-    ...args: unknown[]
-  ): Promise<{ value: unknown; usage: unknown }> =>
-    generateDataModelDiff(...args),
+    options: Parameters<
+      typeof CodeReviewGeneratorModule.generateReviewDataModelDiff
+    >[0],
+  ): ReturnType<typeof CodeReviewGeneratorModule.generateReviewDataModelDiff> =>
+    generateDataModelDiff(options),
   sanitizeReviewAnnotations: jest.fn(async (set: unknown) => set),
 }));
 
@@ -172,13 +188,10 @@ describe('code-review scheduler', () => {
   });
 
   it('drains in-flight generation before deletion and rejects late refresh or visibility work', async () => {
-    let finish: (value: {
-      value: { schemaVersion: number; annotations: never[] };
-      usage: object;
-    }) => void = () => undefined;
+    let finish: (value: GenerateAnnotationsResult) => void = () => undefined;
     generateAnnotations.mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
+        new Promise<GenerateAnnotationsResult>((resolve) => {
           finish = resolve;
         }),
     );
@@ -251,13 +264,10 @@ describe('code-review scheduler', () => {
   });
 
   it('does not start a queued rerun after deletion begins draining the in-flight run', async () => {
-    let finish: (value: {
-      value: { schemaVersion: number; annotations: never[] };
-      usage: object;
-    }) => void = () => undefined;
+    let finish: (value: GenerateAnnotationsResult) => void = () => undefined;
     generateAnnotations.mockImplementationOnce(
       () =>
-        new Promise((resolve) => {
+        new Promise<GenerateAnnotationsResult>((resolve) => {
           finish = resolve;
         }),
     );

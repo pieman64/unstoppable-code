@@ -446,7 +446,7 @@ describe('PipelineRunCostView', () => {
     expect(
       byTestId(renderer.container, 'pipeline-run-cost-item-run-subagent')
         .textContent,
-    ).toContain('Included in pipeline step cost');
+    ).toContain('Included in workflow step cost');
     expect(
       byTestId(renderer.container, 'pipeline-run-cost-item-run-delegation')
         .tagName,

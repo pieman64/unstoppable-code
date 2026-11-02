@@ -280,7 +280,7 @@ test.describe('diff / changed-files viewer (G12)', () => {
       // FILES rail tab is gone). Add it through the chat group's add-tab menu
       // and assert it renders so the broader files surface is covered
       // alongside the diff.
-      await window.getByTestId('panel-add-panel-group-chat').click();
+      await window.getByTestId('panel-add-tab-group-chat').click();
       await window.getByTestId('panel-add-menu-item-file-explorer').click();
       await expect(window.getByTestId('files-tree-tab')).toBeVisible();
       await expect(window.getByTestId('files-tree-refresh')).toBeVisible();

@@ -96,7 +96,7 @@ describe('desktop subagent reference attachments', () => {
     ).toBe(MESSAGE_BODY);
 
     const copyButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Copy to clipboard"]',
+      'button[aria-label="Copy your message"]',
     );
     if (!copyButton) throw new Error('Missing sent message copy action');
     await act(async () => {

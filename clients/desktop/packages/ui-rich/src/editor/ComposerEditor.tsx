@@ -12,13 +12,18 @@ import {
   type KeyboardEvent,
 } from 'react';
 import type { Descendant } from 'slate';
-import { useIsPhone, useMediaQuery } from '@canopy/ui-shared';
+import {
+  defaultChatPlaceholder,
+  useIsPhone,
+  useMediaQuery,
+} from '@canopy/ui-shared';
 import type {
   ChatEditor,
   FileMentionOption,
   SerializedEditorValue,
   SerializedFileReference,
   SlashCommandOption,
+  SlashCommandPreparation,
 } from '../types';
 import { createEmptyValue } from '../types';
 import { useFileTypeahead, useSlashCommands } from '../plugins';
@@ -151,12 +156,12 @@ export interface ComposerEditorProps {
   fetchSlashCommands?: () => Promise<SlashCommandOption[]>;
   /**
    * Host gate run before a slash row is inserted. Cloud uses it to enable an
-   * available catalog skill; `false` or a rejection leaves the trigger text
-   * untouched.
+   * available catalog skill and Portal to resolve a row's host text; `false`
+   * or a rejection leaves the trigger text untouched.
    */
   onSelectSlashCommand?: (
     command: SlashCommandOption,
-  ) => boolean | Promise<boolean>;
+  ) => SlashCommandPreparation | Promise<SlashCommandPreparation>;
   /**
    * Optional file-mention search. Receives the typeahead query and returns
    * matching files for the menu.
@@ -164,38 +169,6 @@ export interface ComposerEditorProps {
   searchFileMentions?: (query: string) => Promise<FileMentionOption[]>;
   /** Render a multi-repo header row in the file-mention menu. */
   multiRepo?: boolean;
-}
-
-/**
- * The editor's own placeholder, used only when the host passes none. The
- * phone variants exist because the desktop strings name every affordance
- * the composer has and at 390px the long form truncates; a truncated
- * placeholder teaches nothing while looking broken.
- */
-function getDefaultComposerPlaceholder({
-  slashEnabled,
-  fileEnabled,
-  isPhone,
-}: {
-  slashEnabled: boolean;
-  fileEnabled: boolean;
-  isPhone: boolean;
-}): string {
-  if (isPhone) {
-    if (slashEnabled) return 'Ask anything, / for skills';
-    if (fileEnabled) return 'Ask anything';
-    return 'Send a message';
-  }
-  if (slashEnabled && fileEnabled) {
-    return 'Send a message, @ to mention, / for skills and commands';
-  }
-  if (fileEnabled) {
-    return 'Send a message, @ to mention';
-  }
-  if (slashEnabled) {
-    return 'Send a message, / for skills and commands';
-  }
-  return 'Send a message';
 }
 
 /**
@@ -294,6 +267,11 @@ function ComposerEditorInner(
   // Latest-slash ref so the async enablement gate below inserts through (and
   // checks staleness against) the CURRENT trigger, not the render that
   // started the selection.
+  // A query changed away and back is still a different selection session.
+  const slashGeneration = useRef(0);
+  useEffect(() => {
+    slashGeneration.current += 1;
+  }, [slash.triggerKey, slash.isOpen]);
   const slashRef = useRef(slash);
   useEffect(() => {
     slashRef.current = slash;
@@ -310,6 +288,7 @@ function ComposerEditorInner(
     (command: SlashCommandOption): void => {
       if (command.disabledReason !== undefined) return;
       const triggerKey = slash.triggerKey;
+      const generation = slashGeneration.current;
       if (onSelectSlashCommand && triggerKey === null) return;
       gateSlashSelect(
         command,
@@ -318,7 +297,11 @@ function ComposerEditorInner(
           // Stale when the trigger closed or was retargeted (different text
           // or range) while the host enablement was in flight.
           const latest = slashRef.current;
-          return !(latest.isOpen && latest.triggerKey === triggerKey);
+          return !(
+            latest.isOpen &&
+            latest.triggerKey === triggerKey &&
+            slashGeneration.current === generation
+          );
         },
       );
     },
@@ -384,11 +367,11 @@ function ComposerEditorInner(
   });
   const resolvedPlaceholder =
     placeholder ??
-    getDefaultComposerPlaceholder({
-      slashEnabled: Boolean(fetchSlashCommands),
-      fileEnabled: Boolean(searchFileMentions),
-      isPhone: isPhonePlaceholderWidth,
-    });
+    defaultChatPlaceholder(
+      Boolean(fetchSlashCommands),
+      Boolean(searchFileMentions),
+      isPhonePlaceholderWidth,
+    );
 
   useEffect(() => {
     if (!fileTypeahead.isOpen || !searchFileMentions) {
@@ -451,17 +434,18 @@ function ComposerEditorInner(
     (event: KeyboardEvent<HTMLDivElement>): void => {
       onKeyDown?.(event);
       if (event.defaultPrevented) return;
+      // Enter and Escape that confirm or dismiss an IME candidate belong to
+      // the composition, not to typeaheads or submission.
+      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
       if (fileTypeahead.isOpen && fileTypeahead.onKeyDown(event)) return;
       if (slash.isOpen) {
+        // Show all is handled by the hook: Enter expands, Tab is consumed.
         if (
           (event.key === 'Enter' || event.key === 'Tab') &&
-          slash.filteredCommands.length > 0
+          slash.selectedCommand !== null
         ) {
           event.preventDefault();
-          selectSlashCommand(
-            slash.filteredCommands[slash.selectedIndex] ??
-              slash.filteredCommands[0],
-          );
+          selectSlashCommand(slash.selectedCommand);
           return;
         }
         if (slash.onKeyDown(event)) return;
@@ -572,11 +556,15 @@ function ComposerEditorInner(
         <SlashCommandMenu
           commands={slash.filteredCommands}
           selectedIndex={slash.selectedIndex}
+          onHover={slash.setSelectedIndex}
           isDiscovering={slash.isDiscovering}
           itemLabel="commands"
           title="Commands"
           onSelect={selectSlashCommand}
           pendingCommand={pendingSlashCommand}
+          hiddenCount={slash.hiddenCount}
+          totalCount={slash.totalCount}
+          onShowAll={slash.showAll}
         />
       )}
       <SlateEditor

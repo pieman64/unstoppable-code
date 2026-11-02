@@ -97,12 +97,6 @@ jest.mock('../agents/session-manager', () => ({
 import { resolveGitHubToken } from '../lib/github-auth';
 import { readPreferencesFile } from '../lib/preferences-store';
 
-declare global {
-  var __CANOPY_RELEASE_FLAVOR__: string | undefined;
-  var __CANOPY_INTERNAL_RELEASE_INDICATOR__: string | undefined;
-  var __CANOPY_UPDATE_BASE_URL__: string | undefined;
-}
-
 const mockedResolveGitHubToken = jest.mocked(resolveGitHubToken);
 const mockedReadPreferencesFile = jest.mocked(readPreferencesFile);
 
@@ -281,11 +275,13 @@ async function importFreshUpdater(
   brandOverride?: BrandOverride,
   releaseFlavor: 'stable' | 'rc' | 'internal' = 'stable',
   updateBaseUrl = 'https://releases.unstoppable.ai',
+  sourceBuild = false,
 ): Promise<typeof UpdaterModule> {
   return new Promise((resolve) => {
     jest.isolateModules(() => {
-      globalThis.__CANOPY_RELEASE_FLAVOR__ = releaseFlavor;
-      globalThis.__CANOPY_UPDATE_BASE_URL__ = updateBaseUrl;
+      Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', releaseFlavor);
+      Reflect.set(globalThis, '__CANOPY_UPDATE_BASE_URL__', updateBaseUrl);
+      Reflect.set(globalThis, '__CANOPY_SOURCE_BUILD__', sourceBuild);
       if (brandOverride) {
         jest.doMock('@canopy/brand/current', (): BrandCurrentModule => {
           const actual = jest.requireActual<{ BRAND: DesktopBrandRuntime }>(
@@ -328,7 +324,7 @@ describe('updater service', () => {
     mockAutoUpdater.verifyUpdateCodeSignature = mockDefaultWindowsVerifier;
     mockChatSessionActivityListeners.clear();
     mockHasActiveChatWork.mockReturnValue(false);
-    globalThis.__CANOPY_INTERNAL_RELEASE_INDICATOR__ = '';
+    Reflect.set(globalThis, '__CANOPY_INTERNAL_RELEASE_INDICATOR__', '');
     jest.dontMock('@canopy/brand/current');
     mockedResolveGitHubToken.mockResolvedValue('ghp_test_token_123');
     // Default to manual downloads so existing assertions about the download
@@ -444,6 +440,26 @@ describe('updater service', () => {
       mockElectronApp.getVersion.mockReturnValue('1.0.0');
     });
 
+    it.each(['stable', 'rc', 'internal'] as const)(
+      'threads %s policy into Linux installer refusal',
+      async (flavor) => {
+        const updater = await importFreshUpdater(
+          {
+            id: 'unstoppable-code',
+            displayName: 'Example',
+            release: { artifactPrefix: 'unstoppable-code' },
+          },
+          flavor,
+        );
+        await expect(updater.downloadUpdate()).rejects.toThrow(
+          flavor === 'stable'
+            ? /sudo apt update && sudo apt upgrade/
+            : /manually/,
+        );
+        expect(mockGetAutoUpdater).not.toHaveBeenCalled();
+      },
+    );
+
     it('checks metadata without constructing or invoking an installer', async () => {
       mockFetch.mockResolvedValue(
         new Response(
@@ -525,6 +541,33 @@ describe('updater service', () => {
           // The process architecture must never override the installed package.
           Object.defineProperty(process, 'arch', { value: other });
           mockLinuxArchitecture.mockResolvedValue(host);
+        });
+
+        it('offers APT only with an architecture-matched verified reinstall fallback for the published stable brand', async () => {
+          mockFetch.mockResolvedValue(
+            new Response(
+              linuxStableMetadata('1.2.0', ['x64', 'arm64']).replaceAll(
+                'canopy-',
+                'unstoppable-code-',
+              ),
+            ),
+          );
+          const updater = await importFreshUpdater({
+            id: 'unstoppable-code',
+            displayName: 'Example',
+            release: { artifactPrefix: 'unstoppable-code' },
+          });
+          await updater.checkForUpdates();
+          const download = updater.getUpdateState().info?.manualDownload;
+          expect(download?.url).toContain(
+            `unstoppable-code-1.2.0-linux-${host === 'x64' ? 'amd64' : 'arm64'}.deb`,
+          );
+          expect(download?.guidance).toContain('reinstall fallback');
+          expect(download?.guidance).not.toContain('apt update');
+          expect(download?.checksum.value).toBe(
+            Buffer.from(LINUX_STABLE_SHA512[host], 'base64').toString('hex'),
+          );
+          expect(mockGetAutoUpdater).not.toHaveBeenCalled();
         });
 
         it(`fetches ${feedFile} and offers only the ${host} stable package when both are published`, async () => {
@@ -618,10 +661,15 @@ describe('updater service', () => {
             );
           }
 
-          it.each([
+          const architectureCases: Array<{
+            shape: string;
+            architectures: LinuxArchitecture[];
+          }> = [
             { shape: 'both', architectures: ['x64', 'arm64'] },
             { shape: `${host}-only`, architectures: [host] },
-          ])(
+          ];
+
+          it.each(architectureCases)(
             `lists, selects and targets only the ${host} package from a $shape release`,
             async ({ architectures }) => {
               serve(architectures);
@@ -1667,6 +1715,85 @@ describe('updater service', () => {
     });
   });
 
+  it.each(['darwin', 'win32', 'linux'])(
+    'never activates official updates in a packaged source build on %s',
+    async (platform) => {
+      Object.defineProperty(process, 'platform', { value: platform });
+      const oldSourceBuild = process.env.CANOPY_SOURCE_BUILD;
+      process.env.CANOPY_SOURCE_BUILD = 'false';
+      try {
+        const updater = await importFreshUpdater(
+          undefined,
+          'stable',
+          'https://releases.unstoppable.ai',
+          true,
+        );
+        const window = createWindow();
+        updater.startUpdater(() => window);
+        await jest.advanceTimersByTimeAsync(4 * 60 * 60 * 1_000 + 6_000);
+        for (const event of ['update-available', 'update-downloaded']) {
+          mockAutoUpdater.emit(event, { version: '1.2.0' });
+        }
+        await expect(updater.checkForUpdates()).rejects.toThrow('source-built');
+        await expect(
+          updater.checkForVersion({ tag: 'v1.2.0-rc.1' }),
+        ).rejects.toThrow('source-built');
+        await expect(updater.listTargetUpdateVersions()).rejects.toThrow(
+          'source-built',
+        );
+        await expect(updater.downloadUpdate()).rejects.toThrow('source-built');
+        await expect(updater.installUpdate()).rejects.toThrow('source-built');
+        expect(() => updater.scheduleUpdate()).toThrow('source-built');
+        const state = updater.getUpdateState();
+        expect(state.phase).toBe('error');
+        expect(state.message).toContain('source-built');
+        expect(window.webContents.send).toHaveBeenCalledWith(
+          IPC_CHANNELS.updateEvent,
+          expect.objectContaining({
+            type: 'error',
+            message: `App updates are disabled in source-built ${BRAND.displayName}. Rebuild from source to update.`,
+          }),
+        );
+        updater.reportRendererBusyState(false);
+        emitChatSessionActivity();
+        await jest.advanceTimersByTimeAsync(6_000);
+        updater.stopUpdater();
+
+        expect(mockGetAutoUpdater).not.toHaveBeenCalled();
+        expect(mockAutoUpdater.autoInstallOnAppQuit).toBe(false);
+        expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
+        expect(mockAutoUpdater.downloadUpdate).not.toHaveBeenCalled();
+        expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled();
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(mockedResolveGitHubToken).not.toHaveBeenCalled();
+        expect(mockChatSessionActivityListeners.size).toBe(0);
+      } finally {
+        if (oldSourceBuild === undefined)
+          delete process.env.CANOPY_SOURCE_BUILD;
+        else process.env.CANOPY_SOURCE_BUILD = oldSourceBuild;
+      }
+    },
+  );
+
+  it('keeps official updates enabled regardless of the runtime source-build variable', async () => {
+    const oldSourceBuild = process.env.CANOPY_SOURCE_BUILD;
+    process.env.CANOPY_SOURCE_BUILD = 'true';
+    try {
+      const updater = await importFreshUpdater();
+      updater.startUpdater(() => createWindow());
+      await jest.advanceTimersByTimeAsync(6_000);
+      expect(mockAutoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+      expect(mockAutoUpdater.autoInstallOnAppQuit).toBe(true);
+      mockAutoUpdater.emit('update-downloaded', { version: '1.2.0' });
+      await updater.installUpdate();
+      expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+      updater.stopUpdater();
+    } finally {
+      if (oldSourceBuild === undefined) delete process.env.CANOPY_SOURCE_BUILD;
+      else process.env.CANOPY_SOURCE_BUILD = oldSourceBuild;
+    }
+  });
+
   it('skips automatic startup checks in unpackaged builds', async () => {
     const updater = await importFreshUpdater();
     const window = createWindow();
@@ -1768,6 +1895,26 @@ describe('updater service', () => {
     updater.scheduleUpdate();
 
     expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for live provider background work and reevaluates on its terminal activity', async () => {
+    const updater = await importFreshUpdater();
+    updater.startUpdater(() => createWindow());
+    mockAutoUpdater.emit('update-downloaded', {
+      version: '1.3.0',
+      releaseDate: '2026-04-01T00:00:00.000Z',
+      releaseNotes: null,
+    });
+    // The foreground/renderer is idle; the main busy predicate includes a live Agent.
+    mockHasActiveChatWork.mockReturnValue(true);
+    updater.reportRendererBusyState(false);
+    updater.scheduleUpdate();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    mockHasActiveChatWork.mockReturnValue(false);
+    emitChatSessionActivity();
     await jest.advanceTimersByTimeAsync(5_000);
     expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
   });

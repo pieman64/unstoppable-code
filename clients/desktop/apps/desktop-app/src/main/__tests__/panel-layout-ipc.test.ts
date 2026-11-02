@@ -46,11 +46,9 @@ function getHandler(channel: string): HandlerFn {
   if (!entry) {
     throw new Error(`No handler registered for ${channel}`);
   }
-  const handler: unknown = entry[1];
-  if (typeof handler !== 'function') {
-    throw new Error(`Handler for ${channel} is not callable`);
-  }
-  return handler;
+  const registeredHandler = entry[1];
+  return (...args: unknown[]): unknown =>
+    Reflect.apply(registeredHandler, undefined, args);
 }
 
 function makeLayoutFile(): SerializablePanelLayoutFile {
